@@ -144,7 +144,6 @@ export function createRunFinalDelivery(host) {
             state.agent.session,
             state,
             origin,
-            ctx.sessionProjections,
           );
           const message = event.data.message;
           const answer = message.content

@@ -1,0 +1,22 @@
+{"type":"session","version":4,"id":"closing-root","createdAt":1793384892546,"cwd":"/fixture","isSeeded":false,"delegationDepth":0}
+{"type":"turn/start","seq":1,"time":1793384892732,"data":{"turn":1}}
+{"type":"assistant/message","seq":54,"time":1793385053438,"data":{"turn":1,"step":7,"message":{"id":"message-54","role":"assistant","source":{"kind":"model","provider":"fixture","model":"fixed"},"content":[{"type":"text","text":"甲：21\n乙：55"}]}},"surfaceOp":"append"}
+{"type":"step/end","seq":55,"time":1793385053455,"data":{"turn":1,"step":7}}
+{"type":"agent/inbox/spliced","seq":56,"time":1793385053458,"data":{"target":"next-step","start":0,"removedCount":1,"inserted":[]}}
+{"type":"step/start","seq":57,"time":1793385053485,"data":{"turn":1,"step":8}}
+{"type":"user/message","seq":58,"time":1793385053487,"data":{"id":"input-1","role":"user","source":{"kind":"subagent-settled","form":"notice","senderSessionId":"child-b"},"content":[{"type":"text","text":"55"}]},"surfaceOp":"append"}
+{"type":"agent/inbox/spliced","seq":59,"time":1793385057622,"data":{"target":"next-step","start":0,"inserted":[{"id":"input-2","role":"user","source":{"kind":"agent-message","form":"relay","senderSessionId":"child-a"},"content":[{"type":"text","text":"21"}]}]}}
+{"type":"assistant/message","seq":60,"time":1793385059999,"data":{"turn":1,"step":8,"message":{"id":"message-60","role":"assistant","source":{"kind":"model","provider":"fixture","model":"fixed"},"content":[{"type":"reasoning","text":"[redacted reasoning]"},{"type":"text","text":"甲：21\n乙：55"}]}},"surfaceOp":"append"}
+{"type":"step/end","seq":61,"time":1793385060001,"data":{"turn":1,"step":8}}
+{"type":"agent/inbox/spliced","seq":62,"time":1793385060002,"data":{"target":"next-step","start":0,"removedCount":1,"inserted":[]}}
+{"type":"step/start","seq":63,"time":1793385060020,"data":{"turn":1,"step":9}}
+{"type":"user/message","seq":64,"time":1793385060021,"data":{"id":"input-2","role":"user","source":{"kind":"agent-message","form":"relay","senderSessionId":"child-a"},"content":[{"type":"text","text":"21"}]},"surfaceOp":"append"}
+{"type":"agent/inbox/spliced","seq":65,"time":1793385060752,"data":{"target":"next-step","start":0,"inserted":[{"id":"input-3","role":"user","source":{"kind":"subagent-settled","form":"notice","senderSessionId":"child-a"},"content":[{"type":"text","text":"21"}]}]}}
+{"type":"assistant/message","seq":66,"time":1793385065341,"data":{"turn":1,"step":9,"message":{"id":"message-66","role":"assistant","source":{"kind":"model","provider":"fixture","model":"fixed"},"content":[{"type":"reasoning","text":"[redacted reasoning]"},{"type":"text","text":""}]}},"surfaceOp":"append"}
+{"type":"step/end","seq":67,"time":1793385065342,"data":{"turn":1,"step":9}}
+{"type":"agent/inbox/spliced","seq":68,"time":1793385065343,"data":{"target":"next-step","start":0,"removedCount":1,"inserted":[]}}
+{"type":"step/start","seq":69,"time":1793385065355,"data":{"turn":1,"step":10}}
+{"type":"user/message","seq":70,"time":1793385065356,"data":{"id":"input-3","role":"user","source":{"kind":"subagent-settled","form":"notice","senderSessionId":"child-a"},"content":[{"type":"text","text":"21"}]},"surfaceOp":"append"}
+{"type":"assistant/message","seq":71,"time":1793385067698,"data":{"turn":1,"step":10,"message":{"id":"message-71","role":"assistant","source":{"kind":"model","provider":"fixture","model":"fixed"},"content":[{"type":"text","text":""}]}},"surfaceOp":"append"}
+{"type":"step/end","seq":72,"time":1793385067712,"data":{"turn":1,"step":10}}
+{"type":"turn/end","seq":73,"time":1793385067713,"data":{"turn":1,"reason":{"kind":"completed"}}}

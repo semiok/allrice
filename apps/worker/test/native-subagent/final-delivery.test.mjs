@@ -1,4 +1,4 @@
-/* global structuredClone */
+/* global AbortController, structuredClone */
 import { setImmediate } from 'node:timers';
 import { randomUUID } from 'node:crypto';
 import { expect, it } from 'vitest';
@@ -68,9 +68,14 @@ async function subject(
   return { ...f, call, finish, repair, runId };
 }
 
-it.each(['', ' \n ', '更新后的汇总'])(
-  '双 child 结算尾步 %j：保留同一公开正文身份，不增加模型调用',
-  async (tail) => {
+it.each([
+  ['', false],
+  [' \n ', false],
+  ['更新后的汇总', false],
+  ['', true],
+])(
+  '双 child 结算尾步 %j、relay=%s：保留同一公开正文身份，不增加模型调用',
+  async (tail, relay) => {
     const childrenRelease = gate(),
       rootEntered = gate(),
       answerRelease = gate();
@@ -102,6 +107,14 @@ it.each(['', ' \n ', '更新后的汇总'])(
       });
       await new Promise((resolve) => setImmediate(resolve));
       expect(returned).toBe(false);
+      if (relay) {
+        const child = f.ctx.agents
+          .list()
+          .find((agent) => agent.id !== f.root.id);
+        await f.ctx.subagents.sendMessage(child, f.root.id, text('21'), {
+          signal: new AbortController().signal,
+        });
+      }
       childrenRelease.resolve();
       await Promise.all([first.result, second.result]);
       answerRelease.resolve();
@@ -136,8 +149,14 @@ it.each(['', ' \n ', '更新后的汇总'])(
             e.data.source.kind === 'subagent-settled',
         ),
       ).toHaveLength(2);
+      expect(
+        events.filter(
+          (e) =>
+            e.type === 'user/message' && e.data.source.kind === 'agent-message',
+        ),
+      ).toHaveLength(relay ? 1 : 0);
 
-      if (tail === '') {
+      if (tail === '' && !relay) {
         const ownedState = structuredClone(
           f.ctx.sessionProjections.checkpoint(f.root.session),
         );
@@ -168,7 +187,6 @@ it.each(['', ' \n ', '更新后的汇总'])(
             session,
             { runId: f.runId },
             origin,
-            f.ctx.sessionProjections,
           ).event;
         };
         const initial = (copy) =>
@@ -304,7 +322,23 @@ it.each(['', ' \n ', '更新后的汇总'])(
             ].includes(name)
           ) {
             expect(() => verify(copy), name).toThrow();
-          } else expect(verify(copy), name).toBe(last(copy));
+          } else {
+            // A finalized body is not invalidated by the semantics of later
+            // native input/work. Authority comes from the anchored turn and
+            // completion gate, not a tail-event allowlist.
+            const inputOrWork = [
+              'new human',
+              'new relay',
+              'new tool work',
+              'unknown projection',
+              'canceled input',
+              'removed human',
+              'unknown child',
+            ].includes(name);
+            expect(verify(copy), name).toBe(
+              inputOrWork ? initial(copy) : last(copy),
+            );
+          }
         }
         const noBody = structuredClone(events);
         initial(noBody).data.message.content = [
