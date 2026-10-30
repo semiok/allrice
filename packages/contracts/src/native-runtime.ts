@@ -3,6 +3,14 @@
 export { ModelTransportFailureCodeSchema } from './model-diagnostics.ts';
 export { NativeSubagentSummarySchema } from './native-subagent-summary.ts';
 export {
+  NativeSubagentControlAcceptanceSchema,
+  NativeSubagentControlRequestSchema,
+  NativeSubagentControlScopeSchema,
+  type NativeSubagentControlAcceptance,
+  type NativeSubagentControlRequest,
+  type NativeSubagentControlScope,
+} from './native-subagent-control.ts';
+export {
   NativeSubagentSnapshotSchema,
   nativeChildViewLimits,
 } from './native-subagent-snapshot.ts';

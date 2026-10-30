@@ -2,8 +2,10 @@ import { z } from 'zod';
 import { UuidSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
 
+const PgUuidSchema = UuidSchema.transform((value) => value.toLowerCase());
+
 const address = {
-  requestId: UuidSchema,
+  requestId: PgUuidSchema,
   parentSessionId: z.string().min(1),
   childSessionId: z.string().min(1),
   mode: z.literal('continuable'),
@@ -14,9 +16,9 @@ export const NativeSubagentControlInputSchema = z.discriminatedUnion('kind', [
       ...address,
       kind: z.literal('prompt'),
       delivery: z.enum(['queue', 'steer']),
-      content: z.tuple([
-        z.object({ type: z.literal('text'), text: z.string().min(1) }).strict(),
-      ]),
+      content: z.array(
+        z.object({ type: z.literal('text'), text: z.string() }).strict(),
+      ),
       clientTimeZone: z.string().min(1).optional(),
     })
     .strict(),
@@ -26,10 +28,10 @@ export const NativeSubagentControlInputSchema = z.discriminatedUnion('kind', [
 // Server-frozen internal address, never a browser-supplied execution grant.
 export const NativeSubagentControlScopeSchema = z
   .object({
-    rootRunId: UuidSchema,
+    rootRunId: PgUuidSchema,
     nativeRootId: z.string().min(1),
     generation: z.number().int().nonnegative(),
-    jobId: UuidSchema,
+    jobId: PgUuidSchema,
     jobAttempt: z.number().int().positive(),
     rootOriginDigest: ChecksumSchema,
     storageNamespace: z.string().min(1),

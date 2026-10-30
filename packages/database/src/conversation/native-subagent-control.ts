@@ -87,7 +87,7 @@ export async function enqueueNativeSubagentControl(
   },
 ): Promise<NativeSubagentControlTicket> {
   const input = NativeSubagentControlInputSchema.parse(expected.input);
-  const rootRunId = UuidSchema.parse(expected.rootRunId);
+  const rootRunId = UuidSchema.parse(expected.rootRunId).toLowerCase();
   return getDatabase().begin(async (tx) => {
     const reuse = (row: CommandRow) => {
       const saved = NativeSubagentControlRequestSchema.parse(row.native_input);
@@ -180,7 +180,7 @@ export async function claimNativeSubagentControl(
           and session_id=${authority.task.chatSessionId} and target_run_id=${input.rootRunId}
           and expected_generation=${input.worker.generation} and state='pending' and delivery_attempts=0
           and command_type in ('child_prompt','child_interrupt')
-          and native_input#>>'{scope,jobId}'=${input.worker.jobId}
+          and native_input#>>'{scope,jobId}'=${input.worker.jobId.toLowerCase()}
           and native_input#>>'{scope,jobAttempt}'=${String(input.worker.attempt)}
           and native_input#>>'{scope,nativeRootId}'=${authority.nativeSessionId}
           and native_input#>>'{scope,rootOriginDigest}'=${pin.rootOriginDigest}

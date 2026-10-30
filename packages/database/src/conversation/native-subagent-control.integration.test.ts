@@ -8,6 +8,7 @@ import {
 import * as client from '../core/client.ts';
 import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
 import { createRunAuthorityFixture } from '../run-authority.fixture.ts';
+import { assertNativeRunAuthority } from '../run-delivery-authority.ts';
 import { nativeBindingDescriptor } from '../native-session-binding.fixture.ts';
 import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
 import { buildEmployeeRuntimePackage } from '../platform-employees/runtime-package.ts';
@@ -15,6 +16,7 @@ import { authenticateSession, createSession } from '../identity.ts';
 import { bindJobNativeSession } from '../execution/queue.ts';
 import { sendChatMessage } from '../workspace/service.ts';
 import { newNativeGeneration } from './native-root-origin.ts';
+import { readSessionNativeSubagentTarget } from './native-subagent-query.ts';
 import { releaseConversationRuntime } from './conversation-runtime.ts';
 import {
   claimConversationSteer,
@@ -60,13 +62,27 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
     vi.unstubAllEnvs();
     await fixture?.close();
   });
-  async function chat() {
+  async function chat(nativeRootId?: string) {
     const f = await createRunAuthorityFixture(fixture.db, {
       configure: false,
       memberRole: 'member',
       runtimePackage,
+      allowedTools: runtimePackage.runtimeManifest.toolNames,
+      runtimePolicy: {
+        harness: 'dsh',
+        provider: runtimePackage.runtimeManifest.provider,
+        model: runtimePackage.runtimeManifest.model,
+        reasoningEffort: 'xhigh',
+        timeoutMs: 300000,
+        fallbackModels: [],
+        credentialReference: 'deployment:synthetic-never-resolved',
+        baseUrl: null,
+      },
       businessCreationOrigin: true,
     });
+    expect(f.manifest.securityPolicy.deniedCapabilities).toEqual(
+      runtimePackage.runtimeManifest.deniedCapabilities,
+    );
     await fixture.db`update allrice_jobs set attempt=1 where id=${f.worker.jobId}`;
     const [runtime] =
       await fixture.db`select * from allrice_conversation_runtimes where session_id=${f.session}`;
@@ -77,6 +93,7 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
       contextKey: f.session,
       distributionGeneration: newNativeGeneration,
     });
+    if (nativeRootId) descriptor.nativeSessionId = nativeRootId;
     const bound = await bindJobNativeSession({
       workerId: f.worker.workerId,
       jobId: f.worker.jobId,
@@ -112,12 +129,27 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
       workspaceId: f.workspace,
     });
     if (!context) throw Error('fixture authentication failed');
+    const authority = { ...f.base, worker };
+    // Validate the complete immutable package/manifest, policy and lease gates
+    // before individual scenarios change authority or exercise the ledger.
+    expect(await assertNativeRunAuthority(authority)).toMatchObject({
+      ownerId: f.user,
+      nativeSessionId: descriptor.nativeSessionId,
+    });
+    const pin = await readSessionNativeSubagentTarget(fixture.db, {
+      organizationId: f.org,
+      workspaceId: f.workspace,
+      ownerId: f.user,
+      sessionId: f.session,
+    });
+    expect(pin.descriptor).toEqual(descriptor);
     return {
       ...f,
       worker,
       context,
       descriptor,
-      authority: { ...f.base, worker },
+      authority,
+      pin,
     };
   }
   type Chat = Awaited<ReturnType<typeof chat>>;
@@ -175,6 +207,7 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
       generation: f.worker.generation,
       jobId: f.worker.jobId,
       jobAttempt: 1,
+      rootOriginDigest: f.pin.rootOriginDigest,
       storageNamespace: f.descriptor.storageNamespace,
     });
     expect(JSON.stringify(saved?.ticket)).not.toContain(
@@ -204,6 +237,106 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
     await expect(
       fixture.db`update allrice_conversation_commands set native_input='{}' where id=${input.requestId}`,
     ).rejects.toThrow('immutable native child command');
+  });
+
+  it('freezes ordered native text parts and reuses only the same immutable content', async () => {
+    const f = await chat();
+    const input = {
+      ...prompt(f),
+      kind: 'prompt' as const,
+      delivery: 'queue' as const,
+      content: [
+        { type: 'text' as const, text: '请按修正数值计算。' },
+        { type: 'text' as const, text: '' },
+        { type: 'text' as const, text: '第二项改为 500。' },
+      ],
+    };
+    const original = structuredClone(input.content);
+    const ticket = await enqueue(f, input);
+    input.content[0]!.text = 'changed after enqueue';
+    expect((await read(f, input.requestId))?.request.input).toMatchObject({
+      content: original,
+    });
+    expect(await enqueue(f, { ...input, content: original })).toEqual(ticket);
+    await expect(enqueue(f, input)).rejects.toThrow('CHILD_CONTROL_CONFLICT');
+  });
+
+  it('canonicalizes PG UUID identities on first uppercase submission and retries while retaining opaque native case', async () => {
+    const f = await chat('NativeRoot-MixedCase-' + randomUUID());
+    const input = {
+      ...prompt(f),
+      requestId: 'A1000000-A001-4000-8000-000000000001',
+      childSessionId: 'NativeChild-MixedCase',
+    };
+    const ticket = await enqueueNativeSubagentControl(f.context, f.session, {
+      ...expected(f, input),
+      rootRunId: f.rootRunId.toUpperCase(),
+    });
+    const canonical = input.requestId.toLowerCase();
+    expect(ticket.requestId).toBe(canonical);
+    expect(await enqueue(f, { ...input, requestId: canonical })).toEqual(
+      ticket,
+    );
+    expect(await enqueue(f, input)).toEqual(ticket);
+    for (const address of [
+      { parentSessionId: input.parentSessionId.toLowerCase() },
+      { childSessionId: input.childSessionId.toLowerCase() },
+    ]) {
+      await expect(enqueue(f, { ...input, ...address })).rejects.toThrow(
+        'CHILD_CONTROL_CONFLICT',
+      );
+    }
+    const request = await claimNativeSubagentControl({
+      ...f.authority,
+      rootRunId: f.rootRunId.toUpperCase(),
+      worker: {
+        ...f.authority.worker,
+        jobId: f.worker.jobId.toUpperCase(),
+      },
+    });
+    expect(request?.scope).toMatchObject({
+      rootRunId: f.rootRunId,
+      jobId: f.worker.jobId,
+      nativeRootId: f.descriptor.nativeSessionId,
+    });
+    expect(request?.input).toMatchObject({
+      requestId: canonical,
+      parentSessionId: input.parentSessionId,
+      childSessionId: input.childSessionId,
+    });
+    if (!request) throw Error('expected first claim');
+    const upperRequest = {
+      ...request,
+      scope: {
+        ...request.scope,
+        rootRunId: f.rootRunId.toUpperCase(),
+        jobId: f.worker.jobId.toUpperCase(),
+      },
+      input: { ...request.input, requestId: input.requestId },
+    };
+    const observation = {
+      status: 'accepted' as const,
+      acceptance: {
+        kind: 'prompt' as const,
+        messageId: 'NativeMessage-MixedCase',
+      },
+      source: { kind: 'user_rpc' as const, rpcId: canonical, sequence: 2 },
+    };
+    // RPC source is native evidence: only PG input identities canonicalize.
+    await expect(
+      recordNativeSubagentControlResult(f.context, f.session, upperRequest, {
+        ...observation,
+        source: { ...observation.source, rpcId: input.requestId },
+      }),
+    ).rejects.toThrow('CHILD_CONTROL_CONFLICT');
+    const accepted = await recordNativeSubagentControlResult(
+      f.context,
+      f.session,
+      upperRequest,
+      observation,
+    );
+    expect(accepted.result).toEqual(observation);
+    expect((await read(f, input.requestId))?.ticket).toEqual(accepted);
   });
 
   it('rejects foreign/currently revoked owners, stale roots and stale generations before storing a ticket', async () => {
