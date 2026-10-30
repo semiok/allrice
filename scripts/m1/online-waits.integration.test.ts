@@ -170,7 +170,8 @@ suite('MET-222 online human waits through real monitor SQL', () => {
     const thread = `dsh-${f.session}`;
     await bindNativeQuestionFixture(fixture.db, f.rootRunId, thread);
     const [cr] =
-      await fixture.db`select thread_generation from allrice_conversation_runtimes where session_id=${f.session}`;
+      await fixture.db`select cr.thread_generation,e.assistant_message_id from allrice_conversation_runtimes cr
+        join allrice_employee_runs e on e.session_id=cr.session_id where e.run_id=${f.rootRunId}`;
     const runtimeId = randomUUID();
     const owner = owned
       ? await reserveDshRuntimeOwner({
@@ -219,6 +220,7 @@ suite('MET-222 online human waits through real monitor SQL', () => {
       thread,
       runtimeId,
       owner,
+      messageId: cr!.assistant_message_id,
       threadGeneration: Number(cr!.thread_generation),
     };
   }
@@ -246,7 +248,7 @@ suite('MET-222 online human waits through real monitor SQL', () => {
       threadId: f.thread,
       turnId: 'synthetic-turn',
       sessionId: f.session,
-      messageId: null,
+      messageId: f.messageId,
       sourceEventId: randomUUID(),
       sourceEventType,
       sourcePayload,
