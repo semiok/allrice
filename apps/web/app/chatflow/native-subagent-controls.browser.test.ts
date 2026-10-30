@@ -470,7 +470,7 @@ suite('native child Stop request identity and truthful receipts', () => {
       await expect.poll(() => scenario.posts.length).toBe(1);
       const idA = scenario.posts[0]!.input.requestId;
       console.info('Unmount recovery: A held, leaving the business session');
-      await page.keyboard.press('Escape');
+      await detail(page).getByRole('button', { name: '关闭摘要' }).click();
       for (const [index, id] of ['parent-b', 'parent-a'].entries()) {
         await page.locator(`[data-row-key="session:${id}"]`).focus();
         await page.keyboard.press('Enter');
@@ -525,7 +525,7 @@ suite('native child Stop request identity and truthful receipts', () => {
       );
       expect(savedIds).toEqual(ids);
       expect(await receipt(page).last().textContent()).toContain('正在提交');
-      await page.keyboard.press('Escape');
+      await detail(page).getByRole('button', { name: '关闭摘要' }).click();
       await expect.poll(() => detail(page).count()).toBe(0);
       // Closing detail frees a real HTTP/1 slot so navigation can start while B
       // remains held. Keep the full Sidebar and all shared directory reads.
