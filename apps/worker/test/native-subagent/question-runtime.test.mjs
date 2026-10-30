@@ -594,7 +594,123 @@ it.each(['settle', 'answer', 'stop'])(
   },
 );
 
-it('legacy park rejects a live child without interrupting it, then rechecks an in-flight answer after the public barrier', async () => {
+it.each(['settle', 'answer', 'replacement', 'stop', 'lease'])(
+  'legacy park joins a running child and rechecks the original question after %s',
+  async (race) => {
+    const entered = gate(),
+      release = gate(),
+      receipts = [];
+    let lease = true,
+      rootCalls = 0,
+      childSignal;
+    const runId = randomUUID();
+    const h = await host({
+      runId,
+      accounting: true,
+      questionMode: 'legacy',
+      bridge: async (method, params) => {
+        if (method === 'allrice/run-authorize') {
+          if (!lease) throw Error('lease_lost');
+          return { allowed: true };
+        }
+        receipts.push(params);
+        return {};
+      },
+      model: async (request) => {
+        if (request.sessionId !== 'pr0-root') {
+          childSignal = request.signal;
+          entered.resolve();
+          await hold(request.signal, release);
+          return text('子任务自然完成');
+        }
+        rootCalls++;
+        return rootCalls === 1 || (race === 'replacement' && rootCalls === 2)
+          ? tool('ask_user_question', question(`choice-${rootCalls}`))
+          : text('确认完成');
+      },
+    });
+    h.runId = runId;
+    await h.prompt('子任务继续处理，先等我确认。');
+    const q = await card(h);
+    const child = await h.spawn();
+    void child.result.catch(() => {});
+    await entered.promise;
+    let completed = false;
+    const parking = h.server
+      .handleRequest('session/park-question', {
+        sessionId: h.root.id,
+        questionId: q.questionId,
+      })
+      .then((value) => {
+        completed = true;
+        return value;
+      });
+    const outcome = parking.catch((error) => error);
+    await setImmediate();
+    expect(completed).toBe(false);
+    expect(childSignal.aborted).toBe(false);
+    expect(h.ctx.agents.get(child.childId).status).toBe('running');
+    if (race === 'answer' || race === 'replacement')
+      expect(await answer(h, q, ['继续'])).toMatchObject({ status: 'adopted' });
+    if (race === 'replacement')
+      await expect
+        .poll(() => h.server.pendingUserQuestions.get(h.root.id)?.questionId)
+        .not.toBe(q.questionId);
+    if (race === 'lease') lease = false;
+    const closing = race === 'stop' ? h.server.closeRoot(h.root.id) : null;
+    if (!closing) expect(childSignal.aborted).toBe(false);
+    release.resolve();
+    await child.result.catch(() => {});
+    await closing;
+    const result = await outcome;
+    const checkpoints = () =>
+      h.root.session
+        .snapshotEvents()
+        .filter((e) => e.type === 'allrice/wait/checkpoint');
+    if (race === 'settle') {
+      expect(result.checkpoint).toMatchObject({ questionId: q.questionId });
+      expect(checkpoints()).toHaveLength(1);
+      expect(h.root.inbox.nextStep).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            source: expect.objectContaining({
+              kind: 'subagent-settled',
+              senderSessionId: child.childId,
+            }),
+          }),
+        ]),
+      );
+      const stored = await readStoredDshSession(h.ctx, child.childId);
+      expect(
+        stored.events.findLast((e) => e.type === 'turn/end').data.reason.kind,
+      ).toBe('completed');
+      const childFacts = receipts
+        .filter((p) => p.fact?.nativeSessionId === child.childId)
+        .map((p) => p.fact);
+      expect(childFacts.map((f) => f.phase)).toEqual(['start', 'finish']);
+      expect(childFacts[1]).toMatchObject({ usageComplete: true });
+      expect(receipts.at(-1).delivery).toMatchObject({ complete: true });
+    } else {
+      expect(result.checkpoint).toBeFalsy();
+      expect(checkpoints()).toEqual([]);
+      if (race === 'lease') expect(result.message).toContain('lease_lost');
+      if (race === 'replacement') {
+        const replacement = await card(h);
+        expect(replacement.questionId).not.toBe(q.questionId);
+        await expect(answer(h, q, ['继续'])).rejects.toThrow();
+        const current = await h.server.handleRequest('session/park-question', {
+          sessionId: h.root.id,
+          questionId: replacement.questionId,
+        });
+        expect(current.checkpoint).toMatchObject({
+          questionId: replacement.questionId,
+        });
+      }
+    }
+  },
+);
+
+it('legacy park rejects an in-flight answer after child settlement', async () => {
   const h = await blockedRoot(),
     entered = gate(),
     release = gate();
@@ -612,7 +728,6 @@ it('legacy park rejects a live child without interrupting it, then rechecks an i
       sessionId: h.root.id,
       questionId: h.q.questionId,
     });
-  expect(await park()).toEqual({ checkpoint: null });
   expect(h.ctx.agents.get(child.childId).status).toBe('running');
   release.resolve();
   await child.result;

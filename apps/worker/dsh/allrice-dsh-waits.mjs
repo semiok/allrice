@@ -63,11 +63,12 @@ export async function checkpointNativeQuestion(server, sessionId, questionId) {
     server.runAdmission?.accepting(runId);
     return true;
   };
-  const canPark = () => {
+  const canPark = (joiningChildren = false) => {
     if (!current()) return false;
-    // Another agent/tool may still be doing real work. Never interrupt it just
-    // because the root is asking a question.
-    if (server.ctx.agents.list().some((a) => a !== agent)) return false;
+    // Before joining, children may still be doing real work. After the public
+    // barrier, any remaining resident Agent still excludes host release.
+    if (!joiningChildren && server.ctx.agents.list().some((a) => a !== agent))
+      return false;
     const open = new Map();
     for (const e of agent.session.snapshotEvents()) {
       if (e.type === 'tool/call') open.set(e.data.callId, e.data.name);
@@ -94,9 +95,9 @@ export async function checkpointNativeQuestion(server, sessionId, questionId) {
       return false;
     return true;
   };
-  if (!canPark()) return null;
-  // Registry absence is only a fast rejection check. Public DSH wait also
-  // joins creation, disposal and delivery already in flight, never the blocked root.
+  if (!canPark(true)) return null;
+  // Keep this request pending through natural child completion, including
+  // creation, disposal and delivery. Never cancel children or join the blocked root.
   await server.ctx.subagents?.waitForChildren(agent);
   if (!canPark()) return null;
   await server.taskProgress?.flush();

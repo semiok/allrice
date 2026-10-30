@@ -3,6 +3,7 @@ import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createRuntimeFixtureDatabase } from '../../../../packages/database/src/runtime.fixture.ts';
 import { createLocalCommandFixture } from '../../../../packages/database/src/local-command.fixture.ts';
@@ -13,7 +14,7 @@ import {
   maintainQueue,
   enqueueRun,
 } from '../../../../packages/database/src/execution/queue.ts';
-import { p24Fixture, gate } from '../p24/fixture.js';
+import { p24Fixture, gate, latestTaskMessage } from '../p24/fixture.js';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -37,16 +38,42 @@ suite('MET153 separate Worker process recovery with actual native DSH', () => {
     vi.unstubAllEnvs();
     await fixture?.close();
   });
-  it.each(['parked', 'active'] as const)(
+  it.each(['parked', 'child-settles', 'active'] as const)(
     'kills a %s Worker and preserves the Run without replaying an uncertain dispatch',
     async (phase) => {
       const pending = gate();
-      const model = await p24Fixture(async (_request, index) => {
+      const nativeChildren = phase === 'child-settles';
+      let rootCalls = 0;
+      const model = await p24Fixture(async (request) => {
         if (phase === 'active') {
           await pending.promise;
           return { text: 'Late output' };
         }
-        return index === 1
+        if (nativeChildren) {
+          const task = latestTaskMessage(request);
+          if (
+            task?.role === 'user' &&
+            JSON.stringify(task.content).includes('CHILD_STILL_WORKING')
+          ) {
+            await pending.promise;
+            return { text: 'Child finished naturally.' };
+          }
+          if (++rootCalls === 1)
+            return {
+              nativeTool: {
+                name: 'subagent',
+                arguments: {
+                  description: '继续核对',
+                  prompt: 'CHILD_STILL_WORKING',
+                },
+              },
+            };
+        } else rootCalls++;
+        if (nativeChildren && rootCalls > 2)
+          expect(JSON.stringify(request.messages)).toContain(
+            'Child finished naturally.',
+          );
+        return rootCalls === (nativeChildren ? 2 : 1)
           ? {
               nativeTool: {
                 name: 'ask_user_question',
@@ -91,6 +118,7 @@ suite('MET153 separate Worker process recovery with actual native DSH', () => {
           configChecksum: runtime!.config_checksum,
           root: model.root,
           baseUrl: model.baseUrl,
+          nativeChildren,
         }),
         { mode: 0o600 },
       );
@@ -130,10 +158,19 @@ suite('MET153 separate Worker process recovery with actual native DSH', () => {
           log = (log + String(b)).slice(-5000);
         });
         let report: Record<string, unknown> | undefined;
+        let questionAt: number | undefined;
         child.on('message', (value) => {
-          report = value as Record<string, unknown>;
+          const message = value as Record<string, unknown>;
+          if (typeof message.questionAt === 'number')
+            questionAt = message.questionAt;
+          if (message.finished) report = message;
         });
-        return { child, report: () => report, log: () => log };
+        return {
+          child,
+          report: () => report,
+          questionAt: () => questionAt,
+          log: () => log,
+        };
       }
       async function kill(child: ChildProcess) {
         if (child.exitCode !== null || child.signalCode !== null) return;
@@ -146,20 +183,76 @@ suite('MET153 separate Worker process recovery with actual native DSH', () => {
         await expect
           .poll(
             () => ({
-              calls: model.requests.length,
+              calls: model.requests.length > 0,
               exit: first.child.exitCode,
               log: first.child.exitCode === null ? '' : first.log(),
             }),
             { timeout: 20000 },
           )
-          .toMatchObject({ calls: 1, exit: null });
-        if (phase === 'parked') {
+          .toMatchObject({ calls: true, exit: null });
+        if (phase !== 'active') {
+          if (nativeChildren) {
+            await expect
+              .poll(first.questionAt, { timeout: 20000 })
+              .toBeTruthy();
+            // Real Worker timer and real Host: child spans both the 30s grace
+            // period and the former extra 15s park RPC timeout. No fake clocks.
+            await delay(31_000);
+            const [live] =
+              await f.db`select status,attempt,lease_token from allrice_jobs where id=${f.worker.jobId}`;
+            expect(live).toMatchObject({ status: 'running', attempt: 1 });
+            expect(live!.lease_token).toBeTruthy();
+            expect(
+              await f.db`select 1 from allrice_native_question_waits where run_id=${f.rootRunId}`,
+            ).toHaveLength(0);
+            await delay(16_000);
+            expect(first.report()).toBeUndefined();
+            expect(model.abortedRequests).toEqual([]);
+            expect(model.requests).toHaveLength(3);
+            pending.release();
+          }
           await expect
             .poll(first.report, { timeout: 40000 })
             .toMatchObject({ finished: true, processes: 0 });
           const [wait] =
             await f.db`select checkpoint,generation from allrice_native_question_waits where run_id=${f.rootRunId} and state='parked'`;
           expect(wait).toBeTruthy();
+          const [parkedJob] =
+            await f.db`select id,run_id,attempt,status,worker_id,lease_token from allrice_jobs where id=${f.worker.jobId}`;
+          expect(parkedJob).toMatchObject({
+            id: f.worker.jobId,
+            run_id: f.rootRunId,
+            attempt: 1,
+            status: 'waiting_approval',
+            worker_id: null,
+            lease_token: null,
+          });
+          if (nativeChildren) {
+            expect(Date.now() - first.questionAt()!).toBeGreaterThanOrEqual(
+              47_000,
+            );
+            expect(first.report()?.nativeDelivery).toEqual({
+              calls: 3,
+              complete: true,
+            });
+            const facts = first.report()?.nativeFacts as {
+              phase: string;
+              outcome?: string;
+              nativeSessionId: string;
+            }[];
+            expect(facts.filter((fact) => fact.phase === 'start')).toHaveLength(
+              3,
+            );
+            expect(
+              facts.filter(
+                (fact) =>
+                  fact.phase === 'finish' && fact.outcome === 'succeeded',
+              ),
+            ).toHaveLength(3);
+            expect(
+              new Set(facts.map((fact) => fact.nativeSessionId)).size,
+            ).toBe(2);
+          }
           expect(first.report()?.questionSuspension).toBe(true);
           const before = await f.db.begin((tx) =>
             readTaskClock(tx, f.rootRunId),
@@ -213,7 +306,15 @@ suite('MET153 separate Worker process recovery with actual native DSH', () => {
           );
           expect(after!.waitingMs).toBeGreaterThanOrEqual(2400000);
           expect(after!.activeMs).toBeGreaterThanOrEqual(before!.activeMs);
-          expect(model.requests).toHaveLength(2);
+          expect(model.requests).toHaveLength(nativeChildren ? 4 : 2);
+          const [completedJob] =
+            await f.db`select id,run_id,attempt,status from allrice_jobs where id=${f.worker.jobId}`;
+          expect(completedJob).toMatchObject({
+            id: f.worker.jobId,
+            run_id: f.rootRunId,
+            attempt: 2,
+            status: 'succeeded',
+          });
           const [command] =
             await f.db`select state,native_proof from allrice_conversation_commands where session_id=${f.session}`;
           expect(command).toMatchObject({
@@ -246,6 +347,6 @@ suite('MET153 separate Worker process recovery with actual native DSH', () => {
         await model.close();
       }
     },
-    90000,
+    120000,
   );
 });

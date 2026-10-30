@@ -17,6 +17,8 @@ import {
   parkNativeQuestion,
   continueNativeQuestion,
   releaseConversationRuntime,
+  assertNativeRunAuthority,
+  type NativeModelFact,
 } from '@allrice/database';
 import { runClaimedJob } from '../../src/job-runner.js';
 import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.js';
@@ -34,6 +36,7 @@ const config = JSON.parse(await readFile(process.argv[2]!, 'utf8')) as {
   configChecksum: string;
   root: string;
   baseUrl: string;
+  nativeChildren?: boolean;
 };
 const scope = await getDatabase()<
   { schema: string }[]
@@ -42,6 +45,8 @@ if (!/^p25_[a-f0-9]{32}$/.test(scope[0]!.schema))
   throw Error('isolated_fixture_schema_required');
 const workerId = randomUUID();
 let questionSuspension = false;
+const nativeFacts: NativeModelFact[] = [];
+let nativeDelivery: unknown;
 const job = await claimNextJob(workerId, 30000);
 if (!job?.lease) throw Error('fixture_job_missing');
 const adapter = new DshHarnessAdapter({
@@ -96,6 +101,36 @@ await runClaimedJob(
     let parked = false;
     try {
       const result = await adapter.execute({
+        ...(config.nativeChildren
+          ? {
+              nativeSubagents: { maxDepth: null, maxActive: null },
+              nativeRunAuthority: (generation: number) => () =>
+                assertNativeRunAuthority({
+                  scope: {
+                    organizationId: config.org,
+                    workspaceId: config.workspace,
+                    projectId: null,
+                  },
+                  rootRunId: execution.context.runId,
+                  worker: {
+                    ...workflowLease,
+                    generation,
+                    attempt: execution.job.attempt,
+                  },
+                }),
+              modelPreflight: async () => {},
+              nativeAccounting: {
+                bind: () => ({
+                  record: async (fact: NativeModelFact) => {
+                    nativeFacts.push(fact);
+                  },
+                  delivered: (delivery: unknown) => {
+                    nativeDelivery = delivery;
+                  },
+                }),
+              },
+            }
+          : {}),
         kernel: {
           schemaVersion: 1,
           harness: 'dsh',
@@ -105,7 +140,9 @@ await runClaimedJob(
           userMessageId: randomUUID(),
           assistantMessageId: randomUUID(),
           systemInstructions: 'Synthetic durable wait test.',
-          userRequest: 'Ask for a choice then finish this task.',
+          userRequest: config.nativeChildren
+            ? '派子任务继续核对，先问我选择，等我回答后汇总。'
+            : 'Ask for a choice then finish this task.',
           bootstrapConversation: '',
           authorizedMemoryContext: '',
           grantedCapabilities: ['model:invoke'],
@@ -130,6 +167,11 @@ await runClaimedJob(
         threadId: runtime.threadId,
         tools: [],
         onEvent: async (event) => {
+          if (
+            event.type === 'native.event' &&
+            event.sourceEventType === 'session/user-question'
+          )
+            process.send?.({ questionAt: Date.now() });
           if (
             event.type === 'tool.failed' &&
             event.sourcePayload?.questionWait === true
@@ -193,6 +235,8 @@ process.send?.({
   workerId,
   processes: adapter.runtimeInventory().length,
   questionSuspension,
+  nativeFacts,
+  nativeDelivery,
 });
 await adapter.close();
 // Simulates the Worker remaining available for other jobs; no per-Run timer.
