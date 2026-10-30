@@ -46,17 +46,21 @@ export function NativeSubagentDirectory({
   headers: Record<string, string>;
   refreshKey: string;
 }) {
-  const { reads, refresh } = useNativeSubagents(workspaceId, headers, {
-    [sessionId]: refreshKey,
-  });
-  const read = reads[sessionId];
-  const summary = read && read !== 'error' ? read : null;
   const [open, setOpen] = useState(false),
     [pinned, setPinned] = useState(false);
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [selected, setSelected] = useState<string | null>(null);
+  const { reads, refresh } = useNativeSubagents(
+    workspaceId,
+    headers,
+    { [sessionId]: refreshKey },
+    !open && !selected,
+  );
+  const read = reads[sessionId];
+  const summary = read && read !== 'error' ? read : null;
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const catalog = useRef<HTMLDivElement>(null),
     trigger = useRef<HTMLButtonElement>(null);
+  const pendingFocus = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const close = () => {
     clearTimeout(timer.current);
@@ -64,6 +68,15 @@ export function NativeSubagentDirectory({
     setPinned(false);
   };
   useEffect(() => () => clearTimeout(timer.current), []);
+  useEffect(() => {
+    if (!open) pendingFocus.current = false;
+    else if (summary && pendingFocus.current) {
+      pendingFocus.current = false;
+      catalog.current
+        ?.querySelector<HTMLButtonElement>('button[data-child]:not(:disabled)')
+        ?.focus();
+    }
+  }, [open, summary]);
   const direct =
     summary?.descendants.filter((child) => child.parentId === summary.rootId) ??
     [];
@@ -165,7 +178,7 @@ export function NativeSubagentDirectory({
     setSelected(null);
     trigger.current?.focus();
   };
-  if (!selected && read !== 'error' && !direct.length) return null;
+  if (!selected && !open && summary && !direct.length) return null;
   return (
     <>
       <div
@@ -199,6 +212,7 @@ export function NativeSubagentDirectory({
                   : at + (event.key === 'ArrowUp' ? -1 : 1);
           if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
             event.preventDefault();
+            pendingFocus.current = at < 0 && !open;
             setOpen(true);
             requestAnimationFrame(() =>
               catalog.current
@@ -257,8 +271,12 @@ export function NativeSubagentDirectory({
           }
         >
           <div ref={catalog}>
-            {read === 'error' ? (
+            {read === undefined ? (
+              <p role="status">正在读取子智能体摘要…</p>
+            ) : read === 'error' ? (
               <p role="alert">暂时读不到子智能体目录。</p>
+            ) : summary && !direct.length ? (
+              <p>暂无子智能体</p>
             ) : (
               <ul role="tree" aria-label="子智能体目录">
                 {summary && rows(summary.rootId)}

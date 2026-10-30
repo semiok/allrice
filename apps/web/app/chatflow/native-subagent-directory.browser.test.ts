@@ -154,11 +154,20 @@ suite('native subagent directory and employee sidebar', () => {
           ? null
           : id === 'parent-b'
             ? summary('other-root')
-            : response;
+            : liveOnly && response.root.source === 'prepared'
+              ? null
+              : response;
       await route.fulfill({ json: { summary: read } });
     });
     await page.goto(origin);
-    await page.getByRole('button', { name: /2 个子智能体/ }).waitFor();
+    await page
+      .getByRole('button', {
+        name:
+          value.root.source === 'prepared'
+            ? '子智能体状态未知'
+            : /2 个子智能体/,
+      })
+      .waitFor();
     return {
       page,
       calls,
@@ -180,10 +189,10 @@ suite('native subagent directory and employee sidebar', () => {
             .map((call) => call.id)
             .sort(),
         )
-        .toEqual(['parent-a', 'parent-b', 'parent-c']);
+        .toEqual(['parent-a', 'parent-a', 'parent-b', 'parent-c']);
       expect(
         calls.filter((call) => !call.liveOnly).map((call) => call.id),
-      ).toEqual(['parent-a']);
+      ).toEqual([]);
       await expect
         .poll(() => row(page, 'parent-a').innerText())
         .toContain('1 个子智能体运行中');
@@ -193,12 +202,19 @@ suite('native subagent directory and employee sidebar', () => {
       expect(
         await page.getByRole('navigation', { name: '业务会话' }).innerText(),
       ).not.toMatch(/fork-a|idle-b|grandchild/);
-      expect(await page.getByLabel('子智能体当前活动状态未知').count()).toBe(1);
+      await row(page, 'parent-c').hover();
+      await expect
+        .poll(() => page.getByRole('tooltip').innerText())
+        .toContain('子智能体当前活动状态未知');
       const trigger = page.getByRole('button', {
         name: '2 个子智能体 · 1 个运行中',
         exact: true,
       });
       await trigger.click();
+      await page.getByRole('button', { name: '查看idle-b摘要' }).waitFor();
+      expect(
+        calls.filter((call) => !call.liveOnly).map((call) => call.id),
+      ).toEqual(['parent-a']);
       expect(
         await page.getByRole('tree', { name: '子智能体目录' }).innerText(),
       ).toContain('上次回合已完成');
@@ -261,6 +277,11 @@ suite('native subagent directory and employee sidebar', () => {
       expect(
         await trigger.evaluate((node) => node === document.activeElement),
       ).toBe(true);
+      await page.keyboard.press('ArrowDown');
+      await expect
+        .poll(() => first.evaluate((node) => node === document.activeElement))
+        .toBe(true);
+      await page.keyboard.press('Escape');
     } finally {
       await page.close();
     }
@@ -275,12 +296,20 @@ suite('native subagent directory and employee sidebar', () => {
       observation: { source: 'prepared', cursor: 8 },
     }));
     (cold.descendants[1] as Child).task = undefined;
-    const { page } = await open(cold, 390);
+    const { page, calls } = await open(cold, 390);
     try {
-      const trigger = page.getByRole('button', { name: /2 个子智能体/ });
-      expect(await trigger.innerText()).toContain('运行状态未知');
+      const trigger = page.locator('button[aria-haspopup="tree"]');
+      await expect.poll(() => calls.length).toBe(4);
+      expect(await trigger.innerText()).toBe('子智能体状态未知');
       expect(await trigger.innerText()).not.toContain('0 个运行中');
+      expect(calls.every((call) => call.liveOnly)).toBe(true);
+      await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await expect.poll(() => calls.length).toBe(8);
+      expect(calls.every((call) => call.liveOnly)).toBe(true);
       await trigger.click();
+      await page.getByRole('button', { name: '查看idle-b摘要' }).waitFor();
+      expect(await trigger.innerText()).toContain('运行状态未知');
+      expect(calls.filter((call) => !call.liveOnly)).toHaveLength(1);
       await page.getByRole('button', { name: '查看idle-b摘要' }).click();
       const detail = page.getByRole('complementary', { name: '子智能体摘要' });
       const text = await detail.innerText();
@@ -297,6 +326,12 @@ suite('native subagent directory and employee sidebar', () => {
           () => document.documentElement.scrollWidth > innerWidth,
         ),
       ).toBe(false);
+      await page.keyboard.press('Escape');
+      await expect.poll(() => trigger.innerText()).toBe('子智能体状态未知');
+      const before = calls.length;
+      await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await expect.poll(() => calls.length).toBeGreaterThan(before);
+      expect(calls.filter((call) => !call.liveOnly)).toHaveLength(1);
     } finally {
       await page.close();
     }
