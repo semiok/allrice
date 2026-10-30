@@ -142,7 +142,16 @@ suite('MET-222 online human waits through real monitor SQL', () => {
         },
       }),
     );
-  const collect = () => python();
+  const collect = (allowSourceFailure = false) => {
+    const row = python();
+    if (
+      !allowSourceFailure &&
+      row.unknown_reasons.some((r) => r.startsWith('采集失败'))
+    ) {
+      throw Error(JSON.stringify(row));
+    }
+    return row;
+  };
 
   async function report(workerId: string, concurrency = 4) {
     await recordWorkerOperations(
@@ -587,7 +596,7 @@ suite('MET-222 online human waits through real monitor SQL', () => {
     expect(collect()).toMatchObject(unknown);
     await fixture.db`alter table allrice_dsh_runtime_close_observations rename to hidden_close_observations`;
     try {
-      expect(collect()).toMatchObject({
+      expect(collect(true)).toMatchObject({
         online_runs: null,
         occupied_slots: null,
         total_slots: null,
