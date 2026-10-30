@@ -306,9 +306,9 @@ export class DshRuntimePool {
       async (runtime, check) => {
         await followNativeSubagent(runtime.client, runtime.sessionId, {
           ...input,
-          check: async () => {
+          check: async (signal) => {
             check();
-            await input.check();
+            await input.check(signal);
             check();
           },
         });

@@ -9,7 +9,7 @@ import type { DshProtocolClient } from './dsh-protocol-client.js';
 export interface NativeSubagentFollowInput {
   childId?: string;
   signal: AbortSignal;
-  check(): Promise<void>;
+  check(signal: AbortSignal): Promise<void>;
   send(
     event: NativeSubagentFollowEvent | null,
     signal: AbortSignal,
@@ -28,6 +28,8 @@ export async function followNativeSubagent(
   type Display = Extract<NativeSubagentFollowEvent, { type: 'display' }>;
   type Mark = {
     id: string;
+    child?: string;
+    ended?: boolean;
     seq?: number;
     instance?: string;
     revision?: number;
@@ -37,7 +39,7 @@ export async function followNativeSubagent(
   let pending: Mark[] = [],
     latest: Display | undefined,
     wake: (() => void) | undefined;
-  let known = new Set([rootId]),
+  let known = new Map([[rootId, '']]),
     cursors = new Map<string, number>(),
     baseline:
       { hostEpoch: number; instanceId: string; revision: number } | undefined;
@@ -46,9 +48,15 @@ export async function followNativeSubagent(
     instanceId: display.instanceId,
     revision: display.revision,
   });
-  let finished = false,
-    verified = false,
+  let verified = false,
     heartbeatBusy = false;
+  const ended = (mark: Mark) =>
+    Boolean(
+      input.childId &&
+      mark.ended &&
+      mark.child === input.childId &&
+      known.get(input.childId) === mark.id,
+    );
   const notify = () => {
     wake?.();
     wake = undefined;
@@ -57,21 +65,29 @@ export async function followNativeSubagent(
     abort.abort(error);
     notify();
   };
-  const read = async <T>(operation: () => Promise<T>) => {
+  const read = async <T>(operation: () => Promise<T>, timeoutMs?: number) => {
     signal.throwIfAborted();
     let cancel!: () => void;
     const stopped = new Promise<never>((_, reject) => {
       cancel = () => reject(signal.reason);
       signal.addEventListener('abort', cancel, { once: true });
     });
+    const timer =
+      timeoutMs === undefined
+        ? undefined
+        : setTimeout(
+            () => fail(Error('NATIVE_FOLLOW_AUTH_TIMEOUT')),
+            timeoutMs,
+          );
     try {
       return await Promise.race([operation(), stopped]);
     } finally {
+      clearTimeout(timer);
       signal.removeEventListener('abort', cancel);
     }
   };
   const emit = async (event: NativeSubagentFollowEvent | null) => {
-    await read(input.check);
+    await read(() => input.check(signal), 10_000);
     signal.throwIfAborted();
     await input.send(
       event && NativeSubagentFollowEventSchema.parse(event),
@@ -82,8 +98,16 @@ export async function followNativeSubagent(
     if (signal.aborted) return;
     try {
       const id = String(params.sessionId ?? params.parentSessionId ?? '');
-      if (id !== input.childId && !known.has(id)) return;
-      let mark: Mark = { id };
+      const child =
+        typeof params.childSessionId === 'string'
+          ? params.childSessionId
+          : undefined;
+      const candidate =
+        method === 'subagent.finished' &&
+        child === input.childId &&
+        Boolean(child);
+      if (id !== input.childId && !known.has(id) && !candidate) return;
+      let mark: Mark = { id, child, ended: candidate };
       if (method === 'session.assistant-stream') {
         if (!input.childId || id !== input.childId) return;
         const display = NativeSubagentFollowEventSchema.parse({
@@ -119,12 +143,6 @@ export async function followNativeSubagent(
         )
       )
         return;
-      if (
-        method === 'subagent.finished' &&
-        params.childSessionId === input.childId &&
-        known.has(id)
-      )
-        finished = true;
       if (pending.length >= nativeChildViewLimits.events)
         throw Error('NATIVE_FOLLOW_OVERFLOW');
       pending.push(mark);
@@ -151,22 +169,29 @@ export async function followNativeSubagent(
     );
     if (summary.rootId !== rootId || summary.root.source !== 'live')
       throw Error('NATIVE_QUERY_SOURCE_MISMATCH');
-    known = new Set([rootId]);
+    known = new Map([[rootId, '']]);
     cursors = new Map([[rootId, summary.root.cursor]]);
     for (const row of summary.descendants)
       if (row.kind === 'child') {
-        known.add(row.id);
+        known.set(row.id, row.parentId);
         cursors.set(row.id, row.observation.cursor);
       }
     verified ||= Boolean(input.childId && known.has(input.childId));
     await emit({ type: 'directory', summary });
   };
   const snapshot = async () => {
+    const before = pending.length;
     const s = await read(() =>
       client.nativeSubagentSnapshot(rootId, input.childId!),
     );
     if (s.rootId !== rootId || s.childId !== input.childId)
       throw Error('NATIVE_QUERY_CHILD_UNVERIFIED');
+    // This live cut covers earlier notices for this child, including old activations.
+    pending = pending.filter(
+      (mark, index) =>
+        index >= before ||
+        (mark.id !== input.childId && mark.child !== input.childId),
+    );
     baseline = binding(s.hostEpoch, s.stream);
     cursors.set(s.childId, s.observation.cursor);
     verified = true;
@@ -180,16 +205,11 @@ export async function followNativeSubagent(
       try {
         await snapshot();
       } catch (error) {
-        if (!finished) throw error;
+        if (!pending.some(ended)) throw error;
       }
     }
     while (true) {
       signal.throwIfAborted();
-      if (finished && input.childId && verified) {
-        const summary = await read(input.terminal).catch(() => null);
-        await emit({ type: 'terminal', childId: input.childId, summary });
-        return;
-      }
       if (!pending.length) {
         await new Promise<void>((resolve) => {
           wake = resolve;
@@ -198,13 +218,20 @@ export async function followNativeSubagent(
       }
       const batch = pending;
       pending = [];
+      const settled = batch.some(ended);
       const display = latest;
       latest = undefined;
       let changed = false,
+        detailChanged = false,
         gap = false,
         revision = baseline?.revision;
       for (const mark of batch) {
         if (mark.revision !== undefined) {
+          if (
+            mark.epoch === baseline?.hostEpoch &&
+            mark.cursor! < (cursors.get(mark.id) ?? -1)
+          )
+            continue;
           if (
             !baseline ||
             mark.instance !== baseline.instanceId ||
@@ -224,16 +251,38 @@ export async function followNativeSubagent(
           gap ||= cursor !== undefined && mark.seq !== cursor + 1;
           cursors.set(mark.id, mark.seq);
           changed = true;
+          detailChanged ||= mark.id === input.childId;
         } else changed = true;
       }
       batch.length = 0;
+      if (settled && input.childId && verified) {
+        const summary = await read(input.terminal).catch(() => null);
+        if (
+          !summary?.descendants.some(
+            (row) =>
+              row.kind === 'child' &&
+              row.id === input.childId &&
+              row.running === true,
+          )
+        ) {
+          await emit({ type: 'terminal', childId: input.childId, summary });
+          return;
+        }
+      }
       if (gap) await emit({ type: 'clear', reason: 'resync' });
+      const childCursor = cursors.get(input.childId!);
       if (changed || gap) await directory();
-      if (input.childId && (changed || gap)) {
+      if (
+        input.childId &&
+        (detailChanged ||
+          gap ||
+          !baseline ||
+          cursors.get(input.childId) !== childCursor)
+      ) {
         try {
           await snapshot();
         } catch (error) {
-          if (!finished) throw error;
+          if (!pending.some(ended)) throw error;
         }
       } else if (display && revision! > (baseline?.revision ?? -1)) {
         baseline = binding(display.hostEpoch, display.display);

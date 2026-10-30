@@ -1,4 +1,4 @@
-/* global process, Request, fetch, AbortController, TextDecoder */
+/* global process, Request, fetch, AbortController, TextDecoder, console */
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer, ServerResponse } from 'node:http';
 import {
@@ -271,7 +271,7 @@ suite(
       await fixture.db`insert into allrice_memberships(organization_id,workspace_id,user_id,role) values(${f.org},${f.workspace},${id},'member')`;
       return { ...(await createSession(id)), id };
     }
-    async function start(f, afterRead) {
+    async function start(f, afterRead, authenticate) {
       const target = vi.fn(getSessionNativeSubagentTarget);
       const read = vi.fn(async (value, signal, liveOnly) => {
         const summary = await readAuthorizedNativeSubagentSummary(
@@ -282,10 +282,13 @@ suite(
         await afterRead?.(signal);
         return summary;
       });
-      const handler = createNativeRunDiagnosticsHttpHandler(undefined, {
-        target,
-        read,
-      });
+      const handler = createNativeRunDiagnosticsHttpHandler(
+        authenticate ? { authenticate } : undefined,
+        {
+          target,
+          read,
+        },
+      );
       const server = createServer(async (req, res) => {
         if (!(await handler(req, res))) {
           res.writeHead(404);
@@ -536,6 +539,231 @@ suite(
       },
       30_000,
     );
+    it('does not query target after an expired authorization returns late', async () => {
+      const f = await chat();
+      await hotHost(f);
+      const authenticate = vi.fn(authenticateSession);
+      const api = await start(f, undefined, authenticate);
+      const abort = new AbortController(),
+        entered = gate(),
+        release = gate();
+      const consumer = consume(
+        await web(f, f.token, '&follow=true', abort.signal),
+      );
+      await consumer.until((e) => e.type === 'directory');
+      const originalTimeout = globalThis.setTimeout;
+      let deadline;
+      const timer = vi
+        .spyOn(globalThis, 'setTimeout')
+        .mockImplementation((fn, ms, ...args) => {
+          if (ms === 10_000) deadline = fn;
+          return originalTimeout(fn, ms, ...args);
+        });
+      authenticate.mockImplementationOnce(async () => {
+        entered.resolve();
+        await release.promise;
+        return f.context;
+      });
+      try {
+        // Only notification invalidation is controlled; the HTTP gate and real target reader run unchanged.
+        for (const listener of f.listeners)
+          listener({
+            method: 'session.status',
+            params: { sessionId: f.h.root.id },
+          });
+        await entered.promise;
+        const calls = api.target.mock.calls.length;
+        deadline();
+        expect(await consumer.until((e) => e.type === 'clear')).toEqual({
+          type: 'clear',
+          reason: 'unavailable',
+        });
+        expect((await consumer.reader.read()).done).toBe(true);
+        expect(f.listeners.size).toBe(0);
+        release.resolve();
+        await new Promise((resolve) => originalTimeout(resolve, 0));
+        expect(api.target).toHaveBeenCalledTimes(calls);
+      } finally {
+        timer.mockRestore();
+        release.resolve();
+        abort.abort();
+      }
+    }, 30_000);
+
+    it('blind HTTP: nested child terminal during the initial cut reaches safe terminal, not clear/unavailable', async () => {
+      const pReady = gate(),
+        gReady = gate(),
+        pEnd = gate(),
+        gEnd = gate(),
+        cut = gate(),
+        release = gate();
+      const f = await chat(
+        true,
+        async (request, n) => {
+          if (n === 1) {
+            pReady.resolve();
+            await hold(request.signal, pEnd);
+          } else {
+            gReady.resolve();
+            await hold(request.signal, gEnd);
+          }
+          return text('nested safe final');
+        },
+        false,
+        { depth: 2 },
+      );
+      const p = await f.h.spawn(f.h.root, 'parent', { delivery: 'caller' });
+      await pReady.promise;
+      const g = await f.h.spawn(f.h.ctx.agents.get(p.childId), 'nested', {
+        delivery: 'caller',
+      });
+      await gReady.promise;
+      const { runtime } = await hotHost(f),
+        api = await start(f),
+        abort = new AbortController();
+      const original = runtime.client.nativeSubagentSummary;
+      let first = true;
+      runtime.client.nativeSubagentSummary = async (...args) => {
+        const value = await original(...args);
+        if (first) {
+          first = false;
+          cut.resolve();
+          await release.promise;
+        }
+        return value;
+      };
+      try {
+        const opening = web(
+          f,
+          f.token,
+          `&follow=true&childId=${g.childId}`,
+          abort.signal,
+        );
+        await cut.promise;
+        gEnd.resolve();
+        await g.result;
+        release.resolve();
+        const consumer = consume(await opening);
+        const final = await consumer.until(
+          (e) => e.type === 'terminal' || e.type === 'clear',
+        );
+        console.log(
+          'BLIND_NESTED_HTTP',
+          JSON.stringify({
+            types: consumer.events.map((e) => e.type),
+            finishedSeen: f.h.notices.some(
+              (n) =>
+                n.method === 'subagent.finished' &&
+                n.params.childSessionId === g.childId,
+            ),
+            preparedReads: api.read.mock.calls.length,
+          }),
+        );
+        expect(final.type).toBe('terminal');
+        expect(
+          final.summary.descendants.find((r) => r.id === g.childId).lastReply,
+        ).toBe('nested safe final');
+      } finally {
+        abort.abort();
+        release.resolve();
+        gEnd.resolve();
+        pEnd.resolve();
+        await g.result;
+        await p.result;
+      }
+    }, 30000);
+    it('blind HTTP: a newer active instance survives the preceding activation finished notification', async () => {
+      const readyA = gate(),
+        readyB = gate(),
+        endA = gate(),
+        updateB = gate(),
+        endB = gate(),
+        snapshotEntered = gate(),
+        snapshotRelease = gate();
+      const f = await chat(true, undefined, false, {
+        stream: async function* (request, n) {
+          yield { type: 'block-start', index: 0, blockType: 'text' };
+          yield {
+            type: 'text-delta',
+            index: 0,
+            text: n === 1 ? 'first' : 'second',
+          };
+          if (n === 1) {
+            readyA.resolve();
+            await hold(request.signal, endA);
+          } else if (n === 2) {
+            readyB.resolve();
+            await hold(request.signal, updateB);
+            yield { type: 'text-delta', index: 0, text: ' update' };
+            await hold(request.signal, endB);
+          }
+          yield { type: 'finish', reason: { kind: 'stop' } };
+        },
+      });
+      const a = await f.h.spawn(f.h.root, 'first', { delivery: 'caller' });
+      await readyA.promise;
+      const { runtime } = await hotHost(f);
+      await start(f);
+      const abort = new AbortController();
+      const original = runtime.client.nativeSubagentSnapshot;
+      let first = true;
+      runtime.client.nativeSubagentSnapshot = async (...args) => {
+        if (first) {
+          first = false;
+          snapshotEntered.resolve();
+          await snapshotRelease.promise;
+        }
+        return original(...args);
+      };
+      try {
+        const consumer = consume(
+          await web(
+            f,
+            f.token,
+            `&follow=true&childId=${a.childId}`,
+            abort.signal,
+          ),
+        );
+        await snapshotEntered.promise;
+        endA.resolve();
+        await a.result;
+        await f.h.ctx.subagents.sendMessage(
+          f.h.root,
+          a.childId,
+          text('continue'),
+          { signal: new AbortController().signal },
+        );
+        await readyB.promise;
+        snapshotRelease.resolve();
+        const snapshot = await consumer.until((e) => e.type === 'snapshot');
+        expect(snapshot.snapshot.stream.active.text).toBe('second');
+        updateB.resolve();
+        const next = await consumer.until(
+          (e) =>
+            e.type === 'display' || e.type === 'terminal' || e.type === 'clear',
+        );
+        console.log(
+          'BLIND_REACTIVATION_HTTP',
+          JSON.stringify({
+            types: consumer.events.map((e) => e.type),
+            running: f.h.ctx.agents.get(a.childId)?.status,
+            terminalRow: next.summary?.descendants.find(
+              (r) => r.id === a.childId,
+            ),
+          }),
+        );
+        expect(next.type).toBe('display');
+        expect(next.display.active.text).toBe('second update');
+      } finally {
+        abort.abort();
+        snapshotRelease.resolve();
+        endA.resolve();
+        updateB.resolve();
+        endB.resolve();
+        await a.result;
+        await f.h.wait();
+      }
+    }, 30000);
     it('reconnects to the existing safe baseline, isolates children, and clears after real token revocation', async () => {
       const entered = gate(),
         finish = gate();

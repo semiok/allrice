@@ -29,6 +29,7 @@ async function requestNativeRead<T>(
       },
   read: (response: Response) => Promise<T>,
 ) {
+  let response: Response | undefined;
   try {
     // Fixed deployment address, never a request URL. Redirects must not carry
     // an authenticated user's session token to another destination.
@@ -44,7 +45,7 @@ async function requestNativeRead<T>(
       base.hash
     )
       throw new NativeDiagnosticsUnavailable();
-    const response = await fetch(
+    response = await fetch(
       new URL(
         'runId' in address
           ? '/internal/native-run-diagnostics'
@@ -76,6 +77,7 @@ async function requestNativeRead<T>(
       );
     return await read(response);
   } catch (error) {
+    await response?.body?.cancel().catch(() => {});
     if (error instanceof NativeDiagnosticsUnavailable) throw error;
     throw new NativeDiagnosticsUnavailable();
   }

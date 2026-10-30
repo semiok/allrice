@@ -355,3 +355,31 @@ it('rechecks idle authority at 15s without polling the directory and cancels a b
   expect(f.listeners.size).toBe(0);
   expect(vi.getTimerCount()).toBe(0);
 });
+
+it('fails a blocked idle authority check at the read deadline and never publishes its late completion', async () => {
+  vi.useFakeTimers();
+  const f = fixture(),
+    blocked = gate();
+  f.start();
+  await f.until((e) => e?.type === 'snapshot');
+  let authoritySignal;
+  f.input.check.mockImplementation(async (signal) => {
+    authoritySignal = signal;
+    await blocked.promise;
+  });
+  await vi.advanceTimersByTimeAsync(15_000);
+  await vi.advanceTimersByTimeAsync(9_999);
+  expect(f.listeners.size).toBe(1);
+  await vi.advanceTimersByTimeAsync(1);
+  await f.done();
+  expect(authoritySignal.aborted).toBe(true);
+  expect(f.error()?.message).toBe('NATIVE_FOLLOW_AUTH_TIMEOUT');
+  expect(f.listeners.size).toBe(0);
+  expect(f.failures.size).toBe(0);
+  expect(vi.getTimerCount()).toBe(0);
+  const sent = f.input.send.mock.calls.length;
+  blocked.resolve();
+  await Promise.resolve();
+  expect(f.input.send).toHaveBeenCalledTimes(sent);
+  expect(f.client.nativeSubagentSummary).toHaveBeenCalledOnce();
+});

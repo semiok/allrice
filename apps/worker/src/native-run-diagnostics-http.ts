@@ -129,8 +129,10 @@ export function createNativeRunDiagnosticsHttpHandler(
           input.sessionId,
         );
         signal.throwIfAborted();
-        const check = async () => {
+        const check = async (checkSignal = signal) => {
+          checkSignal.throwIfAborted();
           const current = await deps.authenticate(token, tenant);
+          checkSignal.throwIfAborted();
           if (!current || current.actor.id !== context.actor.id)
             throw Object.assign(Error('authentication_required'), {
               code: 'authentication_required',
@@ -140,6 +142,7 @@ export function createNativeRunDiagnosticsHttpHandler(
             input.workspaceId,
             input.sessionId,
           );
+          checkSignal.throwIfAborted();
           if (nativeRootDigest(after) !== nativeRootDigest(target))
             throw Error('NATIVE_QUERY_TARGET_CHANGED');
           if (input.follow) nativeSubagentQuerySource(after);
