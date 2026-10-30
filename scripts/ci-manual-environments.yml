@@ -39,6 +39,7 @@ rules:
     - apps/worker/src/repository-repair/
 files:
   native:
+    - apps/worker/dsh/allrice-native-accounting.test.mjs
     - apps/rice-bridge/src/credential-files.test.ts
     - apps/rice-bridge/src/dependency-preparation.test.ts
     - apps/rice-bridge/src/desktop-controller.test.ts

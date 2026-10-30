@@ -213,6 +213,7 @@ export class DshProtocolClient {
     requireDurableQuestions?: boolean;
     requireContentGuard?: boolean;
     requireRunAdmission?: boolean;
+    requireNativeAccounting?: boolean;
   }) {
     const {
       expectedVersion,
@@ -232,6 +233,15 @@ export class DshProtocolClient {
       throw new HandlerError(
         'DSH_RUN_GUARD_UNAVAILABLE',
         'DSH Run admission is unavailable',
+        false,
+      );
+    if (
+      input.requireNativeAccounting &&
+      record(result.capabilities)?.nativeAccounting !== 1
+    )
+      throw new HandlerError(
+        'DSH_ACCOUNTING_UNAVAILABLE',
+        'DSH model receipts are unavailable',
         false,
       );
     const serverInfo = record(result.serverInfo);

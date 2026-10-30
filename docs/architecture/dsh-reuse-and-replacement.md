@@ -687,3 +687,19 @@ SQL 消息 ID 和内容匹配。压缩及冷恢复仍由原生 SDK/persistence �
 时间、次数和用量，隐藏内容、思考、工具参数/结果及路径。缺失或不支持的原生事实
 保留 unavailable/partial，供应商 wire 时间仍为 unknown。新 adapter 内容必须独立
 测量、批准并通过 Dev 验证；保留的旧原生包和其存储不随本次变更重绑。
+
+### MET-229：公开模型调用的归根账本（第二片）
+
+沿 `allrice-jsonrpc-lifecycle-v1`，只在员工 Worker 私有 accounting port 存在时组合公开 `llm/stream` 观察。每次实际调用固定 UUID 和原根/Run/route；原准入检查在 start 交付之后执行，账本错误不触发模型重跑。正常、失败/取消和 legacy park 在原 drain/close 边界交付，现有 tenant→route 事务内读取原 facts、聚合并封口；不新增锁层、状态或终态修复。
+
+原生四桶互斥，input 统一含 read/write cache；沿用当前二价估算，缺桶/缺价/未确认交付保持 unknown，订阅证明仍 N/A。fork/replay前缀不收费。普通调用不要求 task clock；不新增 PG lifecycle writer，不承诺跨重启完整 activation 审计。只用当前 primary 的真实 capability，不更改旧 origin 来源记录。
+
+pi-ai 会省略零 cache；仅有实际 finish 证明且原始有效桶与公开 exact total 严格相等时，将真正 undefined 的 cache 计为已知0并保留 total。缺 total/有余量的缺桶，以及非法桶或已给但冲突的 total 保持 unknown；不按 provider 名字猜，不升级历史事实。
+
+旧 assistant/message 投影没有实际 finish 凭据，缺 cache 仍未知。结算事务逐调用重验已给 total 与四桶之和；矛盾时保留用量小计、完整性为 false、金额为 null，不改原事实。
+
+依据：`dsh-llm` 公共 stream/TokenUsage、`dsh-subagent` 原生谱系与树等待，MET-229 root 2026-10-30 第二片核定。归属为 SaaS 账本、门卫、既有存储/租约接线；无 DSH patch 或私有接口。升级时复核 stream 异常/usage、实际授权顺序和 close/park 交付；原生若提供 SaaS root billing 后再替换本接线。生产委派仍由 PR3d 独立启用。
+
+本片只迁移普通 employee 原生根及其本轮后代/repair。`selectedWorkflow` 每个 step 可重新 bind，仍走原 caller；它不是一次固定 root-port 的生命周期，继续使用修正后的 I+R+W 投影及 cache knownness，不能称为逐调用完整账本。
+
+3d 启用前须核定 selectedWorkflow 是否共享委派 profile，以及未迁移调用的归根合同；本片不增加开关或替它选择启用行为。运行池按 accounting 能力隔离普通与旧 caller，切换方向均不能沿用对方的 port 或计数。

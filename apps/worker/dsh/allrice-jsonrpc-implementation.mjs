@@ -1,3 +1,4 @@
+import { installNativeAccounting } from './allrice-native-accounting.mjs';
 import { createRunFinalDelivery } from './allrice-final-delivery.mjs';
 import { readBootstrapCoverage } from './allrice-bootstrap-coverage.mjs';
 import { BootstrapReceiptSchema } from '@allrice/contracts/native-runtime';
@@ -1204,6 +1205,12 @@ export async function createAllRiceRuntime(
           },
         );
       }
+      if (params.requireNativeAccounting && !this.nativeAccounting)
+        this.nativeAccounting = installNativeAccounting(
+          this.ctx,
+          this.accountingBridge,
+          (p) => this.runAdmission.attribute(p),
+        );
       this.registerNativeTools();
       if (this.nativeTools.has('platform.repository.review')) {
         // The profile also installs native tools. Restrict the review Agent's
@@ -1225,6 +1232,7 @@ export async function createAllRiceRuntime(
         },
         capabilities: {
           runAdmission: !!this.runAdmission,
+          nativeAccounting: this.nativeAccounting ? 1 : 0,
           durableQuestions: true,
           taskProgress: !!this.taskProgress,
           contentGuard: !!this.contentGuard,
@@ -1879,10 +1887,14 @@ export async function createAllRiceRuntime(
         case 'session/question-reply':
           requiredSessionId(params);
           return replyNativeQuestion(this, params);
-        case 'run/begin':
-          return this.runAdmission.begin(params);
+        case 'run/begin': {
+          const result = await this.runAdmission.begin(params);
+          this.nativeAccounting?.begin(params.sessionId);
+          return result;
+        }
         case 'run/end':
           await this.taskProgress?.flush();
+          await this.nativeAccounting?.flush();
           return this.runAdmission.end(params.runId);
         case 'session/interrupt':
           return this.interrupt(params);
@@ -1991,6 +2003,8 @@ export async function createAllRiceRuntime(
   server.installUserQuestionProvider();
   const attributed = (params) =>
     server.runAdmission?.attribute(params) ?? params;
+  server.accountingBridge = (params, signal) =>
+    transport.request('allrice/model-receipt', params, signal);
   server.toolBrokerRequest = (params, signal) =>
     transport.request('allrice/tool-call', attributed(params), signal);
   server.personalSkillBridge = (params, signal) =>

@@ -618,8 +618,8 @@ integration(
           await released;
         });
         await locked;
-        let writer: Promise<void> | undefined,
-          rejected: Promise<void> | undefined;
+        let writer: ReturnType<typeof f.complete> | undefined,
+          rejected: ReturnType<typeof refusal> | undefined;
         try {
           writer = f.complete();
           void writer.catch(() => {});

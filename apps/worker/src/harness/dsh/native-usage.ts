@@ -5,8 +5,9 @@ import { record } from './event-projector.js';
 export function projectNativeUsage(
   value: unknown,
   observedOutput: boolean,
-  subscription: boolean,
+  _subscription: boolean,
 ) {
+  void _subscription;
   const raw = record(value);
   const valid = (v: unknown): v is number =>
     typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
@@ -24,18 +25,15 @@ export function projectNativeUsage(
     valid(allInput) &&
     allInput > 0 &&
     valid(output) &&
-    (!observedOutput || output > 0);
+    (!observedOutput || output > 0) &&
+    (raw?.totalTokens === undefined ||
+      (valid(raw.totalTokens) && raw.totalTokens === allInput + output));
   return {
-    inputTokens: subscription
-      ? valid(allInput)
-        ? allInput
-        : 0
-      : valid(input)
-        ? input
-        : 0,
+    inputTokens: valid(allInput) ? allInput : 0,
     cachedInputTokens: valid(read) ? read : 0,
     outputTokens: valid(output) ? output : 0,
     usageComplete: complete,
+    // Message projection has no actual finish proof for omitted cache buckets.
     cacheUsageKnown: complete && valid(read) && valid(write),
   };
 }

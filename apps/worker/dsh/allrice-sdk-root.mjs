@@ -238,6 +238,7 @@ export class AllRiceSdkRoot {
         await this.ctx.sessions.flush(agent.session);
       }
       await this.sdk.shutdown();
+      await this.nativeAccounting?.flush();
       this.roots.clear();
       this.phase = 'closed';
       return { closed: !!agent };

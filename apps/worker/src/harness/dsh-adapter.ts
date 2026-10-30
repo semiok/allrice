@@ -1,3 +1,7 @@
+import {
+  NativeModelFactSchema,
+  NativeModelDeliverySchema,
+} from '@allrice/database';
 import { nativeRunScope } from './dsh/run-scope.js';
 import type { BootstrapReceipt } from '@allrice/contracts';
 import { readDshToolResult } from '@allrice/contracts';
@@ -308,6 +312,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       ? nativeRunScope(runtime.client, threadId, runId)
       : undefined;
     const authorizeRun = input.nativeRunAuthority?.(generation);
+    const accounting = input.nativeAccounting?.bind(threadId);
     let turnId: string | null = null;
     let contentAuthorizationFailure: HandlerError | undefined;
     const checkContent = async (phase: DshContentCheckPhase = 'other') => {
@@ -363,12 +368,30 @@ export class DshHarnessAdapter implements HarnessAdapter {
         return { origin };
       }
       if (runScope) params = runScope.check(params);
+      if (method === 'allrice/model-receipt') {
+        if (!accounting || !runScope) throw Error('NATIVE_ACCOUNTING_DENIED');
+        if (params.delivery !== undefined) {
+          if (params.nativeSessionId !== threadId)
+            throw Error('NATIVE_ACCOUNTING_DENIED');
+          accounting.delivered(
+            NativeModelDeliverySchema.parse(params.delivery),
+          );
+        } else {
+          const fact = NativeModelFactSchema.parse(params.fact);
+          if (fact.nativeSessionId !== params.nativeSessionId)
+            throw Error('NATIVE_ACCOUNTING_DENIED');
+          await accounting.record(fact);
+        }
+        return {};
+      }
       if (method === 'allrice/run-authorize') {
         executionSignal.throwIfAborted();
         try {
           if (params.kind === 'tool') await authorizeRun?.();
-          else if (params.kind === 'model') await input.modelPreflight?.();
-          else throw Error('DSH_RUN_REQUEST_DENIED');
+          else if (params.kind === 'model') {
+            accounting?.delivered({ calls: 0, complete: false });
+            await input.modelPreflight?.();
+          } else throw Error('DSH_RUN_REQUEST_DENIED');
           executionSignal.throwIfAborted();
           return { allowed: true };
         } catch (error) {
@@ -1216,6 +1239,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         caught.receipt.usageComplete &&= usageComplete;
         caught.receipt.cacheUsageKnown &&= cacheUsageKnown;
         try {
+          if (accounting) await runtime.client.endRun(threadId);
           await input.questionWait.park(caught.checkpoint, caught.receipt);
           caught.persisted = true;
         } finally {
@@ -1261,7 +1285,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           });
       const attachUsage = (failure: unknown) => {
         const runId = input.executionEnvironment.ALLRICE_RUN_ID;
-        if (failedUsage && runId)
+        if (failedUsage && runId && !accounting)
           attachExecutionFailureUsage(
             failure,
             runId,

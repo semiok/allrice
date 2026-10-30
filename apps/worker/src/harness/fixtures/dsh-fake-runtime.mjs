@@ -156,6 +156,7 @@ lines.on('line', (line) => {
       },
       capabilities: {
         runAdmission: true,
+        nativeAccounting: frame.params.model === 'legacy-accounting' ? 0 : 1,
         taskProgress:
           process.env.ALLRICE_PROGRESS_GUARD_ENABLED === '1' &&
           frame.params.model !== 'legacy-progress',

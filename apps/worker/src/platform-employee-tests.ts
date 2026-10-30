@@ -395,7 +395,8 @@ export async function executeNextPlatformEmployeeTest(input: {
       meter.costCents =
         subscriptionSnapshot ||
         result.costEstimateAvailable === false ||
-        !meter.usageComplete
+        !meter.usageComplete ||
+        (snapshot.provider === 'dsh' && !meter.cacheUsageKnown)
           ? null
           : estimateModelCostCents({
               provider: result.provider,

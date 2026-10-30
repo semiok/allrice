@@ -106,6 +106,7 @@ export async function checkpointNativeQuestion(server, sessionId, questionId) {
   agent.cancel({ kind: 'user' }, { keepInbox: true });
   await agent.whenIdle();
   await server.taskProgress?.flush();
+  await server.nativeAccounting?.flush();
   await server.ctx.sessions.flush(agent.session);
   return pendingNativeWait(agent);
 }

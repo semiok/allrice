@@ -822,6 +822,7 @@ export class DshRuntimePool {
         : {}),
       systemInstructions,
       taskProgress: !!input.input.progress,
+      nativeAccounting: !!input.input.nativeAccounting,
       contentGuard: !!input.input.contentGuard,
       ...(input.input.contentGuard?.nativeContextKey &&
       input.input.contentGuard.nativeContextKey !==
@@ -1073,6 +1074,7 @@ export class DshRuntimePool {
           nativeIdentity?.version ?? DSH_DISTRIBUTION_CURRENT_VERSION,
         requireRunAdmission: !!input.input.executionEnvironment.ALLRICE_RUN_ID,
         requireTaskProgress: !!input.input.progress,
+        requireNativeAccounting: !!input.input.nativeAccounting,
         requireDurableQuestions: !!input.input.questionWait,
         requireContentGuard: !!input.input.contentGuard,
       });

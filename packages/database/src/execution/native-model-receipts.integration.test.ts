@@ -1,8 +1,19 @@
-/** Real isolated PostgreSQL and Worker receipt entrypoints. No Host/provider is
- * enabled in this storage slice; metadata and Token facts below are synthetic. */
+// @ts-expect-error The shared actual Host fixture is JavaScript.
+import * as NativeHost from '../../../../apps/worker/test/native-subagent/fixture.mjs';
+const { gate, host, text } = NativeHost;
+/** Real isolated PostgreSQL and Worker receipt entrypoints. The added end-to-end
+ * case runs the actual DSH Host; only its provider and tokens are synthetic. */
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import {
   RouteDecisionSchema,
   type EmployeeRuntimePackage,
@@ -35,6 +46,8 @@ import {
 } from './route-decision.ts';
 import {
   NativeModelReceiptSchema,
+  NativeModelFactSchema,
+  NativeModelDeliverySchema,
   type NativeModelFact,
 } from './native-model-receipts.ts';
 
@@ -45,6 +58,10 @@ const suite =
 suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
   let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   let runtimePackage: EmployeeRuntimePackage;
+  beforeEach(() => {
+    vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
+    vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'c'.repeat(64));
+  });
   beforeAll(async () => {
     vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
     vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'c'.repeat(64));
@@ -300,27 +317,6 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
       .map((row) => NativeModelReceiptSchema.parse(row.payload))
       .filter((row) => row.routeDecisionId === decisionId);
   };
-  const settle = (f: Fixture) =>
-    completeRouteDecision({
-      organizationId: f.org,
-      workspaceId: f.workspace,
-      outcome: {
-        decisionId: f.decision.id,
-        status: 'failed',
-        inputTokens: 0,
-        cachedInputTokens: 0,
-        outputTokens: 0,
-        costCents: null,
-        usageComplete: false,
-        cacheUsageKnown: false,
-        errorCode: 'synthetic_stop',
-        failureCategory: null,
-        completedAt: new Date().toISOString(),
-      },
-    }).then(
-      () => ({ closed: true }),
-      (error) => ({ error }),
-    );
   async function held(callId: string) {
     const connection = await fixture.db.reserve();
     const [r] =
@@ -396,6 +392,233 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
     return { ...next, decision: await route(next, 1, runtime.generation) };
   }
 
+  function nativeOutcome(
+    f: Fixture,
+    delivery = { calls: 1, complete: true },
+    price: {
+      inputCentsPerMillion: number;
+      outputCentsPerMillion: number;
+    } | null = { inputCentsPerMillion: 100, outputCentsPerMillion: 400 },
+  ) {
+    return completeRouteDecision({
+      organizationId: f.org,
+      workspaceId: f.workspace,
+      native: {
+        rootSessionId: f.descriptor.nativeSessionId,
+        jobId: f.worker.jobId,
+        jobAttempt: 1,
+        delivery,
+        price: price ?? undefined,
+      },
+      outcome: {
+        decisionId: f.decision.id,
+        status: 'succeeded',
+        inputTokens: 999999,
+        cachedInputTokens: 0,
+        outputTokens: 999999,
+        costCents: 999999,
+        usageComplete: true,
+        cacheUsageKnown: true,
+        errorCode: null,
+        failureCategory: null,
+        completedAt: new Date().toISOString(),
+      },
+    });
+  }
+  it('用户委派后只把实际 root/child/fork 新调用记入原根账单，不重计继承前缀', async () => {
+    const f = await setup();
+    let delivery = { calls: 0, complete: false };
+    const childEntered = gate(),
+      childRelease = gate();
+    const h = await host({
+      accounting: true,
+      runId: f.rootRunId,
+      rootId: f.descriptor.nativeSessionId,
+      provider: 'synthetic',
+      modelName: 'never-called',
+      depth: 2,
+      model: async (_request: unknown, count: number) => {
+        if (count === 2) {
+          childEntered.resolve();
+          await childRelease.promise;
+        }
+        return text('完成');
+      },
+      usage: {
+        inputTokens: 1000,
+        cacheReadTokens: 2000,
+        cacheWriteTokens: 500,
+        outputTokens: 100,
+      },
+      bridge: async (method: string, p: Record<string, unknown>) => {
+        if (method === 'allrice/run-authorize') return { allowed: true };
+        if (method !== 'allrice/model-receipt') throw Error(method);
+        expect(p.rootSessionId).toBe(f.descriptor.nativeSessionId);
+        expect(p.runId).toBe(f.rootRunId);
+        if (p.fact) await write(f, NativeModelFactSchema.parse(p.fact));
+        else delivery = NativeModelDeliverySchema.parse(p.delivery);
+        return {};
+      },
+    });
+    await h.prompt('把主任务和委派的新调用用量归根，不重复收费。');
+    await h.wait();
+    const child = await h.spawn();
+    await childEntered.promise;
+    try {
+      const grandchild = await h.spawn(
+        h.ctx.agents.get(child.childId),
+        '孙任务',
+      );
+      await grandchild.result;
+    } finally {
+      childRelease.resolve();
+    }
+    await child.result;
+    await h.wait();
+    const fork = await h.spawn(h.root, '从已有上下文完成新子任务', {
+      provider: 'fork',
+    });
+    await fork.result;
+    await h.wait();
+    await h.server.handleRequest('run/end', { runId: f.rootRunId });
+    const receipts = await read(f);
+    expect(receipts.filter((p) => p.fact.phase === 'start')).toHaveLength(
+      h.calls.length,
+    );
+    expect(new Set(receipts.map((p) => p.fact.nativeSessionId)).size).toBe(4);
+    expect(delivery).toEqual({ calls: h.calls.length, complete: true });
+    const settled = await nativeOutcome(f, delivery);
+    expect(settled).toMatchObject({
+      inputTokens: 3500 * h.calls.length,
+      cachedInputTokens: 2000 * h.calls.length,
+      outputTokens: 100 * h.calls.length,
+      usageComplete: true,
+      cacheUsageKnown: true,
+    });
+    expect(settled?.costCents).toBeCloseTo(0.19 * h.calls.length);
+    const [ledger] =
+      await fixture.db`select * from allrice_model_usage_ledger where route_decision_id=${f.decision.id}`;
+    expect(Number(ledger!.cost_cents)).toBeCloseTo(0.19 * h.calls.length);
+    expect(
+      await fixture.db`select * from allrice_employee_run_steps where run_id=${f.rootRunId} and payload->>'source'='native_model_receipt_v1'`,
+    ).toHaveLength(0);
+    expect(
+      await nativeOutcome(f, delivery, {
+        inputCentsPerMillion: 999999,
+        outputCentsPerMillion: 999999,
+      }),
+    ).toEqual(settled);
+  }, 30000);
+  it('retains complete tokens but unknown cost when this Run has no frozen deployment tariff', async () => {
+    const f = await setup(),
+      call = start(f);
+    await write(f, call);
+    await write(f, finish(call));
+    expect(
+      await nativeOutcome(f, { calls: 1, complete: true }, null),
+    ).toMatchObject({
+      inputTokens: 130,
+      cachedInputTokens: 20,
+      outputTokens: 5,
+      usageComplete: true,
+      cacheUsageKnown: true,
+      costCents: null,
+    });
+  });
+  it('does not turn a successful empty flush into an observed complete zero charge', async () => {
+    const f = await setup();
+    expect(await nativeOutcome(f, { calls: 0, complete: true })).toMatchObject({
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      usageComplete: false,
+      cacheUsageKnown: false,
+      costCents: null,
+    });
+  });
+  it.each([999, 25, undefined])(
+    'rechecks supplied total=%s through actual receipt commit and root settlement',
+    async (totalTokens) => {
+      const f = await setup(),
+        call = start(f);
+      const fact: NativeModelFact = {
+        ...finish(call),
+        usage: {
+          inputTokens: 20,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          outputTokens: 5,
+          ...(totalTokens === undefined ? {} : { totalTokens }),
+        },
+      };
+      expect(NativeModelFactSchema.safeParse(fact).success).toBe(true);
+      await write(f, call);
+      await write(f, fact);
+      const before = await read(f);
+      expect(before.find((p) => p.fact.phase === 'finish')?.fact).toEqual(fact);
+      const complete = totalTokens !== 999;
+      expect(await nativeOutcome(f)).toMatchObject({
+        inputTokens: 20,
+        cachedInputTokens: 0,
+        outputTokens: 5,
+        usageComplete: complete,
+        cacheUsageKnown: complete,
+        costCents: complete ? 0.004 : null,
+      });
+      const [ledger] =
+        await fixture.db`select * from allrice_model_usage_ledger where route_decision_id=${f.decision.id}`;
+      expect(ledger).toMatchObject({
+        input_tokens: 20,
+        output_tokens: 5,
+        usage_complete: complete,
+        cache_usage_known: complete,
+      });
+      if (complete) expect(Number(ledger!.cost_cents)).toBeCloseTo(0.004);
+      else expect(ledger!.cost_cents).toBeNull();
+      expect(await read(f)).toEqual(before);
+    },
+  );
+  it.each(['delivery', 'missing-finish', 'missing-cache', 'count'] as const)(
+    'keeps %s incomplete without falling back to the caller cumulative snapshot',
+    async (fault) => {
+      const f = await setup(),
+        call = start(f);
+      await write(f, call);
+      if (fault !== 'missing-finish')
+        await write(
+          f,
+          fault === 'missing-cache'
+            ? {
+                ...finish(call),
+                usage: { inputTokens: 100, outputTokens: 5 },
+                usageComplete: false,
+              }
+            : finish(call),
+        );
+      const result = await nativeOutcome(f, {
+        calls: fault === 'count' ? 2 : 1,
+        complete: fault !== 'delivery',
+      });
+      expect(result?.usageComplete).toBe(false);
+      expect(result?.costCents).toBeNull();
+      expect(result?.inputTokens).not.toBe(999999);
+    },
+  );
+  it('does not hide a wrong native root behind an empty fallback', async () => {
+    const f = await setup(),
+      call = start(f);
+    await write(f, call);
+    await write(f, finish(call));
+    await expect(
+      nativeOutcome({
+        ...f,
+        descriptor: { ...f.descriptor, nativeSessionId: 'wrong-root' },
+      }),
+    ).rejects.toThrow('NATIVE_RECEIPT_SCOPE_CONFLICT');
+    expect(
+      await fixture.db`select * from allrice_model_usage_ledger where route_decision_id=${f.decision.id}`,
+    ).toHaveLength(0);
+  });
   it('deduplicates concurrent start and finish retransmissions without adding a task clock', async () => {
     const f = await setup(),
       call = start(f);
@@ -694,7 +917,7 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
         (error) => ({ error }),
       );
       const writer = await nativeBindingWaiter(fixture.db, gate.pid);
-      closing = settle(f);
+      closing = nativeOutcome(f);
       await nativeBindingWaiter(fixture.db, writer);
       const [route] =
         await fixture.db`select completed_at from allrice_route_decisions where id=${f.decision.id}`;
@@ -705,14 +928,23 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
       await Promise.all([writing, closing]);
     }
     expect(await writing).toMatchObject({ value: { fact: finish(call) } });
-    expect(await closing).toEqual({ closed: true });
+    expect(await closing).toMatchObject({
+      inputTokens: 130,
+      cachedInputTokens: 20,
+      outputTokens: 5,
+      usageComplete: true,
+      cacheUsageKnown: true,
+    });
+    const [charged] =
+      await fixture.db`select input_tokens,usage_complete,cost_cents from allrice_model_usage_ledger where route_decision_id=${f.decision.id}`;
+    expect(charged).toMatchObject({ input_tokens: 130, usage_complete: true });
+    expect(Number(charged!.cost_cents)).toBeCloseTo(0.013);
     expect((await read(f)).map((r) => r.fact.phase)).toEqual([
       'start',
       'finish',
     ]);
     await expect(write(f, start(f))).rejects.toThrow('conflict');
-    // This proves the shared closure boundary, not aggregation: the legacy
-    // outcome above is synthetic. The next slice must read facts under it.
+    // The committed finish is read under the same route lock as this ledger write.
   });
   it('does not acquire tenant admission while holding the leased Job', async () => {
     const f = await setup(),
@@ -736,7 +968,7 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
     let writing: Promise<unknown> | undefined,
       closing: Promise<unknown> | undefined;
     try {
-      closing = settle(f);
+      closing = nativeOutcome(f);
       const closer = await nativeBindingWaiter(fixture.db, gate.pid);
       writing = write(f, finish(call)).then(
         (value) => ({ value }),
@@ -748,7 +980,14 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
       await gate.release();
       await Promise.all([writing, closing]);
     }
-    expect(await closing).toEqual({ closed: true });
+    expect(await closing).toMatchObject({
+      inputTokens: 0,
+      outputTokens: 0,
+      usageComplete: false,
+      cacheUsageKnown: false,
+      costCents: null,
+    });
+    expect(await nativeOutcome(f)).toEqual(await closing);
     expect(await writing).toMatchObject({ error: { code: 'conflict' } });
     expect((await read(f)).map((r) => r.fact.phase)).toEqual(['start']);
   });

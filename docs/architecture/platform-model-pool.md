@@ -64,7 +64,7 @@ or written to application tables. Codex CLI is not used for model execution.
 ## Quota and Provider governance
 
 - Every terminal route decision writes one idempotent monthly usage-ledger row.
-- Tenant run, Token and cost quotas are checked before routing.
+- Existing tenant/run admission remains authoritative; Token/cost telemetry is not payment authorization.
 - Three consecutive classified Provider failures open a 60-second circuit;
   success closes the circuit and writes a recovery incident.
 - Platform administrators can reset a circuit or use an audited per-Provider
@@ -72,7 +72,7 @@ or written to application tables. Codex CLI is not used for model execution.
 - Per-run timeout, input, output, total-Token and cost limits are frozen in the
   Session policy.
 - Cost pricing is deployment-owned through `ALLRICE_MODEL_PRICING_JSON`; missing
-  pricing is explicit zero rather than an invented estimate.
+  pricing is unknown/null. DSH input includes read/write cache; the existing two-rate estimate subtracts read cache once.
 
 ## SaaS UI roles
 
