@@ -432,6 +432,7 @@ suite(
           stream: async function* (request) {
             selectedSession ??= request.sessionId;
             const n = request.sessionId === selectedSession ? attempt++ : -1;
+            console.log('ABC_MODEL', window, n, request.sessionId);
             yield { type: 'block-start', index: 0, blockType: 'text' };
             yield {
               type: 'text-delta',
@@ -449,6 +450,7 @@ suite(
         await ready[0].promise;
         const { runtime } = await hotHost(f);
         const api = await start(f, async () => {
+          console.log('ABC_READ', window);
           if (window === 'summary-response') {
             cut.resolve();
             await release.promise;
@@ -480,19 +482,23 @@ suite(
             ),
           );
           const initial = await consumer.until((e) => e.type === 'snapshot');
+          console.log('ABC_STAGE', window, 'initial');
           finish[0].resolve();
           await a.result;
           await cut.promise;
+          console.log('ABC_STAGE', window, 'cut');
           await f.h.ctx.subagents.sendMessage(f.h.root, a.childId, text('B'), {
             signal: abort.signal,
           });
           await ready[1].promise;
+          console.log('ABC_STAGE', window, 'B ready');
           expect(f.h.ctx.agents.get(a.childId)?.status).toBe('running');
           release.resolve();
           const second = await consumer.until(
             (e) =>
               e.type === 'snapshot' && e.snapshot.stream.active?.text === 'B',
           );
+          console.log('ABC_STAGE', window, 'B snapshot');
           expect(second.snapshot.stream.instanceId).not.toBe(
             initial.snapshot.stream.instanceId,
           );
@@ -500,6 +506,7 @@ suite(
           expect(consumer.detail().stream.active.text).toBe('B');
           finish[1].resolve();
           await f.h.wait();
+          console.log('ABC_STAGE', window, 'B drained');
           const settled = await consumer.until(
             (e) =>
               e.type === 'summary' &&
@@ -507,6 +514,7 @@ suite(
                 (r) => r.id === a.childId && r.lastReply === 'B',
               ),
           );
+          console.log('ABC_STAGE', window, 'B summary');
           expect(
             settled.summary.descendants.find((r) => r.id === a.childId)
               .observation.source,
@@ -528,6 +536,7 @@ suite(
             signal: abort.signal,
           });
           await ready[2].promise;
+          console.log('ABC_STAGE', window, 'C ready');
           const third = await consumer.until(
             (e) =>
               e.type === 'snapshot' && e.snapshot.stream.active?.text === 'C',
