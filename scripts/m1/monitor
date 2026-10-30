@@ -1379,12 +1379,12 @@ proof as (
     and i.organization_id=l.organization_id and i.workspace_id=l.workspace_id and i.owner_id=l.owner_id
     and i.session_id=l.session_id and i.thread_id=l.thread_id
   cross join lateral (
-    select count(*) as n,count(distinct v->>'questionId') as unique_ids,
-      coalesce(bool_and(coalesce(jsonb_typeof(v->'questionId')='string' and length(v->>'questionId')>0
-        and v->>'runId'=l.run_id::text and v->>'rootSessionId'=l.thread_id
-        and v->>'nativeSessionId'=l.thread_id,false)),true) as valid
+    select count(*) as n,count(distinct question.value->>'questionId') as unique_ids,
+      coalesce(bool_and(coalesce(jsonb_typeof(question.value->'questionId')='string' and length(question.value->>'questionId')>0
+        and question.value->>'runId'=l.run_id::text and question.value->>'rootSessionId'=l.thread_id
+        and question.value->>'nativeSessionId'=l.thread_id,false)),true) as valid
     from jsonb_array_elements(case when jsonb_typeof(l.f->'questions')='array'
-      then l.f->'questions' else '[]'::jsonb end) v) q),
+      then l.f->'questions' else '[]'::jsonb end) question(value)) q),
 per_job as (
   select id,run_id,bool_or(bound and not closed and valid and coalesce(alive,false) and question_count>0) as waiting,
     bool_or(not (bound and (closed or (valid and coalesce(alive,false))))) as uncertain

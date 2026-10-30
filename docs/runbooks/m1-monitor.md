@@ -87,7 +87,7 @@ huihuimac 一侧（`monitor peer`）：
 
 物理证据复用 exact runtimeId 的 owned（Worker/租户/成员/上下文）和同 boot/owner_digest 的 process_closed；只有当前身份完整匹配的真实关闭才排除。须有同runtime/Worker/session/thread的inventory，未关闭时还须live且15秒内；close_started/request不是物理关闭。foreground有自己的 `sampledAt`，须90秒内且不晚于采集时点；Worker心跳或metadata更新不延长题的时间。deadline、旧pending及opened/ended均不用于猜前台；慢input delivery未结束时仍可计1，程序题实际清理后下次完整空采样计0。
 
-当前覆盖仅 `default_harness_router` 的已取得Host执行；独立platform-technical/experience-consolidation adapters及采样空窗内的有效Job逐Run未知。旧Host、字段/条目缺失、null、complete=false、重复候选、归属矛盾、题时间过期均未知，不能把未列出当0；每题冻结run/root/native身份须匹配当前root。精确总数/比例在未知时为null，JSON给confirmed/possible上下界及最多3个未知Run样本。未知不恢复旧高比例告警，只有完整精确健康才恢复；可信容量下，确定下界已高时仍报警。观测写失败只会使旧题采样过期，后续成功完整替换可自愈，不改变用户Run执行。
+当前可确定范围仅 `default_harness_router` 已取得Host且绑定完整的chat执行；独立platform-technical/experience-consolidation adapters及采样空窗内的有效Job逐Run未知。旧Host、字段/条目缺失、null、complete=false、重复候选、归属矛盾、题时间过期均未知，不能把未列出当0；每题冻结run/root/native身份须匹配当前root。精确总数/比例在未知时为null，JSON给confirmed/possible上下界及最多3个未知Run样本。未知不恢复旧高比例告警，只有完整精确健康才恢复；可信容量下，确定下界已高时仍报警。观测写失败只会使旧题采样过期，后续成功完整替换可自愈，不改变用户Run执行。
 
 总执行位只加总 `allrice_runtime_metadata` 的 `worker-operations:<workerId>`：key 与合法 UUID 身份相符，`capacity.mode` 为 auto/configured、concurrency 为1–32整数、报告在90秒内（沿 `operations-resources.ts`）。这是 Worker 实际采用的配置，不重算 CPU/环境中的 auto，不累加每个 Worker 所带的全局 `pressure.jobs`。旧无有效租约的报告排除；新鲜非法报告、有效租约的 Worker 缺可信容量、完全无在线容量时，总位/占比保留未知，不能报0%健康。缺表/采集失败也保持未知；数据恢复不会提前消除仍高的占比告警。
 
