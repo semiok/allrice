@@ -112,6 +112,7 @@ export async function checkpointNativeQuestion(server, sessionId, questionId) {
     questionId,
     turnId: `${sessionId}:turn:${turn}`,
     questions: question.questions,
+    ...(question.progress ? { progress: question.progress } : {}),
   };
   agent.session.append('allrice/wait/checkpoint', data);
   await server.ctx.sessions.flush(agent.session);
@@ -130,6 +131,17 @@ export async function checkpointNativeQuestion(server, sessionId, questionId) {
   return pendingNativeWait(agent);
 }
 
+function progressWaitCaller(server, agent, wait) {
+  const caller = server.runAdmission?.attribute({
+    nativeSessionId: agent.id,
+  }) ?? {
+    nativeSessionId: agent.id,
+  };
+  if (wait.progress.runId !== caller.runId)
+    throw Error('task_progress_stale_pause');
+  return caller;
+}
+
 export async function answerNativeWait(server, params) {
   const record = await server.ensureRoot(params.sessionId, {
     resumeOnly: true,
@@ -145,6 +157,16 @@ export async function answerNativeWait(server, params) {
     throw Error('NATIVE_WAIT_CHANGED');
   const answer = structuredUserQuestionAnswer(wait, params.text);
   if (!answer) throw Error('QUESTION_ANSWER_REQUIRED');
+  if (wait.progress) {
+    if (!server.progressBridge) throw Error('task_progress_disabled');
+    const status = await server.progressBridge({
+      action: 'check',
+      ...progressWaitCaller(server, agent, wait),
+    });
+    server.assertRoot(record, params.sessionId);
+    if (!status.paused || status.pauseId !== wait.progress.pauseId)
+      throw Error('task_progress_stale_pause');
+  }
   // Use the existing persisted typed-input proof and digest. It resolves this
   // checkpoint, without dispatching a model or treating an answer as approval.
   let resolved;
@@ -189,23 +211,16 @@ export async function continueNativeWait(server, params) {
   });
   const agent = record.agent;
   const wait = pendingNativeWait(agent);
-  if (!wait || wait.questionId !== params.questionId || agent.status !== 'idle')
+  if (
+    !wait ||
+    wait.questionId !== params.questionId ||
+    wait.turnId !== params.turnId ||
+    agent.status !== 'idle'
+  )
     throw Error('NATIVE_WAIT_CHANGED');
   const answered = await answerNativeWait(server, params);
   server.assertRoot(record, params.sessionId);
-  if (wait.questions.some((q) => q.id === 'runtime-progress')) {
-    if (!server.progressBridge) throw Error('task_progress_disabled');
-    // This resume is outside task-progress middleware. Capture the authorized
-    // root once; do not reattribute queued settlement receipts at the transport.
-    const caller = server.runAdmission?.attribute({
-      nativeSessionId: agent.id,
-    }) ?? { nativeSessionId: agent.id };
-    const status = await server.progressBridge({
-      action: 'check',
-      ...caller,
-    });
-    server.assertRoot(record, params.sessionId);
-    if (!status.paused) throw Error('task_progress_stale_pause');
+  if (wait.progress) {
     const chosen = structuredUserQuestionAnswer(wait, params.text).answers.find(
       (a) => a.id === 'runtime-progress',
     );
@@ -221,8 +236,8 @@ export async function continueNativeWait(server, params) {
       throw Error('task_progress_answer_required');
     await server.progressBridge({
       action: 'decide',
-      ...caller,
-      pauseId: status.pauseId,
+      ...progressWaitCaller(server, agent, wait),
+      pauseId: wait.progress.pauseId,
       decision: cancel ? 'cancel' : 'continue',
     });
     server.assertRoot(record, params.sessionId);

@@ -19,6 +19,20 @@ import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.ts';
 import type { HarnessExecutionInput } from '../../src/harness/adapter.ts';
 import type { DshRuntimePool } from '../../src/harness/dsh/runtime-pool.ts';
 import { p24Fixture } from '../p24/fixture.ts';
+import {
+  acquireConversationRuntime,
+  bindConversationThread,
+  recordConversationTurn,
+} from '../../../../packages/database/src/conversation/conversation-runtime.ts';
+import {
+  claimConversationSteer,
+  consumeConversationSteer,
+} from '../../../../packages/database/src/conversation/conversation-input.ts';
+import { POST } from '../../../web/app/api/v1/sessions/[id]/messages/route.ts';
+const browserAuth = vi.hoisted(() => ({ context: vi.fn() }));
+vi.mock('../../../web/lib/identity/session', () => ({
+  getRequestContext: browserAuth.context,
+}));
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -375,6 +389,24 @@ suite(
         );
         const host = adapter(profile),
           input = execution(task);
+        const owned = {
+          organizationId: f.organizationId,
+          workspaceId: f.workspaceId,
+          sessionId: task.sessionId,
+          runId: task.runId,
+          workerId: task.workflowLease.workerId,
+        };
+        await acquireConversationRuntime({
+          ...owned,
+          ownerId: f.ownerId,
+          configChecksum: `sha256:${'a'.repeat(64)}`,
+          compactThresholdTokens: 10000,
+        });
+        const bound = await bindConversationThread({
+          ...owned,
+          threadId: `dsh-${task.sessionId}`,
+        });
+        browserAuth.context.mockResolvedValue(f.context);
         const controller = new AbortController();
         input.signal = controller.signal;
         const progress = port(task);
@@ -398,6 +430,11 @@ suite(
           unsubscribe: (() => void) | undefined;
         input.onTurnStarted = async (turn) => {
           turnId = turn.turnId;
+          await recordConversationTurn({
+            ...owned,
+            threadId: `dsh-${task.sessionId}`,
+            turnId,
+          });
         };
         input.onEvent = async (event) => {
           if (!unsubscribe) {
@@ -423,16 +460,75 @@ suite(
             controller.abort();
             return;
           }
-          const q = event.sourcePayload as { questionId: string };
+          const q = event.sourcePayload as {
+            questionId: string;
+            progress: { runId: string; pauseId: string };
+          };
+          expect(q.progress).toMatchObject({
+            runId: task.runId,
+            pauseId: expect.any(String),
+          });
+          const response = await POST(
+            new Request(
+              `http://localhost/api/v1/sessions/${task.sessionId}/messages?workspaceId=${f.workspaceId}`,
+              {
+                method: 'POST',
+                headers: {
+                  origin: 'http://localhost',
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                  text: '回答进度题',
+                  clientMessageId: randomUUID(),
+                  deliveryMode: 'steer',
+                  expectedTurnId: turnId,
+                  expectedGeneration: bound.generation,
+                  userQuestionAnswer: {
+                    questionId: q.questionId,
+                    answers: [
+                      {
+                        id: 'runtime-progress',
+                        selected: [
+                          decision === 'continue'
+                            ? '重新检查后继续'
+                            : '取消任务',
+                        ],
+                      },
+                    ],
+                  },
+                }),
+              },
+            ),
+            { params: Promise.resolve({ id: task.sessionId }) },
+          );
+          expect(response.status, await response.text()).toBe(202);
+          const command = await claimConversationSteer({
+            ...owned,
+            generation: bound.generation,
+            turnId,
+          });
+          expect(command?.inputKind).toBe('ask_user');
           const proof = await host.steer({
             threadId: `dsh-${task.sessionId}`,
             runId: task.runId,
-            turnId,
-            clientUserMessageId: randomUUID(),
+            turnId: command!.turnId,
+            clientUserMessageId: command!.clientUserMessageId,
             inputKind: 'ask_user',
-            message: `allrice:user-question:v1:${JSON.stringify({ questionId: q.questionId, answers: [{ id: 'runtime-progress', selected: [decision === 'continue' ? '重新检查后继续' : '取消任务'] }] })}`,
+            message: command!.message,
           });
           expect(proof).toMatchObject({ status: 'adopted', runId: task.runId });
+          if (!proof) throw Error('missing proof');
+          await consumeConversationSteer({
+            commandId: command!.id,
+            workerId: owned.workerId,
+            proof,
+          });
+          expect(
+            await f.db`select state from allrice_conversation_commands where id=${command!.id}`,
+          ).toEqual([{ state: 'consumed' }]);
+          expect(
+            await f.db`select state from allrice_conversation_followups where run_id=${command!.followupRunId}`,
+          ).toEqual([{ state: 'consumed' }]);
         };
         try {
           const work = host.execute(input);

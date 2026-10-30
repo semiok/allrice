@@ -10,6 +10,7 @@ export interface PendingUserQuestion {
   runId: string;
   generation: number;
   turnId: string;
+  progress?: { runId?: string; pauseId: string };
   occurredAt: string;
   sequence: number;
 }
@@ -33,6 +34,18 @@ export function projectPendingUserQuestion(
       ].includes(event.type)
     ) {
       pending.clear();
+      continue;
+    }
+    if (event.type === 'turn.started') {
+      const turnId = text(event.payload.turnId);
+      for (const question of pending.values())
+        if (
+          turnId &&
+          question.progress?.runId === event.runId &&
+          question.runId === event.runId &&
+          question.generation === event.generation
+        )
+          question.turnId = turnId;
       continue;
     }
     if (event.type !== 'harness.native' || !event.sourceEvent) continue;

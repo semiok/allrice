@@ -1037,6 +1037,11 @@ export async function createAllRiceRuntime(
               questionId,
               questions,
               programRunId,
+              ...(progressPauseId
+                ? {
+                    progress: { runId: programRunId, pauseId: progressPauseId },
+                  }
+                : {}),
               programTurnId: programRunId
                 ? `${sessionId}:turn:${request.agent.session.snapshotEvents().findLast((e) => e.type === 'turn/start')?.data.turn}`
                 : undefined,
@@ -1055,7 +1060,7 @@ export async function createAllRiceRuntime(
             this.userQuestionNotify({
               sessionId,
               questionId,
-              ...(progressPauseId ? { progressPauseId } : {}),
+              ...(progressPauseId ? { progressPauseId, programRunId } : {}),
               ...(callId
                 ? { callId, durable, nativeSessionId: sessionId }
                 : {}),
@@ -1649,6 +1654,8 @@ export async function createAllRiceRuntime(
       const pendingQuestion = this.pendingUserQuestions.get(sessionId);
       if (params.inputId !== undefined) {
         const record = this.requireRoot(sessionId);
+        const currentTurn = () =>
+          `${sessionId}:turn:${record.agent.session.snapshotEvents().findLast((e) => e.type === 'turn/start')?.data.turn}`;
         let runQuestion =
           params.kind === 'ask_user' && !!pendingQuestion?.programRunId;
         if (!pendingQuestion && params.kind === 'ask_user' && params.runId) {
@@ -1663,10 +1670,7 @@ export async function createAllRiceRuntime(
         if (runQuestion) {
           if (pendingQuestion && params.runId !== pendingQuestion.programRunId)
             throw Error('RUN_NOT_ACTIVE');
-          if (
-            pendingQuestion &&
-            params.turnId !== pendingQuestion.programTurnId
-          )
+          if (pendingQuestion && params.turnId !== currentTurn())
             throw Error('INPUT_TURN_CHANGED');
           this.runAdmission.accepting(params.runId, !pendingQuestion);
         }
@@ -1692,11 +1696,11 @@ export async function createAllRiceRuntime(
               (params.kind === 'ask_user' || this.detaching === undefined) &&
               this.isRootCurrent(record, sessionId) &&
               this.pendingUserQuestions.get(sessionId) === pendingQuestion &&
+              (!runQuestion || params.turnId === currentTurn()) &&
               ((params.kind === 'steer_current' || runQuestion) &&
               this.runAdmission
                 ? (this.runAdmission.accepting(params.runId), true)
-                : params.turnId ===
-                  `${sessionId}:turn:${record.agent.session.snapshotEvents().findLast((e) => e.type === 'turn/start')?.data.turn}`),
+                : params.turnId === currentTurn()),
             notify: () => {
               this.pendingUserQuestions.delete(sessionId);
               if (pendingQuestion.callId) return;

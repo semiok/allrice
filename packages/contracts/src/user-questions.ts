@@ -52,6 +52,14 @@ export const UserQuestionRequestSchema = z
     nativeSessionId: z.string().min(1).optional(),
     callId: z.string().min(1).optional(),
     durable: z.boolean().optional(),
+    // Host-authored provenance; answer submissions never carry this authority.
+    progress: z
+      .object({
+        runId: z.string().uuid().optional(),
+        pauseId: z.string().min(1).max(240),
+      })
+      .strict()
+      .optional(),
   })
   .strict()
   .refine(

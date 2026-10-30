@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { NativeQuestionCheckpointSchema } from '@allrice/contracts';
 import { setImmediate } from 'node:timers/promises';
 import { expect, it, vi } from 'vitest';
 import { askProgramQuestion } from '../../dsh/allrice-program-questions.mjs';
@@ -28,6 +29,122 @@ const answer = (h, card, selected, overrides = {}) =>
     })}`,
     ...overrides,
   });
+
+it.each(['ordinary-choice', 'runtime-progress'])(
+  'legacy model question %s retains ordinary authority across a checkpoint',
+  async (id) => {
+    const decisions = [];
+    const h = await host({
+      runId: randomUUID(),
+      progress: true,
+      questionMode: 'legacy',
+      releaseMs: 0,
+      bridge: async (method, p) => {
+        if (method === 'allrice/run-authorize') return { allowed: true };
+        if (p.action === 'decide') decisions.push(p);
+        return { paused: false, canceled: false };
+      },
+      model: async (_r, n) =>
+        n === 1
+          ? tool('ask_user_question', question(id))
+          : text('已按普通答案继续'),
+    });
+    await h.prompt('先问后继续。');
+    const q = await card(h);
+    const { checkpoint } = await h.server.handleRequest(
+      'session/park-question',
+      { sessionId: h.root.id, questionId: q.questionId },
+    );
+    expect(
+      NativeQuestionCheckpointSchema.parse(checkpoint).progress,
+    ).toBeUndefined();
+    await h.server.handleRequest('session/continue-wait', {
+      sessionId: h.root.id,
+      questionId: q.questionId,
+      turnId: checkpoint.turnId,
+      inputId: randomUUID(),
+      text: `allrice:user-question:v1:${JSON.stringify({ questionId: q.questionId, answers: [{ id, selected: ['继续'] }] })}`,
+    });
+    await h.wait();
+    expect(decisions).toEqual([]);
+    expect(h.calls).toHaveLength(2);
+  },
+);
+
+it.each(['same', 'replacement', 'wrong-run', 'wrong-turn', 'answer-only'])(
+  'legacy program question checks its original pause before adoption: %s',
+  async (variant) => {
+    const runId = randomUUID(),
+      originalPause = randomUUID(),
+      decisions = [];
+    let pauseId = originalPause,
+      paused = true;
+    const h = await host({
+      runId,
+      progress: true,
+      questionMode: 'legacy',
+      releaseMs: 0,
+      bridge: async (method, p) => {
+        if (method === 'allrice/run-authorize') return { allowed: true };
+        if (p.action === 'decide') {
+          decisions.push(p);
+          paused = false;
+        }
+        return { paused, pauseId, canceled: false, reason: 'repeated_failure' };
+      },
+    });
+    await h.prompt('先确认进度。');
+    const q = await card(h);
+    const { checkpoint } = await h.server.handleRequest(
+      'session/park-question',
+      { sessionId: h.root.id, questionId: q.questionId },
+    );
+    expect(NativeQuestionCheckpointSchema.parse(checkpoint).progress).toEqual({
+      runId,
+      pauseId: originalPause,
+    });
+    if (variant === 'replacement' || variant === 'answer-only')
+      pauseId = randomUUID();
+    if (variant === 'wrong-run') {
+      await h.server.handleRequest('run/end', { runId });
+      await h.server.handleRequest('run/begin', {
+        sessionId: h.root.id,
+        runId: randomUUID(),
+      });
+    }
+    const request = h.server.handleRequest(
+      variant === 'answer-only'
+        ? 'session/answer-wait'
+        : 'session/continue-wait',
+      {
+        sessionId: h.root.id,
+        questionId: q.questionId,
+        turnId: variant === 'wrong-turn' ? 'wrong-turn' : checkpoint.turnId,
+        inputId: randomUUID(),
+        text: `allrice:user-question:v1:${JSON.stringify({ questionId: q.questionId, answers: [{ id: 'runtime-progress', selected: ['重新检查后继续'] }] })}`,
+      },
+    );
+    if (variant === 'same') {
+      await request;
+      await h.wait();
+      expect(decisions).toMatchObject([
+        { runId, pauseId: originalPause, decision: 'continue' },
+      ]);
+    } else {
+      await expect(request).rejects.toThrow(
+        variant === 'wrong-turn'
+          ? 'NATIVE_WAIT_CHANGED'
+          : 'task_progress_stale_pause',
+      );
+      expect(decisions).toEqual([]);
+      expect(
+        h.root.session
+          .snapshotEvents()
+          .filter((e) => e.type === 'allrice/input/answered'),
+      ).toEqual([]);
+    }
+  },
+);
 async function card(h) {
   await expect
     .poll(() => h.server.pendingUserQuestions.get(h.root.id))

@@ -1609,6 +1609,14 @@ export class DshHarnessAdapter implements HarnessAdapter {
             : shortText(notification.params.questionId, 240);
         const normalized = UserQuestionRequestSchema.safeParse({
           questionId,
+          ...(notification.params.progressPauseId
+            ? {
+                progress: {
+                  runId: notification.params.programRunId,
+                  pauseId: notification.params.progressPauseId,
+                },
+              }
+            : {}),
           ...(durable
             ? {
                 durable: true,
