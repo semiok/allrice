@@ -1,7 +1,9 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { once } from 'node:events';
 import {
   NativeRunDiagnosticsRequestSchema,
   NativeSubagentQueryRequestSchema,
+  NativeSubagentFollowEventSchema,
 } from '@allrice/contracts';
 import {
   authenticateSession,
@@ -10,7 +12,11 @@ import {
   nativeRootDigest,
 } from '@allrice/database';
 import { readNativeRunDiagnostics } from './harness/native-run-diagnostics.js';
-import { readAuthorizedNativeSubagentSummary } from './harness/native-subagent-query.js';
+import {
+  nativeSubagentQuerySource,
+  readAuthorizedNativeSubagentSummary,
+} from './harness/native-subagent-query.js';
+import { getHarnessRouter } from './harness/router.js';
 
 type Dependencies = {
   authenticate: typeof authenticateSession;
@@ -123,20 +129,57 @@ export function createNativeRunDiagnosticsHttpHandler(
           input.sessionId,
         );
         signal.throwIfAborted();
-        const summary = await subagents.read(target, signal, input.liveOnly);
-        const current = await deps.authenticate(token, tenant);
-        if (!current || current.actor.id !== context.actor.id) {
-          send(401, { error: 'authentication_required' });
+        const check = async () => {
+          const current = await deps.authenticate(token, tenant);
+          if (!current || current.actor.id !== context.actor.id)
+            throw Object.assign(Error('authentication_required'), {
+              code: 'authentication_required',
+            });
+          const after = await subagents.target(
+            current,
+            input.workspaceId,
+            input.sessionId,
+          );
+          if (nativeRootDigest(after) !== nativeRootDigest(target))
+            throw Error('NATIVE_QUERY_TARGET_CHANGED');
+          if (input.follow) nativeSubagentQuerySource(after);
+          signal.throwIfAborted();
+        };
+        if (input.follow) {
+          nativeSubagentQuerySource(target);
+          const followed = await getHarnessRouter()
+            .resolve('dsh')
+            .nativeSubagentFollow?.(target, {
+              childId: input.childId,
+              signal,
+              check,
+              terminal: () => subagents.read(target, signal, false),
+              send: async (event, followSignal) => {
+                followSignal.throwIfAborted();
+                if (
+                  !event &&
+                  (!response.headersSent || response.writableNeedDrain)
+                )
+                  return;
+                if (!response.headersSent)
+                  response.writeHead(200, {
+                    'content-type': 'text/event-stream; charset=utf-8',
+                    'cache-control': 'no-cache, no-transform',
+                    'x-accel-buffering': 'no',
+                  });
+                const data = event
+                  ? `data: ${JSON.stringify(NativeSubagentFollowEventSchema.parse(event))}\n\n`
+                  : ': heartbeat\n\n';
+                if (!response.write(data))
+                  await once(response, 'drain', { signal: followSignal });
+              },
+            });
+          if (!followed) throw Error('NATIVE_QUERY_HOST_UNAVAILABLE');
+          response.end();
           return true;
         }
-        const after = await subagents.target(
-          current,
-          input.workspaceId,
-          input.sessionId,
-        );
-        if (nativeRootDigest(after) !== nativeRootDigest(target))
-          throw Error('NATIVE_QUERY_TARGET_CHANGED');
-        signal.throwIfAborted();
+        const summary = await subagents.read(target, signal, input.liveOnly);
+        await check();
         send(200, { sessionId: input.sessionId, summary });
         return true;
       }
@@ -153,11 +196,19 @@ export function createNativeRunDiagnosticsHttpHandler(
       signal.throwIfAborted();
       send(200, { diagnostics });
     } catch (error) {
+      if (response.destroyed || response.writableEnded) return true;
+      if (response.headersSent) {
+        if (response.writableNeedDrain) response.destroy();
+        else response.end('data: {"type":"clear","reason":"unavailable"}\n\n');
+        return true;
+      }
       const code =
         error && typeof error === 'object' && 'code' in error
           ? error.code
           : undefined;
-      if (
+      if (code === 'authentication_required')
+        send(401, { error: 'authentication_required' });
+      else if (
         code === 'not_found' ||
         code === 'authorization_denied' ||
         code === 'tenant_context_invalid'

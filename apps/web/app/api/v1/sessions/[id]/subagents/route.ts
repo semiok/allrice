@@ -10,6 +10,7 @@ import { executionErrorResponse } from '../../../../../../lib/execution/response
 import {
   NativeDiagnosticsUnavailable,
   requestNativeSubagentSummary,
+  requestNativeSubagentFollow,
 } from '../../../../../../lib/execution/native-run-diagnostics';
 
 export const runtime = 'nodejs';
@@ -21,20 +22,35 @@ export async function GET(
 ) {
   try {
     const context = await requireRequestContext(request);
-    const { workspaceId, liveOnly } = NativeSubagentQueryRequestSchema.pick({
-      workspaceId: true,
-    })
-      .extend({
-        liveOnly: z
-          .literal('true')
-          .transform(() => true)
-          .optional(),
+    const { workspaceId, liveOnly, follow, childId } =
+      NativeSubagentQueryRequestSchema.pick({
+        workspaceId: true,
+        childId: true,
       })
-      .parse(Object.fromEntries(new URL(request.url).searchParams));
+        .extend({
+          follow: z
+            .literal('true')
+            .transform(() => true)
+            .optional(),
+          liveOnly: z
+            .literal('true')
+            .transform(() => true)
+            .optional(),
+        })
+        .parse(Object.fromEntries(new URL(request.url).searchParams));
     const { id } = await route.params;
     await authorizeSessionOwner(context, workspaceId, id);
     const token = (await cookies()).get(sessionCookieName)?.value;
     if (!token) throw new DataAccessError('authentication_required');
+    if (follow)
+      return requestNativeSubagentFollow({
+        token,
+        context,
+        workspaceId,
+        sessionId: id,
+        childId,
+        signal: request.signal,
+      });
     const summary = await requestNativeSubagentSummary({
       token,
       context,

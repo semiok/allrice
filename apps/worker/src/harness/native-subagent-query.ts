@@ -7,18 +7,7 @@ import { currentDshNativeLaunch } from './dsh-native-artifact.js';
 import type { HarnessAdapter } from './adapter.js';
 import { getHarnessRouter } from './router.js';
 
-/** Prefer this Worker's exact live owner; otherwise a persisted prefix, never
- * evidence that another Host stopped. Neither read grants execution authority. */
-export async function readAuthorizedNativeSubagentSummary(
-  target: NativeSubagentQueryTarget,
-  signal: AbortSignal,
-  liveOnly = false,
-  adapter: Pick<
-    HarnessAdapter,
-    'nativeSubagentSummary'
-  > = getHarnessRouter().resolve('dsh'),
-) {
-  signal.throwIfAborted();
+export function nativeSubagentQuerySource(target: NativeSubagentQueryTarget) {
   const pin = target.descriptor;
   const expected = resolve(
     configuredDshRuntimeRoot(),
@@ -34,6 +23,23 @@ export async function readAuthorizedNativeSubagentSummary(
     launch.generation !== pin.distributionGeneration
   )
     throw Error('NATIVE_QUERY_READER_UNAVAILABLE');
+  return { expected, launch };
+}
+
+/** Prefer this Worker's exact live owner; otherwise a persisted prefix, never
+ * evidence that another Host stopped. Neither read grants execution authority. */
+export async function readAuthorizedNativeSubagentSummary(
+  target: NativeSubagentQueryTarget,
+  signal: AbortSignal,
+  liveOnly = false,
+  adapter: Pick<
+    HarnessAdapter,
+    'nativeSubagentSummary'
+  > = getHarnessRouter().resolve('dsh'),
+) {
+  signal.throwIfAborted();
+  const pin = target.descriptor;
+  const { expected, launch } = nativeSubagentQuerySource(target);
   const live = await adapter.nativeSubagentSummary?.(target, signal, liveOnly);
   signal.throwIfAborted();
   if (live) return NativeSubagentSummarySchema.parse(live);

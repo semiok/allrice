@@ -1,4 +1,4 @@
-/* global process, Request, fetch, AbortController */
+/* global process, Request, fetch, AbortController, TextDecoder */
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import {
@@ -140,6 +140,7 @@ suite(
       persist = true,
       model = async () => text('native private child reply'),
       spawn = true,
+      options = {},
     ) {
       const f = await createRunAuthorityFixture(fixture.db, {
         configure: false,
@@ -183,10 +184,16 @@ suite(
         organizationId: f.org,
         workspaceId: f.workspace,
       });
+      const listeners = new Set(),
+        failures = new Set();
       const h = persist
         ? await host({
+            ...options,
             rootId: descriptor.nativeSessionId,
             model,
+            onNotification: (notice) => {
+              for (const listener of listeners) listener(notice);
+            },
             prepare: () =>
               vi.stubEnv('DSH_SESSION_ROOT', descriptor.storageNamespace),
           })
@@ -197,7 +204,16 @@ suite(
         await h.wait();
         await h.ctx.sessions.flush(h.root.session);
       }
-      return { ...f, descriptor, bound, context: context, token, h };
+      return {
+        ...f,
+        descriptor,
+        bound,
+        context: context,
+        token,
+        h,
+        listeners,
+        failures,
+      };
     }
     async function hotHost(f) {
       const target = await getSessionNativeSubagentTarget(
@@ -229,6 +245,19 @@ suite(
               request: (method, params) =>
                 f.h.server.handleRequest(method, params),
             }),
+          nativeSubagentSnapshot:
+            DshProtocolClient.prototype.nativeSubagentSnapshot.bind({
+              request: (method, params) =>
+                f.h.server.handleRequest(method, params),
+            }),
+          subscribe: (listener) => {
+            f.listeners.add(listener);
+            return () => f.listeners.delete(listener);
+          },
+          onFailure: (listener) => {
+            f.failures.add(listener);
+            return () => f.failures.delete(listener);
+          },
           close: () => f.h.server.closeRoot(f.h.root.id),
         },
       };
@@ -289,12 +318,13 @@ suite(
         input,
       };
     }
-    function web(f, token = f.token, query = '') {
+    function web(f, token = f.token, query = '', signal) {
       cookie.token = token;
       return GET(
         new Request(
           `http://localhost/api/v1/sessions/${f.session}/subagents?workspaceId=${f.workspace}${query}`,
           {
+            signal,
             headers: {
               host: 'localhost',
               'x-allrice-organization-id': f.org,
@@ -335,6 +365,304 @@ suite(
         await fixture.db`delete from allrice_native_session_bindings where native_session_id=${f.descriptor.nativeSessionId} returning *`;
       await fixture.db`insert into allrice_native_session_bindings select * from jsonb_populate_record(null::allrice_native_session_bindings,${fixture.db.json({ ...pin, ...changes })})`;
     }
+    function consume(response) {
+      expect(response.status).toBe(200);
+      expect(response.headers.get('content-type')).toContain(
+        'text/event-stream',
+      );
+      const reader = response.body.getReader(),
+        decoder = new TextDecoder(),
+        events = [];
+      let buffered = '',
+        detail;
+      return {
+        events,
+        reader,
+        detail: () => detail,
+        async until(predicate) {
+          while (true) {
+            const boundary = buffered.indexOf('\n\n');
+            if (boundary < 0) {
+              const part = await reader.read();
+              if (part.done)
+                throw Error(
+                  `closed before event: ${events.map((e) => e.type)}`,
+                );
+              buffered += decoder.decode(part.value, { stream: true });
+              continue;
+            }
+            const packet = buffered.slice(0, boundary);
+            buffered = buffered.slice(boundary + 2);
+            if (!packet.startsWith('data: ')) continue;
+            const event = JSON.parse(packet.slice(6));
+            events.push(event);
+            if (event.type === 'snapshot')
+              detail = { kind: 'hot', ...event.snapshot };
+            if (event.type === 'display' && detail?.kind === 'hot')
+              detail.stream = event.display;
+            // Terminal replaces the hot detail view; it never appends another
+            // copy of the final assistant row or interprets active:null as final.
+            if (event.type === 'terminal')
+              detail = {
+                kind: 'terminal',
+                child: event.summary?.descendants.find(
+                  (row) => row.id === event.childId,
+                ),
+              };
+            if (event.type === 'clear') detail = undefined;
+            if (predicate(event)) return event;
+          }
+        },
+      };
+    }
+    it.each([
+      ['a', 'b', 'b', 'ab', 'ab'],
+      ['ab', '', 'b', 'ab', 'abb'],
+      ['<thi', 'nk>PRIVATE_THINK', 'nk>PRIVATE_THINK</think>safe', '', 'safe'],
+      [
+        '<allrice_tool_call>PRIVATE_COMMAND',
+        '',
+        '</allrice_tool_call>',
+        '',
+        '',
+      ],
+    ])(
+      'follows real authorized mid-attempt replacements and one safe prepared final: %s / %s',
+      async (left, right, ending, before, after) => {
+        const entered = gate(),
+          release = gate(),
+          updated = gate(),
+          finish = gate();
+        const f = await chat(true, undefined, false, {
+          stream: async function* (request) {
+            yield { type: 'text-delta', index: 0, text: left };
+            yield { type: 'text-delta', index: 1, text: right };
+            entered.resolve();
+            await hold(request.signal, release);
+            yield {
+              type: 'block-end',
+              index: 1,
+              block: { type: 'text', text: ending },
+            };
+            updated.resolve();
+            await hold(request.signal, finish);
+            yield { type: 'finish', reason: { kind: 'stop' } };
+          },
+        });
+        const activation = await f.h.spawn(f.h.root, 'opened detail', {
+          delivery: 'caller',
+        });
+        const controller = new AbortController();
+        try {
+          await entered.promise;
+          const { pool, runtime } = await hotHost(f);
+          const original = runtime.client.nativeSubagentSnapshot;
+          let first = true;
+          runtime.client.nativeSubagentSnapshot = async (...args) => {
+            const cut = await original(...args);
+            if (first) {
+              first = false;
+              release.resolve();
+              await updated.promise;
+            }
+            return cut;
+          };
+          const api = await start(f, () => {
+            expect(f.h.ctx.agents.get(activation.childId)).toBeUndefined();
+            expect(f.h.ctx.sessions.get(activation.childId)).toBeUndefined();
+          });
+          await f.h.ctx.sessions.flush(f.h.root.session);
+          await f.h.ctx.sessions.flush(
+            f.h.ctx.agents.get(activation.childId).session,
+          );
+          const storage = await files(f.descriptor.storageNamespace),
+            sql = await writes(f),
+            calls = f.h.calls.length,
+            activity = runtime.lastActivityAt;
+          const spies = ['acquire', 'lease', 'touch'].map((key) =>
+            vi.spyOn(pool, key),
+          );
+          const consumer = consume(
+            await web(
+              f,
+              f.token,
+              `&follow=true&childId=${activation.childId}`,
+              controller.signal,
+            ),
+          );
+          const initial = await consumer.until((e) => e.type === 'snapshot');
+          expect(initial.snapshot.stream.active.text).toBe(before);
+          await consumer.until(
+            (e) =>
+              e.type === 'display' &&
+              e.display.revision > initial.snapshot.stream.revision,
+          );
+          expect(consumer.detail().stream.active.text).toBe(after);
+          expect(await files(f.descriptor.storageNamespace)).toEqual(storage);
+          expect(await writes(f)).toEqual(sql);
+          expect(runtime.lastActivityAt).toBe(activity);
+          expect(f.h.calls).toHaveLength(calls);
+          for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+          finish.resolve();
+          await activation.result;
+          await consumer.until((e) => e.type === 'terminal');
+          expect(consumer.detail()).toMatchObject({
+            kind: 'terminal',
+            child: {
+              mode: 'continuable',
+              activity: 'unknown',
+              running: null,
+              observation: { source: 'prepared' },
+              lastReply: after || null,
+            },
+          });
+          expect(
+            consumer.events.filter((e) => e.type === 'terminal'),
+          ).toHaveLength(1);
+          expect(api.read).toHaveBeenCalledOnce();
+          expect(api.read.mock.calls[0][2]).toBe(false);
+          expect(JSON.stringify(consumer.events)).not.toMatch(
+            /PRIVATE|<think>|allrice_tool_call|"frame"|"chunk"|"records"|argumentsDelta/,
+          );
+          expect((await consumer.reader.read()).done).toBe(true);
+          expect(f.listeners.size).toBe(0);
+          expect(f.failures.size).toBe(0);
+        } finally {
+          controller.abort();
+          release.resolve();
+          finish.resolve();
+          await activation.result;
+        }
+      },
+      30_000,
+    );
+    it('reconnects to the existing safe baseline, isolates children, and clears after real token revocation', async () => {
+      const entered = gate(),
+        finish = gate();
+      let count = 0;
+      const f = await chat(true, undefined, false, {
+        stream: async function* (request) {
+          yield {
+            type: 'text-delta',
+            index: 0,
+            text: `safe:${request.sessionId}`,
+          };
+          if (++count === 2) entered.resolve();
+          await hold(request.signal, finish);
+          yield { type: 'finish', reason: { kind: 'stop' } };
+        },
+      });
+      const a = await f.h.spawn(f.h.root, 'A', { delivery: 'caller' }),
+        b = await f.h.spawn(f.h.root, 'B', { delivery: 'caller' });
+      const controllers = [new AbortController(), new AbortController()];
+      try {
+        await entered.promise;
+        await hotHost(f);
+        const api = await start(f);
+        const first = consume(
+          await web(
+            f,
+            f.token,
+            `&follow=true&childId=${a.childId}`,
+            controllers[0].signal,
+          ),
+        );
+        const baseline = await first.until((e) => e.type === 'snapshot');
+        expect(baseline.snapshot.stream.active.text).toBe(`safe:${a.childId}`);
+        expect(
+          JSON.stringify(first.events.filter((e) => e.type !== 'directory')),
+        ).not.toContain(`safe:${b.childId}`);
+        controllers[0].abort();
+        await vi.waitFor(() => expect(f.listeners.size).toBe(0));
+        const second = consume(
+          await web(
+            f,
+            f.token,
+            `&follow=true&childId=${a.childId}`,
+            controllers[1].signal,
+          ),
+        );
+        expect(
+          (await second.until((e) => e.type === 'snapshot')).snapshot.stream,
+        ).toEqual(baseline.snapshot.stream);
+        await revokeSession(f.token);
+        for (const listener of f.listeners)
+          listener({
+            method: 'session.status',
+            params: { sessionId: f.h.root.id },
+          });
+        expect(await second.until((e) => e.type === 'clear')).toEqual({
+          type: 'clear',
+          reason: 'unavailable',
+        });
+        expect((await second.reader.read()).done).toBe(true);
+        expect(api.read).not.toHaveBeenCalled();
+        expect(f.listeners.size).toBe(0);
+      } finally {
+        for (const c of controllers) c.abort();
+        finish.resolve();
+        await Promise.all([a.result, b.result]);
+      }
+    }, 30_000);
+    it('keeps directory follow liveOnly, rejects foreign children/owners, and clears a changed runtime owner', async () => {
+      const f = await chat();
+      const { pool, runtime } = await hotHost(f),
+        api = await start(f),
+        controller = new AbortController();
+      const original = runtime.client.nativeSubagentSummary;
+      const summary = vi
+        .spyOn(runtime.client, 'nativeSubagentSummary')
+        .mockImplementation((...args) => original(...args));
+      const observe = vi.spyOn(f.h.ctx.sessionQuery, 'observeSession');
+      try {
+        const response = consume(
+          await web(f, f.token, '&follow=true', controller.signal),
+        );
+        const initial = await response.until((e) => e.type === 'directory');
+        const cold = initial.summary.descendants[0];
+        expect(cold.kind).toBe('diagnostic');
+        expect(observe.mock.calls.every(([id]) => id === f.h.root.id)).toBe(
+          true,
+        );
+        const unauthorized = await peer(f);
+        expect((await web(f, unauthorized.token, '&follow=true')).status).toBe(
+          404,
+        );
+        const foreign = consume(
+          await web(f, f.token, '&follow=true&childId=foreign'),
+        );
+        await foreign.until((e) => e.type === 'clear');
+        expect(
+          foreign.events.some(
+            (e) => e.type === 'snapshot' || e.type === 'display',
+          ),
+        ).toBe(false);
+        Reflect.get(pool, 'runtimes').set(runtime.sessionId, {
+          ...runtime,
+          id: randomUUID(),
+        });
+        for (const listener of f.listeners)
+          listener({
+            method: 'session.status',
+            params: { sessionId: f.h.root.id },
+          });
+        await response.until((e) => e.type === 'clear');
+        expect((await response.reader.read()).done).toBe(true);
+        expect(summary.mock.calls.every((args) => args[1] === true)).toBe(true);
+        expect(api.read).not.toHaveBeenCalled();
+      } finally {
+        controller.abort();
+        Reflect.get(pool, 'runtimes').set(runtime.sessionId, runtime);
+      }
+      const before = await files(f.descriptor.storageNamespace);
+      await pool.closeOwned(runtime);
+      const afterClose = await files(f.descriptor.storageNamespace);
+      const coldResponse = await web(f, f.token, '&follow=true');
+      expect(coldResponse.status).toBe(503);
+      expect(await files(f.descriptor.storageNamespace)).toEqual(afterClose);
+      expect(before).toBeDefined();
+      expect(api.read).not.toHaveBeenCalled();
+    }, 30_000);
     it('returns an authorized persisted prefix beside a resident writer, without owner/close admission or writes', async () => {
       const f = await chat();
       await fixture.db`update allrice_conversation_runtimes set state='idle',worker_id=null,active_run_id=null,active_turn_id=null where session_id=${f.session}`;
