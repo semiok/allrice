@@ -35,6 +35,7 @@ const summary: NativeSubagentSummary = {
     activity: index === 2 ? 'inactive' : 'running',
     observation: { source: 'live', cursor: 8 },
     task: `${label}自己的任务`,
+    lastReply: null,
     timing: { settledMs: 0 },
     usage: {
       uncachedInputTokens: 0,
