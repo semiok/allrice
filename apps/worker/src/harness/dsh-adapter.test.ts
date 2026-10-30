@@ -1180,9 +1180,9 @@ describe('DshHarnessAdapter', () => {
       const result = await runtime.adapter.execute(input);
       expect(result.answer).toBe(answer);
       expect(result.usageComplete).toBe(true);
-      // This actual OpenAI-compatible adapter reports read cache but no write
-      // cache receipt; missing cache detail must remain unknown, not zero.
-      expect(result.cacheUsageKnown).toBe(false);
+      // The real pi-ai mapper derives exact totals from prompt/output; the
+      // missing write-cache bucket therefore has a proven zero remainder.
+      expect(result.cacheUsageKnown).toBe(true);
       expect(result.usage).toEqual({
         inputTokens: 220,
         cachedInputTokens: 50,

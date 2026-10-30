@@ -46,6 +46,8 @@ import {
 } from './route-decision.ts';
 import {
   NativeModelReceiptSchema,
+  NativeModelFactSchema,
+  NativeModelDeliverySchema,
   type NativeModelFact,
 } from './native-model-receipts.ts';
 
@@ -448,13 +450,13 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
         cacheWriteTokens: 500,
         outputTokens: 100,
       },
-      bridge: async (method: string, p: Record<string, any>) => {
+      bridge: async (method: string, p: Record<string, unknown>) => {
         if (method === 'allrice/run-authorize') return { allowed: true };
         if (method !== 'allrice/model-receipt') throw Error(method);
         expect(p.rootSessionId).toBe(f.descriptor.nativeSessionId);
         expect(p.runId).toBe(f.rootRunId);
-        if (p.fact) await write(f, p.fact);
-        else delivery = p.delivery;
+        if (p.fact) await write(f, NativeModelFactSchema.parse(p.fact));
+        else delivery = NativeModelDeliverySchema.parse(p.delivery);
         return {};
       },
     });
@@ -520,6 +522,17 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
       outputTokens: 5,
       usageComplete: true,
       cacheUsageKnown: true,
+      costCents: null,
+    });
+  });
+  it('does not turn a successful empty flush into an observed complete zero charge', async () => {
+    const f = await setup();
+    expect(await nativeOutcome(f, { calls: 0, complete: true })).toMatchObject({
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      usageComplete: false,
+      cacheUsageKnown: false,
       costCents: null,
     });
   });

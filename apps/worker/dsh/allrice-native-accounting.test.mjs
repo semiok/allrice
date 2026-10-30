@@ -17,14 +17,14 @@ const options = (h, signal) => ({
 });
 async function consume(stream) {
   for await (const _chunk of stream) {
-    /* consume actual public iterator */
+    void _chunk;
   }
 }
 function recorder(receipts, hook = async () => {}) {
   return async (method, params, signal) => {
     if (method === 'allrice/model-receipt') {
       await hook(params, signal);
-      receipts.push(structuredClone(params));
+      receipts.push(globalThis.structuredClone(params));
       return {};
     }
     if (method === 'allrice/run-authorize') {
@@ -38,7 +38,7 @@ it('waits for actual start delivery then rechecks native permission before provi
   const entered = gate(),
     release = gate(),
     receipts = [],
-    abort = new AbortController();
+    abort = new globalThis.AbortController();
   const h = await host({
     accounting: true,
     runId: randomUUID(),

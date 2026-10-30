@@ -7,6 +7,7 @@ export function projectNativeUsage(
   observedOutput: boolean,
   _subscription: boolean,
 ) {
+  void _subscription;
   const raw = record(value);
   const valid = (v: unknown): v is number =>
     typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;

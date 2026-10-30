@@ -110,7 +110,9 @@ export async function aggregateNativeModelReceipts(
     calls.set(receipt.sourceKey, pair);
   }
   let usageComplete =
-    native.delivery.complete && native.delivery.calls === calls.size;
+    native.delivery.complete &&
+    native.delivery.calls > 0 &&
+    native.delivery.calls === calls.size;
   let inputTokens = 0,
     cachedInputTokens = 0,
     outputTokens = 0;

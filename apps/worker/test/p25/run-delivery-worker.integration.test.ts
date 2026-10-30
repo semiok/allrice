@@ -1050,11 +1050,27 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       );
       try {
         const result = await task.run();
+        const facts =
+          await f.db`select payload->'fact' fact from allrice_run_events
+          where run_id=${task.runId} and payload->>'source'='native_model_receipt_v1' order by sequence`;
+        // The fourth public stream hits the real progress question BEFORE
+        // provider dispatch. It has no native finish; zero-cache proof cannot
+        // turn that uncompleted observation into a complete bill.
+        expect(facts.filter((r) => r.fact.phase === 'start')).toHaveLength(4);
+        const finishes = facts.filter((r) => r.fact.phase === 'finish');
+        expect(
+          finishes.map((r) => r.fact.usageComplete),
+          JSON.stringify(facts),
+        ).toEqual([true, true, true, false]);
+        expect(finishes.at(-1)!.fact).toMatchObject({
+          outcome: 'incomplete',
+          usage: {},
+        });
         expect(result).toMatchObject({
           answer: '等你回答后继续。',
           waitingForUser: { questionId: expect.any(String) },
           usage: { inputTokens: 6000, cachedInputTokens: 0, outputTokens: 15 },
-          usageComplete: true,
+          usageComplete: false,
         });
         if (!('waitingForUser' in result) || !result.waitingForUser)
           throw Error('Missing native progress wait');
@@ -1101,7 +1117,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           status: 'succeeded',
           input_tokens: 6000,
           output_tokens: 15,
-          usage_complete: true,
+          usage_complete: false,
         });
         expect(
           await f.db`select route_decision_id id,status,input_tokens,output_tokens,usage_complete from allrice_model_usage_ledger where route_decision_id=${route!.id}`,
@@ -2139,10 +2155,17 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         runtimeFixtureStorage(fixture!.db),
         fixture!.db,
       );
-      if (mode === 'wait-error')
-        vi.spyOn(DshProtocolClient.prototype, 'wait').mockRejectedValueOnce(
-          Error('synthetic public wait failure'),
+      if (mode === 'wait-error') {
+        const actualWait = DshProtocolClient.prototype.wait;
+        vi.spyOn(DshProtocolClient.prototype, 'wait').mockImplementationOnce(
+          async function (this: DshProtocolClient, sessionId) {
+            await actualWait.call(this, sessionId);
+            throw Error(
+              'synthetic public wait failure after native completion',
+            );
+          },
         );
+      }
       available = `[月报](/api/v1/files/${artifact.object.id}/download)`;
       if (
         mode === 'missing-origin' ||
@@ -2260,6 +2283,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
             cost_cents: null,
           });
           const complete = [
+            'wait-error',
             'missing-origin',
             'missing-active-turn',
             'missing-origin-after-repair',
