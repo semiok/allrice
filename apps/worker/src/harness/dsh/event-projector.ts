@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { TaskPlanItemsSchema } from '@allrice/contracts';
+import { shortText } from '@allrice/contracts/native-runtime';
+export { shortText, visibleModelText } from '@allrice/contracts/native-runtime';
 
 export function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -34,12 +36,6 @@ export function sourceMetadata(
     sourceOccurredAt: occurredAt,
     sourcePayload: safeDshSourcePayload(event),
   };
-}
-
-export function shortText(value: unknown, maximum = 240) {
-  return typeof value === 'string' && value.trim()
-    ? value.trim().slice(0, maximum)
-    : undefined;
 }
 
 /**
@@ -316,26 +312,4 @@ export function positiveInteger(value: unknown) {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0
     ? value
     : 0;
-}
-
-/**
- * DSH may stream private reasoning before the user-visible answer. Do not
- * release any partial `<think>` prefix or body to ChatFlow.
- */
-export function visibleModelText(text: string) {
-  const candidate = text.trimStart();
-  if ('<think>'.startsWith(candidate)) {
-    return { ready: false, text: '' };
-  }
-  if (!candidate.startsWith('<think>')) {
-    return { ready: true, text };
-  }
-  const closingTag = candidate.indexOf('</think>');
-  if (closingTag === -1) {
-    return { ready: false, text: '' };
-  }
-  return {
-    ready: true,
-    text: candidate.slice(closingTag + '</think>'.length).trimStart(),
-  };
 }
