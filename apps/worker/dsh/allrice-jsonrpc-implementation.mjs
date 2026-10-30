@@ -49,6 +49,7 @@ import { createModels } from '@earendil-works/pi-ai';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 
 import { installRunAdmission } from './allrice-run-admission.mjs';
+import { controlNativeSubagent } from './allrice-native-control.mjs';
 import { steerDshAgent } from './allrice-dsh-runtime-compatibility.mjs';
 import {
   detachNativeQuestion,
@@ -2007,9 +2008,14 @@ export async function createAllRiceRuntime(
           return result;
         }
         case 'run/end':
+          this.runAdmission.closeInput(params.runId);
           await this.taskProgress?.flush();
           await this.nativeAccounting?.flush();
           return this.runAdmission.end(params.runId);
+        case 'run/close-input':
+          return this.runAdmission.closeInput(params.runId);
+        case 'subagents/control':
+          return controlNativeSubagent(this, params);
         case 'session/interrupt':
           return this.interrupt(params);
         case 'session/steer':

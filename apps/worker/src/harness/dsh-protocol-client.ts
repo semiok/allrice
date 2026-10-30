@@ -1,6 +1,9 @@
 import {
   BootstrapCoverageResultSchema,
   NativeSubagentSummarySchema,
+  NativeSubagentControlRequestSchema,
+  NativeSubagentControlAcceptanceSchema,
+  type NativeSubagentControlRequest,
   QuestionForegroundSnapshotSchema,
   type BootstrapCoverageQuery,
   type BootstrapReceipt,
@@ -346,6 +349,19 @@ export class DshProtocolClient {
 
   async interrupt(sessionId: string) {
     return this.request('session/interrupt', { sessionId }, 10_000);
+  }
+
+  async closeRunInput(runId: string) {
+    return this.request('run/close-input', { runId }, 10_000);
+  }
+
+  async nativeSubagentControl(value: NativeSubagentControlRequest) {
+    const request = NativeSubagentControlRequestSchema.parse(value);
+    if (request.scope.rootRunId !== this.runId)
+      throw Error('NATIVE_CONTROL_RUN_MISMATCH');
+    return NativeSubagentControlAcceptanceSchema.parse(
+      await this.request('subagents/control', request),
+    );
   }
 
   /** DSH owns the tree wait, including follow-up turns and parked children.

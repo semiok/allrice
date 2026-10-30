@@ -25,6 +25,8 @@ import type {
   SubagentPreferences,
   OnlineQuestionExecution,
   NativeSubagentSummary,
+  NativeSubagentControlRequest,
+  NativeSubagentControlAcceptance,
 } from '@allrice/contracts';
 
 export interface HarnessToolCall {
@@ -306,6 +308,9 @@ export interface HarnessAdapter {
     target: NativeSubagentQueryTarget,
     input: NativeSubagentFollowInput,
   ): Promise<boolean | undefined>;
+  nativeSubagentControl?(
+    input: NativeSubagentControlRequest,
+  ): Promise<NativeSubagentControlAcceptance>;
   /** Idle process close runs only while this returns true. */
   setIdleCloseGate?(gate: () => boolean): void;
   close?(): Promise<void>;

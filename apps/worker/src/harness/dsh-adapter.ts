@@ -2,7 +2,7 @@ import {
   NativeModelFactSchema,
   NativeModelDeliverySchema,
 } from '@allrice/database';
-import { nativeRunScope } from './dsh/run-scope.js';
+import { assertNativeControlScope, nativeRunScope } from './dsh/run-scope.js';
 import type { BootstrapReceipt } from '@allrice/contracts';
 import { readDshToolResult } from '@allrice/contracts';
 import type { SessionReferenceSnapshot } from '@allrice/contracts';
@@ -19,6 +19,9 @@ import {
   EmployeeSceneStateSchema,
   ModelStreamDiagnosticSchema,
   ModelCallTimingNotificationSchema,
+  NativeSubagentControlScopeSchema,
+  NativeSubagentControlRequestSchema,
+  type NativeSubagentControlRequest,
   type HarnessEvent,
 } from '@allrice/contracts';
 import type { NativeSessionPin } from '@allrice/database';
@@ -370,6 +373,36 @@ export class DshHarnessAdapter implements HarnessAdapter {
         return { origin };
       }
       if (runScope) params = runScope.check(params);
+      if (method === 'allrice/subagent-authorize') {
+        // A malformed/stale command must not revoke the current root Run.
+        const scope = NativeSubagentControlScopeSchema.parse(params.scope);
+        const assertCurrent = () => {
+          if (
+            !runScope ||
+            params.nativeSessionId !== threadId ||
+            this.runtimePool.get(threadId) !== runtime
+          )
+            throw Error('NATIVE_CONTROL_SCOPE_MISMATCH');
+          assertNativeControlScope(runtime, scope);
+          executionSignal.throwIfAborted();
+        };
+        assertCurrent();
+        try {
+          const grant = record(await authorizeRun?.());
+          assertCurrent();
+          if (
+            !Number.isSafeInteger(grant?.validUntil) ||
+            Number(grant?.validUntil) <= Date.now()
+          )
+            throw Error('NATIVE_CONTROL_GRANT_EXPIRED');
+          return { validUntil: grant!.validUntil };
+        } catch (error) {
+          assertCurrent(); // A late old-Run refusal cannot stop its successor.
+          contentAuthorizationFailure ??= contentGuardFailure(error);
+          void runtime.client.interrupt(threadId).catch(() => {});
+          throw contentAuthorizationFailure;
+        }
+      }
       if (method === 'allrice/model-receipt') {
         if (!accounting || !runScope) throw Error('NATIVE_ACCOUNTING_DENIED');
         if (params.delivery !== undefined) {
@@ -485,6 +518,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
     const stopWindow = new ReceiptDrainWindow(dropOwnedHost);
     const executionSignal = input.signal;
     const onAbort = () => {
+      if (runId) void runtime.client.closeRunInput(runId).catch(() => {});
       stopWindow.begin();
     };
     input.signal.addEventListener('abort', onAbort, { once: true });
@@ -1442,6 +1476,15 @@ export class DshHarnessAdapter implements HarnessAdapter {
     ...args: Parameters<DshRuntimePool['nativeSubagentFollow']>
   ) {
     return this.runtimePool.nativeSubagentFollow(...args);
+  }
+
+  nativeSubagentControl(value: NativeSubagentControlRequest) {
+    const request = NativeSubagentControlRequestSchema.parse(value);
+    const runtime = assertNativeControlScope(
+      this.runtimePool.get(request.scope.nativeRootId),
+      request.scope,
+    );
+    return runtime.client.nativeSubagentControl(request);
   }
 
   setIdleCloseGate(gate: () => boolean) {
