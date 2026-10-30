@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
+import type { NativeSubagentControlRequest } from '@allrice/contracts';
 import { PassThrough, Writable } from 'node:stream';
 import { afterEach, expect, it, vi } from 'vitest';
 import { DshProtocolClient } from '../../src/harness/dsh-protocol-client.ts';
@@ -75,7 +76,7 @@ it('child RPC accepts only the bound Run; timeout is unknown with no resend, wak
   const begin = f.client.beginRun('root', runId);
   f.reply({ result: {} });
   await begin;
-  const request = {
+  const request: NativeSubagentControlRequest = {
     scope: {
       rootRunId: runId,
       nativeRootId: 'root',
