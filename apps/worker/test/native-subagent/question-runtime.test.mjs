@@ -1,4 +1,3 @@
-/* global AbortController */
 import { randomUUID } from 'node:crypto';
 import { setImmediate } from 'node:timers/promises';
 import { expect, it, vi } from 'vitest';
