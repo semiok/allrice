@@ -28,7 +28,10 @@ import {
   claimConversationSteer,
   consumeConversationSteer,
 } from '../../../../packages/database/src/conversation/conversation-input.ts';
-import { POST } from '../../../web/app/api/v1/sessions/[id]/messages/route.ts';
+// Web uses bundler resolution; keep its real route outside worker's NodeNext graph.
+const messageRoutePath =
+  '../../../web/app/api/v1/sessions/[id]/messages/route.ts';
+const { POST } = await import(messageRoutePath);
 const browserAuth = vi.hoisted(() => ({ context: vi.fn() }));
 vi.mock('../../../web/lib/identity/session', () => ({
   getRequestContext: browserAuth.context,
