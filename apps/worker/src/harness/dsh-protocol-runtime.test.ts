@@ -206,6 +206,16 @@ describe('AllRice DSH protocol runtime', () => {
     await expect(client.sessionProjection('dsh-not-live')).resolves.toEqual({
       asOfSeq: undefined,
       contextPressure: null,
+      foreground: {
+        version: 1,
+        sampledAt: expect.stringMatching(
+          /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
+        ),
+        rootSessionId: 'dsh-not-live',
+        runId: null,
+        complete: false,
+        questions: [],
+      },
     });
     await expect(client.closeSession('dsh-not-live')).resolves.toMatchObject({
       closed: false,
