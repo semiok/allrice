@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { EmployeeSidebar } from '../app/chatflow/employee-sidebar';
 import type { Session, Workspace } from '../app/chatflow/chatflow-types';
 
+const state = new URLSearchParams(location.search).get('state');
 const sessions: Session[] = ['parent-a', 'parent-b', 'parent-c'].map((id) => ({
   id,
   title: `${id} 父级任务`,
@@ -12,7 +13,8 @@ const sessions: Session[] = ['parent-a', 'parent-b', 'parent-c'].map((id) => ({
   visibility: 'private',
   updatedAt: '2026-10-30T00:00:00Z',
   archivedAt: null,
-  running: false,
+  running: state === 'running',
+  ...(state === 'pending' ? { pendingInteraction: 'question' as const } : {}),
 }));
 const workspace: Workspace = {
   viewerId: 'viewer',
@@ -44,6 +46,7 @@ function Page() {
         onSelectSession={setActiveId}
         onPrepareSession={() => {}}
         onDetails={() => {}}
+        scheduledSessions={new Set(['parent-b'])}
       />
     </nav>
   );

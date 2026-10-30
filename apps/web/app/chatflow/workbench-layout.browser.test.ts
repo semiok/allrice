@@ -1669,6 +1669,22 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           humanCredentialsConfigured: false,
         });
       }
+      const subagentSession = path.match(
+        /^\/api\/v1\/sessions\/([a-f0-9-]{36})\/subagents$/,
+      )?.[1];
+      if (subagentSession && route.request().method() === 'GET') {
+        // No native children in this fixture. Explicitly allow this scoped read;
+        // unknown routes and every write keep their existing assertions.
+        if (url.searchParams.get('workspaceId') !== state.workspace)
+          return answer({ error: { code: 'authorization_denied' } }, 403);
+        return answer({
+          summary: {
+            rootId: subagentSession,
+            root: { source: 'live', cursor: -1 },
+            descendants: [],
+          },
+        });
+      }
       const nextStepsSession = path.match(
         /^\/api\/v1\/sessions\/([a-f0-9-]{36})\/next-steps$/,
       )?.[1];
@@ -12648,11 +12664,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       f.state.delay = new Promise<void>((done) => {
         release = done;
       });
-      const bCatalog = f.page.waitForResponse(
-        (r) => new URL(r.url()).pathname === `/api/v1/sessions/${B}/artifacts`,
-      );
-      await f.page.getByRole('treeitem', { name: /^研究任务 B/ }).click();
-      await (await bCatalog).finished();
+      const [bCatalog] = await Promise.all([
+        f.page.waitForResponse(
+          (r) =>
+            new URL(r.url()).pathname === `/api/v1/sessions/${B}/artifacts`,
+        ),
+        f.page.getByRole('treeitem', { name: /^研究任务 B/ }).click(),
+      ]);
+      await bCatalog.finished();
       await expect.poll(() => f.panel.count()).toBe(0);
       await f.page.getByRole('treeitem', { name: /^研究任务 A/ }).click();
       // A's refreshed catalog is blocked. The retained catalog still opens now.

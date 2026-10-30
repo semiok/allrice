@@ -328,20 +328,6 @@ export function EmployeeSidebar({
                         >
                           <IconClockOutlineRegular size={14} />
                         </span>
-                      ) : reads[node.id] === 'error' ? (
-                        <span
-                          title="子智能体状态读取失败"
-                          aria-label="子智能体状态读取失败"
-                        >
-                          ?
-                        </span>
-                      ) : nativeSubagentActivityUnknown(reads[node.id]) ? (
-                        <span
-                          title="子智能体当前活动状态未知"
-                          aria-label="子智能体当前活动状态未知"
-                        >
-                          ?
-                        </span>
                       ) : undefined
                     }
                     currentId={activeId ?? undefined}
@@ -357,7 +343,24 @@ export function EmployeeSidebar({
                         ? undefined
                         : archive?.renderActions
                     }
-                    t={employeeTranslate}
+                    t={(key, params) => {
+                      const label = employeeTranslate(key, params);
+                      const read = reads[node.id];
+                      const notice =
+                        read === 'error'
+                          ? '子智能体状态读取失败'
+                          : nativeSubagentActivityUnknown(read)
+                            ? node.runningSubagentCount > 0
+                              ? '部分子智能体当前活动状态未知'
+                              : '子智能体当前活动状态未知'
+                            : '';
+                      return notice &&
+                        ((key.startsWith('status.') &&
+                          !key.startsWith('status.compact.')) ||
+                          key === 'row.archived')
+                        ? `${key.startsWith('status.subagentsRunning.') ? '至少 ' : ''}${label} · ${notice}`
+                        : label;
+                    }}
                   />
                 ))}
                 {group.sessionCount === 0 && (

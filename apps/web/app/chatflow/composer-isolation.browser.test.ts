@@ -387,6 +387,26 @@ suite(
           return;
         }
         reads.push(request.url!);
+        const subagentSession = path.match(
+          /^\/api\/v1\/sessions\/([a-f0-9-]{36})\/subagents$/,
+        )?.[1];
+        if (subagentSession) {
+          if (
+            ![A, B, C].includes(subagentSession) ||
+            url.searchParams.get('workspaceId') !== B
+          ) {
+            answer(response, { error: 'authorization_denied' }, 403);
+            return;
+          }
+          answer(response, {
+            summary: {
+              rootId: subagentSession,
+              root: { source: 'live', cursor: -1 },
+              descendants: [],
+            },
+          });
+          return;
+        }
         if (path === '/api/v1/workspace') {
           answer(response, {
             workspace: {

@@ -140,7 +140,10 @@ suite('visible parent native running badges', () => {
       expect(await page.getByRole('navigation').innerText()).not.toMatch(
         /resident-idle|grandchild/,
       );
-      expect(await page.getByLabel('子智能体当前活动状态未知').count()).toBe(1);
+      await page.locator('[data-row-key="session:parent-c"]').hover();
+      await expect
+        .poll(() => page.getByRole('tooltip').innerText())
+        .toContain('子智能体当前活动状态未知');
       expect(calls).toHaveLength(3);
     } finally {
       await page.close();
@@ -161,19 +164,20 @@ suite('visible parent native running badges', () => {
       await expect.poll(() => nav.innerText()).toContain('1 个子智能体运行中');
       result = null;
       await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await expect.poll(() => nav.innerText()).not.toContain('子智能体运行中');
+      await page.locator('[data-row-key="session:parent-b"]').hover();
       await expect
-        .poll(() => page.getByLabel('子智能体当前活动状态未知').count())
-        .toBe(3);
-      expect(await nav.innerText()).not.toContain('子智能体运行中');
+        .poll(() => page.getByRole('tooltip').innerText())
+        .toContain('子智能体当前活动状态未知');
       result = summary;
       await page.evaluate(() => window.dispatchEvent(new Event('focus')));
       await expect.poll(() => nav.innerText()).toContain('1 个子智能体运行中');
       result = 'error';
       await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await expect.poll(() => nav.innerText()).not.toContain('子智能体运行中');
       await expect
-        .poll(() => page.getByLabel('子智能体状态读取失败').count())
-        .toBe(3);
-      expect(await nav.innerText()).not.toContain('子智能体运行中');
+        .poll(() => page.getByRole('tooltip').innerText())
+        .toContain('子智能体状态读取失败');
       result = summary;
       await page.evaluate(() => window.dispatchEvent(new Event('focus')));
       await expect.poll(() => nav.innerText()).toContain('1 个子智能体运行中');
@@ -183,4 +187,57 @@ suite('visible parent native running badges', () => {
       await page.close();
     }
   });
+
+  it.each(['idle', 'running', 'pending'])(
+    'keeps partial unknown and failed observations visible in the native hover while the parent is %s',
+    async (state) => {
+      const page = await browser.newPage();
+      const child = summary.descendants.find(
+        (entry) => entry.kind === 'child',
+      )!;
+      const mixed: NativeSubagentSummary = {
+        ...summary,
+        descendants: [
+          ...summary.descendants,
+          { ...child, id: 'unknown', running: null },
+          {
+            kind: 'diagnostic',
+            id: 'unloaded',
+            parentId: 'root',
+            depth: 1,
+            reason: 'unavailable',
+          },
+        ],
+      };
+      let failed = false;
+      try {
+        await page.route('**/api/v1/sessions/*/subagents?**', (route) =>
+          failed
+            ? route.fulfill({ status: 503, json: { error: 'unavailable' } })
+            : route.fulfill({ json: { summary: mixed } }),
+        );
+        await page.goto(`${origin}?state=${state}`);
+        for (const id of ['parent-a', 'parent-b', 'parent-c']) {
+          await page.locator(`[data-row-key="session:${id}"]`).hover();
+          await expect
+            .poll(() => page.getByRole('tooltip').innerText())
+            .toContain(
+              '至少 1 个子智能体运行中 · 部分子智能体当前活动状态未知',
+            );
+        }
+        failed = true;
+        await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+        await expect
+          .poll(() => page.getByRole('tooltip').innerText())
+          .toContain(
+            `${state === 'running' ? '进行中' : state === 'pending' ? '等待回答' : '空闲'} · 子智能体状态读取失败`,
+          );
+        expect(await page.getByRole('navigation').innerText()).not.toContain(
+          '子智能体运行中',
+        );
+      } finally {
+        await page.close();
+      }
+    },
+  );
 });
