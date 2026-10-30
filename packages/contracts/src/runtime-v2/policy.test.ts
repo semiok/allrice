@@ -102,7 +102,7 @@ describe('B1 deterministic policy', () => {
       ).effect,
     ).toBe('ask');
   });
-  it('projects existing delegation authority without inventing an Ask approval path', () => {
+  it('defaults native delegation to allow only inside a valid enabled execution policy', () => {
     const action = 'assistant.delegate';
     for (const effect of ['allow', 'deny', 'ask'] as const) {
       expect(
@@ -114,7 +114,18 @@ describe('B1 deterministic policy', () => {
     }
     expect(
       runtimePolicyActionDecision({ ...controls, rules: [] }, action).effect,
-    ).toBe('deny');
+    ).toBe('allow');
+    for (const value of [
+      null,
+      { ...controls, rules: 'invalid' },
+      { ...controls, enabled: false, rules: [] },
+      { ...controls, mode: 'plan_only', rules: [] },
+    ])
+      expect(runtimePolicyActionDecision(value, action).effect).toBe('deny');
+    expect(
+      runtimePolicyActionDecision({ ...controls, rules: [] }, action, [action])
+        .reason,
+    ).toBe('platform_deny');
     expect(
       runtimePolicyActionDecision(
         {

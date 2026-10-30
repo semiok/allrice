@@ -132,8 +132,10 @@ export function runtimePolicyActionDecision(
       ? { effect: 'allow', reason: 'member_scope_automation' }
       : { effect: 'ask', reason: 'member_confirmation_required' };
   }
-  // A policy value is not an installed tool. Preserve the existing delegation
-  // deny semantics; no per-delegation approval/resume capability is registered.
+  // DSH delegation is available unless this valid policy says otherwise.
+  // Ask remains closed: there is no per-delegation human approval consumer.
+  if (action === 'assistant.delegate' && matches.length === 0)
+    return { effect: 'allow', reason: 'native_delegation_default' };
   if (
     action === 'assistant.delegate' &&
     matches.some((r) => r.effect === 'ask')

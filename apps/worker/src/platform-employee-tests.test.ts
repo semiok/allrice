@@ -154,6 +154,7 @@ it('runs the frozen caller model in a fresh context without tools, files, skills
   await run();
   const input = execute.mock.calls[0]![0];
   expect(input.providerSnapshot.model).toBe('synthetic-frozen-model');
+  expect(input.nativeSubagents).toBeUndefined();
   expect(input.kernel).toMatchObject({
     bootstrapConversation: '',
     authorizedMemoryContext: '',
@@ -396,6 +397,7 @@ it('uses the original experience draft with true non-chat identity, no unrelated
     bootstrapConversation: '',
   });
   expect(input.kernel.systemInstructions).not.toContain('Published base');
+  expect(input.nativeSubagents).toBeUndefined();
   expect(input.nativeSkills).toEqual([]);
   expect(input.tools).toEqual([]);
   expect(input.onToolCall).toBeUndefined();

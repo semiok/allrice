@@ -1766,6 +1766,12 @@ export async function executeEmployeeRun({
         : await adapter
             .execute({
               nativeQuestionMode,
+              nativeSubagents:
+                !repairTask &&
+                !repositoryReviewTask &&
+                executionSnapshot.schemaVersion === 2
+                  ? executionSnapshot.nativePreferences?.subagents
+                  : undefined,
               nativeAccounting:
                 adapter.kind === 'dsh'
                   ? {

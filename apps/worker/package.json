@@ -54,12 +54,15 @@
     "@deepseek-ai/dsh-skill": "0.2.1-rc.2",
     "@deepseek-ai/dsh-skill-filesystem": "0.2.1-rc.2",
     "@deepseek-ai/dsh-subagent": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-subagent-fork-in-process": "0.2.1-rc.2",
     "@deepseek-ai/dsh-subagent-spawn-in-process": "0.2.1-rc.2",
     "@deepseek-ai/dsh-system-prompt": "0.2.1-rc.2",
     "@deepseek-ai/dsh-token-meter": "0.2.1-rc.2",
     "@deepseek-ai/dsh-tool-ask-user": "0.2.1-rc.2",
     "@deepseek-ai/dsh-tool-call-timeout-policy": "0.2.1-rc.2",
     "@deepseek-ai/dsh-tool-skill": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-tool-subagent": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-tool-subagent-control": "0.2.1-rc.2",
     "@deepseek-ai/dsh-tool-todo": "0.2.1-rc.2",
     "@deepseek-ai/dsh-tools": "0.2.1-rc.2",
     "@deepseek-ai/dsh-user-approval": "0.2.1-rc.2",
@@ -133,9 +136,6 @@
     "@deepseek-ai/dsh-spill": "0.2.1-rc.2"
   },
   "devDependencies": {
-    "@deepseek-ai/dsh-subagent-fork-in-process": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-tool-subagent": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-tool-subagent-control": "0.2.1-rc.2",
     "@types/pdfkit": "0.17.4",
     "@types/ws": "8.18.1"
   }

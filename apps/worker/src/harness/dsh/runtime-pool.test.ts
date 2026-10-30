@@ -1104,6 +1104,85 @@ it('shares the rollout mode with the Host and restarts once when it changes', as
   expect((await runtimes.acquire(value)).runtime).not.toBe(timed.runtime);
 });
 
+it('freezes native delegation defaults and preferences into real Host reuse and clears the composition for other callers', async () => {
+  const launched = vi.spyOn(CloseObserver, 'createObservedDshClient');
+  const runtimes = pool(true);
+  const value = request();
+  value.input.nativeRunAuthority = () => async () => {};
+  value.input.modelPreflight = async () => {};
+  value.input.nativeAccounting = {
+    bind: () => ({ record: async () => {}, delivered: () => {} }),
+  };
+  // Environment text from an unqualified caller cannot install the plugins.
+  value.input.executionEnvironment = {
+    ...value.input.executionEnvironment,
+    ALLRICE_NATIVE_SUBAGENTS: '{"maxDepth":99}',
+  };
+  const plain = await runtimes.acquire(value);
+  expect(
+    launched.mock.calls.at(-1)![0].launch.environment.ALLRICE_NATIVE_SUBAGENTS,
+  ).toBeUndefined();
+  value.input.nativeSubagents = { maxDepth: null, maxActive: null };
+  const defaults = await runtimes.acquire(value);
+  expect(defaults.runtime).not.toBe(plain.runtime);
+  expect(plain.runtime.client.processState()).toMatchObject({
+    state: 'exited',
+    stdioClosed: true,
+  });
+  expect(
+    JSON.parse(
+      launched.mock.calls.at(-1)![0].launch.environment
+        .ALLRICE_NATIVE_SUBAGENTS!,
+    ),
+  ).toEqual({ maxDepth: 1, maxActiveSubagents: 8 });
+  expect((await runtimes.acquire(value)).runtime).toBe(defaults.runtime);
+  value.input.nativeSubagents = { maxDepth: 2, maxActive: 3 };
+  const changed = await runtimes.acquire(value);
+  expect(changed.preparation.changedFields).toEqual(['nativeSubagents']);
+  expect(
+    JSON.parse(
+      launched.mock.calls.at(-1)![0].launch.environment
+        .ALLRICE_NATIVE_SUBAGENTS!,
+    ),
+  ).toEqual({ maxDepth: 2, maxActiveSubagents: 3 });
+  expect(defaults.runtime.client.processState()).toMatchObject({
+    state: 'exited',
+    stdioClosed: true,
+  });
+  value.input.nativeSubagents = { maxDepth: 0, maxActive: 3 };
+  const denied = await runtimes.acquire(value);
+  expect(denied.runtime).not.toBe(changed.runtime);
+  expect(
+    launched.mock.calls.at(-1)![0].launch.environment.ALLRICE_NATIVE_SUBAGENTS,
+  ).toBeUndefined();
+  value.input.nativeSubagents = undefined;
+  expect((await runtimes.acquire(value)).runtime).not.toBe(denied.runtime);
+  expect(
+    launched.mock.calls.at(-1)![0].launch.environment.ALLRICE_NATIVE_SUBAGENTS,
+  ).toBeUndefined();
+});
+
+it.each(['nativeRunAuthority', 'modelPreflight', 'nativeAccounting'] as const)(
+  'refuses delegation before Host creation without the existing %s gate',
+  async (missing) => {
+    const runtimes = pool(true);
+    const value = request();
+    Object.assign(value.input, {
+      nativeSubagents: { maxDepth: null, maxActive: null },
+      nativeRunAuthority: () => async () => {},
+      modelPreflight: async () => {},
+      nativeAccounting: {
+        bind: () => ({ record: async () => {}, delivered: () => {} }),
+      },
+      [missing]: undefined,
+    });
+    await expect(runtimes.acquire(value)).rejects.toMatchObject({
+      code: 'DSH_NATIVE_DELEGATION_AUTHORITY_REQUIRED',
+    });
+    expect(runtimes.inventory()).toHaveLength(0);
+  },
+);
+
 it('keeps the frozen timeout but uses blocking program questions for a Workflow step', async () => {
   const launched = vi.spyOn(CloseObserver, 'createObservedDshClient');
   const runtimes = pool(false, undefined, 60000);

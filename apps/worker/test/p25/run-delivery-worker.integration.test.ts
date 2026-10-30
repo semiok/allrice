@@ -3,15 +3,7 @@
  * Eligibility, frozen snapshots, native completion and commit guards are real.
  */
 import { randomUUID } from 'node:crypto';
-import {
-  mkdtemp,
-  readdir,
-  readFile,
-  realpath,
-  rm,
-  symlink,
-  writeFile,
-} from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import ExcelJS from 'exceljs';
@@ -88,6 +80,13 @@ const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
     : describe.skip;
+const nativeDelegationTools = [
+  'subagent',
+  'subagent_fork',
+  'list_agents',
+  'send_message',
+  'interrupt_agent',
+];
 suite('MET-210 root Run delivery through real admission and Worker', () => {
   let fixture:
     Awaited<ReturnType<typeof createRuntimeFixtureDatabase>> | undefined;
@@ -109,7 +108,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
 
   async function setup(
     reply: Parameters<typeof p24Fixture>[0],
-    nativeSubagents = false,
+    assertNativeSubagents = false,
     progressWait = false,
     allowedTools = ['workspace.export.create', 'workspace.document.read'],
   ) {
@@ -127,7 +126,13 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     );
     fixture = await createRuntimeFixtureDatabase();
     vi.spyOn(DatabaseClient, 'getDatabase').mockReturnValue(fixture.db);
-    model = await p24Fixture(reply);
+    model = await p24Fixture(async (request, index) => {
+      if (assertNativeSubagents)
+        expect(request.tools?.map((tool) => tool.function.name)).toEqual(
+          expect.arrayContaining(nativeDelegationTools),
+        );
+      return reply ? reply(request, index) : { text: 'Synthetic completed.' };
+    });
     const launch = {
       artifactId,
       generation: DSH_DISTRIBUTION_CURRENT_GENERATION,
@@ -141,28 +146,6 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         '../../dsh/allrice-restricted.cordis.yml',
       ),
     };
-    if (nativeSubagents) {
-      // Test-only native plugins, with the production Worker/Host and real
-      // model HTTP transport. This does not enable product eligibility.
-      await symlink(
-        resolve(import.meta.dirname, '../../node_modules'),
-        join(directory, 'node_modules'),
-      );
-      const profile = await readFile(launch.profile, 'utf8');
-      launch.profile = join(directory, 'profile.yml');
-      await writeFile(
-        launch.profile,
-        profile +
-          '\n' +
-          (await readFile(
-            resolve(
-              import.meta.dirname,
-              '../native-subagent/plugins.cordis.yml',
-            ),
-            'utf8',
-          )),
-      );
-    }
     vi.spyOn(NativeArtifact, 'checkedDshNativeLaunch').mockReturnValue({
       artifactId,
       profileId: 'restricted',
@@ -360,6 +343,159 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       .filter(Boolean)
       .map((line) => JSON.parse(line));
   }
+
+  it('MET231: 正式普通 Worker 双子汇总后冷恢复 fork，只归账本轮真实模型调用', async () => {
+    let phase = 'spawn';
+    let rootCalls = 0;
+    const f = await setup(async (request) => {
+      const userInputs = JSON.stringify(
+        request.messages.filter((m) => m.role === 'user'),
+      );
+      for (const name of ['ONE', 'TWO', 'FORK']) {
+        if (userInputs.includes(`PR3D_TASK_${name}`)) {
+          if (name === 'FORK') expect(userInputs).toContain('PR3D_HISTORY');
+          return { text: `PR3D_RESULT_${name}` };
+        }
+      }
+      rootCalls++;
+      if (
+        (phase === 'spawn' && rootCalls <= 2) ||
+        (phase === 'fork' && rootCalls === 1)
+      )
+        return {
+          nativeTool: {
+            name: phase === 'fork' ? 'subagent_fork' : 'subagent',
+            arguments: {
+              description: '独立核对',
+              prompt: `PR3D_TASK_${phase === 'fork' ? 'FORK' : rootCalls === 1 ? 'ONE' : 'TWO'}`,
+            },
+          },
+        };
+      return { text: '已汇总各子任务的结果。' };
+    }, true);
+    const [birth] =
+      await f.db`select native_root_origin from allrice_chat_sessions where id=${f.chat.id}`;
+    for (const prompt of [
+      'PR3D_HISTORY：请委派两个独立核对并汇总，不需要文件。',
+      '沿用此前背景 fork 一次并汇总，不需要文件。',
+    ]) {
+      const before = model!.requests.length;
+      const task = await prepare(f, prompt, true);
+      expect(task.snapshot.nativePreferences.subagents).toEqual({
+        maxDepth: null,
+        maxActive: null,
+      });
+      try {
+        const result = await task.run();
+        const requests = model!.requests.slice(before);
+        expect(JSON.stringify(requests.at(-1)!.messages)).toContain(
+          phase === 'spawn' ? 'PR3D_RESULT_TWO' : 'PR3D_RESULT_FORK',
+        );
+        if (phase === 'spawn')
+          expect(JSON.stringify(requests.at(-1)!.messages)).toContain(
+            'PR3D_RESULT_ONE',
+          );
+        const facts = await f.db`select payload from allrice_run_events
+          where run_id=${task.runId} and payload->>'source'='native_model_receipt_v1' order by sequence`;
+        const starts = facts.filter((r) => r.payload.fact.phase === 'start');
+        expect(starts).toHaveLength(requests.length);
+        expect(facts).toHaveLength(requests.length * 2);
+        expect(
+          new Set(starts.map((r) => r.payload.fact.nativeSessionId)).size,
+        ).toBe(phase === 'spawn' ? 3 : 2);
+        expect(new Set(starts.map((r) => r.payload.fact.callId)).size).toBe(
+          requests.length,
+        );
+        expect(result.usage).toMatchObject({
+          inputTokens: requests.length * 20,
+          outputTokens: requests.length * 5,
+        });
+        const coverage = readCheckedFinalDeliveryForExecution(
+          task.workflowLease,
+          result,
+        );
+        expect(coverage.coverage).toBe('checked_native_v1');
+        if (coverage.coverage !== 'checked_native_v1')
+          throw Error('missing ordinary delivery proof');
+        await completeJob({
+          ...task.workflowLease,
+          result,
+          checkedDelivery: coverage.checkedDelivery,
+        });
+      } finally {
+        await task.isolation.cleanup();
+      }
+      // Close the actual Host, preserving the same business root and JSONL.
+      await adapter!.close();
+      adapter = new DshHarnessAdapter({
+        runtimeRoot: join(directory!, 'native'),
+        idleCloseMs: 0,
+        requestTimeoutMs: 15000,
+        credentialResolver: {
+          resolve: async () => ({ apiKey: 'synthetic-loopback-only' }),
+        },
+      });
+      vi.mocked(Router.getHarnessRouter).mockReturnValue(
+        new Router.HarnessRouter([adapter]),
+      );
+      phase = 'fork';
+      rootCalls = 0;
+    }
+    expect(
+      (
+        await f.db`select native_root_origin from allrice_chat_sessions where id=${f.chat.id}`
+      )[0],
+    ).toEqual(birth);
+  }, 60000);
+
+  it('MET231: 旧 Run 冻结 deny 不被当前 allow 重算，下一 Run 才安装五工具', async () => {
+    const f = await setup(async () => ({ text: '已说明委派设置。' }));
+    await f.identity.setControls({
+      version: 1,
+      enabled: true,
+      mode: 'execute',
+      rules: [{ action: 'assistant.delegate', effect: 'deny' }],
+    });
+    const denied = await prepare(f, '说明当前设置。');
+    await f.identity.setControls({
+      version: 1,
+      enabled: true,
+      mode: 'execute',
+      rules: [],
+    });
+    try {
+      const result = await denied.run();
+      expect(
+        model!.requests
+          .flatMap((r) => r.tools?.map((t) => t.function.name) ?? [])
+          .filter((name) => nativeDelegationTools.includes(name)),
+      ).toEqual([]);
+      const coverage = readCheckedFinalDeliveryForExecution(
+        denied.workflowLease,
+        result,
+      );
+      if (coverage.coverage !== 'checked_native_v1')
+        throw Error('missing delivery proof');
+      await completeJob({
+        ...denied.workflowLease,
+        result,
+        checkedDelivery: coverage.checkedDelivery,
+      });
+    } finally {
+      await denied.isolation.cleanup();
+    }
+    const next = await prepare(f, '再次说明当前设置。');
+    try {
+      await next.run();
+      expect(
+        model!.requests.at(-1)!.tools?.map((t) => t.function.name),
+      ).toEqual(expect.arrayContaining(nativeDelegationTools));
+      expect(denied.snapshot.nativePreferences.subagents.maxDepth).toBe(0);
+      expect(next.snapshot.nativePreferences.subagents.maxDepth).toBeNull();
+    } finally {
+      await next.isolation.cleanup();
+    }
+  }, 45000);
 
   it('MET229: 普通 Worker 新账本逐 Run 结算，旧来源续聊不重计持久前缀', async () => {
     const f = await setup(async () => ({
@@ -1394,6 +1530,11 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       const [route] =
         await f.db`select selected_kind from allrice_route_decisions where run_id=${task.runId}`;
       expect(route!.selected_kind).toBe('workflow');
+      expect(
+        model!.requests
+          .flatMap((r) => r.tools?.map((t) => t.function.name) ?? [])
+          .filter((name) => nativeDelegationTools.includes(name)),
+      ).toEqual([]);
       const [stored] =
         await f.db`select execution_snapshot from allrice_employee_runs where run_id=${task.runId}`;
       expect(stored!.execution_snapshot).toEqual(task.snapshot);
@@ -1419,6 +1560,9 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         const [direct] =
           await f.db`select selected_kind from allrice_route_decisions where run_id=${ordinary.runId}`;
         expect(direct!.selected_kind).toBe('direct');
+        expect(
+          model!.requests.at(-1)!.tools?.map((t) => t.function.name),
+        ).toEqual(expect.arrayContaining(nativeDelegationTools));
       } finally {
         await ordinary.isolation.cleanup();
       }

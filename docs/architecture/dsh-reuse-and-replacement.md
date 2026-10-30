@@ -647,6 +647,14 @@ The five physical 0.1.5 patches and the old administrator host were removed with
 
 New 0.2.1 execution additionally requires an immutable business INSERT origin, which records the release seal (`ALLRICE_DSH_NATIVE_ARTIFACT_ID`) as provenance only; a context without one is refused as incompatible and never backfilled (MET-221). Removed invariant plugins have no published 0.2.1 exports: native factory ownership/session persistence validation and AllRice lease/pin/deadline/cancel gates are verified by actual SDK and SQL tests, rather than loading unsupported paths.
 
+### MET231：普通员工原生委派组合（2026-10-30）
+
+`allrice-jsonrpc-lifecycle-v1` 直接安装同代公开 spawn/fork providers、`dsh-tool-subagent`、control/list-agents；深度和并行由原生 `SubagentRuntime.Config` 执行（默认 1/8），不设累计上限，不开放模型选择。Cordis 公开 `disabled` 在不合资格时不安装 provider/工具；不以根 Agent mask 隔离子级。静态 approval never 保持无真人审批消费者的拒绝语义；获准组合恢复 `includeRuntimeContext`。
+
+用户 10-30 选定先恢复普通对话、旧流程后接及网页逐子控制后补。Worker 只在普通员工分支传入原 Run 的服务端冻结 `nativePreferences.subagents`；本轮实际 selectedWorkflow、repair/review、preview/internal/technical 不选择该组合。有效执行策略无匹配 `assistant.delegate` 规则时跟随原生允许；deny/ask、无效/缺失、disabled、plan_only 和平台 deny 仍关闭。旧 Run 不补默认值、不重算；出生 artifact 保持原来源，执行仍用当前已封印 primary。
+
+SaaS 门卫复用原真实树、租户/成员/员工/内容和冻结订阅检查；启用要求已有 Run authority 与逐调用归根端口。已有 Host 指纹同时包含冻结偏好和生效原生配置，变化时关闭旧 Host 后重建；不新增 PG 状态、子租约或生命周期。账本与问答/收树分别依赖 MET229 及 PR3d 提问运行前置。守护：正式 profile Host、普通 Worker/Workflow 负例、冻结策略与热池/冷恢复测试；网页逐子停止/消息/热过程及 Dev 真实模型验收由后续回执单列。
+
 ## MET192 固定 UI 0.2.1-rc.2 兼容升级（2026-10-18）
 
 Web 九个已用包固定0.2.1-rc.2，另显式登记 primitives 实际引用的同版 util-code-language。12组来源在官方 commit `687f282e8625c6b8d11ff58211a90524be2e4317` 上重放；新的 ProcessState 复用同源小型 group-tree 分类器。来源账本分别核实组件、原文、适配补丁、实际PDF/Excel软件资产，以及10个Web公共包间所用依赖的解析版本，避免未声明的上游依赖借到旧CLI的brand类型或运行代码。版本补全仅作用于这些确切0.2.1-rc.2包，不全局覆盖旧引擎依赖。

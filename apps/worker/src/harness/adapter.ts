@@ -20,6 +20,7 @@ import type {
   RuntimeNativeInputProof,
   NativeQuestionCheckpoint,
   QuestionWait,
+  SubagentPreferences,
 } from '@allrice/contracts';
 
 export interface HarnessToolCall {
@@ -76,6 +77,9 @@ export interface HarnessExecutionInput {
   nativeQuestionMode?: 'legacy' | 'timed';
   /** Owner preference frozen when this Run was enqueued. */
   nativeQuestionWait?: QuestionWait;
+  /** Ordinary employee caller only: original Run's server-frozen policy and
+   * owner preferences. Missing/zero depth installs no delegation composition. */
+  nativeSubagents?: SubagentPreferences;
   /** Server-loaded current human message before attachment/template augmentation.
    * Selects an existing tool transport only; database admission grants writes. */
   currentUserRequest?: string;
