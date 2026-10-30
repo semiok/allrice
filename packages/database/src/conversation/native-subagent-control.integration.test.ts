@@ -262,11 +262,11 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
   });
 
   it('canonicalizes PG UUID identities on first uppercase submission and retries while retaining opaque native case', async () => {
-    const f = await chat('NativeRoot-MixedCase-' + randomUUID());
+    const f = await chat('dsh-NativeRoot-MixedCase-' + randomUUID());
     const input = {
       ...prompt(f),
       requestId: 'A1000000-A001-4000-8000-000000000001',
-      childSessionId: 'NativeChild-MixedCase',
+      childSessionId: 'dsh-NativeChild-MixedCase',
     };
     const ticket = await enqueueNativeSubagentControl(f.context, f.session, {
       ...expected(f, input),
