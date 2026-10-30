@@ -8,6 +8,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   realpath,
   rm,
   writeFile,
@@ -252,6 +253,8 @@ it('seeds actual pre-retirement APIs and stops all writers before handoff', asyn
     if (identity?.schema !== descriptor.schema || identity.path !== searchPath)
       throw Error('Upgrade schema continuity failed');
     const storage = new LocalStorageAdapter(descriptor.storageRoot);
+    const retirementName =
+      options.migrationName ?? '0229_retire_legacy_assistant_configuration.sql';
     let applied = false;
     return {
       descriptor,
@@ -259,9 +262,7 @@ it('seeds actual pre-retirement APIs and stops all writers before handoff', asyn
       storage,
       async applyRetirement() {
         if (applied) throw Error('Retirement already applied');
-        const name =
-          options.migrationName ??
-          '0229_retire_legacy_assistant_configuration.sql';
+        const name = retirementName;
         const bytes = await readFile(
           new URL(`../migrations/${name}`, import.meta.url),
           'utf8',
@@ -274,6 +275,28 @@ it('seeds actual pre-retirement APIs and stops all writers before handoff', asyn
           schema: descriptor!.schema,
           storageRoot: descriptor!.storageRoot,
         };
+      },
+      async applyCandidateMigrations() {
+        if (!applied) throw Error('Retirement must be applied first');
+        // The old checkout/seed stays exact. Only after its writers stop and
+        // retirement is checked may current code receive its remaining schema.
+        const previous = new Set([
+          ...descriptor!.migrations.map((migration) => migration.name),
+          retirementName,
+        ]);
+        const directory = new URL('../migrations/', import.meta.url);
+        const pending = (await readdir(directory))
+          .filter((name) => name.endsWith('.sql') && !previous.has(name))
+          .sort();
+        return db!.begin(async (tx) => {
+          const migrations: RetirementDescriptor['migrations'] = [];
+          for (const name of pending) {
+            const bytes = await readFile(new URL(name, directory), 'utf8');
+            await tx.unsafe(bytes);
+            migrations.push({ name, sha256: sha(bytes) });
+          }
+          return migrations;
+        });
       },
       close,
     };

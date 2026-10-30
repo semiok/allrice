@@ -1130,11 +1130,14 @@ export async function releaseConversationRuntimeTransaction(
     `;
   await transaction`
       update allrice_conversation_commands
-      set state = 'rejected', error_code = 'TURN_CLOSED', updated_at = now()
+      set state = 'rejected', error_code = case
+        when command_type<>'steer' and state='claimed' then 'INPUT_OUTCOME_UNKNOWN'
+        else 'TURN_CLOSED' end, updated_at = now()
       where organization_id = ${values.organizationId}
         and workspace_id = ${values.workspaceId}
         and session_id = ${values.sessionId}
         and state in ('pending', 'claimed')
+        and (command_type='steer' or target_run_id=${values.runId})
     `;
   await cancelUnadoptedSteers(transaction, values.sessionId);
   await releaseNextConversationFollowup(transaction, values.sessionId);

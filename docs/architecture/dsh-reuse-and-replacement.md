@@ -740,3 +740,11 @@ pi-ai 会省略零 cache；仅有实际 finish 证明且原始有效桶与公开
 本片只迁移普通 employee 原生根及其本轮后代/repair。`selectedWorkflow` 每个 step 可重新 bind，仍走原 caller；它不是一次固定 root-port 的生命周期，继续使用修正后的 I+R+W 投影及 cache knownness，不能称为逐调用完整账本。
 
 3d 启用前须核定 selectedWorkflow 是否共享委派 profile，以及未迁移调用的归根合同；本片不增加开关或替它选择启用行为。运行池按 accounting 能力隔离普通与旧 caller，切换方向均不能沿用对方的 port 或计数。
+
+### MET-230/231 C1：子助手控制的请求与回执账本
+
+原生 `subagents.prompt` / `interruptByParent` 独占 Inbox、唤醒和停止；requestId 只作 source.rpcId，不是去重承诺。按 N4 A，在既有 commands 冻结当前根/世代/Job incarnation、原 pin 与不可变输入；不建 child 状态、followup Run 或父消息。复用现有授权 predicate 和绑定校验，领取只允许 pending/attempts=0 一次，旧 steer 的重领、consume、defer 全部按类型隔离。
+
+回执仅表示真实接收：已领取而 ACK 不明及根关闭后的已领取命令显示 unknown，不能作为未投递重试；未领取的根关闭才是 TURN_CLOSED。可信原生观察者可凭原请求及 own-suffix user source.rpcId 正证据补记 messageId/seq，缺证据不改为 rejected；本片不读取 journal、不轮询、不派发。ACK accepted 不代表执行完成，原生谱系/当前输入窗口由 C2/C3 再核。
+
+依据为 MET-230 评论 `9b1a3ff7` 及公开 subagent API。归属：租户/当前根门卫、既有持久交接账本、原 Job 租约；唯一存储仍是 DSH Session。MET-225 “网页控制”记录该差异；升级时复核 native requestId/Inbox/ACK 语义，待上游提供等价 SaaS 票据后退役本账本接线。0231 只扩原表，不迁移原生历史；用户入口另片。

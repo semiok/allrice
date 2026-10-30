@@ -207,11 +207,21 @@ async function assertRunAuthority(
       },
     }),
     nativeSessionId: row.thread_id,
+    ownerId: row.owner_id,
     activeTurnId: row.active_turn_id,
     assistantMessageId: row.assistant_message_id,
     deadlines,
+    validUntil: Math.min(...deadlines.map((deadline) => deadline.getTime())),
   };
   return { authority, controls: controls.data };
+}
+
+/** The existing admission predicate, inside a command's atomic claim/insert. */
+export async function assertNativeRunAuthorityTransaction(
+  tx: TransactionSql,
+  input: RunDeliveryAuthority,
+) {
+  return (await assertRunAuthority(tx, input, true)).authority;
 }
 
 /** Delivery retains its feature/mode gates and publication locking contract. */

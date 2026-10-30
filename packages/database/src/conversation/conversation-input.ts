@@ -133,6 +133,7 @@ export async function claimConversationSteer(input: {
       select id, followup_run_id, client_user_message_id, message, input_kind, expected_turn_id
       from allrice_conversation_commands c
       where organization_id = ${values.organizationId}
+        and command_type = 'steer'
         and workspace_id = ${values.workspaceId}
         and session_id = ${values.sessionId}
         and expected_generation = ${values.generation}
@@ -155,7 +156,7 @@ export async function claimConversationSteer(input: {
       set state = 'claimed', worker_id = ${values.workerId},
           claimed_at = now(), updated_at = now(), error_code = null,
           delivery_attempts=delivery_attempts+1
-      where id = ${command.id}
+      where id = ${command.id} and command_type = 'steer'
     `;
     return {
       id: command.id,
@@ -183,7 +184,7 @@ export async function consumeConversationSteer(input: {
       await transaction`select cr.session_id,cr.active_run_id,j.id as job_id from allrice_conversation_runtimes cr
       join allrice_conversation_commands c on c.session_id=cr.session_id
       join allrice_jobs j on j.run_id=cr.active_run_id and j.worker_id=cr.worker_id
-      where c.id=${values.commandId} and cr.worker_id=${values.workerId} and cr.state='running'
+      where c.id=${values.commandId} and c.command_type='steer' and cr.worker_id=${values.workerId} and cr.state='running'
       and cr.thread_generation=c.expected_generation
       and (cr.active_turn_id=c.expected_turn_id or ((c.input_kind='steer_current'
         or (c.input_kind='ask_user' and cr.active_run_id=${input.proof?.status === 'adopted' ? (input.proof.runId ?? null) : null})) and exists(
@@ -211,7 +212,7 @@ export async function consumeConversationSteer(input: {
       select c.followup_run_id, f.assistant_message_id, c.message, c.input_kind, c.client_user_message_id,c.expected_turn_id
       from allrice_conversation_commands c
       join allrice_conversation_followups f on f.run_id = c.followup_run_id
-      where c.id = ${values.commandId} and c.state = 'claimed'
+      where c.id = ${values.commandId} and c.state = 'claimed' and c.command_type = 'steer'
         and c.worker_id = ${values.workerId}
       for update of c, f
     `;
@@ -250,7 +251,7 @@ export async function consumeConversationSteer(input: {
       update allrice_conversation_commands
       set state = 'consumed', consumed_at = now(), updated_at = now(),
           native_proof=${input.proof ? transaction.json(input.proof) : null}
-      where id = ${values.commandId}
+      where id = ${values.commandId} and command_type = 'steer'
     `;
     await transaction`
       update allrice_conversation_followups
@@ -329,6 +330,7 @@ export async function rejectConversationSteer(input: {
     where id = ${UuidSchema.parse(input.commandId)}
       and worker_id = ${UuidSchema.parse(input.workerId)}
       and state = 'claimed'
+      and command_type = 'steer'
   `;
 }
 
@@ -343,7 +345,7 @@ export async function deferConversationSteer(input: {
   if (input.proof) RuntimeNativeInputProofSchema.parse(input.proof);
   await db`update allrice_conversation_commands set state='pending',worker_id=null,claimed_at=null,
     native_proof=${input.proof ? db.json(input.proof) : null},next_attempt_at=now()+interval '500 milliseconds',updated_at=now()
-    where id=${UuidSchema.parse(input.commandId)} and worker_id=${UuidSchema.parse(input.workerId)} and state='claimed'`;
+    where id=${UuidSchema.parse(input.commandId)} and worker_id=${UuidSchema.parse(input.workerId)} and state='claimed' and command_type='steer'`;
 }
 
 /** Call while holding the runtime lock. Strict inputs cannot fall through to a new Run. */
@@ -360,7 +362,7 @@ export async function cancelUnadoptedSteers(
   >`
     select f.run_id,f.assistant_message_id,c.error_code from allrice_conversation_followups f
     join allrice_conversation_commands c on c.followup_run_id=f.run_id
-    where f.session_id=${sessionId} and f.mode='steer_only' and f.state='queued' and c.state='rejected'
+    where f.session_id=${sessionId} and f.mode='steer_only' and f.state='queued' and c.state='rejected' and c.command_type='steer'
     for update of f`;
   for (const row of rows) {
     await tx`update allrice_conversation_followups set state='canceled' where run_id=${row.run_id}`;
