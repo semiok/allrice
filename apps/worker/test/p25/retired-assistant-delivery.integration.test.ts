@@ -1,5 +1,6 @@
 /** Same schema/storage upgrade, old real API -> unmodified retirement SQL ->
- * candidate admission/Worker/Host. No eligibility or adapter mocks.
+ * remaining candidate migrations -> candidate admission/Worker/Host.
+ * No eligibility or adapter mocks.
  */
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -89,7 +90,27 @@ suite(
         'retired-source',
       ]);
       legacyBefore = await legacySnapshot();
+      const childCommandColumns = async () =>
+        (
+          await upgrade.db`select column_name from information_schema.columns
+            where table_schema=current_schema() and table_name='allrice_conversation_commands'
+              and column_name in ('target_run_id','native_input') order by column_name`
+        ).map((row) => row.column_name);
+      expect(await childCommandColumns()).toEqual([]);
       const migration = await upgrade.applyRetirement();
+      expect(await childCommandColumns()).toEqual([]);
+      expect(await legacySnapshot()).toEqual(legacyBefore);
+      const candidateMigrations = await upgrade.applyCandidateMigrations();
+      expect(candidateMigrations.map((item) => item.name)).toEqual(
+        expect.arrayContaining([
+          '0230_native_model_receipts.sql',
+          '0231_native_child_commands.sql',
+        ]),
+      );
+      expect(await childCommandColumns()).toEqual([
+        'native_input',
+        'target_run_id',
+      ]);
       console.info(
         'retirement-delivery-upgrade',
         JSON.stringify({
@@ -98,6 +119,7 @@ suite(
           storageRoot: upgrade.descriptor.storageRoot,
           migrations: upgrade.descriptor.migrations,
           migration,
+          candidateMigrations,
           cohorts: cohorts.map((cohort) => ({
             kind: cohort.kind,
             userId: cohort.context.actor.id,
