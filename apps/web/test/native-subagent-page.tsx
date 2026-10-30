@@ -100,6 +100,7 @@ function Page() {
           sessions={sessions}
           activeId={activeId}
           nativeReadyKey={nativeReadyKey}
+          nativeReads={observation.reads}
           collapsed={false}
           onSelectSession={setActiveId}
           onPrepareSession={() => {}}

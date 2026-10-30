@@ -304,6 +304,25 @@ suite('native child Stop request identity and truthful receipts', () => {
       .toBe(1);
     if (start) rootEvent(scenario, 'turn.started', 1);
     await show(page, '甲');
+    const connections = () => ({
+      directory: [...feed.connections].filter(
+        (c) => c.fixture === scenario.feedId && c.childId === null,
+      ).length,
+      detail: [...feed.connections].filter(
+        (c) => c.fixture === scenario.feedId && c.childId !== null,
+      ).length,
+      root: [...feed.rootConnections].filter(
+        (c) => c.fixture === scenario.feedId,
+      ).length,
+    });
+    await expect
+      .poll(connections)
+      .toEqual({ directory: 3, detail: 1, root: 1 });
+    if (scenarios.size === 1)
+      console.info(
+        'Full page held SSE connections before Stop:',
+        connections(),
+      );
     return { page, scenario, errors };
   }
   async function show(page: Page, label: string) {
