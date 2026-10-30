@@ -402,8 +402,16 @@ suite(
             events.push(event);
             if (event.type === 'snapshot')
               detail = { kind: 'hot', ...event.snapshot };
-            if (event.type === 'display' && detail?.kind === 'hot')
+            if (event.type === 'display') {
+              expect(detail).toMatchObject({
+                kind: 'hot',
+                rootId: event.rootId,
+                childId: event.childId,
+                hostEpoch: event.hostEpoch,
+                stream: { instanceId: event.display.instanceId },
+              });
               detail.stream = event.display;
+            }
             // A summary cut replaces the hot detail view; it never appends another
             // copy of the final assistant row or interprets active:null as final.
             if (event.type === 'summary')
@@ -432,7 +440,6 @@ suite(
           stream: async function* (request) {
             selectedSession ??= request.sessionId;
             const n = request.sessionId === selectedSession ? attempt++ : -1;
-            console.log('ABC_MODEL', window, n, request.sessionId);
             yield { type: 'block-start', index: 0, blockType: 'text' };
             yield {
               type: 'text-delta',
@@ -450,7 +457,6 @@ suite(
         await ready[0].promise;
         const { runtime } = await hotHost(f);
         const api = await start(f, async () => {
-          console.log('ABC_READ', window);
           if (window === 'summary-response') {
             cut.resolve();
             await release.promise;
@@ -482,31 +488,28 @@ suite(
             ),
           );
           const initial = await consumer.until((e) => e.type === 'snapshot');
-          console.log('ABC_STAGE', window, 'initial');
           finish[0].resolve();
           await a.result;
           await cut.promise;
-          console.log('ABC_STAGE', window, 'cut');
           await f.h.ctx.subagents.sendMessage(f.h.root, a.childId, text('B'), {
             signal: abort.signal,
           });
           await ready[1].promise;
-          console.log('ABC_STAGE', window, 'B ready');
           expect(f.h.ctx.agents.get(a.childId)?.status).toBe('running');
           release.resolve();
-          const second = await consumer.until(
-            (e) =>
-              e.type === 'snapshot' && e.snapshot.stream.active?.text === 'B',
+          // A fresh native cut may precede its first text; its safe replacement
+          // must then reach the same consumer, without waiting for another cut.
+          await consumer.until(
+            () => consumer.detail()?.stream?.active?.text === 'B',
           );
-          console.log('ABC_STAGE', window, 'B snapshot');
-          expect(second.snapshot.stream.instanceId).not.toBe(
+          const second = consumer.detail();
+          expect(second.stream.instanceId).not.toBe(
             initial.snapshot.stream.instanceId,
           );
           expect(f.listeners.size).toBe(1);
           expect(consumer.detail().stream.active.text).toBe('B');
           finish[1].resolve();
           await f.h.wait();
-          console.log('ABC_STAGE', window, 'B drained');
           const settled = await consumer.until(
             (e) =>
               e.type === 'summary' &&
@@ -514,7 +517,6 @@ suite(
                 (r) => r.id === a.childId && r.lastReply === 'B',
               ),
           );
-          console.log('ABC_STAGE', window, 'B summary');
           expect(
             settled.summary.descendants.find((r) => r.id === a.childId)
               .observation.source,
@@ -536,14 +538,11 @@ suite(
             signal: abort.signal,
           });
           await ready[2].promise;
-          console.log('ABC_STAGE', window, 'C ready');
-          const third = await consumer.until(
-            (e) =>
-              e.type === 'snapshot' && e.snapshot.stream.active?.text === 'C',
+          await consumer.until(
+            () => consumer.detail()?.stream?.active?.text === 'C',
           );
-          expect(third.snapshot.stream.instanceId).not.toBe(
-            second.snapshot.stream.instanceId,
-          );
+          const third = consumer.detail();
+          expect(third.stream.instanceId).not.toBe(second.stream.instanceId);
           expect(consumer.detail().stream.active.text).toBe('C');
           expect(f.listeners.size).toBe(1);
           expect(
@@ -561,6 +560,12 @@ suite(
             JSON.stringify({
               window,
               types: consumer.events.map((e) => e.type),
+              snapshots: consumer.events
+                .filter((e) => e.type === 'snapshot')
+                .map((e) => e.snapshot.stream.active?.text),
+              displays: consumer.events
+                .filter((e) => e.type === 'display')
+                .map((e) => e.display.active?.text),
               reads: api.read.mock.calls.length,
               listeners: f.listeners.size,
             }),
