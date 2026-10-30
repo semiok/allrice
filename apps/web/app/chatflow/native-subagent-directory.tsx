@@ -197,6 +197,7 @@ export function NativeSubagentDirectory({
       : '运行状态未知'
     : `${running} 个运行中`;
   const dismissDetail = () => {
+    clearTimeout(timer.current);
     showCatalog(open, null);
     trigger.current?.focus();
   };

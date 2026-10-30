@@ -242,6 +242,7 @@ suite(
         nativeParents?: 3 | 5;
         nativeOtherOwner?: boolean;
         nativeDelayFull?: boolean;
+        nativeClock?: boolean;
         workspaceFiles?: WorkspaceFile[];
         taskSuggestions?: TaskSuggestionDisplay[];
         nextSteps?: TaskNextSteps;
@@ -743,6 +744,7 @@ suite(
           : {}),
       });
       const page: Page = await context.newPage();
+      if (options.nativeClock) await page.clock.install();
       if (options.nativeParents)
         page.on('request', (request) => {
           if (request.method() !== 'GET') browserWrites.count++;
@@ -1321,6 +1323,82 @@ suite(
         await f.close();
       }
     });
+
+    it.each(['Escape', 'button'] as const)(
+      'keeps a native detail closed when %s cancels a pending hover timer',
+      async (action) => {
+        const f = await fixture({
+          nativeParents: 3,
+          nativeClock: true,
+          height: 1800,
+        });
+        try {
+          const trigger = f.page.getByRole('button', {
+            name: '1 个子智能体 · 1 个运行中',
+            exact: true,
+          });
+          await trigger.click();
+          await f.page
+            .getByRole('button', { name: '查看Child 0摘要', exact: true })
+            .click();
+          const detail = f.page.getByLabel('子智能体摘要', { exact: true });
+          await detail.getByText(`${A} own reply`, { exact: true }).waitFor();
+          const closeButton = f.page.getByRole('button', {
+            name: '关闭摘要',
+            exact: true,
+          });
+          await expect
+            .poll(() =>
+              closeButton.evaluate((node) => node === document.activeElement),
+            )
+            .toBe(true);
+          const childConnections = () =>
+            f.native
+              .connections()
+              .filter((c) => c.sessionId === A && c.childId === 'child-0')
+              .length;
+          await expect.poll(childConnections).toBe(1);
+          await f.page.mouse.move(0, 0);
+          await f.page.clock.pauseAt(
+            await f.page.evaluate(() => Date.now() + 1000),
+          );
+          expect(await detail.count()).toBe(1);
+          expect(await trigger.getAttribute('aria-expanded')).toBe('false');
+          const box = await trigger.boundingBox();
+          expect(box).not.toBeNull();
+          // Real pointer entry schedules open; pointer leave schedules close.
+          await f.page.mouse.move(
+            box!.x + box!.width / 2,
+            box!.y + box!.height / 2,
+          );
+          if (action === 'button') await f.page.mouse.move(0, 0);
+          await f.page.clock.runFor(100);
+          expect(await trigger.getAttribute('aria-expanded')).toBe('false');
+          expect(
+            await closeButton.evaluate(
+              (node) => node === document.activeElement,
+            ),
+          ).toBe(true);
+          // Enter activates the focused close button without moving the pointer.
+          await f.page.keyboard.press(action === 'Escape' ? 'Escape' : 'Enter');
+          await detail.waitFor({ state: 'hidden' });
+          await f.page.clock.runFor(200);
+          expect(await detail.count()).toBe(0);
+          expect(
+            await f.page.getByRole('tree', { name: '子智能体目录' }).count(),
+          ).toBe(0);
+          await expect.poll(childConnections).toBe(0);
+          expect(
+            await trigger.evaluate((node) => node === document.activeElement),
+          ).toBe(true);
+          expect(f.native.browserWrites.count).toBe(0);
+          expect(f.writes).toEqual([]);
+          expect(f.errors).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      },
+    );
 
     it('shares the active native read through parent switches, detail, permission errors, readyKey and Workspace changes', async () => {
       const f = await fixture({
