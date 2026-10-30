@@ -1020,6 +1020,13 @@ suite('native subagent directory and employee sidebar', () => {
                 .length,
           )
           .toBe(1);
+        const backgroundConnections = () =>
+          [...feed.connections].filter(
+            (c) => c.fixture === fixture && c.sessionId === 'parent-b',
+          );
+        await expect.poll(() => backgroundConnections().length).toBe(1);
+        const originalBackground = backgroundConnections()[0]!;
+        expect(calls.filter((call) => call.id === 'parent-b')).toHaveLength(1);
         const rootEvent = (
           sequence: number,
           type: string,
@@ -1085,6 +1092,29 @@ suite('native subagent directory and employee sidebar', () => {
         expect(await row(page, 'parent-a').innerText()).toContain(
           '1 个子智能体运行中',
         );
+        expect(calls.filter((call) => call.id === 'parent-b')).toHaveLength(1);
+        expect(
+          feed.calls.filter(
+            (call) => call.fixture === fixture && call.sessionId === 'parent-b',
+          ),
+        ).toHaveLength(1);
+        expect(backgroundConnections()[0]).toBe(originalBackground);
+        expect(originalBackground.response.destroyed).toBe(false);
+        expect(originalBackground.response.writableEnded).toBe(false);
+        const backgroundUpdate = summary('other-root');
+        backgroundUpdate.descendants = backgroundUpdate.descendants.map(
+          (entry) =>
+            entry.kind === 'child' && entry.parentId === backgroundUpdate.rootId
+              ? { ...entry, running: false }
+              : entry,
+        );
+        feed.send(originalBackground, {
+          type: 'directory',
+          summary: backgroundUpdate,
+        });
+        await expect
+          .poll(() => row(page, 'parent-b').innerText())
+          .not.toContain('子智能体运行中');
         const next = summary();
         next.descendants = next.descendants.map((entry) =>
           entry.kind === 'child' && entry.parentId === next.rootId
@@ -1101,6 +1131,21 @@ suite('native subagent directory and employee sidebar', () => {
         await expect
           .poll(() => row(page, 'parent-a').innerText())
           .toContain('2 个子智能体运行中');
+        await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+        await expect
+          .poll(() => calls.filter((call) => call.id === 'parent-a').length)
+          .toBe(6);
+        await expect
+          .poll(() => calls.filter((call) => call.id === 'parent-b').length)
+          .toBe(2);
+        await expect
+          .poll(() => calls.filter((call) => call.id === 'parent-c').length)
+          .toBe(2);
+        await expect
+          .poll(() => originalBackground.response.destroyed)
+          .toBe(true);
+        await expect.poll(() => backgroundConnections().length).toBe(1);
+        expect(backgroundConnections()[0]).not.toBe(originalBackground);
       } finally {
         release();
         await page.close();

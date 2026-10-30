@@ -55,7 +55,8 @@ export function EmployeeSidebar({
   const key = employeePreferenceKey(workspace);
   const root = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState<string[]>([]);
-  const { reads } = useNativeSubagents(
+  const activeSession = sessions.find((session) => session.id === activeId);
+  const { reads: backgroundReads } = useNativeSubagents(
     workspace.workspaceId,
     {
       'x-allrice-organization-id': workspace.organizationId,
@@ -66,19 +67,38 @@ export function EmployeeSidebar({
         .filter(
           (session) =>
             visible.includes(session.id) &&
+            session.id !== activeId &&
             (!session.ownerId || session.ownerId === workspace.viewerId),
         )
         .map((session) => [
           session.id,
-          `${session.updatedAt}/${session.running}/${session.id === activeId ? nativeReadyKey : ''}`,
+          `${session.updatedAt}/${session.running}`,
         ]),
     ),
     true,
   );
+  const { reads: activeReads } = useNativeSubagents(
+    workspace.workspaceId,
+    {
+      'x-allrice-organization-id': workspace.organizationId,
+      'x-allrice-workspace-id': workspace.workspaceId,
+    },
+    activeSession &&
+      visible.includes(activeSession.id) &&
+      (!activeSession.ownerId || activeSession.ownerId === workspace.viewerId)
+      ? {
+          [activeSession.id]: `${activeSession.updatedAt}/${activeSession.running}/${nativeReadyKey}`,
+        }
+      : {},
+    true,
+  );
+  const reads = useMemo(
+    () => ({ ...backgroundReads, ...activeReads }),
+    [backgroundReads, activeReads],
+  );
   const [expansion, setExpansion] = useState(() => readEmployeeExpansion(key));
   const [all, setAll] = useState<Record<string, boolean>>({});
   const [rail, setRail] = useState<string | null>(null);
-  const activeSession = sessions.find((session) => session.id === activeId);
   const activeGroup = activeSession
     ? sessionEmployeeKey(activeSession)
     : undefined;
