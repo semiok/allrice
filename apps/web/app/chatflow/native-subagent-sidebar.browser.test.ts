@@ -4,7 +4,10 @@ import { resolve } from 'node:path';
 import { createServer, type Server } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { NativeSubagentSummary } from '@allrice/contracts';
-import type { Browser } from '../../../worker/node_modules/playwright-core/index.js';
+import type {
+  Browser,
+  Page,
+} from '../../../worker/node_modules/playwright-core/index.js';
 
 const suite =
   process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1'
@@ -36,6 +39,9 @@ const summary: NativeSubagentSummary = {
     },
   })),
 };
+const hoverCard = (page: Page, id: string) =>
+  page.getByRole('button', { name: `复制: ${id} 父级任务`, exact: true });
+
 suite('visible parent native running badges', () => {
   let browser: Browser, server: Server, origin: string;
   beforeAll(async () => {
@@ -142,7 +148,7 @@ suite('visible parent native running badges', () => {
       );
       await page.locator('[data-row-key="session:parent-c"]').hover();
       await expect
-        .poll(() => page.getByRole('tooltip').innerText())
+        .poll(() => hoverCard(page, 'parent-c').innerText())
         .toContain('子智能体当前活动状态未知');
       expect(calls).toHaveLength(3);
     } finally {
@@ -167,7 +173,7 @@ suite('visible parent native running badges', () => {
       await expect.poll(() => nav.innerText()).not.toContain('子智能体运行中');
       await page.locator('[data-row-key="session:parent-b"]').hover();
       await expect
-        .poll(() => page.getByRole('tooltip').innerText())
+        .poll(() => hoverCard(page, 'parent-b').innerText())
         .toContain('子智能体当前活动状态未知');
       result = summary;
       await page.evaluate(() => window.dispatchEvent(new Event('focus')));
@@ -176,7 +182,7 @@ suite('visible parent native running badges', () => {
       await page.evaluate(() => window.dispatchEvent(new Event('focus')));
       await expect.poll(() => nav.innerText()).not.toContain('子智能体运行中');
       await expect
-        .poll(() => page.getByRole('tooltip').innerText())
+        .poll(() => hoverCard(page, 'parent-b').innerText())
         .toContain('子智能体状态读取失败');
       result = summary;
       await page.evaluate(() => window.dispatchEvent(new Event('focus')));
@@ -220,7 +226,7 @@ suite('visible parent native running badges', () => {
         for (const id of ['parent-a', 'parent-b', 'parent-c']) {
           await page.locator(`[data-row-key="session:${id}"]`).hover();
           await expect
-            .poll(() => page.getByRole('tooltip').innerText())
+            .poll(() => hoverCard(page, id).innerText())
             .toContain(
               '至少 1 个子智能体运行中 · 部分子智能体当前活动状态未知',
             );
@@ -228,7 +234,7 @@ suite('visible parent native running badges', () => {
         failed = true;
         await page.evaluate(() => window.dispatchEvent(new Event('focus')));
         await expect
-          .poll(() => page.getByRole('tooltip').innerText())
+          .poll(() => hoverCard(page, 'parent-c').innerText())
           .toContain(
             `${state === 'running' ? '进行中' : state === 'pending' ? '等待回答' : '空闲'} · 子智能体状态读取失败`,
           );
