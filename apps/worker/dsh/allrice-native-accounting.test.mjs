@@ -192,3 +192,81 @@ it.each(['allrice-restricted', 'allrice-technical'])(
     );
   },
 );
+
+it.each([
+  {
+    raw: { inputTokens: 20, outputTokens: 5, totalTokens: 25 },
+    complete: true,
+  },
+  {
+    raw: {
+      inputTokens: 20,
+      outputTokens: 5,
+      cacheReadTokens: 3,
+      totalTokens: 28,
+    },
+    complete: true,
+  },
+  {
+    raw: { inputTokens: 20, outputTokens: 5, totalTokens: 28 },
+    complete: false,
+  },
+  ...[null, -1, NaN, '0'].map((cacheReadTokens) => ({
+    raw: { inputTokens: 20, outputTokens: 5, totalTokens: 25, cacheReadTokens },
+    complete: false,
+  })),
+  ...[null, -1, NaN, '3600', 3601].map((totalTokens) => ({
+    raw: { ...usage, totalTokens },
+    complete: false,
+  })),
+  { raw: { outputTokens: 5, totalTokens: 5 }, complete: false },
+  { raw: { inputTokens: 20, totalTokens: 20 }, complete: false },
+])(
+  'uses original valid buckets and exact total to prove only omitted zero cache: %j',
+  async ({ raw, complete }) => {
+    const receipts = [];
+    const h = await host({
+      accounting: true,
+      runId: randomUUID(),
+      usage: raw,
+      bridge: recorder(receipts),
+    });
+    await h.prompt('核对本次实际调用，不假定缺桶为零。');
+    await h.wait();
+    const finish = receipts.find((p) => p.fact?.phase === 'finish').fact;
+    expect(finish.usageComplete).toBe(complete);
+    if (complete)
+      expect(finish.usage).toMatchObject({
+        ...raw,
+        cacheReadTokens: raw.cacheReadTokens ?? 0,
+        cacheWriteTokens: 0,
+      });
+  },
+);
+
+it('an exact zero-cache total does not manufacture a missing native finish', async () => {
+  const receipts = [];
+  const h = await host({
+    accounting: true,
+    runId: randomUUID(),
+    bridge: recorder(receipts),
+    stream: async function* () {
+      yield {
+        type: 'usage',
+        usage: { inputTokens: 20, outputTokens: 5, totalTokens: 25 },
+      };
+    },
+  });
+  await consume(h.ctx.llm.stream(options(h)));
+  expect(receipts.find((p) => p.fact?.phase === 'finish').fact).toMatchObject({
+    outcome: 'incomplete',
+    usageComplete: false,
+    usage: {
+      inputTokens: 20,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 5,
+      totalTokens: 25,
+    },
+  });
+});

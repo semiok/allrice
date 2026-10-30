@@ -48,6 +48,10 @@ export function installNativeAccounting(ctx, bridge, attribute) {
           yield chunk;
         }
       } finally {
+        const settled = settledTokenUsage(usage ?? {}, observedOutput);
+        const exactTotal =
+          Number.isSafeInteger(usage?.totalTokens) &&
+          usage.totalTokens === settled.inputTokens + settled.outputTokens;
         const raw = Object.fromEntries(
           [
             'inputTokens',
@@ -61,7 +65,9 @@ export function installNativeAccounting(ctx, bridge, attribute) {
             )
             .map((key) => [key, usage[key]]),
         );
-        const settled = settledTokenUsage(raw, observedOutput);
+        if (exactTotal)
+          for (const key of ['cacheReadTokens', 'cacheWriteTokens'])
+            if (usage[key] === undefined) raw[key] = 0;
         const outcome = ['stop', 'tool-calls', 'max-tokens'].includes(reason)
           ? 'succeeded'
           : reason === 'aborted'
@@ -78,6 +84,7 @@ export function installNativeAccounting(ctx, bridge, attribute) {
             usage: raw,
             usageComplete:
               outcome !== 'incomplete' &&
+              (usage?.totalTokens === undefined || exactTotal) &&
               [
                 'inputTokens',
                 'cacheReadTokens',

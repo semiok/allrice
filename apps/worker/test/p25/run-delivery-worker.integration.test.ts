@@ -388,20 +388,30 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
               r.payload.jobId === task.workflowLease.jobId,
           ),
         ).toBe(true);
+        expect(facts[1]!.payload.fact).toMatchObject({
+          usageComplete: true,
+          usage: {
+            inputTokens: 20,
+            outputTokens: 5,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+            totalTokens: 25,
+          },
+        });
         const [route] =
           await f.db`select id,input_tokens,cached_input_tokens,output_tokens,usage_complete,cache_usage_known,cost_cents from allrice_route_decisions where run_id=${task.runId}`;
         expect(route).toMatchObject({
           input_tokens: 20,
           cached_input_tokens: 0,
           output_tokens: 5,
-          usage_complete: false,
-          cache_usage_known: false,
+          usage_complete: true,
+          cache_usage_known: true,
           cost_cents: null,
         });
         expect(result).toMatchObject({
           usage: { inputTokens: 20, cachedInputTokens: 0, outputTokens: 5 },
-          usageComplete: false,
-          cacheUsageKnown: false,
+          usageComplete: true,
+          cacheUsageKnown: true,
           estimatedCostCents: null,
         });
         expect(
@@ -429,6 +439,52 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         .value.artifactId,
     ).toBe(f.launch.artifactId);
   }, 45000);
+
+  it('MET229: 真实 finish 写入失败保持未知账单，不退旧累计或重跑模型', async () => {
+    const f = await setup(async () => ({ text: '会议结论：先整理资料。' }));
+    await f.db
+      .unsafe(`create function reject_native_finish() returns trigger language plpgsql as $$
+      begin
+        if new.payload->>'source' = 'native_model_receipt_v1'
+          and new.payload->'fact'->>'phase' = 'finish' then
+          raise exception 'isolated native finish failure';
+        end if;
+        return new;
+      end $$;
+      create trigger reject_native_finish before insert on allrice_run_events
+        for each row execute function reject_native_finish()`);
+    const task = await prepare(f, '整理会议结论。', true);
+    try {
+      const result = await task.run();
+      expect(model!.requests).toHaveLength(1);
+      expect(result).toMatchObject({
+        usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+        usageComplete: false,
+        cacheUsageKnown: false,
+        estimatedCostCents: null,
+      });
+      const facts =
+        await f.db`select payload from allrice_run_events where run_id=${task.runId} and payload->>'source'='native_model_receipt_v1'`;
+      expect(facts.map((r) => r.payload.fact.phase)).toEqual(['start']);
+      const [ledger] =
+        await f.db`select l.input_tokens,l.output_tokens,l.usage_complete,l.cache_usage_known,l.cost_cents
+          from allrice_model_usage_ledger l join allrice_route_decisions d on d.id=l.route_decision_id where d.run_id=${task.runId}`;
+      expect(ledger).toMatchObject({
+        input_tokens: 0,
+        output_tokens: 0,
+        usage_complete: false,
+        cache_usage_known: false,
+        cost_cents: null,
+      });
+      await completeJob({ ...task.workflowLease, result });
+      expect(await state(f, task.runId)).toMatchObject({
+        status: 'succeeded',
+        successes: 1,
+      });
+    } finally {
+      await task.isolation.cleanup();
+    }
+  }, 30000);
 
   it.each([
     { mode: 'plan_only', workbench: '1' },
@@ -866,10 +922,9 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           input_tokens: runs[phase]!.input,
           cached_input_tokens: runs[phase]!.cached,
           output_tokens: runs[phase]!.calls * 5,
-          usage_complete: false,
-          // The pinned pi-ai transport omits zero cache buckets. Preserve that
-          // absence; subscription/cache-bucket folding has its own unit coverage.
-          cache_usage_known: false,
+          usage_complete: true,
+          // Exact prompt/output totals prove pi-ai's omitted write-cache is zero.
+          cache_usage_known: true,
         });
         expect(
           await f.db`select route_decision_id id,input_tokens,cached_input_tokens,output_tokens,usage_complete,cache_usage_known from allrice_model_usage_ledger where route_decision_id=${route!.id}`,
@@ -999,7 +1054,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           answer: '等你回答后继续。',
           waitingForUser: { questionId: expect.any(String) },
           usage: { inputTokens: 6000, cachedInputTokens: 0, outputTokens: 15 },
-          usageComplete: false,
+          usageComplete: true,
         });
         if (!('waitingForUser' in result) || !result.waitingForUser)
           throw Error('Missing native progress wait');
@@ -1046,7 +1101,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           status: 'succeeded',
           input_tokens: 6000,
           output_tokens: 15,
-          usage_complete: false,
+          usage_complete: true,
         });
         expect(
           await f.db`select route_decision_id id,status,input_tokens,output_tokens,usage_complete from allrice_model_usage_ledger where route_decision_id=${route!.id}`,
@@ -1406,8 +1461,8 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
             input_tokens: mode === 'interrupt' ? 20 : 40,
             cached_input_tokens: 0,
             output_tokens: mode === 'interrupt' ? 5 : 10,
-            usage_complete: false,
-            cache_usage_known: false,
+            usage_complete: mode !== 'interrupt',
+            cache_usage_known: mode !== 'interrupt',
           });
           expect(
             await f.db`select route_decision_id id,input_tokens,cached_input_tokens,output_tokens,usage_complete,cache_usage_known from allrice_model_usage_ledger where route_decision_id=${route!.id}`,
@@ -2204,10 +2259,20 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
             output_tokens: 5 * completedCalls,
             cost_cents: null,
           });
-          expect(route!.usage_complete).toBe(false);
-          // Pinned pi-ai omits zero cache counters: the new strict four-bucket
-          // ledger retains raw tokens without claiming a complete cash receipt.
-          expect(route!.cache_usage_known).toBe(false);
+          const complete = [
+            'missing-origin',
+            'missing-active-turn',
+            'missing-origin-after-repair',
+            'missing-candidate',
+            'invalid-repair',
+          ].includes(mode);
+          const facts =
+            await f.db`select payload->'fact' fact from allrice_run_events
+            where run_id=${task.runId} and payload->>'source'='native_model_receipt_v1'`;
+          expect(route!.usage_complete, JSON.stringify(facts)).toBe(complete);
+          // Actual finish usage with exact total proves the omitted zero buckets;
+          // a canceled/missing-usage attempt still makes the whole receipt unknown.
+          expect(route!.cache_usage_known).toBe(complete);
           const ledger =
             await f.db`select route_decision_id id,status,input_tokens,cached_input_tokens,output_tokens,usage_complete,cache_usage_known,cost_cents
               from allrice_model_usage_ledger where route_decision_id=${route!.id}`;

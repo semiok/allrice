@@ -55,6 +55,43 @@ describe('pinned native subscription receipts', () => {
       projectNativeUsage({ inputTokens: 10, outputTokens: 7 }, true, true),
     ).toMatchObject({ usageComplete: true, cacheUsageKnown: false });
   });
+  it('proves omitted zero cache from exact total without changing cash or subscription projection', () => {
+    for (const subscription of [true, false])
+      expect(
+        projectNativeUsage(
+          { inputTokens: 20, outputTokens: 5, totalTokens: 25 },
+          true,
+          subscription,
+        ),
+      ).toMatchObject({
+        inputTokens: 20,
+        outputTokens: 5,
+        cachedInputTokens: 0,
+        usageComplete: true,
+        cacheUsageKnown: true,
+      });
+  });
+  it.each([
+    { inputTokens: 20, outputTokens: 5, totalTokens: 28 },
+    ...[null, -1, NaN, '0'].map((cacheReadTokens) => ({
+      inputTokens: 20,
+      outputTokens: 5,
+      totalTokens: 25,
+      cacheReadTokens,
+    })),
+    ...[null, -1, NaN, '22', 23].map((totalTokens) => ({
+      ...usage,
+      totalTokens,
+    })),
+  ])(
+    'does not upgrade invalid buckets or contradictory exact totals: %j',
+    (raw) => {
+      expect(projectNativeUsage(raw, true, true)).toMatchObject({
+        usageComplete: false,
+        cacheUsageKnown: false,
+      });
+    },
+  );
 });
 
 it('uses inclusive DSH input so the existing cash formula subtracts cache-read exactly once', () => {

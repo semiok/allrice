@@ -24,12 +24,15 @@ export function projectNativeUsage(
     valid(allInput) &&
     allInput > 0 &&
     valid(output) &&
-    (!observedOutput || output > 0);
+    (!observedOutput || output > 0) &&
+    (raw?.totalTokens === undefined ||
+      (valid(raw.totalTokens) && raw.totalTokens === allInput + output));
   return {
     inputTokens: valid(allInput) ? allInput : 0,
     cachedInputTokens: valid(read) ? read : 0,
     outputTokens: valid(output) ? output : 0,
     usageComplete: complete,
-    cacheUsageKnown: complete && valid(read) && valid(write),
+    cacheUsageKnown:
+      complete && ((valid(read) && valid(write)) || valid(raw?.totalTokens)),
   };
 }
