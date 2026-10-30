@@ -43,6 +43,61 @@ export async function withNativeQueryReader(storageNamespace, read) {
 
 const cut = ({ source, cursor }) => ({ source, cursor });
 
+/** Positive evidence only, from the original child's own native event suffix. */
+export async function readNativeSubagentControlReceipt(ctx, request, signal) {
+  const { scope, input } = request;
+  if (input.kind !== 'prompt') return null;
+  const tree = await readNativeSubagentSummary(ctx, scope.nativeRootId, signal);
+  if (
+    !tree.descendants.some(
+      (row) =>
+        row.kind === 'child' &&
+        row.id === input.childSessionId &&
+        row.parentId === input.parentSessionId &&
+        row.mode === input.mode,
+    )
+  )
+    return null;
+  const child = await ctx.sessionQuery.observeSession(input.childSessionId, {
+    signal,
+  });
+  try {
+    if (
+      child.header.id !== input.childSessionId ||
+      child.header.parentSession !== input.parentSessionId
+    )
+      return null;
+    const proofs = new Map();
+    for (const event of child.events.slice(child.inheritedEventCount)) {
+      const messages =
+        event.type === 'user/message'
+          ? [event.data]
+          : event.type === 'agent/inbox/spliced'
+            ? event.data.inserted
+            : [];
+      for (const message of messages) {
+        if (
+          message.source?.kind === 'user' &&
+          message.source.rpcId === input.requestId
+        )
+          proofs.set(message.id, {
+            status: 'accepted',
+            acceptance: { kind: 'prompt', messageId: message.id },
+            source: {
+              kind: 'user_rpc',
+              rpcId: message.source.rpcId,
+              sequence: event.seq,
+            },
+          });
+      }
+    }
+    if (proofs.size > 1) throw Error('NATIVE_CONTROL_RECEIPT_CONFLICT');
+    return proofs.values().next().value ?? null;
+  } finally {
+    child[Symbol.dispose]();
+  }
+}
+
 /** Read only native facts. Prepared cuts may contain synthetic interrupted-turn
  * closers: preserve their source, never manufacture activation completion.
  * The supplied root must already be authorized by the owning Host/Worker. */

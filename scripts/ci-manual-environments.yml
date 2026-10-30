@@ -84,6 +84,7 @@ files:
     - apps/worker/src/native-schedule-once.test.ts
   db:
     - apps/web/lib/execution/native-subagent-authorized-query.integration.test.mjs
+    - apps/web/lib/execution/native-subagent-control.integration.test.mjs
     - apps/worker/test/final-delivery-references.pg.test.ts
     - packages/database/src/execution/native-model-receipts.integration.test.ts
     - packages/database/src/freeze-helpers.transaction.test.ts

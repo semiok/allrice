@@ -750,3 +750,5 @@ pi-ai 会省略零 cache；仅有实际 finish 证明且原始有效桶与公开
 回执仅表示真实接收：已领取而 ACK 不明及根关闭后的已领取命令显示 unknown，不能作为未投递重试；未领取的根关闭才是 TURN_CLOSED。可信原生观察者可凭原请求及 own-suffix user source.rpcId 正证据补记 messageId/seq，缺证据不改为 rejected；本片不读取 journal、不轮询、不派发。ACK accepted 不代表执行完成，原生谱系/当前输入窗口由 C2/C3 再核。
 
 依据为 MET-230 评论 `9b1a3ff7` 及公开 subagent API。归属：租户/当前根门卫、既有持久交接账本、原 Job 租约；唯一存储仍是 DSH Session。MET-225 “网页控制”记录该差异；升级时复核 native requestId/Inbox/ACK 语义，待上游提供等价 SaaS 票据后退役本账本接线。0231 只扩原表，不迁移原生历史；用户入口另片。
+
+MET-230 controls C3（既定 N4 A）：普通员工既有 command pump 以真实 Job token/attempt/generation 单次 claim C1，再调用 C2；异步 child admission 不阻塞根问题回答或另一 child Stop。现有 Web 身份/owner 权限接 POST 与单 request GET，只有 C1 ticket 对外。原受权 Worker read listener 可按命令冻结的 root/origin/namespace 读公开 query own-suffix 的真实 user rpcId/sequence/messageId，重复不同 messageId 拒绝合并；当前成员/owner 再核验，晚证据只回填旧请求。Stop 丢 ACK 保持 unknown，冷 root 不创建 Host，不自动重投。归属门卫/账本/原 Job 租约，DSH Inbox 和原 Run 用量 drain 不变；无新 PG 状态/队列/阈值。MET-225 更新既有网页子级控制行；MET-222 以既有请求 unknown/rejected 及 Worker receipt 错误记录发现故障。图片合同及 UI 依用户选择/后片处理。
