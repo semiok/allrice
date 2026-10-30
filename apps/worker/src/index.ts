@@ -18,6 +18,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createNativeRunDiagnosticsHttpHandler } from './native-run-diagnostics-http.js';
+import { createWorkerReadinessResponder } from './worker-readiness.js';
 
 import {
   DSH_INSTALLED_DISTRIBUTION,
@@ -430,6 +431,7 @@ const nativeRunDiagnosticsHttp = createNativeRunDiagnosticsHttpHandler(
   undefined,
   httpAborter.signal,
 );
+const respondWorkerReadiness = createWorkerReadinessResponder();
 const server = createServer(async (request, response) => {
   if (await nativeRunDiagnosticsHttp(request, response, stopping)) return;
   response.setHeader('content-type', 'application/json; charset=utf-8');
@@ -446,86 +448,87 @@ const server = createServer(async (request, response) => {
   }
 
   if (request.url === '/health/ready') {
-    let maintenance;
-    try {
-      maintenance = await readDevMaintenance();
-      for (const control of nativeScheduleControls)
-        await control.observeMaintenance(maintenance);
-    } catch {
-      await Promise.allSettled(
-        nativeScheduleControls.map((control) => control.stop()),
-      );
-      response.writeHead(503);
-      response.end(
-        JSON.stringify(
-          makeHealthResponse(
-            'worker',
-            'not_ready',
-            'dev_maintenance_unavailable',
-          ),
-        ),
-      );
-      return;
-    }
-    const nativeOnceStatus = nativeOnceControl.status();
-    const nativeOnceBlocked =
-      nativeOnceStatus.state === 'blocked' ||
-      (nativeOnceStatus.state === 'cold' &&
-        'lastFault' in nativeOnceStatus &&
-        nativeOnceStatus.lastFault?.phase === 'initialization');
-    const nativeOnceRestartRequired =
-      nativeOnceControl.enabled &&
-      nativeOnceStatus.state === 'closed' &&
-      (!maintenance || maintenance.state === 'open');
-    const nativeRecurringStatus = nativeRecurringControl.status();
-    const nativeRecurringBlocked =
-      nativeRecurringStatus.state === 'blocked' ||
-      (nativeRecurringStatus.state === 'cold' &&
-        'lastFault' in nativeRecurringStatus &&
-        nativeRecurringStatus.lastFault?.phase === 'initialization');
-    const nativeRecurringRestartRequired =
-      nativeRecurringControl.enabled &&
-      nativeRecurringStatus.state === 'closed' &&
-      (!maintenance || maintenance.state === 'open');
-    const ready =
-      databaseReady &&
-      !nativeOnceBlocked &&
-      !nativeOnceRestartRequired &&
-      !nativeRecurringBlocked &&
-      !nativeRecurringRestartRequired;
-    response.statusCode = ready ? 200 : 503;
-    if (ready) response.once('finish', () => startup.mark('health_ready'));
-    response.end(
-      JSON.stringify({
-        ...makeHealthResponse(
-          'worker',
-          ready ? 'ready' : 'not_ready',
-          nativeOnceBlocked
-            ? 'native_once_blocked'
-            : nativeOnceRestartRequired
-              ? 'native_once_restart_required'
-              : nativeRecurringBlocked
-                ? 'native_recurring_blocked'
-                : nativeRecurringRestartRequired
-                  ? 'native_recurring_restart_required'
-                  : lastDatabaseError,
-        ),
-        ...(serviceBuildIdentity ? { identity: serviceBuildIdentity } : {}),
-        nativeCloseIdentity,
-        nativeArtifact,
-        nativeJournalContract,
-        queueWakeup: queueWakeup?.status() ?? { state: 'disabled' },
-        ...(nativeOnceControl.enabled
-          ? { nativeOnceControl: nativeOnceStatus }
-          : {}),
-        ...(nativeRecurringControl.enabled
-          ? { nativeRecurringControl: nativeRecurringStatus }
-          : {}),
-        ...(maintenance ? { maintenance } : {}),
-        ...(maintenance
-          ? { producerLifecycle: readDevProducerLifecycle('worker') }
-          : {}),
-      }),
+    await respondWorkerReadiness(
+      response,
+      async () => {
+        let maintenance;
+        try {
+          maintenance = await readDevMaintenance();
+          for (const control of nativeScheduleControls)
+            await control.observeMaintenance(maintenance);
+        } catch {
+          await Promise.allSettled(
+            nativeScheduleControls.map((control) => control.stop()),
+          );
+          return () =>
+            makeHealthResponse(
+              'worker',
+              'not_ready',
+              'dev_maintenance_unavailable',
+            );
+        }
+        return () => {
+          const nativeOnceStatus = nativeOnceControl.status();
+          const nativeOnceBlocked =
+            nativeOnceStatus.state === 'blocked' ||
+            (nativeOnceStatus.state === 'cold' &&
+              'lastFault' in nativeOnceStatus &&
+              nativeOnceStatus.lastFault?.phase === 'initialization');
+          const nativeOnceRestartRequired =
+            nativeOnceControl.enabled &&
+            nativeOnceStatus.state === 'closed' &&
+            (!maintenance || maintenance.state === 'open');
+          const nativeRecurringStatus = nativeRecurringControl.status();
+          const nativeRecurringBlocked =
+            nativeRecurringStatus.state === 'blocked' ||
+            (nativeRecurringStatus.state === 'cold' &&
+              'lastFault' in nativeRecurringStatus &&
+              nativeRecurringStatus.lastFault?.phase === 'initialization');
+          const nativeRecurringRestartRequired =
+            nativeRecurringControl.enabled &&
+            nativeRecurringStatus.state === 'closed' &&
+            (!maintenance || maintenance.state === 'open');
+          const ready =
+            !stopping &&
+            databaseReady &&
+            !nativeOnceBlocked &&
+            !nativeOnceRestartRequired &&
+            !nativeRecurringBlocked &&
+            !nativeRecurringRestartRequired;
+          return {
+            ...makeHealthResponse(
+              'worker',
+              ready ? 'ready' : 'not_ready',
+              nativeOnceBlocked
+                ? 'native_once_blocked'
+                : nativeOnceRestartRequired
+                  ? 'native_once_restart_required'
+                  : nativeRecurringBlocked
+                    ? 'native_recurring_blocked'
+                    : nativeRecurringRestartRequired
+                      ? 'native_recurring_restart_required'
+                      : (lastDatabaseError ??
+                        (stopping ? 'worker_stopping' : undefined)),
+            ),
+            ...(serviceBuildIdentity ? { identity: serviceBuildIdentity } : {}),
+            nativeCloseIdentity,
+            nativeArtifact,
+            nativeJournalContract,
+            queueWakeup: queueWakeup?.status() ?? { state: 'disabled' },
+            ...(nativeOnceControl.enabled
+              ? { nativeOnceControl: nativeOnceStatus }
+              : {}),
+            ...(nativeRecurringControl.enabled
+              ? { nativeRecurringControl: nativeRecurringStatus }
+              : {}),
+            ...(maintenance ? { maintenance } : {}),
+            ...(maintenance
+              ? { producerLifecycle: readDevProducerLifecycle('worker') }
+              : {}),
+          };
+        };
+      },
+      () => startup.mark('health_ready'),
     );
     return;
   }

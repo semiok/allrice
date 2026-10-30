@@ -53,6 +53,7 @@ files:
     - apps/rice-bridge/src/update-installer.test.ts
     - apps/worker/src/cloud-runner/backend.test.ts
     - apps/worker/src/memory-gate.test.ts
+    - apps/worker/src/worker-readiness.test.ts
     - apps/worker/test/p25/dsh-images-native.integration.test.ts
     - apps/worker/test/p25/session-reference-native.integration.test.ts
     - apps/worker/test/p25/task-progress-native.integration.test.ts
