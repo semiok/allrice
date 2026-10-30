@@ -304,7 +304,7 @@ Allrice 的公开事件不含原生推理正文，因此不伪造 ReasoningRow �
 
 ### allrice-durable-native-question-wait-v1
 
-- MET-231 首轮复核 F1–F4：可信程序来源与原 Run/pause 随既有题/checkpoint JSON 保留（`progress`），不新增 PG 列/表；legacy 在采纳答案前校验原 pause，普通模型题 ID 不选择程序分支。当前 Run 的程序题随公开 `turn.started` 更新网页投递 turn，Host 只接受当前 turn；PG 消费精确 Run/题/投递 turn 的 `question_resolved` 回执，已采纳后跨同 Run turn 仅凭既有 turn 记录收据结算，不扩大旧题提交权。回归包含真消息 API→PG claim→production Host/adapter→PG consume 与双子级结算换 turn。
+- MET-231 首轮复核 F1–F4：可信程序来源与原 Run/pause 编入 Host 生成的顶层 questionId，复用 strict v1 checkpoint 字段，不新增 PG 列/表或日志字段；legacy 在采纳答案前校验原 pause；模型 item/call ID 不能指定此顶层 ID。旧无标记题按普通题读取、不能 decide 当前 pause，进度门须重新提问。当前 Run 的程序题随公开 `turn.started` 更新网页投递 turn，Host 只接受当前 turn；PG 消费精确 Run/题/投递 turn 的 `question_resolved` 回执，已采纳后跨同 Run turn 仅凭既有 turn 记录收据结算，不扩大旧题提交权。回归包含真消息 API→PG claim→production Host/adapter→PG consume 与双子级结算换 turn。
 
 - MET-231 原生恢复共同前置（2026-10-30 用户选择先恢复普通对话委派、网页控制与旧 Workflow 后接）：DSH 0.2.1-rc.2 `subagents.waitForChildren(exactRoot)` 负责创建/释放/结算屏障；AllRice 仍拒绝任何其他 live Agent，随后已受理 typed input 结算与同根/同题/当前 Worker 租约重验，才写原 legacy checkpoint/cancel；根 idle 后 finite accounting flush 再验租约，避免等待正被该题阻塞的根迭代器。只加门卫和租约接线，不等被题阻塞的整根 `session/wait`，不为 park 强停子级；30 秒触发值和恢复协议不变。守护：`native-subagent/question-runtime.test.mjs`、既有 `task-wait-native.integration.test.ts` / `task-wait-worker.integration.test.ts`；MET-225 更新 L07。
 

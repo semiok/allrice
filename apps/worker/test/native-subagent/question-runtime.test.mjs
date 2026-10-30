@@ -3,6 +3,7 @@ import { NativeQuestionCheckpointSchema } from '@allrice/contracts';
 import { setImmediate } from 'node:timers/promises';
 import { expect, it, vi } from 'vitest';
 import { askProgramQuestion } from '../../dsh/allrice-program-questions.mjs';
+import { readStoredDshSession } from '../../dsh/allrice-session-compatibility.mjs';
 import { gate, hold, host, text } from './fixture.mjs';
 
 const tool = (name, args, id = randomUUID()) => [
@@ -30,12 +31,21 @@ const answer = (h, card, selected, overrides = {}) =>
     ...overrides,
   });
 
+async function reopen(h, runId) {
+  await h.server.closeRoot(h.root.id);
+  await h.server.handleRequest('run/end', { runId });
+  await h.server.handleRequest('session/recover', { sessionId: h.root.id });
+  await h.server.handleRequest('run/begin', { sessionId: h.root.id, runId });
+  expect(h.server.requireRoot(h.root.id).agent).not.toBe(h.root);
+}
+
 it.each(['ordinary-choice', 'runtime-progress'])(
   'legacy model question %s retains ordinary authority across a checkpoint',
   async (id) => {
     const decisions = [];
+    const runId = randomUUID();
     const h = await host({
-      runId: randomUUID(),
+      runId,
       progress: true,
       questionMode: 'legacy',
       releaseMs: 0,
@@ -46,7 +56,11 @@ it.each(['ordinary-choice', 'runtime-progress'])(
       },
       model: async (_r, n) =>
         n === 1
-          ? tool('ask_user_question', question(id))
+          ? tool(
+              'ask_user_question',
+              question(id),
+              `question-${randomUUID()}:runtime-progress:${runId}:${randomUUID()}`,
+            )
           : text('已按普通答案继续'),
     });
     await h.prompt('先问后继续。');
@@ -58,6 +72,7 @@ it.each(['ordinary-choice', 'runtime-progress'])(
     expect(
       NativeQuestionCheckpointSchema.parse(checkpoint).progress,
     ).toBeUndefined();
+    await reopen(h, runId);
     await h.server.handleRequest('session/continue-wait', {
       sessionId: h.root.id,
       questionId: q.questionId,
@@ -71,7 +86,15 @@ it.each(['ordinary-choice', 'runtime-progress'])(
   },
 );
 
-it.each(['same', 'replacement', 'wrong-run', 'wrong-turn', 'answer-only'])(
+it.each([
+  'same',
+  'replacement',
+  'wrong-run',
+  'wrong-turn',
+  'answer-only',
+  'same-cold',
+  'replacement-cold',
+])(
   'legacy program question checks its original pause before adoption: %s',
   async (variant) => {
     const runId = randomUUID(),
@@ -99,11 +122,16 @@ it.each(['same', 'replacement', 'wrong-run', 'wrong-turn', 'answer-only'])(
       'session/park-question',
       { sessionId: h.root.id, questionId: q.questionId },
     );
-    expect(NativeQuestionCheckpointSchema.parse(checkpoint).progress).toEqual({
-      runId,
-      pauseId: originalPause,
-    });
-    if (variant === 'replacement' || variant === 'answer-only')
+    expect(NativeQuestionCheckpointSchema.parse(checkpoint).questionId).toBe(
+      q.questionId,
+    );
+    expect(checkpoint).not.toHaveProperty('progress');
+    expect(checkpoint.questionId).toContain(
+      `:runtime-progress:${runId}:${originalPause}`,
+    );
+    await readStoredDshSession(h.ctx, h.root.id);
+    if (variant.endsWith('-cold')) await reopen(h, runId);
+    if (variant.startsWith('replacement') || variant === 'answer-only')
       pauseId = randomUUID();
     if (variant === 'wrong-run') {
       await h.server.handleRequest('run/end', { runId });
@@ -124,7 +152,7 @@ it.each(['same', 'replacement', 'wrong-run', 'wrong-turn', 'answer-only'])(
         text: `allrice:user-question:v1:${JSON.stringify({ questionId: q.questionId, answers: [{ id: 'runtime-progress', selected: ['重新检查后继续'] }] })}`,
       },
     );
-    if (variant === 'same') {
+    if (variant.startsWith('same')) {
       await request;
       await h.wait();
       expect(decisions).toMatchObject([
@@ -138,8 +166,9 @@ it.each(['same', 'replacement', 'wrong-run', 'wrong-turn', 'answer-only'])(
       );
       expect(decisions).toEqual([]);
       expect(
-        h.root.session
-          .snapshotEvents()
+        h.server
+          .requireRoot(h.root.id)
+          .agent.session.snapshotEvents()
           .filter((e) => e.type === 'allrice/input/answered'),
       ).toEqual([]);
     }
@@ -151,6 +180,46 @@ async function card(h) {
     .toBeTruthy();
   return h.server.pendingUserQuestions.get(h.root.id);
 }
+
+it('an unmarked old checkpoint survives cold read but cannot decide the current pause', async () => {
+  const runId = randomUUID(),
+    pauseId = randomUUID(),
+    decisions = [];
+  let paused = false;
+  const h = await host({
+    runId,
+    progress: true,
+    questionMode: 'legacy',
+    releaseMs: 0,
+    bridge: async (method, p) => {
+      if (method === 'allrice/run-authorize') return { allowed: true };
+      if (p.action === 'decide') decisions.push(p);
+      return { paused, pauseId, canceled: false, reason: 'repeated_failure' };
+    },
+    model: async () => tool('ask_user_question', question('runtime-progress')),
+  });
+  await h.prompt('旧版暂停题。');
+  const q = await card(h);
+  const { checkpoint } = await h.server.handleRequest('session/park-question', {
+    sessionId: h.root.id,
+    questionId: q.questionId,
+  });
+  paused = true;
+  await reopen(h, runId);
+  await h.server.handleRequest('session/continue-wait', {
+    sessionId: h.root.id,
+    questionId: q.questionId,
+    turnId: checkpoint.turnId,
+    inputId: randomUUID(),
+    text: `allrice:user-question:v1:${JSON.stringify({ questionId: q.questionId, answers: [{ id: 'runtime-progress', selected: ['继续'] }] })}`,
+  });
+  const current = await card(h);
+  expect(current.questionId).not.toBe(q.questionId);
+  expect(current.progress).toEqual({ runId, pauseId });
+  expect(decisions).toEqual([]);
+  expect(h.calls).toHaveLength(1);
+  await h.server.closeRoot(h.root.id);
+});
 
 async function pausedChild(releaseMs = 5000) {
   const childEntered = gate(),
@@ -313,30 +382,37 @@ it('an input that loses its actual Worker lease cannot resolve the program pause
   await h.waiting;
 });
 
-it('a model-authored runtime-progress ID cannot impersonate a Run program question', async () => {
-  const runId = randomUUID();
-  const h = await host({
-    runId,
-    questionMode: 'legacy',
-    bridge: async () => ({ allowed: true }),
-    model: async (_r, n) =>
-      n === 1
-        ? tool('ask_user_question', question('runtime-progress'))
-        : text('完成'),
-  });
-  await h.prompt('问我是否继续。');
-  const q = await card(h);
-  expect(q.programRunId).toBeUndefined();
-  expect(
-    h.notices.find((n) => n.method === 'session.user-question').params
-      .progressPauseId,
-  ).toBeUndefined();
-  await expect(
-    answer({ ...h, runId }, q, ['继续'], { turnId: `${h.root.id}:turn:99` }),
-  ).rejects.toThrow('INPUT_TURN_CHANGED');
-  await answer({ ...h, runId }, q, ['继续']);
-  await h.wait();
-});
+it.each(['legacy', 'timed'])(
+  'model item/call IDs cannot impersonate the Host program namespace in %s',
+  async (questionMode) => {
+    const runId = randomUUID();
+    const h = await host({
+      runId,
+      questionMode,
+      bridge: async () => ({ allowed: true }),
+      model: async (_r, n) =>
+        n === 1
+          ? tool(
+              'ask_user_question',
+              question('runtime-progress'),
+              `question-${randomUUID()}:runtime-progress:${runId}:${randomUUID()}`,
+            )
+          : text('完成'),
+    });
+    await h.prompt('问我是否继续。');
+    const q = await card(h);
+    expect(q.programRunId).toBeUndefined();
+    expect(
+      h.notices.find((n) => n.method === 'session.user-question').params
+        .progressPauseId,
+    ).toBeUndefined();
+    await expect(
+      answer({ ...h, runId }, q, ['继续'], { turnId: `${h.root.id}:turn:99` }),
+    ).rejects.toThrow('INPUT_TURN_CHANGED');
+    await answer({ ...h, runId }, q, ['继续']);
+    await h.wait();
+  },
+);
 
 it('JSON metadata cannot grant an ordinary public question the idle Run exception', async () => {
   const runId = randomUUID();

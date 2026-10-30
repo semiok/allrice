@@ -686,13 +686,15 @@ it('resumes a skipped parked runtime-progress card as a cancellation', async () 
     options: [{ label: '重新检查后继续' }, { label: '取消任务' }],
   };
   const decisions: unknown[] = [];
+  // The Host-generated outer ID carries provenance; the model's item ID does not.
+  const questionId = `question-${inputId}:runtime-progress:-:one`;
   const server = {
     requireRoot: () => record,
     ensureRoot: async () => record,
     assertRoot() {},
     isRootCurrent: () => true,
     pendingUserQuestions: new Map([
-      [sessionId, { questionId: 'q', questions: [progress] }],
+      [sessionId, { questionId, questions: [progress] }],
     ]),
     ctx: {
       agents: { list: () => [agent] },
@@ -705,14 +707,14 @@ it('resumes a skipped parked runtime-progress card as a cancellation', async () 
       return { paused: true, pauseId: 'one' };
     },
   };
-  await waits.checkpointNativeQuestion(server, sessionId, 'q');
+  await waits.checkpointNativeQuestion(server, sessionId, questionId);
   await expect(
     waits.continueNativeWait(server, {
       sessionId,
-      questionId: 'q',
+      questionId,
       turnId,
       inputId,
-      text: `allrice:user-question:v1:${JSON.stringify({ questionId: 'q', answers: [{ id: 'runtime-progress', selected: [] }] })}`,
+      text: `allrice:user-question:v1:${JSON.stringify({ questionId, answers: [{ id: 'runtime-progress', selected: [] }] })}`,
     }),
   ).rejects.toThrow('task_progress_canceled');
   expect(decisions).toEqual(['cancel']);

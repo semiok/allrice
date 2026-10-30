@@ -5,6 +5,18 @@ import { Config } from '@deepseek-ai/dsh-tool-ask-user';
 // cannot manufacture this key or turn an ordinary question into a Run pause.
 export const programQuestion = Symbol('allrice-program-question');
 
+// Only Host-created question IDs use this namespace; model item/call IDs never
+// become a legacy Host question ID. Keep the strict v1 checkpoint fields intact.
+export function programQuestionProgress(questionId) {
+  const match =
+    /^question-[a-f0-9-]{36}:runtime-progress:([a-f0-9-]{36}|-):(.+)$/.exec(
+      questionId,
+    );
+  return match
+    ? { runId: match[1] === '-' ? undefined : match[1], pauseId: match[2] }
+    : undefined;
+}
+
 // Worker freezes the owner's preference and supplies its own idle-close value.
 // Program questions have no durable DSH projection: forever uses the release
 // point as a timed wait; disabling release preserves the blocking ask.

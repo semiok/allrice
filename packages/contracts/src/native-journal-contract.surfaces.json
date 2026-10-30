@@ -36,7 +36,7 @@
       "occurrences": {
         "apps/worker/dsh/allrice-dsh-runtime-compatibility.mjs": 1,
         "packages/database/migrations/0078_typed_chat_inputs.sql": 2,
-        "packages/database/src/conversation/conversation-input.ts": 1,
+        "packages/database/src/conversation/conversation-input.ts": 3,
         "packages/database/src/execution/queue.ts": 1,
         "packages/database/src/task-native-wait.ts": 1,
         "packages/database/src/workspace/service.ts": 3,
@@ -100,12 +100,16 @@
         "/^app-connect:[a-f0-9-]{36}$/",
         "`Continue the existing task after this persisted user question. Prior completed operations remain completed. This answer is not action approval.\\nQuestion: ${JSON.stringify(wait.questions)}\\nAnswer: ${JSON.stringify(resolved ?? answer)}${wait.questions.some((q) => q.id.startsWith('app-connect:')) ? `\\nInstruction: ${applicationConnectionInstruction(resolved ?? answer)}` : ''}`",
         "'runtime-progress'",
-        "'runtime-progress'",
         "'取消任务'",
         "'重新检查后继续'"
       ],
       "apps/worker/dsh/allrice-jsonrpc-implementation.mjs": [
-        "`app-connect:${result.requestId}`"
+        "`app-connect:${result.requestId}`",
+        "/^runtime-progress:(.+):\\d+$/",
+        "`question-${randomUUID()}:runtime-progress:${programRunId ?? '-'}:${progressPauseId}`"
+      ],
+      "apps/worker/dsh/allrice-program-questions.mjs": [
+        "/^question-[a-f0-9-]{36}:runtime-progress:([a-f0-9-]{36}|-):(.+)$/"
       ],
       "apps/worker/dsh/allrice-task-progress.mjs": [
         "'runtime-progress'",

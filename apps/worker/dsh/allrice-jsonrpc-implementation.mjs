@@ -1016,7 +1016,9 @@ export async function createAllRiceRuntime(
             );
           const questionId = durable
             ? `${sessionId}:${callId}`
-            : `question-${randomUUID()}`;
+            : progressPauseId
+              ? `question-${randomUUID()}:runtime-progress:${programRunId ?? '-'}:${progressPauseId}`
+              : `question-${randomUUID()}`;
           let markDone;
           const done = new Promise((resolveDone) => {
             markDone = resolveDone;
