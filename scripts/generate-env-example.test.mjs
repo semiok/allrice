@@ -73,6 +73,7 @@ afterEach(() =>
     .forEach((root) => rmSync(root, { recursive: true, force: true })),
 );
 
+// Eight real Node/TypeScript CLI launches share this budget; each child keeps its 10s timeout.
 test('source additions/deletions cause real check drift; generation repairs both', () => {
   const root = fixture({ 'apps/web/config.ts': 'process.env.ALLRICE_FIRST;' });
   expect(cli(root).status).toBe(0);
@@ -81,20 +82,32 @@ test('source additions/deletions cause real check drift; generation repairs both
     join(root, 'apps/web/config.ts'),
     'process.env.ALLRICE_FIRST; process.env.ALLRICE_ADDED;',
   );
-  expect(cli(root, ['--check']).stderr).toContain('.env.example drift');
+  const additionCheck = cli(root, ['--check']);
+  expect(additionCheck.error).toBeUndefined();
+  expect(additionCheck.signal).toBeNull();
+  expect(additionCheck.status).toBe(1);
+  expect(additionCheck.stderr).toContain(
+    '.env.example drift: run pnpm env:generate',
+  );
   expect(cli(root).status).toBe(0);
   expect(cli(root, ['--check']).status).toBe(0);
   expect(readFileSync(join(root, '.env.example'), 'utf8')).toContain(
     '# ALLRICE_ADDED=',
   );
   writeFileSync(join(root, 'apps/web/config.ts'), 'process.env.ALLRICE_ADDED;');
-  expect(cli(root, ['--check']).status).not.toBe(0);
+  const deletionCheck = cli(root, ['--check']);
+  expect(deletionCheck.error).toBeUndefined();
+  expect(deletionCheck.signal).toBeNull();
+  expect(deletionCheck.status).toBe(1);
+  expect(deletionCheck.stderr).toContain(
+    '.env.example drift: run pnpm env:generate',
+  );
   expect(cli(root).status).toBe(0);
   expect(cli(root, ['--check']).status).toBe(0);
   expect(readFileSync(join(root, '.env.example'), 'utf8')).not.toContain(
     'ALLRICE_FIRST=',
   );
-});
+}, 30_000);
 
 test('never executes source or copies source defaults, ambient values or env files', () => {
   const root = fixture({
@@ -401,6 +414,7 @@ test('canonical default process bindings work; local process/globalThis shadows 
   expect(result.text).not.toContain('NOT_A_SETTING');
 });
 
+// Baseline generation plus eight refusals require nine real CLI launches.
 test('unsupported process import and re-export variations fail independently of source hashes', () => {
   const file = 'apps/web/config.ts';
   const root = fixture({ [file]: 'export const baseline = {};' });
@@ -423,7 +437,7 @@ test('unsupported process import and re-export variations fail independently of 
     expect(result.stderr).not.toContain('Stale source audit');
     expect(readFileSync(join(root, '.env.example'), 'utf8')).toBe(original);
   }
-});
+}, 30_000);
 
 test('real integerSetting aliases are refused even after explicit fixture source re-approval', () => {
   const file = 'apps/worker/src/index.ts';
