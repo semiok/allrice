@@ -549,6 +549,20 @@ suite(
           trace.push({ event, at: performance.now(), ...details });
         const nativeClients = new Set<DshProtocolClient>();
         const unsubscribe: (() => void)[] = [];
+        const actualClose = DshProtocolClient.prototype.close;
+        const delayedClose = modelAdmissionFirst
+          ? vi
+              .spyOn(DshProtocolClient.prototype, 'close')
+              .mockImplementation(async function (this: DshProtocolClient) {
+                await actualClose.call(this);
+                mark('repro_closed_result_held');
+                await closeOrderingBarrier(
+                  runnerAborted.promise,
+                  'repro_next_real_heartbeat',
+                );
+                mark('repro_closed_result_released');
+              })
+          : undefined;
         const legacyHistory = await readRetiredExecutionHistory(f.db);
         const s = await setup();
         let review!: Awaited<ReturnType<typeof s.create>>;
@@ -972,6 +986,7 @@ suite(
               );
             }
             for (const stop of unsubscribe) stop();
+            delayedClose?.mockRestore();
             handlerObserver?.mockRestore();
             heartbeatObserver?.mockRestore();
             await model.close();
