@@ -1221,7 +1221,15 @@ suite(
             s.lease.leaseToken,
             300000,
           ),
-        ).toMatchObject({ active: false, canceled: false, draining: true });
+        ).toMatchObject({ active: false, canceled: false });
+        const [frozen] =
+          await f.db`select status,worker_id,lease_token,drain_deadline_at from allrice_jobs where id=${s.lease.jobId}`;
+        expect(frozen).toMatchObject({
+          status: 'running',
+          worker_id: s.lease.workerId,
+          lease_token: s.lease.leaseToken,
+          drain_deadline_at: expect.any(Date),
+        });
         // Shorten only this isolated persisted window; do not change the real
         // heartbeat or the production 30s drain. Neither cutoff moves later.
         await f.db`update allrice_jobs j set drain_deadline_at=cutoff.deadline,lease_expires_at=cutoff.deadline
