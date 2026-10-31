@@ -70,7 +70,7 @@ type Body = {
     mode: 'continuable';
   };
 };
-type PostFact = { at: number; body: Body };
+type PostFact = { at: number; body: Body; responseStatus?: number };
 type Scenario = {
   feedId: string;
   mode: Mode;
@@ -174,7 +174,9 @@ suite('native child Stop request identity and truthful receipts', () => {
           ? (scenario.reply?.(body!) ?? scenario.mode)
           : scenario.getMode;
         if (mode === 'drop') {
-          res.destroy();
+          // Lose the ACK body after headers, without a no-response HTTP replay.
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.write('{"ticket":', () => res.destroy());
           return;
         }
         const code =
@@ -317,15 +319,25 @@ suite('native child Stop request identity and truthful receipts', () => {
         send = window.fetch.bind(window);
       target.nativeControlFetches = [];
       window.fetch = (input, init) => {
+        let fact: PostFact | undefined;
         if (
           init?.method === 'POST' &&
           String(input).includes('/subagents/controls?')
-        )
-          target.nativeControlFetches.push({
+        ) {
+          fact = {
             at: Date.now(),
             body: JSON.parse(String(init.body)),
-          });
-        return send(input, init);
+          };
+          target.nativeControlFetches.push(fact);
+        }
+        const pending = send(input, init),
+          observed = fact;
+        if (observed)
+          void pending.then(
+            (response) => (observed.responseStatus = response.status),
+            () => {},
+          );
+        return pending;
       };
     });
     const browserPosts = () =>
@@ -815,7 +827,8 @@ suite('native child Stop request identity and truthful receipts', () => {
           .poll(() => detail(page).textContent())
           .toContain('停止请求已接收');
         expect(scenario.gets).toEqual([id]);
-        if (mode === 'drop')
+        if (mode === 'drop') {
+          expect((await browserPosts())[0]?.responseStatus).toBe(200);
           console.info(
             'CONTROL_DROP_NETWORK',
             JSON.stringify({
@@ -823,6 +836,7 @@ suite('native child Stop request identity and truthful receipts', () => {
               server: scenario.postFacts,
             }),
           );
+        }
         expect(await browserPosts()).toHaveLength(1);
         expect(scenario.posts).toHaveLength(1);
       } finally {
