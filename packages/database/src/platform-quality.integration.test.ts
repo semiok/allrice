@@ -55,6 +55,7 @@ import {
   startClaimedJob,
   completeJob,
   heartbeatJob,
+  finishJobDrain,
   enqueueRun,
 } from './execution/queue.ts';
 import { prepareEmployeeRunBinding } from './employees/employeehub.ts';
@@ -616,6 +617,7 @@ suite(
           )
         ).active,
       ).toBe(false);
+      await finishJobDrain(lease);
       expect((await getPlatformQualityCheck(admin, q.id)).status).toBe(
         'failed',
       );
@@ -667,6 +669,7 @@ suite(
       await expect(getPlatformQualityExecution(lease)).rejects.toThrow(
         'authorization_denied',
       );
+      await finishJobDrain(lease);
       vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', adminEmail);
       expect((await getPlatformQualityCheck(admin, q.id)).status).toBe(
         'failed',

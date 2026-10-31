@@ -27,6 +27,8 @@ import * as harnessRouter from '../../src/harness/router.js';
 import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.js';
 import { DshProtocolClient } from '../../src/harness/dsh-protocol-client.js';
 import * as queue from '../../../../packages/database/src/execution/queue.ts';
+import { createTaskProgressRuntime } from '../../../../packages/database/src/task-progress.ts';
+import { refreshTaskClock } from '../../../../packages/database/src/task-clock.ts';
 import { executeEmployeeRun } from '../../src/jobs/employee-run.js';
 import { runClaimedJob } from '../../src/job-runner.js';
 import { p24Fixture } from '../p24/fixture.js';
@@ -899,16 +901,60 @@ suite(
                     (row.action === 'start' && row.kind === 'model')),
               ),
             ).toBe(modelAdmissionFirst);
+            expect(diagnostic!.last_error_code).toBe(
+              heartbeatFirst
+                ? 'PLATFORM_TECHNICAL_AUTH_REVOKED'
+                : 'EMPLOYEE_CONTENT_UNAVAILABLE',
+            );
+            if (heartbeatFirst) {
+              const stopped = trace.find(
+                (row) => row.event === 'job_at_abort',
+              )!;
+              expect(stopped.job).toMatchObject({
+                status: 'running',
+                worker_id: workerId,
+                lease_token: job!.lease!.token,
+                drain_deadline_at: expect.any(Date),
+              });
+            }
+            expect(
+              trace.some(
+                (row) =>
+                  row.event === 'progress_ok' &&
+                  row.action === 'finish' &&
+                  row.kind === 'tool' &&
+                  row.callId === 'call-1',
+              ),
+            ).toBe(true);
+            const [call] =
+              await f.db`select finished_at,outcome from allrice_task_calls where run_id=${review.runId} and kind='tool' and call_id='call-1'`;
+            expect(call).toEqual({
+              finished_at: expect.any(Date),
+              outcome: 'error',
+            });
           }
         } finally {
           try {
-            await adapter.close();
-          } catch (error) {
+            await adapter.close().catch((error) => {
+              if (closeOrdering)
+                mark('adapter_close_failed', {
+                  error: closeOrderingError(error),
+                });
+              throw error;
+            });
             if (closeOrdering)
-              mark('adapter_close_failed', {
-                error: closeOrderingError(error),
-              });
-            throw error;
+              for (const native of nativeClients)
+                expect(native.closureEvidence()).toMatchObject({
+                  shutdownAcknowledged: true,
+                  wrapperCleanupConfirmed: true,
+                  terminationAttempted: null,
+                  process: {
+                    state: 'exited',
+                    stdioClosed: true,
+                    exitCode: 0,
+                    signal: null,
+                  },
+                });
           } finally {
             if (closeOrdering && review) {
               for (const native of nativeClients)
@@ -1027,6 +1073,171 @@ suite(
         });
       return { ...s, review, lease, execution, development, allowed };
     }
+
+    it.each(['worker-returned', 'complete', 'fail', 'maintenance'] as const)(
+      'revoked receipt drain preserves exact receipts and failure through %s',
+      async (ending) => {
+        const s = await start(await setup());
+        const progressInput = { context: s.execution.context, worker: s.lease };
+        const progress = createTaskProgressRuntime(progressInput, f.db);
+        const call = {
+          nativeSessionId: randomUUID(),
+          callId: randomUUID(),
+          kind: 'tool',
+          name: 'platform_repository_review',
+          argumentsDigest: 'sha256:' + 'a'.repeat(64),
+        };
+        const receipt = {
+          action: 'finish',
+          nativeSessionId: call.nativeSessionId,
+          callId: call.callId,
+          kind: call.kind,
+          outcome: 'error',
+          resultDigest: 'sha256:' + 'b'.repeat(64),
+        };
+        await progress({ action: 'start', ...call });
+        await f.db`update allrice_employee_assignments set active=false where id=(select employee_assignment_id from allrice_employee_runs where run_id=${s.review.runId})`;
+        const beat = () =>
+          heartbeatJob(
+            s.lease.workerId,
+            s.lease.jobId,
+            s.lease.leaseToken,
+            300000,
+          );
+        expect(await beat()).toMatchObject({ active: false, canceled: false });
+        const [first] =
+          await f.db`select * from allrice_jobs where id=${s.lease.jobId}`;
+        expect(first).toMatchObject({
+          status: 'running',
+          worker_id: s.lease.workerId,
+          lease_token: s.lease.leaseToken,
+          drain_reason: 'cancel',
+          cancel_reason: 'platform_technical_auth_revoked',
+          drain_deadline_at: expect.any(Date),
+        });
+        for (const kind of ['model', 'tool'])
+          await expect(
+            progress({ action: 'start', ...call, kind, callId: randomUUID() }),
+          ).rejects.toThrow('task_progress_lease_lost');
+        await expect(
+          progress({ ...receipt, callId: randomUUID() }),
+        ).rejects.toThrow('task_progress_call_missing');
+        for (const worker of [
+          { ...s.lease, workerId: randomUUID() },
+          { ...s.lease, leaseToken: randomUUID() },
+        ])
+          await expect(
+            createTaskProgressRuntime(
+              { ...progressInput, worker },
+              f.db,
+            )(receipt),
+          ).rejects.toThrow('task_progress_lease_lost');
+        // A later user cancel and elapsed task clock must not rewrite the
+        // first persisted technical stop, move its deadline, or grant retry.
+        await cancelPlatformRepositoryReview(s.admin, s.review.id);
+        await f.db`update allrice_task_clocks set phase='active',active_ms=(policy->>'timeoutMs')::double precision+1,changed_at=clock_timestamp() where run_id=${s.review.runId}`;
+        await f.db.begin((tx) => refreshTaskClock(tx, s.review.runId));
+        expect(await beat()).toMatchObject({
+          active: false,
+          canceled: false,
+          draining: true,
+        });
+        const [again] =
+          await f.db`select * from allrice_jobs where id=${s.lease.jobId}`;
+        expect(again!.cancel_reason).toBe(first!.cancel_reason);
+        expect(again!.drain_deadline_at).toEqual(first!.drain_deadline_at);
+        expect(again!.lease_expires_at.getTime()).toBeLessThanOrEqual(
+          first!.drain_deadline_at.getTime(),
+        );
+        if (ending === 'maintenance') {
+          await f.db`update allrice_jobs set drain_deadline_at=clock_timestamp()-interval '1 second',lease_expires_at=clock_timestamp()-interval '1 second' where id=${s.lease.jobId}`;
+          await expect(progress(receipt)).rejects.toThrow(
+            'task_progress_lease_lost',
+          );
+          await expect(beat()).rejects.toThrow('lease_lost');
+          await queue.maintainQueue();
+        } else {
+          await progress(receipt);
+          if (ending === 'worker-returned') await queue.finishJobDrain(s.lease);
+          else if (ending === 'complete')
+            await completeJob({ ...s.lease, result: { answer: 'late' } });
+          else
+            await failJob({
+              ...s.lease,
+              code: 'LATE_HANDLER_FAILURE',
+              message: 'synthetic',
+              retryable: true,
+            });
+        }
+        const [final] =
+          await f.db`select status,last_error_code,worker_id,lease_token from allrice_jobs where id=${s.lease.jobId}`;
+        expect(final).toEqual({
+          status: 'failed',
+          last_error_code: 'PLATFORM_TECHNICAL_AUTH_REVOKED',
+          worker_id: null,
+          lease_token: null,
+        });
+        const [stored] =
+          await f.db`select finished_at from allrice_task_calls where run_id=${s.review.runId} and call_id=${call.callId}`;
+        expect(stored!.finished_at).toEqual(
+          ending === 'maintenance' ? null : expect.any(Date),
+        );
+        const events =
+          await f.db`select event_type,payload from allrice_run_events where run_id=${s.review.runId} and event_type in ('run.failed','run.canceled','run.succeeded')`;
+        expect(events).toEqual([
+          {
+            event_type: 'run.failed',
+            payload: {
+              code: 'PLATFORM_TECHNICAL_AUTH_REVOKED',
+              drainDisposition:
+                ending === 'maintenance'
+                  ? 'receipt_window_closed'
+                  : 'worker_returned',
+            },
+          },
+        ]);
+      },
+    );
+
+    it.each(['cancel', 'timeout'] as const)(
+      'revoked receipt drain preserves an earlier %s stop',
+      async (firstStop) => {
+        const s = await start(await setup());
+        if (firstStop === 'cancel')
+          await cancelPlatformRepositoryReview(s.admin, s.review.id);
+        else {
+          await f.db`update allrice_task_clocks set phase='active',active_ms=(policy->>'timeoutMs')::double precision+1,changed_at=clock_timestamp() where run_id=${s.review.runId}`;
+          await f.db.begin((tx) => refreshTaskClock(tx, s.review.runId));
+        }
+        const beat = () =>
+          heartbeatJob(
+            s.lease.workerId,
+            s.lease.jobId,
+            s.lease.leaseToken,
+            300000,
+          );
+        expect(await beat()).toMatchObject({
+          active: false,
+          canceled: firstStop === 'cancel',
+          draining: true,
+        });
+        const [first] =
+          await f.db`select cancel_reason,drain_reason,drain_deadline_at from allrice_jobs where id=${s.lease.jobId}`;
+        await f.db`update allrice_employee_assignments set active=false where id=(select employee_assignment_id from allrice_employee_runs where run_id=${s.review.runId})`;
+        await beat();
+        const [later] =
+          await f.db`select cancel_reason,drain_reason,drain_deadline_at from allrice_jobs where id=${s.lease.jobId}`;
+        expect(later).toEqual(first);
+        await queue.finishJobDrain(s.lease);
+        const [final] =
+          await f.db`select status,last_error_code from allrice_jobs where id=${s.lease.jobId}`;
+        expect(final).toEqual(
+          firstStop === 'cancel'
+            ? { status: 'canceled', last_error_code: null }
+            : { status: 'failed', last_error_code: 'JOB_TIMEOUT' },
+        );
+      },
+    );
     async function opinion(
       s: Awaited<ReturnType<typeof start>>,
       verdict: 'accept' | 'revise' = 'accept',

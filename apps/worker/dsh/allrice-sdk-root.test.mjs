@@ -341,6 +341,43 @@ it('a close paused in receipt flush rejects compact before it can start maintena
   expect(h.ctx.agents.roots()).toHaveLength(0);
 });
 
+it('a failed receipt flush still tears down native ownership and never confirms a later close', async () => {
+  const h = await host(),
+    id = 'failed-receipt-close';
+  await h.server.ensureRoot(id);
+  const receiptFailure = Error('synthetic_receipt_write_failed');
+  const flush = vi.fn(async () => {
+    throw receiptFailure;
+  });
+  h.server.taskProgress = { flush };
+  const accounting = vi.fn(async () => {});
+  h.server.nativeAccounting = { flush: accounting };
+  const sdkShutdown = vi.spyOn(h.server.sdk, 'shutdown');
+  const sessionFlush = vi.spyOn(h.ctx.sessions, 'flush');
+  const failure = await h.server.closeRoot(id).catch((error) => error);
+  expect(failure).toBeInstanceOf(AggregateError);
+  expect(failure.errors).toContain(receiptFailure);
+  expect(sessionFlush).toHaveBeenCalled();
+  expect(accounting).toHaveBeenCalledOnce();
+  expect(h.ctx.agents.roots()).toHaveLength(0);
+  expect(h.server.phase).toBe('failed');
+  // Teardown removed the native record; that cannot erase the failed ledger
+  // receipt when the adapter follows an interrupt with public shutdown.
+  await expect(h.server.closeRoot(id)).rejects.toBe(failure);
+  const disposed = vi.fn();
+  const disposeFailure = Error('synthetic_listener_dispose_failed');
+  h.server.ownDisposers.push(disposed, () => {
+    throw disposeFailure;
+  });
+  await expect(h.server.shutdown()).rejects.toMatchObject({
+    errors: [failure, disposeFailure],
+  });
+  expect(disposed).toHaveBeenCalledOnce();
+  expect(flush).toHaveBeenCalledOnce();
+  expect(sdkShutdown).toHaveBeenCalledOnce();
+  expect(h.server.phase).toBe('failed');
+});
+
 it('an external close fences recovery while its preceding root drain is still pending', async () => {
   const h = await host(),
     id = 'recover-during-drain';

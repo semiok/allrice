@@ -15,6 +15,7 @@ import {
   startClaimedJob,
   completeJob,
   heartbeatJob,
+  finishJobDrain,
   maintainQueue,
 } from './execution/queue.ts';
 import { updatePlatformRepositoryCredential } from './platform-repository-credentials.ts';
@@ -250,6 +251,7 @@ suite('private publication canonical queue and authority boundaries', () => {
       code: 'authorization_denied',
     });
     await heartbeatJob(lease.workerId, lease.jobId, lease.leaseToken, 30000);
+    await finishJobDrain(lease);
     expect(
       (await getPlatformRepositoryPublication(admin, p.id)).actions[0]!.status,
     ).toBe('failed');
@@ -346,6 +348,7 @@ suite('private publication canonical queue and authority boundaries', () => {
     await revoke;
     await expect(repositoryRequestGate(lease)).rejects.toBeDefined();
     await heartbeatJob(lease.workerId, lease.jobId, lease.leaseToken, 30000);
+    await finishJobDrain(lease);
     expect(
       (await getPlatformRepositoryPublication(admin, p.id)).actions[0]!.status,
     ).toBe('failed');
