@@ -411,7 +411,7 @@ export function NativeSubagentControls({
       {reason && <p role="status">{reason}</p>}
       {child?.mode === 'continuable' && (
         <>
-          {sendReason && sendReason !== reason && (
+          {!reason && sendReason && (
             <p role="status">{sendReason}</p>
           )}
           <ChatComposerInput

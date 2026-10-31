@@ -6,7 +6,7 @@
 
 - 固定依赖 `@deepseek-ai/* 0.2.1-rc.2`；输入行为对照官方源 `687f282e8625c6b8d11ff58211a90524be2e4317` 的 `dsh-client-ui-conversation` InputBar / continuable child composer。公开 UI 包不单独导出 InputBar；本片不搬 SessionController、Lexical、inputHub 或私有生命周期。
 - 直接共用 `chat-composer.tsx` 的 `ChatComposerInput`（根会话也使用）、`use-attachments.ts` 的同一草稿/上传/URL 清理状态、`PendingAttachmentRail` / `AttachmentPreviewDialog`；回执复用 `MessageImageGallery`、`createMessageImageCache` 和现有授权文件读取。没有第二附件后端或另一套 Send 草稿 Hook。
-- 子输入对照 DSH：PNG/JPEG/WebP/GIF；整批粘贴/拖放，混合不支持的文件整批拒绝；图片加 text/plain 同时粘贴时保留选区文字插入；纯图片可发；IME、重复 Enter、Shift 换行不发送；running 时按钮固定 Queue（含修饰键点击），Ctrl 或 ⌘ + Enter 才为 Steer，idle 时 Queue。没有新增选图按钮。rc.2 `dsh-client-ui-conversation/lib/client.js:18951–18961` 的 onPrimary 固定 plain，`:18248–18268` 的图片 intake 后仍执行 pasteText，是这两条对照依据。
+- 子输入对照 DSH：PNG/JPEG/WebP/GIF；整批粘贴/拖放，混合不支持的文件整批拒绝；图片加 text/plain 同时粘贴时保留选区文字插入；纯图片可发；IME、重复 Enter、Shift 换行不发送；running 时按钮固定 Queue（含修饰键点击），Ctrl 或 ⌘ + Enter 才为 Steer，idle 时 Queue。没有新增选图按钮。rc.2 `dsh-client-ui-conversation/lib/client.js:18951–18961` 的 onPrimary 取普通 Enter 模式、不读取点击修饰键；本片该模式为 Queue。`:18248–18268` 的图片 intake 后仍执行 pasteText，是混合粘贴的对照依据。
 - Host 始终调用公开 `subagents.prompt`，图片由原生 attachment admission 验证及持久化。没有复制 DSH 源码段，只有公开行为在既有输入表面的窄适配；维护责任在 AllRice，升级上述 pin 必须重跑图片、Queue/Steer 和输入测试。没有调整 maxDepth；它仍只管原生新建。
 - `parentAvailable` 来自当前正确 Host 中真实 direct-parent Session / Agent 的一致性观察，idle 也可用；prepared / 缺观察 / 替换期间为 unknown。public `agent/created`、`agent/disposed`、`session/disposed` 只让现有 follow 重新读取，事件本身不赋予可用性，也不写 PG。
 
@@ -17,7 +17,7 @@
 | 门卫     | 原控制 owner / membership / 活动 Root / generation / Job / pin 校验不变；图片必须当前 Session 关联、同租户、ready 且经 `getStoredFile` 当前 ACL；Worker 字节读取前后重验原命令与图片快照，Host 继续以现有租约校验和原生直属父授权收口。                                                                 |
 | 单向账本 | C1 原命令只扩 text/image objectId intent 与服务端冻结快照；原请求 CAS 保持，Worker 原文记票、单次 claim / dispatch；wire bytes 单独类型，不能覆盖原请求。recorded、accepted、unknown、rejected 仍是真实回执，无自动重投。                                                                               |
 | 存储     | 复用 `/sessions/:id/attachments`、配额扣算、Session 关联、`PromptImageAttachment`、`loadHarnessImages` 的字节数/摘要验证；浏览器不能提交 key/checksum/grant/base64 到控制入口。回执读取暴露文字和图片元数据，像素走现有文件签名/读取授权。sessionStorage 只记查询定位，正文、图片、URL、busy 不持久化。 |
-| 租约     | 沿现有运行输入窗口、grant 期限和公开 AbortSignal；不加父 wake、运行锁、持久 busy、轮询器、子执行 PG 状态或新增子 Job。上传后的 UI 再核当时 Root / child / owner / parent observation；传输不阻塞另一子级或 Stop。                                                                                       |
+| 租约     | 沿现有运行输入窗口、grant 期限和公开 AbortSignal；不加父 wake、运行锁、持久 busy、轮询器、子执行 PG 状态或新增子 Job。上传后的 UI 再核当时 Root / child / owner / parent observation；Send 与 Stop 请求锁分离，HTTP/1 连接占满时的控制传输仍待闭合。                                                    |
 
 ## 显示与验收边界
 
