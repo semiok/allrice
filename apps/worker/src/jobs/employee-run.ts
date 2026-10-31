@@ -73,6 +73,7 @@ import {
 
 import { AgentLoopGuard, AgentLoopGuardError } from '../agent-loop-guard.js';
 import { finalizeEmployeeConversationContext } from '../conversation/checkpoint-maintenance.js';
+import { pollNativeSubagentControl } from '../conversation/native-subagent-control.js';
 import {
   beginEmployeeConversationTurn,
   bindEmployeeConversationThread,
@@ -1267,6 +1268,8 @@ export async function executeEmployeeRun({
     }
     let steerPolling = true;
     let steerLoop: Promise<void> | undefined;
+    const controlFailure = new AbortController();
+    const nativeSignal = AbortSignal.any([signal, controlFailure.signal]);
     let questionWait: HarnessExecutionInput['questionWait'];
     if (
       taskProgress &&
@@ -1886,7 +1889,7 @@ export async function executeEmployeeRun({
                   : {}),
               },
               providerSnapshot,
-              signal,
+              signal: nativeSignal,
               attempt: execution.job.attempt,
               generation: runtime.generation,
               maxOutputTokens: runLimits?.maxOutputTokens,
@@ -1987,15 +1990,41 @@ export async function executeEmployeeRun({
                   appendEvent: appendChatFlowEvent,
                 });
                 if (steerLoop || (independentDelivery && !steerPolling)) return;
+                const generation = runtime.generation;
                 steerLoop = pollEmployeeConversationSteers({
                   ownership,
                   generation: runtime.generation,
                   threadId,
                   turnId,
-                  signal,
+                  signal: nativeSignal,
                   adapter,
                   polling: () => steerPolling,
+                  pollNativeControl:
+                    !repairTask && !repositoryReviewTask
+                      ? () =>
+                          pollNativeSubagentControl({
+                            authority: {
+                              scope: {
+                                organizationId: ownership.organizationId,
+                                workspaceId: ownership.workspaceId,
+                                projectId: resolved.projectId,
+                              },
+                              rootRunId: ownership.runId,
+                              worker: {
+                                ...workflowLease,
+                                attempt: execution.job.attempt,
+                                generation,
+                              },
+                            },
+                            ownerId: execution.job.ownerId,
+                            sessionId: ownership.sessionId,
+                            adapter,
+                            open: () => steerPolling && !nativeSignal.aborted,
+                            revoke: (error) => controlFailure.abort(error),
+                          })
+                      : undefined,
                 });
+                void steerLoop.catch(() => {}); // The existing finally reports it.
               },
             })
             .finally(async () => {

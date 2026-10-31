@@ -83,6 +83,7 @@ export async function pollEmployeeConversationSteers(input: {
   signal: AbortSignal;
   adapter: HarnessAdapter;
   polling: () => boolean;
+  pollNativeControl?: () => Promise<boolean>;
   drain?: boolean;
 }) {
   const deadline = Date.now() + 3_000;
@@ -90,6 +91,7 @@ export async function pollEmployeeConversationSteers(input: {
     (input.drain ? Date.now() < deadline : input.polling()) &&
     !input.signal.aborted
   ) {
+    const nativeClaimed = !input.drain && (await input.pollNativeControl?.());
     const command = await claimConversationSteer({
       organizationId: input.ownership.organizationId,
       workspaceId: input.ownership.workspaceId,
@@ -102,7 +104,8 @@ export async function pollEmployeeConversationSteers(input: {
     });
     if (!command) {
       if (input.drain) return;
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      if (!nativeClaimed)
+        await new Promise((resolve) => setTimeout(resolve, 150));
       continue;
     }
     if (!input.adapter.capabilities.steer || !input.adapter.steer) {

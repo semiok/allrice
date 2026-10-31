@@ -3,6 +3,7 @@ import {
   NativeSubagentSummarySchema,
   NativeSubagentControlRequestSchema,
   NativeSubagentControlAcceptanceSchema,
+  NativeSubagentControlResultSchema,
   type NativeSubagentControlRequest,
   QuestionForegroundSnapshotSchema,
   type BootstrapCoverageQuery,
@@ -21,6 +22,8 @@ import type {
 import type { HarnessImageInput } from './adapter.js';
 
 import { HandlerError } from '../errors.js';
+
+export class NativeSubagentControlRefusal extends HandlerError {}
 
 export interface DshNotification {
   method: string;
@@ -359,9 +362,15 @@ export class DshProtocolClient {
     const request = NativeSubagentControlRequestSchema.parse(value);
     if (request.scope.rootRunId !== this.runId)
       throw Error('NATIVE_CONTROL_RUN_MISMATCH');
-    return NativeSubagentControlAcceptanceSchema.parse(
-      await this.request('subagents/control', request),
-    );
+    const result = await this.request('subagents/control', request);
+    const refusal = NativeSubagentControlResultSchema.safeParse(result);
+    if (refusal.success && refusal.data.status === 'rejected')
+      throw new NativeSubagentControlRefusal(
+        refusal.data.code,
+        'Native child input was rejected before acceptance',
+        false,
+      );
+    return NativeSubagentControlAcceptanceSchema.parse(result);
   }
 
   /** DSH owns the tree wait, including follow-up turns and parked children.

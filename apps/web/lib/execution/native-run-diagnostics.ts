@@ -26,6 +26,7 @@ async function requestNativeRead<T>(
         liveOnly?: boolean;
         follow?: true;
         childId?: string;
+        controlRequestId?: string;
       },
   read: (response: Response) => Promise<T>,
 ) {
@@ -81,6 +82,19 @@ async function requestNativeRead<T>(
     if (error instanceof NativeDiagnosticsUnavailable) throw error;
     throw new NativeDiagnosticsUnavailable();
   }
+}
+
+/** Ask the existing authenticated reader to recover only the stored receipt. */
+export function recoverNativeSubagentControlReceipt(
+  input: NativeReadInput & { sessionId: string; requestId: string },
+) {
+  return requestNativeRead(
+    input,
+    { sessionId: input.sessionId, controlRequestId: input.requestId },
+    async (response) => {
+      await response.json();
+    },
+  );
 }
 
 export function requestNativeRunDiagnostics(

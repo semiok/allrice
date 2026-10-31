@@ -4,6 +4,7 @@ import {
   NativeRunDiagnosticsRequestSchema,
   NativeSubagentQueryRequestSchema,
   NativeSubagentFollowEventSchema,
+  UuidSchema,
 } from '@allrice/contracts';
 import {
   authenticateSession,
@@ -17,6 +18,7 @@ import {
   readAuthorizedNativeSubagentSummary,
 } from './harness/native-subagent-query.js';
 import { getHarnessRouter } from './harness/router.js';
+import { readNativeSubagentControlTicket } from './harness/native-subagent-control-receipt.js';
 
 type Dependencies = {
   authenticate: typeof authenticateSession;
@@ -105,7 +107,9 @@ export function createNativeRunDiagnosticsHttpHandler(
       }
       const parsed = (
         summaryRequest
-          ? NativeSubagentQueryRequestSchema
+          ? NativeSubagentQueryRequestSchema.extend({
+              controlRequestId: UuidSchema.optional(),
+            })
           : NativeRunDiagnosticsRequestSchema
       ).safeParse(JSON.parse(Buffer.concat(chunks).toString('utf8')));
       if (!parsed.success) {
@@ -123,6 +127,24 @@ export function createNativeRunDiagnosticsHttpHandler(
         return true;
       }
       if ('sessionId' in input) {
+        if (input.controlRequestId) {
+          const ticket = await readNativeSubagentControlTicket(
+            context,
+            input.workspaceId,
+            input.sessionId,
+            input.controlRequestId,
+            signal,
+          );
+          const current = await deps.authenticate(token, tenant);
+          if (!current || current.actor.id !== context.actor.id)
+            throw Object.assign(Error('authentication_required'), {
+              code: 'authentication_required',
+            });
+          await subagents.target(current, input.workspaceId, input.sessionId);
+          signal.throwIfAborted();
+          send(ticket ? 200 : 404, { ticket });
+          return true;
+        }
         const target = await subagents.target(
           context,
           input.workspaceId,
