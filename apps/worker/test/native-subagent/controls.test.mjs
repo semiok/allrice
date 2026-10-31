@@ -85,7 +85,10 @@ it('“给子任务补充图片”：native Queue/Steer admit image-only and mix
   );
   const bad = input(h, child, '整批拒绝');
   bad.input.content.push(picture, { ...picture, mediaType: 'image/jpeg' });
-  await expect(control(h, bad)).rejects.toThrow('IMAGE_TYPE_MISMATCH');
+  await expect(control(h, bad)).resolves.toEqual({
+    status: 'rejected',
+    code: 'subagent/attachment-invalid',
+  });
   expect(agent.inbox.nextTurn).toHaveLength(1);
   const only = input(h, child, '', 'steer');
   only.input.content = [picture];

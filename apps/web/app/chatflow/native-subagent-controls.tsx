@@ -382,6 +382,7 @@ export function NativeSubagentControls({
     }
   };
   const intake = (files: FileList | File[]) => {
+    if (sending || !root || !permitted || parentAvailable !== true) return;
     const batch = [...files];
     if (
       batch.some(

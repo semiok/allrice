@@ -730,7 +730,9 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
         });
       expect(await poll()).toBe(true);
       await expect
-        .poll(async () => (await read(f, input.requestId))?.result.status)
+        .poll(
+          async () => (await read(f, input.requestId))?.ticket.result.status,
+        )
         .toBe('accepted');
       expect(native).toHaveBeenCalledTimes(1);
       expect(native.mock.calls[0]?.[0]).toMatchObject({
@@ -749,7 +751,7 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
       expect(await poll()).toBe(false);
       expect((await enqueue(f, input)).result.status).toBe('accepted');
       const [row] =
-        await fixture.db`select native_input,attempts from allrice_conversation_commands where id=${input.requestId}`;
+        await fixture.db`select native_input,delivery_attempts as attempts from allrice_conversation_commands where id=${input.requestId}`;
       expect(row?.attempts).toBe(1);
       await authorizeNativeSubagentControlImages(
         f.context,
@@ -764,7 +766,9 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
           row!.native_input,
         ),
       ).rejects.toThrow('CHILD_CONTROL_UNAVAILABLE');
-      expect((await read(f, input.requestId))?.message).toEqual(ticket.message);
+      expect((await read(f, input.requestId))?.ticket.message).toEqual(
+        ticket.message,
+      );
       const foreign = await chat();
       await expect(
         enqueue(foreign, {
@@ -805,13 +809,13 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
         revoke: () => {},
       });
       await expect
-        .poll(async () => (await read(f, input.requestId))?.result)
+        .poll(async () => (await read(f, input.requestId))?.ticket.result)
         .toEqual({
           status: 'rejected',
           code: 'NATIVE_CONTROL_IMAGE_UNAVAILABLE',
         });
       expect(native).not.toHaveBeenCalled();
-      expect((await read(f, input.requestId))?.message?.content).toEqual(
+      expect((await read(f, input.requestId))?.ticket.message?.content).toEqual(
         input.content,
       );
     } finally {

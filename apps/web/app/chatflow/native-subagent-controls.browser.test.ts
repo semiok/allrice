@@ -547,6 +547,7 @@ suite('native child Stop request identity and truthful receipts', () => {
         );
         await new Promise((resolve) => setTimeout(resolve, 20));
       });
+      await input.fill('请核对这张图片');
       await input.press('Enter');
       await expect.poll(() => scenario.posts.length).toBe(1);
       expect(scenario.posts[0]?.input).toMatchObject({
@@ -955,7 +956,7 @@ suite('native child Stop request identity and truthful receipts', () => {
     }
   });
 
-  it('native idle/one-shot details have no Stop or message composer', async () => {
+  it('native idle continuable allows Send; one-shot has no Stop or composer', async () => {
     const { page, scenario } = await open();
     try {
       for (const label of ['闲置', '一次性']) {
@@ -964,7 +965,9 @@ suite('native child Stop request identity and truthful receipts', () => {
         expect(
           await detail(page).getByRole('button', { name: /Stop/ }).count(),
         ).toBe(0);
-        expect(await detail(page).getByRole('textbox').count()).toBe(0);
+        expect(await detail(page).getByRole('textbox').count()).toBe(
+          label === '闲置' ? 1 : 0,
+        );
       }
       expect(scenario.posts).toEqual([]);
     } finally {
