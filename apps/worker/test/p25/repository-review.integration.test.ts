@@ -11,6 +11,7 @@ import { getPlatformRepositoryCredential } from '../../../../packages/database/s
 /** Real isolated PostgreSQL/Job/storage. Remote CI is synthetic; Worker cases
  * use the real DSH Host with a synthetic HTTP model and credential. */
 import { randomUUID } from 'node:crypto';
+import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import {
@@ -24,6 +25,10 @@ import { RepositoryCompletedReviewSchema } from '../../../../packages/database/s
 import * as modelPool from '../../../../packages/database/src/providers/model-pool.ts';
 import * as harnessRouter from '../../src/harness/router.js';
 import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.js';
+import { DshProtocolClient } from '../../src/harness/dsh-protocol-client.js';
+import * as queue from '../../../../packages/database/src/execution/queue.ts';
+import { createTaskProgressRuntime } from '../../../../packages/database/src/task-progress.ts';
+import { refreshTaskClock } from '../../../../packages/database/src/task-clock.ts';
 import { executeEmployeeRun } from '../../src/jobs/employee-run.js';
 import { runClaimedJob } from '../../src/job-runner.js';
 import { p24Fixture } from '../p24/fixture.js';
@@ -107,6 +112,41 @@ const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
     : describe.skip;
+
+// Diagnostic barriers schedule real RPC/PG work; they never manufacture an
+// abort, a heartbeat result, a progress receipt or a successful close.
+async function closeOrderingBarrier(promise: Promise<void>, label: string) {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(Error(`close_ordering_${label}`)),
+          10000,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function closeOrderingError(error: unknown): unknown {
+  if (!(error instanceof Error)) return error;
+  return {
+    name: error.name,
+    message: error.message,
+    stack: error.stack,
+    code: Reflect.get(error, 'code'),
+    evidence: Reflect.get(error, 'evidence'),
+    cause: error.cause ? closeOrderingError(error.cause) : undefined,
+    errors:
+      error instanceof AggregateError
+        ? error.errors.map(closeOrderingError)
+        : undefined,
+  };
+}
 
 // Schedule real SQL on separate pooled connections, preserving SQL fragments.
 // Barriers choose the interleaving; PostgreSQL proves the actual lock wait.
@@ -492,12 +532,26 @@ suite(
       'question-attempt',
       'cancel',
       'revoked',
+      'revoked close ordering: heartbeat',
+      'revoked close ordering: modelAdmission',
     ] as const)(
       '真实入口 → Worker → DSH → PG，无助手：%s',
       async (mode) => {
+        const closeOrdering = mode.startsWith('revoked close ordering:');
+        const heartbeatFirst = mode === 'revoked close ordering: heartbeat';
+        const modelAdmissionFirst =
+          mode === 'revoked close ordering: modelAdmission';
+        const toolStarted = readPathSignal();
+        const activeHeartbeat = readPathSignal();
+        const runnerAborted = readPathSignal();
+        const trace: Record<string, unknown>[] = [];
+        const mark = (event: string, details: Record<string, unknown> = {}) =>
+          trace.push({ event, at: performance.now(), ...details });
+        const nativeClients = new Set<DshProtocolClient>();
+        const unsubscribe: (() => void)[] = [];
         const legacyHistory = await readRetiredExecutionHistory(f.db);
         const s = await setup();
-        let review: Awaited<ReturnType<typeof s.create>>;
+        let review!: Awaited<ReturnType<typeof s.create>>;
         const command = (args: Record<string, unknown>) => ({
           nativeTool: { name: 'platform_repository_review', arguments: args },
         });
@@ -509,6 +563,14 @@ suite(
             'platform_repository_review',
           ]);
           if (index === 1) {
+            // Observe an unchanged, real 1s heartbeat before releasing this
+            // control's model response. If admission still loses the race,
+            // the explicit branch assertion below must fail, never relabel it.
+            if (modelAdmissionFirst)
+              await closeOrderingBarrier(
+                activeHeartbeat.promise,
+                'active_heartbeat',
+              );
             if (mode === 'missing-review') return { text: '已经审查通过。' };
             if (mode === 'question-attempt')
               return {
@@ -536,7 +598,11 @@ suite(
           }
           // A native failure is an ordinary DSH tool result. Finish the turn;
           // the unchanged Job completion authority must reject this review.
-          if (mode === 'revoked' || mode === 'question-attempt')
+          if (
+            mode === 'revoked' ||
+            closeOrdering ||
+            mode === 'question-attempt'
+          )
             return { text: '未取得复核意见。' };
           const result = request.messages
             .filter((m) => m.role === 'tool')
@@ -588,6 +654,132 @@ suite(
             baseUrl: model.baseUrl,
           }));
         const remote = repositoryTransport(s);
+        const actualHeartbeat = queue.heartbeatJob;
+        const heartbeatObserver = closeOrdering
+          ? vi
+              .spyOn(queue, 'heartbeatJob')
+              .mockImplementation(async (...args) => {
+                try {
+                  const result = await actualHeartbeat(...args);
+                  mark('heartbeat', { result });
+                  if (result.active) activeHeartbeat.resolve();
+                  return result;
+                } catch (error) {
+                  mark('heartbeat_failed', {
+                    error: closeOrderingError(error),
+                  });
+                  throw error;
+                }
+              })
+          : undefined;
+        const actualSetHandler = DshProtocolClient.prototype.setRequestHandler;
+        let interceptedTool = false;
+        const handlerObserver = closeOrdering
+          ? vi
+              .spyOn(DshProtocolClient.prototype, 'setRequestHandler')
+              .mockImplementation(function (this: DshProtocolClient, handler) {
+                if (handler && !nativeClients.has(this)) {
+                  nativeClients.add(this);
+                  const child = Reflect.get(
+                    this,
+                    'child',
+                  ) as ChildProcessWithoutNullStreams;
+                  mark('host', { pid: child.pid });
+                  // This fixture uses only synthetic credentials. Keep stderr
+                  // test-local; production deliberately discards this channel.
+                  child.stderr.on('data', (chunk: Buffer) =>
+                    mark('host_stderr', { text: chunk.toString() }),
+                  );
+                  let buffered = '';
+                  child.stdout.on('data', (chunk: Buffer) => {
+                    buffered += chunk.toString();
+                    const lines = buffered.split('\n');
+                    buffered = lines.pop()!;
+                    for (const line of lines) {
+                      try {
+                        const frame = JSON.parse(line);
+                        if (frame.result?.allriceClose)
+                          mark('shutdown_receipt', {
+                            receipt: frame.result.allriceClose,
+                          });
+                      } catch {
+                        /* The protocol client owns malformed frames. */
+                      }
+                    }
+                  });
+                  unsubscribe.push(
+                    this.subscribe(({ method, params }) => {
+                      if (JSON.stringify(params).includes('turn/end'))
+                        mark('native_turn_end', { method, params });
+                    }),
+                  );
+                }
+                actualSetHandler.call(
+                  this,
+                  handler &&
+                    (async (method, params) => {
+                      const details = {
+                        method,
+                        action: params.action,
+                        kind: params.kind,
+                        callId: params.callId,
+                        nativeSessionId: params.nativeSessionId,
+                      };
+                      try {
+                        if (
+                          method === 'allrice/tool-call' &&
+                          !interceptedTool
+                        ) {
+                          interceptedTool = true;
+                          await closeOrderingBarrier(
+                            toolStarted.promise,
+                            'tool_start',
+                          );
+                          await f.db`update allrice_employee_assignments set active=false where id=(select employee_assignment_id from allrice_employee_runs where run_id=${review.runId})`;
+                          mark('assignment_revoked');
+                          try {
+                            return await handler(method, params);
+                          } catch (error) {
+                            mark('tool_gate_refused', {
+                              error: closeOrderingError(error),
+                            });
+                            throw error;
+                          } finally {
+                            if (heartbeatFirst) {
+                              // Hold the already dispatched tool's real reply
+                              // until the unchanged runner heartbeat aborts it.
+                              await closeOrderingBarrier(
+                                runnerAborted.promise,
+                                'runner_abort',
+                              );
+                              const [job] =
+                                await f.db`select status,worker_id,lease_token,drain_deadline_at,last_error_code from allrice_jobs where id=${review.jobId}`;
+                              mark('job_at_abort', { job });
+                            }
+                            mark('tool_reply_released');
+                          }
+                        }
+                        const result = await handler(method, params);
+                        if (method === 'allrice/progress') {
+                          mark('progress_ok', details);
+                          if (
+                            params.action === 'start' &&
+                            params.kind === 'tool'
+                          )
+                            toolStarted.resolve();
+                        }
+                        return result;
+                      } catch (error) {
+                        mark('rpc_failed', {
+                          ...details,
+                          error: closeOrderingError(error),
+                        });
+                        throw error;
+                      }
+                    }),
+                );
+              })
+          : undefined;
         const oldHome = process.env.ALLRICE_DSH_PLATFORM_HOME;
         vi.stubEnv(
           'ALLRICE_DSH_PLATFORM_HOME',
@@ -614,7 +806,17 @@ suite(
               stopping: () => false,
               onAbortReady: () => {},
             },
-            executeEmployeeRun,
+            async (input) => {
+              input.signal.addEventListener(
+                'abort',
+                () => {
+                  mark('runner_aborted');
+                  runnerAborted.resolve();
+                },
+                { once: true },
+              );
+              return executeEmployeeRun(input);
+            },
           );
           const detail = await getPlatformRepositoryReview(s.admin, review.id);
           const [diagnostic] =
@@ -683,13 +885,101 @@ suite(
           expect(await readRetiredExecutionHistory(f.db)).toEqual(
             legacyHistory,
           );
+          if (closeOrdering) {
+            expect(trace.some((row) => row.event === 'tool_gate_refused')).toBe(
+              true,
+            );
+            expect(trace.some((row) => row.event === 'runner_aborted')).toBe(
+              heartbeatFirst,
+            );
+            expect(
+              trace.some(
+                (row) =>
+                  row.event === 'rpc_failed' &&
+                  row.method === 'allrice/progress' &&
+                  (row.action === 'model_prepare' ||
+                    (row.action === 'start' && row.kind === 'model')),
+              ),
+            ).toBe(modelAdmissionFirst);
+            expect(diagnostic!.last_error_code).toBe(
+              heartbeatFirst
+                ? 'PLATFORM_TECHNICAL_AUTH_REVOKED'
+                : 'EMPLOYEE_CONTENT_UNAVAILABLE',
+            );
+            if (heartbeatFirst) {
+              const stopped = trace.find(
+                (row) => row.event === 'job_at_abort',
+              )!;
+              expect(stopped.job).toMatchObject({
+                status: 'running',
+                worker_id: workerId,
+                lease_token: job!.lease!.token,
+                drain_deadline_at: expect.any(Date),
+              });
+            }
+            expect(
+              trace.some(
+                (row) =>
+                  row.event === 'progress_ok' &&
+                  row.action === 'finish' &&
+                  row.kind === 'tool' &&
+                  row.callId === 'call-1',
+              ),
+            ).toBe(true);
+            const [call] =
+              await f.db`select finished_at,outcome from allrice_task_calls where run_id=${review.runId} and kind='tool' and call_id='call-1'`;
+            expect(call).toEqual({
+              finished_at: expect.any(Date),
+              outcome: 'error',
+            });
+          }
         } finally {
-          await adapter.close();
-          await model.close();
-          remote.mockRestore();
-          freeze.mockRestore();
-          router.mockRestore();
-          vi.stubEnv('ALLRICE_DSH_PLATFORM_HOME', oldHome);
+          try {
+            await adapter.close().catch((error) => {
+              if (closeOrdering)
+                mark('adapter_close_failed', {
+                  error: closeOrderingError(error),
+                });
+              throw error;
+            });
+            if (closeOrdering)
+              for (const native of nativeClients)
+                expect(native.closureEvidence()).toMatchObject({
+                  shutdownAcknowledged: true,
+                  wrapperCleanupConfirmed: true,
+                  terminationAttempted: null,
+                  process: {
+                    state: 'exited',
+                    stdioClosed: true,
+                    exitCode: 0,
+                    signal: null,
+                  },
+                });
+          } finally {
+            if (closeOrdering && review) {
+              for (const native of nativeClients)
+                mark('closure_evidence', {
+                  evidence: native.closureEvidence(),
+                });
+              const [job] =
+                await f.db`select status,worker_id,lease_token,drain_deadline_at,last_error_code from allrice_jobs where id=${review.jobId}`;
+              const progress =
+                await f.db`select state from allrice_task_progress where run_id=${review.runId}`;
+              mark('final_pg', { job, progress });
+              console.info(
+                '[revoked-close-ordering]',
+                JSON.stringify({ mode, trace }),
+              );
+            }
+            for (const stop of unsubscribe) stop();
+            handlerObserver?.mockRestore();
+            heartbeatObserver?.mockRestore();
+            await model.close();
+            remote.mockRestore();
+            freeze.mockRestore();
+            router.mockRestore();
+            vi.stubEnv('ALLRICE_DSH_PLATFORM_HOME', oldHome);
+          }
         }
       },
       60000,
@@ -783,6 +1073,349 @@ suite(
         });
       return { ...s, review, lease, execution, development, allowed };
     }
+
+    it.each(['worker-returned', 'complete', 'fail', 'maintenance'] as const)(
+      'revoked receipt drain preserves exact receipts and failure through %s',
+      async (ending) => {
+        const s = await start(await setup());
+        const progressInput = { context: s.execution.context, worker: s.lease };
+        const progress = createTaskProgressRuntime(progressInput, f.db);
+        const call = {
+          nativeSessionId: randomUUID(),
+          callId: randomUUID(),
+          kind: 'tool',
+          name: 'platform_repository_review',
+          argumentsDigest: 'sha256:' + 'a'.repeat(64),
+        };
+        const receipt = {
+          action: 'finish',
+          nativeSessionId: call.nativeSessionId,
+          callId: call.callId,
+          kind: call.kind,
+          outcome: 'error',
+          resultDigest: 'sha256:' + 'b'.repeat(64),
+        };
+        await progress({ action: 'start', ...call });
+        await f.db`update allrice_employee_assignments set active=false where id=(select employee_assignment_id from allrice_employee_runs where run_id=${s.review.runId})`;
+        const beat = () =>
+          heartbeatJob(
+            s.lease.workerId,
+            s.lease.jobId,
+            s.lease.leaseToken,
+            300000,
+          );
+        expect(await beat()).toMatchObject({ active: false, canceled: false });
+        const [first] =
+          await f.db`select * from allrice_jobs where id=${s.lease.jobId}`;
+        expect(first).toMatchObject({
+          status: 'running',
+          worker_id: s.lease.workerId,
+          lease_token: s.lease.leaseToken,
+          drain_reason: 'cancel',
+          cancel_reason: 'platform_technical_auth_revoked',
+          drain_deadline_at: expect.any(Date),
+        });
+        for (const kind of ['model', 'tool'])
+          await expect(
+            progress({ action: 'start', ...call, kind, callId: randomUUID() }),
+          ).rejects.toThrow('task_progress_lease_lost');
+        await expect(
+          progress({ ...receipt, callId: randomUUID() }),
+        ).rejects.toThrow('task_progress_call_missing');
+        for (const worker of [
+          { ...s.lease, workerId: randomUUID() },
+          { ...s.lease, leaseToken: randomUUID() },
+        ])
+          await expect(
+            createTaskProgressRuntime(
+              { ...progressInput, worker },
+              f.db,
+            )(receipt),
+          ).rejects.toThrow('task_progress_lease_lost');
+        // A later user cancel and elapsed task clock must not rewrite the
+        // first persisted technical stop, move its deadline, or grant retry.
+        await cancelPlatformRepositoryReview(s.admin, s.review.id);
+        await f.db`update allrice_task_clocks set phase='active',active_ms=(policy->>'timeoutMs')::double precision+1,changed_at=clock_timestamp() where run_id=${s.review.runId}`;
+        await f.db.begin((tx) => refreshTaskClock(tx, s.review.runId));
+        expect(await beat()).toMatchObject({
+          active: false,
+          canceled: false,
+          draining: true,
+        });
+        const [again] =
+          await f.db`select * from allrice_jobs where id=${s.lease.jobId}`;
+        expect(again!.cancel_reason).toBe(first!.cancel_reason);
+        expect(again!.drain_deadline_at).toEqual(first!.drain_deadline_at);
+        expect(again!.lease_expires_at.getTime()).toBeLessThanOrEqual(
+          first!.drain_deadline_at.getTime(),
+        );
+        if (ending === 'maintenance') {
+          await f.db`update allrice_jobs set drain_deadline_at=clock_timestamp()-interval '1 second',lease_expires_at=clock_timestamp()-interval '1 second' where id=${s.lease.jobId}`;
+          await expect(progress(receipt)).rejects.toThrow(
+            'task_progress_lease_lost',
+          );
+          await expect(beat()).rejects.toThrow('lease_lost');
+          await queue.maintainQueue();
+        } else {
+          await progress(receipt);
+          if (ending === 'worker-returned') await queue.finishJobDrain(s.lease);
+          else if (ending === 'complete')
+            await completeJob({ ...s.lease, result: { answer: 'late' } });
+          else
+            await failJob({
+              ...s.lease,
+              code: 'LATE_HANDLER_FAILURE',
+              message: 'synthetic',
+              retryable: true,
+            });
+        }
+        const [final] =
+          await f.db`select status,last_error_code,worker_id,lease_token from allrice_jobs where id=${s.lease.jobId}`;
+        expect(final).toEqual({
+          status: 'failed',
+          last_error_code: 'PLATFORM_TECHNICAL_AUTH_REVOKED',
+          worker_id: null,
+          lease_token: null,
+        });
+        const [stored] =
+          await f.db`select finished_at from allrice_task_calls where run_id=${s.review.runId} and call_id=${call.callId}`;
+        expect(stored!.finished_at).toEqual(
+          ending === 'maintenance' ? null : expect.any(Date),
+        );
+        const events =
+          await f.db`select event_type,payload from allrice_run_events where run_id=${s.review.runId} and event_type in ('run.failed','run.canceled','run.succeeded')`;
+        expect(events).toEqual([
+          {
+            event_type: 'run.failed',
+            payload: {
+              code: 'PLATFORM_TECHNICAL_AUTH_REVOKED',
+              drainDisposition:
+                ending === 'maintenance'
+                  ? 'receipt_window_closed'
+                  : 'worker_returned',
+            },
+          },
+        ]);
+      },
+    );
+
+    it.each(['progress finish', 'worker-returned'] as const)(
+      'revoked receipt drain rolls back %s after a late lock crosses its cutoff',
+      async (ending) => {
+        const s = await start(await setup());
+        const progress = createTaskProgressRuntime(
+          { context: s.execution.context, worker: s.lease },
+          f.db,
+        );
+        const call = {
+          nativeSessionId: randomUUID(),
+          callId: randomUUID(),
+          kind: 'model',
+        };
+        await progress({ action: 'start', ...call });
+        await f.db`update allrice_employee_assignments set active=false where id=(select employee_assignment_id from allrice_employee_runs where run_id=${s.review.runId})`;
+        expect(
+          await heartbeatJob(
+            s.lease.workerId,
+            s.lease.jobId,
+            s.lease.leaseToken,
+            300000,
+          ),
+        ).toMatchObject({ active: false, canceled: false });
+        const [frozen] =
+          await f.db`select status,worker_id,lease_token,drain_deadline_at from allrice_jobs where id=${s.lease.jobId}`;
+        expect(frozen).toMatchObject({
+          status: 'running',
+          worker_id: s.lease.workerId,
+          lease_token: s.lease.leaseToken,
+          drain_deadline_at: expect.any(Date),
+        });
+        // Shorten only this isolated persisted window; do not change the real
+        // heartbeat or the production 30s drain. Neither cutoff moves later.
+        await f.db`update allrice_jobs j set drain_deadline_at=cutoff.deadline,lease_expires_at=cutoff.deadline
+          from (select clock_timestamp()+interval '3 seconds' deadline) cutoff where j.id=${s.lease.jobId}`;
+        const snapshot = async () => {
+          const [row] = await f.db`
+            select j.status,j.worker_id,j.lease_token,j.lease_expires_at,j.drain_deadline_at,
+              j.last_error_code,j.completed_at,r.state as run_state,e.status as employee_status,
+              m.status as message_status,c.finished_at,c.result_digest,c.outcome,
+              t.phase as clock_phase,t.changed_at as clock_changed_at
+            from allrice_jobs j join allrice_runs r on r.id=j.run_id
+            join allrice_employee_runs e on e.run_id=r.id
+            join allrice_messages m on m.id=e.assistant_message_id
+            join allrice_task_clocks t on t.run_id=r.id
+            join allrice_task_calls c on c.run_id=r.id and c.call_id=${call.callId}
+            where j.id=${s.lease.jobId}`;
+          return row!;
+        };
+        const before = await snapshot();
+        const held = readPathSignal<number>(),
+          release = readPathSignal();
+        const blocker = f.db.begin(async (tx) => {
+          const [backend] = await tx<
+            { pid: number }[]
+          >`select pg_backend_pid() pid`;
+          if (ending === 'progress finish')
+            await tx`select call_id from allrice_task_calls where run_id=${s.review.runId} and call_id=${call.callId} for update`;
+          else
+            await tx`select id from allrice_messages where id=(select assistant_message_id from allrice_employee_runs where run_id=${s.review.runId}) for update`;
+          held.resolve(backend!.pid);
+          await release.promise;
+        });
+        void blocker.catch(held.reject);
+        const blockerPid = await held.promise;
+        const work = (
+          ending === 'progress finish'
+            ? progress({
+                action: 'finish',
+                ...call,
+                outcome: 'error',
+                resultDigest: 'sha256:' + 'b'.repeat(64),
+              })
+            : queue.finishJobDrain(s.lease)
+        ).then(
+          (value) => ({ value, error: null }),
+          (error: unknown) => ({
+            value: null,
+            error: closeOrderingError(error),
+          }),
+        );
+        try {
+          // This actual waiting SQL occurs after the original lease check.
+          // Its blocker PID proves the interleaving, without a mocked result.
+          let waiting: { query: string; now: Date } | undefined;
+          await expect
+            .poll(
+              async () => {
+                const [row] = await f.db<{ query: string; now: Date }[]>`
+              select query,clock_timestamp() as now from pg_stat_activity
+              where ${blockerPid}=any(pg_blocking_pids(pid))`;
+                waiting = row;
+                return row;
+              },
+              { timeout: 2000, interval: 20 },
+            )
+            .toMatchObject({
+              query: expect.stringContaining(
+                ending === 'progress finish'
+                  ? 'from allrice_task_calls'
+                  : 'update allrice_employee_runs',
+              ),
+            });
+          // Read DB time independently while the late statement is blocked.
+          const [at] = await f.db<
+            { now: Date }[]
+          >`select clock_timestamp() now`;
+          expect(at!.now.getTime()).toBeLessThan(
+            before.drain_deadline_at.getTime(),
+          );
+          await f.db`select pg_sleep_until(${before.drain_deadline_at}::timestamptz + interval '20 milliseconds')`;
+          release.resolve();
+          await blocker;
+          const result = await work,
+            after = await snapshot();
+          const eventsBefore =
+            await f.db`select event_type from allrice_run_events where run_id=${s.review.runId} and event_type in ('run.failed','run.canceled','run.succeeded')`;
+          await queue.maintainQueue();
+          const final = await snapshot();
+          const events =
+            await f.db`select event_type,payload from allrice_run_events where run_id=${s.review.runId} and event_type in ('run.failed','run.canceled','run.succeeded')`;
+          console.info(
+            '[revoked-receipt-deadline]',
+            JSON.stringify({
+              ending,
+              before,
+              blockedAt: at!.now,
+              waiting,
+              result,
+              after,
+              eventsBefore,
+              final,
+              events,
+            }),
+          );
+          expect(result).toMatchObject({
+            error: {
+              message:
+                ending === 'progress finish'
+                  ? 'task_progress_lease_lost'
+                  : 'lease_lost',
+            },
+          });
+          expect(after).toEqual(before);
+          expect(eventsBefore).toEqual([]);
+          expect(final).toMatchObject({
+            status: 'failed',
+            last_error_code: 'PLATFORM_TECHNICAL_AUTH_REVOKED',
+            worker_id: null,
+            lease_token: null,
+            finished_at: null,
+          });
+          expect(events).toEqual([
+            {
+              event_type: 'run.failed',
+              payload: {
+                code: 'PLATFORM_TECHNICAL_AUTH_REVOKED',
+                drainDisposition: 'receipt_window_closed',
+              },
+            },
+          ]);
+        } finally {
+          release.resolve();
+          await blocker;
+          await work;
+        }
+      },
+    );
+
+    it.each(['cancel', 'timeout', 'reserved-reason'] as const)(
+      'revoked receipt drain preserves an earlier %s stop',
+      async (firstStop) => {
+        const s = await start(await setup());
+        if (firstStop === 'cancel')
+          await cancelPlatformRepositoryReview(s.admin, s.review.id);
+        else if (firstStop === 'reserved-reason')
+          await queue.cancelRun(
+            s.internal,
+            s.internal.workspaceId!,
+            s.review.runId,
+            {
+              reason: 'platform_technical_auth_revoked',
+            },
+          );
+        else {
+          await f.db`update allrice_task_clocks set phase='active',active_ms=(policy->>'timeoutMs')::double precision+1,changed_at=clock_timestamp() where run_id=${s.review.runId}`;
+          await f.db.begin((tx) => refreshTaskClock(tx, s.review.runId));
+        }
+        const beat = () =>
+          heartbeatJob(
+            s.lease.workerId,
+            s.lease.jobId,
+            s.lease.leaseToken,
+            300000,
+          );
+        expect(await beat()).toMatchObject({
+          active: false,
+          canceled: firstStop !== 'timeout',
+          draining: true,
+        });
+        const [first] =
+          await f.db`select cancel_reason,drain_reason,drain_deadline_at from allrice_jobs where id=${s.lease.jobId}`;
+        await f.db`update allrice_employee_assignments set active=false where id=(select employee_assignment_id from allrice_employee_runs where run_id=${s.review.runId})`;
+        await beat();
+        const [later] =
+          await f.db`select cancel_reason,drain_reason,drain_deadline_at from allrice_jobs where id=${s.lease.jobId}`;
+        expect(later).toEqual(first);
+        await queue.finishJobDrain(s.lease);
+        const [final] =
+          await f.db`select status,last_error_code from allrice_jobs where id=${s.lease.jobId}`;
+        expect(final).toEqual(
+          firstStop !== 'timeout'
+            ? { status: 'canceled', last_error_code: null }
+            : { status: 'failed', last_error_code: 'JOB_TIMEOUT' },
+        );
+      },
+    );
     async function opinion(
       s: Awaited<ReturnType<typeof start>>,
       verdict: 'accept' | 'revise' = 'accept',

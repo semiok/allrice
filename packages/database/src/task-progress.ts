@@ -234,6 +234,19 @@ export function createTaskProgressRuntime(
       if (!canceled)
         await tx`update allrice_task_progress set state=${tx.json(JSON.parse(JSON.stringify(state)))},pause_id=${pauseId},updated_at=clock_timestamp() where run_id=${runId}`;
       await refreshTaskClock(tx, runId);
+      if (finishing) {
+        // A later row lock or clock refresh can cross the original window.
+        // Validate the locked lease after all writes, so the whole receipt rolls back.
+        const [clock] = await tx<
+          { now: Date }[]
+        >`select clock_timestamp() as now`;
+        if (
+          !job.lease_expires_at ||
+          job.lease_expires_at <= clock!.now ||
+          (job.drain_deadline_at && job.drain_deadline_at <= clock!.now)
+        )
+          throw Error('task_progress_lease_lost');
+      }
       return {
         paused: !!pauseId,
         pauseId,

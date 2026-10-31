@@ -299,18 +299,39 @@ export class AllRiceSdkRoot {
         this.ctx.sessions.get(SessionId(sessionId)) === record.agent.session
           ? record.agent
           : undefined;
+      const failures = [];
+      const settle = async (work) => {
+        try {
+          await work();
+        } catch (error) {
+          failures.push(error);
+        }
+      };
       if (agent) {
-        await this.ctx.subagents?.drainDescendants([agent]);
-        agent.cancel({ kind: 'user' });
-        // Let native cancellation settle the question before clearing its UI;
-        // rejecting it before async drain loses DSH's ASK_ABORTED taxonomy.
-        await this.clearRootQuestion?.(sessionId, 'Session closing');
-        await agent.whenIdle();
-        await this.taskProgress?.flush();
-        await this.ctx.sessions.flush(agent.session);
+        await settle(() => this.ctx.subagents?.drainDescendants([agent]));
+        await settle(async () => {
+          await agent.cancel({ kind: 'user' });
+          await agent.whenIdle();
+        });
+        // Flush while the Session is live. Native handle disposal below drains
+        // any final events even when explicit cancellation could not complete.
+        await settle(() => this.ctx.sessions.flush(agent.session));
       }
-      await this.sdk.shutdown();
-      await this.nativeAccounting?.flush();
+      await settle(() => this.sdk.shutdown());
+      if (agent) {
+        // Ownership teardown must stop the turn before rejecting a UI waiter;
+        // otherwise a failed cancel can turn that rejection into another step.
+        await settle(() =>
+          this.clearRootQuestion?.(sessionId, 'Session closing'),
+        );
+        await settle(() => this.taskProgress?.flush());
+      }
+      await settle(() => this.nativeAccounting?.flush());
+      if (failures.length)
+        throw new AggregateError(
+          failures,
+          'DSH root closure remains unconfirmed',
+        );
       this.roots.clear();
       this.phase = 'closed';
       return { closed: !!agent };
@@ -321,7 +342,10 @@ export class AllRiceSdkRoot {
       this.phase = 'failed';
       throw error;
     } finally {
-      this.closing = undefined;
+      // Like public SDK shutdown, a failed close stays failed. A later
+      // interrupt/shutdown must not discard a prior receipt failure merely
+      // because mandatory teardown already removed the native agent.
+      if (this.phase !== 'failed') this.closing = undefined;
       this.childDisplay.clear();
     }
   }
@@ -377,8 +401,24 @@ export class AllRiceSdkRoot {
     // Irreversible before the first await: an in-flight public initialize or
     // cold restore cannot reopen the root after shutdown has returned.
     this.terminated = true;
-    await this.closeRoot(this.rootId);
-    while (this.ownDisposers.length) this.ownDisposers.pop()();
+    const failures = [];
+    try {
+      await this.closeRoot(this.rootId);
+    } catch (error) {
+      failures.push(error);
+    }
+    while (this.ownDisposers.length) {
+      try {
+        this.ownDisposers.pop()();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length)
+      throw new AggregateError(
+        failures,
+        'DSH root shutdown remains unconfirmed',
+      );
     return {};
   }
 }

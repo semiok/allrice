@@ -25,6 +25,7 @@ import {
   startClaimedJob,
   completeJob,
   heartbeatJob,
+  finishJobDrain,
   enqueueRun,
   maintainQueue,
   failJob,
@@ -495,6 +496,7 @@ suite(
       });
       expect(checks).toBeGreaterThan(0);
       await heartbeatJob(lease.workerId, lease.jobId, lease.leaseToken, 30000);
+      await finishJobDrain(lease);
       vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', adminEmail);
       expect(
         (await getPlatformTechnicalTask(admin, d.task.id)).task.status,
@@ -569,7 +571,7 @@ suite(
         (await getPlatformTechnicalTask(admin, d.task.id)).task.errorCode,
       ).toBe('JOB_TIMEOUT');
     });
-    it('revocation denies even tool-less models and heartbeat gives one failed terminal', async () => {
+    it('revocation denies even tool-less models and heartbeat drain gives one failed terminal', async () => {
       const d = await submit();
       const { lease } = await start(d);
       vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', 'revoked@example.test');
@@ -584,6 +586,13 @@ suite(
           30000,
         ),
       ).toEqual({ active: false, canceled: false });
+      const [draining] =
+        await fixture.db`select status,lease_token from allrice_jobs where id=${lease.jobId}`;
+      expect(draining).toEqual({
+        status: 'running',
+        lease_token: lease.leaseToken,
+      });
+      await finishJobDrain(lease);
       vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', adminEmail);
       const detail = await getPlatformTechnicalTask(admin, d.task.id);
       expect(detail.task).toMatchObject({

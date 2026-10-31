@@ -2225,13 +2225,44 @@ async function retainStopReceiptLease(
   return deadline;
 }
 
+const technicalRevocationReason = 'platform_technical_auth_revoked';
+
+function isTechnicalRevocationStop(job: JobRow) {
+  // A public cancellation can supply arbitrary reason text. Only heartbeat
+  // writes the paired failure code while freezing this internal stop.
+  return (
+    job.cancel_reason === technicalRevocationReason &&
+    job.last_error_code === 'PLATFORM_TECHNICAL_AUTH_REVOKED'
+  );
+}
+
+function transitionUnauthorizedTechnicalJob(
+  transaction: TransactionSql,
+  job: JobRow,
+  drainDisposition?: 'worker_returned' | 'receipt_window_closed',
+) {
+  return transitionTerminal(transaction, job, {
+    jobStatus: 'failed',
+    runStatus: 'failed',
+    eventType: 'run.failed',
+    code: 'PLATFORM_TECHNICAL_AUTH_REVOKED',
+    message: 'Platform technical execution is no longer authorized',
+    payload: {
+      code: 'PLATFORM_TECHNICAL_AUTH_REVOKED',
+      ...(drainDisposition ? { drainDisposition } : {}),
+    },
+  });
+}
+
 async function transitionStoppedJob(
   transaction: TransactionSql,
   job: JobRow,
   cause: 'cancel' | 'timeout',
   disposition: 'worker_returned' | 'receipt_window_closed',
 ) {
-  if (cause === 'cancel') {
+  if (cause === 'cancel' && isTechnicalRevocationStop(job)) {
+    await transitionUnauthorizedTechnicalJob(transaction, job, disposition);
+  } else if (cause === 'cancel') {
     await transitionTerminal(transaction, job, {
       jobStatus: 'canceled',
       runStatus: 'canceled',
@@ -2276,7 +2307,7 @@ async function stopJobOrDrain(
     );
   return {
     active: false as const,
-    canceled: cause === 'cancel',
+    canceled: cause === 'cancel' && !isTechnicalRevocationStop(job),
     draining: !!deadline,
     drainDeadlineAt: deadline?.toISOString(),
   };
@@ -2297,6 +2328,7 @@ export async function finishJobDrain(input: {
     const cause = queueStopCause(job, new Date());
     if (!cause) return { finalized: false };
     await transitionStoppedJob(transaction, job, cause, 'worker_returned');
+    await assertLockedLeaseCurrent(transaction, job);
     return { finalized: true };
   });
 }
@@ -2547,10 +2579,12 @@ export async function startClaimedJob(
   return result.execution;
 }
 
-/** Revocation terminates this private Run through the existing canonical queue state. */
+/** Heartbeat stops admission but retains the original running receipt lease.
+ * Before start/after handler return there is no in-flight work to drain. */
 async function stopUnauthorizedTechnicalJob(
   transaction: TransactionSql,
   job: JobRow,
+  drainLeaseMs?: number,
 ) {
   if (
     (await isPlatformTechnicalJobAuthorized(transaction, job)) &&
@@ -2560,14 +2594,19 @@ async function stopUnauthorizedTechnicalJob(
     (await isRepositoryReviewJobAuthorized(transaction, job))
   )
     return false;
-  await transitionTerminal(transaction, job, {
-    jobStatus: 'failed',
-    runStatus: 'failed',
-    eventType: 'run.failed',
-    code: 'PLATFORM_TECHNICAL_AUTH_REVOKED',
-    message: 'Platform technical execution is no longer authorized',
-    payload: { code: 'PLATFORM_TECHNICAL_AUTH_REVOKED' },
-  });
+  if (drainLeaseMs !== undefined && job.status === 'running') {
+    // heartbeat checked the first stop under this same Job lock. Reuse the
+    // cancellation drain without turning technical revocation into canceled.
+    const [stopped] = await transaction<JobRow[]>`update allrice_jobs
+      set cancel_requested_at=coalesce(cancel_requested_at,clock_timestamp()),
+        cancel_reason=coalesce(cancel_reason,${technicalRevocationReason}),
+        last_error_code='PLATFORM_TECHNICAL_AUTH_REVOKED',
+        last_error_message='Platform technical execution is no longer authorized'
+      where id=${job.id} returning *`;
+    await stopJobOrDrain(transaction, stopped!, 'cancel', drainLeaseMs);
+  } else {
+    await transitionUnauthorizedTechnicalJob(transaction, job);
+  }
   return true;
 }
 
@@ -2896,7 +2935,7 @@ export async function heartbeatJob(
             await assertLockedLeaseCurrent(transaction, locked);
             return stopped;
           }
-          if (await stopUnauthorizedTechnicalJob(transaction, job)) {
+          if (await stopUnauthorizedTechnicalJob(transaction, job, leaseMs)) {
             await assertLockedLeaseCurrent(transaction, locked);
             return { active: false, canceled: false };
           }
