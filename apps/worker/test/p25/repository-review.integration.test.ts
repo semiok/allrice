@@ -1199,6 +1199,167 @@ suite(
       },
     );
 
+    it.each(['progress finish', 'worker-returned'] as const)(
+      'revoked receipt drain rolls back %s after a late lock crosses its cutoff',
+      async (ending) => {
+        const s = await start(await setup());
+        const progress = createTaskProgressRuntime(
+          { context: s.execution.context, worker: s.lease },
+          f.db,
+        );
+        const call = {
+          nativeSessionId: randomUUID(),
+          callId: randomUUID(),
+          kind: 'model',
+        };
+        await progress({ action: 'start', ...call });
+        await f.db`update allrice_employee_assignments set active=false where id=(select employee_assignment_id from allrice_employee_runs where run_id=${s.review.runId})`;
+        expect(
+          await heartbeatJob(
+            s.lease.workerId,
+            s.lease.jobId,
+            s.lease.leaseToken,
+            300000,
+          ),
+        ).toMatchObject({ active: false, canceled: false, draining: true });
+        // Shorten only this isolated persisted window; do not change the real
+        // heartbeat or the production 30s drain. Neither cutoff moves later.
+        await f.db`update allrice_jobs j set drain_deadline_at=cutoff.deadline,lease_expires_at=cutoff.deadline
+          from (select clock_timestamp()+interval '3 seconds' deadline) cutoff where j.id=${s.lease.jobId}`;
+        const snapshot = async () => {
+          const [row] = await f.db`
+            select j.status,j.worker_id,j.lease_token,j.lease_expires_at,j.drain_deadline_at,
+              j.last_error_code,j.completed_at,r.state as run_state,e.status as employee_status,
+              m.status as message_status,c.finished_at,c.result_digest,c.outcome,
+              t.phase as clock_phase,t.changed_at as clock_changed_at
+            from allrice_jobs j join allrice_runs r on r.id=j.run_id
+            join allrice_employee_runs e on e.run_id=r.id
+            join allrice_messages m on m.id=e.assistant_message_id
+            join allrice_task_clocks t on t.run_id=r.id
+            join allrice_task_calls c on c.run_id=r.id and c.call_id=${call.callId}
+            where j.id=${s.lease.jobId}`;
+          return row!;
+        };
+        const before = await snapshot();
+        const held = readPathSignal<number>(),
+          release = readPathSignal();
+        const blocker = f.db.begin(async (tx) => {
+          const [backend] = await tx<
+            { pid: number }[]
+          >`select pg_backend_pid() pid`;
+          if (ending === 'progress finish')
+            await tx`select call_id from allrice_task_calls where run_id=${s.review.runId} and call_id=${call.callId} for update`;
+          else
+            await tx`select id from allrice_messages where id=(select assistant_message_id from allrice_employee_runs where run_id=${s.review.runId}) for update`;
+          held.resolve(backend!.pid);
+          await release.promise;
+        });
+        void blocker.catch(held.reject);
+        const blockerPid = await held.promise;
+        const work = (
+          ending === 'progress finish'
+            ? progress({
+                action: 'finish',
+                ...call,
+                outcome: 'error',
+                resultDigest: 'sha256:' + 'b'.repeat(64),
+              })
+            : queue.finishJobDrain(s.lease)
+        ).then(
+          (value) => ({ value, error: null }),
+          (error: unknown) => ({
+            value: null,
+            error: closeOrderingError(error),
+          }),
+        );
+        try {
+          // This actual waiting SQL occurs after the original lease check.
+          // Its blocker PID proves the interleaving, without a mocked result.
+          let waiting: { query: string; now: Date } | undefined;
+          await expect
+            .poll(
+              async () => {
+                const [row] = await f.db<{ query: string; now: Date }[]>`
+              select query,clock_timestamp() as now from pg_stat_activity
+              where ${blockerPid}=any(pg_blocking_pids(pid))`;
+                waiting = row;
+                return row;
+              },
+              { timeout: 2000, interval: 20 },
+            )
+            .toMatchObject({
+              query: expect.stringContaining(
+                ending === 'progress finish'
+                  ? 'from allrice_task_calls'
+                  : 'update allrice_messages',
+              ),
+            });
+          // Read DB time independently while the late statement is blocked.
+          const [at] = await f.db<
+            { now: Date }[]
+          >`select clock_timestamp() now`;
+          expect(at!.now.getTime()).toBeLessThan(
+            before.drain_deadline_at.getTime(),
+          );
+          await f.db`select pg_sleep_until(${before.drain_deadline_at}::timestamptz + interval '20 milliseconds')`;
+          release.resolve();
+          await blocker;
+          const result = await work,
+            after = await snapshot();
+          const eventsBefore =
+            await f.db`select event_type from allrice_run_events where run_id=${s.review.runId} and event_type in ('run.failed','run.canceled','run.succeeded')`;
+          await queue.maintainQueue();
+          const final = await snapshot();
+          const events =
+            await f.db`select event_type,payload from allrice_run_events where run_id=${s.review.runId} and event_type in ('run.failed','run.canceled','run.succeeded')`;
+          console.info(
+            '[revoked-receipt-deadline]',
+            JSON.stringify({
+              ending,
+              before,
+              blockedAt: at!.now,
+              waiting,
+              result,
+              after,
+              eventsBefore,
+              final,
+              events,
+            }),
+          );
+          expect(result).toMatchObject({
+            error: {
+              message:
+                ending === 'progress finish'
+                  ? 'task_progress_lease_lost'
+                  : 'lease_lost',
+            },
+          });
+          expect(after).toEqual(before);
+          expect(eventsBefore).toEqual([]);
+          expect(final).toMatchObject({
+            status: 'failed',
+            last_error_code: 'PLATFORM_TECHNICAL_AUTH_REVOKED',
+            worker_id: null,
+            lease_token: null,
+            finished_at: null,
+          });
+          expect(events).toEqual([
+            {
+              event_type: 'run.failed',
+              payload: {
+                code: 'PLATFORM_TECHNICAL_AUTH_REVOKED',
+                drainDisposition: 'receipt_window_closed',
+              },
+            },
+          ]);
+        } finally {
+          release.resolve();
+          await blocker;
+          await work;
+        }
+      },
+    );
+
     it.each(['cancel', 'timeout', 'reserved-reason'] as const)(
       'revoked receipt drain preserves an earlier %s stop',
       async (firstStop) => {
