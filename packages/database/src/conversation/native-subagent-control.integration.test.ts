@@ -58,6 +58,10 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
         capabilities: {
           ...employee.definition.capabilities,
           nativeSkillIds: [],
+          toolNames: [
+            ...employee.definition.capabilities.toolNames,
+            'workspace.export.create',
+          ],
         },
       },
       skills: [],
