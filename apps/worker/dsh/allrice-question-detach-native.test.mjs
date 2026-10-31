@@ -959,12 +959,22 @@ describe('detach failure and ingress interleavings on the real host', () => {
         vi.spyOn(h.agent, 'cancel').mockImplementationOnce(() => {
           throw failure;
         });
-      await expect(h.server.shutdown()).rejects.toBe(failure);
+      const shutdown = h.server.shutdown();
+      await expect(shutdown).rejects.toBeInstanceOf(AggregateError);
+      const shutdownFailure = await shutdown.catch((error) => error);
+      // Both closeRoot and shutdown retain stage failures while completing
+      // teardown. Check the injected Error itself, not just its message.
+      expect(shutdownFailure.errors).toHaveLength(1);
+      const [closeFailure] = shutdownFailure.errors;
+      expect(closeFailure).toBeInstanceOf(AggregateError);
+      expect(closeFailure.errors).toHaveLength(1);
+      expect(closeFailure.errors[0]).toBe(failure);
       expect(h.server.phase).toBe('failed');
       // The production shutdown coordinator always attempts root disposal,
       // even when SDK shutdown failed; no cleanup success receipt is invented.
       await h.ctx.root.fiber.dispose();
       await h.agent.whenIdle();
+      expect(h.server.phase).toBe('failed');
       expect(h.server.pendingUserQuestions.has(h.sessionId)).toBe(false);
       expect(h.requests).toHaveLength(1);
     },
