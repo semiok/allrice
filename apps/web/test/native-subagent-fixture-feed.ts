@@ -1,7 +1,7 @@
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { createNativeSubagentFollowGateway } from '../server/native-subagent-follow.mjs';
-import type { Page } from '../../worker/node_modules/playwright-core/index.js';
+import type { Page } from 'playwright-core';
 import type {
   NativeSubagentFollowEvent,
   NativeSubagentSummary,
