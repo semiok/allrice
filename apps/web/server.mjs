@@ -41,10 +41,6 @@ export class AllRiceHttpServer extends Server {
   terminalGateway = null;
   nativeFollowGateway = null;
   emit(event, ...args) {
-    if (event === 'upgrade' && this.nativeFollowGateway?.matches(args[0])) {
-      void this.nativeFollowGateway.upgrade(...args);
-      return true;
-    }
     if (event === 'upgrade' && this.terminalGateway?.matches(args[0])) {
       void this.terminalGateway.upgrade(...args);
       return true;
@@ -56,6 +52,10 @@ export class AllRiceHttpServer extends Server {
       void this.previewGateway[event === 'request' ? 'request' : 'upgrade'](
         ...args,
       );
+      return true;
+    }
+    if (event === 'upgrade' && this.nativeFollowGateway?.matches(args[0])) {
+      void this.nativeFollowGateway.upgrade(...args);
       return true;
     }
     if (

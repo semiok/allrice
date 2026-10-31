@@ -348,7 +348,9 @@ suite('native subagent directory and employee sidebar', () => {
               .length,
         )
         .toBe(0);
-      await expect.poll(() => sockets.size).toBe(0);
+      // Playwright clears its old-document socket map before late close events.
+      // The server socket and upstream owners remain the resource authority.
+      await expect.poll(() => feed.sockets.size).toBe(0);
     } finally {
       for (const res of uploads) res.end();
       await page.close();

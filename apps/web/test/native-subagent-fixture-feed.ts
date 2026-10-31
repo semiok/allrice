@@ -1,4 +1,5 @@
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
+import type { Duplex } from 'node:stream';
 import { createNativeSubagentFollowGateway } from '../server/native-subagent-follow.mjs';
 import type { Page } from '../../worker/node_modules/playwright-core/index.js';
 import type {
@@ -61,6 +62,7 @@ type Connection = {
 /** Product WS gateway over a real held loopback SSE; no browser transport mock. */
 export class NativeSubagentFixtureFeed {
   gateway?: ReturnType<typeof createNativeSubagentFollowGateway>;
+  sockets = new Set<Duplex>();
   sources = new Map<string, Source>();
   connections = new Set<Connection>();
   rootConnections = new Set<{ fixture: string; response: ServerResponse }>();
@@ -70,6 +72,8 @@ export class NativeSubagentFixtureFeed {
       port: (server.address() as { port: number }).port,
     });
     server.on('upgrade', (req, socket, head) => {
+      this.sockets.add(socket);
+      socket.once('close', () => this.sockets.delete(socket));
       void this.gateway!.upgrade(req, socket, head);
     });
   }

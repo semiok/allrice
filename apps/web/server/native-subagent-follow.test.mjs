@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { AllRiceHttpServer } from '../server.mjs';
 import { createNativeSubagentFollowGateway } from './native-subagent-follow.mjs';
 import { createWebRuntimeClose } from './close-runtime.mjs';
+import { createProjectPreviewGateway } from './project-preview.mjs';
 const cleanups = [];
 afterEach(async () => {
   for (const close of cleanups.splice(0).reverse()) await close();
@@ -100,6 +101,37 @@ it('intercepts Next upgrade, forwards only the fixed authorized scope, and cance
   peer.close(1000);
   await once(peer, 'close');
   await vi.waitFor(() => expect(f.closed()).toBe(1));
+});
+it('keeps the same path on a preview host owned by preview, and follows native on the ordinary host', async () => {
+  const f = await fixture(),
+    id = '11111111-1111-4111-8111-111111111111',
+    host = `rice-preview-${id}.preview.localhost`,
+    access = vi.fn(async () => {
+      throw Error('preview authorization fixture');
+    });
+  f.server.previewGateway = createProjectPreviewGateway({
+    suffix: 'preview.localhost',
+    mainOrigin: f.origin,
+    secure: false,
+    resolveAccess: access,
+    transport: {},
+  });
+  cleanups.push(() => f.server.previewGateway.close());
+  const preview = f.connect({
+    headers: {
+      host,
+      origin: `http://${host}`,
+      cookie: 'allrice_preview_test=preview-token',
+    },
+  });
+  const [, response] = await once(preview, 'unexpected-response');
+  expect(response.statusCode).toBe(403);
+  expect(access).toHaveBeenCalledWith(id, 'preview-token');
+  expect(f.reads).toHaveLength(0);
+  const ordinary = f.connect();
+  expect((await once(ordinary, 'message'))[0].toString()).toContain('resync');
+  expect(f.reads).toHaveLength(1);
+  expect(f.nextUpgrade).not.toHaveBeenCalled();
 });
 it.each([
   { headers: { origin: 'https://evil.example' } },
