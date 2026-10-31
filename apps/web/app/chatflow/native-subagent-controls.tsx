@@ -39,7 +39,8 @@ const ticketText = (ticket?: NativeSubagentControlTicket) => {
   if (result.status === 'rejected') return `请求被拒绝：${result.code}`;
   return {
     recorded: '请求已记录，等待原生回执。',
-    accepted: '停止请求已接收；不代表子任务已经停止。',
+    accepted:
+      '停止请求已接收；不代表子任务已经停止。在途工具仍可能继续输出、生成文件和产生用量，请以实际运行状态为准。',
     unknown: '原生接收结果未知，不会自动重发。',
   }[result.status];
 };

@@ -370,7 +370,9 @@ suite('native child Stop request identity and truthful receipts', () => {
       scenario.release!();
       await expect
         .poll(() => detail(page).textContent())
-        .toContain('停止请求已接收；不代表子任务已经停止。');
+        .toContain(
+          '停止请求已接收；不代表子任务已经停止。在途工具仍可能继续输出、生成文件和产生用量，请以实际运行状态为准。',
+        );
       expect(scenario.posts).toHaveLength(1);
       expect(scenario.posts[0]).toMatchObject({
         rootRunId: runId,

@@ -2123,8 +2123,10 @@ export async function createAllRiceRuntime(
     server.runAdmission?.attribute(params) ?? params;
   server.accountingBridge = (params, signal) =>
     transport.request('allrice/model-receipt', params, signal);
-  server.toolBrokerRequest = (params, signal) =>
-    transport.request('allrice/tool-call', attributed(params), signal);
+  server.toolBrokerRequest = (params, signal) => {
+    signal?.throwIfAborted();
+    return transport.request('allrice/tool-call', attributed(params));
+  };
   server.personalSkillBridge = (params, signal) =>
     transport.request(
       'allrice/personal-skill-check',
