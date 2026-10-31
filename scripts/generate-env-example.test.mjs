@@ -83,6 +83,8 @@ test('source additions/deletions cause real check drift; generation repairs both
     'process.env.ALLRICE_FIRST; process.env.ALLRICE_ADDED;',
   );
   const additionCheck = cli(root, ['--check']);
+  expect(additionCheck.error).toBeUndefined();
+  expect(additionCheck.signal).toBeNull();
   expect(additionCheck.status).toBe(1);
   expect(additionCheck.stderr).toContain(
     '.env.example drift: run pnpm env:generate',
@@ -94,6 +96,8 @@ test('source additions/deletions cause real check drift; generation repairs both
   );
   writeFileSync(join(root, 'apps/web/config.ts'), 'process.env.ALLRICE_ADDED;');
   const deletionCheck = cli(root, ['--check']);
+  expect(deletionCheck.error).toBeUndefined();
+  expect(deletionCheck.signal).toBeNull();
   expect(deletionCheck.status).toBe(1);
   expect(deletionCheck.stderr).toContain(
     '.env.example drift: run pnpm env:generate',
