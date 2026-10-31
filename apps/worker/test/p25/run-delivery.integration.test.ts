@@ -608,6 +608,9 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
     const artifact = await f.publish();
     const answer = `[月报](/api/v1/files/${artifact.object.id}/download)`;
     const { snapshot, decision, proof, guard } = await f.validate(answer);
+    expect(
+      await fixture.db`select root_run_id from allrice_runtime_roots where root_run_id=${f.rootRunId}`,
+    ).toEqual([]);
     expect(snapshot.ownedRunIds).toEqual([f.rootRunId]);
     expect(decision.linked).toEqual([
       {
@@ -660,18 +663,19 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
           /allrice_assistant_|allrice_runtime_run_links/.test(q),
         ),
       ).toEqual([]);
-      // Generic terminal cleanup probes runtime_roots; the independent guard
-      // must not, including the post-write assertCommitted callback.
+      // The shared gate may lock an existing operation root to serialize cloud
+      // admission. No root row or assistant/run-links eligibility is required.
       expect(
         guardQueries.filter((q) =>
-          /allrice_assistant_|allrice_runtime_run_links|allrice_runtime_roots/.test(
-            q,
-          ),
+          /allrice_assistant_|allrice_runtime_run_links/.test(q),
         ),
       ).toEqual([]);
     } finally {
       fixture.db.options.debug = debug;
     }
+    expect(
+      await fixture.db`select root_run_id from allrice_runtime_roots where root_run_id=${f.rootRunId}`,
+    ).toEqual([]);
     expect(await f.state()).toEqual({
       status: 'succeeded',
       state: 'succeeded',
@@ -712,6 +716,9 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
     await fixture.db`insert into allrice_review_continuations(response_id,organization_id,workspace_id,session_id,actor_id,artifact_id,checksum,kind,run_id)
       values(${randomUUID()},${f.org},${f.workspace},${f.session},${f.user},${artifact.id},${artifact.object.checksum},'plan_review',${f.rootRunId})`;
     const queries: string[] = [];
+    expect(
+      await fixture.db`select root_run_id from allrice_runtime_roots where root_run_id=${f.rootRunId}`,
+    ).toEqual([]);
     const debug = fixture.db.options.debug;
     fixture.db.options.debug = (_connection, query) => {
       queries.push(query);
@@ -725,14 +732,15 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
       expect(queries.length).toBeGreaterThan(0);
       expect(
         queries.filter((q) =>
-          /allrice_assistant_|allrice_runtime_run_links|allrice_runtime_roots/.test(
-            q,
-          ),
+          /allrice_assistant_|allrice_runtime_run_links/.test(q),
         ),
       ).toEqual([]);
     } finally {
       fixture.db.options.debug = debug;
     }
+    expect(
+      await fixture.db`select root_run_id from allrice_runtime_roots where root_run_id=${f.rootRunId}`,
+    ).toEqual([]);
   });
 
   it.each([

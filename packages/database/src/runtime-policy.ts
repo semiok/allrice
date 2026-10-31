@@ -559,6 +559,21 @@ export type RuntimePolicyOptions = {
   platformDeniedActions?: readonly string[];
 };
 
+async function lockPolicyBindingOperations(
+  transaction: Transaction,
+  context: RuntimePolicyPrincipal,
+  binding: RuntimeActionBinding,
+) {
+  await lockBrowserBindingOperations(transaction, context, binding);
+  if (binding.action !== 'cloud.process.execute') return;
+  // Ledger admission already owns this root, but approval creation/decision
+  // run in separate transactions. All three must enter root before policy/Job.
+  // Do not take 703 here: a ledger caller already holds root before this hook.
+  await transaction`select root_run_id from allrice_runtime_roots
+    where root_run_id=${binding.task.rootRunId} and organization_id=${context.organizationId}
+      and workspace_id=${context.workspaceId} for update`;
+}
+
 export function createRuntimePolicyAdmission(options: RuntimePolicyOptions) {
   const admit = async (input: {
     transaction: Transaction;
@@ -567,7 +582,7 @@ export function createRuntimePolicyAdmission(options: RuntimePolicyOptions) {
     now: Date;
   }): Promise<void | { status: 'waiting_user' }> => {
     const { transaction } = input;
-    await lockBrowserBindingOperations(
+    await lockPolicyBindingOperations(
       transaction,
       options.context,
       input.binding,
@@ -747,10 +762,10 @@ export async function requestRuntimeActionApproval(
       transaction,
       binding: requestedBinding,
     });
-    await lockBrowserBindingOperations(
+    await lockPolicyBindingOperations(
       transaction,
       options.context,
-      bindingInput,
+      requestedBinding,
     );
     const controls = await controlsFor(transaction, options.context);
     await identity(transaction, options.context);
@@ -870,11 +885,7 @@ export async function decideRuntimeActionApproval(
     const discovered = RuntimeActionApprovalRequestSchema.parse(
       registered.runtime_request,
     );
-    await lockBrowserBindingOperations(
-      transaction,
-      context,
-      discovered.binding,
-    );
+    await lockPolicyBindingOperations(transaction, context, discovered.binding);
     const controls = await controlsFor(transaction, context);
     await identity(transaction, context);
     const { row, request } = await readApproval(

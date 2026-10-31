@@ -40,6 +40,16 @@ async function assertRunAuthority(
   lock: boolean,
 ) {
   const { scope, rootRunId, worker } = input;
+  if (lock) {
+    // Queue completion/publication use this existing pre-root mutex. Cloud
+    // admission holds runtime_root before Run/policy/Job (with or without a
+    // task clock). Join that order before taking Job, or a control can hold Job
+    // while waiting for policy and deadlock the cloud admission waiting for Job.
+    await tx`select pg_advisory_xact_lock(hashtextextended(${rootRunId.toLowerCase()},703))`;
+    await tx`select root_run_id from allrice_runtime_roots
+      where root_run_id=${rootRunId} and organization_id=${scope.organizationId}
+        and workspace_id=${scope.workspaceId} for update`;
+  }
   // Job precedes run/session, matching queue completion. These locks also
   // exclude publication's SHARE job/run and UPDATE session locks.
   const [job] =
@@ -221,9 +231,6 @@ export async function assertNativeRunAuthorityTransaction(
   tx: TransactionSql,
   input: RunDeliveryAuthority,
 ) {
-  // Publication holds this existing Run mutex before Session -> Job locks.
-  // Enter it before Job -> Session admission, including an empty control poll.
-  await tx`select pg_advisory_xact_lock(hashtextextended(${input.rootRunId.toLowerCase()},703))`;
   return (await assertRunAuthority(tx, input, true)).authority;
 }
 

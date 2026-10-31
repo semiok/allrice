@@ -4,6 +4,8 @@ import type { TransactionSql } from 'postgres';
 import {
   ExecutionContextSchema,
   NativeSubagentControlResultSchema,
+  cloudPlatform,
+  cloudToolchainImageV1,
   type EmployeeRuntimePackage,
   type NativeSubagentControlInput,
 } from '@allrice/contracts';
@@ -13,8 +15,18 @@ import {
   runtimeFixtureStorage,
 } from '../runtime.fixture.ts';
 import { publishWorkbenchArtifact } from '../artifact-review.ts';
+import {
+  createCloudCommandOperation,
+  createCloudOperationLedger,
+} from '../cloud-execution.ts';
 import { createRunAuthorityFixture } from '../run-authority.fixture.ts';
 import { assertNativeRunAuthority } from '../run-delivery-authority.ts';
+import {
+  decideRuntimeActionApproval,
+  getRuntimeActionApproval,
+} from '../runtime-policy.ts';
+import { updateWorkAutomation } from '../work-automation.ts';
+import { resolveTaskRuntimePolicy } from '../task-runtime-policy.ts';
 import { nativeBindingDescriptor } from '../native-session-binding.fixture.ts';
 import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
 import { buildEmployeeRuntimePackage } from '../platform-employees/runtime-package.ts';
@@ -47,6 +59,7 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
   beforeAll(async () => {
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
     vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
+    vi.stubEnv('ALLRICE_CLOUD_RUNNER_ENABLED', '1');
     vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'c'.repeat(64));
     fixture = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
@@ -61,6 +74,7 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
           toolNames: [
             ...employee.definition.capabilities.toolNames,
             'workspace.export.create',
+            'cloud.process.execute',
           ],
         },
       },
@@ -182,6 +196,441 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
     enqueueNativeSubagentControl(f.context, f.session, expected(f, input));
   const read = (f: Chat, id: string) =>
     getNativeSubagentControl(f.context, f.session, id);
+  async function cloud(f: Chat) {
+    const db = fixture.db,
+      target = randomUUID();
+    await db`insert into allrice_execution_targets(id,organization_id,workspace_id,target_key,kind,label,state,capabilities)
+      values(${target},${f.org},${f.workspace},'control-lock-test','cloud_sandbox','Synthetic cloud','online','["process.execute"]')`;
+    await db`insert into allrice_cloud_execution_grants(id,organization_id,workspace_id,owner_id,target_id,version,profile,enabled)
+      values(${randomUUID()},${f.org},${f.workspace},${f.user},${target},1,${db.json(
+        {
+          backend: 'cloud-gvisor-v1',
+          imageDigest: cloudToolchainImageV1,
+          architecture: cloudPlatform.architecture,
+          runtime: 'runsc',
+          runtimeVersion: 'release-20260831.0',
+          runtimeChecksum: cloudPlatform.runtimeChecksum,
+          network: 'none',
+          maximumConcurrency: 2,
+        },
+      )},true)`;
+    await f.setControls({
+      version: 1,
+      enabled: true,
+      mode: 'execute',
+      rules: [{ action: 'cloud.process.execute', effect: 'allow' }],
+    });
+    const [policy] =
+      await db`select payload,issued_at,expires_at from allrice_policy_snapshots where id=${f.policy}`;
+    const context = ExecutionContextSchema.parse({
+      executionId: randomUUID(),
+      runId: f.rootRunId,
+      jobId: f.worker.jobId,
+      worker: { type: 'worker', id: f.worker.workerId },
+      delegatedBy: { type: 'user', id: f.user },
+      organizationId: f.org,
+      workspaceId: f.workspace,
+      policySnapshot: {
+        id: f.policy,
+        organizationId: f.org,
+        subjectId: f.user,
+        version: 1,
+        issuedAt: policy!.issued_at.toISOString(),
+        expiresAt: policy!.expires_at.toISOString(),
+        ...policy!.payload,
+      },
+      startedAt: new Date().toISOString(),
+    });
+    const create = (database = db) =>
+      createCloudCommandOperation(
+        {
+          context,
+          callId: randomUUID(),
+          arguments: {
+            script: "console.log('cloud work continues')",
+            inputs: [],
+            outputs: [],
+          },
+        },
+        database,
+      );
+    const created = await create();
+    expect(created.snapshot.status).toBe('ready');
+    const scope = created.snapshot.binding.task.scope;
+    const operationId = created.snapshot.binding.attempt.operationId;
+    const dispatch = (ledger = created.ledger) =>
+      ledger.dispatch({
+        scope,
+        operationId,
+        leaseOwner: f.worker.workerId,
+        leaseMs: 60000,
+      });
+    const lease = await dispatch();
+    const identity = { scope, operationId, leaseToken: lease.leaseToken };
+    const start = (ledger = created.ledger) =>
+      ledger.startOperation({
+        ...identity,
+        attempt: lease.snapshot.binding.attempt,
+        receiptId: randomUUID(),
+      });
+    return { create, created, dispatch, start, identity };
+  }
+
+  // Pause a real cloud admission after its policy UPDATE lock. Before the fix,
+  // control holds Job UPDATE while waiting on this policy; resuming cloud then
+  // reaches the production inputs JOIN jobs FOR SHARE and produces SQLSTATE 40P01.
+  async function alongsideCloud<T>(
+    f: Chat,
+    operation: (db: typeof fixture.db) => Promise<unknown>,
+    control: () => Promise<T>,
+    pausePolicyTransaction = 1,
+  ) {
+    let release!: () => void,
+      ready!: () => void,
+      pid = 0;
+    const resume = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    let policyTransactions = 0;
+    const database = new Proxy(fixture.db, {
+      get(target, key) {
+        if (key !== 'begin') return Reflect.get(target, key, target);
+        return (body: (tx: TransactionSql) => Promise<unknown>) =>
+          target.begin(async (tx) => {
+            await tx`set local statement_timeout='8s'`;
+            pid = (await tx`select pg_backend_pid() pid`)[0]!.pid;
+            let paused = false;
+            return body(
+              new Proxy(tx, {
+                apply(query, receiver, args) {
+                  const pending = Reflect.apply(query, receiver, args);
+                  const sql = Array.isArray(args[0]) ? args[0].join(' ') : '';
+                  if (
+                    !paused &&
+                    sql.includes('from allrice_runtime_policy_controls')
+                  ) {
+                    paused = true;
+                    // Ledger create and approval creation are distinct real
+                    // transactions; count each only once, even with rechecks.
+                    if (++policyTransactions !== pausePolicyTransaction)
+                      return pending;
+                    return (async () => {
+                      const rows = await pending;
+                      ready();
+                      await resume;
+                      return rows;
+                    })();
+                  }
+                  return pending;
+                },
+              }),
+            );
+          });
+      },
+    });
+    const admission = operation(database);
+    void admission.catch(() => {});
+    let pending: Promise<T> | undefined;
+    try {
+      await Promise.race([
+        held,
+        admission.then(() => {
+          throw Error('cloud missed policy barrier');
+        }),
+      ]);
+      pending = control();
+      void pending.catch(() => {});
+      await expect
+        .poll(
+          async () => {
+            const rows = await fixture.db`select pid from pg_stat_activity
+          where datname=current_database() and ${pid}=any(pg_blocking_pids(pid)) and wait_event_type='Lock'`;
+            return rows.length;
+          },
+          { timeout: 2000, interval: 10 },
+        )
+        .toBe(1);
+    } finally {
+      release();
+      await Promise.allSettled([admission, pending]);
+    }
+    // Await original promises so neither PostgreSQL errors nor safety refusals
+    // can be swallowed by the cleanup above.
+    await admission;
+    const result = await pending!;
+    expect(
+      (
+        await fixture.db`select state from allrice_runs where id=${f.rootRunId}`
+      )[0],
+    ).toEqual({ state: 'running' });
+    expect(
+      (
+        await fixture.db`select cancel_request_id from allrice_runtime_roots where root_run_id=${f.rootRunId}`
+      )[0],
+    ).toEqual({ cancel_request_id: null });
+    expect(
+      (
+        await fixture.db`select status,cancel_requested_at from allrice_jobs where id=${f.worker.jobId}`
+      )[0],
+    ).toEqual({ status: 'running', cancel_requested_at: null });
+    return result;
+  }
+
+  it.each([
+    'create',
+    'dispatch',
+    'start',
+    'heartbeat',
+    'heartbeat with clock',
+  ] as const)(
+    '“只停止甲，乙继续云计算”：Stop claim and cloud %s both complete',
+    async (phase) => {
+      const f = await chat(),
+        c = await cloud(f);
+      const input: NativeSubagentControlInput = {
+        kind: 'interrupt',
+        requestId: randomUUID(),
+        parentSessionId: f.descriptor.nativeSessionId,
+        childSessionId: 'synthetic-child-a',
+        mode: 'continuable',
+      };
+      await enqueue(f, input);
+      if (phase === 'heartbeat with clock')
+        await fixture.db`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy)
+          values(${f.rootRunId},${f.org},${f.workspace},${fixture.db.json({ ...resolveTaskRuntimePolicy([]) })})`;
+      if (phase.startsWith('heartbeat')) await c.start();
+      const result = await alongsideCloud(
+        f,
+        async (db) => {
+          if (phase === 'create') return c.create(db);
+          const ledger = createCloudOperationLedger(c.created.principal, db);
+          if (phase === 'dispatch') {
+            const second = await c.create();
+            return ledger.dispatch({
+              scope: c.identity.scope,
+              operationId: second.snapshot.binding.attempt.operationId,
+              leaseOwner: f.worker.workerId,
+              leaseMs: 60000,
+            });
+          }
+          if (phase === 'start') return c.start(ledger);
+          return ledger.heartbeat({ ...c.identity, leaseMs: 60000 });
+        },
+        () => claimNativeSubagentControl(f.authority),
+      );
+      expect(result?.input).toEqual(input);
+      expect(
+        (
+          await fixture.db`select state,delivery_attempts from allrice_conversation_commands where id=${input.requestId}`
+        )[0],
+      ).toEqual({ state: 'claimed', delivery_attempts: 1 });
+    },
+    15000,
+  );
+
+  it.each(['request', 'approved decision'] as const)(
+    'cloud approval %s and Stop claim both complete without canceling the root',
+    async (phase) => {
+      const f = await chat(),
+        c = await cloud(f);
+      // A rule alone is insufficient: the normal member preference can allow
+      // cloud work. Use the public setting to create a real confirmation flow.
+      await updateWorkAutomation(
+        f.context,
+        f.workspace,
+        { expectedRevision: 0, capability: 'cloud', enabled: false },
+        fixture.db,
+      );
+      await f.setControls({
+        version: 1,
+        enabled: true,
+        mode: 'execute',
+        rules: [{ action: 'cloud.process.execute', effect: 'ask' }],
+      });
+      const input: NativeSubagentControlInput = {
+        kind: 'interrupt',
+        requestId: randomUUID(),
+        parentSessionId: f.descriptor.nativeSessionId,
+        childSessionId: 'synthetic-child-awaiting-cloud-approval',
+        mode: 'continuable',
+      };
+      await enqueue(f, input);
+      const approvalFor = async (
+        waiting: Awaited<ReturnType<typeof c.create>>,
+      ) => {
+        expect(waiting.snapshot.status).toBe('waiting_user');
+        const [row] = await fixture.db`select id from allrice_approval_requests
+          where resource_id=${waiting.snapshot.binding.attempt.operationId} and resource_type='runtime_operation'`;
+        return getRuntimeActionApproval(f.context, row!.id, fixture.db);
+      };
+      const registered =
+        phase === 'approved decision'
+          ? await approvalFor(await c.create())
+          : null;
+      let approvalId: string | undefined;
+      const result = await alongsideCloud(
+        f,
+        async (db) => {
+          if (!registered) {
+            const { request } = await approvalFor(await c.create(db));
+            approvalId = request.approvalId;
+            return;
+          }
+          const { request } = registered;
+          approvalId = request.approvalId;
+          await decideRuntimeActionApproval(
+            f.context,
+            request.approvalId,
+            {
+              contractVersion: 1,
+              direction: 'response',
+              kind: 'action_approval',
+              requestId: request.requestId,
+              version: request.version,
+              requestDigest: request.requestDigest,
+              task: request.task,
+              responseId: randomUUID(),
+              respondedBy: f.user,
+              respondedAt: new Date().toISOString(),
+              approvalId: request.approvalId,
+              decision: 'approved',
+            },
+            db,
+          );
+        },
+        () => claimNativeSubagentControl(f.authority),
+        // A new cloud create commits ledger admission before requesting
+        // approval. Only pause that second policy transaction in this case.
+        phase === 'request' ? 2 : 1,
+      );
+      expect(result?.input).toEqual(input);
+      expect(
+        (
+          await fixture.db`select state,delivery_attempts from allrice_conversation_commands where id=${input.requestId}`
+        )[0],
+      ).toEqual({ state: 'claimed', delivery_attempts: 1 });
+      expect(
+        (
+          await fixture.db`select status,runtime_consumed_at from allrice_approval_requests where id=${approvalId!}`
+        )[0],
+      ).toEqual({
+        status: registered ? 'approved' : 'pending',
+        runtime_consumed_at: null,
+      });
+    },
+    15000,
+  );
+
+  it.each(['submit', 'empty poll'] as const)(
+    '“甲按修正数值继续，乙继续云计算”：%s and cloud heartbeat both complete',
+    async (operation) => {
+      const f = await chat(),
+        c = await cloud(f),
+        input = prompt(f);
+      await c.start();
+      const result = await alongsideCloud<
+        | Awaited<ReturnType<typeof enqueue>>
+        | Awaited<ReturnType<typeof claimNativeSubagentControl>>
+      >(
+        f,
+        (db) =>
+          createCloudOperationLedger(c.created.principal, db).heartbeat({
+            ...c.identity,
+            leaseMs: 60000,
+          }),
+        () =>
+          operation === 'submit'
+            ? enqueue(f, input)
+            : claimNativeSubagentControl(f.authority),
+      );
+      if (operation === 'empty poll') expect(result).toBeNull();
+      else {
+        expect(result).toMatchObject({
+          requestId: input.requestId,
+          result: { status: 'recorded' },
+        });
+        expect((await claimNativeSubagentControl(f.authority))?.input).toEqual(
+          input,
+        );
+      }
+    },
+    15000,
+  );
+
+  it.each(['policy', 'membership', 'lease', 'tenant'] as const)(
+    'control and cloud admission preserve the %s refusal after a root-lock wait',
+    async (revoked) => {
+      const f = await chat(),
+        c = await cloud(f),
+        input = prompt(f);
+      await c.start();
+      await enqueue(f, input);
+      const [before] =
+        await fixture.db`select lease_expires_at from allrice_runtime_operations where id=${c.identity.operationId}`;
+      const scope =
+        revoked === 'tenant'
+          ? { ...f.authority.scope, organizationId: randomUUID() }
+          : f.authority.scope;
+      let pending: ReturnType<typeof claimNativeSubagentControl> | undefined;
+      try {
+        await fixture.db.begin(async (tx) => {
+          const [holder] =
+            await tx`select pg_backend_pid() pid,root_run_id from allrice_runtime_roots
+            where root_run_id=${f.rootRunId} for update`;
+          pending = claimNativeSubagentControl({ ...f.authority, scope });
+          void pending.catch(() => {});
+          // Cross-tenant scope must fail without discovering or waiting on this root.
+          if (revoked === 'tenant') return;
+          await expect
+            .poll(
+              async () => {
+                const rows = await fixture.db`select pid from pg_stat_activity
+              where datname=current_database() and ${holder!.pid}=any(pg_blocking_pids(pid))`;
+                return rows.length;
+              },
+              { timeout: 2000, interval: 10 },
+            )
+            .toBe(1);
+          if (revoked === 'policy')
+            await tx`update allrice_runtime_policy_controls set version=2,controls=${tx.json(
+              {
+                version: 2,
+                enabled: false,
+                mode: 'execute',
+                rules: [],
+              },
+            )} where organization_id=${f.org} and workspace_id=${f.workspace}`;
+          if (revoked === 'membership')
+            await tx`update allrice_memberships set active=false where id=${f.membership}`;
+          if (revoked === 'lease')
+            await tx`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${f.worker.jobId}`;
+        });
+      } finally {
+        await Promise.allSettled([pending]);
+      }
+      await expect(pending).rejects.toThrow();
+      const ledger = createCloudOperationLedger(
+        { ...c.created.principal, organizationId: scope.organizationId },
+        fixture.db,
+      );
+      await expect(
+        ledger.heartbeat({ ...c.identity, leaseMs: 60000 }),
+      ).rejects.toThrow();
+      expect(
+        (
+          await fixture.db`select state,delivery_attempts from allrice_conversation_commands where id=${input.requestId}`
+        )[0],
+      ).toEqual({ state: 'pending', delivery_attempts: 0 });
+      expect(
+        (
+          await fixture.db`select lease_expires_at from allrice_runtime_operations where id=${c.identity.operationId}`
+        )[0],
+      ).toEqual(before);
+    },
+  );
   const close = (f: Chat) =>
     releaseConversationRuntime({
       organizationId: f.org,
