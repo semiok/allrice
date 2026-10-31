@@ -87,6 +87,7 @@ type Scenario = {
     sizeBytes: number;
   }[];
   uploadGate?: Promise<void>;
+  firstUploadFails?: boolean;
   parentAvailable?: boolean;
 };
 function result(
@@ -165,6 +166,13 @@ suite('native child Stop request identity and truthful receipts', () => {
         };
         file.sizeBytes = Buffer.from(file.contentBase64, 'base64').length;
         scenario.uploads.push(file);
+        if (scenario.firstUploadFails && scenario.uploads.length === 1) {
+          res.writeHead(500, { 'content-type': 'application/json' });
+          res.end(
+            JSON.stringify({ error: { message: 'fixture upload failed' } }),
+          );
+          return;
+        }
         await scenario.uploadGate;
         res.writeHead(201, { 'content-type': 'application/json' });
         res.end(
@@ -485,12 +493,18 @@ suite('native child Stop request identity and truthful receipts', () => {
   const receipt = (page: Page) =>
     detail(page).locator('[aria-label="Stop 回执"]');
 
-  async function pasteImage(page: Page, mixed = false, drop = false) {
+  async function pasteImage(
+    page: Page,
+    mixed = false,
+    drop = false,
+    pasted = '',
+  ) {
     await detail(page)
       .getByRole('textbox')
       .evaluate(
-        (element, { mixed, drop }) => {
+        (element, { mixed, drop, pasted }) => {
           const transfer = new DataTransfer();
+          if (pasted) transfer.setData('text/plain', pasted);
           const data = Uint8Array.from(
             atob(
               'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQImWP4z8AAAAMBAQCc479ZAAAAAElFTkSuQmCC',
@@ -518,19 +532,23 @@ suite('native child Stop request identity and truthful receipts', () => {
                 }),
           );
         },
-        { mixed, drop },
+        { mixed, drop, pasted },
       );
   }
   it('“图文 Queue，再纯图 Steer”：shared paste/drop, native keys and readable original receipts without persisted payloads', async () => {
     const { page, scenario, errors } = await open();
     try {
       const input = detail(page).getByRole('textbox');
-      await input.fill('请核对这张图片');
+      await input.fill('请核对待替换图片');
       await pasteImage(page, true);
       expect(
         await detail(page).getByRole('group', { name: '待发送附件' }).count(),
       ).toBe(0);
-      await pasteImage(page);
+      await input.evaluate((element: HTMLTextAreaElement) =>
+        element.setSelectionRange(3, 6),
+      );
+      await pasteImage(page, false, false, '这张');
+      await expect.poll(() => input.inputValue()).toBe('请核对这张图片');
       await detail(page)
         .getByRole('button', { name: '移除 补充.png' })
         .waitFor();
@@ -563,6 +581,16 @@ suite('native child Stop request identity and truthful receipts', () => {
         .poll(() => receipts.textContent())
         .toContain('请核对这张图片');
       await expect.poll(() => receipts.locator('img').count()).toBe(1);
+      await expect
+        .poll(() =>
+          receipts
+            .locator('img')
+            .evaluate(
+              (image: HTMLImageElement) =>
+                image.complete && image.naturalWidth === 1,
+            ),
+        )
+        .toBe(true);
       expect(await receipts.textContent()).toContain(
         '消息已被原生接收；不代表已经处理',
       );
@@ -578,12 +606,43 @@ suite('native child Stop request identity and truthful receipts', () => {
         delivery: 'steer',
         content: [{ type: 'image', objectId: scenario.uploads[1]!.id }],
       });
+      await expect.poll(() => input.isEnabled()).toBe(true);
+      await input.fill('修饰点击仍Queue');
+      await detail(page)
+        .getByRole('button', { name: 'Queue', exact: true })
+        .click({ modifiers: ['Meta'] });
+      await expect.poll(() => scenario.posts.length).toBe(3);
+      expect(scenario.posts[2]?.input).toMatchObject({
+        kind: 'prompt',
+        delivery: 'queue',
+        content: [{ type: 'text', text: '修饰点击仍Queue' }],
+      });
       const stored = await page.evaluate(() =>
         Object.values(sessionStorage).join('\n'),
       );
       expect(stored).not.toContain('请核对这张图片');
       expect(stored).not.toContain('contentBase64');
       expect(stored).not.toContain(scenario.uploads[0]!.id);
+      await page.reload();
+      await show(page, '甲');
+      const original = detail(page).locator('[aria-label="发送回执"]').first();
+      await original.getByRole('button', { name: '查看回执' }).click();
+      await expect
+        .poll(() => original.textContent())
+        .toContain('请核对这张图片');
+      await expect.poll(() => original.locator('img').count()).toBe(1);
+      await expect
+        .poll(() =>
+          original
+            .locator('img')
+            .evaluate(
+              (image: HTMLImageElement) =>
+                image.complete && image.naturalWidth === 1,
+            ),
+        )
+        .toBe(true);
+      expect(scenario.posts).toHaveLength(3);
+      expect(scenario.gets).toEqual([scenario.posts[0]!.input.requestId]);
       expect(errors).toEqual([]);
     } finally {
       await page.close();
@@ -631,6 +690,47 @@ suite('native child Stop request identity and truthful receipts', () => {
           .getByRole('button', { name: 'Queue', exact: true })
           .isDisabled(),
       ).toBe(true);
+    } finally {
+      release();
+      await page.close();
+    }
+  });
+
+  it('“A失败但B仍上传”：waits for the whole upload batch and reuses B on the next explicit Send', async () => {
+    const { page, scenario } = await open();
+    let release!: () => void;
+    scenario.firstUploadFails = true;
+    scenario.uploadGate = new Promise<void>((done) => {
+      release = done;
+    });
+    try {
+      await pasteImage(page);
+      await pasteImage(page);
+      const queue = detail(page).getByRole('button', {
+        name: 'Queue',
+        exact: true,
+      });
+      await expect
+        .poll(() =>
+          detail(page).getByRole('button', { name: '移除 补充.png' }).count(),
+        )
+        .toBe(2);
+      await queue.click();
+      await expect.poll(() => scenario.uploads.length).toBe(2);
+      expect(await queue.isDisabled()).toBe(true);
+      expect(scenario.posts).toHaveLength(0);
+      release();
+      await expect.poll(() => queue.isEnabled()).toBe(true);
+      await queue.click();
+      await expect.poll(() => scenario.posts.length).toBe(1);
+      expect(scenario.uploads).toHaveLength(3);
+      expect(scenario.posts[0]?.input).toMatchObject({
+        kind: 'prompt',
+        content: [
+          { type: 'image', objectId: scenario.uploads[2]!.id },
+          { type: 'image', objectId: scenario.uploads[1]!.id },
+        ],
+      });
     } finally {
       release();
       await page.close();

@@ -204,6 +204,19 @@ export function ChatComposerInput({
           );
           if (!files.length) return;
           event.preventDefault();
+          const pasted = event.clipboardData.getData('text/plain');
+          if (imageOnly && pasted) {
+            const { selectionStart, selectionEnd } = event.currentTarget;
+            onDraftChange(
+              draft.slice(0, selectionStart) +
+                pasted +
+                draft.slice(selectionEnd),
+            );
+            const caret = selectionStart + pasted.length;
+            requestAnimationFrame(() =>
+              composerInput.current?.setSelectionRange(caret, caret),
+            );
+          }
           onUploadAttachments(files);
         }}
         onDragOver={(event) => {

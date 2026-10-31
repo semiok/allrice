@@ -343,12 +343,17 @@ export function NativeSubagentControls({
     setError('');
     const captured = identity;
     try {
-      const images = await Promise.all(
+      const uploaded = await Promise.allSettled(
         attachments.pendingAttachments.map((image) =>
           attachments.persistPendingAttachment(image, controls.sessionId),
         ),
       );
       if (current.current !== captured) return;
+      const failed = uploaded.find((result) => result.status === 'rejected');
+      if (failed?.status === 'rejected') throw failed.reason;
+      const images = uploaded.flatMap((result) =>
+        result.status === 'fulfilled' ? [result.value] : [],
+      );
       const submitted = await controls.send(
         root,
         child,
@@ -442,13 +447,13 @@ export function NativeSubagentControls({
               (!draft.trim() && !attachments.pendingAttachments.length)
             }
             onClick={(event) => {
-              if (event.detail < 2) void send(event.ctrlKey !== event.metaKey);
+              if (event.detail < 2) void send(false);
             }}
           >
             {child.running === true ? 'Queue' : '发送'}
           </Button>
           {child.running === true && (
-            <small>Enter / 点击：Queue；Ctrl / ⌘ + Enter / 点击：Steer</small>
+            <small>Enter / 点击：Queue；Ctrl / ⌘ + Enter：Steer</small>
           )}
           {error && <p role="alert">{error}</p>}
           <AttachmentPreviewDialog
