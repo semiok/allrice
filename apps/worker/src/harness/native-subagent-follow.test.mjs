@@ -85,6 +85,7 @@ function fixture(detail = true) {
   };
   const input = {
     childId: detail ? 'child' : undefined,
+    liveOnly: true,
     signal: abort.signal,
     check: vi.fn(async () => {}),
     readSummary: vi.fn(async () => summary),

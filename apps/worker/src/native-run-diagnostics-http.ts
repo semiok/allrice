@@ -176,6 +176,7 @@ export function createNativeRunDiagnosticsHttpHandler(
             .resolve('dsh')
             .nativeSubagentFollow?.(target, {
               childId: input.childId,
+              liveOnly: input.liveOnly,
               signal,
               check,
               readSummary: () => subagents.read(target, signal, false),

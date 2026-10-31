@@ -1114,7 +1114,106 @@ suite(
         await Promise.all([a.result, b.result]);
       }
     }, 30_000);
-    it('keeps directory follow liveOnly, rejects foreign children/owners, and clears a changed runtime owner', async () => {
+    it('keeps prepared replies in the full directory while a sibling runs and after both settle', async () => {
+      // User intent: 打开已完成甲和运行中乙的目录，结束后仍能看各自摘要。
+      const entered = gate(),
+        finish = gate();
+      const f = await chat(
+        true,
+        async (request, n) => {
+          if (n === 2) {
+            entered.resolve();
+            await hold(request.signal, finish);
+          }
+          return text(n === 1 ? '21' : '55');
+        },
+        false,
+      );
+      const a = await f.h.spawn(f.h.root, '甲', { delivery: 'caller' });
+      await a.result;
+      const b = await f.h.spawn(f.h.root, '乙', { delivery: 'caller' });
+      const abort = new AbortController();
+      try {
+        await entered.promise;
+        const { pool, runtime } = await hotHost(f),
+          api = await start(f);
+        const spies = ['acquire', 'lease', 'touch'].map((key) =>
+          vi.spyOn(pool, key),
+        );
+        const create = vi.spyOn(f.h.ctx.sessions, 'create'),
+          activity = runtime.lastActivityAt,
+          sql = await writes(f);
+        const expectedA = {
+          kind: 'child',
+          id: a.childId,
+          label: '甲',
+          lastReply: '21',
+          running: null,
+          activity: 'inactive',
+          observation: { source: 'prepared' },
+        };
+        const point = await (await web(f)).json();
+        const stream = consume(
+          await web(f, f.token, '&follow=true', abort.signal),
+        );
+        const first = await stream.until((e) => e.type === 'directory');
+        expect(first.summary).toEqual(point.summary);
+        expect(first.summary.root.source).toBe('live');
+        expect(first.summary.descendants).toMatchObject([
+          expectedA,
+          { id: b.childId, label: '乙', running: true },
+        ]);
+        finish.resolve();
+        await b.result;
+        const final = await stream.until(
+          (e) =>
+            e.type === 'directory' &&
+            e.summary.descendants.some(
+              (row) =>
+                row.kind === 'child' &&
+                row.id === b.childId &&
+                row.lastReply === '55' &&
+                row.observation.source === 'prepared',
+            ),
+        );
+        expect(final.summary.descendants).toMatchObject([
+          expectedA,
+          {
+            kind: 'child',
+            id: b.childId,
+            label: '乙',
+            lastReply: '55',
+            running: null,
+            observation: { source: 'prepared' },
+          },
+        ]);
+        await stream.reader.cancel();
+        const stored = await files(f.descriptor.storageNamespace);
+        const reopened = consume(
+          await web(f, f.token, '&follow=true', abort.signal),
+        );
+        expect(
+          (await reopened.until((e) => e.type === 'directory')).summary,
+        ).toEqual(final.summary);
+        expect(await files(f.descriptor.storageNamespace)).toEqual(stored);
+        expect(await writes(f)).toEqual(sql);
+        expect(f.h.ctx.sessions.get(a.childId)).toBeUndefined();
+        expect(f.h.ctx.sessions.get(b.childId)).toBeUndefined();
+        expect(f.h.calls).toHaveLength(2);
+        expect(create).not.toHaveBeenCalled();
+        for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+        expect(runtime.lastActivityAt).toBe(activity);
+        expect(api.read.mock.calls.every((args) => args[2] === false)).toBe(
+          true,
+        );
+        await reopened.reader.cancel();
+      } finally {
+        abort.abort();
+        finish.resolve();
+        await b.result;
+      }
+    }, 30_000);
+    it('keeps explicit directory probes liveOnly, rejects foreign children/owners, and clears a changed runtime owner', async () => {
       const f = await chat();
       const { pool, runtime } = await hotHost(f),
         api = await start(f),
@@ -1126,7 +1225,12 @@ suite(
       const observe = vi.spyOn(f.h.ctx.sessionQuery, 'observeSession');
       try {
         const response = consume(
-          await web(f, f.token, '&follow=true', controller.signal),
+          await web(
+            f,
+            f.token,
+            '&follow=true&liveOnly=true',
+            controller.signal,
+          ),
         );
         const initial = await response.until((e) => e.type === 'directory');
         const cold = initial.summary.descendants[0];
@@ -1171,43 +1275,55 @@ suite(
       expect(await files(f.descriptor.storageNamespace)).toEqual(afterClose);
       expect(api.read).not.toHaveBeenCalled();
     }, 30_000);
-    it('rejects changed configured namespace/current distribution before follow reads and clears a business generation switch', async () => {
-      const f = await chat(),
-        { runtime } = await hotHost(f),
-        api = await start(f),
-        controller = new AbortController();
-      const summary = vi.spyOn(runtime.client, 'nativeSubagentSummary');
-      const launch = artifact.currentDshNativeLaunch('restricted');
-      vi.stubEnv('ALLRICE_DSH_RUNTIME_ROOT', join(directory, 'other'));
-      expect((await web(f, f.token, '&follow=true')).status).toBe(503);
-      vi.stubEnv('ALLRICE_DSH_RUNTIME_ROOT', directory);
-      vi.mocked(artifact.currentDshNativeLaunch).mockReturnValue({
-        ...launch,
-        generation: 'another-generation',
-      });
-      expect((await web(f, f.token, '&follow=true')).status).toBe(503);
-      expect(summary).not.toHaveBeenCalled();
-      expect(f.listeners.size).toBe(0);
-      vi.mocked(artifact.currentDshNativeLaunch).mockReturnValue(launch);
-      try {
-        const consumer = consume(
-          await web(f, f.token, '&follow=true', controller.signal),
-        );
-        await consumer.until((e) => e.type === 'directory');
-        await fixture.db`update allrice_conversation_runtimes set thread_generation=thread_generation+1 where session_id=${f.session}`;
-        for (const listener of f.listeners)
-          listener({
-            method: 'session.status',
-            params: { sessionId: f.h.root.id },
-          });
-        await consumer.until((e) => e.type === 'clear');
-        expect((await consumer.reader.read()).done).toBe(true);
+    it.each([true, false])(
+      'rejects changed namespace/distribution and clears a business generation switch (liveOnly=%s)',
+      async (liveOnly) => {
+        const f = await chat(),
+          { runtime } = await hotHost(f),
+          api = await start(f),
+          controller = new AbortController();
+        const summary = vi.spyOn(runtime.client, 'nativeSubagentSummary');
+        const query = `&follow=true${liveOnly ? '&liveOnly=true' : ''}`;
+        const launch = artifact.currentDshNativeLaunch('restricted');
+        vi.stubEnv('ALLRICE_DSH_RUNTIME_ROOT', join(directory, 'other'));
+        expect((await web(f, f.token, query)).status).toBe(503);
+        vi.stubEnv('ALLRICE_DSH_RUNTIME_ROOT', directory);
+        vi.mocked(artifact.currentDshNativeLaunch).mockReturnValue({
+          ...launch,
+          generation: 'another-generation',
+        });
+        expect((await web(f, f.token, query)).status).toBe(503);
+        expect(summary).not.toHaveBeenCalled();
         expect(f.listeners.size).toBe(0);
-        expect(api.read).not.toHaveBeenCalled();
-      } finally {
-        controller.abort();
-      }
-    }, 30_000);
+        vi.mocked(artifact.currentDshNativeLaunch).mockReturnValue(launch);
+        try {
+          const consumer = consume(
+            await web(f, f.token, query, controller.signal),
+          );
+          await consumer.until((e) => e.type === 'directory');
+          await fixture.db`update allrice_conversation_runtimes set thread_generation=thread_generation+1 where session_id=${f.session}`;
+          for (const listener of f.listeners)
+            listener({
+              method: 'session.status',
+              params: { sessionId: f.h.root.id },
+            });
+          await consumer.until((e) => e.type === 'clear');
+          expect((await consumer.reader.read()).done).toBe(true);
+          expect(f.listeners.size).toBe(0);
+          expect(
+            consumer.events.filter((event) => event.type === 'directory'),
+          ).toHaveLength(1);
+          if (liveOnly) expect(api.read).not.toHaveBeenCalled();
+          else
+            expect(api.read.mock.calls.every((args) => args[2] === false)).toBe(
+              true,
+            );
+        } finally {
+          controller.abort();
+        }
+      },
+      30_000,
+    );
     it('cancels a blocked real HTTP writer on bounded notification overflow without touching Host execution', async () => {
       const f = await chat(),
         { runtime } = await hotHost(f),
@@ -1235,7 +1351,12 @@ suite(
         });
       try {
         const consumer = consume(
-          await web(f, f.token, '&follow=true', controller.signal),
+          await web(
+            f,
+            f.token,
+            '&follow=true&liveOnly=true',
+            controller.signal,
+          ),
         );
         await blocked.promise;
         await consumer.until((e) => e.type === 'directory');

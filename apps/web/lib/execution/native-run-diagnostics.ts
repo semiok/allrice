@@ -126,11 +126,20 @@ export function requestNativeSubagentSummary(
 }
 
 export function requestNativeSubagentFollow(
-  input: NativeReadInput & { sessionId: string; childId?: string },
+  input: NativeReadInput & {
+    sessionId: string;
+    childId?: string;
+    liveOnly?: boolean;
+  },
 ) {
   return requestNativeRead(
     input,
-    { sessionId: input.sessionId, childId: input.childId, follow: true },
+    {
+      sessionId: input.sessionId,
+      childId: input.childId,
+      liveOnly: input.liveOnly,
+      follow: true,
+    },
     async (response) => {
       if (
         !response.body ||
