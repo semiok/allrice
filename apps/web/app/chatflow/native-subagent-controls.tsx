@@ -343,17 +343,14 @@ export function NativeSubagentControls({
     setError('');
     const captured = identity;
     try {
-      const uploaded = await Promise.allSettled(
-        attachments.pendingAttachments.map((image) =>
-          attachments.persistPendingAttachment(image, controls.sessionId),
-        ),
-      );
-      if (current.current !== captured) return;
-      const failed = uploaded.find((result) => result.status === 'rejected');
-      if (failed?.status === 'rejected') throw failed.reason;
-      const images = uploaded.flatMap((result) =>
-        result.status === 'fulfilled' ? [result.value] : [],
-      );
+      const images: Attachment[] = [];
+      // One in-flight upload keeps this batch from consuming the HTTP/1 pool.
+      for (const image of attachments.pendingAttachments) {
+        images.push(
+          await attachments.persistPendingAttachment(image, controls.sessionId),
+        );
+        if (current.current !== captured) return;
+      }
       const submitted = await controls.send(
         root,
         child,
@@ -411,9 +408,7 @@ export function NativeSubagentControls({
       {reason && <p role="status">{reason}</p>}
       {child?.mode === 'continuable' && (
         <>
-          {!reason && sendReason && (
-            <p role="status">{sendReason}</p>
-          )}
+          {!reason && sendReason && <p role="status">{sendReason}</p>}
           <ChatComposerInput
             employeeName={child.title || '子任务'}
             draft={draft}

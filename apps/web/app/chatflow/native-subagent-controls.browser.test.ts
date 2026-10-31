@@ -87,7 +87,7 @@ type Scenario = {
     sizeBytes: number;
   }[];
   uploadGate?: Promise<void>;
-  firstUploadFails?: boolean;
+  failedUpload?: number;
   parentAvailable?: boolean;
 };
 function result(
@@ -166,7 +166,7 @@ suite('native child Stop request identity and truthful receipts', () => {
         };
         file.sizeBytes = Buffer.from(file.contentBase64, 'base64').length;
         scenario.uploads.push(file);
-        if (scenario.firstUploadFails && scenario.uploads.length === 1) {
+        if (scenario.uploads.length === scenario.failedUpload) {
           res.writeHead(500, { 'content-type': 'application/json' });
           res.end(
             JSON.stringify({ error: { message: 'fixture upload failed' } }),
@@ -696,10 +696,10 @@ suite('native child Stop request identity and truthful receipts', () => {
     }
   });
 
-  it('“A失败但B仍上传”：waits for the whole upload batch and reuses B on the next explicit Send', async () => {
+  it('“逐张上传，A成功后B失败”：keeps one upload in flight and reuses A on the next explicit Send', async () => {
     const { page, scenario } = await open();
     let release!: () => void;
-    scenario.firstUploadFails = true;
+    scenario.failedUpload = 2;
     scenario.uploadGate = new Promise<void>((done) => {
       release = done;
     });
@@ -716,6 +716,13 @@ suite('native child Stop request identity and truthful receipts', () => {
         )
         .toBe(2);
       await queue.click();
+      await expect.poll(() => scenario.uploads.length).toBe(1);
+      expect(await queue.isDisabled()).toBe(true);
+      expect(
+        await detail(page).getByText('上传中', { exact: true }).count(),
+      ).toBe(1);
+      expect(scenario.posts).toHaveLength(0);
+      release();
       await expect.poll(() => scenario.uploads.length).toBe(2);
       await expect
         .poll(() =>
@@ -724,18 +731,16 @@ suite('native child Stop request identity and truthful receipts', () => {
             .count(),
         )
         .toBe(1);
-      expect(await queue.isDisabled()).toBe(true);
-      expect(scenario.posts).toHaveLength(0);
-      release();
       await expect.poll(() => queue.isEnabled()).toBe(true);
+      expect(scenario.posts).toHaveLength(0);
       await queue.click();
       await expect.poll(() => scenario.posts.length).toBe(1);
       expect(scenario.uploads).toHaveLength(3);
       expect(scenario.posts[0]?.input).toMatchObject({
         kind: 'prompt',
         content: [
+          { type: 'image', objectId: scenario.uploads[0]!.id },
           { type: 'image', objectId: scenario.uploads[2]!.id },
-          { type: 'image', objectId: scenario.uploads[1]!.id },
         ],
       });
     } finally {
