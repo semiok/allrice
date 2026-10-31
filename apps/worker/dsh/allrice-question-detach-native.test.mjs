@@ -970,6 +970,21 @@ describe('detach failure and ingress interleavings on the real host', () => {
       expect(closeFailure.errors).toHaveLength(1);
       expect(closeFailure.errors[0]).toBe(failure);
       expect(h.server.phase).toBe('failed');
+      expect(h.ctx.agents.get(h.sessionId)).toBeUndefined();
+      expect(h.ctx.sessions.get(h.sessionId)).toBeUndefined();
+      const journal = await h.journal(h.sessionId);
+      const results = journal.filter((event) => event.type === 'tool/result');
+      expect(results).toHaveLength(1);
+      expect(results[0].data).toMatchObject({ error: { code: 'ASK_ABORTED' } });
+      expect(
+        journal.findLast((event) => event.type === 'turn/end').data,
+      ).toMatchObject({
+        reason: {
+          kind: 'aborted',
+          reason: { kind: stage === 'cancel' ? 'disposed' : 'user' },
+        },
+      });
+      await expect(h.server.closeRoot(h.sessionId)).rejects.toBe(closeFailure);
       // The production shutdown coordinator always attempts root disposal,
       // even when SDK shutdown failed; no cleanup success receipt is invented.
       await h.ctx.root.fiber.dispose();
@@ -980,39 +995,76 @@ describe('detach failure and ingress interleavings on the real host', () => {
     },
   );
 
-  it('keeps the question pending while native descendants drain, then records cancellation through DSH', async () => {
-    const h = await blockedHost();
-    const entered = barrier(),
-      gate = barrier();
-    const drain = h.ctx.subagents.drainDescendants.bind(h.ctx.subagents);
-    vi.spyOn(h.ctx.subagents, 'drainDescendants').mockImplementation(
-      async (parents) => {
-        entered.release();
-        await gate.promise;
-        return drain(parents);
-      },
-    );
-    const closing = h.server.shutdown();
-    try {
-      await entered.promise;
-      expect(h.server.pendingUserQuestions.has(h.sessionId)).toBe(true);
-      expect(h.events().some((e) => e.type === 'tool/result')).toBe(false);
-      expect(h.requests).toHaveLength(1);
-      gate.release();
-      await closing;
-      const results = (await h.journal(h.sessionId)).filter(
-        (e) =>
-          e.type === 'tool/result' &&
-          e.data.message.toolCallId === h.askCall().data.callId,
+  it.each([
+    'shutdown',
+    'session/close',
+    'session/interrupt',
+    'session/recover',
+  ])(
+    '%s keeps the question pending while native descendants drain, then records cancellation through DSH',
+    async (method) => {
+      const h = await blockedHost();
+      const entered = barrier(),
+        gate = barrier();
+      const drain = h.ctx.subagents.drainDescendants.bind(h.ctx.subagents);
+      vi.spyOn(h.ctx.subagents, 'drainDescendants').mockImplementation(
+        async (parents) => {
+          entered.release();
+          await gate.promise;
+          return drain(parents);
+        },
       );
-      expect(results).toHaveLength(1);
-      expect(results[0].data).toMatchObject({ error: { code: 'ASK_ABORTED' } });
-      expect(h.requests).toHaveLength(1);
-    } finally {
-      gate.release();
-      await closing;
-    }
-  });
+      const closing =
+        method === 'shutdown'
+          ? h.server.shutdown()
+          : h.server.handleRequest(method, { sessionId: h.sessionId });
+      try {
+        await entered.promise;
+        expect(h.server.pendingUserQuestions.has(h.sessionId)).toBe(true);
+        expect(h.events().some((e) => e.type === 'tool/result')).toBe(false);
+        expect(h.requests).toHaveLength(1);
+        gate.release();
+        const outcome = await closing;
+        const journal = await h.journal(h.sessionId);
+        const results = journal.filter(
+          (e) =>
+            e.type === 'tool/result' &&
+            e.data.message.toolCallId === h.askCall().data.callId,
+        );
+        expect(results).toHaveLength(1);
+        expect(results[0].data).toMatchObject({
+          error: { code: 'ASK_ABORTED' },
+        });
+        expect(
+          journal.findLast((event) => event.type === 'turn/end').data,
+        ).toMatchObject({
+          reason: { kind: 'aborted', reason: { kind: 'user' } },
+        });
+        expect(h.server.pendingUserQuestions.has(h.sessionId)).toBe(false);
+        if (method === 'session/interrupt' || method === 'session/recover') {
+          expect(outcome).toMatchObject(
+            method === 'session/interrupt'
+              ? { interrupted: true }
+              : { recovered: true },
+          );
+          const restored = h.server.requireRoot(h.sessionId).agent;
+          expect(restored).not.toBe(h.agent);
+          expect(
+            restored.session.snapshotEvents().slice(0, journal.length),
+          ).toEqual(journal);
+          await h.server.waitRoot(h.sessionId);
+        } else {
+          expect(h.server.phase).toBe('closed');
+          expect(h.ctx.agents.get(h.sessionId)).toBeUndefined();
+          expect(h.ctx.sessions.get(h.sessionId)).toBeUndefined();
+        }
+        expect(h.requests).toHaveLength(1);
+      } finally {
+        gate.release();
+        await closing;
+      }
+    },
+  );
 
   it('a previously admitted legacy park cannot cancel after detach commits', async () => {
     const h = await blockedHost();

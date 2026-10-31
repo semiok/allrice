@@ -309,17 +309,23 @@ export class AllRiceSdkRoot {
       };
       if (agent) {
         await settle(() => this.ctx.subagents?.drainDescendants([agent]));
-        await settle(() => agent.cancel({ kind: 'user' }));
-        // Let native cancellation settle the question before clearing its UI;
-        // rejecting it before async drain loses DSH's ASK_ABORTED taxonomy.
-        await settle(() =>
-          this.clearRootQuestion?.(sessionId, 'Session closing'),
-        );
-        await settle(() => agent.whenIdle());
-        await settle(() => this.taskProgress?.flush());
+        await settle(async () => {
+          await agent.cancel({ kind: 'user' });
+          await agent.whenIdle();
+        });
+        // Flush while the Session is live. Native handle disposal below drains
+        // any final events even when explicit cancellation could not complete.
         await settle(() => this.ctx.sessions.flush(agent.session));
       }
       await settle(() => this.sdk.shutdown());
+      if (agent) {
+        // Ownership teardown must stop the turn before rejecting a UI waiter;
+        // otherwise a failed cancel can turn that rejection into another step.
+        await settle(() =>
+          this.clearRootQuestion?.(sessionId, 'Session closing'),
+        );
+        await settle(() => this.taskProgress?.flush());
+      }
       await settle(() => this.nativeAccounting?.flush());
       if (failures.length)
         throw new AggregateError(

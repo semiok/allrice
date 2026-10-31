@@ -23,6 +23,7 @@ import * as JsonlPersistence from '@deepseek-ai/dsh-session-persistence-jsonl';
 import TokenMeter from '@deepseek-ai/dsh-token-meter';
 import BasicCompaction from '@deepseek-ai/dsh-compaction-basic';
 import { AllRiceSdkRoot } from './allrice-sdk-root.mjs';
+import { readStoredDshSession } from './allrice-session-compatibility.mjs';
 import './allrice-dsh-inputs.mjs';
 import './allrice-dsh-waits.mjs';
 
@@ -341,42 +342,57 @@ it('a close paused in receipt flush rejects compact before it can start maintena
   expect(h.ctx.agents.roots()).toHaveLength(0);
 });
 
-it('a failed receipt flush still tears down native ownership and never confirms a later close', async () => {
-  const h = await host(),
-    id = 'failed-receipt-close';
-  await h.server.ensureRoot(id);
-  const receiptFailure = Error('synthetic_receipt_write_failed');
-  const flush = vi.fn(async () => {
-    throw receiptFailure;
-  });
-  h.server.taskProgress = { flush };
-  const accounting = vi.fn(async () => {});
-  h.server.nativeAccounting = { flush: accounting };
-  const sdkShutdown = vi.spyOn(h.server.sdk, 'shutdown');
-  const sessionFlush = vi.spyOn(h.ctx.sessions, 'flush');
-  const failure = await h.server.closeRoot(id).catch((error) => error);
-  expect(failure).toBeInstanceOf(AggregateError);
-  expect(failure.errors).toContain(receiptFailure);
-  expect(sessionFlush).toHaveBeenCalled();
-  expect(accounting).toHaveBeenCalledOnce();
-  expect(h.ctx.agents.roots()).toHaveLength(0);
-  expect(h.server.phase).toBe('failed');
-  // Teardown removed the native record; that cannot erase the failed ledger
-  // receipt when the adapter follows an interrupt with public shutdown.
-  await expect(h.server.closeRoot(id)).rejects.toBe(failure);
-  const disposed = vi.fn();
-  const disposeFailure = Error('synthetic_listener_dispose_failed');
-  h.server.ownDisposers.push(disposed, () => {
-    throw disposeFailure;
-  });
-  await expect(h.server.shutdown()).rejects.toMatchObject({
-    errors: [failure, disposeFailure],
-  });
-  expect(disposed).toHaveBeenCalledOnce();
-  expect(flush).toHaveBeenCalledOnce();
-  expect(sdkShutdown).toHaveBeenCalledOnce();
-  expect(h.server.phase).toBe('failed');
-});
+it.each(['receipt', 'session'])(
+  'a failed %s flush still tears down native ownership and never confirms a later close',
+  async (stage) => {
+    const h = await host(),
+      id = 'failed-receipt-close';
+    const record = await h.server.ensureRoot(id);
+    await h.server.sdk.prompt({
+      sessionId: id,
+      contentBlocks: [
+        { type: 'text', text: 'Keep this completed work on close.' },
+      ],
+    });
+    await h.server.waitRoot(id);
+    const before = globalThis.structuredClone(
+      record.agent.session.snapshotEvents(),
+    );
+    const receiptFailure = Error(`synthetic_${stage}_write_failed`);
+    const flush = vi.fn(async () => {
+      if (stage === 'receipt') throw receiptFailure;
+    });
+    h.server.taskProgress = { flush };
+    const accounting = vi.fn(async () => {});
+    h.server.nativeAccounting = { flush: accounting };
+    const sdkShutdown = vi.spyOn(h.server.sdk, 'shutdown');
+    const sessionFlush = vi.spyOn(h.ctx.sessions, 'flush');
+    if (stage === 'session') sessionFlush.mockRejectedValueOnce(receiptFailure);
+    const failure = await h.server.closeRoot(id).catch((error) => error);
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(failure.errors).toContain(receiptFailure);
+    expect(sessionFlush).toHaveBeenCalled();
+    expect(accounting).toHaveBeenCalledOnce();
+    expect(h.ctx.agents.roots()).toHaveLength(0);
+    expect((await readStoredDshSession(h.ctx, id)).events).toEqual(before);
+    expect(h.server.phase).toBe('failed');
+    // Teardown removed the native record; that cannot erase the failed ledger
+    // receipt when the adapter follows an interrupt with public shutdown.
+    await expect(h.server.closeRoot(id)).rejects.toBe(failure);
+    const disposed = vi.fn();
+    const disposeFailure = Error('synthetic_listener_dispose_failed');
+    h.server.ownDisposers.push(disposed, () => {
+      throw disposeFailure;
+    });
+    await expect(h.server.shutdown()).rejects.toMatchObject({
+      errors: [failure, disposeFailure],
+    });
+    expect(disposed).toHaveBeenCalledOnce();
+    expect(flush).toHaveBeenCalledOnce();
+    expect(sdkShutdown).toHaveBeenCalledOnce();
+    expect(h.server.phase).toBe('failed');
+  },
+);
 
 it('an external close fences recovery while its preceding root drain is still pending', async () => {
   const h = await host(),

@@ -1663,7 +1663,6 @@ export async function createAllRiceRuntime(
       const sessionId = requiredSessionId(params);
       const record = this.roots.get(sessionId);
       if (!record) return { interrupted: false };
-      await this.clearRootQuestion(sessionId, 'User question was interrupted');
       discardPendingDshInputs(record.agent);
       await this.recoverRoot(sessionId);
       return { interrupted: true };
@@ -1811,7 +1810,6 @@ export async function createAllRiceRuntime(
 
     async recover(params) {
       const sessionId = requiredSessionId(params);
-      await this.clearRootQuestion(sessionId, 'Session recovery');
       const record = await this.recoverRoot(sessionId);
       return { recovered: true, sequence: record.agent.session.seq };
     }
@@ -1828,12 +1826,7 @@ export async function createAllRiceRuntime(
 
     async closeSession(params) {
       const sessionId = requiredSessionId(params);
-      const closing = this.closeRoot(sessionId);
-      await this.clearRootQuestion(
-        sessionId,
-        'Session closed while awaiting an answer',
-      );
-      return closing;
+      return this.closeRoot(sessionId);
     }
 
     async providerStatus() {
