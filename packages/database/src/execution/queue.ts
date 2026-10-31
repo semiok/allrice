@@ -2227,6 +2227,15 @@ async function retainStopReceiptLease(
 
 const technicalRevocationReason = 'platform_technical_auth_revoked';
 
+function isTechnicalRevocationStop(job: JobRow) {
+  // A public cancellation can supply arbitrary reason text. Only heartbeat
+  // writes the paired failure code while freezing this internal stop.
+  return (
+    job.cancel_reason === technicalRevocationReason &&
+    job.last_error_code === 'PLATFORM_TECHNICAL_AUTH_REVOKED'
+  );
+}
+
 function transitionUnauthorizedTechnicalJob(
   transaction: TransactionSql,
   job: JobRow,
@@ -2251,7 +2260,7 @@ async function transitionStoppedJob(
   cause: 'cancel' | 'timeout',
   disposition: 'worker_returned' | 'receipt_window_closed',
 ) {
-  if (cause === 'cancel' && job.cancel_reason === technicalRevocationReason) {
+  if (cause === 'cancel' && isTechnicalRevocationStop(job)) {
     await transitionUnauthorizedTechnicalJob(transaction, job, disposition);
   } else if (cause === 'cancel') {
     await transitionTerminal(transaction, job, {
@@ -2298,8 +2307,7 @@ async function stopJobOrDrain(
     );
   return {
     active: false as const,
-    canceled:
-      cause === 'cancel' && job.cancel_reason !== technicalRevocationReason,
+    canceled: cause === 'cancel' && !isTechnicalRevocationStop(job),
     draining: !!deadline,
     drainDeadlineAt: deadline?.toISOString(),
   };
@@ -2590,7 +2598,9 @@ async function stopUnauthorizedTechnicalJob(
     // cancellation drain without turning technical revocation into canceled.
     const [stopped] = await transaction<JobRow[]>`update allrice_jobs
       set cancel_requested_at=coalesce(cancel_requested_at,clock_timestamp()),
-        cancel_reason=coalesce(cancel_reason,${technicalRevocationReason})
+        cancel_reason=coalesce(cancel_reason,${technicalRevocationReason}),
+        last_error_code='PLATFORM_TECHNICAL_AUTH_REVOKED',
+        last_error_message='Platform technical execution is no longer authorized'
       where id=${job.id} returning *`;
     await stopJobOrDrain(transaction, stopped!, 'cancel', drainLeaseMs);
   } else {

@@ -1199,12 +1199,21 @@ suite(
       },
     );
 
-    it.each(['cancel', 'timeout'] as const)(
+    it.each(['cancel', 'timeout', 'reserved-reason'] as const)(
       'revoked receipt drain preserves an earlier %s stop',
       async (firstStop) => {
         const s = await start(await setup());
         if (firstStop === 'cancel')
           await cancelPlatformRepositoryReview(s.admin, s.review.id);
+        else if (firstStop === 'reserved-reason')
+          await queue.cancelRun(
+            s.internal,
+            s.internal.workspaceId!,
+            s.review.runId,
+            {
+              reason: 'platform_technical_auth_revoked',
+            },
+          );
         else {
           await f.db`update allrice_task_clocks set phase='active',active_ms=(policy->>'timeoutMs')::double precision+1,changed_at=clock_timestamp() where run_id=${s.review.runId}`;
           await f.db.begin((tx) => refreshTaskClock(tx, s.review.runId));
@@ -1218,7 +1227,7 @@ suite(
           );
         expect(await beat()).toMatchObject({
           active: false,
-          canceled: firstStop === 'cancel',
+          canceled: firstStop !== 'timeout',
           draining: true,
         });
         const [first] =
@@ -1232,7 +1241,7 @@ suite(
         const [final] =
           await f.db`select status,last_error_code from allrice_jobs where id=${s.lease.jobId}`;
         expect(final).toEqual(
-          firstStop === 'cancel'
+          firstStop !== 'timeout'
             ? { status: 'canceled', last_error_code: null }
             : { status: 'failed', last_error_code: 'JOB_TIMEOUT' },
         );
