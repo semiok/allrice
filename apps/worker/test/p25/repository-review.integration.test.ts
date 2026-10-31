@@ -1299,7 +1299,7 @@ suite(
               query: expect.stringContaining(
                 ending === 'progress finish'
                   ? 'from allrice_task_calls'
-                  : 'update allrice_messages',
+                    : 'update allrice_employee_runs',
               ),
             });
           // Read DB time independently while the late statement is blocked.
