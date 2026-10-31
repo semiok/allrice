@@ -19,6 +19,7 @@ export async function controlStdio(
   {
     handle = (method, params) => h.server.handleRequest(method, params),
     requestTimeoutMs = 5_000,
+    onPeer = () => {},
   } = {},
 ) {
   const path = join(h.directory, 'control.sock');
@@ -28,6 +29,7 @@ export async function controlStdio(
     peer = new JsonRpcLineTransport(socket, socket);
     peer.onRequest(handle);
     peer.start();
+    onPeer(peer);
   });
   await new Promise((done, reject) => {
     server.once('error', reject);

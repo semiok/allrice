@@ -199,7 +199,7 @@ suite('native subagent directory and employee sidebar', () => {
       if (
         initial &&
         id === 'parent-a' &&
-        calls.filter((call) => call.id === id).length <= 2
+        calls.filter((call) => call.id === id).length <= 1
       ) {
         await initial.gate;
         await route.fulfill(
@@ -299,7 +299,7 @@ suite('native subagent directory and employee sidebar', () => {
             .map((call) => call.id)
             .sort(),
         )
-        .toEqual(['parent-a', 'parent-a', 'parent-b', 'parent-c']);
+        .toEqual(['parent-a', 'parent-b', 'parent-c']);
       expect(
         calls.filter((call) => !call.liveOnly).map((call) => call.id),
       ).toEqual([]);
@@ -579,12 +579,12 @@ suite('native subagent directory and employee sidebar', () => {
     const { page, calls } = await open(cold, 390);
     try {
       const trigger = page.locator('button[aria-haspopup="tree"]');
-      await expect.poll(() => calls.length).toBe(4);
+      await expect.poll(() => calls.length).toBe(3);
       expect(await trigger.innerText()).toBe('子智能体状态未知');
       expect(await trigger.innerText()).not.toContain('0 个运行中');
       expect(calls.every((call) => call.liveOnly)).toBe(true);
       await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-      await expect.poll(() => calls.length).toBe(8);
+      await expect.poll(() => calls.length).toBe(6);
       expect(calls.every((call) => call.liveOnly)).toBe(true);
       await trigger.click();
       await page.getByRole('button', { name: '查看idle-b摘要' }).waitFor();
@@ -857,7 +857,7 @@ suite('native subagent directory and employee sidebar', () => {
               (c) => c.fixture === fixture && c.sessionId === 'parent-a',
             ).length,
         )
-        .toBe(2);
+        .toBe(1);
       const update = summary();
       update.descendants = update.descendants.map((entry) =>
         entry.kind === 'child' && entry.parentId === update.rootId
@@ -1060,7 +1060,7 @@ suite('native subagent directory and employee sidebar', () => {
       try {
         await expect
           .poll(() => calls.filter((call) => call.id === 'parent-a').length)
-          .toBe(2);
+          .toBe(1);
         await expect
           .poll(
             () =>
@@ -1105,7 +1105,7 @@ suite('native subagent directory and employee sidebar', () => {
         await expect
           .poll(() => page.getByLabel('root事件游标').innerText())
           .toBe('root-run:2');
-        expect(calls.filter((call) => call.id === 'parent-a')).toHaveLength(2);
+        expect(calls.filter((call) => call.id === 'parent-a')).toHaveLength(1);
         feed.pushRoot(
           fixture,
           rootEvent(3, kind === 'null' ? 'request/context' : 'request/header'),
@@ -1127,16 +1127,16 @@ suite('native subagent directory and employee sidebar', () => {
                   call.fixture === fixture && call.sessionId === 'parent-a',
               ).length,
           )
-          .toBe(2);
-        expect(calls.filter((call) => call.id === 'parent-a')).toHaveLength(4);
+          .toBe(1);
+        expect(calls.filter((call) => call.id === 'parent-a')).toHaveLength(2);
         release();
-        await expect.poll(initialDelivered).toBe(2);
+        await expect.poll(initialDelivered).toBe(1);
         feed.pushRoot(fixture, rootEvent(4, 'request/context'));
         feed.pushRoot(fixture, rootEvent(5, 'assistant/message'));
         await expect
           .poll(() => page.getByLabel('root事件游标').innerText())
           .toBe('root-run:5');
-        expect(calls.filter((call) => call.id === 'parent-a')).toHaveLength(4);
+        expect(calls.filter((call) => call.id === 'parent-a')).toHaveLength(2);
         expect(await row(page, 'parent-a').innerText()).toContain(
           '1 个子智能体运行中',
         );
@@ -1182,7 +1182,7 @@ suite('native subagent directory and employee sidebar', () => {
         await page.evaluate(() => window.dispatchEvent(new Event('focus')));
         await expect
           .poll(() => calls.filter((call) => call.id === 'parent-a').length)
-          .toBe(6);
+          .toBe(3);
         await expect
           .poll(() => calls.filter((call) => call.id === 'parent-b').length)
           .toBe(2);

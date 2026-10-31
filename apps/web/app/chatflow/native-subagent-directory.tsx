@@ -7,6 +7,11 @@ import { AssistantMarkdown } from './assistant-markdown';
 import type { useNativeSubagents } from './use-native-subagents';
 import { useNativeSubagentFollow } from './use-native-subagent-follow';
 import { NativeSubagentProcess } from './native-subagent-process';
+import {
+  NativeSubagentControls,
+  useNativeSubagentControls,
+  type nativeSubagentControlRoot,
+} from './native-subagent-controls';
 import type { ChatPresentationPolicy } from './dsh-upstream/presentation/presentation-policy';
 import css from './native-subagent-directory.module.css';
 
@@ -44,6 +49,9 @@ export function NativeSubagentDirectory({
   headers,
   observation,
   presentation,
+  controlRoot,
+  canControl = false,
+  viewerId,
 }: {
   workspaceId: string;
   sessionId: string;
@@ -52,7 +60,16 @@ export function NativeSubagentDirectory({
     setLiveOnly: (liveOnly: boolean) => void;
   };
   presentation: ChatPresentationPolicy;
+  controlRoot?: ReturnType<typeof nativeSubagentControlRoot>;
+  canControl?: boolean;
+  viewerId?: string | null;
 }) {
+  const controls = useNativeSubagentControls(
+    workspaceId,
+    sessionId,
+    headers,
+    viewerId,
+  );
   const [open, setOpen] = useState(false),
     [pinned, setPinned] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
@@ -201,7 +218,14 @@ export function NativeSubagentDirectory({
     showCatalog(open, null);
     trigger.current?.focus();
   };
-  if (!selected && !open && summary && !direct.length) return null;
+  if (
+    !selected &&
+    !open &&
+    summary &&
+    !direct.length &&
+    !controls.attempts.length
+  )
+    return null;
   return (
     <>
       <div
@@ -306,6 +330,22 @@ export function NativeSubagentDirectory({
                 {summary && rows(summary.rootId)}
               </ul>
             )}
+            {[
+              ...new Set(
+                controls.attempts.map((a) => a.reference.input.childSessionId),
+              ),
+            ]
+              .filter(
+                (id) =>
+                  !summary?.descendants.some(
+                    (entry) => entry.kind === 'child' && entry.id === id,
+                  ),
+              )
+              .map((id) => (
+                <Button key={id} size="sm" onClick={() => close(id)}>
+                  查看{id}原请求回执
+                </Button>
+              ))}
             <Button size="sm" onClick={refresh}>
               刷新子智能体摘要
             </Button>
@@ -367,6 +407,16 @@ export function NativeSubagentDirectory({
                   ? '暂时无法读取摘要，请刷新。'
                   : '当前活动状态未知，请重新读取摘要。'}
               </p>
+            )}
+            {controlRoot !== undefined && (
+              <NativeSubagentControls
+                key={selected}
+                childId={selected}
+                child={child}
+                root={controlRoot}
+                permitted={canControl}
+                controls={controls}
+              />
             )}
             <Button size="sm" onClick={refresh}>
               刷新子智能体摘要

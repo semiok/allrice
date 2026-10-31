@@ -95,6 +95,15 @@ import {
   continueNativeWait,
 } from './allrice-dsh-waits.mjs';
 
+async function settleToolReplies(requests) {
+  try {
+    return await Promise.all(requests);
+  } catch (error) {
+    await Promise.allSettled(requests);
+    throw error;
+  }
+}
+
 export async function createAllRiceRuntime(
   transport,
   {
@@ -1432,7 +1441,7 @@ export async function createAllRiceRuntime(
               const queries = [
                 ...new Set(args.queries.map((query) => query.trim())),
               ];
-              const results = await Promise.all(
+              const results = await settleToolReplies(
                 queries.map((query, index) =>
                   this.toolBrokerRequest(
                     {
@@ -2123,8 +2132,10 @@ export async function createAllRiceRuntime(
     server.runAdmission?.attribute(params) ?? params;
   server.accountingBridge = (params, signal) =>
     transport.request('allrice/model-receipt', params, signal);
-  server.toolBrokerRequest = (params, signal) =>
-    transport.request('allrice/tool-call', attributed(params), signal);
+  server.toolBrokerRequest = (params, signal) => {
+    signal?.throwIfAborted();
+    return transport.request('allrice/tool-call', attributed(params));
+  };
   server.personalSkillBridge = (params, signal) =>
     transport.request(
       'allrice/personal-skill-check',

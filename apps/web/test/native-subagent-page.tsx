@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { createRoot } from 'react-dom/client';
 import { EmployeeSidebar } from '../app/chatflow/employee-sidebar';
 import { NativeSubagentDirectory } from '../app/chatflow/native-subagent-directory';
+import { nativeSubagentControlRoot } from '../app/chatflow/native-subagent-controls';
 import { presentationPolicyFor } from '../app/chatflow/dsh-upstream/presentation/presentation-policy';
 import {
   nativeSubagentReadyKey,
@@ -42,7 +43,13 @@ const headers = {
 function Page() {
   const [activeId, setActiveId] = useState('parent-a');
   const query = new URLSearchParams(location.search);
-  const rootEvents = query.has('root-events');
+  const controls = query.has('controls');
+  const rootEvents = controls || query.has('root-events');
+  const [controlRunId, setControlRunId] = useState(
+    '44444444-4444-4444-8444-444444444444',
+  );
+  const rootRunId = controls ? controlRunId : 'root-run';
+  const [ownerId, setOwnerId] = useState('viewer');
   const stream = useMemo(
     () =>
       createSessionRunStream({
@@ -62,10 +69,10 @@ function Page() {
   );
   useEffect(() => {
     stream.activate();
-    if (rootEvents) void stream.streamRun('root-run');
+    if (rootEvents) void stream.streamRun(rootRunId);
     return stream.deactivate;
-  }, [stream, rootEvents]);
-  const nativeReadyKey = nativeSubagentReadyKey(runViews['root-run']);
+  }, [stream, rootEvents, rootRunId]);
+  const nativeReadyKey = nativeSubagentReadyKey(runViews[rootRunId]);
   const [liveOnly, setLiveOnly] = useState(true);
   const observation = useNativeSubagents(
     'workspace',
@@ -93,6 +100,7 @@ function Page() {
           sessions={sessions}
           activeId={activeId}
           nativeReadyKey={nativeReadyKey}
+          nativeReads={observation.reads}
           collapsed={false}
           onSelectSession={setActiveId}
           onPrepareSession={() => {}}
@@ -112,6 +120,13 @@ function Page() {
                 sessionId={activeId}
                 headers={headers}
                 observation={{ ...observation, setLiveOnly }}
+                viewerId={workspace.viewerId}
+                canControl={controls && ownerId === workspace.viewerId}
+                controlRoot={
+                  controls
+                    ? nativeSubagentControlRoot(runViews[rootRunId])
+                    : undefined
+                }
                 presentation={presentation}
               />
             </div>
@@ -119,8 +134,28 @@ function Page() {
         </header>
         {rootEvents && (
           <output aria-label="root事件游标">
-            {runViews['root-run']?.cursor ?? 'empty'}
+            {runViews[rootRunId]?.cursor ?? 'empty'}
           </output>
+        )}
+        {controls && (
+          <button
+            style={{ position: 'fixed', bottom: 32, left: 0, zIndex: 90 }}
+            onClick={() =>
+              setControlRunId('55555555-5555-4555-8555-555555555555')
+            }
+          >
+            切换根运行
+          </button>
+        )}
+        {controls && (
+          <button
+            style={{ position: 'fixed', bottom: 0, left: 0, zIndex: 90 }}
+            onClick={() =>
+              setOwnerId((id) => (id === 'viewer' ? 'other' : 'viewer'))
+            }
+          >
+            切换会话所有者
+          </button>
         )}
       </section>
     </main>
