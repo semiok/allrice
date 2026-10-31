@@ -96,7 +96,6 @@ export function useNativeSubagents(
             publish(read);
             if (read?.root.source === 'live') {
               const rootId = read.rootId;
-              query.delete('liveOnly');
               query.set('follow', 'true');
               await followNativeSubagents(
                 `/api/v1/sessions/${encodeURIComponent(id)}/subagents?${query}`,

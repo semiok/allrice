@@ -8,6 +8,7 @@ import type { DshProtocolClient } from './dsh-protocol-client.js';
 
 export interface NativeSubagentFollowInput {
   childId?: string;
+  liveOnly?: boolean;
   signal: AbortSignal;
   check(signal: AbortSignal): Promise<void>;
   send(
@@ -164,10 +165,12 @@ export async function followNativeSubagent(
       });
   }, 15_000);
   const directory = async () => {
-    const summary = await read(() =>
-      client.nativeSubagentSummary(rootId, true),
+    const summary = await read(
+      input.liveOnly || input.childId
+        ? () => client.nativeSubagentSummary(rootId, true)
+        : input.readSummary,
     );
-    if (summary.rootId !== rootId || summary.root.source !== 'live')
+    if (!summary || summary.rootId !== rootId || summary.root.source !== 'live')
       throw Error('NATIVE_QUERY_SOURCE_MISMATCH');
     const selected = input.childId && known.get(input.childId);
     known = new Map([[rootId, '']]);
@@ -175,7 +178,8 @@ export async function followNativeSubagent(
     for (const row of summary.descendants)
       if (row.kind === 'child') {
         known.set(row.id, row.parentId);
-        cursors.set(row.id, row.observation.cursor);
+        if (row.observation.source === 'live')
+          cursors.set(row.id, row.observation.cursor);
       }
     // A selected durable address survives unload; cursors contain live cuts only.
     if (input.childId && selected) {

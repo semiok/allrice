@@ -49,6 +49,7 @@ export async function GET(
         workspaceId,
         sessionId: id,
         childId,
+        liveOnly,
         signal: request.signal,
       });
     const summary = await requestNativeSubagentSummary({

@@ -159,6 +159,7 @@ suite('native subagent directory and employee sidebar', () => {
   ) {
     const page = await browser.newPage({ viewport: { width, height: 850 } });
     const calls: { id: string; liveOnly: boolean }[] = [];
+    const followCalls: { id: string; liveOnly: boolean }[] = [];
     let response: NativeSubagentSummary | 'error' = value;
     const fixture = feed.register({
       summary: (id) => (id === 'parent-b' ? summary('other-root') : response),
@@ -187,6 +188,7 @@ suite('native subagent directory and employee sidebar', () => {
         id = url.pathname.split('/')[4]!,
         liveOnly = url.searchParams.get('liveOnly') === 'true';
       if (url.searchParams.get('follow') === 'true') {
+        followCalls.push({ id, liveOnly });
         url.searchParams.set('fixture', fixture);
         return route.continue({ url: String(url) });
       }
@@ -236,6 +238,7 @@ suite('native subagent directory and employee sidebar', () => {
     return {
       page,
       calls,
+      followCalls,
       fixture,
       initialDelivered: () => initialDelivered,
       setResponse: (next: NativeSubagentSummary | 'error') => {
@@ -403,6 +406,51 @@ suite('native subagent directory and employee sidebar', () => {
         .poll(() => first.evaluate((node) => node === document.activeElement))
         .toBe(true);
       await page.keyboard.press('Escape');
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('preserves probe/full follow intent when opening and closing a prepared child summary', async () => {
+    const value = summary();
+    value.descendants = value.descendants.map((entry) =>
+      entry.kind === 'child'
+        ? {
+            ...entry,
+            running: null,
+            activity: 'inactive',
+            observation: { source: 'prepared', cursor: 8 },
+          }
+        : entry,
+    );
+    const { page, fixture, followCalls } = await open(value);
+    const active = () => followCalls.filter((call) => call.id === 'parent-a');
+    try {
+      await expect.poll(() => active().at(-1)?.liveOnly).toBe(true);
+      const trigger = page.locator('button[aria-haspopup="tree"]');
+      await trigger.click();
+      await expect.poll(() => active().at(-1)?.liveOnly).toBe(false);
+      await page.getByRole('button', { name: '查看idle-b摘要' }).click();
+      const detail = page.getByRole('complementary', { name: '子智能体摘要' });
+      await expect
+        .poll(() => detail.innerText())
+        .toContain('idle-b 自己的最后回复');
+      expect(await detail.innerText()).toContain('当前活动状态未知');
+      expect(
+        feed.calls.filter((call) => call.fixture === fixture && call.childId),
+      ).toHaveLength(0);
+      await page.getByRole('button', { name: '关闭摘要', exact: true }).click();
+      await expect.poll(() => active().at(-1)?.liveOnly).toBe(true);
+      await trigger.click();
+      await expect.poll(() => active().at(-1)?.liveOnly).toBe(false);
+      await page.getByRole('button', { name: '刷新子智能体摘要' }).click();
+      await page.getByRole('button', { name: '查看idle-b摘要' }).waitFor();
+      expect(active().at(-1)?.liveOnly).toBe(false);
+      expect(
+        followCalls
+          .filter((call) => call.id !== 'parent-a')
+          .every((call) => call.liveOnly),
+      ).toBe(true);
     } finally {
       await page.close();
     }
