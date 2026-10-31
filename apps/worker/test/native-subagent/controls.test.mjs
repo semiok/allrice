@@ -36,6 +36,91 @@ const control = (h, request) =>
 const ownMessages = (agent) =>
   agent.session.snapshotEvents().filter((e) => e.type === 'user/message');
 
+it('“给子任务补充图片”：native Queue/Steer admit image-only and mixed parts; reject an invalid whole batch', async () => {
+  const release = gate();
+  const h = await host({
+    runId,
+    bridge,
+    model: async (r) => {
+      await hold(r.signal, release);
+      return text('完成');
+    },
+  });
+  const child = await h.spawn();
+  expect(h.root.status).toBe('idle');
+  const idle = await h.server.handleRequest('session/subagent-summary', {
+    sessionId: h.root.id,
+  });
+  expect(
+    idle.descendants.find((row) => row.id === child.childId)?.parentAvailable,
+  ).toBe(true);
+  await h.prompt('保持活动');
+  await expect.poll(() => h.calls.length).toBe(2);
+  const agent = h.ctx.agents.get(child.childId);
+  const picture = {
+    type: 'image',
+    mediaType: 'image/png',
+    name: '补充.png',
+    data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQImWP4z8AAAAMBAQCc479ZAAAAAElFTkSuQmCC',
+  };
+  const mixed = input(h, child, '请看图');
+  mixed.input.content.push(picture);
+  const queued = await control(h, mixed);
+  expect(agent.inbox.nextTurn).toContainEqual(
+    expect.objectContaining({
+      id: queued.messageId,
+      content: [
+        ...text('请看图'),
+        {
+          type: 'image',
+          attachment: expect.objectContaining({
+            mediaType: 'image/png',
+            name: '补充.png',
+            width: 1,
+            height: 1,
+          }),
+        },
+      ],
+    }),
+  );
+  const bad = input(h, child, '整批拒绝');
+  bad.input.content.push(picture, { ...picture, mediaType: 'image/jpeg' });
+  await expect(control(h, bad)).rejects.toThrow('IMAGE_TYPE_MISMATCH');
+  expect(agent.inbox.nextTurn).toHaveLength(1);
+  const only = input(h, child, '', 'steer');
+  only.input.content = [picture];
+  const steered = await control(h, only);
+  await expect
+    .poll(
+      () =>
+        ownMessages(agent).filter((event) =>
+          [queued.messageId, steered.messageId].includes(event.data.id),
+        ).length,
+    )
+    .toBe(2);
+  expect(
+    ownMessages(h.root).some((event) =>
+      [queued.messageId, steered.messageId].includes(event.data.id),
+    ),
+  ).toBe(false);
+  const directory = await h.server.handleRequest('session/subagent-summary', {
+    sessionId: h.root.id,
+  });
+  expect(
+    directory.descendants.find((row) => row.id === child.childId)
+      ?.parentAvailable,
+  ).toBe(true);
+  expect(
+    h.notices.some(
+      (notice) =>
+        notice.method === 'session.agent-availability' &&
+        notice.params.sessionId === child.childId,
+    ),
+  ).toBe(true);
+  release.resolve();
+  await h.wait();
+});
+
 it('“只停这个子任务，再给另一个补充材料” preserves the parent question and sibling', async () => {
   const children = gate();
   let roots = 0;

@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type {
   ChatFlowEventEnvelope,
   NativeSubagentControlTicket,
+  NativeSubagentControlInput,
   NativeSubagentSummary,
 } from '@allrice/contracts';
 import { NativeSubagentFixtureFeed } from '../../test/native-subagent-fixture-feed';
@@ -32,6 +33,7 @@ const summary: NativeSubagentSummary = {
     mode: index === 3 ? 'one-shot' : 'continuable',
     label,
     running: index !== 2,
+    parentAvailable: true,
     activity: index === 2 ? 'inactive' : 'running',
     observation: { source: 'live', cursor: 8 },
     task: `${label}自己的任务`,
@@ -62,13 +64,7 @@ type Mode =
 type Body = {
   rootRunId: string;
   generation: number;
-  input: {
-    requestId: string;
-    kind: 'interrupt';
-    parentSessionId: string;
-    childSessionId: string;
-    mode: 'continuable';
-  };
+  input: NativeSubagentControlInput;
 };
 type PostFact = { at: number; body: Body; responseStatus?: number };
 type Scenario = {
@@ -83,14 +79,29 @@ type Scenario = {
   observationUnavailable?: boolean;
   gate?: Promise<void>;
   release?: () => void;
+  uploads: {
+    id: string;
+    fileName: string;
+    mediaType: string;
+    contentBase64: string;
+    sizeBytes: number;
+  }[];
+  uploadGate?: Promise<void>;
+  parentAvailable?: boolean;
 };
-function result(mode: Mode): NativeSubagentControlTicket['result'] {
+function result(
+  mode: Mode,
+  kind: 'prompt' | 'interrupt' = 'interrupt',
+): NativeSubagentControlTicket['result'] {
   if (mode === 'recorded' || mode === 'unknown') return { status: mode };
   if (mode === 'rejected')
     return { status: 'rejected', code: 'subagent/unauthorized' };
   return {
     status: 'accepted',
-    acceptance: { kind: 'interrupt', accepted: true },
+    acceptance:
+      kind === 'prompt'
+        ? { kind, messageId: 'native-message' }
+        : { kind, accepted: true },
     source: { kind: 'native_ack' },
   };
 }
@@ -141,6 +152,50 @@ suite('native child Stop request identity and truthful receipts', () => {
         url.searchParams.get('fixture') ??
         req.headers.cookie?.match(/controls-fixture=([^;]+)/)?.[1];
       const scenario = id ? scenarios.get(id) : undefined;
+      if (
+        scenario &&
+        url.pathname.endsWith('/attachments') &&
+        req.method === 'POST'
+      ) {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        const file = {
+          ...JSON.parse(Buffer.concat(chunks).toString()),
+          id: randomUUID(),
+        };
+        file.sizeBytes = Buffer.from(file.contentBase64, 'base64').length;
+        scenario.uploads.push(file);
+        await scenario.uploadGate;
+        res.writeHead(201, { 'content-type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            attachment: {
+              id: file.id,
+              fileName: file.fileName,
+              mediaType: file.mediaType,
+              sizeBytes: file.sizeBytes,
+            },
+          }),
+        );
+        return;
+      }
+      if (scenario && url.pathname.endsWith('/sign')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(
+          JSON.stringify({ url: `/images/${url.pathname.split('/')[4]}` }),
+        );
+        return;
+      }
+      if (scenario && url.pathname.startsWith('/images/')) {
+        const file = scenario.uploads.find(
+          (file) => file.id === url.pathname.split('/')[2],
+        );
+        res.writeHead(file ? 200 : 404, {
+          'content-type': file?.mediaType ?? 'image/png',
+        });
+        res.end(file ? Buffer.from(file.contentBase64, 'base64') : '');
+        return;
+      }
       if (
         scenario &&
         (url.pathname.startsWith('/api/v1/runs/') ||
@@ -202,9 +257,37 @@ suite('native child Stop request identity and truthful receipts', () => {
           res.end('unreadable');
           return;
         }
+        const original =
+          body ??
+          scenario.posts.find((post) => post.input.requestId === requestId);
+        const kind = original?.input.kind ?? 'interrupt';
         const ticket = {
           requestId: mode === 'wrong-id' ? randomUUID() : requestId,
-          kind: mode === 'wrong-kind' ? 'prompt' : 'interrupt',
+          kind:
+            mode === 'wrong-kind'
+              ? kind === 'interrupt'
+                ? 'prompt'
+                : 'interrupt'
+              : kind,
+          ...(original?.input.kind === 'prompt'
+            ? {
+                message: {
+                  content: original.input.content,
+                  images: original.input.content.flatMap((part) =>
+                    part.type === 'image'
+                      ? scenario.uploads
+                          .filter((file) => file.id === part.objectId)
+                          .map(({ id, fileName, mediaType, sizeBytes }) => ({
+                            id,
+                            fileName,
+                            mediaType,
+                            sizeBytes,
+                          }))
+                      : [],
+                  ),
+                },
+              }
+            : {}),
           result:
             mode === 'wrong-acceptance'
               ? {
@@ -212,7 +295,7 @@ suite('native child Stop request identity and truthful receipts', () => {
                   acceptance: { kind: 'prompt', messageId: 'message' },
                   source: { kind: 'native_ack' },
                 }
-              : result(mode),
+              : result(mode, kind),
         };
         res.end(JSON.stringify({ ticket }));
         return;
@@ -297,13 +380,24 @@ suite('native child Stop request identity and truthful receipts', () => {
   }
   async function open(mode: Mode = 'accepted', hold = false, start = true) {
     const scenario: Scenario = {
-      feedId: feed.register({ summary: () => summary }),
+      feedId: feed.register({
+        summary: () => ({
+          ...summary,
+          descendants: summary.descendants.map((row) =>
+            row.kind === 'child'
+              ? { ...row, parentAvailable: scenario.parentAvailable }
+              : row,
+          ),
+        }),
+      }),
       mode,
       getMode: 'accepted',
       posts: [],
       postFacts: [],
       gets: [],
       rootReads: [],
+      uploads: [],
+      parentAvailable: true,
     };
     if (hold)
       scenario.gate = new Promise<void>((done) => {
@@ -390,6 +484,157 @@ suite('native child Stop request identity and truthful receipts', () => {
     page.getByRole('complementary', { name: '子智能体摘要' });
   const receipt = (page: Page) =>
     detail(page).locator('[aria-label="Stop 回执"]');
+
+  async function pasteImage(page: Page, mixed = false, drop = false) {
+    await detail(page)
+      .getByRole('textbox')
+      .evaluate(
+        (element, { mixed, drop }) => {
+          const transfer = new DataTransfer();
+          const data = Uint8Array.from(
+            atob(
+              'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQImWP4z8AAAAMBAQCc479ZAAAAAElFTkSuQmCC',
+            ),
+            (c) => c.charCodeAt(0),
+          );
+          transfer.items.add(
+            new File([data], '补充.png', { type: 'image/png' }),
+          );
+          if (mixed)
+            transfer.items.add(
+              new File(['bad'], '不可用.txt', { type: 'text/plain' }),
+            );
+          element.dispatchEvent(
+            drop
+              ? new DragEvent('drop', {
+                  bubbles: true,
+                  cancelable: true,
+                  dataTransfer: transfer,
+                })
+              : new ClipboardEvent('paste', {
+                  bubbles: true,
+                  cancelable: true,
+                  clipboardData: transfer,
+                }),
+          );
+        },
+        { mixed, drop },
+      );
+  }
+  it('“图文 Queue，再纯图 Steer”：shared paste/drop, native keys and readable original receipts without persisted payloads', async () => {
+    const { page, scenario, errors } = await open();
+    try {
+      const input = detail(page).getByRole('textbox');
+      await input.fill('请核对这张图片');
+      await pasteImage(page, true);
+      expect(
+        await detail(page).getByRole('group', { name: '待发送附件' }).count(),
+      ).toBe(0);
+      await pasteImage(page);
+      await detail(page)
+        .getByRole('button', { name: '移除 补充.png' })
+        .waitFor();
+      await input.evaluate((element) =>
+        element.dispatchEvent(
+          new CompositionEvent('compositionstart', { bubbles: true }),
+        ),
+      );
+      await input.press('Enter');
+      expect(scenario.posts).toHaveLength(0);
+      await input.evaluate(async (element) => {
+        element.dispatchEvent(
+          new CompositionEvent('compositionend', { bubbles: true }),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+      await input.press('Enter');
+      await expect.poll(() => scenario.posts.length).toBe(1);
+      expect(scenario.posts[0]?.input).toMatchObject({
+        kind: 'prompt',
+        delivery: 'queue',
+        content: [
+          { type: 'text', text: '请核对这张图片' },
+          { type: 'image', objectId: scenario.uploads[0]!.id },
+        ],
+      });
+      const receipts = detail(page).locator('[aria-label="发送回执"]');
+      await expect
+        .poll(() => receipts.textContent())
+        .toContain('请核对这张图片');
+      await expect.poll(() => receipts.locator('img').count()).toBe(1);
+      expect(await receipts.textContent()).toContain(
+        '消息已被原生接收；不代表已经处理',
+      );
+      await expect.poll(() => input.inputValue()).toBe('');
+      await pasteImage(page, false, true);
+      await detail(page)
+        .getByRole('button', { name: '移除 补充.png' })
+        .waitFor();
+      await input.press('Control+Enter');
+      await expect.poll(() => scenario.posts.length).toBe(2);
+      expect(scenario.posts[1]?.input).toMatchObject({
+        kind: 'prompt',
+        delivery: 'steer',
+        content: [{ type: 'image', objectId: scenario.uploads[1]!.id }],
+      });
+      const stored = await page.evaluate(() =>
+        Object.values(sessionStorage).join('\n'),
+      );
+      expect(stored).not.toContain('请核对这张图片');
+      expect(stored).not.toContain('contentBase64');
+      expect(stored).not.toContain(scenario.uploads[0]!.id);
+      expect(errors).toEqual([]);
+    } finally {
+      await page.close();
+    }
+  });
+  it('“上传中仍可 Stop；父失联后不发”：the same pending image cannot dispatch across lost parent observation', async () => {
+    const { page, scenario } = await open();
+    let release!: () => void;
+    scenario.uploadGate = new Promise<void>((done) => {
+      release = done;
+    });
+    try {
+      await pasteImage(page);
+      await detail(page)
+        .getByRole('button', { name: '移除 补充.png' })
+        .waitFor();
+      await detail(page)
+        .getByRole('button', { name: 'Queue', exact: true })
+        .click();
+      await expect.poll(() => scenario.uploads.length).toBe(1);
+      await detail(page).getByRole('button', { name: 'Stop 此子任务' }).click();
+      await expect.poll(() => scenario.posts.length).toBe(1);
+      scenario.parentAvailable = undefined;
+      feed.push(scenario.feedId, {
+        type: 'directory',
+        summary: {
+          ...summary,
+          descendants: summary.descendants.map((row) =>
+            row.kind === 'child' ? { ...row, parentAvailable: undefined } : row,
+          ),
+        },
+      });
+      await expect
+        .poll(() => detail(page).textContent())
+        .toContain('直属父智能体状态未知');
+      release();
+      await expect
+        .poll(() => detail(page).getByText('上传中', { exact: true }).count())
+        .toBe(0);
+      expect(scenario.posts.map((post) => post.input.kind)).toEqual([
+        'interrupt',
+      ]);
+      expect(
+        await detail(page)
+          .getByRole('button', { name: 'Queue', exact: true })
+          .isDisabled(),
+      ).toBe(true);
+    } finally {
+      release();
+      await page.close();
+    }
+  });
 
   it('“只停甲”：double click and detail close/reopen retain one request; accepted is not stopped', async () => {
     const { page, scenario, errors } = await open('accepted', true);

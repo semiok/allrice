@@ -2,6 +2,8 @@ import {
   NativeSubagentControlInputSchema,
   NativeSubagentControlRequestSchema,
   NativeSubagentControlResultSchema,
+  PromptImageAttachmentSchema,
+  type Membership,
   UuidSchema,
   runtimeContractEqual,
   type NativeSubagentControlInput,
@@ -16,6 +18,7 @@ import {
   type RunDeliveryAuthority,
 } from '../run-delivery-authority.ts';
 import { readSessionNativeSubagentTarget } from './native-subagent-query.ts';
+import { getStoredFile } from '../data.ts';
 
 type Reader = Parameters<typeof assertWorkbenchSession>[0];
 type Principal = Parameters<typeof assertWorkbenchSession>[1];
@@ -32,6 +35,54 @@ function unavailable(): never {
 function conflict(): never {
   throw Error('CHILD_CONTROL_CONFLICT');
 }
+async function readImages(
+  db: Reader,
+  context: Principal,
+  sessionId: string,
+  input: NativeSubagentControlInput,
+) {
+  const parts =
+    input.kind === 'prompt'
+      ? input.content.filter((p) => p.type === 'image')
+      : [];
+  if (!parts.length) return [];
+  const memberships = await db<
+    Membership[]
+  >`select id,user_id as "userId",organization_id as "organizationId",
+    workspace_id as "workspaceId",role,active from allrice_memberships
+    where user_id=${context.actor.id} and organization_id=${context.organizationId} and active`;
+  const principal = { ...context, memberships, requestId: input.requestId };
+  return Promise.all(
+    parts.map(async ({ objectId }) => {
+      const [reference] = await db`select file_name from allrice_file_references
+      where object_id=${objectId} and session_id=${sessionId}`;
+      if (!reference) unavailable();
+      const { object } = await getStoredFile(principal, objectId, db);
+      return PromptImageAttachmentSchema.parse({
+        object,
+        fileName: reference.file_name,
+      });
+    }),
+  );
+}
+
+/** Current file authority over the original immutable command, before/after byte I/O. */
+export async function authorizeNativeSubagentControlImages(
+  context: Principal,
+  sessionId: string,
+  request: NativeSubagentControlRequest,
+) {
+  const db = getDatabase();
+  const row = await readCommand(
+    db,
+    context,
+    sessionId,
+    request.input.requestId,
+  );
+  if (!row || !runtimeContractEqual(row.native_input, request)) conflict();
+  const images = await readImages(db, context, sessionId, request.input);
+  if (!runtimeContractEqual(images, request.images ?? [])) unavailable();
+}
 function ticket(row: CommandRow): NativeSubagentControlTicket {
   const request = NativeSubagentControlRequestSchema.parse(row.native_input);
   const result = row.native_proof
@@ -44,7 +95,24 @@ function ticket(row: CommandRow): NativeSubagentControlTicket {
             status: 'rejected' as const,
             code: row.error_code ?? 'CHILD_CONTROL_UNAVAILABLE',
           };
-  return { requestId: row.id, kind: request.input.kind, result };
+  return {
+    requestId: row.id,
+    kind: request.input.kind,
+    result,
+    ...(request.input.kind === 'prompt'
+      ? {
+          message: {
+            content: request.input.content,
+            images: (request.images ?? []).map(({ object, fileName }) => ({
+              id: object.id,
+              fileName,
+              mediaType: object.mediaType,
+              sizeBytes: object.sizeBytes,
+            })),
+          },
+        }
+      : {}),
+  };
 }
 async function readCommand(
   db: Reader,
@@ -135,8 +203,10 @@ export async function enqueueNativeSubagentControl(
       ownerId: context.actor.id,
       sessionId,
     });
+    const images = await readImages(tx, context, sessionId, input);
     const request = NativeSubagentControlRequestSchema.parse({
       input,
+      ...(images.length ? { images } : {}),
       scope: {
         rootRunId,
         generation: expected.generation,

@@ -1,6 +1,10 @@
 import { z } from 'zod';
 import { UuidSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
+import {
+  ImageMediaTypeSchema,
+  PromptImageAttachmentSchema,
+} from './storage.ts';
 
 const PgUuidSchema = UuidSchema.transform((value) => value.toLowerCase());
 
@@ -10,19 +14,26 @@ const address = {
   childSessionId: z.string().min(1),
   mode: z.literal('continuable'),
 };
-export const NativeSubagentControlInputSchema = z.discriminatedUnion('kind', [
-  z
-    .object({
-      ...address,
-      kind: z.literal('prompt'),
-      delivery: z.enum(['queue', 'steer']),
-      content: z.array(
-        z.object({ type: z.literal('text'), text: z.string() }).strict(),
+const text = z.object({ type: z.literal('text'), text: z.string() }).strict();
+const prompt = z
+  .object({
+    ...address,
+    kind: z.literal('prompt'),
+    delivery: z.enum(['queue', 'steer']),
+    content: z.array(
+      text.or(
+        z.object({ type: z.literal('image'), objectId: PgUuidSchema }).strict(),
       ),
-      clientTimeZone: z.string().min(1).optional(),
-    })
-    .strict(),
-  z.object({ ...address, kind: z.literal('interrupt') }).strict(),
+    ),
+    clientTimeZone: z.string().min(1).optional(),
+  })
+  .strict();
+const interrupt = z
+  .object({ ...address, kind: z.literal('interrupt') })
+  .strict();
+export const NativeSubagentControlInputSchema = z.discriminatedUnion('kind', [
+  prompt,
+  interrupt,
 ]);
 
 // Server-frozen internal address, never a browser-supplied execution grant.
@@ -41,8 +52,36 @@ export const NativeSubagentControlRequestSchema = z
   .object({
     scope: NativeSubagentControlScopeSchema,
     input: NativeSubagentControlInputSchema,
+    images: z.array(PromptImageAttachmentSchema).optional(),
   })
   .strict();
+
+// Only the trusted Worker resolves frozen objects into native image bytes.
+export const NativeSubagentControlWireSchema = z
+  .object({
+    scope: NativeSubagentControlScopeSchema,
+    input: z.discriminatedUnion('kind', [
+      prompt.extend({
+        content: z.array(
+          text.or(
+            z
+              .object({
+                type: z.literal('image'),
+                mediaType: ImageMediaTypeSchema,
+                data: z.string(),
+                name: z.string().optional(),
+              })
+              .strict(),
+          ),
+        ),
+      }),
+      interrupt,
+    ]),
+  })
+  .strict();
+export type NativeSubagentControlWire = z.infer<
+  typeof NativeSubagentControlWireSchema
+>;
 
 // Inbox acceptance / cancellation ACK, not execution or stopped evidence.
 export const NativeSubagentControlAcceptanceSchema = z.discriminatedUnion(
@@ -103,8 +142,24 @@ export const NativeSubagentControlResultSchema = z.discriminatedUnion(
 export type NativeSubagentControlResult = z.infer<
   typeof NativeSubagentControlResultSchema
 >;
+export const NativeSubagentControlMessageSchema = z
+  .object({
+    content: prompt.shape.content,
+    images: z.array(
+      z
+        .object({
+          id: PgUuidSchema,
+          fileName: z.string(),
+          mediaType: ImageMediaTypeSchema,
+          sizeBytes: z.number().int().nonnegative(),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
 export interface NativeSubagentControlTicket {
   requestId: string;
   kind: NativeSubagentControlInput['kind'];
   result: NativeSubagentControlResult | { status: 'recorded' };
+  message?: z.infer<typeof NativeSubagentControlMessageSchema>;
 }

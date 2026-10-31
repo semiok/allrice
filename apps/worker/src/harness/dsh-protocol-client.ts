@@ -1,10 +1,10 @@
 import {
   BootstrapCoverageResultSchema,
   NativeSubagentSummarySchema,
-  NativeSubagentControlRequestSchema,
+  NativeSubagentControlWireSchema,
   NativeSubagentControlAcceptanceSchema,
   NativeSubagentControlResultSchema,
-  type NativeSubagentControlRequest,
+  type NativeSubagentControlWire,
   QuestionForegroundSnapshotSchema,
   type BootstrapCoverageQuery,
   type BootstrapReceipt,
@@ -358,8 +358,8 @@ export class DshProtocolClient {
     return this.request('run/close-input', { runId }, 10_000);
   }
 
-  async nativeSubagentControl(value: NativeSubagentControlRequest) {
-    const request = NativeSubagentControlRequestSchema.parse(value);
+  async nativeSubagentControl(value: NativeSubagentControlWire) {
+    const request = NativeSubagentControlWireSchema.parse(value);
     if (request.scope.rootRunId !== this.runId)
       throw Error('NATIVE_CONTROL_RUN_MISMATCH');
     const result = await this.request('subagents/control', request);

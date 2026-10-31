@@ -113,6 +113,129 @@ export function DraftChatComposer({
   );
 }
 
+/** Shared draft surface; child controls supply only delivery/admission policy. */
+export function ChatComposerInput({
+  employeeName,
+  busy,
+  composerInput,
+  composing,
+  draft,
+  hero,
+  pendingAttachments,
+  onDraftChange,
+  onOpenAttachment,
+  onRemoveAttachment,
+  onRetryAttachment,
+  onUploadAttachments,
+  onSubmit,
+  imageOnly = false,
+  onInputError,
+}: Pick<
+  ChatComposerProps,
+  | 'employeeName'
+  | 'busy'
+  | 'composerInput'
+  | 'composing'
+  | 'draft'
+  | 'hero'
+  | 'pendingAttachments'
+  | 'onDraftChange'
+  | 'onOpenAttachment'
+  | 'onRemoveAttachment'
+  | 'onRetryAttachment'
+  | 'onUploadAttachments'
+> & {
+  onSubmit: (modified: boolean) => void;
+  imageOnly?: boolean;
+  onInputError?: (message: string) => void;
+}) {
+  useLayoutEffect(() => {
+    resizeComposerTextarea(composerInput.current);
+  }, [composerInput, draft, hero]);
+  return (
+    <>
+      {' '}
+      {pendingAttachments.length ? (
+        <PendingAttachmentRail
+          attachments={pendingAttachments}
+          disabled={busy}
+          onOpen={onOpenAttachment}
+          onRemove={onRemoveAttachment}
+          onRetry={onRetryAttachment}
+        />
+      ) : null}
+      <textarea
+        aria-label={`给 ${employeeName} 的消息`}
+        className={styles.composerInput}
+        disabled={busy}
+        onChange={(event) => {
+          onDraftChange(event.target.value);
+        }}
+        onCompositionEnd={() => {
+          window.setTimeout(() => {
+            composing.current = false;
+          }, 10);
+        }}
+        onCompositionStart={() => {
+          composing.current = true;
+        }}
+        onKeyDown={(event) => {
+          if (
+            !shouldSubmitComposerKey(
+              {
+                key: event.key,
+                shiftKey: event.shiftKey,
+                repeat: event.repeat,
+                nativeIsComposing: event.nativeEvent.isComposing,
+                nativeKeyCode: event.nativeEvent.keyCode,
+              },
+              composing.current,
+            )
+          )
+            return;
+          if (imageOnly && (event.altKey || (event.ctrlKey && event.metaKey)))
+            return;
+          event.preventDefault();
+          onSubmit(event.ctrlKey !== event.metaKey);
+        }}
+        onPaste={(event) => {
+          const files = [...event.clipboardData.files].filter(
+            (file) => imageOnly || file.type.startsWith('image/'),
+          );
+          if (!files.length) return;
+          event.preventDefault();
+          onUploadAttachments(files);
+        }}
+        onDragOver={(event) => {
+          if (imageOnly && event.dataTransfer.types.includes('Files'))
+            event.preventDefault();
+        }}
+        onDrop={(event) => {
+          if (!imageOnly) return;
+          event.preventDefault();
+          if (
+            [...event.dataTransfer.items].some(
+              (item) => item.webkitGetAsEntry?.()?.isDirectory,
+            )
+          ) {
+            onInputError?.('不能添加文件夹，请粘贴或拖入图片。');
+            return;
+          }
+          onUploadAttachments([...event.dataTransfer.files]);
+        }}
+        placeholder={
+          hero
+            ? `告诉 ${employeeName} 你想完成什么工作`
+            : `继续和 ${employeeName} 工作…`
+        }
+        rows={hero ? 3 : 2}
+        ref={composerInput}
+        value={draft}
+      />
+    </>
+  );
+}
+
 export function ChatComposer({
   taskSuggestions,
   taskScope,
@@ -161,9 +284,6 @@ export function ChatComposer({
   onCancelBridgeUpload,
   bridgeUploadStatus,
 }: ChatComposerProps) {
-  useLayoutEffect(() => {
-    resizeComposerTextarea(composerInput.current);
-  }, [composerInput, draft, hero]);
   const closeAttachments = useCallback(
     () => onAttachmentMenuOpenChange(false),
     [onAttachmentMenuOpenChange],
@@ -204,63 +324,22 @@ export function ChatComposer({
           onRemove={onRemoveSessionReference}
           disabled={busy}
         />
-        {pendingAttachments.length ? (
-          <PendingAttachmentRail
-            attachments={pendingAttachments}
-            disabled={busy}
-            onOpen={onOpenAttachment}
-            onRemove={onRemoveAttachment}
-            onRetry={onRetryAttachment}
-          />
-        ) : null}
-        <textarea
-          aria-label={`给 ${employeeName} 的消息`}
-          className={styles.composerInput}
-          disabled={busy}
-          onChange={(event) => {
-            onDraftChange(event.target.value);
+        <ChatComposerInput
+          {...{
+            employeeName,
+            busy,
+            composerInput,
+            composing,
+            draft,
+            hero,
+            pendingAttachments,
+            onDraftChange,
+            onOpenAttachment,
+            onRemoveAttachment,
+            onRetryAttachment,
+            onUploadAttachments,
           }}
-          onCompositionEnd={() => {
-            window.setTimeout(() => {
-              composing.current = false;
-            }, 10);
-          }}
-          onCompositionStart={() => {
-            composing.current = true;
-          }}
-          onKeyDown={(event) => {
-            if (
-              !shouldSubmitComposerKey(
-                {
-                  key: event.key,
-                  shiftKey: event.shiftKey,
-                  repeat: event.repeat,
-                  nativeIsComposing: event.nativeEvent.isComposing,
-                  nativeKeyCode: event.nativeEvent.keyCode,
-                },
-                composing.current,
-              )
-            )
-              return;
-            event.preventDefault();
-            void onSendMessage();
-          }}
-          onPaste={(event) => {
-            const files = [...event.clipboardData.files].filter((file) =>
-              file.type.startsWith('image/'),
-            );
-            if (!files.length) return;
-            event.preventDefault();
-            onUploadAttachments(files);
-          }}
-          placeholder={
-            hero
-              ? `告诉 ${employeeName} 你想完成什么工作`
-              : `继续和 ${employeeName} 工作…`
-          }
-          rows={hero ? 3 : 2}
-          ref={composerInput}
-          value={draft}
+          onSubmit={() => void onSendMessage()}
         />
         <div
           className={`${inputUi.row} ${styles.composerRow} ${composerUi.row}`}

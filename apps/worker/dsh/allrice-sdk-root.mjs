@@ -47,6 +47,20 @@ export class AllRiceSdkRoot {
     // Keep the public durable event channel alive through the existing drain;
     // per-Session sequence de-duplication prevents double publication while SDK is live.
     this.ownDisposers.push(
+      ...['agent/created', 'agent/disposed'].map((event) =>
+        ctx.on(event, ({ agent }) =>
+          transport.notify('session.agent-availability', {
+            sessionId: String(agent.session.id),
+            hostEpoch: this.epoch,
+          }),
+        ),
+      ),
+      ctx.on('session/disposed', (session) =>
+        transport.notify('session.agent-availability', {
+          sessionId: String(session.id),
+          hostEpoch: this.epoch,
+        }),
+      ),
       ctx.on('session/event', (session, event) => {
         const agent = ctx.agents.get(session.id);
         if (agent?.session === session) this.childDisplay.commit(agent, event);

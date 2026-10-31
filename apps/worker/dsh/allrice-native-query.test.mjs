@@ -56,6 +56,7 @@ it('shows the child result through the actual Host and reads the same cold summa
       id: activation.childId,
       activity: 'inactive',
       running: null,
+      parentAvailable: true,
       task: '子任务',
       lastReply: 'native child output',
       usage: {
@@ -96,6 +97,7 @@ it('shows the child result through the actual Host and reads the same cold summa
       );
       const cold = await readNativeSubagentSummary(ctx, h.root.id);
       expect(cold.root.source).toBe('prepared');
+      expect(cold.descendants[0].parentAvailable).toBeUndefined();
       expect(cold.descendants).toMatchObject([
         {
           kind: 'child',
@@ -161,6 +163,7 @@ it('keeps an actual running Host live while a different process sees only a prep
       kind: 'child',
       activity: 'running',
       running: true,
+      parentAvailable: true,
       observation: { source: 'live' },
     });
     expect(live.descendants[0].timing.active).toBeDefined();
@@ -304,6 +307,7 @@ it.each([false, true])(
     expect((await query(h, h.root.id, liveOnly)).descendants[0]).toMatchObject({
       activity: 'running',
       running: false,
+      parentAvailable: true,
       observation: { source: 'live' },
       task: '只检查自己的任务',
     });

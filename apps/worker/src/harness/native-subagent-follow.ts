@@ -139,9 +139,12 @@ export async function followNativeSubagent(
           throw Error('NATIVE_FOLLOW_SEQ');
         mark.seq = seq as number;
       } else if (
-        !['session.status', 'subagent.started', 'subagent.finished'].includes(
-          method,
-        )
+        ![
+          'session.status',
+          'session.agent-availability',
+          'subagent.started',
+          'subagent.finished',
+        ].includes(method)
       )
         return;
       if (pending.length >= nativeChildViewLimits.events)
