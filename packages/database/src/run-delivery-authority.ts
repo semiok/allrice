@@ -221,6 +221,9 @@ export async function assertNativeRunAuthorityTransaction(
   tx: TransactionSql,
   input: RunDeliveryAuthority,
 ) {
+  // Publication holds this existing Run mutex before Session -> Job locks.
+  // Enter it before Job -> Session admission, including an empty control poll.
+  await tx`select pg_advisory_xact_lock(hashtextextended(${input.rootRunId.toLowerCase()},703))`;
   return (await assertRunAuthority(tx, input, true)).authority;
 }
 
