@@ -2328,6 +2328,7 @@ export async function finishJobDrain(input: {
     const cause = queueStopCause(job, new Date());
     if (!cause) return { finalized: false };
     await transitionStoppedJob(transaction, job, cause, 'worker_returned');
+    await assertLockedLeaseCurrent(transaction, job);
     return { finalized: true };
   });
 }
