@@ -30,6 +30,7 @@ import {
 } from './server/workbench-terminal.mjs';
 import { createDevRequestHandler } from './server/dev-maintenance.mjs';
 import { createWebRuntimeClose } from './server/close-runtime.mjs';
+import { createNativeSubagentFollowGateway } from './server/native-subagent-follow.mjs';
 
 /** Next registers its own upgrade listener after the first HTTP request. Route
  * only the dedicated Bridge path before normal EventEmitter dispatch; every
@@ -38,7 +39,12 @@ export class AllRiceHttpServer extends Server {
   bridgeGateway = null;
   previewGateway = null;
   terminalGateway = null;
+  nativeFollowGateway = null;
   emit(event, ...args) {
+    if (event === 'upgrade' && this.nativeFollowGateway?.matches(args[0])) {
+      void this.nativeFollowGateway.upgrade(...args);
+      return true;
+    }
     if (event === 'upgrade' && this.terminalGateway?.matches(args[0])) {
       void this.terminalGateway.upgrade(...args);
       return true;
@@ -93,6 +99,7 @@ export async function startAllRiceWeb({
   // host list stops startup here (requests refuse it too, in any start mode).
   portalEntries();
   const handle = createDevRequestHandler(lifecycle, app.getRequestHandler());
+  server.nativeFollowGateway = createNativeSubagentFollowGateway({ port });
   server.on('request', (req, res) => {
     void handle(req, res).catch(() => {
       if (!res.headersSent) res.writeHead(500);

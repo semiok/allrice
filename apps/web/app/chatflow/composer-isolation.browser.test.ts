@@ -733,6 +733,7 @@ suite(
       if (!address || typeof address === 'string')
         throw Error('Loopback fixture not listening');
       const origin = `http://127.0.0.1:${address.port}`;
+      nativeFeed.attach(server);
       const context: BrowserContext = await browser.newContext({
         viewport: {
           width: options.width ?? 1440,
@@ -744,6 +745,7 @@ suite(
           : {}),
       });
       const page: Page = await context.newPage();
+      await nativeFeed.bindPage(page, origin, nativeFixture);
       if (options.nativeClock) await page.clock.install();
       if (options.nativeParents)
         page.on('request', (request) => {
@@ -801,6 +803,7 @@ suite(
           text: await page.locator('body').innerText(),
         };
         await context.close();
+        await nativeFeed.close();
         server.closeAllConnections();
         await new Promise<void>((done) => server.close(() => done()));
         throw new Error(
@@ -1090,6 +1093,7 @@ suite(
           server.closeAllConnections();
           await page.unrouteAll({ behavior: 'ignoreErrors' });
           await context.close();
+          await nativeFeed.close();
           await new Promise<void>((done) => server.close(() => done()));
         },
       };

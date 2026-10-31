@@ -1,6 +1,10 @@
 /* global process, Request, fetch, AbortController, TextDecoder, console */
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer, ServerResponse } from 'node:http';
+import { once } from 'node:events';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import { WebSocket } from 'ws';
 import {
   mkdtemp,
   readdir,
@@ -60,6 +64,9 @@ vi.mock('next/headers', () => ({
   }),
 }));
 import { GET } from '../../app/api/v1/sessions/[id]/subagents/route';
+import { AllRiceHttpServer } from '../../server.mjs';
+import { createNativeSubagentFollowGateway } from '../../server/native-subagent-follow.mjs';
+import { createSseDataConsumer } from '../../app/chatflow/sse-data-consumer';
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
@@ -127,6 +134,7 @@ suite(
       for (const [pool, runtime] of residents.splice(0))
         await pool.closeOwned(runtime);
       for (const server of servers.splice(0)) {
+        await server.nativeFollowGateway?.close();
         server.closeAllConnections();
         await new Promise((done) => server.close(() => done()));
       }
@@ -1046,6 +1054,105 @@ suite(
         await f.h.wait();
       }
     }, 30000);
+    it('“只有本人能看，离开即断开”：real WS upgrade preserves Web/Worker authorization and generation revocation', async () => {
+      const f = await chat();
+      await hotHost(f);
+      const api = await start(f),
+        other = await peer(f),
+        otherTenant = await chat(false);
+      const server = new AllRiceHttpServer(),
+        clients = [];
+      server.on('upgrade', (_request, socket) => socket.destroy());
+      server.on('request', async (req, res) => {
+        const abort = new AbortController();
+        res.once('close', () => abort.abort());
+        cookie.token =
+          req.headers.cookie?.match(/allrice_session=([^;]+)/)?.[1] ?? '';
+        try {
+          const result = await GET(
+            new Request(`http://${req.headers.host}${req.url}`, {
+              headers: req.headers,
+              signal: abort.signal,
+            }),
+            { params: Promise.resolve({ id: f.session }) },
+          );
+          res.writeHead(result.status, Object.fromEntries(result.headers));
+          res.flushHeaders();
+          if (result.body) await pipeline(Readable.fromWeb(result.body), res);
+          else res.end();
+        } catch {
+          res.destroy();
+        }
+      });
+      await new Promise((done) => server.listen(0, '127.0.0.1', done));
+      servers.push(server);
+      const origin = `http://127.0.0.1:${server.address().port}`;
+      server.nativeFollowGateway = createNativeSubagentFollowGateway({
+        port: server.address().port,
+      });
+      const connect = (
+        token = f.token,
+        workspace = f.workspace,
+        source = origin,
+        organization = f.org,
+      ) => {
+        const ws = new WebSocket(
+          origin.replace('http:', 'ws:') +
+            `/api/v1/sessions/${f.session}/subagents?workspaceId=${workspace}&organizationId=${organization}&follow=true&liveOnly=true`,
+          {
+            headers: {
+              origin: source,
+              ...(token ? { cookie: `allrice_session=${token}` } : {}),
+            },
+          },
+        );
+        ws.on('error', () => {});
+        clients.push(ws);
+        return ws;
+      };
+      try {
+        for (const [token, workspace, source, organization] of [
+          ['', f.workspace, origin],
+          [other.token, f.workspace, origin],
+          [f.token, randomUUID(), origin],
+          [f.token, otherTenant.workspace, origin, otherTenant.org],
+          [f.token, f.workspace, 'https://other.example'],
+        ]) {
+          const ws = connect(token, workspace, source, organization);
+          const [, denied] = await once(ws, 'unexpected-response');
+          expect([401, 403, 404]).toContain(denied.statusCode);
+          ws.terminate();
+        }
+        expect(f.listeners.size).toBe(0);
+        const ws = connect(),
+          events = [],
+          parse = createSseDataConsumer();
+        ws.on('message', (bytes) => {
+          for (const value of parse(bytes)) events.push(JSON.parse(value));
+        });
+        await vi.waitFor(() =>
+          expect(events.some((e) => e.type === 'directory')).toBe(true),
+        );
+        expect(f.listeners.size).toBe(1);
+        expect(api.read).not.toHaveBeenCalled();
+        const closed = once(ws, 'close');
+        await fixture.db`update allrice_conversation_runtimes set thread_generation=thread_generation+1 where session_id=${f.session}`;
+        for (const listener of f.listeners)
+          listener({
+            method: 'session.status',
+            params: { sessionId: f.h.root.id },
+          });
+        await closed;
+        expect(events.at(-1)).toEqual({ type: 'clear', reason: 'unavailable' });
+        expect(
+          events.filter((event) => event.type === 'directory'),
+        ).toHaveLength(1);
+        expect(f.listeners.size).toBe(0);
+      } finally {
+        for (const ws of clients) ws.terminate();
+        await server.nativeFollowGateway.close();
+      }
+    }, 30_000);
     it('reconnects to the existing safe baseline, isolates children, and clears after real token revocation', async () => {
       const entered = gate(),
         finish = gate();

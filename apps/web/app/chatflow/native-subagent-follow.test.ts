@@ -1,128 +1,124 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { followNativeSubagents } from './native-subagent-follow';
 
+class Socket {
+  static instances: Socket[] = [];
+  binaryType = '';
+  onmessage: ((event: MessageEvent) => void) | null = null;
+  onerror: (() => void) | null = null;
+  onclose: ((event: CloseEvent) => void) | null = null;
+  close = vi.fn();
+  constructor(readonly url: URL) {
+    Socket.instances.push(this);
+  }
+  frame(value: string) {
+    this.onmessage?.({
+      data: new TextEncoder().encode(value).buffer,
+    } as MessageEvent);
+  }
+}
+const headers = {
+  'x-allrice-organization-id': 'org',
+  'x-allrice-workspace-id': 'workspace',
+};
+const url =
+  '/api/v1/sessions/parent/subagents?workspaceId=workspace&follow=true';
+beforeEach(() => {
+  Socket.instances = [];
+  vi.stubGlobal('WebSocket', Socket);
+  vi.stubGlobal('location', new URL('https://allrice.example/chatflow'));
+});
 afterEach(() => vi.unstubAllGlobals());
-const frame = (value: unknown) =>
-  new TextEncoder().encode(`data: ${JSON.stringify(value)}\n\n`);
-describe('safe native follow owned response lifetime', () => {
-  it.each([
-    ['HTTP', 403, 'text/event-stream'],
-    ['Content-Type', 200, 'application/json'],
-  ])(
-    'cancels the owned body on invalid %s without hiding the read error',
-    async (_kind, status, contentType) => {
-      const cancel = vi.fn(() => {
-        throw Error('cleanup failed');
-      });
-      vi.stubGlobal(
-        'fetch',
-        vi.fn(
-          async () =>
-            new Response(new ReadableStream({ cancel }), {
-              status: status as number,
-              headers: { 'content-type': contentType as string },
-            }),
-        ),
+describe('authorized native follow socket ownership', () => {
+  it.each(['error', 'abnormal close'])(
+    'rejects %s and closes its transport',
+    async (kind) => {
+      const reading = followNativeSubagents(
+        url,
+        headers,
+        new AbortController().signal,
+        vi.fn(),
       );
-      await expect(
-        followNativeSubagents(
-          '/follow',
-          {},
-          new AbortController().signal,
-          vi.fn(),
-        ),
-      ).rejects.toThrow('native follow unavailable');
-      expect(cancel).toHaveBeenCalledOnce();
+      const socket = Socket.instances[0]!;
+      if (kind === 'error') socket.onerror?.();
+      else socket.onclose?.({ code: 1006 } as CloseEvent);
+      await expect(reading).rejects.toThrow('native follow unavailable');
+      expect(socket.close).toHaveBeenCalledOnce();
     },
   );
-
   it.each(['JSON', 'schema', 'owner'])(
-    'cancels the reader on %s rejection and preserves the original error',
+    'closes on %s rejection and preserves the error',
     async (kind) => {
-      const cancel = vi.fn(() => {
-        throw Error('cleanup failed');
-      });
       const consume = vi.fn(() => {
         if (kind === 'owner') throw Error('owner rejected');
       });
-      vi.stubGlobal(
-        'fetch',
-        vi.fn(
-          async () =>
-            new Response(
-              new ReadableStream({
-                start(controller) {
-                  controller.enqueue(
-                    kind === 'JSON'
-                      ? new TextEncoder().encode('data: broken\n\n')
-                      : frame(
-                          kind === 'schema'
-                            ? { type: 'finished', raw: 'private native frame' }
-                            : { type: 'clear', reason: 'resync' },
-                        ),
-                  );
-                },
-                cancel,
-              }),
-              { headers: { 'content-type': 'text/event-stream' } },
-            ),
-        ),
+      const reading = followNativeSubagents(
+        url,
+        headers,
+        new AbortController().signal,
+        consume,
       );
-      await expect(
-        followNativeSubagents(
-          '/follow',
-          {},
-          new AbortController().signal,
-          consume,
-        ),
-      ).rejects.toThrow(
+      const socket = Socket.instances[0]!;
+      socket.frame(
+        `data: ${
+          kind === 'JSON'
+            ? 'broken'
+            : JSON.stringify(
+                kind === 'schema'
+                  ? { type: 'finished', raw: 'private' }
+                  : { type: 'clear', reason: 'resync' },
+              )
+        }\n\n`,
+      );
+      await expect(reading).rejects.toThrow(
         kind === 'owner' ? 'owner rejected' : kind === 'JSON' ? /JSON/ : /type/,
       );
-      expect(cancel).toHaveBeenCalledOnce();
+      expect(socket.close).toHaveBeenCalledOnce();
     },
   );
-
-  it('rejects late bytes from a fetch that ignores abort and strips non-whitelisted properties', async () => {
+  it('keeps fragmented SSE parsing, strips private fields and rejects late bytes after abort', async () => {
     const abort = new AbortController(),
-      consume = vi.fn(),
-      cancel = vi.fn();
-    let controller!: ReadableStreamDefaultController<Uint8Array>;
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(
-        async () =>
-          new Response(
-            new ReadableStream<Uint8Array>({
-              start(value) {
-                controller = value;
-              },
-              cancel,
-            }),
-            { headers: { 'content-type': 'text/event-stream' } },
-          ),
-      ),
+      consume = vi.fn();
+    const reading = followNativeSubagents(url, headers, abort.signal, consume);
+    const socket = Socket.instances[0]!;
+    expect(String(socket.url)).toBe(
+      'wss://allrice.example' + url + '&organizationId=org',
     );
-    const reading = followNativeSubagents(
-      '/follow',
-      { 'x-allrice-workspace-id': 'scope-a' },
-      abort.signal,
-      consume,
-    );
-    for (let i = 0; i < 5; i++) await Promise.resolve();
-    controller.enqueue(
-      frame({
-        type: 'clear',
-        reason: 'resync',
-        raw: 'private',
-        credentials: 'secret',
-      }),
-    );
-    for (let i = 0; i < 5; i++) await Promise.resolve();
+    socket.frame('data: {"type":"clear",');
+    socket.frame('"reason":"resync","credentials":"private"}\n\n');
     expect(consume).toHaveBeenCalledWith({ type: 'clear', reason: 'resync' });
+    const late = socket.onmessage;
     abort.abort();
-    controller.enqueue(frame({ type: 'clear', reason: 'unavailable' }));
+    late?.({
+      data: new TextEncoder().encode(
+        'data: {"type":"clear","reason":"unavailable"}\n\n',
+      ).buffer,
+    } as MessageEvent);
     await reading;
     expect(consume).toHaveBeenCalledTimes(1);
-    expect(cancel).toHaveBeenCalledOnce();
+    expect(socket.close).toHaveBeenCalledOnce();
+  });
+  it('resolves a normal upstream end and does not open an already-aborted observation', async () => {
+    const abort = new AbortController();
+    const reading = followNativeSubagents(url, headers, abort.signal, vi.fn());
+    Socket.instances[0]!.onclose?.({ code: 1000 } as CloseEvent);
+    await reading;
+    abort.abort();
+    await followNativeSubagents(url, headers, abort.signal, vi.fn());
+    expect(Socket.instances).toHaveLength(1);
+  });
+  it.each([
+    'https://other.example' + url,
+    url.replace('workspaceId=workspace', 'workspaceId=other'),
+  ])('refuses scope changes before connecting: %s', async (target) => {
+    await expect(
+      followNativeSubagents(
+        target,
+        headers,
+        new AbortController().signal,
+        vi.fn(),
+      ),
+    ).rejects.toThrow('scope changed');
+    expect(Socket.instances).toHaveLength(0);
   });
 });

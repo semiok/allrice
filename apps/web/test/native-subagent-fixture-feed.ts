@@ -1,4 +1,6 @@
-import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { IncomingMessage, Server, ServerResponse } from 'node:http';
+import { createNativeSubagentFollowGateway } from '../server/native-subagent-follow.mjs';
+import type { Page } from '../../worker/node_modules/playwright-core/index.js';
 import type {
   NativeSubagentFollowEvent,
   NativeSubagentSummary,
@@ -52,15 +54,35 @@ type Connection = {
   fixture: string;
   sessionId: string;
   childId: string | null;
+  liveOnly: boolean;
   response: ServerResponse;
 };
 
-/** Real held loopback SSE, separate from JSON route fixtures and Dev browsers. */
+/** Product WS gateway over a real held loopback SSE; no browser transport mock. */
 export class NativeSubagentFixtureFeed {
+  gateway?: ReturnType<typeof createNativeSubagentFollowGateway>;
   sources = new Map<string, Source>();
   connections = new Set<Connection>();
   rootConnections = new Set<{ fixture: string; response: ServerResponse }>();
   calls: Omit<Connection, 'response'>[] = [];
+  attach(server: Server) {
+    this.gateway = createNativeSubagentFollowGateway({
+      port: (server.address() as { port: number }).port,
+    });
+    server.on('upgrade', (req, socket, head) => {
+      void this.gateway!.upgrade(req, socket, head);
+    });
+  }
+  async bindPage(page: Page, origin: string, fixture: string) {
+    await page
+      .context()
+      .addCookies([
+        { name: 'native-subagent-fixture', value: fixture, url: origin },
+      ]);
+  }
+  async close() {
+    await this.gateway?.close();
+  }
   register(source: Source) {
     const id = String(this.sources.size + 1);
     this.sources.set(id, source);
@@ -68,7 +90,11 @@ export class NativeSubagentFixtureFeed {
   }
   handle(request: IncomingMessage, response: ServerResponse) {
     const url = new URL(request.url!, 'http://127.0.0.1');
-    const fixture = url.searchParams.get('fixture');
+    const fixture =
+      url.searchParams.get('fixture') ??
+      request.headers.cookie?.match(
+        /(?:^|; )native-subagent-fixture=([^;]+)/,
+      )?.[1];
     if (fixture && url.pathname.startsWith('/api/v1/runs/')) {
       response.writeHead(200, { 'Content-Type': 'text/event-stream' });
       response.flushHeaders();
@@ -81,7 +107,8 @@ export class NativeSubagentFixtureFeed {
     const source = this.sources.get(fixture);
     const sessionId = url.pathname.split('/')[4]!;
     const childId = url.searchParams.get('childId');
-    this.calls.push({ fixture, sessionId, childId });
+    const liveOnly = url.searchParams.get('liveOnly') === 'true';
+    this.calls.push({ fixture, sessionId, childId, liveOnly });
     const summary = source?.summary(sessionId);
     if (!source || source.status || !summary || summary === 'error') {
       response.writeHead(source?.status ?? 503).end();
@@ -93,7 +120,7 @@ export class NativeSubagentFixtureFeed {
       Connection: 'keep-alive',
     });
     response.flushHeaders();
-    const connection = { fixture, sessionId, childId, response };
+    const connection = { fixture, sessionId, childId, liveOnly, response };
     this.connections.add(connection);
     response.on('close', () => this.connections.delete(connection));
     this.send(connection, { type: 'directory', summary });
