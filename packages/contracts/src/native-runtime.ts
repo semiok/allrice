@@ -6,6 +6,8 @@ export {
   NativeSubagentControlAcceptanceSchema,
   NativeSubagentControlRequestSchema,
   NativeSubagentControlScopeSchema,
+  NativeSubagentControlWireSchema,
+  type NativeSubagentControlWire,
   type NativeSubagentControlAcceptance,
   type NativeSubagentControlRequest,
   type NativeSubagentControlScope,

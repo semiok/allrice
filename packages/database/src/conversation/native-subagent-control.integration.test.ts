@@ -1,4 +1,5 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { LocalStorageAdapter } from '@allrice/storage';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { TransactionSql } from 'postgres';
 import {
@@ -8,6 +9,7 @@ import {
   cloudToolchainImageV1,
   type EmployeeRuntimePackage,
   type NativeSubagentControlInput,
+  type NativeSubagentControlWire,
 } from '@allrice/contracts';
 import * as client from '../core/client.ts';
 import {
@@ -32,7 +34,10 @@ import { createEmployeeAdministrationFixture } from '../employee-administration.
 import { buildEmployeeRuntimePackage } from '../platform-employees/runtime-package.ts';
 import { authenticateSession, createSession } from '../identity.ts';
 import { bindJobNativeSession } from '../execution/queue.ts';
-import { sendChatMessage } from '../workspace/service.ts';
+import { linkFileToSession, sendChatMessage } from '../workspace/service.ts';
+import { createStorageMetadata, markStorageReady } from '../data.ts';
+import { pollNativeSubagentControl } from '../../../../apps/worker/src/conversation/native-subagent-control.ts';
+import type { HarnessAdapter } from '../../../../apps/worker/src/harness/adapter.ts';
 import { newNativeGeneration } from './native-root-origin.ts';
 import { readSessionNativeSubagentTarget } from './native-subagent-query.ts';
 import { releaseConversationRuntime } from './conversation-runtime.ts';
@@ -44,6 +49,7 @@ import {
 } from './conversation-input.ts';
 import {
   enqueueNativeSubagentControl,
+  authorizeNativeSubagentControlImages,
   claimNativeSubagentControl,
   getNativeSubagentControl,
   recordNativeSubagentControlResult,
@@ -648,6 +654,174 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
       (select count(*) from allrice_messages where session_id=${f.session}) as messages`;
     return row;
   }
+
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQImWP4z8AAAAMBAQCc479ZAAAAAElFTkSuQmCC',
+    'base64',
+  );
+  async function upload(f: Chat) {
+    const saved = await createStorageMetadata(f.context, {
+      id: randomUUID(),
+      workspaceId: f.workspace,
+      category: 'uploads',
+      mediaType: 'image/png',
+      sizeBytes: png.length,
+      checksum: `sha256:${createHash('sha256').update(png).digest('hex')}`,
+      visibility: 'private',
+      retentionUntil: null,
+      immutable: false,
+    });
+    await runtimeFixtureStorage(fixture.db).put(
+      saved.object,
+      new Blob([png]).stream(),
+    );
+    await markStorageReady(f.context, saved.object.id);
+    await linkFileToSession({
+      context: f.context,
+      workspaceId: f.workspace,
+      sessionId: f.session,
+      objectId: saved.object.id,
+      fileName: '补充.png',
+    });
+    return saved.object.id;
+  }
+  it.each([false, true])(
+    '“给这个子任务发图” freezes authorized objects and sends native bytes once (with text=%s)',
+    async (withText) => {
+      const f = await chat(),
+        objectId = await upload(f);
+      const input: NativeSubagentControlInput = {
+        ...prompt(f),
+        kind: 'prompt',
+        delivery: 'queue',
+        content: [
+          ...(withText ? [{ type: 'text' as const, text: '请看图' }] : []),
+          { type: 'image', objectId },
+        ],
+      };
+      const ticket = await enqueue(f, input);
+      expect(ticket.message).toMatchObject({
+        content: input.content,
+        images: [
+          { id: objectId, fileName: '补充.png', mediaType: 'image/png' },
+        ],
+      });
+      const native = vi.fn<
+        (
+          request: NativeSubagentControlWire,
+        ) => Promise<{ kind: 'prompt'; messageId: string }>
+      >(async () => ({
+        kind: 'prompt' as const,
+        messageId: 'native-image-message',
+      }));
+      vi.stubEnv('ALLRICE_STORAGE_ROOT', fixture.storageRoot);
+      const poll = () =>
+        pollNativeSubagentControl({
+          authority: f.authority,
+          ownerId: f.user,
+          sessionId: f.session,
+          adapter: {
+            nativeSubagentControl: native,
+          } as unknown as HarnessAdapter,
+          open: () => true,
+          revoke: () => {
+            throw Error('unexpected revoke');
+          },
+        });
+      expect(await poll()).toBe(true);
+      await expect
+        .poll(
+          async () => (await read(f, input.requestId))?.ticket.result.status,
+        )
+        .toBe('accepted');
+      expect(native).toHaveBeenCalledTimes(1);
+      expect(native.mock.calls[0]?.[0]).toMatchObject({
+        input: {
+          content: [
+            ...(withText ? [{ type: 'text', text: '请看图' }] : []),
+            {
+              type: 'image',
+              mediaType: 'image/png',
+              data: png.toString('base64'),
+              name: '补充.png',
+            },
+          ],
+        },
+      });
+      expect(await poll()).toBe(false);
+      expect((await enqueue(f, input)).result.status).toBe('accepted');
+      const [row] =
+        await fixture.db`select native_input,delivery_attempts as attempts from allrice_conversation_commands where id=${input.requestId}`;
+      expect(row?.attempts).toBe(1);
+      await authorizeNativeSubagentControlImages(
+        f.context,
+        f.session,
+        row!.native_input,
+      );
+      await fixture.db`update allrice_storage_objects set checksum=${'sha256:' + 'f'.repeat(64)} where id=${objectId}`;
+      await expect(
+        authorizeNativeSubagentControlImages(
+          f.context,
+          f.session,
+          row!.native_input,
+        ),
+      ).rejects.toThrow('CHILD_CONTROL_UNAVAILABLE');
+      expect((await read(f, input.requestId))?.ticket.message).toEqual(
+        ticket.message,
+      );
+      const foreign = await chat();
+      await expect(
+        enqueue(foreign, {
+          ...input,
+          requestId: randomUUID(),
+          parentSessionId: foreign.descriptor.nativeSessionId,
+        }),
+      ).rejects.toThrow('CHILD_CONTROL_UNAVAILABLE');
+    },
+  );
+  it('“图片读取中已撤掉会话关联” rejects before native dispatch and retains the original request', async () => {
+    const f = await chat(),
+      objectId = await upload(f);
+    const input: NativeSubagentControlInput = {
+      ...prompt(f),
+      kind: 'prompt',
+      delivery: 'steer',
+      content: [{ type: 'image', objectId }],
+    };
+    await enqueue(f, input);
+    vi.stubEnv('ALLRICE_STORAGE_ROOT', fixture.storageRoot);
+    const get = LocalStorageAdapter.prototype.get;
+    const spy = vi
+      .spyOn(LocalStorageAdapter.prototype, 'get')
+      .mockImplementation(async function (this: LocalStorageAdapter, object) {
+        const stream = await get.call(this, object);
+        await fixture.db`delete from allrice_file_references where object_id=${objectId}`;
+        return stream;
+      });
+    const native = vi.fn();
+    try {
+      await pollNativeSubagentControl({
+        authority: f.authority,
+        ownerId: f.user,
+        sessionId: f.session,
+        adapter: { nativeSubagentControl: native } as unknown as HarnessAdapter,
+        open: () => true,
+        revoke: () => {},
+      });
+      await expect
+        .poll(async () => (await read(f, input.requestId))?.ticket.result)
+        .toEqual({
+          status: 'rejected',
+          code: 'NATIVE_CONTROL_IMAGE_UNAVAILABLE',
+        });
+      expect(native).not.toHaveBeenCalled();
+      expect((await read(f, input.requestId))?.ticket.message?.content).toEqual(
+        input.content,
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  });
 
   it('records once through the real DB entry, freezes the server incarnation and creates no execution placeholders', async () => {
     const f = await chat(),

@@ -20,8 +20,8 @@ import {
   ModelStreamDiagnosticSchema,
   ModelCallTimingNotificationSchema,
   NativeSubagentControlScopeSchema,
-  NativeSubagentControlRequestSchema,
-  type NativeSubagentControlRequest,
+  NativeSubagentControlWireSchema,
+  type NativeSubagentControlWire,
   type HarnessEvent,
 } from '@allrice/contracts';
 import type { NativeSessionPin } from '@allrice/database';
@@ -1489,8 +1489,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
     return this.runtimePool.nativeSubagentFollow(...args);
   }
 
-  nativeSubagentControl(value: NativeSubagentControlRequest) {
-    const request = NativeSubagentControlRequestSchema.parse(value);
+  nativeSubagentControl(value: NativeSubagentControlWire) {
+    const request = NativeSubagentControlWireSchema.parse(value);
     const runtime = assertNativeControlScope(
       this.runtimePool.get(request.scope.nativeRootId),
       request.scope,

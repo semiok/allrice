@@ -1,5 +1,5 @@
 /* global AbortController, AbortSignal */
-import { NativeSubagentControlRequestSchema } from '@allrice/contracts/native-runtime';
+import { NativeSubagentControlWireSchema } from '@allrice/contracts/native-runtime';
 import { remoteErrorOf } from '@deepseek-ai/dsh-typert-protocol';
 import { clearTimeout, setTimeout } from 'node:timers';
 import { readNativeSubagentSummary } from './allrice-native-query.mjs';
@@ -7,7 +7,7 @@ import { readNativeSubagentSummary } from './allrice-native-query.mjs';
 /** SaaS ingress over the public human controls. DSH owns acceptance, queueing,
  * cancellation and cold-child continuation; this port never acquires a Host. */
 export async function controlNativeSubagent(host, params) {
-  const { scope, input } = NativeSubagentControlRequestSchema.parse(params);
+  const { scope, input } = NativeSubagentControlWireSchema.parse(params);
   const root = host.requireRoot(scope.nativeRootId);
   if (!host.runAdmission) throw Error('RUN_NOT_ACTIVE');
   const window = host.runAdmission.inputWindow(scope.rootRunId);

@@ -203,6 +203,17 @@ export async function readNativeSubagentSummary(
         }
         const session = liveSessions.get(row.id);
         const agent = ctx.get('agents')?.get(row.id);
+        const parentSession = liveSessions.get(row.parentId);
+        const parentAgent = ctx.get('agents')?.get(row.parentId);
+        const parentAvailable =
+          root.source === 'live' &&
+          parent.source === 'live' &&
+          parentSession &&
+          ctx.sessions.get(row.parentId) === parentSession &&
+          ctx.get('agents') &&
+          (!parentAgent || parentAgent.session === parentSession)
+            ? Boolean(parentAgent)
+            : undefined;
         const status =
           root.source === 'live' &&
           child.source === 'live' &&
@@ -222,6 +233,7 @@ export async function readNativeSubagentSummary(
           parentId: row.parentId,
           depth: row.depth,
           mode: identity.mode,
+          parentAvailable,
           label: identity.label,
           running:
             status === 'running' ? true : status === 'idle' ? false : null,

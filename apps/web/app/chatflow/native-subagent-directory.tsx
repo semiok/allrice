@@ -410,9 +410,17 @@ export function NativeSubagentDirectory({
             )}
             {controlRoot !== undefined && (
               <NativeSubagentControls
-                key={selected}
+                key={`${selected}/${child?.parentId}/${controlRoot?.rootRunId}/${controlRoot?.generation}`}
                 childId={selected}
                 child={child}
+                parentAvailable={
+                  summary?.descendants.find(
+                    (entry): entry is Child =>
+                      entry.kind === 'child' &&
+                      entry.id === selected &&
+                      entry.parentId === child?.parentId,
+                  )?.parentAvailable
+                }
                 root={controlRoot}
                 permitted={canControl}
                 controls={controls}

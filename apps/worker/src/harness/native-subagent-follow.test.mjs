@@ -151,6 +151,29 @@ function fixture(detail = true) {
   };
 }
 
+it('direct-parent Agent lifecycle invalidates availability through the existing directory observer', async () => {
+  const f = fixture(false);
+  f.summary.descendants[0].parentAvailable = true;
+  f.start();
+  await f.until((event) => event?.type === 'directory');
+  f.summary.descendants[0].parentAvailable = false;
+  f.notify('session.agent-availability', { sessionId: 'root', hostEpoch: 1 });
+  await f.until(
+    (event) =>
+      event?.type === 'directory' &&
+      event.summary.descendants[0].parentAvailable === false,
+  );
+  f.summary.descendants[0].parentAvailable = undefined;
+  f.notify('session.agent-availability', { sessionId: 'root', hostEpoch: 1 });
+  await f.until(
+    (event) =>
+      event?.type === 'directory' &&
+      event.summary.descendants[0].parentAvailable === undefined,
+  );
+  expect(f.client.nativeSubagentSummary).toHaveBeenCalledTimes(3);
+  await f.stop();
+});
+
 it('subscribes before cut, keeps post-cut/pre-return updates, and ignores older duplicates without concatenation', async () => {
   const f = fixture(),
     release = gate(),

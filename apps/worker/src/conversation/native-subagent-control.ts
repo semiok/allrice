@@ -1,9 +1,14 @@
 import {
   claimNativeSubagentControl,
+  authorizeNativeSubagentControlImages,
   recordNativeSubagentControlResult,
   type RunDeliveryAuthority,
 } from '@allrice/database';
-import type { NativeSubagentControlResult } from '@allrice/contracts';
+import {
+  NativeSubagentControlWireSchema,
+  type NativeSubagentControlResult,
+} from '@allrice/contracts';
+import { loadHarnessImages } from '../harness/prompt-images.js';
 import type { HarnessAdapter } from '../harness/adapter.js';
 import { NativeSubagentControlRefusal } from '../harness/dsh-protocol-client.js';
 
@@ -33,16 +38,58 @@ export async function pollNativeSubagentControl(input: {
   // leave root question answers and another child's Stop independently usable.
   void (async () => {
     let result: NativeSubagentControlResult;
+    let dispatch = false;
     try {
+      const images = request.images ?? [];
+      if (images.length)
+        await authorizeNativeSubagentControlImages(
+          principal,
+          input.sessionId,
+          request,
+        );
+      const bytes = images.length ? await loadHarnessImages(images) : [];
+      if (images.length)
+        await authorizeNativeSubagentControlImages(
+          principal,
+          input.sessionId,
+          request,
+        );
+      const wire = NativeSubagentControlWireSchema.parse({
+        scope: request.scope,
+        input:
+          request.input.kind === 'interrupt'
+            ? request.input
+            : {
+                ...request.input,
+                content: request.input.content.map((part) =>
+                  part.type === 'text'
+                    ? part
+                    : {
+                        type: 'image',
+                        ...bytes[
+                          images.findIndex(
+                            (image) => image.object.id === part.objectId,
+                          )
+                        ],
+                      },
+                ),
+              },
+      });
+      dispatch = input.open();
       result = input.open()
         ? {
             status: 'accepted',
-            acceptance: await input.adapter.nativeSubagentControl!(request),
+            acceptance: await input.adapter.nativeSubagentControl!(wire),
             source: { kind: 'native_ack' },
           }
         : { status: 'rejected', code: 'RUN_COMPLETING' };
     } catch (error) {
-      if (error instanceof NativeSubagentControlRefusal) {
+      if (!dispatch) {
+        result = {
+          status: 'rejected',
+          code: 'NATIVE_CONTROL_IMAGE_UNAVAILABLE',
+        };
+      } else if (error instanceof NativeSubagentControlRefusal) {
         result = { status: 'rejected', code: error.code };
       } else {
         const code = error instanceof Error ? error.message : '';

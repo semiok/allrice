@@ -61,6 +61,7 @@ export async function readAuthorizedNativeSubagentSummary(
         row.kind === 'child' &&
         (row.activity !== 'unknown' ||
           row.running !== null ||
+          row.parentAvailable !== undefined ||
           row.observation.source !== 'prepared'),
     )
   )

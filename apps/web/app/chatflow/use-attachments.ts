@@ -35,15 +35,15 @@ import type { createSessionActions } from './session-actions';
 import type { createSessionSelection } from './session-selection';
 
 interface UseAttachmentsOptions {
-  activeId: string | null;
+  activeId?: string | null;
   busy: boolean;
-  captureSelection: ReturnType<typeof createSessionSelection>['capture'];
-  sessionActions: ReturnType<typeof createSessionActions>;
-  createSession: () => Promise<string | null>;
-  setBusy: Dispatch<SetStateAction<boolean>>;
+  captureSelection?: ReturnType<typeof createSessionSelection>['capture'];
+  sessionActions?: ReturnType<typeof createSessionActions>;
+  createSession?: () => Promise<string | null>;
+  setBusy?: Dispatch<SetStateAction<boolean>>;
   setError: Dispatch<SetStateAction<string>>;
   tenantHeaders: Record<string, string>;
-  workspace: Workspace | null;
+  workspace: Pick<Workspace, 'workspaceId'> | null;
 }
 
 export interface WorkspaceFileAddResult {
@@ -356,7 +356,7 @@ export function useAttachments({
   );
 
   const openWorkspaceFiles = useCallback(async () => {
-    if (!workspace) return;
+    if (!workspace || !captureSelection) return;
     const scope = captureSelection();
     try {
       const result = await readJson<{ files: WorkspaceFile[] }>(
@@ -375,7 +375,8 @@ export function useAttachments({
   }, [captureSelection, setError, tenantHeaders, workspace]);
 
   const uploadFromBridge = useCallback(async () => {
-    if (!workspace || busy) return;
+    if (!workspace || busy || !sessionActions || !createSession || !setBusy)
+      return;
     if (pendingAttachmentsRef.current.length >= 20) {
       setError('每条消息最多添加 20 个附件。');
       return;
@@ -484,7 +485,7 @@ export function useAttachments({
   ]);
 
   const cancelBridgeUpload = useCallback(async () => {
-    if (!bridgeFileCommand || !workspace) return;
+    if (!bridgeFileCommand || !workspace || !captureSelection) return;
     const scope = captureSelection();
     try {
       const command = await readJson<LocalFileCommandView>(
@@ -504,6 +505,7 @@ export function useAttachments({
     async (file: WorkspaceFile) => {
       if (
         !workspace ||
+        !captureSelection ||
         file.category !== 'exports' ||
         file.deliverableVersion === null
       ) {
@@ -537,7 +539,7 @@ export function useAttachments({
   const addWorkspaceFiles = useCallback(
     async (files: WorkspaceFile[]): Promise<WorkspaceFileAddResult> => {
       const result: WorkspaceFileAddResult = { addedIds: [] };
-      if (!workspace)
+      if (!workspace || !sessionActions || !createSession || !setBusy)
         return { ...result, error: '工作区尚未加载，请稍后重试。' };
       const existing = pendingAttachmentsRef.current;
       const existingIds = new Set(

@@ -32,6 +32,8 @@ export const NativeSubagentSummarySchema = z.object({
         label: z.string().optional(),
         // Exact Host-local Agent status: null is unknown, never inferred idle.
         running: z.boolean().nullable().default(null),
+        // Exact live direct-parent Agent; absent means unobserved/prepared.
+        parentAvailable: z.boolean().optional(),
         // Own log only; task is the initial user message's first text block.
         title: z.string().optional(),
         task: z.string().optional(),
