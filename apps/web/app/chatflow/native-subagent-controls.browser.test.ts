@@ -717,6 +717,13 @@ suite('native child Stop request identity and truthful receipts', () => {
         .toBe(2);
       await queue.click();
       await expect.poll(() => scenario.uploads.length).toBe(2);
+      await expect
+        .poll(() =>
+          detail(page)
+            .getByRole('button', { name: '重试', exact: true })
+            .count(),
+        )
+        .toBe(1);
       expect(await queue.isDisabled()).toBe(true);
       expect(scenario.posts).toHaveLength(0);
       release();
