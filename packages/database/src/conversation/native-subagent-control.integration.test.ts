@@ -352,9 +352,14 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
     const result = await pending!;
     expect(
       (
-        await fixture.db`select state,cancel_requested_at from allrice_runs where id=${f.rootRunId}`
+        await fixture.db`select state from allrice_runs where id=${f.rootRunId}`
       )[0],
-    ).toEqual({ state: 'running', cancel_requested_at: null });
+    ).toEqual({ state: 'running' });
+    expect(
+      (
+        await fixture.db`select cancel_request_id from allrice_runtime_roots where root_run_id=${f.rootRunId}`
+      )[0],
+    ).toEqual({ cancel_request_id: null });
     expect(
       (
         await fixture.db`select status,cancel_requested_at from allrice_jobs where id=${f.worker.jobId}`
