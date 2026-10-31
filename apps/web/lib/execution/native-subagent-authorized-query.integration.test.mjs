@@ -1176,6 +1176,7 @@ suite(
                 row.kind === 'child' &&
                 row.id === b.childId &&
                 row.lastReply === '55' &&
+                row.activity === 'inactive' &&
                 row.observation.source === 'prepared',
             ),
         );
@@ -1187,6 +1188,7 @@ suite(
             label: '乙',
             lastReply: '55',
             running: null,
+            activity: 'inactive',
             observation: { source: 'prepared' },
           },
         ]);
