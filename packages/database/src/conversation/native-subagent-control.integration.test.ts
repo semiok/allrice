@@ -1,12 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { TransactionSql } from 'postgres';
 import {
+  ExecutionContextSchema,
   NativeSubagentControlResultSchema,
   type EmployeeRuntimePackage,
   type NativeSubagentControlInput,
 } from '@allrice/contracts';
 import * as client from '../core/client.ts';
-import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
+import {
+  createRuntimeFixtureDatabase,
+  runtimeFixtureStorage,
+} from '../runtime.fixture.ts';
+import { publishWorkbenchArtifact } from '../artifact-review.ts';
 import { createRunAuthorityFixture } from '../run-authority.fixture.ts';
 import { assertNativeRunAuthority } from '../run-delivery-authority.ts';
 import { nativeBindingDescriptor } from '../native-session-binding.fixture.ts';
@@ -401,6 +407,172 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
       )[0],
     ).toEqual({ state: 'claimed', delivery_attempts: 1, native_proof: null });
   });
+
+  for (const operation of ['submit', 'claim'] as const)
+    it(`serializes child Stop ${operation} with ordinary publication before taking Job locks`, async () => {
+      const f = await chat();
+      const input: NativeSubagentControlInput = {
+        kind: 'interrupt',
+        requestId: randomUUID(),
+        parentSessionId: f.descriptor.nativeSessionId,
+        childSessionId: `synthetic-child-${randomUUID()}`,
+        mode: 'continuable',
+      };
+      if (operation === 'claim') await enqueue(f, input);
+      const [policy] =
+        await fixture.db`select payload,issued_at,expires_at from allrice_policy_snapshots where id=${f.policy}`;
+      const context = ExecutionContextSchema.parse({
+        executionId: randomUUID(),
+        runId: f.rootRunId,
+        jobId: f.worker.jobId,
+        worker: { type: 'worker', id: f.worker.workerId },
+        delegatedBy: { type: 'user', id: f.user },
+        organizationId: f.org,
+        workspaceId: f.workspace,
+        policySnapshot: {
+          id: f.policy,
+          organizationId: f.org,
+          subjectId: f.user,
+          version: 1,
+          issuedAt: policy!.issued_at.toISOString(),
+          expiresAt: policy!.expires_at.toISOString(),
+          ...policy!.payload,
+        },
+        startedAt: new Date().toISOString(),
+      });
+      let release!: () => void;
+      const resume = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let ready!: () => void;
+      const held = new Promise<void>((resolve) => {
+        ready = resolve;
+      });
+      let publisherPid = 0;
+      const publicationDb = new Proxy(fixture.db, {
+        get(target, key) {
+          if (key !== 'begin') return Reflect.get(target, key, target);
+          return (body: (tx: TransactionSql) => Promise<unknown>) =>
+            target.begin(async (tx) => {
+              await tx`set local statement_timeout='8s'`;
+              publisherPid = (await tx`select pg_backend_pid() pid`)[0]!.pid;
+              return body(
+                new Proxy(tx, {
+                  apply(query, receiver, args) {
+                    const pending = Reflect.apply(query, receiver, args);
+                    // Pause the real publisher after Session UPDATE, before its
+                    // first Run/Job SHARE. A control must wait without holding Job.
+                    if (String(args[1]).startsWith('artifact:'))
+                      return (async () => {
+                        await pending;
+                        ready();
+                        await resume;
+                        return [];
+                      })();
+                    return pending;
+                  },
+                }),
+              );
+            });
+        },
+      });
+      vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
+      const publication = publishWorkbenchArtifact(
+        {
+          context,
+          sessionId: f.session,
+          callId: randomUUID(),
+          kind: 'document',
+          fileName: 'while-stopping.txt',
+          format: 'text',
+          mediaType: 'text/plain',
+          bytes: Buffer.from('Delivery survives a simultaneous child Stop.'),
+        },
+        runtimeFixtureStorage(fixture.db),
+        publicationDb,
+      );
+      void publication.catch(() => {});
+      let control: Promise<unknown> | undefined;
+      try {
+        await Promise.race([
+          held,
+          publication.then(() => {
+            throw Error('publication missed its barrier');
+          }),
+        ]);
+        control =
+          operation === 'submit'
+            ? enqueue(f, input)
+            : claimNativeSubagentControl({
+                ...f.authority,
+                rootRunId: f.rootRunId.toUpperCase(),
+              });
+        void control.catch(() => {});
+        let waitEvent: string | undefined;
+        await expect
+          .poll(
+            async () => {
+              const rows =
+                await fixture.db`select wait_event from pg_stat_activity
+            where ${publisherPid}=any(pg_blocking_pids(pid)) and wait_event_type='Lock'`;
+              waitEvent = rows[0]?.wait_event;
+              return rows.length;
+            },
+            { timeout: 2000, interval: 10 },
+          )
+          .toBe(1);
+        expect(waitEvent).toBe('advisory');
+      } finally {
+        release();
+        await Promise.allSettled([publication, control]);
+      }
+      expect((await publication).version.fileName).toBe('while-stopping.txt');
+      await control;
+      expect((await read(f, input.requestId))?.ticket.result.status).toBe(
+        operation === 'submit' ? 'recorded' : 'unknown',
+      );
+      expect(
+        (
+          await fixture.db`select delivery_attempts from allrice_conversation_commands where id=${input.requestId}`
+        )[0]!.delivery_attempts,
+      ).toBe(operation === 'submit' ? 0 : 1);
+    });
+
+  for (const operation of ['submit', 'claim'] as const)
+    it(`rechecks an expired lease after ${operation} waits on the publication mutex`, async () => {
+      const f = await chat(),
+        input = prompt(f);
+      if (operation === 'claim') await enqueue(f, input);
+      let pending: Promise<unknown> | undefined;
+      await fixture.db.begin(async (tx) => {
+        const [holder] =
+          await tx`select pg_backend_pid() pid,pg_advisory_xact_lock(hashtextextended(${f.rootRunId},703))`;
+        pending =
+          operation === 'submit'
+            ? enqueue(f, input)
+            : claimNativeSubagentControl(f.authority);
+        void pending.catch(() => {});
+        await expect
+          .poll(
+            async () => {
+              const rows =
+                await fixture.db`select pid from pg_stat_activity where ${holder!.pid}=any(pg_blocking_pids(pid)) and wait_event='advisory'`;
+              return rows.length;
+            },
+            { timeout: 2000, interval: 10 },
+          )
+          .toBe(1);
+        await tx`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${f.worker.jobId}`;
+      });
+      await expect(pending).rejects.toThrow();
+      const rows =
+        await fixture.db`select state,delivery_attempts from allrice_conversation_commands where id=${input.requestId}`;
+      expect(rows).toEqual(
+        operation === 'submit'
+          ? []
+          : [{ state: 'pending', delivery_attempts: 0 }],
+      );
+    });
 
   it('never transfers a pending command to a later Job incarnation or an expired execution lease', async () => {
     const f = await chat(),
