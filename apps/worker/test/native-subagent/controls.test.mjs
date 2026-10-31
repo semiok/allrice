@@ -93,19 +93,20 @@ it('“给子任务补充图片”：native Queue/Steer admit image-only and mix
   const only = input(h, child, '', 'steer');
   only.input.content = [picture];
   const steered = await control(h, only);
-  await expect
-    .poll(
-      () =>
-        ownMessages(agent).filter((event) =>
-          [queued.messageId, steered.messageId].includes(event.data.id),
-        ).length,
-    )
-    .toBe(2);
-  expect(
-    ownMessages(h.root).some((event) =>
-      [queued.messageId, steered.messageId].includes(event.data.id),
-    ),
-  ).toBe(false);
+  expect(agent.inbox.nextStep).toContainEqual(
+    expect.objectContaining({
+      id: steered.messageId,
+      content: [
+        {
+          type: 'image',
+          attachment: expect.objectContaining({
+            mediaType: 'image/png',
+            name: '补充.png',
+          }),
+        },
+      ],
+    }),
+  );
   const directory = await h.server.handleRequest('session/subagent-summary', {
     sessionId: h.root.id,
   });
@@ -122,6 +123,19 @@ it('“给子任务补充图片”：native Queue/Steer admit image-only and mix
   ).toBe(true);
   release.resolve();
   await h.wait();
+  await expect
+    .poll(
+      () =>
+        ownMessages(agent).filter((event) =>
+          [queued.messageId, steered.messageId].includes(event.data.id),
+        ).length,
+    )
+    .toBe(2);
+  expect(
+    ownMessages(h.root).some((event) =>
+      [queued.messageId, steered.messageId].includes(event.data.id),
+    ),
+  ).toBe(false);
 });
 
 it('“只停这个子任务，再给另一个补充材料” preserves the parent question and sibling', async () => {
