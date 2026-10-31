@@ -97,7 +97,18 @@ function Page() {
       >
         <EmployeeSidebar
           workspace={workspace}
-          sessions={sessions}
+          sessions={
+            query.has('transport-pressure')
+              ? [
+                  ...sessions,
+                  {
+                    ...sessions[0]!,
+                    id: 'parent-d',
+                    title: 'parent-d 父级任务',
+                  },
+                ]
+              : sessions
+          }
           activeId={activeId}
           nativeReadyKey={nativeReadyKey}
           nativeReads={observation.reads}

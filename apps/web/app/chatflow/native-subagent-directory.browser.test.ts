@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
-import { createServer, type Server } from 'node:http';
+import { createServer, type Server, type ServerResponse } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type {
   ChatFlowEventEnvelope,
@@ -76,6 +76,8 @@ function summary(rootId = 'native-root'): NativeSubagentSummary {
 suite('native subagent directory and employee sidebar', () => {
   let browser: Browser, server: Server, origin: string;
   const feed = new NativeSubagentFixtureFeed();
+  const uploads = new Set<ServerResponse>();
+  const posts: { path: string; version: string }[] = [];
   beforeAll(async () => {
     const require = createRequire(import.meta.url);
     const { build } = createRequire(require.resolve('tsx'))('esbuild');
@@ -113,6 +115,15 @@ suite('native subagent directory and employee sidebar', () => {
     });
     assets.set('/layout.css', globals.outputFiles[0]!.contents);
     server = createServer((req, res) => {
+      if (req.method === 'POST') {
+        req.resume();
+        posts.push({ path: req.url!, version: req.httpVersion });
+        if (req.url?.endsWith('/attachments')) {
+          uploads.add(res);
+          res.once('close', () => uploads.delete(res));
+        } else res.writeHead(204).end();
+        return;
+      }
       if (feed.handle(req, res)) return;
       const path = new URL(req.url!, origin).pathname,
         asset = assets.get(path);
@@ -131,6 +142,7 @@ suite('native subagent directory and employee sidebar', () => {
     });
     await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
     origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    feed.attach(server);
     const { chromium } = createRequire(
       new URL('../../../worker/package.json', import.meta.url),
     )('playwright-core');
@@ -145,6 +157,7 @@ suite('native subagent directory and employee sidebar', () => {
   });
   afterAll(async () => {
     await browser?.close();
+    await feed.close();
     server?.closeAllConnections();
     if (server) await new Promise<void>((done) => server.close(() => done()));
   }, 60_000);
@@ -159,7 +172,6 @@ suite('native subagent directory and employee sidebar', () => {
   ) {
     const page = await browser.newPage({ viewport: { width, height: 850 } });
     const calls: { id: string; liveOnly: boolean }[] = [];
-    const followCalls: { id: string; liveOnly: boolean }[] = [];
     let response: NativeSubagentSummary | 'error' = value;
     const fixture = feed.register({
       summary: (id) => (id === 'parent-b' ? summary('other-root') : response),
@@ -187,11 +199,6 @@ suite('native subagent directory and employee sidebar', () => {
       const url = new URL(route.request().url()),
         id = url.pathname.split('/')[4]!,
         liveOnly = url.searchParams.get('liveOnly') === 'true';
-      if (url.searchParams.get('follow') === 'true') {
-        followCalls.push({ id, liveOnly });
-        url.searchParams.set('fixture', fixture);
-        return route.continue({ url: String(url) });
-      }
       calls.push({ id, liveOnly });
       expect(route.request().headers()['x-allrice-organization-id']).toBe(
         'org',
@@ -213,7 +220,7 @@ suite('native subagent directory and employee sidebar', () => {
       if (response === 'error')
         return route.fulfill({ status: 503, json: { error: 'unavailable' } });
       const read =
-        id === 'parent-c' && liveOnly
+        id === 'parent-c' && liveOnly && !search.includes('transport-pressure')
           ? null
           : id === 'parent-b'
             ? summary('other-root')
@@ -224,6 +231,7 @@ suite('native subagent directory and employee sidebar', () => {
       await route.fulfill({ json: { summary: read } });
       if (!liveOnly) fullReply?.delivered();
     });
+    await feed.bindPage(page, origin, fixture);
     await page.goto(origin + search);
     await page
       .getByRole('button', {
@@ -238,7 +246,7 @@ suite('native subagent directory and employee sidebar', () => {
     return {
       page,
       calls,
-      followCalls,
+      followCalls: () => feed.calls.filter((call) => call.fixture === fixture),
       fixture,
       initialDelivered: () => initialDelivered,
       setResponse: (next: NativeSubagentSummary | 'error') => {
@@ -246,6 +254,109 @@ suite('native subagent directory and employee sidebar', () => {
       },
     };
   }
+  it('“上传还没完，也要能 Stop 和回答父问题”：HTTP/1 controls arrive with four live parents and child detail', async () => {
+    const { page, fixture } = await open(
+      summary(),
+      1200,
+      undefined,
+      undefined,
+      '?root-events&transport-pressure',
+    );
+    const sockets = new Set<string>();
+    // Existing observers are measured at the real upstream; new ones also
+    // expose browser WebSocket ownership through close/reopen and unload.
+    page.on('websocket', (socket) => {
+      sockets.add(socket.url());
+      socket.on('close', () => sockets.delete(socket.url()));
+    });
+    try {
+      await page.locator('button[aria-haspopup="tree"]').click();
+      await page.getByRole('button', { name: '查看fork-a摘要' }).click();
+      await expect
+        .poll(() => ({
+          directories: [...feed.connections].filter(
+            (c) => c.fixture === fixture && !c.childId,
+          ).length,
+          details: [...feed.connections].filter(
+            (c) => c.fixture === fixture && c.childId,
+          ).length,
+          root: [...feed.rootConnections].filter((c) => c.fixture === fixture)
+            .length,
+        }))
+        .toEqual({ directories: 4, details: 1, root: 1 });
+      expect(
+        [...feed.connections]
+          .filter((c) => c.fixture === fixture && !c.childId)
+          .map((c) => c.sessionId)
+          .sort(),
+      ).toEqual(['parent-a', 'parent-b', 'parent-c', 'parent-d']);
+      await page.evaluate(() => {
+        void fetch('/api/v1/sessions/parent-a/attachments', {
+          method: 'POST',
+          body: 'held image',
+        });
+      });
+      await expect.poll(() => uploads.size).toBe(1);
+      const before = posts.length;
+      const statuses = await page.evaluate(async () =>
+        Promise.all(
+          [
+            [
+              '/api/v1/sessions/parent-a/subagents/controls',
+              { kind: 'interrupt' },
+            ],
+            [
+              '/api/v1/sessions/parent-a/messages',
+              { userQuestionAnswer: { questionId: 'parent-question' } },
+            ],
+          ].map(
+            async ([url, body]) =>
+              (
+                await fetch(String(url), {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify(body),
+                })
+              ).status,
+          ),
+        ),
+      );
+      expect(statuses).toEqual([204, 204]);
+      expect(
+        posts
+          .slice(before)
+          .map((p) => p.path)
+          .sort(),
+      ).toEqual([
+        '/api/v1/sessions/parent-a/messages',
+        '/api/v1/sessions/parent-a/subagents/controls',
+      ]);
+      expect(posts.every((p) => p.version === '1.1')).toBe(true);
+      expect(uploads.size).toBe(1);
+      expect(sockets.size).toBeGreaterThan(0);
+      await page.goto('about:blank');
+      await expect
+        .poll(
+          () =>
+            [...feed.connections].filter((c) => c.fixture === fixture).length,
+        )
+        .toBe(0);
+      await expect
+        .poll(
+          () =>
+            [...feed.rootConnections].filter((c) => c.fixture === fixture)
+              .length,
+        )
+        .toBe(0);
+      // Playwright clears its old-document socket map before late close events.
+      // The server socket and upstream owners remain the resource authority.
+      await expect.poll(() => feed.sockets.size).toBe(0);
+    } finally {
+      for (const res of uploads) res.end();
+      await page.close();
+    }
+  }, 30_000);
+
   const row = (page: Page, id: string) =>
     page.locator(`[data-row-key="session:${id}"]`);
   const ownProcess: typeof snapshotFor = (value, id) => {
@@ -424,7 +535,8 @@ suite('native subagent directory and employee sidebar', () => {
         : entry,
     );
     const { page, fixture, followCalls } = await open(value);
-    const active = () => followCalls.filter((call) => call.id === 'parent-a');
+    const active = () =>
+      followCalls().filter((call) => call.sessionId === 'parent-a');
     try {
       await expect.poll(() => active().at(-1)?.liveOnly).toBe(true);
       const trigger = page.locator('button[aria-haspopup="tree"]');
@@ -447,8 +559,8 @@ suite('native subagent directory and employee sidebar', () => {
       await page.getByRole('button', { name: '查看idle-b摘要' }).waitFor();
       expect(active().at(-1)?.liveOnly).toBe(false);
       expect(
-        followCalls
-          .filter((call) => call.id !== 'parent-a')
+        followCalls()
+          .filter((call) => call.sessionId !== 'parent-a')
           .every((call) => call.liveOnly),
       ).toBe(true);
     } finally {

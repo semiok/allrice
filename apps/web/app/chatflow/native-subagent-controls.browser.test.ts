@@ -1,4 +1,4 @@
-/** Real directory, root SSE, fetch and Chrome; loopback protocol fixture, no model/DB/Dev. */
+/** Real directory WS, root SSE, fetch and Chrome; loopback fixture, no model/DB/Dev. */
 import { createServer, type Server } from 'node:http';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
@@ -70,11 +70,13 @@ type Body = {
     mode: 'continuable';
   };
 };
+type PostFact = { at: number; body: Body; responseStatus?: number };
 type Scenario = {
   feedId: string;
   mode: Mode;
   getMode: Mode;
   posts: Body[];
+  postFacts: (PostFact & { remotePort: number | undefined })[];
   gets: string[];
   rootReads: string[];
   reply?: (body: Body) => Mode;
@@ -158,6 +160,11 @@ suite('native child Stop request identity and truthful receipts', () => {
           for await (const chunk of req) chunks.push(Buffer.from(chunk));
           body = JSON.parse(Buffer.concat(chunks).toString()) as Body;
           scenario.posts.push(body);
+          scenario.postFacts.push({
+            at: Date.now(),
+            body,
+            remotePort: req.socket.remotePort,
+          });
           await scenario.gate;
         }
         const requestId =
@@ -167,7 +174,9 @@ suite('native child Stop request identity and truthful receipts', () => {
           ? (scenario.reply?.(body!) ?? scenario.mode)
           : scenario.getMode;
         if (mode === 'drop') {
-          res.destroy();
+          // Lose the ACK body after headers, without a no-response HTTP replay.
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.write('{"ticket":', () => res.destroy());
           return;
         }
         const code =
@@ -241,6 +250,7 @@ suite('native child Stop request identity and truthful receipts', () => {
     });
     await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
     origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    feed.attach(server);
     const { chromium } = createRequire(
       new URL('../../../worker/package.json', import.meta.url),
     )('playwright-core');
@@ -256,6 +266,7 @@ suite('native child Stop request identity and truthful receipts', () => {
   afterAll(async () => {
     for (const scenario of scenarios.values()) scenario.release?.();
     await browser?.close();
+    await feed.close();
     server?.closeAllConnections();
     if (server) await new Promise<void>((done) => server.close(() => done()));
   }, 60_000);
@@ -290,6 +301,7 @@ suite('native child Stop request identity and truthful receipts', () => {
       mode,
       getMode: 'accepted',
       posts: [],
+      postFacts: [],
       gets: [],
       rootReads: [],
     };
@@ -302,6 +314,38 @@ suite('native child Stop request identity and truthful receipts', () => {
     const page = await browser.newPage({
       viewport: { width: 390, height: 850 },
     });
+    await page.addInitScript(() => {
+      const target = window as unknown as { nativeControlFetches: PostFact[] },
+        send = window.fetch.bind(window);
+      target.nativeControlFetches = [];
+      window.fetch = (input, init) => {
+        let fact: PostFact | undefined;
+        if (
+          init?.method === 'POST' &&
+          String(input).includes('/subagents/controls?')
+        ) {
+          fact = {
+            at: Date.now(),
+            body: JSON.parse(String(init.body)),
+          };
+          target.nativeControlFetches.push(fact);
+        }
+        const pending = send(input, init),
+          observed = fact;
+        if (observed)
+          void pending.then(
+            (response) => (observed.responseStatus = response.status),
+            () => {},
+          );
+        return pending;
+      };
+    });
+    const browserPosts = () =>
+      page.evaluate(
+        () =>
+          (window as unknown as { nativeControlFetches: PostFact[] })
+            .nativeControlFetches,
+      );
     const errors: string[] = [];
     page.on('pageerror', (error) => errors.push(error.message));
     await page.goto(`${origin}/?controls&fixture=${id}`);
@@ -330,10 +374,10 @@ suite('native child Stop request identity and truthful receipts', () => {
       .toEqual({ directory: 3, detail: 1, root: 1 });
     if (scenarios.size === 1)
       console.info(
-        'Full page held SSE connections before Stop:',
+        'Full page observations (native WS, root SSE) before Stop:',
         connections(),
       );
-    return { page, scenario, errors };
+    return { page, scenario, errors, browserPosts };
   }
   async function show(page: Page, label: string) {
     await page.getByRole('button', { name: /4 个子智能体/ }).click();
@@ -708,14 +752,16 @@ suite('native child Stop request identity and truthful receipts', () => {
       await expect.poll(() => nextStop.isEnabled()).toBe(true);
       scenario.reply = (body) =>
         body.rootRunId === runId ? 'unknown' : 'accepted';
-      // With five held SSE, the first HTTP response occupies Chrome's sixth slot.
-      // The new operation must be created before it; transport can drain afterward.
+      // The old reply stays held; the new root can receive its own ACK first.
       scenario.gate = undefined;
       await nextStop.click();
       await expect.poll(() => receipt(page).count()).toBe(2);
       const ids = await receipt(page).locator('code').allTextContents();
       expect(new Set(ids).size).toBe(2);
-      expect(await receipt(page).last().textContent()).toContain('正在提交');
+      await expect
+        .poll(() => receipt(page).last().textContent())
+        .toContain('停止请求已接收');
+      expect(await receipt(page).first().textContent()).toContain('正在提交');
       scenario.release!();
       await expect.poll(() => scenario.posts.length).toBe(2);
       expect(scenario.posts[0]!.rootRunId).toBe(runId);
@@ -764,7 +810,7 @@ suite('native child Stop request identity and truthful receipts', () => {
   ] as const)(
     '%s never fabricates acceptance and only GET recovers the original request',
     async (mode) => {
-      const { page, scenario } = await open(mode);
+      const { page, scenario, browserPosts } = await open(mode);
       try {
         await detail(page)
           .getByRole('button', { name: 'Stop 此子任务' })
@@ -781,6 +827,17 @@ suite('native child Stop request identity and truthful receipts', () => {
           .poll(() => detail(page).textContent())
           .toContain('停止请求已接收');
         expect(scenario.gets).toEqual([id]);
+        if (mode === 'drop') {
+          expect((await browserPosts())[0]?.responseStatus).toBe(200);
+          console.info(
+            'CONTROL_DROP_NETWORK',
+            JSON.stringify({
+              browser: await browserPosts(),
+              server: scenario.postFacts,
+            }),
+          );
+        }
+        expect(await browserPosts()).toHaveLength(1);
         expect(scenario.posts).toHaveLength(1);
       } finally {
         await page.close();

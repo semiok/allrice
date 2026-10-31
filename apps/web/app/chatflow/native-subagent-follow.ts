@@ -9,35 +9,55 @@ export type NativeSubagentSnapshot = Extract<
   { type: 'snapshot' }
 >['snapshot'];
 
-/** One authorized connection; no replay, retries, or native state assembly. */
+/** One authorized read-only socket; no replay, retries, or native assembly. */
 export async function followNativeSubagents(
   url: string,
   headers: Record<string, string>,
   signal: AbortSignal,
   consume: (event: NativeSubagentFollowEvent) => void,
 ) {
-  const response = await fetch(url, { headers, signal, cache: 'no-store' });
+  if (signal.aborted) return;
+  const target = new URL(url, location.href);
   if (
-    !response.ok ||
-    !response.body ||
-    !response.headers.get('content-type')?.startsWith('text/event-stream')
-  ) {
-    await response.body?.cancel().catch(() => {});
-    throw new Error('native follow unavailable');
-  }
-  const reader = response.body.getReader(),
-    data = createSseDataConsumer();
-  try {
-    while (!signal.aborted) {
-      const chunk = await reader.read();
-      if (signal.aborted || chunk.done) return;
-      for (const value of data(chunk.value)) {
-        if (signal.aborted) return;
-        consume(NativeSubagentFollowEventSchema.parse(JSON.parse(value)));
+    target.origin !== location.origin ||
+    target.searchParams.get('workspaceId') !== headers['x-allrice-workspace-id']
+  )
+    throw Error('native follow scope changed');
+  target.searchParams.set(
+    'organizationId',
+    headers['x-allrice-organization-id'] ?? '',
+  );
+  target.protocol = target.protocol === 'https:' ? 'wss:' : 'ws:';
+  await new Promise<void>((resolve, reject) => {
+    const socket = new WebSocket(target),
+      data = createSseDataConsumer();
+    socket.binaryType = 'arraybuffer';
+    const finish = (error?: unknown) => {
+      signal.removeEventListener('abort', cancel);
+      socket.onmessage = socket.onclose = socket.onerror = null;
+      socket.close();
+      if (error) reject(error);
+      else resolve();
+    };
+    const cancel = () => finish();
+    signal.addEventListener('abort', cancel, { once: true });
+    socket.onmessage = (event) => {
+      if (signal.aborted) return;
+      try {
+        if (!(event.data instanceof ArrayBuffer))
+          throw Error('invalid native follow frame');
+        for (const value of data(new Uint8Array(event.data))) {
+          if (signal.aborted) return;
+          consume(NativeSubagentFollowEventSchema.parse(JSON.parse(value)));
+        }
+      } catch (error) {
+        finish(error);
       }
-    }
-  } finally {
-    await reader.cancel().catch(() => {});
-    reader.releaseLock();
-  }
+    };
+    socket.onerror = () => finish(Error('native follow unavailable'));
+    socket.onclose = (event) =>
+      finish(
+        event.code === 1000 ? undefined : Error('native follow unavailable'),
+      );
+  });
 }

@@ -131,6 +131,7 @@ suite('native child IDs retain the parent Session namespace', () => {
     });
     await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
     origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    feed.attach(server);
     const { chromium } = createRequire(
       new URL('../../../worker/package.json', import.meta.url),
     )('playwright-core');
@@ -145,6 +146,7 @@ suite('native child IDs retain the parent Session namespace', () => {
   });
   afterAll(async () => {
     await browser?.close();
+    await feed.close();
     server?.closeAllConnections();
     if (server) await new Promise<void>((done) => server.close(() => done()));
   }, 60_000);
@@ -154,12 +156,7 @@ suite('native child IDs retain the parent Session namespace', () => {
     const errors: string[] = [];
     page.on('pageerror', (error) => errors.push(error.message));
     try {
-      await page.route('**/api/v1/sessions/*/subagents?**', (route) => {
-        const url = new URL(route.request().url());
-        if (url.searchParams.get('follow') === 'true')
-          url.searchParams.set('fixture', fixture);
-        return route.continue({ url: String(url) });
-      });
+      await feed.bindPage(page, origin, fixture);
       await page.goto(origin);
       await expect
         .poll(() =>

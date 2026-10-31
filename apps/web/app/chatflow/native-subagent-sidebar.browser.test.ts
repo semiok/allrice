@@ -101,6 +101,7 @@ suite('visible parent native running badges', () => {
     });
     await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
     origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    feed.attach(server);
     const { chromium } = createRequire(
       new URL('../../../worker/package.json', import.meta.url),
     )('playwright-core');
@@ -115,6 +116,7 @@ suite('visible parent native running badges', () => {
   });
   afterAll(async () => {
     await browser?.close();
+    await feed.close();
     server?.closeAllConnections();
     if (server) await new Promise<void>((done) => server.close(() => done()));
   }, 60_000);
@@ -129,10 +131,6 @@ suite('visible parent native running badges', () => {
       await page.route('**/api/v1/sessions/*/subagents?**', async (route) => {
         const url = new URL(route.request().url()),
           id = url.pathname.split('/')[4]!;
-        if (url.searchParams.get('follow') === 'true') {
-          url.searchParams.set('fixture', fixture);
-          return route.continue({ url: String(url) });
-        }
         expect(url.searchParams.get('liveOnly')).toBe('true');
         expect(route.request().headers()['x-allrice-workspace-id']).toBe(
           'workspace',
@@ -142,6 +140,7 @@ suite('visible parent native running badges', () => {
           json: { summary: id === 'parent-c' ? null : summary },
         });
       });
+      await feed.bindPage(page, origin, fixture);
       await page.goto(origin);
       await expect
         .poll(() => [...new Set(calls)].sort())
@@ -172,15 +171,11 @@ suite('visible parent native running badges', () => {
     const fixture = feed.register({ summary: () => result });
     try {
       await page.route('**/api/v1/sessions/*/subagents?**', async (route) => {
-        const url = new URL(route.request().url());
-        if (url.searchParams.get('follow') === 'true') {
-          url.searchParams.set('fixture', fixture);
-          return route.continue({ url: String(url) });
-        }
         if (result === 'error')
           return route.fulfill({ status: 503, json: { error: 'unavailable' } });
         await route.fulfill({ json: { summary: result } });
       });
+      await feed.bindPage(page, origin, fixture);
       await page.goto(origin);
       const nav = page.getByRole('navigation');
       await expect.poll(() => nav.innerText()).toContain('1 个子智能体运行中');
@@ -237,15 +232,11 @@ suite('visible parent native running badges', () => {
       });
       try {
         await page.route('**/api/v1/sessions/*/subagents?**', (route) => {
-          const url = new URL(route.request().url());
-          if (url.searchParams.get('follow') === 'true') {
-            url.searchParams.set('fixture', fixture);
-            return route.continue({ url: String(url) });
-          }
           return failed
             ? route.fulfill({ status: 503, json: { error: 'unavailable' } })
             : route.fulfill({ json: { summary: mixed } });
         });
+        await feed.bindPage(page, origin, fixture);
         await page.goto(`${origin}?state=${state}`);
         for (const id of ['parent-a', 'parent-b', 'parent-c']) {
           await page.locator(`[data-row-key="session:${id}"]`).hover();
