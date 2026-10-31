@@ -1153,6 +1153,9 @@ suite(
           observation: { source: 'prepared' },
         };
         const point = await (await web(f)).json();
+        expect(api.read).toHaveBeenCalledTimes(1);
+        expect(api.read.mock.calls[0][2]).toBeUndefined();
+        api.read.mockClear();
         const stream = consume(
           await web(f, f.token, '&follow=true', abort.signal),
         );
@@ -1203,6 +1206,7 @@ suite(
         expect(create).not.toHaveBeenCalled();
         for (const spy of spies) expect(spy).not.toHaveBeenCalled();
         expect(runtime.lastActivityAt).toBe(activity);
+        expect(api.read).toHaveBeenCalled();
         expect(api.read.mock.calls.every((args) => args[2] === false)).toBe(
           true,
         );
