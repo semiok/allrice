@@ -254,7 +254,7 @@ suite('native subagent directory and employee sidebar', () => {
       },
     };
   }
-  it('“上传还没完，也要能 Stop 和回答父问题”：HTTP/1 controls arrive with three live parents and child detail', async () => {
+  it('“上传还没完，也要能 Stop 和回答父问题”：HTTP/1 controls arrive with four live parents and child detail', async () => {
     const { page, fixture } = await open(
       summary(),
       1200,
@@ -283,7 +283,13 @@ suite('native subagent directory and employee sidebar', () => {
           root: [...feed.rootConnections].filter((c) => c.fixture === fixture)
             .length,
         }))
-        .toEqual({ directories: 3, details: 1, root: 1 });
+        .toEqual({ directories: 4, details: 1, root: 1 });
+      expect(
+        [...feed.connections]
+          .filter((c) => c.fixture === fixture && !c.childId)
+          .map((c) => c.sessionId)
+          .sort(),
+      ).toEqual(['parent-a', 'parent-b', 'parent-c', 'parent-d']);
       await page.evaluate(() => {
         void fetch('/api/v1/sessions/parent-a/attachments', {
           method: 'POST',

@@ -1,4 +1,4 @@
-/** Real directory, root SSE, fetch and Chrome; loopback protocol fixture, no model/DB/Dev. */
+/** Real directory WS, root SSE, fetch and Chrome; loopback fixture, no model/DB/Dev. */
 import { createServer, type Server } from 'node:http';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
@@ -241,6 +241,7 @@ suite('native child Stop request identity and truthful receipts', () => {
     });
     await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
     origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    feed.attach(server);
     const { chromium } = createRequire(
       new URL('../../../worker/package.json', import.meta.url),
     )('playwright-core');
@@ -256,6 +257,7 @@ suite('native child Stop request identity and truthful receipts', () => {
   afterAll(async () => {
     for (const scenario of scenarios.values()) scenario.release?.();
     await browser?.close();
+    await feed.close();
     server?.closeAllConnections();
     if (server) await new Promise<void>((done) => server.close(() => done()));
   }, 60_000);
@@ -330,7 +332,7 @@ suite('native child Stop request identity and truthful receipts', () => {
       .toEqual({ directory: 3, detail: 1, root: 1 });
     if (scenarios.size === 1)
       console.info(
-        'Full page held SSE connections before Stop:',
+        'Full page observations (native WS, root SSE) before Stop:',
         connections(),
       );
     return { page, scenario, errors };
