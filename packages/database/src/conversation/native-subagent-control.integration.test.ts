@@ -531,7 +531,10 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
         c = await cloud(f),
         input = prompt(f);
       await c.start();
-      const result = await alongsideCloud(
+      const result = await alongsideCloud<
+        | Awaited<ReturnType<typeof enqueue>>
+        | Awaited<ReturnType<typeof claimNativeSubagentControl>>
+      >(
         f,
         (db) =>
           createCloudOperationLedger(c.created.principal, db).heartbeat({
