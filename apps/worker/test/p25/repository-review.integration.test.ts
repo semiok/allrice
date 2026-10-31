@@ -11,6 +11,7 @@ import { getPlatformRepositoryCredential } from '../../../../packages/database/s
 /** Real isolated PostgreSQL/Job/storage. Remote CI is synthetic; Worker cases
  * use the real DSH Host with a synthetic HTTP model and credential. */
 import { randomUUID } from 'node:crypto';
+import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import {
@@ -24,6 +25,8 @@ import { RepositoryCompletedReviewSchema } from '../../../../packages/database/s
 import * as modelPool from '../../../../packages/database/src/providers/model-pool.ts';
 import * as harnessRouter from '../../src/harness/router.js';
 import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.js';
+import { DshProtocolClient } from '../../src/harness/dsh-protocol-client.js';
+import * as queue from '../../../../packages/database/src/execution/queue.ts';
 import { executeEmployeeRun } from '../../src/jobs/employee-run.js';
 import { runClaimedJob } from '../../src/job-runner.js';
 import { p24Fixture } from '../p24/fixture.js';
@@ -107,6 +110,41 @@ const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
     : describe.skip;
+
+// Diagnostic barriers schedule real RPC/PG work; they never manufacture an
+// abort, a heartbeat result, a progress receipt or a successful close.
+async function closeOrderingBarrier(promise: Promise<void>, label: string) {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(Error(`close_ordering_${label}`)),
+          10000,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function closeOrderingError(error: unknown): unknown {
+  if (!(error instanceof Error)) return error;
+  return {
+    name: error.name,
+    message: error.message,
+    stack: error.stack,
+    code: Reflect.get(error, 'code'),
+    evidence: Reflect.get(error, 'evidence'),
+    cause: error.cause ? closeOrderingError(error.cause) : undefined,
+    errors:
+      error instanceof AggregateError
+        ? error.errors.map(closeOrderingError)
+        : undefined,
+  };
+}
 
 // Schedule real SQL on separate pooled connections, preserving SQL fragments.
 // Barriers choose the interleaving; PostgreSQL proves the actual lock wait.
@@ -492,12 +530,26 @@ suite(
       'question-attempt',
       'cancel',
       'revoked',
+      'revoked close ordering: heartbeat',
+      'revoked close ordering: modelAdmission',
     ] as const)(
       '真实入口 → Worker → DSH → PG，无助手：%s',
       async (mode) => {
+        const closeOrdering = mode.startsWith('revoked close ordering:');
+        const heartbeatFirst = mode === 'revoked close ordering: heartbeat';
+        const modelAdmissionFirst =
+          mode === 'revoked close ordering: modelAdmission';
+        const toolStarted = readPathSignal();
+        const activeHeartbeat = readPathSignal();
+        const runnerAborted = readPathSignal();
+        const trace: Record<string, unknown>[] = [];
+        const mark = (event: string, details: Record<string, unknown> = {}) =>
+          trace.push({ event, at: performance.now(), ...details });
+        const nativeClients = new Set<DshProtocolClient>();
+        const unsubscribe: (() => void)[] = [];
         const legacyHistory = await readRetiredExecutionHistory(f.db);
         const s = await setup();
-        let review: Awaited<ReturnType<typeof s.create>>;
+        let review!: Awaited<ReturnType<typeof s.create>>;
         const command = (args: Record<string, unknown>) => ({
           nativeTool: { name: 'platform_repository_review', arguments: args },
         });
@@ -509,6 +561,14 @@ suite(
             'platform_repository_review',
           ]);
           if (index === 1) {
+            // Observe an unchanged, real 1s heartbeat before releasing this
+            // control's model response. If admission still loses the race,
+            // the explicit branch assertion below must fail, never relabel it.
+            if (modelAdmissionFirst)
+              await closeOrderingBarrier(
+                activeHeartbeat.promise,
+                'active_heartbeat',
+              );
             if (mode === 'missing-review') return { text: '已经审查通过。' };
             if (mode === 'question-attempt')
               return {
@@ -536,7 +596,11 @@ suite(
           }
           // A native failure is an ordinary DSH tool result. Finish the turn;
           // the unchanged Job completion authority must reject this review.
-          if (mode === 'revoked' || mode === 'question-attempt')
+          if (
+            mode === 'revoked' ||
+            closeOrdering ||
+            mode === 'question-attempt'
+          )
             return { text: '未取得复核意见。' };
           const result = request.messages
             .filter((m) => m.role === 'tool')
@@ -588,6 +652,132 @@ suite(
             baseUrl: model.baseUrl,
           }));
         const remote = repositoryTransport(s);
+        const actualHeartbeat = queue.heartbeatJob;
+        const heartbeatObserver = closeOrdering
+          ? vi
+              .spyOn(queue, 'heartbeatJob')
+              .mockImplementation(async (...args) => {
+                try {
+                  const result = await actualHeartbeat(...args);
+                  mark('heartbeat', { result });
+                  if (result.active) activeHeartbeat.resolve();
+                  return result;
+                } catch (error) {
+                  mark('heartbeat_failed', {
+                    error: closeOrderingError(error),
+                  });
+                  throw error;
+                }
+              })
+          : undefined;
+        const actualSetHandler = DshProtocolClient.prototype.setRequestHandler;
+        let interceptedTool = false;
+        const handlerObserver = closeOrdering
+          ? vi
+              .spyOn(DshProtocolClient.prototype, 'setRequestHandler')
+              .mockImplementation(function (this: DshProtocolClient, handler) {
+                if (handler && !nativeClients.has(this)) {
+                  nativeClients.add(this);
+                  const child = Reflect.get(
+                    this,
+                    'child',
+                  ) as ChildProcessWithoutNullStreams;
+                  mark('host', { pid: child.pid });
+                  // This fixture uses only synthetic credentials. Keep stderr
+                  // test-local; production deliberately discards this channel.
+                  child.stderr.on('data', (chunk: Buffer) =>
+                    mark('host_stderr', { text: chunk.toString() }),
+                  );
+                  let buffered = '';
+                  child.stdout.on('data', (chunk: Buffer) => {
+                    buffered += chunk.toString();
+                    const lines = buffered.split('\n');
+                    buffered = lines.pop()!;
+                    for (const line of lines) {
+                      try {
+                        const frame = JSON.parse(line);
+                        if (frame.result?.allriceClose)
+                          mark('shutdown_receipt', {
+                            receipt: frame.result.allriceClose,
+                          });
+                      } catch {
+                        /* The protocol client owns malformed frames. */
+                      }
+                    }
+                  });
+                  unsubscribe.push(
+                    this.subscribe(({ method, params }) => {
+                      if (JSON.stringify(params).includes('turn/end'))
+                        mark('native_turn_end', { method, params });
+                    }),
+                  );
+                }
+                actualSetHandler.call(
+                  this,
+                  handler &&
+                    (async (method, params) => {
+                      const details = {
+                        method,
+                        action: params.action,
+                        kind: params.kind,
+                        callId: params.callId,
+                        nativeSessionId: params.nativeSessionId,
+                      };
+                      try {
+                        if (
+                          method === 'allrice/tool-call' &&
+                          !interceptedTool
+                        ) {
+                          interceptedTool = true;
+                          await closeOrderingBarrier(
+                            toolStarted.promise,
+                            'tool_start',
+                          );
+                          await f.db`update allrice_employee_assignments set active=false where id=(select employee_assignment_id from allrice_employee_runs where run_id=${review.runId})`;
+                          mark('assignment_revoked');
+                          try {
+                            return await handler(method, params);
+                          } catch (error) {
+                            mark('tool_gate_refused', {
+                              error: closeOrderingError(error),
+                            });
+                            throw error;
+                          } finally {
+                            if (heartbeatFirst) {
+                              // Hold the already dispatched tool's real reply
+                              // until the unchanged runner heartbeat aborts it.
+                              await closeOrderingBarrier(
+                                runnerAborted.promise,
+                                'runner_abort',
+                              );
+                              const [job] =
+                                await f.db`select status,worker_id,lease_token,drain_deadline_at,last_error_code from allrice_jobs where id=${review.jobId}`;
+                              mark('job_at_abort', { job });
+                            }
+                            mark('tool_reply_released');
+                          }
+                        }
+                        const result = await handler(method, params);
+                        if (method === 'allrice/progress') {
+                          mark('progress_ok', details);
+                          if (
+                            params.action === 'start' &&
+                            params.kind === 'tool'
+                          )
+                            toolStarted.resolve();
+                        }
+                        return result;
+                      } catch (error) {
+                        mark('rpc_failed', {
+                          ...details,
+                          error: closeOrderingError(error),
+                        });
+                        throw error;
+                      }
+                    }),
+                );
+              })
+          : undefined;
         const oldHome = process.env.ALLRICE_DSH_PLATFORM_HOME;
         vi.stubEnv(
           'ALLRICE_DSH_PLATFORM_HOME',
@@ -614,7 +804,17 @@ suite(
               stopping: () => false,
               onAbortReady: () => {},
             },
-            executeEmployeeRun,
+            async (input) => {
+              input.signal.addEventListener(
+                'abort',
+                () => {
+                  mark('runner_aborted');
+                  runnerAborted.resolve();
+                },
+                { once: true },
+              );
+              return executeEmployeeRun(input);
+            },
           );
           const detail = await getPlatformRepositoryReview(s.admin, review.id);
           const [diagnostic] =
@@ -683,13 +883,57 @@ suite(
           expect(await readRetiredExecutionHistory(f.db)).toEqual(
             legacyHistory,
           );
+          if (closeOrdering) {
+            expect(trace.some((row) => row.event === 'tool_gate_refused')).toBe(
+              true,
+            );
+            expect(trace.some((row) => row.event === 'runner_aborted')).toBe(
+              heartbeatFirst,
+            );
+            expect(
+              trace.some(
+                (row) =>
+                  row.event === 'rpc_failed' &&
+                  row.method === 'allrice/progress' &&
+                  (row.action === 'model_prepare' ||
+                    (row.action === 'start' && row.kind === 'model')),
+              ),
+            ).toBe(modelAdmissionFirst);
+          }
         } finally {
-          await adapter.close();
-          await model.close();
-          remote.mockRestore();
-          freeze.mockRestore();
-          router.mockRestore();
-          vi.stubEnv('ALLRICE_DSH_PLATFORM_HOME', oldHome);
+          try {
+            await adapter.close();
+          } catch (error) {
+            if (closeOrdering)
+              mark('adapter_close_failed', {
+                error: closeOrderingError(error),
+              });
+            throw error;
+          } finally {
+            if (closeOrdering && review) {
+              for (const native of nativeClients)
+                mark('closure_evidence', {
+                  evidence: native.closureEvidence(),
+                });
+              const [job] =
+                await f.db`select status,worker_id,lease_token,drain_deadline_at,last_error_code from allrice_jobs where id=${review.jobId}`;
+              const progress =
+                await f.db`select state from allrice_task_progress where run_id=${review.runId}`;
+              mark('final_pg', { job, progress });
+              console.info(
+                '[revoked-close-ordering]',
+                JSON.stringify({ mode, trace }),
+              );
+            }
+            for (const stop of unsubscribe) stop();
+            handlerObserver?.mockRestore();
+            heartbeatObserver?.mockRestore();
+            await model.close();
+            remote.mockRestore();
+            freeze.mockRestore();
+            router.mockRestore();
+            vi.stubEnv('ALLRICE_DSH_PLATFORM_HOME', oldHome);
+          }
         }
       },
       60000,
