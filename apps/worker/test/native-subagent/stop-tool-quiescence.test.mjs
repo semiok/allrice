@@ -92,6 +92,10 @@ async function fixture(tool = python) {
   return {
     ...h,
     client,
+    disconnect: async () => {
+      Reflect.get(client, 'child').kill('SIGTERM');
+      await Reflect.get(client, 'closed');
+    },
     dispatched,
     outcomes,
     results,
@@ -192,7 +196,9 @@ it.each([
         await f.barrier();
         expect(ended).toBe(false);
         expect(agent.status).toBe('running');
-        requests[1 - first].reply.resolve({});
+        requests[1 - first].reply.resolve(
+          failure < 0 ? {} : { error: '随后才失败，不能取代原错误' },
+        );
       } else
         requests[0].reply.resolve(failure < 0 ? {} : { error: '远端明确失败' });
       await a.result;
@@ -207,6 +213,7 @@ it.each([
       if (failure < 0) expect(result.error.info.code).toBe('ABORTED');
       else {
         expect(JSON.stringify(result)).toContain('远端明确失败');
+        expect(JSON.stringify(result)).not.toContain('随后才失败');
         expect(result.error.info?.code).not.toBe('ABORTED');
       }
       expect(
@@ -263,3 +270,83 @@ it('cancellation before native body and at actual broker dispatch sends no Worke
     await f.wait();
   }
 });
+
+it('EOF settles the native body as a transport failure; a late Worker success cannot revive it', async () => {
+  const f = await fixture();
+  try {
+    const child = await f.spawn();
+    await expect.poll(() => f.dispatched.length).toBe(1);
+    const agent = f.ctx.agents.get(child.childId);
+    expect(await f.stop(child)).toEqual({ kind: 'interrupt', accepted: true });
+    await f.disconnect();
+    await child.result;
+    expect(f.outcomes).toHaveLength(0);
+    const result = f.results.find((r) => r.agentId === child.childId).result;
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result)).toContain('JSON-RPC input closed');
+    expect(result.error.info?.code).not.toBe('ABORTED');
+    const events = agent.session.snapshotEvents();
+    f.release();
+    await expect.poll(() => f.outcomes.length).toBe(1);
+    await setImmediate();
+    expect(agent.session.snapshotEvents()).toEqual(events);
+    expect(f.invocations.get(child.childId)).toBe(1);
+  } finally {
+    f.release();
+    f.root.cancel({ kind: 'user' }, { keepInbox: false });
+    await f.wait();
+  }
+});
+
+it.each(['timeout-first', 'stop-first'])(
+  'native %s keeps waiting for the real RPC and preserves the owning cancellation kind',
+  async (order) => {
+    const f = await fixture();
+    // Scale only the declared budget; the production body, native timeout
+    // policy, child loop, SDK and stdio client remain unchanged.
+    f.ctx.on('agent/created', ({ agent }) => {
+      if (agent.id !== f.root.id)
+        agent.ctx.tools.register({
+          ...f.ctx.tools.get('python_execute'),
+          timeoutMs: order === 'timeout-first' ? 1_000 : 60_000,
+        });
+    });
+    const aborted = gate();
+    f.ctx.on('tools/execute', (exec, next) => {
+      if (exec.name === 'python_execute')
+        exec.signal.addEventListener('abort', () => aborted.resolve(), {
+          once: true,
+        });
+      return next();
+    });
+    try {
+      const child = await f.spawn();
+      await expect.poll(() => f.dispatched.length).toBe(1);
+      const agent = f.ctx.agents.get(child.childId);
+      if (order === 'stop-first') await f.stop(child);
+      await aborted.promise;
+      if (order === 'timeout-first') await f.stop(child);
+      await f.barrier();
+      expect(agent.status).toBe('running');
+      expect(f.results.some((r) => r.agentId === child.childId)).toBe(false);
+      f.release();
+      await child.result;
+      expect(
+        f.results.find((r) => r.agentId === child.childId).result,
+      ).toMatchObject({
+        isError: true,
+        error: {
+          info: {
+            code: order === 'timeout-first' ? 'TOOL_TIMEOUT' : 'ABORTED',
+          },
+        },
+      });
+      expect(f.dispatched).toHaveLength(1);
+      expect(f.outcomes).toHaveLength(1);
+    } finally {
+      f.release();
+      await f.answer();
+      await f.wait();
+    }
+  },
+);
