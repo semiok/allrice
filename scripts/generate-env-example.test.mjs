@@ -73,7 +73,7 @@ afterEach(() =>
     .forEach((root) => rmSync(root, { recursive: true, force: true })),
 );
 
-// Eight real Node/TypeScript CLI launches share this budget; each child stays capped at 10s.
+// Eight real Node/TypeScript CLI launches share this budget; each child keeps its 10s timeout.
 test('source additions/deletions cause real check drift; generation repairs both', () => {
   const root = fixture({ 'apps/web/config.ts': 'process.env.ALLRICE_FIRST;' });
   expect(cli(root).status).toBe(0);
@@ -82,14 +82,22 @@ test('source additions/deletions cause real check drift; generation repairs both
     join(root, 'apps/web/config.ts'),
     'process.env.ALLRICE_FIRST; process.env.ALLRICE_ADDED;',
   );
-  expect(cli(root, ['--check']).stderr).toContain('.env.example drift');
+  const additionCheck = cli(root, ['--check']);
+  expect(additionCheck.status).toBe(1);
+  expect(additionCheck.stderr).toContain(
+    '.env.example drift: run pnpm env:generate',
+  );
   expect(cli(root).status).toBe(0);
   expect(cli(root, ['--check']).status).toBe(0);
   expect(readFileSync(join(root, '.env.example'), 'utf8')).toContain(
     '# ALLRICE_ADDED=',
   );
   writeFileSync(join(root, 'apps/web/config.ts'), 'process.env.ALLRICE_ADDED;');
-  expect(cli(root, ['--check']).status).not.toBe(0);
+  const deletionCheck = cli(root, ['--check']);
+  expect(deletionCheck.status).toBe(1);
+  expect(deletionCheck.stderr).toContain(
+    '.env.example drift: run pnpm env:generate',
+  );
   expect(cli(root).status).toBe(0);
   expect(cli(root, ['--check']).status).toBe(0);
   expect(readFileSync(join(root, '.env.example'), 'utf8')).not.toContain(
