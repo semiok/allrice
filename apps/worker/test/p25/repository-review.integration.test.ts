@@ -544,25 +544,12 @@ suite(
         const toolStarted = readPathSignal();
         const activeHeartbeat = readPathSignal();
         const runnerAborted = readPathSignal();
+        const jobFailureCommitted = readPathSignal();
         const trace: Record<string, unknown>[] = [];
         const mark = (event: string, details: Record<string, unknown> = {}) =>
           trace.push({ event, at: performance.now(), ...details });
         const nativeClients = new Set<DshProtocolClient>();
         const unsubscribe: (() => void)[] = [];
-        const actualClose = DshProtocolClient.prototype.close;
-        const delayedClose = modelAdmissionFirst
-          ? vi
-              .spyOn(DshProtocolClient.prototype, 'close')
-              .mockImplementation(async function (this: DshProtocolClient) {
-                await actualClose.call(this);
-                mark('repro_closed_result_held');
-                await closeOrderingBarrier(
-                  runnerAborted.promise,
-                  'repro_next_real_heartbeat',
-                );
-                mark('repro_closed_result_released');
-              })
-          : undefined;
         const legacyHistory = await readRetiredExecutionHistory(f.db);
         const s = await setup();
         let review!: Awaited<ReturnType<typeof s.create>>;
@@ -577,9 +564,9 @@ suite(
             'platform_repository_review',
           ]);
           if (index === 1) {
-            // Observe an unchanged, real 1s heartbeat before releasing this
-            // control's model response. If admission still loses the race,
-            // the explicit branch assertion below must fail, never relabel it.
+            // The real 1s heartbeat has committed before this response. Its
+            // result stays in flight until real failure settlement below, so
+            // this branch does not depend on Host closure taking under 1s.
             if (modelAdmissionFirst)
               await closeOrderingBarrier(
                 activeHeartbeat.promise,
@@ -668,6 +655,18 @@ suite(
             baseUrl: model.baseUrl,
           }));
         const remote = repositoryTransport(s);
+        const actualFailJob = queue.failJob;
+        const failureObserver = modelAdmissionFirst
+          ? vi.spyOn(queue, 'failJob').mockImplementation(async (...args) => {
+              try {
+                const result = await actualFailJob(...args);
+                mark('job_failure_committed');
+                return result;
+              } finally {
+                jobFailureCommitted.resolve();
+              }
+            })
+          : undefined;
         const actualHeartbeat = queue.heartbeatJob;
         const heartbeatObserver = closeOrdering
           ? vi
@@ -676,7 +675,20 @@ suite(
                 try {
                   const result = await actualHeartbeat(...args);
                   mark('heartbeat', { result });
-                  if (result.active) activeHeartbeat.resolve();
+                  if (result.active) {
+                    activeHeartbeat.resolve();
+                    if (modelAdmissionFirst) {
+                      // Delay delivery, never replace the real DB result. The
+                      // unchanged runner keeps one heartbeat in flight while
+                      // native close and failJob finish under the live lease.
+                      mark('heartbeat_result_held');
+                      await closeOrderingBarrier(
+                        jobFailureCommitted.promise,
+                        'job_failure_commit',
+                      );
+                      mark('heartbeat_result_released');
+                    }
+                  }
                   return result;
                 } catch (error) {
                   mark('heartbeat_failed', {
@@ -834,7 +846,7 @@ suite(
           );
           const detail = await getPlatformRepositoryReview(s.admin, review.id);
           const [diagnostic] =
-            await f.db`select last_error_code,last_error_message from allrice_jobs where id=${review.jobId}`;
+            await f.db`select status,worker_id,lease_token,last_error_code,last_error_message from allrice_jobs where id=${review.jobId}`;
           expect(detail.status, JSON.stringify(diagnostic)).toBe(
             mode === 'accept' || mode === 'revise'
               ? 'succeeded'
@@ -900,6 +912,12 @@ suite(
             legacyHistory,
           );
           if (closeOrdering) {
+            expect(model.requests).toHaveLength(1);
+            expect(diagnostic).toMatchObject({
+              status: 'failed',
+              worker_id: null,
+              lease_token: null,
+            });
             expect(trace.some((row) => row.event === 'tool_gate_refused')).toBe(
               true,
             );
@@ -920,6 +938,24 @@ suite(
                 ? 'PLATFORM_TECHNICAL_AUTH_REVOKED'
                 : 'EMPLOYEE_CONTENT_UNAVAILABLE',
             );
+            if (modelAdmissionFirst)
+              expect(
+                trace
+                  .map((row) => row.event)
+                  .filter((event) =>
+                    [
+                      'heartbeat_result_held',
+                      'assignment_revoked',
+                      'job_failure_committed',
+                      'heartbeat_result_released',
+                    ].includes(event as string),
+                  ),
+              ).toEqual([
+                'heartbeat_result_held',
+                'assignment_revoked',
+                'job_failure_committed',
+                'heartbeat_result_released',
+              ]);
             if (heartbeatFirst) {
               const stopped = trace.find(
                 (row) => row.event === 'job_at_abort',
@@ -986,9 +1022,9 @@ suite(
               );
             }
             for (const stop of unsubscribe) stop();
-            delayedClose?.mockRestore();
             handlerObserver?.mockRestore();
             heartbeatObserver?.mockRestore();
+            failureObserver?.mockRestore();
             await model.close();
             remote.mockRestore();
             freeze.mockRestore();
