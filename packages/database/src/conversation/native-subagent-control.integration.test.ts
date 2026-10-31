@@ -21,6 +21,11 @@ import {
 } from '../cloud-execution.ts';
 import { createRunAuthorityFixture } from '../run-authority.fixture.ts';
 import { assertNativeRunAuthority } from '../run-delivery-authority.ts';
+import {
+  decideRuntimeActionApproval,
+  getRuntimeActionApproval,
+} from '../runtime-policy.ts';
+import { updateWorkAutomation } from '../work-automation.ts';
 import { resolveTaskRuntimePolicy } from '../task-runtime-policy.ts';
 import { nativeBindingDescriptor } from '../native-session-binding.fixture.ts';
 import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
@@ -278,6 +283,7 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
     f: Chat,
     operation: (db: typeof fixture.db) => Promise<unknown>,
     control: () => Promise<T>,
+    pausePolicyTransaction = 1,
   ) {
     let release!: () => void,
       ready!: () => void,
@@ -288,6 +294,7 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
     const held = new Promise<void>((resolve) => {
       ready = resolve;
     });
+    let policyTransactions = 0;
     const database = new Proxy(fixture.db, {
       get(target, key) {
         if (key !== 'begin') return Reflect.get(target, key, target);
@@ -306,6 +313,10 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
                     sql.includes('from allrice_runtime_policy_controls')
                   ) {
                     paused = true;
+                    // Ledger create and approval creation are distinct real
+                    // transactions; count each only once, even with rechecks.
+                    if (++policyTransactions !== pausePolicyTransaction)
+                      return pending;
                     return (async () => {
                       const rows = await pending;
                       ready();
@@ -416,6 +427,99 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
           await fixture.db`select state,delivery_attempts from allrice_conversation_commands where id=${input.requestId}`
         )[0],
       ).toEqual({ state: 'claimed', delivery_attempts: 1 });
+    },
+    15000,
+  );
+
+  it.each(['request', 'approved decision'] as const)(
+    'cloud approval %s and Stop claim both complete without canceling the root',
+    async (phase) => {
+      const f = await chat(),
+        c = await cloud(f);
+      // A rule alone is insufficient: the normal member preference can allow
+      // cloud work. Use the public setting to create a real confirmation flow.
+      await updateWorkAutomation(
+        f.context,
+        f.workspace,
+        { expectedRevision: 0, capability: 'cloud', enabled: false },
+        fixture.db,
+      );
+      await f.setControls({
+        version: 1,
+        enabled: true,
+        mode: 'execute',
+        rules: [{ action: 'cloud.process.execute', effect: 'ask' }],
+      });
+      const input: NativeSubagentControlInput = {
+        kind: 'interrupt',
+        requestId: randomUUID(),
+        parentSessionId: f.descriptor.nativeSessionId,
+        childSessionId: 'synthetic-child-awaiting-cloud-approval',
+        mode: 'continuable',
+      };
+      await enqueue(f, input);
+      const approvalFor = async (
+        waiting: Awaited<ReturnType<typeof c.create>>,
+      ) => {
+        expect(waiting.snapshot.status).toBe('waiting_user');
+        const [row] = await fixture.db`select id from allrice_approval_requests
+          where resource_id=${waiting.snapshot.binding.attempt.operationId} and resource_type='runtime_operation'`;
+        return getRuntimeActionApproval(f.context, row!.id, fixture.db);
+      };
+      const registered =
+        phase === 'approved decision'
+          ? await approvalFor(await c.create())
+          : null;
+      let approvalId: string | undefined;
+      const result = await alongsideCloud(
+        f,
+        async (db) => {
+          if (!registered) {
+            const { request } = await approvalFor(await c.create(db));
+            approvalId = request.approvalId;
+            return;
+          }
+          const { request } = registered;
+          approvalId = request.approvalId;
+          await decideRuntimeActionApproval(
+            f.context,
+            request.approvalId,
+            {
+              contractVersion: 1,
+              direction: 'response',
+              kind: 'action_approval',
+              requestId: request.requestId,
+              version: request.version,
+              requestDigest: request.requestDigest,
+              task: request.task,
+              responseId: randomUUID(),
+              respondedBy: f.user,
+              respondedAt: new Date().toISOString(),
+              approvalId: request.approvalId,
+              decision: 'approved',
+            },
+            db,
+          );
+        },
+        () => claimNativeSubagentControl(f.authority),
+        // A new cloud create commits ledger admission before requesting
+        // approval. Only pause that second policy transaction in this case.
+        phase === 'request' ? 2 : 1,
+      );
+      expect(result?.input).toEqual(input);
+      expect(
+        (
+          await fixture.db`select state,delivery_attempts from allrice_conversation_commands where id=${input.requestId}`
+        )[0],
+      ).toEqual({ state: 'claimed', delivery_attempts: 1 });
+      expect(
+        (
+          await fixture.db`select status,runtime_consumed_at from allrice_approval_requests where id=${approvalId!}`
+        )[0],
+      ).toEqual({
+        status: registered ? 'approved' : 'pending',
+        runtime_consumed_at: null,
+      });
     },
     15000,
   );
