@@ -102,7 +102,7 @@ export async function enqueueNativeSubagentControl(
     const existing = await readCommand(tx, context, sessionId, input.requestId);
     if (existing) return reuse(existing);
     // Resolve incarnation on the server. The shared predicate subsequently
-    // locks Job -> user -> Run/runtime and checks again after lock waits.
+    // locks runtime root -> Job -> user -> Run/runtime, then checks after waits.
     const [job] =
       await tx`select j.id,j.worker_id,j.lease_token,j.attempt,r.project_id
       from allrice_conversation_runtimes c

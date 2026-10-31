@@ -21,6 +21,7 @@ import {
 } from '../cloud-execution.ts';
 import { createRunAuthorityFixture } from '../run-authority.fixture.ts';
 import { assertNativeRunAuthority } from '../run-delivery-authority.ts';
+import { resolveTaskRuntimePolicy } from '../task-runtime-policy.ts';
 import { nativeBindingDescriptor } from '../native-session-binding.fixture.ts';
 import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
 import { buildEmployeeRuntimePackage } from '../platform-employees/runtime-package.ts';
@@ -362,7 +363,13 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
     return result;
   }
 
-  it.each(['create', 'dispatch', 'start', 'heartbeat'] as const)(
+  it.each([
+    'create',
+    'dispatch',
+    'start',
+    'heartbeat',
+    'heartbeat with clock',
+  ] as const)(
     '“只停止甲，乙继续云计算”：Stop claim and cloud %s both complete',
     async (phase) => {
       const f = await chat(),
@@ -375,7 +382,10 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
         mode: 'continuable',
       };
       await enqueue(f, input);
-      if (phase === 'heartbeat') await c.start();
+      if (phase === 'heartbeat with clock')
+        await fixture.db`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy)
+          values(${f.rootRunId},${f.org},${f.workspace},${fixture.db.json({ ...resolveTaskRuntimePolicy([]) })})`;
+      if (phase.startsWith('heartbeat')) await c.start();
       const result = await alongsideCloud(
         f,
         async (db) => {
@@ -438,8 +448,8 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
     15000,
   );
 
-  it.each(['policy', 'membership', 'tenant'] as const)(
-    'control and cloud admission preserve the %s refusal',
+  it.each(['policy', 'membership', 'lease', 'tenant'] as const)(
+    'control and cloud admission preserve the %s refusal after a root-lock wait',
     async (revoked) => {
       const f = await chat(),
         c = await cloud(f),
@@ -448,22 +458,48 @@ suite('MET-230 C1 durable child-control ledger (no native dispatch)', () => {
       await enqueue(f, input);
       const [before] =
         await fixture.db`select lease_expires_at from allrice_runtime_operations where id=${c.identity.operationId}`;
-      if (revoked === 'policy')
-        await f.setControls({
-          version: 2,
-          enabled: false,
-          mode: 'execute',
-          rules: [],
-        });
-      if (revoked === 'membership')
-        await fixture.db`update allrice_memberships set active=false where id=${f.membership}`;
       const scope =
         revoked === 'tenant'
           ? { ...f.authority.scope, organizationId: randomUUID() }
           : f.authority.scope;
-      await expect(
-        claimNativeSubagentControl({ ...f.authority, scope }),
-      ).rejects.toThrow();
+      let pending: ReturnType<typeof claimNativeSubagentControl> | undefined;
+      try {
+        await fixture.db.begin(async (tx) => {
+          const [holder] =
+            await tx`select pg_backend_pid() pid,root_run_id from allrice_runtime_roots
+            where root_run_id=${f.rootRunId} for update`;
+          pending = claimNativeSubagentControl({ ...f.authority, scope });
+          void pending.catch(() => {});
+          // Cross-tenant scope must fail without discovering or waiting on this root.
+          if (revoked === 'tenant') return;
+          await expect
+            .poll(
+              async () => {
+                const rows = await fixture.db`select pid from pg_stat_activity
+              where datname=current_database() and ${holder!.pid}=any(pg_blocking_pids(pid))`;
+                return rows.length;
+              },
+              { timeout: 2000, interval: 10 },
+            )
+            .toBe(1);
+          if (revoked === 'policy')
+            await tx`update allrice_runtime_policy_controls set version=2,controls=${tx.json(
+              {
+                version: 2,
+                enabled: false,
+                mode: 'execute',
+                rules: [],
+              },
+            )} where organization_id=${f.org} and workspace_id=${f.workspace}`;
+          if (revoked === 'membership')
+            await tx`update allrice_memberships set active=false where id=${f.membership}`;
+          if (revoked === 'lease')
+            await tx`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${f.worker.jobId}`;
+        });
+      } finally {
+        await Promise.allSettled([pending]);
+      }
+      await expect(pending).rejects.toThrow();
       const ledger = createCloudOperationLedger(
         { ...c.created.principal, organizationId: scope.organizationId },
         fixture.db,
