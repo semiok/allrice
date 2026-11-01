@@ -441,7 +441,9 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
           const card = input.locator('xpath=..');
           expect(await input.isDisabled()).toBe(false);
           expect(await input.isEditable()).toBe(false);
-          expect(await input.evaluate((node) => node.readOnly)).toBe(true);
+          expect(
+            await input.evaluate((node: HTMLTextAreaElement) => node.readOnly),
+          ).toBe(true);
           const at = (await input.boundingBox())!;
           await page.mouse.click(at.x + at.width / 2, at.y + at.height / 2);
           expect(
@@ -450,11 +452,13 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
           const draft = await input.inputValue();
           // The fixture's onDraftChange is a noop. Native input events expose
           // any edit before React could reset the controlled value.
-          const edits = await input.evaluateHandle((node) => {
-            const values: string[] = [];
-            node.addEventListener('input', () => values.push(node.value));
-            return values;
-          });
+          const edits = await input.evaluateHandle(
+            (node: HTMLTextAreaElement) => {
+              const values: string[] = [];
+              node.addEventListener('input', () => values.push(node.value));
+              return values;
+            },
+          );
           await page.keyboard.type('locked draft');
           await page.keyboard.press('Backspace');
           expect(await edits.jsonValue()).toEqual([]);
