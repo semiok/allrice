@@ -69,6 +69,7 @@ interface ChatComposerProps {
   onRemoveSessionReference?: (id: string) => void;
   employeeName: string;
   attachmentMenuOpen: boolean;
+  autoFocus?: boolean;
   busy: boolean;
   composerInput: RefObject<HTMLTextAreaElement | null>;
   composing: MutableRefObject<boolean>;
@@ -116,6 +117,7 @@ export function DraftChatComposer({
 /** Shared draft surface; child controls supply only delivery/admission policy. */
 export function ChatComposerInput({
   employeeName,
+  autoFocus = false,
   busy,
   composerInput,
   composing,
@@ -134,6 +136,7 @@ export function ChatComposerInput({
 }: Pick<
   ChatComposerProps,
   | 'employeeName'
+  | 'autoFocus'
   | 'busy'
   | 'composerInput'
   | 'composing'
@@ -168,7 +171,7 @@ export function ChatComposerInput({
       ) : null}
       <textarea
         aria-label={`给 ${employeeName} 的消息`}
-        autoFocus={readOnly}
+        autoFocus={autoFocus}
         className={styles.composerInput}
         disabled={busy && !readOnly}
         readOnly={readOnly}
@@ -275,6 +278,7 @@ export function ChatComposer({
   onRemoveSessionReference,
   employeeName,
   attachmentMenuOpen,
+  autoFocus = false,
   busy,
   composerInput,
   composing,
@@ -345,6 +349,7 @@ export function ChatComposer({
         <ChatComposerInput
           {...{
             employeeName,
+            autoFocus,
             busy,
             composerInput,
             composing,

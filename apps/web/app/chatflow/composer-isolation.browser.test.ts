@@ -234,6 +234,7 @@ suite(
         programTurn?: boolean;
         delayHistoryB?: boolean;
         immediateReply?: boolean;
+        emptyA?: boolean;
         longHistory?: boolean;
         settled?: 'failed' | 'canceled';
         width?: number;
@@ -361,7 +362,7 @@ suite(
       });
       let showTiming = false;
       const messages: Record<string, ReturnType<typeof message>[]> = {
-        [A]: [message('history-a', 'Existing A')],
+        [A]: options.emptyA ? [] : [message('history-a', 'Existing A')],
         [B]: [message('history-b', 'Existing B')],
         [C]: [],
       };
@@ -795,7 +796,12 @@ suite(
           await page.getByRole('treeitem', { name: /^Session B/ }).waitFor();
         // Sidebar readiness precedes History: uploading into the temporary
         // empty-state composer can race its replacement by the active composer.
-        await page.getByText('Existing A', { exact: true }).waitFor();
+        if (options.emptyA) {
+          await page
+            .getByRole('heading', { name: 'Session A', exact: true })
+            .waitFor();
+          await page.locator('[data-phase="hero"]').waitFor();
+        } else await page.getByText('Existing A', { exact: true }).waitFor();
       } catch (cause) {
         const diagnostic = {
           errors,
@@ -870,9 +876,16 @@ suite(
         showTiming() {
           showTiming = true;
         },
+        showQuestion() {
+          for (const response of streams)
+            response.write(
+              `data: ${JSON.stringify({ ...event(true), eventId: 'question-2', sequence: 2, cursor: `${runId}:2` })}\n\n`,
+            );
+        },
         finishRun(
           sessionId = A,
           outcome: 'canceled' | 'succeeded' = 'canceled',
+          sequence = options.nativeParents ? 3 : 2,
         ) {
           for (const item of messages[sessionId]!)
             if (item.runId === runId) {
@@ -882,7 +895,7 @@ suite(
             }
           for (const response of streams) {
             response.end(
-              `data: ${JSON.stringify({ ...event(), eventId: 'event-2', sequence: options.nativeParents ? 3 : 2, cursor: `${runId}:${options.nativeParents ? 3 : 2}`, type: `run.${outcome}`, payload: {} })}\n\n`,
+              `data: ${JSON.stringify({ ...event(), eventId: 'event-2', sequence, cursor: `${runId}:${sequence}`, type: `run.${outcome}`, payload: {} })}\n\n`,
             );
           }
         },
@@ -1725,12 +1738,18 @@ suite(
       15_000,
     );
     it.each([
-      { start: 'first message', newWork: true, mouse: true },
-      { start: 'continuation', newWork: false, mouse: false },
+      { start: 'first message', newWork: true, mouse: true, emptyA: false },
+      {
+        start: 'existing empty session',
+        newWork: false,
+        mouse: true,
+        emptyA: true,
+      },
+      { start: 'continuation', newWork: false, mouse: false, emptyA: false },
     ])(
       'keeps continuous typing through a $start, generation and completion',
-      async ({ newWork, mouse }) => {
-        const f = await fixture({ immediateReply: true });
+      async ({ newWork, mouse, emptyA }) => {
+        const f = await fixture({ immediateReply: true, emptyA });
         try {
           if (newWork) await startNewWork(f.page);
           const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
@@ -1853,6 +1872,47 @@ suite(
         expect(
           await input.evaluate((node) => node === document.activeElement),
         ).toBe(false);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    });
+
+    it('keeps external focus when a question closes during a pending queued send', async () => {
+      const f = await fixture({ running: true });
+      try {
+        await expect
+          .poll(() => f.reads.some((url) => url.includes(`${runId}/events`)))
+          .toBe(true);
+        await f.send('等本轮结束后再处理');
+        await f.waitPending(1);
+        expect(f.pending[0]!.body.deliveryMode).toBe('follow_up');
+        f.showQuestion();
+        await f.page
+          .getByRole('heading', { name: '确认范围？', exact: true })
+          .waitFor();
+        const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+        expect(await input.count()).toBe(0);
+        const otherControl = f.page.getByRole('button', {
+          name: '新的工作',
+          exact: true,
+        });
+        await otherControl.focus();
+        f.finishRun(A, 'succeeded', 3);
+        await input.waitFor();
+        expect(await input.isEditable()).toBe(false);
+        expect(
+          await otherControl.evaluate(
+            (node) => node === document.activeElement,
+          ),
+        ).toBe(true);
+        await f.page.getByText('Existing A', { exact: true }).click();
+        await f.respond(0);
+        expect(await input.isEditable()).toBe(true);
+        expect(
+          await f.page.evaluate(() => document.activeElement === document.body),
+        ).toBe(true);
+        expect(f.pending).toHaveLength(1);
         expect(f.errors).toEqual([]);
       } finally {
         await f.close();
