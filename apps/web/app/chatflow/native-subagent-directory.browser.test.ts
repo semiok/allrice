@@ -575,7 +575,7 @@ suite('native subagent directory and employee sidebar', () => {
     },
   );
 
-  it('preserves selected child detail when an empty catalog removes the header', async () => {
+  it('keeps selected detail open and withdraws stale process when the catalog removes its child', async () => {
     const { page, fixture } = await open(
       summary(),
       1200,
@@ -596,7 +596,15 @@ suite('native subagent directory and employee sidebar', () => {
         await page.getByRole('tree', { name: '子智能体目录' }).count(),
       ).toBe(0);
       expect(await detail.isVisible()).toBe(true);
-      expect(await detail.innerText()).toContain('fork-a 中途基线');
+      const text = await detail.innerText();
+      expect(text).toContain('fork-a');
+      expect(text).toContain('当前活动状态未知，请重新读取摘要。');
+      expect(text).not.toContain('fork-a 中途基线');
+      expect(
+        await detail
+          .getByRole('button', { name: '刷新子智能体摘要' })
+          .isVisible(),
+      ).toBe(true);
     } finally {
       await page.close();
     }
