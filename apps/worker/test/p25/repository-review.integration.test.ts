@@ -534,6 +534,7 @@ suite(
       'revoked',
       'revoked close ordering: heartbeat',
       'revoked close ordering: modelAdmission',
+      'revoked close ordering: modelAdmission then heartbeat',
     ] as const)(
       '真实入口 → Worker → DSH → PG，无助手：%s',
       async (mode) => {
@@ -541,9 +542,13 @@ suite(
         const heartbeatFirst = mode === 'revoked close ordering: heartbeat';
         const modelAdmissionFirst =
           mode === 'revoked close ordering: modelAdmission';
+        const lateHeartbeat =
+          mode === 'revoked close ordering: modelAdmission then heartbeat';
         const toolStarted = readPathSignal();
         const activeHeartbeat = readPathSignal();
         const runnerAborted = readPathSignal();
+        const jobFailureCommitted = readPathSignal();
+        const closeResultHeld = readPathSignal();
         const trace: Record<string, unknown>[] = [];
         const mark = (event: string, details: Record<string, unknown> = {}) =>
           trace.push({ event, at: performance.now(), ...details });
@@ -563,10 +568,10 @@ suite(
             'platform_repository_review',
           ]);
           if (index === 1) {
-            // Observe an unchanged, real 1s heartbeat before releasing this
-            // control's model response. If admission still loses the race,
-            // the explicit branch assertion below must fail, never relabel it.
-            if (modelAdmissionFirst)
+            // The real 1s heartbeat has committed before this response. Its
+            // result stays in flight until the chosen settlement/close gate,
+            // so model admission never races the next heartbeat by elapsed time.
+            if (modelAdmissionFirst || lateHeartbeat)
               await closeOrderingBarrier(
                 activeHeartbeat.promise,
                 'active_heartbeat',
@@ -654,6 +659,18 @@ suite(
             baseUrl: model.baseUrl,
           }));
         const remote = repositoryTransport(s);
+        const actualFailJob = queue.failJob;
+        const failureObserver = modelAdmissionFirst
+          ? vi.spyOn(queue, 'failJob').mockImplementation(async (...args) => {
+              try {
+                const result = await actualFailJob(...args);
+                mark('job_failure_committed');
+                return result;
+              } finally {
+                jobFailureCommitted.resolve();
+              }
+            })
+          : undefined;
         const actualHeartbeat = queue.heartbeatJob;
         const heartbeatObserver = closeOrdering
           ? vi
@@ -662,7 +679,22 @@ suite(
                 try {
                   const result = await actualHeartbeat(...args);
                   mark('heartbeat', { result });
-                  if (result.active) activeHeartbeat.resolve();
+                  if (result.active) {
+                    activeHeartbeat.resolve();
+                    if (modelAdmissionFirst || lateHeartbeat) {
+                      // Delay delivery, never replace the real DB result. The
+                      // mixed branch releases it while handler close is held;
+                      // the model-only branch waits for real failJob instead.
+                      mark('heartbeat_result_held');
+                      await closeOrderingBarrier(
+                        lateHeartbeat
+                          ? closeResultHeld.promise
+                          : jobFailureCommitted.promise,
+                        lateHeartbeat ? 'close_result' : 'job_failure_commit',
+                      );
+                      mark('heartbeat_result_released');
+                    }
+                  }
                   return result;
                 } catch (error) {
                   mark('heartbeat_failed', {
@@ -780,6 +812,26 @@ suite(
                 );
               })
           : undefined;
+        const actualClose = DshProtocolClient.prototype.close;
+        const closeObserver = lateHeartbeat
+          ? vi
+              .spyOn(DshProtocolClient.prototype, 'close')
+              .mockImplementation(async function (this: DshProtocolClient) {
+                await actualClose.call(this);
+                // Keep this real close result pending at the handler boundary
+                // until the next real heartbeat commits revocation and aborts.
+                mark('close_result_held');
+                closeResultHeld.resolve();
+                await closeOrderingBarrier(
+                  runnerAborted.promise,
+                  'runner_abort_after_model_admission',
+                );
+                const [job] =
+                  await f.db`select status,worker_id,lease_token,drain_deadline_at,last_error_code from allrice_jobs where id=${review.jobId}`;
+                mark('job_at_abort', { job });
+                mark('close_result_released');
+              })
+          : undefined;
         const oldHome = process.env.ALLRICE_DSH_PLATFORM_HOME;
         vi.stubEnv(
           'ALLRICE_DSH_PLATFORM_HOME',
@@ -820,7 +872,7 @@ suite(
           );
           const detail = await getPlatformRepositoryReview(s.admin, review.id);
           const [diagnostic] =
-            await f.db`select last_error_code,last_error_message from allrice_jobs where id=${review.jobId}`;
+            await f.db`select status,worker_id,lease_token,last_error_code,last_error_message from allrice_jobs where id=${review.jobId}`;
           expect(detail.status, JSON.stringify(diagnostic)).toBe(
             mode === 'accept' || mode === 'revise'
               ? 'succeeded'
@@ -886,11 +938,17 @@ suite(
             legacyHistory,
           );
           if (closeOrdering) {
+            expect(model.requests).toHaveLength(1);
+            expect(diagnostic).toMatchObject({
+              status: 'failed',
+              worker_id: null,
+              lease_token: null,
+            });
             expect(trace.some((row) => row.event === 'tool_gate_refused')).toBe(
               true,
             );
             expect(trace.some((row) => row.event === 'runner_aborted')).toBe(
-              heartbeatFirst,
+              heartbeatFirst || lateHeartbeat,
             );
             expect(
               trace.some(
@@ -900,13 +958,73 @@ suite(
                   (row.action === 'model_prepare' ||
                     (row.action === 'start' && row.kind === 'model')),
               ),
-            ).toBe(modelAdmissionFirst);
+            ).toBe(modelAdmissionFirst || lateHeartbeat);
             expect(diagnostic!.last_error_code).toBe(
-              heartbeatFirst
+              heartbeatFirst || lateHeartbeat
                 ? 'PLATFORM_TECHNICAL_AUTH_REVOKED'
                 : 'EMPLOYEE_CONTENT_UNAVAILABLE',
             );
-            if (heartbeatFirst) {
+            if (modelAdmissionFirst)
+              expect(
+                trace
+                  .map((row) => row.event)
+                  .filter((event) =>
+                    [
+                      'heartbeat_result_held',
+                      'assignment_revoked',
+                      'job_failure_committed',
+                      'heartbeat_result_released',
+                    ].includes(event as string),
+                  ),
+              ).toEqual([
+                'heartbeat_result_held',
+                'assignment_revoked',
+                'job_failure_committed',
+                'heartbeat_result_released',
+              ]);
+            if (lateHeartbeat) {
+              const admissionFailure = trace.find(
+                (row) =>
+                  row.event === 'rpc_failed' &&
+                  row.method === 'allrice/progress' &&
+                  (row.action === 'model_prepare' ||
+                    (row.action === 'start' && row.kind === 'model')),
+              );
+              expect(admissionFailure).toMatchObject({
+                error: { code: 'EMPLOYEE_CONTENT_UNAVAILABLE' },
+              });
+              const revokedHeartbeat = trace.find(
+                (row) =>
+                  row.event === 'heartbeat' &&
+                  (row.result as { active: boolean }).active === false,
+              );
+              expect(revokedHeartbeat).toMatchObject({
+                result: { active: false, canceled: false },
+              });
+              const expectedOrder = [
+                'heartbeat_result_held',
+                'assignment_revoked',
+                'model_admission_refused',
+                'close_result_held',
+                'heartbeat_result_released',
+                'heartbeat_revoked',
+                'runner_aborted',
+                'job_at_abort',
+                'close_result_released',
+              ];
+              expect(
+                trace
+                  .map((row) =>
+                    row === admissionFailure
+                      ? 'model_admission_refused'
+                      : row === revokedHeartbeat
+                        ? 'heartbeat_revoked'
+                        : row.event,
+                  )
+                  .filter((event) => expectedOrder.includes(event as string)),
+              ).toEqual(expectedOrder);
+            }
+            if (heartbeatFirst || lateHeartbeat) {
               const stopped = trace.find(
                 (row) => row.event === 'job_at_abort',
               )!;
@@ -915,6 +1033,7 @@ suite(
                 worker_id: workerId,
                 lease_token: job!.lease!.token,
                 drain_deadline_at: expect.any(Date),
+                last_error_code: 'PLATFORM_TECHNICAL_AUTH_REVOKED',
               });
             }
             expect(
@@ -926,12 +1045,15 @@ suite(
                   row.callId === 'call-1',
               ),
             ).toBe(true);
-            const [call] =
-              await f.db`select finished_at,outcome from allrice_task_calls where run_id=${review.runId} and kind='tool' and call_id='call-1'`;
-            expect(call).toEqual({
-              finished_at: expect.any(Date),
-              outcome: 'error',
-            });
+            const calls =
+              await f.db`select call_id,finished_at,outcome from allrice_task_calls where run_id=${review.runId} and kind='tool'`;
+            expect(calls).toEqual([
+              {
+                call_id: 'call-1',
+                finished_at: expect.any(Date),
+                outcome: 'error',
+              },
+            ]);
           }
         } finally {
           try {
@@ -972,8 +1094,10 @@ suite(
               );
             }
             for (const stop of unsubscribe) stop();
+            closeObserver?.mockRestore();
             handlerObserver?.mockRestore();
             heartbeatObserver?.mockRestore();
+            failureObserver?.mockRestore();
             await model.close();
             remote.mockRestore();
             freeze.mockRestore();
