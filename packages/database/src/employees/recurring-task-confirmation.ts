@@ -11,10 +11,6 @@ import { askUserQuestionArguments } from './ask-user-question.ts';
 const decline = '先不创建';
 const weekdayNames = '一二三四五六日';
 
-export function declinedScheduleAnswer(label: string | undefined) {
-  return label === decline;
-}
-
 function clock(time: string) {
   return time.endsWith(':00') ? time.slice(0, 5) : time;
 }
@@ -114,7 +110,7 @@ export function recurringConfirmation(
 ) {
   const expected = card(request, prompt, rule, conversationMode);
   const answer = answers.find(({ item }) => item.id === expected.id);
-  if (declinedScheduleAnswer(answer?.label)) return 'declined' as const;
+  if (answer?.label === decline) return 'declined' as const;
   return answer &&
     isDeepStrictEqual(answer.item, expected) &&
     answer.label === expected.options![0]!.label

@@ -169,6 +169,43 @@ describe('explicit once task intent in the current human message', () => {
   });
 });
 
+describe('model-structured once candidates keep the existing safety boundary', () => {
+  it.each([
+    '1 分钟后提醒我喝水，提醒名称是 MET223-on-1。请直接创建一次性提醒。',
+    '帮忙设一下：1 分钟后叫我去吃饭，叫做午饭提醒。',
+  ])('does not require a positive sentence grammar: %s', (text) => {
+    expect(intent(text)).toBeNull();
+    expect(intent(text, { delayMinutes: 1 })).toEqual({
+      delayMinutes: 1,
+      authoritativeRequest: text,
+    });
+  });
+
+  it.each([
+    '“1 分钟后提醒我喝水”。',
+    '‘1 分钟后提醒我喝水’。',
+    '请解释“1 分钟后提醒我喝水”。',
+    '每隔 15 分钟提醒我一次。',
+    '只有我以后确认了，才在 15 分钟后提醒。',
+    '1 分钟后提醒我喝水。不要创建任务。',
+  ])('does not bypass an existing exclusion: %s', (text) => {
+    expect(intent(text, { delayMinutes: 15 })).toBeNull();
+  });
+
+  it('retains the supported quoted-argument path and the unknown-quote limitation', () => {
+    const text = '15分钟后回复“如果每天都需要，三分钟后再说”。';
+    expect(intent(text, { delayMinutes: 15 })).toEqual({
+      delayMinutes: 15,
+      authoritativeRequest: text,
+    });
+    expect(
+      intent('1分钟后提醒我喝水，提醒名称是“新提醒”。请直接创建一次性提醒。', {
+        delayMinutes: 1,
+      }),
+    ).toBeNull();
+  });
+});
+
 describe('confirmation of the preceding once task request', () => {
   const request = '搞个定时任务，两分钟提醒我喝水';
   const question =

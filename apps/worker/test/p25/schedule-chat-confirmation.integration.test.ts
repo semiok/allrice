@@ -513,6 +513,8 @@ suite(
       '1 分钟后提醒我喝水，提醒名称是 MET223-on-1。不要创建一次性提醒。',
       '如果我确认，1 分钟后提醒我喝水，提醒名称是 MET223-on-1。',
       '“1 分钟后提醒我喝水，提醒名称是 MET223-on-1。”',
+      '“1 分钟后提醒我喝水”。',
+      '请解释“1 分钟后提醒我喝水”。',
       '1 分钟后提醒我喝水，提醒名称是 MET223-on-1。只是示例，不要实际创建。',
     ])(
       'retains an existing denial despite complete model arguments: %s',
@@ -529,91 +531,23 @@ suite(
       },
     );
 
-    it.each([
-      {
-        text: '稍后提醒我喝水，提醒名称是补水提醒。',
-        question: '什么时候提醒你喝水？',
-        label: '3 分钟后',
-        other: '10 分钟后',
-        delayMinutes: 3,
-      },
-      {
-        text: '1 分钟后提醒我处理那件事，提醒名称是待办提醒。',
-        question: '这次要提醒你处理什么？',
-        label: '写周报',
-        other: '喝水',
-        delayMinutes: 1,
-      },
-    ])(
-      'uses an adopted time/object answer once, without another sentence grammar: $question',
-      async ({ text, question, label, other, delayMinutes }) => {
-        const c = await chat(text);
-        try {
-          const card = {
-            questions: [
-              {
-                id: 'missing-detail',
-                question,
-                options: [{ label }, { label: other }],
-                multi_select: false,
-              },
-            ],
-          };
-          await f.db`insert into allrice_run_events(organization_id,workspace_id,run_id,sequence,event_type,payload)
-            select ${f.organizationId},${f.workspaceId},${c.runId},coalesce(max(sequence),0)+1,'harness.native',
-              ${f.db.json({ sourceEventType: 'session/user-question', nativePayload: { questionId: `question-${randomUUID()}`, questions: card.questions } })}
-            from allrice_run_events where run_id=${c.runId}`;
-          await expect(
-            createAutomation(c.call(delayMinutes)),
-          ).rejects.toMatchObject({ code: 'AUTOMATION_REQUEST_UNCLEAR' });
-          expect(await c.onceTasks()).toHaveLength(0);
-          await c.answer(card, label);
-          const call = c.call(delayMinutes);
-          const created = read(await createAutomation(call));
-          expect(await c.onceTasks()).toMatchObject([
-            {
-              id: created.automationId,
-              prompt: `${text}\n用户已确认的选择：${label}`,
-            },
-          ]);
-          expect(created).not.toHaveProperty('askUserQuestion');
-          expect(read(await createAutomation(call)).automationId).toBe(
-            created.automationId,
-          );
-          await expect(
-            createAutomation(c.call(delayMinutes)),
-          ).rejects.toMatchObject({ code: 'AUTOMATION_REQUEST_UNCLEAR' });
-          expect(await c.onceTasks()).toHaveLength(1);
-        } finally {
-          await c.finish();
-        }
-      },
-    );
-
-    it.each([
-      { selected: ['先不创建'] },
-      { selected: [] },
-      { selected: [], custom: '3 分钟后' },
-      { selected: ['3 分钟后'], questionId: 'another-question' },
-      { selected: ['不在卡片上的选项'] },
-      { selected: ['3 分钟后', '先不创建'] },
-    ])(
-      'does not treat a declined/skipped/forged answer as a once candidate: %j',
-      async (choice) => {
+    it.each(['取消', '不创建', '否', '先不创建', '写周报'])(
+      'never promotes an arbitrary adopted choice into once authority: %s',
+      async (label) => {
         const c = await chat('稍后提醒我喝水，提醒名称是补水提醒。');
         try {
           await c.answer(
             {
               questions: [
                 {
-                  id: 'missing-time',
-                  question: '什么时候提醒？',
-                  options: [{ label: '3 分钟后' }, { label: '先不创建' }],
+                  id: 'missing-detail',
+                  question: '要创建这个提醒吗？',
+                  options: [{ label: '创建' }, { label }],
                   multi_select: false,
                 },
               ],
             },
-            choice,
+            label,
           );
           await expect(createAutomation(c.call(3))).rejects.toMatchObject({
             code: 'AUTOMATION_REQUEST_UNCLEAR',

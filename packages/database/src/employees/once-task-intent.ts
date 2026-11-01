@@ -98,6 +98,7 @@ function positiveInteger(literal: string): number | null {
 function maskQuotedArguments(text: string): string | null {
   const pairs: Readonly<Record<string, string>> = {
     '“': '”',
+    '‘': '’',
     '「': '」',
     '『': '』',
     '"': '"',
@@ -106,19 +107,15 @@ function maskQuotedArguments(text: string): string | null {
   };
   const stack: string[] = [];
   let result = '';
-  let unquoted = false;
   for (const character of text) {
     if (stack.at(-1) === character) {
       stack.pop();
       if (!stack.length) result += '字面内容';
     } else if (pairs[character]) stack.push(pairs[character]!);
-    else if ('”」』'.includes(character)) return null;
-    else if (!stack.length) {
-      result += character;
-      if (character.trim()) unquoted = true;
-    }
+    else if ('”’」』'.includes(character)) return null;
+    else if (!stack.length) result += character;
   }
-  return stack.length || !unquoted ? null : result;
+  return stack.length ? null : result;
 }
 
 function onceQualifier(clause: string): boolean {
@@ -168,15 +165,13 @@ function onceRequestProse(text: string): string | null {
 }
 
 /** Recognize exact legacy parameters, or retain a model-structured candidate.
- * A candidate never needs to match a positive sentence grammar. The existing
- * exclusions remain single-sided: adopted answers can resolve ambiguity, but
- * never override a denial or promote quoted material into authority.
+ * An unquoted candidate needs no positive sentence grammar. Existing denials
+ * remain. Unknown quoted requests retain the strict legacy path; existing
+ * questions never enter this candidate path.
  */
 export function explicitOnceTaskIntent(
   text: string,
-  candidate?: Pick<OnceTaskIntent, 'delayMinutes' | 'conversationMode'> & {
-    answered?: boolean;
-  },
+  candidate?: Pick<OnceTaskIntent, 'delayMinutes' | 'conversationMode'>,
 ): OnceTaskIntent | null {
   const prose = onceRequestProse(text);
   if (prose === null) return null;
@@ -199,14 +194,13 @@ export function explicitOnceTaskIntent(
   let work = false;
   for (const clause of clauses) {
     if (onceQualifier(clause)) continue;
-    // These are the pre-existing alternatives, grouped by what an adopted
-    // answer can resolve. No new wording is used as a permission rule.
-    const constraints = clause.matchAll(
-      /(如果|假如|若|除非|倘|视情况|看情况|有空|(?:不要|不用|不必|无需|不能|不允许|暂不|别|勿)|只是示例|仅作示例|仅供参考)|([?？]|大约|大概|左右|差不多|稍后|待会|等会|过会|尽快|至少|至多|最迟|不超过|或者|是否|怎么|如何|能否|可否|(?:吗|么|呢|行不行|好不好|可不可以)$|刚才|上次|之前|上述|上面|同上|照旧)|(每|定期|循环|周期|反复|重复|长期|永久|默认|今后|以后)/gu,
-    );
-    for (const constraint of constraints)
-      if (!candidate || constraint[1] || (!candidate.answered && constraint[2]))
-        return null;
+    // Preserve the existing denials, conditions and recurring exclusions.
+    if (
+      /[?？]|如果|假如|若|除非|倘|视情况|看情况|有空|(?:不要|不用|不必|无需|不能|不允许|暂不|别|勿)|每|定期|循环|周期|反复|重复|长期|永久|默认|今后|以后|大约|大概|左右|差不多|稍后|待会|等会|过会|尽快|至少|至多|最迟|不超过|或者|是否|怎么|如何|能否|可否|(?:吗|么|呢|行不行|好不好|可不可以)$|只是示例|仅作示例|仅供参考|刚才|上次|之前|上述|上面|同上|照旧/u.test(
+        clause,
+      )
+    )
+      return null;
     if (candidate) continue;
     if (
       new RegExp(
@@ -220,6 +214,9 @@ export function explicitOnceTaskIntent(
   }
   if (candidate) {
     const recognized = explicitOnceTaskIntent(text);
+    // A quotation is data only inside an already supported outer request.
+    // Unknown quoted wording cannot obtain authority from a model candidate.
+    if (prose !== selection.request && !recognized) return null;
     const conversationMode =
       selection.conversationMode ?? candidate.conversationMode;
     return {
