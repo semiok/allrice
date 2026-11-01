@@ -128,6 +128,7 @@ export function ChatComposerInput({
   onRetryAttachment,
   onUploadAttachments,
   onSubmit,
+  readOnly = false,
   imageOnly = false,
   onInputError,
 }: Pick<
@@ -146,6 +147,7 @@ export function ChatComposerInput({
   | 'onUploadAttachments'
 > & {
   onSubmit: (modified: boolean) => void;
+  readOnly?: boolean;
   imageOnly?: boolean;
   onInputError?: (message: string) => void;
 }) {
@@ -167,7 +169,8 @@ export function ChatComposerInput({
       <textarea
         aria-label={`给 ${employeeName} 的消息`}
         className={styles.composerInput}
-        disabled={busy}
+        disabled={busy && !readOnly}
+        readOnly={readOnly}
         onChange={(event) => {
           onDraftChange(event.target.value);
         }}
@@ -199,6 +202,7 @@ export function ChatComposerInput({
           onSubmit(event.ctrlKey !== event.metaKey);
         }}
         onPaste={(event) => {
+          if (busy) return;
           const files = [...event.clipboardData.files].filter(
             (file) => imageOnly || file.type.startsWith('image/'),
           );
@@ -352,6 +356,7 @@ export function ChatComposer({
             onRetryAttachment,
             onUploadAttachments,
           }}
+          readOnly={busy}
           onSubmit={() => void onSendMessage()}
         />
         <div
@@ -489,6 +494,10 @@ export function ChatComposer({
               disabled={
                 showStop ? cancelPending : busy || cancelPending || !hasDraft
               }
+              onMouseDown={(event) => {
+                event.preventDefault();
+                composerInput.current?.focus({ preventScroll: true });
+              }}
               onClick={() => void (showStop ? onCancelRun() : onSendMessage())}
               type="button"
             >

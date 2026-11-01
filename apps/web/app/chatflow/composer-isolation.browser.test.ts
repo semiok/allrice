@@ -2177,6 +2177,11 @@ suite(
               .inputValue(),
           )
           .toBe('B untouched');
+        expect(
+          await f.page
+            .getByRole('textbox', { name: '给 Rice 的消息' })
+            .evaluate((node) => node === document.activeElement),
+        ).toBe(true);
         await f.page.getByText('B.txt', { exact: true }).waitFor();
         expect(f.reads.some((url) => url.includes(`${runId}/events`))).toBe(
           false,
@@ -2200,9 +2205,9 @@ suite(
           .poll(() =>
             f.page
               .getByRole('textbox', { name: '给 Rice 的消息' })
-              .isDisabled(),
+              .isEditable(),
           )
-          .toBe(true);
+          .toBe(false);
         expect(
           await f.page
             .getByRole('textbox', { name: '给 Rice 的消息' })
@@ -2215,9 +2220,9 @@ suite(
           .poll(() =>
             f.page
               .getByRole('textbox', { name: '给 Rice 的消息' })
-              .isDisabled(),
+              .isEditable(),
           )
-          .toBe(false);
+          .toBe(true);
         expect(
           await f.page
             .getByRole('textbox', { name: '给 Rice 的消息' })
@@ -4134,8 +4139,8 @@ suite(
         expect(
           await f.page
             .getByRole('textbox', { name: '给 Rice 的消息' })
-            .isDisabled(),
-        ).toBe(false);
+            .isEditable(),
+        ).toBe(true);
         expect(f.writes).toHaveLength(1);
         expect(f.errors).toEqual([]);
       } finally {
@@ -4156,14 +4161,14 @@ suite(
         expect(
           await f.page
             .getByRole('textbox', { name: '给 Rice 的消息' })
-            .isDisabled(),
-        ).toBe(true);
+            .isEditable(),
+        ).toBe(false);
         await f.respond(1);
         expect(
           await f.page
             .getByRole('textbox', { name: '给 Rice 的消息' })
-            .isDisabled(),
-        ).toBe(false);
+            .isEditable(),
+        ).toBe(true);
         expect(
           await f.page.getByText('first.txt', { exact: true }).count(),
         ).toBe(0);
@@ -4211,8 +4216,8 @@ suite(
         expect(
           await f.page
             .getByRole('textbox', { name: '给 Rice 的消息' })
-            .isDisabled(),
-        ).toBe(true);
+            .isEditable(),
+        ).toBe(false);
         await f.respond(1, false);
         expect(
           await f.page

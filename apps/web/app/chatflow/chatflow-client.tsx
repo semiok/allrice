@@ -825,6 +825,8 @@ export function ChatFlowClient({
     if (!workspace || !text || busy || sessionArchived) return;
     const action = sessionActions.begin('composer');
     if (!action) return;
+    const submittedInput = composerInput.current;
+    const keepInputFocus = document.activeElement === submittedInput;
     const draftAttachments = [...pendingAttachments];
     const draftReferences = [...sessionReferences];
     const draftReferenceSelections = [...referenceSelections];
@@ -1014,7 +1016,20 @@ export function ChatFlowClient({
       setCompanyReferences(draftCompanyReferences);
       setError(cause instanceof Error ? cause.message : '消息发送失败');
     } finally {
-      if (action.finish()) setBusy(false);
+      if (action.finish()) {
+        setBusy(false);
+        const selection = captureSelection();
+        requestAnimationFrame(() => {
+          if (
+            keepInputFocus &&
+            selection.current() &&
+            (document.activeElement === submittedInput ||
+              (!submittedInput?.isConnected &&
+                document.activeElement === document.body))
+          )
+            composerInput.current?.focus({ preventScroll: true });
+        });
+      }
     }
   }
 
