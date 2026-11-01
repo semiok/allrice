@@ -307,6 +307,7 @@ header.conversationHeader::after {
   min-width: 0;
   flex-shrink: 1;
   padding-block: 4px;
+  padding-inline-start: 4px;
   overflow-x: auto;
 }
 

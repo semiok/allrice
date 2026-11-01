@@ -46,10 +46,10 @@
   color: var(--dsw-alias-label-caption);
   text-align: right;
 }
-.trigger.trigger {
+button.trigger.trigger {
   color: #2563eb;
 }
-.trigger.trigger[aria-expanded='true']:not(:disabled) {
+button.trigger.trigger[aria-expanded='true']:not(:disabled) {
   background: #eef2ff;
 }
 .ongoing.ongoing {

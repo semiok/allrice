@@ -292,6 +292,9 @@ suite('native subagent directory and employee sidebar', () => {
       const trigger = page.locator('button[aria-haspopup="tree"]');
       try {
         expect(await trigger.innerText()).toBe('2');
+        expect(
+          await trigger.evaluate((node) => getComputedStyle(node).color),
+        ).toBe('rgb(37, 99, 235)');
         expect(await trigger.locator('svg rect').count()).toBe(3);
         expect(await trigger.locator('[data-state="ongoing"]').count()).toBe(0);
         const badge = trigger.locator('span[aria-hidden="true"]');
@@ -391,9 +394,15 @@ suite('native subagent directory and employee sidebar', () => {
             left: point.left - button.left,
             top: point.top - button.top,
             clipped: point.top < actions.top,
+            clippedLeft: point.left < actions.left,
           };
         });
-        expect(geometry).toEqual({ left: -3, top: -3, clipped: false });
+        expect(geometry).toEqual({
+          left: -3,
+          top: -3,
+          clipped: false,
+          clippedLeft: false,
+        });
         await capture(page, `${width}-running`);
         await trigger.click();
         expect(
@@ -462,6 +471,9 @@ suite('native subagent directory and employee sidebar', () => {
         expect(
           calls.filter((c) => !c.liveOnly).every((c) => c.id === 'parent-a'),
         ).toBe(true);
+      } catch (error) {
+        await capture(page, `${width}-failure`);
+        throw error;
       } finally {
         await page.close();
       }
