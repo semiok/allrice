@@ -591,7 +591,7 @@ suite('native subagent directory and employee sidebar', () => {
         type: 'directory',
         summary: { ...summary(), descendants: [] },
       });
-      await expect.poll(() => trigger.count()).toBe(0);
+      await expect.poll(() => trigger.isVisible()).toBe(false);
       expect(
         await page.getByRole('tree', { name: '子智能体目录' }).count(),
       ).toBe(0);
