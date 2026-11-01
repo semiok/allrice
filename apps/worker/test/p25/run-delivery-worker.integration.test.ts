@@ -57,6 +57,7 @@ import {
 } from '../../../../packages/database/src/final-delivery-commit.ts';
 import { readDeliverySnapshot } from '../../../../packages/database/src/run-delivery.ts';
 import { executeEmployeeRun } from '../../src/jobs/employee-run.ts';
+import { executeRiceTool } from '../../src/tool-broker.ts';
 import * as TurnLifecycle from '../../src/conversation/turn-lifecycle.ts';
 import * as SubscriptionPreflight from '../../src/subscription-preflight.ts';
 import { prepareExecutionIsolation } from '../../src/isolation.ts';
@@ -1353,6 +1354,135 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       ).toHaveLength(0);
       expect(await readRetiredExecutionHistory(f.db)).toEqual(legacyHistory);
       expect(model!.requests).toHaveLength(1);
+    } finally {
+      await task.isolation.cleanup();
+    }
+  }, 45000);
+
+  it.each([
+    {
+      label: 'SB01 original remember request',
+      prompt: '帮我记一下，我看数据的时候习惯先看表格再看文字说明',
+      lifecycleState: 'durable',
+      trust: 'user_confirmed',
+    },
+    {
+      label: 'stable preference without a phrase signal',
+      prompt: '数据先放表格，再配文字说明，这样看起来更顺手。',
+      lifecycleState: 'candidate',
+      trust: 'derived',
+    },
+  ] as const)(
+    'R2 stores $label through chat admission and Worker',
+    async (c) => {
+      const content = '看数据时先看表格再看文字说明';
+      const f = await setup(
+        async (request, count) => {
+          if (count === 1) {
+            expect(JSON.stringify(request.messages)).toContain(c.prompt);
+            return {
+              nativeTool: {
+                name: 'workspace_memory_remember',
+                arguments: {
+                  content,
+                  memoryClass: 'user_preference',
+                  lifecycleState: c.lifecycleState,
+                },
+              },
+            };
+          }
+          return { text: 'Synthetic completed.' };
+        },
+        false,
+        false,
+        ['workspace.memory.remember'],
+      );
+      const task = await prepare(f, c.prompt);
+      try {
+        await task.run();
+        const memories = await f.db`
+        select m.content,m.employee_id,m.source_type,m.source_id,m.lifecycle_state,
+          m.trust_level,m.memory_class,m.revision,s.role,s.content->>'text' source_text,
+          er.user_message_id
+        from allrice_memories m join allrice_messages s on s.id=m.source_id
+        join allrice_employee_runs er on er.run_id=${task.runId}
+        where m.organization_id=${f.identity.org} and m.workspace_id=${f.identity.workspace}`;
+        expect(memories).toHaveLength(1);
+        expect(memories[0]).toMatchObject({
+          content,
+          employee_id: f.identity.employee,
+          source_type: 'message',
+          source_id: memories[0]!.user_message_id,
+          lifecycle_state: c.lifecycleState,
+          trust_level: c.trust,
+          memory_class: 'user_preference',
+          revision: 1,
+          role: 'user',
+          source_text: c.prompt,
+        });
+      } finally {
+        await task.isolation.cleanup();
+      }
+    },
+    45000,
+  );
+
+  it('R2 preserves database source, assignment and schema guards before memory writes', async () => {
+    const f = await setup(undefined, false, false, [
+      'workspace.memory.remember',
+    ]);
+    const task = await prepare(
+      f,
+      '帮我记一下，我看数据的时候习惯先看表格再看文字说明',
+    );
+    try {
+      const [source] =
+        await f.db`select user_message_id from allrice_employee_runs where run_id=${task.runId}`;
+      const foreign = await createRunAuthorityFixture(f.db, {
+        configure: false,
+      });
+      const [foreignSource] =
+        await f.db`select id from allrice_messages where session_id=${foreign.session} and role='user'`;
+      const input = {
+        context: task.execution.context,
+        capabilities: ['storage:write'] as ['storage:write'],
+        storageRoot: '.local/storage',
+        employeeId: f.identity.employee,
+        userMessageId: source!.user_message_id as string,
+        call: {
+          id: randomUUID(),
+          name: 'workspace.memory.remember',
+          arguments: { content: '先看表格再看文字', lifecycleState: 'durable' },
+        },
+      };
+      await expect(
+        executeRiceTool({
+          ...input,
+          userMessageId: foreignSource!.id as string,
+        }),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+      await expect(
+        executeRiceTool({ ...input, userMessageId: randomUUID() }),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+      await expect(
+        executeRiceTool({
+          ...input,
+          call: {
+            ...input.call,
+            arguments: {
+              ...input.call.arguments,
+              expiresAt: 'not-a-timestamp',
+            },
+          },
+        }),
+      ).rejects.toThrow();
+      await f.db`update allrice_employee_assignments set active=false where id=${f.identity.assignment}`;
+      await expect(executeRiceTool(input)).rejects.toMatchObject({
+        code: 'authorization_denied',
+      });
+      expect(
+        await f.db`select id from allrice_memories where workspace_id=${f.identity.workspace}`,
+      ).toHaveLength(0);
     } finally {
       await task.isolation.cleanup();
     }

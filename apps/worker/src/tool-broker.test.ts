@@ -220,13 +220,13 @@ describe('Codex hosted search Tool Broker integration', () => {
     expect(riceToolRisk('workspace.memory.remember')).toBe('managed_write');
   });
 
-  it('writes durable memory only for an explicit current-message request', async () => {
+  it('writes structured durable memory with the Worker-bound source despite unfamiliar wording', async () => {
     const context = executionContext();
     const employeeId = randomUUID();
     const userMessageId = randomUUID();
     createTraceableMemory.mockResolvedValue({
       id: randomUUID(),
-      content: '我偏好中文周报',
+      content: '看数据时先看表格再看文字说明',
       memoryClass: 'user_preference',
       lifecycleState: 'durable',
       provenance: { sourceType: 'message', sourceId: userMessageId },
@@ -238,14 +238,18 @@ describe('Codex hosted search Tool Broker integration', () => {
       storageRoot: '.local/storage',
       employeeId,
       userMessageId,
-      userRequest: '请记住：我偏好中文周报。',
+      userRequest: '帮我记一下，我看数据的时候习惯先看表格再看文字说明',
       call: {
         id: randomUUID(),
         name: 'workspace.memory.remember',
         arguments: {
-          content: '我偏好中文周报',
+          content: '看数据时先看表格再看文字说明',
           memoryClass: 'user_preference',
           lifecycleState: 'durable',
+          sourceId: randomUUID(),
+          sourceType: 'tool',
+          employeeId: randomUUID(),
+          workspaceId: randomUUID(),
         },
       },
     });
@@ -258,6 +262,7 @@ describe('Codex hosted search Tool Broker integration', () => {
         workspaceId: context.workspaceId,
       }),
       expect.objectContaining({
+        workspaceId: context.workspaceId,
         employeeId,
         sourceType: 'message',
         sourceId: userMessageId,
@@ -270,14 +275,14 @@ describe('Codex hosted search Tool Broker integration', () => {
     expect(result.summary).toBe('已保存为长期记忆');
   });
 
-  it('keeps stable user facts as candidates and rejects unsupported writes', async () => {
+  it('keeps model-structured stable user facts as candidates without a phrase gate', async () => {
     const context = executionContext();
     const employeeId = randomUUID();
     const userMessageId = randomUUID();
     createTraceableMemory.mockResolvedValue({
       id: randomUUID(),
-      content: '我们项目要求每周五发布',
-      memoryClass: 'project_fact',
+      content: '看数据时先看表格再看文字说明',
+      memoryClass: 'user_preference',
       lifecycleState: 'candidate',
       provenance: { sourceType: 'message', sourceId: userMessageId },
     });
@@ -292,13 +297,13 @@ describe('Codex hosted search Tool Broker integration', () => {
     const candidate = await executeRiceTool({
       ...common,
       capabilities: [...common.capabilities],
-      userRequest: '我们项目要求每周五发布。',
+      userRequest: '数据先放表格，再配文字说明，这样看起来更顺手。',
       call: {
         id: randomUUID(),
         name: 'workspace.memory.remember',
         arguments: {
-          content: '我们项目要求每周五发布',
-          memoryClass: 'project_fact',
+          content: '看数据时先看表格再看文字说明',
+          memoryClass: 'user_preference',
           lifecycleState: 'candidate',
         },
       },
@@ -314,40 +319,64 @@ describe('Codex hosted search Tool Broker integration', () => {
         confidence: 0.8,
       }),
     );
+  });
 
+  it.each([
+    ['missing lifecycle', { lifecycleState: undefined }],
+    ['unsupported lifecycle', { lifecycleState: 'archived' }],
+    ['unsupported class', { memoryClass: 'inference' }],
+    ['empty content', { content: ' ' }],
+    ['oversized content', { content: 'x'.repeat(10_001) }],
+  ])('rejects %s before memory storage', async (_label, invalid) => {
     await expect(
       executeRiceTool({
-        ...common,
-        capabilities: [...common.capabilities],
-        userRequest: '帮我查一下今天的新闻。',
+        context: executionContext(),
+        capabilities: ['storage:write'],
+        storageRoot: '.local/storage',
+        employeeId: randomUUID(),
+        userMessageId: randomUUID(),
+        userRequest: '帮我记一下，我看数据的时候习惯先看表格再看文字说明',
         call: {
           id: randomUUID(),
           name: 'workspace.memory.remember',
           arguments: {
-            content: '今天的新闻结果',
-            lifecycleState: 'candidate',
-          },
-        },
-      }),
-    ).rejects.toMatchObject({
-      code: 'MEMORY_STABLE_USER_STATEMENT_REQUIRED',
-    });
-
-    await expect(
-      executeRiceTool({
-        ...common,
-        capabilities: [...common.capabilities],
-        userRequest: '我偏好中文周报。',
-        call: {
-          id: randomUUID(),
-          name: 'workspace.memory.remember',
-          arguments: {
-            content: '我偏好中文周报',
+            content: '看数据时先看表格再看文字说明',
             lifecycleState: 'durable',
+            ...invalid,
           },
         },
       }),
-    ).rejects.toMatchObject({ code: 'MEMORY_EXPLICIT_CONFIRMATION_REQUIRED' });
+    ).rejects.toMatchObject({ code: 'TOOL_INPUT_INVALID' });
+    expect(createTraceableMemory).not.toHaveBeenCalled();
+  });
+
+  it('requires memory write capability and the complete authoritative scope', async () => {
+    const context = executionContext();
+    const common = {
+      context,
+      capabilities: ['storage:write'] as ['storage:write'],
+      storageRoot: '.local/storage',
+      employeeId: randomUUID(),
+      userMessageId: randomUUID(),
+      call: {
+        id: randomUUID(),
+        name: 'workspace.memory.remember',
+        arguments: { content: '先表格再文字', lifecycleState: 'durable' },
+      },
+    };
+    await expect(
+      executeRiceTool({ ...common, capabilities: [] }),
+    ).rejects.toMatchObject({ code: 'TOOL_CAPABILITY_DENIED' });
+    await expect(
+      executeRiceTool({ ...common, employeeId: undefined }),
+    ).rejects.toMatchObject({ code: 'MEMORY_SOURCE_MESSAGE_REQUIRED' });
+    await expect(
+      executeRiceTool({
+        ...common,
+        context: { ...context, workspaceId: null },
+      }),
+    ).rejects.toMatchObject({ code: 'MEMORY_SOURCE_MESSAGE_REQUIRED' });
+    expect(createTraceableMemory).not.toHaveBeenCalled();
   });
 
   it('confirms only pre-write memory refusals for the exact invocation', async () => {
@@ -372,10 +401,11 @@ describe('Codex hosted search Tool Broker integration', () => {
     };
     const denied = await executeRiceTool({
       ...common,
-      userRequest: '你记在哪里啦',
+      userMessageId: undefined,
+      userRequest: '请记住我的观察名单。',
     }).catch((error) => error);
     expect(denied).toMatchObject({
-      code: 'MEMORY_EXPLICIT_CONFIRMATION_REQUIRED',
+      code: 'MEMORY_SOURCE_MESSAGE_REQUIRED',
     });
     expect(createTraceableMemory).not.toHaveBeenCalled();
     expect(isConfirmedToolFailure(denied, identity)).toBe(true);

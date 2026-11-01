@@ -24,10 +24,6 @@ import { parseDocument } from '../../document-reader.js';
 import { readPdfLocally } from '../../document-read-local.js';
 import { confirmToolFailure, HandlerError } from '../../errors.js';
 import {
-  hasExplicitRememberIntent,
-  hasStableMemorySignal,
-} from '../../memory-lifecycle.js';
-import {
   limitValue,
   memoryClassValue,
   memoryLifecycleStateValue,
@@ -460,24 +456,6 @@ export const rememberWorkspaceMemory: RiceToolHandler = async ({
     return error;
   };
   const lifecycleState = memoryLifecycleStateValue(args.lifecycleState);
-  if (
-    lifecycleState === 'durable' &&
-    !hasExplicitRememberIntent(input.userRequest)
-  ) {
-    throw rejected(
-      'MEMORY_EXPLICIT_CONFIRMATION_REQUIRED',
-      '只有用户在当前消息中明确要求记住时，才能写入长期记忆',
-    );
-  }
-  if (
-    lifecycleState === 'candidate' &&
-    !hasStableMemorySignal(input.userRequest)
-  ) {
-    throw rejected(
-      'MEMORY_STABLE_USER_STATEMENT_REQUIRED',
-      '候选记忆必须来自用户当前消息中的稳定偏好、决定或项目事实',
-    );
-  }
   if (!input.context.workspaceId || !input.employeeId || !input.userMessageId) {
     throw rejected(
       'MEMORY_SOURCE_MESSAGE_REQUIRED',

@@ -2,21 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildCheckpointMemoryCandidate,
-  hasExplicitRememberIntent,
   hasStableMemorySignal,
 } from './memory-lifecycle.js';
 
 describe('governed memory lifecycle', () => {
-  it('recognizes explicit remember intent without treating negation as consent', () => {
-    expect(hasExplicitRememberIntent('请记住，我偏好中文周报。')).toBe(true);
-    expect(
-      hasExplicitRememberIntent('Remember that Friday is release day.'),
-    ).toBe(true);
-    expect(hasExplicitRememberIntent('以后按此处理周报。')).toBe(true);
-    expect(hasExplicitRememberIntent('不要记住这件事。')).toBe(false);
-    expect(hasExplicitRememberIntent('我偏好中文周报。')).toBe(false);
-  });
-
   it('only treats stable user-authored facts as candidate signals', () => {
     expect(hasStableMemorySignal('我们项目要求每周五发布。')).toBe(true);
     expect(hasStableMemorySignal('I prefer concise weekly reports.')).toBe(

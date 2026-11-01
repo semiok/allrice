@@ -18,19 +18,9 @@ import type { BaselineEntry } from './user-text-regex-gate.ts';
 export const baseline: readonly BaselineEntry[] = [
   {
     file: 'apps/worker/src/memory-lifecycle.ts',
-    owner: 'hasExplicitRememberIntent',
-    kind: 'reject',
-    use: '用上面两个正则判断能否写长期记忆：没说“记住”或说了“不要记住”就拒绝写入',
-    sites: [
-      String.raw`test(/(?:请|帮我|以后|今后|之后|你)?(?:记住|记下|记得|保存(?:为|成)?(?:长期)?记忆)|(?:以后|今后)(?:按此|照此|按这个|照这个|按照这个)|\bremember\b|\bkeep (?:this|that) in mind\b/i)`,
-      String.raw`test(/(?:不要|不用|别)(?:记住|记下|保存)|\b(?:do not|don't) remember\b|\bforget (?:this|that)\b/i)`,
-    ],
-  },
-  {
-    file: 'apps/worker/src/memory-lifecycle.ts',
     owner: 'hasStableMemorySignal',
     kind: 'reject',
-    use: '用上面两个正则判断能否写候选记忆：没有信号词或说了“不要记住”就拒绝写入',
+    use: '仅供 checkpoint 预压缩候选提取判断稳定用户陈述，不再决定记忆工具写权限',
     sites: [
       String.raw`test(/记住|记下|我的?偏好|我喜欢|我习惯|以后(?:请|要|都)|(?:我|我们)(?:已经)?决定|项目(?:要求|目标|约束|背景)|必须|不要|remember|I prefer|my preference|we decided|project (?:goal|constraint|requirement|context)|must|always|never/i)`,
       String.raw`test(/(?:不要|不用|别)(?:记住|记下|保存)|\b(?:do not|don't) remember\b|\bforget (?:this|that)\b/i)`,
