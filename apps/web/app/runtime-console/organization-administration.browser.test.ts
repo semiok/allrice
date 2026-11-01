@@ -2055,6 +2055,9 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
         .getByLabel('业务采用', { exact: true })
         .selectOption('yes');
       await adoption
+        .getByLabel('采用时间', { exact: true })
+        .fill('2026-10-15T12:00');
+      await adoption
         .getByLabel('采用与人工投入依据', { exact: true })
         .fill('实际采用，准备复核返工共计 30 分钟');
       await adoption
