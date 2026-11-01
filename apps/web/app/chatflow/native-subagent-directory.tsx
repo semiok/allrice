@@ -121,6 +121,12 @@ export function NativeSubagentDirectory({
   const direct =
     summary?.descendants.filter((child) => child.parentId === summary.rootId) ??
     [];
+  const visible = read === 'error' || direct.length > 0;
+  useEffect(() => {
+    if (visible) return;
+    setOpen(false);
+    setPinned(false);
+  }, [visible]);
   const [now, setNow] = useState(Date.now);
   const ticking =
     open &&
@@ -201,11 +207,11 @@ export function NativeSubagentDirectory({
     showCatalog(open, null);
     trigger.current?.focus();
   };
-  if (!selected && !open && read !== 'error' && !direct.length) return null;
+  if (!selected && !open && !visible) return null;
   return (
     <>
       <div
-        hidden={read !== 'error' && !direct.length}
+        hidden={!visible}
         onMouseEnter={() => {
           clearTimeout(timer.current);
           timer.current = setTimeout(() => showCatalog(true), 150);
@@ -254,7 +260,7 @@ export function NativeSubagentDirectory({
           portal
           align="end"
           autoFocus={false}
-          open={open}
+          open={open && visible}
           onClose={close}
           listClassName={css.catalog}
           anchor={
@@ -276,11 +282,8 @@ export function NativeSubagentDirectory({
               }}
             >
               <WorkbenchIcon kind="subagent" />
-              {read !== 'error' && running > 0 && (
-                <StateDot state="ongoing" size={10} className={css.ongoing} />
-              )}
               <span
-                className={`${actions.badge} ${read === 'error' ? css.errorBadge : actions.neutralBadge}`}
+                className={`${actions.badge} ${read === 'error' ? css.errorBadge : running ? css.runningBadge : actions.neutralBadge}`}
                 aria-hidden="true"
               >
                 {read === 'error' ? '!' : direct.length}

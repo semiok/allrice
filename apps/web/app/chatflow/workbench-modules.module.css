@@ -86,6 +86,7 @@
 .neutralBadge {
   background: #e4e4e7;
   color: #52525b;
+  border-color: #fff;
 }
 .guide {
   height: 100%;

@@ -128,7 +128,7 @@ export function WorkbenchEntries(props: {
           <WorkbenchIcon kind={kind} />
           {props.counts[kind] > 0 && (
             <span
-              className={`${css.badge} ${kind === 'files' ? css.neutralBadge : ''}`}
+              className={`${css.badge} ${css.neutralBadge}`}
               aria-hidden="true"
             >
               {props.counts[kind] > 99 ? '99+' : props.counts[kind]}

@@ -327,7 +327,7 @@ suite('native subagent directory and employee sidebar', () => {
             .getByRole('button', { name: '经验管理，1 项新增', exact: true })
             .locator('span')
             .evaluate((node) => getComputedStyle(node).backgroundColor),
-        ).not.toBe(colors[0]);
+        ).toBe(colors[0]);
         expect((await trigger.boundingBox())!.x).toBeLessThan(
           (await files.boundingBox())!.x,
         );
@@ -371,37 +371,38 @@ suite('native subagent directory and employee sidebar', () => {
           ),
         };
         feed.push(fixture, { type: 'directory', summary: live });
-        await trigger.locator('[data-state="ongoing"]').waitFor();
-        const ongoing = trigger.locator('[data-state="ongoing"]');
+        await expect
+          .poll(() =>
+            badge.evaluate((node) => getComputedStyle(node).backgroundColor),
+          )
+          .toBe('rgb(34, 197, 94)');
+        expect(await trigger.innerText()).toBe('2');
+        expect(await trigger.locator('[data-state="ongoing"]').count()).toBe(0);
         expect(
-          await ongoing.evaluate(
-            (node) => getComputedStyle(node).backgroundColor,
-          ),
-        ).not.toBe('rgba(0, 0, 0, 0)');
+          await badge.evaluate((node) => getComputedStyle(node).color),
+        ).toBe('rgb(255, 255, 255)');
         expect(
-          await ongoing
-            .locator('g')
-            .evaluate((node) => getComputedStyle(node).display),
-        ).toBe('none');
-        const geometry = await ongoing.evaluate((node) => {
-          const point = node.getBoundingClientRect(),
+          await files
+            .locator('span')
+            .evaluate((node) => getComputedStyle(node).backgroundColor),
+        ).toBe(colors[0]);
+        const geometry = await badge.evaluate((node) => {
+          const bounds = node.getBoundingClientRect(),
             button = node.closest('button')!.getBoundingClientRect();
           const actions = node
             .closest('header')!
             .querySelector('div[class*="conversationActions"]')!
             .getBoundingClientRect();
           return {
-            left: point.left - button.left,
-            top: point.top - button.top,
-            clipped: point.top < actions.top,
-            clippedLeft: point.left < actions.left,
+            right: button.right - bounds.right,
+            top: bounds.top - button.top,
+            clipped: bounds.top < actions.top || bounds.right > actions.right,
           };
         });
         expect(geometry).toEqual({
-          left: -3,
+          right: -3,
           top: -3,
           clipped: false,
-          clippedLeft: false,
         });
         await capture(page, `${width}-running`);
         await trigger.click();
@@ -410,6 +411,11 @@ suite('native subagent directory and employee sidebar', () => {
             (node) => getComputedStyle(node).backgroundColor,
           ),
         ).toBe('rgb(238, 242, 255)');
+        expect(
+          await badge.evaluate(
+            (node) => getComputedStyle(node).backgroundColor,
+          ),
+        ).toBe('rgb(34, 197, 94)');
         const liveRow = page.getByRole('button', { name: '查看fork-a摘要' });
         await expect.poll(() => liveRow.innerText()).toContain('1 秒');
         const readsBeforeClock = calls.length;
@@ -420,11 +426,12 @@ suite('native subagent directory and employee sidebar', () => {
           await liveRow
             .locator('[data-state="ongoing"]')
             .evaluate((node) => getComputedStyle(node).backgroundColor),
-        ).toBe(
-          await ongoing.evaluate(
-            (node) => getComputedStyle(node).backgroundColor,
-          ),
-        );
+        ).not.toBe('rgba(0, 0, 0, 0)');
+        expect(
+          await liveRow
+            .locator('[data-state="ongoing"] g')
+            .evaluate((node) => getComputedStyle(node).display),
+        ).toBe('none');
         await capture(page, `${width}-expanded`);
         expect(
           await page.evaluate(
@@ -441,10 +448,12 @@ suite('native subagent directory and employee sidebar', () => {
         const failure = await badge.evaluate((node) => ({
           color: getComputedStyle(node).color,
           background: getComputedStyle(node).backgroundColor,
+          border: getComputedStyle(node).borderTopColor,
           width: node.getBoundingClientRect().width,
           height: node.getBoundingClientRect().height,
         }));
         expect(failure.color).toBe('rgb(255, 255, 255)');
+        expect(failure.border).toBe('rgb(255, 255, 255)');
         const [red, green, blue] = failure.background
           .match(/\d+/g)!
           .map(Number);
@@ -468,6 +477,15 @@ suite('native subagent directory and employee sidebar', () => {
           .getByRole('button', { name: '刷新子智能体摘要', exact: true })
           .click();
         await expect.poll(() => trigger.innerText()).toBe('2');
+        await expect
+          .poll(() => trigger.getAttribute('aria-expanded'))
+          .toBe('false');
+        expect(
+          await badge.evaluate(
+            (node) => getComputedStyle(node).backgroundColor,
+          ),
+        ).toBe(colors[0]);
+        await trigger.click();
         expect(
           await page
             .getByRole('button', { name: '查看idle-b摘要' })
@@ -484,6 +502,181 @@ suite('native subagent directory and employee sidebar', () => {
       }
     },
   );
+
+  it.each(['refresh', 'resync', 'empty'] as const)(
+    'closes an open portal when %s removes its header anchor and restores it unpinned',
+    async (transition) => {
+      const { page, fixture } = await open();
+      let release = () => {};
+      try {
+        await expect
+          .poll(() =>
+            [...feed.connections].some(
+              (c) =>
+                c.fixture === fixture &&
+                c.sessionId === 'parent-a' &&
+                !c.childId,
+            ),
+          )
+          .toBe(true);
+        const trigger = page.locator('button[aria-haspopup="tree"]');
+        const tree = page.getByRole('tree', { name: '子智能体目录' });
+        await trigger.click();
+        await tree.waitFor();
+        if (transition === 'refresh') {
+          const gate = new Promise<void>((done) => {
+            release = done;
+          });
+          await page.route(
+            '**/api/v1/sessions/parent-a/subagents?**',
+            async (route) => {
+              if (
+                new URL(route.request().url()).searchParams.get('liveOnly') !==
+                'true'
+              )
+                await gate;
+              await route.fallback();
+            },
+          );
+          await page.getByRole('button', { name: '刷新子智能体摘要' }).click();
+        } else {
+          await page.getByRole('button', { name: '查看fork-a摘要' }).focus();
+          if (transition === 'resync')
+            feed.push(fixture, { type: 'clear', reason: 'resync' });
+          else
+            feed.push(fixture, {
+              type: 'directory',
+              summary: { ...summary(), descendants: [] },
+            });
+        }
+        await expect.poll(() => trigger.count()).toBe(0);
+        expect(await tree.count()).toBe(0);
+        await page.keyboard.press('Escape');
+        expect(
+          await page.evaluate(
+            () => document.activeElement?.closest('[hidden]') !== null,
+          ),
+        ).toBe(false);
+        if (transition === 'refresh') release();
+        else feed.push(fixture, { type: 'directory', summary: summary() });
+        await trigger.waitFor();
+        expect(await trigger.getAttribute('aria-expanded')).toBe('false');
+        expect(await tree.count()).toBe(0);
+        await trigger.click();
+        await tree.waitFor();
+        await page.keyboard.press('Escape');
+        expect(
+          await trigger.evaluate((node) => node === document.activeElement),
+        ).toBe(true);
+      } finally {
+        release();
+        await page.close();
+      }
+    },
+  );
+
+  it('preserves selected child detail when an empty catalog removes the header', async () => {
+    const { page, fixture } = await open(
+      summary(),
+      1200,
+      undefined,
+      ownProcess,
+    );
+    try {
+      const detail = await selectChild(page);
+      const trigger = page.locator('button[aria-haspopup="tree"]');
+      await trigger.click();
+      await page.getByRole('tree', { name: '子智能体目录' }).waitFor();
+      feed.push(fixture, {
+        type: 'directory',
+        summary: { ...summary(), descendants: [] },
+      });
+      await expect.poll(() => trigger.count()).toBe(0);
+      expect(
+        await page.getByRole('tree', { name: '子智能体目录' }).count(),
+      ).toBe(0);
+      expect(await detail.isVisible()).toBe(true);
+      expect(await detail.innerText()).toContain('fork-a 中途基线');
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('keeps ordinary, running and error badge borders white in dark mode', async () => {
+    const value = summary();
+    value.descendants = value.descendants.map((entry) => ({
+      ...entry,
+      running: false,
+    }));
+    const { page, fixture, setResponse } = await open(value);
+    try {
+      const lightBase = await page.evaluate(() =>
+        getComputedStyle(document.body).getPropertyValue('--dsw-alias-bg-base'),
+      );
+      await page.evaluate(() => {
+        document.documentElement.setAttribute('data-theme', 'dark');
+        document.body.setAttribute('data-ds-dark-theme', '');
+      });
+      expect(
+        await page.evaluate(() =>
+          getComputedStyle(document.body).getPropertyValue(
+            '--dsw-alias-bg-base',
+          ),
+        ),
+      ).not.toBe(lightBase);
+      const trigger = page.locator('button[aria-haspopup="tree"]');
+      const badge = trigger.locator('span[aria-hidden="true"]');
+      for (const button of [
+        trigger,
+        page.getByRole('button', {
+          name: '工作区文件，33 项新增',
+          exact: true,
+        }),
+        page.getByRole('button', { name: '经验管理，1 项新增', exact: true }),
+      ]) {
+        expect(
+          await button.locator('span[aria-hidden="true"]').evaluate((node) => {
+            const style = getComputedStyle(node);
+            return [style.backgroundColor, style.color, style.borderTopColor];
+          }),
+        ).toEqual([
+          'rgb(228, 228, 231)',
+          'rgb(82, 82, 91)',
+          'rgb(255, 255, 255)',
+        ]);
+      }
+      await expect
+        .poll(() =>
+          [...feed.connections].some(
+            (c) =>
+              c.fixture === fixture && c.sessionId === 'parent-a' && !c.childId,
+          ),
+        )
+        .toBe(true);
+      feed.push(fixture, { type: 'directory', summary: summary() });
+      await expect
+        .poll(() =>
+          badge.evaluate((node) => getComputedStyle(node).backgroundColor),
+        )
+        .toBe('rgb(34, 197, 94)');
+      expect(
+        await badge.evaluate((node) => getComputedStyle(node).borderTopColor),
+      ).toBe('rgb(255, 255, 255)');
+      await capture(page, 'dark-running');
+      setResponse('error');
+      await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await page
+        .getByRole('button', { name: '子智能体读取失败', exact: true })
+        .waitFor();
+      expect(
+        await badge.evaluate((node) => getComputedStyle(node).borderTopColor),
+      ).toBe('rgb(255, 255, 255)');
+      expect(await badge.innerText()).toBe('!');
+      await capture(page, 'dark-error');
+    } finally {
+      await page.close();
+    }
+  });
 
   it.each(['resync', 'unavailable', 'EOF-prepared', 'EOF-live'] as const)(
     '“运行结束别变未知”：handles %s without preserving stale activity or inventing completion',
@@ -876,6 +1069,10 @@ suite('native subagent directory and employee sidebar', () => {
       await trigger.click();
       await expect.poll(() => active().at(-1)?.liveOnly).toBe(false);
       await page.getByRole('button', { name: '刷新子智能体摘要' }).click();
+      await expect
+        .poll(() => trigger.getAttribute('aria-expanded'))
+        .toBe('false');
+      await trigger.click();
       await page.getByRole('button', { name: '查看idle-b摘要' }).waitFor();
       expect(active().at(-1)?.liveOnly).toBe(false);
       expect(
