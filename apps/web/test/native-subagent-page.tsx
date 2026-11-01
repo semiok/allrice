@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { createRoot } from 'react-dom/client';
 import { EmployeeSidebar } from '../app/chatflow/employee-sidebar';
 import { NativeSubagentDirectory } from '../app/chatflow/native-subagent-directory';
+import { WorkbenchEntries } from '../app/chatflow/workbench-modules';
 import { nativeSubagentControlRoot } from '../app/chatflow/native-subagent-controls';
 import { presentationPolicyFor } from '../app/chatflow/dsh-upstream/presentation/presentation-policy';
 import {
@@ -73,12 +74,11 @@ function Page() {
     return stream.deactivate;
   }, [stream, rootEvents, rootRunId]);
   const nativeReadyKey = nativeSubagentReadyKey(runViews[rootRunId]);
-  const [liveOnly, setLiveOnly] = useState(true);
   const observation = useNativeSubagents(
     'workspace',
     headers,
     { [activeId]: `initial/${nativeReadyKey}` },
-    liveOnly,
+    false,
   );
   const presentation = presentationPolicyFor(
     query.get('view') === 'verbose' ? 'verbose' : 'detailed',
@@ -130,7 +130,7 @@ function Page() {
                 workspaceId="workspace"
                 sessionId={activeId}
                 headers={headers}
-                observation={{ ...observation, setLiveOnly }}
+                observation={observation}
                 viewerId={workspace.viewerId}
                 canControl={controls && ownerId === workspace.viewerId}
                 controlRoot={
@@ -139,6 +139,14 @@ function Page() {
                     : undefined
                 }
                 presentation={presentation}
+              />
+              <WorkbenchEntries
+                counts={{ files: 33, experience: 1, workflow: 0 }}
+                experience
+                workflow={false}
+                open={false}
+                onOpen={() => {}}
+                onToggle={() => {}}
               />
             </div>
           </div>

@@ -1281,7 +1281,7 @@ suite(
       }
     });
 
-    it('keeps keyboard focus from a stable hot native summary through a delayed full read and Enter detail', async () => {
+    it('waits for the active full read before showing the native header and preserves keyboard detail focus', async () => {
       const f = await fixture({
         nativeParents: 3,
         nativeDelayFull: true,
@@ -1292,6 +1292,9 @@ suite(
           name: '1 个子智能体 · 1 个运行中',
           exact: true,
         });
+        expect(await trigger.count()).toBe(0);
+        await expect.poll(f.native.fullRequests).toBe(1);
+        f.native.releaseFull();
         await trigger.waitFor();
         await expect
           .poll(
@@ -1307,7 +1310,7 @@ suite(
           )
           .toContain('1 个子智能体运行中');
         expect(await trigger.getAttribute('aria-expanded')).toBe('false');
-        expect(f.native.fullRequests()).toBe(0);
+        expect(f.native.fullRequests()).toBe(1);
         await trigger.focus();
         await f.page.keyboard.press('ArrowDown');
         await expect.poll(f.native.fullRequests).toBe(1);
@@ -1315,8 +1318,6 @@ suite(
           name: '查看Child 0摘要',
           exact: true,
         });
-        expect(await first.count()).toBe(0);
-        f.native.releaseFull();
         await first.waitFor();
         await expect
           .poll(() => first.evaluate((node) => node === document.activeElement))

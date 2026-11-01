@@ -33,6 +33,7 @@ export function WorkbenchIcon({
     | 'restore'
     | 'start'
     | 'schedule'
+    | 'subagent'
     | 'chevron-right';
   size?: number;
 }) {
@@ -62,7 +63,14 @@ export function WorkbenchIcon({
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      {kind === 'experience' ? (
+      {kind === 'subagent' ? (
+        <>
+          <rect x="9.5" y="2" width="5" height="5" rx="1" />
+          <path d="M12 7v5M5 16v-4h14v4" />
+          <rect x="2" y="16" width="6" height="6" rx="1.5" />
+          <rect x="16" y="16" width="6" height="6" rx="1.5" />
+        </>
+      ) : kind === 'experience' ? (
         <>
           <path d="M12 5a3 3 0 0 0-5.8-1 4 4 0 0 0-3 6.5A4 4 0 0 0 5 18a3.5 3.5 0 0 0 7 1V5Zm0 0a3 3 0 0 1 5.8-1 4 4 0 0 1 3 6.5A4 4 0 0 1 19 18a3.5 3.5 0 0 1-7 1" />
           <path d="M8 8a3 3 0 0 1-3-2m11 2a3 3 0 0 0 3-2M7 13a3 3 0 0 0-3 1m13-1a3 3 0 0 1 3 1M8 17a3 3 0 0 0 1-3m7 3a3 3 0 0 1-1-3" />
@@ -119,7 +127,10 @@ export function WorkbenchEntries(props: {
         >
           <WorkbenchIcon kind={kind} />
           {props.counts[kind] > 0 && (
-            <span className={css.badge} aria-hidden="true">
+            <span
+              className={`${css.badge} ${kind === 'files' ? css.neutralBadge : ''}`}
+              aria-hidden="true"
+            >
               {props.counts[kind] > 99 ? '99+' : props.counts[kind]}
             </span>
           )}

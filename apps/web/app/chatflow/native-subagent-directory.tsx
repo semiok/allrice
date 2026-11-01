@@ -13,6 +13,8 @@ import {
   type nativeSubagentControlRoot,
 } from './native-subagent-controls';
 import type { ChatPresentationPolicy } from './dsh-upstream/presentation/presentation-policy';
+import { WorkbenchIcon } from './workbench-modules';
+import actions from './workbench-modules.module.css';
 import css from './native-subagent-directory.module.css';
 
 type Entry = NativeSubagentSummary['descendants'][number];
@@ -32,15 +34,19 @@ const activity = (child: Child) =>
       : child.timing.lastTurnCompleted
         ? '上次回合已完成'
         : '未运行';
-function metrics(child: Child) {
+function elapsed(child: Child, now = child.timing.active?.through) {
   const { active, settledMs } = child.timing;
   const seconds = Math.floor(
-    (settledMs + (active ? Math.max(0, active.through - active.since) : 0)) /
+    (settledMs +
+      (active ? Math.max(0, (now ?? active.through) - active.since) : 0)) /
       1000,
   );
+  return `${seconds} 秒`;
+}
+function metrics(child: Child) {
   return `${Object.values(child.usage)
     .reduce((a, b) => a + b, 0)
-    .toLocaleString()} tokens · ${seconds} 秒`;
+    .toLocaleString()} tokens · ${elapsed(child)}`;
 }
 
 export function NativeSubagentDirectory({
@@ -56,9 +62,7 @@ export function NativeSubagentDirectory({
   workspaceId: string;
   sessionId: string;
   headers: Record<string, string>;
-  observation: ReturnType<typeof useNativeSubagents> & {
-    setLiveOnly: (liveOnly: boolean) => void;
-  };
+  observation: ReturnType<typeof useNativeSubagents>;
   presentation: ChatPresentationPolicy;
   controlRoot?: ReturnType<typeof nativeSubagentControlRoot>;
   canControl?: boolean;
@@ -73,12 +77,10 @@ export function NativeSubagentDirectory({
   const [open, setOpen] = useState(false),
     [pinned, setPinned] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
-  const { reads, refresh, revision, setLiveOnly } = observation;
-  useEffect(() => () => setLiveOnly(true), [setLiveOnly]);
+  const { reads, refresh, revision } = observation;
   const showCatalog = (nextOpen: boolean, nextSelected = selected) => {
     setOpen(nextOpen);
     setSelected(nextSelected);
-    setLiveOnly(!nextOpen && !nextSelected);
   };
   const read = reads[sessionId];
   const summary = read && read !== 'error' ? read : null;
@@ -94,7 +96,6 @@ export function NativeSubagentDirectory({
     follow.view && typeof follow.view === 'object' ? follow.view : null;
   const snapshot = hot && 'rows' in hot ? hot : null;
   const detailSummary = hot && 'descendants' in hot ? hot : summary;
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const catalog = useRef<HTMLDivElement>(null),
     trigger = useRef<HTMLButtonElement>(null);
   const pendingFocus = useRef(false);
@@ -120,46 +121,42 @@ export function NativeSubagentDirectory({
   const direct =
     summary?.descendants.filter((child) => child.parentId === summary.rootId) ??
     [];
+  const [now, setNow] = useState(Date.now);
+  const ticking =
+    open &&
+    direct.some(
+      (entry) =>
+        entry.kind === 'child' && entry.running === true && entry.timing.active,
+    );
+  useEffect(() => {
+    if (!ticking) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [ticking]);
   const child = detailSummary?.descendants.find(
     (entry) => entry.id === selected && entry.kind === 'child',
   ) as Child | undefined;
-  const toggle = (id: string) =>
-    setExpanded((value) => {
-      const next = new Set(value);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  const rows = (parentId: string) =>
+  const rows = () =>
     summary?.descendants
-      .filter((entry) => entry.parentId === parentId)
+      .filter((entry) => entry.parentId === summary.rootId)
       .map((entry) => {
-        const branch = summary.descendants.some(
-          (other) => other.parentId === entry.id,
-        );
         const label =
           entry.kind === 'child' ? (entry.label ?? entry.id) : entry.id;
+        const status =
+          entry.kind === 'diagnostic'
+            ? diagnostic[entry.reason]
+            : entry.running === null && entry.timing.lastTurnCompleted
+              ? '历史记录 · 上次回合已完成'
+              : activity(entry);
         return (
-          <li
-            role="treeitem"
-            key={entry.id}
-            aria-expanded={branch ? expanded.has(entry.id) : undefined}
-          >
+          <li role="treeitem" key={entry.id}>
             <div className={css.row}>
-              {branch && (
-                <Button
-                  size="sm"
-                  aria-label={`${expanded.has(entry.id) ? '收起' : '展开'}${label}`}
-                  onClick={() => toggle(entry.id)}
-                >
-                  {expanded.has(entry.id) ? '▾' : '▸'}
-                </Button>
-              )}
               <Button
                 className={css.entry}
                 size="sm"
                 data-child={entry.id}
-                data-parent={parentId}
+                data-parent={summary.rootId}
                 aria-label={`查看${label}摘要`}
                 disabled={entry.kind === 'diagnostic'}
                 onClick={() => {
@@ -168,6 +165,7 @@ export function NativeSubagentDirectory({
               >
                 {entry.kind === 'child' && entry.running !== null ? (
                   <StateDot
+                    size={10}
                     state={
                       entry.running
                         ? 'ongoing'
@@ -177,58 +175,37 @@ export function NativeSubagentDirectory({
                     }
                   />
                 ) : (
-                  <span aria-label="活动状态未知">?</span>
+                  <span
+                    className={css.unobserved}
+                    aria-label="活动状态未观测"
+                  />
                 )}
                 <span className={css.label}>
                   <strong>{label}</strong>
-                  <small>
-                    {entry.kind === 'child'
-                      ? [
-                          entry.title,
-                          entry.mode === 'one-shot' ? '一次性' : '可继续',
-                          activity(entry),
-                        ]
-                          .filter(Boolean)
-                          .join(' · ')
-                      : diagnostic[entry.reason]}
-                  </small>
                 </span>
-                {entry.kind === 'child' && <small>{metrics(entry)} →</small>}
+                <small>
+                  {status}
+                  {entry.kind === 'child' &&
+                    ` · ${elapsed(entry, entry.running === true ? now : undefined)}`}
+                </small>
               </Button>
             </div>
-            {branch && expanded.has(entry.id) && (
-              <ul role="group">{rows(entry.id)}</ul>
-            )}
           </li>
         );
       });
   const running = direct.filter(
     (entry) => entry.kind === 'child' && entry.running === true,
   ).length;
-  const unknown = direct.some(
-    (entry) => entry.kind === 'diagnostic' || entry.running === null,
-  );
-  const runningLabel = unknown
-    ? running
-      ? `至少 ${running} 个运行中 · 部分状态未知`
-      : '运行状态未知'
-    : `${running} 个运行中`;
   const dismissDetail = () => {
     clearTimeout(timer.current);
     showCatalog(open, null);
     trigger.current?.focus();
   };
-  if (
-    !selected &&
-    !open &&
-    summary &&
-    !direct.length &&
-    !controls.attempts.length
-  )
-    return null;
+  if (!selected && !open && read !== 'error' && !direct.length) return null;
   return (
     <>
       <div
+        hidden={read !== 'error' && !direct.length}
         onMouseEnter={() => {
           clearTimeout(timer.current);
           timer.current = setTimeout(() => showCatalog(true), 150);
@@ -271,24 +248,6 @@ export function NativeSubagentDirectory({
                 ?.focus(),
             );
           }
-          if (at >= 0 && ['ArrowRight', 'ArrowLeft'].includes(event.key)) {
-            event.preventDefault();
-            const id = buttons[at]!.dataset.child!;
-            if (event.key === 'ArrowRight' && expanded.has(id))
-              buttons[at + 1]?.focus();
-            else if (
-              summary?.descendants.some((entry) => entry.parentId === id) &&
-              (event.key === 'ArrowRight') !== expanded.has(id)
-            )
-              toggle(id);
-            else if (event.key === 'ArrowLeft')
-              buttons
-                .find(
-                  (button) =>
-                    button.dataset.child === buttons[at]!.dataset.parent,
-                )
-                ?.focus();
-          }
         }}
       >
         <Menu
@@ -302,32 +261,52 @@ export function NativeSubagentDirectory({
             <Button
               ref={trigger}
               size="sm"
+              className={`${actions.iconButton} ${css.trigger}`}
               aria-expanded={open}
               aria-haspopup="tree"
+              aria-label={
+                read === 'error'
+                  ? '子智能体读取失败'
+                  : `${direct.length} 个子智能体${running ? ` · ${running} 个运行中` : ''}`
+              }
               onClick={() => {
                 clearTimeout(timer.current);
                 setPinned(!pinned);
                 showCatalog(!pinned);
               }}
             >
-              {read === 'error'
-                ? '子智能体读取失败'
-                : summary
-                  ? `${direct.length} 个子智能体 · ${runningLabel}`
-                  : '子智能体状态未知'}
+              <WorkbenchIcon kind="subagent" />
+              {read !== 'error' && running > 0 && (
+                <StateDot state="ongoing" size={10} className={css.ongoing} />
+              )}
+              <span
+                className={`${actions.badge} ${read === 'error' ? css.errorBadge : actions.neutralBadge}`}
+                aria-hidden="true"
+              >
+                {read === 'error' ? '!' : direct.length}
+              </span>
             </Button>
           }
         >
           <div ref={catalog}>
+            {summary && (
+              <p>
+                {direct.length} 个子智能体 · {running} 个运行中
+              </p>
+            )}
             {read === undefined ? (
               <p role="status">正在读取子智能体摘要…</p>
             ) : read === 'error' ? (
-              <p role="alert">暂时读不到子智能体目录。</p>
+              <p role="alert">
+                {observation.disconnected?.[sessionId]
+                  ? '实时观察已断开，重试。'
+                  : '暂时读不到子智能体目录。'}
+              </p>
             ) : summary && !direct.length ? (
               <p>暂无子智能体</p>
             ) : (
               <ul role="tree" aria-label="子智能体目录">
-                {summary && rows(summary.rootId)}
+                {summary && rows()}
               </ul>
             )}
             {[
