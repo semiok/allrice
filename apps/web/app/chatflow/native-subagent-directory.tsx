@@ -291,7 +291,8 @@ export function NativeSubagentDirectory({
           <div ref={catalog}>
             {summary && (
               <p>
-                {direct.length} 个子智能体 · {running} 个运行中
+                {direct.length} 个子智能体
+                {running > 0 && ` · ${running} 个运行中`}
               </p>
             )}
             {read === undefined ? (

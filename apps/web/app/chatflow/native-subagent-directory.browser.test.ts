@@ -1027,7 +1027,9 @@ suite('native subagent directory and employee sidebar', () => {
       const before = calls.length;
       await page.evaluate(() => window.dispatchEvent(new Event('focus')));
       await expect.poll(() => calls.length).toBeGreaterThan(before);
-      expect(calls.filter((call) => !call.liveOnly)).toHaveLength(3);
+      await expect
+        .poll(() => calls.filter((call) => !call.liveOnly).length)
+        .toBe(3);
     } finally {
       await page.close();
     }

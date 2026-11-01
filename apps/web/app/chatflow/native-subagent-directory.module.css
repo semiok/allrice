@@ -49,7 +49,7 @@
 .trigger.trigger {
   color: #2563eb;
 }
-.trigger.trigger[aria-expanded='true'] {
+.trigger.trigger[aria-expanded='true']:not(:disabled) {
   background: #eef2ff;
 }
 .ongoing.ongoing {

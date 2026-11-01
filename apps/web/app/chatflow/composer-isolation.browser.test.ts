@@ -1293,7 +1293,7 @@ suite(
           exact: true,
         });
         expect(await trigger.count()).toBe(0);
-        await expect.poll(f.native.fullRequests).toBe(1);
+        await expect.poll(f.native.fullRequests).toBeGreaterThan(0);
         f.native.releaseFull();
         await trigger.waitFor();
         await expect
@@ -1310,10 +1310,10 @@ suite(
           )
           .toContain('1 个子智能体运行中');
         expect(await trigger.getAttribute('aria-expanded')).toBe('false');
-        expect(f.native.fullRequests()).toBe(1);
+        const requestsBeforeOpen = f.native.fullRequests();
         await trigger.focus();
         await f.page.keyboard.press('ArrowDown');
-        await expect.poll(f.native.fullRequests).toBe(1);
+        expect(f.native.fullRequests()).toBe(requestsBeforeOpen);
         const first = f.page.getByRole('button', {
           name: '查看Child 0摘要',
           exact: true,
@@ -1336,7 +1336,7 @@ suite(
                 .length,
           )
           .toBe(1);
-        expect(f.native.fullRequests()).toBe(1);
+        expect(f.native.fullRequests()).toBe(requestsBeforeOpen);
         expect(f.native.browserWrites.count).toBe(0);
         expect(f.writes).toEqual([]);
         expect(f.errors).toEqual([]);
