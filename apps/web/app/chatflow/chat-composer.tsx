@@ -168,6 +168,7 @@ export function ChatComposerInput({
       ) : null}
       <textarea
         aria-label={`给 ${employeeName} 的消息`}
+        autoFocus={readOnly}
         className={styles.composerInput}
         disabled={busy && !readOnly}
         readOnly={readOnly}

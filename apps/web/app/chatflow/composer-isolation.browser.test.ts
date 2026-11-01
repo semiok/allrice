@@ -870,15 +870,19 @@ suite(
         showTiming() {
           showTiming = true;
         },
-        finishRun(sessionId = A) {
+        finishRun(
+          sessionId = A,
+          outcome: 'canceled' | 'succeeded' = 'canceled',
+        ) {
           for (const item of messages[sessionId]!)
             if (item.runId === runId) {
-              item.status = 'failed';
-              item.content.text = '';
+              item.status = outcome === 'succeeded' ? 'completed' : 'failed';
+              item.content.text =
+                outcome === 'succeeded' ? 'Synthetic completed reply' : '';
             }
           for (const response of streams) {
             response.end(
-              `data: ${JSON.stringify({ ...event(), eventId: 'event-2', sequence: options.nativeParents ? 3 : 2, cursor: `${runId}:${options.nativeParents ? 3 : 2}`, type: 'run.canceled', payload: {} })}\n\n`,
+              `data: ${JSON.stringify({ ...event(), eventId: 'event-2', sequence: options.nativeParents ? 3 : 2, cursor: `${runId}:${options.nativeParents ? 3 : 2}`, type: `run.${outcome}`, payload: {} })}\n\n`,
             );
           }
         },
@@ -1758,9 +1762,12 @@ suite(
           expect(
             await input.evaluate((node) => node === document.activeElement),
           ).toBe(true);
-          f.finishRun(newWork ? C : A);
+          f.finishRun(newWork ? C : A, 'succeeded');
           await f.page
             .getByRole('button', { name: '发送', exact: true })
+            .waitFor();
+          await f.page
+            .getByText('Synthetic completed reply', { exact: true })
             .waitFor();
           expect(await input.inputValue()).toBe(second);
           expect(
@@ -1813,6 +1820,39 @@ suite(
             (node) => node === document.activeElement,
           ),
         ).toBe(true);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    });
+
+    it('keeps transcript focus after the user leaves a pending first send', async () => {
+      const f = await fixture({ immediateReply: true });
+      try {
+        await startNewWork(f.page);
+        const text = '发送后我要选择正文';
+        await f.send(text);
+        await f.waitPending(1);
+        const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+        expect(
+          await input.evaluate((node) => node === document.activeElement),
+        ).toBe(true);
+        await f.page
+          .getByRole('button', { name: '新的工作', exact: true })
+          .focus();
+        await f.page.getByText(text, { exact: true }).click();
+        expect(
+          await f.page.evaluate(() => document.activeElement === document.body),
+        ).toBe(true);
+        await f.respond(0);
+        await f.waitPending(2);
+        await f.respond(1);
+        expect(
+          await f.page.evaluate(() => document.activeElement === document.body),
+        ).toBe(true);
+        expect(
+          await input.evaluate((node) => node === document.activeElement),
+        ).toBe(false);
         expect(f.errors).toEqual([]);
       } finally {
         await f.close();
