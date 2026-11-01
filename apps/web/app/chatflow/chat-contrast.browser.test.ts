@@ -414,6 +414,9 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
           const input = messageBox(page);
           const card = input.locator('xpath=..');
           const send = page.getByRole('button', { name: '发送', exact: true });
+          expect(await input.inputValue()).toBe('把本周销售数据整理成周报');
+          expect(await input.isEditable()).toBe(true);
+          expect(await send.isEnabled()).toBe(true);
           await input.click();
           expect.soft((await ring(card)).style).toBe('solid');
           await send.click();
@@ -450,6 +453,7 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
             await input.evaluate((node) => node === document.activeElement),
           ).toBe(true);
           const draft = await input.inputValue();
+          expect(draft).toBe('把本周销售数据整理成周报');
           // The fixture's onDraftChange is a noop. Native input events expose
           // any edit before React could reset the controlled value.
           const edits = await input.evaluateHandle(
