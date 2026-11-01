@@ -407,7 +407,7 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
           await page.close();
         }
 
-        // A draft ready to send: pointer focus on 发送 leaves no card ring.
+        // Pointer Send keeps the message box focused, including its card ring.
         page = await open(width, theme, 'draft');
         try {
           await frame(page, width);
@@ -417,8 +417,10 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
           await input.click();
           expect.soft((await ring(card)).style).toBe('solid');
           await send.click();
-          expect.soft((await ring(card)).style).toBe('none');
-          await input.click();
+          expect(
+            await input.evaluate((node) => node === document.activeElement),
+          ).toBe(true);
+          expect.soft((await ring(card)).style).toBe('solid');
           await page.keyboard.press('Tab');
           await page.keyboard.press('Tab');
           expect(
@@ -432,15 +434,47 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
           await page.close();
         }
 
-        // A busy conversation: the box is disabled and never shows the ring.
+        // Submission locks editing and attachments while the box can keep focus.
         page = await open(width, theme, 'busy');
         try {
           const input = messageBox(page);
           const card = input.locator('xpath=..');
-          expect(await input.isDisabled()).toBe(true);
+          expect(await input.isDisabled()).toBe(false);
+          expect(await input.isEditable()).toBe(false);
+          expect(await input.evaluate((node) => node.readOnly)).toBe(true);
           const at = (await input.boundingBox())!;
           await page.mouse.click(at.x + at.width / 2, at.y + at.height / 2);
+          expect(
+            await input.evaluate((node) => node === document.activeElement),
+          ).toBe(true);
+          const draft = await input.inputValue();
+          // The fixture's onDraftChange is a noop. Native input events expose
+          // any edit before React could reset the controlled value.
+          const edits = await input.evaluateHandle((node) => {
+            const values: string[] = [];
+            node.addEventListener('input', () => values.push(node.value));
+            return values;
+          });
+          await page.keyboard.type('locked draft');
+          await page.keyboard.press('Backspace');
+          expect(await edits.jsonValue()).toEqual([]);
+          expect(await input.inputValue()).toBe(draft);
+          expect(
+            await input.evaluate((node) => node === document.activeElement),
+          ).toBe(true);
+          expect.soft((await ring(card)).style).toBe('solid');
+          expect(
+            await page
+              .getByRole('button', { name: '发送', exact: true })
+              .isDisabled(),
+          ).toBe(true);
+          expect(
+            await page.getByRole('button', { name: '添加文件' }).isDisabled(),
+          ).toBe(true);
           await page.keyboard.press('Tab');
+          expect(
+            await input.evaluate((node) => node === document.activeElement),
+          ).toBe(false);
           expect.soft((await ring(card)).style).toBe('none');
           await dragFiles(page);
           await readable(page.getByText('当前无法添加图片'));
