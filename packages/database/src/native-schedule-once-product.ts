@@ -642,15 +642,20 @@ export async function initializeNativeOncePartition(
  */
 async function readOnceTaskIntent(
   tx: Tx,
-  input: EmployeeChatCall,
+  input: EmployeeChatCall & {
+    delayMinutes: number;
+    conversationMode?: 'reuse' | 'new_each_run';
+  },
   current: Awaited<ReturnType<typeof assertEmployeeChatExecution>>,
 ) {
   const { text } = current;
   const clarified = await readScheduleClarification(tx, input, text);
   if (clarified)
     return clarified.intent?.kind === 'once' ? clarified.intent : null;
-  const direct = explicitOnceTaskIntent(text);
-  if (direct || !isOnceTaskConfirmationReply(text)) return direct;
+  if (!isOnceTaskConfirmationReply(text))
+    // Unquoted current-human requests use validated model parameters.
+    // Existing questions and their frequency/consumption stay above.
+    return explicitOnceTaskIntent(text, input);
   const ctx = input.context;
   const [previous] = await tx<
     {

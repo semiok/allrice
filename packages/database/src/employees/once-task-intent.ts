@@ -98,6 +98,7 @@ function positiveInteger(literal: string): number | null {
 function maskQuotedArguments(text: string): string | null {
   const pairs: Readonly<Record<string, string>> = {
     '“': '”',
+    '‘': '’',
     '「': '」',
     '『': '』',
     '"': '"',
@@ -111,7 +112,7 @@ function maskQuotedArguments(text: string): string | null {
       stack.pop();
       if (!stack.length) result += '字面内容';
     } else if (pairs[character]) stack.push(pairs[character]!);
-    else if ('”」』'.includes(character)) return null;
+    else if ('”’」』'.includes(character)) return null;
     else if (!stack.length) result += character;
   }
   return stack.length ? null : result;
@@ -145,12 +146,10 @@ function taskClause(clause: string): boolean {
   );
 }
 
-/** Recognize one explicit relative-time request without requiring time-first
- * wording. Only a server-loaded human message may be passed here. Its
- * provenance, tenant/frozen/live authority and exact tool delay are checked by
- * the caller. Unsupported or uncertain requests need clarification, not a guess.
+/** Existing structural/source exclusions shared with the direct tool path.
+ * Quoted arguments stay data; an entire quotation never becomes an instruction.
  */
-export function explicitOnceTaskIntent(text: string): OnceTaskIntent | null {
+function onceRequestProse(text: string): string | null {
   if (
     !text.trim() ||
     text.length > 32_000 ||
@@ -162,30 +161,52 @@ export function explicitOnceTaskIntent(text: string): OnceTaskIntent | null {
     /(?:^|\n)(?:[ \t]*>| {4}| {0,3}\t)|```|~~~/u.test(text)
   )
     return null;
-  const selection = scheduleConversationIntent(text);
-  const prose = maskQuotedArguments(selection.request);
+  return maskQuotedArguments(scheduleConversationIntent(text).request);
+}
+
+/** Recognize exact legacy parameters, or retain a model-structured candidate.
+ * An unquoted candidate needs no positive sentence grammar. Existing denials
+ * remain. Unknown quoted requests retain the strict legacy path; existing
+ * questions never enter this candidate path.
+ */
+export function explicitOnceTaskIntent(
+  text: string,
+  candidate?: Pick<OnceTaskIntent, 'delayMinutes' | 'conversationMode'>,
+): OnceTaskIntent | null {
+  if (candidate) {
+    const recognized = explicitOnceTaskIntent(text);
+    if (recognized) return recognized;
+  }
+  const prose = onceRequestProse(text);
   if (prose === null) return null;
+  const selection = scheduleConversationIntent(text);
   const reminder = prose.trim().match(reminderRequest);
   const match = reminder
     ? [reminder[0], reminder[2], reminder[3], `${reminder[1]}${reminder[4]}`]
     : prose.trim().match(relativeRequest);
-  if (!match) return null;
-  const number = positiveInteger(match[1]!);
+  if (!match && !candidate) return null;
+  const number = match ? positiveInteger(match[1]!) : null;
   const minutes =
-    number === null ? null : number * (minuteUnits[match[2]!] ?? 0);
-  if (!minutes || minutes > maximumDelayMinutes) return null;
-  const clauses = match[3]!
+    number === null ? null : number * (minuteUnits[match![2]!] ?? 0);
+  if ((!minutes || minutes > maximumDelayMinutes) && !candidate) return null;
+  const clauses = (candidate ? prose : match![3]!)
     .split(/[。；;！!，,\n.]/u)
     .map((clause) => clause.trim())
     .filter(Boolean);
-  if (!clauses.length || onceQualifier(clauses[0]!)) return null;
+  if (!clauses.length || (!candidate && onceQualifier(clauses[0]!)))
+    return null;
   let work = false;
   for (const clause of clauses) {
     if (onceQualifier(clause)) continue;
+    // Preserve the existing denials, conditions and recurring exclusions.
     if (
       /[?？]|如果|假如|若|除非|倘|视情况|看情况|有空|(?:不要|不用|不必|无需|不能|不允许|暂不|别|勿)|每|定期|循环|周期|反复|重复|长期|永久|默认|今后|以后|大约|大概|左右|差不多|稍后|待会|等会|过会|尽快|至少|至多|最迟|不超过|或者|是否|怎么|如何|能否|可否|(?:吗|么|呢|行不行|好不好|可不可以)$|只是示例|仅作示例|仅供参考|刚才|上次|之前|上述|上面|同上|照旧/u.test(
         clause,
-      ) ||
+      )
+    )
+      return null;
+    if (candidate) continue;
+    if (
       new RegExp(
         `${numberPattern}\\s*(?:秒|分(?:钟)?|小时|天|周|个月|月|年)(?:之后|以后|后|内|前)|明天|后天|(?:[0-9零一二两三四五六七八九十]+\\s*[点时](?:整|钟|回复|提醒|执行|发送|$)|[0-9]{1,2}[:：][0-9]{2})`,
         'u',
@@ -195,9 +216,21 @@ export function explicitOnceTaskIntent(text: string): OnceTaskIntent | null {
       return null;
     work = true;
   }
+  if (candidate) {
+    // A quotation is data only inside an already supported outer request.
+    // Unknown quoted wording cannot obtain authority from a model candidate.
+    if (prose !== selection.request) return null;
+    const conversationMode =
+      selection.conversationMode ?? candidate.conversationMode;
+    return {
+      delayMinutes: candidate.delayMinutes,
+      authoritativeRequest: text,
+      ...(conversationMode === undefined ? {} : { conversationMode }),
+    };
+  }
   return work
     ? {
-        delayMinutes: minutes,
+        delayMinutes: minutes!,
         authoritativeRequest: text,
         ...(selection.conversationMode === undefined
           ? {}

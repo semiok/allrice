@@ -10,7 +10,10 @@ import {
   sendChatMessage,
 } from '../../../../packages/database/src/workspace/service.ts';
 import { initializeNativeRecurringPartition } from '../../../../packages/database/src/native-schedule-recurring-product.ts';
-import { initializeNativeOncePartition } from '../../../../packages/database/src/native-schedule-once-product.ts';
+import {
+  cancelOnceTask,
+  initializeNativeOncePartition,
+} from '../../../../packages/database/src/native-schedule-once-product.ts';
 import {
   claimNextJob,
   startClaimedJob,
@@ -263,6 +266,7 @@ suite(
         options:
           | string
           | {
+              name?: string;
               prompt?: string;
               callId?: string;
               conversationMode?: 'reuse' | 'new_each_run';
@@ -271,7 +275,7 @@ suite(
         const opts =
           typeof options === 'string' ? { prompt: options } : options;
         const args = {
-          name: '提醒',
+          name: opts.name ?? '提醒',
           prompt: opts.prompt ?? '到点提醒我原话里的事',
           ...(typeof schedule === 'number'
             ? { delayMinutes: schedule }
@@ -388,9 +392,15 @@ suite(
         join allrice_native_recurring_versions v on v.automation_id=a.id and v.revision=1
         where a.session_id=${session.id} and a.clock_owner='native_recurring' order by a.created_at`;
       const onceTasks = () => f.db<
-        { id: string; prompt: string; conversation_mode: string }[]
+        {
+          id: string;
+          name: string;
+          prompt: string;
+          conversation_mode: string;
+          run_at: string;
+        }[]
       >`
-        select id,prompt,conversation_mode from allrice_automations
+        select id,name,prompt,conversation_mode,schedule->>'runAt' run_at from allrice_automations
         where session_id=${session.id} and clock_owner='native_once' order by created_at`;
       const finish = () =>
         failJob({
@@ -425,6 +435,134 @@ suite(
       };
     const yes = (card: Card | undefined) =>
       card!.questions[0]!.options[0]!.label;
+
+    it.each([
+      {
+        text: '1 分钟后提醒我喝水，提醒名称是 MET223-on-1。请直接创建一次性提醒。',
+        name: 'MET223-on-1',
+        delayMinutes: 1,
+      },
+      {
+        text: '帮忙设一下：3 分钟后叫我去吃饭，叫做午饭提醒。',
+        name: '午饭提醒',
+        delayMinutes: 3,
+      },
+      {
+        text: '5 分钟以后提醒我喝水',
+        name: '喝水提醒',
+        delayMinutes: 5,
+      },
+    ])(
+      'creates one real once task directly from the complete wording: $text',
+      async ({ text, name, delayMinutes }) => {
+        const c = await chat(text);
+        try {
+          const call = c.call(delayMinutes, {
+            name,
+            prompt: '模型提取的提醒内容，不能替换用户原话',
+          });
+          const before = Date.now();
+          const created = read(await createAutomation(call));
+          const after = Date.now();
+          expect(created).toMatchObject({
+            automationId: expect.any(String),
+            prompt: text,
+          });
+          expect(created).not.toHaveProperty('askUserQuestion');
+          const rows = await c.onceTasks();
+          expect(rows).toEqual([
+            {
+              id: created.automationId,
+              name,
+              prompt: text,
+              conversation_mode: 'reuse',
+              run_at: expect.any(String),
+            },
+          ]);
+          expect(Date.parse(rows[0]!.run_at)).toBeGreaterThanOrEqual(
+            before + delayMinutes * 60_000,
+          );
+          expect(Date.parse(rows[0]!.run_at)).toBeLessThanOrEqual(
+            after + delayMinutes * 60_000,
+          );
+          expect(
+            await f.db`select control_id from allrice_native_once_controls
+              where automation_id=${created.automationId!}`,
+          ).toHaveLength(1);
+          expect(read(await createAutomation(call)).automationId).toBe(
+            created.automationId,
+          );
+          expect(await c.onceTasks()).toHaveLength(1);
+          expect(await c.tasks()).toHaveLength(0);
+          expect(
+            (
+              await cancelOnceTask(
+                f.context,
+                c.sessionId,
+                created.automationId!,
+              )
+            ).status,
+          ).toBe('canceled');
+          expect(read(await createAutomation(call))).toMatchObject({
+            automationId: created.automationId,
+            status: 'canceled',
+          });
+          expect(await c.onceTasks()).toHaveLength(1);
+        } finally {
+          await c.finish();
+        }
+      },
+    );
+
+    it.each([
+      '1 分钟后提醒我喝水，提醒名称是 MET223-on-1。不要创建一次性提醒。',
+      '如果我确认，1 分钟后提醒我喝水，提醒名称是 MET223-on-1。',
+      '“1 分钟后提醒我喝水，提醒名称是 MET223-on-1。”',
+      '“1 分钟后提醒我喝水”。',
+      '请解释“1 分钟后提醒我喝水”。',
+      '1 分钟后提醒我喝水，提醒名称是 MET223-on-1。只是示例，不要实际创建。',
+    ])(
+      'retains an existing denial despite complete model arguments: %s',
+      async (text) => {
+        const c = await chat(text);
+        try {
+          await expect(createAutomation(c.call(1))).rejects.toMatchObject({
+            code: 'AUTOMATION_REQUEST_UNCLEAR',
+          });
+          expect(await c.onceTasks()).toHaveLength(0);
+        } finally {
+          await c.finish();
+        }
+      },
+    );
+
+    it.each(['取消', '不创建', '否', '先不创建', '写周报'])(
+      'never promotes an arbitrary adopted choice into once authority: %s',
+      async (label) => {
+        const c = await chat('稍后提醒我喝水，提醒名称是补水提醒。');
+        try {
+          await c.answer(
+            {
+              questions: [
+                {
+                  id: 'missing-detail',
+                  question: '要创建这个提醒吗？',
+                  options: [{ label: '创建' }, { label }],
+                  multi_select: false,
+                },
+              ],
+            },
+            label,
+          );
+          await expect(createAutomation(c.call(3))).rejects.toMatchObject({
+            code: 'AUTOMATION_REQUEST_UNCLEAR',
+          });
+          expect(await c.onceTasks()).toHaveLength(0);
+        } finally {
+          await c.finish();
+        }
+      },
+    );
 
     it.each(corpus)(
       'creates the reminder for “$text” ($source), directly or after one confirmation',
