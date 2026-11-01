@@ -440,10 +440,15 @@ suite('native subagent directory and employee sidebar', () => {
         expect(await trigger.locator('[data-state="ongoing"]').count()).toBe(0);
         const failure = await badge.evaluate((node) => ({
           color: getComputedStyle(node).color,
+          background: getComputedStyle(node).backgroundColor,
           width: node.getBoundingClientRect().width,
           height: node.getBoundingClientRect().height,
         }));
         expect(failure.color).toBe('rgb(255, 255, 255)');
+        const [red, green, blue] = failure.background
+          .match(/\d+/g)!
+          .map(Number);
+        expect(red! > green! + 40 && red! > blue! + 40).toBe(true);
         expect(failure.width).toBe(failure.height);
         await capture(page, `${width}-error`);
         const cold = {

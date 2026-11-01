@@ -70,7 +70,7 @@ button.trigger.trigger[aria-expanded='true']:not(:disabled) {
 .entry [data-state='done'] {
   color: var(--dsw-alias-state-idle-primary);
 }
-.errorBadge {
+.errorBadge.errorBadge {
   width: 16px;
   padding: 0;
   background: var(--dsw-alias-state-error-primary);
