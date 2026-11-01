@@ -26,7 +26,6 @@ import {
   createTraceableMemory,
   createCheckpointMemoryCandidate,
   listWorkspaceMemories,
-  linkFileToSession,
 } from '../../../../packages/database/src/workspace/service.ts';
 import { mutateCompanyAsset } from '../../../../packages/database/src/company-assets.ts';
 import {
@@ -1696,8 +1695,9 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           id: randomUUID(),
           kind: 'every',
           everySeconds: 60,
-          title: 'Synthetic control',
-          prompt: 'Control only',
+          title: 'AllRice once control',
+          prompt:
+            'Synthetic schedule control only. Never execute business work.',
           scheduledAt,
         },
       };
@@ -1784,6 +1784,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     'R2 ignores template and attachment filename $contamination as human intent',
     async (c) => {
       let seedAnswer = '',
+        memoryRequest = '',
         memoryPhase = false,
         wrote = false;
       const f = await setup(
@@ -1791,12 +1792,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           if (!memoryPhase) return { text: seedAnswer };
           if (!wrote) {
             wrote = true;
-            expect(JSON.stringify(request.messages)).toContain(
-              `TEMPLATE_POISON ${c.contamination}`,
-            );
-            expect(JSON.stringify(request.messages)).toContain(
-              `${c.contamination}.txt`,
-            );
+            memoryRequest = JSON.stringify(request.messages);
             return {
               nativeTool: {
                 name: 'workspace_memory_remember',
@@ -1825,7 +1821,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
             sessionId: f.chat.id,
             callId: randomUUID(),
             kind: 'document',
-            fileName: 'template-source.txt',
+            fileName: `${c.contamination}.txt`,
             format: 'text',
             mediaType: 'text/plain',
             bytes: Buffer.from('Synthetic template bytes'),
@@ -1883,13 +1879,6 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         false,
         f.db,
       );
-      await linkFileToSession({
-        context: f.context,
-        workspaceId: f.identity.workspace,
-        sessionId: f.chat.id,
-        objectId: source.object.id,
-        fileName: `${c.contamination}.txt`,
-      });
       memoryPhase = true;
       const broker = vi.spyOn(ToolBroker, 'executeRiceTool');
       const sent = await sendChatMessage(
@@ -1914,13 +1903,8 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       const task = await claim(f, sent.run!.id);
       try {
         await task.run();
-        const [stored] =
-          await f.db`select lifecycle_state,trust_level,source_id from allrice_memories where workspace_id=${f.identity.workspace}`;
-        expect(stored).toMatchObject({
-          lifecycle_state: c.state,
-          trust_level: c.state === 'durable' ? 'user_confirmed' : 'derived',
-          source_id: sent.userMessage.id,
-        });
+        expect(memoryRequest).toContain(`TEMPLATE_POISON ${c.contamination}`);
+        expect(memoryRequest).toContain(`${c.contamination}.txt`);
         const callIndex = broker.mock.calls.findIndex(
           ([input]) => input.call.name === 'workspace.memory.remember',
         );
@@ -1928,6 +1912,13 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         expect(broker.mock.calls[callIndex]![0].userRequest).toBe(c.prompt);
         const receipt = await broker.mock.results[callIndex]!.value;
         expect(JSON.parse(receipt.modelContent).lifecycleState).toBe(c.state);
+        const [stored] =
+          await f.db`select lifecycle_state,trust_level,source_id from allrice_memories where workspace_id=${f.identity.workspace}`;
+        expect(stored).toMatchObject({
+          lifecycle_state: c.state,
+          trust_level: c.state === 'durable' ? 'user_confirmed' : 'derived',
+          source_id: sent.userMessage.id,
+        });
       } finally {
         await task.isolation.cleanup();
       }
