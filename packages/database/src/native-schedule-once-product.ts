@@ -15,6 +15,9 @@ import {
   confirmedOnceTaskIntent,
   isOnceTaskConfirmationReply,
 } from './employees/once-task-intent.ts';
+import { explicitRecurringTaskIntent } from './employees/recurring-task-intent.ts';
+import { scheduleConversationIntent } from './employees/schedule-conversation-intent.ts';
+import { declinedScheduleAnswer } from './employees/recurring-task-confirmation.ts';
 import { randomUUID } from 'node:crypto';
 import { realpath, stat, access } from 'node:fs/promises';
 import { constants } from 'node:fs';
@@ -642,15 +645,58 @@ export async function initializeNativeOncePartition(
  */
 async function readOnceTaskIntent(
   tx: Tx,
-  input: EmployeeChatCall,
+  input: EmployeeChatCall & {
+    delayMinutes: number;
+    conversationMode?: 'reuse' | 'new_each_run';
+  },
   current: Awaited<ReturnType<typeof assertEmployeeChatExecution>>,
 ) {
   const { text } = current;
   const clarified = await readScheduleClarification(tx, input, text);
-  if (clarified)
-    return clarified.intent?.kind === 'once' ? clarified.intent : null;
-  const direct = explicitOnceTaskIntent(text);
-  if (direct || !isOnceTaskConfirmationReply(text)) return direct;
+  if (clarified) {
+    if (clarified.intent?.kind === 'once') return clarified.intent;
+    if (clarified.intent?.kind === 'recurring' || !clarified.answerAvailable)
+      return null;
+    const { item, label } = clarified.answers[0]!;
+    if (
+      declinedScheduleAnswer(label) ||
+      item.id.startsWith('schedule-confirm:') ||
+      explicitRecurringTaskIntent(clarified.request) ||
+      explicitRecurringTaskIntent(label)
+    )
+      return null;
+    const originalIntent = explicitOnceTaskIntent(clarified.request, {
+      ...input,
+      answered: true,
+    });
+    if (!originalIntent || !explicitOnceTaskIntent(label, input)) return null;
+    const original = scheduleConversationIntent(clarified.request);
+    const selected = scheduleConversationIntent(label);
+    if (
+      original.conversationMode &&
+      selected.conversationMode &&
+      original.conversationMode !== selected.conversationMode
+    )
+      return null;
+    const conversationMode =
+      selected.conversationMode ??
+      original.conversationMode ??
+      input.conversationMode;
+    return {
+      delayMinutes:
+        explicitOnceTaskIntent(label)?.delayMinutes ??
+        originalIntent.delayMinutes,
+      authoritativeRequest: `${clarified.request}\n用户已确认的选择：${label}`,
+      ...(conversationMode === undefined ? {} : { conversationMode }),
+    };
+  }
+  if (!isOnceTaskConfirmationReply(text)) {
+    if (explicitRecurringTaskIntent(text)) return null;
+    // The model already interpreted the current human's words into validated
+    // parameters. Exact legacy parsing may detect a conflict, but failing to
+    // match its grammar never withholds creation or adds a confirmation card.
+    return explicitOnceTaskIntent(text, input);
+  }
   const ctx = input.context;
   const [previous] = await tx<
     {

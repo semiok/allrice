@@ -1,6 +1,10 @@
 import { nativeQuestionAnswerAdopted } from '../native-questions.ts';
 import type { TransactionSql } from 'postgres';
-import { EmployeeExecutionSnapshotSchema } from '@allrice/contracts';
+import {
+  EmployeeExecutionSnapshotSchema,
+  UserQuestionRequestSchema,
+  UserQuestionAnswerSubmissionSchema,
+} from '@allrice/contracts';
 import {
   clarifiedScheduleIntent,
   selectedScheduleAnswers,
@@ -23,6 +27,7 @@ export async function readScheduleClarification(
     request,
     intent: null,
     answers: [],
+    answerAvailable: false,
     confirmedRequests: [] as string[],
   };
   // Parallel calls of one Session read and consume its answers one at a time.
@@ -177,13 +182,27 @@ export async function readScheduleClarification(
       and a.created_at>=${row.answered_at}
       and coalesce(a.native_once_request_id,a.native_recurring_request_id)
         <>all(${kinds.map((kind) => id(kind, input.callId))}::uuid[])`;
+  const consumed = enrolled.some(
+    (task) => !!native || others.has(task.request_id),
+  );
+  const answers = selectedScheduleAnswers(row.question, row.answer);
+  const question = UserQuestionRequestSchema.safeParse(row.question);
+  const answer = UserQuestionAnswerSubmissionSchema.safeParse(row.answer);
   return {
     request,
     // A selected frequency is consumed by another call of this Run.
-    intent: enrolled.some((task) => !!native || others.has(task.request_id))
+    intent: consumed
       ? null
       : clarifiedScheduleIntent(request, row.question, row.answer),
-    answers: selectedScheduleAnswers(row.question, row.answer),
+    answers,
+    // The once consumer can use the model's structured parameters after an
+    // adopted time/object answer without parsing another positive grammar.
+    // Partial/custom/multiple/skipped answers and consumed choices never do.
+    answerAvailable:
+      !consumed &&
+      question.data?.questions.length === 1 &&
+      answer.data?.answers.length === 1 &&
+      answers.length === 1,
     // A card confirmation is consumed by the task it enrolled, whose
     // immutable first version (fixed rules in configuration, monthly in
     // business_content) stores exactly the confirmed request.
