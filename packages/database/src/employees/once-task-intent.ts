@@ -173,6 +173,10 @@ export function explicitOnceTaskIntent(
   text: string,
   candidate?: Pick<OnceTaskIntent, 'delayMinutes' | 'conversationMode'>,
 ): OnceTaskIntent | null {
+  if (candidate) {
+    const recognized = explicitOnceTaskIntent(text);
+    if (recognized) return recognized;
+  }
   const prose = onceRequestProse(text);
   if (prose === null) return null;
   const selection = scheduleConversationIntent(text);
@@ -213,14 +217,13 @@ export function explicitOnceTaskIntent(
     work = true;
   }
   if (candidate) {
-    const recognized = explicitOnceTaskIntent(text);
     // A quotation is data only inside an already supported outer request.
     // Unknown quoted wording cannot obtain authority from a model candidate.
-    if (prose !== selection.request && !recognized) return null;
+    if (prose !== selection.request) return null;
     const conversationMode =
       selection.conversationMode ?? candidate.conversationMode;
     return {
-      delayMinutes: recognized?.delayMinutes ?? candidate.delayMinutes,
+      delayMinutes: candidate.delayMinutes,
       authoritativeRequest: text,
       ...(conversationMode === undefined ? {} : { conversationMode }),
     };

@@ -170,6 +170,14 @@ describe('explicit once task intent in the current human message', () => {
 });
 
 describe('model-structured once candidates keep the existing safety boundary', () => {
+  it.each(['5 分钟以后提醒我喝水', '两分钟以后提醒我喝水。'])(
+    'retains the complete existing recognized result: %s',
+    (text) => {
+      expect(intent(text, { delayMinutes: 99 })).toEqual(intent(text));
+      expect(intent(text)).not.toBeNull();
+    },
+  );
+
   it.each([
     '1 分钟后提醒我喝水，提醒名称是 MET223-on-1。请直接创建一次性提醒。',
     '帮忙设一下：1 分钟后叫我去吃饭，叫做午饭提醒。',

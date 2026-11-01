@@ -447,6 +447,11 @@ suite(
         name: '午饭提醒',
         delayMinutes: 3,
       },
+      {
+        text: '5 分钟以后提醒我喝水',
+        name: '喝水提醒',
+        delayMinutes: 5,
+      },
     ])(
       'creates one real once task directly from the complete wording: $text',
       async ({ text, name, delayMinutes }) => {
