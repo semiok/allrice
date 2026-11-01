@@ -222,7 +222,7 @@ const seat: Record<Exclude<Scene, 'hero'>, ReactNode> = {
     />
   ),
   draft: <ChatComposer {...composer} draft="把本周销售数据整理成周报" />,
-  busy: <ChatComposer {...composer} busy />,
+  busy: <ChatComposer {...composer} busy draft="把本周销售数据整理成周报" />,
   question: (
     <UserQuestionComposer
       busy={false}

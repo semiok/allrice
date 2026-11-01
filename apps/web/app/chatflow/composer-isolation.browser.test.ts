@@ -234,6 +234,7 @@ suite(
         programTurn?: boolean;
         delayHistoryB?: boolean;
         immediateReply?: boolean;
+        emptyA?: boolean;
         longHistory?: boolean;
         settled?: 'failed' | 'canceled';
         width?: number;
@@ -361,7 +362,7 @@ suite(
       });
       let showTiming = false;
       const messages: Record<string, ReturnType<typeof message>[]> = {
-        [A]: [message('history-a', 'Existing A')],
+        [A]: options.emptyA ? [] : [message('history-a', 'Existing A')],
         [B]: [message('history-b', 'Existing B')],
         [C]: [],
       };
@@ -795,7 +796,12 @@ suite(
           await page.getByRole('treeitem', { name: /^Session B/ }).waitFor();
         // Sidebar readiness precedes History: uploading into the temporary
         // empty-state composer can race its replacement by the active composer.
-        await page.getByText('Existing A', { exact: true }).waitFor();
+        if (options.emptyA) {
+          await page
+            .getByRole('heading', { name: 'Session A', exact: true })
+            .waitFor();
+          await page.locator('[data-phase="hero"]').waitFor();
+        } else await page.getByText('Existing A', { exact: true }).waitFor();
       } catch (cause) {
         const diagnostic = {
           errors,
@@ -870,15 +876,26 @@ suite(
         showTiming() {
           showTiming = true;
         },
-        finishRun() {
-          for (const item of messages[A]!)
+        showQuestion() {
+          for (const response of streams)
+            response.write(
+              `data: ${JSON.stringify({ ...event(true), eventId: 'question-2', sequence: 2, cursor: `${runId}:2` })}\n\n`,
+            );
+        },
+        finishRun(
+          sessionId = A,
+          outcome: 'canceled' | 'succeeded' = 'canceled',
+          sequence = options.nativeParents ? 3 : 2,
+        ) {
+          for (const item of messages[sessionId]!)
             if (item.runId === runId) {
-              item.status = 'failed';
-              item.content.text = '';
+              item.status = outcome === 'succeeded' ? 'completed' : 'failed';
+              item.content.text =
+                outcome === 'succeeded' ? 'Synthetic completed reply' : '';
             }
           for (const response of streams) {
             response.end(
-              `data: ${JSON.stringify({ ...event(), eventId: 'event-2', sequence: options.nativeParents ? 3 : 2, cursor: `${runId}:${options.nativeParents ? 3 : 2}`, type: 'run.canceled', payload: {} })}\n\n`,
+              `data: ${JSON.stringify({ ...event(), eventId: 'event-2', sequence, cursor: `${runId}:${sequence}`, type: `run.${outcome}`, payload: {} })}\n\n`,
             );
           }
         },
@@ -1720,6 +1737,188 @@ suite(
       },
       15_000,
     );
+    it.each([
+      { start: 'first message', newWork: true, mouse: true, emptyA: false },
+      {
+        start: 'existing empty session',
+        newWork: false,
+        mouse: true,
+        emptyA: true,
+      },
+      { start: 'continuation', newWork: false, mouse: false, emptyA: false },
+    ])(
+      'keeps continuous typing through a $start, generation and completion',
+      async ({ newWork, mouse, emptyA }) => {
+        const f = await fixture({ immediateReply: true, emptyA });
+        try {
+          if (newWork) await startNewWork(f.page);
+          const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+          const first = '先核对这份资料';
+          const second = '接着整理下一份';
+          await input.fill(first);
+          if (mouse)
+            await f.page
+              .getByRole('button', { name: '发送', exact: true })
+              .click();
+          else await f.page.keyboard.press('Enter');
+          await f.waitPending(1);
+          if (newWork) {
+            expect(f.pending[0]!.path).toBe('/api/v1/sessions');
+            await f.respond(0);
+            await f.waitPending(2);
+          }
+          expect(await input.isEditable()).toBe(false);
+          const firstPost = newWork ? 1 : 0;
+          await f.respond(firstPost);
+          await f.page
+            .getByRole('button', { name: '停止生成', exact: true })
+            .waitFor();
+          expect(await input.isEditable()).toBe(true);
+          // The next keystrokes must go to the retained/restored input. No
+          // locator action is allowed to silently focus it after the send.
+          await f.page.keyboard.insertText(second);
+          await expect.poll(() => input.inputValue()).toBe(second);
+          expect(
+            await input.evaluate((node) => node === document.activeElement),
+          ).toBe(true);
+          f.finishRun(newWork ? C : A, 'succeeded');
+          await f.page
+            .getByRole('button', { name: '发送', exact: true })
+            .waitFor();
+          await f.page
+            .getByText('Synthetic completed reply', { exact: true })
+            .waitFor();
+          expect(await input.inputValue()).toBe(second);
+          expect(
+            await input.evaluate((node) => node === document.activeElement),
+          ).toBe(true);
+          await f.page.keyboard.press('Enter');
+          await f.waitPending(firstPost + 2);
+          expect(
+            f.pending
+              .filter((request) => request.path.endsWith('/messages'))
+              .map((request) => ({
+                path: request.path,
+                text: request.body.text,
+              })),
+          ).toEqual([
+            {
+              path: `/api/v1/sessions/${newWork ? C : A}/messages`,
+              text: first,
+            },
+            {
+              path: `/api/v1/sessions/${newWork ? C : A}/messages`,
+              text: second,
+            },
+          ]);
+          await f.respond(firstPost + 1);
+          expect(f.errors).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      },
+      15_000,
+    );
+
+    it('keeps another control focused when the first send finishes', async () => {
+      const f = await fixture({ immediateReply: true });
+      try {
+        await startNewWork(f.page);
+        await f.send('发送时我先使用其它控件');
+        await f.waitPending(1);
+        const otherControl = f.page.getByRole('button', {
+          name: '新的工作',
+          exact: true,
+        });
+        await otherControl.focus();
+        await f.respond(0);
+        await f.waitPending(2);
+        await f.respond(1);
+        expect(
+          await otherControl.evaluate(
+            (node) => node === document.activeElement,
+          ),
+        ).toBe(true);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    });
+
+    it('keeps transcript focus after the user leaves a pending first send', async () => {
+      const f = await fixture({ immediateReply: true });
+      try {
+        await startNewWork(f.page);
+        const text = '发送后我要选择正文';
+        await f.send(text);
+        await f.waitPending(1);
+        const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+        expect(
+          await input.evaluate((node) => node === document.activeElement),
+        ).toBe(true);
+        await f.page
+          .getByRole('button', { name: '新的工作', exact: true })
+          .focus();
+        await f.page.getByText(text, { exact: true }).click();
+        expect(
+          await f.page.evaluate(() => document.activeElement === document.body),
+        ).toBe(true);
+        await f.respond(0);
+        await f.waitPending(2);
+        await f.respond(1);
+        expect(
+          await f.page.evaluate(() => document.activeElement === document.body),
+        ).toBe(true);
+        expect(
+          await input.evaluate((node) => node === document.activeElement),
+        ).toBe(false);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    });
+
+    it('keeps external focus when a question closes during a pending queued send', async () => {
+      const f = await fixture({ running: true });
+      try {
+        await expect
+          .poll(() => f.reads.some((url) => url.includes(`${runId}/events`)))
+          .toBe(true);
+        await f.send('等本轮结束后再处理');
+        await f.waitPending(1);
+        expect(f.pending[0]!.body.deliveryMode).toBe('follow_up');
+        f.showQuestion();
+        await f.page
+          .getByRole('heading', { name: '确认范围？', exact: true })
+          .waitFor();
+        const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+        expect(await input.count()).toBe(0);
+        const otherControl = f.page.getByRole('button', {
+          name: '新的工作',
+          exact: true,
+        });
+        await otherControl.focus();
+        f.finishRun(A, 'succeeded', 3);
+        await input.waitFor();
+        expect(await input.isEditable()).toBe(false);
+        expect(
+          await otherControl.evaluate(
+            (node) => node === document.activeElement,
+          ),
+        ).toBe(true);
+        await f.page.getByText('Existing A', { exact: true }).click();
+        await f.respond(0);
+        expect(await input.isEditable()).toBe(true);
+        expect(
+          await f.page.evaluate(() => document.activeElement === document.body),
+        ).toBe(true);
+        expect(f.pending).toHaveLength(1);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    });
+
     it('MET-210 sends an ordinary message without retired assistant state or requests', async () => {
       const f = await fixture();
       try {
@@ -2078,6 +2277,11 @@ suite(
               .inputValue(),
           )
           .toBe('B untouched');
+        expect(
+          await f.page
+            .getByRole('textbox', { name: '给 Rice 的消息' })
+            .evaluate((node) => node === document.activeElement),
+        ).toBe(true);
         await f.page.getByText('B.txt', { exact: true }).waitFor();
         expect(f.reads.some((url) => url.includes(`${runId}/events`))).toBe(
           false,
@@ -2101,9 +2305,9 @@ suite(
           .poll(() =>
             f.page
               .getByRole('textbox', { name: '给 Rice 的消息' })
-              .isDisabled(),
+              .isEditable(),
           )
-          .toBe(true);
+          .toBe(false);
         expect(
           await f.page
             .getByRole('textbox', { name: '给 Rice 的消息' })
@@ -2116,9 +2320,9 @@ suite(
           .poll(() =>
             f.page
               .getByRole('textbox', { name: '给 Rice 的消息' })
-              .isDisabled(),
+              .isEditable(),
           )
-          .toBe(false);
+          .toBe(true);
         expect(
           await f.page
             .getByRole('textbox', { name: '给 Rice 的消息' })
@@ -4035,8 +4239,8 @@ suite(
         expect(
           await f.page
             .getByRole('textbox', { name: '给 Rice 的消息' })
-            .isDisabled(),
-        ).toBe(false);
+            .isEditable(),
+        ).toBe(true);
         expect(f.writes).toHaveLength(1);
         expect(f.errors).toEqual([]);
       } finally {
@@ -4057,14 +4261,14 @@ suite(
         expect(
           await f.page
             .getByRole('textbox', { name: '给 Rice 的消息' })
-            .isDisabled(),
-        ).toBe(true);
+            .isEditable(),
+        ).toBe(false);
         await f.respond(1);
         expect(
           await f.page
             .getByRole('textbox', { name: '给 Rice 的消息' })
-            .isDisabled(),
-        ).toBe(false);
+            .isEditable(),
+        ).toBe(true);
         expect(
           await f.page.getByText('first.txt', { exact: true }).count(),
         ).toBe(0);
@@ -4112,8 +4316,8 @@ suite(
         expect(
           await f.page
             .getByRole('textbox', { name: '给 Rice 的消息' })
-            .isDisabled(),
-        ).toBe(true);
+            .isEditable(),
+        ).toBe(false);
         await f.respond(1, false);
         expect(
           await f.page

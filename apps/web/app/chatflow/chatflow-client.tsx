@@ -190,6 +190,7 @@ export function ChatFlowClient({
     user: Message;
     assistant: Message;
     preparing: boolean;
+    focusOnMount: boolean;
   } | null>(null);
   const [imageCache] = useState(createMessageImageCache);
   const [sessionReferences, setSessionReferences] = useState<
@@ -842,6 +843,8 @@ export function ChatFlowClient({
       sessionId: activeId,
       queued: isRunning,
       preparing: true,
+      focusOnMount:
+        isEmptyConversation && document.activeElement === composerInput.current,
       user: {
         id: optimisticUserId,
         role: 'user' as const,
@@ -1593,6 +1596,9 @@ export function ChatFlowClient({
   };
   const renderComposer = (hero = false) => (
     <DraftChatComposer
+      autoFocus={
+        !!(visibleSubmission?.preparing && visibleSubmission.focusOnMount)
+      }
       taskSuggestions={
         taskSuggestionsEnabled
           ? (suggestionVersion?.taskSuggestions ?? [])

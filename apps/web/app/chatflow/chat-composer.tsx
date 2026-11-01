@@ -69,6 +69,7 @@ interface ChatComposerProps {
   onRemoveSessionReference?: (id: string) => void;
   employeeName: string;
   attachmentMenuOpen: boolean;
+  autoFocus?: boolean;
   busy: boolean;
   composerInput: RefObject<HTMLTextAreaElement | null>;
   composing: MutableRefObject<boolean>;
@@ -116,6 +117,7 @@ export function DraftChatComposer({
 /** Shared draft surface; child controls supply only delivery/admission policy. */
 export function ChatComposerInput({
   employeeName,
+  autoFocus = false,
   busy,
   composerInput,
   composing,
@@ -128,11 +130,13 @@ export function ChatComposerInput({
   onRetryAttachment,
   onUploadAttachments,
   onSubmit,
+  readOnly = false,
   imageOnly = false,
   onInputError,
 }: Pick<
   ChatComposerProps,
   | 'employeeName'
+  | 'autoFocus'
   | 'busy'
   | 'composerInput'
   | 'composing'
@@ -146,6 +150,7 @@ export function ChatComposerInput({
   | 'onUploadAttachments'
 > & {
   onSubmit: (modified: boolean) => void;
+  readOnly?: boolean;
   imageOnly?: boolean;
   onInputError?: (message: string) => void;
 }) {
@@ -166,8 +171,10 @@ export function ChatComposerInput({
       ) : null}
       <textarea
         aria-label={`给 ${employeeName} 的消息`}
+        autoFocus={autoFocus}
         className={styles.composerInput}
-        disabled={busy}
+        disabled={busy && !readOnly}
+        readOnly={readOnly}
         onChange={(event) => {
           onDraftChange(event.target.value);
         }}
@@ -199,6 +206,7 @@ export function ChatComposerInput({
           onSubmit(event.ctrlKey !== event.metaKey);
         }}
         onPaste={(event) => {
+          if (busy) return;
           const files = [...event.clipboardData.files].filter(
             (file) => imageOnly || file.type.startsWith('image/'),
           );
@@ -270,6 +278,7 @@ export function ChatComposer({
   onRemoveSessionReference,
   employeeName,
   attachmentMenuOpen,
+  autoFocus = false,
   busy,
   composerInput,
   composing,
@@ -340,6 +349,7 @@ export function ChatComposer({
         <ChatComposerInput
           {...{
             employeeName,
+            autoFocus,
             busy,
             composerInput,
             composing,
@@ -352,6 +362,7 @@ export function ChatComposer({
             onRetryAttachment,
             onUploadAttachments,
           }}
+          readOnly={busy}
           onSubmit={() => void onSendMessage()}
         />
         <div
@@ -489,6 +500,10 @@ export function ChatComposer({
               disabled={
                 showStop ? cancelPending : busy || cancelPending || !hasDraft
               }
+              onMouseDown={(event) => {
+                event.preventDefault();
+                composerInput.current?.focus({ preventScroll: true });
+              }}
               onClick={() => void (showStop ? onCancelRun() : onSendMessage())}
               type="button"
             >
