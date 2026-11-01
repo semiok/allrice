@@ -1,5 +1,16 @@
+const explicitRememberPattern =
+  /(?:请|帮我|以后|今后|之后|你)?(?:记住|记下|记得|保存(?:为|成)?(?:长期)?记忆)|(?:以后|今后)(?:按此|照此|按这个|照这个|按照这个)|\bremember\b|\bkeep (?:this|that) in mind\b/i;
 const explicitForgetPattern =
   /(?:不要|不用|别)(?:记住|记下|保存)|\b(?:do not|don't) remember\b|\bforget (?:this|that)\b/i;
+
+/** A matched request permits durable; unmatched requests remain candidates. */
+export function hasExplicitRememberIntent(userRequest: string | undefined) {
+  return explicitRememberPattern.test(userRequest?.trim() ?? '');
+}
+
+export function hasExplicitForgetIntent(userRequest: string | undefined) {
+  return explicitForgetPattern.test(userRequest?.trim() ?? '');
+}
 
 export interface MemoryCandidateMessage {
   id: string;

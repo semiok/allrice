@@ -2,10 +2,26 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildCheckpointMemoryCandidate,
+  hasExplicitForgetIntent,
+  hasExplicitRememberIntent,
   hasStableMemorySignal,
 } from './memory-lifecycle.js';
 
 describe('governed memory lifecycle', () => {
+  it('keeps the existing positive and negative patterns separate for write policy', () => {
+    expect(hasExplicitRememberIntent('请记住：我偏好中文周报')).toBe(true);
+    expect(
+      hasExplicitRememberIntent(
+        '帮我记一下，我看数据的时候习惯先看表格再看文字说明',
+      ),
+    ).toBe(false);
+    expect(hasExplicitForgetIntent('不要记住这件事')).toBe(true);
+    expect(hasExplicitForgetIntent('请记住：我偏好中文周报')).toBe(false);
+    // Residual quote risk is recorded rather than extending either old pattern.
+    expect(hasExplicitRememberIntent('他说‘记住这个’')).toBe(true);
+    expect(hasExplicitForgetIntent('他说‘记住这个’')).toBe(false);
+  });
+
   it('only treats stable user-authored facts as candidate signals', () => {
     expect(hasStableMemorySignal('我们项目要求每周五发布。')).toBe(true);
     expect(hasStableMemorySignal('I prefer concise weekly reports.')).toBe(

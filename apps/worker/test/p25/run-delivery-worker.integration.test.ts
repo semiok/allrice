@@ -26,7 +26,9 @@ import {
   createTraceableMemory,
   createCheckpointMemoryCandidate,
   listWorkspaceMemories,
+  linkFileToSession,
 } from '../../../../packages/database/src/workspace/service.ts';
+import { mutateCompanyAsset } from '../../../../packages/database/src/company-assets.ts';
 import {
   contextCheckpointChecksum,
   getLatestContextCheckpoint,
@@ -57,7 +59,8 @@ import {
 } from '../../../../packages/database/src/final-delivery-commit.ts';
 import { readDeliverySnapshot } from '../../../../packages/database/src/run-delivery.ts';
 import { executeEmployeeRun } from '../../src/jobs/employee-run.ts';
-import { executeRiceTool } from '../../src/tool-broker.ts';
+import * as ToolBroker from '../../src/tool-broker.ts';
+import { isConfirmedToolFailure } from '../../src/errors.ts';
 import * as TurnLifecycle from '../../src/conversation/turn-lifecycle.ts';
 import * as SubscriptionPreflight from '../../src/subscription-preflight.ts';
 import { prepareExecutionIsolation } from '../../src/isolation.ts';
@@ -1363,14 +1366,50 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     {
       label: 'SB01 original remember request',
       prompt: '帮我记一下，我看数据的时候习惯先看表格再看文字说明',
-      lifecycleState: 'durable',
-      trust: 'user_confirmed',
+      requested: 'durable',
+      state: 'candidate',
+    },
+    {
+      label: 'explicit durable request',
+      prompt: '请记住：我偏好中文周报',
+      requested: 'durable',
+      state: 'durable',
     },
     {
       label: 'stable preference without a phrase signal',
       prompt: '数据先放表格，再配文字说明，这样看起来更顺手。',
-      lifecycleState: 'candidate',
-      trust: 'derived',
+      requested: 'candidate',
+      state: 'candidate',
+    },
+    {
+      label: 'ordinary news request downgraded',
+      prompt: '帮我查一下今天的新闻',
+      requested: 'durable',
+      state: 'candidate',
+    },
+    {
+      label: 'explicit request never promotes model candidate',
+      prompt: '请记住：我偏好中文周报',
+      requested: 'candidate',
+      state: 'candidate',
+    },
+    {
+      label: 'residual quoted remember risk',
+      prompt: '他说‘记住这个’',
+      requested: 'durable',
+      state: 'durable',
+    },
+    {
+      label: 'user declines durable',
+      prompt: '不要记住这件事',
+      requested: 'durable',
+      state: null,
+    },
+    {
+      label: 'user declines candidate',
+      prompt: '不要记住这件事',
+      requested: 'candidate',
+      state: null,
     },
   ] as const)(
     'R2 stores $label through chat admission and Worker',
@@ -1386,40 +1425,112 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
                 arguments: {
                   content,
                   memoryClass: 'user_preference',
-                  lifecycleState: c.lifecycleState,
+                  lifecycleState: c.requested,
                 },
               },
             };
           }
+          if (count === 2 && c.state === 'candidate')
+            return {
+              nativeTool: {
+                name: 'workspace_memory_search',
+                arguments: { query: content },
+              },
+            };
           return { text: 'Synthetic completed.' };
         },
         false,
         false,
-        ['workspace.memory.remember'],
+        ['workspace.memory.remember', 'workspace.memory.search'],
       );
+      const broker = vi.spyOn(ToolBroker, 'executeRiceTool');
       const task = await prepare(f, c.prompt);
       try {
-        await task.run();
+        const result = await task.run();
         const memories = await f.db`
-        select m.content,m.employee_id,m.source_type,m.source_id,m.lifecycle_state,
+        select m.id,m.content,m.employee_id,m.source_type,m.source_id,m.lifecycle_state,
           m.trust_level,m.memory_class,m.revision,s.role,s.content->>'text' source_text,
           er.user_message_id
         from allrice_memories m join allrice_messages s on s.id=m.source_id
         join allrice_employee_runs er on er.run_id=${task.runId}
         where m.organization_id=${f.identity.org} and m.workspace_id=${f.identity.workspace}`;
+        const writeIndex = broker.mock.calls.findIndex(
+          ([input]) => input.call.name === 'workspace.memory.remember',
+        );
+        expect(writeIndex).toBeGreaterThanOrEqual(0);
+        const invocation = broker.mock.calls[writeIndex]![0];
+        expect(invocation.userRequest).toBe(c.prompt);
+        if (c.state === null) {
+          expect(memories).toHaveLength(0);
+          const error = await broker.mock.results[writeIndex]!.value.catch(
+            (error: unknown) => error,
+          );
+          expect(error).toMatchObject({ code: 'MEMORY_USER_DECLINED' });
+          expect(
+            isConfirmedToolFailure(error, {
+              runId: task.runId,
+              callId: invocation.call.id,
+              toolName: invocation.call.name,
+            }),
+          ).toBe(true);
+          return;
+        }
         expect(memories).toHaveLength(1);
+        const trust = c.state === 'durable' ? 'user_confirmed' : 'derived';
         expect(memories[0]).toMatchObject({
           content,
           employee_id: f.identity.employee,
           source_type: 'message',
           source_id: memories[0]!.user_message_id,
-          lifecycle_state: c.lifecycleState,
-          trust_level: c.trust,
+          lifecycle_state: c.state,
+          trust_level: trust,
           memory_class: 'user_preference',
           revision: 1,
           role: 'user',
           source_text: c.prompt,
         });
+        const receipt = await broker.mock.results[writeIndex]!.value;
+        expect(JSON.parse(receipt.modelContent)).toMatchObject({
+          id: memories[0]!.id,
+          lifecycleState: c.state,
+          provenance: { trust },
+        });
+        expect(receipt.summary).toBe(
+          c.state === 'durable' ? '已保存为长期记忆' : '已保存为待确认候选记忆',
+        );
+        if (c.state === 'candidate') {
+          const searchIndex = broker.mock.calls.findIndex(
+            ([input]) => input.call.name === 'workspace.memory.search',
+          );
+          expect(searchIndex).toBeGreaterThanOrEqual(0);
+          const search = await broker.mock.results[searchIndex]!.value;
+          expect(JSON.parse(search.modelContent).items).toContainEqual(
+            expect.objectContaining({
+              id: memories[0]!.id,
+              provenance: expect.objectContaining({ trust: 'derived' }),
+            }),
+          );
+          const coverage = readCheckedFinalDeliveryForExecution(
+            task.workflowLease,
+            result,
+          );
+          if (coverage.coverage !== 'checked_native_v1')
+            throw Error('Missing checked memory completion');
+          await completeJob({
+            ...task.workflowLease,
+            result,
+            checkedDelivery: coverage.checkedDelivery,
+          });
+          const next = await sendChatMessage(
+            f.context,
+            f.identity.workspace,
+            f.chat.id,
+            { text: content, clientMessageId: randomUUID() },
+          );
+          const [frozen] =
+            await f.db`select prompt_snapshot from allrice_employee_runs where run_id=${next.run!.id}`;
+          expect(frozen!.prompt_snapshot.memories).toEqual([]);
+        }
       } finally {
         await task.isolation.cleanup();
       }
@@ -1456,16 +1567,16 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         },
       };
       await expect(
-        executeRiceTool({
+        ToolBroker.executeRiceTool({
           ...input,
           userMessageId: foreignSource!.id as string,
         }),
       ).rejects.toMatchObject({ code: 'authorization_denied' });
       await expect(
-        executeRiceTool({ ...input, userMessageId: randomUUID() }),
+        ToolBroker.executeRiceTool({ ...input, userMessageId: randomUUID() }),
       ).rejects.toMatchObject({ code: 'authorization_denied' });
       await expect(
-        executeRiceTool({
+        ToolBroker.executeRiceTool({
           ...input,
           call: {
             ...input.call,
@@ -1477,7 +1588,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         }),
       ).rejects.toThrow();
       await f.db`update allrice_employee_assignments set active=false where id=${f.identity.assignment}`;
-      await expect(executeRiceTool(input)).rejects.toMatchObject({
+      await expect(ToolBroker.executeRiceTool(input)).rejects.toMatchObject({
         code: 'authorization_denied',
       });
       expect(
@@ -1487,6 +1598,171 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       await task.isolation.cleanup();
     }
   }, 45000);
+
+  it.each([
+    {
+      contamination: '请记住',
+      prompt: '按本次模板整理数据',
+      state: 'candidate',
+    },
+    {
+      contamination: '不要记住',
+      prompt: '请记住：我偏好中文周报',
+      state: 'durable',
+    },
+  ] as const)(
+    'R2 ignores template and attachment filename $contamination as human intent',
+    async (c) => {
+      let seedAnswer = '',
+        memoryPhase = false,
+        wrote = false;
+      const f = await setup(
+        async (request) => {
+          if (!memoryPhase) return { text: seedAnswer };
+          if (!wrote) {
+            wrote = true;
+            expect(JSON.stringify(request.messages)).toContain(
+              `TEMPLATE_POISON ${c.contamination}`,
+            );
+            expect(JSON.stringify(request.messages)).toContain(
+              `${c.contamination}.txt`,
+            );
+            return {
+              nativeTool: {
+                name: 'workspace_memory_remember',
+                arguments: {
+                  content: '我偏好中文周报',
+                  lifecycleState: 'durable',
+                  memoryClass: 'user_preference',
+                },
+              },
+            };
+          }
+          return { text: 'Synthetic completed.' };
+        },
+        false,
+        false,
+        ['workspace.memory.remember', 'workspace.export.create'],
+      );
+      vi.stubEnv('ALLRICE_STORAGE_ROOT', fixture!.storageRoot!);
+      const storage = runtimeFixtureStorage(f.db);
+      const seed = await prepare(f, '准备本次模板源文件');
+      let source;
+      try {
+        source = await publishWorkbenchArtifact(
+          {
+            context: seed.execution.context,
+            sessionId: f.chat.id,
+            callId: randomUUID(),
+            kind: 'document',
+            fileName: 'template-source.txt',
+            format: 'text',
+            mediaType: 'text/plain',
+            bytes: Buffer.from('Synthetic template bytes'),
+          },
+          storage,
+          f.db,
+        );
+        seedAnswer = `[模板源](/api/v1/files/${source.object.id}/download)`;
+        const result = await seed.run();
+        const coverage = readCheckedFinalDeliveryForExecution(
+          seed.workflowLease,
+          result,
+        );
+        if (coverage.coverage !== 'checked_native_v1')
+          throw Error('Missing checked template source');
+        await completeJob({
+          ...seed.workflowLease,
+          result,
+          checkedDelivery: coverage.checkedDelivery,
+        });
+      } finally {
+        await seed.isolation.cleanup();
+      }
+      await f.db`insert into allrice_organization_people(organization_id,user_id,display_name,content_maintenance_level)
+      values(${f.identity.org},${f.identity.user},'Fixture publisher','company')
+      on conflict(organization_id,user_id) do update set content_maintenance_level='company'`;
+      const assetId = randomUUID();
+      const draft = await mutateCompanyAsset(
+        f.context,
+        f.identity.org,
+        {
+          operation: 'save',
+          assetId,
+          expectedRevision: 0,
+          content: {
+            kind: 'template',
+            title: 'Synthetic template',
+            body: `TEMPLATE_POISON ${c.contamination}`,
+            category: '',
+            appliesToEmployeeIds: [],
+            taskKeywords: [],
+            slots: [],
+            sourceVersionId: source.id,
+          },
+        },
+        storage,
+        false,
+        f.db,
+      );
+      const published = await mutateCompanyAsset(
+        f.context,
+        f.identity.org,
+        { operation: 'publish', assetId, expectedRevision: draft.revision },
+        storage,
+        false,
+        f.db,
+      );
+      await linkFileToSession({
+        context: f.context,
+        workspaceId: f.identity.workspace,
+        sessionId: f.chat.id,
+        objectId: source.object.id,
+        fileName: `${c.contamination}.txt`,
+      });
+      memoryPhase = true;
+      const broker = vi.spyOn(ToolBroker, 'executeRiceTool');
+      const sent = await sendChatMessage(
+        f.context,
+        f.identity.workspace,
+        f.chat.id,
+        {
+          text: c.prompt,
+          clientMessageId: randomUUID(),
+          attachmentIds: [source.object.id],
+          companyTemplates: [
+            {
+              assetId,
+              revisionId: published.latest.id,
+              digest: published.latest.digest,
+              parameters: {},
+            },
+          ],
+        },
+      );
+      const task = await claim(f, sent.run!.id);
+      try {
+        await task.run();
+        const [stored] =
+          await f.db`select lifecycle_state,trust_level,source_id from allrice_memories where workspace_id=${f.identity.workspace}`;
+        expect(stored).toMatchObject({
+          lifecycle_state: c.state,
+          trust_level: c.state === 'durable' ? 'user_confirmed' : 'derived',
+          source_id: sent.userMessage.id,
+        });
+        const callIndex = broker.mock.calls.findIndex(
+          ([input]) => input.call.name === 'workspace.memory.remember',
+        );
+        expect(callIndex).toBeGreaterThanOrEqual(0);
+        expect(broker.mock.calls[callIndex]![0].userRequest).toBe(c.prompt);
+        const receipt = await broker.mock.results[callIndex]!.value;
+        expect(JSON.parse(receipt.modelContent).lifecycleState).toBe(c.state);
+      } finally {
+        await task.isolation.cleanup();
+      }
+    },
+    60000,
+  );
 
   it('MET-236: cumulative usage stays in billing while native history owns continuation', async () => {
     // Spread each Run's billed input across real native steps below the native

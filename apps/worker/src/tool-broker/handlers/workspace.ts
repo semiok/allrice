@@ -24,6 +24,10 @@ import { parseDocument } from '../../document-reader.js';
 import { readPdfLocally } from '../../document-read-local.js';
 import { confirmToolFailure, HandlerError } from '../../errors.js';
 import {
+  hasExplicitForgetIntent,
+  hasExplicitRememberIntent,
+} from '../../memory-lifecycle.js';
+import {
   limitValue,
   memoryClassValue,
   memoryLifecycleStateValue,
@@ -455,13 +459,23 @@ export const rememberWorkspaceMemory: RiceToolHandler = async ({
     });
     return error;
   };
-  const lifecycleState = memoryLifecycleStateValue(args.lifecycleState);
+  const requestedLifecycleState = memoryLifecycleStateValue(
+    args.lifecycleState,
+  );
   if (!input.context.workspaceId || !input.employeeId || !input.userMessageId) {
     throw rejected(
       'MEMORY_SOURCE_MESSAGE_REQUIRED',
       '长期记忆缺少当前员工或用户消息来源',
     );
   }
+  if (hasExplicitForgetIntent(input.userRequest)) {
+    throw rejected('MEMORY_USER_DECLINED', '用户当前消息要求不要保存记忆');
+  }
+  const lifecycleState =
+    requestedLifecycleState === 'durable' &&
+    hasExplicitRememberIntent(input.userRequest)
+      ? 'durable'
+      : 'candidate';
   const content = stringValue(args.content, 'content');
   if (content.length > 10_000) {
     throw new HandlerError(
@@ -507,7 +521,7 @@ export const rememberWorkspaceMemory: RiceToolHandler = async ({
       },
     }),
     summary:
-      lifecycleState === 'durable'
+      memory.lifecycleState === 'durable'
         ? '已保存为长期记忆'
         : '已保存为待确认候选记忆',
     itemCount: 1,

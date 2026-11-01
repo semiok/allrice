@@ -19,6 +19,10 @@ describe('worker explicit memory provenance', () => {
       'employeeId: executionSnapshot.employee.id',
     );
     expect(nativeToolBlock).toContain('userMessageId,');
-    expect(nativeToolBlock).toContain('userRequest: kernel.userRequest');
+    expect(nativeToolBlock).toContain(
+      "call.name === 'workspace.memory.remember'",
+    );
+    expect(nativeToolBlock).toContain('? resolved.currentUserRequest');
+    expect(nativeToolBlock).toContain(': kernel.userRequest');
   });
 });
