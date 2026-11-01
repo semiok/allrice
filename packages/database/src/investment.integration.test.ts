@@ -55,7 +55,7 @@ suite('human-confirmed investment evidence (private PostgreSQL schema)', () => {
     sourceRunIds: [a.task.runId],
     sourceVersionId: a.artifact.artifactId,
     baselineRevisionId: null,
-    adoptedAt: new Date().toISOString(),
+    adoptedAt: '2026-10-15T12:00:00Z',
     humanMinutes: 30,
     humanScope: 'complete',
     source: '采用及投入确认',
