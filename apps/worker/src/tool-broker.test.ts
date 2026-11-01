@@ -17,6 +17,7 @@ const {
   completeManagedBrowserTask,
   createToolBrokerExportObject,
   createTraceableMemory,
+  assertEmployeeChatHumanSource,
   createDefaultManagedBrowserTask,
   dispatchBridgeCommand,
   createLocalFileOperation,
@@ -35,6 +36,7 @@ const {
   completeManagedBrowserTask: vi.fn(),
   createToolBrokerExportObject: vi.fn(),
   createTraceableMemory: vi.fn(),
+  assertEmployeeChatHumanSource: vi.fn(),
   createDefaultManagedBrowserTask: vi.fn(),
   dispatchBridgeCommand: vi.fn(),
   createLocalFileOperation: vi.fn(),
@@ -56,6 +58,7 @@ vi.mock('@allrice/database', async (original) => ({
   CompanyAssetError: (await original<typeof Database>()).CompanyAssetError,
   CompanyRunAssetError: (await original<typeof Database>())
     .CompanyRunAssetError,
+  DataAccessError: (await original<typeof Database>()).DataAccessError,
   markCompanyMaterialRead: vi.fn(async () => undefined),
   ManagedBrowserTaskStartError: (await original<typeof Database>())
     .ManagedBrowserTaskStartError,
@@ -66,6 +69,7 @@ vi.mock('@allrice/database', async (original) => ({
   completeManagedBrowserTask,
   createToolBrokerExportObject,
   createTraceableMemory,
+  assertEmployeeChatHumanSource,
   createDefaultManagedBrowserTask,
   dispatchBridgeCommand,
   createLocalFileOperation,
@@ -99,6 +103,7 @@ import {
 import {
   ArtifactPublicationRollbackError,
   ArtifactPublicationParentError,
+  DataAccessError,
 } from '@allrice/database';
 import type * as Database from '@allrice/database';
 import { HandlerError, isConfirmedToolFailure } from './errors.js';
@@ -143,6 +148,7 @@ describe('Codex hosted search Tool Broker integration', () => {
     completeManagedBrowserTask.mockReset();
     createToolBrokerExportObject.mockReset();
     createTraceableMemory.mockReset();
+    assertEmployeeChatHumanSource.mockReset().mockResolvedValue(undefined);
     createDefaultManagedBrowserTask.mockReset();
     registerToolBrokerExport.mockReset();
     publishWorkbenchArtifact.mockReset();
@@ -430,6 +436,44 @@ describe('Codex hosted search Tool Broker integration', () => {
         },
       }),
     ).rejects.toMatchObject({ code: 'TOOL_INPUT_INVALID' });
+    expect(createTraceableMemory).not.toHaveBeenCalled();
+  });
+
+  it('confirms an internal-source refusal but leaves source database failures unconfirmed', async () => {
+    const context = executionContext();
+    const call = {
+      id: randomUUID(),
+      name: 'workspace.memory.remember',
+      arguments: { content: '先表格再文字', lifecycleState: 'durable' },
+    };
+    const input = {
+      context,
+      capabilities: ['storage:write'] as ['storage:write'],
+      storageRoot: '.local/storage',
+      employeeId: randomUUID(),
+      userMessageId: randomUUID(),
+      userRequest: '请记住：先表格再文字',
+      call,
+    };
+    const identity = {
+      runId: context.runId,
+      callId: call.id,
+      toolName: call.name,
+    };
+    assertEmployeeChatHumanSource.mockRejectedValueOnce(
+      new DataAccessError('authorization_denied'),
+    );
+    const denied = await executeRiceTool(input).catch((error) => error);
+    expect(denied).toMatchObject({ code: 'MEMORY_HUMAN_SOURCE_REQUIRED' });
+    expect(isConfirmedToolFailure(denied, identity)).toBe(true);
+    expect(assertEmployeeChatHumanSource).toHaveBeenCalledWith({
+      context,
+      userMessageId: input.userMessageId,
+    });
+    const unavailable = new Error('source database connection lost');
+    assertEmployeeChatHumanSource.mockRejectedValueOnce(unavailable);
+    await expect(executeRiceTool(input)).rejects.toBe(unavailable);
+    expect(isConfirmedToolFailure(unavailable, identity)).toBe(false);
     expect(createTraceableMemory).not.toHaveBeenCalled();
   });
 

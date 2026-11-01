@@ -694,13 +694,12 @@ async function readOnceTaskIntent(
   )
     return null;
   await assertEmployeeChatHumanSource(
-    tx,
     {
       ...input,
       userMessageId: previous.id,
       context: { ...ctx, runId: previous.run_id },
     },
-    { text: previous.text, snapshot },
+    tx,
   );
   const intent = confirmedOnceTaskIntent(
     text,
@@ -797,7 +796,7 @@ export async function createOnceTaskFromExecutionContext(
       instance,
       'automation.create',
     );
-    await assertEmployeeChatHumanSource(tx, input, current);
+    await assertEmployeeChatHumanSource(input, tx);
     const [old] = await tx<
       Plan[]
     >`select * from allrice_automations where organization_id=${scope.organizationId}

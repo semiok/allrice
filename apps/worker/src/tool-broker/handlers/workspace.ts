@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 
 import {
   createTraceableMemory,
+  assertEmployeeChatHumanSource,
+  DataAccessError,
   getToolBrokerFile,
   listToolBrokerFiles,
   readToolBrokerMemoryContext,
@@ -467,6 +469,22 @@ export const rememberWorkspaceMemory: RiceToolHandler = async ({
       'MEMORY_SOURCE_MESSAGE_REQUIRED',
       '长期记忆缺少当前员工或用户消息来源',
     );
+  }
+  try {
+    await assertEmployeeChatHumanSource({
+      context: input.context,
+      userMessageId: input.userMessageId,
+    });
+  } catch (error) {
+    if (
+      error instanceof DataAccessError &&
+      error.code === 'authorization_denied'
+    )
+      throw rejected(
+        'MEMORY_HUMAN_SOURCE_REQUIRED',
+        '记忆只能来自当前真人消息',
+      );
+    throw error;
   }
   if (hasExplicitForgetIntent(input.userRequest)) {
     throw rejected('MEMORY_USER_DECLINED', '用户当前消息要求不要保存记忆');

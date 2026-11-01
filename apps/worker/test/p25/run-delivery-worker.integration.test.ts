@@ -30,6 +30,19 @@ import {
 } from '../../../../packages/database/src/workspace/service.ts';
 import { mutateCompanyAsset } from '../../../../packages/database/src/company-assets.ts';
 import {
+  createRecurringTask,
+  dispatchNextNativeRecurringOccurrence,
+  initializeNativeRecurringPartition,
+  lockNativeRecurringAdmissions,
+} from '../../../../packages/database/src/native-schedule-recurring-product.ts';
+import { createNativeRecurringSqlStore } from '../../../../packages/database/src/native-schedule-recurring-sql.ts';
+import type {
+  NativeRecurringSnapshot,
+  NativeRecurringTask,
+  NativeRecurringMutation,
+} from '../../../../packages/database/src/native-schedule-recurring-state.ts';
+import { nativeOnceDigest } from '../../../../packages/database/src/native-schedule-once-state.ts';
+import {
   contextCheckpointChecksum,
   getLatestContextCheckpoint,
 } from '../../../../packages/database/src/conversation/conversation-checkpoint.ts';
@@ -1441,7 +1454,11 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         },
         false,
         false,
-        ['workspace.memory.remember', 'workspace.memory.search'],
+        [
+          'workspace.memory.remember',
+          'workspace.memory.search',
+          'workspace.export.create',
+        ],
       );
       const broker = vi.spyOn(ToolBroker, 'executeRiceTool');
       const task = await prepare(f, c.prompt);
@@ -1571,10 +1588,10 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           ...input,
           userMessageId: foreignSource!.id as string,
         }),
-      ).rejects.toMatchObject({ code: 'authorization_denied' });
+      ).rejects.toMatchObject({ code: 'MEMORY_HUMAN_SOURCE_REQUIRED' });
       await expect(
         ToolBroker.executeRiceTool({ ...input, userMessageId: randomUUID() }),
-      ).rejects.toMatchObject({ code: 'authorization_denied' });
+      ).rejects.toMatchObject({ code: 'MEMORY_HUMAN_SOURCE_REQUIRED' });
       await expect(
         ToolBroker.executeRiceTool({
           ...input,
@@ -1598,6 +1615,159 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       await task.isolation.cleanup();
     }
   }, 45000);
+
+  it.each(['durable', 'candidate'])(
+    'R2 rejects %s memory from a real recurring producer and Worker',
+    async (lifecycleState) => {
+      const f = await setup(
+        async (_request, count) =>
+          count === 1
+            ? {
+                nativeTool: {
+                  name: 'workspace_memory_remember',
+                  arguments: { content: '我偏好中文周报', lifecycleState },
+                },
+              }
+            : { text: 'Synthetic completed.' },
+        false,
+        false,
+        ['workspace.memory.remember'],
+      );
+      vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '1');
+      const reference = {
+        artifactId: f.artifactId,
+        profileId: 'allrice-recurring-control-v1',
+        storageId: 'r2-internal-source',
+        stateRoot: directory!,
+      };
+      vi.stubEnv(
+        'ALLRICE_NATIVE_RECURRING_REFERENCE',
+        JSON.stringify(reference),
+      );
+      await initializeNativeRecurringPartition(reference);
+      const ready = {
+        enabled: true,
+        storageReady: true,
+        legacyClockExcluded: true,
+        controlArtifactApproved: true,
+      };
+      const store = createNativeRecurringSqlStore({
+        db: f.db,
+        partitionId: 'allrice-recurring-v1',
+        ownerId: randomUUID(),
+        reference,
+        ttlMs: 300000,
+        readiness: () => ready,
+        decodeTask: (value) => structuredClone(value) as NativeRecurringTask,
+        lockAdmission: lockNativeRecurringAdmissions,
+        proveClosed: async () => null,
+      });
+      const grant = (await store.acquireWriter())!;
+      const created = await createRecurringTask(f.context, f.chat.id, {
+        clientRequestId: randomUUID(),
+        name: 'Synthetic memory source check',
+        prompt: '请记住：我偏好中文周报',
+        rule: { kind: 'every', seconds: 60 },
+      });
+      const [row] = await f.db<
+        { snapshot: NativeRecurringSnapshot }[]
+      >`select snapshot from allrice_native_recurring_controls where automation_id=${created.id}`;
+      const control = row!.snapshot.control;
+      const mutate = async (mutation: NativeRecurringMutation) => {
+        const write = {
+          writeId: randomUUID(),
+          digest: nativeOnceDigest(mutation),
+          mutation,
+        };
+        expect(await store.commitMutation(grant.writer, write)).toBe(
+          'committed',
+        );
+      };
+      await mutate({
+        kind: 'session_initializing',
+        controlId: control.controlId,
+      });
+      await mutate({ kind: 'session_ready', controlId: control.controlId });
+      const scheduledAt = new Date(Date.now() - 180000).toISOString();
+      const native: NativeRecurringTask = {
+        sessionId: control.controlSessionId,
+        status: 'active',
+        record: {
+          id: randomUUID(),
+          kind: 'every',
+          everySeconds: 60,
+          title: 'Synthetic control',
+          prompt: 'Control only',
+          scheduledAt,
+        },
+      };
+      await mutate({
+        kind: 'put_task',
+        controlId: control.controlId,
+        task: native,
+      });
+      await mutate({
+        kind: 'confirm_command',
+        controlId: control.controlId,
+        commandId: control.command.id,
+        nativeTaskId: native.record.id,
+      });
+      // Only the timer receipt is synthetic, as in the existing SQL corpus.
+      // The recurring dispatcher, ordinary-message admission and Worker are real.
+      native.lastDelivery = {
+        scheduledAt,
+        deliveredAt: new Date().toISOString(),
+        messageId: randomUUID(),
+      };
+      native.deliveryHistory = {
+        records: [{ ...native.lastDelivery, prompt: native.record.prompt }],
+        earlierRecordsUnavailable: false,
+      };
+      native.record.scheduledAt = new Date(
+        Date.parse(scheduledAt) + 60000,
+      ).toISOString();
+      await mutate({
+        kind: 'put_task',
+        controlId: control.controlId,
+        task: native,
+      });
+      expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
+        true,
+      );
+      const [queued] =
+        await f.db`select ar.run_id,m.role,m.content->>'text' text from allrice_automation_runs ar
+      join allrice_employee_runs er on er.run_id=ar.run_id join allrice_messages m on m.id=er.user_message_id where ar.automation_id=${created.id}`;
+      expect(queued).toMatchObject({ role: 'user' });
+      expect(queued!.text).toContain('请记住：我偏好中文周报');
+      const broker = vi.spyOn(ToolBroker, 'executeRiceTool');
+      const task = await claim(f, queued!.run_id as string);
+      try {
+        await task.run();
+        const index = broker.mock.calls.findIndex(
+          ([input]) => input.call.name === 'workspace.memory.remember',
+        );
+        expect(index).toBeGreaterThanOrEqual(0);
+        const invocation = broker.mock.calls[index]![0];
+        const error = await broker.mock.results[index]!.value.catch(
+          (error: unknown) => error,
+        );
+        expect(error).toMatchObject({ code: 'MEMORY_HUMAN_SOURCE_REQUIRED' });
+        expect(
+          isConfirmedToolFailure(error, {
+            runId: task.runId,
+            callId: invocation.call.id,
+            toolName: invocation.call.name,
+          }),
+        ).toBe(true);
+        expect(
+          await f.db`select id from allrice_memories where workspace_id=${f.identity.workspace}`,
+        ).toHaveLength(0);
+      } finally {
+        await task.isolation.cleanup();
+      }
+    },
+    45000,
+  );
 
   it.each([
     {
@@ -1729,6 +1899,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         {
           text: c.prompt,
           clientMessageId: randomUUID(),
+          deliveryMode: 'follow_up',
           attachmentIds: [source.object.id],
           companyTemplates: [
             {

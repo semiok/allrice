@@ -131,13 +131,12 @@ export async function readScheduleClarification(
     // The original Run may be finished. Recheck its existing human-source
     // exclusions without requiring its old lease or turn to remain live.
     await assertEmployeeChatHumanSource(
-      tx,
       {
         ...input,
         userMessageId: source.id,
         context: { ...ctx, runId: native.source_run_id },
       },
-      { text: source.text, snapshot },
+      tx,
     );
     request = source.text;
   }
