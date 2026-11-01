@@ -870,8 +870,8 @@ suite(
         showTiming() {
           showTiming = true;
         },
-        finishRun() {
-          for (const item of messages[A]!)
+        finishRun(sessionId = A) {
+          for (const item of messages[sessionId]!)
             if (item.runId === runId) {
               item.status = 'failed';
               item.content.text = '';
@@ -1720,6 +1720,105 @@ suite(
       },
       15_000,
     );
+    it.each([
+      { start: 'first message', newWork: true, mouse: true },
+      { start: 'continuation', newWork: false, mouse: false },
+    ])(
+      'keeps continuous typing through a $start, generation and completion',
+      async ({ newWork, mouse }) => {
+        const f = await fixture({ immediateReply: true });
+        try {
+          if (newWork) await startNewWork(f.page);
+          const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+          const first = '先核对这份资料';
+          const second = '接着整理下一份';
+          await input.fill(first);
+          if (mouse)
+            await f.page
+              .getByRole('button', { name: '发送', exact: true })
+              .click();
+          else await f.page.keyboard.press('Enter');
+          await f.waitPending(1);
+          if (newWork) {
+            expect(f.pending[0]!.path).toBe('/api/v1/sessions');
+            await f.respond(0);
+            await f.waitPending(2);
+          }
+          expect(await input.isEditable()).toBe(false);
+          const firstPost = newWork ? 1 : 0;
+          await f.respond(firstPost);
+          await f.page
+            .getByRole('button', { name: '停止生成', exact: true })
+            .waitFor();
+          expect(await input.isEditable()).toBe(true);
+          // The next keystrokes must go to the retained/restored input. No
+          // locator action is allowed to silently focus it after the send.
+          await f.page.keyboard.insertText(second);
+          await expect.poll(() => input.inputValue()).toBe(second);
+          expect(
+            await input.evaluate((node) => node === document.activeElement),
+          ).toBe(true);
+          f.finishRun(newWork ? C : A);
+          await f.page
+            .getByRole('button', { name: '发送', exact: true })
+            .waitFor();
+          expect(await input.inputValue()).toBe(second);
+          expect(
+            await input.evaluate((node) => node === document.activeElement),
+          ).toBe(true);
+          await f.page.keyboard.press('Enter');
+          await f.waitPending(firstPost + 2);
+          expect(
+            f.pending
+              .filter((request) => request.path.endsWith('/messages'))
+              .map((request) => ({
+                path: request.path,
+                text: request.body.text,
+              })),
+          ).toEqual([
+            {
+              path: `/api/v1/sessions/${newWork ? C : A}/messages`,
+              text: first,
+            },
+            {
+              path: `/api/v1/sessions/${newWork ? C : A}/messages`,
+              text: second,
+            },
+          ]);
+          await f.respond(firstPost + 1);
+          expect(f.errors).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      },
+      15_000,
+    );
+
+    it('keeps another control focused when the first send finishes', async () => {
+      const f = await fixture({ immediateReply: true });
+      try {
+        await startNewWork(f.page);
+        await f.send('发送时我先使用其它控件');
+        await f.waitPending(1);
+        const otherControl = f.page.getByRole('button', {
+          name: '新的工作',
+          exact: true,
+        });
+        await otherControl.focus();
+        await f.respond(0);
+        await f.waitPending(2);
+        await f.respond(1);
+        expect(
+          await otherControl.evaluate(
+            (node) => node === document.activeElement,
+          ),
+        ).toBe(true);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    });
+
     it('MET-210 sends an ordinary message without retired assistant state or requests', async () => {
       const f = await fixture();
       try {
