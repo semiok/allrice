@@ -1291,6 +1291,75 @@ suite(
       }
     });
 
+    it('MET-214 keeps the subagent entry for new work before its first message', async () => {
+      const f = await fixture();
+      try {
+        await startNewWork(f.page);
+        await f.page
+          .getByRole('heading', { level: 1, name: '新的工作', exact: true })
+          .waitFor();
+        expect(new URL(f.page.url()).searchParams.get('session')).toBeNull();
+        const trigger = f.page.getByRole('button', {
+          name: '子智能体',
+          exact: true,
+        });
+        const directory = resolve(root, '.local/met214-subagent-entry');
+        await mkdir(directory, { recursive: true });
+        await f.page.screenshot({
+          path: resolve(directory, 'new-work-before-open.png'),
+        });
+        await trigger.waitFor();
+        expect(await trigger.locator('span[aria-hidden="true"]').count()).toBe(
+          0,
+        );
+        expect(
+          await f.page.getByRole('button', { name: /^工作区文件/ }).isVisible(),
+        ).toBe(true);
+        const reads = f.reads.length;
+        await trigger.hover();
+        await expect
+          .poll(() => trigger.getAttribute('aria-expanded'))
+          .toBe('true');
+        await f.page.getByText('暂无子智能体', { exact: true }).waitFor();
+        await f.page.screenshot({
+          path: resolve(directory, 'new-work-hover.png'),
+        });
+        await f.page.mouse.move(800, 800);
+        await expect
+          .poll(() => trigger.getAttribute('aria-expanded'))
+          .toBe('false');
+        for (const key of ['ArrowDown', 'ArrowUp', 'Home', 'End']) {
+          await trigger.focus();
+          await f.page.keyboard.press(key);
+          expect(await trigger.getAttribute('aria-expanded')).toBe('true');
+          await f.page.getByText('暂无子智能体', { exact: true }).waitFor();
+          await f.page.keyboard.press('Escape');
+          expect(await trigger.getAttribute('aria-expanded')).toBe('false');
+          expect(
+            await trigger.evaluate((node) => node === document.activeElement),
+          ).toBe(true);
+        }
+        await trigger.click();
+        await f.page.getByText('暂无子智能体', { exact: true }).waitFor();
+        await f.page.mouse.move(800, 800);
+        await f.page.waitForTimeout(350);
+        expect(await trigger.getAttribute('aria-expanded')).toBe('true');
+        expect(
+          f.reads.slice(reads).filter((url) => url.includes('/subagents')),
+        ).toEqual([]);
+        expect(f.pending).toEqual([]);
+        await f.page.screenshot({
+          path: resolve(directory, 'new-work-empty.png'),
+        });
+        await f.page.keyboard.press('Escape');
+        expect(
+          await trigger.evaluate((node) => node === document.activeElement),
+        ).toBe(true);
+      } finally {
+        await f.close();
+      }
+    });
+
     it('waits for the active full read before showing the native header and preserves keyboard detail focus', async () => {
       const f = await fixture({
         nativeParents: 3,

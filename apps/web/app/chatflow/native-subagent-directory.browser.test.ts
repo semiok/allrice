@@ -1,7 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
-import { tmpdir } from 'node:os';
 import { createServer, type Server, type ServerResponse } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type {
@@ -255,7 +254,7 @@ suite('native subagent directory and employee sidebar', () => {
     };
   }
   async function capture(page: Page, name: string) {
-    const directory = join(tmpdir(), 'allrice-met214-header');
+    const directory = join(process.cwd(), '.local', 'met214-subagent-entry');
     mkdirSync(directory, { recursive: true });
     await page.screenshot({ path: join(directory, `${name}.png`) });
   }
@@ -270,14 +269,19 @@ suite('native subagent directory and employee sidebar', () => {
         await expect
           .poll(() => blank.calls.filter((c) => c.id === 'parent-a').length)
           .toBe(1);
-        expect(
-          await blank.page.locator('button[aria-haspopup="tree"]').count(),
-        ).toBe(0);
+        const trigger = blank.page.locator('button[aria-haspopup="tree"]');
+        await trigger.waitFor();
+        expect(await trigger.innerText()).toBe('');
+        expect(await trigger.locator('span[aria-hidden="true"]').count()).toBe(
+          0,
+        );
         expect(
           await blank.page
             .getByText('子智能体状态未知', { exact: true })
             .count(),
         ).toBe(0);
+        await trigger.click();
+        await blank.page.getByText('暂无子智能体', { exact: true }).waitFor();
         await capture(blank.page, `${width}-zero`);
       } finally {
         await blank.page.close();
@@ -291,7 +295,7 @@ suite('native subagent directory and employee sidebar', () => {
       const { page, calls, fixture, setResponse } = await open(ended, width);
       const trigger = page.locator('button[aria-haspopup="tree"]');
       try {
-        expect(await trigger.innerText()).toBe('2');
+        expect(await trigger.innerText()).toBe('');
         expect(
           await trigger.evaluate((node) => getComputedStyle(node).color),
         ).toBe('rgb(37, 99, 235)');
@@ -300,7 +304,12 @@ suite('native subagent directory and employee sidebar', () => {
         );
         expect(await trigger.locator('[data-state="ongoing"]').count()).toBe(0);
         const badge = trigger.locator('span[aria-hidden="true"]');
-        const colors = await badge.evaluate((node) => {
+        expect(await badge.count()).toBe(0);
+        const files = page.getByRole('button', {
+          name: '工作区文件，33 项新增',
+          exact: true,
+        });
+        const colors = await files.locator('span').evaluate((node) => {
           const style = getComputedStyle(node);
           return [
             style.backgroundColor,
@@ -315,10 +324,6 @@ suite('native subagent directory and employee sidebar', () => {
           'rgb(255, 255, 255)',
           '2px',
         ]);
-        const files = page.getByRole('button', {
-          name: '工作区文件，33 项新增',
-          exact: true,
-        });
         expect(
           await files
             .locator('span')
@@ -354,12 +359,8 @@ suite('native subagent directory and employee sidebar', () => {
         await page
           .getByRole('button', { name: '查看grandchild摘要' })
           .waitFor();
-        expect(await trigger.innerText()).toBe('2');
-        expect(
-          await badge.evaluate(
-            (node) => getComputedStyle(node).backgroundColor,
-          ),
-        ).toBe(colors[0]);
+        expect(await trigger.innerText()).toBe('');
+        expect(await badge.count()).toBe(0);
         await page.getByRole('button', { name: '收起fork-a' }).click();
         await page.keyboard.press('Escape');
         await page.clock.install({ time: new Date(10000) });
@@ -384,7 +385,7 @@ suite('native subagent directory and employee sidebar', () => {
             badge.evaluate((node) => getComputedStyle(node).backgroundColor),
           )
           .toBe('rgb(34, 197, 94)');
-        expect(await trigger.innerText()).toBe('2');
+        expect(await trigger.innerText()).toBe('1');
         expect(await trigger.locator('[data-state="ongoing"]').count()).toBe(0);
         expect(
           await badge.evaluate((node) => getComputedStyle(node).color),
@@ -484,21 +485,18 @@ suite('native subagent directory and employee sidebar', () => {
         await page
           .getByRole('button', { name: '刷新子智能体摘要', exact: true })
           .click();
-        await expect.poll(() => trigger.innerText()).toBe('2');
         await expect
-          .poll(() => trigger.getAttribute('aria-expanded'))
-          .toBe('false');
-        expect(
-          await badge.evaluate(
-            (node) => getComputedStyle(node).backgroundColor,
-          ),
-        ).toBe(colors[0]);
-        await trigger.click();
+          .poll(() => trigger.getAttribute('aria-label'))
+          .toBe('2 个子智能体');
+        expect(await trigger.innerText()).toBe('');
+        expect(await badge.count()).toBe(0);
+        expect(await trigger.getAttribute('aria-expanded')).toBe('true');
         expect(
           await page
             .getByRole('button', { name: '查看idle-b摘要' })
             .innerText(),
         ).toContain('历史记录 · 上次回合已完成');
+        await capture(page, `${width}-unknown`);
         expect(
           calls.filter((c) => !c.liveOnly).every((c) => c.id === 'parent-a'),
         ).toBe(true);
@@ -512,7 +510,7 @@ suite('native subagent directory and employee sidebar', () => {
   );
 
   it.each(['refresh', 'resync', 'empty'] as const)(
-    'closes an open portal when %s removes its header anchor and restores it unpinned',
+    'keeps the entry and open status reachable through %s, then honors Escape',
     async (transition) => {
       const { page, fixture } = await open();
       let release = () => {};
@@ -557,8 +555,22 @@ suite('native subagent directory and employee sidebar', () => {
               summary: { ...summary(), descendants: [] },
             });
         }
-        await expect.poll(() => trigger.count()).toBe(0);
+        await expect
+          .poll(() => trigger.locator('span[aria-hidden="true"]').count())
+          .toBe(0);
+        expect(await trigger.count()).toBe(1);
+        expect(await trigger.getAttribute('aria-expanded')).toBe('true');
         expect(await tree.count()).toBe(0);
+        await page
+          .getByText(
+            transition === 'refresh'
+              ? '正在读取子智能体摘要…'
+              : transition === 'resync'
+                ? '当前活动状态未知，请重新读取摘要。'
+                : '暂无子智能体',
+            { exact: true },
+          )
+          .waitFor();
         await page.keyboard.press('Escape');
         expect(
           await page.evaluate(
@@ -567,7 +579,9 @@ suite('native subagent directory and employee sidebar', () => {
         ).toBe(false);
         if (transition === 'refresh') release();
         else feed.push(fixture, { type: 'directory', summary: summary() });
-        await trigger.waitFor();
+        await expect
+          .poll(() => trigger.getAttribute('aria-label'))
+          .toBe('2 个子智能体 · 1 个运行中');
         expect(await trigger.getAttribute('aria-expanded')).toBe('false');
         expect(await tree.count()).toBe(0);
         await trigger.click();
@@ -599,7 +613,11 @@ suite('native subagent directory and employee sidebar', () => {
         type: 'directory',
         summary: { ...summary(), descendants: [] },
       });
-      await expect.poll(() => trigger.isVisible()).toBe(false);
+      await expect
+        .poll(() => trigger.getAttribute('aria-label'))
+        .toBe('0 个子智能体');
+      expect(await trigger.isVisible()).toBe(true);
+      expect(await trigger.locator('span[aria-hidden="true"]').count()).toBe(0);
       expect(
         await page.getByRole('tree', { name: '子智能体目录' }).count(),
       ).toBe(0);
@@ -618,7 +636,7 @@ suite('native subagent directory and employee sidebar', () => {
     }
   });
 
-  it('keeps ordinary, running and error badge borders white in dark mode', async () => {
+  it('omits idle counts and keeps running and error badge borders white in dark mode', async () => {
     const value = summary();
     value.descendants = value.descendants.map((entry) => ({
       ...entry,
@@ -642,8 +660,8 @@ suite('native subagent directory and employee sidebar', () => {
       ).not.toBe(lightBase);
       const trigger = page.locator('button[aria-haspopup="tree"]');
       const badge = trigger.locator('span[aria-hidden="true"]');
+      expect(await badge.count()).toBe(0);
       for (const button of [
-        trigger,
         page.getByRole('button', {
           name: '工作区文件，33 项新增',
           exact: true,
@@ -719,11 +737,7 @@ suite('native subagent directory and employee sidebar', () => {
       await expect.poll(() => descendant.innerText()).toContain('3 秒');
       expect(calls.length).toBe(reads);
       expect(await trigger.getAttribute('aria-label')).toBe('2 个子智能体');
-      expect(
-        await trigger
-          .locator('span[aria-hidden="true"]')
-          .evaluate((node) => getComputedStyle(node).backgroundColor),
-      ).toBe('rgb(228, 228, 231)');
+      expect(await trigger.locator('span[aria-hidden="true"]').count()).toBe(0);
       await capture(page, 'expanded-descendant');
     } finally {
       await page.close();
@@ -816,27 +830,30 @@ suite('native subagent directory and employee sidebar', () => {
       );
       connection.response.end();
       await expect.poll(() => tailRequested).toBe(true);
-      await expect.poll(() => trigger.count()).toBe(0);
+      await expect
+        .poll(() => trigger.getAttribute('aria-label'))
+        .toBe('子智能体');
+      expect(await trigger.count()).toBe(1);
+      expect(await trigger.locator('span[aria-hidden="true"]').count()).toBe(0);
       release();
-      await trigger.waitFor();
+      await expect
+        .poll(() => trigger.getAttribute('aria-label'))
+        .toBe('2 个子智能体');
       const states = await trace.evaluate((value) => value.stop());
-      const directory = join(tmpdir(), 'allrice-met214-header');
+      const directory = join(process.cwd(), '.local', 'met214-subagent-entry');
       mkdirSync(directory, { recursive: true });
       writeFileSync(
         join(directory, 'normal-EOF-transitions.json'),
         JSON.stringify({ states, calls }, null, 2),
       );
       expect(states).toContain('2 个子智能体 · 1 个运行中');
-      expect(states).toContain('hidden');
+      expect(states).toContain('子智能体');
+      expect(states).not.toContain('hidden');
       expect(states.at(-1)).toBe('2 个子智能体');
       expect(
         states.some((state) => state.includes('读取失败') || state === '!'),
       ).toBe(false);
-      expect(
-        await trigger
-          .locator('span[aria-hidden="true"]')
-          .evaluate((node) => getComputedStyle(node).backgroundColor),
-      ).toBe('rgb(228, 228, 231)');
+      expect(await trigger.locator('span[aria-hidden="true"]').count()).toBe(0);
       expect(calls.filter((call) => call.id === 'parent-a')).toHaveLength(2);
       await capture(page, 'normal-EOF');
     } finally {
@@ -876,7 +893,13 @@ suite('native subagent directory and employee sidebar', () => {
         }));
         if (transition === 'resync') {
           feed.send(connection, { type: 'clear', reason: 'resync' });
-          await expect.poll(() => trigger.isVisible()).toBe(false);
+          await expect
+            .poll(() => trigger.getAttribute('aria-label'))
+            .toBe('子智能体');
+          expect(await trigger.isVisible()).toBe(true);
+          expect(
+            await trigger.locator('span[aria-hidden="true"]').count(),
+          ).toBe(0);
           const next = summary();
           next.descendants = next.descendants.map((entry) => ({
             ...entry,
@@ -1263,8 +1286,7 @@ suite('native subagent directory and employee sidebar', () => {
       await page.getByRole('button', { name: '刷新子智能体摘要' }).click();
       await expect
         .poll(() => trigger.getAttribute('aria-expanded'))
-        .toBe('false');
-      await trigger.click();
+        .toBe('true');
       await page.getByRole('button', { name: '查看idle-b摘要' }).waitFor();
       expect(active().at(-1)?.liveOnly).toBe(false);
       expect(
@@ -1277,7 +1299,7 @@ suite('native subagent directory and employee sidebar', () => {
     }
   });
 
-  it('hides an initial full read until the catalog arrives, then supports pinning', async () => {
+  it('opens the initial loading state and keeps the entry pinned when its catalog arrives', async () => {
     let release!: () => void;
     const gate = new Promise<void>((done) => {
       release = done;
@@ -1289,14 +1311,19 @@ suite('native subagent directory and employee sidebar', () => {
     try {
       const trigger = page.locator('button[aria-haspopup="tree"]');
       const tree = page.getByRole('tree', { name: '子智能体目录' });
-      expect(await trigger.count()).toBe(0);
+      expect(await trigger.count()).toBe(1);
+      expect(await trigger.locator('span[aria-hidden="true"]').count()).toBe(0);
       expect(
         await page.getByText('子智能体状态未知', { exact: true }).count(),
       ).toBe(0);
-      release();
-      await trigger.waitFor();
       await trigger.click();
       await page.mouse.move(1100, 800);
+      await page
+        .getByRole('status')
+        .filter({ hasText: '正在读取子智能体摘要…' })
+        .waitFor();
+      await capture(page, 'initial-loading');
+      release();
       await tree.waitFor();
       expect(await trigger.getAttribute('aria-expanded')).toBe('true');
       await page.keyboard.press('Escape');
@@ -1307,8 +1334,82 @@ suite('native subagent directory and employee sidebar', () => {
     }
   });
 
+  it.each(['wait', 'leave'] as const)(
+    'MET-214 delayed directory focus honors %s intent',
+    async (intent) => {
+      const cold = summary();
+      cold.root.source = 'prepared';
+      cold.descendants = cold.descendants.map((entry) => ({
+        ...entry,
+        running: null,
+        observation: { source: 'prepared', cursor: 8 },
+      }));
+      let release!: () => void;
+      const gate = new Promise<void>((done) => {
+        release = done;
+      });
+      const { page } = await open(cold, 1200, { gate, delivered: () => {} });
+      try {
+        const trigger = page.locator('button[aria-haspopup="tree"]');
+        const outside = page.getByRole('textbox', { name: '目录外草稿' });
+        await trigger.focus();
+        await page.keyboard.press('ArrowDown');
+        await page
+          .getByText('正在读取子智能体摘要…', { exact: true })
+          .waitFor();
+        await page.evaluate(() => {
+          const input = document.createElement('input');
+          input.setAttribute('aria-label', '目录外草稿');
+          document.body.append(input);
+        });
+        if (intent === 'leave') {
+          for (
+            let count = 0;
+            count < 20 &&
+            !(await outside.evaluate(
+              (node) => node === document.activeElement,
+            ));
+            count++
+          )
+            await page.keyboard.press('Tab');
+          expect(
+            await outside.evaluate((node) => node === document.activeElement),
+          ).toBe(true);
+          await page.keyboard.type('draft');
+        }
+        release();
+        const first = page.getByRole('button', { name: '查看fork-a摘要' });
+        await first.waitFor();
+        await capture(page, `late-focus-${intent}`);
+        if (intent === 'wait') {
+          await expect
+            .poll(() =>
+              first.evaluate((node) => node === document.activeElement),
+            )
+            .toBe(true);
+        } else {
+          await page.evaluate(
+            () =>
+              new Promise<void>((done) =>
+                requestAnimationFrame(() =>
+                  requestAnimationFrame(() => done()),
+                ),
+              ),
+          );
+          expect(
+            await outside.evaluate((node) => node === document.activeElement),
+          ).toBe(true);
+          expect(await outside.inputValue()).toBe('draft');
+        }
+      } finally {
+        release();
+        await page.close();
+      }
+    },
+  );
+
   it.each(['select', 'Escape', 'outside', 'scope'])(
-    'keeps a delayed initial cold read hidden and preserves the latest user intent (%s)',
+    'keeps a delayed initial cold read reachable and preserves the latest user intent (%s)',
     async (action) => {
       const cold = summary();
       cold.root.source = 'prepared';
@@ -1327,11 +1428,17 @@ suite('native subagent directory and employee sidebar', () => {
       });
       try {
         const trigger = page.locator('button[aria-haspopup="tree"]');
-        expect(await trigger.count()).toBe(0);
+        expect(await trigger.count()).toBe(1);
+        expect(await trigger.locator('span[aria-hidden="true"]').count()).toBe(
+          0,
+        );
         await expect
           .poll(() => calls.filter((c) => !c.liveOnly).length)
           .toBe(1);
-        if (action === 'Escape') await page.keyboard.press('Escape');
+        await trigger.click();
+        await trigger.focus();
+        if (action === 'select') await page.keyboard.press('ArrowDown');
+        else if (action === 'Escape') await page.keyboard.press('Escape');
         else if (action === 'outside')
           await page.getByRole('heading', { level: 1 }).click();
         else if (action === 'scope') {
@@ -1339,10 +1446,10 @@ suite('native subagent directory and employee sidebar', () => {
           await page.keyboard.press('Enter');
         }
         release();
-        await trigger.waitFor();
+        await expect
+          .poll(() => trigger.getAttribute('aria-label'))
+          .toContain('2 个子智能体');
         if (action === 'select') {
-          await trigger.focus();
-          await page.keyboard.press('ArrowDown');
           const first = page.getByRole('button', { name: '查看fork-a摘要' });
           await expect
             .poll(() =>
@@ -1394,8 +1501,9 @@ suite('native subagent directory and employee sidebar', () => {
     try {
       const trigger = page.locator('button[aria-haspopup="tree"]');
       await expect.poll(() => calls.length).toBe(3);
-      expect(await trigger.innerText()).toBe('2');
+      expect(await trigger.innerText()).toBe('');
       expect(await trigger.innerText()).not.toContain('0 个运行中');
+      expect(await trigger.locator('span[aria-hidden="true"]').count()).toBe(0);
       expect(
         calls
           .filter((call) => !call.liveOnly)
@@ -1429,7 +1537,7 @@ suite('native subagent directory and employee sidebar', () => {
         ),
       ).toBe(false);
       await page.keyboard.press('Escape');
-      await expect.poll(() => trigger.innerText()).toBe('2');
+      expect(await trigger.innerText()).toBe('');
       const before = calls.length;
       await page.evaluate(() => window.dispatchEvent(new Event('focus')));
       await expect.poll(() => calls.length).toBeGreaterThan(before);
@@ -1485,6 +1593,7 @@ suite('native subagent directory and employee sidebar', () => {
           .isDisabled(),
       ).toBe(true);
       expect(await trigger.innerText()).not.toContain('0 个运行中');
+      expect(await trigger.locator('span[aria-hidden="true"]').count()).toBe(0);
       await page.evaluate(() => window.dispatchEvent(new Event('offline')));
       await expect
         .poll(() => row(page, 'parent-a').innerText())
