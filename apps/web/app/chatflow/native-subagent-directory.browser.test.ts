@@ -234,7 +234,9 @@ suite('native subagent directory and employee sidebar', () => {
       if (!liveOnly) fullReply?.delivered();
     });
     await feed.bindPage(page, origin, fixture);
-    await page.goto(origin + search);
+    const query = new URLSearchParams(search);
+    if (snapshot) query.set('details', '');
+    await page.goto(`${origin}?${query}`);
     await page.getByRole('heading', { level: 1 }).waitFor();
     if (!fullReply && !initial?.gate && value.descendants.length)
       await page
@@ -253,11 +255,144 @@ suite('native subagent directory and employee sidebar', () => {
       },
     };
   }
+  async function reopenCatalog(page: Page) {
+    const trigger = page.locator('button[aria-haspopup="tree"]');
+    await trigger.focus();
+    await trigger.press('Escape');
+    await trigger.click();
+  }
+  async function showDetail(page: Page, id: string) {
+    await page.getByRole('textbox', { name: '子任务 ID（测试）' }).fill(id);
+    await page.getByRole('button', { name: '打开详情（测试）' }).click();
+    await page.getByRole('complementary', { name: '子智能体摘要' }).waitFor();
+  }
   async function capture(page: Page, name: string) {
     const directory = join(process.cwd(), '.local', 'met214-subagent-entry');
     mkdirSync(directory, { recursive: true });
     await page.screenshot({ path: join(directory, `${name}.png`) });
   }
+
+  it.each(['light', 'dark'])(
+    '“看看子智能体，收起来再看看”：refreshes once per opening, keeps %s theme and has no detail or receipt entry',
+    async (theme) => {
+      const { page, calls, followCalls } = await open(
+        summary(),
+        1200,
+        undefined,
+        undefined,
+        `?theme=${theme}`,
+      );
+      const controlRequests: string[] = [];
+      page.on('request', (request) => {
+        if (request.url().includes('/subagents/controls'))
+          controlRequests.push(request.url());
+      });
+      try {
+        await page.evaluate(() =>
+          sessionStorage.setItem(
+            `allrice-child-control-refs:${JSON.stringify([
+              'viewer',
+              'workspace',
+              'parent-a',
+              {
+                'x-allrice-organization-id': 'org',
+                'x-allrice-workspace-id': 'workspace',
+              },
+            ])}`,
+            JSON.stringify([
+              {
+                rootRunId: '44444444-4444-4444-8444-444444444444',
+                generation: 1,
+                input: {
+                  kind: 'interrupt',
+                  requestId: '22222222-2222-4222-8222-222222222222',
+                  parentSessionId: 'native-root',
+                  childSessionId: 'missing-child',
+                  mode: 'continuable',
+                },
+              },
+            ]),
+          ),
+        );
+        await page.reload();
+        const trigger = page.locator('button[aria-haspopup="tree"]');
+        await expect
+          .poll(() => trigger.getAttribute('aria-label'))
+          .toBe('2 个子智能体 · 1 个运行中');
+        const fullReads = () =>
+          calls.filter((call) => call.id === 'parent-a' && !call.liveOnly)
+            .length;
+        const before = fullReads();
+        const tree = page.getByRole('tree', { name: '子智能体目录' });
+        await trigger.hover();
+        await tree.waitFor();
+        await expect.poll(fullReads).toBe(before + 1);
+        const title = page.getByRole('heading', {
+          name: '子智能体',
+          exact: true,
+        });
+        expect(
+          await title.evaluate((node) => ({
+            size: getComputedStyle(node).fontSize,
+            weight: getComputedStyle(node).fontWeight,
+            background: getComputedStyle(node.parentElement!.parentElement!)
+              .backgroundColor,
+          })),
+        ).toEqual({
+          size: '16px',
+          weight: '600',
+          background:
+            theme === 'light' ? 'rgb(255, 255, 255)' : 'rgb(23, 23, 23)',
+        });
+        await trigger.click(); // Pin the existing hover opening.
+        await page.getByRole('button', { name: '展开fork-a' }).click();
+        const first = page.getByRole('treeitem', {
+          name: 'fork-a摘要',
+          exact: true,
+        });
+        await first.click();
+        await first.press('Enter');
+        await first.press('ArrowRight');
+        await page
+          .getByRole('treeitem', { name: 'grandchild摘要', exact: true })
+          .waitFor();
+        expect(fullReads()).toBe(before + 1);
+        expect(
+          await page
+            .getByRole('button', {
+              name: /刷新子智能体摘要|查看.*摘要|原请求回执/,
+            })
+            .count(),
+        ).toBe(0);
+        expect(
+          await page
+            .getByRole('complementary', { name: '子智能体摘要' })
+            .count(),
+        ).toBe(0);
+        await capture(page, `popover-${theme}`);
+        await first.press('Escape');
+        expect(await tree.count()).toBe(0);
+        expect(fullReads()).toBe(before + 1);
+        await trigger.click();
+        await tree.waitFor();
+        await expect.poll(fullReads).toBe(before + 2);
+        await trigger.click();
+        expect(await tree.count()).toBe(0);
+        expect(fullReads()).toBe(before + 2);
+        await page.mouse.move(1100, 800);
+        await trigger.hover();
+        await tree.waitFor();
+        await expect.poll(fullReads).toBe(before + 3);
+        await page.mouse.move(1100, 800);
+        await expect.poll(() => tree.count()).toBe(0);
+        expect(fullReads()).toBe(before + 3);
+        expect(followCalls().filter((call) => call.childId)).toEqual([]);
+        expect(controlRequests).toEqual([]);
+      } finally {
+        await page.close();
+      }
+    },
+  );
 
   it.each([1440, 390])(
     '“看看直属子任务”：five header states match the reference at %s px',
@@ -341,7 +476,7 @@ suite('native subagent directory and employee sidebar', () => {
         await capture(page, `${width}-ended`);
         await trigger.click();
         const done = page
-          .getByRole('button', { name: '查看idle-b摘要' })
+          .getByRole('treeitem', { name: 'idle-b摘要' })
           .locator('[data-state="done"]');
         expect(
           await done.evaluate((node) => getComputedStyle(node).color),
@@ -356,9 +491,7 @@ suite('native subagent directory and employee sidebar', () => {
           }),
         );
         await page.getByRole('button', { name: '展开fork-a' }).click();
-        await page
-          .getByRole('button', { name: '查看grandchild摘要' })
-          .waitFor();
+        await page.getByRole('treeitem', { name: 'grandchild摘要' }).waitFor();
         expect(await trigger.innerText()).toBe('');
         expect(await badge.count()).toBe(0);
         await page.getByRole('button', { name: '收起fork-a' }).click();
@@ -425,7 +558,7 @@ suite('native subagent directory and employee sidebar', () => {
             (node) => getComputedStyle(node).backgroundColor,
           ),
         ).toBe('rgb(34, 197, 94)');
-        const liveRow = page.getByRole('button', { name: '查看fork-a摘要' });
+        const liveRow = page.getByRole('treeitem', { name: 'fork-a摘要' });
         await expect.poll(() => liveRow.innerText()).toContain('1 秒');
         const readsBeforeClock = calls.length;
         await page.clock.runFor(2000);
@@ -482,9 +615,7 @@ suite('native subagent directory and employee sidebar', () => {
         setResponse(cold);
         if ((await trigger.getAttribute('aria-expanded')) !== 'true')
           await trigger.click();
-        await page
-          .getByRole('button', { name: '刷新子智能体摘要', exact: true })
-          .click();
+        await reopenCatalog(page);
         await expect
           .poll(() => trigger.getAttribute('aria-label'))
           .toBe('2 个子智能体');
@@ -492,9 +623,7 @@ suite('native subagent directory and employee sidebar', () => {
         expect(await badge.count()).toBe(0);
         expect(await trigger.getAttribute('aria-expanded')).toBe('true');
         expect(
-          await page
-            .getByRole('button', { name: '查看idle-b摘要' })
-            .innerText(),
+          await page.getByRole('treeitem', { name: 'idle-b摘要' }).innerText(),
         ).toContain('历史记录 · 上次回合已完成');
         await capture(page, `${width}-unknown`);
         expect(
@@ -544,9 +673,9 @@ suite('native subagent directory and employee sidebar', () => {
               await route.fallback();
             },
           );
-          await page.getByRole('button', { name: '刷新子智能体摘要' }).click();
+          await reopenCatalog(page);
         } else {
-          await page.getByRole('button', { name: '查看fork-a摘要' }).focus();
+          await page.getByRole('treeitem', { name: 'fork-a摘要' }).focus();
           if (transition === 'resync')
             feed.push(fixture, { type: 'clear', reason: 'resync' });
           else
@@ -627,9 +756,7 @@ suite('native subagent directory and employee sidebar', () => {
       expect(text).toContain('当前活动状态未知，请重新读取摘要。');
       expect(text).not.toContain('fork-a 中途基线');
       expect(
-        await detail
-          .getByRole('button', { name: '刷新子智能体摘要' })
-          .isVisible(),
+        await detail.getByRole('button', { name: '关闭摘要' }).isVisible(),
       ).toBe(true);
     } finally {
       await page.close();
@@ -728,9 +855,7 @@ suite('native subagent directory and employee sidebar', () => {
       const trigger = page.locator('button[aria-haspopup="tree"]');
       await trigger.click();
       await page.getByRole('button', { name: '展开fork-a' }).click();
-      const descendant = page.getByRole('button', {
-        name: '查看grandchild摘要',
-      });
+      const descendant = page.getByRole('treeitem', { name: 'grandchild摘要' });
       await expect.poll(() => descendant.innerText()).toContain('1 秒');
       const reads = calls.length;
       await page.clock.runFor(2000);
@@ -879,6 +1004,22 @@ suite('native subagent directory and employee sidebar', () => {
               ).length,
           )
           .toBe(1);
+        if (transition === 'EOF-live') {
+          await trigger.click();
+          await page.getByRole('tree', { name: '子智能体目录' }).waitFor();
+          await expect
+            .poll(
+              () =>
+                feed.calls.filter(
+                  (c) =>
+                    c.fixture === fixture &&
+                    c.sessionId === 'parent-a' &&
+                    !c.childId,
+                ).length,
+            )
+            .toBe(2);
+        }
+        const startingReads = calls.filter((c) => c.id === 'parent-a').length;
         const connection = [...feed.connections].find(
           (c) =>
             c.fixture === fixture && c.sessionId === 'parent-a' && !c.childId,
@@ -919,18 +1060,15 @@ suite('native subagent directory and employee sidebar', () => {
           } else connection.response.end();
           await expect
             .poll(() => calls.filter((c) => c.id === 'parent-a').length)
-            .toBe(2);
+            .toBe(startingReads + 1);
           if (transition === 'EOF-live') {
             await page
               .getByRole('button', { name: '子智能体读取失败', exact: true })
               .waitFor();
-            await trigger.click();
             expect(await page.getByRole('alert').innerText()).toContain(
               '实时观察已断开，重试',
             );
-            await page
-              .getByRole('button', { name: '刷新子智能体摘要', exact: true })
-              .click();
+            await reopenCatalog(page);
             await expect
               .poll(() => trigger.getAttribute('aria-label'))
               .toBe('2 个子智能体 · 1 个运行中');
@@ -958,7 +1096,7 @@ suite('native subagent directory and employee sidebar', () => {
       1200,
       undefined,
       undefined,
-      '?root-events&transport-pressure',
+      '?root-events&transport-pressure&details',
     );
     const sockets = new Set<string>();
     // Existing observers are measured at the real upstream; new ones also
@@ -969,7 +1107,7 @@ suite('native subagent directory and employee sidebar', () => {
     });
     try {
       await page.locator('button[aria-haspopup="tree"]').click();
-      await page.getByRole('button', { name: '查看fork-a摘要' }).click();
+      await showDetail(page, 'fork-a');
       await expect
         .poll(() => ({
           directories: [...feed.connections].filter(
@@ -1091,15 +1229,20 @@ suite('native subagent directory and employee sidebar', () => {
     return cut;
   };
   async function selectChild(page: Page, id = 'fork-a') {
-    await page.locator('button[aria-haspopup="tree"]').click();
-    await page.getByRole('button', { name: `查看${id}摘要` }).click();
+    await showDetail(page, id);
     const detail = page.getByRole('complementary', { name: '子智能体摘要' });
     await expect.poll(() => detail.innerText()).toContain(`${id} 中途基线`);
     return detail;
   }
 
   it('reads the active full catalog, probes other visible parents and expands descendants with direct header totals', async () => {
-    const { page, calls } = await open();
+    const { page, calls } = await open(
+      summary(),
+      1200,
+      undefined,
+      undefined,
+      '?details',
+    );
     try {
       await expect
         .poll(() =>
@@ -1137,22 +1280,22 @@ suite('native subagent directory and employee sidebar', () => {
         exact: true,
       });
       await trigger.click();
-      await page.getByRole('button', { name: '查看idle-b摘要' }).waitFor();
+      await page.getByRole('treeitem', { name: 'idle-b摘要' }).waitFor();
       expect(
         calls.filter((call) => !call.liveOnly).map((call) => call.id),
-      ).toEqual(['parent-a']);
+      ).toEqual(['parent-a', 'parent-a']);
       expect(
         await page.getByRole('tree', { name: '子智能体目录' }).innerText(),
       ).toContain('上次回合已完成');
       await page.getByRole('button', { name: '展开fork-a' }).click();
-      await page.getByRole('button', { name: '查看grandchild摘要' }).waitFor();
+      await page.getByRole('treeitem', { name: 'grandchild摘要' }).waitFor();
       expect(
         calls.filter((call) => !call.liveOnly).map((call) => call.id),
-      ).toEqual(['parent-a']);
+      ).toEqual(['parent-a', 'parent-a']);
       expect(await trigger.getAttribute('aria-label')).toBe(
         '2 个子智能体 · 1 个运行中',
       );
-      await page.getByRole('button', { name: '查看fork-a摘要' }).click();
+      await showDetail(page, 'fork-a');
       const detail = page.getByRole('complementary', { name: '子智能体摘要' });
       await expect
         .poll(() => detail.innerText())
@@ -1178,7 +1321,7 @@ suite('native subagent directory and employee sidebar', () => {
       const trigger = page.getByRole('button', { name: /2 个子智能体/ });
       await trigger.hover();
       await page.getByRole('tree', { name: '子智能体目录' }).waitFor();
-      await page.getByRole('button', { name: '查看idle-b摘要' }).hover();
+      await page.getByRole('treeitem', { name: 'idle-b摘要' }).hover();
       await page.waitForTimeout(180);
       expect(
         await page.getByRole('tree', { name: '子智能体目录' }).count(),
@@ -1193,12 +1336,10 @@ suite('native subagent directory and employee sidebar', () => {
       expect(
         await page.getByRole('tree', { name: '子智能体目录' }).count(),
       ).toBe(1);
-      const first = page.getByRole('button', { name: '查看fork-a摘要' });
+      const first = page.getByRole('treeitem', { name: 'fork-a摘要' });
       await first.focus();
       await page.keyboard.press('ArrowRight');
-      const descendant = page.getByRole('button', {
-        name: '查看grandchild摘要',
-      });
+      const descendant = page.getByRole('treeitem', { name: 'grandchild摘要' });
       await descendant.waitFor();
       await page.keyboard.press('ArrowRight');
       expect(
@@ -1229,7 +1370,7 @@ suite('native subagent directory and employee sidebar', () => {
       await expect
         .poll(() =>
           page
-            .getByRole('button', { name: '查看idle-b摘要' })
+            .getByRole('treeitem', { name: 'idle-b摘要' })
             .evaluate((node) => node === document.activeElement),
         )
         .toBe(true);
@@ -1262,7 +1403,13 @@ suite('native subagent directory and employee sidebar', () => {
           }
         : entry,
     );
-    const { page, fixture, followCalls } = await open(value);
+    const { page, fixture, followCalls } = await open(
+      value,
+      1200,
+      undefined,
+      undefined,
+      '?details',
+    );
     const active = () =>
       followCalls().filter((call) => call.sessionId === 'parent-a');
     try {
@@ -1270,7 +1417,7 @@ suite('native subagent directory and employee sidebar', () => {
       const trigger = page.locator('button[aria-haspopup="tree"]');
       await trigger.click();
       await expect.poll(() => active().at(-1)?.liveOnly).toBe(false);
-      await page.getByRole('button', { name: '查看idle-b摘要' }).click();
+      await showDetail(page, 'idle-b');
       const detail = page.getByRole('complementary', { name: '子智能体摘要' });
       await expect
         .poll(() => detail.innerText())
@@ -1283,11 +1430,11 @@ suite('native subagent directory and employee sidebar', () => {
       await expect.poll(() => active().at(-1)?.liveOnly).toBe(false);
       await trigger.click();
       await expect.poll(() => active().at(-1)?.liveOnly).toBe(false);
-      await page.getByRole('button', { name: '刷新子智能体摘要' }).click();
+      await reopenCatalog(page);
       await expect
         .poll(() => trigger.getAttribute('aria-expanded'))
         .toBe('true');
-      await page.getByRole('button', { name: '查看idle-b摘要' }).waitFor();
+      await page.getByRole('treeitem', { name: 'idle-b摘要' }).waitFor();
       expect(active().at(-1)?.liveOnly).toBe(false);
       expect(
         followCalls()
@@ -1450,17 +1597,19 @@ suite('native subagent directory and employee sidebar', () => {
           .poll(() => trigger.getAttribute('aria-label'))
           .toContain('2 个子智能体');
         if (action === 'select') {
-          const first = page.getByRole('button', { name: '查看fork-a摘要' });
+          const first = page.getByRole('treeitem', { name: 'fork-a摘要' });
           await expect
             .poll(() =>
               first.evaluate((node) => node === document.activeElement),
             )
             .toBe(true);
           await page.keyboard.press('Enter');
-          const detail = page.getByRole('complementary', {
-            name: '子智能体摘要',
-          });
-          expect(await detail.innerText()).toContain('fork-a 自己的初始任务');
+          expect(
+            await page
+              .getByRole('complementary', { name: '子智能体摘要' })
+              .count(),
+          ).toBe(0);
+          expect(await trigger.getAttribute('aria-expanded')).toBe('true');
         } else {
           expect(await trigger.getAttribute('aria-expanded')).toBe('false');
           expect(
@@ -1497,7 +1646,13 @@ suite('native subagent directory and employee sidebar', () => {
       observation: { source: 'prepared', cursor: 8 },
     }));
     (cold.descendants[1] as Child).task = undefined;
-    const { page, calls } = await open(cold, 390);
+    const { page, calls } = await open(
+      cold,
+      390,
+      undefined,
+      undefined,
+      '?details',
+    );
     try {
       const trigger = page.locator('button[aria-haspopup="tree"]');
       await expect.poll(() => calls.length).toBe(3);
@@ -1517,10 +1672,10 @@ suite('native subagent directory and employee sidebar', () => {
           .every((call) => call.id === 'parent-a'),
       ).toBe(true);
       await trigger.click();
-      await page.getByRole('button', { name: '查看idle-b摘要' }).waitFor();
+      await page.getByRole('treeitem', { name: 'idle-b摘要' }).waitFor();
       expect(await trigger.getAttribute('aria-label')).toBe('2 个子智能体');
-      expect(calls.filter((call) => !call.liveOnly)).toHaveLength(2);
-      await page.getByRole('button', { name: '查看idle-b摘要' }).click();
+      expect(calls.filter((call) => !call.liveOnly)).toHaveLength(3);
+      await showDetail(page, 'idle-b');
       const detail = page.getByRole('complementary', { name: '子智能体摘要' });
       const text = await detail.innerText();
       expect(text).toContain('历史摘要 · 当前活动状态未知');
@@ -1543,7 +1698,7 @@ suite('native subagent directory and employee sidebar', () => {
       await expect.poll(() => calls.length).toBeGreaterThan(before);
       await expect
         .poll(() => calls.filter((call) => !call.liveOnly).length)
-        .toBe(3);
+        .toBe(4);
     } finally {
       await page.close();
     }
@@ -1579,7 +1734,7 @@ suite('native subagent directory and employee sidebar', () => {
         ],
       };
       setResponse(diagnostic);
-      await page.getByRole('button', { name: '刷新子智能体摘要' }).click();
+      await reopenCatalog(page);
       const trigger = page.getByRole('button', { name: /1 个子智能体/ });
       await trigger.waitFor();
       if ((await trigger.getAttribute('aria-expanded')) !== 'true')
@@ -1589,9 +1744,9 @@ suite('native subagent directory and employee sidebar', () => {
       ).toContain('暂不支持此类型');
       expect(
         await page
-          .getByRole('button', { name: '查看unsupported-child摘要' })
-          .isDisabled(),
-      ).toBe(true);
+          .getByRole('treeitem', { name: 'unsupported-child摘要' })
+          .getAttribute('aria-disabled'),
+      ).toBe('true');
       expect(await trigger.innerText()).not.toContain('0 个运行中');
       expect(await trigger.locator('span[aria-hidden="true"]').count()).toBe(0);
       await page.evaluate(() => window.dispatchEvent(new Event('offline')));
@@ -2161,9 +2316,9 @@ suite('native subagent directory and employee sidebar', () => {
         await page.getByRole('complementary', { name: '子智能体摘要' }).count(),
       ).toBe(0);
       await page.locator('button[aria-haspopup="tree"]').click();
-      await page.getByRole('button', { name: '查看fork-a摘要' }).waitFor();
+      await page.getByRole('treeitem', { name: 'fork-a摘要' }).waitFor();
       feed.sources.get(fixture)!.status = 403;
-      await page.getByRole('button', { name: '查看fork-a摘要' }).click();
+      await showDetail(page, 'fork-a');
       const denied = page.getByRole('complementary', { name: '子智能体摘要' });
       await expect.poll(() => denied.innerText()).toContain('暂时无法读取摘要');
       expect(await denied.innerText()).not.toMatch(
@@ -2188,10 +2343,16 @@ suite('native subagent directory and employee sidebar', () => {
           }
         : entry,
     );
-    const { page, fixture } = await open(value);
+    const { page, fixture } = await open(
+      value,
+      1200,
+      undefined,
+      undefined,
+      '?details',
+    );
     try {
       await page.locator('button[aria-haspopup="tree"]').click();
-      await page.getByRole('button', { name: '查看idle-b摘要' }).click();
+      await showDetail(page, 'idle-b');
       const detail = page.getByRole('complementary', { name: '子智能体摘要' });
       expect(await detail.innerText()).toContain('历史摘要 · 上次回合已完成');
       expect(await detail.innerText()).toContain('最后回复已截断');

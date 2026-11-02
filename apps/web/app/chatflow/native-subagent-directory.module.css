@@ -12,6 +12,11 @@
   width: min(520px, calc(100vw - 32px));
   max-height: 65vh;
 }
+.title {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 600;
+}
 .catalog ul {
   list-style: none;
   padding: 0;
@@ -27,6 +32,9 @@
   gap: 8px;
 }
 .entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   flex: 1;
   min-width: 0;
   height: auto;
@@ -34,6 +42,10 @@
   white-space: normal;
   padding: 8px;
   justify-content: start;
+}
+.catalog [role='treeitem']:focus-visible {
+  outline: 2px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
 }
 .label {
   flex: 1;

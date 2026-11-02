@@ -482,10 +482,13 @@ suite('native child Stop request identity and truthful receipts', () => {
     return { page, scenario, errors, browserPosts };
   }
   async function show(page: Page, label: string) {
-    await page.getByRole('button', { name: /4 个子智能体/ }).click();
+    const child = summary.descendants.find(
+      (entry) => entry.kind === 'child' && entry.label === label,
+    );
     await page
-      .getByRole('button', { name: `查看${label}摘要`, exact: true })
-      .click();
+      .getByRole('textbox', { name: '子任务 ID（测试）' })
+      .fill(child?.id ?? label);
+    await page.getByRole('button', { name: '打开详情（测试）' }).click();
     await page.getByRole('complementary', { name: '子智能体摘要' }).waitFor();
   }
   const detail = (page: Page) =>
@@ -1000,15 +1003,7 @@ suite('native child Stop request identity and truthful receipts', () => {
           .toContain('停止请求已接收；不代表子任务已经停止。');
         expect(scenario.posts).toHaveLength(1);
         await page.reload();
-        await page
-          .getByRole('button', { name: '子智能体读取失败', exact: true })
-          .click();
-        await page
-          .getByRole('button', {
-            name: '查看native-child-0原请求回执',
-            exact: true,
-          })
-          .click();
+        await show(page, 'native-child-0');
         expect(await receipt(page).locator('code').textContent()).toBe(id);
         expect(await detail(page).textContent()).toContain('尚无确认结果');
         expect(await detail(page).textContent()).not.toContain(
