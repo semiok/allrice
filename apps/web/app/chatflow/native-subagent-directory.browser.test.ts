@@ -306,8 +306,21 @@ suite('native subagent directory and employee sidebar', () => {
   it.each(['light', 'dark'])(
     '“看看子智能体，收起来再看看”：refreshes once per opening, keeps %s theme and has no detail or receipt entry',
     async (theme) => {
+      const value = summary();
+      const observedAt = Date.now();
+      value.descendants = value.descendants.map((entry) =>
+        entry.kind === 'child' && entry.running
+          ? {
+              ...entry,
+              timing: {
+                settledMs: 2000,
+                active: { since: observedAt - 3000, through: observedAt },
+              },
+            }
+          : entry,
+      );
       const { page, calls, followCalls } = await open(
-        summary(),
+        value,
         1200,
         undefined,
         undefined,
@@ -373,7 +386,7 @@ suite('native subagent directory and employee sidebar', () => {
           size: '16px',
           weight: '600',
           background:
-            theme === 'light' ? 'rgb(255, 255, 255)' : 'rgb(23, 23, 23)',
+            theme === 'light' ? 'rgb(255, 255, 255)' : 'rgb(21, 21, 23)',
         });
         await trigger.click(); // Pin the existing hover opening.
         await page.getByRole('button', { name: '展开fork-a' }).click();
@@ -400,6 +413,7 @@ suite('native subagent directory and employee sidebar', () => {
             .getByRole('complementary', { name: '子智能体摘要' })
             .count(),
         ).toBe(0);
+        await title.click();
         await capture(page, `popover-${theme}`);
         await first.press('Escape');
         expect(await tree.count()).toBe(0);
@@ -2361,14 +2375,14 @@ suite('native subagent directory and employee sidebar', () => {
         )
         .toBe(true);
       feed.sources.get(fixture)!.status = 403;
-      await showDetail(page, 'fork-a');
+      await showDetail(page, 'other-root:fork-a');
       await expect
         .poll(() =>
           feed.calls.some(
             (call) =>
               call.fixture === fixture &&
               call.sessionId === 'parent-b' &&
-              call.childId === 'fork-a',
+              call.childId === 'other-root:fork-a',
           ),
         )
         .toBe(true);
