@@ -3,6 +3,7 @@ import { createServer, type Server } from 'node:http';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type {
@@ -870,6 +871,15 @@ suite('native child Stop request identity and truthful receipts', () => {
 
   it('a late response from an unmounted business session cannot erase its successor request reference', async () => {
     const { page, scenario, errors } = await open('accepted', true);
+    const traceDirectory = resolve('.local/integration-collection');
+    await mkdir(traceDirectory, { recursive: true });
+    await page.context().tracing.start({
+      screenshots: true,
+      snapshots: true,
+      sources: true,
+    });
+    page.setDefaultNavigationTimeout(5000);
+    page.setDefaultTimeout(5000);
     const releaseA = scenario.release!;
     let releaseB: (() => void) | undefined;
     try {
@@ -948,8 +958,10 @@ suite('native child Stop request identity and truthful receipts', () => {
         'Unmount recovery: both IDs saved; reloading while B remains held',
       );
       await page.reload();
+      console.info('Unmount recovery: reload completed; releasing B');
       releaseB!();
       await show(page, '甲');
+      console.info('Unmount recovery: restored detail opened');
       expect(await receipt(page).locator('code').allTextContents()).toEqual(
         ids,
       );
@@ -967,7 +979,13 @@ suite('native child Stop request identity and truthful receipts', () => {
     } finally {
       releaseA();
       releaseB?.();
-      await page.close();
+      try {
+        await page.context().tracing.stop({
+          path: resolve(traceDirectory, 'unmounted-control-reload-trace.zip'),
+        });
+      } finally {
+        await page.close();
+      }
     }
   });
 
