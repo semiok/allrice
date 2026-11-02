@@ -46,7 +46,7 @@
   color: light-dark(#8551ce, #b18aef);
 }
 .workflow {
-  color: light-dark(#447bcc, #82acff);
+  color: light-dark(#249552, #69cf8b);
 }
 .schedule {
   color: light-dark(#579494, #8cc9c9);
@@ -158,7 +158,7 @@
   background: light-dark(#eee4ff, #9d66e32b);
 }
 .tile.workflow {
-  background: light-dark(#e6efff, #558df32b);
+  background: light-dark(#e5f6eb, #3cae622b);
 }
 .chevron {
   display: flex;

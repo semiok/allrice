@@ -295,7 +295,9 @@ suite('native subagent directory and employee sidebar', () => {
         expect(
           await trigger.evaluate((node) => getComputedStyle(node).color),
         ).toBe('rgb(37, 99, 235)');
-        expect(await trigger.locator('svg rect').count()).toBe(3);
+        expect(await trigger.locator('svg').getAttribute('aria-hidden')).toBe(
+          'true',
+        );
         expect(await trigger.locator('[data-state="ongoing"]').count()).toBe(0);
         const badge = trigger.locator('span[aria-hidden="true"]');
         const colors = await badge.evaluate((node) => {

@@ -65,10 +65,9 @@ export function WorkbenchIcon({
     >
       {kind === 'subagent' ? (
         <>
-          <rect x="9.5" y="2" width="5" height="5" rx="1" />
-          <path d="M12 7v5M5 16v-4h14v4" />
-          <rect x="2" y="16" width="6" height="6" rx="1.5" />
-          <rect x="16" y="16" width="6" height="6" rx="1.5" />
+          <circle cx="8" cy="7" r="2.75" />
+          <path d="M3 18v-1.5a5 5 0 0 1 5-5h1a5 5 0 0 1 3.2 1.2M14 4.5a2.75 2.75 0 0 1 0 5.5M15.5 11.5a4.5 4.5 0 0 1 3.5 1.8" />
+          <path d="M14 16.5a3.5 3.5 0 0 1 5.8-1.2L21 16.5m0-2.5v2.5h-2.5M20.5 19a3.5 3.5 0 0 1-5.8 1.2L13.5 19m0 2.5V19H16" />
         </>
       ) : kind === 'experience' ? (
         <>
@@ -77,10 +76,10 @@ export function WorkbenchIcon({
         </>
       ) : kind === 'workflow' ? (
         <>
-          <rect x="3" y="3" width="7" height="6" rx="1.5" />
-          <rect x="14" y="15" width="7" height="6" rx="1.5" />
-          <rect x="3" y="15" width="7" height="6" rx="1.5" />
-          <path d="M6.5 9v6M10 6h7.5v9" />
+          <circle cx="5" cy="5" r="2.5" />
+          <circle cx="5" cy="15" r="2.5" />
+          <circle cx="19" cy="19" r="2.5" />
+          <path d="M7.5 5H16a5 5 0 0 1 0 10H7.5M5 17.5A1.5 1.5 0 0 0 6.5 19h10" />
         </>
       ) : kind === 'start' ? (
         <>

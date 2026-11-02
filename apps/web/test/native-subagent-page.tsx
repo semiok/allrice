@@ -2,7 +2,13 @@ import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { createRoot } from 'react-dom/client';
 import { EmployeeSidebar } from '../app/chatflow/employee-sidebar';
 import { NativeSubagentDirectory } from '../app/chatflow/native-subagent-directory';
-import { WorkbenchEntries } from '../app/chatflow/workbench-modules';
+import {
+  WorkbenchEntries,
+  WorkbenchStart,
+  moduleLabels,
+  type WorkbenchModule,
+} from '../app/chatflow/workbench-modules';
+import { applyTheme } from '../lib/theme/theme';
 import { nativeSubagentControlRoot } from '../app/chatflow/native-subagent-controls';
 import { presentationPolicyFor } from '../app/chatflow/dsh-upstream/presentation/presentation-policy';
 import {
@@ -44,6 +50,8 @@ const headers = {
 function Page() {
   const [activeId, setActiveId] = useState('parent-a');
   const query = new URLSearchParams(location.search);
+  const icons = query.has('icons');
+  const [selected, setSelected] = useState<WorkbenchModule | null>(null);
   const controls = query.has('controls');
   const rootEvents = controls || query.has('root-events');
   const [controlRunId, setControlRunId] = useState(
@@ -91,7 +99,7 @@ function Page() {
         style={{
           width: 230,
           height: 500,
-          display: 'flex',
+          display: icons ? 'none' : 'flex',
           flexDirection: 'column',
         }}
       >
@@ -118,7 +126,7 @@ function Page() {
           onDetails={() => {}}
         />
       </nav>
-      <section style={{ minWidth: 0 }}>
+      <section style={{ minWidth: 0, flex: icons ? 1 : undefined }}>
         <header className={shellUi.conversationHeader}>
           <div className={conversationUi.titleRow}>
             <h1>{activeId} 父级任务</h1>
@@ -143,14 +151,27 @@ function Page() {
               <WorkbenchEntries
                 counts={{ files: 33, experience: 1, workflow: 0 }}
                 experience
-                workflow={false}
-                open={false}
-                onOpen={() => {}}
+                workflow={icons && !query.has('no-workflow')}
+                open={icons && selected !== null}
+                selected={selected}
+                onOpen={icons ? setSelected : () => {}}
                 onToggle={() => {}}
               />
             </div>
           </div>
         </header>
+        {icons && (
+          <section aria-label="图标工作台">
+            <WorkbenchStart
+              experience
+              workflow={!query.has('no-workflow')}
+              onOpen={setSelected}
+            />
+            <output aria-label="当前工作台模块">
+              {selected ? moduleLabels[selected] : '未选择'}
+            </output>
+          </section>
+        )}
         {rootEvents && (
           <output aria-label="root事件游标">
             {runViews[rootRunId]?.cursor ?? 'empty'}
@@ -180,4 +201,6 @@ function Page() {
     </main>
   );
 }
+const theme = new URLSearchParams(location.search).get('theme');
+if (theme === 'light' || theme === 'dark') applyTheme(theme);
 createRoot(document.getElementById('root')!).render(<Page />);
