@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 
 import {
   createTraceableMemory,
+  assertEmployeeChatHumanSource,
+  DataAccessError,
   getToolBrokerFile,
   listToolBrokerFiles,
   readToolBrokerMemoryContext,
@@ -24,8 +26,8 @@ import { parseDocument } from '../../document-reader.js';
 import { readPdfLocally } from '../../document-read-local.js';
 import { confirmToolFailure, HandlerError } from '../../errors.js';
 import {
+  hasExplicitForgetIntent,
   hasExplicitRememberIntent,
-  hasStableMemorySignal,
 } from '../../memory-lifecycle.js';
 import {
   limitValue,
@@ -459,31 +461,39 @@ export const rememberWorkspaceMemory: RiceToolHandler = async ({
     });
     return error;
   };
-  const lifecycleState = memoryLifecycleStateValue(args.lifecycleState);
-  if (
-    lifecycleState === 'durable' &&
-    !hasExplicitRememberIntent(input.userRequest)
-  ) {
-    throw rejected(
-      'MEMORY_EXPLICIT_CONFIRMATION_REQUIRED',
-      '只有用户在当前消息中明确要求记住时，才能写入长期记忆',
-    );
-  }
-  if (
-    lifecycleState === 'candidate' &&
-    !hasStableMemorySignal(input.userRequest)
-  ) {
-    throw rejected(
-      'MEMORY_STABLE_USER_STATEMENT_REQUIRED',
-      '候选记忆必须来自用户当前消息中的稳定偏好、决定或项目事实',
-    );
-  }
+  const requestedLifecycleState = memoryLifecycleStateValue(
+    args.lifecycleState,
+  );
   if (!input.context.workspaceId || !input.employeeId || !input.userMessageId) {
     throw rejected(
       'MEMORY_SOURCE_MESSAGE_REQUIRED',
       '长期记忆缺少当前员工或用户消息来源',
     );
   }
+  try {
+    await assertEmployeeChatHumanSource({
+      context: input.context,
+      userMessageId: input.userMessageId,
+    });
+  } catch (error) {
+    if (
+      error instanceof DataAccessError &&
+      error.code === 'authorization_denied'
+    )
+      throw rejected(
+        'MEMORY_HUMAN_SOURCE_REQUIRED',
+        '记忆只能来自当前真人消息',
+      );
+    throw error;
+  }
+  if (hasExplicitForgetIntent(input.userRequest)) {
+    throw rejected('MEMORY_USER_DECLINED', '用户当前消息要求不要保存记忆');
+  }
+  const lifecycleState =
+    requestedLifecycleState === 'durable' &&
+    hasExplicitRememberIntent(input.userRequest)
+      ? 'durable'
+      : 'candidate';
   const content = stringValue(args.content, 'content');
   if (content.length > 10_000) {
     throw new HandlerError(
@@ -506,7 +516,7 @@ export const rememberWorkspaceMemory: RiceToolHandler = async ({
       sourceType: 'message',
       sourceId: input.userMessageId,
       sourceLabel:
-        lifecycleState === 'durable' ? '用户明确要求记住' : '用户稳定陈述候选',
+        lifecycleState === 'durable' ? '用户明确要求记住' : '模型提取候选',
       confidence: lifecycleState === 'durable' ? 1 : 0.8,
       expiresAt,
       lifecycleState,
@@ -529,7 +539,7 @@ export const rememberWorkspaceMemory: RiceToolHandler = async ({
       },
     }),
     summary:
-      lifecycleState === 'durable'
+      memory.lifecycleState === 'durable'
         ? '已保存为长期记忆'
         : '已保存为待确认候选记忆',
     itemCount: 1,

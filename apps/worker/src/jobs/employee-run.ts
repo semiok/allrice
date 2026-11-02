@@ -1583,7 +1583,10 @@ export async function executeEmployeeRun({
                     sessionId: kernel.sessionId,
                     employeeId: executionSnapshot.employee.id,
                     userMessageId,
-                    userRequest: kernel.userRequest,
+                    userRequest:
+                      name === 'workspace.memory.remember'
+                        ? resolved.currentUserRequest
+                        : kernel.userRequest,
                     signal,
                     call: {
                       id: idempotencyKey,
@@ -1958,7 +1961,10 @@ export async function executeEmployeeRun({
                                   : undefined,
                               employeeId: executionSnapshot.employee.id,
                               userMessageId,
-                              userRequest: kernel.userRequest,
+                              userRequest:
+                                call.name === 'workspace.memory.remember'
+                                  ? resolved.currentUserRequest
+                                  : kernel.userRequest,
                               signal,
                               call,
                             }),

@@ -704,7 +704,7 @@ export async function createRecurringTaskFromExecutionContext(
       instance,
       'automation.create',
     );
-    await assertEmployeeChatHumanSource(tx, input, current);
+    await assertEmployeeChatHumanSource(input, tx);
     if (!nativeRecurringProductEnabled())
       throw new NativeRecurringProductError('disabled');
     // Wording only grants. Without any answered question in this Run, a

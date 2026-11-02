@@ -3,17 +3,13 @@ const explicitRememberPattern =
 const explicitForgetPattern =
   /(?:不要|不用|别)(?:记住|记下|保存)|\b(?:do not|don't) remember\b|\bforget (?:this|that)\b/i;
 
-/**
- * Durable memory is a user-controlled action. A model or untrusted tool result
- * cannot opt itself into long-term memory merely by calling the write tool.
- */
+/** A matched request permits durable; unmatched requests remain candidates. */
 export function hasExplicitRememberIntent(userRequest: string | undefined) {
-  const request = userRequest?.trim() ?? '';
-  return (
-    request.length > 0 &&
-    explicitRememberPattern.test(request) &&
-    !explicitForgetPattern.test(request)
-  );
+  return explicitRememberPattern.test(userRequest?.trim() ?? '');
+}
+
+export function hasExplicitForgetIntent(userRequest: string | undefined) {
+  return explicitForgetPattern.test(userRequest?.trim() ?? '');
 }
 
 export interface MemoryCandidateMessage {
