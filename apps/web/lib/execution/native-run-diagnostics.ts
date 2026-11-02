@@ -78,6 +78,18 @@ async function requestNativeRead<T>(
       );
     return await read(response);
   } catch (error) {
+    console.warn('Native diagnostics request failed', {
+      at: new Date().toISOString(),
+      targetId: 'sessionId' in address ? address.sessionId : address.runId,
+      liveOnly: 'liveOnly' in address && !!address.liveOnly,
+      follow: 'follow' in address && !!address.follow,
+      phase: response
+        ? response.ok
+          ? 'decode'
+          : 'worker_status'
+        : 'transport',
+      workerStatus: response?.status,
+    });
     await response?.body?.cancel().catch(() => {});
     if (error instanceof NativeDiagnosticsUnavailable) throw error;
     throw new NativeDiagnosticsUnavailable();

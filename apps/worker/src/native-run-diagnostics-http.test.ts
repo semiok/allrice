@@ -5,6 +5,7 @@ import { createNativeRunDiagnosticsHttpHandler } from './native-run-diagnostics-
 
 const servers: Server[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const s of servers.splice(0)) {
     s.closeAllConnections();
     await new Promise<void>((r) => s.close(() => r()));
@@ -130,6 +131,90 @@ const summaryInput = {
   organizationId: input.organizationId,
   workspaceId: input.workspaceId,
 };
+it.each([
+  [
+    'NATIVE_QUERY_BINDING_UNAVAILABLE',
+    undefined,
+    'NATIVE_QUERY_BINDING_UNAVAILABLE',
+    503,
+  ],
+  ['NATIVE_QUERY_HOST_MISMATCH', undefined, 'NATIVE_QUERY_HOST_MISMATCH', 503],
+  [
+    'private /tenant/user-content',
+    'SESSION_QUERY_PERSISTENCE_FAILED',
+    'SESSION_QUERY_PERSISTENCE_FAILED',
+    503,
+  ],
+  ['private Bearer real_session_opaque_token', undefined, 'unclassified', 503],
+  [
+    'NATIVE_QUERY_SECRET_USER_CONTENT',
+    'CUSTOM_PRIVATE_CODE',
+    'unclassified',
+    503,
+  ],
+  ['private', 'authentication_required', 'unclassified', 401],
+  ['private', 'authorization_denied', 'unclassified', 404],
+  ['private', 'not_found', 'unclassified', 404],
+  ['private', 'tenant_context_invalid', 'unclassified', 404],
+] as const)(
+  'logs only an allowlisted reason for a summary failure (%s, %s)',
+  async (message, code, reason, status) => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const h = await host();
+    h.subagents.target.mockRejectedValue(
+      Object.assign(Error(message), { code }),
+    );
+    const response = await h.request(
+      { ...summaryInput, liveOnly: true },
+      {},
+      '/internal/native-subagent-summary',
+    );
+    expect(response.status).toBe(status);
+    expect(await response.json()).toEqual({
+      error:
+        status === 401
+          ? 'authentication_required'
+          : status === 404
+            ? 'not_found'
+            : 'diagnostics_unavailable',
+    });
+    expect(h.subagents.read).not.toHaveBeenCalled();
+    expect(warning).toHaveBeenCalledExactlyOnceWith(
+      'Native diagnostics read failed',
+      {
+        at: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T.*Z$/),
+        sessionId: summaryInput.sessionId,
+        liveOnly: true,
+        follow: false,
+        reason,
+      },
+    );
+    expect(JSON.stringify(warning.mock.calls)).not.toMatch(
+      /Bearer|real_session_opaque_token|private|user-content|SECRET_USER_CONTENT|CUSTOM_PRIVATE_CODE/,
+    );
+  },
+);
+
+it('classifies a parser failure without logging its input and preserves HTTP 400', async () => {
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const h = await host();
+  h.authenticate.mockRejectedValue(new SyntaxError('private JSON body'));
+  const response = await h.request(
+    summaryInput,
+    {},
+    '/internal/native-subagent-summary',
+  );
+  expect(response.status).toBe(400);
+  expect(await response.json()).toEqual({ error: 'invalid_request' });
+  expect(warning).toHaveBeenCalledWith(
+    'Native diagnostics read failed',
+    expect.objectContaining({
+      reason: 'invalid_json',
+      sessionId: summaryInput.sessionId,
+    }),
+  );
+  expect(JSON.stringify(warning.mock.calls)).not.toContain('private JSON body');
+});
 it('aborts a summary on service shutdown and drains reader finally before HTTP close with the client connected', async () => {
   const entered = gate(),
     cleaning = gate(),

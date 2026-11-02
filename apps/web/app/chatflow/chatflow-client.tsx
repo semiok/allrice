@@ -1320,7 +1320,7 @@ export function ChatFlowClient({
     tenantHeaders,
     nativeReadable
       ? {
-          [activeId!]: `${settingsScope}/${nativeSession?.updatedAt}/${nativeSession?.running}/${isRunning}/${history?.messages.at(-1)?.status}/${nativeReadyKey}`,
+          [activeId!]: `${settingsScope}/${nativeSession?.ownerId}/${nativeSession?.employeeAssignmentId}/${nativeSession?.employeeInstanceId}/${nativeSession?.employeeVersionId}/${nativeReadyKey}`,
         }
       : {},
     false,

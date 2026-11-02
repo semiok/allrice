@@ -8,7 +8,7 @@ import {
   type NativeSubagentSummary,
 } from '@allrice/contracts';
 import { NativeSubagentFixtureFeed } from '../../test/native-subagent-fixture-feed';
-import type { Attachment, WorkspaceFile } from './chatflow-types';
+import type { Attachment, Session, WorkspaceFile } from './chatflow-types';
 import { createRequire } from 'node:module';
 import { createServer, type ServerResponse } from 'node:http';
 import { execFileSync } from 'node:child_process';
@@ -347,6 +347,7 @@ suite(
       const nextStepsGate = new Promise<void>((done) => {
         releaseNextStepsA = done;
       });
+      let nativeProjection: Partial<Session> = {};
       const fixtureSession = (id: string) => ({
         ...session(id),
         ...(options.nativeParents
@@ -355,6 +356,7 @@ suite(
         ...(options.nextSteps
           ? { employeeAssignmentId: nextAssignmentId }
           : {}),
+        ...(id === A ? nativeProjection : {}),
       });
       let releaseHistoryB!: () => void;
       const historyBGate = new Promise<void>((done) => {
@@ -614,9 +616,14 @@ suite(
           });
           return;
         }
-        if (path === '/api/v1/sessions' && options.taskSuggestions) {
+        if (
+          path === '/api/v1/sessions' &&
+          (options.taskSuggestions || options.nativeParents)
+        ) {
           answer(response, {
-            sessions: [session(A), session(B)],
+            sessions: (options.nativeParents ? nativeIds : [A, B]).map(
+              fixtureSession,
+            ),
             nextCursor: null,
           });
           return;
@@ -844,6 +851,9 @@ suite(
           releaseFull: () => releaseNativeFull(),
           connections: () => [...nativeFeed.connections],
           summary: nativeSummary,
+          updateSession(patch: Partial<Session>) {
+            nativeProjection = { ...nativeProjection, ...patch };
+          },
           push(id: string, summary: NativeSubagentSummary) {
             nativeFeed.push(
               nativeFixture,
@@ -1538,6 +1548,169 @@ suite(
         await f.close();
       }
     });
+
+    it('keeps the same native directory open through terminal, history and Workspace projections', async () => {
+      const f = await fixture({ nativeParents: 3, running: true });
+      let releaseHistory = () => {},
+        releaseWorkspace = () => {};
+      try {
+        await expect
+          .poll(() => f.reads.some((path) => path.includes(`${runId}/events`)))
+          .toBe(true);
+        f.native.allowReady();
+        const trigger = f.page.locator('button[aria-haspopup="tree"]');
+        await trigger.waitFor();
+        await expect.poll(() => f.native.fullRequests()).toBe(2);
+        await expect
+          .poll(
+            () =>
+              f.native.connections().filter((c) => c.sessionId === A).length,
+          )
+          .toBe(1);
+        const connection = f.native
+          .connections()
+          .find((c) => c.sessionId === A)!;
+        await trigger.click();
+        const tree = f.page.getByRole('tree', { name: '子智能体目录' });
+        await tree.waitFor();
+        const trace = await trigger.evaluateHandle((node) => {
+          const header = node.closest('header')!;
+          const states: boolean[] = [];
+          const observer = new MutationObserver(() =>
+            states.push(node.isConnected),
+          );
+          observer.observe(header, { childList: true, subtree: true });
+          return {
+            stop: () => {
+              observer.disconnect();
+              return states;
+            },
+          };
+        });
+        const historyGate = new Promise<void>((done) => {
+          releaseHistory = done;
+        });
+        const workspaceGate = new Promise<void>((done) => {
+          releaseWorkspace = done;
+        });
+        await f.page.route(`**/api/v1/sessions/${A}?*`, async (route) => {
+          await historyGate;
+          await route.fallback();
+        });
+        await f.page.route('**/api/v1/workspace', async (route) => {
+          await workspaceGate;
+          await route.fallback();
+        });
+        const historyRequested = f.page.waitForRequest(
+          (r) => new URL(r.url()).pathname === `/api/v1/sessions/${A}`,
+        );
+        f.native.updateSession({
+          updatedAt: '2026-09-14T00:00:01Z',
+          running: true,
+        });
+        f.finishRun(A, 'succeeded');
+        await historyRequested;
+        const assertRetained = async () => {
+          expect(f.native.fullRequests()).toBe(2);
+          expect(f.native.connections().find((c) => c.sessionId === A)).toBe(
+            connection,
+          );
+          expect(connection.response.destroyed).toBe(false);
+          expect(await trigger.getAttribute('aria-expanded')).toBe('true');
+          expect(await tree.isVisible()).toBe(true);
+        };
+        await assertRetained();
+        f.native.updateSession({
+          updatedAt: '2026-09-14T00:00:02Z',
+          running: false,
+        });
+        const workspaceRequested = f.page.waitForRequest(
+          (r) => new URL(r.url()).pathname === '/api/v1/workspace',
+        );
+        releaseHistory();
+        await workspaceRequested;
+        await f.page
+          .getByText('Synthetic completed reply', { exact: true })
+          .waitFor();
+        await assertRetained();
+        f.native.updateSession({
+          updatedAt: '2026-09-14T00:00:03Z',
+          running: true,
+        });
+        const archiveApplied = f.page.waitForResponse(
+          (r) => new URL(r.url()).pathname === '/api/v1/sessions',
+        );
+        releaseWorkspace();
+        await archiveApplied;
+        const settled = f.native.summary(A);
+        settled.descendants = settled.descendants.map((entry) => ({
+          ...entry,
+          running: false,
+        }));
+        f.native.push(A, settled);
+        await expect
+          .poll(() => trigger.getAttribute('aria-label'))
+          .toBe('1 个子智能体');
+        await assertRetained();
+        expect(await trace.evaluate((value) => value.stop())).not.toContain(
+          false,
+        );
+        expect(f.errors).toEqual([]);
+        expect(f.writes).toEqual([]);
+      } finally {
+        releaseHistory();
+        releaseWorkspace();
+        await f.close();
+      }
+    });
+
+    it.each([
+      'ownerId',
+      'employeeAssignmentId',
+      'employeeInstanceId',
+      'employeeVersionId',
+    ] as const)(
+      'invalidates an active native directory when %s changes in refreshed Session data',
+      async (field) => {
+        const f = await fixture({ nativeParents: 3, running: true });
+        try {
+          const trigger = f.page.locator('button[aria-haspopup="tree"]');
+          await trigger.waitFor();
+          await expect
+            .poll(
+              () =>
+                f.native.connections().filter((c) => c.sessionId === A).length,
+            )
+            .toBe(1);
+          const before = f.native.connections().find((c) => c.sessionId === A)!;
+          const reads = f.native.fullRequests();
+          f.native.updateSession({
+            [field]: 'changed',
+            updatedAt: '2026-09-14T00:00:01Z',
+          });
+          f.finishRun(A, 'succeeded');
+          await expect.poll(() => before.response.destroyed).toBe(true);
+          if (field === 'ownerId') {
+            const failed = f.page.getByRole('button', {
+              name: '子智能体读取失败',
+              exact: true,
+            });
+            await failed.waitFor();
+            expect(await failed.innerText()).toBe('!');
+            expect(f.native.fullRequests()).toBe(reads);
+          } else {
+            await expect
+              .poll(() => f.native.fullRequests())
+              .toBeGreaterThan(reads);
+            await trigger.waitFor();
+          }
+          expect(f.errors).toEqual([]);
+          expect(f.writes).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      },
+    );
 
     it('does not read an active native parent owned by a different viewer or borrow another parent count', async () => {
       const f = await fixture({ nativeParents: 3, nativeOtherOwner: true });

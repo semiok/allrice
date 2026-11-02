@@ -3,11 +3,13 @@ import type { RequestContext } from '@allrice/contracts';
 import {
   requestNativeRunDiagnostics,
   requestNativeSubagentSummary,
+  requestNativeSubagentFollow,
 } from './native-run-diagnostics';
 
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 const runId = '11111111-1111-4111-8111-111111111111';
 const input = {
@@ -126,4 +128,89 @@ it('refuses a mismatched Session envelope or malformed summary without exposing 
   await expect(
     requestNativeSubagentSummary({ ...input, sessionId: runId }),
   ).rejects.toMatchObject({ status: 503 });
+});
+
+it.each(['transport', 'worker_status', 'decode'])(
+  'logs a fixed %s category and Session address without credentials or remote failures',
+  async (phase) => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const secret = `${input.token} Bearer private-header /private/tenant/user-content`;
+    const fetch = vi.fn();
+    if (phase === 'transport') fetch.mockRejectedValue(Error(secret));
+    else
+      fetch.mockResolvedValue(
+        new Response(secret, { status: phase === 'decode' ? 200 : 503 }),
+      );
+    vi.stubGlobal('fetch', fetch);
+    await expect(
+      requestNativeSubagentSummary({
+        ...input,
+        sessionId: runId,
+        liveOnly: true,
+      }),
+    ).rejects.toMatchObject({
+      status: 503,
+      message: 'Native diagnostics unavailable',
+    });
+    expect(warning).toHaveBeenCalledExactlyOnceWith(
+      'Native diagnostics request failed',
+      {
+        at: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T.*Z$/),
+        targetId: runId,
+        liveOnly: true,
+        follow: false,
+        phase,
+        workerStatus:
+          phase === 'transport' ? undefined : phase === 'decode' ? 200 : 503,
+      },
+    );
+    expect(JSON.stringify(warning.mock.calls)).not.toMatch(
+      /real_session_token|Bearer|private-header|\/private|user-content/,
+    );
+  },
+);
+
+it.each([401, 404, 429, 500, 503])(
+  'keeps the Worker %s mapping while logging only its status',
+  async (status) => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(new Response('private Worker error', { status })),
+    );
+    await expect(
+      requestNativeSubagentSummary({ ...input, sessionId: runId }),
+    ).rejects.toMatchObject({
+      status: [401, 404].includes(status) ? status : 503,
+    });
+    expect(warning).toHaveBeenCalledWith(
+      'Native diagnostics request failed',
+      expect.objectContaining({ phase: 'worker_status', workerStatus: status }),
+    );
+    expect(JSON.stringify(warning.mock.calls)).not.toContain(
+      'private Worker error',
+    );
+  },
+);
+
+it('classifies an invalid follow envelope without exposing its body or changing the error', async () => {
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  vi.stubGlobal(
+    'fetch',
+    vi.fn().mockResolvedValue(Response.json({ secret: input.token })),
+  );
+  await expect(
+    requestNativeSubagentFollow({ ...input, sessionId: runId }),
+  ).rejects.toMatchObject({ status: 503 });
+  expect(warning).toHaveBeenCalledWith(
+    'Native diagnostics request failed',
+    expect.objectContaining({
+      follow: true,
+      phase: 'decode',
+      workerStatus: 200,
+    }),
+  );
+  expect(JSON.stringify(warning.mock.calls)).not.toContain(input.token);
 });
