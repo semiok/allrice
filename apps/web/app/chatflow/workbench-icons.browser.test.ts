@@ -205,10 +205,13 @@ suite('workbench icon scale and workflow identity', () => {
               .evaluate((node) => getComputedStyle(node).color),
           ).toBe(green);
           await agents.click();
-          await page
-            .getByRole('button', { name: '查看核对数据摘要' })
-            .waitFor();
+          await page.getByRole('treeitem', { name: '核对数据摘要' }).waitFor();
           expect(await agents.getAttribute('aria-expanded')).toBe('true');
+          expect(
+            await page
+              .getByRole('button', { name: '查看核对数据摘要' })
+              .count(),
+          ).toBe(0);
           await page.keyboard.press('Escape');
           await buttons[3]!.click();
           expect(await page.getByLabel('当前工作台模块').innerText()).toBe(
