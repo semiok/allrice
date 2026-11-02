@@ -86,6 +86,11 @@ suite('workbench icon scale and workflow identity', () => {
     server = createServer((req, res) => {
       if (feed.handle(req, res)) return;
       const path = new URL(req.url!, origin).pathname;
+      if (path.endsWith('/subagents')) {
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ summary }));
+        return;
+      }
       const asset = assets.get(path);
       res.setHeader(
         'Content-Type',
