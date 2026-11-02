@@ -50,27 +50,42 @@ function metrics(child: Child) {
 }
 
 export function EmptyNativeSubagentDirectory() {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState<'preview' | 'pinned' | false>(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(timer.current), []);
   return (
     <Menu
       portal
       align="end"
       autoFocus={false}
-      open={open}
-      onClose={() => setOpen(false)}
+      open={!!open}
+      closeOnPointerLeave={open === 'preview'}
+      onClose={() => {
+        clearTimeout(timer.current);
+        setOpen(false);
+      }}
       listClassName={css.catalog}
       anchor={
         <Button
           size="sm"
           className={`${actions.iconButton} ${css.trigger}`}
-          aria-expanded={open}
+          aria-expanded={!!open}
           aria-haspopup="tree"
           aria-label="子智能体"
-          onClick={() => setOpen((value) => !value)}
+          onMouseEnter={() => {
+            if (!open)
+              timer.current = setTimeout(() => setOpen('preview'), 150);
+          }}
+          onMouseLeave={() => clearTimeout(timer.current)}
+          onClick={() => {
+            clearTimeout(timer.current);
+            setOpen((value) => (value === 'pinned' ? false : 'pinned'));
+          }}
           onKeyDown={(event) => {
-            if (event.key !== 'ArrowDown') return;
+            if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key))
+              return;
             event.preventDefault();
-            setOpen(true);
+            setOpen((value) => value || 'preview');
           }}
         >
           <WorkbenchIcon kind="subagent" />
