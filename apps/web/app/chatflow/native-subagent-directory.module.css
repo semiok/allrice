@@ -44,6 +44,46 @@
 .entry small {
   display: block;
 }
+.entry > small {
+  max-width: 60%;
+  color: var(--dsw-alias-label-caption);
+  text-align: right;
+}
+button.trigger.trigger {
+  color: #2563eb;
+}
+button.trigger.trigger[aria-expanded='true']:not(:disabled) {
+  background: #eef2ff;
+}
+.entry [data-state='ongoing'] {
+  border-radius: 50%;
+  background: var(--dsw-alias-state-success-primary);
+}
+.entry [data-state='ongoing'] > * {
+  display: none;
+}
+.entry [data-state='done'] {
+  color: var(--dsw-alias-state-idle-primary);
+}
+.runningBadge.runningBadge {
+  background: #22c55e;
+  color: #fff;
+  border-color: #fff;
+}
+.errorBadge.errorBadge {
+  width: 16px;
+  padding: 0;
+  background: var(--dsw-alias-state-error-primary);
+  color: #fff;
+  border-color: #fff;
+}
+.unobserved {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--dsw-alias-state-idle-primary);
+}
 .detail {
   position: fixed;
   z-index: 70;

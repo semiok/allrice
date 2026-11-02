@@ -1314,16 +1314,7 @@ export function ChatFlowClient({
     !!workspace &&
     !!activeId &&
     (!nativeSession?.ownerId || nativeSession.ownerId === workspace.viewerId);
-  const nativeScope = `${settingsScope}/${activeId}`;
-  // Only the catalog/detail UI chooses a full cut; observation ownership stays
-  // here even when the active parent has no visible sidebar row.
-  const [nativeFullScope, setNativeFullScope] = useState('');
-  const setNativeLiveOnly = useCallback(
-    (liveOnly: boolean) => {
-      setNativeFullScope(liveOnly ? '' : nativeScope);
-    },
-    [nativeScope],
-  );
+  // The active header includes durable children; background rows stay live-only.
   const nativeObservation = useNativeSubagents(
     workspace?.workspaceId ?? '',
     tenantHeaders,
@@ -1332,7 +1323,7 @@ export function ChatFlowClient({
           [activeId!]: `${settingsScope}/${nativeSession?.updatedAt}/${nativeSession?.running}/${isRunning}/${history?.messages.at(-1)?.status}/${nativeReadyKey}`,
         }
       : {},
-    nativeFullScope !== nativeScope,
+    false,
   );
   const activeNativeReads = nativeReadable
     ? nativeObservation.reads
@@ -1981,7 +1972,6 @@ export function ChatFlowClient({
                         observation={{
                           ...nativeObservation,
                           reads: activeNativeReads,
-                          setLiveOnly: setNativeLiveOnly,
                         }}
                         viewerId={workspace.viewerId}
                         canControl={

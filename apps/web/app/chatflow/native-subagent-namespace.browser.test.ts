@@ -214,9 +214,7 @@ suite('native child IDs retain the parent Session namespace', () => {
         if (id === 'parent-b') await row(page, id).click();
         const trigger = page.getByRole('button', {
           name:
-            id === 'parent-a'
-              ? '1 个子智能体 · 1 个运行中'
-              : '1 个子智能体 · 运行状态未知',
+            id === 'parent-a' ? '1 个子智能体 · 1 个运行中' : '1 个子智能体',
           exact: true,
         });
         await trigger.waitFor();

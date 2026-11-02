@@ -51,6 +51,7 @@ export function useNativeSubagents(
   const [state, setState] = useState<{
     key: string;
     reads: Record<string, NativeSubagentRead>;
+    disconnected?: Record<string, boolean>;
   }>({ key: '', reads: {} });
   useEffect(() => {
     const refresh = () => setRevision((value) => value + 1);
@@ -69,11 +70,12 @@ export function useNativeSubagents(
       void Promise.all(
         Object.keys(requests).map(async (id) => {
           let read: NativeSubagentRead = 'error';
-          const publish = (read: NativeSubagentRead) => {
+          const publish = (read: NativeSubagentRead, disconnected = false) => {
             if (!abort.signal.aborted)
               setState((state) => ({
                 key,
                 reads: { ...state.reads, [id]: read },
+                disconnected: { ...state.disconnected, [id]: disconnected },
               }));
           };
           try {
@@ -96,6 +98,7 @@ export function useNativeSubagents(
             publish(read);
             if (read?.root.source === 'live') {
               const rootId = read.rootId;
+              const unavailable = new Error('directory unavailable');
               query.set('follow', 'true');
               await followNativeSubagents(
                 `/api/v1/sessions/${encodeURIComponent(id)}/subagents?${query}`,
@@ -107,11 +110,33 @@ export function useNativeSubagents(
                     event.summary.rootId === rootId
                   )
                     publish(event.summary);
-                  else if (event.type === 'clear') publish(null);
-                  else throw new Error('directory scope changed');
+                  else if (event.type === 'clear') {
+                    publish(null);
+                    if (event.reason === 'unavailable') throw unavailable;
+                  } else throw new Error('directory scope changed');
                 },
+              ).catch((error) => {
+                if (error !== unavailable) throw error;
+              });
+              if (abort.signal.aborted) return;
+              publish(null);
+              query.delete('follow');
+              const response = await fetch(
+                `/api/v1/sessions/${encodeURIComponent(id)}/subagents?${query}`,
+                { headers, cache: 'no-store', signal: abort.signal },
               );
-              read = null;
+              if (!response.ok) throw new Error('summary unavailable');
+              const body = await response.json();
+              read =
+                liveOnly && body.summary === null
+                  ? null
+                  : NativeSubagentSummarySchema.parse(body.summary);
+              if (read && read.rootId !== rootId)
+                throw new Error('directory scope changed');
+              if (read?.root.source === 'live') {
+                publish('error', true);
+                return;
+              }
             }
           } catch {
             read = 'error';
@@ -121,5 +146,10 @@ export function useNativeSubagents(
       );
     return () => abort.abort();
   }, [key]);
-  return { reads: state.key === key ? state.reads : {}, refresh, revision };
+  return {
+    reads: state.key === key ? state.reads : {},
+    disconnected: state.key === key ? state.disconnected : undefined,
+    refresh,
+    revision,
+  };
 }

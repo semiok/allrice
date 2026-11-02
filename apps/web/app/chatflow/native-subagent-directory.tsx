@@ -13,6 +13,8 @@ import {
   type nativeSubagentControlRoot,
 } from './native-subagent-controls';
 import type { ChatPresentationPolicy } from './dsh-upstream/presentation/presentation-policy';
+import { WorkbenchIcon } from './workbench-modules';
+import actions from './workbench-modules.module.css';
 import css from './native-subagent-directory.module.css';
 
 type Entry = NativeSubagentSummary['descendants'][number];
@@ -32,15 +34,19 @@ const activity = (child: Child) =>
       : child.timing.lastTurnCompleted
         ? '上次回合已完成'
         : '未运行';
-function metrics(child: Child) {
+function elapsed(child: Child, now = child.timing.active?.through) {
   const { active, settledMs } = child.timing;
   const seconds = Math.floor(
-    (settledMs + (active ? Math.max(0, active.through - active.since) : 0)) /
+    (settledMs +
+      (active ? Math.max(0, (now ?? active.through) - active.since) : 0)) /
       1000,
   );
+  return `${seconds} 秒`;
+}
+function metrics(child: Child) {
   return `${Object.values(child.usage)
     .reduce((a, b) => a + b, 0)
-    .toLocaleString()} tokens · ${seconds} 秒`;
+    .toLocaleString()} tokens · ${elapsed(child)}`;
 }
 
 export function NativeSubagentDirectory({
@@ -56,9 +62,7 @@ export function NativeSubagentDirectory({
   workspaceId: string;
   sessionId: string;
   headers: Record<string, string>;
-  observation: ReturnType<typeof useNativeSubagents> & {
-    setLiveOnly: (liveOnly: boolean) => void;
-  };
+  observation: ReturnType<typeof useNativeSubagents>;
   presentation: ChatPresentationPolicy;
   controlRoot?: ReturnType<typeof nativeSubagentControlRoot>;
   canControl?: boolean;
@@ -73,12 +77,10 @@ export function NativeSubagentDirectory({
   const [open, setOpen] = useState(false),
     [pinned, setPinned] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
-  const { reads, refresh, revision, setLiveOnly } = observation;
-  useEffect(() => () => setLiveOnly(true), [setLiveOnly]);
+  const { reads, refresh, revision } = observation;
   const showCatalog = (nextOpen: boolean, nextSelected = selected) => {
     setOpen(nextOpen);
     setSelected(nextSelected);
-    setLiveOnly(!nextOpen && !nextSelected);
   };
   const read = reads[sessionId];
   const summary = read && read !== 'error' ? read : null;
@@ -120,6 +122,25 @@ export function NativeSubagentDirectory({
   const direct =
     summary?.descendants.filter((child) => child.parentId === summary.rootId) ??
     [];
+  const visible = read === 'error' || direct.length > 0;
+  useEffect(() => {
+    if (visible) return;
+    setOpen(false);
+    setPinned(false);
+  }, [visible]);
+  const [now, setNow] = useState(Date.now);
+  const ticking =
+    open &&
+    summary?.descendants.some(
+      (entry) =>
+        entry.kind === 'child' && entry.running === true && entry.timing.active,
+    );
+  useEffect(() => {
+    if (!ticking) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [ticking]);
   const child = detailSummary?.descendants.find(
     (entry) => entry.id === selected && entry.kind === 'child',
   ) as Child | undefined;
@@ -139,6 +160,12 @@ export function NativeSubagentDirectory({
         );
         const label =
           entry.kind === 'child' ? (entry.label ?? entry.id) : entry.id;
+        const status =
+          entry.kind === 'diagnostic'
+            ? diagnostic[entry.reason]
+            : entry.running === null && entry.timing.lastTurnCompleted
+              ? '历史记录 · 上次回合已完成'
+              : activity(entry);
         return (
           <li
             role="treeitem"
@@ -168,6 +195,7 @@ export function NativeSubagentDirectory({
               >
                 {entry.kind === 'child' && entry.running !== null ? (
                   <StateDot
+                    size={10}
                     state={
                       entry.running
                         ? 'ongoing'
@@ -177,23 +205,19 @@ export function NativeSubagentDirectory({
                     }
                   />
                 ) : (
-                  <span aria-label="活动状态未知">?</span>
+                  <span
+                    className={css.unobserved}
+                    aria-label="活动状态未观测"
+                  />
                 )}
                 <span className={css.label}>
                   <strong>{label}</strong>
-                  <small>
-                    {entry.kind === 'child'
-                      ? [
-                          entry.title,
-                          entry.mode === 'one-shot' ? '一次性' : '可继续',
-                          activity(entry),
-                        ]
-                          .filter(Boolean)
-                          .join(' · ')
-                      : diagnostic[entry.reason]}
-                  </small>
                 </span>
-                {entry.kind === 'child' && <small>{metrics(entry)} →</small>}
+                <small>
+                  {status}
+                  {entry.kind === 'child' &&
+                    ` · ${elapsed(entry, entry.running === true ? now : undefined)}`}
+                </small>
               </Button>
             </div>
             {branch && expanded.has(entry.id) && (
@@ -205,30 +229,16 @@ export function NativeSubagentDirectory({
   const running = direct.filter(
     (entry) => entry.kind === 'child' && entry.running === true,
   ).length;
-  const unknown = direct.some(
-    (entry) => entry.kind === 'diagnostic' || entry.running === null,
-  );
-  const runningLabel = unknown
-    ? running
-      ? `至少 ${running} 个运行中 · 部分状态未知`
-      : '运行状态未知'
-    : `${running} 个运行中`;
   const dismissDetail = () => {
     clearTimeout(timer.current);
     showCatalog(open, null);
     trigger.current?.focus();
   };
-  if (
-    !selected &&
-    !open &&
-    summary &&
-    !direct.length &&
-    !controls.attempts.length
-  )
-    return null;
+  if (!selected && !open && !visible) return null;
   return (
     <>
       <div
+        hidden={!visible}
         onMouseEnter={() => {
           clearTimeout(timer.current);
           timer.current = setTimeout(() => showCatalog(true), 150);
@@ -295,34 +305,52 @@ export function NativeSubagentDirectory({
           portal
           align="end"
           autoFocus={false}
-          open={open}
+          open={open && visible}
           onClose={close}
           listClassName={css.catalog}
           anchor={
             <Button
               ref={trigger}
               size="sm"
+              className={`${actions.iconButton} ${css.trigger}`}
               aria-expanded={open}
               aria-haspopup="tree"
+              aria-label={
+                read === 'error'
+                  ? '子智能体读取失败'
+                  : `${direct.length} 个子智能体${running ? ` · ${running} 个运行中` : ''}`
+              }
               onClick={() => {
                 clearTimeout(timer.current);
                 setPinned(!pinned);
                 showCatalog(!pinned);
               }}
             >
-              {read === 'error'
-                ? '子智能体读取失败'
-                : summary
-                  ? `${direct.length} 个子智能体 · ${runningLabel}`
-                  : '子智能体状态未知'}
+              <WorkbenchIcon kind="subagent" />
+              <span
+                className={`${actions.badge} ${read === 'error' ? css.errorBadge : running ? css.runningBadge : actions.neutralBadge}`}
+                aria-hidden="true"
+              >
+                {read === 'error' ? '!' : direct.length}
+              </span>
             </Button>
           }
         >
           <div ref={catalog}>
+            {summary && (
+              <p>
+                {direct.length} 个子智能体
+                {running > 0 && ` · ${running} 个运行中`}
+              </p>
+            )}
             {read === undefined ? (
               <p role="status">正在读取子智能体摘要…</p>
             ) : read === 'error' ? (
-              <p role="alert">暂时读不到子智能体目录。</p>
+              <p role="alert">
+                {observation.disconnected?.[sessionId]
+                  ? '实时观察已断开，重试。'
+                  : '暂时读不到子智能体目录。'}
+              </p>
             ) : summary && !direct.length ? (
               <p>暂无子智能体</p>
             ) : (
