@@ -1,6 +1,9 @@
 'use client';
 import { ReferenceLibrary } from './reference-library';
-import { NativeSubagentDirectory } from './native-subagent-directory';
+import {
+  EmptyNativeSubagentDirectory,
+  NativeSubagentDirectory,
+} from './native-subagent-directory';
 import {
   nativeSubagentReadyKey,
   useNativeSubagents,
@@ -1963,7 +1966,7 @@ export function ChatFlowClient({
                   <div
                     className={`${conversationUi.headerActions} ${styles.conversationActions}`}
                   >
-                    {activeId && (
+                    {activeId ? (
                       <NativeSubagentDirectory
                         key={`${settingsScope}/${activeId}`}
                         workspaceId={workspace.workspaceId}
@@ -1991,6 +1994,8 @@ export function ChatFlowClient({
                           preferences.value.collapseTiming,
                         )}
                       />
+                    ) : (
+                      <EmptyNativeSubagentDirectory key={settingsScope} />
                     )}
                     {!layout.compact && workbenchEnabled ? (
                       <UnifiedWorkbenchControls

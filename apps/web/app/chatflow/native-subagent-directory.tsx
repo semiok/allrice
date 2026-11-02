@@ -49,6 +49,39 @@ function metrics(child: Child) {
     .toLocaleString()} tokens · ${elapsed(child)}`;
 }
 
+export function EmptyNativeSubagentDirectory() {
+  const [open, setOpen] = useState(false);
+  return (
+    <Menu
+      portal
+      align="end"
+      autoFocus={false}
+      open={open}
+      onClose={() => setOpen(false)}
+      listClassName={css.catalog}
+      anchor={
+        <Button
+          size="sm"
+          className={`${actions.iconButton} ${css.trigger}`}
+          aria-expanded={open}
+          aria-haspopup="tree"
+          aria-label="子智能体"
+          onClick={() => setOpen((value) => !value)}
+          onKeyDown={(event) => {
+            if (event.key !== 'ArrowDown') return;
+            event.preventDefault();
+            setOpen(true);
+          }}
+        >
+          <WorkbenchIcon kind="subagent" />
+        </Button>
+      }
+    >
+      <p>暂无子智能体</p>
+    </Menu>
+  );
+}
+
 export function NativeSubagentDirectory({
   workspaceId,
   sessionId,
@@ -231,6 +264,9 @@ export function NativeSubagentDirectory({
   return (
     <>
       <div
+        onBlurCapture={() => {
+          pendingFocus.current = false;
+        }}
         onMouseEnter={() => {
           clearTimeout(timer.current);
           timer.current = setTimeout(() => showCatalog(true), 150);
