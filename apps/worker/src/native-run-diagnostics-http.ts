@@ -93,6 +93,7 @@ export function createNativeRunDiagnosticsHttpHandler(
     };
     signal.addEventListener('abort', cancelRead, { once: true });
     if (!summaryRequest) active++;
+    let diagnosticInput: Record<string, string | boolean> = {};
     try {
       let size = 0;
       const chunks: Buffer[] = [];
@@ -117,6 +118,14 @@ export function createNativeRunDiagnosticsHttpHandler(
         return true;
       }
       const input = parsed.data;
+      diagnosticInput =
+        'sessionId' in input
+          ? {
+              sessionId: input.sessionId,
+              liveOnly: !!input.liveOnly,
+              follow: !!input.follow,
+            }
+          : { runId: input.runId };
       const tenant = {
         organizationId: input.organizationId,
         workspaceId: input.workspaceId,
@@ -232,6 +241,26 @@ export function createNativeRunDiagnosticsHttpHandler(
         error && typeof error === 'object' && 'code' in error
           ? error.code
           : undefined;
+      const reason = [
+        'NATIVE_QUERY_BINDING_UNAVAILABLE',
+        'NATIVE_QUERY_READER_UNAVAILABLE',
+        'NATIVE_QUERY_HOST_UNAVAILABLE',
+        'NATIVE_QUERY_HOST_MISMATCH',
+        'NATIVE_QUERY_SOURCE_MISMATCH',
+        'SESSION_QUERY_PERSISTENCE_FAILED',
+        'SESSION_QUERY_CORRUPT_SESSION',
+      ].find(
+        (reason) =>
+          reason === code ||
+          (error instanceof Error && reason === error.message),
+      );
+      console.warn('Native diagnostics read failed', {
+        at: new Date().toISOString(),
+        ...diagnosticInput,
+        reason:
+          reason ??
+          (error instanceof SyntaxError ? 'invalid_json' : 'unclassified'),
+      });
       if (code === 'authentication_required')
         send(401, { error: 'authentication_required' });
       else if (
