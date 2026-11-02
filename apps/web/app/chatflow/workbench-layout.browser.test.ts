@@ -13098,6 +13098,78 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
+  it.each([1440, 900])(
+    'keeps workbench expand and collapse controls under the same pointer at %ipx',
+    async (width) => {
+      const f = await fixture({ width, artifacts: true });
+      try {
+        if (width > 1100)
+          await f.page.addStyleTag({
+            content: 'main { width: calc(100% - 8px) !important; }',
+          });
+        const expand = f.page.getByRole('button', {
+          name: '展开工作台',
+          exact: true,
+        });
+        const collapse = f.panel.getByRole('button', {
+          name: '关闭工作台',
+          exact: true,
+        });
+        const geometry = (control: Locator) =>
+          control.evaluate((button) => {
+            const target = button.getBoundingClientRect();
+            const glyph = button.querySelector('svg')!.getBoundingClientRect();
+            const frame = document
+              .querySelector('main')!
+              .getBoundingClientRect();
+            return {
+              target: [target.width, target.height],
+              glyph: [glyph.width, glyph.height],
+              center: [
+                target.x + target.width / 2,
+                target.y + target.height / 2,
+              ],
+              glyphCenter: [
+                glyph.x + glyph.width / 2,
+                glyph.y + glyph.height / 2,
+              ],
+              gap: frame.right - target.right,
+            };
+          });
+        if (await collapse.isVisible()) await collapse.click();
+        await expand.waitFor();
+        await expect
+          .poll(async () => Math.round((await geometry(expand)).gap))
+          .toBe(28);
+        const folded = await geometry(expand);
+        expect(folded.target).toEqual([32, 32]);
+        expect(folded.glyph).toEqual([20, 20]);
+        expect(folded.glyphCenter).toEqual(folded.center);
+        await f.page.mouse.click(folded.center[0]!, folded.center[1]!);
+        await collapse.waitFor();
+        await expect
+          .poll(async () => (await geometry(collapse)).gap)
+          .toBeCloseTo(folded.gap, 1);
+        const expanded = await geometry(collapse);
+        expect(expanded.target).toEqual(folded.target);
+        expect(expanded.glyph).toEqual(folded.glyph);
+        expect(expanded.glyphCenter).toEqual(expanded.center);
+        for (const axis of [0, 1])
+          expect(expanded.center[axis]).toBeCloseTo(folded.center[axis]!, 1);
+        // The pointer can close and reopen without moving to another header.
+        await f.page.mouse.click(folded.center[0]!, folded.center[1]!);
+        await expand.waitFor();
+        await expect
+          .poll(async () => (await geometry(expand)).center)
+          .toEqual(folded.center);
+        await f.page.mouse.click(folded.center[0]!, folded.center[1]!);
+        await collapse.waitFor();
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
   it('aligns 56px headers and resizes deliverables with native capture, limits, reset and preserved drafts', async () => {
     const f = await fixture({ artifacts: true });
     try {

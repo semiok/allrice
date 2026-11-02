@@ -435,6 +435,12 @@
   align-items: center;
   border-bottom: 1px solid var(--dsw-alias-border-l2, #ddd);
 }
+@media (min-width: 761px) {
+  /* Match the conversation header's end inset; each toggle stays in its header. */
+  .nativeDock :global([data-dockkit-strip]) {
+    padding-right: 28px;
+  }
+}
 .nativeDock :global([data-dockkit-strip]) button {
   border: 0;
   padding: 4px;
