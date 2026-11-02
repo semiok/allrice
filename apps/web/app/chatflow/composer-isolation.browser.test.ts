@@ -1316,8 +1316,34 @@ suite(
           await f.page.getByRole('button', { name: /^工作区文件/ }).isVisible(),
         ).toBe(true);
         const reads = f.reads.length;
+        await trigger.hover();
+        await expect
+          .poll(() => trigger.getAttribute('aria-expanded'))
+          .toBe('true');
+        await f.page.getByText('暂无子智能体', { exact: true }).waitFor();
+        await f.page.screenshot({
+          path: resolve(directory, 'new-work-hover.png'),
+        });
+        await f.page.mouse.move(800, 800);
+        await expect
+          .poll(() => trigger.getAttribute('aria-expanded'))
+          .toBe('false');
+        for (const key of ['ArrowDown', 'ArrowUp', 'Home', 'End']) {
+          await trigger.focus();
+          await f.page.keyboard.press(key);
+          expect(await trigger.getAttribute('aria-expanded')).toBe('true');
+          await f.page.getByText('暂无子智能体', { exact: true }).waitFor();
+          await f.page.keyboard.press('Escape');
+          expect(await trigger.getAttribute('aria-expanded')).toBe('false');
+          expect(
+            await trigger.evaluate((node) => node === document.activeElement),
+          ).toBe(true);
+        }
         await trigger.click();
         await f.page.getByText('暂无子智能体', { exact: true }).waitFor();
+        await f.page.mouse.move(800, 800);
+        await f.page.waitForTimeout(350);
+        expect(await trigger.getAttribute('aria-expanded')).toBe('true');
         expect(
           f.reads.slice(reads).filter((url) => url.includes('/subagents')),
         ).toEqual([]);
