@@ -1,7 +1,17 @@
-import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ComponentProps,
+} from 'react';
 import { createRoot } from 'react-dom/client';
 import { EmployeeSidebar } from '../app/chatflow/employee-sidebar';
-import { NativeSubagentDirectory } from '../app/chatflow/native-subagent-directory';
+import {
+  NativeSubagentDirectory,
+  NativeSubagentDetail,
+} from '../app/chatflow/native-subagent-directory';
 import {
   WorkbenchEntries,
   WorkbenchStart,
@@ -47,6 +57,44 @@ const headers = {
   'x-allrice-organization-id': 'org',
   'x-allrice-workspace-id': 'workspace',
 };
+// Direct regression surface for the retained component; never part of the product directory.
+function DetailFixture(
+  props: Omit<
+    ComponentProps<typeof NativeSubagentDetail>,
+    'selected' | 'onClose'
+  >,
+) {
+  const [id, setId] = useState('fork-a');
+  const [selected, setSelected] = useState<string | null>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  return (
+    <>
+      <section
+        aria-label="详情组件测试入口"
+        style={{ position: 'fixed', top: 0, left: 0, zIndex: 90, width: 220 }}
+      >
+        <input
+          aria-label="子任务 ID（测试）"
+          style={{ width: 100 }}
+          value={id}
+          onChange={(event) => setId(event.target.value)}
+        />
+        <button ref={trigger} onClick={() => setSelected(id)}>
+          打开详情（测试）
+        </button>
+        <button onClick={props.observation.refresh}>刷新观察（测试）</button>
+      </section>
+      <NativeSubagentDetail
+        {...props}
+        selected={selected}
+        onClose={() => {
+          setSelected(null);
+          trigger.current?.focus();
+        }}
+      />
+    </>
+  );
+}
 function Page() {
   const [activeId, setActiveId] = useState('parent-a');
   const query = new URLSearchParams(location.search);
@@ -160,6 +208,23 @@ function Page() {
             </div>
           </div>
         </header>
+        {(controls || query.has('details')) && (
+          <DetailFixture
+            key={activeId}
+            workspaceId="workspace"
+            sessionId={activeId}
+            headers={headers}
+            observation={observation}
+            viewerId={workspace.viewerId}
+            canControl={controls && ownerId === workspace.viewerId}
+            controlRoot={
+              controls
+                ? nativeSubagentControlRoot(runViews[rootRunId])
+                : undefined
+            }
+            presentation={presentation}
+          />
+        )}
         {icons && (
           <section aria-label="图标工作台">
             <WorkbenchStart
@@ -179,7 +244,7 @@ function Page() {
         )}
         {controls && (
           <button
-            style={{ position: 'fixed', bottom: 32, left: 0, zIndex: 90 }}
+            style={{ position: 'fixed', top: 0, right: 0, zIndex: 90 }}
             onClick={() =>
               setControlRunId('55555555-5555-4555-8555-555555555555')
             }
@@ -189,7 +254,7 @@ function Page() {
         )}
         {controls && (
           <button
-            style={{ position: 'fixed', bottom: 0, left: 0, zIndex: 90 }}
+            style={{ position: 'fixed', top: 32, right: 0, zIndex: 90 }}
             onClick={() =>
               setOwnerId((id) => (id === 'viewer' ? 'other' : 'viewer'))
             }

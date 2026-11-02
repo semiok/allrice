@@ -157,7 +157,7 @@ suite('native child IDs retain the parent Session namespace', () => {
     page.on('pageerror', (error) => errors.push(error.message));
     try {
       await feed.bindPage(page, origin, fixture);
-      await page.goto(origin);
+      await page.goto(origin + '/?details');
       await expect
         .poll(() =>
           [...new Set(requests.map((request) => request.sessionId))].sort(),
@@ -219,14 +219,23 @@ suite('native child IDs retain the parent Session namespace', () => {
         });
         await trigger.waitFor();
         await trigger.click();
-        const native = page.getByRole('button', {
-          name: '查看same-child摘要',
+        const native = page.getByRole('treeitem', {
+          name: 'same-child摘要',
           exact: true,
         });
         await native.waitFor();
         expect(await native.getAttribute('data-child')).toBe('same-child');
         expect(await native.getAttribute('data-parent')).toBe(root);
         await native.click();
+        expect(
+          await page
+            .getByRole('complementary', { name: '子智能体摘要' })
+            .count(),
+        ).toBe(0);
+        await page
+          .getByRole('textbox', { name: '子任务 ID（测试）' })
+          .fill('same-child');
+        await page.getByRole('button', { name: '打开详情（测试）' }).click();
         const detail = page.getByRole('complementary', {
           name: '子智能体摘要',
         });

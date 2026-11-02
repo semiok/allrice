@@ -3,6 +3,7 @@ import { createServer, type Server } from 'node:http';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type {
@@ -482,10 +483,13 @@ suite('native child Stop request identity and truthful receipts', () => {
     return { page, scenario, errors, browserPosts };
   }
   async function show(page: Page, label: string) {
-    await page.getByRole('button', { name: /4 个子智能体/ }).click();
+    const child = summary.descendants.find(
+      (entry) => entry.kind === 'child' && entry.label === label,
+    );
     await page
-      .getByRole('button', { name: `查看${label}摘要`, exact: true })
-      .click();
+      .getByRole('textbox', { name: '子任务 ID（测试）' })
+      .fill(child?.id ?? label);
+    await page.getByRole('button', { name: '打开详情（测试）' }).click();
     await page.getByRole('complementary', { name: '子智能体摘要' }).waitFor();
   }
   const detail = (page: Page) =>
@@ -760,7 +764,7 @@ suite('native child Stop request identity and truthful receipts', () => {
       await page.keyboard.press('Escape');
       expect(
         await page
-          .getByRole('button', { name: /4 个子智能体/ })
+          .getByRole('button', { name: '打开详情（测试）' })
           .evaluate((button) => document.activeElement === button),
       ).toBe(true);
       await show(page, '甲');
@@ -867,6 +871,15 @@ suite('native child Stop request identity and truthful receipts', () => {
 
   it('a late response from an unmounted business session cannot erase its successor request reference', async () => {
     const { page, scenario, errors } = await open('accepted', true);
+    const traceDirectory = resolve('.local/integration-collection');
+    await mkdir(traceDirectory, { recursive: true });
+    await page.context().tracing.start({
+      screenshots: true,
+      snapshots: true,
+      sources: true,
+    });
+    page.setDefaultNavigationTimeout(5000);
+    page.setDefaultTimeout(5000);
     const releaseA = scenario.release!;
     let releaseB: (() => void) | undefined;
     try {
@@ -945,8 +958,10 @@ suite('native child Stop request identity and truthful receipts', () => {
         'Unmount recovery: both IDs saved; reloading while B remains held',
       );
       await page.reload();
+      console.info('Unmount recovery: reload completed; releasing B');
       releaseB!();
       await show(page, '甲');
+      console.info('Unmount recovery: restored detail opened');
       expect(await receipt(page).locator('code').allTextContents()).toEqual(
         ids,
       );
@@ -964,7 +979,13 @@ suite('native child Stop request identity and truthful receipts', () => {
     } finally {
       releaseA();
       releaseB?.();
-      await page.close();
+      try {
+        await page.context().tracing.stop({
+          path: resolve(traceDirectory, 'unmounted-control-reload-trace.zip'),
+        });
+      } finally {
+        await page.close();
+      }
     }
   });
 
@@ -1000,15 +1021,7 @@ suite('native child Stop request identity and truthful receipts', () => {
           .toContain('停止请求已接收；不代表子任务已经停止。');
         expect(scenario.posts).toHaveLength(1);
         await page.reload();
-        await page
-          .getByRole('button', { name: '子智能体读取失败', exact: true })
-          .click();
-        await page
-          .getByRole('button', {
-            name: '查看native-child-0原请求回执',
-            exact: true,
-          })
-          .click();
+        await show(page, 'native-child-0');
         expect(await receipt(page).locator('code').textContent()).toBe(id);
         expect(await detail(page).textContent()).toContain('尚无确认结果');
         expect(await detail(page).textContent()).not.toContain(

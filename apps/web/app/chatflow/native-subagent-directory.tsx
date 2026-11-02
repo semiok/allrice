@@ -92,21 +92,13 @@ export function EmptyNativeSubagentDirectory() {
         </Button>
       }
     >
+      <h2 className={css.title}>子智能体</h2>
       <p>暂无子智能体</p>
     </Menu>
   );
 }
 
-export function NativeSubagentDirectory({
-  workspaceId,
-  sessionId,
-  headers,
-  observation,
-  presentation,
-  controlRoot,
-  canControl = false,
-  viewerId,
-}: {
+type NativeSubagentDirectoryProps = {
   workspaceId: string;
   sessionId: string;
   headers: Record<string, string>;
@@ -115,51 +107,38 @@ export function NativeSubagentDirectory({
   controlRoot?: ReturnType<typeof nativeSubagentControlRoot>;
   canControl?: boolean;
   viewerId?: string | null;
-}) {
-  const controls = useNativeSubagentControls(
-    workspaceId,
-    sessionId,
-    headers,
-    viewerId,
-  );
+};
+export function NativeSubagentDirectory({
+  sessionId,
+  observation,
+}: NativeSubagentDirectoryProps) {
   const [open, setOpen] = useState(false),
     [pinned, setPinned] = useState(false);
-  const [selected, setSelected] = useState<string | null>(null);
-  const { reads, refresh, revision } = observation;
-  const showCatalog = (nextOpen: boolean, nextSelected = selected) => {
+  const openRef = useRef(false);
+  const { reads, refresh } = observation;
+  const showCatalog = (nextOpen: boolean) => {
+    if (nextOpen && !openRef.current) refresh();
+    openRef.current = nextOpen;
     setOpen(nextOpen);
-    setSelected(nextSelected);
   };
   const read = reads[sessionId];
   const summary = read && read !== 'error' ? read : null;
-  const follow = useNativeSubagentFollow(
-    workspaceId,
-    sessionId,
-    headers,
-    summary,
-    selected,
-    String(revision),
-  );
-  const hot =
-    follow.view && typeof follow.view === 'object' ? follow.view : null;
-  const snapshot = hot && 'rows' in hot ? hot : null;
-  const detailSummary = hot && 'descendants' in hot ? hot : summary;
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const catalog = useRef<HTMLDivElement>(null),
     trigger = useRef<HTMLButtonElement>(null);
   const pendingFocus = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const close = (nextSelected = selected) => {
+  const close = () => {
     clearTimeout(timer.current);
-    showCatalog(false, nextSelected);
+    showCatalog(false);
     setPinned(false);
   };
   useEffect(() => () => clearTimeout(timer.current), []);
   useEffect(() => {
     if (!open) pendingFocus.current = false;
     else if (summary && pendingFocus.current) {
-      const first = catalog.current?.querySelector<HTMLButtonElement>(
-        'button[data-child]:not(:disabled)',
+      const first = catalog.current?.querySelector<HTMLElement>(
+        '[data-child]:not([aria-disabled="true"])',
       );
       if (first) {
         pendingFocus.current = false;
@@ -183,9 +162,6 @@ export function NativeSubagentDirectory({
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, [ticking]);
-  const child = detailSummary?.descendants.find(
-    (entry) => entry.id === selected && entry.kind === 'child',
-  ) as Child | undefined;
   const toggle = (id: string) =>
     setExpanded((value) => {
       const next = new Set(value);
@@ -213,6 +189,11 @@ export function NativeSubagentDirectory({
             role="treeitem"
             key={entry.id}
             aria-expanded={branch ? expanded.has(entry.id) : undefined}
+            tabIndex={entry.kind === 'child' ? 0 : undefined}
+            data-child={entry.id}
+            data-parent={parentId}
+            aria-label={`${label}摘要`}
+            aria-disabled={entry.kind === 'diagnostic' || undefined}
           >
             <div className={css.row}>
               {branch && (
@@ -224,17 +205,7 @@ export function NativeSubagentDirectory({
                   {expanded.has(entry.id) ? '▾' : '▸'}
                 </Button>
               )}
-              <Button
-                className={css.entry}
-                size="sm"
-                data-child={entry.id}
-                data-parent={parentId}
-                aria-label={`查看${label}摘要`}
-                disabled={entry.kind === 'diagnostic'}
-                onClick={() => {
-                  close(entry.id);
-                }}
-              >
+              <div className={css.entry}>
                 {entry.kind === 'child' && entry.running !== null ? (
                   <StateDot
                     size={10}
@@ -260,7 +231,7 @@ export function NativeSubagentDirectory({
                   {entry.kind === 'child' &&
                     ` · ${elapsed(entry, entry.running === true ? now : undefined)}`}
                 </small>
-              </Button>
+              </div>
             </div>
             {branch && expanded.has(entry.id) && (
               <ul role="group">{rows(entry.id)}</ul>
@@ -271,11 +242,6 @@ export function NativeSubagentDirectory({
   const running = direct.filter(
     (entry) => entry.kind === 'child' && entry.running === true,
   ).length;
-  const dismissDetail = () => {
-    clearTimeout(timer.current);
-    showCatalog(open, null);
-    trigger.current?.focus();
-  };
   return (
     <>
       <div
@@ -298,11 +264,11 @@ export function NativeSubagentDirectory({
             return;
           }
           const buttons = [
-            ...(catalog.current?.querySelectorAll<HTMLButtonElement>(
-              'button[data-child]:not(:disabled)',
+            ...(catalog.current?.querySelectorAll<HTMLElement>(
+              '[data-child]:not([aria-disabled="true"])',
             ) ?? []),
           ];
-          const at = buttons.indexOf(event.target as HTMLButtonElement);
+          const at = buttons.indexOf(event.target as HTMLElement);
           const target =
             at < 0
               ? 0
@@ -317,8 +283,8 @@ export function NativeSubagentDirectory({
             showCatalog(true);
             requestAnimationFrame(() =>
               catalog.current
-                ?.querySelectorAll<HTMLButtonElement>(
-                  'button[data-child]:not(:disabled)',
+                ?.querySelectorAll<HTMLElement>(
+                  '[data-child]:not([aria-disabled="true"])',
                 )
                 .item(target)
                 ?.focus(),
@@ -384,12 +350,7 @@ export function NativeSubagentDirectory({
           }
         >
           <div ref={catalog}>
-            {summary && (
-              <p>
-                {direct.length} 个子智能体
-                {running > 0 && ` · ${running} 个运行中`}
-              </p>
-            )}
+            <h2 className={css.title}>子智能体</h2>
             {read === undefined ? (
               <p role="status">正在读取子智能体摘要…</p>
             ) : read === null ? (
@@ -407,28 +368,55 @@ export function NativeSubagentDirectory({
                 {summary && rows(summary.rootId)}
               </ul>
             )}
-            {[
-              ...new Set(
-                controls.attempts.map((a) => a.reference.input.childSessionId),
-              ),
-            ]
-              .filter(
-                (id) =>
-                  !summary?.descendants.some(
-                    (entry) => entry.kind === 'child' && entry.id === id,
-                  ),
-              )
-              .map((id) => (
-                <Button key={id} size="sm" onClick={() => close(id)}>
-                  查看{id}原请求回执
-                </Button>
-              ))}
-            <Button size="sm" onClick={refresh}>
-              刷新子智能体摘要
-            </Button>
           </div>
         </Menu>
       </div>
+    </>
+  );
+}
+
+/** Retained for direct component regression; the product directory has no detail entry. */
+export function NativeSubagentDetail({
+  workspaceId,
+  sessionId,
+  headers,
+  observation,
+  presentation,
+  controlRoot,
+  canControl = false,
+  viewerId,
+  selected,
+  onClose: dismissDetail,
+}: NativeSubagentDirectoryProps & {
+  selected: string | null;
+  onClose: () => void;
+}) {
+  const controls = useNativeSubagentControls(
+    workspaceId,
+    sessionId,
+    headers,
+    viewerId,
+  );
+  const { reads, revision } = observation;
+  const read = reads[sessionId];
+  const summary = read && read !== 'error' ? read : null;
+  const follow = useNativeSubagentFollow(
+    workspaceId,
+    sessionId,
+    headers,
+    summary,
+    selected,
+    String(revision),
+  );
+  const hot =
+    follow.view && typeof follow.view === 'object' ? follow.view : null;
+  const snapshot = hot && 'rows' in hot ? hot : null;
+  const detailSummary = hot && 'descendants' in hot ? hot : summary;
+  const child = detailSummary?.descendants.find(
+    (entry) => entry.id === selected && entry.kind === 'child',
+  ) as Child | undefined;
+  return (
+    <>
       {selected &&
         createPortal(
           <aside
@@ -503,9 +491,6 @@ export function NativeSubagentDirectory({
                 controls={controls}
               />
             )}
-            <Button size="sm" onClick={refresh}>
-              刷新子智能体摘要
-            </Button>
           </aside>,
           document.body,
         )}
