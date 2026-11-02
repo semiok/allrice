@@ -363,7 +363,7 @@ describe('Codex hosted search Tool Broker integration', () => {
         expect.anything(),
         expect.objectContaining({
           lifecycleState: 'candidate',
-          sourceLabel: '用户稳定陈述候选',
+          sourceLabel: '模型提取候选',
           confidence: 0.8,
         }),
       );

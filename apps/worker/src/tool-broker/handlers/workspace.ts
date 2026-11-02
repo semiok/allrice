@@ -516,7 +516,7 @@ export const rememberWorkspaceMemory: RiceToolHandler = async ({
       sourceType: 'message',
       sourceId: input.userMessageId,
       sourceLabel:
-        lifecycleState === 'durable' ? '用户明确要求记住' : '用户稳定陈述候选',
+        lifecycleState === 'durable' ? '用户明确要求记住' : '模型提取候选',
       confidence: lifecycleState === 'durable' ? 1 : 0.8,
       expiresAt,
       lifecycleState,
