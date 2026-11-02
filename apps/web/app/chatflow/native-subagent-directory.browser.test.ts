@@ -613,7 +613,11 @@ suite('native subagent directory and employee sidebar', () => {
         type: 'directory',
         summary: { ...summary(), descendants: [] },
       });
-      await expect.poll(() => trigger.isVisible()).toBe(false);
+      await expect
+        .poll(() => trigger.getAttribute('aria-label'))
+        .toBe('0 个子智能体');
+      expect(await trigger.isVisible()).toBe(true);
+      expect(await trigger.locator('span[aria-hidden="true"]').count()).toBe(0);
       expect(
         await page.getByRole('tree', { name: '子智能体目录' }).count(),
       ).toBe(0);
@@ -889,7 +893,13 @@ suite('native subagent directory and employee sidebar', () => {
         }));
         if (transition === 'resync') {
           feed.send(connection, { type: 'clear', reason: 'resync' });
-          await expect.poll(() => trigger.isVisible()).toBe(false);
+          await expect
+            .poll(() => trigger.getAttribute('aria-label'))
+            .toBe('子智能体');
+          expect(await trigger.isVisible()).toBe(true);
+          expect(
+            await trigger.locator('span[aria-hidden="true"]').count(),
+          ).toBe(0);
           const next = summary();
           next.descendants = next.descendants.map((entry) => ({
             ...entry,
@@ -1276,8 +1286,7 @@ suite('native subagent directory and employee sidebar', () => {
       await page.getByRole('button', { name: '刷新子智能体摘要' }).click();
       await expect
         .poll(() => trigger.getAttribute('aria-expanded'))
-        .toBe('false');
-      await trigger.click();
+        .toBe('true');
       await page.getByRole('button', { name: '查看idle-b摘要' }).waitFor();
       expect(active().at(-1)?.liveOnly).toBe(false);
       expect(
