@@ -122,12 +122,6 @@ export function NativeSubagentDirectory({
   const direct =
     summary?.descendants.filter((child) => child.parentId === summary.rootId) ??
     [];
-  const visible = read === 'error' || direct.length > 0;
-  useEffect(() => {
-    if (visible) return;
-    setOpen(false);
-    setPinned(false);
-  }, [visible]);
   const [now, setNow] = useState(Date.now);
   const ticking =
     open &&
@@ -234,11 +228,9 @@ export function NativeSubagentDirectory({
     showCatalog(open, null);
     trigger.current?.focus();
   };
-  if (!selected && !open && !visible) return null;
   return (
     <>
       <div
-        hidden={!visible}
         onMouseEnter={() => {
           clearTimeout(timer.current);
           timer.current = setTimeout(() => showCatalog(true), 150);
@@ -305,7 +297,7 @@ export function NativeSubagentDirectory({
           portal
           align="end"
           autoFocus={false}
-          open={open && visible}
+          open={open}
           onClose={close}
           listClassName={css.catalog}
           anchor={
@@ -318,7 +310,9 @@ export function NativeSubagentDirectory({
               aria-label={
                 read === 'error'
                   ? '子智能体读取失败'
-                  : `${direct.length} 个子智能体${running ? ` · ${running} 个运行中` : ''}`
+                  : summary
+                    ? `${direct.length} 个子智能体${running ? ` · ${running} 个运行中` : ''}`
+                    : '子智能体'
               }
               onClick={() => {
                 clearTimeout(timer.current);
@@ -327,12 +321,14 @@ export function NativeSubagentDirectory({
               }}
             >
               <WorkbenchIcon kind="subagent" />
-              <span
-                className={`${actions.badge} ${read === 'error' ? css.errorBadge : running ? css.runningBadge : actions.neutralBadge}`}
-                aria-hidden="true"
-              >
-                {read === 'error' ? '!' : direct.length}
-              </span>
+              {(read === 'error' || running > 0) && (
+                <span
+                  className={`${actions.badge} ${read === 'error' ? css.errorBadge : css.runningBadge}`}
+                  aria-hidden="true"
+                >
+                  {read === 'error' ? '!' : running}
+                </span>
+              )}
             </Button>
           }
         >
@@ -345,6 +341,8 @@ export function NativeSubagentDirectory({
             )}
             {read === undefined ? (
               <p role="status">正在读取子智能体摘要…</p>
+            ) : read === null ? (
+              <p role="status">当前活动状态未知，请重新读取摘要。</p>
             ) : read === 'error' ? (
               <p role="alert">
                 {observation.disconnected?.[sessionId]
