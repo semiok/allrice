@@ -255,7 +255,7 @@ async function artifactRows(
       and (${delivery?.includeUnavailable ?? false} or (o.state='ready' and o.deleted_at is null
         and (o.retention_until is null or o.retention_until>clock_timestamp())))
       and (${!delivery?.ownedRunIds} or a.run_id=any(${[...(delivery?.ownedRunIds ?? [])]}::uuid[]))
-      and (${!delivery?.businessOnly} or a.version_id is null or a.kind in ('document','plan','file'))
+      and (${!delivery?.businessOnly} or a.version_id is null or a.kind in ('document','plan','file','changeset'))
       and (${artifactId}::uuid is null or v.id=${artifactId}::uuid)
       and (${runId}::uuid is null or a.run_id=${runId}::uuid)
       and (${includeToolResults} or coalesce(a.provenance->>'kind','') <> 'project_snapshot')
