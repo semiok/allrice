@@ -92,11 +92,11 @@ export function EmptyNativeSubagentDirectory() {
         </Button>
       }
     >
+      <h2 className={css.title}>子智能体</h2>
       <p>暂无子智能体</p>
     </Menu>
   );
 }
-
 
 type NativeSubagentDirectoryProps = {
   workspaceId: string;

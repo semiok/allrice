@@ -1345,6 +1345,14 @@ suite(
         await f.page.waitForTimeout(350);
         expect(await trigger.getAttribute('aria-expanded')).toBe('true');
         expect(
+          await f.page
+            .getByRole('heading', { name: '子智能体', exact: true })
+            .evaluate((node) => ({
+              size: getComputedStyle(node).fontSize,
+              weight: getComputedStyle(node).fontWeight,
+            })),
+        ).toEqual({ size: '16px', weight: '600' });
+        expect(
           f.reads.slice(reads).filter((url) => url.includes('/subagents')),
         ).toEqual([]);
         expect(f.pending).toEqual([]);

@@ -1571,7 +1571,7 @@ suite('native subagent directory and employee sidebar', () => {
           await page.keyboard.type('draft');
         }
         release();
-        const first = page.getByRole('button', { name: '查看fork-a摘要' });
+        const first = page.getByRole('treeitem', { name: 'fork-a摘要' });
         await first.waitFor();
         await capture(page, `late-focus-${intent}`);
         if (intent === 'wait') {
