@@ -1090,9 +1090,9 @@ suite('native subagent directory and employee sidebar', () => {
       await expect
         .poll(() => row(page, 'parent-a').innerText())
         .toContain('1 个子智能体运行中');
-      expect(await row(page, 'parent-b').innerText()).toContain(
-        '1 个子智能体运行中',
-      );
+      await expect
+        .poll(() => row(page, 'parent-b').innerText())
+        .toContain('1 个子智能体运行中');
       expect(
         await page.getByRole('navigation', { name: '业务会话' }).innerText(),
       ).not.toMatch(/fork-a|idle-b|grandchild/);
