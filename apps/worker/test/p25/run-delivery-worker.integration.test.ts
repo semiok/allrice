@@ -2,7 +2,7 @@
  * Only the model target/transport and installed-artifact approval are synthetic.
  * Eligibility, frozen snapshots, native completion and commit guards are real.
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, readdir, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -64,7 +64,12 @@ import {
   appendJobEvent,
   maintainQueue,
 } from '../../../../packages/database/src/execution/queue.ts';
-import { publishWorkbenchArtifact } from '../../../../packages/database/src/artifact-review.ts';
+import {
+  getWorkbenchArtifact,
+  publishWorkbenchArtifact,
+  publishWorkbenchChangesetProposal,
+  readArtifactBytes,
+} from '../../../../packages/database/src/artifact-review.ts';
 import {
   finalDeliveryTextDigest,
   finalDeliveryFactsDigest,
@@ -3019,6 +3024,169 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           status: 'running',
           successes: 0,
         });
+      } finally {
+        await task.isolation.cleanup();
+      }
+    },
+    45000,
+  );
+
+  async function changesetVersions(
+    f: Setup,
+    task: Awaited<ReturnType<typeof prepare>>,
+  ) {
+    vi.stubEnv('ALLRICE_CHANGESET_ENABLED', '1');
+    const device = randomUUID(),
+      grant = randomUUID(),
+      target = randomUUID();
+    await f.db`insert into allrice_bridge_devices(id,organization_id,workspace_id,owner_id,name,platform,protocol_version,capabilities,token_hash,last_seen_at)
+      values(${device},${f.identity.org},${f.identity.workspace},${f.identity.user},'Proposal only','macos-arm64',2,array['local.fs.write'],${'a'.repeat(64)},clock_timestamp())`;
+    await f.db`insert into allrice_bridge_folder_grants(id,organization_id,workspace_id,owner_id,device_id,label,root_fingerprint)
+      values(${grant},${f.identity.org},${f.identity.workspace},${f.identity.user},${device},'Proposal only',${'b'.repeat(64)})`;
+    await f.db`insert into allrice_execution_targets(id,organization_id,workspace_id,target_key,kind,label,state,capabilities,metadata)
+      values(${target},${f.identity.org},${f.identity.workspace},${`bridge.${device}`},'rice_bridge','Proposal only','online','["files.write"]','{}')`;
+    const publish = (after: string, parentObjectId?: string) =>
+      publishWorkbenchChangesetProposal(
+        {
+          context: task.execution.context,
+          sessionId: f.chat.id,
+          callId: randomUUID(),
+          fileName: '修改提案.json',
+          proposal: {
+            files: [{ path: 'code.mjs', before: 'original', after }],
+          },
+          ...(parentObjectId ? { parentObjectId } : {}),
+        },
+        runtimeFixtureStorage(f.db),
+        f.db,
+      );
+    const first = await publish('proposal v1');
+    const revised = await publish('proposal v2', first.object.id);
+    return { first, revised };
+  }
+
+  it.each(['deliver', 'old-run', 'expire-before-commit'] as const)(
+    'MET214 changeset v2 / %s：只给出文件修改提案，不应用',
+    async (mode) => {
+      let answer = '';
+      const f = await setup(async () => ({ text: answer }));
+      const task = await prepare(f, '只给出文件修改提案，不应用。');
+      try {
+        const { first, revised } = await changesetVersions(f, task);
+        expect([first.version.version, revised.version.version]).toEqual([
+          1, 2,
+        ]);
+        expect(revised.version.parentObjectId).toBe(first.object.id);
+        const bytes = await readArtifactBytes(
+          runtimeFixtureStorage(f.db),
+          revised.object,
+        );
+        expect(revised.object.checksum).toBe(
+          `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+        );
+        expect(
+          JSON.parse(Buffer.from(bytes).toString('utf8')).files[0].after.text,
+        ).toBe('proposal v2');
+        const foreign = await createRunAuthorityFixture(f.db, {
+          configure: false,
+        });
+        for (const context of [
+          {
+            ...f.context,
+            organizationId: foreign.org,
+            workspaceId: foreign.workspace,
+          },
+          { ...f.context, actor: { type: 'user' as const, id: foreign.user } },
+        ])
+          await expect(
+            getWorkbenchArtifact(context, f.chat.id, revised.id, f.db),
+          ).rejects.toMatchObject({ code: 'artifact_not_found' });
+        answer = `[修改提案 v2](/api/v1/files/${revised.object.id}/download)`;
+        const result = await task.run();
+        const coverage = readCheckedFinalDeliveryForExecution(
+          task.workflowLease,
+          result,
+        );
+        if (coverage.coverage !== 'checked_native_v1')
+          throw Error('Missing changeset proof');
+        const facts = await readDeliverySnapshot({
+          scope: {
+            organizationId: f.identity.org,
+            workspaceId: f.identity.workspace,
+            projectId: null,
+          },
+          rootRunId: task.runId,
+          worker: {
+            ...task.workflowLease,
+            attempt: task.execution.job.attempt,
+            generation: coverage.proof.generation,
+          },
+        });
+        expect(facts.ownedRunIds).toEqual([task.runId]);
+        expect(facts.artifacts).toHaveLength(2);
+        for (const artifact of [first, revised])
+          expect(facts.artifacts).toContainEqual(
+            expect.objectContaining({
+              objectId: artifact.object.id,
+              versionId: artifact.version.id,
+              checksum: artifact.object.checksum,
+              originRunId: task.runId,
+            }),
+          );
+        expect(coverage.proof.factSetDigest).toBe(
+          finalDeliveryFactsDigest(facts),
+        );
+        expect(coverage.proof.candidateDigest).toBe(
+          finalDeliveryTextDigest(answer),
+        );
+        if (mode === 'expire-before-commit')
+          await f.db`update allrice_storage_objects set retention_until=created_at+interval '1 microsecond' where id=${revised.object.id}`;
+        const completing = completeJob({
+          ...task.workflowLease,
+          result,
+          checkedDelivery: coverage.checkedDelivery,
+        });
+        if (mode === 'expire-before-commit') {
+          await expect(completing).rejects.toMatchObject({
+            code: 'final_delivery_evidence_unavailable',
+          });
+          expect(await state(f, task.runId)).toMatchObject({
+            status: 'running',
+            state: 'running',
+            successes: 0,
+          });
+        } else {
+          await completing;
+          expect(await state(f, task.runId)).toMatchObject({
+            status: 'succeeded',
+            state: 'succeeded',
+            text: answer,
+            result: { answer },
+            successes: 1,
+          });
+          if (mode === 'old-run') {
+            const next = await prepare(f, '只给出本轮文件修改提案，不应用。');
+            try {
+              await expect(next.run()).rejects.toMatchObject({
+                code: 'FINAL_DELIVERY_RESPONSE_INVALID',
+              });
+              expect(await state(f, next.runId)).toMatchObject({
+                status: 'running',
+                state: 'running',
+                successes: 0,
+              });
+            } finally {
+              await next.isolation.cleanup();
+            }
+          }
+        }
+        expect(
+          await f.db`select run_id from allrice_changeset_runs where artifact_id in (${first.id},${revised.id})`,
+        ).toHaveLength(0);
+        expect(
+          await f.db`select id from allrice_runtime_operations where run_id=${task.runId}`,
+        ).toHaveLength(0);
+        expect(model!.requests).toHaveLength(mode === 'old-run' ? 2 : 1);
       } finally {
         await task.isolation.cleanup();
       }
