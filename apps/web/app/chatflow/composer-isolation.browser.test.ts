@@ -1360,7 +1360,7 @@ suite(
       }
     });
 
-    it('waits for the active full read before showing the native header and preserves keyboard detail focus', async () => {
+    it('waits for the active full read, refreshes the native catalog on keyboard opening and keeps summary selection inert', async () => {
       const f = await fixture({
         nativeParents: 3,
         nativeDelayFull: true,
@@ -1392,9 +1392,9 @@ suite(
         const requestsBeforeOpen = f.native.fullRequests();
         await trigger.focus();
         await f.page.keyboard.press('ArrowDown');
-        expect(f.native.fullRequests()).toBe(requestsBeforeOpen);
-        const first = f.page.getByRole('button', {
-          name: '查看Child 0摘要',
+        await expect.poll(f.native.fullRequests).toBe(requestsBeforeOpen + 1);
+        const first = f.page.getByRole('treeitem', {
+          name: 'Child 0摘要',
           exact: true,
         });
         await first.waitFor();
@@ -1402,10 +1402,10 @@ suite(
           .poll(() => first.evaluate((node) => node === document.activeElement))
           .toBe(true);
         await f.page.keyboard.press('Enter');
-        await f.page
-          .getByLabel('子智能体摘要', { exact: true })
-          .getByText(`${A} own reply`, { exact: true })
-          .waitFor();
+        expect(
+          await f.page.getByLabel('子智能体摘要', { exact: true }).count(),
+        ).toBe(0);
+        expect(await trigger.getAttribute('aria-expanded')).toBe('true');
         await expect
           .poll(
             () =>
@@ -1414,8 +1414,8 @@ suite(
                 .filter((c) => c.sessionId === A && c.childId === 'child-0')
                 .length,
           )
-          .toBe(1);
-        expect(f.native.fullRequests()).toBe(requestsBeforeOpen);
+          .toBe(0);
+        expect(f.native.fullRequests()).toBe(requestsBeforeOpen + 1);
         expect(f.native.browserWrites.count).toBe(0);
         expect(f.writes).toEqual([]);
         expect(f.errors).toEqual([]);
@@ -1426,7 +1426,7 @@ suite(
     });
 
     it.each(['Escape', 'button'] as const)(
-      'keeps a native detail closed when %s cancels a pending hover timer',
+      'keeps the native catalog closed when %s cancels a pending hover timer',
       async (action) => {
         const f = await fixture({
           nativeParents: 3,
@@ -1438,57 +1438,45 @@ suite(
             name: '1 个子智能体 · 1 个运行中',
             exact: true,
           });
+          const readsBeforeOpen = f.native.fullRequests();
           await trigger.click();
+          const tree = f.page.getByRole('tree', { name: '子智能体目录' });
           await f.page
-            .getByRole('button', { name: '查看Child 0摘要', exact: true })
-            .click();
-          const detail = f.page.getByLabel('子智能体摘要', { exact: true });
-          await detail.getByText(`${A} own reply`, { exact: true }).waitFor();
-          const closeButton = f.page.getByRole('button', {
-            name: '关闭摘要',
-            exact: true,
-          });
-          await expect
-            .poll(() =>
-              closeButton.evaluate((node) => node === document.activeElement),
-            )
-            .toBe(true);
+            .getByRole('treeitem', { name: 'Child 0摘要', exact: true })
+            .waitFor();
+          await expect.poll(f.native.fullRequests).toBe(readsBeforeOpen + 1);
           const childConnections = () =>
             f.native
               .connections()
               .filter((c) => c.sessionId === A && c.childId === 'child-0')
               .length;
-          await expect.poll(childConnections).toBe(1);
+          expect(childConnections()).toBe(0);
           await f.page.mouse.move(0, 0);
           await f.page.clock.pauseAt(
             await f.page.evaluate(() => Date.now() + 1000),
           );
-          expect(await detail.count()).toBe(1);
-          expect(await trigger.getAttribute('aria-expanded')).toBe('false');
+          expect(await tree.count()).toBe(1);
+          expect(await trigger.getAttribute('aria-expanded')).toBe('true');
+          await trigger.focus();
           const box = await trigger.boundingBox();
           expect(box).not.toBeNull();
-          // Real pointer entry schedules open; pointer leave schedules close.
+          // Re-entering the pinned trigger still arms its existing hover callback.
           await f.page.mouse.move(
             box!.x + box!.width / 2,
             box!.y + box!.height / 2,
           );
-          if (action === 'button') await f.page.mouse.move(0, 0);
           await f.page.clock.runFor(100);
-          expect(await trigger.getAttribute('aria-expanded')).toBe('false');
-          expect(
-            await closeButton.evaluate(
-              (node) => node === document.activeElement,
-            ),
-          ).toBe(true);
-          // Enter activates the focused close button without moving the pointer.
+          expect(await trigger.getAttribute('aria-expanded')).toBe('true');
+          // Escape or Enter on the actual trigger must cancel that pending callback.
           await f.page.keyboard.press(action === 'Escape' ? 'Escape' : 'Enter');
-          await detail.waitFor({ state: 'hidden' });
+          await tree.waitFor({ state: 'hidden' });
           await f.page.clock.runFor(200);
-          expect(await detail.count()).toBe(0);
+          expect(await tree.count()).toBe(0);
           expect(
-            await f.page.getByRole('tree', { name: '子智能体目录' }).count(),
+            await f.page.getByLabel('子智能体摘要', { exact: true }).count(),
           ).toBe(0);
-          await expect.poll(childConnections).toBe(0);
+          expect(childConnections()).toBe(0);
+          expect(f.native.fullRequests()).toBe(readsBeforeOpen + 1);
           expect(
             await trigger.evaluate((node) => node === document.activeElement),
           ).toBe(true);
@@ -1501,7 +1489,7 @@ suite(
       },
     );
 
-    it('shares the active native read through parent switches, detail, permission errors, readyKey and Workspace changes', async () => {
+    it('shares the active native read through parent switches, catalog opening, permission errors, readyKey and Workspace changes', async () => {
       const f = await fixture({
         nativeParents: 3,
         running: true,
@@ -1545,12 +1533,11 @@ suite(
         phases.push('ready-key');
         await header(1).click();
         await f.page
-          .getByRole('button', { name: '查看Child 0摘要', exact: true })
-          .click();
-        await f.page
-          .getByLabel('子智能体摘要', { exact: true })
-          .getByText(`${A} own reply`, { exact: true })
+          .getByRole('treeitem', { name: 'Child 0摘要', exact: true })
           .waitFor();
+        expect(
+          await f.page.getByLabel('子智能体摘要', { exact: true }).count(),
+        ).toBe(0);
         await expect.poll(() => active(A).length).toBe(1);
         await expect
           .poll(
@@ -1560,12 +1547,10 @@ suite(
                 .filter((c) => c.sessionId === A && c.childId === 'child-0')
                 .length,
           )
-          .toBe(1);
+          .toBe(0);
         expect(active(B)[0]).toBe(readyBackgroundB);
-        phases.push('hot-detail');
-        await f.page
-          .getByRole('button', { name: '关闭摘要', exact: true })
-          .click();
+        phases.push('catalog-open');
+        await f.page.keyboard.press('Escape');
         await f.choose(B);
         await header(2).waitFor();
         await expect.poll(() => active(B).length).toBe(1);
@@ -1636,12 +1621,25 @@ suite(
               f.native.connections().filter((c) => c.sessionId === A).length,
           )
           .toBe(1);
-        const connection = f.native
+        const previousConnection = f.native
           .connections()
           .find((c) => c.sessionId === A)!;
         await trigger.click();
         const tree = f.page.getByRole('tree', { name: '子智能体目录' });
         await tree.waitFor();
+        await expect.poll(f.native.fullRequests).toBe(3);
+        await expect
+          .poll(() => previousConnection.response.destroyed)
+          .toBe(true);
+        await expect
+          .poll(
+            () =>
+              f.native.connections().filter((c) => c.sessionId === A).length,
+          )
+          .toBe(1);
+        const connection = f.native
+          .connections()
+          .find((c) => c.sessionId === A)!;
         const trace = await trigger.evaluateHandle((node) => {
           const header = node.closest('header')!;
           const states: boolean[] = [];
@@ -1680,7 +1678,7 @@ suite(
         f.finishRun(A, 'succeeded');
         await historyRequested;
         const assertRetained = async () => {
-          expect(f.native.fullRequests()).toBe(2);
+          expect(f.native.fullRequests()).toBe(3);
           expect(f.native.connections().find((c) => c.sessionId === A)).toBe(
             connection,
           );
