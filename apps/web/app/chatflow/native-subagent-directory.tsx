@@ -96,6 +96,7 @@ export function NativeSubagentDirectory({
     follow.view && typeof follow.view === 'object' ? follow.view : null;
   const snapshot = hot && 'rows' in hot ? hot : null;
   const detailSummary = hot && 'descendants' in hot ? hot : summary;
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const catalog = useRef<HTMLDivElement>(null),
     trigger = useRef<HTMLButtonElement>(null);
   const pendingFocus = useRef(false);
@@ -130,7 +131,7 @@ export function NativeSubagentDirectory({
   const [now, setNow] = useState(Date.now);
   const ticking =
     open &&
-    direct.some(
+    summary?.descendants.some(
       (entry) =>
         entry.kind === 'child' && entry.running === true && entry.timing.active,
     );
@@ -143,10 +144,20 @@ export function NativeSubagentDirectory({
   const child = detailSummary?.descendants.find(
     (entry) => entry.id === selected && entry.kind === 'child',
   ) as Child | undefined;
-  const rows = () =>
+  const toggle = (id: string) =>
+    setExpanded((value) => {
+      const next = new Set(value);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const rows = (parentId: string) =>
     summary?.descendants
-      .filter((entry) => entry.parentId === summary.rootId)
+      .filter((entry) => entry.parentId === parentId)
       .map((entry) => {
+        const branch = summary.descendants.some(
+          (other) => other.parentId === entry.id,
+        );
         const label =
           entry.kind === 'child' ? (entry.label ?? entry.id) : entry.id;
         const status =
@@ -156,13 +167,26 @@ export function NativeSubagentDirectory({
               ? '历史记录 · 上次回合已完成'
               : activity(entry);
         return (
-          <li role="treeitem" key={entry.id}>
+          <li
+            role="treeitem"
+            key={entry.id}
+            aria-expanded={branch ? expanded.has(entry.id) : undefined}
+          >
             <div className={css.row}>
+              {branch && (
+                <Button
+                  size="sm"
+                  aria-label={`${expanded.has(entry.id) ? '收起' : '展开'}${label}`}
+                  onClick={() => toggle(entry.id)}
+                >
+                  {expanded.has(entry.id) ? '▾' : '▸'}
+                </Button>
+              )}
               <Button
                 className={css.entry}
                 size="sm"
                 data-child={entry.id}
-                data-parent={summary.rootId}
+                data-parent={parentId}
                 aria-label={`查看${label}摘要`}
                 disabled={entry.kind === 'diagnostic'}
                 onClick={() => {
@@ -196,6 +220,9 @@ export function NativeSubagentDirectory({
                 </small>
               </Button>
             </div>
+            {branch && expanded.has(entry.id) && (
+              <ul role="group">{rows(entry.id)}</ul>
+            )}
           </li>
         );
       });
@@ -254,6 +281,24 @@ export function NativeSubagentDirectory({
                 ?.focus(),
             );
           }
+          if (at >= 0 && ['ArrowRight', 'ArrowLeft'].includes(event.key)) {
+            event.preventDefault();
+            const id = buttons[at]!.dataset.child!;
+            if (event.key === 'ArrowRight' && expanded.has(id))
+              buttons[at + 1]?.focus();
+            else if (
+              summary?.descendants.some((entry) => entry.parentId === id) &&
+              (event.key === 'ArrowRight') !== expanded.has(id)
+            )
+              toggle(id);
+            else if (event.key === 'ArrowLeft')
+              buttons
+                .find(
+                  (button) =>
+                    button.dataset.child === buttons[at]!.dataset.parent,
+                )
+                ?.focus();
+          }
         }}
       >
         <Menu
@@ -310,7 +355,7 @@ export function NativeSubagentDirectory({
               <p>暂无子智能体</p>
             ) : (
               <ul role="tree" aria-label="子智能体目录">
-                {summary && rows()}
+                {summary && rows(summary.rootId)}
               </ul>
             )}
             {[

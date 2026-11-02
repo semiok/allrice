@@ -17,6 +17,9 @@
   padding: 0;
   margin: 0;
 }
+.catalog ul ul {
+  padding-inline-start: 20px;
+}
 .row,
 .detail header {
   display: flex;

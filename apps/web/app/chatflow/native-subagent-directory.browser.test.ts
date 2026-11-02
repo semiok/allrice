@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -348,11 +348,17 @@ suite('native subagent directory and employee sidebar', () => {
             return color;
           }),
         );
+        await page.getByRole('button', { name: '展开fork-a' }).click();
+        await page
+          .getByRole('button', { name: '查看grandchild摘要' })
+          .waitFor();
+        expect(await trigger.innerText()).toBe('2');
         expect(
-          await page
-            .getByRole('button', { name: '查看grandchild摘要' })
-            .count(),
-        ).toBe(0);
+          await badge.evaluate(
+            (node) => getComputedStyle(node).backgroundColor,
+          ),
+        ).toBe(colors[0]);
+        await page.getByRole('button', { name: '收起fork-a' }).click();
         await page.keyboard.press('Escape');
         await page.clock.install({ time: new Date(10000) });
         const live = {
@@ -686,6 +692,157 @@ suite('native subagent directory and employee sidebar', () => {
     }
   });
 
+  it('updates an expanded descendant elapsed time without counting its running state in the header', async () => {
+    const value = summary();
+    value.descendants = value.descendants.map((entry) => ({
+      ...entry,
+      running: entry.depth > 1,
+      timing:
+        entry.depth > 1
+          ? { settledMs: 0, active: { since: 9000, through: 9500 } }
+          : { settledMs: 18000, lastTurnCompleted: true },
+    }));
+    const { page, calls } = await open(value);
+    try {
+      await page.clock.install({ time: new Date(10000) });
+      const trigger = page.locator('button[aria-haspopup="tree"]');
+      await trigger.click();
+      await page.getByRole('button', { name: '展开fork-a' }).click();
+      const descendant = page.getByRole('button', {
+        name: '查看grandchild摘要',
+      });
+      await expect.poll(() => descendant.innerText()).toContain('1 秒');
+      const reads = calls.length;
+      await page.clock.runFor(2000);
+      await expect.poll(() => descendant.innerText()).toContain('3 秒');
+      expect(calls.length).toBe(reads);
+      expect(await trigger.getAttribute('aria-label')).toBe('2 个子智能体');
+      expect(
+        await trigger
+          .locator('span[aria-hidden="true"]')
+          .evaluate((node) => getComputedStyle(node).backgroundColor),
+      ).toBe('rgb(228, 228, 231)');
+      await capture(page, 'expanded-descendant');
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('records every header transition through normal completion and a prepared EOF tail read without flashing an error', async () => {
+    const { page, calls, fixture, setResponse } = await open();
+    let release = () => {};
+    try {
+      await expect
+        .poll(() =>
+          [...feed.connections].some(
+            (c) =>
+              c.fixture === fixture && c.sessionId === 'parent-a' && !c.childId,
+          ),
+        )
+        .toBe(true);
+      const connection = [...feed.connections].find(
+        (c) =>
+          c.fixture === fixture && c.sessionId === 'parent-a' && !c.childId,
+      )!;
+      const trigger = page.locator('button[aria-haspopup="tree"]');
+      const trace = await trigger.evaluateHandle((node) => {
+        const states: string[] = [];
+        const scope = node.closest('header')!;
+        const record = () => {
+          const button = scope.querySelector('button[aria-haspopup="tree"]');
+          states.push(button?.getAttribute('aria-label') ?? 'hidden');
+          if (button?.textContent === '!') states.push('!');
+        };
+        const observer = new MutationObserver((records) => {
+          for (const mutation of records)
+            if (mutation.attributeName === 'aria-label' && mutation.oldValue)
+              states.push(mutation.oldValue);
+          record();
+        });
+        observer.observe(scope, {
+          subtree: true,
+          childList: true,
+          characterData: true,
+          attributes: true,
+          attributeOldValue: true,
+        });
+        record();
+        return {
+          stop: () => {
+            record();
+            observer.disconnect();
+            return states;
+          },
+        };
+      });
+      const settled = summary();
+      settled.descendants = settled.descendants.map((entry) => ({
+        ...entry,
+        running: false,
+        timing: { settledMs: 18000, lastTurnCompleted: true },
+      }));
+      feed.send(connection, { type: 'directory', summary: settled });
+      await expect
+        .poll(() => trigger.getAttribute('aria-label'))
+        .toBe('2 个子智能体');
+      setResponse({
+        ...settled,
+        root: { source: 'prepared', cursor: 11 },
+        descendants: settled.descendants.map((entry) => ({
+          ...entry,
+          running: null,
+          activity: 'unknown',
+          observation: { source: 'prepared', cursor: 9 },
+        })),
+      });
+      let tailRequested = false;
+      const gate = new Promise<void>((done) => {
+        release = done;
+      });
+      await page.route(
+        '**/api/v1/sessions/parent-a/subagents?**',
+        async (route) => {
+          if (
+            new URL(route.request().url()).searchParams.get('liveOnly') !==
+            'true'
+          ) {
+            tailRequested = true;
+            await gate;
+          }
+          await route.fallback();
+        },
+      );
+      connection.response.end();
+      await expect.poll(() => tailRequested).toBe(true);
+      await expect.poll(() => trigger.count()).toBe(0);
+      release();
+      await trigger.waitFor();
+      const states = await trace.evaluate((value) => value.stop());
+      const directory = join(tmpdir(), 'allrice-met214-header');
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(
+        join(directory, 'normal-EOF-transitions.json'),
+        JSON.stringify({ states, calls }, null, 2),
+      );
+      expect(states).toContain('2 个子智能体 · 1 个运行中');
+      expect(states).toContain('hidden');
+      expect(states.at(-1)).toBe('2 个子智能体');
+      expect(
+        states.some((state) => state.includes('读取失败') || state === '!'),
+      ).toBe(false);
+      expect(
+        await trigger
+          .locator('span[aria-hidden="true"]')
+          .evaluate((node) => getComputedStyle(node).backgroundColor),
+      ).toBe('rgb(228, 228, 231)');
+      expect(calls.filter((call) => call.id === 'parent-a')).toHaveLength(2);
+      await capture(page, 'normal-EOF');
+    } finally {
+      release();
+      await page.close();
+    }
+  });
+
   it.each(['resync', 'unavailable', 'EOF-prepared', 'EOF-live'] as const)(
     '“运行结束别变未知”：handles %s without preserving stale activity or inventing completion',
     async (transition) => {
@@ -916,7 +1073,7 @@ suite('native subagent directory and employee sidebar', () => {
     return detail;
   }
 
-  it('reads the active full catalog, probes other visible parents and shows only direct children', async () => {
+  it('reads the active full catalog, probes other visible parents and expands descendants with direct header totals', async () => {
     const { page, calls } = await open();
     try {
       await expect
@@ -962,12 +1119,11 @@ suite('native subagent directory and employee sidebar', () => {
       expect(
         await page.getByRole('tree', { name: '子智能体目录' }).innerText(),
       ).toContain('上次回合已完成');
+      await page.getByRole('button', { name: '展开fork-a' }).click();
+      await page.getByRole('button', { name: '查看grandchild摘要' }).waitFor();
       expect(
-        await page.getByRole('button', { name: '查看grandchild摘要' }).count(),
-      ).toBe(0);
-      expect(
-        await page.getByRole('button', { name: '展开fork-a' }).count(),
-      ).toBe(0);
+        calls.filter((call) => !call.liveOnly).map((call) => call.id),
+      ).toEqual(['parent-a']);
       expect(await trigger.getAttribute('aria-label')).toBe(
         '2 个子智能体 · 1 个运行中',
       );
@@ -1015,9 +1171,35 @@ suite('native subagent directory and employee sidebar', () => {
       const first = page.getByRole('button', { name: '查看fork-a摘要' });
       await first.focus();
       await page.keyboard.press('ArrowRight');
+      const descendant = page.getByRole('button', {
+        name: '查看grandchild摘要',
+      });
+      await descendant.waitFor();
+      await page.keyboard.press('ArrowRight');
       expect(
-        await page.getByRole('button', { name: '查看grandchild摘要' }).count(),
-      ).toBe(0);
+        await descendant.evaluate((node) => node === document.activeElement),
+      ).toBe(true);
+      await page.keyboard.press('ArrowLeft');
+      expect(
+        await first.evaluate((node) => node === document.activeElement),
+      ).toBe(true);
+      await page.keyboard.press('ArrowLeft');
+      expect(await descendant.count()).toBe(0);
+      await page.keyboard.press('ArrowRight');
+      await descendant.waitFor();
+      await page.keyboard.press('ArrowDown');
+      await expect
+        .poll(() =>
+          descendant.evaluate((node) => node === document.activeElement),
+        )
+        .toBe(true);
+      await page.keyboard.press('ArrowUp');
+      await expect
+        .poll(() => first.evaluate((node) => node === document.activeElement))
+        .toBe(true);
+      expect(await trigger.getAttribute('aria-label')).toBe(
+        '2 个子智能体 · 1 个运行中',
+      );
       await page.keyboard.press('End');
       await expect
         .poll(() =>
