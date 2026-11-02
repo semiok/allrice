@@ -270,6 +270,37 @@ suite('native subagent directory and employee sidebar', () => {
     const directory = join(process.cwd(), '.local', 'met214-subagent-entry');
     mkdirSync(directory, { recursive: true });
     await page.screenshot({ path: join(directory, `${name}.png`) });
+    if (name.startsWith('popover-')) {
+      const title = page.getByRole('heading', {
+        name: '子智能体',
+        exact: true,
+      });
+      const menu = await title
+        .locator('xpath=ancestor::*[contains(@class,"catalog")][1]')
+        .boundingBox();
+      const trigger = await page
+        .locator('button[aria-haspopup="tree"]')
+        .boundingBox();
+      if (!menu || !trigger)
+        throw new Error('Expected the real menu and trigger');
+      const x = Math.max(0, Math.min(menu.x, trigger.x) - 8);
+      const y = Math.max(0, Math.min(menu.y, trigger.y) - 8);
+      await page.screenshot({
+        path: join(directory, `${name}-menu.png`),
+        clip: {
+          x,
+          y,
+          width: Math.min(
+            page.viewportSize()!.width - x,
+            Math.max(menu.x + menu.width, trigger.x + trigger.width) - x + 8,
+          ),
+          height: Math.min(
+            page.viewportSize()!.height - y,
+            Math.max(menu.y + menu.height, trigger.y + trigger.height) - y + 8,
+          ),
+        },
+      });
+    }
   }
 
   it.each(['light', 'dark'])(
@@ -335,7 +366,7 @@ suite('native subagent directory and employee sidebar', () => {
           await title.evaluate((node) => ({
             size: getComputedStyle(node).fontSize,
             weight: getComputedStyle(node).fontWeight,
-            background: getComputedStyle(node.parentElement!.parentElement!)
+            background: getComputedStyle(node.closest('[class*="catalog"]')!)
               .backgroundColor,
           })),
         ).toEqual({
@@ -512,6 +543,7 @@ suite('native subagent directory and employee sidebar', () => {
               : entry,
           ),
         };
+        setResponse(live);
         feed.push(fixture, { type: 'directory', summary: live });
         await expect
           .poll(() =>
@@ -2315,10 +2347,31 @@ suite('native subagent directory and employee sidebar', () => {
       expect(
         await page.getByRole('complementary', { name: '子智能体摘要' }).count(),
       ).toBe(0);
-      await page.locator('button[aria-haspopup="tree"]').click();
-      await page.getByRole('treeitem', { name: 'fork-a摘要' }).waitFor();
+      await page
+        .getByRole('button', { name: '2 个子智能体 · 1 个运行中', exact: true })
+        .waitFor();
+      await expect
+        .poll(() =>
+          [...feed.connections].some(
+            (connection) =>
+              connection.fixture === fixture &&
+              connection.sessionId === 'parent-b' &&
+              !connection.childId,
+          ),
+        )
+        .toBe(true);
       feed.sources.get(fixture)!.status = 403;
       await showDetail(page, 'fork-a');
+      await expect
+        .poll(() =>
+          feed.calls.some(
+            (call) =>
+              call.fixture === fixture &&
+              call.sessionId === 'parent-b' &&
+              call.childId === 'fork-a',
+          ),
+        )
+        .toBe(true);
       const denied = page.getByRole('complementary', { name: '子智能体摘要' });
       await expect.poll(() => denied.innerText()).toContain('暂时无法读取摘要');
       expect(await denied.innerText()).not.toMatch(

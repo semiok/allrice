@@ -763,7 +763,7 @@ suite('native child Stop request identity and truthful receipts', () => {
       await page.keyboard.press('Escape');
       expect(
         await page
-          .getByRole('button', { name: /4 个子智能体/ })
+          .getByRole('button', { name: '打开详情（测试）' })
           .evaluate((button) => document.activeElement === button),
       ).toBe(true);
       await show(page, '甲');
