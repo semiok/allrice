@@ -1334,6 +1334,80 @@ suite('native subagent directory and employee sidebar', () => {
     }
   });
 
+  it.each(['wait', 'leave'] as const)(
+    'MET-214 delayed directory focus honors %s intent',
+    async (intent) => {
+      const cold = summary();
+      cold.root.source = 'prepared';
+      cold.descendants = cold.descendants.map((entry) => ({
+        ...entry,
+        running: null,
+        observation: { source: 'prepared', cursor: 8 },
+      }));
+      let release!: () => void;
+      const gate = new Promise<void>((done) => {
+        release = done;
+      });
+      const { page } = await open(cold, 1200, { gate, delivered: () => {} });
+      try {
+        const trigger = page.locator('button[aria-haspopup="tree"]');
+        const outside = page.getByRole('textbox', { name: '目录外草稿' });
+        await trigger.focus();
+        await page.keyboard.press('ArrowDown');
+        await page
+          .getByText('正在读取子智能体摘要…', { exact: true })
+          .waitFor();
+        await page.evaluate(() => {
+          const input = document.createElement('input');
+          input.setAttribute('aria-label', '目录外草稿');
+          document.body.append(input);
+        });
+        if (intent === 'leave') {
+          for (
+            let count = 0;
+            count < 20 &&
+            !(await outside.evaluate(
+              (node) => node === document.activeElement,
+            ));
+            count++
+          )
+            await page.keyboard.press('Tab');
+          expect(
+            await outside.evaluate((node) => node === document.activeElement),
+          ).toBe(true);
+          await page.keyboard.type('draft');
+        }
+        release();
+        const first = page.getByRole('button', { name: '查看fork-a摘要' });
+        await first.waitFor();
+        await capture(page, `late-focus-${intent}`);
+        if (intent === 'wait') {
+          await expect
+            .poll(() =>
+              first.evaluate((node) => node === document.activeElement),
+            )
+            .toBe(true);
+        } else {
+          await page.evaluate(
+            () =>
+              new Promise<void>((done) =>
+                requestAnimationFrame(() =>
+                  requestAnimationFrame(() => done()),
+                ),
+              ),
+          );
+          expect(
+            await outside.evaluate((node) => node === document.activeElement),
+          ).toBe(true);
+          expect(await outside.inputValue()).toBe('draft');
+        }
+      } finally {
+        release();
+        await page.close();
+      }
+    },
+  );
+
   it.each(['select', 'Escape', 'outside', 'scope'])(
     'keeps a delayed initial cold read reachable and preserves the latest user intent (%s)',
     async (action) => {
