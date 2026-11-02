@@ -215,6 +215,10 @@ suite('workbench icon scale and workflow identity', () => {
             '工作流',
           );
           expect(await buttons[3]!.getAttribute('aria-pressed')).toBe('true');
+          await buttons[1]!.click();
+          expect(await page.getByLabel('当前工作台模块').innerText()).toBe(
+            '工作区文件',
+          );
           await workflowCard.click();
           expect(await page.getByLabel('当前工作台模块').innerText()).toBe(
             '工作流',
