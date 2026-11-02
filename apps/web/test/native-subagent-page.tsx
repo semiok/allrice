@@ -244,7 +244,7 @@ function Page() {
         )}
         {controls && (
           <button
-            style={{ position: 'fixed', bottom: 32, left: 0, zIndex: 90 }}
+            style={{ position: 'fixed', top: 0, right: 0, zIndex: 90 }}
             onClick={() =>
               setControlRunId('55555555-5555-4555-8555-555555555555')
             }
@@ -254,7 +254,7 @@ function Page() {
         )}
         {controls && (
           <button
-            style={{ position: 'fixed', bottom: 0, left: 0, zIndex: 90 }}
+            style={{ position: 'fixed', top: 32, right: 0, zIndex: 90 }}
             onClick={() =>
               setOwnerId((id) => (id === 'viewer' ? 'other' : 'viewer'))
             }
