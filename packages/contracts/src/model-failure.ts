@@ -100,28 +100,34 @@ export function classifyModelFailure(
   return 'unknown';
 }
 
+// Use the same field grammar before, during and after replacement. Whitespace
+// may cross lines; losing that context could expose an unlabelled continuation.
+const credentialLabel = String.raw`(?:authorization|api[\s_-]*key|(?:access|refresh)[\s_-]*token|password|secret|cookie|token)`;
+const credentialPrefix = String.raw`\b(?:${credentialLabel}["']?\s*[:=]|(?:Bearer|Basic)\s+)`;
+const credentialForms = new RegExp(
+  String.raw`${credentialPrefix}[^\r\n]*(?:\r\n?|\n)?`,
+  'gi',
+);
+
 const sensitiveForms = [
   /\b(?:(?:request|response|trace|correlation|organization|project|account|user|session|conversation|job|run|turn|call|subscription|thread)[ _-]?)?id(?:\s*[:=]\s*|\s+)[^\r\n]*/gi,
   /(?:^|(?<=\s))\.[\w.-]+(?=\s|$)/gm,
   /%[A-Za-z_][A-Za-z0-9_]*%[\\/][^\r\n<>"']+/g,
 
   /-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-]*PRIVATE KEY-----|$)/g,
-  /\bauthorization["']?\s*[:=][^\r\n]*/gi,
-  /\b(?:Bearer|Basic)\s+[^\s"'<>]+/gi,
+  credentialForms,
   /\b(?:sk-[\w-]+|AIza[\w-]+|gh[pousr]_[\w]+|eyJ[\w-]+\.[\w-]+\.[\w-]+)\b/g,
   /[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]+\.[\p{L}]{2,}/gu,
   /\b(?:https?|wss?|ftp|file):\/\/[^\s<>"']+|\b(?:[\w-]+\.)+[A-Za-z]{2,}(?::\d+)?(?:\/[^\s<>"']*)?/gi,
   /(?:[A-Za-z]:[\\/]|\\\\|~\/|\.\.?\/|(?<![\w])\/)[^\r\n<>"']+/g,
   /\b[\w.-]+(?:[\\/][^\s"'<>]+)+/g,
   /\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b|\b[0-9a-f]{16,}\b|\b[0-9A-HJKMNP-TV-Z]{26}\b|\b\d{8,}\b|\b(?:req|resp|call|org|proj|user|acct|sess|chatcmpl|dsh)[_-][\w-]+/gi,
-  /\b(?:[\w-]*id|api[ _-]*key|(?:access|refresh)[ _-]*token|password|secret|cookie|token)["']?\s*[:=][^\r\n]*/gi,
+  /\b[\w-]*id["']?\s*[:=][^\r\n]*/gi,
 ];
-// A multiline credential field can lose its continuation when its label is
-// removed. Hide the whole receipt before any replacement loses that context.
-const unreliableCredentialLine =
-  /\b(?:(?:authorization|api[ _-]*key|(?:access|refresh)[ _-]*token|password|secret|cookie|token)["']?[ \t]*[:=][^\r\n]*|(?:Bearer|Basic)[ \t]+[^\r\n]*)(?:\r\n?|\n)|\b(?:api|access|refresh)[ _-]*\r?\n[ _-]*(?:key|token)\b/i;
-const residualSensitive =
-  /\bauthorization["']?\s*[:=]|\b(?:Bearer|Basic)\s+\S|\b(?:api[ _-]*key|(?:access|refresh)[ _-]*token|password|secret|cookie|token|[\w-]*id)["']?\s*[:=]|:\/\/|\bsk-|[\w.+-]+@[\w.-]+/i;
+const residualSensitive = new RegExp(
+  String.raw`${credentialPrefix}|\b[\w-]*id["']?\s*[:=]|:\/\/|\bsk-|[\w.+-]+@[\w.-]+`,
+  'i',
+);
 
 /** Unreliable input, redaction exceptions or residual credentials hide the
  * whole message. The original value is never a failure fallback. */
@@ -130,12 +136,15 @@ export function redactModelFailure(message: unknown): string {
     if (
       typeof message !== 'string' ||
       !message.trim() ||
-      unreliableCredentialLine.test(message) ||
       /[\p{Cc}\p{Cf}\p{Cs}]/u.test(
         message.replaceAll('\r', '').replaceAll('\n', '').replaceAll('\t', ''),
       )
     )
       return hiddenModelFailure;
+    credentialForms.lastIndex = 0;
+    for (const [field] of message.matchAll(credentialForms)) {
+      if (/[\r\n\u2028\u2029]/.test(field)) return hiddenModelFailure;
+    }
     let safe = message;
     for (const pattern of sensitiveForms)
       safe = safe.replace(pattern, '[已隐藏]');
