@@ -19,6 +19,7 @@ import { authorizeFixturePlatformAdministrator } from './platform-authority.fixt
 import {
   createRuntimePolicyAdmission,
   requestRuntimeActionApproval,
+  readRuntimePolicyControls,
   setRuntimePolicyControls,
   runtimePolicyDigest,
 } from './runtime-policy.ts';
@@ -54,7 +55,7 @@ import {
   getAutomationCatalogTask,
   changeAutomationCatalogTask,
 } from './automation-catalog.ts';
-import { updateWorkAutomation } from './work-automation.ts';
+import { getWorkAutomation, updateWorkAutomation } from './work-automation.ts';
 import {
   getUserPreferences,
   updateUserPreferences,
@@ -1528,24 +1529,38 @@ suite(
           command: null,
         };
         await authorizeFixturePlatformAdministrator(f.db, f.ownerId);
+        const controls = await readRuntimePolicyControls(
+          f.db,
+          f.context,
+          false,
+        );
         await setRuntimePolicyControls(
           f.context,
           {
-            version: 1,
+            ...controls,
+            version: controls.version + 1,
             enabled: true,
             mode: 'execute',
-            rules: [{ action: binding.action, effect: 'ask' }],
+            rules: [
+              ...controls.rules.filter(
+                (rule) => rule.action !== binding.action,
+              ),
+              { action: binding.action, effect: 'ask' },
+            ],
           },
-          null,
+          controls.version,
           f.db,
         );
-        const [settings] =
-          await f.db`select revision from allrice_member_work_automation where organization_id=${f.organizationId} and workspace_id=${f.workspaceId} and user_id=${f.ownerId}`;
+        const settings = await getWorkAutomation(
+          f.context,
+          f.workspaceId,
+          f.db,
+        );
         await updateWorkAutomation(
           f.context,
           f.workspaceId,
           {
-            expectedRevision: settings!.revision,
+            expectedRevision: settings.revision,
             capability: 'computer',
             enabled: false,
           },
@@ -1568,13 +1583,12 @@ suite(
         await expect(admit('dispatch')).rejects.toMatchObject({
           code: 'approval_invalid_or_stale',
         });
-        const [current] =
-          await f.db`select revision from allrice_member_work_automation where organization_id=${f.organizationId} and workspace_id=${f.workspaceId} and user_id=${f.ownerId}`;
+        const current = await getWorkAutomation(f.context, f.workspaceId, f.db);
         await updateWorkAutomation(
           f.context,
           f.workspaceId,
           {
-            expectedRevision: current!.revision,
+            expectedRevision: current.revision,
             capability: 'computer',
             enabled: true,
           },
