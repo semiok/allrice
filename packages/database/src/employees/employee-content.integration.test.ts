@@ -72,6 +72,12 @@ import {
   mutateCompanyAsset,
 } from '../company-assets.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
+import { sceneSkillFixture } from './employee-scene-skills.fixture.ts';
+import {
+  listEmployeeSceneSkills,
+  getEmployeeSceneSkill,
+  getEmployeeSceneSkillResource,
+} from './employee-scene-skills.ts';
 import { listContextCheckpointEvidence } from '../conversation/conversation-checkpoint.ts';
 import {
   acquireConversationRuntime,
@@ -267,6 +273,490 @@ suite(
       };
     }
     type Setup = Awaited<ReturnType<typeof setup>>;
+    describe('C1 published scene packages, without a runtime connection', () => {
+      function packageDraft(
+        s: Setup,
+        scope: 'company' | 'department' | 'personal' = 'personal',
+        next: {
+          setId?: string;
+          sceneId?: string;
+          expectedRevision?: number;
+          version?: string;
+        } = {},
+      ) {
+        const sceneId = next.sceneId ?? randomUUID();
+        const edit = {
+          contentId: randomUUID(),
+          revisionId: randomUUID(),
+          expectedRevision: 0,
+          kind: 'procedure' as const,
+          title: 'Complete scene skill',
+          ...sceneSkillFixture(next.version),
+        };
+        const input = s.draft({
+          setId: next.setId ?? randomUUID(),
+          expectedRevision: next.expectedRevision ?? 0,
+          ownership:
+            scope === 'personal'
+              ? s.base.ownership
+              : scope === 'company'
+                ? { scope, organizationId: s.company.organizationId }
+                : {
+                    scope,
+                    organizationId: s.company.organizationId,
+                    departmentId: s.dept.id,
+                  },
+          target:
+            scope === 'personal'
+              ? s.base.target
+              : { kind: 'employee', employeeId: s.employeeId },
+          manifest: {
+            schemaVersion: 1,
+            common: [],
+            declaredConflicts: [],
+            scenes: [
+              {
+                id: sceneId,
+                name: 'Published scene',
+                appliesWhen: 'Explicitly selected',
+                references: [
+                  { sourceKind: 'draft_text', contentId: edit.contentId },
+                ],
+              },
+            ],
+          },
+          textEdits: [edit],
+        });
+        return {
+          input,
+          edit,
+          sceneId,
+          pin: (receipt: EmployeeContentReceipt) => ({
+            setId: input.setId,
+            revisionId: receipt.candidate.id,
+            sceneId,
+            sourceRevisionId: edit.revisionId,
+          }),
+        };
+      }
+      async function instanceFor(s: Setup, context: RequestContext) {
+        const employee = (
+          await getEmployeeWorkspace(context, s.company.workspaceId)
+        ).employees.find(
+          (entry) => entry.employeeKey === publication.definition.key,
+        )!;
+        return createEmployeeInstance(context, {
+          workspaceId: s.company.workspaceId,
+          assignmentId: employee.id,
+          requestId: randomUUID(),
+          profile: { name: 'C1 reader' },
+        });
+      }
+      it('publishes original bytes, complete resources and source versions; draft and catalog do not disclose bytes', async () => {
+        const s = await setup(),
+          p = packageDraft(s);
+        const saved = await mutateEmployeeContent(s.a, p.input);
+        expect(
+          (await listEmployeeSceneSkills(s.a, s.instance.id)).skills,
+        ).toEqual([]);
+        await expect(
+          getEmployeeSceneSkill(s.a, s.instance.id, p.pin(saved)),
+        ).rejects.toThrow('not_found');
+        await expect(
+          getEmployeeSceneSkillResource(
+            s.a,
+            s.instance.id,
+            p.pin(saved),
+            'assets/template.csv',
+          ),
+        ).rejects.toThrow('not_found');
+        const checked = await mutateEmployeeContent(
+          s.a,
+          action(p.input, saved, 'validate'),
+        );
+        expect(checked.validation?.valid).toBe(true);
+        await expect(
+          getEmployeeSceneSkill(s.a, s.instance.id, p.pin(checked)),
+        ).rejects.toThrow('not_found');
+        const published = await mutateEmployeeContent(
+          s.a,
+          action(p.input, checked, 'activate'),
+        );
+        const pin = p.pin(published),
+          catalog = await listEmployeeSceneSkills(s.a, s.instance.id);
+        expect(catalog.skills).toHaveLength(1);
+        expect(JSON.stringify(catalog)).not.toContain('contentBase64');
+        expect(JSON.stringify(catalog)).not.toContain(p.edit.body);
+        const pkg = await getEmployeeSceneSkill(s.a, s.instance.id, pin);
+        expect(pkg.content).toBe(p.edit.body);
+        expect(pkg.skillPackage).toEqual(p.edit.skillPackage);
+        expect(pkg.source.createdBy).toBe(s.a.actor.id);
+        expect(pkg.publication.digest).toBe(published.candidate.digest);
+        const resource = await getEmployeeSceneSkillResource(
+          s.a,
+          s.instance.id,
+          pin,
+          'assets/template.csv',
+        );
+        expect(resource.contentBase64).toBe(
+          p.edit.skillPackage.bundle.resources[0]!.contentBase64,
+        );
+        expect(resource.bundleChecksum).toBe(pkg.bundleChecksum);
+        // This pre-existing content reader and the manifest v1 remain unchanged.
+        const legacy = await getEffectiveEmployeeContent(s.a, s.instance.id);
+        expect(
+          legacy.sources.find(
+            (source) => source.reference.revisionId === p.edit.revisionId,
+          )?.body,
+        ).toBe(p.edit.body);
+        expect(legacy.layers[0]!.active!.manifest.scenes[0]).not.toHaveProperty(
+          'skillPackage',
+        );
+        await expect(
+          f.db`update allrice_company_asset_revisions set content='{}'::jsonb where id=${p.edit.revisionId}`,
+        ).rejects.toThrow(/immutable/);
+        await expect(
+          getEmployeeSceneSkillResource(
+            s.a,
+            s.instance.id,
+            pin,
+            'assets/missing.csv',
+          ),
+        ).rejects.toThrow('not_found');
+        await expect(
+          getEmployeeSceneSkillResource(s.a, s.instance.id, pin, '../secrets'),
+        ).rejects.toThrow();
+        await expect(
+          getEmployeeSceneSkill(s.a, s.instance.id, {
+            ...pin,
+            sceneId: randomUUID(),
+          }),
+        ).rejects.toThrow('not_found');
+
+        // Web uses bundler resolution; follow the existing route tests below
+        // instead of pulling its source into the database's NodeNext typecheck.
+        const routePath =
+          '../../../../apps/web/app/api/v1/employee-instances/[id]/scene-skills/route.ts';
+        const { GET } = (await import(routePath)) as {
+          GET(
+            request: Request,
+            options: { params: Promise<{ id: string }> },
+          ): Promise<Response>;
+        };
+        const url = `https://example.test/api/v1/employee-instances/${s.instance.id}/scene-skills`;
+        const params = { params: Promise.resolve({ id: s.instance.id }) };
+        browser.context = s.a;
+        const response = await GET(
+          new Request(`${url}?${new URLSearchParams(pin)}`),
+          params,
+        );
+        expect(response.status).toBe(200);
+        expect(response.headers.get('cache-control')).toBe('private, no-store');
+        expect((await response.json()).content).toBe(p.edit.body);
+        const fileResponse = await GET(
+          new Request(
+            `${url}?${new URLSearchParams({ ...pin, resourcePath: 'assets/template.csv' })}`,
+          ),
+          params,
+        );
+        expect((await fileResponse.json()).contentBase64).toBe(
+          resource.contentBase64,
+        );
+        expect(
+          (await GET(new Request(`${url}?setId=${pin.setId}`), params)).status,
+        ).toBe(400);
+        browser.context = null;
+        const anonymous = await GET(new Request(url), params);
+        expect(anonymous.status).toBe(401);
+        expect(anonymous.headers.get('cache-control')).toBe(
+          'private, no-store',
+        );
+      });
+      it('keeps historical pins immutable and never substitutes a prior package for a plain newer procedure', async () => {
+        const s = await setup(),
+          first = packageDraft(s),
+          firstReceipt = await enable(s, first.input);
+        const second = packageDraft(s, 'personal', {
+          setId: first.input.setId,
+          sceneId: first.sceneId,
+          expectedRevision: firstReceipt.revision,
+          version: '2.0.0',
+        });
+        const secondReceipt = await enable(s, second.input);
+        expect(
+          (await listEmployeeSceneSkills(s.a, s.instance.id)).skills[0]!
+            .bundleVersion,
+        ).toBe('2.0.0');
+        expect(
+          (
+            await getEmployeeSceneSkill(
+              s.a,
+              s.instance.id,
+              first.pin(firstReceipt),
+            )
+          ).content,
+        ).toBe(first.edit.body);
+        const plain = packageDraft(s, 'personal', {
+          setId: first.input.setId,
+          sceneId: first.sceneId,
+          expectedRevision: secondReceipt.revision,
+          version: '3.0.0',
+        });
+        plain.input.textEdits = [
+          {
+            contentId: plain.edit.contentId,
+            revisionId: plain.edit.revisionId,
+            expectedRevision: 0,
+            kind: 'procedure',
+            title: 'Legacy writer',
+            body: 'Plain replacement without a package.',
+          },
+        ];
+        const saved = await mutateEmployeeContent(s.a, plain.input);
+        const checked = await mutateEmployeeContent(
+          s.a,
+          action(plain.input, saved, 'validate'),
+        );
+        await mutateEmployeeContent(s.a, {
+          ...action(plain.input, checked, 'activate'),
+          invalidatePrevious: true,
+        } as EmployeeContentMutation);
+        expect(
+          (await listEmployeeSceneSkills(s.a, s.instance.id)).skills,
+        ).toEqual([]);
+        await expect(
+          getEmployeeSceneSkill(s.a, s.instance.id, plain.pin(checked)),
+        ).rejects.toThrow('not_found');
+        await expect(
+          getEmployeeSceneSkill(s.a, s.instance.id, second.pin(secondReceipt)),
+        ).rejects.toThrow('not_found');
+        expect(
+          (
+            await getEmployeeSceneSkill(
+              s.a,
+              s.instance.id,
+              first.pin(firstReceipt),
+            )
+          ).bundleVersion,
+        ).toBe('1.0.0');
+      });
+      it('inherits company, current department and personal packages without widening scope', async () => {
+        const s = await setup(),
+          records = [];
+        for (const scope of ['company', 'department', 'personal'] as const) {
+          const p = packageDraft(s, scope),
+            receipt = await enable(s, p.input);
+          records.push({ scope, pin: p.pin(receipt) });
+        }
+        expect(
+          (await listEmployeeSceneSkills(s.a, s.instance.id)).skills.map(
+            (pkg) => pkg.ownership.scope,
+          ),
+        ).toEqual(['company', 'department', 'personal']);
+        const peer = await instanceFor(s, s.b),
+          other = await instanceFor(s, s.c);
+        expect(
+          (await listEmployeeSceneSkills(s.b, peer.id)).skills.map(
+            (pkg) => pkg.ownership.scope,
+          ),
+        ).toEqual(['company', 'department']);
+        expect(
+          (await listEmployeeSceneSkills(s.c, other.id)).skills.map(
+            (pkg) => pkg.ownership.scope,
+          ),
+        ).toEqual(['company']);
+        await expect(
+          getEmployeeSceneSkill(s.b, peer.id, records[2]!.pin),
+        ).rejects.toThrow('not_found');
+        await expect(
+          getEmployeeSceneSkill(s.c, other.id, records[1]!.pin),
+        ).rejects.toThrow('not_found');
+        const foreign = await setup();
+        await expect(
+          getEmployeeSceneSkill(
+            foreign.a,
+            foreign.instance.id,
+            records[0]!.pin,
+          ),
+        ).rejects.toThrow('not_found');
+        await expect(
+          getEmployeeSceneSkillResource(
+            foreign.a,
+            foreign.instance.id,
+            records[0]!.pin,
+            'assets/template.csv',
+          ),
+        ).rejects.toThrow('not_found');
+        await f.db`update allrice_organization_people set department_id=${s.otherDept.id} where organization_id=${s.company.organizationId} and user_id=${s.a.actor.id}`;
+        await expect(
+          getEmployeeSceneSkill(s.a, s.instance.id, records[1]!.pin),
+        ).rejects.toThrow('not_found');
+      });
+      it.each([
+        'session',
+        'membership',
+        'assignment',
+        'source',
+        'publication',
+      ] as const)(
+        'rechecks %s revocation on the next package and resource read',
+        async (kind) => {
+          const s = await setup(),
+            p = packageDraft(s),
+            receipt = await enable(s, p.input),
+            pin = p.pin(receipt);
+          await getEmployeeSceneSkillResource(
+            s.a,
+            s.instance.id,
+            pin,
+            'assets/template.csv',
+          );
+          if (kind === 'session') await revokeSession(s.tokens[0]!);
+          if (kind === 'membership')
+            await f.db`update allrice_memberships set active=false where organization_id=${s.company.organizationId} and user_id=${s.a.actor.id}`;
+          if (kind === 'assignment')
+            await f.db`update allrice_employee_assignments set active=false where id=${s.instance.assignmentId}`;
+          if (kind === 'source')
+            await f.db`update allrice_company_assets set state='withdrawn' where id=${p.edit.contentId}`;
+          if (kind === 'publication')
+            await f.db`update allrice_employee_content_publications set invalidated_at=clock_timestamp() where set_id=${p.input.setId} and revision_id=${pin.revisionId}`;
+          await expect(
+            getEmployeeSceneSkill(s.a, s.instance.id, pin),
+          ).rejects.toThrow();
+          await expect(
+            getEmployeeSceneSkillResource(
+              s.a,
+              s.instance.id,
+              pin,
+              'assets/template.csv',
+            ),
+          ).rejects.toThrow();
+        },
+      );
+      it('validates reused package dependencies before publishing a new manifest', async () => {
+        const s = await setup(),
+          uploaded = await readyReference(s, 'Controlled input', 'personal'),
+          ref = await managedRef(s, uploaded),
+          p = packageDraft(s);
+        p.edit.skillPackage.resourceSources = [
+          { path: 'assets/template.csv', references: [ref] },
+        ];
+        p.input.manifest.scenes[0]!.references.push(ref);
+        const receipt = await enable(s, p.input),
+          published = await getEmployeeSceneSkill(
+            s.a,
+            s.instance.id,
+            p.pin(receipt),
+          );
+        const reused = {
+          ...p.input,
+          requestId: randomUUID(),
+          expectedRevision: receipt.revision,
+          textEdits: [],
+          manifest: {
+            ...p.input.manifest,
+            scenes: [
+              { ...published.scene, references: [published.source.reference] },
+            ],
+          },
+        };
+        const draft = await mutateEmployeeContent(s.a, reused),
+          checked = await mutateEmployeeContent(
+            s.a,
+            action(reused, draft, 'validate'),
+          );
+        expect(checked.validation?.valid).toBe(false);
+        expect(checked.validation?.issues).toContainEqual(
+          expect.objectContaining({
+            code: 'source_changed',
+            contentId: p.edit.contentId,
+          }),
+        );
+        await expect(
+          mutateEmployeeContent(s.a, action(reused, checked, 'activate')),
+        ).rejects.toThrow();
+        expect(
+          (await listEmployeeSceneSkills(s.a, s.instance.id)).skills.map(
+            (entry) => entry.pin,
+          ),
+        ).toEqual([published.pin]);
+        await expect(
+          getEmployeeSceneSkill(s.a, s.instance.id, p.pin(draft)),
+        ).rejects.toThrow('not_found');
+        // Reusing the same immutable package is valid when its source stays declared.
+        const corrected = {
+          ...reused,
+          requestId: randomUUID(),
+          expectedRevision: checked.revision,
+          manifest: { ...reused.manifest, scenes: [published.scene] },
+        };
+        const next = await enable(s, corrected);
+        expect(
+          (await getEmployeeSceneSkill(s.a, s.instance.id, p.pin(next)))
+            .skillPackage,
+        ).toEqual(p.edit.skillPackage);
+      });
+      it('keeps managed resource sources subject to live authorization and prevents private-to-company publication', async () => {
+        const s = await setup(),
+          uploaded = await readyReference(
+            s,
+            'Synthetic controlled input',
+            'personal',
+          );
+        const ref = await managedRef(s, uploaded),
+          p = packageDraft(s);
+        p.edit.skillPackage.resourceSources = [
+          { path: 'assets/template.csv', references: [ref] },
+        ];
+        // The mapping is not an independent capability: it must be in this exact scene.
+        await expect(mutateEmployeeContent(s.a, p.input)).rejects.toThrow(
+          'validation_failed',
+        );
+        const [count] = await f.db<
+          { count: number }[]
+        >`select count(*)::int as count from allrice_company_asset_revisions where id=${p.edit.revisionId}`;
+        expect(count!.count).toBe(0);
+        p.input.manifest.scenes[0]!.references.push(ref);
+        const receipt = await enable(s, p.input),
+          pin = p.pin(receipt);
+        expect(
+          (await getEmployeeSceneSkill(s.a, s.instance.id, pin)).skillPackage
+            .resourceSources[0]!.references,
+        ).toEqual([ref]);
+        const company = packageDraft(s, 'company');
+        company.edit.skillPackage.resourceSources = [
+          { path: 'assets/template.csv', references: [ref] },
+        ];
+        company.input.manifest.scenes[0]!.references.push(ref);
+        const draftReceipt = await mutateEmployeeContent(s.a, company.input);
+        const checked = await mutateEmployeeContent(
+          s.a,
+          action(company.input, draftReceipt, 'validate'),
+        );
+        expect(checked.validation?.valid).toBe(false);
+        await expect(
+          mutateEmployeeContent(
+            s.a,
+            action(company.input, checked, 'activate'),
+          ),
+        ).rejects.toThrow();
+        await archiveReference(s, uploaded.sourceId);
+        expect(
+          (await listEmployeeSceneSkills(s.a, s.instance.id)).skills,
+        ).toEqual([]);
+        await expect(
+          getEmployeeSceneSkill(s.a, s.instance.id, pin),
+        ).rejects.toThrow('not_found');
+        await expect(
+          getEmployeeSceneSkillResource(
+            s.a,
+            s.instance.id,
+            pin,
+            'assets/template.csv',
+          ),
+        ).rejects.toThrow('not_found');
+      });
+    });
     async function knowledge(
       s: Setup,
       name: string,

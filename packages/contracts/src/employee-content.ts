@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { ReferenceSelectionSchema } from './reference-library.ts';
 import { UuidSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
+import { SkillBundleSchema, SkillResourcePathSchema } from './skill-bundle.ts';
 import {
   ContentOwnershipSchema,
   ContentAccessDecisionSchema,
@@ -273,18 +274,77 @@ const draftManifestSchema = z
     declaredConflicts: z.array(conflictSchema).max(16),
   })
   .strict();
-export const EmployeeContentTextSchema = z
+/** Package bytes live with the procedure, never in the scene index. Sources
+ * describe controlled references; a URL or checksum does not grant access. */
+export const EmployeeSceneSkillPayloadSchema = z
+  .object({
+    bundle: SkillBundleSchema,
+    resourceSources: z
+      .array(
+        z
+          .object({
+            path: SkillResourcePathSchema,
+            references: z
+              .array(EmployeeContentReferenceSchema)
+              .min(1)
+              .max(employeeContentLimits.references),
+          })
+          .strict(),
+      )
+      .max(32),
+  })
+  .strict()
+  .superRefine((payload, ctx) => {
+    const paths = payload.resourceSources.map((source) => source.path);
+    if (
+      new Set(paths).size !== paths.length ||
+      paths.some(
+        (path) =>
+          !payload.bundle.resources.some((resource) => resource.path === path),
+      )
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Resource provenance must name distinct package resources.',
+      });
+  });
+export type EmployeeSceneSkillPayload = z.infer<
+  typeof EmployeeSceneSkillPayloadSchema
+>;
+
+const ordinaryTextSchema = z
   .object({
     kind: z.enum(['requirement', 'procedure']),
     title: z.string().trim().min(1).max(160),
     body: z.string().trim().min(1).max(8000),
   })
   .strict();
-const textEditSchema = EmployeeContentTextSchema.extend({
+const packagedTextSchema = z
+  .object({
+    kind: z.literal('procedure'),
+    title: z.string().trim().min(1).max(160),
+    // A package's checksum covers the original bytes, including surrounding whitespace.
+    body: z
+      .string()
+      .min(1)
+      .max(8000)
+      .refine((body) => body.trim().length > 0),
+    skillPackage: EmployeeSceneSkillPayloadSchema,
+  })
+  .strict();
+export const EmployeeContentTextSchema = z.union([
+  ordinaryTextSchema,
+  packagedTextSchema,
+]);
+const textEditFields = {
   contentId: UuidSchema,
   revisionId: UuidSchema,
   expectedRevision: z.number().int().nonnegative(),
-});
+};
+const textEditSchema = z.union([
+  ordinaryTextSchema.extend(textEditFields),
+  packagedTextSchema.extend(textEditFields),
+]);
 const mutationFields = {
   workspaceId: UuidSchema,
   setId: UuidSchema,

@@ -13,6 +13,7 @@ export * from './organization-ai-directory.ts';
 export * from './platform-employee-history.ts';
 export * from './content-maintenance.ts';
 export * from './employees/employee-content.ts';
+export * from './employees/employee-scene-skills.ts';
 export { assertEmployeeChatHumanSource } from './employees/employee-chat-authority.ts';
 export {
   prepareEmployeeMethodActivationFromChat,

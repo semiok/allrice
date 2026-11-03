@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   EmployeeContentMutationSchema,
   EmployeeContentManifestSchema,
+  EmployeeContentTextSchema,
   EmployeeContentReceiptSchema,
   EmployeeContentSetSchema,
   EmployeeEffectiveContentSchema,
@@ -56,6 +57,7 @@ import {
   type ContentRevisionRow,
 } from './employee-content-model.ts';
 import { resolveEmployeeMethodTarget } from './employee-method-target.ts';
+import { validateSceneSkillPackage } from './employee-scene-skill-package.ts';
 export { EmployeeContentError } from './employee-content-model.ts';
 
 // HTTP callers provide a login Session; Worker callers provide current Run
@@ -361,6 +363,44 @@ async function assemble(
         sharedReader,
       });
       if (resolved.issue) issues.push(resolved.issue);
+      // Validate the complete candidate, including exact procedure revisions
+      // reused without textEdits. Otherwise removing a resource's source could
+      // publish an unreadable package. Active/runtime reads are unchanged.
+      if (
+        row.id === candidate?.row.id &&
+        ref.sourceKind === 'procedure' &&
+        resolved.dto.available
+      ) {
+        const [source] = await sql<{ content: unknown }[]>`
+          select content from allrice_company_asset_revisions
+          where organization_id=${context.organizationId} and asset_id=${ref.contentId}
+            and id=${ref.revisionId} and content ? 'skillPackage'`;
+        if (source) {
+          const text = EmployeeContentTextSchema.safeParse(source.content);
+          try {
+            if (
+              !text.success ||
+              !('skillPackage' in text.data) ||
+              runtimePolicyDigest(source.content) !== ref.digest
+            )
+              throw new EmployeeContentError('validation_failed');
+            validateSceneSkillPackage(text.data.skillPackage, text.data.body, [
+              ...rev.manifest.common,
+              ...(sceneId
+                ? rev.manifest.scenes.find((scene) => scene.id === sceneId)!
+                    .references
+                : []),
+            ]);
+          } catch {
+            issues.push({
+              code: 'source_changed',
+              contentId: ref.contentId,
+              ...(sceneId ? { sceneId } : {}),
+              message: '场景技能包与其正文、资源或资料引用不一致。',
+            });
+          }
+        }
+      }
       dependencies.push({ layer: row.id, source: resolved.dependency });
       const old = sources.get(exactKey(ref));
       if (!old || !resolved.dto.available) sources.set(exactKey(ref), resolved);
@@ -637,6 +677,7 @@ async function saveTextEdits(
       kind: edit.kind,
       title: edit.title,
       body: edit.body,
+      ...('skillPackage' in edit ? { skillPackage: edit.skillPackage } : {}),
     });
     const kind =
       edit.kind === 'requirement' ? 'execution_requirement' : 'procedure';
@@ -687,7 +728,7 @@ async function saveTextEdits(
       digest,
     });
   }
-  return EmployeeContentManifestSchema.parse({
+  const manifest = EmployeeContentManifestSchema.parse({
     ...input.manifest,
     common: input.manifest.common.map((r) =>
       r.sourceKind === 'draft_text' ? mapped.get(r.contentId)! : r,
@@ -699,6 +740,21 @@ async function saveTextEdits(
       ),
     })),
   });
+  for (const edit of input.textEdits) {
+    if (!('skillPackage' in edit)) continue;
+    const owns = (ref: EmployeeContentReference) =>
+      ref.contentId === edit.contentId && ref.revisionId === edit.revisionId;
+    if (manifest.common.some(owns))
+      validateSceneSkillPackage(edit.skillPackage, edit.body, manifest.common);
+    for (const scene of manifest.scenes) {
+      if (scene.references.some(owns))
+        validateSceneSkillPackage(edit.skillPackage, edit.body, [
+          ...manifest.common,
+          ...scene.references,
+        ]);
+    }
+  }
+  return manifest;
 }
 
 export async function mutateEmployeeContent(
@@ -1113,6 +1169,67 @@ export async function getEffectiveEmployeeContent(
     );
     return readEffectiveContent(context, target, instanceId, tx);
   });
+}
+
+/** Published-only source for the C1 catalog. It deliberately never returns a
+ * candidate, maintenance privilege, or runtime snapshot. Call in a read-only
+ * transaction so publication, current authority and bytes share one view. */
+export async function readPublishedEmployeeSceneLayers(
+  context: EmployeeContentContext,
+  instanceIdInput: string,
+  tx: ContentTx,
+  pin?: { setId: string; revisionId: string },
+) {
+  const instanceId = UuidSchema.parse(instanceIdInput);
+  if (pin) {
+    UuidSchema.parse(pin.setId);
+    UuidSchema.parse(pin.revisionId);
+  }
+  const target = await resolveTarget(
+    context,
+    { kind: 'instance', instanceId },
+    tx,
+    false,
+  );
+  const rows = await inheritedRows(
+    context,
+    target,
+    {
+      scope: 'personal',
+      organizationId: context.organizationId,
+      ownerId: context.actor.id,
+    },
+    tx,
+  );
+  if (pin && !rows.some((row) => row.id === pin.setId))
+    throw new DataAccessError('not_found');
+  const layers = [];
+  for (const row of rows) {
+    const ownership = contentOwnership(row);
+    if (!(await getContentAccess(context, ownership, tx)).canRead)
+      throw new DataAccessError('not_found');
+    const revision = await readRevision(
+      tx,
+      pin?.setId === row.id ? pin.revisionId : row.active_revision_id,
+    );
+    if (
+      !revision ||
+      revision.set_id !== row.id ||
+      runtimePolicyDigest(revision.manifest) !== revision.digest
+    )
+      throw new DataAccessError('not_found');
+    const [publication] = await tx<{ published_at: Date }[]>`
+      select published_at from allrice_employee_content_publications
+      where set_id=${row.id} and revision_id=${revision.id} and invalidated_at is null`;
+    if (!publication) throw new DataAccessError('not_found');
+    layers.push({
+      setId: row.id,
+      ownership,
+      revision: revisionDto(revision),
+      publishedAt: publication.published_at.toISOString(),
+    });
+  }
+  return { instanceId, employeeId: target.employeeId, layers };
 }
 
 async function readEffectiveContent(
