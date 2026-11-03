@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   NativeSubagentSummarySchema,
   type NativeSubagentSummary,
@@ -39,6 +39,8 @@ export function useNativeSubagents(
   requests: Record<string, string>,
   liveOnly = false,
 ) {
+  // UI-only startup grace: ready/refresh share its deadline; a valid read closes it.
+  const startup = useRef(new Map<string, number>());
   const [revision, setRevision] = useState(0);
   const refresh = () => setRevision((value) => value + 1);
   const key = JSON.stringify([
@@ -70,6 +72,8 @@ export function useNativeSubagents(
       void Promise.all(
         Object.keys(requests).map(async (id) => {
           let read: NativeSubagentRead = 'error';
+          const scope = JSON.stringify([workspaceId, headers, liveOnly, id]);
+          let timer: ReturnType<typeof setTimeout> | undefined;
           const publish = (read: NativeSubagentRead, disconnected = false) => {
             if (!abort.signal.aborted)
               setState((state) => ({
@@ -78,6 +82,20 @@ export function useNativeSubagents(
                 disconnected: { ...state.disconnected, [id]: disconnected },
               }));
           };
+          const armDeadline = () => {
+            const deadline = startup.current.get(scope);
+            if (deadline) {
+              clearTimeout(timer);
+              timer = setTimeout(
+                () => publish('error'),
+                Math.max(0, deadline - performance.now()),
+              );
+            }
+          };
+          abort.signal.addEventListener('abort', () => clearTimeout(timer), {
+            once: true,
+          });
+          armDeadline();
           try {
             const query = new URLSearchParams({ workspaceId });
             if (liveOnly) query.set('liveOnly', 'true');
@@ -89,12 +107,30 @@ export function useNativeSubagents(
                 signal: abort.signal,
               },
             );
+            if (abort.signal.aborted) return;
+            if (
+              response.status === 503 &&
+              response.headers.get('x-allrice-native-query-error') ===
+                'NATIVE_QUERY_BINDING_UNAVAILABLE' &&
+              startup.current.get(scope) !== 0
+            ) {
+              const deadline =
+                startup.current.get(scope) ?? performance.now() + 5_000;
+              startup.current.set(scope, deadline);
+              if (performance.now() < deadline) {
+                armDeadline();
+                return;
+              }
+            }
             if (!response.ok) throw new Error('summary unavailable');
             const body = await response.json();
             read =
               liveOnly && body.summary === null
                 ? null
                 : NativeSubagentSummarySchema.parse(body.summary);
+            if (abort.signal.aborted) return;
+            startup.current.set(scope, 0);
+            clearTimeout(timer);
             publish(read);
             if (read?.root.source === 'live') {
               const rootId = read.rootId;
@@ -139,6 +175,7 @@ export function useNativeSubagents(
               }
             }
           } catch {
+            clearTimeout(timer);
             read = 'error';
           }
           publish(read);

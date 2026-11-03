@@ -74,7 +74,15 @@ export async function GET(
         );
       return Response.json(
         { error: 'NATIVE_SUBAGENT_SUMMARY_UNAVAILABLE' },
-        { status: 503, headers: { 'cache-control': 'no-store' } },
+        {
+          status: 503,
+          headers: {
+            'cache-control': 'no-store',
+            ...(error.code
+              ? { 'x-allrice-native-query-error': error.code }
+              : {}),
+          },
+        },
       );
     }
     return executionErrorResponse(error);

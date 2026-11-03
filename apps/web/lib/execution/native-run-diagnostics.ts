@@ -5,7 +5,10 @@ import {
 } from '@allrice/contracts';
 
 export class NativeDiagnosticsUnavailable extends Error {
-  constructor(readonly status = 503) {
+  constructor(
+    readonly status = 503,
+    readonly code?: 'NATIVE_QUERY_BINDING_UNAVAILABLE',
+  ) {
     super('Native diagnostics unavailable');
   }
 }
@@ -75,6 +78,14 @@ async function requestNativeRead<T>(
     if (!response.ok)
       throw new NativeDiagnosticsUnavailable(
         [401, 404].includes(response.status) ? response.status : 503,
+        response.status === 503 &&
+          'sessionId' in address &&
+          !address.follow &&
+          !address.controlRequestId &&
+          response.headers.get('x-allrice-native-query-error') ===
+            'NATIVE_QUERY_BINDING_UNAVAILABLE'
+          ? 'NATIVE_QUERY_BINDING_UNAVAILABLE'
+          : undefined,
       );
     return await read(response);
   } catch (error) {

@@ -275,6 +275,15 @@ suite('native subagent directory and employee sidebar', () => {
     if (snapshot) query.set('details', '');
     await page.goto(`${origin}?${query}`);
     await page.getByRole('heading', { level: 1 }).waitFor();
+    if (search.includes('root-events'))
+      await expect
+        .poll(
+          () =>
+            [...feed.rootConnections].filter(
+              (connection) => connection.fixture === fixture,
+            ).length,
+        )
+        .toBe(1);
     if (!fullReply && !initial?.gate && value.descendants.length)
       await page
         .getByRole('button', {
@@ -2306,30 +2315,47 @@ suite('native subagent directory and employee sidebar', () => {
 
   it('MET-238 startup: “一直读不到就报错”：the 5s deadline survives ready and opening refresh without polling', async () => {
     let release!: () => void;
+    let releaseRead!: () => void;
     const gate = new Promise<void>((done) => {
       release = done;
     });
+    const blockedRead = new Promise<void>((done) => {
+      releaseRead = done;
+    });
+    const initial = {
+      kind: 'error' as const,
+      gate,
+      code: bindingUnavailable,
+      repeat: true,
+    };
     const { page, calls, fixture, initialDelivered } = await open(
       summary(),
       1200,
       undefined,
       undefined,
       '?root-events=1',
-      { kind: 'error', gate, code: bindingUnavailable, repeat: true },
+      initial,
     );
     try {
       await page.clock.install();
+      await page.clock.pauseAt(new Date(Date.now() + 100));
       release();
       await expect.poll(initialDelivered).toBe(1);
-      await flushPaint(page);
+      await page.clock.runFor(50);
       const trigger = page.locator('button[aria-haspopup="tree"]');
       expect(await trigger.getAttribute('aria-label')).toBe('子智能体');
       await page.clock.runFor(2000);
       feed.pushRoot(fixture, rootReady());
       await expect.poll(initialDelivered).toBe(2);
       await page.clock.runFor(2000);
-      await trigger.click();
-      await expect.poll(initialDelivered).toBe(3);
+      // Refresh replaces the request owner, but its pending GET cannot renew
+      // or suspend the already-observed binding failure's absolute deadline.
+      initial.gate = blockedRead;
+      await trigger.dispatchEvent('click');
+      await expect
+        .poll(() => calls.filter((call) => call.id === 'parent-a').length)
+        .toBe(3);
+      expect(initialDelivered()).toBe(2);
       await page.clock.runFor(900);
       expect(await trigger.getAttribute('aria-label')).toBe('子智能体');
       await page
@@ -2345,9 +2371,13 @@ suite('native subagent directory and employee sidebar', () => {
         .filter({ hasText: '暂时读不到子智能体目录。' })
         .waitFor();
       expect(calls.filter((call) => call.id === 'parent-a')).toHaveLength(3);
+      expect(initialDelivered()).toBe(2);
       await capture(page, 'startup-deadline-error');
     } finally {
       release();
+      releaseRead();
+      if (calls.filter((call) => call.id === 'parent-a').length === 3)
+        await expect.poll(initialDelivered).toBe(3);
       await page.close();
     }
   });
