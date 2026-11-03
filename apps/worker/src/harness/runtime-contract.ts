@@ -16,6 +16,9 @@ export function normalizeHarnessRunEvent(
     : undefined;
   if (
     sourcePayload &&
+    event.harness === 'dsh' &&
+    event.type === 'native.event' &&
+    event.sourceEventType === 'assistant/attempt' &&
     (event.internalTask || !event.sessionId || !event.messageId)
   )
     delete sourcePayload.modelFailure;

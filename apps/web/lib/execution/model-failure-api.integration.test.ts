@@ -435,27 +435,6 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
       ),
     ).not.toContain(raw);
   });
-  it('counts only distinct confirmed root attempts in the existing display JSONB, with no raw selected', async () => {
-    const counts = await db.db`
-      with attempts as (
-        select distinct on (run_id,coalesce(payload->>'attempt',''),payload->>'sourceEventId')
-          run_id,occurred_at,payload#>>'{nativePayload,modelFailure,category}' category
-        from allrice_run_events e
-        where event_type='harness.native' and payload->>'source'='dsh'
-          and payload->>'sourceEventType'='assistant/attempt'
-          and coalesce(payload->'internalTask','null'::jsonb)='null'::jsonb
-          and exists(select 1 from allrice_employee_runs er where er.run_id=e.run_id
-            and er.organization_id=e.organization_id and er.workspace_id=e.workspace_id
-            and er.session_id::text=payload->>'conversationId' and er.assistant_message_id::text=payload->>'messageId')
-          and payload->>'sourceEventId' ~ '^dsh:[0-9]+$'
-          and payload#>>'{nativePayload,modelFailure,category}' in ('auth','quota','rate_limit','service','transport','context','unknown')
-        order by run_id,coalesce(payload->>'attempt',''),payload->>'sourceEventId',sequence
-      ) select category,count(*)::int as attempts from attempts group by category order by category`;
-    expect([...counts]).toEqual([
-      { category: 'service', attempts: 1 },
-      { category: 'unknown', attempts: 2 },
-    ]);
-  });
   it('review regression: decided Workflow approval replay maps the public step error slot', async () => {
     const f = await seed('DSH_PI_AI_ERROR', raw),
       workflowId = randomUUID(),
@@ -617,5 +596,26 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
       (row: { runId: string }) => row.runId === f.task.runId,
     );
     expect(row.modelFailures).toBeUndefined();
+  });
+  it('counts only distinct confirmed root attempts in the existing display JSONB, with no raw selected', async () => {
+    const counts = await db.db`
+      with attempts as (
+        select distinct on (run_id,coalesce(payload->>'attempt',''),payload->>'sourceEventId')
+          run_id,occurred_at,payload#>>'{nativePayload,modelFailure,category}' category
+        from allrice_run_events e
+        where event_type='harness.native' and payload->>'source'='dsh'
+          and payload->>'sourceEventType'='assistant/attempt'
+          and coalesce(payload->'internalTask','null'::jsonb)='null'::jsonb
+          and exists(select 1 from allrice_employee_runs er where er.run_id=e.run_id
+            and er.organization_id=e.organization_id and er.workspace_id=e.workspace_id
+            and er.session_id::text=payload->>'conversationId' and er.assistant_message_id::text=payload->>'messageId')
+          and payload->>'sourceEventId' ~ '^dsh:[0-9]+$'
+          and payload#>>'{nativePayload,modelFailure,category}' in ('auth','quota','rate_limit','service','transport','context','unknown')
+        order by run_id,coalesce(payload->>'attempt',''),payload->>'sourceEventId',sequence
+      ) select category,count(*)::int as attempts from attempts group by category order by category`;
+    expect([...counts]).toEqual([
+      { category: 'service', attempts: 1 },
+      { category: 'unknown', attempts: 2 },
+    ]);
   });
 });

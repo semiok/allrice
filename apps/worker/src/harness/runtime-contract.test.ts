@@ -47,6 +47,26 @@ describe('normalizeHarnessRunEvent', () => {
     expect(projected.payload.nativePayload).not.toHaveProperty('modelFailure');
     expect(projected.payload.internalTask).toBeDefined();
   });
+  it('retains unrelated internal task metadata with a matching business key', () => {
+    const result = normalizeHarnessRunEvent({
+      ...envelope('dsh'),
+      sessionId: null,
+      messageId: null,
+      internalTask: {
+        kind: 'experience_consolidation',
+        occurrenceId: randomUUID(),
+      },
+      type: 'native.event',
+      presentation: 'lifecycle',
+      status: 'updated',
+      label: 'Existing metadata',
+      sourceEventType: 'unrelated/event',
+      sourcePayload: { modelFailure: { business: true } },
+    });
+    expect(result.payload.nativePayload).toEqual({
+      modelFailure: { business: true },
+    });
+  });
   it.each(['codex', 'dsh'] as const)(
     'maps %s deltas to the same durable contract',
     (harness) => {
