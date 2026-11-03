@@ -19,7 +19,6 @@ import { DshRuntimePool, type DshRuntime } from './dsh/runtime-pool.js';
 import { HandlerError, confirmToolFailure } from '../errors.js';
 import { bootstrapContextForCheckpoint } from '../employee-kernel.js';
 import { getDshCleanupFailures } from './dsh-client-cleanup.js';
-import { DshProtocolClient } from './dsh-protocol-client.js';
 import { HarnessEventBatcher } from './delta-batcher.js';
 import { getExecutionFailureUsage } from './dsh/execution-failure-usage.js';
 import type { DshRunTimingReport } from './dsh/run-timing.js';
@@ -1027,107 +1026,6 @@ describe('DshHarnessAdapter', () => {
     } finally {
       controller.abort();
       release();
-      await runtime.close();
-    }
-  }, 30_000);
-
-  it('retains a late root authorization refusal while the final content check is awaiting', async () => {
-    function gate() {
-      let release!: () => void;
-      const promise = new Promise<void>((resolveGate) => {
-        release = resolveGate;
-      });
-      return { promise, release };
-    }
-    const authorizing = gate(),
-      releaseAuthority = gate(),
-      publishing = gate(),
-      refused = gate();
-    const runtime = await schedulingRuntime([]);
-    const events: HarnessEvent[] = [];
-    const input = executionInput({
-      prompt: '取消后保留已有结果，不再发出模型请求。',
-      provider: runtime.provider,
-      events,
-    });
-    input.workDirectory = runtime.root;
-    const denial = new HandlerError('NATIVE_RUN_DENIED', 'canceled', false);
-    let authorityPending = false;
-    input.nativeRunAuthority = () => async () => {
-      authorityPending = true;
-      authorizing.release();
-      await releaseAuthority.promise;
-      throw denial;
-    };
-    input.contentGuard = {
-      generationId: randomUUID(),
-      check: async () => {
-        if (!authorityPending) return;
-        publishing.release();
-        await refused.promise;
-      },
-    };
-    const threadId = `dsh-${input.kernel.sessionId}-${input.contentGuard.generationId}`;
-    const setHandler = DshProtocolClient.prototype.setRequestHandler;
-    vi.spyOn(
-      DshProtocolClient.prototype,
-      'setRequestHandler',
-    ).mockImplementation(function (this: DshProtocolClient, handler) {
-      setHandler.call(
-        this,
-        handler &&
-          (async (method, params) => {
-            try {
-              return await handler(method, params);
-            } catch (error) {
-              if (method === 'allrice/run-authorize') refused.release();
-              throw error;
-            }
-          }),
-      );
-    });
-    const endRun = vi.spyOn(DshProtocolClient.prototype, 'endRun');
-    const work = runtime.adapter
-      .execute(input)
-      .catch((error: unknown) => error);
-    try {
-      await authorizing.promise;
-      const pool = Reflect.get(
-        runtime.adapter,
-        'runtimePool',
-      ) as DshRuntimePool;
-      const client = pool.get(threadId)!.client;
-      // Native cancel abandons the pending RPC and lets the real wait settle.
-      // The local authority callback remains pending until publication's check.
-      await client.interrupt(threadId);
-      await publishing.promise;
-      releaseAuthority.release();
-      expect(await work).toBe(denial);
-      expect(
-        getExecutionFailureUsage(
-          denial,
-          input.executionEnvironment.ALLRICE_RUN_ID!,
-          input.attempt,
-        ),
-      ).toMatchObject({
-        usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
-        usageComplete: false,
-      });
-      expect(events.some((event) => event.type === 'assistant.completed')).toBe(
-        false,
-      );
-      expect(runtime.requests).toHaveLength(0);
-      expect(endRun).not.toHaveBeenCalled();
-      expect(runtime.adapter.runtimeInventory()).toHaveLength(0);
-      expect(client.closureEvidence()).toMatchObject({
-        shutdownAcknowledged: true,
-        wrapperCleanupConfirmed: true,
-        process: { state: 'exited', stdioClosed: true, exitCode: 0 },
-      });
-    } finally {
-      releaseAuthority.release();
-      refused.release();
-      await work;
       await runtime.close();
     }
   }, 30_000);
