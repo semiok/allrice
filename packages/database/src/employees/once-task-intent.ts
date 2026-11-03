@@ -21,11 +21,11 @@ const minuteUnits: Readonly<Record<string, number>> = {
   天: 1_440,
 };
 const numberPattern = '[0-9零〇一二两三四五六七八九十百千万]+';
-const requestPrefix =
-  '(?:请\\s*|麻烦(?:你)?\\s*|帮忙\\s*)?(?:(?:帮我|为我)\\s*)?';
-const schedulePrefix = `(?:${requestPrefix}(?:给我\\s*)?(?:搞|建|创建|设置|设|安排|添加|定)(?:一)?(?:个|条)?(?:定时任务|一次性任务|定时提醒|提醒|任务|一下)\\s*[，,:：。]?\\s*)?`;
+const requestPrefix = '(?:请\\s*|麻烦(?:你)?\\s*)?(?:(?:帮我|为我)\\s*)?';
+const schedulePrefix = `(?:${requestPrefix}(?:给我\\s*)?(?:搞|建|创建|设置|设|安排|添加|定)(?:一)?(?:个|条)?(?:定时任务|一次性任务|定时提醒|提醒|任务)\\s*[，,:：。]?\\s*)?`;
+const candidateSetupPrefix = `${requestPrefix}(?:帮忙\\s*)?(?:给我\\s*)?(?:搞|建|创建|设置|设|安排|添加|定)(?:一)?(?:个|条)?(?:定时任务|一次性任务|定时提醒|提醒|任务|一下)\\s*[，,:：。]?\\s*`;
 const relativeRequest = new RegExp(
-  `^${schedulePrefix}${requestPrefix}(?:(?:从现在(?:起|开始)?|现在开始)\\s*)?(?:在\\s*|再?过\\s*)?(${numberPattern})\\s*(分钟|小时|天)(?:之后|以后|后)?\\s*[，,:：]?\\s*(.+)$`,
+  `^(?:${schedulePrefix}${requestPrefix}|(?<candidatePrefix>${candidateSetupPrefix}))(?:(?:从现在(?:起|开始)?|现在开始)\\s*)?(?:在\\s*|再?过\\s*)?(?<delay>${numberPattern})\\s*(?<unit>分钟|小时|天)(?:之后|以后|后)?\\s*[，,:：]?\\s*(?<work>.+)$`,
   'su',
 );
 const reminderRequest = new RegExp(
@@ -183,9 +183,17 @@ export function explicitOnceTaskIntent(
   if (prose === null) return null;
   const selection = scheduleConversationIntent(text);
   const reminder = prose.trim().match(reminderRequest);
+  const relative = reminder ? null : prose.trim().match(relativeRequest);
   const match = reminder
     ? [reminder[0], reminder[2], reminder[3], `${reminder[1]}${reminder[4]}`]
-    : prose.trim().match(relativeRequest);
+    : relative && (candidate || !relative.groups!.candidatePrefix)
+      ? [
+          relative[0],
+          relative.groups!.delay,
+          relative.groups!.unit,
+          relative.groups!.work,
+        ]
+      : null;
   if (!match) return null;
   const number = positiveInteger(match[1]!);
   const minutes =

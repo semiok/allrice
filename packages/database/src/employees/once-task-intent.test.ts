@@ -276,6 +276,8 @@ describe('once reminders with an explicit prohibition on extra work', () => {
     '1分钟后回复。不要创建重复提醒。',
     '1分钟后提醒。',
     '1分钟后回复。',
+    '帮忙设一下：帮忙设一下：1分钟后提醒我喝水。',
+    '帮忙设一下：请创建任务，1分钟后提醒我喝水。',
   ])('never takes a prohibition or qualifier as task authority: %s', (text) => {
     expect(intent(text)).toBeNull();
     expect(intent(text, { delayMinutes: 1 })).toBeNull();
@@ -288,6 +290,40 @@ describe('once reminders with an explicit prohibition on extra work', () => {
       delayMinutes: 3,
       authoritativeRequest: text,
     });
+  });
+
+  it.each([
+    '帮忙设一下：1 分钟以后提醒我喝水。',
+    '帮忙设一下：1分钟后提醒我“喝水”。',
+  ])(
+    'does not widen strict or confirmation authority for a candidate prefix: %s',
+    (text) => {
+      expect(intent(text)).toBeNull();
+      expect(intent(text, { delayMinutes: 1 })).toBeNull();
+      expect(
+        confirmedOnceTaskIntent(
+          '是的',
+          text,
+          '确认一下：1分钟后提醒我喝水，对吗？',
+        ),
+      ).toBeNull();
+    },
+  );
+
+  it('requires a model candidate for a newly supported setup prefix', () => {
+    const text = '帮忙设一下：1分钟后提醒我喝水。';
+    expect(intent(text)).toBeNull();
+    expect(intent(text, { delayMinutes: 1 })).toEqual({
+      delayMinutes: 1,
+      authoritativeRequest: text,
+    });
+    expect(
+      confirmedOnceTaskIntent(
+        '是的',
+        text,
+        '确认一下：1分钟后提醒我喝水，对吗？',
+      ),
+    ).toBeNull();
   });
 });
 

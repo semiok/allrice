@@ -571,6 +571,8 @@ suite(
       '1分钟后回复。不要创建重复提醒。',
       '1分钟后提醒。',
       '1分钟后回复。',
+      '帮忙设一下：1 分钟以后提醒我喝水。',
+      '帮忙设一下：1分钟后提醒我“喝水”。',
     ])(
       'retains an existing denial despite complete model arguments: %s',
       async (text) => {
