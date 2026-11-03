@@ -1769,6 +1769,25 @@ suite(
         if (change !== 'namespace') expect(api.read).not.toHaveBeenCalled();
       },
     );
+    it('MET-238 startup: passes only the binding code through the authorized public GET and preserves the error body', async () => {
+      const f = await chat(false),
+        api = await start(f);
+      for (const reason of [
+        'NATIVE_QUERY_BINDING_UNAVAILABLE',
+        'NATIVE_QUERY_HOST_MISMATCH',
+      ]) {
+        api.target.mockRejectedValue(Error(reason));
+        const response = await web(f);
+        expect(response.status).toBe(503);
+        expect(response.headers.get('x-allrice-native-query-error')).toBe(
+          reason === 'NATIVE_QUERY_BINDING_UNAVAILABLE' ? reason : null,
+        );
+        expect(await response.json()).toEqual({
+          error: 'NATIVE_SUBAGENT_SUMMARY_UNAVAILABLE',
+        });
+      }
+      expect(api.read).not.toHaveBeenCalled();
+    });
     it('does not create a missing native namespace or return an empty tree', async () => {
       const f = await chat(false),
         api = await start(f),

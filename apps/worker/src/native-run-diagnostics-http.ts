@@ -94,6 +94,7 @@ export function createNativeRunDiagnosticsHttpHandler(
     signal.addEventListener('abort', cancelRead, { once: true });
     if (!summaryRequest) active++;
     let diagnosticInput: Record<string, string | boolean> = {};
+    let plainSummaryRead = false;
     try {
       let size = 0;
       const chunks: Buffer[] = [];
@@ -118,6 +119,8 @@ export function createNativeRunDiagnosticsHttpHandler(
         return true;
       }
       const input = parsed.data;
+      plainSummaryRead =
+        'sessionId' in input && !input.follow && !input.controlRequestId;
       diagnosticInput =
         'sessionId' in input
           ? {
@@ -271,7 +274,11 @@ export function createNativeRunDiagnosticsHttpHandler(
         send(404, { error: 'not_found' });
       else if (error instanceof SyntaxError)
         send(400, { error: 'invalid_request' });
-      else send(503, { error: 'diagnostics_unavailable' });
+      else {
+        if (plainSummaryRead && reason === 'NATIVE_QUERY_BINDING_UNAVAILABLE')
+          response.setHeader('x-allrice-native-query-error', reason);
+        send(503, { error: 'diagnostics_unavailable' });
+      }
     } finally {
       if (!summaryRequest) active--;
       response.off('close', onClose);

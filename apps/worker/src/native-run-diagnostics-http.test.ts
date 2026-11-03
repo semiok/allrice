@@ -170,6 +170,11 @@ it.each([
       '/internal/native-subagent-summary',
     );
     expect(response.status).toBe(status);
+    expect(response.headers.get('x-allrice-native-query-error')).toBe(
+      reason === 'NATIVE_QUERY_BINDING_UNAVAILABLE' && status === 503
+        ? reason
+        : null,
+    );
     expect(await response.json()).toEqual({
       error:
         status === 401
