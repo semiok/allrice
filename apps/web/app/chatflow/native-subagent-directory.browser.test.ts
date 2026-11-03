@@ -670,7 +670,7 @@ suite('native subagent directory and employee sidebar', () => {
         expect(await trigger.getAttribute('aria-expanded')).toBe('true');
         expect(
           await page.getByRole('treeitem', { name: 'idle-b摘要' }).innerText(),
-        ).toContain('历史记录 · 上次回合已完成');
+        ).toContain('状态未知');
         await capture(page, `${width}-unknown`);
         expect(
           calls.filter((c) => !c.liveOnly).every((c) => c.id === 'parent-a'),
@@ -1332,7 +1332,7 @@ suite('native subagent directory and employee sidebar', () => {
       ).toEqual(['parent-a', 'parent-a']);
       expect(
         await page.getByRole('tree', { name: '子智能体目录' }).innerText(),
-      ).toContain('上次回合已完成');
+      ).toContain('已结束');
       await page.getByRole('button', { name: '展开fork-a' }).click();
       await page.getByRole('treeitem', { name: 'grandchild摘要' }).waitFor();
       expect(
