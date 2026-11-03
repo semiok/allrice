@@ -11,6 +11,66 @@ const bridge = async (method) => {
   return { allowed: true };
 };
 
+it('profile writes reach the Broker only from the actual live root, never a child sharing its Run', async () => {
+  const calls = [],
+    steps = new Map(),
+    childResults = [];
+  const profileCall = (id) => ({
+    type: 'tool-call',
+    id,
+    name: 'workspace_employee_profile_update',
+    arguments: JSON.stringify({
+      expectedRevision: 1,
+      expressionStyle: 'concise',
+    }),
+  });
+  const h = await host({
+    runId,
+    nativeTools: ['workspace.employee.profile.update'],
+    bridge: async (method, params) => {
+      if (method === 'allrice/run-authorize') return { allowed: true };
+      if (method !== 'allrice/tool-call') throw Error(method);
+      calls.push(params);
+      return { modelContent: '{"revision":2}', summary: 'Saved by root' };
+    },
+    model: async (request) => {
+      const step = (steps.get(request.sessionId) ?? 0) + 1;
+      steps.set(request.sessionId, step);
+      if (request.sessionId !== 'pr0-root') {
+        if (step === 1) return [profileCall('child-profile')];
+        childResults.push(JSON.stringify(request.messages));
+        return text('子任务已完成');
+      }
+      if (step === 1)
+        return [
+          {
+            type: 'tool-call',
+            id: 'delegate-profile',
+            name: 'subagent',
+            arguments: JSON.stringify({
+              description: '资料来源检查',
+              prompt: '以后回答保持简洁。',
+            }),
+          },
+        ];
+      if (step === 2) return [profileCall('root-profile')];
+      return text('本轮完成');
+    },
+  });
+  await h.prompt('以后回答保持简洁。');
+  await h.wait();
+  expect(calls).toEqual([
+    expect.objectContaining({
+      nativeSessionId: h.root.id,
+      toolCallId: 'root-profile',
+      name: 'workspace.employee.profile.update',
+      arguments: { expectedRevision: 1, expressionStyle: 'concise' },
+    }),
+  ]);
+  expect(childResults).toHaveLength(1);
+  expect(childResults[0]).toContain('EMPLOYEE_PROFILE_ROOT_REQUIRED');
+});
+
 it('PR3a observes actual child and grandchild identity before model admission', async () => {
   const finish = gate(),
     entered = gate();

@@ -1611,6 +1611,13 @@ export async function createAllRiceRuntime(
               tool.canonicalName !== 'local.process.execute',
             execute: async (args, exec) => {
               const agent = this.ctx.agents.requireInitiator();
+              if (
+                tool.canonicalName === 'workspace.employee.profile.update' &&
+                (this.runAdmission
+                  ? this.runAdmission.rootFor(agent) !== agent
+                  : !this.ctx.agents.roots().includes(agent))
+              )
+                throw Error('EMPLOYEE_PROFILE_ROOT_REQUIRED');
               const preparation =
                 tool.canonicalName ===
                 'workspace.employee.method.prepare_activation'

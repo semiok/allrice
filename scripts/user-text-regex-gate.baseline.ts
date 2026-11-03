@@ -283,20 +283,6 @@ export const baseline: readonly BaselineEntry[] = [
     ],
   },
   {
-    file: 'packages/database/src/employees/employee-profile-intent.ts',
-    owner: 'explicitEmployeeProfileIntent',
-    kind: 'reject',
-    use: '改员工名字或回答风格，要求原话是固定句式，否则拒绝（explicit_profile_request_required）',
-    sites: [
-      String.raw`test(/^(?:请)?(?:保存为|设为|设置为)(?:我(?:自己)?的)?(?:长期(?:默认)?|默认)(?:表达|回答|回复)(?:偏好|方式|风格)[。.]?$/u)`,
-      String.raw`/^(?:请)?(?:(?:以后|今后|从现在起)[，,\s]*)?(?:把你的(?:名字|名称)改(?:为|成)|将你的(?:名字|名称)改(?:为|成)|(?:给你|把你|将你)?改名(?:为|叫)|(?:以后|今后)叫你|你(?:以后|今后)叫)[：:\s]*(.+?)[。.]?$/u`,
-      String.raw`/^(?:please )?(?:rename yourself to|from now on (?:your name is|call yourself))\s+(.+?)\.?$/i`,
-      String.raw`/^(?:请)?(?:以后|今后|从现在起|长期|默认)[，,\s]*(?:(?:你的|你)?(?:回答|回复|表达)(?:方式|风格)?[，,\s]*)?(?:默认)?(?:都)?(?:保持|采用|用|请用|要|应当|设为|设置为)?[：:\s]*(.+?)(?:的(?:方式|风格))?(?:回答|回复|表达)?[。.]?$/u`,
-      String.raw`/^(?:please )?(?:from now on|by default)\s+(?:be|respond|reply)\s+(.+?)\.?$/i`,
-      String.raw`["简洁","简短","精简","concise","结构化","条理清晰","分点","structured","探索式","探索性","exploratory"].includes()`,
-    ],
-  },
-  {
     file: 'packages/database/src/employees/once-task-intent.ts',
     owner: 'explicitOnceTaskIntent',
     kind: 'reject',

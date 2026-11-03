@@ -91,6 +91,7 @@ integration(
       'progress_missing',
       'progress_canceled',
       'personal_profile_writable',
+      'general_profile_writable',
       'personal_method',
       'personal_profile_read_only',
       'image',
@@ -111,6 +112,7 @@ integration(
         const unknownUsage = ![
           'complete',
           'personal_profile_writable',
+          'general_profile_writable',
           'personal_method',
           'personal_profile_read_only',
           'quota_exhausted',
@@ -126,7 +128,10 @@ integration(
         const fixture = await createP27CodexWorkerFixture({
           allowCiDatabase: true,
           syntheticImages: mode === 'image',
-          imageGeneration: mode === 'image_generation',
+          imageGeneration: [
+            'image_generation',
+            'general_profile_writable',
+          ].includes(mode),
           personalProfile: ['personal_method'].includes(mode)
             ? 'writable'
             : mode === 'personal_profile_writable'
@@ -180,11 +185,13 @@ integration(
           const task = await fixture.prepareOrdinaryTask(
             mode === 'personal_method'
               ? '请保存我的工作场景候选：每周核对数据。'
-              : mode.startsWith('personal_profile')
-                ? '请把你的名字改为小禾。以后回答保持简洁。'
-                : mode.startsWith('progress_')
-                  ? '连续失败了，先暂停，等我确认后再继续。'
-                  : 'Synthetic arithmetic.',
+              : mode === 'general_profile_writable'
+                ? '请记住我喜欢简短回答。'
+                : mode.startsWith('personal_profile')
+                  ? '往后就叫你小禾，回复也短一点，记下来。'
+                  : mode.startsWith('progress_')
+                    ? '连续失败了，先暂停，等我确认后再继续。'
+                    : 'Synthetic arithmetic.',
             images,
           );
           if (mode === 'complete') {
@@ -296,7 +303,12 @@ integration(
                 );
               }
               const profileTool = 'workspace.employee.profile.update';
-              if (mode === 'personal_profile_writable') {
+              if (
+                [
+                  'personal_profile_writable',
+                  'general_profile_writable',
+                ].includes(mode)
+              ) {
                 // Exercise the actual frozen binding -> Worker -> adapter
                 // envelope and Broker write, without any model or credential.
                 expect(input.tools?.map((tool) => tool.name)).toContain(
@@ -308,21 +320,40 @@ integration(
                   name: profileTool,
                   arguments: {
                     expectedRevision: 1,
-                    name: '小禾',
+                    ...(mode === 'personal_profile_writable'
+                      ? { name: '小禾' }
+                      : {}),
                     expressionStyle: 'concise',
                   },
                 };
                 const receipt = await input.onToolCall!(call);
                 expect(JSON.parse(String(receipt.modelContent))).toMatchObject({
                   revision: 2,
-                  profile: { name: '小禾', expressionStyle: 'concise' },
+                  profile: {
+                    ...(mode === 'personal_profile_writable'
+                      ? { name: '小禾' }
+                      : {}),
+                    expressionStyle: 'concise',
+                  },
+                  effectiveFrom: 'next_task',
+                  receipt: receipt.summary,
                 });
+                expect(receipt.summary).toContain('默认表达方式：简洁');
+                expect(receipt.summary).toContain('下个任务起生效');
+                expect(receipt.summary).toContain('你可以再说一句改回去');
+                if (mode === 'personal_profile_writable')
+                  expect(receipt.summary).toContain('个人名称：小禾');
                 const [saved] = await fixture.db`select i.revision,i.profile
                   from allrice_employee_instances i join allrice_chat_sessions s
-                    on s.employee_instance_id=i.id where s.id=${task.sessionId}`;
+                    on coalesce(s.employee_instance_id,s.employee_assignment_id)=i.id where s.id=${task.sessionId}`;
                 expect(saved).toMatchObject({
                   revision: 2,
-                  profile: { name: '小禾', expressionStyle: 'concise' },
+                  profile: {
+                    ...(mode === 'personal_profile_writable'
+                      ? { name: '小禾' }
+                      : {}),
+                    expressionStyle: 'concise',
+                  },
                 });
                 expect(task.binding.executionSnapshot.instance?.revision).toBe(
                   1,
