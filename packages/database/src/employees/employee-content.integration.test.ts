@@ -433,8 +433,16 @@ suite(
           }),
         ).rejects.toThrow('not_found');
 
-        const { GET } =
-          await import('../../../../apps/web/app/api/v1/employee-instances/[id]/scene-skills/route.ts');
+        // Web uses bundler resolution; follow the existing route tests below
+        // instead of pulling its source into the database's NodeNext typecheck.
+        const routePath =
+          '../../../../apps/web/app/api/v1/employee-instances/[id]/scene-skills/route.ts';
+        const { GET } = (await import(routePath)) as {
+          GET(
+            request: Request,
+            options: { params: Promise<{ id: string }> },
+          ): Promise<Response>;
+        };
         const url = `https://example.test/api/v1/employee-instances/${s.instance.id}/scene-skills`;
         const params = { params: Promise.resolve({ id: s.instance.id }) };
         browser.context = s.a;
