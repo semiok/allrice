@@ -1,3 +1,5 @@
+import { modelFailureText, type ModelFailure } from '@allrice/contracts';
+import { readTerminalModelFailure } from './model-failures.ts';
 import {
   recordNativeQuestions,
   closeNativeRunQuestions,
@@ -844,7 +846,7 @@ async function enqueueRunCore(
     throw new QueueError('not_found');
   return {
     run: row
-      ? mapRunSnapshot(row)
+      ? await mapPublicRunSnapshot(row)
       : await getRun(browserContext(), workspaceId, result.runId),
     created: result.created,
     delivery: result.delivery,
@@ -1723,7 +1725,22 @@ export async function getRun(
   const row = await selectRunJob(context.organizationId, workspaceId, runId);
   if (!row) throw new QueueError('not_found');
   authorizeRun(context, row);
-  return mapRunSnapshot(row);
+  return mapPublicRunSnapshot(row);
+}
+
+async function mapPublicRunSnapshot(row: RunJobRow) {
+  const failure = await readTerminalModelFailure(
+    getDatabase(),
+    {
+      organizationId: row.organization_id,
+      workspaceId: row.workspace_id,
+      runId: row.id,
+      attempt: row.attempt,
+    },
+    row.error_code,
+    row.error_message,
+  );
+  return mapRunSnapshot(row, failure);
 }
 
 export async function listRunEvents(
@@ -2003,6 +2020,7 @@ async function transitionTerminal(
     eventType: 'run.failed' | 'run.canceled' | 'run.succeeded';
     code?: string;
     message?: string;
+    modelFailure?: ModelFailure | null;
     result?: unknown;
     skipExperienceCapture?: boolean;
     payload: Record<string, unknown>;
@@ -2100,6 +2118,9 @@ async function transitionTerminal(
         ) === index,
     );
     const failureText =
+      (input.modelFailure
+        ? modelFailureText(input.modelFailure.category, job.run_id)
+        : null) ??
       modelGovernanceFailureText(input.code) ??
       (input.code === 'SKILL_ARTIFACT_MISSING'
         ? 'Rice 暂时无法使用已引用的 Skill：Skill 文件在本地存储中缺失。请重新安装或刷新该 Skill 后重试。'
@@ -2154,6 +2175,9 @@ async function transitionTerminal(
         toJsonValue({
           text,
           citations,
+          ...(input.modelFailure
+            ? { modelFailureCategory: input.modelFailure.category }
+            : {}),
           ...(warning.success && warning.data
             ? { budgetWarning: warning.data }
             : {}),
@@ -3401,6 +3425,18 @@ export async function failJob(input: {
       });
       return { retrying: false };
     }
+    const failure = await readTerminalModelFailure(
+      transaction,
+      {
+        organizationId: job.organization_id,
+        workspaceId: job.workspace_id,
+        runId: job.run_id,
+        attempt: job.attempt,
+      },
+      input.code,
+      input.message,
+    );
+    const message = failure?.upstreamMessage ?? input.message;
     const canRetry =
       input.retryable &&
       job.attempt < job.max_attempts &&
@@ -3419,7 +3455,7 @@ export async function failJob(input: {
         set status = 'retry_wait', available_at = ${availableAt},
             worker_id = null, lease_token = null, claimed_at = null,
             heartbeat_at = null, lease_expires_at = null,
-            last_error_code = ${input.code}, last_error_message = ${input.message},
+            last_error_code = ${input.code}, last_error_message = ${message},
             updated_at = now()
         where id = ${job.id}
       `;
@@ -3453,10 +3489,12 @@ export async function failJob(input: {
       runStatus: 'failed',
       eventType: 'run.failed',
       code: input.code,
-      message: input.message,
+      message,
+      modelFailure: failure,
       payload: {
         code: input.code,
-        message: input.message,
+        message,
+        ...(failure ? { modelFailure: failure } : {}),
         attempt: job.attempt,
         deadLetter,
       },

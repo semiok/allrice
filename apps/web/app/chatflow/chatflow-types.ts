@@ -1,3 +1,4 @@
+import type { ModelFailureCategory } from '@allrice/contracts';
 import type {
   McpFailureKind,
   EmployeeInstance,
@@ -115,6 +116,7 @@ export interface Message {
     sessionReferences?: SessionReference[];
     budgetWarning?:
       'MODEL_OUTPUT_BUDGET_EXCEEDED' | 'MODEL_TOTAL_TOKEN_BUDGET_EXCEEDED';
+    modelFailureCategory?: ModelFailureCategory;
     text: string;
     interaction?:
       | {

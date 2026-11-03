@@ -84,6 +84,8 @@ export function conversationTurns(
             text: message.content.text,
             nativeText: null,
             budgetWarning: !!message.content.budgetWarning,
+            modelFailureCategory: message.content.modelFailureCategory,
+            reference: message.runId,
           }).body
         : null;
     const text =

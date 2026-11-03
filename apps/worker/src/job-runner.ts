@@ -1,4 +1,4 @@
-import type { HarnessEvent } from '@allrice/contracts';
+import { modelFailure, type HarnessEvent } from '@allrice/contracts';
 import {
   QueueError,
   appendJobEvent,
@@ -267,8 +267,10 @@ export async function runClaimedJob(
     console.error('[M5] Handler failed', {
       jobId: input.jobId,
       code: failure.code,
-      message: failure.message,
-      cause: error instanceof Error ? error.message : 'unknown error',
+      message: modelFailure(failure.message).upstreamMessage,
+      cause: modelFailure(
+        error instanceof Error ? error.message : 'unknown error',
+      ).upstreamMessage,
     });
     try {
       await failJob({

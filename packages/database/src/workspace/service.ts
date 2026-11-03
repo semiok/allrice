@@ -1,3 +1,4 @@
+import { isModelFailureCode, modelFailure } from '@allrice/contracts';
 import { requireNativeQuestionAdmission } from '../native-questions.ts';
 import { archivePrivateExperience } from '../experience-runtime.ts';
 import { nativeContextExecutionRetired } from '../conversation/native-context-retirement.ts';
@@ -147,6 +148,7 @@ interface SessionRow {
 }
 
 interface MessageRow {
+  model_error_message?: string | null;
   session_references?: unknown;
   id: string;
   session_id: string;
@@ -920,6 +922,20 @@ function mapMessage(
   const userId = requireUser(context);
   const storedContent = ChatMessageContentSchema.parse(row.content);
   let content = storedContent;
+  if (
+    row.role === 'assistant' &&
+    row.status === 'failed' &&
+    isModelFailureCode(row.error_code) &&
+    !content.modelFailureCategory
+  )
+    content = {
+      ...content,
+      modelFailureCategory: modelFailure(
+        row.model_error_message,
+        undefined,
+        row.error_code?.slice(4),
+      ).category,
+    };
   const prefix = 'allrice:user-question:v1:';
   if (
     !storedContent.interaction &&
@@ -1001,7 +1017,7 @@ export async function getChatSessionHistory(
     sql,
   );
   const messages = await sql<MessageRow[]>`
-    select m.*, er.run_id,
+    select m.*, er.run_id, er.error_message as model_error_message,
       queued.created_at as queued_created_at,
       case when queued.mode='follow_up' and queued.state in ('queued','released')
         and queued_job.status='queued' and queued_input.kind in ('message','queue_next')

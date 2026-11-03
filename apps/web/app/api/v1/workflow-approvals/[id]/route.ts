@@ -1,5 +1,6 @@
 import { DataAccessError, decideWorkflowApproval } from '@allrice/database';
 
+import { publicWorkflowRun } from '../../../../../lib/execution/public-workflow-errors';
 import { executionErrorResponse } from '../../../../../lib/execution/responses';
 import { getRequestContext } from '../../../../../lib/identity/session';
 
@@ -14,10 +15,8 @@ export async function POST(
     if (!context) throw new DataAccessError('authentication_required');
     const { id } = await params;
     return Response.json({
-      workflowRun: await decideWorkflowApproval(
-        context,
-        id,
-        await request.json(),
+      workflowRun: publicWorkflowRun(
+        await decideWorkflowApproval(context, id, await request.json()),
       ),
     });
   } catch (error) {

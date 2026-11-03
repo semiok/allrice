@@ -12,7 +12,13 @@ import {
   type TechnicalEvidence,
   type TechnicalRecord,
 } from './platform-technical-contracts.ts';
-import { UuidSchema, type RequestContext } from '@allrice/contracts';
+import {
+  UuidSchema,
+  modelFailure,
+  isModelFailureCode,
+  type RequestContext,
+} from '@allrice/contracts';
+import { readRootModelFailures } from './execution/model-failures.ts';
 import type { z } from 'zod';
 import type postgres from 'postgres';
 import { getDatabase, getDiagnosticsDatabase } from './core/client.ts';
@@ -70,7 +76,8 @@ async function records(
 ) {
   const rows =
     kind === 'run'
-      ? await sql`select 'run' kind,r.id,r.id run_id,j.id job_id,r.organization_id,r.workspace_id,r.state status,r.error_code,
+      ? await sql`select 'run' kind,r.id,r.id run_id,j.id job_id,r.organization_id,r.workspace_id,r.state status,r.error_code,r.error_message,
+        exists(select 1 from allrice_employee_runs er where er.run_id=r.id and er.organization_id=r.organization_id and er.workspace_id=r.workspace_id) is_chat_run,
         r.updated_at observed_at from allrice_runs r left join allrice_jobs j on j.run_id=r.id
         where (${id ?? null}::uuid is null or r.id=${id ?? null}::uuid)
           and (${start}::timestamptz is null or r.updated_at>=${start}::timestamptz) and r.updated_at<=${end}::timestamptz
@@ -90,8 +97,29 @@ async function records(
   const result = rows.map(record);
   if (kind !== 'run') return result;
   // Reuse the original receipts. Only bounded metadata crosses the platform
-  // boundary: never prompts, tool output, scripts, provider bodies or headers.
-  for (const item of result) {
+  // boundary: a redacted failure message, never prompts, tool output or scripts.
+  for (const [index, item] of result.entries()) {
+    const model = await readRootModelFailures(sql, {
+      organizationId: item.organizationId,
+      workspaceId: item.workspaceId,
+      runId: item.runId,
+    });
+    if (
+      !model.failures.length &&
+      rows[index]?.is_chat_run &&
+      isModelFailureCode(item.errorCode)
+    )
+      model.failures.push(
+        modelFailure(
+          rows[index]?.error_message,
+          undefined,
+          item.errorCode?.slice(4),
+        ),
+      );
+    if (model.failures.length) {
+      item.modelFailures = model.failures;
+      item.modelFailuresTruncated = model.truncated;
+    }
     if (item.status !== 'failed') continue;
     const cloud =
       await sql`select o.id as "operationId",o.snapshot->>'status' status,

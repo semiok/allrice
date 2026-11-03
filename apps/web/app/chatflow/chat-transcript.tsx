@@ -242,6 +242,9 @@ export const ChatTranscript = memo(function ChatTranscript({
                       text: message.content.text,
                       nativeText: nativeExecutionFailureText(message.errorCode),
                       budgetWarning: !!message.content.budgetWarning,
+                      modelFailureCategory:
+                        message.content.modelFailureCategory,
+                      reference: message.runId,
                     })
                   : null;
               const fallbackText =

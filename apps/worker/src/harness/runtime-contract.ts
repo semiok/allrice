@@ -9,6 +9,19 @@ export interface NormalizedHarnessRunEvent {
 export function normalizeHarnessRunEvent(
   event: HarnessEvent,
 ): NormalizedHarnessRunEvent {
+  // This is the existing one-way display ledger, not native execution.
+  // Internal tasks have no chat message identity and are outside this view.
+  const sourcePayload = event.sourcePayload
+    ? { ...event.sourcePayload }
+    : undefined;
+  if (
+    sourcePayload &&
+    event.harness === 'dsh' &&
+    event.type === 'native.event' &&
+    event.sourceEventType === 'assistant/attempt' &&
+    (event.internalTask || !event.sessionId || !event.messageId)
+  )
+    delete sourcePayload.modelFailure;
   const envelope = {
     source: event.harness,
     generation: event.generation,
@@ -26,7 +39,7 @@ export function normalizeHarnessRunEvent(
     ...(event.sourceOccurredAt
       ? { sourceOccurredAt: event.sourceOccurredAt }
       : {}),
-    ...(event.sourcePayload ? { nativePayload: event.sourcePayload } : {}),
+    ...(sourcePayload ? { nativePayload: sourcePayload } : {}),
   };
   if (event.type === 'native.event') {
     return {

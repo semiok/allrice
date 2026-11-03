@@ -21,6 +21,52 @@ function envelope(harness: 'codex' | 'dsh') {
 }
 
 describe('normalizeHarnessRunEvent', () => {
+  it('review regression: internal task failure receipts are outside the chat display projection', () => {
+    const projected = normalizeHarnessRunEvent({
+      ...envelope('dsh'),
+      sessionId: null,
+      messageId: null,
+      internalTask: {
+        kind: 'experience_consolidation',
+        occurrenceId: randomUUID(),
+      },
+      type: 'native.event',
+      presentation: 'lifecycle',
+      status: 'failed',
+      label: '模型调用未完成',
+      sourceEventId: 'dsh:14',
+      sourceEventType: 'assistant/attempt',
+      sourcePayload: {
+        modelFailure: {
+          category: 'unknown',
+          code: 'PRIVATE_INTERNAL',
+          upstreamMessage: 'Internal original',
+        },
+      },
+    });
+    expect(projected.payload.nativePayload).not.toHaveProperty('modelFailure');
+    expect(projected.payload.internalTask).toBeDefined();
+  });
+  it('retains unrelated internal task metadata with a matching business key', () => {
+    const result = normalizeHarnessRunEvent({
+      ...envelope('dsh'),
+      sessionId: null,
+      messageId: null,
+      internalTask: {
+        kind: 'experience_consolidation',
+        occurrenceId: randomUUID(),
+      },
+      type: 'native.event',
+      presentation: 'lifecycle',
+      status: 'updated',
+      label: 'Existing metadata',
+      sourceEventType: 'unrelated/event',
+      sourcePayload: { modelFailure: { business: true } },
+    });
+    expect(result.payload.nativePayload).toEqual({
+      modelFailure: { business: true },
+    });
+  });
   it.each(['codex', 'dsh'] as const)(
     'maps %s deltas to the same durable contract',
     (harness) => {

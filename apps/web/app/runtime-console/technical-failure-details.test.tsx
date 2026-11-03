@@ -45,6 +45,27 @@ describe('technical failure attribution', () => {
     ])
       expect(html).toContain(text);
   });
+  it('shows the categorized safe original without a cause-unknown disclaimer, including recovered retries', () => {
+    for (const category of ['auth', 'unknown'] as const) {
+      const html = renderToStaticMarkup(
+        <TechnicalFailureDetails
+          record={{
+            ...record,
+            status: 'succeeded',
+            modelFailures: [
+              { category, upstreamMessage: 'Safe original <provider failure>' },
+            ],
+          }}
+        />,
+      );
+      expect(html).toContain('Safe original &lt;provider failure&gt;');
+      expect(html).not.toContain('根因尚未确认');
+      expect(html).not.toContain('不能据此认定');
+      expect(html).toContain(
+        category === 'auth' ? '授权失效' : '模型服务返回了未归类的错误',
+      );
+    }
+  });
   it('keeps historical records without diagnostics compatible', () => {
     expect(
       renderToStaticMarkup(
