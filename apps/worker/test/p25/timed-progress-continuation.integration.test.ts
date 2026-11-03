@@ -472,7 +472,6 @@ suite(
             DshProtocolClient.prototype,
             'setRequestHandler',
           ).mockImplementation(function (this: DshProtocolClient, handler) {
-            if (handler) client = this;
             setHandler.call(
               this,
               handler &&
@@ -536,7 +535,8 @@ suite(
           if (!unsubscribe) {
             const pool = Reflect.get(host, 'runtimePool') as DshRuntimePool;
             const runtime = pool.get(`dsh-${task.sessionId}`);
-            if (runtime)
+            if (runtime) {
+              client = runtime.client;
               unsubscribe = runtime.client.subscribe((n) => {
                 if (
                   n.params.sessionId === runtime.sessionId &&
@@ -546,6 +546,7 @@ suite(
                   if (idle) releaseRoot();
                 }
               });
+            }
           }
           if (event.sourceEventType !== 'session/user-question') return;
           cards++;
