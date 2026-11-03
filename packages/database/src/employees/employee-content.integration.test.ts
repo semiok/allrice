@@ -633,6 +633,69 @@ suite(
           ).rejects.toThrow();
         },
       );
+      it('validates reused package dependencies before publishing a new manifest', async () => {
+        const s = await setup(),
+          uploaded = await readyReference(s, 'Controlled input', 'personal'),
+          ref = await managedRef(s, uploaded),
+          p = packageDraft(s);
+        p.edit.skillPackage.resourceSources = [
+          { path: 'assets/template.csv', references: [ref] },
+        ];
+        p.input.manifest.scenes[0]!.references.push(ref);
+        const receipt = await enable(s, p.input),
+          published = await getEmployeeSceneSkill(
+            s.a,
+            s.instance.id,
+            p.pin(receipt),
+          );
+        const reused = {
+          ...p.input,
+          requestId: randomUUID(),
+          expectedRevision: receipt.revision,
+          textEdits: [],
+          manifest: {
+            ...p.input.manifest,
+            scenes: [
+              { ...published.scene, references: [published.source.reference] },
+            ],
+          },
+        };
+        const draft = await mutateEmployeeContent(s.a, reused),
+          checked = await mutateEmployeeContent(
+            s.a,
+            action(reused, draft, 'validate'),
+          );
+        expect(checked.validation?.valid).toBe(false);
+        expect(checked.validation?.issues).toContainEqual(
+          expect.objectContaining({
+            code: 'source_changed',
+            contentId: p.edit.contentId,
+          }),
+        );
+        await expect(
+          mutateEmployeeContent(s.a, action(reused, checked, 'activate')),
+        ).rejects.toThrow();
+        expect(
+          (await listEmployeeSceneSkills(s.a, s.instance.id)).skills.map(
+            (entry) => entry.pin,
+          ),
+        ).toEqual([published.pin]);
+        await expect(
+          getEmployeeSceneSkill(s.a, s.instance.id, p.pin(draft)),
+        ).rejects.toThrow('not_found');
+        // Reusing the same immutable package is valid when its source stays declared.
+        const corrected = {
+          ...reused,
+          requestId: randomUUID(),
+          expectedRevision: checked.revision,
+          manifest: { ...reused.manifest, scenes: [published.scene] },
+        };
+        const next = await enable(s, corrected);
+        expect(
+          (await getEmployeeSceneSkill(s.a, s.instance.id, p.pin(next)))
+            .skillPackage,
+        ).toEqual(p.edit.skillPackage);
+      });
       it('keeps managed resource sources subject to live authorization and prevents private-to-company publication', async () => {
         const s = await setup(),
           uploaded = await readyReference(

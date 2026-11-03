@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   EmployeeContentMutationSchema,
   EmployeeContentManifestSchema,
+  EmployeeContentTextSchema,
   EmployeeContentReceiptSchema,
   EmployeeContentSetSchema,
   EmployeeEffectiveContentSchema,
@@ -362,6 +363,44 @@ async function assemble(
         sharedReader,
       });
       if (resolved.issue) issues.push(resolved.issue);
+      // Validate the complete candidate, including exact procedure revisions
+      // reused without textEdits. Otherwise removing a resource's source could
+      // publish an unreadable package. Active/runtime reads are unchanged.
+      if (
+        row.id === candidate?.row.id &&
+        ref.sourceKind === 'procedure' &&
+        resolved.dto.available
+      ) {
+        const [source] = await sql<{ content: unknown }[]>`
+          select content from allrice_company_asset_revisions
+          where organization_id=${context.organizationId} and asset_id=${ref.contentId}
+            and id=${ref.revisionId} and content ? 'skillPackage'`;
+        if (source) {
+          const text = EmployeeContentTextSchema.safeParse(source.content);
+          try {
+            if (
+              !text.success ||
+              !('skillPackage' in text.data) ||
+              runtimePolicyDigest(source.content) !== ref.digest
+            )
+              throw new EmployeeContentError('validation_failed');
+            validateSceneSkillPackage(text.data.skillPackage, text.data.body, [
+              ...rev.manifest.common,
+              ...(sceneId
+                ? rev.manifest.scenes.find((scene) => scene.id === sceneId)!
+                    .references
+                : []),
+            ]);
+          } catch {
+            issues.push({
+              code: 'source_changed',
+              contentId: ref.contentId,
+              ...(sceneId ? { sceneId } : {}),
+              message: '场景技能包与其正文、资源或资料引用不一致。',
+            });
+          }
+        }
+      }
       dependencies.push({ layer: row.id, source: resolved.dependency });
       const old = sources.get(exactKey(ref));
       if (!old || !resolved.dto.available) sources.set(exactKey(ref), resolved);
