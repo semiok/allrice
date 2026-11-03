@@ -813,7 +813,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     const dropped = await remember('放弃失败的候选');
     loseAckFor = pending.id;
     failDeleteFor = dropped.id;
-    const ui = await open();
+    const ui = await open('chat');
     try {
       await card(ui.page, pending.id)
         .getByRole('button', { name: '确认并记住' })
@@ -840,6 +840,9 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       await card(ui.page, pending.id)
         .getByText('长期记忆', { exact: true })
         .waitFor();
+      await card(ui.page, pending.id)
+        .getByRole('alert')
+        .waitFor({ state: 'detached' });
       await card(ui.page, dropped.id)
         .getByRole('button', { name: '放弃', exact: true })
         .click();

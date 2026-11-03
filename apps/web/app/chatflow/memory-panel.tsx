@@ -56,6 +56,14 @@ function MemoryCard(props: {
   const [busy, setBusy] = useState<'promote' | 'delete' | null>(null);
   const [error, setError] = useState('');
   const live = useRef(true);
+  const lastMemory = useRef(memory);
+  useEffect(() => {
+    // Successful reads replace settled rows; pending rows retain their object.
+    // Starting or failing a read must leave the operation error visible.
+    const refreshed = lastMemory.current !== memory;
+    lastMemory.current = memory;
+    if (refreshed && !busy) setError('');
+  }, [memory, busy]);
   useEffect(() => {
     live.current = true;
     return () => {
