@@ -77,6 +77,7 @@ async function records(
   const rows =
     kind === 'run'
       ? await sql`select 'run' kind,r.id,r.id run_id,j.id job_id,r.organization_id,r.workspace_id,r.state status,r.error_code,r.error_message,
+        exists(select 1 from allrice_employee_runs er where er.run_id=r.id and er.organization_id=r.organization_id and er.workspace_id=r.workspace_id) is_chat_run,
         r.updated_at observed_at from allrice_runs r left join allrice_jobs j on j.run_id=r.id
         where (${id ?? null}::uuid is null or r.id=${id ?? null}::uuid)
           and (${start}::timestamptz is null or r.updated_at>=${start}::timestamptz) and r.updated_at<=${end}::timestamptz
@@ -103,8 +104,18 @@ async function records(
       workspaceId: item.workspaceId,
       runId: item.runId,
     });
-    if (!model.failures.length && isModelFailureCode(item.errorCode))
-      model.failures.push(modelFailure(rows[index]?.error_message));
+    if (
+      !model.failures.length &&
+      rows[index]?.is_chat_run &&
+      isModelFailureCode(item.errorCode)
+    )
+      model.failures.push(
+        modelFailure(
+          rows[index]?.error_message,
+          undefined,
+          item.errorCode?.slice(4),
+        ),
+      );
     if (model.failures.length) {
       item.modelFailures = model.failures;
       item.modelFailuresTruncated = model.truncated;

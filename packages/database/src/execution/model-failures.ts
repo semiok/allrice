@@ -1,4 +1,5 @@
 import {
+  UuidSchema,
   isModelFailureCode,
   modelFailure,
   readModelFailure,
@@ -24,6 +25,9 @@ export function rootModelFailure(payload: unknown): ModelFailure | null {
   const row = object(payload);
   if (
     row?.source !== 'dsh' ||
+    row.internalTask != null ||
+    !UuidSchema.safeParse(row.conversationId).success ||
+    !UuidSchema.safeParse(row.messageId).success ||
     row.sourceEventType !== 'assistant/attempt' ||
     typeof row.sourceEventId !== 'string' ||
     !/^dsh:[0-9]+$/.test(row.sourceEventId)
@@ -41,12 +45,22 @@ export async function readTerminalModelFailure(
   message: unknown,
 ): Promise<ModelFailure | null> {
   if (!code?.startsWith('DSH_')) return null;
+  const [chat] = await sql<{ present: boolean }[]>`
+    select exists(select 1 from allrice_employee_runs er
+      where er.organization_id=${scope.organizationId} and er.workspace_id=${scope.workspaceId}
+        and er.run_id=${scope.runId} and er.session_id is not null and er.assistant_message_id is not null) present`;
+  if (!chat?.present) return null;
   const [last] = await sql<{ payload: unknown }[]>`
     select jsonb_build_object('source',payload->'source','sourceEventType',payload->'sourceEventType',
-      'sourceEventId',payload->'sourceEventId','nativePayload',jsonb_build_object('modelFailure',payload#>'{nativePayload,modelFailure}')) payload
+      'sourceEventId',payload->'sourceEventId','conversationId',payload->'conversationId',
+      'messageId',payload->'messageId','internalTask',payload->'internalTask','nativePayload',jsonb_build_object('modelFailure',payload#>'{nativePayload,modelFailure}')) payload
     from allrice_run_events
     where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
       and run_id=${scope.runId} and payload->>'source'='dsh'
+      and coalesce(payload->'internalTask','null'::jsonb)='null'::jsonb
+      and exists(select 1 from allrice_employee_runs er where er.run_id=${scope.runId}
+        and er.organization_id=${scope.organizationId} and er.workspace_id=${scope.workspaceId}
+        and er.session_id::text=payload->>'conversationId' and er.assistant_message_id::text=payload->>'messageId')
       and (${scope.attempt ?? null}::int is null or payload->>'attempt'=${String(scope.attempt)})
       and payload->>'sourceEventType' in ('assistant/attempt','assistant/message','llm/retry','llm/retry-started')
     order by sequence desc limit 1`;
@@ -63,10 +77,15 @@ export async function readRootModelFailures(
 ) {
   const rows = await sql<{ payload: unknown }[]>`
     select jsonb_build_object('source',payload->'source','sourceEventType',payload->'sourceEventType',
-      'sourceEventId',payload->'sourceEventId','nativePayload',jsonb_build_object('modelFailure',payload#>'{nativePayload,modelFailure}')) payload
+      'sourceEventId',payload->'sourceEventId','conversationId',payload->'conversationId',
+      'messageId',payload->'messageId','internalTask',payload->'internalTask','nativePayload',jsonb_build_object('modelFailure',payload#>'{nativePayload,modelFailure}')) payload
     from allrice_run_events
     where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
       and run_id=${scope.runId} and payload->>'source'='dsh'
+      and coalesce(payload->'internalTask','null'::jsonb)='null'::jsonb
+      and exists(select 1 from allrice_employee_runs er where er.run_id=${scope.runId}
+        and er.organization_id=${scope.organizationId} and er.workspace_id=${scope.workspaceId}
+        and er.session_id::text=payload->>'conversationId' and er.assistant_message_id::text=payload->>'messageId')
       and payload->>'sourceEventType'='assistant/attempt'
       and payload#>'{nativePayload,modelFailure}' is not null
     order by sequence desc limit 9`;
@@ -83,5 +102,7 @@ export function terminalModelFailureCategorySql(sql: Sql) {
   return sql`(select e.payload#>>'{modelFailure,category}' from allrice_run_events e
     where e.run_id=r.id and e.organization_id=r.organization_id and e.workspace_id=r.workspace_id
       and e.event_type='run.failed' and e.payload->>'code'=r.error_code
+      and exists(select 1 from allrice_employee_runs er where er.run_id=r.id
+        and er.organization_id=r.organization_id and er.workspace_id=r.workspace_id)
     order by e.sequence desc limit 1)`;
 }

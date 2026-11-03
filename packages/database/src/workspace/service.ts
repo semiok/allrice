@@ -930,7 +930,11 @@ function mapMessage(
   )
     content = {
       ...content,
-      modelFailureCategory: modelFailure(row.model_error_message).category,
+      modelFailureCategory: modelFailure(
+        row.model_error_message,
+        undefined,
+        row.error_code?.slice(4),
+      ).category,
     };
   const prefix = 'allrice:user-question:v1:';
   if (

@@ -42,7 +42,7 @@ export function modelFailureText(
 export function isModelFailureCode(code: string | null | undefined) {
   return (
     !!code &&
-    /^DSH_(?:PI_AI_ERROR|AUTH|INVALID_CREDENTIAL|QUOTA_EXCEEDED|ACCOUNT_QUOTA_EXCEEDED|RATE_LIMIT|SERVER|TRANSPORT|TIMEOUT|CONTEXT_WINDOW_EXCEEDED|INVALID_REQUEST|EMPTY_RESPONSE)$/.test(
+    /^DSH_(?:PI_AI_ERROR|AUTH|INVALID_CREDENTIAL|QUOTA|ACCOUNT_QUOTA|RATE_LIMIT|SERVER|TRANSPORT|TIMEOUT|CONTEXT_WINDOW_EXCEEDED|INVALID_REQUEST|EMPTY_RESPONSE)$/.test(
       code,
     )
   );
@@ -52,7 +52,10 @@ export function isModelFailureCode(code: string | null | undefined) {
 export function classifyModelFailure(
   message: string,
   status?: unknown,
+  code?: unknown,
 ): ModelFailureCategory {
+  // Native dsh-llm rc.2 codes are explicit provider failure states.
+  if (code === 'QUOTA' || code === 'ACCOUNT_QUOTA') return 'quota';
   if (
     status === 401 ||
     /\b(?:authentication|access|auth) token (?:has )?expired\b|\b(?:invalid|expired|revoked) (?:authentication|access) token\b|\binvalid (?:api key|credentials)\b|\bauthentication (?:failed|required)\b/i.test(
@@ -111,10 +114,14 @@ const sensitiveForms = [
   /(?:[A-Za-z]:[\\/]|\\\\|~\/|\.\.?\/|(?<![\w])\/)[^\r\n<>"']+/g,
   /\b[\w.-]+(?:[\\/][^\s"'<>]+)+/g,
   /\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b|\b[0-9a-f]{16,}\b|\b[0-9A-HJKMNP-TV-Z]{26}\b|\b\d{8,}\b|\b(?:req|resp|call|org|proj|user|acct|sess|chatcmpl|dsh)[_-][\w-]+/gi,
-  /\b(?:[\w-]*id|api[_-]?key|access[_-]?token|password|secret|cookie|token)["']?\s*[:=][^\r\n]*/gi,
+  /\b(?:[\w-]*id|api[ _-]*key|(?:access|refresh)[ _-]*token|password|secret|cookie|token)["']?\s*[:=][^\r\n]*/gi,
 ];
+// A multiline credential field can lose its continuation when its label is
+// removed. Hide the whole receipt before any replacement loses that context.
+const unreliableCredentialLine =
+  /\b(?:(?:authorization|api[ _-]*key|(?:access|refresh)[ _-]*token|password|secret|cookie|token)["']?[ \t]*[:=][^\r\n]*|(?:Bearer|Basic)[ \t]+[^\r\n]*)(?:\r\n?|\n)|\b(?:api|access|refresh)[ _-]*\r?\n[ _-]*(?:key|token)\b/i;
 const residualSensitive =
-  /\bauthorization["']?\s*[:=]|\b(?:Bearer|Basic)\s+\S|\b(?:api[_-]?key|access[_-]?token|password|secret|cookie|token|[\w-]*id)["']?\s*[:=]|:\/\/|\bsk-|[\w.+-]+@[\w.-]+/i;
+  /\bauthorization["']?\s*[:=]|\b(?:Bearer|Basic)\s+\S|\b(?:api[ _-]*key|(?:access|refresh)[ _-]*token|password|secret|cookie|token|[\w-]*id)["']?\s*[:=]|:\/\/|\bsk-|[\w.+-]+@[\w.-]+/i;
 
 /** Unreliable input, redaction exceptions or residual credentials hide the
  * whole message. The original value is never a failure fallback. */
@@ -123,6 +130,7 @@ export function redactModelFailure(message: unknown): string {
     if (
       typeof message !== 'string' ||
       !message.trim() ||
+      unreliableCredentialLine.test(message) ||
       /[\p{Cc}\p{Cf}\p{Cs}]/u.test(
         message.replaceAll('\r', '').replaceAll('\n', '').replaceAll('\t', ''),
       )
@@ -147,10 +155,11 @@ export function modelFailure(
   status?: unknown,
   code?: unknown,
 ): ModelFailure {
-  const category =
-    typeof message === 'string'
-      ? classifyModelFailure(message, status)
-      : 'unknown';
+  const category = classifyModelFailure(
+    typeof message === 'string' ? message : '',
+    status,
+    code,
+  );
   return {
     category,
     upstreamMessage: redactModelFailure(message),
@@ -198,7 +207,9 @@ export function publicModelFailureMessage(
 ) {
   const category =
     proven?.category ??
-    (isModelFailureCode(code) ? modelFailure(message).category : null);
+    (isModelFailureCode(code)
+      ? modelFailure(message, undefined, code?.slice(4)).category
+      : null);
   if (category) return modelFailureText(category, reference);
   if (code?.startsWith('DSH_')) {
     const fixed =
@@ -212,7 +223,8 @@ export function publicModelFailureMessage(
   return message ?? null;
 }
 
-/** Only the reserved private receipt is filtered at any nesting depth.
+/** For explicitly identified private error metadata only. Reserved receipt
+ * copies are filtered at any nesting depth; never call on business results.
  * Business errorMessage/code/message fields are left intact. */
 export function publicModelFailureMetadata(value: unknown): unknown {
   if (value === undefined) return value;

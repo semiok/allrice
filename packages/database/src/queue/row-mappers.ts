@@ -232,6 +232,12 @@ export function mapEvent(row: EventRow): RunEvent {
     type: row.event_type,
     schemaVersion: row.schema_version,
     occurredAt: row.occurred_at.toISOString(),
-    payload: publicModelFailureMetadata(publicPayload),
+    payload:
+      (row.event_type === 'run.failed' &&
+        typeof payload?.code === 'string' &&
+        payload.code.startsWith('DSH_')) ||
+      (row.event_type === 'harness.native' && payload?.source === 'dsh')
+        ? publicModelFailureMetadata(publicPayload)
+        : publicPayload,
   });
 }

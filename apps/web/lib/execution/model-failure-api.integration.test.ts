@@ -45,6 +45,7 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
   let unproven: Fixture;
   let recovered: Fixture;
   let redactionFailed: Fixture;
+  let sensitiveRecord: Fixture;
   const sensitive = [
     'https://private.test/path?q=secret',
     'Authorization: Basic cHJpdmF0ZTpwYXNz',
@@ -127,7 +128,11 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
     db = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(db.db);
     vi.spyOn(client, 'getDiagnosticsDatabase').mockReturnValue(db.db);
-    legacy = await seed('DSH_PI_AI_ERROR', raw + '\n' + sensitive.join('\n'));
+    legacy = await seed('DSH_PI_AI_ERROR', raw);
+    sensitiveRecord = await seed(
+      'DSH_PI_AI_ERROR',
+      raw + '\n' + sensitive.join('\n'),
+    );
     vi.stubEnv(
       'ALLRICE_PLATFORM_ADMIN_EMAILS',
       `${legacy.reviewer.actor.id}@example.test`,
@@ -382,6 +387,11 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
     expect(body).not.toContain('Private unproven iterator failure');
     const rows = JSON.parse(body).diagnostics.runs.value;
     expect(
+      rows.find((row: { runId: string }) => row.runId === sensitiveRecord.run),
+    ).toMatchObject({
+      modelFailures: [{ upstreamMessage: '原文无法安全展示' }],
+    });
+    expect(
       rows.find((row: { runId: string }) => row.runId === redactionFailed.run),
     ).toMatchObject({
       modelFailures: [{ upstreamMessage: '原文无法安全展示' }],
@@ -395,6 +405,11 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
     vi.stubEnv(
       'ALLRICE_PLATFORM_ADMIN_EMAILS',
       `${legacy.owner.actor.id}@example.test`,
+    );
+    auth.context = legacy.owner;
+    auth.context = sensitiveRecord.owner;
+    await publicBody(
+      await runGet(request(sensitiveRecord), route(sensitiveRecord)),
     );
     auth.context = legacy.owner;
     // Public APIs retain the same restricted surface even for a platform admin.
@@ -414,9 +429,13 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
       with attempts as (
         select distinct on (run_id,coalesce(payload->>'attempt',''),payload->>'sourceEventId')
           run_id,occurred_at,payload#>>'{nativePayload,modelFailure,category}' category
-        from allrice_run_events
+        from allrice_run_events e
         where event_type='harness.native' and payload->>'source'='dsh'
           and payload->>'sourceEventType'='assistant/attempt'
+          and coalesce(payload->'internalTask','null'::jsonb)='null'::jsonb
+          and exists(select 1 from allrice_employee_runs er where er.run_id=e.run_id
+            and er.organization_id=e.organization_id and er.workspace_id=e.workspace_id
+            and er.session_id::text=payload->>'conversationId' and er.assistant_message_id::text=payload->>'messageId')
           and payload->>'sourceEventId' ~ '^dsh:[0-9]+$'
           and payload#>>'{nativePayload,modelFailure,category}' in ('auth','quota','rate_limit','service','transport','context','unknown')
         order by run_id,coalesce(payload->>'attempt',''),payload->>'sourceEventId',sequence
@@ -565,5 +584,18 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
         (row: { runId: string }) => row.runId === f.run,
       ).modelFailures,
     ).toBeUndefined();
+  });
+  it('review regression: non-chat Runs cannot use the legacy administrator raw-message fallback', async () => {
+    const f = await seed('DSH_PI_AI_ERROR', 'Internal-only model original');
+    await db.db`delete from allrice_employee_runs where run_id=${f.run}`;
+    auth.context = legacy.reviewer;
+    const response = await adminGet(
+      new Request('http://localhost/api/v1/admin/technical-assistant'),
+    );
+    expect(response.status).toBe(200);
+    const row = (await response.json()).diagnostics.runs.value.find(
+      (row: { runId: string }) => row.runId === f.run,
+    );
+    expect(row.modelFailures).toBeUndefined();
   });
 });
