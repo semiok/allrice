@@ -305,7 +305,7 @@ suite(
       expect(history.revisions).toHaveLength(2);
       expect(history.publishedRevisionIds).toHaveLength(2);
     });
-    it('recommends only applicable published revisions, ranks company pins and rechecks current bytes and authority', async () => {
+    it('lists six applicable published revisions by company pin and stable ID, ignoring legacy keywords and rechecking current bytes and authority', async () => {
       const employee = randomUUID(),
         other = randomUUID();
       await f.db`insert into allrice_platform_employees(id,employee_key,name,description,status)
@@ -334,21 +334,42 @@ suite(
       };
       let pinned = await create('Pinned current reference');
       const fixed = pinned.latest;
-      const matching = await create('Task-matching reference', {
-        taskKeywords: ['quarter-report'],
+      await create('Legacy keyword reference', {
+        taskKeywords: ['请整理本周周报'],
       });
       const excluded = await create('Different AI reference', {
         appliesToEmployeeIds: [other],
       });
+      for (let index = 0; index < 6; index++)
+        await create('Other applicable reference ' + index, {
+          taskKeywords: index % 2 ? ['请汇总这一周的工作回顾'] : [],
+        });
+      const unpublished = await mutate(owner, {
+        operation: 'save',
+        assetId: randomUUID(),
+        expectedRevision: 0,
+        content: content('template', {
+          title: 'Own unpublished draft',
+          sourceVersionId: a.artifact.artifactId,
+        }),
+      });
+      const stableIds = (
+        await listCompanyAssets(member, owner.organizationId, {}, f.db)
+      ).assets
+        .filter((item) => item.kind === 'template' && item.id !== excluded.id)
+        .map((item) => item.id)
+        .sort();
       const recommend = (ctx = owner) =>
         listCompanyTemplateRecommendations(
           ctx,
           owner.organizationId,
           employee,
-          'quarter-report',
           f.db,
         );
-      expect((await recommend()).assets[0]!.id).toBe(matching.id);
+      expect((await recommend()).assets.map((item) => item.id)).toEqual(
+        stableIds.slice(0, 6),
+      );
+      expect((await recommend()).nextCursor).toBeNull();
       const pin = {
         operation: 'pin',
         assetId: pinned.id,
@@ -369,6 +390,11 @@ suite(
         },
       });
       const result = await recommend();
+      expect(result.assets.map((item) => item.id)).toEqual([
+        pinned.id,
+        ...stableIds.filter((assetId) => assetId !== pinned.id).slice(0, 5),
+      ]);
+      expect(result.assets).toHaveLength(6);
       expect(result.assets[0]).toMatchObject({
         id: pinned.id,
         pinned: true,
@@ -376,6 +402,30 @@ suite(
       });
       expect(JSON.stringify(result)).not.toContain('NEW PRIVATE DRAFT');
       expect(result.assets.some((x) => x.id === excluded.id)).toBe(false);
+      expect(result.assets.some((x) => x.id === unpublished.id)).toBe(false);
+      const all = await listCompanyAssets(
+        owner,
+        owner.organizationId,
+        {},
+        f.db,
+      );
+      expect(all.assets.length).toBeGreaterThan(6);
+      expect(all.assets.find((item) => item.id === pinned.id)!.latest.id).toBe(
+        pinned.latest.id,
+      );
+      expect(all.assets.find((item) => item.id === unpublished.id)!.state).toBe(
+        'draft',
+      );
+      expect(
+        (
+          await listCompanyAssets(
+            owner,
+            owner.organizationId,
+            { after: all.assets[0]!.id },
+            f.db,
+          )
+        ).assets.map((item) => item.id),
+      ).toEqual(all.assets.slice(1).map((item) => item.id));
       expect((await recommend(member)).assets[0]!.latest.id).toBe(fixed.id);
       await expect(recommend(foreign.context)).rejects.toThrow('not_found');
       const [count] =
@@ -390,7 +440,15 @@ suite(
         },
         true,
       );
-      expect((await recommend()).assets[0]!.id).toBe(matching.id);
+      expect((await recommend()).assets.map((item) => item.id)).toEqual(
+        stableIds.slice(0, 6),
+      );
+      pinned = await mutate(owner, {
+        operation: 'pin',
+        assetId: pinned.id,
+        expectedRevision: pinned.revision,
+      });
+      expect((await recommend()).assets[0]!.id).toBe(pinned.id);
       await f.db`update allrice_storage_objects set created_at=clock_timestamp()-interval '2 seconds',retention_until=clock_timestamp()-interval '1 second' where id=${fixed.file!.objectId}`;
       expect((await recommend()).assets.some((x) => x.id === pinned.id)).toBe(
         false,

@@ -102,22 +102,25 @@ describe('company publication HTTP authority and exact bytes', () => {
       (await companyAssetsHttp(request('workspaceId=invalid'))).status,
     ).toBe(400);
   });
-  it('reads bounded recommendations as the actual member and validates the employee scope', async () => {
+  it('reads the bounded directory as the actual member, ignores draft task text and validates the employee scope', async () => {
     const employee = randomUUID(),
       otherWs = randomUUID();
-    const response = await companyAssetsHttp(
-      request(
-        `recommendations=1&workspaceId=${otherWs}&employeeId=${employee}&task=quarter`,
-      ),
-    );
-    expect(response.status).toBe(200);
-    expect(p.recommendations).toHaveBeenCalledWith(
-      { ...context, workspaceId: otherWs },
-      org,
-      employee,
-      'quarter',
-    );
-    expect(response.headers.get('cache-control')).toBe('private, no-store');
+    for (const draft of ['请整理本周周报', '请汇总这一周的工作回顾']) {
+      const response = await companyAssetsHttp(
+        request(
+          `recommendations=1&workspaceId=${otherWs}&employeeId=${employee}&task=${encodeURIComponent(draft)}`,
+        ),
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ assets: [] });
+      expect(p.recommendations).toHaveBeenLastCalledWith(
+        { ...context, workspaceId: otherWs },
+        org,
+        employee,
+      );
+      expect(response.headers.get('cache-control')).toBe('private, no-store');
+    }
+    expect(p.recommendations).toHaveBeenCalledTimes(2);
     expect(
       (await companyAssetsHttp(request('recommendations=1&employeeId=invalid')))
         .status,

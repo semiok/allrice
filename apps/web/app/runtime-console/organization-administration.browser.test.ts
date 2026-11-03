@@ -1349,6 +1349,9 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
           await editor.getByLabel('可选记忆摘录', { exact: true }).inputValue(),
         ).toBe(chosen.revisionId);
         expect(await editor.getByLabel('规矩正文').inputValue()).toBe(authored);
+        expect(await editor.getByLabel('规矩任务关键词').inputValue()).toBe(
+          '汇总、报销',
+        );
         await editor
           .getByRole('button', { name: '发布已保存草稿', exact: true })
           .click();
@@ -1399,6 +1402,11 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
         ).toBe(draft.latest.id);
         expect(
           await historyDialog.getByText(authored, { exact: true }).count(),
+        ).toBe(1);
+        expect(
+          await historyDialog
+            .getByText('适用任务：汇总、报销', { exact: true })
+            .count(),
         ).toBe(1);
         const historyResponse = await context.request.get(
           `${base}?assetId=${draft.id}&history=1`,

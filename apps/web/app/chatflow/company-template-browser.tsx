@@ -264,9 +264,10 @@ export function CompanyAssetRevisionView({
               {selected.content.category && (
                 <p>分类：{selected.content.category}</p>
               )}
-              {selected.content.taskKeywords.length > 0 && (
-                <p>适用任务：{selected.content.taskKeywords.join('、')}</p>
-              )}
+              {asset.kind === 'rule' &&
+                selected.content.taskKeywords.length > 0 && (
+                  <p>适用任务：{selected.content.taskKeywords.join('、')}</p>
+                )}
               {selected.content.slots.length > 0 && (
                 <div>
                   <strong>使用时所需填写项</strong>
@@ -367,7 +368,6 @@ export function CompanyTemplateBrowser(props: {
   onPrepare?: (ref: CompanyDraftReference) => Promise<void>;
   recommended?: boolean;
   employeeId?: string;
-  taskText?: string;
   title?: string;
 }) {
   if (!props.open) return null;
@@ -385,7 +385,6 @@ function Browser({
   onPrepare,
   recommended = false,
   employeeId,
-  taskText = '',
   title = '公司范本',
 }: Parameters<typeof CompanyTemplateBrowser>[0]) {
   const [view, setView] = useState(
@@ -397,7 +396,7 @@ function Browser({
   const base = companyAssetUrl('/api/v1/company-assets', {
     workspaceId,
     ...(view === 'recommended' && employeeId
-      ? { recommendations: '1', employeeId, task: taskText }
+      ? { recommendations: '1', employeeId }
       : {}),
   });
   const directory = useCompanyAssetDirectory(base, headers);
@@ -439,7 +438,7 @@ function Browser({
             aria-pressed={view === 'recommended'}
             onClick={() => switchView('recommended')}
           >
-            推荐范本
+            适用范本快览
           </Button>
         )}
         <Button aria-pressed={view === 'all'} onClick={() => switchView('all')}>
@@ -471,7 +470,8 @@ function Browser({
       </div>
       {view === 'recommended' && (
         <p>
-          优先显示公司置顶和与本次任务相关的共享范本。目录只在打开或刷新时读取。
+          显示当前员工适用的已发布范本，最多 6
+          项，公司置顶优先。查看完整目录请打开“全部范本与本人草稿”。目录只在打开或刷新时读取。
         </p>
       )}
       <Button

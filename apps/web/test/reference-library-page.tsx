@@ -5,6 +5,10 @@ import { useState } from 'react';
 import { ReferenceLibrary } from '../app/chatflow/reference-library';
 import { SaveArtifactReference } from '../app/chatflow/save-artifact-reference';
 import { PlatformReferenceLibrary } from '../app/runtime-console/platform-reference-library';
+import {
+  CompanyTemplateEditor,
+  companyAssetUrl,
+} from '../app/chatflow/company-template-publisher';
 const params = new URLSearchParams(window.location.search);
 const fixtureHeaders = {};
 function ReferenceFixture() {
@@ -56,7 +60,16 @@ function ArtifactFixture() {
   );
 }
 createRoot(document.getElementById('root')!).render(
-  params.has('artifactId') ? (
+  params.has('templateVersionId') ? (
+    <CompanyTemplateEditor
+      base={companyAssetUrl('/api/v1/company-assets', {
+        workspaceId: params.get('workspaceId')!,
+      })}
+      headers={fixtureHeaders}
+      versionId={params.get('templateVersionId')!}
+      fileName="新范本.txt"
+    />
+  ) : params.has('artifactId') ? (
     <ArtifactFixture />
   ) : params.get('platform') === '1' ? (
     <PlatformReferenceLibrary />
