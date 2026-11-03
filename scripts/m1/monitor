@@ -22,6 +22,7 @@
 # writing heartbeat.json, which the other machine reads over SSH: whichever side stops,
 # the other one says so.
 import argparse
+import copy
 import datetime
 import fcntl
 import hashlib
@@ -630,16 +631,13 @@ def queue_messages(r, messages):
 
 
 def prepare_notifications(r, findings, ran):
-    """An interrupted preparation must not save consumed alerts without their
-    messages. No I/O occurs until evaluation, composition and enqueue all complete."""
-    before = r.state
-    r.state = json.loads(json.dumps(before))
-    try:
-        events = evaluate(r, findings, ran)
-        queue_messages(r, compose(r, events))
-    except BaseException:
-        r.state = before
-        raise
+    """Prepare the completed sample without modifying the live state or doing I/O.
+    The caller commits this state, including the existing outbox, in one assignment."""
+    prepared = copy.copy(r)
+    prepared.state = json.loads(json.dumps(r.state))
+    events = evaluate(prepared, findings, ran)
+    queue_messages(prepared, compose(prepared, events))
+    return prepared.state
 
 
 def deliver(r, messages):
@@ -1253,7 +1251,7 @@ def model_auth_log(r, seen):
                 return dict(identity, offset=st.st_size, discardPartial=partial, frontier=frontier(current, st.st_size)), 0, None, not partial, None
             rotated = any(cursor.get(k) != v for k, v in identity.items())
             if rotated:
-                archives, archived = [], None
+                archives, archived, current_consumed = [], None, False
                 if cursor.get('path') == path:
                     # Numeric rename rotation has a verifiable order: .N, ... .1,
                     # current. Never jump from the cursor's segment to current when
@@ -1285,6 +1283,7 @@ def model_auth_log(r, seen):
                                 raise CheckError('扫描时轮转段已变化，无法判断日志连续性')
                             if (cursor.get('device'), cursor.get('inode')) != (item['device'], item['inode']):
                                 cursor = dict(path=path, device=item['device'], inode=item['inode'], offset=0)
+                            current_consumed |= (item['device'], item['inode']) == (st.st_dev, st.st_ino)
                             if not consume(old, cursor):
                                 if cursor['offset'] < os.fstat(old.fileno()).st_size and budget == 0:
                                     return cursor, count, earliest, False, gap
@@ -1292,7 +1291,13 @@ def model_auth_log(r, seen):
                                 gap = '轮转旧段有无法补全的残行或记录，无法判断未读记录'
                 else:
                     gap = '日志已轮转或来源改变，旧段不可补读，无法判断未读记录'
-                cursor = dict(identity, offset=0)
+                if current_consumed:
+                    if (cursor.get('device'), cursor.get('inode')) != (st.st_dev, st.st_ino):
+                        return cursor, count, earliest, False, gap  # never rewind to an older open FD
+                    # The opened current was renamed into the archive chain. Keep
+                    # its consumed offset, including when the budget is now zero.
+                else:
+                    cursor = dict(identity, offset=0)
             elif cursor['offset'] > st.st_size:
                 gap = '日志被截断，旧段不可补读，无法判断未读记录'
                 cursor = dict(identity, offset=0)
@@ -1364,18 +1369,26 @@ def check_model_authorization(r):
     data = finding('model_authorization_data', 'warning' if issues else 'ok', '模型授权无法判断',
                    '；'.join(issues), 'm1-model-subscription.md', 'monitor status 查看未知原因，核对授权文件与 Worker 日志可读性')
     data['noRepeat'] = True
-    expiry_due = expires is not None and not fresh and expires / 1000 - r.now <= 72 * 3600
-    if issues and not added and not expiry_due:
+    expiry_phase = None if expires is None or expires / 1000 - r.now > 72 * 3600 \
+        else 24 if expires / 1000 - r.now <= 24 * 3600 else 72
+    if issues and not added and expiry_phase is None:
         r.state['modelAuth'] = state
         return [data, unknown('model_authorization')]
     if recovered or active is None:
         r.state['modelAuth'] = state
         return [data, finding('model_authorization', 'ok', '模型授权到期/过期错误')]
-    if not fresh and active['stage'] != 'error' and expires is not None and expires / 1000 - r.now <= 24 * 3600:
+    if expiry_phase == 24 and active['stage'] != 'error':
         active['stage'] = 24
-    phase = active['stage']
+    error_id = 'model_authorization:%s:error' % active['id'] if active['count'] else None
+    new_error = error_id is not None and error_id not in r.state.get('notifiedOnce', {})
+    phase = 'error' if error_id and (new_error or expiry_phase is None) else expiry_phase
+    if phase is None:
+        r.state['modelAuth'] = state
+        return [data, unknown('model_authorization')]  # old warning awaits recovery evidence
     title = '模型授权过期错误' if phase == 'error' else '模型授权将在 %s 小时内到期' % phase
     detail = '到期 %s；请到运行控制台重新授权' % (utc_time(expires / 1000) if expires is not None else '无法判断（到期字段不可读）')
+    if phase == 'error' and expiry_phase is not None:
+        detail += '；当前授权已进入 %s 小时到期阶段' % expiry_phase
     if expires is not None and expires / 1000 <= r.now:
         detail += '（当前已到期，沿用 24 小时通知阶段）'
     if active['count']:
@@ -1383,10 +1396,14 @@ def check_model_authorization(r):
             added, active['count'], utc_time(active['first']))
     if fresh:
         detail += '；已观察到新的有效到期版本，等待完整安静窗口确认恢复'
-    f = finding('model_authorization', 'warning' if phase == 72 else 'critical', title, detail,
+    severity = 'critical' if active['stage'] in (24, 'error') or expiry_phase == 24 else 'warning'
+    f = finding('model_authorization', severity, title, detail,
                 'm1-model-subscription.md', '运行控制台 → 模型与用量 → Codex 订阅，重新授权')
-    phases = [72, 24] if phase == 24 else [phase]
-    f.update(noRepeat=True, onceIds=['model_authorization:%s:%s' % (active['id'], p) for p in phases])
+    # Time milestones belong to the currently read grant, even while an older
+    # fault is held open by unknown logs. The error notice belongs to that fault.
+    phases = [72, 24] if expiry_phase == 24 else [72] if expiry_phase == 72 else []
+    once = ['model_authorization:%s:%s' % (expires, p) for p in phases] + ([error_id] if error_id else [])
+    f.update(noRepeat=True, onceIds=once)
     r.state['modelAuth'] = state
     return [data, f]
 
@@ -2402,10 +2419,11 @@ def do_round(cfg, peer):
     findings.append(finding('monitor_state', 'warning' if lost else 'ok', '监控状态文件损坏',
                             '读不出来，已另存为 %s；之前的待发通知和告警状态丢了，已有的故障会重新报一次' % lost,
                             'm1-monitor.md', 'monitor status'))
+    preparation_state = r.state
     signal.alarm(90)  # delivery has its own timeouts; this only bounds a hung write
     try:
         r.now = time.time()
-        prepare_notifications(r, findings, ran)
+        r.state = prepare_notifications(r, findings, ran)
         r.save()  # consumed facts and their queued messages become durable together
         if peer:
             flush_incidents_remote(r)
@@ -2419,6 +2437,12 @@ def do_round(cfg, peer):
         r.save()
         heartbeat(r, time.time() - start, error)
     except RoundTimeout:
+        signal.alarm(0)
+        if r.state is preparation_state:
+            # Finish this already completed sample, not a later source snapshot.
+            # This bounded in-memory preparation makes no external calls. External
+            # delivery remains timed out and is left to the existing outbox.
+            r.state = prepare_notifications(r, findings, ran)
         r.save()
         sys.exit('monitor: delivering the round timed out')
     finally:

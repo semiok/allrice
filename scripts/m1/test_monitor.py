@@ -1108,6 +1108,41 @@ class ModelAuthorization(unittest.TestCase):
         self.assertEqual([x['metadata']['event'] for x in incidents], ['opened', 'escalated', 'recovered'])
         self.assertEqual(len({x['metadata']['alertId'] for x in incidents}), 1)
 
+    def test_new_expiry_milestones_survive_old_unrecovered_fault_and_restart(self):
+        for confirmed_error in (False, True):
+            with self.subTest(confirmed_error=confirmed_error):
+                self.setUp()
+                e1 = int((self.start + 72 * 3600) * 1000)
+                e2 = e1 + 200 * 3600 * 1000
+                self.grant(e1)
+                self.collect()
+                if confirmed_error:
+                    self.append(self.record())
+                    self.collect(self.start + 1)
+                old_alert_id = self.r.state['alerts']['model_authorization']['incidentId']
+                os.rename(self.log, self.log + '.unavailable')
+                self.collect(self.start + 2)
+                self.grant(e2)
+                self.assertEqual(self.collect(self.start + 3)[1], [])
+                self.restart()
+                for phase in (72, 24):
+                    at = e2 / 1000 - phase * 3600
+                    findings, events = self.collect(at)
+                    self.assertEqual(findings[0]['severity'], 'warning')
+                    self.assertEqual(len(events), 1)
+                    self.assertEqual(events[0]['finding']['key'], 'model_authorization')
+                    self.assertIn('%s 小时' % phase, events[0]['finding']['title'])
+                    self.assertIn(monitor.utc_time(e2 / 1000), events[0]['finding']['detail'])
+                    self.assertEqual(events[0]['alert']['incidentId'], old_alert_id)
+                    self.assertNotIn('quietSince', self.r.state['modelAuth'])
+                    self.assertEqual(self.r.state['modelAuth']['active']['expires'], e1)
+                    self.restart()
+                    self.assertEqual(self.collect(at + 240)[1], [])
+                    self.assertEqual(self.r.state['alerts']['model_authorization']['incidentId'], old_alert_id)
+                self.assertEqual(self.collect(e2 / 1000 + 3600)[1], [])
+                rows = [x for x in self.r.state['incidentOutbox'] if x['detailCode'] == 'monitor.model_authorization']
+                self.assertFalse(any(x['metadata']['event'] == 'recovered' for x in rows))
+
     def test_new_error_after_24h_critical_is_told_once_in_same_incident(self):
         self.grant(int((self.start + 3600) * 1000))
         self.collect()
@@ -1333,6 +1368,82 @@ class ModelAuthorization(unittest.TestCase):
                 self.assertEqual(self.collect(self.start + 241)[0][0]['severity'], 'warning')
                 self.assertIn('gap', self.r.state['modelAuth'])
 
+    def test_rename_after_current_open_never_rewinds_already_consumed_inode(self):
+        for budget in (monitor.AUTH_LOG_BYTES, len(self.record().encode())):
+            with self.subTest(budget=budget):
+                self.setUp()
+                self.collect()  # cursor in A
+                os.rename(self.log, self.log + '.1')
+                open(self.log, 'w').close()  # B
+                os.rename(self.log + '.1', self.log + '.2')
+                os.rename(self.log, self.log + '.1')
+                with open(self.log, 'w') as stream:
+                    stream.write(self.record())  # C is opened by the scanner before its next rename
+                c_inode = os.stat(self.log).st_ino
+                original_scandir = monitor.os.scandir
+                renamed = False
+
+                def rename_before_listing(path):
+                    nonlocal renamed
+                    if not renamed:
+                        renamed = True
+                        os.rename(self.log + '.2', self.log + '.3')
+                        os.rename(self.log + '.1', self.log + '.2')
+                        os.rename(self.log, self.log + '.1')
+                        open(self.log, 'w').close()  # D
+                    return original_scandir(path)
+
+                with mock.patch.object(monitor.os, 'scandir', side_effect=rename_before_listing), \
+                     mock.patch.object(monitor, 'AUTH_LOG_BYTES', budget):
+                    findings, _ = self.collect(self.start + 1)
+                self.assertTrue(renamed)
+                self.assertEqual(findings[0]['severity'], 'warning')
+                self.assertEqual(self.r.state['modelAuth']['active']['count'], 1)
+                self.assertEqual(self.r.state['modelAuth']['log']['inode'], c_inode)
+                self.assertEqual(self.r.state['modelAuth']['log']['offset'], len(self.record().encode()))
+                self.restart()
+                self.collect(self.start + 241)
+                self.restart()
+                self.assertEqual(self.collect(self.start + 481)[1], [])
+                self.assertEqual(self.r.state['modelAuth']['active']['count'], 1)
+                rows = [x for x in self.r.state['incidentOutbox'] if x['detailCode'] == 'monitor.model_authorization']
+                self.assertEqual(len(rows), 1)
+
+    def test_archive_rename_between_listing_and_open_is_unknown_then_resumes_once(self):
+        self.collect()
+        before = json.loads(json.dumps(self.r.state['modelAuth']['log']))
+        self.append(self.record())  # A's unread tail
+        os.rename(self.log, self.log + '.1')
+        open(self.log, 'w').close()  # B
+        os.rename(self.log + '.1', self.log + '.2')
+        os.rename(self.log, self.log + '.1')
+        with open(self.log, 'w') as stream:
+            stream.write(self.record())  # C
+        original_open, renamed = open, False
+
+        def rename_before_archive_open(path, *args, **kwargs):
+            nonlocal renamed
+            if path == self.log + '.1' and not renamed:
+                renamed = True
+                os.rename(self.log + '.2', self.log + '.3')
+                os.rename(self.log + '.1', self.log + '.2')
+                os.rename(self.log, self.log + '.1')
+                original_open(self.log, 'w').close()  # D replaces the listed current
+            return original_open(path, *args, **kwargs)
+
+        with mock.patch('builtins.open', side_effect=rename_before_archive_open):
+            findings, _ = self.collect(self.start + 1)
+        self.assertTrue(renamed)
+        self.assertEqual(findings[0]['severity'], 'warning')
+        self.assertIn('轮转段已变化', findings[0]['detail'])
+        self.assertEqual(self.r.state['modelAuth']['log'], before)
+        self.restart()
+        self.collect(self.start + 241)
+        self.assertEqual(self.r.state['modelAuth']['active']['count'], 2)
+        self.restart()
+        self.assertEqual(self.collect(self.start + 481)[1], [])
+        self.assertEqual(self.r.state['modelAuth']['active']['count'], 2)
+
     def test_repeated_read_failures_each_notify_once_without_flapping_or_reminders(self):
         self.collect()
         for at in (1, 241, 481):
@@ -1435,36 +1546,60 @@ class ModelAuthorization(unittest.TestCase):
                             at = self.start + 2
                     self.restart()
                     original = getattr(monitor, boundary)
+                    interruptions = 0
 
                     def interrupted(*args, **kwargs):
+                        nonlocal interruptions
+                        interruptions += 1
                         if boundary != 'flush_incidents':
-                            original(*args, **kwargs)
-                        raise monitor.RoundTimeout()
+                            result = original(*args, **kwargs)
+                        else:
+                            result = None
+                        if interruptions == 1:  # SIGALRM is a one-shot delivery deadline
+                            raise monitor.RoundTimeout()
+                        return result
 
                     cfg, sent = self.r.cfg, []
                     with mock.patch.object(monitor, 'M1_CHECKS', [('model_authorization', monitor.check_model_authorization, False, None)]), \
-                         mock.patch.object(monitor, 'heartbeat'), mock.patch.object(monitor, 'flush_incidents'), \
+                         mock.patch.object(monitor, 'heartbeat'), mock.patch.object(monitor, 'flush_incidents') as flush, \
                          mock.patch.object(monitor, 'send_telegram', side_effect=lambda cfg, text: sent.append(text)):
                         with mock.patch.object(monitor.time, 'time', return_value=at), \
                              mock.patch.object(monitor, boundary, side_effect=interrupted):
                             with self.assertRaisesRegex(SystemExit, 'delivering the round timed out'):
                                 monitor.do_round(cfg, False)
                         self.assertEqual(sent, [])
+                        if boundary != 'flush_incidents':
+                            flush.assert_not_called()  # timeout finalization must not restart external delivery
                         saved = monitor.Round(cfg).state
-                        self.assertEqual(len(saved.get('outbox', [])), 1 if boundary == 'flush_incidents' else 0)
+                        self.assertEqual(len(saved.get('outbox', [])), 1)
                         self.assertNotIn('SYNTHETIC_', json.dumps(saved))
-                        # New processes/rounds must eventually deliver exactly one
-                        # message, including recovery and read-failure notifications.
+                        # Change the next sample so it cannot reconstruct this
+                        # completed batch. Its messages must remain first in FIFO.
+                        if scenario == 'data_warning':
+                            os.rename(self.credentials + '.saved', self.credentials)
+                        elif scenario == 'data_recovery':
+                            os.rename(self.credentials, self.credentials + '.unavailable')
+                        elif scenario == 'auth_recovery':
+                            self.append(self.record())
                         for next_at in (at + 240, at + 480):
                             with mock.patch.object(monitor.time, 'time', return_value=next_at):
                                 monitor.do_round(cfg, False)
-                        self.assertEqual(len(sent), 1, sent)
+                        changes_again = scenario in ('data_warning', 'data_recovery', 'auth_recovery')
+                        self.assertEqual(len(sent), 2 if changes_again else 1, sent)
                         if scenario.endswith('recovery'):
                             self.assertIn('1 项恢复', sent[0])
                         elif scenario == 'data_warning':
                             self.assertIn('无法判断', sent[0])
                         else:
                             self.assertIn('72 小时' if scenario == 'threshold' else '过期错误', sent[0])
+                        if changes_again:
+                            self.assertIn('1 项恢复' if scenario == 'data_warning' else
+                                          '过期错误' if scenario == 'auth_recovery' else '无法判断', sent[1])
+                            if scenario == 'auth_recovery':
+                                rows = [x for x in monitor.Round(cfg).state['incidentOutbox']
+                                        if x['detailCode'] == 'monitor.model_authorization']
+                                self.assertEqual([x['metadata']['event'] for x in rows], ['opened', 'recovered', 'opened'])
+                                self.assertNotEqual(rows[0]['metadata']['alertId'], rows[2]['metadata']['alertId'])
                         self.assertEqual(monitor.Round(cfg).state['outbox'], [])
 
     def test_real_process_lock_and_restart_deduplicate_milestones_in_temporary_files(self):
