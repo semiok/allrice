@@ -239,9 +239,10 @@ it.each([
   ['model-preflight', 'resolve', false],
   ['model-preflight', 'reject', false],
   ['tool', 'resolve', true],
+  ['tool', 'reject', false, true],
 ])(
-  'single Stop abandons A %s/%s; same Host B is fenced (current revoke=%s)',
-  async (phase, outcome, revokeCurrent) => {
+  'single Stop abandons A %s/%s; same Host B is fenced (current revoke=%s, publication=%s)',
+  async (phase, outcome, revokeCurrent, duringPublication) => {
     // Only process placement is injected. Both public RPC peers, the Host,
     // native child loop and the two adapter.execute() lifetimes are real.
     const rootId = 'dsh-controls-root',
@@ -423,6 +424,17 @@ it.each([
     const adapter = new DshHarnessAdapter({
       runtimeCommand: 'in-process-test',
     });
+    a.onEvent = async (event) => {
+      if (duringPublication && event.type === 'assistant.completed') {
+        // Publication may await persistence. The native Run has already ended;
+        // its abandoned child callback must use the existing old-Run fence.
+        releaseAuthority.resolve();
+        const late = await lateReturn.promise;
+        expect(late.ok).toBe(false);
+        expect(late.error.message).toBe('DSH_RUN_SESSION_DENIED');
+        expect(interrupt).not.toHaveBeenCalled();
+      }
+    };
     try {
       const first = adapter.execute(a).then(
         (result) => ({ ok: true, result }),
