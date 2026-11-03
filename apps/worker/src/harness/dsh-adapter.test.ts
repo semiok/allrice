@@ -675,7 +675,7 @@ describe('DshHarnessAdapter', () => {
           expect(completed).toEqual([]);
           expect(
             events.filter(
-                (event) => event.sourcePayload?.employeeProfileReceipt === true,
+              (event) => event.sourcePayload?.employeeProfileReceipt === true,
             ),
           ).toEqual([]);
         }
