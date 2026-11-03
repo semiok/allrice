@@ -50,7 +50,9 @@ const run = WorkflowRunSchema.parse({
 describe('public Workflow error DTO only', () => {
   it('hides the known model error slot and preserves all workflow/business data', () => {
     const result = publicWorkflowRun(run);
-    expect(result.steps[0]?.errorMessage).toContain('授权失效');
+    expect(result.steps[0]?.errorMessage).toContain(
+      '模型服务认证或授权失败。请联系管理员检查授权配置，反复重试无法修复认证问题。',
+    );
     expect(JSON.stringify(result)).not.toMatch(
       /authentication token has expired|sk-private/,
     );

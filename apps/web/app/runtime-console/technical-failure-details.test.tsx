@@ -62,7 +62,9 @@ describe('technical failure attribution', () => {
       expect(html).not.toContain('根因尚未确认');
       expect(html).not.toContain('不能据此认定');
       expect(html).toContain(
-        category === 'auth' ? '授权失效' : '模型服务返回了未归类的错误',
+        category === 'auth'
+          ? '模型服务认证或授权失败。请联系管理员检查授权配置，反复重试无法修复认证问题。'
+          : '模型服务返回了未归类的错误',
       );
     }
   });
