@@ -16,7 +16,7 @@ createRoot(document.getElementById('root')!).render(
     <ChatFlowClient
       workbenchEnabled={!location.search.includes('workbench=off')}
       experienceEnabled
-      taskSuggestionsEnabled
+      taskSuggestionsEnabled={!location.search.includes('task-suggestions=off')}
     />
   </StrictMode>,
 );

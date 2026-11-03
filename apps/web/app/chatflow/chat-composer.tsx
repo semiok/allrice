@@ -335,6 +335,10 @@ export function ChatComposer({
       <div
         className={`${inputUi.card} ${composerUi.card}`}
         data-hero={hero || undefined}
+        data-suggestions={
+          Boolean(taskSuggestions && onPrepareTask && onTaskPreparation) ||
+          undefined
+        }
       >
         <CompanyTemplateDraftChips
           references={companyReferences}

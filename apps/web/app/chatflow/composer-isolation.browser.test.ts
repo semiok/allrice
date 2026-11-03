@@ -246,6 +246,7 @@ suite(
         nativeClock?: boolean;
         workspaceFiles?: WorkspaceFile[];
         taskSuggestions?: TaskSuggestionDisplay[];
+        taskSuggestionsEnabled?: boolean;
         nextSteps?: TaskNextSteps;
         delayNextStepsA?: boolean;
         readiness?: WorkspaceReadiness['capabilities'];
@@ -797,7 +798,7 @@ suite(
         await page.goto(
           liveOrigin
             ? `${liveOrigin}/chatflow?session=${A}`
-            : `${origin}/?session=${A}${options.workbenchOff ? '&workbench=off' : ''}`,
+            : `${origin}/?session=${A}${options.workbenchOff ? '&workbench=off' : ''}${options.taskSuggestionsEnabled === false ? '&task-suggestions=off' : ''}`,
         );
         if ((options.width ?? 1440) >= 760)
           await page.getByRole('treeitem', { name: /^Session B/ }).waitFor();
@@ -1989,7 +1990,7 @@ suite(
     it.each([1440, 390])(
       'uses the DSH default composer height, grows for my draft and shrinks when cleared at %ipx',
       async (width) => {
-        const f = await fixture({ width });
+        const f = await fixture({ width, taskSuggestionsEnabled: false });
         try {
           const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
           const card = input.locator('..');

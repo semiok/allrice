@@ -46,6 +46,18 @@
   transform: translateY(-2px);
 }
 
+/* Optional task controls retain their existing taller toolbar alignment. */
+.card[data-suggestions] .row button[aria-label='添加文件'] {
+  width: 36px;
+  height: 36px;
+}
+
+.card[data-suggestions] .row > :last-child > button {
+  width: 44px;
+  height: 44px;
+  transform: none;
+}
+
 @media (pointer: coarse) {
   .row button[aria-label='添加文件'],
   .row > :last-child > button {
