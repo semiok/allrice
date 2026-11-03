@@ -52,6 +52,13 @@ const present = (
 ) => presentReplyFailure({ code, text, nativeText, budgetWarning: false });
 
 describe('plain copy for a reply that did not finish', () => {
+  it('uses the server-proven expired-token category for a retained reply and its notice', () => {
+    const result = presentReplyFailure({ code: 'DSH_PI_AI_ERROR', text: '已保留的回答', nativeText: null, budgetWarning: false, modelFailureCategory: 'auth', reference: 'run-reference' });
+    expect(result.body).toBe('已保留的回答');
+    expect(result.notice).toContain('管理员');
+    expect(result.notice).toContain('反复重试');
+    expect(result.notice).not.toContain('员工');
+  });
   it.each(contractCodes)('replaces the stored wording for %s once', (code) => {
     const stored = modelGovernanceFailureText(code)!;
     expect(stored).toBeTruthy();

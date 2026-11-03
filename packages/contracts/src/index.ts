@@ -3,6 +3,7 @@ export * from './native-run-diagnostics.ts';
 export * from './static-browser.ts';
 export type ServiceName = 'web' | 'worker';
 export * from './message-feedback.ts';
+export * from './model-failure.ts';
 export * from './work-methods.ts';
 export * from './employee-method-activation.ts';
 export * from './user-preferences.ts';
