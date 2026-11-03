@@ -130,9 +130,10 @@ const credentialWord = (word: string) =>
     .join('');
 const credentialWords = (...words: string[]) =>
   words.map(credentialWord).join(String.raw`[\s_-]*`);
-// ID token needs a field/camel boundary so valid_tokens and validTokenCount
-// remain usage facts. Other credential names may have arbitrary field prefixes.
-const idTokenLabel = String.raw`(?:(?<![A-Za-z0-9])|(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z]))${credentialWords('id', 'token')}|(?<=[A-Z])IDTOKEN(?=$|[^A-Z0-9])`;
+// Natural ID-token labels use field/camel boundaries. A complete identifier
+// suffix also covers folded/acronym prefixes; whitespace is excluded there so
+// "valid token", valid_tokens and validTokenCount remain ordinary token facts.
+const idTokenLabel = String.raw`(?:(?<![A-Za-z0-9])|(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z]))${credentialWords('id', 'token')}|${credentialWord('id')}[_-]*${credentialWord('token')}(?=$|[^A-Za-z0-9_-])`;
 const credentialLabel = `(?:${[
   credentialWords('authorization'),
   credentialWords('api', 'key'),
