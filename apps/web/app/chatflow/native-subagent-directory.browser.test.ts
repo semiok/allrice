@@ -2414,16 +2414,8 @@ suite('native subagent directory and employee sidebar', () => {
       const trigger = page.locator('button[aria-haspopup="tree"]');
       expect(await trigger.getAttribute('aria-label')).toBe('子智能体');
       await page.clock.runFor(2000);
-      expect(
-        await page.evaluate(() => {
-          Object.defineProperty(navigator, 'onLine', {
-            configurable: true,
-            value: false,
-          });
-          window.dispatchEvent(new Event('offline'));
-          return navigator.onLine;
-        }),
-      ).toBe(false);
+      await page.context().setOffline(true);
+      expect(await page.evaluate(() => navigator.onLine)).toBe(false);
       await page.clock.runFor(2000);
       await trigger.dispatchEvent('click');
       await page.clock.runFor(1100);
@@ -2438,16 +2430,8 @@ suite('native subagent directory and employee sidebar', () => {
       await capture(page, 'startup-offline-deadline-error');
       // The online owner gets the expired deadline even while its read hangs.
       initial.gate = onlineRead;
-      expect(
-        await page.evaluate(() => {
-          Object.defineProperty(navigator, 'onLine', {
-            configurable: true,
-            value: true,
-          });
-          window.dispatchEvent(new Event('online'));
-          return navigator.onLine;
-        }),
-      ).toBe(true);
+      await page.context().setOffline(false);
+      expect(await page.evaluate(() => navigator.onLine)).toBe(true);
       await expect
         .poll(() => calls.filter((call) => call.id === 'parent-a').length)
         .toBe(2);
