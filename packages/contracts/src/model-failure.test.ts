@@ -225,6 +225,32 @@ describe('synthetic provider failures; historical observations only cover auth/s
   ])('review regression: natural credential label %s is hidden', (text) => {
     expect(redactModelFailure(text)).not.toContain('P4ssW0rdQWER123');
   });
+  it.each(
+    [
+      ['API key', 'API\nkey'],
+      ['access token', 'access\ntoken'],
+      ['refresh token', 'refresh\ntoken'],
+    ].flatMap((labels) =>
+      labels.flatMap((label) => [
+        `${label} P4ssW0rdQWER123`,
+        `Incorrect ${label} provided: P4ssW0rdQWER123`,
+        `${label}\nP4ssW0rdQWER123`,
+      ]),
+    ),
+  )('natural credential boundary regression: %s fails closed', (text) => {
+    expect(redactModelFailure(text)).toBe(hiddenModelFailure);
+  });
+  it.each(
+    ['Authorization', 'password', 'secret', 'cookie'].flatMap((label) => [
+      `${label} P4ssW0rdQWER123`,
+      `${label}\nP4ssW0rdQWER123`,
+    ]),
+  )(
+    'natural credential boundary regression: %s has no reliable value boundary',
+    (text) => {
+      expect(redactModelFailure(text)).toBe(hiddenModelFailure);
+    },
+  );
   it.each([
     'API key\n:\nP4ssW0rdQWER123',
     'Authorization\n: Bearer\nP4ssW0rdQWER123',
