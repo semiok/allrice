@@ -1,7 +1,12 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Button, Menu, StateDot } from '@deepseek-ai/dsh-client-ui-primitives';
+import {
+  Button,
+  Menu,
+  StateDot,
+  Tooltip,
+} from '@deepseek-ai/dsh-client-ui-primitives';
 import type { NativeSubagentSummary } from '@allrice/contracts';
 import { AssistantMarkdown } from './assistant-markdown';
 import type { useNativeSubagents } from './use-native-subagents';
@@ -34,6 +39,14 @@ const activity = (child: Child) =>
       : child.timing.lastTurnCompleted
         ? '上次回合已完成'
         : '未运行';
+const catalogActivity = (child: Child) =>
+  child.running === true
+    ? '运行中'
+    : child.running === null
+      ? '状态未知'
+      : child.timing.lastTurnCompleted === undefined
+        ? '未运行'
+        : '已结束';
 function elapsed(child: Child, now = child.timing.active?.through) {
   const { active, settledMs } = child.timing;
   const seconds = Math.floor(
@@ -93,7 +106,7 @@ export function EmptyNativeSubagentDirectory() {
       }
     >
       <h2 className={css.title}>子智能体</h2>
-      <p>暂无子智能体</p>
+      <p className={`${css.message} ${css.empty}`}>暂无子智能体</p>
     </Menu>
   );
 }
@@ -181,9 +194,11 @@ export function NativeSubagentDirectory({
         const status =
           entry.kind === 'diagnostic'
             ? diagnostic[entry.reason]
-            : entry.running === null && entry.timing.lastTurnCompleted
-              ? '历史记录 · 上次回合已完成'
-              : activity(entry);
+            : catalogActivity(entry);
+        const abnormal =
+          entry.kind === 'child' &&
+          entry.running === false &&
+          entry.timing.lastTurnCompleted === false;
         return (
           <li
             role="treeitem"
@@ -193,6 +208,7 @@ export function NativeSubagentDirectory({
             data-child={entry.id}
             data-parent={parentId}
             aria-label={`${label}摘要`}
+            aria-description={abnormal ? '未正常结束' : undefined}
             aria-disabled={entry.kind === 'diagnostic' || undefined}
           >
             <div className={css.row}>
@@ -206,30 +222,44 @@ export function NativeSubagentDirectory({
                 </Button>
               )}
               <div className={css.entry}>
-                {entry.kind === 'child' && entry.running !== null ? (
-                  <StateDot
-                    size={10}
-                    state={
-                      entry.running
-                        ? 'ongoing'
-                        : entry.timing.lastTurnCompleted
-                          ? 'done'
-                          : 'idle'
-                    }
-                  />
-                ) : (
-                  <span
-                    className={css.unobserved}
-                    aria-label="活动状态未观测"
-                  />
-                )}
-                <span className={css.label}>
-                  <strong>{label}</strong>
-                </span>
-                <small>
-                  {status}
-                  {entry.kind === 'child' &&
-                    ` · ${elapsed(entry, entry.running === true ? now : undefined)}`}
+                <span className={css.label}>{label}</span>
+                <small className={css.metadata}>
+                  <span className={css.status}>
+                    {entry.kind === 'child' && entry.running !== null ? (
+                      <StateDot
+                        size={8}
+                        state={
+                          entry.running
+                            ? 'ongoing'
+                            : entry.timing.lastTurnCompleted
+                              ? 'done'
+                              : 'idle'
+                        }
+                      />
+                    ) : (
+                      <span
+                        className={css.unobserved}
+                        aria-label="活动状态未观测"
+                      />
+                    )}
+                    <span>{status}</span>
+                    {abnormal && (
+                      <Tooltip label="未正常结束" side="top" portal>
+                        <span
+                          className={css.abnormal}
+                          role="img"
+                          aria-label="未正常结束"
+                        >
+                          !
+                        </span>
+                      </Tooltip>
+                    )}
+                  </span>
+                  {entry.kind === 'child' && (
+                    <span className={css.duration}>
+                      {elapsed(entry, entry.running === true ? now : undefined)}
+                    </span>
+                  )}
                 </small>
               </div>
             </div>
@@ -352,17 +382,27 @@ export function NativeSubagentDirectory({
           <div ref={catalog}>
             <h2 className={css.title}>子智能体</h2>
             {read === undefined ? (
-              <p role="status">正在读取子智能体摘要…</p>
+              <div className={css.loading}>
+                <p className={css.message} role="status">
+                  正在读取子智能体摘要…
+                </p>
+                <div className={css.skeleton} aria-hidden="true">
+                  <span />
+                  <span />
+                </div>
+              </div>
             ) : read === null ? (
-              <p role="status">当前活动状态未知，请重新读取摘要。</p>
+              <p className={css.message} role="status">
+                当前活动状态未知，请重新读取摘要。
+              </p>
             ) : read === 'error' ? (
-              <p role="alert">
+              <p className={css.message} role="alert">
                 {observation.disconnected?.[sessionId]
                   ? '实时观察已断开，重试。'
                   : '暂时读不到子智能体目录。'}
               </p>
             ) : summary && !direct.length ? (
-              <p>暂无子智能体</p>
+              <p className={`${css.message} ${css.empty}`}>暂无子智能体</p>
             ) : (
               <ul role="tree" aria-label="子智能体目录">
                 {summary && rows(summary.rootId)}
