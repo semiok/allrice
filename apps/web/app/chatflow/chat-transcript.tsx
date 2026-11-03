@@ -171,6 +171,13 @@ export const ChatTranscript = memo(function ChatTranscript({
   const [browserRevisions, setBrowserRevisions] = useState<
     Record<string, number>
   >({});
+  // A recovered live view can retain only early events while its complete
+  // history trace arrives. Both are read hints, never memory authority.
+  const memoryRevisionForRun = (runId: string | null) =>
+    memoryReadRevision([
+      ...(runViews[runId ?? '']?.events ?? []),
+      ...(runTraces[runId ?? '']?.events ?? []),
+    ]);
   const timingByRun = new Map(
     runTimings.map((entry) => [entry.runId, entry.timing]),
   );
@@ -215,11 +222,7 @@ export const ChatTranscript = memo(function ChatTranscript({
                 message.role !== 'assistant' ||
                 message.status !== 'completed' ||
                 message.content.text.length > 0 ||
-                !!memoryReadRevision(
-                  runViews[message.runId ?? '']?.events ??
-                    runTraces[message.runId ?? '']?.events ??
-                    [],
-                ) ||
+                !!memoryRevisionForRun(message.runId) ||
                 adopted.some(
                   (input) => input.steering?.runId === message.runId,
                 ),
@@ -235,6 +238,7 @@ export const ChatTranscript = memo(function ChatTranscript({
                 ? timingByRun.get(message.runId)
                 : undefined;
               const traceEvents = messageRun?.events ?? trace?.events ?? [];
+              const memoryRevision = memoryRevisionForRun(message.runId);
               const messageIsRunning = isMessageRunActive(message, messageRun);
               const streamedText = messageRun
                 ? assistantDelta(messageRun.events)
@@ -530,14 +534,14 @@ export const ChatTranscript = memo(function ChatTranscript({
                             );
                           }}
                         </CloudOperationPanel>
-                        {message.runId && memoryReadRevision(traceEvents) && (
+                        {message.runId && memoryRevision && (
                           <MemoryPanel
                             key={`${memoryScope}/${workspaceId}/${message.runId}`}
                             scopeId={memoryScope ?? workspaceId}
                             workspaceId={workspaceId}
                             headers={tenantHeaders}
                             runId={message.runId}
-                            refreshKey={memoryReadRevision(traceEvents)}
+                            refreshKey={memoryRevision}
                           />
                         )}
                         {onOpenAutomation &&

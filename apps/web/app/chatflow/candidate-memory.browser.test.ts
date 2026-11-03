@@ -136,6 +136,9 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
               runId: identity.rootRunId,
               userMessageId: run!.user_message_id,
               assistantMessageId: run!.assistant_message_id,
+              sessionId: identity.session,
+              assignmentId: identity.assignment,
+              versionId: identity.version,
             }),
           );
           return;
@@ -156,6 +159,51 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
           const parts = url.pathname.split('/'),
             id = parts[4] ?? '';
           const result = await requests.run(request, async () => {
+            // Exercise the real restoreHistory/loadRunTrace client with a
+            // disconnected partial SSE view and a complete immutable trace.
+            if (
+              parts[3] === 'runs' &&
+              parts[4] === identity.rootRunId &&
+              parts[5] === 'events' &&
+              req.method === 'GET'
+            ) {
+              const event = (
+                sequence: number,
+                type: 'harness.native' | 'tool.completed',
+                payload: Record<string, unknown>,
+              ) => ({
+                schemaVersion: 3,
+                eventId: sequence === 1 ? identity.employee : identity.version,
+                organizationId: identity.org,
+                workspaceId: identity.workspace,
+                conversationId: identity.session,
+                runId: identity.rootRunId,
+                generation: 1,
+                sequence,
+                cursor: `${identity.rootRunId}:${sequence}`,
+                harness: 'dsh',
+                occurredAt: new Date().toISOString(),
+                sourceEvent: null,
+                type,
+                payload,
+              });
+              const early = event(1, 'harness.native', {
+                sourceEventType: 'synthetic-early',
+              });
+              return url.searchParams.get('format') === 'json'
+                ? Response.json({
+                    events: [
+                      early,
+                      event(2, 'tool.completed', {
+                        name: 'workspace_memory_remember',
+                        toolCallId: 'recovered-remember',
+                      }),
+                    ],
+                  })
+                : new Response('data: ' + JSON.stringify(early) + '\n\n', {
+                    headers: { 'content-type': 'text/event-stream' },
+                  });
+            }
             // Unrelated existing transcript host dependency, no operations.
             if (
               url.pathname === '/api/v1/runtime/cloud-operations' &&
@@ -240,7 +288,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     expect(failures).toEqual([]);
   }, 30000);
 
-  async function remember(content: string) {
+  async function remember(content: string, expiresAt: string | null = null) {
     const [run] =
       await f.db`select user_message_id from allrice_employee_runs where run_id=${identity.rootRunId}`;
     return createTraceableMemory(owner, {
@@ -252,6 +300,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       sourceId: run!.user_message_id,
       sourceLabel: '模型提取候选',
       confidence: 0.8,
+      expiresAt,
       lifecycleState: 'candidate',
       memoryClass: 'user_preference',
     });
@@ -579,6 +628,185 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       await ui.close();
     }
   });
+
+  it('restores an empty-body memory receipt from a complete trace while retaining the partial live view', async () => {
+    const pending = await remember('断线后恢复的真实候选');
+    const ui = await open('recovery');
+    try {
+      const status = ui.page.getByLabel('恢复传输状态');
+      await expect
+        .poll(() => status.getAttribute('data-live-events'))
+        .toBe('1');
+      expect(await card(ui.page, pending.id).count()).toBe(0);
+      await ui.page.getByRole('button', { name: '恢复已完成历史' }).click();
+      await card(ui.page, pending.id)
+        .getByRole('button', { name: '确认并记住' })
+        .waitFor();
+      expect(await status.getAttribute('data-live-events')).toBe('1');
+      expect(await status.getAttribute('data-trace-state')).toBe('loaded');
+      await card(ui.page, pending.id)
+        .getByRole('button', { name: '确认并记住' })
+        .click();
+      await card(ui.page, pending.id)
+        .getByText('长期记忆', { exact: true })
+        .waitFor();
+    } finally {
+      await ui.close();
+    }
+  });
+
+  it.each(['future', 'expired'] as const)(
+    'shows the existing %s expiry before and after confirmation without extending it',
+    async (period) => {
+      const future = new Date(Date.now() + 86400000).toISOString();
+      const expiresAt =
+        period === 'future'
+          ? future
+          : new Date(Date.now() - 86400000).toISOString();
+      const pending = await remember('已有期限的候选 ' + period, future);
+      if (period === 'expired') {
+        // Reconstruct a legally captured older record in the isolated fixture:
+        // expiry stays after capture, while both dates are now in the past.
+        const capturedAt = new Date(Date.now() - 2 * 86400000).toISOString();
+        await f.db`update allrice_memories set captured_at=${capturedAt},created_at=${capturedAt},updated_at=${capturedAt},expires_at=${expiresAt} where id=${pending.id}`;
+        await f.db`update allrice_memory_revisions set changed_at=${capturedAt},expires_at=${expiresAt} where memory_id=${pending.id}`;
+      }
+      const ui = await open('management');
+      try {
+        const receipt = card(ui.page, pending.id);
+        await receipt
+          .getByText('已记为候选，等待你确认', { exact: true })
+          .waitFor();
+        expect(await receipt.locator('time').getAttribute('datetime')).toBe(
+          expiresAt,
+        );
+        expect(await receipt.textContent()).toContain(
+          '确认不会延长有效期；过期后不会用于后续对话。',
+        );
+        expect(
+          await receipt
+            .getByText('已记为候选，确认后才生效', { exact: true })
+            .count(),
+        ).toBe(0);
+        await receipt.getByRole('button', { name: '确认并记住' }).click();
+        await receipt.getByText('长期记忆', { exact: true }).waitFor();
+        expect(await receipt.locator('time').getAttribute('datetime')).toBe(
+          expiresAt,
+        );
+        expect(await receipt.textContent()).toContain(
+          '确认不会延长有效期；过期后不会用于后续对话。',
+        );
+        const [stored] =
+          await f.db`select lifecycle_state,expires_at from allrice_memories where id=${pending.id}`;
+        expect(stored!.lifecycle_state).toBe('durable');
+        expect(stored!.expires_at.toISOString()).toBe(expiresAt);
+      } finally {
+        await ui.close();
+      }
+    },
+  );
+
+  it.each(['confirm-success', 'discard-failure', 'discard-ack-loss'] as const)(
+    'preserves the other in-flight card across a successful background refresh: %s',
+    async (mode) => {
+      const fast = await remember('快速确认 ' + mode);
+      const slow = await remember('等待回执 ' + mode);
+      const ui = await open('management');
+      let release = () => {};
+      if (mode === 'discard-failure') failDeleteFor = slow.id;
+      try {
+        await card(ui.page, slow.id).waitFor();
+        let reached!: () => void;
+        const arrived = new Promise<void>((done) => {
+          reached = done;
+        });
+        const blocked = new Promise<void>((done) => {
+          release = done;
+        });
+        const confirming = mode === 'confirm-success';
+        await ui.page.route(
+          `**/api/v1/memories/${slow.id}${confirming ? '/promote' : ''}?**`,
+          async (route) => {
+            // Success and lost delete acknowledgement are already committed when
+            // the fast card triggers a read; definitive failure stays uncommitted.
+            const response =
+              mode === 'discard-failure' ? null : await route.fetch();
+            reached();
+            await blocked;
+            if (mode === 'discard-ack-loss')
+              return route.fulfill({ status: 503, json: {} });
+            return response ? route.fulfill({ response }) : route.continue();
+          },
+        );
+        await card(ui.page, slow.id)
+          .getByRole('button', {
+            name: confirming ? '确认并记住' : '放弃',
+            exact: true,
+          })
+          .click();
+        await arrived;
+        const refreshed = ui.page.waitForResponse(
+          (response) =>
+            new URL(response.url()).pathname === '/api/v1/memories' &&
+            response.request().method() === 'GET',
+        );
+        await card(ui.page, fast.id)
+          .getByRole('button', { name: '确认并记住' })
+          .click();
+        await (await refreshed).finished();
+        await ui.page.evaluate(
+          () =>
+            new Promise<void>((done) =>
+              requestAnimationFrame(() => requestAnimationFrame(() => done())),
+            ),
+        );
+        expect(await card(ui.page, slow.id).getAttribute('aria-busy')).toBe(
+          'true',
+        );
+        expect(
+          await card(ui.page, slow.id)
+            .getByRole('button', {
+              name: confirming ? '正在确认…' : '正在处理…',
+              exact: true,
+            })
+            .isDisabled(),
+        ).toBe(true);
+        release();
+        if (confirming) {
+          await card(ui.page, slow.id)
+            .getByText('长期记忆', { exact: true })
+            .waitFor();
+          expect(
+            (
+              await f.db`select lifecycle_state from allrice_memories where id=${slow.id}`
+            )[0]!.lifecycle_state,
+          ).toBe('durable');
+        } else {
+          const error = card(ui.page, slow.id).getByRole('alert');
+          await error.waitFor();
+          expect(await error.textContent()).toContain(
+            '暂时无法确认操作结果，请重新读取记忆。',
+          );
+          const [stored] =
+            await f.db`select archived_at from allrice_memories where id=${slow.id}`;
+          if (mode === 'discard-ack-loss') {
+            expect(stored!.archived_at).not.toBeNull();
+            await card(ui.page, slow.id)
+              .getByRole('button', { name: '重新读取记忆' })
+              .click();
+            await card(ui.page, slow.id).waitFor({ state: 'detached' });
+          } else expect(stored!.archived_at).toBeNull();
+        }
+        await card(ui.page, fast.id)
+          .getByText('长期记忆', { exact: true })
+          .waitFor();
+      } finally {
+        release();
+        failDeleteFor = '';
+        await ui.close();
+      }
+    },
+  );
 
   it('keeps candidate on lost confirmation acknowledgement, recovers by rereading, and retains failed discard', async () => {
     const pending = await remember('确认回执丢失的候选');

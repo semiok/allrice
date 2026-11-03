@@ -50,6 +50,7 @@ function MemoryCard(props: {
   inline: boolean;
   onChange: (memory: MemoryView | null) => void;
   onRefresh: () => void;
+  onPending: (pending: boolean) => void;
 }) {
   const { memory } = props;
   const [busy, setBusy] = useState<'promote' | 'delete' | null>(null);
@@ -65,6 +66,7 @@ function MemoryCard(props: {
     if (busy || !memory.ownedByMe) return;
     setBusy(action);
     setError('');
+    props.onPending(true);
     try {
       const response = await fetch(
         `/api/v1/memories/${encodeURIComponent(memory.id)}${action === 'promote' ? '/promote' : ''}?workspaceId=${encodeURIComponent(props.workspaceId)}`,
@@ -91,6 +93,7 @@ function MemoryCard(props: {
     } catch {
       if (live.current) setError('暂时无法确认操作结果，请重新读取记忆。');
     } finally {
+      props.onPending(false);
       if (live.current) setBusy(null);
     }
   }
@@ -101,12 +104,29 @@ function MemoryCard(props: {
       data-memory-id={memory.id}
       aria-busy={busy !== null}
     >
-      <strong>{candidate ? '已记为候选，确认后才生效' : '长期记忆'}</strong>
+      <strong>
+        {candidate
+          ? memory.expiresAt
+            ? '已记为候选，等待你确认'
+            : '已记为候选，确认后才生效'
+          : '长期记忆'}
+      </strong>
       <p className={css.content}>{memory.content}</p>
       <small>
         {memoryClassLabel(memory.memoryClass)} · {memorySourceLabel(memory)} · v
         {memory.revision}
       </small>
+      {memory.expiresAt && (
+        <p>
+          有效期至{' '}
+          <time dateTime={memory.expiresAt}>
+            {new Date(memory.expiresAt).toLocaleString('zh-CN', {
+              timeZoneName: 'short',
+            })}
+          </time>
+          。 确认不会延长有效期；过期后不会用于后续对话。
+        </p>
+      )}
       {memory.ownedByMe && (candidate || !props.inline) && (
         <div className={css.actions}>
           {candidate && (
@@ -152,6 +172,7 @@ export function MemoryPanel(props: {
   const scope = `${props.scopeId}/${props.workspaceId}/${props.runId ?? 'personal'}`;
   const active = useRef(scope);
   active.current = scope;
+  const pending = useRef(new Set<string>());
   const [attempt, setAttempt] = useState(0);
   const [snapshot, setSnapshot] = useState<{
     scope: string;
@@ -166,6 +187,9 @@ export function MemoryPanel(props: {
     [credentials],
   );
   useEffect(() => {
+    pending.current.clear();
+  }, [scope]);
+  useEffect(() => {
     const reload = (event: Event) => {
       if ((event as CustomEvent).detail?.scopeId === props.scopeId)
         setAttempt((value) => value + 1);
@@ -175,7 +199,9 @@ export function MemoryPanel(props: {
   }, [props.scopeId]);
   useEffect(() => {
     const controller = new AbortController();
-    setSnapshot(null);
+    // A same-scope refresh must not replace cards with a loading screen while
+    // another card is still awaiting its mutation acknowledgement.
+    setSnapshot((value) => (value?.scope === scope ? value : null));
     const query = new URLSearchParams({
       workspaceId: props.workspaceId,
       personal: '1',
@@ -197,11 +223,30 @@ export function MemoryPanel(props: {
         )
           throw Error('记忆读取范围已变化，请重新打开。');
         if (!controller.signal.aborted && active.current === scope)
-          setSnapshot({ scope, memories });
+          setSnapshot((value) => ({
+            scope,
+            memories: [
+              ...memories.map((memory) =>
+                pending.current.has(memory.id) && value?.scope === scope
+                  ? (value.memories?.find((item) => item.id === memory.id) ??
+                    memory)
+                  : memory,
+              ),
+              ...(value?.scope === scope ? (value.memories ?? []) : []).filter(
+                (memory) =>
+                  pending.current.has(memory.id) &&
+                  !memories.some((item) => item.id === memory.id),
+              ),
+            ],
+          }));
       })
       .catch(() => {
         if (!controller.signal.aborted && active.current === scope)
-          setSnapshot({ scope, error: '记忆读取失败，请重新读取。' });
+          setSnapshot((value) => ({
+            ...(value?.scope === scope ? value : {}),
+            scope,
+            error: '记忆读取失败，请重新读取。',
+          }));
       });
     return () => controller.abort();
   }, [
@@ -223,6 +268,11 @@ export function MemoryPanel(props: {
         headers={headers}
         inline={inline}
         onRefresh={refresh}
+        onPending={(busy) => {
+          if (active.current !== scope) return;
+          if (busy) pending.current.add(memory.id);
+          else pending.current.delete(memory.id);
+        }}
         onChange={(updated) => {
           if (active.current !== scope) return;
           setSnapshot((value) =>
@@ -243,7 +293,7 @@ export function MemoryPanel(props: {
         }}
       />
     ));
-  if (inline && current?.memories?.length === 0) return null;
+  if (inline && current?.memories?.length === 0 && !current.error) return null;
   return (
     <section
       className={css.panel}
@@ -259,15 +309,16 @@ export function MemoryPanel(props: {
           </p>
         </>
       )}
-      {current?.error ? (
+      {current?.error && (
         <p role="alert">
           {current.error}{' '}
           <Button type="button" variant="ghost" onClick={refresh}>
             重新读取记忆
           </Button>
         </p>
-      ) : !current?.memories ? (
-        <p role="status">正在读取记忆…</p>
+      )}
+      {!current?.memories ? (
+        !current?.error && <p role="status">正在读取记忆…</p>
       ) : inline ? (
         cards(current.memories)
       ) : (
