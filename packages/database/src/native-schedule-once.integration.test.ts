@@ -1481,7 +1481,7 @@ suite(
         await f.db`insert into allrice_execution_targets(id,organization_id,workspace_id,target_key,kind,label,state,capabilities,concurrency_limit,timeout_seconds)
           values(${target},${f.organizationId},${f.workspaceId},${'once-approval-' + target},'rice_bridge','Synthetic delete target','online','[]',1,60)`;
         await f.db`insert into allrice_bridge_devices(id,organization_id,workspace_id,owner_id,name,platform,protocol_version,capabilities,token_hash)
-          values(${device},${f.organizationId},${f.workspaceId},${f.ownerId},'Synthetic only','macos-x64',2,array['local.fs.changeset'],${'b'.repeat(64)})`;
+          values(${device},${f.organizationId},${f.workspaceId},${f.ownerId},'Synthetic only','macos-x64',2,array['local.fs.write'],${'b'.repeat(64)})`;
         await f.db`insert into allrice_bridge_folder_grants(id,organization_id,workspace_id,owner_id,device_id,label,root_fingerprint)
           values(${grant},${f.organizationId},${f.workspaceId},${f.ownerId},${device},'Synthetic only',${'a'.repeat(64)})`;
         const binding: RuntimeActionBinding = {
