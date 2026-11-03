@@ -625,15 +625,19 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
         runId: f.run,
       }),
     ).toEqual({ failures: [], truncated: false });
+    // Diagnostics end at a JS millisecond timestamp. Keep this just-written
+    // synthetic row inside that window without relying on PostgreSQL microseconds.
+    await db.db`update allrice_runs set updated_at=date_trunc('milliseconds',clock_timestamp()) where id=${f.run}`;
     platformAdmin();
     const response = await adminGet(
       new Request('http://localhost/api/v1/admin/technical-assistant'),
     );
-    expect(
-      (await response.json()).diagnostics.runs.value.find(
-        (row: { runId: string }) => row.runId === f.run,
-      ).modelFailures,
-    ).toBeUndefined();
+    expect(response.status).toBe(200);
+    const row = (await response.json()).diagnostics.runs.value.find(
+      (row: { runId: string }) => row.runId === f.run,
+    );
+    expect(row).toBeDefined();
+    expect(row.modelFailures).toBeUndefined();
   });
   it('review regression: non-chat Runs cannot use the legacy administrator raw-message fallback', async () => {
     const f = await runFixture(db.db);
