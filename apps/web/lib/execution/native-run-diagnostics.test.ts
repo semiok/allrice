@@ -4,6 +4,7 @@ import {
   requestNativeRunDiagnostics,
   requestNativeSubagentSummary,
   requestNativeSubagentFollow,
+  recoverNativeSubagentControlReceipt,
 } from './native-run-diagnostics';
 
 afterEach(() => {
@@ -214,3 +215,68 @@ it('classifies an invalid follow envelope without exposing its body or changing 
   );
   expect(JSON.stringify(warning.mock.calls)).not.toContain(input.token);
 });
+
+it.each([
+  [503, 'NATIVE_QUERY_BINDING_UNAVAILABLE', 'NATIVE_QUERY_BINDING_UNAVAILABLE'],
+  [503, 'NATIVE_QUERY_HOST_MISMATCH', undefined],
+  [500, 'NATIVE_QUERY_BINDING_UNAVAILABLE', undefined],
+  [401, 'NATIVE_QUERY_BINDING_UNAVAILABLE', undefined],
+  [404, 'NATIVE_QUERY_BINDING_UNAVAILABLE', undefined],
+] as const)(
+  'MET-238 startup: allowlists only the summary 503 header (%i/%s) without reading a failure body',
+  async (status, code, expected) => {
+    let cancelled = false;
+    const body = new ReadableStream({
+      cancel: () => {
+        cancelled = true;
+      },
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(body, {
+          status,
+          headers: { 'x-allrice-native-query-error': code },
+        }),
+      ),
+    );
+    await expect(
+      requestNativeSubagentSummary({ ...input, sessionId: runId }),
+    ).rejects.toMatchObject({
+      status: [401, 404].includes(status) ? status : 503,
+      code: expected,
+    });
+    expect(cancelled).toBe(true);
+  },
+);
+
+it.each(['run', 'follow', 'receipt'] as const)(
+  'MET-238 startup: does not reclassify the %s path as a startup summary',
+  async (kind) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response('unavailable', {
+          status: 503,
+          headers: {
+            'x-allrice-native-query-error': 'NATIVE_QUERY_BINDING_UNAVAILABLE',
+          },
+        }),
+      ),
+    );
+    const reading =
+      kind === 'run'
+        ? requestNativeRunDiagnostics(input)
+        : kind === 'follow'
+          ? requestNativeSubagentFollow({ ...input, sessionId: runId })
+          : recoverNativeSubagentControlReceipt({
+              ...input,
+              sessionId: runId,
+              requestId: runId,
+            });
+    await expect(reading).rejects.toMatchObject({
+      status: 503,
+      code: undefined,
+    });
+  },
+);

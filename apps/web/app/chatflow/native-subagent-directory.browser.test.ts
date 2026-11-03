@@ -73,6 +73,33 @@ function summary(rootId = 'native-root'): NativeSubagentSummary {
   };
 }
 
+function rootReady(sequence = 1): ChatFlowEventEnvelope {
+  return {
+    schemaVersion: 3,
+    eventId: `root-run-${sequence}`,
+    organizationId: 'org',
+    workspaceId: 'workspace',
+    conversationId: null,
+    runId: 'root-run',
+    generation: 1,
+    cursor: `root-run:${sequence}`,
+    sequence,
+    harness: 'dsh',
+    type: 'harness.native',
+    occurredAt: '2026-10-30T00:00:00Z',
+    payload: {},
+    sourceEvent: {
+      id: `native-${sequence}`,
+      type: 'request/header',
+      occurredAt: '2026-10-30T00:00:00Z',
+      payload: {},
+    },
+  };
+}
+
+const bindingUnavailable = 'NATIVE_QUERY_BINDING_UNAVAILABLE';
+const bindingHeader = 'x-allrice-native-query-error';
+
 suite('native subagent directory and employee sidebar', () => {
   let browser: Browser, server: Server, origin: string;
   const feed = new NativeSubagentFixtureFeed();
@@ -168,7 +195,13 @@ suite('native subagent directory and employee sidebar', () => {
     fullReply?: { gate: Promise<void>; delivered: () => void },
     snapshot?: typeof snapshotFor,
     search = '',
-    initial?: { kind: 'error' | 'null'; gate?: Promise<void> },
+    initial?: {
+      kind: 'error' | 'null';
+      gate?: Promise<void>;
+      code?: string;
+      status?: number;
+      repeat?: boolean;
+    },
   ) {
     const page = await browser.newPage({
       viewport: { width, height: width === 390 ? 844 : 900 },
@@ -208,12 +241,16 @@ suite('native subagent directory and employee sidebar', () => {
       if (
         initial &&
         id === 'parent-a' &&
-        calls.filter((call) => call.id === id).length <= 1
+        (initial.repeat || calls.filter((call) => call.id === id).length <= 1)
       ) {
         await initial.gate;
         await route.fulfill(
           initial.kind === 'error'
-            ? { status: 503, json: { error: 'unavailable' } }
+            ? {
+                status: initial.status ?? 503,
+                headers: initial.code ? { [bindingHeader]: initial.code } : {},
+                json: { error: 'unavailable' },
+              }
             : { json: { summary: null } },
         );
         initialDelivered += 1;
@@ -260,6 +297,14 @@ suite('native subagent directory and employee sidebar', () => {
     await trigger.focus();
     await trigger.press('Escape');
     await trigger.click();
+  }
+  async function flushPaint(page: Page) {
+    await page.evaluate(
+      () =>
+        new Promise<void>((done) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => done())),
+        ),
+    );
   }
   async function showDetail(page: Page, id: string) {
     await page.getByRole('textbox', { name: '子任务 ID（测试）' }).fill(id);
@@ -2169,6 +2214,215 @@ suite('native subagent directory and employee sidebar', () => {
       await expect.poll(() => detail.innerText()).toContain('暂时无法读取');
       expect(await detail.innerText()).not.toMatch(/中途基线|自己的最后回复/);
     } finally {
+      await page.close();
+    }
+  });
+
+  it.each([
+    ['light', 1200],
+    ['dark', 390],
+  ] as const)(
+    'MET-238 startup: “刚发第一句话，子智能体别闪红”：keeps %s/%ipx loading until the existing ready read succeeds',
+    async (theme, width) => {
+      let release!: () => void;
+      const gate = new Promise<void>((done) => {
+        release = done;
+      });
+      const { page, calls, fixture, initialDelivered } = await open(
+        summary(),
+        width,
+        undefined,
+        undefined,
+        `?root-events=1&theme=${theme}`,
+        { kind: 'error', gate, code: bindingUnavailable },
+      );
+      const trace = await page.locator('header').evaluateHandle((scope) => {
+        const states: string[] = [];
+        const record = () => {
+          const button = scope.querySelector('button[aria-haspopup="tree"]');
+          states.push(button?.getAttribute('aria-label') ?? 'hidden');
+          if (button?.textContent === '!') states.push('!');
+        };
+        const observer = new MutationObserver((records) => {
+          for (const mutation of records)
+            if (mutation.attributeName === 'aria-label' && mutation.oldValue)
+              states.push(mutation.oldValue);
+          record();
+        });
+        observer.observe(scope, {
+          subtree: true,
+          childList: true,
+          characterData: true,
+          attributes: true,
+          attributeOldValue: true,
+        });
+        record();
+        return {
+          stop: () => {
+            record();
+            observer.disconnect();
+            return states;
+          },
+        };
+      });
+      try {
+        release();
+        await expect.poll(initialDelivered).toBe(1);
+        await flushPaint(page);
+        const trigger = page.locator('button[aria-haspopup="tree"]');
+        expect(await trigger.getAttribute('aria-label')).toBe('子智能体');
+        expect(await trigger.locator('span[aria-hidden="true"]').count()).toBe(
+          0,
+        );
+        // A ready event, rather than another timer/request, owns the next read.
+        feed.pushRoot(fixture, rootReady());
+        await page
+          .getByRole('button', {
+            name: '2 个子智能体 · 1 个运行中',
+            exact: true,
+          })
+          .waitFor();
+        expect(calls.filter((call) => call.id === 'parent-a')).toHaveLength(2);
+        const states = await trace.evaluate((value) => value.stop());
+        const directory = join(process.cwd(), '.local', 'met238-startup-503');
+        mkdirSync(directory, { recursive: true });
+        writeFileSync(
+          join(directory, `${theme}-${width}-transitions.json`),
+          JSON.stringify({ states, calls }, null, 2),
+        );
+        expect(
+          states.some(
+            (state) =>
+              state.includes('读取失败') || state === '!' || state === 'hidden',
+          ),
+        ).toBe(false);
+        await capture(page, `startup-${theme}-${width}-ready`);
+      } finally {
+        release();
+        await page.close();
+      }
+    },
+  );
+
+  it('MET-238 startup: “一直读不到就报错”：the 5s deadline survives ready and opening refresh without polling', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((done) => {
+      release = done;
+    });
+    const { page, calls, fixture, initialDelivered } = await open(
+      summary(),
+      1200,
+      undefined,
+      undefined,
+      '?root-events=1',
+      { kind: 'error', gate, code: bindingUnavailable, repeat: true },
+    );
+    try {
+      await page.clock.install();
+      release();
+      await expect.poll(initialDelivered).toBe(1);
+      await flushPaint(page);
+      const trigger = page.locator('button[aria-haspopup="tree"]');
+      expect(await trigger.getAttribute('aria-label')).toBe('子智能体');
+      await page.clock.runFor(2000);
+      feed.pushRoot(fixture, rootReady());
+      await expect.poll(initialDelivered).toBe(2);
+      await page.clock.runFor(2000);
+      await trigger.click();
+      await expect.poll(initialDelivered).toBe(3);
+      await page.clock.runFor(900);
+      expect(await trigger.getAttribute('aria-label')).toBe('子智能体');
+      await page
+        .getByRole('status')
+        .filter({ hasText: '正在读取子智能体摘要…' })
+        .waitFor();
+      await page.clock.runFor(200);
+      await page
+        .getByRole('button', { name: '子智能体读取失败', exact: true })
+        .waitFor();
+      await page
+        .getByRole('alert')
+        .filter({ hasText: '暂时读不到子智能体目录。' })
+        .waitFor();
+      expect(calls.filter((call) => call.id === 'parent-a')).toHaveLength(3);
+      await capture(page, 'startup-deadline-error');
+    } finally {
+      release();
+      await page.close();
+    }
+  });
+
+  it.each([
+    [503, 'NATIVE_QUERY_HOST_MISMATCH'],
+    [503, undefined],
+    [500, bindingUnavailable],
+    [401, bindingUnavailable],
+    [404, bindingUnavailable],
+  ] as const)(
+    'MET-238 startup: other failure %i/%s remains an immediate error',
+    async (status, code) => {
+      let release!: () => void;
+      const gate = new Promise<void>((done) => {
+        release = done;
+      });
+      const { page, calls, initialDelivered } = await open(
+        summary(),
+        1200,
+        undefined,
+        undefined,
+        '',
+        { kind: 'error', gate, status, code },
+      );
+      try {
+        await page.clock.install();
+        release();
+        await expect.poll(initialDelivered).toBe(1);
+        await page
+          .getByRole('button', { name: '子智能体读取失败', exact: true })
+          .waitFor({ timeout: 1000 });
+        expect(calls.filter((call) => call.id === 'parent-a')).toHaveLength(1);
+      } finally {
+        release();
+        await page.close();
+      }
+    },
+  );
+
+  it('MET-238 startup: a late aborted binding error cannot reopen grace after a successful read', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((done) => {
+      release = done;
+    });
+    const { page, fixture, initialDelivered } = await open(
+      summary(),
+      1200,
+      undefined,
+      undefined,
+      '?root-events=1',
+      { kind: 'error', gate, code: bindingUnavailable },
+    );
+    try {
+      feed.pushRoot(fixture, rootReady());
+      await page
+        .getByRole('button', { name: '2 个子智能体 · 1 个运行中', exact: true })
+        .waitFor();
+      release();
+      await expect.poll(initialDelivered).toBe(1);
+      await flushPaint(page);
+      await page.clock.install();
+      await page.route('**/api/v1/sessions/parent-a/subagents?**', (route) =>
+        route.fulfill({
+          status: 503,
+          headers: { [bindingHeader]: bindingUnavailable },
+          json: { error: 'unavailable' },
+        }),
+      );
+      await page.locator('button[aria-haspopup="tree"]').click();
+      await page
+        .getByRole('button', { name: '子智能体读取失败', exact: true })
+        .waitFor({ timeout: 1000 });
+    } finally {
+      release();
       await page.close();
     }
   });
