@@ -619,16 +619,35 @@ def send_telegram(cfg, text):
         raise CheckError(str(body.get('description', 'send failed')).replace(token, '<token>'))
 
 
-def deliver(r, messages):
-    """Queue the messages and send everything queued, oldest first; what fails waits for
-    the next round. `failingSince` (in the heartbeat) lets the other machine tell a
-    monitor that has stopped being able to deliver."""
+def queue_messages(r, messages):
+    """Append to the existing bounded Telegram outbox, without external I/O."""
     box = r.state.setdefault('outbox', [])
     tg = r.state.setdefault('telegram', {})
     box.extend(m for m in ([messages] if isinstance(messages, str) else messages or []) if m)
     if len(box) > 20:
         tg['dropped'] = tg.get('dropped', 0) + len(box) - 20
         del box[:-20]
+
+
+def prepare_notifications(r, findings, ran):
+    """An interrupted preparation must not save consumed alerts without their
+    messages. No I/O occurs until evaluation, composition and enqueue all complete."""
+    before = r.state
+    r.state = json.loads(json.dumps(before))
+    try:
+        events = evaluate(r, findings, ran)
+        queue_messages(r, compose(r, events))
+    except BaseException:
+        r.state = before
+        raise
+
+
+def deliver(r, messages):
+    """Queue the messages and send everything queued, oldest first; what fails waits for
+    the next round. `failingSince` (in the heartbeat) lets the other machine tell a
+    monitor that has stopped being able to deliver."""
+    queue_messages(r, messages)
+    box, tg = r.state['outbox'], r.state['telegram']
     while box:
         note = '（另有 %d 条更早的通知没能发出，已丢弃）\n' % tg['dropped'] if tg.get('dropped') else ''
         try:
@@ -1234,25 +1253,43 @@ def model_auth_log(r, seen):
                 return dict(identity, offset=st.st_size, discardPartial=partial, frontier=frontier(current, st.st_size)), 0, None, not partial, None
             rotated = any(cursor.get(k) != v for k, v in identity.items())
             if rotated:
-                archived = None
+                archives, archived = [], None
                 if cursor.get('path') == path:
-                    # Ordinary rename rotation: finish its still-readable tail first.
+                    # Numeric rename rotation has a verifiable order: .N, ... .1,
+                    # current. Never jump from the cursor's segment to current when
+                    # intermediate segments are still readable.
                     with os.scandir(os.path.dirname(path)) as entries:
                         for entry in entries:
                             if entry.name.startswith(os.path.basename(path) + '.') and entry.is_file():
                                 old = entry.stat()
+                                suffix = entry.name[len(os.path.basename(path)) + 1:]
+                                item = {'path': entry.path, 'device': old.st_dev, 'inode': old.st_ino,
+                                        'index': int(suffix) if re.fullmatch(r'[1-9][0-9]*', suffix) else None}
+                                archives.append(item)
                                 if (old.st_dev, old.st_ino) == (cursor.get('device'), cursor.get('inode')):
-                                    archived = entry.path
-                                    break
+                                    archived = item
                 if archived:
-                    with open(archived, 'rb') as old:
-                        if not consume(old, cursor):
-                            if cursor['offset'] < os.fstat(old.fileno()).st_size and budget == 0:
-                                return cursor, count, earliest, False, gap
-                            # A rotated segment ending inside a line/record cannot
-                            # certify zero errors. Latch that evidence and continue
-                            # with the new file instead of getting stuck on it forever.
-                            gap = '轮转旧段有无法补全的残行或记录，无法判断未读记录'
+                    if archived['index'] is not None:
+                        segments = sorted((x for x in archives if x['index'] is not None and x['index'] <= archived['index']),
+                                          key=lambda x: -x['index'])
+                        if len(segments) != archived['index'] or any(x['index'] is None for x in archives) \
+                                or len({(x['device'], x['inode']) for x in segments}) != len(segments):
+                            gap = '轮转段缺失或顺序不明，无法判断日志连续性'
+                    else:
+                        segments = [archived]
+                        gap = '轮转段名称无法确定先后，无法判断日志连续性'
+                    for item in segments:
+                        with open(item['path'], 'rb') as old:
+                            old_stat = os.fstat(old.fileno())
+                            if (old_stat.st_dev, old_stat.st_ino) != (item['device'], item['inode']):
+                                raise CheckError('扫描时轮转段已变化，无法判断日志连续性')
+                            if (cursor.get('device'), cursor.get('inode')) != (item['device'], item['inode']):
+                                cursor = dict(path=path, device=item['device'], inode=item['inode'], offset=0)
+                            if not consume(old, cursor):
+                                if cursor['offset'] < os.fstat(old.fileno()).st_size and budget == 0:
+                                    return cursor, count, earliest, False, gap
+                                # Do not stay forever on an incomplete sealed tail.
+                                gap = '轮转旧段有无法补全的残行或记录，无法判断未读记录'
                 else:
                     gap = '日志已轮转或来源改变，旧段不可补读，无法判断未读记录'
                 cursor = dict(identity, offset=0)
@@ -1260,6 +1297,9 @@ def model_auth_log(r, seen):
                 gap = '日志被截断，旧段不可补读，无法判断未读记录'
                 cursor = dict(identity, offset=0)
             complete = consume(current, cursor)
+            latest = os.stat(path)
+            if (latest.st_dev, latest.st_ino) != (st.st_dev, st.st_ino) or latest.st_size != cursor['offset']:
+                complete = False  # a concurrent append/rotation is read next round
     except OSError:
         raise CheckError('Worker 错误日志无法读取') from None
     return cursor, count, earliest, complete, gap
@@ -1288,7 +1328,9 @@ def check_model_authorization(r):
         state['gap'] = {'reason': gap, 'expires': baseline}
     active = state.get('active')
     if active is None and (added or expires is not None and expires / 1000 - r.now <= 72 * 3600):
-        fault_expiry = expires if expires is not None else baseline
+        # Errors and a renewed grant may both arrive between two samples. Keep the
+        # previously observed grant as the fault baseline, preserving E1 -> E2.
+        fault_expiry = baseline if added else expires
         active = state['active'] = {'expires': fault_expiry, 'id': str(fault_expiry) if fault_expiry is not None else str(uuid.uuid4()),
                                     'count': 0, 'first': None, 'stage': 72}
     if active is not None:
@@ -1322,7 +1364,8 @@ def check_model_authorization(r):
     data = finding('model_authorization_data', 'warning' if issues else 'ok', '模型授权无法判断',
                    '；'.join(issues), 'm1-model-subscription.md', 'monitor status 查看未知原因，核对授权文件与 Worker 日志可读性')
     data['noRepeat'] = True
-    if issues and not added:
+    expiry_due = expires is not None and not fresh and expires / 1000 - r.now <= 72 * 3600
+    if issues and not added and not expiry_due:
         r.state['modelAuth'] = state
         return [data, unknown('model_authorization')]
     if recovered or active is None:
@@ -2362,12 +2405,13 @@ def do_round(cfg, peer):
     signal.alarm(90)  # delivery has its own timeouts; this only bounds a hung write
     try:
         r.now = time.time()
-        events = evaluate(r, findings, ran)
+        prepare_notifications(r, findings, ran)
+        r.save()  # consumed facts and their queued messages become durable together
         if peer:
             flush_incidents_remote(r)
         else:
             flush_incidents(r)
-        deliver(r, compose(r, events))
+        deliver(r, [])
         if not peer and daily_due(r):
             send_daily(r)
         r.state['lastRound'] = {'at': r.now, 'seconds': round(time.time() - start, 1), 'error': error}

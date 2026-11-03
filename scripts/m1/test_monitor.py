@@ -1040,6 +1040,45 @@ class ModelAuthorization(unittest.TestCase):
                 self.restart()
                 self.assertEqual(self.collect(self.start + 3600)[1], [])
 
+    def test_readable_expiry_notifies_72_and_24_despite_unknown_logs_without_recovering(self):
+        for damage in ('missing', 'partial', 'gap'):
+            with self.subTest(damage=damage):
+                self.setUp()
+                self.collect()
+                if damage == 'missing':
+                    os.rename(self.log, self.log + '.saved')
+                elif damage == 'partial':
+                    self.append("[M5] Handler failed {\n  code: 'DSH_PI_AI_ERROR',\n")
+                else:
+                    self.append("[M5] Handler failed {\n  code: 'DSH_PI_AI_ERROR',\n}\n")
+                at72 = self.expires / 1000 - 72 * 3600
+                findings, events = self.collect(at72)
+                self.assertEqual({f['key']: f['severity'] for f in findings},
+                                 {'model_authorization_data': 'warning', 'model_authorization': 'warning'})
+                self.assertEqual({e['finding']['key'] for e in events},
+                                 {'model_authorization_data', 'model_authorization'})
+                self.assertIn('72 小时', '\n'.join(monitor.compose(self.r, events)))
+                self.assertIn(monitor.utc_time(self.expires / 1000), '\n'.join(monitor.compose(self.r, events)))
+                self.restart()
+                self.assertEqual(self.collect(at72 + 240)[1], [])
+                at24 = self.expires / 1000 - 24 * 3600
+                _, events = self.collect(at24)
+                self.assertEqual([(e['event'], e['finding']['key']) for e in events],
+                                 [('escalated', 'model_authorization')])
+                self.assertIn('24 小时', '\n'.join(monitor.compose(self.r, events)))
+                self.restart()
+                self.assertEqual(self.collect(at24 + 240)[1], [])
+                # Even a new future grant cannot recover while the log is unreadable.
+                self.grant(self.expires + 200 * 3600 * 1000)
+                if os.path.exists(self.log):
+                    os.rename(self.log, self.log + '.unavailable')
+                for at in (at24 + 480, at24 + 960):
+                    findings, events = self.collect(at)
+                    self.assertEqual(findings[1]['severity'], 'unknown')
+                    self.assertFalse(any(e['event'] == 'recovered' for e in events))
+                    self.assertIn('model_authorization', self.r.state['alerts'])
+                    self.assertNotIn('quietSince', self.r.state['modelAuth'])
+
     def test_warning_error_new_grant_later_error_then_one_quiet_recovery(self):
         self.expires = int((self.start + 72 * 3600) * 1000)
         self.grant(self.expires)
@@ -1076,6 +1115,32 @@ class ModelAuthorization(unittest.TestCase):
         _, events = self.collect(self.start + 1)
         self.assertEqual([e['event'] for e in events], ['escalated'])
         self.assertEqual(self.collect(self.start + 7200)[1], [])
+
+    def test_first_error_and_renewed_expiry_in_one_scan_preserve_recovery_across_restart(self):
+        self.collect()  # E1 is known, but not within 72h: no active fault yet.
+        self.grant(self.expires + 200 * 3600 * 1000)
+        self.append(self.record())
+        _, events = self.collect(self.start + 1)
+        self.assertEqual([e['event'] for e in events], ['opened'])
+        self.assertEqual(self.r.state['modelAuth']['active']['expires'], self.expires)
+        self.assertEqual(self.r.state['modelAuth']['expires'], self.expires + 200 * 3600 * 1000)
+        self.assertEqual(self.collect(self.start + 2)[1], [])
+        self.restart()
+        self.append(self.record())
+        self.assertEqual(self.collect(self.start + 241)[1], [])
+        self.assertEqual(self.r.state['modelAuth']['active']['count'], 2)
+        self.assertNotIn('quietSince', self.r.state['modelAuth'])
+        self.assertEqual(self.collect(self.start + 242)[1], [])
+        self.restart()
+        self.assertEqual(self.collect(self.start + 481)[1], [])
+        _, events = self.collect(self.start + 482)
+        self.assertEqual([(e['event'], e['finding']['key']) for e in events],
+                         [('recovered', 'model_authorization')])
+        self.restart()
+        self.assertEqual(self.collect(self.start + 722)[1], [])
+        rows = [x for x in self.r.state['incidentOutbox'] if x['detailCode'] == 'monitor.model_authorization']
+        self.assertEqual([x['metadata']['event'] for x in rows], ['opened', 'recovered'])
+        self.assertEqual(len({x['metadata']['alertId'] for x in rows}), 1)
 
     def test_unreadable_sources_report_cannot_judge_and_do_not_recover_auth(self):
         self.collect()
@@ -1213,6 +1278,61 @@ class ModelAuthorization(unittest.TestCase):
         self.assertTrue(all(e['event'] == 'recovered' for e in events))
         self.assertEqual(self.collect(self.start + 721)[1], [])
 
+    def test_multiple_rotations_read_middle_errors_with_budget_and_block_premature_recovery(self):
+        for budget in (monitor.AUTH_LOG_BYTES, len(self.record().encode())):
+            with self.subTest(budget=budget):
+                self.setUp()
+                self.collect()
+                self.append(self.record())
+                self.collect(self.start + 1)
+                self.grant(self.expires + 200 * 3600 * 1000)
+                self.collect(self.start + 2)  # quiet window is open before two rotations
+                self.append(self.record(code='OTHER_ERROR') * 2)
+                os.rename(self.log, self.log + '.1')
+                with open(self.log, 'w') as stream:
+                    stream.write(self.record() * 2)  # the intermediate segment alone has new expired errors
+                os.rename(self.log + '.1', self.log + '.2')
+                os.rename(self.log, self.log + '.1')
+                with open(self.log, 'w') as stream:
+                    stream.write('ordinary current log\n')
+                with mock.patch.object(monitor, 'AUTH_LOG_BYTES', budget):
+                    for attempt in range(8):
+                        at = self.start + 242 + attempt * 240
+                        findings, events = self.collect(at)
+                        self.assertFalse(any(e['event'] == 'recovered' and e['finding']['key'] == 'model_authorization'
+                                             for e in events))
+                        self.restart()
+                        if findings[0]['severity'] == 'ok':
+                            break
+                    else:
+                        self.fail('readable numeric rotation chain never drained')
+                self.assertEqual(self.r.state['modelAuth']['active']['count'], 3)
+                self.assertNotIn('gap', self.r.state['modelAuth'])
+                self.collect(at + 1)
+                self.assertEqual(self.collect(at + 239)[1], [])
+                _, events = self.collect(at + 241)
+                self.assertEqual([(e['event'], e['finding']['key']) for e in events],
+                                 [('recovered', 'model_authorization')])
+                self.restart()
+                self.assertEqual(self.collect(at + 481)[1], [])
+
+    def test_rotation_missing_or_ambiguous_intermediate_segments_latch_unknown(self):
+        for names in (('.2', None), ('.old', '.middle')):
+            with self.subTest(names=names):
+                self.setUp()
+                self.collect()
+                os.rename(self.log, self.log + names[0])
+                if names[1]:
+                    with open(self.log + names[1], 'w') as stream:
+                        stream.write(self.record())
+                open(self.log, 'w').close()
+                findings, _ = self.collect(self.start + 1)
+                self.assertEqual(findings[0]['severity'], 'warning')
+                self.assertIn('连续性', findings[0]['detail'])
+                self.restart()
+                self.assertEqual(self.collect(self.start + 241)[0][0]['severity'], 'warning')
+                self.assertIn('gap', self.r.state['modelAuth'])
+
     def test_repeated_read_failures_each_notify_once_without_flapping_or_reminders(self):
         self.collect()
         for at in (1, 241, 481):
@@ -1289,6 +1409,63 @@ class ModelAuthorization(unittest.TestCase):
         self.restart()
         self.assertEqual(self.collect(self.start + 1000)[1], [])
         self.assertEqual(self.r.state['outbox'], [])
+
+    def test_delivery_timeout_preserves_each_notification_before_and_after_enqueue(self):
+        scenarios = ('threshold', 'error', 'auth_recovery', 'data_warning', 'data_recovery')
+        for scenario in scenarios:
+            for boundary in ('evaluate', 'compose', 'queue_messages', 'flush_incidents'):
+                with self.subTest(scenario=scenario, boundary=boundary):
+                    self.setUp()
+                    self.collect()
+                    at = self.start + 1
+                    if scenario == 'threshold':
+                        self.grant(int((self.start + 72 * 3600) * 1000))
+                    elif scenario in ('error', 'auth_recovery'):
+                        self.append(self.record())
+                        if scenario == 'auth_recovery':
+                            self.collect(self.start + 1)
+                            self.grant(self.expires + 200 * 3600 * 1000)
+                            self.collect(self.start + 2)
+                            at = self.start + 242
+                    else:
+                        os.rename(self.credentials, self.credentials + '.saved')
+                        if scenario == 'data_recovery':
+                            self.collect(self.start + 1)
+                            os.rename(self.credentials + '.saved', self.credentials)
+                            at = self.start + 2
+                    self.restart()
+                    original = getattr(monitor, boundary)
+
+                    def interrupted(*args, **kwargs):
+                        if boundary != 'flush_incidents':
+                            original(*args, **kwargs)
+                        raise monitor.RoundTimeout()
+
+                    cfg, sent = self.r.cfg, []
+                    with mock.patch.object(monitor, 'M1_CHECKS', [('model_authorization', monitor.check_model_authorization, False, None)]), \
+                         mock.patch.object(monitor, 'heartbeat'), mock.patch.object(monitor, 'flush_incidents'), \
+                         mock.patch.object(monitor, 'send_telegram', side_effect=lambda cfg, text: sent.append(text)):
+                        with mock.patch.object(monitor.time, 'time', return_value=at), \
+                             mock.patch.object(monitor, boundary, side_effect=interrupted):
+                            with self.assertRaisesRegex(SystemExit, 'delivering the round timed out'):
+                                monitor.do_round(cfg, False)
+                        self.assertEqual(sent, [])
+                        saved = monitor.Round(cfg).state
+                        self.assertEqual(len(saved.get('outbox', [])), 1 if boundary == 'flush_incidents' else 0)
+                        self.assertNotIn('SYNTHETIC_', json.dumps(saved))
+                        # New processes/rounds must eventually deliver exactly one
+                        # message, including recovery and read-failure notifications.
+                        for next_at in (at + 240, at + 480):
+                            with mock.patch.object(monitor.time, 'time', return_value=next_at):
+                                monitor.do_round(cfg, False)
+                        self.assertEqual(len(sent), 1, sent)
+                        if scenario.endswith('recovery'):
+                            self.assertIn('1 项恢复', sent[0])
+                        elif scenario == 'data_warning':
+                            self.assertIn('无法判断', sent[0])
+                        else:
+                            self.assertIn('72 小时' if scenario == 'threshold' else '过期错误', sent[0])
+                        self.assertEqual(monitor.Round(cfg).state['outbox'], [])
 
     def test_real_process_lock_and_restart_deduplicate_milestones_in_temporary_files(self):
         expires = int((self.start + 72 * 3600) * 1000)
