@@ -2492,6 +2492,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       try {
         await authorizing.promise;
         const pin = runtime!.nativePin!;
+        expect(pin.rootOriginDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
         expect(
           await adapter!.nativeSubagentControl({
             scope: {
@@ -2500,7 +2501,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
               generation: runtime!.nativeGeneration!,
               jobId: task.execution.job.id,
               jobAttempt: task.execution.job.attempt,
-              rootOriginDigest: pin.rootOriginDigest,
+              rootOriginDigest: pin.rootOriginDigest!,
               storageNamespace: pin.storageNamespace,
             },
             input: {
