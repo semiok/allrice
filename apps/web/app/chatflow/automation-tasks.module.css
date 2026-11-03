@@ -234,3 +234,16 @@
 .taskLink:hover {
   color: var(--ar-link);
 }
+
+/* Authenticated once-task receipts retain every saved content line. */
+.createdOnceReceipt {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.createdOnceReceipt p {
+  margin: 4px 0;
+}

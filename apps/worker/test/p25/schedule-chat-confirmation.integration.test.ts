@@ -453,20 +453,20 @@ suite(
         delayMinutes: 5,
       },
     ])(
-      'creates one real once task directly from the complete wording: $text',
+      'creates one real once task from model parameters on the real chat entry: $text',
       async ({ text, name, delayMinutes }) => {
         const c = await chat(text);
         try {
           const call = c.call(delayMinutes, {
             name,
-            prompt: '模型提取的提醒内容，不能替换用户原话',
+            prompt: '实际保存的提醒内容。\n完整第二行。',
           });
           const before = Date.now();
           const created = read(await createAutomation(call));
           const after = Date.now();
           expect(created).toMatchObject({
             automationId: expect.any(String),
-            prompt: text,
+            prompt: call.arguments.prompt,
           });
           expect(created).not.toHaveProperty('askUserQuestion');
           const rows = await c.onceTasks();
@@ -474,7 +474,7 @@ suite(
             {
               id: created.automationId,
               name,
-              prompt: text,
+              prompt: call.arguments.prompt,
               conversation_mode: 'reuse',
               run_at: expect.any(String),
             },
@@ -522,14 +522,14 @@ suite(
       '请解释“1 分钟后提醒我喝水”。',
       '1 分钟后提醒我喝水，提醒名称是 MET223-on-1。只是示例，不要实际创建。',
     ])(
-      'retains an existing denial despite complete model arguments: %s',
+      'does not reinterpret source wording after a valid model once call: %s',
       async (text) => {
         const c = await chat(text);
         try {
-          await expect(createAutomation(c.call(1))).rejects.toMatchObject({
-            code: 'AUTOMATION_REQUEST_UNCLEAR',
-          });
-          expect(await c.onceTasks()).toHaveLength(0);
+          const call = c.call(1);
+          const created = read(await createAutomation(call));
+          expect(created.prompt).toBe(call.arguments.prompt);
+          expect(await c.onceTasks()).toHaveLength(1);
         } finally {
           await c.finish();
         }
@@ -537,7 +537,7 @@ suite(
     );
 
     it.each(['取消', '不创建', '否', '先不创建', '写周报'])(
-      'never promotes an arbitrary adopted choice into once authority: %s',
+      'does not add a once frequency-card gate to valid model parameters: %s',
       async (label) => {
         const c = await chat('稍后提醒我喝水，提醒名称是补水提醒。');
         try {
@@ -554,10 +554,11 @@ suite(
             },
             label,
           );
-          await expect(createAutomation(c.call(3))).rejects.toMatchObject({
-            code: 'AUTOMATION_REQUEST_UNCLEAR',
-          });
-          expect(await c.onceTasks()).toHaveLength(0);
+          const call = c.call(3);
+          expect(read(await createAutomation(call)).prompt).toBe(
+            call.arguments.prompt,
+          );
+          expect(await c.onceTasks()).toHaveLength(1);
         } finally {
           await c.finish();
         }
@@ -1084,32 +1085,22 @@ suite(
       }
     });
 
-    it('preserves once-only replay and grants a later once confirmation despite an earlier task in the same run', async () => {
+    it('keeps exact once-call replay distinct from different call IDs and ignores old frequency consumption', async () => {
       const c = await chat('1 分钟尖叫一次');
       try {
         await c.answer(frequencyCard, '1 分钟后提醒一次');
-        const firstCall = c.call(1);
+        const firstCall = c.call(1, '保存的第一项工作');
         const first = read(await createAutomation(firstCall));
         expect(read(await createAutomation(firstCall)).automationId).toBe(
           first.automationId,
         );
-        await expect(createAutomation(c.call(1))).rejects.toMatchObject({
-          code: 'AUTOMATION_REQUEST_UNCLEAR',
-        });
-        expect(await c.onceTasks()).toHaveLength(1);
-        await c.answer(frequencyCard, '2 分钟后提醒一次');
-        const secondCall = c.call(2);
-        const second = read(await createAutomation(secondCall));
-        expect(second.automationId).not.toBe(first.automationId);
-        expect(read(await createAutomation(secondCall)).automationId).toBe(
-          second.automationId,
+        const second = read(
+          await createAutomation(c.call(2, '保存的第二项工作')),
         );
-        await expect(createAutomation(c.call(2))).rejects.toMatchObject({
-          code: 'AUTOMATION_REQUEST_UNCLEAR',
-        });
+        expect(second.automationId).not.toBe(first.automationId);
         expect(await c.onceTasks()).toMatchObject([
-          { prompt: '1 分钟尖叫一次\n用户已确认的提醒频率：1 分钟后提醒一次' },
-          { prompt: '1 分钟尖叫一次\n用户已确认的提醒频率：2 分钟后提醒一次' },
+          { prompt: '保存的第一项工作' },
+          { prompt: '保存的第二项工作' },
         ]);
       } finally {
         await c.finish();
@@ -1117,7 +1108,7 @@ suite(
     });
 
     it.each(['once then recurring', 'recurring then once'])(
-      'shares consumed-answer protection across schedule kinds: %s',
+      'keeps recurring consumed-answer protection while once uses model parameters: %s',
       async (order) => {
         const c = await chat('1 分钟尖叫一次');
         try {
@@ -1130,18 +1121,12 @@ suite(
           } else {
             await c.answer(frequencyCard, '每隔 1 分钟提醒');
             await createAutomation(c.call(every(60)));
-            await expect(createAutomation(c.call(1))).rejects.toMatchObject({
-              code: 'AUTOMATION_REQUEST_UNCLEAR',
-            });
-            await c.answer(frequencyCard, '1 分钟后提醒一次');
             await createAutomation(c.call(1));
           }
           await requiresConfirmation(c, c.call(every(60)));
-          await expect(createAutomation(c.call(1))).rejects.toMatchObject({
-            code: 'AUTOMATION_REQUEST_UNCLEAR',
-          });
+          await createAutomation(c.call(1));
           expect(await c.tasks()).toHaveLength(1);
-          expect(await c.onceTasks()).toHaveLength(1);
+          expect(await c.onceTasks()).toHaveLength(2);
         } finally {
           await c.finish();
         }
@@ -1393,59 +1378,42 @@ suite(
       },
     );
 
-    it('serializes once-only calls through the tool-call ledger and keeps deletion from renewing authorization', async () => {
+    it('deduplicates the same once call but not separate calls, even after cancellation', async () => {
       const c = await chat('1 分钟尖叫一次');
       try {
         await c.answer(frequencyCard, '1 分钟后提醒一次');
-        const calls = [c.call(1), c.call(1)];
-        const results = await Promise.allSettled(calls.map(createAutomation));
-        expect(
-          results.filter((result) => result.status === 'fulfilled'),
-        ).toHaveLength(1);
-        expect(
-          results.filter((result) => result.status === 'rejected'),
-        ).toMatchObject([{ reason: { code: 'AUTOMATION_REQUEST_UNCLEAR' } }]);
-        const [saved] = await c.onceTasks();
-        expect(saved?.prompt).toBe(
-          '1 分钟尖叫一次\n用户已确认的提醒频率：1 分钟后提醒一次',
-        );
-        expect(
-          await f.db`select call_id from allrice_task_calls where run_id=${c.runId}`,
-        ).toHaveLength(2);
-        const winner =
-          calls[results.findIndex((result) => result.status === 'fulfilled')]!;
-        expect(read(await createAutomation(winner)).automationId).toBe(
-          saved!.id,
-        );
-        await f.db`update allrice_automations set deleted_at=clock_timestamp(),status='paused' where id=${saved!.id}`;
-        await expect(createAutomation(c.call(1))).rejects.toMatchObject({
-          code: 'AUTOMATION_REQUEST_UNCLEAR',
-        });
-        await requiresConfirmation(c, c.call(every(60)));
+        const call = c.call(1, '唯一调用的内容');
+        const results = await Promise.all([
+          createAutomation(call),
+          createAutomation(call),
+        ]);
+        const saved = read(results[0]);
+        expect(read(results[1]).automationId).toBe(saved.automationId);
         expect(await c.onceTasks()).toHaveLength(1);
-        expect(await c.tasks()).toHaveLength(0);
+        await cancelOnceTask(f.context, c.sessionId, saved.automationId!);
+        expect(read(await createAutomation(call))).toMatchObject({
+          automationId: saved.automationId,
+          status: 'canceled',
+        });
+        const separate = read(await createAutomation(c.call(1)));
+        expect(separate.automationId).not.toBe(saved.automationId);
+        expect(await c.onceTasks()).toHaveLength(2);
       } finally {
         await c.finish();
       }
     });
 
-    it('does not fall back to a recognized once request after declining or consuming a frequency answer', async () => {
+    it('leaves declined or consumed once wording to the model while preserving exact-call replay', async () => {
       const c = await chat('1分钟后提醒我喝水');
       try {
         await c.answer(frequencyCard, '先不创建');
-        await expect(createAutomation(c.call(1))).rejects.toMatchObject({
-          code: 'AUTOMATION_REQUEST_UNCLEAR',
-        });
-        await c.answer(frequencyCard, '1 分钟后提醒一次');
         const call = c.call(1);
         const saved = read(await createAutomation(call));
         expect(read(await createAutomation(call)).automationId).toBe(
           saved.automationId,
         );
-        await expect(createAutomation(c.call(1))).rejects.toMatchObject({
-          code: 'AUTOMATION_REQUEST_UNCLEAR',
-        });
-        expect(await c.onceTasks()).toHaveLength(1);
+        await createAutomation(c.call(1));
+        expect(await c.onceTasks()).toHaveLength(2);
       } finally {
         await c.finish();
       }
@@ -1505,12 +1473,15 @@ suite(
             (error: unknown) => ({ value: null, error }),
           );
           const rows = kind === 'once' ? await c.onceTasks() : await c.tasks();
-          expect.soft(rows).toHaveLength(choice === 'consumed' ? 1 : 0);
-          if (kind === 'once')
-            expect(result.error).toMatchObject({
-              code: 'AUTOMATION_REQUEST_UNCLEAR',
-            });
-          else
+          expect
+            .soft(rows)
+            .toHaveLength(
+              (choice === 'consumed' ? 1 : 0) + (kind === 'once' ? 1 : 0),
+            );
+          if (kind === 'once') {
+            expect(result.error).toBeNull();
+            expect(result.value?.automationId).toEqual(expect.any(String));
+          } else
             expect(result.value).toMatchObject({
               created: false,
               status: 'confirmation_required',

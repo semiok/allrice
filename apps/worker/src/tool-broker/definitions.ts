@@ -891,9 +891,9 @@ export function riceToolDefinitionsForCapabilities(
 /**
  * Stable DSH turn capability set. Tenant-authorized read-only tools are always
  * visible to the native Agent Loop. Exact-approval adapters are also visible
- * after frozen/environment admission. One-time scheduling separately verifies
- * the current human request in its database transaction; it must not depend on
- * route keywords. Other side-effect and secret-bearing tools require a route.
+ * after frozen/environment admission. One-time scheduling verifies current
+ * human provenance and execution authority in its database transaction; the
+ * model decides the intended task. Other side effects require a route.
  */
 export function riceToolDefinitionsForTurn(
   capabilities: SkillCapability[],

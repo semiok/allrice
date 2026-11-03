@@ -86,6 +86,7 @@ suite(
       import React,{StrictMode,useState} from 'react';import {createRoot} from 'react-dom/client';
       import {AutomationTaskList,AutomationTaskDetail,AutomationTaskCard} from './app/chatflow/automation-tasks';
       import {AutomationTrigger} from './app/chatflow/automation-trigger';
+      import {AutomationRunTaskCards} from './app/chatflow/automation-run-task-cards';
       function Fixture(){const [selected,setSelected]=useState(null),[opened,setOpened]=useState(''),[hide,setHide]=useState(false),[mode,setMode]=useState('list');
         const [identity,setIdentity]=useState({organizationId:'${ORG}',workspaceId:'${WORKSPACE}',viewerId:'${VIEWER}',taskId:null});
         const scope=[identity.organizationId,identity.workspaceId,identity.viewerId].join('/'),headers={'x-fixture-organization':identity.organizationId,'x-fixture-viewer':identity.viewerId,'x-test-secret':'never-persist'};
@@ -94,8 +95,10 @@ suite(
         <button onClick={()=>setIdentity(v=>({...v,workspaceId:'${OTHER_WORKSPACE}'}))}>切换工作区</button>
         <button onClick={()=>setIdentity(v=>({...v,viewerId:'${OTHER_VIEWER}'}))}>切换用户</button>
         <button onClick={()=>setIdentity(v=>({...v,taskId:'${OTHER_TASK}'}))}>切换任务</button>
+        <button onClick={()=>setMode('receipt')}>创建回执</button>
         <div style={{display:'flex',height:'calc(100vh - 50px)',minWidth:0}}>
           {mode==='list'&&<div className="list"><AutomationTaskList workspaceId={identity.workspaceId} scope={scope} headers={headers} employees={[{id:'${EMPLOYEE}',name:'Rice'}]} selectedId={selected?.id} onSelect={setSelected} onNew={()=>setMode('new')}/></div>}
+          {mode==='receipt'&&<AutomationRunTaskCards taskIds={['${TASK}']} workspaceId={identity.workspaceId} headers={headers} onOpen={id=>setSelected({id})}/>}
           {mode==='new'&&<p>说明时间和工作内容，创建新的任务</p>}
           {selected&&!hide&&<aside className="detail"><AutomationTaskDetail taskId={identity.taskId??selected.id} active={!hide} workspaceId={identity.workspaceId} scope={scope} headers={headers} onOpenSession={setOpened}/></aside>}
         </div><output aria-label="原会话">{opened}</output>
@@ -386,7 +389,19 @@ suite(
           return;
         }
         if (request.method() === 'PATCH') {
-          const body = request.postDataJSON() as ChangeRecurringTaskInput;
+          const rawBody = request.postDataJSON();
+          if (task.definition.kind === 'once') {
+            if (rawBody.action !== 'cancel')
+              throw new Error('fixture once action');
+            task.definition.task.status = 'canceled';
+            task.definition.task.canCancel = false;
+            task.canStop = false;
+            task.nextRunAt = null;
+            return route.fulfill({
+              json: { task: structuredClone(task.definition.task) },
+            });
+          }
+          const body = rawBody as ChangeRecurringTaskInput;
           if (task.definition.kind === 'legacy') {
             if (!['pause', 'delete'].includes(body.action))
               return route.fulfill({
@@ -568,6 +583,75 @@ suite(
         close: () => page.close(),
       };
     }
+    it.each([1440, 390])(
+      'shows the full authenticated once creation card and reuses pending cancellation at %ipx',
+      async (width) => {
+        const f = await fixture();
+        try {
+          await f.page.setViewportSize({ width, height: 900 });
+          const prompt = `${'完整保存内容'.repeat(40)}\n最后一行 <literal>`;
+          f.task.prompt = prompt;
+          f.task.definition = {
+            kind: 'once',
+            task: {
+              id: TASK,
+              clientRequestId: TASK,
+              name: f.task.name,
+              prompt,
+              sessionId: CHAT,
+              runAt: '2099-01-01T01:02:03.000Z',
+              timezone: 'Asia/Shanghai',
+              status: 'pending',
+              runId: null,
+              errorMessage: null,
+              createdAt: f.task.createdAt,
+              canCancel: true,
+            },
+          };
+          await f.page
+            .getByRole('button', { name: '创建回执', exact: true })
+            .click();
+          const card = f.page.locator('[data-tool="schedule_create"]');
+          await card
+            .getByText('任务内容：' + prompt, { exact: true })
+            .waitFor();
+          expect(await card.textContent()).toContain('完整保存内容'.repeat(40));
+          expect(await card.textContent()).toContain('最后一行 <literal>');
+          expect(await card.textContent()).toContain('09:02:03');
+          expect(await card.textContent()).toContain('Asia/Shanghai');
+          expect(
+            await card.evaluate((element) => {
+              const content = element.lastElementChild;
+              if (!(content instanceof HTMLElement)) return false;
+              const style = getComputedStyle(content);
+              return (
+                style.whiteSpace === 'pre-wrap' &&
+                content.scrollHeight <= content.clientHeight + 1 &&
+                element.getBoundingClientRect().bottom >=
+                  content.getBoundingClientRect().bottom
+              );
+            }),
+          ).toBe(true);
+          await card.getByRole('button', { name: '打开', exact: true }).click();
+          await f.page
+            .getByRole('button', { name: '取消任务', exact: true })
+            .click();
+          await f.page
+            .getByRole('button', { name: '确认取消', exact: true })
+            .click();
+          await f.page.getByText('任务已取消。', { exact: true }).waitFor();
+          expect(f.task.definition.task.status).toBe('canceled');
+          expect(
+            f.requests.filter((request) => request.method === 'PATCH').at(-1)
+              ?.body,
+          ).toEqual({ action: 'cancel' });
+          expect(f.errors).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      },
+    );
+
     it.each([1440, 390])(
       'shows legacy history read-only, allows pause/delete, and never resumes or starts work at %ipx',
       async (width) => {
