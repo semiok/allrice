@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "version": "1.0.0",
+  "sourceRef": "https://github.com/semiok/allrice/tree/main/examples/workflow-skills/weekly-brief",
+  "license": "Apache-2.0",
+  "reviewedBy": "Synthetic example; replace with your own review note before publishing",
+  "resources": [
+    { "path": "references/output-contract.md", "mediaType": "text/markdown" },
+    { "path": "assets/example-input.json", "mediaType": "application/json" },
+    { "path": "scripts/check-example.mjs", "mediaType": "text/javascript" }
+  ],
+  "dependencies": [{ "kind": "tool", "name": "workspace.skill.read" }]
+}

@@ -1,0 +1,152 @@
+# 本人开发 Workflow skill
+
+D0 把本地原生 skill 目录转换成 C1 可保存的 procedure、SkillBundle 和资源来源字段。
+使用自己的编辑器、Git 和命令行即可。该命令离线运行，不连接数据库、模型或网络，
+不登录、不发布、不执行包里的脚本，也不安装包声明的依赖。
+样例不加入平台 skill catalog；它不是已经上线的业务 Workflow。
+
+## 写一个包
+
+复制 [weekly-brief 样例](../../examples/workflow-skills/weekly-brief)，修改自己的内容：
+
+```text
+weekly-brief/
+  SKILL.md
+  bundle.json
+  sources.json                  # 可选：受控资料的准确引用
+  references/output-contract.md
+  assets/example-input.json
+  scripts/check-example.mjs      # 仅作为文件资源，不执行
+```
+
+`SKILL.md` 是原生 YAML frontmatter 加 Markdown 正文。本版仅支持 `name`、`description`。
+名称与正文由当前 rc.2 的公开 `FileSystemSkillProvider.list/get` 解析。
+原生支持而 C1 暂不能保存的 `whenToUse`、`metadata`、`disable-model-invocation`、
+`user-invocable` 等字段会明确报错，未知字段也不静默丢弃。
+支持 YAML 引号、多行 description 和 CRLF；正文采用原生 get 返回的内容，随后不另改空白。
+
+`bundle.json` 复用现有 SkillBundle 元数据：`schemaVersion: 1`、三段版本号、
+来源 URL `sourceRef`、`license`、`reviewedBy`、`dependencies` 和 `resources`。
+资源显式列出 `path` 和 `mediaType`；命令只读取列出的资源，目录里其他文件不打包。
+不要把凭证或用户私有数据列入包。资源的 `byteLength/checksum`、顶层 `contentChecksum/checksum`
+可省略，由工具生成；提供时必须与本次输入一致，否则失败，不自动修掉错误声明。
+这是一份作者输入文件，最终输出的 `procedure.skillPackage.bundle` 才是含 Base64 字节的完整 C1 bundle。
+
+资源路径与大小沿用 C1：`references/`、`assets/`、`scripts/` 下的受限相对路径，
+最多 32 项，每项 128 KiB，总计 512 KiB。大小写重复路径、目录穿越、符号链接与特殊文件拒绝。
+正文最多 8,000 字符。不要在打包过程中改动输入目录。
+脚本与其他资源一样只读成字节；声明 Node 依赖也不会执行它或安装 npm/pip。
+
+工具依赖用当前 manifest 的 canonical name，例如 `workspace.skill.read`；报告列出对应 wire name、
+capability 和 risk。验证只证明工具在本仓库存在，不证明员工获权、运行时已接通或业务接口可用。
+旧 `workspace.brand_content.step` 仍依赖旧引擎，不能用作新 Workflow 普通调用；新写入合同归 C3。
+第一版应以文字、资源和已授权业务工具为基础。C1 包脚本直接执行未实现，不绕过这一边界。
+
+## 打包与检查
+
+在独立 checkout/worktree 中使用仓库固定的 Node 22.23.2、pnpm 10.33.3：
+
+```bash
+pnpm install --frozen-lockfile
+pnpm --filter @allrice/contracts build
+node --import tsx scripts/workflow-skill-pack.mjs \
+  examples/workflow-skills/weekly-brief \
+  --scene-id 10000000-0000-4000-8000-000000000001 \
+  --scene-name '我的周报草稿' \
+  --title '周报整理方法' > /tmp/weekly-brief.c1.json
+```
+
+这里的 UUID 仅是合成示例。实际目标 scene ID、显示名、procedure 标题由本人明确选择；
+工具不猜测组织、员工、权限或发布目标，不生成内容操作 ID。
+输出文件不要指向输入包里的文件；失败时检查退出码和 stderr，stdout 不输出半成品 JSON。
+仅需说明时运行 `node --import tsx scripts/workflow-skill-pack.mjs --help`。
+
+输出包含：
+
+- `scene`：目标 id、显示名、description 对应的 appliesWhen、`allrice-scene-<UUID>` 名称。
+- `procedure`：现有 `EmployeeContentTextSchema` 的 packaged procedure，可作为后续 textEdit 的内容字段。
+- `references`：需要加入目标 scene/内容集合并由服务端重新授权的准确来源引用。
+- `report`：作者名、实际 `/allrice-scene-<UUID>`、源文件/正文/完整包 checksum、依赖与脚本清单；`published` 和 `scriptsExecuted` 均为 false。
+
+相同输入、参数和工具版本产生相同 JSON；没有时间戳、随机 ID、绝对路径或临时目录。
+正文 checksum 不等于源 SKILL.md checksum；bundle.version 是作者元数据，不是服务端 revision。
+精确发布版本以后由 C1 publication/source revision 和 checksum 标识。
+
+受控资料必须保留来源。可选 `sources.json` 示例：
+
+```json
+{
+  "references": [
+    {
+      "sourceKind": "knowledge",
+      "contentId": "20000000-0000-4000-8000-000000000001",
+      "revisionId": "20000000-0000-4000-8000-000000000002",
+      "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ],
+  "resourceSources": [
+    {
+      "path": "references/output-contract.md",
+      "references": [
+        {
+          "sourceKind": "knowledge",
+          "contentId": "20000000-0000-4000-8000-000000000001",
+          "revisionId": "20000000-0000-4000-8000-000000000002",
+          "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    }
+  ]
+}
+```
+
+这些合成 ID/hash 不可用于真实发布。用现有受权读取回执的准确引用；每个 resourceSources 引用
+必须同时出现在 references 中，并指向已打包资源。完全自写资源可不提供 sources.json。
+离线工具无法判断文件是否来自受控资料，不能替人补造来源、核实身份或授权；
+`sourceRef` URL、`reviewedBy` 和 checksum 都不授予权限。
+
+## 排错和隔离试跑
+
+先重复运行离线命令。错误会指出 `SKILL.md`、`bundle.json` 的字段或具体资源路径；
+原生拒绝解析时另有 Provider warning。可用以下失败示例检查边界：
+
+| 改动                                   | 预期                        |
+| -------------------------------------- | --------------------------- |
+| frontmatter 加 `user-invocable: false` | 不支持的 C1 字段，拒绝      |
+| 资源 path 写 `../secret`               | 路径校验失败                |
+| 为资源填错误 checksum                  | 指明该资源 checksum 不匹配  |
+| 声明不存在的工具依赖                   | `skill_bundle_unknown_tool` |
+| 受控资源引用未列入 references          | 来源声明失败                |
+| scripts 中放有副作用代码               | 仅编码字节，不执行          |
+
+确定性回归（无需模型或数据库）：
+
+```bash
+pnpm exec vitest run --maxWorkers=2 scripts/workflow-skill-pack.test.mjs \
+  packages/database/src/skill-bundles.test.ts \
+  packages/database/src/employees/employee-scene-skill-package.test.ts
+```
+
+真正试跑使用 [独立开发环境说明](README.md) 配置自己的 PostgreSQL、storage/native journal、
+账号和模型凭据，使用合成数据。不要复制共享 Dev 的 `.env`、数据或凭据。
+内部 qa-instance 会借用共享测试订阅，不把它当作完全独立的本人环境。
+重测试遵守仓库 m5-test 规则；本 D0 不运行真实模型。
+
+本版只证明“文件 → 原生解析 → C1 合同”链路，报告不是模型实际加载记录。
+C2 将接 Provider、普通加载、`/name` 和准确资源；A5 将展示实际加载版本与错误。
+在这些功能就绪前，不把离线打包成功当作会话内验收通过。
+
+## 发布、更新与回退边界
+
+D0 输出不是完整 HTTP mutation，也不会自动保存或发布。现 C1 底层内容接口见
+[员工内容说明](../features/employee-content.md)：`save_draft → validate → activate`。
+完整请求还需要当前登录身份、目标、集合 CAS、稳定 requestId、content/revision ID 和完整 manifest；
+更新须保留未编辑条目并准确替换旧引用，不能盲目覆盖。由 C4 的本人文件提交入口连接这些字段，
+该入口尚未实现。本版不提供绕过它的 SQL、cookie 导出或自动发布脚本。
+
+修改文件后重新打包，建议升 bundle.version，并核对 diff/checksum。服务端的候选与发布仍由本人确认。
+未来正常发布后的回退使用同集合 `restore_draft → validate → activate` 生成新候选/新发布，
+不是删除新版本，也不默认 invalidatePrevious。账号和当前权限仍在服务端核验。
+旧 Workflow 的历史删除属于 A6，不由此工具处理。
+
+D0 本身没有数据库或部署状态；出现问题可单独 revert 本功能 PR，删除离线产物即可。
