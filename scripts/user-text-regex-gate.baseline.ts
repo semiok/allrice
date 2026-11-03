@@ -471,15 +471,6 @@ export const baseline: readonly BaselineEntry[] = [
     ],
   },
   {
-    file: 'packages/database/src/conversation/conversation-checkpoint.ts',
-    owner: 'buildExtractiveContextSummary',
-    kind: 'decide',
-    use: '上下文压缩时按“目标/决定/偏好”等关键词挑出要保留的消息',
-    sites: [
-      String.raw`test(/目标|决定|决策|文件|结果|待办|偏好|风险|约束|goal|decision|file|result|todo|preference|risk|constraint/i)`,
-    ],
-  },
-  {
     file: 'packages/database/src/execution/tool-broker.ts',
     owner: 'searchToolBrokerMemories',
     kind: 'decide',
