@@ -219,7 +219,7 @@ suite('MET-214 native subagent directory design', () => {
           expect(await typography(name)).toMatchObject({
             size: '14px',
             line: '20px',
-            weight: '500',
+            weight: '400',
           });
           expect(await typography(status)).toMatchObject({
             size: '12px',
