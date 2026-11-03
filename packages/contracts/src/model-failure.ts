@@ -62,7 +62,7 @@ export function classifyModelFailure(
     return 'auth';
   // r1-exempt(external-text): 明确上游错误回执的展示分类，不解释用户指令，不改变执行和重试
   if (
-    /\b(?:quota|credits?|balance) (?:is |has been )?(?:exhausted|depleted|exceeded)\b|\binsufficient[ _-](?:quota|credits?|balance)\b|\busage[_ -]limit[_ -](?:reached|exceeded)\b|\bhit (?:your |the )?(?:ChatGPT )?usage limit\b/i.test(
+    /\b(?:quota|credits?|balance) (?:is |has been )?(?:exhausted|depleted|exceeded)\b|\binsufficient[ _-](?:quota|credits?|balance)\b|\busage[_ -]limit[_ -](?:reached|exceeded)\b|\bhit (?:your |the )?(?:ChatGPT )?usage limit\b|\byou(?: have)? exceeded (?:your )?(?:current )?quota\b/i.test(
       message,
     )
   )
@@ -123,7 +123,9 @@ export function redactModelFailure(message: unknown): string {
     if (
       typeof message !== 'string' ||
       !message.trim() ||
-      /[\p{Cf}\p{Cs}\u0000-\u0008\u000b-\u001f\u007f]/u.test(message)
+      /[\p{Cc}\p{Cf}\p{Cs}]/u.test(
+        message.replaceAll('\r', '').replaceAll('\n', '').replaceAll('\t', ''),
+      )
     )
       return hiddenModelFailure;
     let safe = message;

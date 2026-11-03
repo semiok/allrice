@@ -141,8 +141,8 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
       init,
     );
   const route = (f: Fixture) => ({ params: Promise.resolve({ id: f.run }) });
-  async function publicBody(response: Response) {
-    expect(response.status).toBe(200);
+  async function publicBody(response: Response, status = 200) {
+    expect(response.status).toBe(status);
     const body = await response.text();
     expect(body).not.toContain(raw);
     expect(body).not.toContain(unknownRaw);
@@ -183,7 +183,7 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
       });
     }
   }
-  it('POST idempotent replay and cancel return the same safe terminal snapshot without changing state', async () => {
+  it('POST replay returns a safe snapshot and terminal cancellation keeps its conflict contract', async () => {
     for (const f of [legacy, unknown, unproven]) {
       auth.context = f.owner;
       const replay = await publicBody(
@@ -216,8 +216,13 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
           }),
           route(f),
         ),
+        409,
       );
-      expect(JSON.parse(cancelled).run.status).toBe('failed');
+      expect(JSON.parse(cancelled).error.code).toBe('CONFLICT');
+      const unchanged = JSON.parse(
+        await publicBody(await runGet(request(f), route(f))),
+      );
+      expect(unchanged.run.status).toBe('failed');
     }
   });
   it('message reread retains the complete reply and only exposes the server-derived category', async () => {

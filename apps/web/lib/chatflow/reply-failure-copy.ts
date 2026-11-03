@@ -148,10 +148,17 @@ export function presentReplyFailure(input: {
     input.text === savedGenericFailure ||
     // r1-exempt(display): 失败消息里存的是服务端固定文案或保留下来的模型回复，查表只决定显示哪句失败说明
     savedCodes.has(input.text);
+  // PI_AI_ERROR and TURN_FAILED share historical stored copy; the explicit
+  // code keeps a platform progress failure distinct from a model failure.
+  const explicit =
+    input.code === 'DSH_PI_AI_ERROR' || input.code === 'DSH_TURN_FAILED'
+      ? input.code
+      : null;
   const kind =
     (input.nativeText &&
       // r1-exempt(own-text): 把 contracts 给出的固定失败文案换回错误码，不是用户原话
       savedCodes.get(input.nativeText)) ||
+    explicit ||
     // r1-exempt(display): 失败消息里存的是服务端固定文案或保留下来的模型回复，换回错误码只决定显示哪句失败说明
     savedCodes.get(input.text) ||
     input.code ||

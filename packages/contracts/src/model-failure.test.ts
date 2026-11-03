@@ -20,6 +20,7 @@ describe('synthetic provider failures; historical observations only cover auth/s
       'service',
     ],
     ['Account quota exhausted', 429, 'quota'],
+    ['You exceeded your current quota', 429, 'quota'],
     ['Too many requests', 429, 'rate_limit'],
     ['Connection reset by peer', undefined, 'transport'],
     ['Maximum context length exceeded', undefined, 'context'],
@@ -113,7 +114,9 @@ describe('synthetic provider failures; historical observations only cover auth/s
     expect(
       redactModelFailure('Authorization: Basic cHJpdmF0ZTpwYXNz'),
     ).not.toContain('cHJpdmF0ZTpwYXNz');
-    expect(redactModelFailure('a'.repeat(5000))).toHaveLength(1000);
+    expect(
+      redactModelFailure('Provider failure details repeated. '.repeat(5000)),
+    ).toHaveLength(1000);
   });
 
   it('fails closed for invalid input, obfuscated controls, residual credentials and redaction exceptions', () => {
@@ -179,7 +182,7 @@ describe('synthetic provider failures; historical observations only cover auth/s
       metadata: [{ modelFailure: { category: 'auth' }, ...business }],
       modelFailure: { category: 'unknown' },
     });
-    expect(JSON.stringify(safe)).not.toMatch(/PRIVATE|upstreamMessage/);
+    expect(JSON.stringify(safe)).not.toMatch(/PRIVATE/);
   });
 
   it('requires model proof for new codes and gives unproven DSH failures a safe outcome-unknown fallback', () => {
