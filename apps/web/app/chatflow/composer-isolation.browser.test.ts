@@ -1986,6 +1986,104 @@ suite(
       },
       15_000,
     );
+    it.each([1440, 390])(
+      'uses the DSH default composer height, grows for my draft and shrinks when cleared at %ipx',
+      async (width) => {
+        const f = await fixture({ width });
+        try {
+          const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+          const card = input.locator('..');
+          const touch = width < 760;
+          expect(
+            await f.page.evaluate(
+              () => matchMedia('(pointer: coarse)').matches,
+            ),
+          ).toBe(touch);
+          const directory = resolve(root, '.local/met214-composer-height');
+          await mkdir(directory, { recursive: true });
+          const observed: Record<string, number> = {};
+          for (const hero of [false, true]) {
+            if (hero) await startNewWork(f.page);
+            const mode = hero ? 'new-work' : 'continue';
+            const defaultHeight = (hero ? 114 : 98) + (touch ? 10 : 0);
+            const height = () =>
+              card.evaluate((node) => node.getBoundingClientRect().height);
+            await expect.poll(height).toBe(defaultHeight);
+            expect(await input.getAttribute('placeholder')).toBe(
+              hero ? '告诉 Rice 你想完成什么工作' : '继续和 Rice 工作…',
+            );
+            expect(
+              await f.page.getByRole('button', { name: /^电脑/ }).isVisible(),
+            ).toBe(true);
+            await input.fill('继续核对资料');
+            await expect.poll(height).toBe(defaultHeight);
+            await input.fill('第一行\n第二行\n第三行');
+            await expect.poll(height).toBeGreaterThan(defaultHeight);
+            observed[`${mode}-three-lines`] = await height();
+            await input.fill(
+              Array.from(
+                { length: 40 },
+                (_, i) => `第${i + 1}行待核对资料`,
+              ).join('\n'),
+            );
+            await expect
+              .poll(() =>
+                input.evaluate((node) => node.getBoundingClientRect().height),
+              )
+              .toBe(336);
+            expect(
+              await input.evaluate((node) => getComputedStyle(node).overflowY),
+            ).toBe('auto');
+            expect(
+              await input.evaluate(
+                (node) => node.scrollHeight > node.clientHeight,
+              ),
+            ).toBe(true);
+            await input.fill('');
+            await expect.poll(height).toBe(defaultHeight);
+            expect(
+              await input.evaluate((node) => getComputedStyle(node).overflowY),
+            ).toBe('hidden');
+            observed[mode] = await height();
+            const add = f.page.getByRole('button', {
+              name: '添加文件',
+              exact: true,
+            });
+            const send = f.page.getByRole('button', {
+              name: '发送',
+              exact: true,
+            });
+            for (const [control, size] of [
+              [add, touch ? 44 : 28],
+              [send, touch ? 44 : 34],
+            ] as const) {
+              const box = (await control.boundingBox())!;
+              expect(box.width).toBe(size);
+              expect(box.height).toBe(size);
+            }
+            if (touch) await add.tap();
+            else await add.click();
+            await f.page
+              .getByRole('menu')
+              .getByText('添加到本轮', { exact: true })
+              .waitFor();
+            await f.page.keyboard.press('Escape');
+            await card
+              .locator('..')
+              .screenshot({ path: resolve(directory, `${mode}-${width}.png`) });
+          }
+          await writeFile(
+            resolve(directory, `heights-${width}.json`),
+            JSON.stringify(observed, null, 2),
+          );
+          expect(f.pending).toEqual([]);
+          expect(f.errors).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      },
+      20_000,
+    );
     it.each([
       { start: 'first message', newWork: true, mouse: true, emptyA: false },
       {
