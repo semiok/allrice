@@ -340,9 +340,13 @@ export class DshHarnessAdapter implements HarnessAdapter {
     let turnId: string | null = null;
     let contentAuthorizationFailure: HandlerError | undefined;
     const checkContent = async (phase: DshContentCheckPhase = 'other') => {
+      // Native wait may settle an interrupted tree without rejecting. Keep the
+      // local admission denial authoritative, including callers without a guard.
+      if (contentAuthorizationFailure) throw contentAuthorizationFailure;
       if (!input.contentGuard) return;
       try {
         await timing.checkContent(phase, () => input.contentGuard!.check());
+        if (contentAuthorizationFailure) throw contentAuthorizationFailure;
       } catch (error) {
         contentAuthorizationFailure ??= contentGuardFailure(error);
         throw contentAuthorizationFailure;
