@@ -71,6 +71,13 @@ describe('synthetic provider failures; historical observations only cover auth/s
     );
   });
 
+  it.each([
+    'Token usage information is unavailable',
+    'Model output token limit exceeded',
+  ])('preserves ordinary token nouns: %s', (text) => {
+    expect(redactModelFailure(text)).toBe(text);
+  });
+
   it('removes sensitive URL, credential, mail, path and identifier forms', () => {
     const secrets = [
       'https://private.test/path?q=secret',

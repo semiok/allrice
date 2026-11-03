@@ -100,10 +100,15 @@ export function classifyModelFailure(
   return 'unknown';
 }
 
-// Use the same field grammar before, during and after replacement. Whitespace
-// may cross lines; losing that context could expose an unlabelled continuation.
-const credentialLabel = String.raw`(?:authorization|api[\s_-]*key|(?:access|refresh)[\s_-]*token|password|secret|cookie|token)`;
-const credentialPrefix = String.raw`\b(?:${credentialLabel}["']?\s*[:=]|(?:Bearer|Basic)\s+)`;
+// A credential signal is broader than a reliably bounded assignment. Natural
+// or folded labels without a value boundary must fail closed before replacing.
+// Generic "token" nouns stay readable; explicit token assignments are filtered.
+const credentialLabel = String.raw`(?:authorization|api[\s_-]*key|(?:access|refresh)[\s_-]*token|password|secret|cookie)`;
+const credentialScheme = String.raw`(?:Bearer|Basic)`;
+const credentialSignal = String.raw`\b(?:${credentialLabel}|${credentialScheme})\b`;
+const credentialSignals = new RegExp(credentialSignal, 'gi');
+const credentialPrefix = String.raw`\b(?:(?:${credentialLabel}|token)["']?\s*[:=]|${credentialScheme}\s+)`;
+const credentialPrefixAtStart = new RegExp(`^${credentialPrefix}`, 'i');
 const credentialForms = new RegExp(
   String.raw`${credentialPrefix}[^\r\n]*(?:\r\n?|\n)?`,
   'gi',
@@ -125,7 +130,7 @@ const sensitiveForms = [
   /\b[\w-]*id["']?\s*[:=][^\r\n]*/gi,
 ];
 const residualSensitive = new RegExp(
-  String.raw`${credentialPrefix}|\b[\w-]*id["']?\s*[:=]|:\/\/|\bsk-|[\w.+-]+@[\w.-]+`,
+  String.raw`${credentialSignal}|${credentialPrefix}|\b[\w-]*id["']?\s*[:=]|:\/\/|\bsk-|[\w.+-]+@[\w.-]+`,
   'i',
 );
 
@@ -141,6 +146,11 @@ export function redactModelFailure(message: unknown): string {
       )
     )
       return hiddenModelFailure;
+    credentialSignals.lastIndex = 0;
+    for (const signal of message.matchAll(credentialSignals)) {
+      if (!credentialPrefixAtStart.test(message.slice(signal.index)))
+        return hiddenModelFailure;
+    }
     credentialForms.lastIndex = 0;
     for (const [field] of message.matchAll(credentialForms)) {
       if (/[\r\n\u2028\u2029]/.test(field)) return hiddenModelFailure;
