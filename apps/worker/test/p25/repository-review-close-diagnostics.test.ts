@@ -1,0 +1,190 @@
+import { describe, expect, it, vi } from 'vitest';
+import { DshRuntimeCloseError } from '../../src/harness/dsh-protocol-client.js';
+import { closeReviewRuntime } from './repository-review-close-diagnostics.fixture.js';
+
+describe('repository-review CI close diagnostics', () => {
+  it('logs nested close errors and safe receipts, then rethrows the same failure before fixture cleanup', async () => {
+    const secrets = [
+      'sk-synthetic-secret',
+      '真人正文不要写进诊断',
+      '/Users/private/synthetic-path',
+      'https://private.invalid/path?token=secret',
+      'synthetic stderr content',
+    ];
+    const safeEvidence = {
+      process: {
+        state: 'exited' as const,
+        stdioClosed: true,
+        exitCode: 0,
+        signal: null,
+      },
+      shutdownAcknowledged: true,
+      wrapperCleanupConfirmed: false,
+      emptyTransportClosed: false,
+      terminationAttempted: null,
+    };
+    const evidence = { ...safeEvidence, secrets };
+    const bodyError = new Error('DSH_CLOSE_OWNER_CONFLICT', {
+      cause: new Error(secrets.join(' ')),
+    });
+    const innerError = Object.assign(
+      new Error('DSH_CLOSE_EVIDENCE_WRITE_UNCONFIRMED'),
+      { code: '40P01' },
+    );
+    const cycle = Object.assign(new Error(secrets.join(' ')), {
+      code: 'EPIPE',
+    });
+    cycle.cause = cycle;
+    const cleanupError = new AggregateError(
+      [
+        new DshRuntimeCloseError(evidence),
+        new AggregateError(
+          [innerError],
+          'DSH runtime close observation remains unconfirmed',
+          { cause: cycle },
+        ),
+      ],
+      'DSH runtime closure remains unconfirmed',
+    );
+    const before = structuredClone(evidence);
+    const events: string[] = [];
+    const adapter = {
+      close: vi.fn(async () => {
+        events.push('adapter.close');
+        throw cleanupError;
+      }),
+      runtimeClosureInventory: () => {
+        events.push('inventory');
+        return [
+          {
+            state: 'unconfirmed',
+            processState: 'exited',
+            stdioClosed: true,
+            exitCode: 0,
+            signal: null,
+            shutdownAcknowledged: true,
+            wrapperCleanupConfirmed: false,
+            terminationAttempted: null,
+            id: secrets[2],
+            lease_token: secrets[0],
+            secrets,
+          },
+        ];
+      },
+    };
+    const clients = [
+      {
+        closureEvidence: () => {
+          events.push('closureEvidence');
+          return evidence;
+        },
+      },
+    ];
+    const log = vi.spyOn(console, 'info').mockImplementation(() => {
+      events.push('log');
+    });
+    try {
+      await expect(
+        (async () => {
+          try {
+            await closeReviewRuntime({ adapter, clients, bodyError });
+          } finally {
+            events.push('fixture.cleanup');
+          }
+        })(),
+      ).rejects.toBe(cleanupError);
+      expect(adapter.close).toHaveBeenCalledTimes(1);
+      expect(events).toEqual([
+        'adapter.close',
+        'closureEvidence',
+        'inventory',
+        'log',
+        'fixture.cleanup',
+      ]);
+      expect(log).toHaveBeenCalledTimes(1);
+      const [prefix, serialized] = log.mock.calls[0]!;
+      expect(prefix).toBe('[repository-review-close]');
+      const output = JSON.parse(serialized);
+      expect(output.bodyError.message).toBe('DSH_CLOSE_OWNER_CONFLICT');
+      expect(output.cleanupError.message).toBe(cleanupError.message);
+      expect(output.cleanupError.errors[0]).toMatchObject({
+        code: 'DSH_RUNTIME_CLOSE_UNCONFIRMED',
+        evidence: safeEvidence,
+      });
+      expect(output.cleanupError.errors[1].errors[0].message).toBe(
+        innerError.message,
+      );
+      expect(output.cleanupError.errors[1].errors[0].code).toBe('40P01');
+      expect(output.cleanupError.errors[1].cause.code).toBe('EPIPE');
+      expect(output.cleanupError.errors[1].cause.cause).toEqual({
+        omitted: 'cycle',
+      });
+      expect(output.clients).toEqual([safeEvidence]);
+      expect(output.inventory).toEqual([
+        { state: 'unconfirmed', ...safeEvidence, emptyTransportClosed: null },
+      ]);
+      for (const secret of secrets) expect(serialized).not.toContain(secret);
+      expect(serialized).not.toContain('stack');
+      expect(evidence).toEqual(before);
+      expect(cleanupError.errors[1].errors[0]).toBe(innerError);
+      expect(bodyError.cause).toBeInstanceOf(Error);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('retains the original body failure when runtime cleanup succeeds', async () => {
+    const bodyError = new Error('DSH_CLOSE_OWNER_CONFLICT');
+    const adapter = {
+      close: vi.fn(async () => {}),
+      runtimeClosureInventory: () => [],
+    };
+    const log = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      await expect(
+        Promise.reject(bodyError).finally(() =>
+          closeReviewRuntime({ adapter, clients: [], bodyError }),
+        ),
+      ).rejects.toBe(bodyError);
+      expect(adapter.close).toHaveBeenCalledTimes(1);
+      const output = JSON.parse(log.mock.calls[0]![1]);
+      expect(output.bodyError.message).toBe(bodyError.message);
+      expect(output.cleanupError).toBeNull();
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('bounds deep and wide errors at the same logging exit', async () => {
+    let failure: Error = new Error('DSH_CLOSE_EVIDENCE_CONFLICT');
+    for (let index = 0; index < 100; index++)
+      failure = new AggregateError(
+        Array(20).fill(failure),
+        'untrusted content',
+        {
+          cause: failure,
+        },
+      );
+    const log = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      await expect(
+        closeReviewRuntime({
+          adapter: {
+            close: async () => {
+              throw failure;
+            },
+            runtimeClosureInventory: () => [],
+          },
+          clients: [],
+        }),
+      ).rejects.toBe(failure);
+      const serialized = log.mock.calls[0]![1] as string;
+      expect(serialized).toContain('"omitted":"limit"');
+      expect(serialized).toContain('"omittedErrors":12');
+      expect(serialized.length).toBeLessThan(10000);
+      expect(serialized).not.toContain('untrusted content');
+    } finally {
+      log.mockRestore();
+    }
+  });
+});

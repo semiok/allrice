@@ -2,6 +2,10 @@ import type { RepositoryReviewArtifactRef } from '../../../../packages/database/
 import { createReadPathProbe } from '../../../../packages/database/src/read-path-probe.fixture.ts';
 import { readRetiredExecutionHistory } from './retired-execution-history.fixture.ts';
 import {
+  closeReviewRuntime,
+  reviewCloseError as closeOrderingError,
+} from './repository-review-close-diagnostics.fixture.js';
+import {
   expectReadPathRowLocked,
   readPathSignal,
   scheduleReadPathQuery,
@@ -130,22 +134,6 @@ async function closeOrderingBarrier(promise: Promise<void>, label: string) {
   } finally {
     clearTimeout(timer);
   }
-}
-
-function closeOrderingError(error: unknown): unknown {
-  if (!(error instanceof Error)) return error;
-  return {
-    name: error.name,
-    message: error.message,
-    stack: error.stack,
-    code: Reflect.get(error, 'code'),
-    evidence: Reflect.get(error, 'evidence'),
-    cause: error.cause ? closeOrderingError(error.cause) : undefined,
-    errors:
-      error instanceof AggregateError
-        ? error.errors.map(closeOrderingError)
-        : undefined,
-  };
 }
 
 // Schedule real SQL on separate pooled connections, preserving SQL fragments.
@@ -539,6 +527,7 @@ suite(
       '真实入口 → Worker → DSH → PG，无助手：%s',
       async (mode) => {
         const closeOrdering = mode.startsWith('revoked close ordering:');
+        const diagnoseClose = mode === 'revoked' || closeOrdering;
         const heartbeatFirst = mode === 'revoked close ordering: heartbeat';
         const modelAdmissionFirst =
           mode === 'revoked close ordering: modelAdmission';
@@ -706,10 +695,15 @@ suite(
           : undefined;
         const actualSetHandler = DshProtocolClient.prototype.setRequestHandler;
         let interceptedTool = false;
-        const handlerObserver = closeOrdering
+        const handlerObserver = diagnoseClose
           ? vi
               .spyOn(DshProtocolClient.prototype, 'setRequestHandler')
               .mockImplementation(function (this: DshProtocolClient, handler) {
+                if (!closeOrdering) {
+                  if (handler) nativeClients.add(this);
+                  actualSetHandler.call(this, handler);
+                  return;
+                }
                 if (handler && !nativeClients.has(this)) {
                   nativeClients.add(this);
                   const child = Reflect.get(
@@ -837,6 +831,7 @@ suite(
           'ALLRICE_DSH_PLATFORM_HOME',
           join(f.storageRoot, 'synthetic-platform-home'),
         );
+        let bodyError: unknown;
         try {
           review = await s.create();
           const [stored] =
@@ -1055,15 +1050,50 @@ suite(
               },
             ]);
           }
+        } catch (error) {
+          bodyError = error;
+          throw error;
         } finally {
+          const closeLog =
+            mode === 'revoked' ? vi.spyOn(console, 'info') : undefined;
           try {
-            await adapter.close().catch((error) => {
+            await (
+              diagnoseClose
+                ? closeReviewRuntime({
+                    adapter,
+                    clients: nativeClients,
+                    bodyError,
+                  })
+                : adapter.close()
+            ).catch((error) => {
               if (closeOrdering)
                 mark('adapter_close_failed', {
                   error: closeOrderingError(error),
                 });
               throw error;
             });
+            // A diagnostic assertion must not replace a prior body failure.
+            if (closeLog && bodyError === undefined) {
+              const emitted = closeLog.mock.calls.find(
+                ([prefix]) => prefix === '[repository-review-close]',
+              );
+              expect(emitted).toBeDefined();
+              const output = JSON.parse(emitted![1]);
+              expect(output).toMatchObject({
+                bodyError: null,
+                cleanupError: null,
+                inventory: [],
+              });
+              expect(nativeClients.size).toBeGreaterThan(0);
+              expect(output.clients).toHaveLength(nativeClients.size);
+              for (const evidence of output.clients)
+                expect(evidence).toMatchObject({
+                  shutdownAcknowledged: true,
+                  wrapperCleanupConfirmed: true,
+                  terminationAttempted: null,
+                  process: { state: 'exited', stdioClosed: true, exitCode: 0 },
+                });
+            }
             if (closeOrdering)
               for (const native of nativeClients)
                 expect(native.closureEvidence()).toMatchObject({
@@ -1078,6 +1108,7 @@ suite(
                   },
                 });
           } finally {
+            closeLog?.mockRestore();
             if (closeOrdering && review) {
               for (const native of nativeClients)
                 mark('closure_evidence', {
