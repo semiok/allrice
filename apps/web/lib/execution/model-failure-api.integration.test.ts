@@ -44,6 +44,8 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
     '12345678-1234-4123-8123-123456789abc',
     'request_id=private',
   ];
+  const json = (value: unknown) =>
+    db.db.json(JSON.parse(JSON.stringify(value)));
   const raw = 'Your authentication token has expired';
   const unknownRaw = 'Unfamiliar synthetic provider error';
   const secret = 'sk-synthetic-private';
@@ -78,7 +80,7 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
         },
       })!;
       await db.db`insert into allrice_run_events(organization_id,workspace_id,run_id,sequence,event_type,payload)
-        values(${f.org},${f.workspace},${f.run},1,'harness.native',${db.db.json({ source: 'dsh', sourceEventId: projected.sourceEventId, sourceEventType: projected.sourceEventType, sourceOccurredAt: projected.sourceOccurredAt, nativePayload: projected.sourcePayload, attempt: 0, summary: projected.summary })})`;
+        values(${f.org},${f.workspace},${f.run},1,'harness.native',${json({ source: 'dsh', sourceEventId: projected.sourceEventId, sourceEventType: projected.sourceEventType, sourceOccurredAt: projected.sourceOccurredAt, nativePayload: projected.sourcePayload, attempt: 0, summary: 'summary' in projected ? projected.summary : undefined })})`;
     }
     if (code) {
       const receiptPayload = receipt
@@ -105,9 +107,9 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
           })!.sourcePayload
         : {};
       await db.db`insert into allrice_run_events(organization_id,workspace_id,run_id,sequence,event_type,payload)
-        values(${f.org},${f.workspace},${f.run},2,'run.failed',${db.db.json({ code, message: message + ' ' + secret, ...receiptPayload, metadata: { deeper: [{ modelFailure: { category: 'unknown', upstreamMessage: message + ' ' + secret, nested: { raw: secret } } }] } })})`;
+        values(${f.org},${f.workspace},${f.run},2,'run.failed',${json({ code, message: message + ' ' + secret, ...receiptPayload, metadata: { deeper: [{ modelFailure: { category: 'unknown', upstreamMessage: message + ' ' + secret, nested: { raw: secret } } }] } })})`;
       await db.db`update allrice_employee_runs set status='failed',error_code=${code},error_message=${message + ' ' + secret} where run_id=${f.run}`;
-      await db.db`update allrice_messages set status='failed',error_code=${code},content=${db.db.json({ text: 'Retained complete answer', citations: [], ...(receipt ? { modelFailureCategory: 'unknown' } : {}) })} where id=${f.assistant}`;
+      await db.db`update allrice_messages set status='failed',error_code=${code},content=${json({ text: 'Retained complete answer', citations: [], ...(receipt ? { modelFailureCategory: 'unknown' } : {}) })} where id=${f.assistant}`;
     }
     return { ...f, idempotencyKey };
   }
@@ -247,8 +249,8 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
     await db.db`update allrice_runs set state='running',completed_at=null where id=${f.run}`;
     await db.db`update allrice_employee_runs set status='running',completed_at=null where run_id=${f.run}`;
     await db.db`insert into allrice_run_events(organization_id,workspace_id,run_id,sequence,event_type,payload)
-      values(${f.org},${f.workspace},${f.run},1,'assistant.text.completed',${db.db.json({ messageId: f.assistant, attempt: 1, text: 'Completed answer survives', sourceEventType: 'assistant/message', nativePayload: { contentTypes: ['text'] } })}),
-      (${f.org},${f.workspace},${f.run},2,'harness.native',${db.db.json({ source: 'dsh', sourceEventId: 'dsh:14', sourceEventType: 'assistant/attempt', attempt: 1, nativePayload: { modelFailure: { category: 'unknown', code: 'FUTURE_TERMINAL', upstreamMessage: unknownRaw + ' ' + secret } } })})`;
+      values(${f.org},${f.workspace},${f.run},1,'assistant.text.completed',${json({ messageId: f.assistant, attempt: 1, text: 'Completed answer survives', sourceEventType: 'assistant/message', nativePayload: { contentTypes: ['text'] } })}),
+      (${f.org},${f.workspace},${f.run},2,'harness.native',${json({ source: 'dsh', sourceEventId: 'dsh:14', sourceEventType: 'assistant/attempt', attempt: 1, nativePayload: { modelFailure: { category: 'unknown', code: 'FUTURE_TERMINAL', upstreamMessage: unknownRaw + ' ' + secret } } })})`;
     expect(
       await failJob({
         workerId,

@@ -57,7 +57,9 @@ describe('safeDshSourcePayload', () => {
       expect(JSON.stringify(view)).not.toMatch(
         /private-secret|PRIVATE PROMPT|PRIVATE RESPONSE/,
       );
-      expect(view?.summary).not.toContain(message);
+      expect(view && 'summary' in view ? view.summary : '').not.toContain(
+        message,
+      );
     },
   );
   it('never invents model failure evidence from a missing finish or compaction/platform error', () => {
