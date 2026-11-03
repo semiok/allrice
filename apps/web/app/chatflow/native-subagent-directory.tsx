@@ -228,7 +228,13 @@ export function NativeSubagentDirectory({
                     {entry.kind === 'child' && entry.running !== null ? (
                       <StateDot
                         size={8}
-                        state={entry.running ? 'ongoing' : 'idle'}
+                        state={
+                          entry.running
+                            ? 'ongoing'
+                            : entry.timing.lastTurnCompleted
+                              ? 'done'
+                              : 'idle'
+                        }
                       />
                     ) : (
                       <span

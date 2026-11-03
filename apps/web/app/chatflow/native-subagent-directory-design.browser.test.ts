@@ -32,7 +32,7 @@ const child = (
   depth: 1,
   mode: 'continuable',
   running,
-  activity: 'unknown',
+  activity: running === null ? 'unknown' : 'running',
   observation: { source: 'live', cursor: 8 },
   timing: {
     settledMs: seconds * 1000,
@@ -281,33 +281,45 @@ suite('MET-214 native subagent directory design', () => {
             ),
           ).toEqual([]);
           await capture(panel, `${theme}-${width}-list`);
-          if (width === 320) {
-            const longName =
-              '首次拍摄检查清单 · 首次拍摄检查清单 · 首次拍摄检查清单';
-            value.descendants[0] = {
-              ...value.descendants[0]!,
-              label: longName,
-            } as Child;
-            feed.push(fixture, { type: 'directory', summary: value });
-            const long = page.getByText(longName, { exact: true });
-            await long.waitFor();
-            const longBox = (await long.boundingBox())!;
-            expect(longBox.height).toBeGreaterThan(20);
-            expect((await duration.boundingBox())!.y).toBeGreaterThanOrEqual(
-              longBox.y + longBox.height + 4,
-            );
-            expect(
-              await panel.evaluate(
-                (node) => node.scrollWidth > node.clientWidth,
-              ),
-            ).toBe(false);
-            await capture(panel, `${theme}-${width}-long-name`);
-          }
         } finally {
           await page.close();
         }
       },
     );
+
+    it(`keeps long ${theme} names readable above a single-line duration at 320 px`, async () => {
+      const longName = '首次拍摄检查清单 · 首次拍摄检查清单 · 首次拍摄检查清单';
+      const { page, panel } = await open(
+        summary([child('long-name', longName, false, true)]),
+        320,
+        theme,
+      );
+      try {
+        const name = page.getByText(longName, { exact: true });
+        const duration = page.getByText('43 秒', { exact: true });
+        await name.waitFor();
+        const nameBox = (await name.boundingBox())!;
+        const durationBox = (await duration.boundingBox())!;
+        expect(nameBox.height).toBeGreaterThan(20);
+        expect(durationBox.y).toBeGreaterThanOrEqual(
+          nameBox.y + nameBox.height + 4,
+        );
+        expect(durationBox.height).toBe(18);
+        expect(
+          await duration.evaluate((node) => getComputedStyle(node).whiteSpace),
+        ).toBe('nowrap');
+        expect(
+          await panel.evaluate(
+            (node) =>
+              node.scrollWidth > node.clientWidth ||
+              document.documentElement.scrollWidth > innerWidth,
+          ),
+        ).toBe(false);
+        await capture(panel, `${theme}-320-long-name`);
+      } finally {
+        await page.close();
+      }
+    });
 
     it.each(['empty', 'loading'])(
       `“空态和加载别用大字”：uses body typography in ${theme} %s`,
@@ -384,6 +396,11 @@ suite('MET-214 native subagent directory design', () => {
           name: `子智能体 ${i}摘要`,
           exact: true,
         });
+        await expect
+          .poll(() => row.innerText(), {
+            message: `State case ${i}: ${expected}`,
+          })
+          .toContain(expected);
         expect(await row.getByText(expected, { exact: true }).count()).toBe(1);
         expect(await row.getByRole('img', { name: '未正常结束' }).count()).toBe(
           abnormal ? 1 : 0,

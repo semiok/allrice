@@ -130,7 +130,8 @@ button.trigger.trigger[aria-expanded='true']:not(:disabled) {
 .entry [data-state='ongoing'] > * {
   display: none;
 }
-.entry [data-state='idle'] {
+.entry [data-state='idle'],
+.entry [data-state='done'] {
   color: var(--ar-idle);
 }
 .runningBadge.runningBadge {

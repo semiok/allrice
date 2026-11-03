@@ -386,7 +386,7 @@ suite('native subagent directory and employee sidebar', () => {
           size: '16px',
           weight: '600',
           background:
-            theme === 'light' ? 'rgb(255, 255, 255)' : 'rgb(21, 21, 23)',
+            theme === 'light' ? 'rgb(255, 255, 255)' : 'rgb(44, 44, 46)',
         });
         await trigger.click(); // Pin the existing hover opening.
         await page.getByRole('button', { name: '展开fork-a' }).click();
@@ -528,7 +528,7 @@ suite('native subagent directory and employee sidebar', () => {
         ).toBe(
           await page.evaluate(() => {
             const marker = document.createElement('span');
-            marker.style.color = 'var(--dsw-alias-state-idle-primary)';
+            marker.style.color = 'var(--ar-idle)';
             document.body.append(marker);
             const color = getComputedStyle(marker).color;
             marker.remove();
