@@ -495,6 +495,36 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
     expect(response.status).toBe(200);
     expect(await response.text()).not.toContain('P4ssW0rdQWER123');
   });
+  it.each([
+    'API key\n:\nP4ssW0rdQWER123',
+    'Authorization\n: Bearer\nP4ssW0rdQWER123',
+  ])(
+    'second review regression: multiline credentials stay private in actual administrator and public APIs: %s',
+    async (message) => {
+      const f = await seed('DSH_PI_AI_ERROR', message);
+      auth.context = f.owner;
+      const publicResponses = [
+        await runGet(request(f), route(f)),
+        ...(await Promise.all(
+          ['application/json', 'text/event-stream'].map((accept) =>
+            eventsGet(request(f, '/events', { headers: { accept } }), route(f)),
+          ),
+        )),
+      ];
+      for (const response of publicResponses) {
+        expect(await publicBody(response)).not.toContain('P4ssW0rdQWER123');
+      }
+      platformAdmin();
+      const response = await adminGet(
+        new Request('http://localhost/api/v1/admin/technical-assistant'),
+      );
+      expect(response.status).toBe(200);
+      const row = (await response.json()).diagnostics.runs.value.find(
+        (item: { runId: string }) => item.runId === f.run,
+      );
+      expect(row.modelFailures[0].upstreamMessage).toBe('原文无法安全展示');
+    },
+  );
   it.each(['DSH_QUOTA', 'DSH_ACCOUNT_QUOTA'])(
     'review regression: historical native quota code %s without receipt retains quota advice and admin safe original',
     async (code) => {

@@ -226,6 +226,26 @@ describe('synthetic provider failures; historical observations only cover auth/s
     expect(redactModelFailure(text)).not.toContain('P4ssW0rdQWER123');
   });
   it.each([
+    'API key\n:\nP4ssW0rdQWER123',
+    'Authorization\n: Bearer\nP4ssW0rdQWER123',
+    'Basic\ncHJpdmF0ZTpwYXNz',
+    'Bearer\nP4ssW0rdQWER123',
+    'api\nkey: P4ssW0rdQWER123',
+    'access\ntoken\n= P4ssW0rdQWER123',
+    'refresh token\r\n=\r\nP4ssW0rdQWER123',
+    'password\n= P4ssW0rdQWER123',
+    'secret\r: P4ssW0rdQWER123',
+    'cookie \n:\tP4ssW0rdQWER123',
+    'token\n: P4ssW0rdQWER123',
+    'Basic \r\n cHJpdmF0ZTpwYXNz',
+    'Bearer \n P4ssW0rdQWER123',
+  ])(
+    'second review regression: credential fields spanning lines fail closed: %s',
+    (text) => {
+      expect(redactModelFailure(text)).toBe(hiddenModelFailure);
+    },
+  );
+  it.each([
     'Authorization: Basic\ncHJpdmF0ZTpwYXNz',
     'Authorization: Bearer\nsynthetic-private',
     'api_key=\nsynthetic-private',
