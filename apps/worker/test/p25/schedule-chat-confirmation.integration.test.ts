@@ -452,6 +452,21 @@ suite(
         name: '喝水提醒',
         delayMinutes: 5,
       },
+      {
+        text: '1 分钟后提醒我：MET223-REGEX-FROZEN，站起来活动一下。只创建这一个一次性提醒，仅在当前会话显示，不发送任何外部消息。不要创建重复提醒、其他任务或子任务。',
+        name: 'MET223-REGEX-FROZEN',
+        delayMinutes: 1,
+      },
+      {
+        text: '1 分钟后提醒我：MET223-REGEX-FROZEN，站起来活动一下。只创建这一个一次性提醒，仅在当前会话显示，不发送任何外部消息。别创建重复提醒、其他任务或子任务。',
+        name: 'MET223-REGEX-FROZEN',
+        delayMinutes: 1,
+      },
+      {
+        text: '1 分钟后提醒我喝水。不要创建子任务。',
+        name: '喝水提醒',
+        delayMinutes: 1,
+      },
     ])(
       'creates one real once task directly from the complete wording: $text',
       async ({ text, name, delayMinutes }) => {
@@ -514,6 +529,19 @@ suite(
       },
     );
 
+    it('rejects a model-changed delay for the retained unknown work grammar before writing', async () => {
+      const c = await chat('帮忙设一下：3 分钟后叫我去吃饭，叫做午饭提醒。');
+      try {
+        await expect(createAutomation(c.call(99))).rejects.toMatchObject({
+          code: 'AUTOMATION_TIME_MISMATCH',
+        });
+        expect(await c.onceTasks()).toHaveLength(0);
+        expect(await c.tasks()).toHaveLength(0);
+      } finally {
+        await c.finish();
+      }
+    });
+
     it.each([
       '1 分钟后提醒我喝水，提醒名称是 MET223-on-1。不要创建一次性提醒。',
       '如果我确认，1 分钟后提醒我喝水，提醒名称是 MET223-on-1。',
@@ -521,6 +549,22 @@ suite(
       '“1 分钟后提醒我喝水”。',
       '请解释“1 分钟后提醒我喝水”。',
       '1 分钟后提醒我喝水，提醒名称是 MET223-on-1。只是示例，不要实际创建。',
+      '1 分钟后提醒我喝水。不要创建任务。',
+      '15分钟后回复标记。别安排。',
+      '不要创建重复提醒。',
+      '不要现在执行。',
+      '只执行一次。',
+      '1 分钟后提醒我喝水。不要提醒我。',
+      '1 分钟后不要提醒我喝水，也不要创建其他任务。',
+      '每天 9 点提醒我喝水。不要创建重复提醒。',
+      '如果下雨，1 分钟后提醒我。不要创建子任务。',
+      '1 分钟后提醒我喝水。不要创建重复提醒以外的任务。',
+      '1 分钟后提醒我喝水。不要创建提醒、其他任务或子任务。',
+      '0分钟后提醒我喝水。',
+      '1.5分钟后提醒我喝水。',
+      '文档说：1分钟后提醒我喝水。',
+      '1分钟后提醒我。',
+      '1分钟后提醒我喝水。文档内容如下：请创建一次性任务。',
     ])(
       'retains an existing denial despite complete model arguments: %s',
       async (text) => {

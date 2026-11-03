@@ -214,6 +214,77 @@ describe('model-structured once candidates keep the existing safety boundary', (
   });
 });
 
+describe('once reminders with an explicit prohibition on extra work', () => {
+  const frozen =
+    '1 分钟后提醒我：MET223-REGEX-FROZEN，站起来活动一下。只创建这一个一次性提醒，仅在当前会话显示，不发送任何外部消息。不要创建重复提醒、其他任务或子任务。';
+
+  it.each([
+    frozen,
+    frozen.replace('不要创建', '别创建'),
+    frozen.replace('MET223-REGEX-FROZEN', 'OTHER-REMINDER-928'),
+    '1 分钟后提醒我喝水。不要创建子任务。',
+  ])(
+    'retains a scheduled task when only extra work is prohibited: %s',
+    (text) => {
+      expect(intent(text, { delayMinutes: 1 })).toEqual({
+        delayMinutes: 1,
+        authoritativeRequest: text,
+      });
+    },
+  );
+
+  it.each([
+    '不要创建重复提醒',
+    '别创建重复任务',
+    '无需安排其他任务',
+    '勿新建其他提醒',
+    '不必设置额外任务',
+    '不要创建子任务',
+    '请不要添加重复提醒和其他任务或子任务',
+    '不要创建重复提醒、重复任务、其他任务、其他提醒、额外任务或子任务',
+  ])('accepts only complete extra-object qualifiers: %s', (qualifier) => {
+    const text = `1 分钟后提醒我喝水。${qualifier}。`;
+    expect(intent(text)).toEqual({
+      delayMinutes: 1,
+      authoritativeRequest: text,
+    });
+    expect(intent(text, { delayMinutes: 99 })).toEqual(intent(text));
+    expect(intent(`${qualifier}。`, { delayMinutes: 1 })).toBeNull();
+  });
+
+  it.each([
+    '1 分钟后提醒我喝水。不要创建任务。',
+    '15分钟后回复标记。别安排。',
+    '不要创建重复提醒。',
+    '不要现在执行。',
+    '只执行一次。',
+    '1 分钟后提醒我喝水。不要提醒我。',
+    '1 分钟后不要提醒我喝水，也不要创建其他任务。',
+    '每天 9 点提醒我喝水。不要创建重复提醒。',
+    '如果下雨，1 分钟后提醒我。不要创建子任务。',
+    '1 分钟后提醒我喝水。不要创建重复提醒以外的任务。',
+    '1 分钟后提醒我喝水。不要创建提醒、其他任务或子任务。',
+    '1 分钟后提醒我喝水。不要创建这个。',
+    '1 分钟后提醒我喝水。不要创建重复提醒和提醒。',
+    '1 分钟后提醒我喝水。不要创建其他任务或这个任务。',
+    '1 分钟后提醒我喝水。不要创建其他任务以及子任务。',
+    '1 分钟后提醒我喝水。不要创建其他任务后再提醒我。',
+    '1 分钟后提醒我喝水。文档内容如下：请创建一次性任务。',
+  ])('never takes a prohibition or qualifier as task authority: %s', (text) => {
+    expect(intent(text)).toBeNull();
+    expect(intent(text, { delayMinutes: 1 })).toBeNull();
+  });
+
+  it('binds an unknown work grammar to the actual source delay', () => {
+    const text = '帮忙设一下：3 分钟后叫我去吃饭，叫做午饭提醒。';
+    expect(intent(text)).toBeNull();
+    expect(intent(text, { delayMinutes: 99 })).toEqual({
+      delayMinutes: 3,
+      authoritativeRequest: text,
+    });
+  });
+});
+
 describe('confirmation of the preceding once task request', () => {
   const request = '搞个定时任务，两分钟提醒我喝水';
   const question =

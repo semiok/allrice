@@ -21,8 +21,9 @@ const minuteUnits: Readonly<Record<string, number>> = {
   天: 1_440,
 };
 const numberPattern = '[0-9零〇一二两三四五六七八九十百千万]+';
-const requestPrefix = '(?:请\\s*|麻烦(?:你)?\\s*)?(?:(?:帮我|为我)\\s*)?';
-const schedulePrefix = `(?:${requestPrefix}(?:给我\\s*)?(?:搞|建|创建|设置|设|安排|添加|定)(?:一)?(?:个|条)?(?:定时任务|一次性任务|定时提醒|提醒|任务)\\s*[，,:：。]?\\s*)?`;
+const requestPrefix =
+  '(?:请\\s*|麻烦(?:你)?\\s*|帮忙\\s*)?(?:(?:帮我|为我)\\s*)?';
+const schedulePrefix = `(?:${requestPrefix}(?:给我\\s*)?(?:搞|建|创建|设置|设|安排|添加|定)(?:一)?(?:个|条)?(?:定时任务|一次性任务|定时提醒|提醒|任务|一下)\\s*[，,:：。]?\\s*)?`;
 const relativeRequest = new RegExp(
   `^${schedulePrefix}${requestPrefix}(?:(?:从现在(?:起|开始)?|现在开始)\\s*)?(?:在\\s*|再?过\\s*)?(${numberPattern})\\s*(分钟|小时|天)(?:之后|以后|后)?\\s*[，,:：]?\\s*(.+)$`,
   'su',
@@ -120,7 +121,9 @@ function maskQuotedArguments(text: string): string | null {
 
 function onceQualifier(clause: string): boolean {
   return (
-    /^(?:请)?(?:实际)?(?:创建|安排|预约)(?:一个)?一次性任务$/u.test(clause) ||
+    /^(?:请)?(?:(?:实际)?(?:创建|安排|预约)(?:一个)?一次性任务|(?:不要|不用|不必|无需|不能|不允许|暂不|别|勿)(?:创建|新建|安排|设置|添加|建立|建|预约)(?:重复提醒|重复任务|其他任务|其他提醒|额外任务|子任务)(?:[、和或](?:重复提醒|重复任务|其他任务|其他提醒|额外任务|子任务))*)$/u.test(
+      clause,
+    ) ||
     /^(?:请)?(?:不要|别|无需)(?:现在|立即|马上)执行$/u.test(clause) ||
     /^(?:请)?(?:只|仅)(?:执行|运行|提醒)一次$/u.test(clause) ||
     /^(?:请)?(?:不要|无需)(?:长期|永久)保存(?:我的)?(?:偏好|设置)$/u.test(
@@ -129,7 +132,7 @@ function onceQualifier(clause: string): boolean {
   );
 }
 
-function taskClause(clause: string): boolean {
+function taskClause(clause: string, allowUnknown = false): boolean {
   const request = clause
     .replace(/^(?:请)?(?:然后|最后|同时|并且|并|再)\s*/u, '')
     .replace(/^(?:请)?(?:帮我|为我)\s*/u, '')
@@ -140,10 +143,9 @@ function taskClause(clause: string): boolean {
   const match = request.match(
     /^(?:请)?(?:只|仅)?(?:回复|回答|提醒|告诉|通知|检查|整理|生成|汇总|查询|查找|总结|读取|列出|编写|执行|完成|发送|翻译|给出|附上|使用|分成|保持)(.+)$/u,
   );
-  return Boolean(
-    match &&
-    !/^(?:我|一下|我一下|一下我|任务|这个任务)?$/u.test(match[1]!.trim()),
-  );
+  return match
+    ? !/^(?:我|一下|我一下|一下我|任务|这个任务)?$/u.test(match[1]!.trim())
+    : allowUnknown && Boolean(request);
 }
 
 /** Existing structural/source exclusions shared with the direct tool path.
@@ -165,9 +167,9 @@ function onceRequestProse(text: string): string | null {
 }
 
 /** Recognize exact legacy parameters, or retain a model-structured candidate.
- * An unquoted candidate needs no positive sentence grammar. Existing denials
- * remain. Unknown quoted requests retain the strict legacy path; existing
- * questions never enter this candidate path.
+ * Candidates still need an explicit supported delay and initial work, while
+ * unknown unquoted work grammar remains available. Existing denials remain.
+ * Unknown quoted requests and confirmation replies retain the strict path.
  */
 export function explicitOnceTaskIntent(
   text: string,
@@ -184,17 +186,16 @@ export function explicitOnceTaskIntent(
   const match = reminder
     ? [reminder[0], reminder[2], reminder[3], `${reminder[1]}${reminder[4]}`]
     : prose.trim().match(relativeRequest);
-  if (!match && !candidate) return null;
-  const number = match ? positiveInteger(match[1]!) : null;
+  if (!match) return null;
+  const number = positiveInteger(match[1]!);
   const minutes =
     number === null ? null : number * (minuteUnits[match![2]!] ?? 0);
-  if ((!minutes || minutes > maximumDelayMinutes) && !candidate) return null;
-  const clauses = (candidate ? prose : match![3]!)
+  if (!minutes || minutes > maximumDelayMinutes) return null;
+  const clauses = match[3]!
     .split(/[。；;！!，,\n.]/u)
     .map((clause) => clause.trim())
     .filter(Boolean);
-  if (!clauses.length || (!candidate && onceQualifier(clauses[0]!)))
-    return null;
+  if (!clauses.length || onceQualifier(clauses[0]!)) return null;
   let work = false;
   for (const clause of clauses) {
     if (onceQualifier(clause)) continue;
@@ -205,17 +206,25 @@ export function explicitOnceTaskIntent(
       )
     )
       return null;
-    if (candidate) continue;
     if (
       new RegExp(
         `${numberPattern}\\s*(?:秒|分(?:钟)?|小时|天|周|个月|月|年)(?:之后|以后|后|内|前)|明天|后天|(?:[0-9零一二两三四五六七八九十]+\\s*[点时](?:整|钟|回复|提醒|执行|发送|$)|[0-9]{1,2}[:：][0-9]{2})`,
         'u',
-      ).test(clause) ||
-      !taskClause(clause)
+      ).test(clause)
     )
       return null;
+    if (candidate) {
+      // A bare qualifier or incomplete first verb cannot supply the work.
+      if (!work && !taskClause(clause, true)) return null;
+      // A colon frame needs an actual outer task verb; its payload is data.
+      if (/[:：]/u.test(clause) && !taskClause(clause)) return null;
+      work = true;
+      continue;
+    }
+    if (!taskClause(clause)) return null;
     work = true;
   }
+  if (!work) return null;
   if (candidate) {
     // A quotation is data only inside an already supported outer request.
     // Unknown quoted wording cannot obtain authority from a model candidate.
@@ -223,7 +232,7 @@ export function explicitOnceTaskIntent(
     const conversationMode =
       selection.conversationMode ?? candidate.conversationMode;
     return {
-      delayMinutes: candidate.delayMinutes,
+      delayMinutes: minutes,
       authoritativeRequest: text,
       ...(conversationMode === undefined ? {} : { conversationMode }),
     };
