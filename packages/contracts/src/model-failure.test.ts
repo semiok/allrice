@@ -12,6 +12,20 @@ import {
 } from './model-failure.ts';
 
 const compoundCredentialLabels = [
+  'Authorization',
+  'providerAuthorization',
+  'API_KEY',
+  'providerApiKey',
+  'access_token',
+  'providerAccessToken',
+  'refresh-token',
+  'providerRefreshToken',
+  'password',
+  'providerPassword',
+  'secret',
+  'providerSecret',
+  'cookie',
+  'providerCookie',
   'client_secret',
   'CLIENT_SECRET',
   'client-secret',
@@ -78,6 +92,15 @@ describe('synthetic provider failures; historical observations only cover auth/s
     },
   );
   it('classifies the native pi-ai overflow receipt and preserves historical source proof', () => {
+    for (const message of [
+      'pi-ai detected context overflow',
+      'pi-ai detected context overflow for model "synthetic"',
+    ])
+      expect(modelFailure(message).category).toBe('context');
+    expect(
+      modelFailure('Notes about pi-ai detected context overflow handling')
+        .category,
+    ).toBe('unknown');
     expect(
       modelFailure(
         'pi-ai detected context overflow for model "synthetic"',
@@ -175,6 +198,9 @@ describe('synthetic provider failures; historical observations only cover auth/s
     'tokenUsage: 180; tokenLimit: 200000; usedTokenCount: 180; validTokenCount: 180; valid_tokens: 180',
     'maxTokens=16000; outputTokenLimit=16000',
     'Your authentication token has expired',
+    'The secretary confirmed the request',
+    'The secretion measurement is available',
+    'The Secretarial report is available',
   ])(
     'keeps ordinary token statistics and the monitor expiry receipt readable: %s',
     (message) => {

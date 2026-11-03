@@ -15,6 +15,7 @@ import {
 import {
   UuidSchema,
   modelFailure,
+  redactModelFailure,
   isModelFailureCode,
   type RequestContext,
 } from '@allrice/contracts';
@@ -277,10 +278,16 @@ async function detail(id: string, sql: Sql) {
   if (!row) throw new DataAccessError('not_found');
   const refs =
     await sql`select record from allrice_platform_technical_evidence where issue_id=${id} order by recorded_at desc,source_id limit 100`;
-  return TechnicalIssueDetailSchema.parse({
+  const result = TechnicalIssueDetailSchema.parse({
     issue: issue(row),
     records: refs.map((r) => r.record),
   });
+  // Stored evidence predates the current sanitizer. Only the known private
+  // model-failure slot is re-redacted; stored facts and business data stay intact.
+  for (const record of result.records)
+    for (const failure of record.modelFailures ?? [])
+      failure.upstreamMessage = redactModelFailure(failure.upstreamMessage);
+  return result;
 }
 export async function listPlatformTechnicalIssues(
   context: RequestContext,
