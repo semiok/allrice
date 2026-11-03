@@ -7,9 +7,13 @@ import {
   authenticateSession,
 } from '../../../../packages/database/src/identity.ts';
 import * as client from '../../../../packages/database/src/core/client.ts';
-import { createRuntimeFixtureDatabase } from '../../../../packages/database/src/runtime.fixture.ts';
+import {
+  createRuntimeFixtureDatabase,
+  runFixture,
+} from '../../../../packages/database/src/runtime.fixture.ts';
 import { createExperienceFixture } from '../../../../packages/database/src/experience.fixture.ts';
 import {
+  readTerminalModelFailure,
   readRootModelFailures,
   terminalModelFailureCategorySql,
 } from '../../../../packages/database/src/execution/model-failures.ts';
@@ -57,6 +61,13 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
   ];
   const json = (value: unknown) =>
     db.db.json(JSON.parse(JSON.stringify(value)));
+  const platformAdmin = () => {
+    vi.stubEnv(
+      'ALLRICE_PLATFORM_ADMIN_EMAILS',
+      `${legacy.reviewer.actor.id}@example.test`,
+    );
+    auth.context = legacy.reviewer;
+  };
   const raw = 'Your authentication token has expired';
   const unknownRaw = 'Unfamiliar synthetic provider error';
   const secret = 'sk-synthetic-private';
@@ -373,7 +384,7 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
     await db.db`update allrice_memberships set role='member' where user_id=${legacy.owner.actor.id} and workspace_id=${legacy.workspace}`;
   });
   it('the existing platform admin API safely displays legacy, new-code and recovered root attempt receipts', async () => {
-    auth.context = legacy.reviewer;
+    platformAdmin();
     const response = await adminGet(
       new Request('http://localhost/api/v1/admin/technical-assistant'),
     );
@@ -498,7 +509,7 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
   });
   it('review regression: natural API key credentials are absent from the actual administrator response', async () => {
     await seed('DSH_PI_AI_ERROR', 'Invalid API key: P4ssW0rdQWER123');
-    auth.context = legacy.reviewer;
+    platformAdmin();
     const response = await adminGet(
       new Request('http://localhost/api/v1/admin/technical-assistant'),
     );
@@ -512,7 +523,7 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
       auth.context = f.owner;
       const body = await publicBody(await runGet(request(f), route(f)));
       expect(body).toContain('模型服务额度已用完');
-      auth.context = legacy.reviewer;
+      platformAdmin();
       const response = await adminGet(
         new Request('http://localhost/api/v1/admin/technical-assistant'),
       );
@@ -575,7 +586,7 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
         runId: f.run,
       }),
     ).toEqual({ failures: [], truncated: false });
-    auth.context = legacy.reviewer;
+    platformAdmin();
     const response = await adminGet(
       new Request('http://localhost/api/v1/admin/technical-assistant'),
     );
@@ -586,15 +597,24 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
     ).toBeUndefined();
   });
   it('review regression: non-chat Runs cannot use the legacy administrator raw-message fallback', async () => {
-    const f = await seed('DSH_PI_AI_ERROR', 'Internal-only model original');
-    await db.db`delete from allrice_employee_runs where run_id=${f.run}`;
-    auth.context = legacy.reviewer;
+    const f = await runFixture(db.db);
+    await db.db`update allrice_runs set state='failed',error_code='DSH_PI_AI_ERROR',error_message='Internal-only model original',completed_at=now() where id=${f.task.runId}`;
+    await db.db`update allrice_jobs set status='failed',worker_id=null,lease_token=null,claimed_at=null,heartbeat_at=null,lease_expires_at=null,completed_at=now() where id=${f.worker.jobId}`;
+    expect(
+      await readTerminalModelFailure(
+        db.db,
+        { ...f.task.scope, runId: f.task.runId },
+        'DSH_PI_AI_ERROR',
+        'Internal-only model original',
+      ),
+    ).toBeNull();
+    platformAdmin();
     const response = await adminGet(
       new Request('http://localhost/api/v1/admin/technical-assistant'),
     );
     expect(response.status).toBe(200);
     const row = (await response.json()).diagnostics.runs.value.find(
-      (row: { runId: string }) => row.runId === f.run,
+      (row: { runId: string }) => row.runId === f.task.runId,
     );
     expect(row.modelFailures).toBeUndefined();
   });
