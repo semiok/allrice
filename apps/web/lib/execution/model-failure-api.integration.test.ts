@@ -24,7 +24,7 @@ suite('real model-failure API boundaries, isolated database and synthetic provid
     f = await createExperienceFixture(db.db);
     vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', `${f.reviewer.actor.id}@example.test`);
     await db.db`insert into allrice_jobs(id,organization_id,workspace_id,owner_id,run_id,status,idempotency_key,timeout_at,payload)
-      values(${randomUUID()},${f.org},${f.workspace},${f.user},${f.run},'failed',${randomUUID()},now()+interval '1 hour','{}')`;
+      values(${randomUUID()},${f.org},${f.workspace},${f.user},${f.run},'failed',${randomUUID()},now()+interval '1 hour','{"schemaVersion":1,"type":"allrice.employee.run","input":{}}')`;
     await db.db`update allrice_runs set state='failed',error_code='DSH_PI_AI_ERROR',error_message=${raw+' '+secret},completed_at=now(),updated_at=now() where id=${f.run}`;
     await db.db`insert into allrice_run_events(organization_id,workspace_id,run_id,sequence,event_type,payload)
       values(${f.org},${f.workspace},${f.run},1,'run.failed',${db.db.json({code:'DSH_PI_AI_ERROR',message:raw+' '+secret,metadata:{modelFailure:{category:'auth',upstreamMessage:raw+' '+secret,nested:{raw:secret}}}})})`;
