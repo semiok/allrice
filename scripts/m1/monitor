@@ -22,7 +22,10 @@
 # writing heartbeat.json, which the other machine reads over SSH: whichever side stops,
 # the other one says so.
 import argparse
+import copy
+import datetime
 import fcntl
+import hashlib
 import json
 import os
 import plistlib
@@ -119,6 +122,8 @@ M1 = dict(
     backupCriticalHours=50,
     subscriptionStaleMinutes=30,
     authConfirmMinutes=3,  # an authorization error other than "disconnected" must be seen on two rounds (under one interval)
+    modelAuthCredentials=None,  # only records.llm-pi-ai/openai-codex.payload.expires is projected
+    modelAuthLog=None,  # the Worker's existing StandardErrorPath; no model/auth requests
     quotaWarnPercent=80,
     quotaCriticalPercent=95,
     restartWindowMinutes=60,
@@ -301,6 +306,9 @@ def derive_m1(cfg):
         'release': (worker or {}).get('WorkingDirectory'),
         'node': args[0],
         'cloudArchitecture': kenv.get('ALLRICE_CLOUD_ARCHITECTURE', ''),
+        'modelAuthCredentials': os.path.join(kenv.get('ALLRICE_DSH_PLATFORM_HOME') or dotenv.get('ALLRICE_DSH_PLATFORM_HOME'), '.credentials.yaml')
+        if kenv.get('ALLRICE_DSH_PLATFORM_HOME') or dotenv.get('ALLRICE_DSH_PLATFORM_HOME') else None,
+        'modelAuthLog': (worker or {}).get('StandardErrorPath'),
     }
     for k, v in fill.items():
         if cfg.get(k) is None:
@@ -391,6 +399,11 @@ def evaluate(r, findings, ran=()):
         key, sev, cur = f['key'], f['severity'], alerts.get(f['key'])
         if sev == 'unknown':
             continue
+        # Opt-in milestones use the same alert/outboxes. Existing checks have neither
+        # field and keep their reminders and flapping behavior.
+        once = f.get('onceIds', [])
+        notified = r.state.get('notifiedOnce', {})
+        already = bool(once) and all(i in notified for i in once)
         if sev == 'ok':
             if cur:
                 del alerts[key]
@@ -402,23 +415,27 @@ def evaluate(r, findings, ran=()):
                     r.state.setdefault('mutedRecoveries', {})[key] = {'title': cur['title'], 'since': cur['since']}
             continue
         if not cur:
+            if already:
+                continue
             recent = [t for t in opens.get(key, []) if now - t < cfg['flapMinutes'] * 60] + [now]
             opens[key] = recent
-            muted_until = r.state.get('muted', {}).get(key, {}).get('mutedUntil', 0)
+            muted_until = 0 if f.get('noRepeat') else r.state.get('muted', {}).get(key, {}).get('mutedUntil', 0)
             cur = alerts[key] = dict(f, since=now, notifiedAt=now, notifiedSeverity=sev, incidentId=str(uuid.uuid4()))
             r.state.get('mutedRecoveries', {}).pop(key, None)
             event = 'opened'
             if muted_until > now:
                 cur.update(mutedUntil=muted_until, silentOpen=True)
-            elif len(recent) >= cfg['flapLimit']:
+            elif not f.get('noRepeat') and len(recent) >= cfg['flapLimit']:
                 cur['mutedUntil'] = now + cfg['flapMinutes'] * 60
                 r.state.setdefault('muted', {})[key] = {'mutedUntil': cur['mutedUntil']}
                 event = 'flapping'
             events.append({'event': event, 'finding': f, 'alert': cur, 'silent': muted_until > now})
             history.append({'at': now, 'event': 'opened', 'key': key, 'severity': sev, 'title': f['title']})
             incident(r, 'monitor_alert', sev, f, cur, cur['incidentId'], event=event)
+            if once:
+                r.state.setdefault('notifiedOnce', {}).update({i: now for i in once})
             continue
-        escalated = RANK[sev] > RANK[cur['notifiedSeverity']]  # only above the highest already sent
+        escalated = RANK[sev] > RANK[cur['notifiedSeverity']] or bool(once and not already)
         since, inc, notified, muted = cur['since'], cur['incidentId'], cur['notifiedAt'], cur.get('mutedUntil', 0)
         cur.update(f, since=since, incidentId=inc)
         if escalated:
@@ -426,13 +443,15 @@ def evaluate(r, findings, ran=()):
             r.state.get('muted', {}).pop(key, None)
             events.append({'event': 'escalated', 'finding': f, 'alert': cur, 'silent': False})
             incident(r, 'monitor_alert', sev, f, cur, event='escalated')
-        elif muted > now and cur.get('silentOpen') and now - since >= cfg['flapBreakMinutes'] * 60:
+            if once:
+                r.state.setdefault('notifiedOnce', {}).update({i: now for i in once})
+        elif not f.get('noRepeat') and muted > now and cur.get('silentOpen') and now - since >= cfg['flapBreakMinutes'] * 60:
             # Opened during a flapping mute and still bad: no longer a flap, an outage.
             cur.update(notifiedAt=now, notifiedSeverity=max(sev, cur['notifiedSeverity'], key=RANK.get), silentOpen=False, mutedUntil=0)
             r.state.get('muted', {}).pop(key, None)
             events.append({'event': 'reminder', 'finding': f, 'alert': cur, 'silent': False})
             incident(r, 'monitor_alert', sev, f, cur, event='reminder')
-        elif muted <= now and (cur.get('silentOpen') or now - notified >= cfg['repeatMinutes'][sev] * 60):
+        elif not f.get('noRepeat') and muted <= now and (cur.get('silentOpen') or now - notified >= cfg['repeatMinutes'][sev] * 60):
             cur.update(notifiedAt=now, notifiedSeverity=max(sev, cur['notifiedSeverity'], key=RANK.get), silentOpen=False)
             events.append({'event': 'reminder', 'finding': f, 'alert': cur, 'silent': False})
             incident(r, 'monitor_alert', sev, f, cur, event='reminder')
@@ -601,16 +620,32 @@ def send_telegram(cfg, text):
         raise CheckError(str(body.get('description', 'send failed')).replace(token, '<token>'))
 
 
-def deliver(r, messages):
-    """Queue the messages and send everything queued, oldest first; what fails waits for
-    the next round. `failingSince` (in the heartbeat) lets the other machine tell a
-    monitor that has stopped being able to deliver."""
+def queue_messages(r, messages):
+    """Append to the existing bounded Telegram outbox, without external I/O."""
     box = r.state.setdefault('outbox', [])
     tg = r.state.setdefault('telegram', {})
     box.extend(m for m in ([messages] if isinstance(messages, str) else messages or []) if m)
     if len(box) > 20:
         tg['dropped'] = tg.get('dropped', 0) + len(box) - 20
         del box[:-20]
+
+
+def prepare_notifications(r, findings, ran):
+    """Prepare the completed sample without modifying the live state or doing I/O.
+    The caller commits this state, including the existing outbox, in one assignment."""
+    prepared = copy.copy(r)
+    prepared.state = json.loads(json.dumps(r.state))
+    events = evaluate(prepared, findings, ran)
+    queue_messages(prepared, compose(prepared, events))
+    return prepared.state
+
+
+def deliver(r, messages):
+    """Queue the messages and send everything queued, oldest first; what fails waits for
+    the next round. `failingSince` (in the heartbeat) lets the other machine tell a
+    monitor that has stopped being able to deliver."""
+    queue_messages(r, messages)
+    box, tg = r.state['outbox'], r.state['telegram']
     while box:
         note = '（另有 %d 条更早的通知没能发出，已丢弃）\n' % tg['dropped'] if tg.get('dropped') else ''
         try:
@@ -1055,6 +1090,322 @@ def check_subscription(r):
     else:
         out.append(unknown('quota'))
     return out
+
+
+def utc_time(seconds):
+    return datetime.datetime.fromtimestamp(seconds, datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+
+
+def model_auth_expiry(path):
+    """Read only the numeric expiry projection of DSH's existing YAML grant. Never
+    retain credentials, their hashes, or parser exceptions containing document text.
+    Unsupported/ambiguous YAML is unavailable, not an inferred healthy grant."""
+    if not path:
+        raise CheckError('到期字段路径未配置')
+    records, target, payload = False, False, False
+    roots, targets, payloads, values = 0, 0, 0, []
+
+    def entry(line):
+        # Only the block mapping form emitted by DSH is supported. Validate keys at
+        # each projected level, including malformed or non-numeric duplicates; do
+        # not accidentally select the one valid value from an ambiguous document.
+        parsed = re.fullmatch(r'''([A-Za-z0-9_./-]+|"[^"\\]*"|'[^']*'):\s*(.*)''', line)
+        if not parsed:
+            raise CheckError('到期字段缺失、重复或格式不支持')
+        return parsed[1].strip('"\''), parsed[2]
+
+    try:
+        with open(expand(path), encoding='utf-8') as stream:
+            for raw in stream:
+                line = raw.rstrip()
+                if not line.strip() or line.lstrip().startswith('#'):
+                    continue
+                indent = len(line) - len(line.lstrip(' '))
+                if indent == 0:
+                    key, value = entry(line)
+                    records, target, payload = key == 'records', False, False
+                    if records:
+                        roots += 1
+                        if value:
+                            raise CheckError('到期字段缺失、重复或格式不支持')
+                elif records and indent == 2:
+                    key, value = entry(line[2:])
+                    target, payload = key == 'llm-pi-ai/openai-codex', False
+                    if target:
+                        targets += 1
+                        if value:
+                            raise CheckError('到期字段缺失、重复或格式不支持')
+                elif records and indent < 2:
+                    raise CheckError('到期字段缺失、重复或格式不支持')
+                elif target and indent == 4:
+                    key, value = entry(line[4:])
+                    payload = key == 'payload'
+                    if payload:
+                        payloads += 1
+                        if value:
+                            raise CheckError('到期字段缺失、重复或格式不支持')
+                elif target and indent < 4:
+                    raise CheckError('到期字段缺失、重复或格式不支持')
+                elif target and payload and indent == 6:
+                    key, value = entry(line[6:])
+                    if key == 'expires':
+                        if not re.fullmatch(r'[0-9]{1,15}', value):
+                            raise CheckError('到期字段时间无效')
+                        values.append(int(value))
+                elif target and payload and indent < 6:
+                    raise CheckError('到期字段缺失、重复或格式不支持')
+                elif records and indent < 4:
+                    target, payload = False, False
+    except (OSError, UnicodeError):
+        raise CheckError('到期字段无法读取') from None
+    if roots != 1 or targets != 1 or payloads != 1 or len(values) != 1:
+        raise CheckError('到期字段缺失、重复或格式不支持')
+    try:
+        utc_time(values[0] / 1000)
+    except (ValueError, OverflowError, OSError):
+        raise CheckError('到期字段时间无效') from None
+    return values[0]
+
+
+AUTH_LOG_BYTES = 8 * 2 ** 20  # same per-round read budget as pg_resources; never skip unread bytes
+
+
+def model_auth_log(r, seen):
+    """Append-only Handler failed records, not message/cause lines or user text.
+    The existing stderr has no timestamps: only first observation is knowable.
+    Cursor/partial-record state contains safe metadata, a local digest and parsing
+    flags, never raw log text."""
+    path = expand(r.cfg.get('modelAuthLog'))
+    if not path:
+        raise CheckError('Worker 错误日志路径未配置')
+    cursor = json.loads(json.dumps(seen or {}))
+    count, earliest, gap, budget = 0, None, None, AUTH_LOG_BYTES
+
+    def frontier(stream, offset):
+        # A local digest detects copytruncate/regrow even if size already exceeds
+        # the old offset again. No raw bytes leave this read-only projection.
+        width = min(offset, 256)
+        stream.seek(offset - width)
+        return hashlib.sha256(stream.read(width)).hexdigest()
+
+    def consume(stream, cur):
+        nonlocal count, earliest, gap, budget
+        st = os.fstat(stream.fileno())
+        if cur.get('frontier') and frontier(stream, cur['offset']) != cur['frontier']:
+            gap = '日志游标前沿已改写或截断后再增长，无法判断未读记录'
+            cur['offset'] = 0
+            cur.pop('record', None)
+            cur.pop('discardPartial', None)
+        stream.seek(cur['offset'])
+        chunk = stream.read(min(max(0, st.st_size - cur['offset']), budget))
+        budget -= len(chunk)
+        complete = chunk[:chunk.rfind(b'\n') + 1]
+        text = complete.decode('utf-8', 'replace')
+        if '\ufffd' in text:
+            gap = '日志编码损坏，部分记录无法判断'
+        cur['offset'] += len(complete)
+        for line in text.splitlines():
+            if cur.pop('discardPartial', False):
+                continue  # a historical partial line at the initial EOF baseline
+            record = cur.get('record')
+            if line == '[M5] Handler failed {':
+                if record is not None:
+                    gap = 'Handler failed 记录未结束就出现下一条，无法判断'
+                cur['record'] = {'at': r.now, 'codeSeen': False, 'messageSeen': False,
+                                 'expiredCode': False, 'expiredMessage': False, 'invalid': False}
+            elif record is not None:
+                if line == '}':
+                    if record['invalid'] or not record['codeSeen'] or not record['messageSeen']:
+                        gap = 'Handler failed 记录损坏或格式不支持，无法判断'
+                    elif record['expiredCode'] and record['expiredMessage']:
+                        count += 1
+                        earliest = min(earliest, record['at']) if earliest is not None else record['at']
+                    cur.pop('record', None)
+                elif line.startswith('  code: '):
+                    code = re.fullmatch(r'  code: ([\"\'])([A-Z_0-9]+)\1,?', line)
+                    record['invalid'] |= record['codeSeen'] or code is None
+                    record['codeSeen'] = True
+                    record['expiredCode'] = bool(code and code[2] == 'DSH_PI_AI_ERROR')
+                elif line.startswith('  message: '):
+                    value = line[len('  message: '):]
+                    valid = value[:1] in ('\"', "'") and (value.endswith(value[:1]) or value.endswith(value[:1] + ','))
+                    record['invalid'] |= record['messageSeen'] or not valid
+                    record['messageSeen'] = True
+                    record['expiredMessage'] = bool(re.match(r'  message: ([\"\'])Your authentication token has expired(?:[.\s]|[\"\'])', line))
+                elif not line.startswith(('  jobId: ', '  cause: ')):
+                    record['invalid'] = True
+        after = os.fstat(stream.fileno())
+        if after.st_size < cur['offset']:
+            gap = '扫描时日志被截断，无法判断未读记录'
+        cur['frontier'] = frontier(stream, cur['offset'])
+        return cur['offset'] == after.st_size and not cur.get('record') and not cur.get('discardPartial')
+
+    try:
+        with open(path, 'rb') as current:
+            st = os.fstat(current.fileno())
+            identity = {'path': path, 'device': st.st_dev, 'inode': st.st_ino}
+            if not cursor:
+                # Do not replay the already recovered historical expiry errors.
+                current.seek(max(0, st.st_size - 1))
+                partial = bool(st.st_size and current.read(1) != b'\n')
+                return dict(identity, offset=st.st_size, discardPartial=partial, frontier=frontier(current, st.st_size)), 0, None, not partial, None
+            rotated = any(cursor.get(k) != v for k, v in identity.items())
+            if rotated:
+                archives, archived, current_consumed = [], None, False
+                if cursor.get('path') == path:
+                    # Numeric rename rotation has a verifiable order: .N, ... .1,
+                    # current. Never jump from the cursor's segment to current when
+                    # intermediate segments are still readable.
+                    with os.scandir(os.path.dirname(path)) as entries:
+                        for entry in entries:
+                            if entry.name.startswith(os.path.basename(path) + '.') and entry.is_file():
+                                old = entry.stat()
+                                suffix = entry.name[len(os.path.basename(path)) + 1:]
+                                item = {'path': entry.path, 'device': old.st_dev, 'inode': old.st_ino,
+                                        'index': int(suffix) if re.fullmatch(r'[1-9][0-9]*', suffix) else None}
+                                archives.append(item)
+                                if (old.st_dev, old.st_ino) == (cursor.get('device'), cursor.get('inode')):
+                                    archived = item
+                if archived:
+                    if archived['index'] is not None:
+                        segments = sorted((x for x in archives if x['index'] is not None and x['index'] <= archived['index']),
+                                          key=lambda x: -x['index'])
+                        if len(segments) != archived['index'] or any(x['index'] is None for x in archives) \
+                                or len({(x['device'], x['inode']) for x in segments}) != len(segments):
+                            gap = '轮转段缺失或顺序不明，无法判断日志连续性'
+                    else:
+                        segments = [archived]
+                        gap = '轮转段名称无法确定先后，无法判断日志连续性'
+                    for item in segments:
+                        with open(item['path'], 'rb') as old:
+                            old_stat = os.fstat(old.fileno())
+                            if (old_stat.st_dev, old_stat.st_ino) != (item['device'], item['inode']):
+                                raise CheckError('扫描时轮转段已变化，无法判断日志连续性')
+                            if (cursor.get('device'), cursor.get('inode')) != (item['device'], item['inode']):
+                                cursor = dict(path=path, device=item['device'], inode=item['inode'], offset=0)
+                            current_consumed |= (item['device'], item['inode']) == (st.st_dev, st.st_ino)
+                            if not consume(old, cursor):
+                                if cursor['offset'] < os.fstat(old.fileno()).st_size and budget == 0:
+                                    return cursor, count, earliest, False, gap
+                                # Do not stay forever on an incomplete sealed tail.
+                                gap = '轮转旧段有无法补全的残行或记录，无法判断未读记录'
+                else:
+                    gap = '日志已轮转或来源改变，旧段不可补读，无法判断未读记录'
+                if current_consumed:
+                    if (cursor.get('device'), cursor.get('inode')) != (st.st_dev, st.st_ino):
+                        return cursor, count, earliest, False, gap  # never rewind to an older open FD
+                    # The opened current was renamed into the archive chain. Keep
+                    # its consumed offset, including when the budget is now zero.
+                else:
+                    cursor = dict(identity, offset=0)
+            elif cursor['offset'] > st.st_size:
+                gap = '日志被截断，旧段不可补读，无法判断未读记录'
+                cursor = dict(identity, offset=0)
+            complete = consume(current, cursor)
+            latest = os.stat(path)
+            if (latest.st_dev, latest.st_ino) != (st.st_dev, st.st_ino) or latest.st_size != cursor['offset']:
+                complete = False  # a concurrent append/rotation is read next round
+    except OSError:
+        raise CheckError('Worker 错误日志无法读取') from None
+    return cursor, count, earliest, complete, gap
+
+
+def check_model_authorization(r):
+    """One operational incident: 72h -> 24h -> confirmed expired errors -> one
+    recovery. DSH remains the credential authority; this is a read-only projection."""
+    # Commit cursor, count and health together. If the round alarm interrupts the
+    # projection, the next process must be able to reread any unaccounted records.
+    state = json.loads(json.dumps(r.state.get('modelAuth', {})))
+    issues, expires, added, first, complete, gap = [], None, 0, None, False, None
+    try:
+        expires = model_auth_expiry(r.cfg.get('modelAuthCredentials'))
+    except CheckError as err:
+        issues.append(str(err))
+    try:
+        cursor, added, first, complete, gap = model_auth_log(r, state.get('log'))
+        state['log'] = cursor
+        if not complete:
+            issues.append('Worker 错误日志未完整读取（未完结记录、单行过长或扫描积压），无法判断')
+    except CheckError as err:
+        issues.append(str(err))
+    baseline = state.get('expires') if state.get('expires') is not None else expires
+    if gap:
+        state['gap'] = {'reason': gap, 'expires': baseline}
+    active = state.get('active')
+    if active is None and (added or expires is not None and expires / 1000 - r.now <= 72 * 3600):
+        # Errors and a renewed grant may both arrive between two samples. Keep the
+        # previously observed grant as the fault baseline, preserving E1 -> E2.
+        fault_expiry = baseline if added else expires
+        active = state['active'] = {'expires': fault_expiry, 'id': str(fault_expiry) if fault_expiry is not None else str(uuid.uuid4()),
+                                    'count': 0, 'first': None, 'stage': 72}
+    if active is not None:
+        if active['expires'] is None and expires is not None:
+            active['expires'] = expires  # first readable grant is a baseline, never proof of reauthorization
+        if added:
+            active['count'] += added
+            active['first'] = min(active['first'], first) if active['first'] is not None else first
+            active['stage'] = 'error'
+    if expires is not None:
+        state['expires'] = expires
+        if state.get('gap') and state['gap']['expires'] is None:
+            state['gap']['expires'] = expires
+    # A lost/corrupt segment cannot be turned into "zero errors" next round. A new
+    # future grant plus a complete quiet window can establish health from that point.
+    fault_expiries = [x['expires'] for x in (active, state.get('gap')) if x is not None]
+    fresh = expires is not None and expires / 1000 > r.now and bool(fault_expiries) \
+        and all(x is not None and expires > x for x in fault_expiries)
+    if fresh and complete and not issues and not added and not gap:
+        since = state.setdefault('quietSince', r.now)
+    else:
+        state.pop('quietSince', None)
+        since = None
+    recovered = since is not None and r.now - since >= max(240, r.cfg['intervalSeconds'])
+    if recovered:
+        state.pop('gap', None)
+        state.pop('active', None)
+        state.pop('quietSince', None)
+    if state.get('gap'):
+        issues.append(state['gap']['reason'] + '；历史计数不完整，需新有效到期版本及完整安静窗口')
+    data = finding('model_authorization_data', 'warning' if issues else 'ok', '模型授权无法判断',
+                   '；'.join(issues), 'm1-model-subscription.md', 'monitor status 查看未知原因，核对授权文件与 Worker 日志可读性')
+    data['noRepeat'] = True
+    expiry_phase = None if expires is None or expires / 1000 - r.now > 72 * 3600 \
+        else 24 if expires / 1000 - r.now <= 24 * 3600 else 72
+    if issues and not added and expiry_phase is None:
+        r.state['modelAuth'] = state
+        return [data, unknown('model_authorization')]
+    if recovered or active is None:
+        r.state['modelAuth'] = state
+        return [data, finding('model_authorization', 'ok', '模型授权到期/过期错误')]
+    if expiry_phase == 24 and active['stage'] != 'error':
+        active['stage'] = 24
+    error_id = 'model_authorization:%s:error' % active['id'] if active['count'] else None
+    new_error = error_id is not None and error_id not in r.state.get('notifiedOnce', {})
+    phase = 'error' if error_id and (new_error or expiry_phase is None) else expiry_phase
+    if phase is None:
+        r.state['modelAuth'] = state
+        return [data, unknown('model_authorization')]  # old warning awaits recovery evidence
+    title = '模型授权过期错误' if phase == 'error' else '模型授权将在 %s 小时内到期' % phase
+    detail = '到期 %s；请到运行控制台重新授权' % (utc_time(expires / 1000) if expires is not None else '无法判断（到期字段不可读）')
+    if phase == 'error' and expiry_phase is not None:
+        detail += '；当前授权已进入 %s 小时到期阶段' % expiry_phase
+    if expires is not None and expires / 1000 <= r.now:
+        detail += '（当前已到期，沿用 24 小时通知阶段）'
+    if active['count']:
+        detail += '；本轮新增 %d 条，本次故障累计 %d 条 DSH_PI_AI_ERROR / token has expired 完整 Handler failed 记录（message/cause 不双计）；最早观察时间 %s（日志无发生时间戳）' % (
+            added, active['count'], utc_time(active['first']))
+    if fresh:
+        detail += '；已观察到新的有效到期版本，等待完整安静窗口确认恢复'
+    severity = 'critical' if active['stage'] in (24, 'error') or expiry_phase == 24 else 'warning'
+    f = finding('model_authorization', severity, title, detail,
+                'm1-model-subscription.md', '运行控制台 → 模型与用量 → Codex 订阅，重新授权')
+    # Time milestones belong to the currently read grant, even while an older
+    # fault is held open by unknown logs. The error notice belongs to that fault.
+    phases = [72, 24] if expiry_phase == 24 else [72] if expiry_phase == 72 else []
+    once = ['model_authorization:%s:%s' % (expires, p) for p in phases] + ([error_id] if error_id else [])
+    f.update(noRepeat=True, onceIds=once)
+    r.state['modelAuth'] = state
+    return [data, f]
 
 
 def check_tunnel(r):
@@ -1912,6 +2263,7 @@ M1_CHECKS = [
     ('images', check_images, True, None),
     ('office', check_office, True, None),
     ('subscription', check_subscription, False, 'postgres'),
+    ('model_authorization', check_model_authorization, False, None),
     ('tunnel', check_tunnel, True, None),
     ('public_entry', check_public_entry, True, None),
     ('disk', check_disk, False, None),
@@ -2067,15 +2419,17 @@ def do_round(cfg, peer):
     findings.append(finding('monitor_state', 'warning' if lost else 'ok', '监控状态文件损坏',
                             '读不出来，已另存为 %s；之前的待发通知和告警状态丢了，已有的故障会重新报一次' % lost,
                             'm1-monitor.md', 'monitor status'))
+    preparation_state = r.state
     signal.alarm(90)  # delivery has its own timeouts; this only bounds a hung write
     try:
         r.now = time.time()
-        events = evaluate(r, findings, ran)
+        r.state = prepare_notifications(r, findings, ran)
+        r.save()  # consumed facts and their queued messages become durable together
         if peer:
             flush_incidents_remote(r)
         else:
             flush_incidents(r)
-        deliver(r, compose(r, events))
+        deliver(r, [])
         if not peer and daily_due(r):
             send_daily(r)
         r.state['lastRound'] = {'at': r.now, 'seconds': round(time.time() - start, 1), 'error': error}
@@ -2083,6 +2437,12 @@ def do_round(cfg, peer):
         r.save()
         heartbeat(r, time.time() - start, error)
     except RoundTimeout:
+        signal.alarm(0)
+        if r.state is preparation_state:
+            # Finish this already completed sample, not a later source snapshot.
+            # This bounded in-memory preparation makes no external calls. External
+            # delivery remains timed out and is left to the existing outbox.
+            r.state = prepare_notifications(r, findings, ran)
         r.save()
         sys.exit('monitor: delivering the round timed out')
     finally:
