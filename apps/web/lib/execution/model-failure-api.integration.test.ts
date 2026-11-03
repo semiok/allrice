@@ -2,6 +2,10 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { RequestContext } from '@allrice/contracts';
+import {
+  createSession,
+  authenticateSession,
+} from '../../../../packages/database/src/identity.ts';
 import * as client from '../../../../packages/database/src/core/client.ts';
 import { createRuntimeFixtureDatabase } from '../../../../packages/database/src/runtime.fixture.ts';
 import { createExperienceFixture } from '../../../../packages/database/src/experience.fixture.ts';
@@ -323,7 +327,12 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
       values(${taskId},${f.org},${f.workspace},${f.user},'Synthetic historical task','Synthetic only','schedule',${json({ frequency: 'daily', time: '09:00', timezone: 'UTC' })},'enabled','reuse',${session!.employee_assignment_id},${f.session.id},'2099-01-01T09:00:00Z')`;
     await db.db`insert into allrice_automation_runs(id,organization_id,workspace_id,automation_id,scheduled_for,status,run_id,session_id,error_code,error_message)
       values(${randomUUID()},${f.org},${f.workspace},${taskId},'2026-11-03T09:00:00Z','failed',${f.run},${f.session.id},'DSH_SYNTHETIC_NEW_CODE',${unknownRaw + ' ' + secret})`;
-    auth.context = f.owner;
+    const login = await createSession(f.user);
+    auth.context = await authenticateSession(login.token, {
+      organizationId: f.org,
+      workspaceId: f.workspace,
+    });
+    expect(auth.context).not.toBeNull();
     const body = await publicBody(
       await taskGet(
         new Request(
