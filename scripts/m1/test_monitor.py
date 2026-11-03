@@ -962,6 +962,393 @@ class Business(unittest.TestCase):
         self.assertFalse(monitor.daily_due(r))
 
 
+class ModelAuthorization(unittest.TestCase):
+    def setUp(self):
+        self.r = make_round(dailyHour=99)
+        self.r.now = 2_000_000_000
+        self.start = self.r.now
+        self.expires = int((self.start + 200 * 3600) * 1000)
+        self.credentials = os.path.join(self.r.cfg['stateDir'], 'synthetic-credentials.yaml')
+        self.log = os.path.join(self.r.cfg['stateDir'], 'synthetic-worker.err.log')
+        self.r.cfg.update(modelAuthCredentials=self.credentials, modelAuthLog=self.log)
+        self.grant(self.expires)
+        open(self.log, 'w').close()
+
+    def grant(self, expires):
+        with open(self.credentials, 'w') as stream:
+            stream.write('version: 1\nrefs: {}\nrecords:\n  llm-pi-ai/openai-codex:\n'
+                         '    kind: grant\n    payload:\n      type: oauth\n'
+                         '      access: SYNTHETIC_ACCESS_SECRET\n      refresh: SYNTHETIC_REFRESH_SECRET\n'
+                         '      expires: %s\n      accountId: SYNTHETIC_ACCOUNT_SECRET\n' % expires)
+
+    def append(self, text):
+        with open(self.log, 'a') as stream:
+            stream.write(text)
+
+    @staticmethod
+    def record(code='DSH_PI_AI_ERROR', message='Your authentication token has expired. Please try signing in again.'):
+        return "[M5] Handler failed {\n  jobId: 'synthetic-job',\n  code: '%s',\n  message: '%s',\n  cause: '%s'\n}\n" % (code, message, message)
+
+    def collect(self, at=None, confirm=False):
+        if at is not None:
+            self.r.now = at
+        findings, ran = monitor.run_checks(self.r, [('model_authorization', monitor.check_model_authorization, confirm, None)])
+        check = next(f for f in findings if f['key'] == 'check:model_authorization')
+        self.assertEqual(check['severity'], 'ok', check)
+        findings = [f for f in findings if f['key'] != check['key']]
+        events = monitor.evaluate(self.r, findings, ran)
+        self.assertNotIn('SYNTHETIC_', json.dumps(self.r.state))
+        self.assertNotIn('SYNTHETIC_', '\n'.join(monitor.compose(self.r, events)))
+        return findings, events
+
+    def restart(self):
+        at = self.r.now
+        self.r.save()
+        self.r = monitor.Round(self.r.cfg)
+        self.r.now = at
+
+    def test_72_24_once_across_restart_without_periodic_or_third_expiry_notice(self):
+        self.append(self.record())  # recovered historical errors are before the first EOF baseline
+        self.assertEqual(self.collect()[1], [])
+        at72 = self.expires / 1000 - 72 * 3600
+        _, events = self.collect(at72)
+        self.assertEqual([e['event'] for e in events], ['opened'])
+        text = '\n'.join(monitor.compose(self.r, events))
+        self.assertIn('72 小时', text)
+        self.assertIn(monitor.utc_time(self.expires / 1000), text)
+        self.assertIn('运行控制台', text)
+        self.assertEqual(self.collect(at72 + 6 * 3600)[1], [])
+        self.restart()
+        self.assertEqual(self.collect(at72 + 12 * 3600)[1], [])
+        _, events = self.collect(self.expires / 1000 - 24 * 3600)
+        self.assertEqual([e['event'] for e in events], ['escalated'])
+        self.assertIn('24 小时', '\n'.join(monitor.compose(self.r, events)))
+        self.restart()
+        self.assertEqual(self.collect(self.expires / 1000 + 3600)[1], [])
+        self.assertEqual(self.r.state['modelAuth']['active']['count'], 0)
+
+    def test_first_observation_inside_24h_or_after_expiry_uses_only_current_stage(self):
+        for remaining in (12 * 3600, -1):
+            with self.subTest(remaining=remaining):
+                self.setUp()
+                self.grant(int((self.start + remaining) * 1000))
+                _, events = self.collect()
+                self.assertEqual([e['event'] for e in events], ['opened'])
+                self.assertIn('24 小时', events[0]['finding']['title'])
+                if remaining < 0:
+                    self.assertIn('当前已到期', events[0]['finding']['detail'])
+                self.restart()
+                self.assertEqual(self.collect(self.start + 3600)[1], [])
+
+    def test_warning_error_new_grant_later_error_then_one_quiet_recovery(self):
+        self.expires = int((self.start + 72 * 3600) * 1000)
+        self.grant(self.expires)
+        self.collect()
+        self.append(self.record() * 2)
+        self.append("user content DSH_PI_AI_ERROR Your authentication token has expired\n")
+        self.append(self.record(code='OTHER_ERROR'))
+        _, events = self.collect(self.start + 1, confirm=True)
+        self.assertEqual([e['event'] for e in events], ['escalated'])
+        self.assertEqual(self.r.state['modelAuth']['active']['count'], 2)
+        self.assertIn('最早观察时间 ' + monitor.utc_time(self.start + 1), events[0]['finding']['detail'])
+        self.restart()
+        self.grant(self.expires + 200 * 3600 * 1000)
+        self.assertEqual(self.collect(self.start + 2)[1], [])
+        self.append(self.record())
+        self.assertEqual(self.collect(self.start + 242)[1], [])
+        self.assertEqual(self.r.state['modelAuth']['active']['count'], 3)
+        self.assertEqual(self.collect(self.start + 243)[1], [])
+        self.restart()
+        self.assertEqual(self.collect(self.start + 482)[1], [])
+        _, events = self.collect(self.start + 483)
+        self.assertEqual([(e['event'], e['finding']['key']) for e in events], [('recovered', 'model_authorization')])
+        self.assertEqual(len(monitor.compose(self.r, events)), 1)
+        self.restart()
+        self.assertEqual(self.collect(self.start + 723)[1], [])
+        incidents = [x for x in self.r.state['incidentOutbox'] if x['detailCode'] == 'monitor.model_authorization']
+        self.assertEqual([x['metadata']['event'] for x in incidents], ['opened', 'escalated', 'recovered'])
+        self.assertEqual(len({x['metadata']['alertId'] for x in incidents}), 1)
+
+    def test_new_error_after_24h_critical_is_told_once_in_same_incident(self):
+        self.grant(int((self.start + 3600) * 1000))
+        self.collect()
+        self.append(self.record())
+        _, events = self.collect(self.start + 1)
+        self.assertEqual([e['event'] for e in events], ['escalated'])
+        self.assertEqual(self.collect(self.start + 7200)[1], [])
+
+    def test_unreadable_sources_report_cannot_judge_and_do_not_recover_auth(self):
+        self.collect()
+        self.append(self.record())
+        self.collect(self.start + 1)
+        os.rename(self.credentials, self.credentials + '.saved')
+        os.rename(self.log, self.log + '.saved')
+        findings, events = self.collect(self.start + 500)
+        self.assertEqual({f['key']: f['severity'] for f in findings},
+                         {'model_authorization_data': 'warning', 'model_authorization': 'unknown'})
+        self.assertIn('无法判断', '\n'.join(monitor.compose(self.r, events)))
+        self.assertIn('model_authorization', self.r.state['alerts'])
+        os.rename(self.credentials + '.saved', self.credentials)
+        os.rename(self.log + '.saved', self.log)
+        _, events = self.collect(self.start + 740)
+        self.assertEqual([e['finding']['key'] for e in events], ['model_authorization_data'])
+        self.assertIn('model_authorization', self.r.state['alerts'])
+        # Merely rewriting bytes/mtime or observing no errors is not reauthorization.
+        self.grant(self.expires)
+        self.assertEqual(self.collect(self.start + 5000)[1], [])
+        self.assertIn('model_authorization', self.r.state['alerts'])
+
+    def test_known_error_is_still_reported_when_expiry_is_unreadable(self):
+        self.collect()
+        os.remove(self.credentials)
+        self.append(self.record())
+        _, events = self.collect(self.start + 1)
+        self.assertEqual({e['finding']['key'] for e in events}, {'model_authorization_data', 'model_authorization'})
+        self.assertIn('到期 无法判断', '\n'.join(monitor.compose(self.r, events)))
+
+    def test_expiry_projection_rejects_ambiguous_or_unsupported_documents_without_secrets(self):
+        self.assertEqual(monitor.model_auth_expiry(self.credentials), self.expires)
+        with open(self.credentials) as stream:
+            valid = stream.read()
+        for document in ('SYNTHETIC_ACCESS_SECRET', 'records: {}\n',
+                         'records:\n  llm-pi-ai/openai-codex:\n    payload:\n      expires: not-a-time\n',
+                         'records:\n  llm-pi-ai/openai-codex:\n    payload:\n      expires: 1\n      expires: 2\n',
+                         valid + '      expires: not-a-time\n',
+                         valid + '      "expires": null\n',
+                         valid + "      'expires\": 123\n",
+                         valid + '    payload: {}\n',
+                         valid + '  "llm-pi-ai/openai-codex": {}\n',
+                         valid + "  'llm-pi-ai/openai-codex\": {}\n",
+                         valid + 'records: {}\n',
+                         valid.replace(str(self.expires), '9' * 16)):
+            with self.subTest(document=document):
+                with open(self.credentials, 'w') as stream:
+                    stream.write(document)
+                with self.assertRaises(monitor.CheckError) as caught:
+                    monitor.model_auth_expiry(self.credentials)
+                self.assertNotIn('SYNTHETIC_', str(caught.exception))
+
+    def test_expiry_projection_supports_balanced_quoted_keys_without_exposing_other_fields(self):
+        with open(self.credentials) as stream:
+            valid = stream.read()
+        for quote in ('"', "'"):
+            with self.subTest(quote=quote):
+                with open(self.credentials, 'w') as stream:
+                    stream.write(valid.replace('records:', quote + 'records' + quote + ':')
+                                 .replace('llm-pi-ai/openai-codex:', quote + 'llm-pi-ai/openai-codex' + quote + ':')
+                                 .replace('payload:', quote + 'payload' + quote + ':')
+                                 .replace('expires:', quote + 'expires' + quote + ':'))
+                self.assertEqual(monitor.model_auth_expiry(self.credentials), self.expires)
+
+    def test_interrupted_projection_rereads_records_instead_of_losing_their_count(self):
+        self.collect()
+        before = json.loads(json.dumps(self.r.state))
+        self.append(self.record())
+        with mock.patch.object(monitor, 'utc_time', side_effect=[monitor.utc_time(self.expires / 1000), monitor.RoundTimeout()]):
+            with self.assertRaises(monitor.RoundTimeout):
+                monitor.check_model_authorization(self.r)
+        self.assertEqual(self.r.state, before)
+        _, events = self.collect(self.start + 1)
+        self.assertEqual(self.r.state['modelAuth']['active']['count'], 1)
+        self.assertEqual([e['event'] for e in events], ['opened'])
+
+    def test_partial_records_never_persist_raw_text_or_claim_zero_healthy(self):
+        self.collect()
+        prefix = "[M5] Handler failed {\n  code: 'DSH_PI_AI_ERROR',\n  message: 'Your authentication token has exp"
+        self.append(prefix)
+        findings, _ = self.collect(self.start + 1)
+        self.assertEqual(findings[0]['severity'], 'warning')
+        self.assertNotIn('authentication', json.dumps(self.r.state))
+        self.restart()
+        self.append("ired. Please try signing in again.',\n  cause: 'SYNTHETIC_CAUSE_SECRET'\n}\n")
+        _, events = self.collect(self.start + 241)
+        self.assertEqual(self.r.state['modelAuth']['active']['count'], 1)
+        self.assertTrue(any(e['finding']['key'] == 'model_authorization' for e in events))
+
+    def test_readable_rename_rotation_consumes_old_tail_then_new_file(self):
+        self.collect()
+        self.append(self.record())
+        os.rename(self.log, self.log + '.1')
+        with open(self.log, 'w') as stream:
+            stream.write(self.record())
+        findings, _ = self.collect(self.start + 1)
+        self.assertEqual(findings[0]['severity'], 'ok')
+        self.assertEqual(self.r.state['modelAuth']['active']['count'], 2)
+        self.assertNotIn('gap', self.r.state['modelAuth'])
+        self.assertEqual(self.collect(self.start + 241)[1], [])
+
+    def test_rotation_backlog_is_fully_read_over_rounds_without_replaying_or_losing_errors(self):
+        self.collect()
+        old_records, new_records = 5, 2
+        self.append(self.record() * old_records)
+        os.rename(self.log, self.log + '.1')
+        with open(self.log, 'w') as stream:
+            stream.write(self.record() * new_records)
+        with mock.patch.object(monitor, 'AUTH_LOG_BYTES', len(self.record().encode()) * 2):
+            for at in (1, 241, 481, 721):
+                findings, _ = self.collect(self.start + at)
+                self.restart()
+        self.assertEqual(findings[0]['severity'], 'ok')
+        self.assertEqual(self.r.state['modelAuth']['active']['count'], old_records + new_records)
+        self.assertNotIn('gap', self.r.state['modelAuth'])
+
+    def test_incomplete_rotated_tail_latches_unknown_but_does_not_block_new_errors(self):
+        self.collect()
+        self.append("[M5] Handler failed {\n  code: 'DSH_PI_AI_ERROR',\n  message: 'unfinished")
+        os.rename(self.log, self.log + '.1')
+        with open(self.log, 'w') as stream:
+            stream.write(self.record())
+        findings, events = self.collect(self.start + 1)
+        self.assertEqual(findings[0]['severity'], 'warning')
+        self.assertEqual(self.r.state['modelAuth']['active']['count'], 1)
+        self.assertTrue(any(e['finding']['key'] == 'model_authorization' for e in events))
+        self.assertIn('gap', self.r.state['modelAuth'])
+        self.restart()
+        self.grant(self.expires + 200 * 3600 * 1000)
+        self.collect(self.start + 241)
+        self.assertEqual(self.collect(self.start + 480)[1], [])
+        _, events = self.collect(self.start + 481)
+        self.assertEqual(sorted(e['finding']['key'] for e in events),
+                         ['model_authorization', 'model_authorization_data'])
+        self.assertTrue(all(e['event'] == 'recovered' for e in events))
+        self.assertEqual(self.collect(self.start + 721)[1], [])
+
+    def test_repeated_read_failures_each_notify_once_without_flapping_or_reminders(self):
+        self.collect()
+        for at in (1, 241, 481):
+            os.rename(self.credentials, self.credentials + '.saved')
+            _, events = self.collect(self.start + at)
+            self.assertEqual([(e['event'], e['silent']) for e in events], [('opened', False)])
+            self.assertEqual(self.collect(self.start + at + 1)[1], [])
+            os.rename(self.credentials + '.saved', self.credentials)
+            _, events = self.collect(self.start + at + 2)
+            self.assertEqual([e['event'] for e in events], ['recovered'])
+
+    def test_lost_rotation_truncation_and_corrupt_records_latch_unknown_until_fresh_quiet_grant(self):
+        for damage in ('rotation', 'truncation', 'record', 'encoding'):
+            with self.subTest(damage=damage):
+                self.setUp()
+                self.append('historical padding\n' * 100)
+                self.collect()
+                if damage == 'rotation':
+                    os.remove(self.log)
+                    open(self.log, 'w').close()
+                elif damage == 'truncation':
+                    open(self.log, 'w').close()
+                elif damage == 'record':
+                    self.append("[M5] Handler failed {\n  code: 'DSH_PI_AI_ERROR',\n}\n")
+                else:
+                    with open(self.log, 'ab') as stream:
+                        stream.write(b'\xff\n')
+                findings, _ = self.collect(self.start + 1)
+                self.assertEqual(findings[0]['severity'], 'warning')
+                self.assertEqual(self.collect(self.start + 1000)[0][0]['severity'], 'warning')
+                self.grant(self.expires + 200 * 3600 * 1000)
+                self.assertEqual(self.collect(self.start + 1001)[0][0]['severity'], 'warning')
+                self.assertEqual(self.collect(self.start + 1240)[0][0]['severity'], 'warning')
+                self.assertEqual(self.collect(self.start + 1241)[0][0]['severity'], 'ok')
+
+    def test_copytruncate_then_regrow_past_old_offset_reports_gap_and_new_errors(self):
+        self.append('historical padding\n' * 100)
+        self.collect()
+        before = os.stat(self.log)
+        with open(self.log, 'w') as stream:
+            stream.write(self.record() + 'different padding\n' * 200)
+        after = os.stat(self.log)
+        self.assertEqual(before.st_ino, after.st_ino)
+        self.assertGreater(after.st_size, before.st_size)
+        findings, events = self.collect(self.start + 1)
+        self.assertEqual(findings[0]['severity'], 'warning')
+        self.assertIn('截断后再增长', findings[0]['detail'])
+        self.assertEqual(self.r.state['modelAuth']['active']['count'], 1)
+        self.assertTrue(any(e['finding']['key'] == 'model_authorization' for e in events))
+        self.restart()
+        self.assertEqual(self.collect(self.start + 241)[0][0]['severity'], 'warning')
+        self.assertEqual(self.r.state['modelAuth']['active']['count'], 1)
+
+    def test_oversized_unfinished_line_is_not_skipped_or_healthy_on_next_scan(self):
+        self.collect()
+        self.append('x' * 1024 + '\n')
+        with mock.patch.object(monitor, 'AUTH_LOG_BYTES', 256):
+            for at in (self.start + 1, self.start + 1000):
+                findings, _ = self.collect(at)
+                self.assertEqual(findings[0]['severity'], 'warning')
+                self.assertEqual(self.r.state['modelAuth']['log']['offset'], 0)
+
+    def test_failed_delivery_queue_survives_process_restart_without_duplicate_enqueue(self):
+        self.grant(int((self.start + 72 * 3600) * 1000))
+        _, events = self.collect()
+        with mock.patch.object(monitor, 'send_telegram', side_effect=monitor.CheckError('synthetic offline')):
+            monitor.deliver(self.r, monitor.compose(self.r, events))
+        self.restart()
+        _, events = self.collect(self.start + 240)
+        sent = []
+        with mock.patch.object(monitor, 'send_telegram', side_effect=lambda cfg, text: sent.append(text)):
+            monitor.deliver(self.r, monitor.compose(self.r, events))
+        self.assertEqual(len(sent), 1)
+        self.restart()
+        self.assertEqual(self.collect(self.start + 1000)[1], [])
+        self.assertEqual(self.r.state['outbox'], [])
+
+    def test_real_process_lock_and_restart_deduplicate_milestones_in_temporary_files(self):
+        expires = int((self.start + 72 * 3600) * 1000)
+        self.grant(expires)
+        config = os.path.join(self.r.cfg['stateDir'], 'synthetic-config.json')
+        sent = os.path.join(self.r.cfg['stateDir'], 'fake-telegram.jsonl')
+        cfg = dict(self.r.cfg, incidents=False)
+        with open(config, 'w') as stream:
+            json.dump(cfg, stream)
+        program = r'''
+import importlib.machinery, importlib.util, json, sys, time
+loader = importlib.machinery.SourceFileLoader('monitor', sys.argv[1])
+spec = importlib.util.spec_from_loader('monitor', loader)
+m = importlib.util.module_from_spec(spec)
+loader.exec_module(m)
+with open(sys.argv[2]) as stream:
+    cfg = json.load(stream)
+m.time.time = lambda: float(sys.argv[4])
+m.M1_CHECKS = [('model_authorization', m.check_model_authorization, False, None)]
+m.heartbeat = lambda *a, **kw: None
+def fake_send(cfg, text):
+    with open(sys.argv[3], 'a') as stream:
+        stream.write(json.dumps(text) + '\n')
+    time.sleep(0.1)
+m.send_telegram = fake_send
+m.do_round(cfg, False)
+'''
+        def processes(at):
+            children = [subprocess.Popen([sys.executable, '-c', program, os.path.join(HERE, 'monitor'), config, sent, str(at)],
+                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(4)]
+            for child in children:
+                out, err = child.communicate(timeout=20)
+                self.assertEqual(child.returncode, 0, out + err)
+
+        for at in (self.start, self.start + 240, self.start + 48 * 3600, self.start + 49 * 3600):
+            processes(at)
+        at_error = self.start + 49 * 3600 + 1
+        self.append(self.record())
+        processes(at_error)
+        self.grant(expires + 200 * 3600 * 1000)
+        processes(at_error + 1)
+        self.append(self.record())
+        processes(at_error + 241)
+        for at in (at_error + 242, at_error + 481, at_error + 482, at_error + 722):
+            processes(at)
+        with open(sent) as stream:
+            messages = [json.loads(line) for line in stream]
+        self.assertEqual(len(messages), 4)
+        self.assertIn('72 小时', messages[0])
+        self.assertIn('24 小时', messages[1])
+        self.assertIn('过期错误', messages[2])
+        self.assertIn('最早观察时间', messages[2])
+        self.assertIn('1 项恢复', messages[3])
+        with open(os.path.join(cfg['stateDir'], 'state.json')) as stream:
+            state = json.load(stream)
+        self.assertNotIn('model_authorization', state['alerts'])
+        self.assertNotIn('active', state['modelAuth'])
+        self.assertEqual(state['outbox'], [])
+
+
 class OnlineWaits(unittest.TestCase):
     worker_id = 'd69d8923-e74d-45ab-9b38-1d4eb8f51aa0'
 
