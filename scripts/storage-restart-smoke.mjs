@@ -37,6 +37,7 @@ const cookie = loggedIn.headers.get('set-cookie')?.split(';')[0];
 if (!cookie) throw new Error('restart login did not set a session');
 const headers = {
   cookie,
+  origin: new URL(baseUrl).origin,
   'x-allrice-organization-id': state.organizationId,
   'x-allrice-workspace-id': state.workspaceId,
 };

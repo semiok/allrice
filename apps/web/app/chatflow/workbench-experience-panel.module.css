@@ -28,6 +28,7 @@
 }
 .tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 20px;
   border-bottom: 1px solid var(--dsw-alias-border-l2);
   margin: 0 18px;

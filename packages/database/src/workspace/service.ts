@@ -2469,16 +2469,54 @@ export async function listWorkspaceMemories(
   context: RequestContext,
   workspaceIdInput: string,
   employeeIdInput?: string,
+  options: { personal?: boolean; sourceId?: string; runId?: string } = {},
 ) {
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
   const employeeId = employeeIdInput ? UuidSchema.parse(employeeIdInput) : null;
   const sql = getDatabase();
+  const personal = options.personal || !!options.sourceId || !!options.runId;
+  let sourceIds = options.sourceId
+    ? [UuidSchema.parse(options.sourceId)]
+    : null;
+  if (options.runId) {
+    const [run] = await sql<{ session_id: string; user_message_id: string }[]>`
+      select session_id, user_message_id from allrice_employee_runs
+      where run_id = ${UuidSchema.parse(options.runId)}
+        and organization_id = ${context.organizationId}
+        and workspace_id = ${workspaceId} and owner_id = ${requireUser(context)}
+    `;
+    if (!run) throw new DataAccessError('not_found');
+    const steering = await readSessionSteering(
+      context.organizationId,
+      workspaceId,
+      run.session_id,
+      sql,
+    );
+    const bound = new Set([
+      run.user_message_id,
+      ...steering
+        .filter(
+          (item) =>
+            item.steering.runId === options.runId &&
+            item.steering.status === 'adopted',
+        )
+        .map((item) => item.messageId),
+    ]);
+    sourceIds = sourceIds
+      ? sourceIds.filter((id) => bound.has(id))
+      : [...bound];
+  }
+  if (sourceIds?.length === 0) return [];
   const rows = await sql<MemoryRow[]>`
     select * from allrice_memories
     where organization_id = ${context.organizationId}
       and workspace_id = ${workspaceId}
       and (${employeeId}::uuid is null or employee_id = ${employeeId})
       and archived_at is null
+      and (not ${personal} or (owner_id = ${requireUser(context)}
+        and not exists (select 1 from allrice_experience_reviews review
+          where review.memory_id = allrice_memories.id)))
+      ${sourceIds ? sql`and source_type = 'message' and source_id in ${sql(sourceIds)}` : sql``}
     order by updated_at desc, id desc
     limit 100
   `;

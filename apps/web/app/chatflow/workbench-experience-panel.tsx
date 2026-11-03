@@ -13,6 +13,7 @@ import {
 import { workbenchJson } from '../../lib/chatflow/workbench-model';
 import { WorkbenchIcon } from './workbench-modules';
 import css from './workbench-experience-panel.module.css';
+import { MemoryPanel } from './memory-panel';
 const scopes = {
   personal: '个人',
   department: '部门',
@@ -32,7 +33,7 @@ export function WorkbenchExperiencePanel(props: {
   const [employee, setEmployee] = useState(props.instanceId ?? 'all'),
     [scope, setScope] = useState('all'),
     [query, setQuery] = useState(''),
-    [tab, setTab] = useState<'effective' | 'history'>('effective'),
+    [tab, setTab] = useState<'effective' | 'history' | 'memories'>('effective'),
     [revision, setRevision] = useState(0);
   const [snapshot, setSnapshot] = useState<{
     key: string;
@@ -67,7 +68,7 @@ export function WorkbenchExperiencePanel(props: {
           result.status === 'fulfilled' ? [result.value] : [],
         ),
         error: results.some((result) => result.status === 'rejected')
-          ? '部分员工的经验读取失败，可刷新重试。'
+          ? '部分 AllRice 助手的经验读取失败，可刷新重试。'
           : '',
       });
     });
@@ -114,11 +115,12 @@ export function WorkbenchExperiencePanel(props: {
     <section className={css.panel} aria-label="经验管理">
       <div className={css.toolbar}>
         <select
-          aria-label="经验所属员工"
+          aria-label="经验所属 AllRice 助手"
+          disabled={tab === 'memories'}
           value={employee}
           onChange={(event) => setEmployee(event.target.value)}
         >
-          <option value="all">全部员工</option>
+          <option value="all">全部 AllRice 助手</option>
           {props.employees.map((item) => (
             <option key={item.id} value={item.id}>
               {item.name}
@@ -127,7 +129,7 @@ export function WorkbenchExperiencePanel(props: {
         </select>
         <select
           aria-label="经验范围"
-          disabled={tab === 'history'}
+          disabled={tab !== 'effective'}
           value={scope}
           onChange={(event) => setScope(event.target.value)}
         >
@@ -142,6 +144,13 @@ export function WorkbenchExperiencePanel(props: {
         </button>
       </div>
       <nav className={css.tabs} aria-label="经验视图">
+        <button
+          type="button"
+          aria-pressed={tab === 'memories'}
+          onClick={() => setTab('memories')}
+        >
+          个人记忆
+        </button>
         <button
           type="button"
           aria-pressed={tab === 'effective'}
@@ -246,6 +255,14 @@ export function WorkbenchExperiencePanel(props: {
               />
             )}
           </>
+        ) : tab === 'memories' ? (
+          <MemoryPanel
+            key={props.scopeId}
+            scopeId={props.scopeId}
+            workspaceId={props.workspaceId}
+            headers={props.headers}
+            refreshKey={String(revision)}
+          />
         ) : (
           selected.map((item) => (
             <section key={item.id} className={css.history}>

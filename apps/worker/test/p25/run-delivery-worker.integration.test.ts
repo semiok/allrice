@@ -26,6 +26,8 @@ import {
   createTraceableMemory,
   createCheckpointMemoryCandidate,
   listWorkspaceMemories,
+  promoteWorkspaceMemory,
+  deleteWorkspaceMemory,
 } from '../../../../packages/database/src/workspace/service.ts';
 import { mutateCompanyAsset } from '../../../../packages/database/src/company-assets.ts';
 import {
@@ -1394,7 +1396,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       label: 'explicit durable request',
       prompt: '请记住：我偏好中文周报',
       requested: 'durable',
-      state: 'durable',
+      state: 'candidate',
     },
     {
       label: 'stable preference without a phrase signal',
@@ -1418,19 +1420,19 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       label: 'residual quoted remember risk',
       prompt: '他说‘记住这个’',
       requested: 'durable',
-      state: 'durable',
+      state: 'candidate',
     },
     {
       label: 'user declines durable',
       prompt: '不要记住这件事',
       requested: 'durable',
-      state: null,
+      state: 'candidate',
     },
     {
       label: 'user declines candidate',
       prompt: '不要记住这件事',
       requested: 'candidate',
-      state: null,
+      state: 'candidate',
     },
   ] as const)(
     'R2 stores $label through chat admission and Worker',
@@ -1485,23 +1487,8 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         expect(writeIndex).toBeGreaterThanOrEqual(0);
         const invocation = broker.mock.calls[writeIndex]![0];
         expect(invocation.userRequest).toBe(c.prompt);
-        if (c.state === null) {
-          expect(memories).toHaveLength(0);
-          const error = await broker.mock.results[writeIndex]!.value.catch(
-            (error: unknown) => error,
-          );
-          expect(error).toMatchObject({ code: 'MEMORY_USER_DECLINED' });
-          expect(
-            isConfirmedToolFailure(error, {
-              runId: task.runId,
-              callId: invocation.call.id,
-              toolName: invocation.call.name,
-            }),
-          ).toBe(true);
-          return;
-        }
         expect(memories).toHaveLength(1);
-        const trust = c.state === 'durable' ? 'user_confirmed' : 'derived';
+        const trust = 'derived';
         expect(memories[0]).toMatchObject({
           content,
           employee_id: f.identity.employee,
@@ -1520,9 +1507,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           lifecycleState: c.state,
           provenance: { trust },
         });
-        expect(receipt.summary).toBe(
-          c.state === 'durable' ? '已保存为长期记忆' : '已保存为待确认候选记忆',
-        );
+        expect(receipt.summary).toBe('已记为候选，确认后才生效');
         if (c.state === 'candidate') {
           const searchIndex = broker.mock.calls.findIndex(
             ([input]) => input.call.name === 'workspace.memory.search',
@@ -1555,6 +1540,55 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           const [frozen] =
             await f.db`select prompt_snapshot from allrice_employee_runs where run_id=${next.run!.id}`;
           expect(frozen!.prompt_snapshot.memories).toEqual([]);
+          // The real owner action changes lifecycle; a fresh chat then uses the
+          // existing automatic recall path. This is deterministic overlap, not
+          // a replacement for the frozen SB02 semantic-recall acceptance case.
+          await promoteWorkspaceMemory(
+            f.context,
+            f.identity.workspace,
+            memories[0]!.id,
+          );
+          const confirmedChat = await createAssignedChatSession(f.context, {
+            workspaceId: f.identity.workspace,
+            employeeAssignmentId: f.identity.assignment,
+            title: 'Synthetic confirmed memory recall',
+          });
+          const confirmedReply = await sendChatMessage(
+            f.context,
+            f.identity.workspace,
+            confirmedChat.id,
+            {
+              text: content,
+              clientMessageId: randomUUID(),
+            },
+          );
+          const [confirmed] =
+            await f.db`select prompt_snapshot from allrice_employee_runs where run_id=${confirmedReply.run!.id}`;
+          expect(confirmed!.prompt_snapshot.memories).toContainEqual(
+            expect.objectContaining({ id: memories[0]!.id }),
+          );
+          await deleteWorkspaceMemory(
+            f.context,
+            f.identity.workspace,
+            memories[0]!.id,
+          );
+          const discardedChat = await createAssignedChatSession(f.context, {
+            workspaceId: f.identity.workspace,
+            employeeAssignmentId: f.identity.assignment,
+            title: 'Synthetic archived memory recall',
+          });
+          const discardedReply = await sendChatMessage(
+            f.context,
+            f.identity.workspace,
+            discardedChat.id,
+            {
+              text: content,
+              clientMessageId: randomUUID(),
+            },
+          );
+          const [discarded] =
+            await f.db`select prompt_snapshot from allrice_employee_runs where run_id=${discardedReply.run!.id}`;
+          expect(discarded!.prompt_snapshot.memories).toEqual([]);
         }
       } finally {
         await task.isolation.cleanup();
@@ -1787,7 +1821,9 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     {
       contamination: '不要记住',
       prompt: '请记住：我偏好中文周报',
-      state: 'durable',
+      // Formerly durable via the positive phrase gate. All model writes now
+      // remain candidates; template/file text still cannot grant or deny one.
+      state: 'candidate',
     },
   ] as const)(
     'R2 ignores template and attachment filename $contamination as human intent',
@@ -1920,13 +1956,21 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         expect(callIndex).toBeGreaterThanOrEqual(0);
         expect(broker.mock.calls[callIndex]![0].userRequest).toBe(c.prompt);
         const receipt = await broker.mock.results[callIndex]!.value;
-        expect(JSON.parse(receipt.modelContent).lifecycleState).toBe(c.state);
-        const [stored] =
-          await f.db`select lifecycle_state,trust_level,source_id from allrice_memories where workspace_id=${f.identity.workspace}`;
-        expect(stored).toMatchObject({
+        expect(JSON.parse(receipt.modelContent)).toMatchObject({
+          lifecycleState: c.state,
+          requiresConfirmation: true,
+          notice: '已记为候选，确认后才生效',
+          provenance: { sourceType: 'message', sourceId: sent.userMessage.id },
+        });
+        const stored =
+          await f.db`select lifecycle_state,trust_level,source_id,source_label,confidence::float8 confidence from allrice_memories where workspace_id=${f.identity.workspace}`;
+        expect(stored).toHaveLength(1);
+        expect(stored[0]).toMatchObject({
           lifecycle_state: c.state,
-          trust_level: c.state === 'durable' ? 'user_confirmed' : 'derived',
+          trust_level: 'derived',
           source_id: sent.userMessage.id,
+          source_label: '模型提取候选',
+          confidence: 0.8,
         });
       } finally {
         await task.isolation.cleanup();

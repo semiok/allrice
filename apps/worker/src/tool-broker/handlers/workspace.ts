@@ -26,10 +26,6 @@ import { parseDocument } from '../../document-reader.js';
 import { readPdfLocally } from '../../document-read-local.js';
 import { confirmToolFailure, HandlerError } from '../../errors.js';
 import {
-  hasExplicitForgetIntent,
-  hasExplicitRememberIntent,
-} from '../../memory-lifecycle.js';
-import {
   limitValue,
   memoryClassValue,
   memoryLifecycleStateValue,
@@ -461,13 +457,11 @@ export const rememberWorkspaceMemory: RiceToolHandler = async ({
     });
     return error;
   };
-  const requestedLifecycleState = memoryLifecycleStateValue(
-    args.lifecycleState,
-  );
+  memoryLifecycleStateValue(args.lifecycleState);
   if (!input.context.workspaceId || !input.employeeId || !input.userMessageId) {
     throw rejected(
       'MEMORY_SOURCE_MESSAGE_REQUIRED',
-      '长期记忆缺少当前员工或用户消息来源',
+      '记忆缺少当前 AllRice 助手或用户消息来源',
     );
   }
   try {
@@ -486,14 +480,6 @@ export const rememberWorkspaceMemory: RiceToolHandler = async ({
       );
     throw error;
   }
-  if (hasExplicitForgetIntent(input.userRequest)) {
-    throw rejected('MEMORY_USER_DECLINED', '用户当前消息要求不要保存记忆');
-  }
-  const lifecycleState =
-    requestedLifecycleState === 'durable' &&
-    hasExplicitRememberIntent(input.userRequest)
-      ? 'durable'
-      : 'candidate';
   const content = stringValue(args.content, 'content');
   if (content.length > 10_000) {
     throw new HandlerError(
@@ -515,11 +501,10 @@ export const rememberWorkspaceMemory: RiceToolHandler = async ({
       visibility: 'private',
       sourceType: 'message',
       sourceId: input.userMessageId,
-      sourceLabel:
-        lifecycleState === 'durable' ? '用户明确要求记住' : '模型提取候选',
-      confidence: lifecycleState === 'durable' ? 1 : 0.8,
+      sourceLabel: '模型提取候选',
+      confidence: 0.8,
       expiresAt,
-      lifecycleState,
+      lifecycleState: 'candidate',
       memoryClass: memoryClassValue(args.memoryClass),
     },
   );
@@ -529,6 +514,8 @@ export const rememberWorkspaceMemory: RiceToolHandler = async ({
       content: memory.content,
       memoryClass: memory.memoryClass,
       lifecycleState: memory.lifecycleState,
+      requiresConfirmation: true,
+      notice: '已记为候选，确认后才生效',
       provenance: {
         sourceType: memory.sourceType,
         sourceId: memory.sourceId,
@@ -538,10 +525,7 @@ export const rememberWorkspaceMemory: RiceToolHandler = async ({
         capturedAt: memory.capturedAt,
       },
     }),
-    summary:
-      memory.lifecycleState === 'durable'
-        ? '已保存为长期记忆'
-        : '已保存为待确认候选记忆',
+    summary: '已记为候选，确认后才生效',
     itemCount: 1,
   };
 };

@@ -22,9 +22,11 @@ Knowledge and Workflow remain separate governed capabilities. They are not relab
 
 ## Capture rules
 
-- `workspace.memory.remember` writes a candidate only from a stable statement in the current user message.
-- A durable write requires an explicit current-message instruction such as “请记住” or “以后按此”.
-- Before context compaction, Rice may create a candidate from matching user-authored statements and link it to the checkpoint.
+- `workspace.memory.remember` writes candidates with the existing Worker-bound human message source. The model decides which stable facts to propose.
+- Model memory writes always create candidates, even when the model requests durable. User wording is not an authorization gate. Every successful result reports “已记为候选，确认后才生效”.
+- Only the owner’s explicit confirmation button promotes an existing candidate. The chat receipt and the workbench’s “个人记忆” tab use the same live memory card. Confirmation does not call or resume a model.
+- The model interprets requests not to save. A forced valid tool call still persists a candidate; this is not a zero-storage guarantee. Candidates remain excluded from automatic recall.
+- DSH owns context compaction; the retired checkpoint phrase extractor does not run.
 - Assistant output, hidden reasoning, web pages, connector content and tool results cannot promote themselves into durable memory.
 - Promotion and correction create revisions and audit events; deletion archives the source and removes it from future recall.
 
@@ -40,15 +42,14 @@ Explicit memory search may also return candidates so the user can inspect and co
 
 ## User controls
 
-The workspace Memory panel separates “待你确认” from “长期记忆” and exposes the memory class, source and revision. Owners can confirm, correct or delete their records. A candidate becomes eligible for future automatic recall only after confirmation.
+The existing experience workbench has a “个人记忆” tab separating “待你确认” from “长期记忆”, with class, source and revision. The default chat reply also displays the real candidate and its confirmation button. Owners can confirm or discard candidates and delete their durable records. Experience review records keep their separate review path. A candidate becomes eligible for future automatic recall only after confirmation.
 
 ## Acceptance
 
-- an explicit “remember” survives into a different Session;
+- an explicit “remember” creates a candidate; after the human confirms, it is eligible in a different Session;
 - a paraphrased but relevant request can recall the durable memory;
 - an unrelated request does not receive it;
-- pre-compaction capture creates an inactive candidate rather than an automatic fact;
-- the owner can inspect, promote, correct and delete a memory;
+- the owner can inspect, confirm, discard and delete a memory;
 - private memory never crosses user, workspace or organization boundaries;
 - recall and lifecycle changes remain attributable and auditable.
 
