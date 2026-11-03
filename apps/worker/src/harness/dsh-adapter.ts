@@ -340,9 +340,13 @@ export class DshHarnessAdapter implements HarnessAdapter {
     let turnId: string | null = null;
     let contentAuthorizationFailure: HandlerError | undefined;
     const checkContent = async (phase: DshContentCheckPhase = 'other') => {
+      // Native wait may settle an interrupted tree without rejecting. Keep the
+      // local admission denial authoritative, including callers without a guard.
+      if (contentAuthorizationFailure) throw contentAuthorizationFailure;
       if (!input.contentGuard) return;
       try {
         await timing.checkContent(phase, () => input.contentGuard!.check());
+        if (contentAuthorizationFailure) throw contentAuthorizationFailure;
       } catch (error) {
         contentAuthorizationFailure ??= contentGuardFailure(error);
         throw contentAuthorizationFailure;
@@ -1121,9 +1125,19 @@ export class DshHarnessAdapter implements HarnessAdapter {
               released.factSetDigest !== proof.factSetDigest
             )
               finalDeliveryUnavailable();
-            runDelivery.finish(proof);
             checkedDeliveryProof = proof;
           }
+          // Native cancellation can abandon an RPC while its local authority
+          // callback is still pending. Keep this execution current through finish
+          // and endRun (including receipt flush), before committing public success.
+          if (runId) await runtime.client.endRun(threadId);
+          executionSignal.throwIfAborted();
+          if (contentAuthorizationFailure) throw contentAuthorizationFailure;
+          if (runDelivery) runDelivery.finish(checkedDeliveryProof!);
+          // No await between the failure check and retiring this identity. Later
+          // abandoned callbacks use assertCurrentRun's existing old-Run fence,
+          // including while public event persistence below is awaiting.
+          runtime.executionObservation = undefined;
           answer = projectedCandidate;
           timing.mark('beforePublication');
           await emit({
@@ -1292,7 +1306,6 @@ export class DshHarnessAdapter implements HarnessAdapter {
           throw error;
         }
       }
-      if (runId && !waitingForUser) await runtime.client.endRun(threadId);
     } catch (caught) {
       if (caught instanceof NativeQuestionParked && input.questionWait) {
         for (const key of [

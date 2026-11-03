@@ -8,6 +8,9 @@ import { JsonRpcLineTransport } from '@deepseek-ai/dsh-sdk-protocol';
 import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.ts';
 import { DshProtocolClient } from '../../src/harness/dsh-protocol-client.ts';
 import { DshRuntimePool } from '../../src/harness/dsh/runtime-pool.ts';
+import { HandlerError } from '../../src/errors.ts';
+import { getDshCleanupFailures } from '../../src/harness/dsh-client-cleanup.ts';
+import { getExecutionFailureUsage } from '../../src/harness/dsh/execution-failure-usage.ts';
 import { gate, hold, host, text } from './fixture.mjs';
 
 const mocks = vi.hoisted(() => ({ spawn: vi.fn() }));
@@ -63,6 +66,171 @@ function execution(rootId) {
   };
 }
 
+it.each(['final guard', 'endRun'])(
+  'retains a late root refusal during %s after native cancel settles',
+  async (phase) => {
+    const authorizing = gate(),
+      releaseAuthority = gate(),
+      publishing = gate(),
+      refused = gate(),
+      ending = gate(),
+      releaseEnd = gate();
+    const input = execution('dsh-late-root');
+    const events = [];
+    const denial = Object.freeze(
+      new HandlerError('NATIVE_RUN_DENIED', 'canceled', false),
+    );
+    let authorityPending = false;
+    input.nativeRunAuthority = () => async () => {
+      authorityPending = true;
+      authorizing.resolve();
+      await releaseAuthority.promise;
+      throw denial;
+    };
+    input.contentGuard = {
+      generationId: randomUUID(),
+      check: async () => {
+        if (!authorityPending) return;
+        publishing.resolve();
+        if (phase === 'final guard') await refused.promise;
+      },
+    };
+    const rootId = `dsh-${input.kernel.sessionId}-${input.contentGuard.generationId}`;
+    input.threadId = rootId;
+    input.onEvent = async (event) => events.push(event);
+    const childProcess = Object.assign(new EventEmitter(), {
+      pid: 31337,
+      stdin: new PassThrough(),
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+    });
+    const exit = () => {
+      childProcess.emit('exit', 0, null);
+      childProcess.emit('close', 0, null);
+    };
+    childProcess.kill = vi.fn(exit);
+    mocks.spawn.mockReturnValue(childProcess);
+    const client = new DshProtocolClient({
+      command: 'in-process-test',
+      args: [],
+      cwd: process.cwd(),
+      environment: {},
+      requestTimeoutMs: 5_000,
+    });
+    const peer = new JsonRpcLineTransport(
+      childProcess.stdin,
+      childProcess.stdout,
+    );
+    const setHandler = client.setRequestHandler.bind(client);
+    vi.spyOn(client, 'setRequestHandler').mockImplementation((handler) =>
+      setHandler(
+        handler &&
+          (async (method, params) => {
+            try {
+              return await handler(method, params);
+            } catch (error) {
+              if (method === 'allrice/run-authorize') refused.resolve();
+              throw error;
+            }
+          }),
+      ),
+    );
+    peer.start();
+    const h = await host({
+      rootId,
+      runId: input.executionEnvironment.ALLRICE_RUN_ID,
+      bridge: (method, params, signal) => peer.request(method, params, signal),
+      onNotification: ({ method, params }) => peer.notify(method, params),
+    });
+    peer.onRequest(async (method, params) => {
+      const value = await h.server.handleRequest(method, params);
+      if (method === 'run/end' && authorityPending) {
+        ending.resolve();
+        await releaseEnd.promise;
+      }
+      if (method === 'shutdown') setImmediate(exit);
+      return value;
+    });
+    await h.server.handleRequest('run/end', {
+      sessionId: rootId,
+      runId: input.executionEnvironment.ALLRICE_RUN_ID,
+    });
+    const runtime = {
+      id: randomUUID(),
+      sessionId: rootId,
+      client,
+      nativeTools: [],
+    };
+    vi.spyOn(
+      DshRuntimePool.prototype,
+      'hasApprovedNativeLaunch',
+    ).mockReturnValue(false);
+    vi.spyOn(DshRuntimePool.prototype, 'describeNativeSession').mockReturnValue(
+      null,
+    );
+    vi.spyOn(DshRuntimePool.prototype, 'get').mockReturnValue(runtime);
+    vi.spyOn(DshRuntimePool.prototype, 'acquire').mockResolvedValue({
+      runtime,
+      fresh: false,
+      preparation: {},
+    });
+    vi.spyOn(DshRuntimePool.prototype, 'touch').mockImplementation(() => {});
+    const endRun = vi.spyOn(client, 'endRun');
+    const adapter = new DshHarnessAdapter({
+      runtimeCommand: 'in-process-test',
+    });
+    const work = adapter.execute(input).catch((error) => error);
+    try {
+      await authorizing.promise;
+      // Public Agent cancellation abandons its pending RPC, while the local
+      // authorization callback stays pending through the real SDK tree wait.
+      await h.root.cancel({ kind: 'user' });
+      await publishing.promise;
+      if (phase === 'endRun') await ending.promise;
+      releaseAuthority.resolve();
+      await refused.promise;
+      releaseEnd.resolve();
+      expect(await work).toBe(denial);
+      expect(
+        getExecutionFailureUsage(
+          denial,
+          input.executionEnvironment.ALLRICE_RUN_ID,
+          1,
+        ),
+      ).toMatchObject({
+        usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+        usageComplete: false,
+      });
+      expect(events.some((event) => event.type === 'assistant.completed')).toBe(
+        false,
+      );
+      expect(h.calls).toHaveLength(0);
+      expect(endRun).toHaveBeenCalledTimes(phase === 'endRun' ? 1 : 0);
+      expect(h.ctx.agents.get(rootId)).toBeUndefined();
+      // This fixture owns the SDK, not an executable wrapper or real OS child.
+      expect(getDshCleanupFailures(denial)).toMatchObject([
+        { code: 'DSH_RUNTIME_CLOSE_UNCONFIRMED' },
+      ]);
+      expect(client.closureEvidence()).toMatchObject({
+        shutdownAcknowledged: true,
+        wrapperCleanupConfirmed: false,
+      });
+    } finally {
+      releaseAuthority.resolve();
+      refused.resolve();
+      releaseEnd.resolve();
+      await work;
+      await adapter.close().catch((error) => {
+        expect(error).toMatchObject({
+          errors: [{ errors: [{ code: 'DSH_RUNTIME_CLOSE_UNCONFIRMED' }] }],
+        });
+      });
+      peer.close();
+    }
+  },
+  15_000,
+);
+
 it.each([
   ['tool', 'resolve', false],
   ['tool', 'reject', false],
@@ -71,9 +239,10 @@ it.each([
   ['model-preflight', 'resolve', false],
   ['model-preflight', 'reject', false],
   ['tool', 'resolve', true],
+  ['tool', 'reject', false, true],
 ])(
-  'single Stop abandons A %s/%s; same Host B is fenced (current revoke=%s)',
-  async (phase, outcome, revokeCurrent) => {
+  'single Stop abandons A %s/%s; same Host B is fenced (current revoke=%s, publication=%s)',
+  async (phase, outcome, revokeCurrent, duringPublication) => {
     // Only process placement is injected. Both public RPC peers, the Host,
     // native child loop and the two adapter.execute() lifetimes are real.
     const rootId = 'dsh-controls-root',
@@ -255,6 +424,17 @@ it.each([
     const adapter = new DshHarnessAdapter({
       runtimeCommand: 'in-process-test',
     });
+    a.onEvent = async (event) => {
+      if (duringPublication && event.type === 'assistant.completed') {
+        // Publication may await persistence. The native Run has already ended;
+        // its abandoned child callback must use the existing old-Run fence.
+        releaseAuthority.resolve();
+        const late = await lateReturn.promise;
+        expect(late.ok).toBe(false);
+        expect(late.error.message).toBe('DSH_RUN_SESSION_DENIED');
+        expect(interrupt).not.toHaveBeenCalled();
+      }
+    };
     try {
       const first = adapter.execute(a).then(
         (result) => ({ ok: true, result }),

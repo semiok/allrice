@@ -18,6 +18,7 @@ import { createTaskProgressRuntime } from '../../../../packages/database/src/tas
 import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.ts';
 import type { HarnessExecutionInput } from '../../src/harness/adapter.ts';
 import type { DshRuntimePool } from '../../src/harness/dsh/runtime-pool.ts';
+import { DshProtocolClient } from '../../src/harness/dsh-protocol-client.ts';
 import { p24Fixture } from '../p24/fixture.ts';
 import {
   acquireConversationRuntime,
@@ -51,6 +52,7 @@ suite(
       for (const adapter of adapters.splice(0)) await adapter.close();
       await model?.close();
       await f?.close();
+      vi.restoreAllMocks();
       vi.unstubAllEnvs();
     });
     async function setup() {
@@ -335,9 +337,16 @@ suite(
       30000,
     );
 
-    it.each(['continue', 'cancel', 'pending', 'stop'] as const)(
-      'real adapter handles an idle root and paused native child: %s',
-      async (decision) => {
+    it.each([
+      ['continue', undefined],
+      ['cancel', undefined],
+      ['pending', undefined],
+      ['stop', undefined],
+      ['cancel', 'authorization-before-cancel'],
+      ['cancel', 'cancel-before-authorization'],
+    ] as const)(
+      'real adapter handles an idle root and paused native child: %s / %s',
+      async (decision, order) => {
         const task = await setup();
         let releaseRoot!: () => void;
         const rootIdle = new Promise<void>((resolveIdle) => {
@@ -414,18 +423,98 @@ suite(
         const controller = new AbortController();
         input.signal = controller.signal;
         const progress = port(task);
-        input.nativeRunAuthority = () => () =>
-          progress({
-            action: 'check',
-            nativeSessionId: `dsh-${task.sessionId}`,
+        let progressFailure: unknown;
+        input.nativeRunAuthority = () => async () => {
+          try {
+            return await progress({
+              action: 'check',
+              nativeSessionId: `dsh-${task.sessionId}`,
+            });
+          } catch (error) {
+            progressFailure ??= error;
+            throw error;
+          }
+        };
+        const timeline: string[] = [];
+        let authorizationFailure: unknown,
+          deniedKind: unknown,
+          client: DshProtocolClient | undefined;
+        const endRun = order
+          ? vi.spyOn(DshProtocolClient.prototype, 'endRun')
+          : undefined;
+        if (order) {
+          function gate() {
+            let release!: () => void;
+            const promise = new Promise<void>((resolveGate) => {
+              release = resolveGate;
+            });
+            return { promise, release };
+          }
+          const cancelStarted = gate(),
+            inputAuthorized = gate(),
+            cancelCommitted = gate();
+          input.progress = async (request) => {
+            if (request.action !== 'decide' || request.decision !== 'cancel')
+              return progress(request);
+            cancelStarted.release();
+            if (order === 'authorization-before-cancel')
+              await inputAuthorized.promise;
+            const result = await progress(request);
+            timeline.push('cancel-committed');
+            cancelCommitted.release();
+            return result;
+          };
+          // Only delay the real flush authorization after the answer was adopted.
+          // Both sides still call the original adapter handler and PG port.
+          let inputAuthorizations = 0;
+          const setHandler = DshProtocolClient.prototype.setRequestHandler;
+          vi.spyOn(
+            DshProtocolClient.prototype,
+            'setRequestHandler',
+          ).mockImplementation(function (this: DshProtocolClient, handler) {
+            setHandler.call(
+              this,
+              handler &&
+                (async (method, params) => {
+                  const authorizing = method === 'allrice/run-authorize';
+                  const flushInput =
+                    authorizing &&
+                    params.kind === 'input' &&
+                    ++inputAuthorizations === 2;
+                  if (flushInput) {
+                    await cancelStarted.promise;
+                    if (order === 'cancel-before-authorization')
+                      await cancelCommitted.promise;
+                  }
+                  try {
+                    const result = await handler(method, params);
+                    if (flushInput) {
+                      timeline.push('input-authorized');
+                      inputAuthorized.release();
+                    }
+                    return result;
+                  } catch (error) {
+                    if (authorizing && !authorizationFailure) {
+                      authorizationFailure = error;
+                      deniedKind = params.kind;
+                      timeline.push('authorization-denied');
+                    }
+                    throw error;
+                  }
+                }),
+            );
           });
+        }
         const facts: Record<string, unknown>[] = [];
+        const deliveries: unknown[] = [];
         input.nativeAccounting = {
           bind: () => ({
             record: async (fact) => {
               facts.push(fact);
             },
-            delivered: () => {},
+            delivered: (value) => {
+              deliveries.push(value);
+            },
           }),
         };
         let turnId = '',
@@ -441,10 +530,13 @@ suite(
           });
         };
         input.onEvent = async (event) => {
+          if (order && event.type === 'assistant.completed')
+            timeline.push('assistant.completed');
           if (!unsubscribe) {
             const pool = Reflect.get(host, 'runtimePool') as DshRuntimePool;
             const runtime = pool.get(`dsh-${task.sessionId}`);
-            if (runtime)
+            if (runtime) {
+              client = runtime.client;
               unsubscribe = runtime.client.subscribe((n) => {
                 if (
                   n.params.sessionId === runtime.sessionId &&
@@ -454,6 +546,7 @@ suite(
                   if (idle) releaseRoot();
                 }
               });
+            }
           }
           if (event.sourceEventType !== 'session/user-question') return;
           cards++;
@@ -536,6 +629,70 @@ suite(
         };
         try {
           const work = host.execute(input);
+          if (order) {
+            const outcome = await work.then(
+              (result) => ({ result, error: undefined }),
+              (error: unknown) => ({ result: undefined, error }),
+            );
+            expect(
+              await f.db`select canceled from allrice_task_progress where run_id=${task.runId}`,
+            ).toEqual([{ canceled: true }]);
+            expect(
+              await f.db`select decision from allrice_task_progress_decisions where run_id=${task.runId}`,
+            ).toEqual([{ decision: 'cancel' }]);
+            const [job] =
+              await f.db`select cancel_requested_at from allrice_jobs where id=${task.workflowLease.jobId}`;
+            expect(job!.cancel_requested_at).not.toBeNull();
+            expect(timeline.slice(0, 2)).toEqual(
+              order === 'authorization-before-cancel'
+                ? ['input-authorized', 'cancel-committed']
+                : ['cancel-committed', 'authorization-denied'],
+            );
+            expect(deniedKind).toBe(
+              order === 'authorization-before-cancel' ? 'model' : 'input',
+            );
+            expect(authorizationFailure).toMatchObject({
+              code: 'EMPLOYEE_CONTENT_CHECK_UNAVAILABLE',
+              retryable: false,
+              cause: progressFailure,
+            });
+            expect(progressFailure).toMatchObject({
+              message: 'task_progress_lease_lost',
+            });
+            expect(rootRequests).toBe(2);
+            expect(childRequests).toBe(3);
+            expect(model.requests).toHaveLength(5);
+            const finishes = facts.filter((fact) => fact.phase === 'finish');
+            const succeeded = finishes.filter(
+              (fact) => fact.outcome === 'succeeded',
+            );
+            expect(succeeded).toHaveLength(5);
+            for (const fact of succeeded)
+              expect(fact).toMatchObject({
+                usage: { inputTokens: 20, outputTokens: 5 },
+                usageComplete: true,
+              });
+            expect(finishes.map((fact) => fact.callId).sort()).toEqual(
+              facts
+                .filter((fact) => fact.phase === 'start')
+                .map((fact) => fact.callId)
+                .sort(),
+            );
+            expect(deliveries.at(-1)).toEqual({
+              calls: finishes.length,
+              complete: true,
+            });
+            // Soft checks retain all red evidence before the original rejects.
+            expect.soft(outcome.error).toBe(authorizationFailure);
+            expect.soft(timeline).not.toContain('assistant.completed');
+            expect.soft(endRun).not.toHaveBeenCalled();
+            expect.soft(host.runtimeInventory()).toHaveLength(0);
+            expect.soft(client!.closureEvidence()).toMatchObject({
+              shutdownAcknowledged: true,
+              wrapperCleanupConfirmed: true,
+              process: { state: 'exited', stdioClosed: true, exitCode: 0 },
+            });
+          }
           if (decision === 'cancel' || decision === 'stop')
             await expect(work).rejects.toThrow();
           else {
