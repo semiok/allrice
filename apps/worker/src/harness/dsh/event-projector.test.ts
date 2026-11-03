@@ -11,6 +11,7 @@ import {
 describe('safeDshSourcePayload', () => {
   it.each([
     ['AUTH', 'auth', 'providerAuthToken'],
+    ['AUTH', 'auth', 'OIDCIDToken'],
     ['MISSING_CREDENTIAL', 'auth', 'CLIENT_SECRET'],
     ['STREAM_CLOSED', 'transport', 'provider_id_token'],
     ['CONTEXT_WINDOW_EXCEEDED', 'context', 'tls-private-key'],

@@ -12,6 +12,12 @@ import {
 } from './model-failure.ts';
 
 const compoundCredentialLabels = [
+  'provideridtoken',
+  'provideridToken',
+  'OIDCIDToken',
+  'AWSIDToken',
+  'prefixid_token',
+  'prefix-idToken',
   'Authorization',
   'providerAuthorization',
   'API_KEY',
@@ -201,6 +207,8 @@ describe('synthetic provider failures; historical observations only cover auth/s
     'The secretary confirmed the request',
     'The secretion measurement is available',
     'The Secretarial report is available',
+    'valid_token_count=180; VALID_TOKEN_COUNT=180; token_usage=180; token_limit=200000',
+    'A valid token was produced by the lexer',
   ])(
     'keeps ordinary token statistics and the monitor expiry receipt readable: %s',
     (message) => {

@@ -87,6 +87,8 @@ describe('Worker canceled-handler receipt finalization', () => {
     'AUTH_TOKEN',
     'providerIdToken',
     'tls-private-key',
+    'OIDCIDToken',
+    'AWSIDToken',
   ])(
     'sanitizes Handler failed message/cause for %s while preserving the expiry prefix and failure contract',
     async (label) => {

@@ -683,6 +683,7 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
     'AUTH_TOKEN',
     'providerIdToken',
     'tls-private-key',
+    'AWSIDToken',
   ])(
     'keeps compound %s credentials private in the actual root receipt, administrator and public APIs',
     async (label) => {
