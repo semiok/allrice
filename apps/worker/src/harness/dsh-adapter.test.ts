@@ -627,6 +627,64 @@ describe('DshHarnessAdapter', () => {
     }
   }, 30_000);
 
+  it.each([true, false])(
+    'projects only a successful profile Broker receipt onto its exact native completion (saved=%s)',
+    async (saved) => {
+      const id = randomUUID(),
+        receipt =
+          '已保存默认表达方式：简洁。下个任务起生效，你可以再说一句改回去。';
+      const args = { expectedRevision: 1, expressionStyle: 'concise' };
+      const runtime = await schedulingRuntime([
+        { id, wireName: 'workspace_employee_profile_update', arguments: args },
+        'SYNTHETIC_FINAL_WITHOUT_PROFILE_RECEIPT',
+      ]);
+      const events: HarnessEvent[] = [];
+      const input = executionInput({
+        prompt: '请记住我喜欢简短回答。',
+        provider: runtime.provider,
+        events,
+        onToolCall: async () => {
+          if (!saved) throw Error('write response lost');
+          return { modelContent: '{"revision":2}', summary: receipt };
+        },
+      });
+      input.workDirectory = runtime.root;
+      input.tools = [
+        {
+          name: 'workspace.employee.profile.update',
+          description: 'synthetic',
+          inputSchema: { type: 'object' },
+        },
+      ];
+      try {
+        const result = await runtime.adapter.execute(input);
+        expect(result.answer).toBe('SYNTHETIC_FINAL_WITHOUT_PROFILE_RECEIPT');
+        const completed = events.filter(
+          (event) => event.type === 'tool.completed',
+        );
+        if (saved) {
+          expect(completed).toMatchObject([
+            {
+              toolCallId: id,
+              name: 'workspace.employee.profile.update',
+              summary: receipt,
+              sourcePayload: { employeeProfileReceipt: true },
+            },
+          ]);
+        } else {
+          expect(completed).toEqual([]);
+          expect(
+            events.filter(
+              (event) => event.sourcePayload?.employeeProfileReceipt === true,
+            ),
+          ).toEqual([]);
+        }
+      } finally {
+        await runtime.close();
+      }
+    },
+  );
+
   it('uses adopted native coverage across Runs and imports a changed checkpoint without duplicating SQL messages', async () => {
     const runtime = await schedulingRuntime([
       'FIRST_REPLY',

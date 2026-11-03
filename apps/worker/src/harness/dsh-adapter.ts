@@ -312,6 +312,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
     // child join/retry; a later runOnce replaces it with its own turn barrier.
     let awaitTurnOrigin: ((settled?: boolean) => Promise<void>) | undefined;
     const ordinaryHandler = dshInboundToolHandler(input);
+    // Project only the successful server-authored profile receipt onto its
+    // native completion event; raw model/tool output is not a public receipt.
+    const profileReceipts = new Map<string, string>();
     const runId = input.executionEnvironment.ALLRICE_RUN_ID;
     const runScope = runId
       ? nativeRunScope(runtime.client, threadId, runId)
@@ -533,7 +536,15 @@ export class DshHarnessAdapter implements HarnessAdapter {
         }
         return progress;
       }
-      return ordinaryHandler(method, params);
+      const response = await ordinaryHandler(method, params);
+      if (
+        method === 'allrice/tool-call' &&
+        params.name === 'workspace.employee.profile.update' &&
+        typeof params.toolCallId === 'string' &&
+        typeof response?.summary === 'string'
+      )
+        profileReceipts.set(params.toolCallId, response.summary);
+      return response;
     });
     let ownedDrop: Promise<void> | undefined;
     const dropOwnedHost = () =>
@@ -913,6 +924,24 @@ export class DshHarnessAdapter implements HarnessAdapter {
             });
           },
           onNative: async (event) => {
+            if (
+              event.type === 'tool.completed' &&
+              event.name === 'workspace.employee.profile.update'
+            ) {
+              const receipt = profileReceipts.get(event.toolCallId);
+              if (receipt !== undefined) {
+                profileReceipts.delete(event.toolCallId);
+                event = {
+                  ...event,
+                  summary: receipt,
+                  sourcePayload: {
+                    ...event.sourcePayload,
+                    summary: receipt,
+                    employeeProfileReceipt: true,
+                  },
+                };
+              }
+            }
             // Directory registration is not adoption. Attach exact frozen
             // identity only to an actual native Skill call/result.
             if (
@@ -1229,6 +1258,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
               presentation: isDshSearchTool(toolCall.name) ? 'search' : 'tool',
               status: 'completed',
               summary: toolResult.summary,
+              ...(toolCall.name === 'workspace.employee.profile.update'
+                ? { employeeProfileReceipt: true }
+                : {}),
             },
             ...(toolResult.itemCount === undefined
               ? {}

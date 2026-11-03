@@ -402,6 +402,26 @@ export const ChatTranscript = memo(function ChatTranscript({
                                       void onLoadRunTrace(message.runId);
                                   }}
                                 />
+                                {traceEvents
+                                  .filter(
+                                    (event) =>
+                                      event.type === 'tool.completed' &&
+                                      event.payload.name ===
+                                        'workspace.employee.profile.update' &&
+                                      event.sourceEvent?.payload
+                                        .employeeProfileReceipt === true &&
+                                      typeof event.payload.summary === 'string',
+                                  )
+                                  .map((event) => (
+                                    <p
+                                      key={event.eventId}
+                                      className={styles.referenceSources}
+                                      role="status"
+                                      aria-label="个人设置保存回执"
+                                    >
+                                      {String(event.payload.summary)}
+                                    </p>
+                                  ))}
                                 {!!message.content.citations?.some(
                                   (c) => c.type === 'knowledge' && c.reference,
                                 ) && (

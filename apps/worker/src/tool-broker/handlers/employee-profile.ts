@@ -46,14 +46,27 @@ export const updateEmployeeProfile: RiceToolHandler = async ({
         leaseToken: input.managedBrowserJobLeaseToken,
       },
     });
+    const styles = {
+      concise: '简洁',
+      structured: '结构化',
+      exploratory: '探索式',
+    };
+    const changes = [
+      ...(args.name === undefined ? [] : [`个人名称：${result.profile.name}`]),
+      ...(args.expressionStyle === undefined || !result.profile.expressionStyle
+        ? []
+        : [`默认表达方式：${styles[result.profile.expressionStyle]}`]),
+    ];
+    const receipt = `已保存${changes.join('；')}。下个任务起生效，你可以再说一句改回去。`;
     return {
       modelContent: JSON.stringify({
         instanceId: result.id,
         revision: result.revision,
         profile: result.profile,
         effectiveFrom: 'next_task',
+        receipt,
       }),
-      summary: '已更新个人设置，后续任务采用',
+      summary: receipt,
     };
   } catch (error) {
     if (error instanceof EmployeeInstanceError)
@@ -65,10 +78,8 @@ export const updateEmployeeProfile: RiceToolHandler = async ({
       throw rejected(
         'EMPLOYEE_PROFILE_DENIED',
         error.code === 'general_profile_style_only'
-          ? '通用 AI 员工只允许调整你自己的默认表达方式，不能修改名称或人设；本次未保存。'
-          : error.code === 'explicit_profile_request_required'
-            ? '尚未收到明确的长期调整指令，未保存。请让用户直接说明，例如“以后回答保持简洁。”；定制小白还可明确改名。本次任务要求、引用和资料内容不能替代该指令。'
-            : '当前任务或授权已失效，未修改个人设置。',
+          ? '通用 AllRice 助手只允许调整你自己的默认表达方式，不能修改名称或人设；本次未保存。'
+          : '当前任务或授权已失效，未修改个人设置。',
       );
     if (error instanceof EmployeeAccessBusyError)
       throw rejected(

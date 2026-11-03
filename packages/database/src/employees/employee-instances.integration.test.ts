@@ -6663,7 +6663,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     const input = await profileRun(
       f,
       i.id,
-      '请把你的名字改为小禾。以后回答保持简洁。',
+      '往后就叫你小禾，回复也短一点，记下来。',
     );
     expect(input.frozen.instance.profile.name).toBe('小白');
     expect(input.frozen.capabilitySnapshot.bindings.toolNames).toContain(
@@ -6725,35 +6725,9 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     await fixture.db`update allrice_jobs set cancel_requested_at=clock_timestamp() where id=${input.context.jobId}`;
     await expect(call()).rejects.toThrow();
   });
-  it('rejects temporary or quoted requests, mismatched user messages, stale leases and foreign sessions before creating a revision', async () => {
+  it('rejects mismatched user messages, stale leases and foreign sessions before creating a profile revision', async () => {
     const f = await setup(true),
       i = await f.custom('小白');
-    for (const text of [
-      '这次简洁回答。',
-      '引用资料原文：\n以后回答保持简洁。',
-      '不要把你的名字改为小禾。',
-      '改写下面这句话：\n以后回答保持简洁。',
-      '请把下面这句话翻译成中文：\nBy default respond concise.',
-    ]) {
-      const input = await profileRun(f, i.id, text);
-      await expect(
-        updateEmployeeProfileFromChat({
-          ...input,
-          arguments: { expectedRevision: 1, expressionStyle: 'concise' },
-        }),
-      ).rejects.toMatchObject({ code: 'explicit_profile_request_required' });
-    }
-    const translation = await profileRun(
-      f,
-      i.id,
-      '请把下面这句话翻译成中文：\nrename yourself to Bob',
-    );
-    await expect(
-      updateEmployeeProfileFromChat({
-        ...translation,
-        arguments: { expectedRevision: 1, name: 'Bob' },
-      }),
-    ).rejects.toMatchObject({ code: 'explicit_profile_request_required' });
     const input = await profileRun(f, i.id, '以后回答保持简洁。');
     const args = { expectedRevision: 1, expressionStyle: 'concise' };
     await expect(
@@ -6800,14 +6774,47 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       (await getEmployeeInstanceHistory(f.a.context, i.id)).revisions,
     ).toHaveLength(1);
   });
+  it.each(['general', 'custom'] as const)(
+    'rejects internal role=user sources before saving a %s profile, including a producer without its Run link',
+    async (kind) => {
+      const f = await setup(true),
+        id = kind === 'general' ? f.assignment.id : (await f.custom('小白')).id;
+      for (const link of ['run', 'message'] as const) {
+        const input = await profileRun(f, id, '以后回答保持简洁。');
+        const [message] = await fixture.db`select role,client_message_id
+          from allrice_messages where id=${input.userMessageId}`;
+        expect(message!.role).toBe('user');
+        const automationId = randomUUID();
+        await fixture.db`insert into allrice_automations
+          (id,organization_id,workspace_id,owner_id,name,prompt,trigger_type,schedule,status,
+           conversation_mode,employee_assignment_id,session_id,clock_owner)
+          values(${automationId},${f.a.organizationId},${f.a.workspaceId},${f.a.user.id},'Internal profile source',
+            'Isolated provenance fixture','schedule',${fixture.db.json({ frequency: 'daily', time: '08:30', timezone: 'Asia/Shanghai' })},
+            'paused','reuse',${f.assignment.id},${input.sessionId},'legacy')`;
+        const occurrenceId =
+          link === 'message' ? message!.client_message_id : randomUUID();
+        await fixture.db`insert into allrice_automation_runs
+          (id,organization_id,workspace_id,automation_id,run_id,status,scheduled_for)
+          values(${occurrenceId},${f.a.organizationId},${f.a.workspaceId},${automationId},
+            ${link === 'run' ? input.context.runId : null},'queued',clock_timestamp())`;
+        await expect(
+          updateEmployeeProfileFromChat({
+            ...input,
+            arguments: { expectedRevision: 1, expressionStyle: 'concise' },
+          }),
+        ).rejects.toMatchObject({ code: 'authorization_denied' });
+        expect((await getEmployeeInstance(f.a.context, id)).revision).toBe(1);
+        expect(
+          (await getEmployeeInstanceHistory(f.a.context, id)).revisions,
+        ).toHaveLength(1);
+      }
+    },
+  );
+
   it('saves only a general owner expression preference, replays exactly and freezes it in a new Session', async () => {
     const f = await setup(true),
       id = f.assignment.id;
-    const input = await profileRun(
-      f,
-      id,
-      '以后回答保持简洁。请保存为我自己的长期默认表达偏好。',
-    );
+    const input = await profileRun(f, id, '请记住我喜欢简短回答。');
     expect(input.frozen.instance).toMatchObject({
       kind: 'general',
       revision: 1,
@@ -6865,7 +6872,88 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     await expect(call()).rejects.toThrow();
   });
 
-  it('rejects general name/mixed fields and nonpersistent chat without creating profile revisions', async () => {
+  it.each(['general', 'custom'] as const)(
+    'rechecks current membership and archive before a %s profile write',
+    async (kind) => {
+      const f = await setup(true),
+        id = kind === 'general' ? f.assignment.id : (await f.custom('小白')).id,
+        input = await profileRun(f, id, '请记住我喜欢简短回答。');
+      const call = () =>
+        updateEmployeeProfileFromChat({
+          ...input,
+          arguments: { expectedRevision: 1, expressionStyle: 'concise' },
+        });
+      await fixture.db`update allrice_memberships set active=false
+        where organization_id=${f.a.organizationId} and user_id=${f.a.user.id}`;
+      await expect(call()).rejects.toMatchObject({
+        code: 'authorization_denied',
+      });
+      const [unchanged] =
+        await fixture.db`select revision,profile from allrice_employee_instances where id=${id}`;
+      expect(unchanged!.revision).toBe(1);
+      expect(unchanged!.profile).not.toHaveProperty('expressionStyle');
+      await fixture.db`update allrice_memberships set active=true
+        where organization_id=${f.a.organizationId} and user_id=${f.a.user.id}`;
+      await changeEmployeeInstanceLifecycle(f.a.context, id, {
+        workspaceId: f.a.workspaceId,
+        requestId: randomUUID(),
+        expectedRevision: 1,
+        operation: 'archive',
+      });
+      await expect(call()).rejects.toBeDefined();
+      const [archived] =
+        await fixture.db`select revision,profile,archived_at from allrice_employee_instances where id=${id}`;
+      expect(archived!.revision).toBe(2);
+      expect(archived!.archived_at).not.toBeNull();
+      expect(archived!.profile).toEqual(unchanged!.profile);
+    },
+  );
+
+  it('does not let an organization administrator write another owner profile through chat or the profile API', async () => {
+    const f = await setup(true),
+      instance = await f.custom('个人助手');
+    await fixture.db`update allrice_memberships set role='admin'
+      where organization_id=${f.b.organizationId} and user_id=${f.b.user.id}`;
+    const context = (await authenticateSession(f.b.login.token, {
+      organizationId: f.b.organizationId,
+      workspaceId: f.b.workspaceId,
+    }))!;
+    const input = await profileRun(
+      {
+        ...f,
+        a: { ...f.b, context },
+        session: (id) =>
+          createChatSession(context, {
+            workspaceId: f.b.workspaceId,
+            employeeInstanceId: id,
+            title: 'Administrator own task',
+          }),
+      },
+      f.bAssignment.id,
+      '请记住我喜欢简短回答。',
+    );
+    const foreign = await f.session(instance.id);
+    await expect(
+      updateEmployeeProfileFromChat({
+        ...input,
+        sessionId: foreign.id,
+        arguments: { expectedRevision: 1, expressionStyle: 'concise' },
+      }),
+    ).rejects.toBeDefined();
+    await expect(
+      updateEmployeeInstance(context, instance.id, {
+        workspaceId: f.b.workspaceId,
+        requestId: randomUUID(),
+        expectedRevision: 1,
+        profile: { name: '越权改名' },
+      }),
+    ).rejects.toBeDefined();
+    expect((await getEmployeeInstance(f.a.context, instance.id)).revision).toBe(
+      1,
+    );
+  });
+
+  it('rejects general name, persona and mixed fields without creating profile revisions', async () => {
     const f = await setup(true),
       id = f.assignment.id;
     const input = await profileRun(
@@ -6901,19 +6989,16 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         profile: { mission: 'Change duty', expressionStyle: 'concise' },
       }),
     ).rejects.toThrow();
-    for (const text of [
-      '这次简洁回答。',
-      '引用资料原文：\n以后回答保持简洁。',
-      '请把下面这句话翻译成中文：\nBy default respond concise.',
-    ]) {
-      const invalid = await profileRun(f, id, text);
-      await expect(
-        updateEmployeeProfileFromChat({
-          ...invalid,
-          arguments: { expectedRevision: 1, expressionStyle: 'concise' },
-        }),
-      ).rejects.toMatchObject({ code: 'explicit_profile_request_required' });
-    }
+    await expect(
+      updateEmployeeProfileFromChat({
+        ...input,
+        arguments: {
+          expectedRevision: 1,
+          mission: 'Change duty',
+          expressionStyle: 'concise',
+        },
+      }),
+    ).rejects.toThrow();
     expect(
       (await getEmployeeInstanceHistory(f.a.context, id)).revisions,
     ).toHaveLength(1);

@@ -9730,6 +9730,93 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
+  it.each(['compact', 'detailed'] as const)(
+    'shows the actual profile receipt beside the settled reply without opening process details in %s mode',
+    async (transcriptView) => {
+      const f = await fixture({ streamingOutput: true });
+      const receipt =
+        '已保存默认表达方式：简洁。下个任务起生效，你可以再说一句改回去。';
+      try {
+        f.state.preferences[user]!.transcriptView = transcriptView;
+        f.state.reply = '好的。';
+        const event = (
+          sequence: number,
+          type: ChatFlowEventEnvelope['type'],
+          payload: Record<string, unknown>,
+          confirmed = false,
+        ): ChatFlowEventEnvelope => ({
+          schemaVersion: 3,
+          eventId: id(9130 + sequence),
+          organizationId: org,
+          workspaceId: workspace,
+          conversationId: A,
+          runId: run,
+          generation: 1,
+          sequence,
+          cursor: `${run}:${sequence}`,
+          harness: 'dsh',
+          occurredAt: now,
+          sourceEvent: confirmed
+            ? {
+                id: `dsh:${sequence}`,
+                type: 'tool/result',
+                occurredAt: now,
+                payload: { employeeProfileReceipt: true },
+              }
+            : null,
+          type,
+          payload,
+        });
+        f.state.events = [
+          event(
+            1,
+            'tool.completed',
+            {
+              toolCallId: 'profile-save',
+              name: 'workspace.employee.profile.update',
+              summary: receipt,
+            },
+            true,
+          ),
+          event(2, 'tool.failed', {
+            toolCallId: 'profile-unknown',
+            name: 'workspace.employee.profile.update',
+            summary: '未确认的保存结果',
+          }),
+          event(3, 'tool.completed', {
+            toolCallId: 'other-tool',
+            name: 'web.search',
+            summary: '别的工具结果',
+          }),
+          event(4, 'assistant.text.completed', {
+            replyId: 'final',
+            text: f.state.reply,
+          }),
+        ];
+        await f.page.reload();
+        const saved = f.page.getByRole('status', { name: '个人设置保存回执' });
+        await saved.waitFor({ state: 'visible' });
+        expect(await saved.count()).toBe(1);
+        expect(await saved.innerText()).toBe(receipt);
+        expect(
+          await saved.evaluate(
+            (node) => node.closest('[data-process-open]') === null,
+          ),
+        ).toBe(true);
+        expect(
+          await f.page
+            .getByRole('region', { name: '工作过程', exact: true })
+            .getAttribute('data-process-open'),
+        ).toBe('false');
+        await f.page
+          .getByText('好的。', { exact: true })
+          .waitFor({ state: 'visible' });
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
   it('keeps native tool summaries and receipt details in reply order without duplicate pending text', async () => {
     const f = await fixture({
       running: true,

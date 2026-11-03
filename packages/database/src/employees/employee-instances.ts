@@ -25,8 +25,10 @@ import {
   cancelEmployeeAccessRuns,
   employeeAccessTransaction,
 } from './employee-access-cancellation.ts';
-import { assertEmployeeChatRun } from './employee-chat-authority.ts';
-import { explicitEmployeeProfileIntent } from './employee-profile-intent.ts';
+import {
+  assertEmployeeChatRun,
+  assertEmployeeChatHumanSource,
+} from './employee-chat-authority.ts';
 
 type Sql = ReturnType<typeof getDatabase> | postgres.TransactionSql;
 type Tx = postgres.TransactionSql;
@@ -434,9 +436,7 @@ async function writeInstanceProfile(
 export class EmployeeProfileChatError extends Error {
   constructor(
     public readonly code:
-      | 'explicit_profile_request_required'
-      | 'profile_run_unavailable'
-      | 'general_profile_style_only',
+      'profile_run_unavailable' | 'general_profile_style_only',
   ) {
     super(code);
   }
@@ -514,17 +514,14 @@ export async function updateEmployeeProfileFromChat(input: {
       async (before) => {
         if (before.kind === 'general' && args.name !== undefined)
           throw new EmployeeProfileChatError('general_profile_style_only');
-        const text = await assertEmployeeChatRun(
+        await assertEmployeeChatRun(
           tx,
           input,
           before,
           'workspace.employee.profile.update',
           fail,
         );
-        if (!explicitEmployeeProfileIntent(text, args))
-          throw new EmployeeProfileChatError(
-            'explicit_profile_request_required',
-          );
+        await assertEmployeeChatHumanSource(input, tx);
       },
     );
   });
