@@ -864,6 +864,104 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     }
   });
 
+  it.each(['success', 'failure'] as const)(
+    'ignores an older read finishing with %s after a later lost write acknowledgement',
+    async (outcome) => {
+      const fast = await remember('触发较早读取 ' + outcome);
+      const pending = await remember('较后确认回执丢失 ' + outcome);
+      const ui = await open('chat');
+      let release = () => {};
+      loseAckFor = pending.id;
+      try {
+        await card(ui.page, pending.id).waitFor();
+        let reached!: () => void;
+        const arrived = new Promise<void>((done) => {
+          reached = done;
+        });
+        const blocked = new Promise<void>((done) => {
+          release = done;
+        });
+        let beforeWriteState: string | undefined;
+        await ui.page.route('**/api/v1/memories?**', async (route) => {
+          const response = await route.fetch();
+          beforeWriteState = (await response.json()).memories.find(
+            (memory: WorkspaceMemory) => memory.id === pending.id,
+          )?.lifecycleState;
+          reached();
+          await blocked;
+          return outcome === 'success'
+            ? route.fulfill({ response })
+            : route.fulfill({ status: 503, json: {} });
+        });
+        await card(ui.page, fast.id)
+          .getByRole('button', { name: '确认并记住' })
+          .click();
+        await arrived;
+        expect(beforeWriteState).toBe('candidate');
+        await card(ui.page, pending.id)
+          .getByRole('button', { name: '确认并记住' })
+          .click();
+        const operationError = card(ui.page, pending.id).getByRole('alert');
+        await operationError.waitFor();
+        expect(
+          (
+            await f.db`select lifecycle_state from allrice_memories where id=${pending.id}`
+          )[0]!.lifecycle_state,
+        ).toBe('durable');
+        const returned = ui.page.waitForResponse(
+          (response) =>
+            new URL(response.url()).pathname === '/api/v1/memories' &&
+            response.request().method() === 'GET',
+        );
+        release();
+        await (await returned).finished();
+        await ui.page.unrouteAll({ behavior: 'wait' });
+        await ui.page.evaluate(
+          () =>
+            new Promise<void>((done) =>
+              requestAnimationFrame(() => requestAnimationFrame(() => done())),
+            ),
+        );
+        expect(await operationError.count()).toBe(1);
+        expect(
+          await card(ui.page, pending.id)
+            .getByText('已记为候选，确认后才生效', { exact: true })
+            .count(),
+        ).toBe(1);
+        expect(
+          await ui.page
+            .getByRole('alert')
+            .filter({ hasText: '记忆读取失败' })
+            .count(),
+        ).toBe(0);
+        // A new, failed read also cannot clear the unresolved operation error.
+        await ui.page.route('**/api/v1/memories?**', (route) =>
+          route.fulfill({ status: 503, json: {} }),
+        );
+        await card(ui.page, pending.id)
+          .getByRole('button', { name: '重新读取记忆' })
+          .click();
+        await ui.page
+          .getByRole('alert')
+          .filter({ hasText: '记忆读取失败' })
+          .waitFor();
+        expect(await operationError.count()).toBe(1);
+        await ui.page.unrouteAll({ behavior: 'wait' });
+        await card(ui.page, pending.id)
+          .getByRole('button', { name: '重新读取记忆' })
+          .click();
+        await card(ui.page, pending.id)
+          .getByText('长期记忆', { exact: true })
+          .waitFor();
+        await operationError.waitFor({ state: 'detached' });
+      } finally {
+        release();
+        loseAckFor = '';
+        await ui.close();
+      }
+    },
+  );
+
   it('offers a retry after the personal-memory read fails', async () => {
     const pending = await remember('读取失败后可重试的候选');
     const ui = await open('management');

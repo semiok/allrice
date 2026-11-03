@@ -58,7 +58,7 @@ function MemoryCard(props: {
   const live = useRef(true);
   const lastMemory = useRef(memory);
   useEffect(() => {
-    // Successful reads replace settled rows; pending rows retain their object.
+    // Accepted reads replace settled rows; pending rows retain their object.
     // Starting or failing a read must leave the operation error visible.
     const refreshed = lastMemory.current !== memory;
     lastMemory.current = memory;
@@ -181,6 +181,7 @@ export function MemoryPanel(props: {
   const active = useRef(scope);
   active.current = scope;
   const pending = useRef(new Set<string>());
+  const operationRevision = useRef(0);
   const [attempt, setAttempt] = useState(0);
   const [snapshot, setSnapshot] = useState<{
     scope: string;
@@ -195,6 +196,7 @@ export function MemoryPanel(props: {
     [credentials],
   );
   useEffect(() => {
+    operationRevision.current += 1;
     pending.current.clear();
   }, [scope]);
   useEffect(() => {
@@ -207,6 +209,11 @@ export function MemoryPanel(props: {
   }, [props.scopeId]);
   useEffect(() => {
     const controller = new AbortController();
+    const startedOperationRevision = operationRevision.current;
+    const current = () =>
+      !controller.signal.aborted &&
+      active.current === scope &&
+      operationRevision.current === startedOperationRevision;
     // A same-scope refresh must not replace cards with a loading screen while
     // another card is still awaiting its mutation acknowledgement.
     setSnapshot((value) => (value?.scope === scope ? value : null));
@@ -222,6 +229,7 @@ export function MemoryPanel(props: {
     })
       .then(memoryResponse)
       .then((result) => {
+        if (!current()) return;
         const memories = MemoryViewSchema.array().parse(result.memories);
         if (
           memories.some(
@@ -230,8 +238,9 @@ export function MemoryPanel(props: {
           )
         )
           throw Error('记忆读取范围已变化，请重新打开。');
-        if (!controller.signal.aborted && active.current === scope)
-          setSnapshot((value) => ({
+        setSnapshot((value) => {
+          if (!current()) return value;
+          return {
             scope,
             memories: [
               ...memories.map((memory) =>
@@ -246,15 +255,19 @@ export function MemoryPanel(props: {
                   !memories.some((item) => item.id === memory.id),
               ),
             ],
-          }));
+          };
+        });
       })
       .catch(() => {
-        if (!controller.signal.aborted && active.current === scope)
-          setSnapshot((value) => ({
+        if (!current()) return;
+        setSnapshot((value) => {
+          if (!current()) return value;
+          return {
             ...(value?.scope === scope ? value : {}),
             scope,
             error: '记忆读取失败，请重新读取。',
-          }));
+          };
+        });
       });
     return () => controller.abort();
   }, [
@@ -278,6 +291,8 @@ export function MemoryPanel(props: {
         onRefresh={refresh}
         onPending={(busy) => {
           if (active.current !== scope) return;
+          // A read started before this transition cannot settle this operation.
+          operationRevision.current += 1;
           if (busy) pending.current.add(memory.id);
           else pending.current.delete(memory.id);
         }}
