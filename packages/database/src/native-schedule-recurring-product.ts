@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { publicModelFailureMessage } from '@allrice/contracts';
 import { lockNativeQuestionMode } from './native-questions.ts';
 import {
   NativeCalendarControlSchema,
@@ -322,13 +323,14 @@ export async function readRecurringOccurrenceRows(
       outbox_reason: string | null;
       run_id: string | null;
       run_state: string | null;
+      error_code?: string | null;
       error_message: string | null;
       session_id: string | null;
     }[]
   >`
     select o.occurrence_id,o.revision,coalesce(p.business_scheduled_for,o.scheduled_at) scheduled_at,
       to_char(coalesce(p.business_scheduled_for,o.scheduled_at) at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') cursor_at,
-      o.outbox_state,o.outbox_reason,r.id run_id,r.state run_state,j.last_error_message error_message,ar.session_id
+      o.outbox_state,o.outbox_reason,r.id run_id,r.state run_state,j.last_error_code error_code,j.last_error_message error_message,ar.session_id
     from allrice_native_recurring_occurrences o
     left join allrice_native_calendar_periods p on p.period_id=o.calendar_period_id
     left join allrice_automation_runs ar on ar.native_recurring_occurrence_id=o.occurrence_id and ar.automation_id=o.automation_id
@@ -378,7 +380,7 @@ export function recurringOccurrenceProjection(
                   o.outbox_reason === 'ORDINARY_FIXED_ALREADY_CLAIMED'
                 ? '本期已由此前排队的任务处理，没有重复执行。'
                 : '本期权限或任务配置发生变化，未执行。'
-        : o.error_message,
+        : publicModelFailureMessage(o.error_code, o.error_message, o.run_id),
   });
 }
 export async function readRecurringTaskProjection(

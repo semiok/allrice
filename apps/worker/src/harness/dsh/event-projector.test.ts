@@ -9,6 +9,85 @@ import {
 } from './event-projector.js';
 
 describe('safeDshSourcePayload', () => {
+  it.each([
+    ['Your authentication token has expired', 'PI_AI_ERROR', 'auth'],
+    ['Quota exhausted', 'QUOTA_EXCEEDED', 'quota'],
+    ['Too many requests', 'RATE_LIMIT', 'rate_limit'],
+    ['Servers overloaded', 'SERVER', 'service'],
+    ['Connection reset', 'TRANSPORT', 'transport'],
+    ['Maximum context length exceeded', 'CONTEXT_WINDOW_EXCEEDED', 'context'],
+    ['Novel provider error', 'FUTURE_PROVIDER_CODE', 'unknown'],
+  ])(
+    'projects only a proven root attempt error: %s',
+    (message, code, category) => {
+      const view = nativeEventView({
+        seq: 20,
+        type: 'assistant/attempt',
+        data: {
+          turn: 2,
+          step: 3,
+          prompt: 'PRIVATE PROMPT',
+          stream: [
+            {
+              type: 'chunk',
+              chunk: { type: 'text-delta', text: 'PRIVATE RESPONSE' },
+            },
+            {
+              type: 'chunk',
+              chunk: {
+                type: 'finish',
+                reason: {
+                  kind: 'error',
+                  failure: {
+                    code,
+                    message: message + ' Bearer private-secret',
+                  },
+                },
+              },
+            },
+          ],
+        },
+      });
+      expect(view).toMatchObject({
+        status: 'failed',
+        presentation: 'lifecycle',
+        sourceEventType: 'assistant/attempt',
+        sourcePayload: { turn: 2, step: 3, modelFailure: { category, code } },
+      });
+      expect(JSON.stringify(view)).not.toMatch(
+        /private-secret|PRIVATE PROMPT|PRIVATE RESPONSE/,
+      );
+      expect(view?.summary).not.toContain(message);
+    },
+  );
+  it('never invents model failure evidence from a missing finish or compaction/platform error', () => {
+    for (const event of [
+      {
+        type: 'assistant/attempt',
+        data: { error: { message: 'PRIVATE' }, stream: [] },
+      },
+      {
+        type: 'assistant/attempt',
+        data: {
+          stream: [
+            {
+              type: 'chunk',
+              chunk: { type: 'finish', reason: { kind: 'stop' } },
+            },
+          ],
+        },
+      },
+      {
+        type: 'compaction/end',
+        data: { error: { code: 'SERVER', message: 'PRIVATE' } },
+      },
+      {
+        type: 'turn/end',
+        data: { error: { code: 'TURN_FAILED', message: 'PRIVATE' } },
+      },
+    ])
+      expect(safeDshSourcePayload(event)).not.toHaveProperty('modelFailure');
+  });
   it('projects native retries without copying provider messages or credentials', () => {
     const retry = nativeEventView({
       seq: 30,

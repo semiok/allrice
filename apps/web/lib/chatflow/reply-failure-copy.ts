@@ -1,4 +1,8 @@
-import { modelGovernanceFailureText } from '@allrice/contracts';
+import {
+  modelGovernanceFailureText,
+  modelFailureText,
+  type ModelFailureCategory,
+} from '@allrice/contracts';
 
 /**
  * Plain copy for a reply that did not finish: what happened, then what the
@@ -11,7 +15,7 @@ const tooLarge = '这次工作量太大，未完成。建议把任务拆小一�
 const quota = '已达到用量上限，这次未完成。请联系管理员调整。';
 const usage =
   '之前的用量还没统计完，这次未完成。请联系管理员处理，反复重试也不会解除。';
-const model = `AI 回复出错，这次未完成。${kept}你可以让员工接着做。`;
+const model = `AI 回复出错，这次未完成。${kept}请稍后重试；持续出现请联系管理员。`;
 const waitChanged =
   '等待期间权限或设置有变化，这次未完成。已有的内容都保留了，请确认设置，并展开「工作过程」看看做到了哪一步，再决定是否重新发起。';
 const delivery =
@@ -40,7 +44,7 @@ const byCode: Record<string, string> = {
   DSH_TRANSPORT: `连接中断，这次未完成。${kept}你可以让员工接着做。`,
   DSH_TIMEOUT: `等待回复超时，这次未完成。${kept}你可以稍后让员工接着做。`,
   DSH_PI_AI_ERROR: model,
-  DSH_TURN_FAILED: model,
+  DSH_TURN_FAILED: '这次执行未完成。已有内容已保留，请联系管理员处理。',
   DSH_RECOVERY_REQUIRED:
     '这次任务没法安全地接着做，未完成，也没有自动重做。已有的内容都保留了，可以展开「工作过程」看看做到了哪一步，再决定怎么继续。',
   DSH_UNKNOWN: unknown,
@@ -126,7 +130,19 @@ export function presentReplyFailure(input: {
   text: string;
   nativeText: string | null;
   budgetWarning: boolean;
+  modelFailureCategory?: ModelFailureCategory;
+  reference?: string | null;
 }): { body: string; notice: string | null } {
+  if (input.modelFailureCategory) {
+    const copy = modelFailureText(input.modelFailureCategory, input.reference);
+    const saved =
+      /* r1-exempt(own-text): 仅替换本系统保存的通用错误文案 */
+      input.text === savedGenericFailure ||
+      /* r1-exempt(own-text): 仅识别本系统已保存的固定错误文案 */
+      savedCodes.has(input.text) ||
+      input.text === copy;
+    return { body: saved ? copy : input.text, notice: copy };
+  }
   const stored =
     // r1-exempt(display): 失败消息里存的是服务端兜底文案或保留下来的模型回复，比较只决定显示哪句失败说明
     input.text === savedGenericFailure ||

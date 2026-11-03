@@ -53,12 +53,54 @@ const present = (
 
 describe('plain copy for a reply that did not finish', () => {
   it('uses the server-proven expired-token category for a retained reply and its notice', () => {
-    const result = presentReplyFailure({ code: 'DSH_PI_AI_ERROR', text: '已保留的回答', nativeText: null, budgetWarning: false, modelFailureCategory: 'auth', reference: 'run-reference' });
+    const result = presentReplyFailure({
+      code: 'DSH_PI_AI_ERROR',
+      text: '已保留的回答',
+      nativeText: null,
+      budgetWarning: false,
+      modelFailureCategory: 'auth',
+      reference: 'run-reference',
+    });
     expect(result.body).toBe('已保留的回答');
     expect(result.notice).toContain('管理员');
     expect(result.notice).toContain('反复重试');
     expect(result.notice).not.toContain('员工');
   });
+  it.each([
+    'auth',
+    'quota',
+    'rate_limit',
+    'service',
+    'transport',
+    'context',
+    'unknown',
+  ] as const)(
+    'uses the server category %s for generic text and retained reply notices',
+    (category) => {
+      const base = {
+        code: 'DSH_FUTURE_PROVIDER_CODE',
+        nativeText: null,
+        budgetWarning: false,
+        modelFailureCategory: category,
+        reference: 'run-reference',
+      };
+      const generic = presentReplyFailure({
+        ...base,
+        text: savedGenericFailure,
+      });
+      const retained = presentReplyFailure({
+        ...base,
+        text: 'Kept complete reply',
+      });
+      expect(retained.body).toBe('Kept complete reply');
+      expect(retained.notice).toBe(generic.body);
+      expect(generic.notice).toBe(generic.body);
+      expect(generic.body).toContain('错误编号：run-reference');
+      expect(generic.body).not.toContain('员工');
+      if (category === 'unknown')
+        expect(generic.body).toContain('模型服务返回了未归类的错误');
+    },
+  );
   it.each(contractCodes)('replaces the stored wording for %s once', (code) => {
     const stored = modelGovernanceFailureText(code)!;
     expect(stored).toBeTruthy();

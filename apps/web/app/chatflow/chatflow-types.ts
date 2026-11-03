@@ -115,6 +115,7 @@ export interface Message {
     sessionReferences?: SessionReference[];
     budgetWarning?:
       'MODEL_OUTPUT_BUDGET_EXCEEDED' | 'MODEL_TOTAL_TOKEN_BUDGET_EXCEEDED';
+    modelFailureCategory?: import('@allrice/contracts').ModelFailureCategory;
     text: string;
     interaction?:
       | {

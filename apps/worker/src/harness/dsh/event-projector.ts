@@ -1,5 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { TaskPlanItemsSchema } from '@allrice/contracts';
+import {
+  TaskPlanItemsSchema,
+  modelFailure,
+  modelFailureText,
+  type ModelFailureCategory,
+} from '@allrice/contracts';
 import { shortText } from '@allrice/contracts/native-runtime';
 export { shortText, visibleModelText } from '@allrice/contracts/native-runtime';
 
@@ -58,6 +63,30 @@ export function safeDshSourcePayload(event: Record<string, unknown>) {
     ...(turn === undefined ? {} : { turn }),
     ...(step === undefined ? {} : { step }),
   };
+  if (type === 'assistant/attempt') {
+    const finish = Array.isArray(data.stream)
+      ? data.stream
+          .map(record)
+          .findLast(
+            (item) =>
+              item?.type === 'chunk' && record(item.chunk)?.type === 'finish',
+          )
+      : null;
+    const reason = record(record(finish?.chunk)?.reason);
+    const failure = record(reason?.failure);
+    return {
+      ...common,
+      ...(reason?.kind === 'error' && failure
+        ? {
+            modelFailure: modelFailure(
+              failure.message,
+              failure.status,
+              failure.code,
+            ),
+          }
+        : {}),
+    };
+  }
   if (type === 'assistant/chunk' || type === 'assistant/live-chunk') {
     const chunk = record(data.chunk) ?? {};
     return {
@@ -170,6 +199,16 @@ export function nativeEventView(event: Record<string, unknown>) {
   const type = typeof event.type === 'string' ? event.type : '';
   const data = record(event.data) ?? {};
   const source = sourceMetadata(event);
+  const failure = record(source.sourcePayload.modelFailure);
+  if (type === 'assistant/attempt' && failure)
+    return {
+      type: 'native.event' as const,
+      presentation: 'lifecycle' as const,
+      status: 'failed' as const,
+      label: '模型调用未完成',
+      summary: modelFailureText(failure.category as ModelFailureCategory),
+      ...source,
+    };
   if (type === 'llm/retry' || type === 'llm/retry-started') {
     const retry = positiveInteger(data.retry);
     return {

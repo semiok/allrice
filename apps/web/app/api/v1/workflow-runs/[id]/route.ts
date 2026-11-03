@@ -1,5 +1,6 @@
 import { DataAccessError, getWorkflowRun } from '@allrice/database';
 
+import { publicWorkflowRun } from '../../../../../lib/execution/public-workflow-errors';
 import { executionErrorResponse } from '../../../../../lib/execution/responses';
 import { getRequestContext } from '../../../../../lib/identity/session';
 
@@ -16,7 +17,9 @@ export async function GET(
     if (!workspaceId) throw new Error('workspaceId is required');
     const { id } = await params;
     return Response.json({
-      workflowRun: await getWorkflowRun(context, workspaceId, id),
+      workflowRun: publicWorkflowRun(
+        await getWorkflowRun(context, workspaceId, id),
+      ),
     });
   } catch (error) {
     return executionErrorResponse(error);

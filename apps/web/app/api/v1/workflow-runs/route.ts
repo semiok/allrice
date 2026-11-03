@@ -4,6 +4,7 @@ import {
   startWorkflowRun,
 } from '@allrice/database';
 
+import { publicWorkflowRun } from '../../../../lib/execution/public-workflow-errors';
 import { executionErrorResponse } from '../../../../lib/execution/responses';
 import { getRequestContext } from '../../../../lib/identity/session';
 
@@ -17,12 +18,14 @@ export async function GET(request: Request) {
     const workspaceId = url.searchParams.get('workspaceId');
     if (!workspaceId) throw new Error('workspaceId is required');
     return Response.json({
-      workflowRuns: await listWorkflowRuns(context, {
-        workspaceId,
-        employeeId: url.searchParams.get('employeeId') ?? undefined,
-        sessionId: url.searchParams.get('sessionId') ?? undefined,
-        limit: Number(url.searchParams.get('limit') ?? 20),
-      }),
+      workflowRuns: (
+        await listWorkflowRuns(context, {
+          workspaceId,
+          employeeId: url.searchParams.get('employeeId') ?? undefined,
+          sessionId: url.searchParams.get('sessionId') ?? undefined,
+          limit: Number(url.searchParams.get('limit') ?? 20),
+        })
+      ).map(publicWorkflowRun),
     });
   } catch (error) {
     return executionErrorResponse(error);
@@ -35,7 +38,7 @@ export async function POST(request: Request) {
     if (!context) throw new DataAccessError('authentication_required');
     const workflowRun = await startWorkflowRun(context, await request.json());
     return Response.json(
-      { workflowRun },
+      { workflowRun: publicWorkflowRun(workflowRun) },
       {
         status: 201,
         headers: { location: `/api/v1/workflow-runs/${workflowRun.runId}` },

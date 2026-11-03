@@ -1,4 +1,5 @@
 import type { TechnicalRecord } from '@allrice/database/technical-contracts';
+import { modelFailureText } from '@allrice/contracts';
 
 const reasons: Record<string, string> = {
   deadline: '计算达到执行时限',
@@ -13,17 +14,25 @@ export function TechnicalFailureDetails({
   record: TechnicalRecord;
 }) {
   const details = record.failureDetails;
-  if (!details) return null;
+  if (!details && !record.modelFailures?.length) return null;
   return (
     <section aria-label="失败链路详情">
-      {record.errorCode === 'DSH_PI_AI_ERROR' && (
-        <p>
-          模型调用返回通用错误。现有记录未提供可核实的上游状态码或请求
-          ID，根因尚未确认；不能据此认定是 Codex 服务故障或排除
-          AllRice。此前工具失败单独列出，不代表已确认与最终中断存在因果关系。
-        </p>
-      )}
-      {details.cloud.map((operation) => (
+      {record.modelFailures?.map((failure, index) => (
+        <div key={index}>
+          <p>{modelFailureText(failure.category, record.runId)}</p>
+          <pre>{failure.upstreamMessage}</pre>
+        </div>
+      ))}
+      {record.modelFailuresTruncated && <p>仅展示最近 8 次模型调用错误。</p>}
+      {record.errorCode === 'DSH_PI_AI_ERROR' &&
+        !record.modelFailures?.length && (
+          <p>
+            模型调用返回通用错误。现有记录未提供可核实的上游状态码或请求
+            ID，根因尚未确认；不能据此认定是 Codex 服务故障或排除
+            AllRice。此前工具失败单独列出，不代表已确认与最终中断存在因果关系。
+          </p>
+        )}
+      {details?.cloud.map((operation) => (
         <p key={operation.operationId}>
           {reasons[operation.reason]} · 操作 {operation.operationId} · 账本状态{' '}
           {operation.status}
@@ -33,7 +42,7 @@ export function TechnicalFailureDetails({
           {operation.cleanupConfirmed ? '已清理' : '清理待确认'}
         </p>
       ))}
-      {details.cloudTruncated && <p>仅展示最近 8 个云端异常操作。</p>}
+      {details?.cloudTruncated && <p>仅展示最近 8 个云端异常操作。</p>}
     </section>
   );
 }

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { TransactionSql } from 'postgres';
 import {
+  publicModelFailureMessage,
   AutomationCatalogQuerySchema,
   AutomationCatalogTaskSchema,
   AutomationScheduleSchema,
@@ -285,10 +286,11 @@ async function manualHistory(
       manual_requested_at: Date;
       cursor_at: string;
       state: string | null;
+      error_code: string | null;
       error_message: string | null;
     }[]
   >`select ar.id,ar.run_id,ar.session_id,ar.manual_request_id,ar.manual_revision,ar.manual_requested_at,
-    to_char(ar.manual_requested_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') cursor_at,r.state,ar.error_message
+    to_char(ar.manual_requested_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') cursor_at,r.state,coalesce(r.error_code,ar.error_code) error_code,ar.error_message
     from allrice_automation_runs ar join allrice_runs r on r.id=ar.run_id and r.organization_id=ar.organization_id and r.workspace_id=ar.workspace_id and r.owner_id=${ownerId}
     where ar.automation_id=${taskId} and ar.organization_id=${context.organizationId} and ar.workspace_id=${context.workspaceId!} and ar.manual_request_id is not null
     ${before ? tx`and (ar.manual_requested_at,ar.id)<(${before.at}::text::timestamptz,${before.id}::uuid)` : tx``}
@@ -304,7 +306,11 @@ async function manualHistory(
       status: historyRunStatus(o.state, o.run_id),
       runId: o.run_id,
       sessionId: o.session_id,
-      errorMessage: o.error_message,
+      errorMessage: publicModelFailureMessage(
+        o.error_code,
+        o.error_message,
+        o.run_id,
+      ),
       source: {
         kind: 'manual' as const,
         requestId: o.manual_request_id,
@@ -381,6 +387,7 @@ export async function getAutomationCatalogTask(
         cursor_at: string;
         state: string | null;
         automation_status: string;
+        error_code: string | null;
         error_message: string | null;
         manual_request_id: string | null;
         manual_revision: number | null;
@@ -389,7 +396,7 @@ export async function getAutomationCatalogTask(
       }[]
     >`
       select ar.id,ar.run_id,ar.session_id,ar.scheduled_for,to_char(ar.scheduled_for at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') cursor_at,
-        r.state,ar.status as automation_status,ar.error_message,ar.manual_request_id,ar.manual_revision,ar.manual_requested_at,ar.native_once_occurrence_id from allrice_automation_runs ar
+        r.state,ar.status as automation_status,coalesce(r.error_code,ar.error_code) error_code,ar.error_message,ar.manual_request_id,ar.manual_revision,ar.manual_requested_at,ar.native_once_occurrence_id from allrice_automation_runs ar
       left join allrice_runs r on r.id=ar.run_id and r.organization_id=ar.organization_id and r.workspace_id=ar.workspace_id and r.owner_id=${ownerId}
       where ar.automation_id=${row.id} and ar.organization_id=${context.organizationId} and ar.workspace_id=${workspaceId}
       ${before ? tx`and (ar.scheduled_for,ar.id)<(${before.at}::text::timestamptz,${before.id}::uuid)` : tx``}
@@ -409,7 +416,11 @@ export async function getAutomationCatalogTask(
         ),
         runId: o.run_id,
         sessionId: o.session_id,
-        errorMessage: o.error_message,
+        errorMessage: publicModelFailureMessage(
+          o.error_code,
+          o.error_message,
+          o.run_id,
+        ),
         source:
           o.manual_request_id && o.manual_requested_at
             ? {

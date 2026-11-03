@@ -1,3 +1,4 @@
+import { ModelFailureCategorySchema } from './model-failure.ts';
 import { McpFailureKindSchema } from './mcp-failure.ts';
 import {
   CompanyRunSnapshotSchema,
@@ -80,6 +81,7 @@ export type ReviewContinuationInput = z.infer<
 
 export const ChatMessageContentSchema = z
   .object({
+    modelFailureCategory: ModelFailureCategorySchema.optional(),
     text: z.string().max(100_000),
     companyAssets: CompanyRunSnapshotSchema.optional(),
     referenceSelections: ReferenceSelectionsSchema.optional(),

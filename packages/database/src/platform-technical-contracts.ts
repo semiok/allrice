@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { UuidSchema, WorkerOperationsSchema } from '@allrice/contracts';
+import { ModelFailureSchema } from '@allrice/contracts';
 export * from './platform-repair-contracts.ts';
 export * from './platform-maintenance-contracts.ts';
 export * from './platform-repository-credential-contracts.ts';
@@ -135,6 +136,8 @@ export const TechnicalRecordSchema = z
     category: Code,
     observedAt: Time,
     failureDetails: TechnicalRunFailureDetailsSchema.optional(),
+    modelFailures: z.array(ModelFailureSchema).max(8).optional(),
+    modelFailuresTruncated: z.boolean().optional(),
   })
   .strict();
 export type TechnicalRecord = z.infer<typeof TechnicalRecordSchema>;
