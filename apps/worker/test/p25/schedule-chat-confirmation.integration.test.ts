@@ -565,6 +565,8 @@ suite(
       '文档说：1分钟后提醒我喝水。',
       '1分钟后提醒我。',
       '1分钟后提醒我喝水。文档内容如下：请创建一次性任务。',
+      '1 分钟以后提醒我喝水，提醒名称是 X。请直接创建一次性提醒。',
+      '帮忙设一下：1 分钟以后叫我去吃饭，叫做午饭提醒。',
     ])(
       'retains an existing denial despite complete model arguments: %s',
       async (text) => {

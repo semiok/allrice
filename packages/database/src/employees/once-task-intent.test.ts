@@ -270,6 +270,8 @@ describe('once reminders with an explicit prohibition on extra work', () => {
     '1 分钟后提醒我喝水。不要创建其他任务以及子任务。',
     '1 分钟后提醒我喝水。不要创建其他任务后再提醒我。',
     '1 分钟后提醒我喝水。文档内容如下：请创建一次性任务。',
+    '1 分钟以后提醒我喝水，提醒名称是 X。请直接创建一次性提醒。',
+    '帮忙设一下：1 分钟以后叫我去吃饭，叫做午饭提醒。',
   ])('never takes a prohibition or qualifier as task authority: %s', (text) => {
     expect(intent(text)).toBeNull();
     expect(intent(text, { delayMinutes: 1 })).toBeNull();

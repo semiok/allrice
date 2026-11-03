@@ -196,8 +196,15 @@ export function explicitOnceTaskIntent(
     .map((clause) => clause.trim())
     .filter(Boolean);
   if (!clauses.length || onceQualifier(clauses[0]!)) return null;
-  let work = false;
-  for (const clause of clauses) {
+  // Keep the original candidate denial scope, including its time/prefix.
+  // Extra clocks and work below are checked only in the parsed task body.
+  const denialClauses = candidate
+    ? prose
+        .split(/[。；;！!，,\n.]/u)
+        .map((clause) => clause.trim())
+        .filter(Boolean)
+    : clauses;
+  for (const clause of denialClauses) {
     if (onceQualifier(clause)) continue;
     // Preserve the existing denials, conditions and recurring exclusions.
     if (
@@ -206,6 +213,10 @@ export function explicitOnceTaskIntent(
       )
     )
       return null;
+  }
+  let work = false;
+  for (const clause of clauses) {
+    if (onceQualifier(clause)) continue;
     if (
       new RegExp(
         `${numberPattern}\\s*(?:秒|分(?:钟)?|小时|天|周|个月|月|年)(?:之后|以后|后|内|前)|明天|后天|(?:[0-9零一二两三四五六七八九十]+\\s*[点时](?:整|钟|回复|提醒|执行|发送|$)|[0-9]{1,2}[:：][0-9]{2})`,

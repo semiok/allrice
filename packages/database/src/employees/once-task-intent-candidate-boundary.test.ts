@@ -92,6 +92,10 @@ const inputs = [
   { id: 87, text: '不要创建重复提醒。' },
   { id: 88, text: '不要现在执行。' },
   { id: 89, text: '只执行一次。' },
+  {
+    id: 90,
+    text: '1分钟后提醒我喝水，提醒名称是“新提醒”。请直接创建一次性提醒。',
+  },
 ];
 
 describe('existing rejection matrix with and without a model candidate', () => {
