@@ -1,7 +1,6 @@
 import {
   createOnceTaskFromExecutionContext,
   createRecurringTaskFromExecutionContext,
-  NativeOnceProductError,
   NativeRecurringProductError,
 } from '@allrice/database';
 import {
@@ -10,7 +9,7 @@ import {
 } from '@allrice/contracts';
 import { z } from 'zod';
 
-import { HandlerError, confirmToolFailure } from '../../errors.js';
+import { HandlerError } from '../../errors.js';
 import type { RiceToolHandler } from '../types.js';
 
 const content = {
@@ -67,30 +66,6 @@ export const createAutomation: RiceToolHandler = async ({
       ? {}
       : { conversationMode: parsed.data.conversationMode }),
   };
-  const reject = (error: unknown): never => {
-    const rejected = (code: string, message: string): never => {
-      const failure = new HandlerError(code, message, false);
-      confirmToolFailure(failure, {
-        runId: input.context.runId,
-        callId: input.call.id,
-        toolName: input.call.name,
-      });
-      throw failure;
-    };
-    if (error instanceof NativeOnceProductError) {
-      if (error.code === 'intent_required')
-        rejected(
-          'AUTOMATION_REQUEST_UNCLEAR',
-          '未创建任务。尚不能确定一次性任务的时间和内容，或确认回复没有对应的未完成请求。请结合当前对话澄清缺失信息，不要要求用户重复已经明确的指令；引用、否定或条件表达不代表创建授权。',
-        );
-      if (error.code === 'time_mismatch')
-        rejected(
-          'AUTOMATION_TIME_MISMATCH',
-          '未创建任务。delayMinutes 与当前用户明确指定的时间不一致，请按用户原话换算，不能自行延长或缩短。',
-        );
-    }
-    throw error;
-  };
   if ('rule' in parsed.data) {
     const task = await createRecurringTaskFromExecutionContext({
       ...common,
@@ -101,7 +76,7 @@ export const createAutomation: RiceToolHandler = async ({
         (error.code === 'confirmation_required' || error.code === 'declined')
       )
         return error;
-      return reject(error);
+      throw error;
     });
     // Neither outcome is a failure: the human decides on a card, or did.
     if (task instanceof NativeRecurringProductError)
@@ -155,7 +130,7 @@ export const createAutomation: RiceToolHandler = async ({
   const automation = await createOnceTaskFromExecutionContext({
     ...common,
     delayMinutes: parsed.data.delayMinutes,
-  }).catch(reject);
+  });
   return {
     modelContent: JSON.stringify({
       automationId: automation.id,
@@ -166,10 +141,7 @@ export const createAutomation: RiceToolHandler = async ({
       prompt: automation.prompt,
       conversationMode: automation.conversationMode,
     }),
-    summary:
-      automation.status === 'preparing'
-        ? `已保存一次性任务，等待调度确认；计划于 ${automation.runAt} 执行，可在左侧“自动化任务”中查看。`
-        : `已保存一次性任务，计划于 ${automation.runAt} 执行，可在左侧“自动化任务”中查看。`,
+    summary: `${automation.status === 'preparing' ? '已保存一次性任务，等待调度确认。' : '已保存一次性任务。'}执行时间：${automation.runAt}（${automation.timezone}）。\n任务内容：\n${automation.prompt}`,
     itemCount: 1,
   };
 };

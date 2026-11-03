@@ -1509,6 +1509,28 @@ export function AutomationTaskCard({
           打开
         </Button>
       </div>
+      {task.definition.kind === 'once' && (
+        <div className={css.createdOnceReceipt}>
+          <p>
+            执行时间：
+            <time dateTime={task.definition.task.runAt}>
+              {new Intl.DateTimeFormat('zh-CN', {
+                timeZone: task.definition.task.timezone,
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: false,
+              }).format(new Date(task.definition.task.runAt))}
+            </time>
+            {' · '}
+            {task.definition.task.timezone}
+          </p>
+          <p>任务内容：{task.prompt}</p>
+        </div>
+      )}
     </div>
   );
 }

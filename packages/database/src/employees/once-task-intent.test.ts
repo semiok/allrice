@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  explicitOnceTaskIntent as intent,
-  confirmedOnceTaskIntent,
-} from './once-task-intent.ts';
+import { explicitOnceTaskIntent as intent } from './once-task-intent.ts';
 
 describe('explicit once task intent in the current human message', () => {
   it.each([
@@ -166,95 +163,5 @@ describe('explicit once task intent in the current human message', () => {
     `15分钟后回复${'字'.repeat(32_000)}。`,
   ])('fails closed on empty, hidden-control or oversized requests', (text) => {
     expect(intent(text)).toBeNull();
-  });
-});
-
-describe('model-structured once candidates keep the existing safety boundary', () => {
-  it.each(['5 分钟以后提醒我喝水', '两分钟以后提醒我喝水。'])(
-    'retains the complete existing recognized result: %s',
-    (text) => {
-      expect(intent(text, { delayMinutes: 99 })).toEqual(intent(text));
-      expect(intent(text)).not.toBeNull();
-    },
-  );
-
-  it.each([
-    '1 分钟后提醒我喝水，提醒名称是 MET223-on-1。请直接创建一次性提醒。',
-    '帮忙设一下：1 分钟后叫我去吃饭，叫做午饭提醒。',
-  ])('does not require a positive sentence grammar: %s', (text) => {
-    expect(intent(text)).toBeNull();
-    expect(intent(text, { delayMinutes: 1 })).toEqual({
-      delayMinutes: 1,
-      authoritativeRequest: text,
-    });
-  });
-
-  it.each([
-    '“1 分钟后提醒我喝水”。',
-    '‘1 分钟后提醒我喝水’。',
-    '请解释“1 分钟后提醒我喝水”。',
-    '每隔 15 分钟提醒我一次。',
-    '只有我以后确认了，才在 15 分钟后提醒。',
-    '1 分钟后提醒我喝水。不要创建任务。',
-  ])('does not bypass an existing exclusion: %s', (text) => {
-    expect(intent(text, { delayMinutes: 15 })).toBeNull();
-  });
-
-  it('retains the supported quoted-argument path and the unknown-quote limitation', () => {
-    const text = '15分钟后回复“如果每天都需要，三分钟后再说”。';
-    expect(intent(text, { delayMinutes: 15 })).toEqual({
-      delayMinutes: 15,
-      authoritativeRequest: text,
-    });
-    expect(
-      intent('1分钟后提醒我喝水，提醒名称是“新提醒”。请直接创建一次性提醒。', {
-        delayMinutes: 1,
-      }),
-    ).toBeNull();
-  });
-});
-
-describe('confirmation of the preceding once task request', () => {
-  const request = '搞个定时任务，两分钟提醒我喝水';
-  const question =
-    '任务尚未创建成功。确认一下：是**从现在起 2 分钟后，提醒你喝水一次**，对吗？';
-  it.each(['是的', '对', '确认', '好的。', '可以', '没错', 'OK'])(
-    'retains the preceding human request on %s',
-    (reply) => {
-      expect(confirmedOnceTaskIntent(reply, request, question)).toEqual({
-        delayMinutes: 2,
-        authoritativeRequest: request,
-      });
-    },
-  );
-  it.each([
-    '不是',
-    '是的，但改成5分钟',
-    '好的，不过不要创建',
-    '是否可以',
-    '是的？',
-  ])(
-    'does not turn a correction or a question into confirmation: %s',
-    (reply) => {
-      expect(confirmedOnceTaskIntent(reply, request, question)).toBeNull();
-    },
-  );
-  it('does not use an assistant proposal as a replacement for human task content', () => {
-    expect(confirmedOnceTaskIntent('是的', '你好', question)).toBeNull();
-    expect(
-      confirmedOnceTaskIntent('是的', '不要两分钟后提醒我喝水', question),
-    ).toBeNull();
-  });
-  it('does not confirm an already completed answer or a changed delay', () => {
-    expect(
-      confirmedOnceTaskIntent('是的', request, '已经创建好了。'),
-    ).toBeNull();
-    expect(
-      confirmedOnceTaskIntent(
-        '是的',
-        request,
-        question.replace('2 分钟', '5 分钟'),
-      ),
-    ).toBeNull();
   });
 });

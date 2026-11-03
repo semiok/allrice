@@ -2716,6 +2716,20 @@ suite(
             }),
           ).rejects.toMatchObject({ code: 'authorization_denied' });
 
+          if (kind === 'once') {
+            const structured = { ...input, delayMinutes: 2 };
+            const saved = await create(structured);
+            expect(saved.prompt).toBe(input.prompt);
+            expect(await create(structured)).toEqual(saved);
+            await expect(create(input)).rejects.toMatchObject({
+              code: 'request_conflict',
+            });
+            expect(
+              (await create({ ...structured, callId: randomUUID() })).id,
+            ).not.toBe(saved.id);
+            return;
+          }
+
           // Even a valid adopted card cannot promote a machine-produced source
           // into a human request through a later, genuinely human consumer Run.
           const [message] =
@@ -2737,35 +2751,27 @@ suite(
           await f.db`delete from allrice_automation_runs where id=${message!.client_message_id}`;
           await f.db`delete from allrice_automations where id=${legacyId}`;
 
-          if (kind === 'once') {
-            await expect(
-              create({ ...input, delayMinutes: 2 }),
-            ).rejects.toMatchObject({ code: 'time_mismatch' });
-          } else {
-            await expect(
-              create({ ...input, prompt: '未确认的另一项工作' }),
-            ).rejects.toMatchObject({ code: 'confirmation_required' });
-            await f.db`update allrice_native_questions set questions=${f.db.json([{ ...items![0], question: '被替换的确认正文' }])}
+          await expect(
+            create({ ...input, prompt: '未确认的另一项工作' }),
+          ).rejects.toMatchObject({ code: 'confirmation_required' });
+          await f.db`update allrice_native_questions set questions=${f.db.json([{ ...items![0], question: '被替换的确认正文' }])}
               where session_id=${input.sessionId} and call_id=${choice.callId}`;
-            await expect(create()).rejects.toMatchObject({
-              code: 'confirmation_required',
-            });
-            await f.db`update allrice_native_questions set questions=${f.db.json(items!)}
+          await expect(create()).rejects.toMatchObject({
+            code: 'confirmation_required',
+          });
+          await f.db`update allrice_native_questions set questions=${f.db.json(items!)}
               where session_id=${input.sessionId} and call_id=${choice.callId}`;
-          }
           expect(await enrollmentCounts()).toEqual(before);
           const saved = await create();
           expect(saved.prompt).toBe(
-            kind === 'once'
-              ? `${original}\n用户已确认的提醒频率：${label}`
-              : `${original}\n用户已确认的任务内容：${source.input.prompt}\n用户已确认的频率：每隔 1 分钟，在本聊天中执行`,
+            `${original}\n用户已确认的任务内容：${source.input.prompt}\n用户已确认的频率：每隔 1 分钟，在本聊天中执行`,
           );
           expect(await create()).toEqual(saved);
           const after = await enrollmentCounts();
           await expect(
             create({ ...input, callId: randomUUID() }),
           ).rejects.toMatchObject({
-            code: kind === 'once' ? 'intent_required' : 'confirmation_required',
+            code: 'confirmation_required',
           });
           expect(await enrollmentCounts()).toEqual(after);
         } finally {

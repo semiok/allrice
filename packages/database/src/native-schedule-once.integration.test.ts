@@ -14,6 +14,15 @@ import {
 import type { TransactionSql } from 'postgres';
 import * as client from './core/client.ts';
 import { getDatabase } from './core/client.ts';
+import type { RuntimeActionBinding } from '@allrice/contracts';
+import { authorizeFixturePlatformAdministrator } from './platform-authority.fixture.ts';
+import {
+  createRuntimePolicyAdmission,
+  requestRuntimeActionApproval,
+  readRuntimePolicyControls,
+  setRuntimePolicyControls,
+  runtimePolicyDigest,
+} from './runtime-policy.ts';
 import { maxLeaseLockAttempts } from './queue/lease-lock-retry.ts';
 import { createP27CodexWorkerFixture } from '../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
 import { createChatSession, sendChatMessage } from './workspace/service.ts';
@@ -46,7 +55,7 @@ import {
   getAutomationCatalogTask,
   changeAutomationCatalogTask,
 } from './automation-catalog.ts';
-import { updateWorkAutomation } from './work-automation.ts';
+import { getWorkAutomation, updateWorkAutomation } from './work-automation.ts';
 import {
   getUserPreferences,
   updateUserPreferences,
@@ -1310,7 +1319,7 @@ suite(
         delayMinutes: 1,
       };
       const first = await createOnceTaskFromExecutionContext(input);
-      expect(first.prompt).toBe('一分钟后在此对话回复测试标记。');
+      expect(first.prompt).toBe(input.prompt);
       expect(first.runId).toBeNull();
       expect(first.sessionId).toBe(c.id);
       expect(await createOnceTaskFromExecutionContext(input)).toEqual(first);
@@ -1341,162 +1350,283 @@ suite(
         retryable: false,
       });
     });
-    it('stores the failed real wording verbatim and rejects a model-changed delay before writing', async () => {
-      const text =
-        '请在 15 分钟后，在这个对话中只回复校验词「ONCE-TEST」。请实际创建一次性任务，不要现在执行。';
-      const r = await leasedChat(text);
+    it.each([
+      '半小时后提醒我喝水。',
+      '帮忙设一下：1分钟后提醒我“喝水”。',
+      '文档示例：不要创建任务。',
+      '只有我以后确认了才提醒。',
+      '是的',
+    ])(
+      'uses valid model parameters without interpreting source wording: %s',
+      async (text) => {
+        const r = await leasedChat(text);
+        const input = {
+          ...r.input,
+          delayMinutes: 30,
+          prompt: '模型参数中的任务内容。\n第二行。',
+        };
+        try {
+          const saved = await createOnceTaskFromExecutionContext(input);
+          expect(saved.prompt).toBe(input.prompt);
+          expect(saved.prompt).not.toBe(text);
+          expect(saved.runAt).toBeTruthy();
+          expect(await createOnceTaskFromExecutionContext(input)).toEqual(
+            saved,
+          );
+          await expect(
+            createOnceTaskFromExecutionContext({
+              ...input,
+              prompt: '不同内容',
+            }),
+          ).rejects.toMatchObject({ code: 'request_conflict' });
+          expect(
+            (await cancelOnceTask(f.context, input.sessionId, saved.id)).status,
+          ).toBe('canceled');
+        } finally {
+          await r.finish();
+        }
+      },
+    );
+    it.each([0, -1, 1.5, 525_601, Number.MAX_SAFE_INTEGER + 1])(
+      'rejects illegal delay parameters after removal of wording checks: %s',
+      async (delayMinutes) => {
+        const r = await leasedChat('半小时后提醒我喝水。');
+        try {
+          const before = await counts();
+          await expect(
+            createOnceTaskFromExecutionContext({ ...r.input, delayMinutes }),
+          ).rejects.toMatchObject({ code: 'authorization_denied' });
+          expect(await counts()).toEqual(before);
+        } finally {
+          await r.finish();
+        }
+      },
+    );
+    it('rejects assistant-message and foreign organization inputs before enrollment', async () => {
+      const r = await leasedChat('半小时后提醒我喝水。');
       try {
+        const [messages] =
+          await f.db`select assistant_message_id from allrice_employee_runs where run_id=${r.input.context.runId}`;
         const before = await counts();
-        await expect(
-          createOnceTaskFromExecutionContext({ ...r.input, delayMinutes: 16 }),
-        ).rejects.toMatchObject({ code: 'time_mismatch' });
-        expect(await counts()).toEqual(before);
-        const saved = await createOnceTaskFromExecutionContext(r.input);
-        expect(saved.prompt).toBe(text);
-        expect(saved.runAt).toBeTruthy();
-        expect(await createOnceTaskFromExecutionContext(r.input)).toEqual(
-          saved,
-        );
-        await cancelOnceTask(f.context, r.input.sessionId, saved.id);
-      } finally {
-        await r.finish();
-      }
-    });
-    const colloquialRequest = '搞个定时任务，两分钟提醒我喝水';
-    const clarification =
-      '任务尚未创建成功。确认一下：是**从现在起 2 分钟后，提醒你喝水一次**，对吗？';
-    it('creates the actual colloquial request without requiring a leading delay phrase', async () => {
-      const r = await leasedChat(colloquialRequest);
-      try {
-        const before = await counts();
-        await expect(
-          createOnceTaskFromExecutionContext({ ...r.input, delayMinutes: 3 }),
-        ).rejects.toMatchObject({ code: 'time_mismatch' });
-        expect(await counts()).toEqual(before);
-        const input = { ...r.input, delayMinutes: 2 };
-        const saved = await createOnceTaskFromExecutionContext(input);
-        expect(saved.prompt).toBe(colloquialRequest);
-        expect(await createOnceTaskFromExecutionContext(input)).toEqual(saved);
-        await cancelOnceTask(f.context, input.sessionId, saved.id);
-      } finally {
-        await r.finish();
-      }
-    });
-    it('creates on the actual confirmation exchange using the original human request and current authority', async () => {
-      const first = await leasedChat(colloquialRequest);
-      await first.complete(clarification);
-      const r = await leasedChat('是的', randomUUID(), first.input.sessionId);
-      try {
-        const before = await counts();
-        await expect(
-          createOnceTaskFromExecutionContext({ ...r.input, delayMinutes: 5 }),
-        ).rejects.toMatchObject({ code: 'time_mismatch' });
         await expect(
           createOnceTaskFromExecutionContext({
             ...r.input,
-            delayMinutes: 2,
-            worker: { ...r.input.worker, leaseToken: randomUUID() },
+            userMessageId: messages!.assistant_message_id,
+          }),
+        ).rejects.toMatchObject({ code: 'authorization_denied' });
+        await expect(
+          createOnceTaskFromExecutionContext({
+            ...r.input,
+            context: { ...r.input.context, organizationId: randomUUID() },
           }),
         ).rejects.toMatchObject({ code: 'authorization_denied' });
         expect(await counts()).toEqual(before);
-        const input = { ...r.input, delayMinutes: 2 };
-        const saved = await createOnceTaskFromExecutionContext(input);
-        expect(saved.prompt).toBe(colloquialRequest);
-        expect(saved.sessionId).toBe(first.input.sessionId);
-        expect(await createOnceTaskFromExecutionContext(input)).toEqual(saved);
-        await cancelOnceTask(f.context, input.sessionId, saved.id);
       } finally {
         await r.finish();
       }
     });
-    it('does not borrow an unfulfilled request from another chat', async () => {
-      const first = await leasedChat(colloquialRequest);
-      await first.complete(clarification);
-      const r = await leasedChat('是的');
+    it('rejects a real system message even when its text and leased chat identity otherwise match', async () => {
+      const r = await leasedChat('半小时后提醒我喝水。');
       try {
+        await f.db`update allrice_messages set role='system' where id=${r.input.userMessageId}`;
         const before = await counts();
         await expect(
-          createOnceTaskFromExecutionContext({ ...r.input, delayMinutes: 2 }),
-        ).rejects.toMatchObject({ code: 'intent_required' });
-        expect(await counts()).toEqual(before);
-      } finally {
-        await r.finish();
-      }
-    });
-    it('does not skip an intervening human turn to find older scheduling authority', async () => {
-      const first = await leasedChat(colloquialRequest);
-      await first.complete(clarification);
-      const unrelated = await leasedChat(
-        '先不要设置提醒，回答你好。',
-        randomUUID(),
-        first.input.sessionId,
-      );
-      await unrelated.complete('你好。');
-      const r = await leasedChat('是的', randomUUID(), first.input.sessionId);
-      try {
-        const before = await counts();
-        await expect(
-          createOnceTaskFromExecutionContext({ ...r.input, delayMinutes: 2 }),
-        ).rejects.toMatchObject({ code: 'intent_required' });
-        expect(await counts()).toEqual(before);
-      } finally {
-        await r.finish();
-      }
-    });
-    it('does not create another reminder when the preceding call already enrolled one', async () => {
-      const first = await leasedChat(colloquialRequest);
-      const saved = await createOnceTaskFromExecutionContext({
-        ...first.input,
-        delayMinutes: 2,
-      });
-      await f.db`insert into allrice_task_calls(run_id,native_session_id,call_id,kind,name,outcome)
-        values(${first.input.context.runId},'synthetic-confirmation-fixture',${first.input.callId},'tool','automation_create','success')`;
-      await first.complete(clarification);
-      const r = await leasedChat('是的', randomUUID(), first.input.sessionId);
-      try {
-        const before = await counts();
-        await expect(
-          createOnceTaskFromExecutionContext({ ...r.input, delayMinutes: 2 }),
-        ).rejects.toMatchObject({ code: 'intent_required' });
-        expect(await counts()).toEqual(before);
-      } finally {
-        await r.finish();
-        await cancelOnceTask(f.context, first.input.sessionId, saved.id);
-      }
-    });
-    it('does not promote a previous internal trigger into human authority through confirmation', async () => {
-      const a = await task();
-      const occurrenceId = randomUUID(),
-        legacyId = randomUUID();
-      // Seed only the legacy source row; never downgrade a new native AR.
-      await f.db`insert into allrice_automations
-        (id,organization_id,workspace_id,owner_id,name,prompt,trigger_type,schedule,status,
-         conversation_mode,employee_assignment_id,session_id,clock_owner)
-        values(${legacyId},${f.organizationId},${f.workspaceId},${f.ownerId},'Legacy internal source',
-          'Isolated legacy source only','schedule',${f.db.json({ frequency: 'daily', time: '08:30', timezone: 'Asia/Shanghai' })},
-          'paused','reuse',${f.assignmentId},${a.sessionId},'legacy')`;
-      await f.db`insert into allrice_automation_runs(id,organization_id,workspace_id,automation_id,status,scheduled_for)
-        values(${occurrenceId},${f.organizationId},${f.workspaceId},${legacyId},'queued',clock_timestamp())`;
-      const [legacySource] =
-        await f.db`select ar.run_id,ar.conversation_snapshot,a.clock_owner
-        from allrice_automation_runs ar join allrice_automations a on a.id=ar.automation_id where ar.id=${occurrenceId}`;
-      expect(legacySource).toEqual({
-        run_id: null,
-        conversation_snapshot: null,
-        clock_owner: 'legacy',
-      });
-      const first = await leasedChat(colloquialRequest, occurrenceId);
-      await first.complete(clarification);
-      const r = await leasedChat('是的', randomUUID(), first.input.sessionId);
-      try {
-        const before = await counts();
-        await expect(
-          createOnceTaskFromExecutionContext({ ...r.input, delayMinutes: 2 }),
+          createOnceTaskFromExecutionContext(r.input),
         ).rejects.toMatchObject({ code: 'authorization_denied' });
         expect(await counts()).toEqual(before);
       } finally {
+        await f.db`update allrice_messages set role='user' where id=${r.input.userMessageId}`;
         await r.finish();
-        await cancelOnceTask(f.context, a.sessionId, a.task.id);
+      }
+    });
+    it('rejects an independently linked SQL child Run, distinct from native DSH children', async () => {
+      const parent = await leasedChat('父任务');
+      const child = await leasedChat('半小时后提醒我喝水。');
+      const parentId = parent.input.context.runId,
+        childId = child.input.context.runId;
+      const previous =
+        await f.db`select * from allrice_runtime_run_links where run_id=${childId}`;
+      try {
+        await f.db`insert into allrice_runtime_roots(root_run_id,organization_id,workspace_id,task,deadline_at)
+          values(${parentId},${f.organizationId},${f.workspaceId},'{}',clock_timestamp()+interval '1 hour') on conflict do nothing`;
+        await f.db`insert into allrice_runtime_run_links(run_id,root_run_id,parent_run_id,organization_id,workspace_id,task)
+          values(${parentId},${parentId},null,${f.organizationId},${f.workspaceId},'{}') on conflict do nothing`;
+        await f.db`delete from allrice_runtime_run_links where run_id=${childId}`;
+        await f.db`insert into allrice_runtime_run_links(run_id,root_run_id,parent_run_id,organization_id,workspace_id,task)
+          values(${childId},${parentId},${parentId},${f.organizationId},${f.workspaceId},'{}')`;
+        const before = await counts();
+        await expect(
+          createOnceTaskFromExecutionContext(child.input),
+        ).rejects.toMatchObject({ code: 'authorization_denied' });
+        expect(await counts()).toEqual(before);
+      } finally {
+        await f.db`delete from allrice_runtime_run_links where run_id=${childId}`;
+        if (previous.length)
+          await f.db`insert into allrice_runtime_run_links ${f.db(previous)}`;
+        await child.finish();
+        await parent.finish();
+      }
+    });
+    it('keeps a real due Run behind ordinary exact approval and current target authority', async () => {
+      vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
+      const r = await runningOnce(
+        '到点后删除指定的测试文件，须依现有规则确认。',
+      );
+      const target = randomUUID(),
+        device = randomUUID(),
+        grant = randomUUID();
+      try {
+        const [run] =
+          await f.db`select r.execution_spec,p.payload from allrice_runs r
+          join allrice_policy_snapshots p on p.id=r.policy_snapshot_id where r.id=${r.runId}`;
+        await f.db`insert into allrice_execution_targets(id,organization_id,workspace_id,target_key,kind,label,state,capabilities,concurrency_limit,timeout_seconds)
+          values(${target},${f.organizationId},${f.workspaceId},${'once-approval-' + target},'rice_bridge','Synthetic delete target','online','[]',1,60)`;
+        await f.db`insert into allrice_bridge_devices(id,organization_id,workspace_id,owner_id,name,platform,protocol_version,capabilities,token_hash)
+          values(${device},${f.organizationId},${f.workspaceId},${f.ownerId},'Synthetic only','macos-x64',2,array['local.fs.write'],${'b'.repeat(64)})`;
+        await f.db`insert into allrice_bridge_folder_grants(id,organization_id,workspace_id,owner_id,device_id,label,root_fingerprint)
+          values(${grant},${f.organizationId},${f.workspaceId},${f.ownerId},${device},'Synthetic only',${'a'.repeat(64)})`;
+        const binding: RuntimeActionBinding = {
+          task: {
+            scope: {
+              organizationId: f.organizationId,
+              workspaceId: f.workspaceId,
+              projectId: null,
+            },
+            chatSessionId: r.sessionId,
+            runId: r.runId,
+            rootRunId: r.runId,
+            parentRunId: null,
+            frozenConfiguration: {
+              employeeVersionId: null,
+              digest: runtimePolicyDigest(run!.execution_spec),
+            },
+          },
+          attempt: {
+            operationId: randomUUID(),
+            attemptId: randomUUID(),
+            attemptNumber: 1,
+            generation: 0,
+            fence: 1,
+          },
+          requestedBy: { type: 'user', id: f.ownerId },
+          policy: {
+            snapshotId: r.context.policySnapshot.id,
+            digest: runtimePolicyDigest(run!.payload),
+          },
+          execution: {
+            targetId: target,
+            targetKind: 'rice_bridge',
+            deviceId: device,
+            grantId: grant,
+            grantVersion: 1,
+            scopeDigest: 'sha256:' + 'a'.repeat(64),
+            workCopy: { id: randomUUID(), kind: 'in_place' },
+          },
+          action: 'local.fs.changeset',
+          inputDigest: runtimePolicyDigest({ delete: 'synthetic-test.txt' }),
+          dataScope: [],
+          baseline: [],
+          command: null,
+        };
+        await authorizeFixturePlatformAdministrator(f.db, f.ownerId);
+        const controls = await readRuntimePolicyControls(
+          f.db,
+          f.context,
+          false,
+        );
+        await setRuntimePolicyControls(
+          f.context,
+          {
+            ...controls,
+            version: controls.version + 1,
+            enabled: true,
+            mode: 'execute',
+            rules: [
+              ...controls.rules.filter(
+                (rule) => rule.action !== binding.action,
+              ),
+              { action: binding.action, effect: 'ask' },
+            ],
+          },
+          controls.version,
+          f.db,
+        );
+        const settings = await getWorkAutomation(
+          f.context,
+          f.workspaceId,
+          f.db,
+        );
+        await updateWorkAutomation(
+          f.context,
+          f.workspaceId,
+          {
+            expectedRevision: settings.revision,
+            capability: 'computer',
+            enabled: false,
+          },
+          f.db,
+        );
+        const options = {
+          context: f.context,
+          resolveCurrentBinding: async () => structuredClone(binding),
+        };
+        const admission = createRuntimePolicyAdmission(options);
+        const admit = (phase: 'create' | 'dispatch') =>
+          f.db.begin((transaction) =>
+            admission({ transaction, binding, phase, now: new Date() }),
+          );
+        expect(await admit('create')).toEqual({ status: 'waiting_user' });
+        await expect(admit('dispatch')).rejects.toMatchObject({
+          code: 'approval_required',
+        });
+        await requestRuntimeActionApproval(options, binding, 600_000, f.db);
+        await expect(admit('dispatch')).rejects.toMatchObject({
+          code: 'approval_invalid_or_stale',
+        });
+        const current = await getWorkAutomation(f.context, f.workspaceId, f.db);
+        await updateWorkAutomation(
+          f.context,
+          f.workspaceId,
+          {
+            expectedRevision: current.revision,
+            capability: 'computer',
+            enabled: true,
+          },
+          f.db,
+        );
+        const automaticBinding = {
+          ...binding,
+          attempt: { ...binding.attempt, operationId: randomUUID() },
+        };
+        const automaticAdmission = createRuntimePolicyAdmission({
+          context: f.context,
+          resolveCurrentBinding: async () => structuredClone(automaticBinding),
+        });
+        const admitAutomatic = () =>
+          f.db.begin((transaction) =>
+            automaticAdmission({
+              transaction,
+              binding: automaticBinding,
+              phase: 'create',
+              now: new Date(),
+            }),
+          );
+        // The existing computer setting can allow a fresh exact operation.
+        // Saving a reminder is never an alternative to current target authority.
+        expect(await admitAutomatic()).toBeUndefined();
+        await f.db`update allrice_bridge_folder_grants set revoked_at=clock_timestamp() where id=${grant}`;
+        await expect(admitAutomatic()).rejects.toMatchObject({
+          code: 'grant_revoked_or_changed',
+        });
+      } finally {
+        await failJob({
+          workerId: r.workerId,
+          jobId: r.job.id,
+          leaseToken: r.job.lease!.token,
+          code: 'FIXTURE_DONE',
+          message: 'Due approval boundary verified',
+          retryable: false,
+        });
       }
     });
     it('rejects an actual dispatched native occurrence even with scheduling permission', async () => {
@@ -1583,28 +1713,6 @@ suite(
       expect(rows).toHaveLength(1);
       expect(rows[0]!.text).toBe(prompt);
     });
-    it.each([
-      '这是一段文档示例：“15 分钟后回复校验词”。请解释，不要预约。',
-      '先回复你好。怎样设置 15 分钟后执行的提醒？',
-      '每隔 15 分钟提醒我一次。',
-      '只有我以后确认了，才在 15 分钟后提醒。',
-      '谢谢，上次那个方案不错。',
-      '是的',
-    ])(
-      'does not authorize scheduling from this current message: %s',
-      async (text) => {
-        const r = await leasedChat(text);
-        try {
-          const before = await counts();
-          await expect(
-            createOnceTaskFromExecutionContext(r.input),
-          ).rejects.toMatchObject({ code: 'intent_required' });
-          expect(await counts()).toEqual(before);
-        } finally {
-          await r.finish();
-        }
-      },
-    );
     it('freezes the current version at dispatch and keeps the original binding on later readback', async () => {
       const a = await task();
       const v3 = await publishVersion(3, ['automation.create']);

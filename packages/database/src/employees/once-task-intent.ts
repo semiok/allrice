@@ -146,7 +146,7 @@ function taskClause(clause: string): boolean {
   );
 }
 
-/** Existing structural/source exclusions shared with the direct tool path.
+/** Existing wording exclusions for recurring frequency clarification.
  * Quoted arguments stay data; an entire quotation never becomes an instruction.
  */
 function onceRequestProse(text: string): string | null {
@@ -164,19 +164,8 @@ function onceRequestProse(text: string): string | null {
   return maskQuotedArguments(scheduleConversationIntent(text).request);
 }
 
-/** Recognize exact legacy parameters, or retain a model-structured candidate.
- * An unquoted candidate needs no positive sentence grammar. Existing denials
- * remain. Unknown quoted requests retain the strict legacy path; existing
- * questions never enter this candidate path.
- */
-export function explicitOnceTaskIntent(
-  text: string,
-  candidate?: Pick<OnceTaskIntent, 'delayMinutes' | 'conversationMode'>,
-): OnceTaskIntent | null {
-  if (candidate) {
-    const recognized = explicitOnceTaskIntent(text);
-    if (recognized) return recognized;
-  }
+/** Strict parsing retained only for the recurring frequency-clarification path. */
+export function explicitOnceTaskIntent(text: string): OnceTaskIntent | null {
   const prose = onceRequestProse(text);
   if (prose === null) return null;
   const selection = scheduleConversationIntent(text);
@@ -184,17 +173,16 @@ export function explicitOnceTaskIntent(
   const match = reminder
     ? [reminder[0], reminder[2], reminder[3], `${reminder[1]}${reminder[4]}`]
     : prose.trim().match(relativeRequest);
-  if (!match && !candidate) return null;
+  if (!match) return null;
   const number = match ? positiveInteger(match[1]!) : null;
   const minutes =
     number === null ? null : number * (minuteUnits[match![2]!] ?? 0);
-  if ((!minutes || minutes > maximumDelayMinutes) && !candidate) return null;
-  const clauses = (candidate ? prose : match![3]!)
+  if (!minutes || minutes > maximumDelayMinutes) return null;
+  const clauses = match[3]!
     .split(/[。；;！!，,\n.]/u)
     .map((clause) => clause.trim())
     .filter(Boolean);
-  if (!clauses.length || (!candidate && onceQualifier(clauses[0]!)))
-    return null;
+  if (!clauses.length || onceQualifier(clauses[0]!)) return null;
   let work = false;
   for (const clause of clauses) {
     if (onceQualifier(clause)) continue;
@@ -205,7 +193,6 @@ export function explicitOnceTaskIntent(
       )
     )
       return null;
-    if (candidate) continue;
     if (
       new RegExp(
         `${numberPattern}\\s*(?:秒|分(?:钟)?|小时|天|周|个月|月|年)(?:之后|以后|后|内|前)|明天|后天|(?:[0-9零一二两三四五六七八九十]+\\s*[点时](?:整|钟|回复|提醒|执行|发送|$)|[0-9]{1,2}[:：][0-9]{2})`,
@@ -216,18 +203,6 @@ export function explicitOnceTaskIntent(
       return null;
     work = true;
   }
-  if (candidate) {
-    // A quotation is data only inside an already supported outer request.
-    // Unknown quoted wording cannot obtain authority from a model candidate.
-    if (prose !== selection.request) return null;
-    const conversationMode =
-      selection.conversationMode ?? candidate.conversationMode;
-    return {
-      delayMinutes: candidate.delayMinutes,
-      authoritativeRequest: text,
-      ...(conversationMode === undefined ? {} : { conversationMode }),
-    };
-  }
   return work
     ? {
         delayMinutes: minutes!,
@@ -237,49 +212,4 @@ export function explicitOnceTaskIntent(
           : { conversationMode: selection.conversationMode }),
       }
     : null;
-}
-
-export function isOnceTaskConfirmationReply(text: string): boolean {
-  return /^(?:是(?:的)?|对(?:的)?|确认(?:了)?|没错|好(?:的)?|可以|就这样|就这么办|嗯(?:嗯)?|ok|okay)[。.!！\s]*$/iu.test(
-    text.trim(),
-  );
-}
-
-/** A short answer can confirm the preceding human's complete request. The
- * assistant question only links the exchange; it never supplies task authority.
- * SQL callers must verify adjacency, human provenance and no prior enrollment.
- */
-export function confirmedOnceTaskIntent(
-  reply: string,
-  request: string,
-  question: string,
-): OnceTaskIntent | null {
-  if (
-    !isOnceTaskConfirmationReply(reply) ||
-    !/(?:确认|是否|对吗|对不对|好吗|好不好|可以吗|要不要|是不是)/u.test(
-      question,
-    ) ||
-    !/[?？]/u.test(question)
-  )
-    return null;
-  const intent = explicitOnceTaskIntent(request);
-  if (!intent) return null;
-  // Do not treat agreement with a changed time as agreement with the original.
-  const proposedTimes = question
-    .replace(/[*_]/gu, '')
-    .matchAll(
-      new RegExp(
-        `(${numberPattern})\\s*(分钟|小时|天)(?:之后|以后|后|(?=\\s*(?:提醒|回复|告诉|通知|执行)))`,
-        'gu',
-      ),
-    );
-  for (const time of proposedTimes) {
-    const value = positiveInteger(time[1]!);
-    if (
-      value === null ||
-      value * minuteUnits[time[2]!]! !== intent.delayMinutes
-    )
-      return null;
-  }
-  return intent;
 }

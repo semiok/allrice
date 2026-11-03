@@ -12,10 +12,7 @@ vi.mock('@allrice/database', async (original) => ({
   createOnceTaskFromExecutionContext: create,
   createRecurringTaskFromExecutionContext: createRecurring,
 }));
-import {
-  NativeOnceProductError,
-  NativeRecurringProductError,
-} from '@allrice/database';
+import { NativeRecurringProductError } from '@allrice/database';
 import { createAutomation } from './automation.js';
 import { isConfirmedToolFailure } from '../../errors.js';
 
@@ -58,29 +55,15 @@ function call(): RiceToolHandlerContext {
 }
 beforeEach(() => vi.resetAllMocks());
 
-it.each([
-  ['intent_required', 'AUTOMATION_REQUEST_UNCLEAR'],
-  ['time_mismatch', 'AUTOMATION_TIME_MISMATCH'],
-] as const)(
-  'explains a confirmed no-write rejection: %s',
-  async (reason, code) => {
-    create.mockRejectedValueOnce(new NativeOnceProductError(reason));
+it.each([0, -1, 1.5, 525_601, Number.MAX_SAFE_INTEGER + 1])(
+  'rejects an invalid structured once delay before writing: %s',
+  async (delayMinutes) => {
     const c = call();
-    const rejected = await createAutomation(c).catch((error: unknown) => error);
-    expect(rejected).toMatchObject({
-      code,
-      retryable: false,
+    c.arguments = { ...c.arguments, delayMinutes };
+    await expect(createAutomation(c)).rejects.toMatchObject({
+      code: 'TOOL_INPUT_INVALID',
     });
-    const identity = {
-      runId: c.input.context.runId,
-      callId: c.input.call.id,
-      toolName: c.input.call.name,
-    };
-    expect(isConfirmedToolFailure(rejected, identity)).toBe(true);
-    expect(
-      isConfirmedToolFailure(rejected, { ...identity, callId: randomUUID() }),
-    ).toBe(false);
-    expect(create).toHaveBeenCalledTimes(1);
+    expect(create).not.toHaveBeenCalled();
   },
 );
 
@@ -113,7 +96,7 @@ it('rejects previews or missing private lease before the database write', async 
   expect(create).not.toHaveBeenCalled();
 });
 
-it('reports the stored request and actual due time, not the model rewrite', async () => {
+it('reports the complete stored task and actual due time from the database receipt', async () => {
   const c = call();
   const saved = {
     id: randomUUID(),
@@ -121,7 +104,8 @@ it('reports the stored request and actual due time, not the model rewrite', asyn
     runAt: '2026-10-20T09:00:00.000Z',
     sessionId: c.input.sessionId,
     status: 'preparing',
-    prompt: '请在十五分钟后只回复校验词。',
+    prompt: `${'保存的完整工作内容'.repeat(30)}\n最后一行`,
+    timezone: 'Asia/Shanghai',
   };
   create.mockResolvedValueOnce(saved);
   const result = await createAutomation(c);
@@ -131,6 +115,8 @@ it('reports the stored request and actual due time, not the model rewrite', asyn
     prompt: saved.prompt,
     sessionId: c.input.sessionId,
   });
+  expect(result.summary).toContain(saved.prompt);
+  expect(result.summary).toContain(saved.runAt);
   expect(create).toHaveBeenCalledWith(
     expect.objectContaining({
       userMessageId: c.input.userMessageId,
