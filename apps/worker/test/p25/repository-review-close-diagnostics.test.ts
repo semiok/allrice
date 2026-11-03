@@ -3,7 +3,8 @@ import { DshRuntimeCloseError } from '../../src/harness/dsh-protocol-client.js';
 import { closeReviewRuntime } from './repository-review-close-diagnostics.fixture.js';
 
 describe('repository-review CI close diagnostics', () => {
-  it('logs nested close errors and safe receipts, then rethrows the same failure before fixture cleanup', async () => {
+  const variants = ['plain', 'subclass', 'slice', 'getter'] as const;
+  it.each(variants)('logs nested errors safely: %s', async (variant) => {
     const secrets = [
       'sk-synthetic-secret',
       '真人正文不要写进诊断',
@@ -11,6 +12,26 @@ describe('repository-review CI close diagnostics', () => {
       'https://private.invalid/path?token=secret',
       'synthetic stderr content',
     ];
+    class LeakyArray extends Array {
+      toJSON() {
+        return secrets;
+      }
+    }
+    const taint = (array: unknown[]) => {
+      if (variant === 'subclass')
+        Object.setPrototypeOf(array, LeakyArray.prototype);
+      if (variant === 'slice')
+        Object.defineProperty(array, 'slice', {
+          value: () => ({ map: () => secrets }),
+        });
+      if (variant === 'getter')
+        Object.defineProperty(array, array.length, {
+          get: () => {
+            throw Error(secrets[0]);
+          },
+        });
+      return array;
+    };
     const safeEvidence = {
       process: {
         state: 'exited' as const,
@@ -46,6 +67,7 @@ describe('repository-review CI close diagnostics', () => {
       ],
       'DSH runtime closure remains unconfirmed',
     );
+    taint(cleanupError.errors);
     const before = structuredClone(evidence);
     const events: string[] = [];
     const adapter = {
@@ -55,7 +77,7 @@ describe('repository-review CI close diagnostics', () => {
       }),
       runtimeClosureInventory: () => {
         events.push('inventory');
-        return [
+        return taint([
           {
             state: 'unconfirmed',
             processState: 'exited',
@@ -69,7 +91,7 @@ describe('repository-review CI close diagnostics', () => {
             lease_token: secrets[0],
             secrets,
           },
-        ];
+        ]);
       },
     };
     const clients = [
@@ -87,7 +109,11 @@ describe('repository-review CI close diagnostics', () => {
       await expect(
         (async () => {
           try {
-            await closeReviewRuntime({ adapter, clients, bodyError });
+            try {
+              throw bodyError;
+            } finally {
+              await closeReviewRuntime({ adapter, clients, bodyError });
+            }
           } finally {
             events.push('fixture.cleanup');
           }
@@ -122,7 +148,10 @@ describe('repository-review CI close diagnostics', () => {
       expect(output.clients).toEqual([safeEvidence]);
       expect(output.inventory).toEqual([
         { state: 'unconfirmed', ...safeEvidence, emptyTransportClosed: null },
+        ...(variant === 'getter' ? [{ omitted: 'non-data' }] : []),
       ]);
+      if (variant === 'getter')
+        expect(output.cleanupError.errors[2]).toEqual({ omitted: 'non-data' });
       for (const secret of secrets) expect(serialized).not.toContain(secret);
       expect(serialized).not.toContain('stack');
       expect(evidence).toEqual(before);
@@ -154,6 +183,40 @@ describe('repository-review CI close diagnostics', () => {
       log.mockRestore();
     }
   });
+
+  it.each(['inventory', 'console'])(
+    'preserves errors if %s throws',
+    async (at) => {
+      const bodyError = Error('DSH_CLOSE_OWNER_CONFLICT');
+      const closeError = Error('DSH_CLOSE_EVIDENCE_CONFLICT');
+      const cleanup = vi.fn();
+      const adapter = {
+        close: vi.fn(async () => {
+          if (at === 'inventory') throw closeError;
+        }),
+        runtimeClosureInventory: () => {
+          if (at === 'inventory') throw Error('inspection failed');
+          return [];
+        },
+      };
+      const log = vi.spyOn(console, 'info').mockImplementation(() => {
+        throw Error('console failed');
+      });
+      try {
+        await expect(
+          Promise.reject(bodyError)
+            .finally(() =>
+              closeReviewRuntime({ adapter, clients: [], bodyError }),
+            )
+            .finally(cleanup),
+        ).rejects.toBe(at === 'inventory' ? closeError : bodyError);
+        expect(adapter.close).toHaveBeenCalledTimes(1);
+        expect(cleanup).toHaveBeenCalledTimes(1);
+      } finally {
+        log.mockRestore();
+      }
+    },
+  );
 
   it('bounds deep and wide errors at the same logging exit', async () => {
     let failure: Error = new Error('DSH_CLOSE_EVIDENCE_CONFLICT');

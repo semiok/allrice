@@ -41,6 +41,24 @@ const field = (value: unknown, key: string): unknown =>
   value && typeof value === 'object'
     ? Object.getOwnPropertyDescriptor(value, key)?.value
     : undefined;
+function arrayValues(
+  values: readonly unknown[],
+  project: (v: unknown) => unknown,
+) {
+  const result: unknown[] = [];
+  const length = field(values, 'length');
+  if (typeof length !== 'number' || !Number.isSafeInteger(length))
+    return result;
+  for (let index = 0; index < Math.min(length, 8); index++) {
+    const slot = Object.getOwnPropertyDescriptor(values, String(index));
+    result.push(
+      slot && Object.hasOwn(slot, 'value')
+        ? project(slot.value)
+        : { omitted: 'non-data' },
+    );
+  }
+  return result;
+}
 const choice = (value: unknown, allowed: readonly unknown[]) =>
   allowed.includes(value) ? value : null;
 const boolean = (value: unknown) => choice(value, [true, false]);
@@ -93,6 +111,7 @@ export function reviewCloseError(error: unknown): unknown {
     const message = field(value, 'message');
     const cause = field(value, 'cause');
     const errors = field(value, 'errors');
+    const length = field(errors, 'length');
     const evidence = field(value, 'evidence');
     return {
       name:
@@ -109,8 +128,10 @@ export function reviewCloseError(error: unknown): unknown {
       ...(cause !== undefined ? { cause: visit(cause, depth + 1) } : {}),
       ...(Array.isArray(errors)
         ? {
-            errors: errors.slice(0, 8).map((item) => visit(item, depth + 1)),
-            ...(errors.length > 8 ? { omittedErrors: errors.length - 8 } : {}),
+            errors: arrayValues(errors, (item) => visit(item, depth + 1)),
+            ...(typeof length === 'number' && length > 8
+              ? { omittedErrors: length - 8 }
+              : {}),
           }
         : {}),
     };
@@ -138,17 +159,19 @@ export function logReviewCloseDiagnostics(input: {
           input.cleanupError === undefined
             ? null
             : reviewCloseError(input.cleanupError),
-        clients: [...input.clients].slice(0, 8).map((client) => {
-          const evidence = client.closureEvidence();
+        clients: arrayValues([...input.clients], (client) => {
+          const evidence = (
+            client as { closureEvidence(): unknown }
+          ).closureEvidence();
           return evidence ? closeFacts(evidence) : null;
         }),
-        inventory: input.adapter
-          .runtimeClosureInventory()
-          .slice(0, 8)
-          .map((row) => ({
+        inventory: arrayValues(
+          input.adapter.runtimeClosureInventory(),
+          (row) => ({
             state: choice(field(row, 'state'), ['closing', 'unconfirmed']),
             ...closeFacts(row),
-          })),
+          }),
+        ),
       }),
     );
   } catch {
