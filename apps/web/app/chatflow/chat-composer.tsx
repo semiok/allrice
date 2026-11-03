@@ -130,6 +130,7 @@ export function ChatComposerInput({
   onRetryAttachment,
   onUploadAttachments,
   onSubmit,
+  rows = hero ? 3 : 2,
   readOnly = false,
   imageOnly = false,
   onInputError,
@@ -150,13 +151,14 @@ export function ChatComposerInput({
   | 'onUploadAttachments'
 > & {
   onSubmit: (modified: boolean) => void;
+  rows?: number;
   readOnly?: boolean;
   imageOnly?: boolean;
   onInputError?: (message: string) => void;
 }) {
   useLayoutEffect(() => {
     resizeComposerTextarea(composerInput.current);
-  }, [composerInput, draft, hero]);
+  }, [composerInput, draft, hero, rows]);
   return (
     <>
       {' '}
@@ -249,7 +251,7 @@ export function ChatComposerInput({
             ? `告诉 ${employeeName} 你想完成什么工作`
             : `继续和 ${employeeName} 工作…`
         }
-        rows={hero ? 3 : 2}
+        rows={rows}
         ref={composerInput}
         value={draft}
       />
@@ -330,7 +332,10 @@ export function ChatComposer({
           )}
         </div>
       ) : null}
-      <div className={`${inputUi.card} ${composerUi.card}`}>
+      <div
+        className={`${inputUi.card} ${composerUi.card}`}
+        data-hero={hero || undefined}
+      >
         <CompanyTemplateDraftChips
           references={companyReferences}
           disabled={busy}
@@ -347,6 +352,7 @@ export function ChatComposer({
           disabled={busy}
         />
         <ChatComposerInput
+          rows={1}
           {...{
             employeeName,
             autoFocus,

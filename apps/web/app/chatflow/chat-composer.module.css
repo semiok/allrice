@@ -2,58 +2,59 @@
 
 /* A visible focus ring at every width while the message box has focus (MET-214
    D13): 2px, at least 3:1 against the card and the page in both themes. The
-   card's buttons keep their own focus rings. Drawn inside the border box, over
-   the 1px border, so an ancestor's overflow or the narrow side clearance can
-   never clip it. */
+   card's buttons keep their own focus rings. Drawn inside the card so an
+   ancestor's overflow or the narrow side clearance can never clip it. */
 .card:has(> textarea:focus) {
   outline: 2px solid var(--dsw-alias-state-business-primary);
   outline-offset: -2px;
 }
 
+.card {
+  --dsw-elevation-stroke-color: var(--dsw-alias-border-l2);
+  gap: 12px;
+  padding-top: 8px;
+  border: 0;
+  border-radius: var(--dsw-radius-panel);
+  box-shadow: var(--dsw-elevation-soft);
+}
+
+.card textarea {
+  min-height: 36px;
+  padding: 4px 12px 0 14px;
+  font-family: var(--dsw-font-family);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 24px;
+}
+
+.card[data-hero] textarea {
+  min-height: 52px;
+}
+
+.row {
+  padding: 2px 8px 6px;
+}
+
+.row button[aria-label='添加文件'] {
+  width: 28px;
+  height: 28px;
+}
+
+.row > :last-child > button {
+  width: 34px;
+  height: 34px;
+  transform: translateY(-2px);
+}
+
+@media (pointer: coarse) {
+  .row button[aria-label='添加文件'],
+  .row > :last-child > button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
 @media (min-width: 761px) {
-  .card {
-    gap: 11px;
-    padding-top: 15px;
-    border-radius: 23px;
-    border-color: color-mix(
-      in srgb,
-      var(--dsw-alias-label-primary) 12%,
-      transparent
-    );
-    box-shadow:
-      0 2px 6px light-dark(#20385c08, #00000024),
-      0 9px 28px light-dark(#20385c0e, #00000030),
-      0 22px 60px light-dark(#20385c10, #00000035);
-    transition:
-      border-color 140ms ease,
-      box-shadow 140ms ease;
-  }
-
-  .card:focus-within {
-    border-color: color-mix(
-      in srgb,
-      var(--dsw-alias-state-business-primary) 40%,
-      var(--dsw-alias-border-l2-darkmode-thin)
-    );
-    box-shadow:
-      0 2px 6px light-dark(#20385c08, #00000024),
-      0 9px 28px light-dark(#20385c12, #00000030),
-      0 22px 60px light-dark(#20385c14, #00000035);
-  }
-
-  .card textarea {
-    min-height: 54px;
-    padding: 1px 18px 0;
-    font-family: var(--ds-font-family-ui, ui-sans-serif, system-ui, sans-serif);
-    font-size: 14px;
-    font-weight: 400;
-    line-height: 25px;
-  }
-
-  .row {
-    padding: 0 12px 10px;
-  }
-
   .row button {
     font-weight: 400;
   }
@@ -78,11 +79,5 @@
     width: 100%;
     justify-content: space-between;
     gap: 6px 14px;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .card {
-    transition: none;
   }
 }
