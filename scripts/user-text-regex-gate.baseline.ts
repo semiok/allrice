@@ -17,34 +17,6 @@ import type { BaselineEntry } from './user-text-regex-gate.ts';
 
 export const baseline: readonly BaselineEntry[] = [
   {
-    file: 'apps/worker/src/memory-lifecycle.ts',
-    owner: 'hasExplicitRememberIntent',
-    kind: 'format',
-    use: '旧明确句式只放行模型请求的 durable；未命中照常存 candidate，不拒绝写入',
-    sites: [
-      String.raw`test(/(?:请|帮我|以后|今后|之后|你)?(?:记住|记下|记得|保存(?:为|成)?(?:长期)?记忆)|(?:以后|今后)(?:按此|照此|按这个|照这个|按照这个)|\bremember\b|\bkeep (?:this|that) in mind\b/i)`,
-    ],
-  },
-  {
-    file: 'apps/worker/src/memory-lifecycle.ts',
-    owner: 'hasExplicitForgetIntent',
-    kind: 'reject',
-    use: '旧否定句式命中时拒绝 durable/candidate 写入；沿用现有否定范围，不增句式',
-    sites: [
-      String.raw`test(/(?:不要|不用|别)(?:记住|记下|保存)|\b(?:do not|don't) remember\b|\bforget (?:this|that)\b/i)`,
-    ],
-  },
-  {
-    file: 'apps/worker/src/memory-lifecycle.ts',
-    owner: 'hasStableMemorySignal',
-    kind: 'reject',
-    use: '仅供 checkpoint 预压缩候选提取判断稳定用户陈述，不再决定记忆工具写权限',
-    sites: [
-      String.raw`test(/记住|记下|我的?偏好|我喜欢|我习惯|以后(?:请|要|都)|(?:我|我们)(?:已经)?决定|项目(?:要求|目标|约束|背景)|必须|不要|remember|I prefer|my preference|we decided|project (?:goal|constraint|requirement|context)|must|always|never/i)`,
-      String.raw`test(/(?:不要|不用|别)(?:记住|记下|保存)|\b(?:do not|don't) remember\b|\bforget (?:this|that)\b/i)`,
-    ],
-  },
-  {
     file: 'apps/worker/src/tool-broker/handlers/delivery.ts',
     owner: 'requiresOfficeQuality',
     kind: 'reject',

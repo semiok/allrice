@@ -52,6 +52,7 @@ import { AutomationRunTaskCards } from './automation-run-task-cards';
 import { AssistantMessageActions } from './message-feedback';
 import { isMessageRunActive } from './run-view';
 import { HistoryRefreshNotice } from './history-refresh-notice';
+import { MemoryPanel, memoryReadRevision } from './memory-panel';
 import { workProcessPresentation } from '../../lib/chatflow/work-process-presentation';
 import {
   presentReplyFailure,
@@ -59,6 +60,7 @@ import {
 } from '../../lib/chatflow/reply-failure-copy';
 
 interface ChatTranscriptProps {
+  memoryScope?: string;
   onOpenReference?: (reference: ReferenceDraft) => void;
   messageImages?: MessageImageSource;
   streamingOutput?: boolean;
@@ -90,6 +92,7 @@ interface ChatTranscriptProps {
 }
 
 export const ChatTranscript = memo(function ChatTranscript({
+  memoryScope,
   onOpenReference,
   messageImages,
   streamingOutput = false,
@@ -212,6 +215,11 @@ export const ChatTranscript = memo(function ChatTranscript({
                 message.role !== 'assistant' ||
                 message.status !== 'completed' ||
                 message.content.text.length > 0 ||
+                !!memoryReadRevision(
+                  runViews[message.runId ?? '']?.events ??
+                    runTraces[message.runId ?? '']?.events ??
+                    [],
+                ) ||
                 adopted.some(
                   (input) => input.steering?.runId === message.runId,
                 ),
@@ -522,6 +530,16 @@ export const ChatTranscript = memo(function ChatTranscript({
                             );
                           }}
                         </CloudOperationPanel>
+                        {message.runId && memoryReadRevision(traceEvents) && (
+                          <MemoryPanel
+                            key={`${memoryScope}/${workspaceId}/${message.runId}`}
+                            scopeId={memoryScope ?? workspaceId}
+                            workspaceId={workspaceId}
+                            headers={tenantHeaders}
+                            runId={message.runId}
+                            refreshKey={memoryReadRevision(traceEvents)}
+                          />
+                        )}
                         {onOpenAutomation &&
                         message.automationTaskIds?.length ? (
                           <AutomationRunTaskCards

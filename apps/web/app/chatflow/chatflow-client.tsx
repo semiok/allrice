@@ -2239,6 +2239,7 @@ export function ChatFlowClient({
                   >
                     <InputStatusContext.Provider value={inputStatus}>
                       <ChatTranscript
+                        memoryScope={settingsScope}
                         onOpenReference={openReference}
                         onOpenAutomation={(id) => openAutomationTask({ id })}
                         streamingOutput={preferences.value.streamingOutput}

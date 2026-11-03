@@ -226,7 +226,7 @@ describe('Codex hosted search Tool Broker integration', () => {
     expect(riceToolRisk('workspace.memory.remember')).toBe('managed_write');
   });
 
-  it('writes durable memory for the Worker-bound explicit request and source', async () => {
+  it('keeps the former explicit durable request as a candidate with Worker-bound source', async () => {
     const context = executionContext();
     const employeeId = randomUUID();
     const userMessageId = randomUUID();
@@ -234,7 +234,7 @@ describe('Codex hosted search Tool Broker integration', () => {
       id: randomUUID(),
       content: '看数据时先看表格再看文字说明',
       memoryClass: 'user_preference',
-      lifecycleState: 'durable',
+      lifecycleState: 'candidate',
       provenance: { sourceType: 'message', sourceId: userMessageId },
     });
 
@@ -272,13 +272,13 @@ describe('Codex hosted search Tool Broker integration', () => {
         employeeId,
         sourceType: 'message',
         sourceId: userMessageId,
-        sourceLabel: '用户明确要求记住',
-        lifecycleState: 'durable',
+        sourceLabel: '模型提取候选',
+        lifecycleState: 'candidate',
         memoryClass: 'user_preference',
-        confidence: 1,
+        confidence: 0.8,
       }),
     );
-    expect(result.summary).toBe('已保存为长期记忆');
+    expect(result.summary).toBe('已记为候选，确认后才生效');
   });
 
   it('keeps model-structured stable user facts as candidates without a phrase gate', async () => {
@@ -314,7 +314,7 @@ describe('Codex hosted search Tool Broker integration', () => {
         },
       },
     });
-    expect(candidate.summary).toBe('已保存为待确认候选记忆');
+    expect(candidate.summary).toBe('已记为候选，确认后才生效');
     expect(createTraceableMemory).toHaveBeenLastCalledWith(
       expect.objectContaining({
         requestId: context.executionId,
@@ -371,42 +371,45 @@ describe('Codex hosted search Tool Broker integration', () => {
         lifecycleState: 'candidate',
         provenance: { trust: 'derived' },
       });
-      expect(result.summary).toBe('已保存为待确认候选记忆');
+      expect(result.summary).toBe('已记为候选，确认后才生效');
     },
   );
 
   it.each(['durable', 'candidate'])(
-    'confirms a current-user denial before a %s write',
+    'stores a forced declined %s proposal only as an unconfirmed candidate',
     async (lifecycleState) => {
-      const context = executionContext();
-      const call = {
+      createTraceableMemory.mockResolvedValue({
         id: randomUUID(),
-        name: 'workspace.memory.remember',
-        arguments: { content: '先表格再文字', lifecycleState },
-      };
-      const identity = {
-        runId: context.runId,
-        callId: call.id,
-        toolName: call.name,
-      };
-      const error = await executeRiceTool({
-        context,
+        content: '先表格再文字',
+        lifecycleState: 'candidate',
+        trust: 'derived',
+        confidence: 0.8,
+      });
+      const result = await executeRiceTool({
+        context: executionContext(),
         capabilities: ['storage:write'],
         storageRoot: '.local/storage',
         employeeId: randomUUID(),
         userMessageId: randomUUID(),
         userRequest: '不要记住这件事',
-        call,
-      }).catch((error) => error);
-      expect(error).toMatchObject({ code: 'MEMORY_USER_DECLINED' });
-      expect(createTraceableMemory).not.toHaveBeenCalled();
-      expect(isConfirmedToolFailure(error, identity)).toBe(true);
-      for (const other of [
-        { ...identity, runId: randomUUID() },
-        { ...identity, callId: randomUUID() },
-        { ...identity, toolName: 'workspace.memory.search' },
-      ])
-        expect(isConfirmedToolFailure(error, other)).toBe(false);
+        call: {
+          id: randomUUID(),
+          name: 'workspace.memory.remember',
+          arguments: { content: '先表格再文字', lifecycleState },
+        },
+      });
+      expect(createTraceableMemory).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          lifecycleState: 'candidate',
+          confidence: 0.8,
+        }),
+      );
+      expect(JSON.parse(result.modelContent)).toMatchObject({
+        lifecycleState: 'candidate',
+        requiresConfirmation: true,
+        notice: '已记为候选，确认后才生效',
+      });
     },
   );
 

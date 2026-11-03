@@ -74,6 +74,7 @@ files:
     - apps/web/app/chatflow/brand-content-panel.test.tsx
     - apps/web/server/project-preview.test.mjs
   browser+db:
+    - apps/web/app/chatflow/candidate-memory.browser.test.ts
     - apps/web/app/chatflow/reference-library.browser.test.ts
     - apps/web/app/chatflow/work-automation.browser.test.ts
     - apps/web/app/runtime-console/organization-administration.browser.test.ts
