@@ -43,7 +43,6 @@
 .row > :last-child > button {
   width: 34px;
   height: 34px;
-  transform: translateY(-2px);
 }
 
 /* Optional task controls retain their existing taller toolbar alignment. */
