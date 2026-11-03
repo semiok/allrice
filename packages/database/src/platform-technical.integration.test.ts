@@ -262,6 +262,55 @@ suite(
         { action: 'status_changed' },
       ]);
     });
+    it('re-redacts stored modelFailures on detail, repeated capture and update responses without modifying the evidence', async () => {
+      const [problem] = await listPlatformTechnicalIssues(admin, fixture.db);
+      const [evidence] =
+        await fixture.db`select source_kind,source_id,record from allrice_platform_technical_evidence where issue_id=${problem!.id} order by source_id limit 1`;
+      const sensitiveValue = 'SyntheticStoredCredentialQWER';
+      const receipt = {
+        category: 'unknown',
+        code: 'AUTH',
+        status: 401,
+        upstreamMessage: `Provider receipt. provider_auth_token=${sensitiveValue}`,
+      };
+      const storedRecord = { ...evidence!.record, modelFailures: [receipt] };
+      await fixture.db`update allrice_platform_technical_evidence set record=${fixture.db.json(storedRecord)} where source_kind=${evidence!.source_kind} and source_id=${evidence!.source_id}`;
+      const read = await getPlatformTechnicalIssue(
+        admin,
+        problem!.id,
+        fixture.db,
+      );
+      const repeated = await capturePlatformTechnicalIssue(
+        admin,
+        { kind: evidence!.source_kind, id: evidence!.source_id },
+        fixture.db,
+        'test',
+      );
+      const updated = await updatePlatformTechnicalIssue(
+        admin,
+        problem!.id,
+        {
+          ifVersion: read.issue.version,
+          status: 'investigating',
+          category: 'upstream',
+          severity: 'low',
+        },
+        fixture.db,
+      );
+      for (const detail of [read, repeated.detail, updated.detail]) {
+        const record = detail.records.find(
+          (item) => item.id === evidence!.source_id,
+        )!;
+        expect(record.modelFailures).toEqual([
+          { ...receipt, upstreamMessage: 'Provider receipt. [已隐藏]' },
+        ]);
+        expect(JSON.stringify(detail)).not.toContain(sensitiveValue);
+      }
+      expect(repeated.created).toBe(false);
+      const [after] =
+        await fixture.db`select record from allrice_platform_technical_evidence where source_kind=${evidence!.source_kind} and source_id=${evidence!.source_id}`;
+      expect(after!.record).toEqual(storedRecord);
+    });
     it('denies ordinary and tenant-admin identities, spoofed membership and revoked platform accounts', async () => {
       const [problem] = await listPlatformTechnicalIssues(admin, fixture.db);
       const tenantAdmin = await customer.member('admin');

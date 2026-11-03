@@ -10,6 +10,45 @@ import {
 
 describe('safeDshSourcePayload', () => {
   it.each([
+    ['AUTH', 'auth', 'providerAuthToken'],
+    ['MISSING_CREDENTIAL', 'auth', 'CLIENT_SECRET'],
+    ['STREAM_CLOSED', 'transport', 'provider_id_token'],
+    ['CONTEXT_WINDOW_EXCEEDED', 'context', 'tls-private-key'],
+  ] as const)(
+    'projects rc.2 %s facts through the shared classifier and credential sanitizer',
+    (code, category, label) => {
+      const sensitiveValue = 'SyntheticCredentialValueQWER';
+      const payload = safeDshSourcePayload({
+        type: 'assistant/attempt',
+        data: {
+          stream: [
+            {
+              type: 'chunk',
+              chunk: {
+                type: 'finish',
+                reason: {
+                  kind: 'error',
+                  failure: {
+                    code,
+                    message: `Provider receipt. ${label}=${sensitiveValue}`,
+                  },
+                },
+              },
+            },
+          ],
+        },
+      });
+      expect(payload).toMatchObject({
+        modelFailure: {
+          code,
+          category,
+          upstreamMessage: 'Provider receipt. [已隐藏]',
+        },
+      });
+      expect(JSON.stringify(payload)).not.toContain(sensitiveValue);
+    },
+  );
+  it.each([
     ['Your authentication token has expired', 'PI_AI_ERROR', 'auth'],
     ['Quota exhausted', 'QUOTA_EXCEEDED', 'quota'],
     ['Too many requests', 'RATE_LIMIT', 'rate_limit'],

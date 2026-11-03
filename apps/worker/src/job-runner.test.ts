@@ -32,6 +32,7 @@ vi.mock('./workflow-engine.js', () => ({
 }));
 import { runClaimedJob, type ClaimedJobRunnerInput } from './job-runner.js';
 import { QueueError } from '@allrice/database';
+import { HandlerError } from './errors.js';
 
 /** Worker orchestration seam only. Real lease/receipt authorization is tested
  * separately against isolated PostgreSQL and an actual native DSH process. */
@@ -81,6 +82,43 @@ describe('Worker canceled-handler receipt finalization', () => {
     };
     return { value, abort: () => abort() };
   }
+  it.each([
+    'client_secret',
+    'AUTH_TOKEN',
+    'providerIdToken',
+    'tls-private-key',
+  ])(
+    'sanitizes Handler failed message/cause for %s while preserving the expiry prefix and failure contract',
+    async (label) => {
+      const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const sensitiveValue = 'SyntheticCredentialValueQWER';
+      const message = `Your authentication token has expired ${label}=${sensitiveValue}`;
+      try {
+        await runClaimedJob(input().value, async () => {
+          throw new HandlerError('DSH_PI_AI_ERROR', message, false);
+        });
+        expect(log).toHaveBeenCalledWith('[M5] Handler failed', {
+          jobId: 'job',
+          code: 'DSH_PI_AI_ERROR',
+          message: 'Your authentication token has expired [已隐藏]',
+          cause: 'Your authentication token has expired [已隐藏]',
+        });
+        expect(JSON.stringify(log.mock.calls)).not.toContain(sensitiveValue);
+        expect(ports.fail).toHaveBeenCalledExactlyOnceWith({
+          workerId: 'worker',
+          jobId: 'job',
+          leaseToken: 'lease',
+          code: 'DSH_PI_AI_ERROR',
+          message,
+          retryable: false,
+        });
+        expect(ports.complete).not.toHaveBeenCalled();
+        expect(ports.cleanup).toHaveBeenCalledOnce();
+      } finally {
+        log.mockRestore();
+      }
+    },
+  );
   it('settles a rolled-back admission deadlock without starting any handler or heartbeat', async () => {
     ports.start.mockRejectedValue(
       Object.assign(new Error('deadlock'), { code: '40P01' }),

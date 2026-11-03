@@ -11,7 +11,176 @@ import {
   redactModelFailure,
 } from './model-failure.ts';
 
+const compoundCredentialLabels = [
+  'client_secret',
+  'CLIENT_SECRET',
+  'client-secret',
+  'clientSecret',
+  'provider_client_secret',
+  'PROVIDER_CLIENT_SECRET',
+  'provider-client-secret',
+  'providerClientSecret',
+  'auth_token',
+  'AUTH_TOKEN',
+  'auth-token',
+  'authToken',
+  'provider_auth_token',
+  'PROVIDER_AUTH_TOKEN',
+  'provider-auth-token',
+  'providerAuthToken',
+  'id_token',
+  'ID_TOKEN',
+  'id-token',
+  'idToken',
+  'provider_id_token',
+  'PROVIDER_ID_TOKEN',
+  'provider-id-token',
+  'providerIdToken',
+  'private_key',
+  'PRIVATE_KEY',
+  'private-key',
+  'privateKey',
+  'provider_private_key',
+  'PROVIDER_PRIVATE_KEY',
+  'provider-private-key',
+  'providerPrivateKey',
+];
+
 describe('synthetic provider failures; historical observations only cover auth/service', () => {
+  it.each([
+    ['AUTH', 'auth'],
+    ['INVALID_CREDENTIAL', 'auth'],
+    ['MISSING_CREDENTIAL', 'auth'],
+    ['QUOTA', 'quota'],
+    ['ACCOUNT_QUOTA', 'quota'],
+    ['RATE_LIMIT', 'rate_limit'],
+    ['SERVER', 'service'],
+    ['TRANSPORT', 'transport'],
+    ['TIMEOUT', 'transport'],
+    ['STREAM_CLOSED', 'transport'],
+    ['CONTEXT_WINDOW_EXCEEDED', 'context'],
+  ] as const)(
+    'uses the explicit rc.2 %s code before conflicting message/status evidence',
+    (code, category) => {
+      expect(
+        classifyModelFailure('Unclassified provider receipt', undefined, code),
+      ).toBe(category);
+      expect(
+        classifyModelFailure(
+          'Your authentication token has expired',
+          401,
+          code,
+        ),
+      ).toBe(category);
+      expect(classifyModelFailure('Too many requests', 429, code)).toBe(
+        category,
+      );
+    },
+  );
+  it('classifies the native pi-ai overflow receipt and preserves historical source proof', () => {
+    expect(
+      modelFailure(
+        'pi-ai detected context overflow for model "synthetic"',
+        undefined,
+        'CONTEXT_WINDOW_EXCEEDED',
+      ).category,
+    ).toBe('context');
+    for (const code of ['DSH_MISSING_CREDENTIAL', 'DSH_STREAM_CLOSED'])
+      expect(isModelFailureCode(code)).toBe(false);
+  });
+  it.each([
+    'EMPTY_RESPONSE',
+    'INVALID_RESPONSE',
+    'MALFORMED_RESPONSE',
+    'INVALID_REQUEST',
+    'IMAGE_OFFLOAD_REQUIRED',
+    'ABORTED',
+    'PI_AI_ERROR',
+    'UNKNOWN',
+    'FILES_API',
+    'HTTP_404',
+    'REQUEST_EXTENSION',
+    'INVALID_REPLAY_STATE',
+    'UNSUPPORTED_CONTENT',
+    'UNSUPPORTED_OPTION',
+    'UNSUPPORTED_REASONING_EFFORT',
+    'UNKNOWN_MODEL',
+    'INVALID_CONFIG',
+    'NO_ADAPTER',
+    'NO_CREDENTIAL_STORE',
+    'UNSTORABLE_PROVIDER_ID',
+    'DISCOVERY_FAILED',
+    'DISCOVERY_UNSUPPORTED',
+    'NO_DISCOVERY',
+    'INVALID_ADAPTER',
+    'DUPLICATE_ADAPTER',
+    'REGISTRATION_DISPOSED',
+    'INVALID_DIRECTORY',
+    'DUPLICATE_DIRECTORY',
+    'INVALID_DISCOVERY',
+    'DUPLICATE_DISCOVERY',
+    'INVALID_CATALOG',
+    'INVALID_MODEL_INFO',
+    'INVALID_MODEL_CONTEXT',
+    'INVALID_MODEL_MAX_TOKENS',
+    'INVALID_MODEL_REASONING',
+    'INVALID_PREPARED_CALL',
+  ])('does not guess a cause from the non-specific rc.2 code %s', (code) => {
+    expect(
+      classifyModelFailure('Unclassified provider receipt', undefined, code),
+    ).toBe('unknown');
+  });
+  it.each(compoundCredentialLabels)(
+    'replaces the bounded credential value for %s and fails closed if a replacement leaves it behind',
+    (label) => {
+      const sensitiveValue = 'SyntheticCredentialValueQWER';
+      for (const input of [
+        `Provider failure. ${label}=${sensitiveValue}`,
+        `Provider failure. ${label}: '${sensitiveValue}'`,
+        `Provider failure. {"${label}":"${sensitiveValue}"}`,
+      ]) {
+        const output = redactModelFailure(input);
+        expect(output).toContain('Provider failure.');
+        expect(output).toContain('[已隐藏]');
+        expect(output).not.toContain(sensitiveValue);
+        const replace = vi
+          .spyOn(String.prototype, 'replace')
+          .mockImplementation(function (this: string) {
+            return String(this);
+          });
+        try {
+          expect(redactModelFailure(input)).toBe(hiddenModelFailure);
+        } finally {
+          replace.mockRestore();
+        }
+      }
+    },
+  );
+  it.each(compoundCredentialLabels)(
+    'hides the whole credential receipt when %s has no reliable boundary',
+    (label) => {
+      for (const input of [
+        `${label} SyntheticCredentialValueQWER`,
+        `Incorrect ${label} provided: SyntheticCredentialValueQWER`,
+        `${label}\nSyntheticCredentialValueQWER`,
+        `{"${label}\\u0022":"SyntheticCredentialValueQWER"}`,
+        `{"${label}\\n":"SyntheticCredentialValueQWER"}`,
+      ])
+        expect(redactModelFailure(input)).toBe(hiddenModelFailure);
+    },
+  );
+  it.each([
+    '用了多少 token',
+    'input_tokens=120 output_tokens=60 total_tokens=180 token_usage=180 token_limit=200000',
+    'tokenUsage: 180; tokenLimit: 200000; usedTokenCount: 180; validTokenCount: 180; valid_tokens: 180',
+    'maxTokens=16000; outputTokenLimit=16000',
+    'Your authentication token has expired',
+  ])(
+    'keeps ordinary token statistics and the monitor expiry receipt readable: %s',
+    (message) => {
+      expect(redactModelFailure(message)).toBe(message);
+    },
+  );
   it.each([
     ['Your authentication token has expired', undefined, 'auth'],
     [
