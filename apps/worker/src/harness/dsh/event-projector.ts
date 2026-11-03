@@ -44,9 +44,9 @@ export function sourceMetadata(
 }
 
 /**
- * DSH's event log is intentionally lossless, but ChatFlow is a tenant-facing
- * audit stream. Keep ordering and presentation facts while excluding prompts,
- * credentials, raw tool arguments/results and hidden reasoning text.
+ * DSH's event log remains lossless. The display ledger keeps presentation
+ * facts plus a restricted redacted failure receipt; public DTOs remove its
+ * original message. Prompts, tool arguments/results and reasoning stay out.
  */
 export function safeDshSourcePayload(event: Record<string, unknown>) {
   const type = typeof event.type === 'string' ? event.type : '';

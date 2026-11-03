@@ -166,6 +166,14 @@ export function modelFailure(
   };
 }
 
+/** Category-only evidence selected from a trusted terminal display projection. */
+export function readModelFailureCategory(
+  value: unknown,
+): Pick<ModelFailure, 'category'> | null {
+  const parsed = ModelFailureCategorySchema.safeParse(value);
+  return parsed.success ? { category: parsed.data } : null;
+}
+
 /** Stored JSONB is validated and redacted again at the admin boundary. */
 export function readModelFailure(value: unknown): ModelFailure | null {
   try {

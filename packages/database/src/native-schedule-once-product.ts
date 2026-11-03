@@ -1,3 +1,4 @@
+import { terminalModelFailureCategorySql } from './execution/model-failures.ts';
 import { lockNativeQuestionMode } from './native-questions.ts';
 import {
   scheduleIdentity as identity,
@@ -31,6 +32,7 @@ import type { TransactionSql } from 'postgres';
 import { z } from 'zod';
 import {
   publicModelFailureMessage,
+  readModelFailureCategory,
   CreateOnceTaskInputSchema,
   OnceTaskSchema,
   OnceTaskListQuerySchema,
@@ -252,13 +254,15 @@ export async function readOnceTaskProjection(
       run_id: string | null;
       run_state: string | null;
       job_status: string | null;
+      model_failure_category: string | null;
       error_code: string | null;
       error_message: string | null;
       result_session_id: string | null;
     }[]
   >`
     select c.snapshot->'control'->'command'->>'status' command_status,c.snapshot->'task' task,
-      o.outbox_state,o.outbox_reason,r.id run_id,r.state run_state,j.status job_status,j.last_error_code error_code,j.last_error_message error_message,ar.session_id result_session_id
+      o.outbox_state,o.outbox_reason,r.id run_id,r.state run_state,j.status job_status,j.last_error_code error_code,j.last_error_message error_message,ar.session_id result_session_id,
+      ${terminalModelFailureCategorySql(tx)} model_failure_category
     from allrice_native_once_controls c
     left join allrice_native_once_occurrences o on o.partition_id=c.partition_id and o.control_id=c.control_id
     left join allrice_automation_runs ar on ar.native_once_occurrence_id=o.occurrence_id and ar.automation_id=c.automation_id
@@ -307,6 +311,7 @@ export async function readOnceTaskProjection(
             state?.error_code,
             state?.error_message,
             state?.run_id,
+            readModelFailureCategory(state?.model_failure_category),
           ),
     createdAt: p.created_at.toISOString(),
     canCancel:

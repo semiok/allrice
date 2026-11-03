@@ -5,6 +5,7 @@ import type { RequestContext } from '@allrice/contracts';
 import * as client from '../../../../packages/database/src/core/client.ts';
 import { createRuntimeFixtureDatabase } from '../../../../packages/database/src/runtime.fixture.ts';
 import { createExperienceFixture } from '../../../../packages/database/src/experience.fixture.ts';
+import { terminalModelFailureCategorySql } from '../../../../packages/database/src/execution/model-failures.ts';
 import { failJob } from '../../../../packages/database/src/execution/queue.ts';
 import { nativeEventView } from '../../../../apps/worker/src/harness/dsh/event-projector.ts';
 const auth = vi.hoisted(() => ({ context: null as RequestContext | null }));
@@ -19,6 +20,7 @@ import { POST as runPost } from '../../app/api/v1/runs/route';
 import { POST as cancelPost } from '../../app/api/v1/runs/[id]/cancel/route';
 import { GET as eventsGet } from '../../app/api/v1/runs/[id]/events/route';
 import { GET as sessionGet } from '../../app/api/v1/sessions/[id]/route';
+import { GET as taskGet } from '../../app/api/v1/scheduled-tasks/[taskId]/route';
 import { GET as adminGet } from '../../app/api/v1/admin/technical-assistant/route';
 
 const suite =
@@ -297,8 +299,49 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
       modelFailureCategory: 'unknown',
     });
   });
+  it('unproven historical DSH_UNKNOWN and platform TURN_FAILED remain safe without a model claim', async () => {
+    auth.context = unproven.owner;
+    for (const code of ['DSH_UNKNOWN', 'DSH_TURN_FAILED']) {
+      await db.db`update allrice_runs set error_code=${code} where id=${unproven.run}`;
+      const result = JSON.parse(
+        await publicBody(await runGet(request(unproven), route(unproven))),
+      );
+      expect(result.run.error.code).toBe(code);
+      expect(result.run.error.message).not.toContain(
+        'Private unproven iterator failure',
+      );
+      expect(result.run.error.message).not.toContain('模型服务返回');
+    }
+    await db.db`update allrice_runs set error_code='DSH_SYNTHETIC_NO_FINISH' where id=${unproven.run}`;
+  });
+  it('the public scheduled-task history reads the same proven category without selecting the original', async () => {
+    const f = unknown,
+      taskId = randomUUID();
+    const [session] =
+      await db.db`select employee_assignment_id from allrice_chat_sessions where id=${f.session.id}`;
+    await db.db`insert into allrice_automations(id,organization_id,workspace_id,owner_id,name,prompt,trigger_type,schedule,status,conversation_mode,employee_assignment_id,session_id,next_run_at)
+      values(${taskId},${f.org},${f.workspace},${f.user},'Synthetic historical task','Synthetic only','schedule',${json({ frequency: 'daily', time: '09:00', timezone: 'UTC' })},'enabled','reuse',${session!.employee_assignment_id},${f.session.id},'2099-01-01T09:00:00Z')`;
+    await db.db`insert into allrice_automation_runs(id,organization_id,workspace_id,automation_id,scheduled_for,status,run_id,session_id,error_code,error_message)
+      values(${randomUUID()},${f.org},${f.workspace},${taskId},'2026-11-03T09:00:00Z','failed',${f.run},${f.session.id},'DSH_SYNTHETIC_NEW_CODE',${unknownRaw + ' ' + secret})`;
+    auth.context = f.owner;
+    const body = await publicBody(
+      await taskGet(
+        new Request(
+          `http://localhost/api/v1/scheduled-tasks/${taskId}?workspaceId=${f.workspace}`,
+        ),
+        { params: Promise.resolve({ taskId }) },
+      ),
+    );
+    expect(JSON.parse(body).occurrences[0].errorMessage).toContain(
+      '模型服务返回了未归类的错误',
+    );
+    const [selected] =
+      await db.db`select ${terminalModelFailureCategorySql(db.db)} category from allrice_runs r where r.id=${f.run} and r.organization_id=${f.org} and r.workspace_id=${f.workspace}`;
+    expect(selected!.category).toBe('unknown');
+  });
   it('rejects a member and tenant admin at the actual platform-admin API', async () => {
     for (const role of ['member', 'admin'] as const) {
+      await db.db`update allrice_memberships set role=${role} where user_id=${legacy.owner.actor.id} and workspace_id=${legacy.workspace}`;
       auth.context = {
         ...legacy.owner,
         memberships: legacy.owner.memberships.map((m) => ({ ...m, role })),
@@ -309,6 +352,7 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
       expect(response.status).toBe(403);
       expect(await response.text()).not.toContain(raw);
     }
+    await db.db`update allrice_memberships set role='member' where user_id=${legacy.owner.actor.id} and workspace_id=${legacy.workspace}`;
   });
   it('the existing platform admin API safely displays legacy, new-code and recovered root attempt receipts', async () => {
     auth.context = legacy.reviewer;
@@ -351,5 +395,22 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
         ),
       ),
     ).not.toContain(raw);
+  });
+  it('counts only distinct confirmed root attempts in the existing display JSONB, with no raw selected', async () => {
+    const counts = await db.db`
+      with attempts as (
+        select distinct on (run_id,coalesce(payload->>'attempt',''),payload->>'sourceEventId')
+          run_id,occurred_at,payload#>>'{nativePayload,modelFailure,category}' category
+        from allrice_run_events
+        where event_type='harness.native' and payload->>'source'='dsh'
+          and payload->>'sourceEventType'='assistant/attempt'
+          and payload->>'sourceEventId' ~ '^dsh:[0-9]+$'
+          and payload#>>'{nativePayload,modelFailure,category}' in ('auth','quota','rate_limit','service','transport','context','unknown')
+        order by run_id,coalesce(payload->>'attempt',''),payload->>'sourceEventId',sequence
+      ) select category,count(*)::int as attempts from attempts group by category order by category`;
+    expect([...counts]).toEqual([
+      { category: 'service', attempts: 1 },
+      { category: 'unknown', attempts: 2 },
+    ]);
   });
 });

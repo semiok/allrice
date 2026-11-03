@@ -96,7 +96,7 @@ async function records(
   const result = rows.map(record);
   if (kind !== 'run') return result;
   // Reuse the original receipts. Only bounded metadata crosses the platform
-  // boundary: never prompts, tool output, scripts, provider bodies or headers.
+  // boundary: a redacted failure message, never prompts, tool output or scripts.
   for (const [index, item] of result.entries()) {
     const model = await readRootModelFailures(sql, {
       organizationId: item.organizationId,

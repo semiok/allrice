@@ -75,3 +75,13 @@ export async function readRootModelFailures(
     .filter((value): value is ModelFailure => value !== null);
   return { failures: failures.slice(0, 8), truncated: failures.length > 8 };
 }
+
+/** Scalar display fragment for an already scoped allrice_runs alias `r`.
+ * The terminal receipt is written by failJob from proven root evidence;
+ * public task/history queries select its category, never the private message. */
+export function terminalModelFailureCategorySql(sql: Sql) {
+  return sql`(select e.payload#>>'{modelFailure,category}' from allrice_run_events e
+    where e.run_id=r.id and e.organization_id=r.organization_id and e.workspace_id=r.workspace_id
+      and e.event_type='run.failed' and e.payload->>'code'=r.error_code
+    order by e.sequence desc limit 1)`;
+}
