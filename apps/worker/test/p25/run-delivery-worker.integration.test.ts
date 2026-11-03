@@ -83,6 +83,10 @@ import * as SubscriptionPreflight from '../../src/subscription-preflight.ts';
 import { prepareExecutionIsolation } from '../../src/isolation.ts';
 import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.ts';
 import { DshProtocolClient } from '../../src/harness/dsh-protocol-client.ts';
+import {
+  DshRuntimePool,
+  type DshRuntime,
+} from '../../src/harness/dsh/runtime-pool.ts';
 import { normalizeHarnessRunEvent } from '../../src/harness/runtime-contract.ts';
 import { checkOfficeExport } from '../../src/office/quality.ts';
 import * as Router from '../../src/harness/router.ts';
@@ -2370,6 +2374,212 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       }
     },
     45000,
+  );
+
+  it.each(['finish', 'endRun'] as const)(
+    '取消拒绝晚于最终 guard、落在 %s 响应期间：真实 Worker 不发布成功且保留原错、用量和关闭',
+    async (phase) => {
+      const authorizing = gate(),
+        releaseAuthority = gate(),
+        rootRelease = gate(),
+        finishing = gate(),
+        releaseFinish = gate(),
+        refused = gate();
+      let roots = 0;
+      const f = await setup(async () => {
+        if (++roots === 1)
+          return {
+            nativeTool: {
+              name: 'subagent',
+              arguments: {
+                description: '可停止的独立检查',
+                prompt: 'LATE_CANCELED_AUTHORITY_CHILD',
+              },
+            },
+          };
+        await rootRelease.promise;
+        return { text: '子任务已停止，已整理当前结果。' };
+      }, true);
+      const task = await prepare(f, '委派独立检查，停止后整理已有结果。', true);
+      let runtime: DshRuntime | undefined;
+      const acquire = DshRuntimePool.prototype.acquire;
+      vi.spyOn(DshRuntimePool.prototype, 'acquire').mockImplementation(
+        async function (this: DshRuntimePool, input) {
+          const acquired = await acquire.call(this, input);
+          runtime = acquired.runtime;
+          return acquired;
+        },
+      );
+      let holdChild = false,
+        held = false;
+      let childId: string | undefined;
+      let refusal: unknown;
+      const execute = adapter!.execute.bind(adapter);
+      vi.spyOn(adapter!, 'execute').mockImplementation((input) => {
+        const authority = input.nativeRunAuthority!;
+        input.nativeRunAuthority = (generation) => {
+          const grant = authority(generation);
+          return async () => {
+            if (holdChild) {
+              holdChild = false;
+              authorizing.release();
+              await releaseAuthority.promise;
+            }
+            return grant();
+          };
+        };
+        return execute(input);
+      });
+      const setHandler = DshProtocolClient.prototype.setRequestHandler;
+      vi.spyOn(
+        DshProtocolClient.prototype,
+        'setRequestHandler',
+      ).mockImplementation(function (this: DshProtocolClient, handler) {
+        setHandler.call(
+          this,
+          handler &&
+            (async (method, params) => {
+              const target =
+                !held &&
+                method === 'allrice/run-authorize' &&
+                params.kind === 'model' &&
+                params.nativeSessionId !== params.rootSessionId;
+              if (target) {
+                held = holdChild = true;
+                childId = params.nativeSessionId as string;
+              }
+              try {
+                return await handler(method, params);
+              } catch (error) {
+                if (target) {
+                  refusal = error;
+                  refused.release();
+                }
+                throw error;
+              }
+            }),
+        );
+      });
+      const delivery = DshProtocolClient.prototype.finalDelivery;
+      vi.spyOn(DshProtocolClient.prototype, 'finalDelivery').mockImplementation(
+        async function (this: DshProtocolClient, action, params) {
+          const result = await delivery.call(this, action, params);
+          if (phase === 'finish' && action === 'finish') {
+            finishing.release();
+            await releaseFinish.promise;
+          }
+          return result;
+        },
+      );
+      const end = DshProtocolClient.prototype.endRun;
+      const endRun = vi
+        .spyOn(DshProtocolClient.prototype, 'endRun')
+        .mockImplementation(async function (
+          this: DshProtocolClient,
+          sessionId,
+        ) {
+          const result = await end.call(this, sessionId);
+          if (phase === 'endRun') {
+            finishing.release();
+            await releaseFinish.promise;
+          }
+          return result;
+        });
+      const work = task.run().then(
+        (result) => ({ result, error: undefined }),
+        (error) => ({ result: undefined, error }),
+      );
+      try {
+        await authorizing.promise;
+        const pin = runtime!.nativePin!;
+        expect(
+          await adapter!.nativeSubagentControl({
+            scope: {
+              rootRunId: task.runId,
+              nativeRootId: runtime!.sessionId,
+              generation: runtime!.nativeGeneration!,
+              jobId: task.execution.job.id,
+              jobAttempt: task.execution.job.attempt,
+              rootOriginDigest: pin.rootOriginDigest,
+              storageNamespace: pin.storageNamespace,
+            },
+            input: {
+              requestId: randomUUID(),
+              kind: 'interrupt',
+              parentSessionId: runtime!.sessionId,
+              childSessionId: childId!,
+              mode: 'continuable',
+            },
+          }),
+        ).toEqual({ kind: 'interrupt', accepted: true });
+        // Native Stop abandons the child's pending RPC, so the real tree and
+        // checked candidate can settle while its local authority stays pending.
+        rootRelease.release();
+        await finishing.promise;
+        const dispatched = model!.requests.length;
+        await cancelRun(f.context, f.identity.workspace, task.runId, {
+          reason: 'user_requested',
+        });
+        releaseAuthority.release();
+        await refused.promise;
+        releaseFinish.release();
+        const outcome = await work;
+        expect.soft(refusal).toMatchObject({ retryable: false });
+        expect.soft(outcome.error).toBe(refusal);
+        expect.soft(outcome.result).toBeUndefined();
+        expect
+          .soft(
+            await f.db`select id from allrice_run_events where run_id=${task.runId}
+          and event_type='assistant.text.completed'`,
+          )
+          .toHaveLength(0);
+        expect.soft(model!.requests).toHaveLength(dispatched);
+        expect
+          .soft(
+            model!.requests.every(
+              (r) =>
+                !JSON.stringify(
+                  r.messages.filter((m) => m.role === 'user'),
+                ).includes('LATE_CANCELED_AUTHORITY_CHILD'),
+            ),
+          )
+          .toBe(true);
+        const [route] =
+          await f.db`select id,input_tokens,cached_input_tokens,output_tokens,
+          usage_complete,cache_usage_known from allrice_route_decisions where run_id=${task.runId}`;
+        expect.soft(route).toMatchObject({
+          input_tokens: dispatched * 20,
+          cached_input_tokens: 0,
+          output_tokens: dispatched * 5,
+          usage_complete: false,
+        });
+        expect
+          .soft(
+            await f.db`select route_decision_id id,input_tokens,cached_input_tokens,
+          output_tokens,usage_complete,cache_usage_known from allrice_model_usage_ledger
+          where route_decision_id=${route!.id}`,
+          )
+          .toEqual([route]);
+        expect.soft(await state(f, task.runId)).toMatchObject({ successes: 0 });
+        const [job] =
+          await f.db`select cancel_requested_at from allrice_jobs where run_id=${task.runId}`;
+        expect.soft(job!.cancel_requested_at).toBeInstanceOf(Date);
+        expect.soft(adapter!.runtimeInventory()).toHaveLength(0);
+        expect.soft(runtime!.client.closureEvidence()).toMatchObject({
+          shutdownAcknowledged: true,
+          wrapperCleanupConfirmed: true,
+          process: { state: 'exited', stdioClosed: true, exitCode: 0 },
+        });
+        if (phase === 'endRun') expect.soft(endRun).toHaveBeenCalledTimes(1);
+      } finally {
+        rootRelease.release();
+        releaseAuthority.release();
+        releaseFinish.release();
+        await work;
+        await task.isolation.cleanup();
+      }
+    },
+    30000,
   );
 
   it('PR3a 子智能体调用工具前撤销成员权限，真实 Worker 拒绝并收树', async () => {
