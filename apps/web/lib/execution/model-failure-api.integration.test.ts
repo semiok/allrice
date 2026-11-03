@@ -9,7 +9,10 @@ import {
 import * as client from '../../../../packages/database/src/core/client.ts';
 import { createRuntimeFixtureDatabase } from '../../../../packages/database/src/runtime.fixture.ts';
 import { createExperienceFixture } from '../../../../packages/database/src/experience.fixture.ts';
-import { terminalModelFailureCategorySql } from '../../../../packages/database/src/execution/model-failures.ts';
+import {
+  readRootModelFailures,
+  terminalModelFailureCategorySql,
+} from '../../../../packages/database/src/execution/model-failures.ts';
 import { failJob } from '../../../../packages/database/src/execution/queue.ts';
 import { nativeEventView } from '../../../../apps/worker/src/harness/dsh/event-projector.ts';
 const auth = vi.hoisted(() => ({ context: null as RequestContext | null }));
@@ -25,6 +28,7 @@ import { POST as cancelPost } from '../../app/api/v1/runs/[id]/cancel/route';
 import { GET as eventsGet } from '../../app/api/v1/runs/[id]/events/route';
 import { GET as sessionGet } from '../../app/api/v1/sessions/[id]/route';
 import { GET as taskGet } from '../../app/api/v1/scheduled-tasks/[taskId]/route';
+import { POST as approvalPost } from '../../app/api/v1/workflow-approvals/[id]/route';
 import { GET as adminGet } from '../../app/api/v1/admin/technical-assistant/route';
 
 const suite =
@@ -86,7 +90,7 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
         },
       })!;
       await db.db`insert into allrice_run_events(organization_id,workspace_id,run_id,sequence,event_type,payload)
-        values(${f.org},${f.workspace},${f.run},1,'harness.native',${json({ source: 'dsh', sourceEventId: projected.sourceEventId, sourceEventType: projected.sourceEventType, sourceOccurredAt: projected.sourceOccurredAt, nativePayload: projected.sourcePayload, attempt: 0, summary: 'summary' in projected ? projected.summary : undefined })})`;
+        values(${f.org},${f.workspace},${f.run},1,'harness.native',${json({ source: 'dsh', conversationId: f.session.id, messageId: f.assistant, sourceEventId: projected.sourceEventId, sourceEventType: projected.sourceEventType, sourceOccurredAt: projected.sourceOccurredAt, nativePayload: projected.sourcePayload, attempt: 0, summary: 'summary' in projected ? projected.summary : undefined })})`;
     }
     if (code) {
       const receiptPayload = receipt
@@ -261,7 +265,7 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
     await db.db`update allrice_employee_runs set status='running',completed_at=null where run_id=${f.run}`;
     await db.db`insert into allrice_run_events(organization_id,workspace_id,run_id,sequence,event_type,payload)
       values(${f.org},${f.workspace},${f.run},1,'assistant.text.completed',${json({ messageId: f.assistant, attempt: 1, text: 'Completed answer survives', sourceEventType: 'assistant/message', nativePayload: { contentTypes: ['text'] } })}),
-      (${f.org},${f.workspace},${f.run},2,'harness.native',${json({ source: 'dsh', sourceEventId: 'dsh:14', sourceEventType: 'assistant/attempt', attempt: 1, nativePayload: { modelFailure: { category: 'unknown', code: 'FUTURE_TERMINAL', upstreamMessage: unknownRaw + ' ' + secret } } })})`;
+      (${f.org},${f.workspace},${f.run},2,'harness.native',${json({ source: 'dsh', conversationId: f.session.id, messageId: f.assistant, sourceEventId: 'dsh:14', sourceEventType: 'assistant/attempt', attempt: 1, nativePayload: { modelFailure: { category: 'unknown', code: 'FUTURE_TERMINAL', upstreamMessage: unknownRaw + ' ' + secret } } })})`;
     expect(
       await failJob({
         workerId,
@@ -421,5 +425,145 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
       { category: 'service', attempts: 1 },
       { category: 'unknown', attempts: 2 },
     ]);
+  });
+  it('review regression: decided Workflow approval replay maps the public step error slot', async () => {
+    const f = await seed('DSH_PI_AI_ERROR', raw),
+      workflowId = randomUUID(),
+      revisionId = randomUUID(),
+      workflowRunId = randomUUID(),
+      stepId = randomUUID(),
+      approvalId = randomUUID();
+    const definition = {
+      schemaVersion: 1,
+      steps: [
+        { key: 'load', name: 'Synthetic model', kind: 'model', input: {} },
+      ],
+    };
+    const [assignment] =
+      await db.db`select a.employee_id from allrice_employee_runs er join allrice_employee_assignments a on a.id=er.employee_assignment_id where er.run_id=${f.run}`;
+    await db.db`insert into allrice_workflows(id,organization_id,workspace_id,slug,name,description,created_by) values(${workflowId},${f.org},${f.workspace},${'privacy-' + workflowId},'Synthetic workflow','Synthetic only',${f.user})`;
+    await db.db`insert into allrice_workflow_revisions(id,organization_id,workspace_id,workflow_id,revision,name,description,definition,checksum,created_by,published_at) values(${revisionId},${f.org},${f.workspace},${workflowId},1,'Synthetic workflow','Synthetic only',${json(definition)},${'sha256:' + 'a'.repeat(64)},${f.user},now())`;
+    await db.db`insert into allrice_workflow_runs(id,organization_id,workspace_id,owner_id,run_id,employee_id,workflow_revision_id,session_id,status,definition_snapshot,input)
+      values(${workflowRunId},${f.org},${f.workspace},${f.user},${f.run},${assignment!.employee_id},${revisionId},${f.session.id},'failed',${json(definition)},'{}')`;
+    await db.db`insert into allrice_workflow_step_runs(id,organization_id,workspace_id,workflow_run_id,step_key,name,step_kind,status,attempt,max_attempts,idempotency_key,error_code,error_message)
+      values(${stepId},${f.org},${f.workspace},${workflowRunId},'load','Synthetic model','model','failed',1,1,${randomUUID()},'DSH_PI_AI_ERROR',${raw + ' ' + secret})`;
+    await db.db`insert into allrice_approval_requests(id,organization_id,workspace_id,run_id,actor_id,resource_type,resource_id,action,input_digest,status,decided_by,decided_at,decision_reason)
+      values(${approvalId},${f.org},${f.workspace},${f.run},${f.user},'workflow_step',${stepId},'workflow.step.execute',${'sha256:' + 'a'.repeat(64)},'approved',${f.user},now(),'Already approved')`;
+    auth.context = f.owner;
+    const body = await publicBody(
+      await approvalPost(
+        new Request(
+          `http://localhost/api/v1/workflow-approvals/${approvalId}`,
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              workspaceId: f.workspace,
+              decision: 'approved',
+              reason: 'Replay existing decision',
+            }),
+          },
+        ),
+        { params: Promise.resolve({ id: approvalId }) },
+      ),
+    );
+    expect(JSON.parse(body).workflowRun.steps[0]).toMatchObject({
+      status: 'failed',
+      errorCode: 'DSH_PI_AI_ERROR',
+    });
+    const [approval] =
+      await db.db`select status,decision_reason from allrice_approval_requests where id=${approvalId}`;
+    expect(approval).toMatchObject({
+      status: 'approved',
+      decision_reason: 'Already approved',
+    });
+  });
+  it('review regression: natural API key credentials are absent from the actual administrator response', async () => {
+    await seed('DSH_PI_AI_ERROR', 'Invalid API key: P4ssW0rdQWER123');
+    auth.context = legacy.reviewer;
+    const response = await adminGet(
+      new Request('http://localhost/api/v1/admin/technical-assistant'),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.text()).not.toContain('P4ssW0rdQWER123');
+  });
+  it.each(['DSH_QUOTA', 'DSH_ACCOUNT_QUOTA'])(
+    'review regression: historical native quota code %s without receipt retains quota advice and admin safe original',
+    async (code) => {
+      const f = await seed(code, 'Usage window reached');
+      auth.context = f.owner;
+      const body = await publicBody(await runGet(request(f), route(f)));
+      expect(body).toContain('模型服务额度已用完');
+      auth.context = legacy.reviewer;
+      const response = await adminGet(
+        new Request('http://localhost/api/v1/admin/technical-assistant'),
+      );
+      expect(response.status).toBe(200);
+      const rows = (await response.json()).diagnostics.runs.value;
+      expect(
+        rows.find((row: { runId: string }) => row.runId === f.run),
+      ).toMatchObject({
+        modelFailures: [
+          {
+            category: 'quota',
+            upstreamMessage: expect.stringContaining('Usage window reached'),
+          },
+        ],
+      });
+    },
+  );
+  it('review regression: JSON/SSE preserve business result objects named modelFailure consistently with Run GET', async () => {
+    const f = recovered,
+      result = {
+        modelFailure: {
+          category: 'service',
+          upstreamMessage: 'Business transport field',
+          details: { modelFailure: { business: true } },
+        },
+        output: { modelFailure: { business: true } },
+      };
+    await db.db`update allrice_runs set result=${json(result)} where id=${f.run}`;
+    await db.db`insert into allrice_run_events(organization_id,workspace_id,run_id,sequence,event_type,payload) values(${f.org},${f.workspace},${f.run},2,'run.succeeded',${json({ result })})`;
+    auth.context = f.owner;
+    expect(
+      (await (await runGet(request(f), route(f))).json()).run.result,
+    ).toEqual(result);
+    for (const accept of ['application/json', 'text/event-stream']) {
+      const response = await eventsGet(
+        request(f, '/events', { headers: { accept } }),
+        route(f),
+      );
+      expect(response.status).toBe(200);
+      const events =
+        accept === 'application/json'
+          ? (await response.json()).events
+          : (await response.text())
+              .split('\n')
+              .filter((line) => line.startsWith('data: '))
+              .map((line) => JSON.parse(line.slice(6)));
+      expect(
+        events.find((event: { type: string }) => event.type === 'run.succeeded')
+          .payload.result,
+      ).toEqual(result);
+    }
+  });
+  it('review regression: internal task events never become main-chat model receipts', async () => {
+    const f = await seed(null, 'Synthetic internal original', true);
+    await db.db`update allrice_run_events set payload=payload||${json({ internalTask: { kind: 'experience_consolidation', occurrenceId: randomUUID() }, conversationId: null, messageId: null })} where run_id=${f.run}`;
+    expect(
+      await readRootModelFailures(db.db, {
+        organizationId: f.org,
+        workspaceId: f.workspace,
+        runId: f.run,
+      }),
+    ).toEqual({ failures: [], truncated: false });
+    auth.context = legacy.reviewer;
+    const response = await adminGet(
+      new Request('http://localhost/api/v1/admin/technical-assistant'),
+    );
+    expect(
+      (await response.json()).diagnostics.runs.value.find(
+        (row: { runId: string }) => row.runId === f.run,
+      ).modelFailures,
+    ).toBeUndefined();
   });
 });

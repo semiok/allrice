@@ -217,4 +217,23 @@ describe('synthetic provider failures; historical observations only cover auth/s
       ),
     ).toBe('Original business message');
   });
+  it.each([
+    'API key: P4ssW0rdQWER123',
+    'Invalid API key: P4ssW0rdQWER123',
+    'access token: P4ssW0rdQWER123',
+    'refresh token = P4ssW0rdQWER123',
+  ])('review regression: natural credential label %s is hidden', (text) => {
+    expect(redactModelFailure(text)).not.toContain('P4ssW0rdQWER123');
+  });
+  it.each([
+    'Authorization: Basic\ncHJpdmF0ZTpwYXNz',
+    'Authorization: Bearer\nsynthetic-private',
+    'api_key=\nsynthetic-private',
+    'token:\n  synthetic-private',
+  ])(
+    'review regression: unreliable multiline credentials fail closed: %s',
+    (text) => {
+      expect(redactModelFailure(text)).toBe(hiddenModelFailure);
+    },
+  );
 });
