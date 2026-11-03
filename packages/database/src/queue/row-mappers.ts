@@ -193,6 +193,23 @@ export function mapRunSnapshot(
   });
 }
 
+/** Only private display/error slots enter the receipt sanitizer. Business
+ * result/output objects are never traversed, even when keys happen to match. */
+function publicFailurePayload(
+  payload: Record<string, unknown>,
+  native: boolean,
+) {
+  const privateSlots: Record<string, unknown> = {};
+  for (const key of native
+    ? ['nativePayload', 'metadata']
+    : ['modelFailure', 'metadata'])
+    if (Object.hasOwn(payload, key)) privateSlots[key] = payload[key];
+  return {
+    ...payload,
+    ...(publicModelFailureMetadata(privateSlots) as Record<string, unknown>),
+  };
+}
+
 export function mapEvent(row: EventRow): RunEvent {
   const payload =
     row.payload &&
@@ -225,6 +242,14 @@ export function mapEvent(row: EventRow): RunEvent {
             summary: modelFailureText(nativeFailure.category, row.run_id),
           }
         : row.payload;
+  const nativeReceipt =
+    row.event_type === 'harness.native' &&
+    payload?.source === 'dsh' &&
+    payload.sourceEventType === 'assistant/attempt';
+  const modelError =
+    row.event_type === 'run.failed' &&
+    typeof payload?.code === 'string' &&
+    payload.code.startsWith('DSH_');
   return RunEventSchema.parse({
     eventId: row.id,
     runId: row.run_id,
@@ -233,11 +258,11 @@ export function mapEvent(row: EventRow): RunEvent {
     schemaVersion: row.schema_version,
     occurredAt: row.occurred_at.toISOString(),
     payload:
-      (row.event_type === 'run.failed' &&
-        typeof payload?.code === 'string' &&
-        payload.code.startsWith('DSH_')) ||
-      (row.event_type === 'harness.native' && payload?.source === 'dsh')
-        ? publicModelFailureMetadata(publicPayload)
+      nativeReceipt || modelError
+        ? publicFailurePayload(
+            publicPayload as Record<string, unknown>,
+            nativeReceipt,
+          )
         : publicPayload,
   });
 }
