@@ -2382,6 +2382,89 @@ suite('native subagent directory and employee sidebar', () => {
     }
   });
 
+  it('MET-238 startup offline: keeps the original deadline while really offline and never reads until online', async () => {
+    let release!: () => void;
+    let releaseOnline!: () => void;
+    const gate = new Promise<void>((done) => {
+      release = done;
+    });
+    const onlineRead = new Promise<void>((done) => {
+      releaseOnline = done;
+    });
+    const initial = {
+      kind: 'error' as const,
+      gate,
+      code: bindingUnavailable,
+      repeat: true,
+    };
+    const { page, calls, initialDelivered } = await open(
+      summary(),
+      1200,
+      undefined,
+      undefined,
+      '',
+      initial,
+    );
+    try {
+      await page.clock.install();
+      await page.clock.pauseAt(new Date(Date.now() + 100));
+      release();
+      await expect.poll(initialDelivered).toBe(1);
+      await page.clock.runFor(50);
+      const trigger = page.locator('button[aria-haspopup="tree"]');
+      expect(await trigger.getAttribute('aria-label')).toBe('子智能体');
+      await page.clock.runFor(2000);
+      expect(
+        await page.evaluate(() => {
+          Object.defineProperty(navigator, 'onLine', {
+            configurable: true,
+            value: false,
+          });
+          window.dispatchEvent(new Event('offline'));
+          return navigator.onLine;
+        }),
+      ).toBe(false);
+      await page.clock.runFor(2000);
+      await trigger.dispatchEvent('click');
+      await page.clock.runFor(1100);
+      await page
+        .getByRole('button', { name: '子智能体读取失败', exact: true })
+        .waitFor({ timeout: 1000 });
+      expect(calls.filter((call) => call.id === 'parent-a')).toHaveLength(1);
+      await page
+        .getByRole('alert')
+        .filter({ hasText: '暂时读不到子智能体目录。' })
+        .waitFor();
+      await capture(page, 'startup-offline-deadline-error');
+      // The online owner gets the expired deadline even while its read hangs.
+      initial.gate = onlineRead;
+      expect(
+        await page.evaluate(() => {
+          Object.defineProperty(navigator, 'onLine', {
+            configurable: true,
+            value: true,
+          });
+          window.dispatchEvent(new Event('online'));
+          return navigator.onLine;
+        }),
+      ).toBe(true);
+      await expect
+        .poll(() => calls.filter((call) => call.id === 'parent-a').length)
+        .toBe(2);
+      await page.clock.runFor(50);
+      await page
+        .getByRole('button', { name: '子智能体读取失败', exact: true })
+        .waitFor({ timeout: 1000 });
+      expect(initialDelivered()).toBe(1);
+    } finally {
+      release();
+      releaseOnline();
+      if (calls.filter((call) => call.id === 'parent-a').length === 2)
+        await expect.poll(initialDelivered).toBe(2);
+      await page.close();
+    }
+  });
+
   it.each([
     [503, 'NATIVE_QUERY_HOST_MISMATCH'],
     [503, undefined],
