@@ -68,7 +68,7 @@ export function useNativeSubagents(
     const [workspaceId, headers, requests, liveOnly] = JSON.parse(key);
     const abort = new AbortController();
     setState({ key, reads: {} });
-    if (navigator.onLine !== false)
+    if (Object.keys(requests).length)
       void Promise.all(
         Object.keys(requests).map(async (id) => {
           let read: NativeSubagentRead = 'error';
@@ -96,6 +96,8 @@ export function useNativeSubagents(
             once: true,
           });
           armDeadline();
+          // An observed deadline still expires offline; offline reads stay disabled.
+          if (navigator.onLine === false) return;
           try {
             const query = new URLSearchParams({ workspaceId });
             if (liveOnly) query.set('liveOnly', 'true');
