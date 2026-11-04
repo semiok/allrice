@@ -1,7 +1,10 @@
 import { installNativeAccounting } from './allrice-native-accounting.mjs';
 import { createRunFinalDelivery } from './allrice-final-delivery.mjs';
 import { readBootstrapCoverage } from './allrice-bootstrap-coverage.mjs';
-import { enqueuePersonalScenePrompt } from './allrice-personal-scene-prompt.mjs';
+import {
+  enqueuePersonalScenePrompt,
+  installPersonalScenePromptAdmission,
+} from './allrice-personal-scene-prompt.mjs';
 import { BootstrapReceiptSchema } from '@allrice/contracts/native-runtime';
 import {
   PersonalSkillPinSchema,
@@ -1270,6 +1273,13 @@ export async function createAllRiceRuntime(
         ? params.contentScenes
         : [];
       this.personalContentScenes = params.personalContentScenes === true;
+      if (
+        this.personalContentScenes &&
+        !this.personalPromptAdmissionInstalled
+      ) {
+        installPersonalScenePromptAdmission(this.ctx);
+        this.personalPromptAdmissionInstalled = true;
+      }
       if (scenes.length || params.personalContentScenes === true) {
         if (!params.requireContentGuard || !this.sceneBridge)
           throw Error('employee_scene_guard_required');

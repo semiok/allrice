@@ -1,12 +1,15 @@
 import { createHash } from 'node:crypto';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { expect, it } from 'vitest';
-import { enqueuePersonalScenePrompt } from './allrice-personal-scene-prompt.mjs';
+import {
+  enqueuePersonalScenePrompt,
+  installPersonalScenePromptAdmission,
+} from './allrice-personal-scene-prompt.mjs';
 import { readBootstrapCoverage } from './allrice-bootstrap-coverage.mjs';
 
-it('queues every source before one wake, preserving image, reference, receipt and message identity', () => {
-  const queued = [],
-    calls = [];
+it('admits all sources in one native step, preserving image, reference, receipt and identity', async () => {
+  let queued = [];
+  const calls = [];
   const agent = {
     send(message, target, wake) {
       calls.push({ target, wake });
@@ -43,7 +46,18 @@ it('queues every source before one wake, preserving image, reference, receipt an
     ],
     reference,
   );
-  expect(calls.map((c) => c.wake)).toEqual([false, false, false, true]);
+  expect(calls.map((c) => c.wake)).toEqual([true]);
+  expect(queued[0].source.kind).toBe('user');
+  expect(queued[0].content[0].text).toBe(human);
+  let preStep;
+  installPersonalScenePromptAdmission({
+    on(_name, handler) {
+      preStep = handler;
+    },
+  });
+  queued = (
+    await preStep({}, async () => ({ kind: 'continue', messages: queued }))
+  ).messages;
   expect(queued.map((m) => m.source.kind)).toEqual([
     'allrice-context',
     'user',

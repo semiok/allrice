@@ -884,7 +884,9 @@ describe('personal Workflow native slash source and use evidence', () => {
       {
         kind: 'tool-result',
         contentRef: 'exact-package-v2',
-        nativeId: 'call_synthetic_0',
+        nativeId: r.events.find(
+          (e) => e.type === 'tool/call' && e.data.name === 'skill',
+        ).data.callId,
       },
     ]);
   }, 45000);
