@@ -82,8 +82,12 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     otherWorkspace = randomUUID();
     await f.db`insert into allrice_workspaces(id,organization_id,slug,name) values(${otherWorkspace},${identity.org},'other','Other')`;
     await f.db`insert into allrice_memberships(id,organization_id,workspace_id,user_id,role) values(${randomUUID()},${identity.org},${otherWorkspace},${identity.user},'admin')`;
-    const otherOwner = (await authenticateSession(ownerToken, { organizationId: identity.org, workspaceId: otherWorkspace }))!;
-    otherInstance = (await ensureDefaultEmployee(otherOwner, otherWorkspace))!.id;
+    const otherOwner = (await authenticateSession(ownerToken, {
+      organizationId: identity.org,
+      workspaceId: otherWorkspace,
+    }))!;
+    otherInstance = (await ensureDefaultEmployee(otherOwner, otherWorkspace))!
+      .id;
     await ensureGeneralEmployeeInstance(f.db, otherInstance);
     candidate = await remember('真实候选：看数据时先看表格，再看文字说明。');
     const readerAssignment = await ensureDefaultEmployee(

@@ -72,7 +72,10 @@ function completedHistory(fixture: Fixture): History {
 }
 function App({ fixture }: { fixture: Fixture }) {
   const [workspaceId, setWorkspace] = useState(fixture.workspaceId);
-  const instanceId = workspaceId === fixture.workspaceId ? fixture.assignmentId : fixture.otherInstanceId;
+  const instanceId =
+    workspaceId === fixture.workspaceId
+      ? fixture.assignmentId
+      : fixture.otherInstanceId;
   const column = useRef<HTMLDivElement>(null);
   const query = new URLSearchParams(location.search);
   const management = query.get('host') === 'management';

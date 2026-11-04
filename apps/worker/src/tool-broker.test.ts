@@ -344,8 +344,9 @@ describe('Codex hosted search Tool Broker integration', () => {
         trust: 'derived',
         confidence: 0.8,
       });
+      const context = executionContext();
       const result = await executeRiceTool({
-        context: executionContext(),
+        context,
         capabilities: ['storage:write'],
         storageRoot: '.local/storage',
         employeeId: randomUUID(),
@@ -388,8 +389,9 @@ describe('Codex hosted search Tool Broker integration', () => {
         trust: 'derived',
         confidence: 0.8,
       });
+      const context = executionContext();
       const result = await executeRiceTool({
-        context: executionContext(),
+        context,
         capabilities: ['storage:write'],
         storageRoot: '.local/storage',
         employeeId: randomUUID(),
