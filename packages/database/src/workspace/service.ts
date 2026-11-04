@@ -3031,11 +3031,14 @@ export async function deleteWorkspaceMemory(
       tx,
       true,
     );
-    const [origin] = await tx<{source_type: string; source_id: string | null}[]>`
+    const [origin] = await tx<
+      { source_type: string; source_id: string | null }[]
+    >`
       select source_type,source_id from allrice_memories
       where id=${memoryId} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
         and owner_id=${scope.ownerId} and instance_id=${scope.instanceId}`;
-    if (origin) await lockMemorySource(tx, scope, origin.source_type, origin.source_id);
+    if (origin)
+      await lockMemorySource(tx, scope, origin.source_type, origin.source_id);
     await memoryOperation(
       tx,
       scope,

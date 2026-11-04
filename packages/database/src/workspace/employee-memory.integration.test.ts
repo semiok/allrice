@@ -363,8 +363,12 @@ suite(
       await expect(
         createTraceableMemory(f.context, proposal),
       ).rejects.toBeInstanceOf(EmployeeMemoryConflict);
-      await expect(createTraceableMemory(f.context, {...proposal, content: 'Rephrased old discarded proposal'}))
-        .rejects.toBeInstanceOf(EmployeeMemoryConflict);
+      await expect(
+        createTraceableMemory(f.context, {
+          ...proposal,
+          content: 'Rephrased old discarded proposal',
+        }),
+      ).rejects.toBeInstanceOf(EmployeeMemoryConflict);
     });
 
     it('serializes concurrent edit/confirmation, preserves a single winning revision and rejects a changed idempotency payload', async () => {
