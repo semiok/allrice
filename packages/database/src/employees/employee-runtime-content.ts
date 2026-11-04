@@ -1112,6 +1112,7 @@ export async function loadPersonalRuntimeSceneSkill(
       personal.resources.push({ path: resource.path, checksum: resource.checksum });
     // Include every actually read package's body in the established body budget.
     let bodyBytes = 0;
+    const sourceRefs = new Set<string>();
     for (const read of reads) {
       if (!read.personal) return unavailable();
       const exact = read.personal.contentRef === pkg.skill.contentRef ? pkg : await readPersonalSceneSkillInTransaction(
@@ -1119,9 +1120,11 @@ export async function loadPersonalRuntimeSceneSkill(
         { contentRef: read.personal.contentRef }, tx, true,
       );
       bodyBytes += Buffer.byteLength(exact.skill.content);
+      for (const source of exact.resolved) sourceRefs.add(employeeContentReferenceKey(source.dto.reference));
     }
-    if (bodyBytes > employeeContentLimits.textBytes || !(await validContentLease(scope, worker, tx))) return unavailable();
+    if (bodyBytes > employeeContentLimits.textBytes || sourceRefs.size > employeeContentLimits.references || !(await validContentLease(scope, worker, tx))) return unavailable();
     await tx`update allrice_employee_runs set content_scene_state=${tx.json(EmployeeSceneStateSchema.parse(state))} where run_id=${scope.runId}`;
+    if (!(await validContentLease(scope, worker, tx))) return unavailable();
     return { receipt, ...(resource ? {
       resource: PersonalSceneSkillResourceSchema.parse({ ...resource, contentRef: pkg.skill.contentRef, bundleChecksum: pkg.skill.bundleChecksum }),
     } : { skill: pkg.skill }) };

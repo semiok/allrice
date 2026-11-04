@@ -166,15 +166,12 @@ export async function savePersonalSceneSkill(contextInput: RequestContext, insta
     const target = await resolveEmployeeMethodTarget(context, instanceId, undefined, tx);
     const contentId = employeeChatUuid('personal-scene-package', instanceId, input.requestId);
     const sourceRevisionId = employeeChatUuid('personal-scene-package-revision', instanceId, input.requestId);
-    const base = {
-      ...target, setId: target.setId, target: target.target, ownership: target.ownership,
+    const mutation = {
+      setId: target.setId, target: target.target, ownership: target.ownership,
       workspaceId: input.workspaceId, requestId: input.requestId, expectedRevision: input.expectedRevision,
       changeSummary: input.changeSummary, operation: 'save_draft' as const,
       manifest: { schemaVersion: 1 as const, common: [], scenes: [], declaredConflicts: [] }, textEdits: [],
     };
-    // Only mutation fields are forwarded; method target metadata is not public input.
-    const { setId, ownership, target: mutationTarget, workspaceId, requestId, expectedRevision, changeSummary, operation, manifest, textEdits } = base;
-    const mutation = { setId, ownership, target: mutationTarget, workspaceId, requestId, expectedRevision, changeSummary, operation, manifest, textEdits };
     const receipt = await mutateEmployeeContentInTransaction(context, mutation, tx, {
       authorize, publishOnSave: true,
       inputDigest: runtimePolicyDigest({ instanceId, input }),
