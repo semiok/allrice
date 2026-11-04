@@ -127,7 +127,9 @@ it.each([
   ['workspace.memory.read', '已调用工具'],
   ['cloud_mcp_call', '已调用工具'],
   ['web_search', '已搜索网页'],
+  ['web.search', '已搜索网页'],
   ['web_fetch', '已访问网页'],
+  ['web.fetch', '已访问网页'],
   ['apply_patch', '修改了文件'],
 ])('keeps %s in the native activity category', (toolName, expected) => {
   expect(workProcessTitle([call(1, { toolName })], false)).toBe(expected);
