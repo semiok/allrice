@@ -21,7 +21,7 @@ import '../app/styles/base.css';
 import '@allrice/ui/styles.css';
 
 type Fixture = {
-  ownerId:string;
+  ownerId: string;
   organizationId: string;
   workspaceId: string;
   otherWorkspaceId: string;
@@ -145,7 +145,16 @@ function App({ fixture }: { fixture: Fixture }) {
           },
         },
       ];
-  if(query.get('host')==='admin') return <main style={{maxWidth:900,margin:'0 auto',padding:16}}><EmployeeMemoryView organizationId={fixture.organizationId} ownerId={fixture.ownerId} instanceId={fixture.assignmentId}/></main>;
+  if (query.get('host') === 'admin')
+    return (
+      <main style={{ maxWidth: 900, margin: '0 auto', padding: 16 }}>
+        <EmployeeMemoryView
+          organizationId={fixture.organizationId}
+          ownerId={fixture.ownerId}
+          instanceId={fixture.assignmentId}
+        />
+      </main>
+    );
   return (
     <main style={{ width: '100%', maxWidth: 900, margin: '0 auto' }}>
       <button

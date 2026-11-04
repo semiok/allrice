@@ -238,7 +238,11 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
                 params: Promise.resolve({ id }),
               });
             if (parts[3] === 'admin' && parts[6] === 'employee-memories')
-              return request.method === 'GET' ? adminMemories(request, { params: Promise.resolve({ organizationId: parts[5]! }) }) : new Response(null, {status:405});
+              return request.method === 'GET'
+                ? adminMemories(request, {
+                    params: Promise.resolve({ organizationId: parts[5]! }),
+                  })
+                : new Response(null, { status: 405 });
             if (parts[3] !== 'memories') {
               failures.push(
                 'Unexpected API/model request: ' +
@@ -253,15 +257,18 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
             if (req.method === 'DELETE' && id === failDeleteFor)
               return Response.json({}, { status: 503 });
             const params = { params: Promise.resolve({ id }) };
-            const response = id === 'manage' ? await manage(request) : !id
-              ? req.method === 'POST'
-                ? await create(request)
-                : await list(request)
-              : req.method === 'DELETE'
-                ? await discard(request, params)
-                : req.method === 'PATCH'
-                  ? await correct(request, params)
-                  : await promote(request, params);
+            const response =
+              id === 'manage'
+                ? await manage(request)
+                : !id
+                  ? req.method === 'POST'
+                    ? await create(request)
+                    : await list(request)
+                  : req.method === 'DELETE'
+                    ? await discard(request, params)
+                    : req.method === 'PATCH'
+                      ? await correct(request, params)
+                      : await promote(request, params);
             if (id === loseAckFor && parts[5] === 'promote' && response.ok) {
               loseAckFor = '';
               return Response.json({}, { status: 503 });
@@ -690,7 +697,9 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       await ui.page
         .getByRole('button', { name: '个人记忆', exact: true })
         .click();
-      await ui.page.getByRole('button', { name: '待确认', exact: true }).waitFor();
+      await ui.page
+        .getByRole('button', { name: '待确认', exact: true })
+        .waitFor();
       expect(await card(ui.page, pending.id).count()).toBe(0);
     } finally {
       await ui.close();
@@ -741,7 +750,10 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       }
       const ui = await open('management');
       try {
-        if (period === 'expired') await ui.page.getByRole('button', {name:'已过期',exact:true}).click();
+        if (period === 'expired')
+          await ui.page
+            .getByRole('button', { name: '已过期', exact: true })
+            .click();
         const receipt = card(ui.page, pending.id);
         await receipt
           .getByText('已记为候选，等待你确认', { exact: true })
@@ -816,8 +828,9 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
         await arrived;
         const refreshed = ui.page.waitForResponse(
           (response) =>
-            ['/api/v1/memories','/api/v1/memories/manage'].includes(new URL(response.url()).pathname) &&
-            response.request().method() === 'GET',
+            ['/api/v1/memories', '/api/v1/memories/manage'].includes(
+              new URL(response.url()).pathname,
+            ) && response.request().method() === 'GET',
         );
         await card(ui.page, fast.id)
           .getByRole('button', { name: '确认并记住' })
@@ -1005,17 +1018,20 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
           release = done;
         });
         let beforeWriteState: string | undefined;
-        await ui.page.route('**/api/v1/memories{,/manage}?**', async (route) => {
-          const response = await route.fetch();
-          beforeWriteState = (await response.json()).memories.find(
-            (memory: WorkspaceMemory) => memory.id === pending.id,
-          )?.lifecycleState;
-          reached();
-          await blocked;
-          return outcome === 'success'
-            ? route.fulfill({ response })
-            : route.fulfill({ status: 503, json: {} });
-        });
+        await ui.page.route(
+          '**/api/v1/memories{,/manage}?**',
+          async (route) => {
+            const response = await route.fetch();
+            beforeWriteState = (await response.json()).memories.find(
+              (memory: WorkspaceMemory) => memory.id === pending.id,
+            )?.lifecycleState;
+            reached();
+            await blocked;
+            return outcome === 'success'
+              ? route.fulfill({ response })
+              : route.fulfill({ status: 503, json: {} });
+          },
+        );
         await card(ui.page, fast.id)
           .getByRole('button', { name: '确认并记住' })
           .click();
@@ -1033,8 +1049,9 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
         ).toBe('durable');
         const returned = ui.page.waitForResponse(
           (response) =>
-            ['/api/v1/memories','/api/v1/memories/manage'].includes(new URL(response.url()).pathname) &&
-            response.request().method() === 'GET',
+            ['/api/v1/memories', '/api/v1/memories/manage'].includes(
+              new URL(response.url()).pathname,
+            ) && response.request().method() === 'GET',
         );
         release();
         await (await returned).finished();
@@ -1158,52 +1175,105 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     }
   });
   it('owner adds and directly edits memory, retains oversized draft, then withdraws with a real receipt', async () => {
-    const ui=await open('management');
+    const ui = await open('management');
     try {
-      await ui.page.getByText('管理员可以查看你的记忆。',{exact:false}).waitFor();
-      await ui.page.getByRole('button',{name:'新增记忆',exact:true}).click();
+      await ui.page
+        .getByText('管理员可以查看你的记忆。', { exact: false })
+        .waitFor();
+      await ui.page
+        .getByRole('button', { name: '新增记忆', exact: true })
+        .click();
       await ui.page.getByLabel('新增记忆内容').fill('中'.repeat(334));
-      await ui.page.getByRole('button',{name:'保存记忆',exact:true}).click();
-      await ui.page.getByRole('alert').filter({hasText:'1000 字节'}).waitFor();
-      expect(await ui.page.getByLabel('新增记忆内容').inputValue()).toBe('中'.repeat(334));
-      const content='本人新增月报资料入口 '+randomUUID();
+      await ui.page
+        .getByRole('button', { name: '保存记忆', exact: true })
+        .click();
+      await ui.page
+        .getByRole('alert')
+        .filter({ hasText: '1000 字节' })
+        .waitFor();
+      expect(await ui.page.getByLabel('新增记忆内容').inputValue()).toBe(
+        '中'.repeat(334),
+      );
+      const content = '本人新增月报资料入口 ' + randomUUID();
       await ui.page.getByLabel('新增记忆内容').fill(content);
-      await ui.page.getByRole('button',{name:'保存记忆',exact:true}).click();
-      await ui.page.getByRole('status').filter({hasText:'记忆已保存'}).waitFor();
-      const [stored]=await f.db`select id,revision,trust_level,lifecycle_state,instance_id from allrice_memories where content=${content} and owner_id=${identity.user}`;
-      expect(stored).toMatchObject({revision:1,trust_level:'user_confirmed',lifecycle_state:'durable',instance_id:identity.assignment});
-      const row=card(ui.page,stored!.id);
-      await row.getByRole('button',{name:'编辑',exact:true}).click();
-      await ui.page.getByLabel('编辑记忆内容').fill(content+' 已更正');
-      await ui.page.getByRole('button',{name:'保存记忆',exact:true}).click();
-      await row.getByText(content+' 已更正',{exact:true}).waitFor();
-      expect((await f.db`select revision from allrice_memories where id=${stored!.id}`)[0]!.revision).toBe(2);
-      await ui.page.locator('summary').filter({hasText:'容量预览'}).click();
-      await ui.page.getByText('此预览不代表每次对话实际使用的记忆。',{exact:false}).waitFor();
-      await capture(ui.page,'m2-owner-management');
-      await row.getByRole('button',{name:'撤回',exact:true}).click();
-      await row.waitFor({state:'detached'});
-      await ui.page.getByRole('button',{name:'已撤回',exact:true}).click();
-      await card(ui.page,stored!.id).waitFor();
-      expect(await card(ui.page,stored!.id).getByRole('button').count()).toBe(0);
-    } finally {await ui.close();}
+      await ui.page
+        .getByRole('button', { name: '保存记忆', exact: true })
+        .click();
+      await ui.page
+        .getByRole('status')
+        .filter({ hasText: '记忆已保存' })
+        .waitFor();
+      const [stored] =
+        await f.db`select id,revision,trust_level,lifecycle_state,instance_id from allrice_memories where content=${content} and owner_id=${identity.user}`;
+      expect(stored).toMatchObject({
+        revision: 1,
+        trust_level: 'user_confirmed',
+        lifecycle_state: 'durable',
+        instance_id: identity.assignment,
+      });
+      const row = card(ui.page, stored!.id);
+      await row.getByRole('button', { name: '编辑', exact: true }).click();
+      await ui.page.getByLabel('编辑记忆内容').fill(content + ' 已更正');
+      await ui.page
+        .getByRole('button', { name: '保存记忆', exact: true })
+        .click();
+      await row.getByText(content + ' 已更正', { exact: true }).waitFor();
+      expect(
+        (
+          await f.db`select revision from allrice_memories where id=${stored!.id}`
+        )[0]!.revision,
+      ).toBe(2);
+      await ui.page.locator('summary').filter({ hasText: '容量预览' }).click();
+      await ui.page
+        .getByText('此预览不代表每次对话实际使用的记忆。', { exact: false })
+        .waitFor();
+      await capture(ui.page, 'm2-owner-management');
+      await row.getByRole('button', { name: '撤回', exact: true }).click();
+      await row.waitFor({ state: 'detached' });
+      await ui.page
+        .getByRole('button', { name: '已撤回', exact: true })
+        .click();
+      await card(ui.page, stored!.id).waitFor();
+      expect(await card(ui.page, stored!.id).getByRole('button').count()).toBe(
+        0,
+      );
+    } finally {
+      await ui.close();
+    }
   });
 
   it('administrator sees only the memory projection and a read audit; ordinary account is denied', async () => {
-    const memory=await remember('管理员只读记忆 '+randomUUID());
-    const denied=await open('admin');
-    try {await denied.page.getByRole('alert').waitFor();expect(await denied.page.getByText(memory.content,{exact:true}).count()).toBe(0);} finally {await denied.close();}
-    const [user]=await f.db`select email from allrice_users where id=${identity.user}`;
-    vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS',user!.email);
-    const ui=await open('admin','dark',360);
+    const memory = await remember('管理员只读记忆 ' + randomUUID());
+    const denied = await open('admin');
     try {
-      await ui.page.getByText(memory.content,{exact:true}).waitFor();
-      expect(await ui.page.getByRole('button',{name:/编辑|确认并记住|撤回|新增记忆/}).count()).toBe(0);
+      await denied.page.getByRole('alert').waitFor();
+      expect(
+        await denied.page.getByText(memory.content, { exact: true }).count(),
+      ).toBe(0);
+    } finally {
+      await denied.close();
+    }
+    const [user] =
+      await f.db`select email from allrice_users where id=${identity.user}`;
+    vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', user!.email);
+    const ui = await open('admin', 'dark', 360);
+    try {
+      await ui.page.getByText(memory.content, { exact: true }).waitFor();
+      expect(
+        await ui.page
+          .getByRole('button', { name: /编辑|确认并记住|撤回|新增记忆/ })
+          .count(),
+      ).toBe(0);
       expect(await ui.page.locator('a[href]').count()).toBe(0);
-      const audits=await f.db`select metadata from allrice_audit_events where action='employee_memory.admin_read' and actor_id=${identity.user} and resource_id=${identity.assignment}`;
-      expect(audits.length).toBeGreaterThan(0);expect(JSON.stringify(audits)).not.toContain(memory.content);
-      await noOverflow(ui.page);await capture(ui.page,'m2-admin-read-only');
-    } finally {await ui.close();vi.unstubAllEnvs();}
+      const audits =
+        await f.db`select metadata from allrice_audit_events where action='employee_memory.admin_read' and actor_id=${identity.user} and resource_id=${identity.assignment}`;
+      expect(audits.length).toBeGreaterThan(0);
+      expect(JSON.stringify(audits)).not.toContain(memory.content);
+      await noOverflow(ui.page);
+      await capture(ui.page, 'm2-admin-read-only');
+    } finally {
+      await ui.close();
+      vi.unstubAllEnvs();
+    }
   });
-
 });

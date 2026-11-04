@@ -309,10 +309,22 @@ function PersonInstances({
           >
             查看共享详情
           </AdminButton>
-          <AdminButton onClick={() => setMemoryInstance(value => value === instance.id ? null : instance.id)}>
+          <AdminButton
+            onClick={() =>
+              setMemoryInstance((value) =>
+                value === instance.id ? null : instance.id,
+              )
+            }
+          >
             {memoryInstance === instance.id ? '收起记忆' : '查看记忆'}
           </AdminButton>
-          {memoryInstance === instance.id && <EmployeeMemoryView organizationId={organizationId} ownerId={userId} instanceId={instance.id} />}
+          {memoryInstance === instance.id && (
+            <EmployeeMemoryView
+              organizationId={organizationId}
+              ownerId={userId}
+              instanceId={instance.id}
+            />
+          )}
         </article>
       ))}
       {!data.instances.length && (

@@ -48,7 +48,21 @@ async function memoryResponse(response: Response) {
 }
 
 export function MemoryCard(props: {
-  memory: Pick<MemoryView, 'id' | 'workspaceId' | 'ownerId' | 'instanceId' | 'content' | 'contentDigest' | 'revision' | 'lifecycleState' | 'expiresAt' | 'memoryClass' | 'sourceType' | 'trust'> & { ownedByMe?: boolean };
+  memory: Pick<
+    MemoryView,
+    | 'id'
+    | 'workspaceId'
+    | 'ownerId'
+    | 'instanceId'
+    | 'content'
+    | 'contentDigest'
+    | 'revision'
+    | 'lifecycleState'
+    | 'expiresAt'
+    | 'memoryClass'
+    | 'sourceType'
+    | 'trust'
+  > & { ownedByMe?: boolean };
   isOwner?: boolean;
   onEdit?: () => void;
   readOnly?: boolean;
@@ -177,7 +191,16 @@ export function MemoryCard(props: {
       )}
       {!props.readOnly && ownedByMe && (candidate || !props.inline) && (
         <div className={css.actions}>
-          {props.onEdit && <Button type="button" variant="outline" disabled={busy !== null} onClick={props.onEdit}>编辑</Button>}
+          {props.onEdit && (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={busy !== null}
+              onClick={props.onEdit}
+            >
+              编辑
+            </Button>
+          )}
           {candidate && (
             <Button
               type="button"
@@ -193,7 +216,13 @@ export function MemoryCard(props: {
             disabled={busy !== null}
             onClick={() => void mutate('delete')}
           >
-            {busy === 'delete' ? '正在处理…' : candidate ? '放弃' : props.onEdit ? '撤回' : '删除'}
+            {busy === 'delete'
+              ? '正在处理…'
+              : candidate
+                ? '放弃'
+                : props.onEdit
+                  ? '撤回'
+                  : '删除'}
           </Button>
         </div>
       )}
