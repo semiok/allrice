@@ -361,7 +361,18 @@ function Manager(props: Props) {
           </div>
         </form>
       )}
-      {readError && <p role="alert">{readError} <Button type="button" variant="ghost" onClick={()=>setRefresh(value=>value+1)}>重新读取记忆</Button></p>}
+      {readError && (
+        <p role="alert">
+          {readError}{' '}
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => setRefresh((value) => value + 1)}
+          >
+            重新读取记忆
+          </Button>
+        </p>
+      )}
       {error && (
         <p role="alert">
           {error}{' '}
