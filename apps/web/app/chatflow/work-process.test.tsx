@@ -47,6 +47,18 @@ const render = (overrides: Partial<ComponentProps<typeof WorkProcess>> = {}) =>
   );
 
 describe('native process display surface', () => {
+  it('uses an action title for memory without claiming the memory was confirmed', () => {
+    const memory: NativeExperienceItem[] = [{
+      id: 'memory', kind: 'tool', toolName: 'workspace.memory.remember',
+      title: 'workspace.memory.remember', status: 'completed', sequence: 1,
+    }];
+    const html = render({ items: memory, parts: undefined });
+    expect(html).toContain('已调用工具');
+    expect(html).not.toContain('记忆 · 1 项');
+    expect(html).toContain('整理工作记忆');
+    expect(html).not.toContain('已记住');
+  });
+
   it('keeps live lifecycle-only thinking in the phase row without duplicating it as a step', () => {
     const thinking: NativeExperienceItem[] = [
       {
