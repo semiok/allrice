@@ -47,8 +47,26 @@ async function memoryResponse(response: Response) {
   return response.status === 204 ? null : response.json();
 }
 
-function MemoryCard(props: {
-  memory: MemoryView;
+export function MemoryCard(props: {
+  memory: Pick<
+    MemoryView,
+    | 'id'
+    | 'workspaceId'
+    | 'ownerId'
+    | 'instanceId'
+    | 'content'
+    | 'contentDigest'
+    | 'revision'
+    | 'lifecycleState'
+    | 'expiresAt'
+    | 'memoryClass'
+    | 'sourceType'
+    | 'trust'
+  > & { ownedByMe?: boolean };
+  isOwner?: boolean;
+  onEdit?: () => void;
+  readOnly?: boolean;
+  showRevision?: boolean;
   workspaceId: string;
   headers: Record<string, string>;
   inline: boolean;
@@ -57,6 +75,7 @@ function MemoryCard(props: {
   onPending: (pending: boolean) => void;
 }) {
   const { memory } = props;
+  const ownedByMe = props.isOwner ?? memory.ownedByMe;
   const [busy, setBusy] = useState<'promote' | 'delete' | null>(null);
   const [error, setError] = useState('');
   const live = useRef(true);
@@ -81,7 +100,7 @@ function MemoryCard(props: {
     };
   }, []);
   async function mutate(action: 'promote' | 'delete') {
-    if (busy || !memory.ownedByMe) return;
+    if (busy || !ownedByMe) return;
     setBusy(action);
     setError('');
     props.onPending(true);
@@ -156,8 +175,8 @@ function MemoryCard(props: {
       </strong>
       <p className={css.content}>{memory.content}</p>
       <small>
-        {memoryClassLabel(memory.memoryClass)} · {memorySourceLabel(memory)} · v
-        {memory.revision}
+        {memoryClassLabel(memory.memoryClass)} · {memorySourceLabel(memory)}
+        {props.showRevision !== false && ` · v${memory.revision}`}
       </small>
       {memory.expiresAt && (
         <p>
@@ -170,8 +189,18 @@ function MemoryCard(props: {
           。 确认不会延长有效期；过期后不会用于后续对话。
         </p>
       )}
-      {memory.ownedByMe && (candidate || !props.inline) && (
+      {!props.readOnly && ownedByMe && (candidate || !props.inline) && (
         <div className={css.actions}>
+          {props.onEdit && (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={busy !== null}
+              onClick={props.onEdit}
+            >
+              编辑
+            </Button>
+          )}
           {candidate && (
             <Button
               type="button"
@@ -187,7 +216,13 @@ function MemoryCard(props: {
             disabled={busy !== null}
             onClick={() => void mutate('delete')}
           >
-            {busy === 'delete' ? '正在处理…' : candidate ? '放弃' : '删除'}
+            {busy === 'delete'
+              ? '正在处理…'
+              : candidate
+                ? '放弃'
+                : props.onEdit
+                  ? '撤回'
+                  : '删除'}
           </Button>
         </div>
       )}

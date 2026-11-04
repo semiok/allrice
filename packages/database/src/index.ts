@@ -1,3 +1,7 @@
+export {
+  listPersonalEmployeeMemories,
+  listAdminEmployeeMemories,
+} from './employee-memory-management.ts';
 export * from './image-operations.ts';
 export { readQualityEvidenceBundle } from './platform-quality-evidence-bundle.ts';
 export * from './project-workspace.ts';

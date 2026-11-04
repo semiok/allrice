@@ -3,6 +3,7 @@ import {
   correctWorkspaceMemory,
   deleteWorkspaceMemory,
 } from '@allrice/database';
+import { EmployeeMemoryTextSchema } from '@allrice/contracts';
 
 import { getRequestContext } from '../../../../../lib/identity/session';
 import { sameOriginBrowserWrite } from '../../../../../lib/identity/request-origin';
@@ -22,11 +23,13 @@ export async function PATCH(
     const workspaceId = new URL(request.url).searchParams.get('workspaceId');
     if (!workspaceId) throw new DataAccessError('not_found');
     const { id } = await route.params;
+    const input = await request.json();
+    EmployeeMemoryTextSchema.parse(input.content);
     const memory = await correctWorkspaceMemory(
       context,
       workspaceId,
       id,
-      await request.json(),
+      input,
     );
     return Response.json(
       {
