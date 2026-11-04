@@ -1576,6 +1576,7 @@ suite(
                     userMessageId: scope.userMessageId,
                     assistantMessageId: scope.assistantMessageId,
                     resolved: {
+                      legacyWorkflowExecution: false,
                       projectId: null,
                       promptSnapshot: {
                         userRequest: request,

@@ -666,7 +666,6 @@ suite(
       await expect(
         fixture.db`update allrice_workflow_revisions set name='Tampered after revocation' where id=${v1.workflow.id}`,
       ).rejects.toThrow('immutable');
-
     }, 30_000);
 
     it('enforces owner, sibling-instance, general-instance, workspace and company isolation without granting source metadata', async () => {
