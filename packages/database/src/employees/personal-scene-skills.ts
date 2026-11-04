@@ -364,9 +364,8 @@ export async function savePersonalSceneSkill(
         publishOnSave: true,
         inputDigest: runtimePolicyDigest({ instanceId, input }),
         buildInput: async (row) => {
-          // Do not implicitly publish an unrelated unfinished draft.
-          if (row && row.candidate_revision_id !== row.active_revision_id)
-            throw new EmployeeContentError('version_conflict');
+          // As with existing immediate saves, start from active content. An
+          // unrelated unenabled draft remains immutable history.
           const [saved] = row?.active_revision_id
             ? await tx<{ manifest: unknown }[]>`
           select manifest from allrice_employee_content_revisions where id=${row.active_revision_id} and set_id=${row.id}`
@@ -377,19 +376,36 @@ export async function savePersonalSceneSkill(
           const scene = previous.scenes.find(
             (item) => item.id === input.scene.id,
           );
-          if (scene?.references.length) {
-            if (!input.expectedContentRef)
-              throw new EmployeeContentError('version_conflict');
-            const current = await readPersonalSceneSkillInTransaction(
-              context,
-              instanceId,
-              { sceneId: scene.id },
-              tx,
-              true,
-            );
-            if (current.skill.contentRef !== input.expectedContentRef)
-              throw new EmployeeContentError('version_conflict');
-          } else if (input.expectedContentRef)
+          // Compare only immutable package identity, not old source bytes or
+          // readability: an owner must be able to replace a revoked package.
+          // Plain procedures and other references are not packages. Missing or
+          // mismatched source identity is not evidence that the scene is empty.
+          const packages = [];
+          for (const ref of scene?.references ?? []) {
+            if (ref.sourceKind !== 'procedure') continue;
+            const [source] = await tx<{
+              digest: string;
+              kind: string;
+              packaged: boolean;
+            }[]>`select digest,content->>'kind' as kind,content ? 'skillPackage' as packaged
+              from allrice_company_asset_revisions
+              where organization_id=${context.organizationId} and asset_id=${ref.contentId} and id=${ref.revisionId}`;
+            if (!source || source.digest !== ref.digest || source.kind !== 'procedure')
+              throw new EmployeeContentError('source_changed');
+            if (source.packaged) packages.push(ref);
+          }
+          if (packages.length > 1)
+            throw new EmployeeContentError('version_conflict');
+          const previousPackage = packages[0];
+          const expectedContentRef = previousPackage
+            ? personalSceneContentRef({
+                setId: row!.id,
+                revisionId: row!.active_revision_id!,
+                sceneId: scene!.id,
+                sourceRevisionId: previousPackage.revisionId,
+              })
+            : null;
+          if (input.expectedContentRef !== expectedContentRef)
             throw new EmployeeContentError('version_conflict');
           const next = {
             ...input.scene,
@@ -474,20 +490,16 @@ export async function savePersonalSceneSkill(
       sceneId: input.scene.id,
       sourceRevisionId,
     });
-    const pkg = await readPersonalSceneSkillInTransaction(
-      context,
-      instanceId,
-      { contentRef },
-      tx,
-      true,
-    );
+    // The stored request digest binds these validated input checksums. Replays
+    // return the original success metadata even if its sources were revoked;
+    // they do not read bytes or grant permission to read them again.
     return PersonalSceneSkillSaveReceiptSchema.parse({
       instanceId,
       sceneId: input.scene.id,
       revision: receipt.revision,
       contentRef,
-      contentChecksum: pkg.skill.contentChecksum,
-      bundleChecksum: pkg.skill.bundleChecksum,
+      contentChecksum: procedure.skillPackage.bundle.contentChecksum,
+      bundleChecksum: procedure.skillPackage.bundle.checksum,
     });
   });
 }

@@ -79,6 +79,7 @@ import {
   getPersonalSceneSkillResource,
   savePersonalSceneSkill,
   parsePersonalSceneContentRef,
+  personalSceneContentRef,
 } from './personal-scene-skills.ts';
 import {
   listEmployeeSceneSkills,
@@ -765,6 +766,81 @@ suite(
         expect(
           (await listPersonalSceneSkills(s.a, s.instance.id)).skills,
         ).toEqual([]);
+      });
+      it('installs the first package into a scene with plain procedures and knowledge without migrating other content', async () => {
+        const s = await setup(), body = input(s), source = await knowledge(s, 'OLD_REFERENCE');
+        const plain = { ...text('OLD_PLAIN_PROCEDURE'), kind: 'procedure' as const };
+        const common = text('KEEP_COMMON');
+        const before = await enable(s, s.draft({
+          textEdits: [plain, common],
+          manifest: { schemaVersion: 1, declaredConflicts: [],
+            common: [{ sourceKind: 'draft_text', contentId: common.contentId }],
+            scenes: [{ ...body.scene, references: [source.ref, { sourceKind: 'draft_text', contentId: plain.contentId }] }],
+          },
+        }));
+        const [old] = await f.db`select manifest from allrice_employee_content_revisions where id=${before.active!.id}`;
+        expect((await listPersonalSceneSkills(s.a, s.instance.id)).skills).toEqual([]);
+        const saved = await savePersonalSceneSkill(s.a, s.instance.id, {
+          ...body, expectedRevision: before.revision,
+        });
+        expect((await getPersonalSceneSkill(s.a, s.instance.id, body.scene.id)).content).toBe(body.procedure.body);
+        const pin = parsePersonalSceneContentRef(saved.contentRef);
+        const [now] = await f.db`select manifest from allrice_employee_content_revisions where id=${pin.revisionId}`;
+        expect(now!.manifest.common).toEqual(old!.manifest.common);
+        const [retained] = await f.db`select manifest from allrice_employee_content_revisions where id=${before.active!.id}`;
+        expect(retained!.manifest).toEqual(old!.manifest);
+      });
+      it('requires the exact existing package even when its scene also contains a plain procedure', async () => {
+        const s = await setup(), body = input(s);
+        const packaged = { ...body.procedure, contentId: randomUUID(), revisionId: randomUUID(), expectedRevision: 0 };
+        const plain = { ...text('PLAIN_ALONGSIDE_PACKAGE'), kind: 'procedure' as const };
+        const draft = s.draft({ textEdits: [packaged, plain], manifest: {
+          schemaVersion: 1, common: [], declaredConflicts: [],
+          scenes: [{ ...body.scene, references: [packaged, plain].map(item => ({ sourceKind: 'draft_text' as const, contentId: item.contentId })) }],
+        } });
+        const before = await enable(s, draft);
+        const replacement = { ...body, expectedRevision: before.revision };
+        await expect(savePersonalSceneSkill(s.a, s.instance.id, replacement)).rejects.toMatchObject({ code: 'version_conflict' });
+        const contentRef = personalSceneContentRef({ setId: draft.setId, revisionId: before.active!.id, sceneId: body.scene.id, sourceRevisionId: packaged.revisionId });
+        const saved = await savePersonalSceneSkill(s.a, s.instance.id, { ...replacement, expectedContentRef: contentRef });
+        expect((await getPersonalSceneSkill(s.a, s.instance.id, body.scene.id)).contentRef).toBe(saved.contentRef);
+      });
+      it('replays success metadata and permits a clean replacement after old source revocation without returning revoked bytes', async () => {
+        const s = await setup(), body = input(s), source = await knowledge(s, 'REVOKABLE_SOURCE');
+        body.references = [source.ref];
+        body.procedure.skillPackage.resourceSources = [{ path: 'assets/template.csv', references: [source.ref] }];
+        const first = await savePersonalSceneSkill(s.a, s.instance.id, body);
+        await f.db`update allrice_employee_knowledge_bindings set enabled=false where id=${source.bindingId}`;
+        await expect(getPersonalSceneSkill(s.a, s.instance.id, body.scene.id)).rejects.toMatchObject({ code: 'not_found' });
+        expect(await savePersonalSceneSkill(s.a, s.instance.id, body)).toEqual(first);
+        const clean = { ...input(s, '2.0.0'), scene: body.scene, expectedRevision: first.revision, expectedContentRef: first.contentRef };
+        const second = await savePersonalSceneSkill(s.a, s.instance.id, clean);
+        expect((await getPersonalSceneSkill(s.a, s.instance.id, body.scene.id)).contentRef).toBe(second.contentRef);
+        expect(await savePersonalSceneSkill(s.a, s.instance.id, body)).toEqual(first);
+        await expect(getPersonalSceneSkillResource(s.a, s.instance.id, first.contentRef, 'assets/template.csv')).rejects.toMatchObject({ code: 'not_found' });
+        const [count] = await f.db`select count(*)::int as n from allrice_employee_content_requests where request_id=${body.requestId}`;
+        expect(count!.n).toBe(1);
+        await f.db`update allrice_employee_assignments set active=false where id=${s.assigned.id}`;
+        await expect(savePersonalSceneSkill(s.a, s.instance.id, body)).rejects.toBeDefined();
+      });
+      it('starts an immediate save from active content while preserving an unrelated unenabled draft in history', async () => {
+        const s = await setup(), firstInput = input(s);
+        const first = await savePersonalSceneSkill(s.a, s.instance.id, firstInput);
+        const firstPin = parsePersonalSceneContentRef(first.contentRef);
+        const edit = text('UNENABLED_DRAFT_ONLY');
+        const pending = await mutateEmployeeContent(s.a, s.draft({
+          setId: firstPin.setId, expectedRevision: first.revision, textEdits: [edit],
+          manifest: { schemaVersion: 1, common: [{ sourceKind: 'draft_text', contentId: edit.contentId }], scenes: [], declaredConflicts: [] },
+        }));
+        const [before] = await f.db`select manifest,digest from allrice_employee_content_revisions where id=${pending.candidate.id}`;
+        const secondInput = { ...input(s), expectedRevision: pending.revision };
+        const second = await savePersonalSceneSkill(s.a, s.instance.id, secondInput);
+        expect((await listPersonalSceneSkills(s.a, s.instance.id)).skills).toHaveLength(2);
+        expect((await getPersonalSceneSkill(s.a, s.instance.id, firstInput.scene.id)).content).toBe(firstInput.procedure.body);
+        const [active] = await f.db`select manifest from allrice_employee_content_revisions where id=${parsePersonalSceneContentRef(second.contentRef).revisionId}`;
+        expect(active!.manifest.common).toEqual([]);
+        const [after] = await f.db`select manifest,digest from allrice_employee_content_revisions where id=${pending.candidate.id}`;
+        expect(after).toEqual(before);
       });
     });
     describe('C1 published scene packages, without a runtime connection', () => {
