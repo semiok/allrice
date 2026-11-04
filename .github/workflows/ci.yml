@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     # Browser, tenant and organization suites run sequentially and can exceed
     # 20 minutes on standard runners. Keep the individual test deadlines below.
-    timeout-minutes: 60
+    timeout-minutes: 120
     services:
       postgres:
         image: pgvector/pgvector:pg17
