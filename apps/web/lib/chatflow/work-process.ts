@@ -178,3 +178,61 @@ export function summarizeWorkProcess(items: NativeExperienceItem[]) {
       : undefined,
   };
 }
+
+// DSH Chat uses action phrases, not category labels and step counts. Its title
+// helper is private; adapt our existing public step categories to those phrases.
+const processTitles: Partial<Record<WorkProcessCategory, [string, string]>> = {
+  think: ['正在分析请求', '已完成分析'],
+  search: ['正在搜索代码', '已搜索代码'],
+  read: ['正在读取文件', '已读取文件'],
+  write: ['正在写入文件', '已写入文件'],
+  edit: ['正在编辑文件', '修改了文件'],
+  execute: ['正在运行命令', '执行了命令'],
+  question: ['等待你的操作', '向用户提出了问题'],
+  plan: ['正在更新计划', '更新了计划'],
+};
+
+export function workProcessTitle(
+  items: NativeExperienceItem[],
+  running: boolean,
+) {
+  const title = (item: NativeExperienceItem, live: boolean) => {
+    // Keep actual compaction and waiting notices; memory is an ordinary tool,
+    // so a completed call does not claim its candidate has been accepted.
+    if (item.kind === 'compaction' || item.modelWait) return item.title;
+    const name = item.toolName ?? item.title;
+    const phrases =
+      name === 'web_search' || name === 'web.search' || item.kind === 'search'
+        ? ['正在搜索网页', '已搜索网页']
+        : name === 'web_fetch' || name === 'web.fetch'
+          ? ['正在访问网页', '已访问网页']
+          : name === 'run_code'
+            ? ['正在运行代码', '运行了代码']
+            : (processTitles[classification(item)[0]] ?? [
+                '正在调用工具',
+                '已调用工具',
+              ]);
+    return phrases[live ? 0 : 1]!;
+  };
+  const ordered = [...items].sort((a, b) => a.sequence - b.sequence);
+  const live = ordered.findLast((item) =>
+    ['started', 'updated'].includes(item.status),
+  );
+  if (running) return live ? title(live, true) : '正在分析请求';
+  const actions = ordered.filter(
+    (item) => !item.modelWait && item.kind !== 'think',
+  );
+  const counts = new Map<string, number>();
+  for (const item of actions) {
+    const text = title(item, false);
+    counts.set(text, (counts.get(text) ?? 0) + 1);
+  }
+  const titles = [...counts].sort((a, b) => b[1] - a[1]).map(([text]) => text);
+  if (!titles.length) return '已完成分析';
+  if (titles.length === 1) return titles[0]!;
+  if (titles.length === 2) {
+    const [first, second] = titles as [string, string];
+    return `${first}并${first.startsWith('已') && second.startsWith('已') ? second.slice(1) : second}`;
+  }
+  return `${titles.slice(0, 3).join('，')}${titles.length > 3 ? '等' : ''}`;
+}

@@ -41,29 +41,46 @@ describe('projectNativeExperience', () => {
   it('shows only the memory operation for five native prune events, including historical replay', () => {
     const events = Array.from({ length: 5 }, (_, i) => {
       const row = event(i + 1, 'harness.native', {
-        presentation: 'compaction', status: 'completed', label: '工具结果已精简',
+        presentation: 'compaction',
+        status: 'completed',
+        label: '工具结果已精简',
       });
       row.sourceEvent!.type = 'compaction/prune';
       return row;
     });
-    events.push(event(6, 'tool.completed', {
-      toolCallId: 'remember', name: 'workspace.memory.remember',
-    }));
+    events.push(
+      event(6, 'tool.completed', {
+        toolCallId: 'remember',
+        name: 'workspace.memory.remember',
+      }),
+    );
     const original = structuredClone(events);
-    for (const input of [events, JSON.parse(JSON.stringify(events)).reverse()]) {
+    for (const input of [
+      events,
+      JSON.parse(JSON.stringify(events)).reverse(),
+    ]) {
       const steps = summarizeWorkProcess(projectNativeExperience(input)).steps;
       expect(steps).toHaveLength(1);
-      expect(steps[0]).toMatchObject({ label: '记忆', description: '整理工作记忆' });
+      expect(steps[0]).toMatchObject({
+        label: '记忆',
+        description: '整理工作记忆',
+      });
     }
     expect(events).toEqual(original);
   });
 
   it('keeps real compaction lifecycle and failures while pruning never overwrites them', () => {
     const rows = ['start', 'summary', 'prune', 'end'].map((phase, i) => {
-      const row = event(i + 1, 'harness.native', {
-        presentation: 'compaction', status: phase === 'start' ? 'started' : 'completed',
-        label: phase === 'prune' ? '工具结果已精简' : '上下文已整理',
-      }, { compactionId: 'compact-1' });
+      const row = event(
+        i + 1,
+        'harness.native',
+        {
+          presentation: 'compaction',
+          status: phase === 'start' ? 'started' : 'completed',
+          label: phase === 'prune' ? '工具结果已精简' : '上下文已整理',
+        },
+        { compactionId: 'compact-1' },
+      );
       row.sourceEvent!.type = `compaction/${phase}`;
       return row;
     });
@@ -77,11 +94,15 @@ describe('projectNativeExperience', () => {
     expect(projectNativeExperience(rows)[0]?.status).toBe('failed');
     // Unknown historical types and legacy compaction stay visible; no label matching.
     const unknown = event(5, 'harness.native', {
-      presentation: 'compaction', status: 'completed', label: '工具结果已精简',
+      presentation: 'compaction',
+      status: 'completed',
+      label: '工具结果已精简',
     });
     unknown.sourceEvent = null;
     expect(projectNativeExperience([unknown])).toHaveLength(1);
-    expect(projectNativeExperience([event(6, 'context.compaction.completed', {})])).toHaveLength(1);
+    expect(
+      projectNativeExperience([event(6, 'context.compaction.completed', {})]),
+    ).toHaveLength(1);
   });
 
   it('does not describe a historical skill argument as a search query', () => {

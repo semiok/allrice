@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { NativeExperienceItem } from './native-experience';
-import { summarizeWorkProcess } from './work-process';
+import { summarizeWorkProcess, workProcessTitle } from './work-process';
 
 function call(
   id: number,
@@ -83,4 +83,39 @@ describe('chronological public work process', () => {
       '加载技能',
     ]);
   });
+});
+
+it('uses native action titles for live, settled, failed and mixed work', () => {
+  const memory = call(1, { toolName: 'workspace.memory.remember' });
+  expect(workProcessTitle([memory], false)).toBe('已调用工具');
+  expect(workProcessTitle([{ ...memory, status: 'started' }], true)).toBe(
+    '正在调用工具',
+  );
+  expect(workProcessTitle([{ ...memory, status: 'failed' }], false)).toBe(
+    '已调用工具',
+  );
+  expect(
+    workProcessTitle(
+      [call(1, { kind: 'think' }), call(2, { toolName: 'read' }), memory],
+      false,
+    ),
+  ).toBe('已调用工具并读取文件');
+  expect(
+    workProcessTitle(
+      [call(1, { toolName: 'ask_user_question', status: 'info' })],
+      false,
+    ),
+  ).toBe('向用户提出了问题');
+  expect(
+    workProcessTitle(
+      [
+        call(1, {
+          kind: 'compaction',
+          title: '上下文整理未完成',
+          status: 'failed',
+        }),
+      ],
+      false,
+    ),
+  ).toBe('上下文整理未完成');
 });

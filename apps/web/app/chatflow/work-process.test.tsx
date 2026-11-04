@@ -48,10 +48,16 @@ const render = (overrides: Partial<ComponentProps<typeof WorkProcess>> = {}) =>
 
 describe('native process display surface', () => {
   it('uses an action title for memory without claiming the memory was confirmed', () => {
-    const memory: NativeExperienceItem[] = [{
-      id: 'memory', kind: 'tool', toolName: 'workspace.memory.remember',
-      title: 'workspace.memory.remember', status: 'completed', sequence: 1,
-    }];
+    const memory: NativeExperienceItem[] = [
+      {
+        id: 'memory',
+        kind: 'tool',
+        toolName: 'workspace.memory.remember',
+        title: 'workspace.memory.remember',
+        status: 'completed',
+        sequence: 1,
+      },
+    ];
     const html = render({ items: memory, parts: undefined });
     expect(html).toContain('已调用工具');
     expect(html).not.toContain('记忆 · 1 项');
@@ -114,17 +120,17 @@ describe('native process display surface', () => {
     const standard = render({ running: true, transcriptView: 'standard' });
     expect(compact).not.toContain('检查入口文件');
     expect(standard).toContain('检查入口文件');
-    expect(compact).toContain('阅读 · 1 项');
+    expect(compact).toContain('正在读取文件');
     const detailed = render({ running: true, transcriptView: 'detailed' });
     expect(detailed).toContain('检查入口文件');
-    expect(detailed).not.toContain('阅读 · 1 项');
+    expect(detailed).not.toContain('正在读取文件');
   });
   it('keeps verbose history fully visible without a step-group control', () => {
     const html = render({ transcriptView: 'verbose' });
     expect(html).toContain('data-process-open="true"');
     expect(html).not.toMatch(/data-work-reply="progress" hidden/);
     expect(html).toContain('检查入口文件');
-    expect(html).not.toContain('阅读 · 1 项');
+    expect(html).not.toContain('正在读取文件');
   });
   it.each(['failed', 'canceled'] as const)(
     'keeps a %s process visible',

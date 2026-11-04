@@ -2968,7 +2968,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           expect(
             (await process.locator('[data-work-reply]').boundingBox())!.y,
           ).toBeGreaterThan((await cards.last().boundingBox())!.y);
-          const tools = process.getByRole('button', { name: '工具 · 4 项' });
+          const tools = process.getByRole('button', { name: '已调用工具' });
           const toolsTop = (await tools.boundingBox())!.y;
           await tools.click();
           await process.getByRole('list', { name: '工作步骤' }).waitFor();
@@ -10010,7 +10010,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       const groups = f.page.locator('section[aria-label="工作步骤"]');
       expect(await groups.count()).toBe(2);
       for (const group of await groups.all()) {
-        const summary = group.getByRole('button', { name: '工具 · 1 项' });
+        const summary = group.getByRole('button', { name: '已调用工具' });
         await summary.click();
         const steps = group.getByRole('list', { name: '工作步骤' });
         await steps.waitFor();
@@ -10053,7 +10053,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(await first.count()).toBe(1);
       expect(await second.count()).toBe(1);
       expect(await groups.count()).toBe(2);
-      await groups.last().getByRole('button', { name: '工具 · 1 项' }).click();
+      await groups.last().getByRole('button', { name: '已调用工具' }).click();
       expect(
         await groups.last().getByRole('list', { name: '工作步骤' }).isVisible(),
       ).toBe(true);
