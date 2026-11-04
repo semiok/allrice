@@ -214,6 +214,10 @@ export async function createBrowserWorkspace(
     lease,
   });
   await db.begin(async (tx) => {
+    // Acquire the INSERT's existing Job FK lock before Run, matching the
+    // Job -> Run order of queue/delivery writers. Keep the FK's lock strength;
+    // authority and lease checks remain with the existing admission/read paths.
+    await tx`select id from allrice_jobs where id=${input.context.jobId} for key share`;
     const [run] = await tx<
       { session_id: string }[]
     >`select e.session_id from allrice_employee_runs e join allrice_runs r on r.id=e.run_id
