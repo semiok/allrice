@@ -33,7 +33,7 @@ import {
   getPersonalSceneSkillResource,
   parsePersonalSceneContentRef,
 } from './personal-scene-skills.ts';
-import { runtimePolicyDigest } from '../runtime-policy.ts';
+import { mutateEmployeeContent } from './employee-content.ts';
 import { skillBundleChecksum, skillBytesChecksum } from '../skill-bundles.ts';
 
 const browser = vi.hoisted(() => ({ context: null as RequestContext | null }));
@@ -406,9 +406,16 @@ suite(
         other = await setup(),
         artifact = file();
       const saved = await install(s, artifact);
-      for (const context of [s.peer, other.owner, null]) {
+      for (const { label, context, expected } of [
+        { label: 'same-workspace peer', context: s.peer, expected: 404 },
+        {
+          label: 'foreign organization/workspace',
+          context: other.owner,
+          expected: 403,
+        },
+        { label: 'unauthenticated', context: null, expected: 401 },
+      ]) {
         browser.context = context;
-        const expected = context ? 404 : 401;
         expect(
           (
             await http(s, 'preview', {
@@ -416,8 +423,9 @@ suite(
               file: artifact,
             })
           ).status,
+          label,
         ).toBe(expected);
-        expect((await http(s, 'history')).status).toBe(expected);
+        expect((await http(s, 'history')).status, label).toBe(expected);
       }
       const peerInstance = await createEmployeeInstance(s.owner, {
         workspaceId: s.workspaceId,
@@ -507,7 +515,8 @@ suite(
       const pin = parsePersonalSceneContentRef(b.receipt.contentRef);
       const [stored] =
         await f.db`select manifest from allrice_employee_content_revisions where id=${pin.revisionId}`;
-      // Isolated fixture corruption, never a production mutation path.
+      // The legacy generic builder can represent an ambiguous personal scene.
+      // Build a new revision normally; published history remains immutable.
       const manifest = structuredClone(stored!.manifest);
       const first = manifest.scenes.find(
         (scene: { id: string }) => scene.id === original.scene.id,
@@ -516,7 +525,42 @@ suite(
         (scene: { id: string }) => scene.id !== original.scene.id,
       );
       first.references.push(second.references[0]);
-      await f.db`update allrice_employee_content_revisions set manifest=${f.db.json(manifest)},digest=${runtimePolicyDigest(manifest)} where id=${pin.revisionId}`;
+      const target = {
+        workspaceId: s.workspaceId,
+        setId: pin.setId,
+        ownership: {
+          scope: 'personal' as const,
+          organizationId: s.owner.organizationId,
+          ownerId: s.owner.actor.id,
+        },
+        target: { kind: 'instance' as const, instanceId: s.instance.id },
+        changeSummary: 'Legacy scene with two complete procedures',
+      };
+      let revision = await mutateEmployeeContent(s.owner, {
+        ...target,
+        requestId: randomUUID(),
+        expectedRevision: b.receipt.revision,
+        operation: 'save_draft',
+        manifest,
+        textEdits: [],
+      });
+      revision = await mutateEmployeeContent(s.owner, {
+        ...target,
+        requestId: randomUUID(),
+        expectedRevision: revision.revision,
+        operation: 'validate',
+        candidateRevisionId: revision.candidate.id,
+        candidateDigest: revision.candidate.digest,
+      });
+      expect(revision.validation?.valid).toBe(true);
+      await mutateEmployeeContent(s.owner, {
+        ...target,
+        requestId: randomUUID(),
+        expectedRevision: revision.revision,
+        operation: 'activate',
+        candidateRevisionId: revision.candidate.id,
+        candidateDigest: revision.candidate.digest,
+      });
       expect(
         (
           await http(s, 'preview', {
