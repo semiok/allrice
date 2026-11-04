@@ -11,6 +11,7 @@ import type {
   DshNativeSkillSnapshot,
   FrozenMcpTool,
   LocalMcpSnapshot,
+  PersonalSceneSkillResource,
 } from '@allrice/contracts';
 
 import type { searchCodexHostedWeb } from '../codex-search-broker.js';
@@ -55,6 +56,8 @@ export interface RiceToolExecutionInput {
   storageRoot: string;
   skillVersionIds?: string[];
   nativeSkills?: readonly DshNativeSkillSnapshot[];
+  /** Worker-owned generation and lease closure, never reconstructed from args. */
+  readPersonalSceneResource?: (contentRef: string, path: string) => Promise<PersonalSceneSkillResource>;
   sessionId?: string;
   employeeId?: string;
   userMessageId?: string;

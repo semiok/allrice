@@ -44,6 +44,8 @@ import {
   assertEmployeeContentContext,
   assertNativeRunAuthority,
   loadEmployeeRuntimeScene,
+  loadPersonalRuntimeSceneSkill,
+  listPersonalRuntimeSceneSkills,
   loadEmployeeRuntimeReferences,
   readEmployeeReferenceCitations,
   adoptEmployeeRuntimeScene,
@@ -344,6 +346,16 @@ export async function executeEmployeeRun({
         generationId: contentRuntime.generationId,
         nativeContextKey: contentRuntime.nativeContextKey,
         scenes: contentRuntime.scenes,
+        ...(contentRuntime.snapshot.personalScenes ? {
+          personalScenes: {
+            list: () => listPersonalRuntimeSceneSkills(contentScope, contentRuntime!.generationId, workflowLease),
+            load: async (sceneId: string) => {
+              const loaded = await loadPersonalRuntimeSceneSkill(contentScope, contentRuntime!.generationId, { sceneId }, workflowLease);
+              if (!('skill' in loaded)) throw new EmployeeRuntimeContentError();
+              return loaded.skill;
+            },
+          },
+        } : {}),
         loadScene: async (selection: {
           sceneId: string;
           sceneDigest: string;
@@ -552,6 +564,7 @@ export async function executeEmployeeRun({
     resolved,
     commonContent: contentRuntime?.sources,
     hasContentScenes: !!contentRuntime?.scenes.length,
+    personalScenes: contentRuntime?.snapshot.personalScenes,
     companyMaterials: companyInputBindings,
     workAutomation: workAutomation.settings,
   };
@@ -1569,6 +1582,13 @@ export async function executeEmployeeRun({
                     ? taskTool(call)
                     : executeRiceTool({
                         nativeSkills: resolved.nativeSkills,
+                        ...(contentRuntime?.snapshot.personalScenes ? {
+                          readPersonalSceneResource: async (contentRef: string, path: string) => {
+                            const loaded = await loadPersonalRuntimeSceneSkill(contentScope, contentRuntime!.generationId, { contentRef, resourcePath: path }, workflowLease);
+                            if (!('resource' in loaded)) throw new EmployeeRuntimeContentError();
+                            return loaded.resource;
+                          },
+                        } : {}),
                         localMcp:
                           executionSnapshot.schemaVersion === 2
                             ? executionSnapshot.localMcp
