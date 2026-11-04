@@ -177,6 +177,25 @@ suite(
     async function open(width = 1280, dark = false, dialog = false) {
       const page = await browser.newPage({ viewport: { width, height: 960 } });
       page.setDefaultTimeout(8000);
+      const initializationErrors: string[] = [];
+      let rejectInitialization!: (error: Error) => void;
+      const initializationFailed = new Promise<never>((resolve, reject) => {
+        void resolve;
+        rejectInitialization = reject;
+      });
+      page.on('pageerror', (error) => {
+        initializationErrors.push(error.message);
+        console.error('Personal Workflow fixture pageerror:', error.message);
+        rejectInitialization(error);
+      });
+      page.on('console', (message) => {
+        if (message.type() !== 'error') return;
+        initializationErrors.push(message.text());
+        console.error(
+          'Personal Workflow fixture consoleerror:',
+          message.text(),
+        );
+      });
       await page.route('**/scene-skills/files?**', (route) =>
         route.fulfill(
           json({
@@ -203,14 +222,27 @@ suite(
         details.content.instanceId = details.profile.instanceId;
         await route.fulfill(json(details));
       });
-      await page.goto(`${origin}${dialog ? '?dialog=1' : ''}`);
-      if (dark)
-        await page.evaluate(() =>
-          document.body.setAttribute('data-ds-dark-theme', ''),
+      try {
+        await Promise.race([
+          (async () => {
+            await page.goto(`${origin}${dialog ? '?dialog=1' : ''}`);
+            if (dark)
+              await page.evaluate(() =>
+                document.body.setAttribute('data-ds-dark-theme', ''),
+              );
+            await page
+              .getByText('本人 Workflow · 文件与修改记录', { exact: true })
+              .click();
+          })(),
+          initializationFailed,
+        ]);
+      } catch (error) {
+        await page.close();
+        throw new Error(
+          `Workflow fixture initialization failed: ${initializationErrors.join(' | ') || 'no page/console error'}`,
+          { cause: error },
         );
-      await page
-        .getByText('本人 Workflow · 文件与修改记录', { exact: true })
-        .click();
+      }
       return page;
     }
     async function upload(page: Page, file = artifact()) {
