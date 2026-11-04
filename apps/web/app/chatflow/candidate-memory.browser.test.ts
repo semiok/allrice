@@ -313,12 +313,29 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
   }, 30000);
 
   async function remember(content: string, expiresAt: string | null = null) {
-    // Each independent UI scenario has a new human source. Reusing the same
-    // message after another scenario discards a proposal would hit its tombstone.
-    const sourceId = randomUUID();
-    await f.db`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content)
-      select ${sourceId},organization_id,workspace_id,session_id,owner_id,'user',${f.db.json({ text: content, citations: [] })}
-      from allrice_employee_runs where run_id=${identity.rootRunId}`;
+    const [run] =
+      await f.db`select user_message_id from allrice_employee_runs where run_id=${identity.rootRunId}`;
+    let sourceId = run!.user_message_id as string;
+    if (candidate) {
+      // Later independent proposals have fresh human input with a persisted
+      // native adoption receipt, so the real Run-scoped card read can see them.
+      sourceId = randomUUID();
+      const followup = randomUUID(), reply = randomUUID(), inputId = randomUUID();
+      const turn = 'ui-fixture-' + randomUUID();
+      await f.db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input)
+        values(${followup},${identity.org},${identity.workspace},${identity.user},'succeeded','{}','{}')`;
+      await f.db`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content)
+        values(${sourceId},${identity.org},${identity.workspace},${identity.session},${identity.user},'user',${f.db.json({ text: content, citations: [] })}),
+          (${reply},${identity.org},${identity.workspace},${identity.session},${identity.user},'assistant','{"text":"","citations":[]}')`;
+      await f.db`insert into allrice_conversation_followups(run_id,organization_id,workspace_id,session_id,owner_id,user_message_id,assistant_message_id,client_user_message_id,mode,state)
+        values(${followup},${identity.org},${identity.workspace},${identity.session},${identity.user},${sourceId},${reply},${inputId},'follow_up','consumed')`;
+      await f.db`insert into allrice_run_events(organization_id,workspace_id,run_id,sequence,event_type,payload)
+        select ${identity.org},${identity.workspace},${identity.rootRunId},coalesce(max(sequence),0)+1,'turn.started',${f.db.json({ turnId: turn, generation: 1 })}
+        from allrice_run_events where run_id=${identity.rootRunId}`;
+      const proof = { status: 'adopted', inputId, messageId: 'native-input', sequence: 9, turnId: turn, runId: identity.rootRunId, checkpoint: 'step_user_message' };
+      await f.db`insert into allrice_conversation_commands(organization_id,workspace_id,session_id,owner_id,followup_run_id,command_type,client_user_message_id,expected_generation,expected_turn_id,message,input_kind,state,native_proof)
+        values(${identity.org},${identity.workspace},${identity.session},${identity.user},${followup},'steer',${inputId},1,${turn},${content},'steer_current','consumed',${f.db.json(proof)})`;
+    }
     return createTraceableMemory(owner, {
       workspaceId: identity.workspace,
       employeeId: identity.employee,
