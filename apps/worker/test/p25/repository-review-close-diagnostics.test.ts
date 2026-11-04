@@ -1,8 +1,59 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DshRuntimeCloseError } from '../../src/harness/dsh-protocol-client.js';
-import { closeReviewRuntime } from './repository-review-close-diagnostics.fixture.js';
+import {
+  closeReviewRuntime,
+  reviewCloseError,
+  reviewCloseRpc,
+  reviewCloseReceipt,
+} from './repository-review-close-diagnostics.fixture.js';
 
 describe('repository-review CI close diagnostics', () => {
+  it('projects only stage booleans and RPC identities, without invoking getters', () => {
+    const secret = 'sk-synthetic-secret /private/path human content';
+    const getter = vi.fn(() => {
+      throw Error(secret);
+    });
+    const payload = {
+      action: 'start',
+      kind: 'tool',
+      arguments: secret,
+      callId: secret,
+      nativeSessionId: secret,
+      version: 1,
+      sdkShutdown: false,
+      rootDisposed: true,
+      priorFramesFlushed: true,
+    };
+    Object.defineProperty(payload, 'untrusted', { get: getter });
+    expect(reviewCloseRpc('allrice/progress', payload)).toEqual({
+      method: 'allrice/progress',
+      action: 'start',
+      kind: 'tool',
+    });
+    expect(reviewCloseReceipt(payload)).toEqual({
+      version: 1,
+      sdkShutdown: false,
+      rootDisposed: true,
+      priorFramesFlushed: true,
+    });
+    Object.defineProperty(payload, 'action', { get: getter });
+    Object.defineProperty(payload, 'sdkShutdown', { get: getter });
+    expect(reviewCloseRpc(secret, payload)).toEqual({
+      method: null,
+      action: null,
+      kind: 'tool',
+    });
+    expect(reviewCloseReceipt(payload).sdkShutdown).toBeNull();
+    expect(getter).not.toHaveBeenCalled();
+    expect(reviewCloseError(Error('task_progress_call_missing'))).toEqual({
+      name: 'Error',
+      message: 'task_progress_call_missing',
+    });
+    expect(JSON.stringify(reviewCloseError(Error(secret)))).not.toContain(
+      secret,
+    );
+  });
+
   const variants = ['plain', 'subclass', 'slice', 'getter'] as const;
   it.each(variants)('logs nested errors safely: %s', async (variant) => {
     const secrets = [
