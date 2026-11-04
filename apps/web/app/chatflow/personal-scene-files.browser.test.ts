@@ -50,7 +50,7 @@ function artifact(version = '2.0.0'): PersonalSceneFile {
       title: '周报文件方法',
       ...payload,
     },
-    references,
+    references: [...references],
     report: { scriptsExecuted: false, published: false },
   };
 }

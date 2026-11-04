@@ -41,6 +41,11 @@ import {
 import { mutateEmployeeContent } from './employee-content.ts';
 import { skillBundleChecksum, skillBytesChecksum } from '../skill-bundles.ts';
 import { runtimePolicyDigest } from '../runtime-policy-digest.ts';
+import { nativeBindingWaiter } from '../native-session-binding.fixture.ts';
+import {
+  readPathSignal,
+  settleReadPathRace,
+} from '../read-path-races.fixture.ts';
 
 const browser = vi.hoisted(() => ({ context: null as RequestContext | null }));
 vi.mock('../../../../apps/web/lib/identity/session', () => ({
@@ -749,6 +754,95 @@ suite(
       expect((await snapshot(s))!.revisions).toBe(count!.revisions + 1);
       expect((await snapshot(s))!.requests).toBe(count!.requests + 1);
     });
+
+    it.each(['package', 'resource source'] as const)(
+      'rejects restore after waiting for a %s revocation that commits first, without partial writes',
+      async (kind) => {
+        const s = await setup(),
+          original = file(),
+          dependency = await knowledge(s);
+        original.references.push(dependency.ref);
+        if (!('skillPackage' in original.procedure))
+          throw Error('fixture package required');
+        original.procedure.skillPackage.resourceSources = [
+          { path: 'assets/template.csv', references: [dependency.ref] },
+        ];
+        const a = await install(s, original);
+        const b = await install(s, file('2.0.0', original.scene.id));
+        const input = restoreBody(
+          s,
+          await restorePreview(s, a.receipt.contentRef),
+        );
+        const before = await snapshot(s),
+          pin = parsePersonalSceneContentRef(a.receipt.contentRef);
+        const [source] =
+          await f.db`select asset_id from allrice_company_asset_revisions where id=${pin.sourceRevisionId}`;
+        const ready = readPathSignal<number>(),
+          release = readPathSignal();
+        const revoking = f.db.begin(async (tx) => {
+          const [backend] = await tx<
+            { pid: number }[]
+          >`select pg_backend_pid() as pid`;
+          if (kind === 'package')
+            await tx`update allrice_company_assets set state='withdrawn' where id=${source!.asset_id}`;
+          else
+            await tx`update allrice_employee_knowledge_bindings set enabled=false where id=${dependency.bindingId}`;
+          ready.resolve(backend!.pid);
+          await release.promise;
+        });
+        void revoking.catch((error) => ready.reject(error));
+        const blockerPid = await ready.promise;
+        const restoring = http(s, 'restore', input);
+        void restoring.catch(() => undefined);
+        try {
+          // The existing observer returns only after PostgreSQL reports this
+          // exact revoker as the restore query's blocker. No sleep orders it.
+          const waiterPid = await nativeBindingWaiter(f.db, blockerPid);
+          const [waiter] = await f.db<
+            { wait_event_type: string; query: string }[]
+          >`
+            select wait_event_type,query from pg_stat_activity
+            where pid=${waiterPid} and ${blockerPid}=any(pg_blocking_pids(pid))`;
+          expect(waiter?.wait_event_type).toBe('Lock');
+          expect(waiter!.query).toContain('for share');
+          expect(waiter!.query).toContain(
+            kind === 'package'
+              ? 'allrice_company_assets'
+              : 'allrice_employee_knowledge_bindings',
+          );
+        } finally {
+          release.resolve();
+          await settleReadPathRace([revoking, restoring]);
+        }
+        // The lock releases only on revocation commit. The woken restore must
+        // observe current qualification instead of publishing its preview.
+        const response = await restoring;
+        expect(response.status).toBe(404);
+        const result = await response.json();
+        expect(result).not.toHaveProperty('receipt');
+        expect(JSON.stringify(result)).not.toContain(original.procedure.body);
+        expect(await snapshot(s)).toEqual(before);
+        expect(
+          (
+            await getPersonalSceneSkill(
+              s.owner,
+              s.instance.id,
+              original.scene.id,
+            )
+          ).contentRef,
+        ).toBe(b.receipt.contentRef);
+        await expect(
+          getPersonalSceneSkillResource(
+            s.owner,
+            s.instance.id,
+            a.receipt.contentRef,
+            'assets/template.csv',
+          ),
+        ).rejects.toMatchObject({ code: 'not_found' });
+        expect((await http(s, 'restore', input)).status).toBe(404);
+        expect(await snapshot(s)).toEqual(before);
+      },
+    );
 
     it('holds exact old source locks until restore commits and preserves withdrawal enforcement afterwards', async () => {
       const s = await setup(),

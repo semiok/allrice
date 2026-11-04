@@ -209,6 +209,8 @@ export async function previewPersonalSceneRestore(
       { content: unknown }[]
     >`select content from allrice_company_asset_revisions where organization_id=${context.organizationId} and id=${pkg.pin.sourceRevisionId}`;
     const procedure = EmployeeContentTextSchema.parse(row?.content);
+    if (procedure.kind !== 'procedure' || !('skillPackage' in procedure))
+      throw new EmployeeContentError('source_changed');
     const file: PersonalSceneFile = {
       schemaVersion: 1,
       scene: {
