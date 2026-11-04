@@ -40,10 +40,14 @@ export function WorkbenchExperiencePanel(props: {
     details: EmployeeDetails[];
     error: string;
   } | null>(null);
+  const currentEmployee =
+    employee === 'all' || props.employees.some((item) => item.id === employee)
+      ? employee
+      : (props.instanceId ?? 'all');
   const selected =
-    employee === 'all'
+    currentEmployee === 'all'
       ? props.employees
-      : props.employees.filter((item) => item.id === employee);
+      : props.employees.filter((item) => item.id === currentEmployee);
   const employeeIds = selected.map((item) => item.id).join(','),
     key = props.scopeId + '/' + employeeIds + '/' + revision;
   useEffect(() => {
@@ -116,7 +120,7 @@ export function WorkbenchExperiencePanel(props: {
       <div className={css.toolbar}>
         <select
           aria-label="经验所属 AllRice 助手"
-          value={employee}
+          value={currentEmployee}
           onChange={(event) => setEmployee(event.target.value)}
         >
           <option value="all">全部 AllRice 助手</option>
