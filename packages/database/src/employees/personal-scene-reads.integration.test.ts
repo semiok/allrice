@@ -25,7 +25,10 @@ import {
 } from '../workspace/service.ts';
 import { acquireConversationRuntime } from '../conversation/conversation-runtime.ts';
 import { failJob } from '../execution/queue.ts';
-import { createEmployeeInstance } from './employee-instances.ts';
+import {
+  createEmployeeInstance,
+  changeEmployeeInstanceLifecycle,
+} from './employee-instances.ts';
 import { resolveEmployeeExecution } from './employeehub.ts';
 import {
   prepareEmployeeContentContext,
@@ -532,6 +535,51 @@ suite(
           })
         ).status,
       ).toBe(403);
+    });
+
+    it('returns real HTTP 409 for archived current content while owner read audit remains 200', async () => {
+      const s = await setup(),
+        installed = await save(s),
+        run = await runtime(s);
+      await loadPersonalRuntimeSceneSkill(
+        run.scope,
+        run.content.generationId,
+        { sceneId: installed.sceneId },
+        run.worker,
+      );
+      const archived = await changeEmployeeInstanceLifecycle(
+        s.owner,
+        s.instance.id,
+        {
+          workspaceId: s.workspaceId,
+          expectedRevision: s.instance.revision,
+          requestId: randomUUID(),
+          operation: 'archive',
+        },
+      );
+      expect(archived.archivedAt).not.toBeNull();
+      browser.context = s.owner;
+      const directory = await http(s, 'resource');
+      expect(directory.status).toBe(409);
+      expect(await directory.json()).toMatchObject({
+        error: { retryable: false },
+      });
+      expect(
+        (await http(s, 'content', { contentRef: installed.contentRef })).status,
+      ).toBe(409);
+      expect(
+        (
+          await http(s, 'resource', {
+            contentRef: installed.contentRef,
+            resourcePath: 'assets/template.csv',
+          })
+        ).status,
+      ).toBe(409);
+      const audit = await http(s, 'reads', { runId: run.scope.runId });
+      expect(audit.status).toBe(200);
+      expect((await audit.json()).runs[0].reads).toMatchObject([
+        { contentRef: installed.contentRef, contentRead: true },
+      ]);
     });
 
     it('pages through all owned Run receipts without dropping or duplicating the boundary Run', async () => {

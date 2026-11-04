@@ -55,6 +55,8 @@ import type {
   Session,
 } from './chatflow-types';
 import { employeeDetailsFixture } from '../../test/employee-details-fixture';
+import { employeeHubErrorResponse } from '../../lib/employeehub/responses';
+import { EmployeeInstanceError } from '../../../../packages/database/src/employees/employee-instances.ts';
 import { layoutPreferenceKey } from './use-workbench-layout';
 
 const settingsReviewDir = process.env.ALLRICE_SETTINGS_REVIEW_DIR;
@@ -2869,6 +2871,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       const historicalId = id(6799),
         historicalSessionId = id(6750);
       const source = employeeDetailsFixture().profile.source;
+      const archivedResponse = employeeHubErrorResponse(
+        new EmployeeInstanceError('instance_archived'),
+      );
+      const archivedError = await archivedResponse.json();
       const historical = EmployeeInstanceSchema.parse({
         id: historicalId,
         assignmentId: id(99),
@@ -2894,7 +2900,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           (route) =>
             route.fulfill({
               status: currentStatus,
-              json: { error: { message: 'Current details unavailable' } },
+              json:
+                currentStatus === 409
+                  ? archivedError
+                  : { error: { message: 'Current details unavailable' } },
             }),
         );
         await f.page.route(
@@ -2905,8 +2914,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           `**/api/v1/employee-instances/${historicalId}/scene-skills?*`,
           (route) =>
             route.fulfill({
-              status: 403,
-              json: { error: { message: 'Current content unavailable' } },
+              status: currentStatus,
+              json:
+                currentStatus === 409
+                  ? archivedError
+                  : { error: { message: 'Current content unavailable' } },
             }),
         );
         await f.page.route(

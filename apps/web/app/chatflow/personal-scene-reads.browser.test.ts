@@ -11,6 +11,8 @@ import type {
   PersonalSceneReadHistory,
 } from '@allrice/contracts';
 import { employeeDetailsFixture } from '../../test/employee-details-fixture';
+import { employeeHubErrorResponse } from '../../lib/employeehub/responses';
+import { EmployeeInstanceError } from '../../../../packages/database/src/employees/employee-instances.ts';
 import { skillBytesChecksum } from '../../../../packages/database/src/skill-bundles.ts';
 
 const suite =
@@ -94,8 +96,13 @@ suite(
   'owner distinguishes availability, actual reads and unproven injection',
   () => {
     let browser: Browser, server: Server, origin: string;
+    let archivedFailure: ReturnType<typeof json>;
     const screenshots = resolve('.local/met227-a5-preview');
     beforeAll(async () => {
+      const failure = employeeHubErrorResponse(
+        new EmployeeInstanceError('instance_archived'),
+      );
+      archivedFailure = json(await failure.json(), failure.status);
       const require = createRequire(import.meta.url),
         { build } = createRequire(require.resolve('tsx'))('esbuild');
       const built = await build({
@@ -190,8 +197,9 @@ suite(
       });
       const state = {
         revoked: false,
-        directoryStatus:
-          dialog === 'archived' || dialog === 'withdrawn' ? 403 : 0,
+        archived: dialog === 'archived',
+        directoryStatus: dialog === 'withdrawn' ? 403 : 0,
+        directoryCode: 'UNKNOWN',
         historyStatus: 0,
         ledgerReads: 0,
         contentRefs: [] as string[],
@@ -219,12 +227,14 @@ suite(
       };
       await page.route('**/employee-instances/*/content?**', (route) =>
         route.fulfill(
-          dialog === 'archived' || dialog === 'withdrawn'
-            ? json(
-                { error: { message: 'private current detail denied' } },
-                dialog === 'archived' ? 409 : 403,
-              )
-            : json(details),
+          dialog === 'archived'
+            ? archivedFailure
+            : dialog === 'withdrawn'
+              ? json(
+                  { error: { message: 'private current detail denied' } },
+                  403,
+                )
+              : json(details),
         ),
       );
       await page.route('**/employee-instances/*?**', (route) =>
@@ -254,17 +264,19 @@ suite(
         )!;
         state.contentRefs.push(ref);
         await route.fulfill(
-          state.revoked || dialog === 'archived' || dialog === 'withdrawn'
-            ? json(
-                {
-                  error: {
-                    code: 'RESOURCE_NOT_FOUND',
-                    message: 'secret token=do-not-display',
+          state.archived
+            ? archivedFailure
+            : state.revoked || dialog === 'withdrawn'
+              ? json(
+                  {
+                    error: {
+                      code: 'RESOURCE_NOT_FOUND',
+                      message: 'secret token=do-not-display',
+                    },
                   },
-                },
-                dialog === 'archived' || dialog === 'withdrawn' ? 403 : 404,
-              )
-            : json(skill(ref === 'exact-1.0.0' ? '1.0.0' : '2.0.0')),
+                  dialog === 'withdrawn' ? 403 : 404,
+                )
+              : json(skill(ref === 'exact-1.0.0' ? '1.0.0' : '2.0.0')),
         );
       });
       await page.route('**/scene-skills?**', async (route) => {
@@ -277,21 +289,29 @@ suite(
             exact = skill(version);
           state.contentRefs.push(ref);
           await route.fulfill(
-            state.revoked
-              ? json({ error: { code: 'RESOURCE_NOT_FOUND' } }, 404)
-              : json({
-                  ...exact.resources[0],
-                  contentRef: exact.contentRef,
-                  bundleChecksum: exact.bundleChecksum,
-                  contentBase64: bytes(version).toString('base64'),
-                }),
+            state.archived
+              ? archivedFailure
+              : state.revoked
+                ? json({ error: { code: 'RESOURCE_NOT_FOUND' } }, 404)
+                : json({
+                    ...exact.resources[0],
+                    contentRef: exact.contentRef,
+                    bundleChecksum: exact.bundleChecksum,
+                    contentBase64: bytes(version).toString('base64'),
+                  }),
           );
-        } else if (query.has('sceneId'))
+        } else if (state.archived) await route.fulfill(archivedFailure);
+        else if (query.has('sceneId'))
           await route.fulfill(json(skill('2.0.0')));
         else if (state.directoryStatus)
           await route.fulfill(
             json(
-              { error: { message: 'private refresh denied' } },
+              {
+                error: {
+                  code: state.directoryCode,
+                  message: 'private refresh denied',
+                },
+              },
               state.directoryStatus,
             ),
           );
@@ -682,6 +702,142 @@ suite(
         await page.close();
       }
     });
+    it('clears displayed private bytes after the real archived 409 directory response while keeping owner audit', async () => {
+      const { page, state } = await open();
+      try {
+        await page
+          .getByRole('button', { name: '查看这次读取的包', exact: true })
+          .click();
+        await page.getByText('准确正文 1.0.0', { exact: true }).waitFor();
+        await page
+          .getByRole('button', {
+            name: '读取资源：references/template.md',
+            exact: true,
+          })
+          .click();
+        await page.getByRole('region', { name: '已核验的资源文件' }).waitFor();
+        state.archived = true;
+        const denied = page.waitForResponse(
+          (response) =>
+            response.url().includes('/scene-skills?') &&
+            response.status() === 409,
+        );
+        await page
+          .getByRole('button', { name: '重新读取目录', exact: true })
+          .click();
+        await denied;
+        await page.getByRole('alert').waitFor();
+        expect(
+          await page.getByRole('region', { name: '本人包与精确资源' }).count(),
+        ).toBe(0);
+        expect(
+          await page.getByRole('region', { name: '已核验的资源文件' }).count(),
+        ).toBe(0);
+        expect(
+          await page
+            .getByRole('button', { name: '下载资源文件', exact: true })
+            .count(),
+        ).toBe(0);
+        expect(
+          await page.getByRole('region', { name: '准确读取回执' }).count(),
+        ).toBe(1);
+        await page
+          .getByRole('button', { name: '重新读取工作记录', exact: true })
+          .click();
+        await page.getByRole('region', { name: '准确读取回执' }).waitFor();
+      } finally {
+        await page.close();
+      }
+    });
+    it('ignores a late old body after the real archived 409 directory response', async () => {
+      const { page, state } = await open();
+      let release!: () => void;
+      const gate = new Promise<void>((done) => {
+        release = done;
+      });
+      try {
+        let started = false;
+        await page.route('**/scene-skills/content?**', async (route) => {
+          started = true;
+          await gate;
+          try {
+            await route.fulfill(json(skill('1.0.0')));
+          } catch {
+            /* The client may have aborted the old request. */
+          }
+        });
+        await page
+          .getByRole('button', { name: '查看这次读取的包', exact: true })
+          .click();
+        await expect.poll(() => started).toBe(true);
+        state.archived = true;
+        await page
+          .getByRole('button', { name: '重新读取目录', exact: true })
+          .click();
+        await page.getByRole('alert').waitFor();
+        release();
+        await page.waitForLoadState('networkidle');
+        expect(
+          await page.getByRole('region', { name: '本人包与精确资源' }).count(),
+        ).toBe(0);
+        expect(await page.locator('body').innerText()).not.toContain(
+          '准确正文 1.0.0',
+        );
+        expect(
+          await page.getByRole('region', { name: '准确读取回执' }).count(),
+        ).toBe(1);
+      } finally {
+        release();
+        await page.close();
+      }
+    });
+    it.each(['CONFLICT', 'VERSION_CONFLICT'])(
+      'does not treat ordinary 409 %s as archived or discard authorized private bytes',
+      async (code) => {
+        const { page, state } = await open();
+        try {
+          await page
+            .getByRole('button', { name: '查看这次读取的包', exact: true })
+            .click();
+          await page.getByText('准确正文 1.0.0', { exact: true }).waitFor();
+          await page
+            .getByRole('button', {
+              name: '读取资源：references/template.md',
+              exact: true,
+            })
+            .click();
+          await page
+            .getByRole('region', { name: '已核验的资源文件' })
+            .waitFor();
+          state.directoryStatus = 409;
+          state.directoryCode = code;
+          await page
+            .getByRole('button', { name: '重新读取目录', exact: true })
+            .click();
+          await page.getByRole('alert').waitFor();
+          expect(
+            await page
+              .getByRole('region', { name: '本人包与精确资源' })
+              .count(),
+          ).toBe(1);
+          expect(
+            await page
+              .getByRole('region', { name: '已核验的资源文件' })
+              .count(),
+          ).toBe(1);
+          expect(
+            await page
+              .getByRole('button', { name: '下载资源文件', exact: true })
+              .count(),
+          ).toBe(1);
+          expect(
+            await page.getByRole('region', { name: '准确读取回执' }).count(),
+          ).toBe(1);
+        } finally {
+          await page.close();
+        }
+      },
+    );
     it('uses the semantic link color with readable contrast in dark mode', async () => {
       const { page } = await open(390, true);
       try {
