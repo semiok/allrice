@@ -71,7 +71,16 @@ if (!memory || !saved.some((item) => item.id === state.fileMemoryId)) {
 }
 await request(
   `/api/v1/memories/${state.messageMemoryId}?workspaceId=${state.workspaceId}`,
-  { method: 'DELETE', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ instanceId: state.memoryInstanceId, expectedRevision: memory.revision, contentDigest: memory.contentDigest, idempotencyKey: randomUUID() }) },
+  {
+    method: 'DELETE',
+    headers: { ...headers, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      instanceId: state.memoryInstanceId,
+      expectedRevision: memory.revision,
+      contentDigest: memory.contentDigest,
+      idempotencyKey: randomUUID(),
+    }),
+  },
   204,
 );
 await request(

@@ -270,17 +270,32 @@ if (
 }
 
 const memoryInstanceId = session.employeeInstanceId;
-if (!memoryInstanceId) throw new Error('session has no current employee instance');
+if (!memoryInstanceId)
+  throw new Error('session has no current employee instance');
 // Browser writes cannot impersonate a server message/file producer.
 for (const [sourceType, sourceId] of [
   ['message', userMessage.id],
   ['file', fileId],
 ]) {
-  await jsonRequest('/api/v1/memories', {
-    method: 'POST',
-    headers: { ...tenantHeaders(inviteeCookie), 'content-type': 'application/json' },
-    body: JSON.stringify({ workspaceId, instanceId: memoryInstanceId, idempotencyKey: randomUUID(), content: 'forged source', sourceType, sourceId }),
-  }, 403);
+  await jsonRequest(
+    '/api/v1/memories',
+    {
+      method: 'POST',
+      headers: {
+        ...tenantHeaders(inviteeCookie),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        workspaceId,
+        instanceId: memoryInstanceId,
+        idempotencyKey: randomUUID(),
+        content: 'forged source',
+        sourceType,
+        sourceId,
+      }),
+    },
+    403,
+  );
 }
 const messageMemoryResponse = await jsonRequest(
   '/api/v1/memories',
@@ -323,11 +338,21 @@ const fileMemoryResponse = await jsonRequest(
 );
 const fileMemory = (await fileMemoryResponse.json()).memory;
 
-const adminSessionResponse = await jsonRequest('/api/v1/sessions', {
-  method: 'POST',
-  headers: { ...tenantHeaders(loginCookie), 'content-type': 'application/json' },
-  body: JSON.stringify({ workspaceId, title: 'Admin memory isolation smoke' }),
-}, 201);
+const adminSessionResponse = await jsonRequest(
+  '/api/v1/sessions',
+  {
+    method: 'POST',
+    headers: {
+      ...tenantHeaders(loginCookie),
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      workspaceId,
+      title: 'Admin memory isolation smoke',
+    }),
+  },
+  201,
+);
 const adminSession = (await adminSessionResponse.json()).session;
 const adminRecallResponse = await jsonRequest('/api/v1/memories/recall', {
   method: 'POST',
@@ -335,7 +360,12 @@ const adminRecallResponse = await jsonRequest('/api/v1/memories/recall', {
     ...tenantHeaders(loginCookie),
     'content-type': 'application/json',
   },
-  body: JSON.stringify({ workspaceId, instanceId: adminSession.employeeInstanceId, query: 'private memory', limit: 10 }),
+  body: JSON.stringify({
+    workspaceId,
+    instanceId: adminSession.employeeInstanceId,
+    query: 'private memory',
+    limit: 10,
+  }),
 });
 if ((await adminRecallResponse.json()).results.length !== 0) {
   throw new Error('admin recall exposed another user private memory');
@@ -346,7 +376,12 @@ const inviteeRecallResponse = await jsonRequest('/api/v1/memories/recall', {
     ...tenantHeaders(inviteeCookie),
     'content-type': 'application/json',
   },
-  body: JSON.stringify({ workspaceId, instanceId: memoryInstanceId, query: 'private memory', limit: 10 }),
+  body: JSON.stringify({
+    workspaceId,
+    instanceId: memoryInstanceId,
+    query: 'private memory',
+    limit: 10,
+  }),
 });
 const inviteeRecall = await inviteeRecallResponse.json();
 if (!inviteeRecall.results.some((result) => result.id === messageMemory.id)) {
