@@ -1,6 +1,7 @@
 import {
   modelGovernanceFailureText,
   modelFailureText,
+  personalWorkflowHistoryFailureText,
   type ModelFailureCategory,
 } from '@allrice/contracts';
 
@@ -133,6 +134,8 @@ export function presentReplyFailure(input: {
   modelFailureCategory?: ModelFailureCategory;
   reference?: string | null;
 }): { body: string; notice: string | null } {
+  const workflow = personalWorkflowHistoryFailureText(input.code, input.text);
+  if (workflow) return { body: workflow, notice: workflow };
   if (input.modelFailureCategory) {
     const copy = modelFailureText(input.modelFailureCategory, input.reference);
     const saved =

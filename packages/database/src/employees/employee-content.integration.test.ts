@@ -4,6 +4,8 @@ import {
   publishPlatformEmployee,
 } from './platform-employees.ts';
 import { randomUUID } from 'node:crypto';
+import { failJob } from '../execution/queue.ts';
+import { personalWorkflowHistoryUnavailableMessage } from '@allrice/contracts';
 import { updateQueuedMessage } from '../conversation/queued-messages.ts';
 import {
   prepareReferenceUpload,
@@ -1000,6 +1002,44 @@ suite(
             outcome: 'idle',
           });
           await fresh.finish();
+        },
+      );
+      it.each([true, false])(
+        'projects only the fixed personal Workflow history failure into the stored reply (personal=%s)',
+        async (personal) => {
+          const s = await setup();
+          const run = await runtimeRun(
+            s,
+            undefined,
+            true,
+            [],
+            [],
+            '继续我的工作',
+            personal,
+          );
+          const worker = await sceneLease(run);
+          const message = personal
+            ? personalWorkflowHistoryUnavailableMessage
+            : 'Synthetic private diagnostic that must not be exposed';
+          expect(
+            await failJob({
+              ...worker,
+              code: 'EMPLOYEE_CONTENT_UNAVAILABLE',
+              message,
+              retryable: false,
+            }),
+          ).toEqual({ retrying: false });
+          const [reply] =
+            await f.db`select content,status,error_code from allrice_messages where id=${run.sent.assistantMessage.id}`;
+          expect(reply).toMatchObject({
+            status: 'failed',
+            error_code: 'EMPLOYEE_CONTENT_UNAVAILABLE',
+            content: {
+              text: personal
+                ? personalWorkflowHistoryUnavailableMessage
+                : 'Rice 暂时无法完成这次请求，请稍后重试。',
+            },
+          });
         },
       );
       it('records exact package/resource reads before returning bytes and revokes retained history', async () => {

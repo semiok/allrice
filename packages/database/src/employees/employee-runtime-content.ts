@@ -37,6 +37,7 @@ import {
   SkillResourcePathSchema,
   PersonalSceneSkillResourceSchema,
   employeeContentLimits,
+  personalWorkflowHistoryUnavailableMessage,
 } from '@allrice/contracts';
 import { getDatabase } from '../core/client.ts';
 import { DataAccessError } from '../data.ts';
@@ -1057,7 +1058,7 @@ export async function prepareEmployeeContentContext(scope: RunScope) {
   if (result && 'rejected' in result) {
     if ('personalWorkflow' in result)
       throw new EmployeeRuntimeContentError(
-        '这段对话用到的 Workflow 已不可用，请开新对话继续。',
+        personalWorkflowHistoryUnavailableMessage,
       );
     return unavailable();
   }
