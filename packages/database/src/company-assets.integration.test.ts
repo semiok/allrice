@@ -536,7 +536,7 @@ suite(
         member.workspaceId!,
       );
       const otherMemory = await createTraceableMemory(member, {
-        instanceId: memberEmployee.assignment!.id,
+        instanceId: memberEmployee!.id,
         idempotencyKey: randomUUID(),
         workspaceId: member.workspaceId,
         content: 'Unrelated private memory',

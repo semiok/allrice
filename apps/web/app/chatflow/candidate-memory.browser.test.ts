@@ -50,6 +50,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
   let foreign: Awaited<ReturnType<typeof createRunAuthorityFixture>>;
   let owner: RequestContext, reader: RequestContext;
   let ownerToken: string, readerToken: string, foreignToken: string;
+  let otherInstance: string;
   let otherWorkspace: string, browser: Browser, server: Server, origin: string;
   let candidate: WorkspaceMemory, shared: WorkspaceMemory;
   const failures: string[] = [],
@@ -81,6 +82,9 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     otherWorkspace = randomUUID();
     await f.db`insert into allrice_workspaces(id,organization_id,slug,name) values(${otherWorkspace},${identity.org},'other','Other')`;
     await f.db`insert into allrice_memberships(id,organization_id,workspace_id,user_id,role) values(${randomUUID()},${identity.org},${otherWorkspace},${identity.user},'admin')`;
+    const otherOwner = (await authenticateSession(ownerToken, { organizationId: identity.org, workspaceId: otherWorkspace }))!;
+    otherInstance = (await ensureDefaultEmployee(otherOwner, otherWorkspace))!.id;
+    await ensureGeneralEmployeeInstance(f.db, otherInstance);
     candidate = await remember('真实候选：看数据时先看表格，再看文字说明。');
     const readerAssignment = await ensureDefaultEmployee(
       reader,
@@ -144,6 +148,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
               organizationId: identity.org,
               workspaceId: identity.workspace,
               otherWorkspaceId: otherWorkspace,
+              otherInstanceId: otherInstance,
               runId: identity.rootRunId,
               userMessageId: run!.user_message_id,
               assistantMessageId: run!.assistant_message_id,
@@ -537,10 +542,10 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       expect(
         (await api(suffix!, { method, headers: { origin: '' } })).status,
       ).toBe(403);
-    expect((await api(path, write, readerToken)).status).toBe(404);
+    expect((await api(path, write, readerToken)).status).toBe(403);
     expect(
       (await api(path, write, foreignToken, foreign.workspace)).status,
-    ).toBe(404);
+    ).toBe(403);
     expect(
       (await api('/' + shared.id, { ...write, method: 'DELETE' })).status,
     ).toBe(404);
