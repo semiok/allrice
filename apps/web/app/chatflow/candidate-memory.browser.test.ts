@@ -1280,7 +1280,9 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', user!.email);
     const ui = await open('admin', 'dark', 360);
     try {
-      await ui.page.getByRole('button', { name: '待确认', exact: true }).click();
+      await ui.page
+        .getByRole('button', { name: '待确认', exact: true })
+        .click();
       await ui.page.getByText(memory.content, { exact: true }).waitFor();
       expect(
         await ui.page
