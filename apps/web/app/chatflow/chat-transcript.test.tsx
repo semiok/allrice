@@ -293,7 +293,8 @@ describe('historical transcript capability gating', () => {
     expect(interleaved.match(/>正在整理对话…</g)).toHaveLength(1);
     expect(interleaved).not.toContain('回复中…');
     expect(interleaved).toContain('我先检查项目。');
-    expect(interleaved).toContain('整理 · 1 项');
+    expect(interleaved).toContain('上下文整理');
+    expect(interleaved).not.toContain('整理 · 1 项');
     const events = [event(1, 'started', 'start')];
     expect(show(events)).toContain('正在整理对话…');
     expect(show(events)).not.toContain('aria-expanded="true"');

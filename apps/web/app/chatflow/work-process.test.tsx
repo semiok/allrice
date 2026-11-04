@@ -61,7 +61,9 @@ describe('native process display surface', () => {
     const html = render({ items: memory, parts: undefined });
     expect(html).toContain('已调用工具');
     expect(html).not.toContain('记忆 · 1 项');
-    expect(html).toContain('整理工作记忆');
+    expect(
+      render({ items: memory, parts: undefined, transcriptView: 'verbose' }),
+    ).toContain('整理工作记忆');
     expect(html).not.toContain('已记住');
   });
 

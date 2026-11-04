@@ -214,7 +214,13 @@ export function workProcessTitle(
               ]);
     return phrases[live ? 0 : 1]!;
   };
-  const ordered = [...items].sort((a, b) => a.sequence - b.sequence);
+  const ordered = items
+    .filter(
+      (item) =>
+        item.modelWait ||
+        ['tool', 'search', 'think', 'compaction', 'todo'].includes(item.kind),
+    )
+    .sort((a, b) => a.sequence - b.sequence);
   const live = ordered.findLast((item) =>
     ['started', 'updated'].includes(item.status),
   );
