@@ -604,13 +604,22 @@ suite(
       const [row] =
         await f.db`select content_scene_state from allrice_employee_runs where run_id=${run.scope.runId}`;
       const corrupted = structuredClone(row!.content_scene_state);
-      corrupted.reads[0].sceneId = otherVersion.sceneId;
-      Object.assign(corrupted.reads[0].personal, {
+      const badRead = structuredClone(corrupted.reads[0]);
+      badRead.receiptId = randomUUID();
+      badRead.sceneId = otherVersion.sceneId;
+      badRead.sceneDigest = otherVersion.bundleChecksum;
+      Object.assign(badRead.personal, {
         contentRef: otherVersion.contentRef,
         contentChecksum: otherVersion.contentChecksum,
         bundleChecksum: otherVersion.bundleChecksum,
       });
+      corrupted.reads.push(badRead);
       await f.db`update allrice_employee_runs set content_scene_state=${f.db.json(corrupted)} where run_id=${run.scope.runId}`;
+      const [appended] =
+        await f.db`select content_scene_state from allrice_employee_runs where run_id=${run.scope.runId}`;
+      expect(appended!.content_scene_state.reads[0]).toEqual(
+        row!.content_scene_state.reads[0],
+      );
       await appendUse(
         run,
         useEvent(run, identity, {
