@@ -804,9 +804,7 @@ suite(
           first.runtime.nativeContextKey,
         );
         expect(second.runtime.generationId).toBe(first.runtime.generationId);
-        expect(second.runtime.allowedMessageIds).toContain(
-          first.sent.userMessage.id,
-        );
+        expect(second.runtime.allowedMessageIds).toBeNull();
         await assertEmployeeContentContext(
           second.scope,
           second.runtime.generationId,
@@ -849,18 +847,27 @@ suite(
         });
         await second.finish();
       });
-      it.each(['source', 'publication', 'already-invalidated'])(
+      it.each([
+        'source',
+        'publication',
+        'already-invalidated',
+        'restored-source',
+        'reference',
+      ])(
         'rejects personal Workflow history after %s revocation without replacing its generation or history',
         async (revocation) => {
           const s = await setup(),
             body = input(s);
           const saved = await savePersonalSceneSkill(s.a, s.instance.id, body);
+          const ref =
+            revocation === 'reference' ? await readyReference(s) : undefined;
+          let sourceId: string | undefined;
           const first = await runtimeRun(
             s,
             undefined,
             true,
             [],
-            [],
+            ref ? [ref.revisionId] : [],
             '加载我的周报 Workflow',
             true,
           );
@@ -878,6 +885,14 @@ suite(
           if (revocation === 'publication') {
             const pin = parsePersonalSceneContentRef(saved.contentRef);
             await f.db`update allrice_employee_content_publications set invalidated_at=now() where set_id=${pin.setId} and revision_id=${pin.revisionId}`;
+          } else if (ref) {
+            // The package itself is valid, but this retained Workflow history
+            // also depends on the attached source. Do not discard it to proceed.
+            await archiveReference(s, ref.sourceId);
+            expect(
+              (await getPersonalSceneSkill(s.a, s.instance.id, body.scene.id))
+                .contentRef,
+            ).toBe(saved.contentRef);
           } else {
             const pkg = await getPersonalSceneSkill(
               s.a,
@@ -887,6 +902,7 @@ suite(
             const source = pkg.sources.find(
               (source) => source.reference.sourceKind === 'procedure',
             )!.reference;
+            sourceId = source.contentId;
             await f.db`update allrice_company_assets set state='withdrawn' where id=${source.contentId}`;
           }
           if (revocation === 'already-invalidated') {
@@ -907,6 +923,13 @@ suite(
           // Enter twice with distinct, initially unbound Runs. Neither the first
           // rejection nor an already committed invalidation permits recovery.
           for (let attempt = 0; attempt < 2; attempt++) {
+            if (attempt === 1 && revocation === 'restored-source') {
+              await f.db`update allrice_company_assets set state='published' where id=${sourceId!}`;
+              expect(
+                (await getPersonalSceneSkill(s.a, s.instance.id, body.scene.id))
+                  .contentRef,
+              ).toBe(saved.contentRef);
+            }
             const sent = await sendChatMessage(
               s.a,
               s.company.workspaceId,
@@ -945,7 +968,8 @@ suite(
           expect(
             await f.db`select id,content from allrice_messages where id in ${f.db(originalMessages.map((message) => message.id))} order by id`,
           ).toEqual(originalMessages);
-          // A separate conversation is allowed and cannot load the revoked package.
+          // New conversations use current authority; recovery never rewrites or
+          // reactivates the invalidated conversation, even after source restore.
           const fresh = await runtimeRun(
             s,
             undefined,
@@ -956,15 +980,20 @@ suite(
             true,
           );
           const freshWorker = await sceneLease(fresh);
-          expect(
-            (
-              await listPersonalRuntimeSceneSkills(
-                fresh.scope,
-                fresh.runtime.generationId,
-                freshWorker,
-              )
-            ).skills,
-          ).toEqual([]);
+          const freshCatalog = listPersonalRuntimeSceneSkills(
+            fresh.scope,
+            fresh.runtime.generationId,
+            freshWorker,
+          );
+          if (revocation === 'publication')
+            await expect(freshCatalog).rejects.toMatchObject({
+              code: 'not_found',
+            });
+          else if (ref || revocation === 'restored-source')
+            expect(
+              (await freshCatalog).skills.map((skill) => skill.sceneId),
+            ).toEqual([body.scene.id]);
+          else expect((await freshCatalog).skills).toEqual([]);
           await releaseConversationRuntime({
             ...fresh.scope,
             workerId: freshWorker.workerId,
