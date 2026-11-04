@@ -1,5 +1,9 @@
 import { BrandContentToolReadSchema } from '@allrice/contracts';
-import { authorizeBrandContentTool, getBrandContentBoard, listBrandContentBrands } from '@allrice/database';
+import {
+  authorizeBrandContentTool,
+  getBrandContentBoard,
+  listBrandContentBrands,
+} from '@allrice/database';
 import { HandlerError } from '../../errors.js';
 import type { RiceToolHandler, RiceToolHandlerContext } from '../types.js';
 
@@ -56,4 +60,3 @@ export const readBrandContent: RiceToolHandler = async (context) => {
     summary: '已读取当前员工的品牌内容记录',
   };
 };
-

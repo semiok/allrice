@@ -1,4 +1,8 @@
-import { seedLegacyWorkflowPackage, seedLegacyWorkflowBinding } from './legacy-workflow.fixture.ts';
+import { enqueueRun } from '../execution/queue.ts';
+import {
+  seedLegacyWorkflowPackage,
+  seedLegacyWorkflowBinding,
+} from './legacy-workflow.fixture.ts';
 /** Real PostgreSQL/StoragePort integration. Opt-in isolated fixture only; no
  * provider, Worker, Dev server, real tenant or native Host is invoked here. */
 import { randomUUID } from 'node:crypto';
@@ -40,9 +44,7 @@ import { resolveEmployeeContentSource } from '../employees/employee-content-sour
 import { manageEmployeeAssignments } from '../employees/employeehub.ts';
 import { authorizeFixturePlatformAdministrator } from '../platform-authority.fixture.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
-import {
-  resolveEmployeeCapabilitiesForRun,
-} from './capability-registry.ts';
+import { resolveEmployeeCapabilitiesForRun } from './capability-registry.ts';
 import {
   assertWorkflowPackageExecution,
   listWorkflowPackages,
@@ -408,8 +410,7 @@ suite(
     const register = (
       s: Setup,
       input: Awaited<ReturnType<typeof packageInput>>['request'],
-    ) =>
-      seedLegacyWorkflowPackage(s.owner.context, input);
+    ) => seedLegacyWorkflowPackage(s.owner.context, input);
     const enable = (s: Setup, value: WorkflowPackage, expectedRevision = 0) =>
       seedLegacyWorkflowBinding(s.owner.context, {
         ...selection(s, value),
@@ -432,6 +433,22 @@ suite(
         ${value.workflow.id},'queued',${fixture.db.json(JSON.parse(JSON.stringify(value.workflow.definition)))},'{}')`;
       return runId;
     }
+
+    it('rejects retired execution and admin writes, preserving old bindings during ordinary capability updates', async () => {
+      const s = await setup();
+      const methods = await installMethods(s);
+      const prepared = await packageInput(s,methods.common);
+      const value = await register(s,prepared.request);
+      await enable(s,value);
+      const before = await fixture.db`select * from allrice_employee_workflow_bindings where instance_id=${s.instance.id}`;
+      await expect(enqueueRun(s.owner.context,{workspaceId:s.owner.workspaceId,type:'allrice.workflow.run',idempotencyKey:randomUUID(),input:{prompt:'执行旧工作流'}})).rejects.toMatchObject({code:'policy_denied'});
+      await expect(manageEmployeeCapabilities(s.owner.context,{workspaceId:s.owner.workspaceId,employeeId:s.employeeId,workflowRevisionIds:[value.workflow.id]})).rejects.toMatchObject({code:'invalid_binding'});
+      await expect(updateCapabilityStatus(s.owner.context,value.workflow.workflowId,{workspaceId:s.owner.workspaceId,kind:'workflow',status:'archived'})).rejects.toMatchObject({code:'invalid_binding'});
+      await expect(updateCapabilityRevisionStatus(s.owner.context,value.workflow.id,{workspaceId:s.owner.workspaceId,kind:'workflow',status:'deprecated'})).rejects.toMatchObject({code:'invalid_binding'});
+      await manageEmployeeCapabilities(s.owner.context,{workspaceId:s.owner.workspaceId,employeeId:s.employeeId,workflowRevisionIds:[],knowledgeRevisionIds:[]});
+      expect(await fixture.db`select * from allrice_employee_workflow_bindings where instance_id=${s.instance.id}`).toEqual(before);
+      expect(await fixture.db`select id from allrice_jobs where organization_id=${s.owner.organizationId} and payload->>'type'='allrice.workflow.run'`).toEqual([]);
+    });
 
     it('reads existing ready source bytes with exact published procedure pins', async () => {
       const s = await setup();
@@ -814,6 +831,5 @@ suite(
       expect(state.syncStatus).toBe('method_changed');
       expect(state.package.manifest.method).toEqual(methods.common.method);
     }, 30_000);
-
   },
 );

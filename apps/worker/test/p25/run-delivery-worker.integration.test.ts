@@ -3157,8 +3157,25 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     45000,
   );
 
+  it('用户提到工作流仍走普通 DSH 回答与完整交付检查，不创建旧执行记录', async () => {
+    const f = await setup(async () => ({ text: '数组比较函数返回负数、零或正数来决定顺序。' }));
+    const task = await prepare(f, '按工作流执行排序流程，解释数组比较函数，不需要文件。');
+    expect(task.snapshot.capabilitySnapshot.workflows).toEqual([]);
+    try {
+      const result = await task.run();
+      const coverage = readCheckedFinalDeliveryForExecution(task.workflowLease, result);
+      expect(coverage.coverage).toBe('checked_native_v1');
+      if (coverage.coverage !== 'checked_native_v1') throw Error('missing ordinary delivery proof');
+      await completeJob({...task.workflowLease, result, checkedDelivery:coverage.checkedDelivery});
+      expect(await state(f,task.runId)).toMatchObject({status:'succeeded',successes:1});
+      const [route] = await f.db`select selected_kind from allrice_route_decisions where run_id=${task.runId}`;
+      expect(route!.selected_kind).toBe('direct');
+      expect(await f.db`select id from allrice_workflow_runs where run_id=${task.runId}`).toEqual([]);
+    } finally { await task.isolation.cleanup(); }
+  }, 45000);
+
   it.each(['missing-frozen-revision', 'unauthorized'] as const)(
-    '异常 Workflow 路由 %s 不绕过根交付守卫',
+    '已存旧 Workflow 路由 %s 在模型调用前拒绝',
     async (mode) => {
       const f = await setup(async () => ({ text: '本轮只解释比较函数。' }));
       const task = await prepare(f, '解释数组比较函数，不需要文件。');
@@ -3184,10 +3201,8 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       );
       try {
         await expect(task.run()).rejects.toMatchObject({
-          code:
-            mode === 'unauthorized'
-              ? 'ROUTE_NOT_AUTHORIZED'
-              : 'WORKFLOW_SNAPSHOT_MISSING',
+          code: 'LEGACY_WORKFLOW_RETIRED',
+          retryable: false,
         });
         expect(model!.requests).toHaveLength(0);
         expect(await state(f, task.runId)).toMatchObject({

@@ -487,14 +487,14 @@ export async function updateCapabilityStatus(
   input: unknown,
 ) {
   const update = UpdateCapabilityStatusInputSchema.parse(input);
-  if (update.kind === 'workflow') throw new CapabilityRegistryError('invalid_binding');
+  if (update.kind === 'workflow')
+    throw new CapabilityRegistryError('invalid_binding');
   const workspaceId = await resolveWorkspaceId(context, update.workspaceId);
   await requireCapabilityAdmin(context, workspaceId);
   const capabilityId = UuidSchema.parse(capabilityIdInput);
   const sql = getDatabase();
   await sql.begin(async (transaction) => {
-    const rows =
-      await transaction<{ id: string }[]>`
+    const rows = await transaction<{ id: string }[]>`
             update allrice_knowledge_sources set status = ${update.status},
               updated_at = now()
             where id = ${capabilityId} and ownership is null
@@ -530,8 +530,7 @@ export async function updateCapabilityRevisionStatus(
   }
   const sql = getDatabase();
   await sql.begin(async (transaction) => {
-    const rows =
-      await transaction<{ id: string }[]>`
+    const rows = await transaction<{ id: string }[]>`
               update allrice_knowledge_revisions set status = ${update.status}
               where id = ${revisionId} and file_object_id is null
                 and organization_id = ${context.organizationId}

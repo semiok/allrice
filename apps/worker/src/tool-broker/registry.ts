@@ -12,9 +12,7 @@ import {
   inspectEmployeeMethodTest,
 } from './handlers/employee-method.js';
 import { generateImage } from './handlers/image.js';
-import {
-  readBrandContent,
-} from './handlers/brand-content.js';
+import { readBrandContent } from './handlers/brand-content.js';
 import { updateEmployeeProfile } from './handlers/employee-profile.js';
 import { runProjectWorkspace } from './handlers/project.js';
 import { executeLocalFileTool } from './handlers/local-files.js';

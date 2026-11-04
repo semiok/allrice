@@ -11,7 +11,7 @@ if (!baseUrl || !stateEncoded) {
 const state = JSON.parse(
   Buffer.from(stateEncoded, 'base64url').toString('utf8'),
 );
-const { organizationId, workspaceId, secondWorkspaceId } = state;
+const { organizationId, workspaceId } = state;
 
 async function jsonRequest(path, init = {}, expectedStatus = 200) {
   const response = await fetch(`${baseUrl}${path}`, init);
@@ -62,10 +62,18 @@ const rice = employeeHub.directory.find(
 if (!rice) throw new Error('Rice is missing from the admin directory');
 
 // The retired creation endpoint must fail even for an administrator.
-await jsonRequest('/api/v1/admin/capabilities', {
-  method: 'POST', headers: {...tenantHeaders(admin.cookie), 'content-type':'application/json'},
-  body: JSON.stringify({kind:'workflow',workspaceId}),
-}, 422);
+await jsonRequest(
+  '/api/v1/admin/capabilities',
+  {
+    method: 'POST',
+    headers: {
+      ...tenantHeaders(admin.cookie),
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ kind: 'workflow', workspaceId }),
+  },
+  422,
+);
 
 async function createKnowledge({ slug, name, principalId }) {
   const response = await jsonRequest(
@@ -175,17 +183,49 @@ await jsonRequest(
 );
 
 // The retired binding/publication/status branches reject without changing data.
-await jsonRequest(`/api/v1/employees/${rice.employeeId}/capabilities`, {
-  method:'PUT', headers:{...tenantHeaders(admin.cookie),'content-type':'application/json'},
-  body:JSON.stringify({workspaceId,workflowRevisionIds:[randomUUID()],knowledgeRevisionIds:[]}),
-},422);
-for (const [method,path] of [
-  ['POST',`/api/v1/admin/capabilities/${randomUUID()}/revisions`],
-  ['PATCH',`/api/v1/admin/capabilities/${randomUUID()}/revisions`],
-  ['PATCH',`/api/v1/admin/capabilities/${randomUUID()}`],
-]) await jsonRequest(path, {method,headers:{...tenantHeaders(admin.cookie),'content-type':'application/json'},body:JSON.stringify({workspaceId,kind:'workflow',status:'archived'})},422);
-for (const path of ['/api/v1/workflow-runs', `/api/v1/workflow-runs/${randomUUID()}`, `/api/v1/workflow-approvals/${randomUUID()}`]) {
-  await jsonRequest(path,{headers:tenantHeaders(admin.cookie)},404);
+await jsonRequest(
+  `/api/v1/employees/${rice.employeeId}/capabilities`,
+  {
+    method: 'PUT',
+    headers: {
+      ...tenantHeaders(admin.cookie),
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      workspaceId,
+      workflowRevisionIds: [randomUUID()],
+      knowledgeRevisionIds: [],
+    }),
+  },
+  422,
+);
+for (const [method, path] of [
+  ['POST', `/api/v1/admin/capabilities/${randomUUID()}/revisions`],
+  ['PATCH', `/api/v1/admin/capabilities/${randomUUID()}/revisions`],
+  ['PATCH', `/api/v1/admin/capabilities/${randomUUID()}`],
+])
+  await jsonRequest(
+    path,
+    {
+      method,
+      headers: {
+        ...tenantHeaders(admin.cookie),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        workspaceId,
+        kind: 'workflow',
+        status: 'archived',
+      }),
+    },
+    422,
+  );
+for (const path of [
+  '/api/v1/workflow-runs',
+  `/api/v1/workflow-runs/${randomUUID()}`,
+  `/api/v1/workflow-approvals/${randomUUID()}`,
+]) {
+  await jsonRequest(path, { headers: tenantHeaders(admin.cookie) }, 404);
 }
 
 await jsonRequest(

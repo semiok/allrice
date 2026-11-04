@@ -282,7 +282,7 @@ describe('current brand-content versions', () => {
           disabled={false}
           draftKey="test.topic"
           onMutate={act}
-            onArticles={() => {}}
+          onArticles={() => {}}
         />,
       );
     board.articles = [];

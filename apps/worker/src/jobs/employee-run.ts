@@ -208,8 +208,15 @@ export async function executeEmployeeRun({
     ownerId: execution.job.ownerId,
     runId: execution.context.runId,
   });
-  if (resolved.executionSnapshot?.schemaVersion === 2 && resolved.executionSnapshot.workflowInvocation) {
-    throw new HandlerError('LEGACY_WORKFLOW_RETIRED', '旧 Workflow 执行入口已停用。', false);
+  if (
+    resolved.executionSnapshot?.schemaVersion === 2 &&
+    resolved.executionSnapshot.workflowInvocation
+  ) {
+    throw new HandlerError(
+      'LEGACY_WORKFLOW_RETIRED',
+      '旧 Workflow 执行入口已停用。',
+      false,
+    );
   }
   if (typeof input.qualityRequestId === 'string')
     return executePlatformQualityCheck(
@@ -952,7 +959,11 @@ export async function executeEmployeeRun({
     });
     routeDecision = await recordRouteDecision(proposedDecision);
     if (routeDecision.selectedKind === 'workflow') {
-      throw new HandlerError('LEGACY_WORKFLOW_RETIRED', '旧 Workflow 执行入口已停用。', false);
+      throw new HandlerError(
+        'LEGACY_WORKFLOW_RETIRED',
+        '旧 Workflow 执行入口已停用。',
+        false,
+      );
     }
     if (
       routeDecision.inputChecksum !== proposedDecision.inputChecksum ||
@@ -1032,10 +1043,7 @@ export async function executeEmployeeRun({
       executionSnapshot.taskRuntimePolicy
         ? createTaskProgressRuntime({
             context: execution.context,
-            sessionId:
-              repairTask
-                ? undefined
-                : input.sessionId,
+            sessionId: repairTask ? undefined : input.sessionId,
             worker: workflowLease,
           })
         : undefined;
@@ -1140,7 +1148,8 @@ export async function executeEmployeeRun({
       executionSnapshot.finalDeliveryPolicy?.mode === 'checked_native_v1'
         ? ('checked_native_v1' as const)
         : ('legacy' as const);
-    const selectedToolNames = routeDecision.selectedKind === 'tool' ? [revisionId] : [];
+    const selectedToolNames =
+      routeDecision.selectedKind === 'tool' ? [revisionId] : [];
     const tools = repositoryReviewTask
       ? authorizedTools
       : repairTask
@@ -1403,295 +1412,281 @@ export async function executeEmployeeRun({
       },
     });
     const result: HarnessExecutionResult = await adapter
-            .execute({
-              nativeQuestionMode,
-              nativeSubagents:
-                !repairTask &&
-                !repositoryReviewTask &&
-                executionSnapshot.schemaVersion === 2
-                  ? executionSnapshot.nativePreferences?.subagents
-                  : undefined,
-              nativeAccounting:
-                adapter.kind === 'dsh'
-                  ? {
-                      bind: (rootSessionId: string) => {
-                        const decisionId = routeDecision!.id;
-                        let price;
-                        try {
-                          price =
-                            readModelPricing()[
-                              `${providerName(providerSnapshot)}:${providerSnapshot.model}`
-                            ];
-                        } catch {
-                          /* Optional tariff stays unknown. */
-                        }
-                        const captured: NativeModelSettlement =
-                          (nativeSettlement = {
-                            rootSessionId,
-                            jobId: execution.job.id,
-                            jobAttempt: execution.job.attempt,
-                            delivery: { calls: 0, complete: false },
-                            price,
-                          });
-                        return {
-                          record: (fact) =>
-                            appendNativeModelReceipt({
-                              ...workflowLease,
-                              rootSessionId,
-                              routeDecisionId: decisionId,
-                              fact,
-                            }),
-                          delivered: (value) => {
-                            captured.delivery = value;
+      .execute({
+        nativeQuestionMode,
+        nativeSubagents:
+          !repairTask &&
+          !repositoryReviewTask &&
+          executionSnapshot.schemaVersion === 2
+            ? executionSnapshot.nativePreferences?.subagents
+            : undefined,
+        nativeAccounting:
+          adapter.kind === 'dsh'
+            ? {
+                bind: (rootSessionId: string) => {
+                  const decisionId = routeDecision!.id;
+                  let price;
+                  try {
+                    price =
+                      readModelPricing()[
+                        `${providerName(providerSnapshot)}:${providerSnapshot.model}`
+                      ];
+                  } catch {
+                    /* Optional tariff stays unknown. */
+                  }
+                  const captured: NativeModelSettlement = (nativeSettlement = {
+                    rootSessionId,
+                    jobId: execution.job.id,
+                    jobAttempt: execution.job.attempt,
+                    delivery: { calls: 0, complete: false },
+                    price,
+                  });
+                  return {
+                    record: (fact) =>
+                      appendNativeModelReceipt({
+                        ...workflowLease,
+                        rootSessionId,
+                        routeDecisionId: decisionId,
+                        fact,
+                      }),
+                    delivered: (value) => {
+                      captured.delivery = value;
+                    },
+                  };
+                },
+              }
+            : undefined,
+        ...(!repairTask && !repositoryReviewTask
+          ? {
+              nativeRunAuthority: (generation: number) => () =>
+                assertNativeRunAuthority({
+                  scope: {
+                    organizationId: execution.context.organizationId,
+                    workspaceId: execution.context.workspaceId!,
+                    projectId: resolved.projectId,
+                  },
+                  rootRunId: execution.context.runId,
+                  worker: {
+                    ...workflowLease,
+                    attempt: execution.job.attempt,
+                    generation,
+                  },
+                }),
+            }
+          : {}),
+        modelPreflight: async () =>
+          preflightSubscription(subscriptionPreflightInput),
+        contentGuard,
+        progress: taskProgress,
+        questionWait,
+        nativeQuestionWait:
+          executionSnapshot.schemaVersion === 2
+            ? executionSnapshot.nativePreferences?.questionWait
+            : undefined,
+        ...(independentDelivery
+          ? {
+              runDelivery: {
+                rootRunId: execution.context.runId,
+                bind: (generation: number) =>
+                  createRunDeliveryPort({
+                    scope: {
+                      organizationId: execution.context.organizationId,
+                      workspaceId: execution.context.workspaceId!,
+                      projectId: resolved.projectId,
+                    },
+                    rootRunId: execution.context.runId,
+                    worker: {
+                      ...workflowLease,
+                      attempt: execution.job.attempt,
+                      generation,
+                    },
+                  }),
+                pauseInput: async () => {
+                  steerPolling = false;
+                  await steerLoop;
+                  signal.throwIfAborted();
+                },
+              },
+            }
+          : {}),
+        kernel: routedKernel,
+        currentUserRequest: resolved.currentUserRequest,
+        nativeSkills:
+          repairTask || repositoryReviewTask ? [] : resolved.nativeSkills,
+        baseSkillCatalog:
+          repairTask ||
+          repositoryReviewTask ||
+          executionSnapshot.schemaVersion !== 2
+            ? undefined
+            : executionSnapshot.baseSkillCatalog,
+        storageObjects: selectedStorageObjects,
+        images: harnessImages,
+        workDirectory: isolation.workDirectory,
+        executionEnvironment: {
+          ...isolation.environment,
+          ...(repairTask?.frozen.version === 2
+            ? {
+                ALLRICE_MAINTENANCE_OUTPUT_TOKENS: String(
+                  repairTask.frozen.maintenance.maxOutputTokens,
+                ),
+              }
+            : {}),
+        },
+        providerSnapshot,
+        signal: nativeSignal,
+        attempt: execution.job.attempt,
+        generation: runtime.generation,
+        maxOutputTokens: runLimits?.maxOutputTokens,
+        onEvent: async (event) => {
+          if (
+            event.type === 'tool.completed' &&
+            event.source === 'harness' &&
+            (event.name === 'web.search' ||
+              event.name === 'web.fetch' ||
+              event.name === 'browser.run' ||
+              event.name === 'wechat.article.search' ||
+              event.name === 'wechat.article.read')
+          ) {
+            await recordToolBrokerAudit({
+              context: execution.context,
+              toolName: event.name,
+              metadata: {
+                skillVersionIds: resolved.nativeSkills.map((skill) => skill.id),
+                capability: 'network:outbound',
+              },
+            });
+          }
+          await guardedHarnessEvent(event);
+        },
+        authorizedToolNames: authorizedTools.map((tool) => tool.name),
+        tools,
+        onToolCall:
+          tools.length > 0
+            ? (call) =>
+                delivery.execute(call, () =>
+                  taskTool
+                    ? taskTool(call)
+                    : executeRiceTool({
+                        nativeSkills: resolved.nativeSkills,
+                        localMcp:
+                          executionSnapshot.schemaVersion === 2
+                            ? executionSnapshot.localMcp
+                            : undefined,
+                        frozenMcpTools:
+                          executionSnapshot.schemaVersion === 2
+                            ? executionSnapshot.mcpTools
+                            : [],
+                        context: execution.context,
+                        memoryReadAuthority: {
+                          scope: contentScope,
+                          worker: {
+                            ...workflowLease,
+                            attempt: execution.job.attempt,
                           },
-                        };
-                      },
-                    }
-                  : undefined,
-              ...(!repairTask && !repositoryReviewTask
-                ? {
-                    nativeRunAuthority: (generation: number) => () =>
-                      assertNativeRunAuthority({
+                        },
+                        managedBrowserJobAttempt: execution.job.attempt,
+                        managedBrowserJobLeaseToken: workflowLease.leaseToken,
+                        capabilities: resolved.grantedCapabilities,
+                        storageRoot:
+                          process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
+                        skillVersionIds: resolved.nativeSkills.map(
+                          (skill) => skill.id,
+                        ),
+                        sessionId:
+                          typeof input.sessionId === 'string'
+                            ? input.sessionId
+                            : undefined,
+                        employeeId: executionSnapshot.employee.id,
+                        userMessageId,
+                        userRequest:
+                          call.name === 'workspace.memory.remember'
+                            ? resolved.currentUserRequest
+                            : kernel.userRequest,
+                        signal,
+                        call,
+                      }),
+                )
+            : undefined,
+        threadId: runtime.threadId,
+        nativeBinding,
+        onThreadBound: async ({ threadId, resumed, replacedThreadId }) => {
+          runtime = await bindEmployeeConversationThread({
+            ownership,
+            adapterKind: adapter.kind,
+            threadId,
+            resumed,
+            replacedThreadId,
+            appendEvent: appendChatFlowEvent,
+          });
+          return { generation: runtime.generation };
+        },
+        onTurnStarted: async ({ threadId, turnId }) => {
+          runtime = await beginEmployeeConversationTurn({
+            ownership,
+            adapterKind: adapter.kind,
+            threadId,
+            turnId,
+            appendEvent: appendChatFlowEvent,
+          });
+          if (steerLoop || (independentDelivery && !steerPolling)) return;
+          const generation = runtime.generation;
+          steerLoop = pollEmployeeConversationSteers({
+            ownership,
+            generation: runtime.generation,
+            threadId,
+            turnId,
+            signal: nativeSignal,
+            adapter,
+            polling: () => steerPolling,
+            pollNativeControl:
+              !repairTask && !repositoryReviewTask
+                ? () =>
+                    pollNativeSubagentControl({
+                      authority: {
                         scope: {
-                          organizationId: execution.context.organizationId,
-                          workspaceId: execution.context.workspaceId!,
+                          organizationId: ownership.organizationId,
+                          workspaceId: ownership.workspaceId,
                           projectId: resolved.projectId,
                         },
-                        rootRunId: execution.context.runId,
+                        rootRunId: ownership.runId,
                         worker: {
                           ...workflowLease,
                           attempt: execution.job.attempt,
                           generation,
                         },
-                      }),
-                  }
-                : {}),
-              modelPreflight: async () =>
-                preflightSubscription(subscriptionPreflightInput),
-              contentGuard,
-              progress: taskProgress,
-              questionWait,
-              nativeQuestionWait:
-                executionSnapshot.schemaVersion === 2
-                  ? executionSnapshot.nativePreferences?.questionWait
-                  : undefined,
-              ...(independentDelivery
-                ? {
-                    runDelivery: {
-                      rootRunId: execution.context.runId,
-                      bind: (generation: number) =>
-                        createRunDeliveryPort({
-                          scope: {
-                            organizationId: execution.context.organizationId,
-                            workspaceId: execution.context.workspaceId!,
-                            projectId: resolved.projectId,
-                          },
-                          rootRunId: execution.context.runId,
-                          worker: {
-                            ...workflowLease,
-                            attempt: execution.job.attempt,
-                            generation,
-                          },
-                        }),
-                      pauseInput: async () => {
-                        steerPolling = false;
-                        await steerLoop;
-                        signal.throwIfAborted();
                       },
-                    },
-                  }
-                : {}),
-              kernel: routedKernel,
-              currentUserRequest: resolved.currentUserRequest,
-              nativeSkills:
-                repairTask || repositoryReviewTask ? [] : resolved.nativeSkills,
-              baseSkillCatalog:
-                repairTask ||
-                repositoryReviewTask ||
-                executionSnapshot.schemaVersion !== 2
-                  ? undefined
-                  : executionSnapshot.baseSkillCatalog,
-              storageObjects: selectedStorageObjects,
-              images: harnessImages,
-              workDirectory: isolation.workDirectory,
-              executionEnvironment: {
-                ...isolation.environment,
-                ...(repairTask?.frozen.version === 2
-                  ? {
-                      ALLRICE_MAINTENANCE_OUTPUT_TOKENS: String(
-                        repairTask.frozen.maintenance.maxOutputTokens,
-                      ),
-                    }
-                  : {}),
-              },
-              providerSnapshot,
-              signal: nativeSignal,
-              attempt: execution.job.attempt,
-              generation: runtime.generation,
-              maxOutputTokens: runLimits?.maxOutputTokens,
-              onEvent: async (event) => {
-                if (
-                  event.type === 'tool.completed' &&
-                  event.source === 'harness' &&
-                  (event.name === 'web.search' ||
-                    event.name === 'web.fetch' ||
-                    event.name === 'browser.run' ||
-                    event.name === 'wechat.article.search' ||
-                    event.name === 'wechat.article.read')
-                ) {
-                  await recordToolBrokerAudit({
-                    context: execution.context,
-                    toolName: event.name,
-                    metadata: {
-                      skillVersionIds: resolved.nativeSkills.map(
-                        (skill) => skill.id,
-                      ),
-                      capability: 'network:outbound',
-                    },
-                  });
-                }
-                await guardedHarnessEvent(event);
-              },
-              authorizedToolNames: authorizedTools.map((tool) => tool.name),
-              tools,
-              onToolCall:
-                tools.length > 0
-                  ? (call) =>
-                      delivery.execute(call, () =>
-                        taskTool
-                          ? taskTool(call)
-                          : executeRiceTool({
-                              nativeSkills: resolved.nativeSkills,
-                              localMcp:
-                                executionSnapshot.schemaVersion === 2
-                                  ? executionSnapshot.localMcp
-                                  : undefined,
-                              frozenMcpTools:
-                                executionSnapshot.schemaVersion === 2
-                                  ? executionSnapshot.mcpTools
-                                  : [],
-                              context: execution.context,
-                              memoryReadAuthority: {
-                                scope: contentScope,
-                                worker: {
-                                  ...workflowLease,
-                                  attempt: execution.job.attempt,
-                                },
-                              },
-                              managedBrowserJobAttempt: execution.job.attempt,
-                              managedBrowserJobLeaseToken:
-                                workflowLease.leaseToken,
-                              capabilities: resolved.grantedCapabilities,
-                              storageRoot:
-                                process.env.ALLRICE_STORAGE_ROOT ??
-                                '.local/storage',
-                              skillVersionIds: resolved.nativeSkills.map(
-                                (skill) => skill.id,
-                              ),
-                              sessionId:
-                                typeof input.sessionId === 'string'
-                                  ? input.sessionId
-                                  : undefined,
-                              employeeId: executionSnapshot.employee.id,
-                              userMessageId,
-                              userRequest:
-                                call.name === 'workspace.memory.remember'
-                                  ? resolved.currentUserRequest
-                                  : kernel.userRequest,
-                              signal,
-                              call,
-                            }),
-                      )
-                  : undefined,
-              threadId: runtime.threadId,
-              nativeBinding,
-              onThreadBound: async ({
-                threadId,
-                resumed,
-                replacedThreadId,
-              }) => {
-                runtime = await bindEmployeeConversationThread({
-                  ownership,
-                  adapterKind: adapter.kind,
-                  threadId,
-                  resumed,
-                  replacedThreadId,
-                  appendEvent: appendChatFlowEvent,
-                });
-                return { generation: runtime.generation };
-              },
-              onTurnStarted: async ({ threadId, turnId }) => {
-                runtime = await beginEmployeeConversationTurn({
-                  ownership,
-                  adapterKind: adapter.kind,
-                  threadId,
-                  turnId,
-                  appendEvent: appendChatFlowEvent,
-                });
-                if (steerLoop || (independentDelivery && !steerPolling)) return;
-                const generation = runtime.generation;
-                steerLoop = pollEmployeeConversationSteers({
-                  ownership,
-                  generation: runtime.generation,
-                  threadId,
-                  turnId,
-                  signal: nativeSignal,
-                  adapter,
-                  polling: () => steerPolling,
-                  pollNativeControl:
-                    !repairTask && !repositoryReviewTask
-                      ? () =>
-                          pollNativeSubagentControl({
-                            authority: {
-                              scope: {
-                                organizationId: ownership.organizationId,
-                                workspaceId: ownership.workspaceId,
-                                projectId: resolved.projectId,
-                              },
-                              rootRunId: ownership.runId,
-                              worker: {
-                                ...workflowLease,
-                                attempt: execution.job.attempt,
-                                generation,
-                              },
-                            },
-                            ownerId: execution.job.ownerId,
-                            sessionId: ownership.sessionId,
-                            adapter,
-                            open: () => steerPolling && !nativeSignal.aborted,
-                            revoke: (error) => controlFailure.abort(error),
-                          })
-                      : undefined,
-                });
-                void steerLoop.catch(() => {}); // The existing finally reports it.
-              },
-            })
-            .finally(async () => {
-              steerPolling = false;
-              await steerLoop?.catch((error) => {
-                console.error('[M5] Active turn steer polling failed', {
-                  sessionId: input.sessionId,
-                  message:
-                    error instanceof Error ? error.message : 'unknown error',
-                });
-              });
-              if (
-                !independentDelivery &&
-                runtime.threadId &&
-                runtime.activeTurnId
-              ) {
-                await pollEmployeeConversationSteers({
-                  ownership,
-                  generation: runtime.generation,
-                  threadId: runtime.threadId,
-                  turnId: runtime.activeTurnId,
-                  signal,
-                  adapter,
-                  polling: () => false,
-                  drain: true,
-                });
-              }
-            });
+                      ownerId: execution.job.ownerId,
+                      sessionId: ownership.sessionId,
+                      adapter,
+                      open: () => steerPolling && !nativeSignal.aborted,
+                      revoke: (error) => controlFailure.abort(error),
+                    })
+                : undefined,
+          });
+          void steerLoop.catch(() => {}); // The existing finally reports it.
+        },
+      })
+      .finally(async () => {
+        steerPolling = false;
+        await steerLoop?.catch((error) => {
+          console.error('[M5] Active turn steer polling failed', {
+            sessionId: input.sessionId,
+            message: error instanceof Error ? error.message : 'unknown error',
+          });
+        });
+        if (!independentDelivery && runtime.threadId && runtime.activeTurnId) {
+          await pollEmployeeConversationSteers({
+            ownership,
+            generation: runtime.generation,
+            threadId: runtime.threadId,
+            turnId: runtime.activeTurnId,
+            signal,
+            adapter,
+            polling: () => false,
+            drain: true,
+          });
+        }
+      });
     const waitingForProgress = !!result.waitingForUser;
     if (waitingForProgress) {
       const progress = await taskProgress?.({
@@ -1720,11 +1715,11 @@ export async function executeEmployeeRun({
         attempt: execution.job.attempt,
       });
     await appendChatFlowEvent('turn.completed', {
-        source: adapter.kind,
-        threadId: result.threadId ?? runtime.threadId,
-        turnId: result.turnId ?? runtime.activeTurnId,
-        generation: runtime.generation,
-      });
+      source: adapter.kind,
+      threadId: result.threadId ?? runtime.threadId,
+      turnId: result.turnId ?? runtime.activeTurnId,
+      generation: runtime.generation,
+    });
     routeUsage = result.usage;
     // Keep subscription accounting incomplete until identity-bound receipts
     // are verified. A forged/mismatched result cannot claim successful delivery.

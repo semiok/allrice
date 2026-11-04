@@ -609,7 +609,11 @@ async function prepareEnqueueRun(
   const context = admission.context;
   const submission = CreateRunInputSchema.parse(input);
   // Retired types must not create a queued job or fall back to an employee turn.
-  if (submission.type === 'allrice.workflow.run' || 'workflowBinding' in options || options.employeeBinding?.executionSnapshot.workflowInvocation) {
+  if (
+    submission.type === 'allrice.workflow.run' ||
+    'workflowBinding' in options ||
+    options.employeeBinding?.executionSnapshot.workflowInvocation
+  ) {
     throw new QueueError('policy_denied');
   }
   if (

@@ -1081,8 +1081,6 @@ export function BrandContentTopicCard({
             </button>
           )}
         </>
-            ))}
-        </>
       )}
     </article>
   );

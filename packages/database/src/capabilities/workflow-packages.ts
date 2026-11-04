@@ -20,11 +20,7 @@ import {
 import { freezeEmployeeRuntimeContent } from '../employees/employee-content.ts';
 import { getEmployeeInstance } from '../employees/employee-instances.ts';
 import { resolveEmployeeContentSource } from '../employees/employee-content-sources.ts';
-import type {
-  ContentSql,
-  ContentTx,
-} from '../employees/employee-content-model.ts';
-import { runtimePolicyDigest } from '../runtime-policy.ts';
+import type { ContentSql } from '../employees/employee-content-model.ts';
 import { capabilityChecksum } from './capability-registry.ts';
 import {
   readWorkflowPackageObject,

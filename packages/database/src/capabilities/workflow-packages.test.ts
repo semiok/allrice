@@ -35,9 +35,7 @@ vi.mock('../employees/employee-content-sources.ts', async (original) => ({
   resolveEmployeeContentSource: stubs.source,
 }));
 
-import {
-  assertWorkflowPackageExecution,
-} from './workflow-packages.ts';
+import { assertWorkflowPackageExecution } from './workflow-packages.ts';
 
 function setup() {
   const scope = {
@@ -336,5 +334,4 @@ describe('Workflow package execution admission (scripted DB ports, no SQL server
       assertWorkflowPackageExecution(f.context, f.request),
     ).rejects.toThrow('not_found');
   });
-
 });

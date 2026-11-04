@@ -11,17 +11,18 @@ describe('Worker job handler dispatch', () => {
     expect(resolveJobHandler('allrice.system.echo')).toBe(executeSystemEcho);
   });
 
-  it.each(['allrice.unknown', 'allrice.workflow.run'])('rejects %s without retry or falling back to a model', (type) => {
-    expect(() => resolveJobHandler(type)).toThrowError(
-      HandlerError,
-    );
-    try {
-      resolveJobHandler(type);
-    } catch (error) {
-      expect(error).toMatchObject({
-        code: 'UNSUPPORTED_JOB_TYPE',
-        retryable: false,
-      });
-    }
-  });
+  it.each(['allrice.unknown', 'allrice.workflow.run'])(
+    'rejects %s without retry or falling back to a model',
+    (type) => {
+      expect(() => resolveJobHandler(type)).toThrowError(HandlerError);
+      try {
+        resolveJobHandler(type);
+      } catch (error) {
+        expect(error).toMatchObject({
+          code: 'UNSUPPORTED_JOB_TYPE',
+          retryable: false,
+        });
+      }
+    },
+  );
 });

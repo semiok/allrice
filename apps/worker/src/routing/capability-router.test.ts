@@ -419,19 +419,20 @@ describe('capability route decision', () => {
     expect(plan.reasonCodes).toContain('direct_no_capability_match');
   });
 
-  it.each([
-    ['请根据知识库查产品定价', 'knowledge'],
-  ] as const)('routes %s to %s', (prompt, expected) => {
-    const input = base();
-    const snapshot = withCapabilities(input.snapshot);
-    const plan = decideCapabilityRoute({
-      request: { ...input.request, prompt },
-      executionSnapshot: snapshot,
-      tools,
-    });
-    expect(plan.selectedKind).toBe(expected);
-    expect(plan.reasonCodes).toContain('minimum_necessary_capability');
-  });
+  it.each([['请根据知识库查产品定价', 'knowledge']] as const)(
+    'routes %s to %s',
+    (prompt, expected) => {
+      const input = base();
+      const snapshot = withCapabilities(input.snapshot);
+      const plan = decideCapabilityRoute({
+        request: { ...input.request, prompt },
+        executionSnapshot: snapshot,
+        tools,
+      });
+      expect(plan.selectedKind).toBe(expected);
+      expect(plan.reasonCodes).toContain('minimum_necessary_capability');
+    },
+  );
 
   it('leaves DSH-native Skill selection to the DSH Agent Loop', () => {
     const input = base();
@@ -466,16 +467,23 @@ describe('capability route decision', () => {
     });
   });
 
-  it.each(['运行周报工作流', '请用技能和工作流处理这件事'])('ignores retired directory entries for %s', (prompt) => {
-    const input = base();
-    const snapshot = withCapabilities(input.snapshot);
-    const before = structuredClone(snapshot);
-    const plan = decideCapabilityRoute({request:{...input.request,prompt},executionSnapshot:snapshot,tools});
-    expect(plan.selectedKind).toBe('direct');
-    expect(plan.candidates.some(c => c.kind === 'workflow')).toBe(false);
-    expect(plan.selectedWorkflowRevisionIds).toEqual([]);
-    expect(snapshot).toEqual(before);
-  });
+  it.each(['运行周报工作流', '请用技能和工作流处理这件事'])(
+    'ignores retired directory entries for %s',
+    (prompt) => {
+      const input = base();
+      const snapshot = withCapabilities(input.snapshot);
+      const before = structuredClone(snapshot);
+      const plan = decideCapabilityRoute({
+        request: { ...input.request, prompt },
+        executionSnapshot: snapshot,
+        tools,
+      });
+      expect(plan.selectedKind).toBe('direct');
+      expect(plan.candidates.some((c) => c.kind === 'workflow')).toBe(false);
+      expect(plan.selectedWorkflowRevisionIds).toEqual([]);
+      expect(snapshot).toEqual(before);
+    },
+  );
 
   it('allows the same tool only under an explicit autonomous policy', () => {
     const input = base({ approvalPolicy: 'autonomous' });
@@ -640,8 +648,17 @@ function businessWorkflowRouteFixture() {
 }
 
 describe('retired explicit Workflow invocation', () => {
-  it.each(['你好', '运行周报工作流', '请生成品牌内容选题'])('rejects a stored invocation without falling back for %s', prompt => {
-    const f = businessWorkflowRouteFixture();
-    expect(() => decideCapabilityRoute({request:{...f.request,prompt},executionSnapshot:f.snapshot,tools})).toThrow('Legacy Workflow execution is retired');
-  });
+  it.each(['你好', '运行周报工作流', '请生成品牌内容选题'])(
+    'rejects a stored invocation without falling back for %s',
+    (prompt) => {
+      const f = businessWorkflowRouteFixture();
+      expect(() =>
+        decideCapabilityRoute({
+          request: { ...f.request, prompt },
+          executionSnapshot: f.snapshot,
+          tools,
+        }),
+      ).toThrow('Legacy Workflow execution is retired');
+    },
+  );
 });

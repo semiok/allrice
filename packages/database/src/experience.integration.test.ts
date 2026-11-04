@@ -429,10 +429,20 @@ suite(
       expect(before.feedback).toHaveLength(2);
       expect(before.experiences).toHaveLength(1);
       expect(before.experienceUses).toHaveLength(1);
-      const frozen = {...f.invocation.input, experiences: [BrandExperiencePinSchema.parse({
-        id:approved.id,revision:approved.revision,digest:approved.digest,content:approved.content,
-        retrospectiveId:f.retrospectiveId,platform:f.invocation.input.platform,campaignKey:f.invocation.input.context.campaign?.key ?? null,
-      })]};
+      const frozen = {
+        ...f.invocation.input,
+        experiences: [
+          BrandExperiencePinSchema.parse({
+            id: approved.id,
+            revision: approved.revision,
+            digest: approved.digest,
+            content: approved.content,
+            retrospectiveId: f.reportId,
+            platform: f.invocation.input.platform,
+            campaignKey: f.invocation.input.context.campaign?.key ?? null,
+          }),
+        ],
+      };
       expect(frozen.experiences?.[0]?.id).toBe(approved.id);
       await prepareStorageDelete(owner, f.evidenceId);
       await completeStorageDelete(owner, f.evidenceId);

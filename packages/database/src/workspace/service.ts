@@ -2138,9 +2138,7 @@ export async function sendChatMessage(
 ) {
   const message = SendChatMessageInputSchema.parse(input);
   const requestDigest = `sha256:${createHash('sha256')
-    .update(
-      JSON.stringify(message),
-    )
+    .update(JSON.stringify(message))
     .digest('hex')}`;
   const conversationMessage = message.userQuestionAnswer
     ? `allrice:user-question:v1:${JSON.stringify(message.userQuestionAnswer)}`

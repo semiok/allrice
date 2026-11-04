@@ -576,33 +576,30 @@ async function prepareReminderPackage(
     new Blob([Uint8Array.from(bytes)]).stream(),
   );
   await markStorageReady(actor.context, source.object.id, fixture.db);
-  const value = await seedLegacyWorkflowPackage(
-    actor.context,
-    {
-      workspaceId: actor.workspace,
-      instanceId: actor.instance.id,
-      sceneId: null,
-      requestId: randomUUID(),
-      ...(previous ? { workflowId: previous.workflow.workflowId } : {}),
-      expectedRevision: previous?.workflow.revision ?? 0,
-      slug: 'met194-isolated-reminder-handoff',
-      name: 'MET194 synthetic reminder handoff',
-      description: 'Only isolated reminder acceptance.',
-      definition: template.definition,
-      manifest: {
-        schemaVersion: 1,
-        templateKey: template.templateKey,
-        method: method.reference,
-        definitionChecksum: runtimePolicyDigest(template.definition),
-        source: {
-          objectId: source.object.id,
-          checksum: source.object.checksum,
-        },
-        files: files.map(({ path, checksum }) => ({ path, checksum })),
-        assets: [],
+  const value = await seedLegacyWorkflowPackage(actor.context, {
+    workspaceId: actor.workspace,
+    instanceId: actor.instance.id,
+    sceneId: null,
+    requestId: randomUUID(),
+    ...(previous ? { workflowId: previous.workflow.workflowId } : {}),
+    expectedRevision: previous?.workflow.revision ?? 0,
+    slug: 'met194-isolated-reminder-handoff',
+    name: 'MET194 synthetic reminder handoff',
+    description: 'Only isolated reminder acceptance.',
+    definition: template.definition,
+    manifest: {
+      schemaVersion: 1,
+      templateKey: template.templateKey,
+      method: method.reference,
+      definitionChecksum: runtimePolicyDigest(template.definition),
+      source: {
+        objectId: source.object.id,
+        checksum: source.object.checksum,
       },
+      files: files.map(({ path, checksum }) => ({ path, checksum })),
+      assets: [],
     },
-  );
+  });
   const [binding] = await fixture.db<
     { binding_revision: number }[]
   >`select binding_revision from allrice_employee_workflow_bindings
@@ -1056,7 +1053,6 @@ suite(
       ).rejects.toMatchObject({ code: 'not_found' });
       expect((await board(brand)).feedback).toHaveLength(1);
     });
-
 
     it('persists review-directed native file revisions, a one-slot image revision, approved handoff and a user-provided receipt', async () => {
       const f = await prepareDraft(a, 'full-chain');

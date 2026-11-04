@@ -110,10 +110,7 @@ function authorization(input: {
       exclusionReason: 'excluded_capability_denied',
     };
   }
-  if (
-    input.requiresApproval &&
-    input.approvalPolicy !== 'autonomous'
-  ) {
+  if (input.requiresApproval && input.approvalPolicy !== 'autonomous') {
     return {
       authorized: false,
       exclusionReason: 'excluded_approval_required',
