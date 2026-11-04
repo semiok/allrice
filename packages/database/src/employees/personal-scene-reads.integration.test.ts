@@ -33,6 +33,7 @@ import {
   failJob,
   bindJobNativeSession,
   appendJobEvent,
+  startClaimedJob,
 } from '../execution/queue.ts';
 import { nativeBindingDescriptor } from '../native-session-binding.fixture.ts';
 import {
@@ -226,8 +227,11 @@ suite(
         leaseToken: randomUUID(),
       };
       const [job] =
-        await f.db`update allrice_jobs set status='running',worker_id=${worker.workerId},lease_token=${worker.leaseToken},claimed_at=now(),heartbeat_at=now(),lease_expires_at=now()+interval '10 minutes' where run_id=${scope.runId} returning id`;
+        await f.db`update allrice_jobs set status='claimed',attempt=1,worker_id=${worker.workerId},lease_token=${worker.leaseToken},claimed_at=now(),heartbeat_at=now(),lease_expires_at=now()+interval '10 minutes' where run_id=${scope.runId} returning id`;
       worker.jobId = job!.id;
+      expect(
+        await startClaimedJob(worker.workerId, worker.jobId, worker.leaseToken),
+      ).not.toBeNull();
       await acquireConversationRuntime({
         ...scope,
         workerId: worker.workerId,
@@ -242,7 +246,6 @@ suite(
         ...run.scope,
         contextKey: run.scope.sessionId,
       });
-      await f.db`update allrice_jobs set attempt=1 where id=${run.worker.jobId}`;
       const [current] = await f.db<
         {
           config_checksum: string;
