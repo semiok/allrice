@@ -1,3 +1,4 @@
+import { listPersonalSceneSkills } from './personal-scene-skills.ts';
 import { heartbeatJob } from '../execution/queue.ts';
 import { createReadPathProbe } from '../read-path-probe.fixture.ts';
 import { sharedHistoryMethodAcceptancePhrases } from './employee-method-shared-history.fixture.ts';
@@ -2127,7 +2128,9 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         department.id,
         'personal',
       );
-      const next = await methodRun(x.f, x.instance.id, '普通金额任务');
+      // Shared methods still run on the original assigned employee. A new
+      // owner custom Run intentionally does not inherit these layers.
+      const next = await methodRun(x.f, x.f.assignment.id, '普通金额任务');
       expect(JSON.stringify(next.runtime.snapshot)).toContain(
         x.saved.candidate.id,
       );
@@ -2247,12 +2250,8 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       ).scenes.map((s) => s.name),
     ).not.toContain('金额合计');
     await x.departmentInfo!.configure(x.f.b.user.id, target.id, 'personal');
-    const peer = await createEmployeeInstance(x.f.b.context, {
-      workspaceId: x.f.b.workspaceId,
-      assignmentId: x.f.bAssignment.id,
-      requestId: randomUUID(),
-      profile: { name: '目标部门员工' },
-    });
+    // Preserve the backend assigned employee's original shared reader.
+    const peer = { id: x.f.bAssignment.id };
     const session = await createChatSession(x.f.b.context, {
       workspaceId: x.f.b.workspaceId,
       employeeInstanceId: peer.id,
@@ -2595,12 +2594,8 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     expect((await x.activate()).enabled).toBe(true);
     expect((await x.activate()).replayed).toBe(true);
     await x.run.finish();
-    const peer = await createEmployeeInstance(x.f.b.context, {
-      workspaceId: x.f.b.workspaceId,
-      assignmentId: x.f.bAssignment.id,
-      requestId: randomUUID(),
-      profile: { name: '公司方法使用者' },
-    });
+    // Preserve the backend assigned employee's original shared reader.
+    const peer = { id: x.f.bAssignment.id };
     for (const department of [
       x.departmentInfo!.department,
       x.departmentInfo!.other,
@@ -2826,12 +2821,8 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     expect(enabled.enabled).toBe(true);
     expect((await x.activate()).replayed).toBe(true);
     await x.run.finish();
-    const peerInstance = await createEmployeeInstance(x.f.b.context, {
-      workspaceId: x.f.b.workspaceId,
-      assignmentId: x.f.bAssignment.id,
-      requestId: randomUUID(),
-      profile: { name: '同事小白' },
-    });
+    // Preserve the backend assigned employee's original shared reader.
+    const peerInstance = { id: x.f.bAssignment.id };
     const effective = await getEffectiveEmployeeContent(
       x.f.b.context,
       peerInstance.id,
@@ -3901,9 +3892,19 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       '普通任务',
       x.run.sessionId,
     );
-    expect(JSON.stringify(next.runtime.snapshot)).toContain(
-      x.saved.candidate.id,
-    );
+    // The legacy activation receipt remains valid, but a plain procedure is
+    // not silently converted into a new personal Workflow package.
+    expect(next.frozen.content).toMatchObject({
+      personalScenes: true,
+      layers: [],
+    });
+    expect(
+      (await listPersonalSceneSkills(x.f.a.context, x.instance.id)).skills,
+    ).toEqual([]);
+    expect(
+      (await getEmployeeContentSet(x.f.a.context, x.saved.setId)).set.active
+        ?.id,
+    ).toBe(x.saved.candidate.id);
     expect(await x.activate(next)).toMatchObject({
       enabled: true,
       replayed: true,
@@ -3934,7 +3935,9 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     await x.answer();
     expect(await x.activate()).toMatchObject({ enabled: true });
     await x.run.finish();
-    const next = await methodRun(x.f, x.instance.id, '普通金额任务');
+    // Shared methods still run on the original assigned employee. A new
+    // owner custom Run intentionally does not inherit these layers.
+    const next = await methodRun(x.f, x.f.assignment.id, '普通金额任务');
     expect(JSON.stringify(next.runtime.snapshot)).toContain(
       x.saved.candidate.id,
     );
@@ -5607,9 +5610,18 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       expect(tests!.n).toBe(0);
       await run.finish();
       const next = await methodRun(f, instance.id, '普通一次性查询');
-      expect(next.frozen.content.layers).toMatchObject([
-        { revisionId: saved.active!.id },
-      ]);
+      // Retained plain methods are readable through their existing view, not
+      // auto-migrated into the package-only personal runtime.
+      expect(next.frozen.content).toMatchObject({
+        personalScenes: true,
+        layers: [],
+      });
+      expect(
+        (await listPersonalSceneSkills(f.a.context, instance.id)).skills,
+      ).toEqual([]);
+      expect(
+        (await getEmployeeContentSet(f.a.context, saved.setId)).set.active?.id,
+      ).toBe(saved.active!.id);
       expect(
         (await getEffectiveEmployeeContent(f.a.context, instance.id)).scenes,
       ).toMatchObject([{ name: '美股监控助手' }]);
