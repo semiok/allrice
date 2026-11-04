@@ -790,7 +790,11 @@ browserSuite(
         expect(posts.at(-1)).not.toHaveProperty('receiptId');
         expect(reads).toBeGreaterThan(previousReads);
         await dialog.getByText('合成 UI 反馈样本', { exact: true }).waitFor();
-        expect(await dialog.getByLabel('选择复盘样本 合成 UI 反馈样本', { exact: true }).count()).toBe(0);
+        expect(
+          await dialog
+            .getByLabel('选择复盘样本 合成 UI 反馈样本', { exact: true })
+            .count(),
+        ).toBe(0);
         expect(
           await dialog
             .getByText(
@@ -865,7 +869,11 @@ browserSuite(
         .getByRole('button', { name: '退回修改', exact: true })
         .click();
       await dialog.getByText('请补充事实出处', { exact: true }).waitFor();
-      expect(await dialog.getByRole('button', { name: '按审稿意见重新起草', exact: true }).count()).toBe(0);
+      expect(
+        await dialog
+          .getByRole('button', { name: '按审稿意见重新起草', exact: true })
+          .count(),
+      ).toBe(0);
       expect(posts.at(-1)).toMatchObject({
         operation: 'article.review',
         articleId: id(6),
