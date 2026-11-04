@@ -130,6 +130,17 @@ export function assertMemoryRevision(
     throw new EmployeeMemoryConflict();
 }
 
+/** Source tombstones cover rephrasing of one old proposal, not future human messages. */
+export async function lockMemorySource(
+  tx: TransactionSql,
+  scope: EmployeeMemoryScope,
+  sourceType: string,
+  sourceId: string | null,
+) {
+  if (!sourceId || !['message', 'checkpoint'].includes(sourceType)) return;
+  await tx`select pg_advisory_xact_lock(hashtextextended(${`employee-memory-source:${scope.organizationId}:${scope.workspaceId}:${scope.ownerId}:${scope.instanceId}:${sourceType}:${sourceId}`},0))`;
+}
+
 /** The caller has already locked current identity and instance authority.
  * Persist the receipt in the same transaction as content/revisions/audit.
  * A later edit/archive prevents an old acknowledgement becoming a fresh one. */

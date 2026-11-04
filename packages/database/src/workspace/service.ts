@@ -29,9 +29,11 @@ import { platformEmployeeModelPolicy } from '../providers/platform-model-setting
 import { createHash, randomUUID } from 'node:crypto';
 import {
   assertMemoryRevision,
+  EmployeeMemoryConflict,
   employeeMemoryScope,
   memoryContentDigest,
   memoryOperation,
+  lockMemorySource,
   type EmployeeMemoryIdentity,
 } from './employee-memory.ts';
 import { assertEmployeeChatHumanSource } from '../employees/employee-chat-authority.ts';
@@ -79,10 +81,7 @@ import { z } from 'zod';
 import { newCurrentEmployeeChatOrigin } from '../conversation/current-execution-binding.ts';
 import type { TransactionSql } from 'postgres';
 
-import {
-  DataAccessError,
-  getStoredFile,
-} from '../data.ts';
+import { DataAccessError, getStoredFile } from '../data.ts';
 import { getDatabase } from '../core/client.ts';
 import { workbenchFileSchemaReady } from '../workbench-file-access.ts';
 import {
@@ -1279,7 +1278,6 @@ async function loadWorkspaceMemoryRecallCandidates(
       and m.archived_at is null
       and m.owner_id=${requireUser(input.context)} and m.instance_id=${input.instanceId}
       and m.lifecycle_state='durable' and m.trust_level='user_confirmed'
-      and not exists(select 1 from allrice_experience_reviews personal_review where personal_review.memory_id=m.id)
       and not exists(select 1 from allrice_experience_reviews er
         where er.memory_id=m.id and (er.origin_kind in ('incremental','derived') or er.status<>'approved'
           or exists(select 1 from allrice_employee_runs origin where origin.run_id=er.run_id and origin.method_authoring)))
@@ -2655,6 +2653,15 @@ export async function createTraceableMemory(
     }
     if (['tool', 'connector'].includes(memory.sourceType) && !memory.sourceId)
       throw new DataAccessError('not_found');
+    if (source) {
+      await lockMemorySource(tx, scope, memory.sourceType, memory.sourceId);
+      const [discarded] = await tx`select id from allrice_memories
+        where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
+          and owner_id=${scope.ownerId} and instance_id=${scope.instanceId}
+          and source_type=${memory.sourceType} and source_id=${memory.sourceId}
+          and archived_at is not null limit 1`;
+      if (discarded) throw new EmployeeMemoryConflict();
+    }
     const key = source
       ? `source:${memory.sourceType}:${memory.sourceId}:${memoryContentDigest(memory.content)}`
       : memory.idempotencyKey;
@@ -3024,6 +3031,11 @@ export async function deleteWorkspaceMemory(
       tx,
       true,
     );
+    const [origin] = await tx<{source_type: string; source_id: string | null}[]>`
+      select source_type,source_id from allrice_memories
+      where id=${memoryId} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
+        and owner_id=${scope.ownerId} and instance_id=${scope.instanceId}`;
+    if (origin) await lockMemorySource(tx, scope, origin.source_type, origin.source_id);
     await memoryOperation(
       tx,
       scope,

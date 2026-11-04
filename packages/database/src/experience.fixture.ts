@@ -13,7 +13,7 @@ import {
 
 export async function createExperienceFixture(
   db: ReturnType<typeof postgres>,
-  options: { published?: boolean } = {},
+  options: { published?: boolean; authenticated?: boolean } = {},
 ) {
   const org = randomUUID(),
     workspace = randomUUID(),
@@ -42,7 +42,8 @@ export async function createExperienceFixture(
         },
       ],
     };
-    await db`insert into allrice_sessions(id,user_id,token_hash,expires_at) values(${context.sessionId},${id},${createHash('sha256').update(randomUUID()).digest('hex')},now()+interval '1 hour')`;
+    if (options.authenticated)
+      await db`insert into allrice_sessions(id,user_id,token_hash,expires_at) values(${context.sessionId},${id},${createHash('sha256').update(randomUUID()).digest('hex')},now()+interval '1 hour')`;
     return context;
   }
   const owner = await member('member', user),

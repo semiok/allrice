@@ -195,6 +195,7 @@ integration(
             images,
           );
           if (mode === 'complete') {
+            await fixture.db`insert into allrice_sessions(id,user_id,token_hash,expires_at) values(${fixture.context.sessionId},${fixture.context.actor.id},${createHash('sha256').update(randomUUID()).digest('hex')},now()+interval '1 hour')`;
             const [source] =
               await fixture.db`select user_message_id from allrice_employee_runs where run_id=${task.runId}`;
             const draftMemory = await createTraceableMemory(fixture.context, {

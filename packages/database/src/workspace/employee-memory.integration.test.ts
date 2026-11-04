@@ -224,21 +224,52 @@ suite(
     it('keeps ordinary edits frozen for the current Run while every instance reference rechecks its own scope', async () => {
       const f = await setup();
       const m = await f.create('Confirmed monthly report source');
-      const [revision] = await fixture.db`select id from allrice_memory_revisions where memory_id=${m.id} and revision=1`;
+      const [revision] =
+        await fixture.db`select id from allrice_memory_revisions where memory_id=${m.id} and revision=1`;
       const input = {
-        context: f.context, employeeId: m.employeeId!, instanceId: f.assignment,
-        ownership: {scope: 'personal' as const, organizationId: f.org, ownerId: f.context.actor.id},
-        ref: {sourceKind: 'experience' as const, contentId: m.id, revisionId: revision!.id,
-          digest: runtimePolicyDigest({memoryId: m.id, revisionId: revision!.id, revision: 1, content: m.content})},
-        sql: fixture.db, lock: false, allowDraft: false,
+        context: f.context,
+        employeeId: m.employeeId!,
+        instanceId: f.assignment,
+        ownership: {
+          scope: 'personal' as const,
+          organizationId: f.org,
+          ownerId: f.context.actor.id,
+        },
+        ref: {
+          sourceKind: 'experience' as const,
+          contentId: m.id,
+          revisionId: revision!.id,
+          digest: runtimePolicyDigest({
+            memoryId: m.id,
+            revisionId: revision!.id,
+            revision: 1,
+            content: m.content,
+          }),
+        },
+        sql: fixture.db,
+        lock: false,
+        allowDraft: false,
       };
-      expect((await resolveEmployeeContentSource(input)).dto.available).toBe(true);
-      const foreignInstance = await resolveEmployeeContentSource({...input, instanceId: f.other.id});
+      expect((await resolveEmployeeContentSource(input)).dto.available).toBe(
+        true,
+      );
+      const foreignInstance = await resolveEmployeeContentSource({
+        ...input,
+        instanceId: f.other.id,
+      });
       expect(foreignInstance.dto.available).toBe(false);
       expect(foreignInstance.dto).not.toHaveProperty('body');
-      await correctWorkspaceMemory(f.context, f.workspace, m.id, {...exact(m), content: 'Corrected monthly report source', reason: 'Owner edited next-run preference'});
+      await correctWorkspaceMemory(f.context, f.workspace, m.id, {
+        ...exact(m),
+        content: 'Corrected monthly report source',
+        reason: 'Owner edited next-run preference',
+      });
       expect(await filterEmployeeMethodMemories(f.scope, [m])).toEqual([m]);
-      const current = (await listWorkspaceMemories(f.context, f.workspace, undefined, {instanceId: f.assignment}))[0]!;
+      const current = (
+        await listWorkspaceMemories(f.context, f.workspace, undefined, {
+          instanceId: f.assignment,
+        })
+      )[0]!;
       await deleteWorkspaceMemory(f.context, f.workspace, m.id, exact(current));
       expect(await filterEmployeeMethodMemories(f.scope, [m])).toEqual([]);
     });
@@ -246,10 +277,16 @@ suite(
     it('keeps workspace startup available after its general instance is archived without reviving it', async () => {
       const f = await setup();
       await f.create('Personal source');
-      await changeEmployeeInstanceLifecycle(f.context, f.assignment, {workspaceId: f.workspace, requestId: randomUUID(), expectedRevision: 1, operation: 'archive'});
+      await changeEmployeeInstanceLifecycle(f.context, f.assignment, {
+        workspaceId: f.workspace,
+        requestId: randomUUID(),
+        expectedRevision: 1,
+        operation: 'archive',
+      });
       const workspace = await getEmployeeWorkspace(f.context, f.workspace);
       expect(workspace.memories).toEqual([]);
-      const [instance] = await fixture.db`select archived_at from allrice_employee_instances where id=${f.assignment}`;
+      const [instance] =
+        await fixture.db`select archived_at from allrice_employee_instances where id=${f.assignment}`;
       expect(instance!.archived_at).not.toBeNull();
     });
 
@@ -326,6 +363,8 @@ suite(
       await expect(
         createTraceableMemory(f.context, proposal),
       ).rejects.toBeInstanceOf(EmployeeMemoryConflict);
+      await expect(createTraceableMemory(f.context, {...proposal, content: 'Rephrased old discarded proposal'}))
+        .rejects.toBeInstanceOf(EmployeeMemoryConflict);
     });
 
     it('serializes concurrent edit/confirmation, preserves a single winning revision and rejects a changed idempotency payload', async () => {

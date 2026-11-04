@@ -783,7 +783,6 @@ export async function searchToolBrokerMemories(
       and workspace_id = ${context.workspaceId} and archived_at is null
       and owner_id = ${context.policySnapshot.subjectId} and instance_id=${instanceId}
       and lifecycle_state='durable' and trust_level='user_confirmed'
-      and not exists(select 1 from allrice_experience_reviews personal_review where personal_review.memory_id=m.id)
       and (expires_at is null or expires_at > now())
       and not exists(select 1 from allrice_experience_reviews er
         where er.memory_id=m.id and (er.origin_kind in ('incremental','derived') or er.status<>'approved'
