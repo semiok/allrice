@@ -313,15 +313,19 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
   }, 30000);
 
   async function remember(content: string, expiresAt: string | null = null) {
-    const [run] =
-      await f.db`select user_message_id from allrice_employee_runs where run_id=${identity.rootRunId}`;
+    // Each independent UI scenario has a new human source. Reusing the same
+    // message after another scenario discards a proposal would hit its tombstone.
+    const sourceId = randomUUID();
+    await f.db`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content)
+      select ${sourceId},organization_id,workspace_id,session_id,owner_id,'user',${f.db.json({ text: content, citations: [] })}
+      from allrice_employee_runs where run_id=${identity.rootRunId}`;
     return createTraceableMemory(owner, {
       workspaceId: identity.workspace,
       employeeId: identity.employee,
       content,
       visibility: 'private',
       sourceType: 'message',
-      sourceId: run!.user_message_id,
+      sourceId,
       sourceLabel: '模型提取候选',
       confidence: 0.8,
       expiresAt,
