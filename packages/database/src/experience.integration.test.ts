@@ -13,7 +13,6 @@ import { approveSyntheticCurrentEmployeeExecution } from './current-execution.fi
 import {
   createChatSession,
   getEmployeeWorkspace,
-  createTraceableMemory,
   sendChatMessage,
   correctWorkspaceMemory,
   promoteWorkspaceMemory,
@@ -959,7 +958,7 @@ suite(
             query: 'Reconciliation rule',
           })
         ).map((m) => m.id),
-      ).not.toContain(c.id);
+      ).toContain(c.id);
     });
     it('guards legacy promote/correct endpoints instead of silently bypassing scope review', async () => {
       const f = await fixture();
@@ -1117,7 +1116,7 @@ suite(
         vi.stubEnv('ALLRICE_EXPERIENCE_REVIEW_ENABLED', '1');
       }
     });
-    it('freezes the instance-confirmed personal revision into the next Run and kernel while unbound reviewed history stays separate', async () => {
+    it('freezes the approved memory revision into a real next queued Run and actual Worker kernel, preserving earlier Run', async () => {
       const f = await fixture();
       const oldSession = await createChatSession(f.owner, {
         workspaceId: f.workspace,
@@ -1132,23 +1131,8 @@ suite(
           text: 'Reconciliation rule: preserve original files and use decimal amounts.',
         },
       );
-      const legacy = await store.create(f.owner, f.input);
-      await store.review(f.owner, legacy.id, decision(legacy));
-      const c = await createTraceableMemory(f.owner, {
-        workspaceId: f.workspace,
-        instanceId:
-          oldSession.employeeInstanceId ?? oldSession.employeeAssignmentId,
-        idempotencyKey: randomUUID(),
-        content: f.input.content,
-        sourceType: 'user',
-        lifecycleState: 'candidate',
-      });
-      await promoteWorkspaceMemory(f.owner, f.workspace, c.id, {
-        instanceId: c.instanceId,
-        expectedRevision: c.revision,
-        contentDigest: c.contentDigest,
-        idempotencyKey: randomUUID(),
-      });
+      const c = await store.create(f.owner, f.input);
+      await store.review(f.owner, c.id, decision(c));
       const newSession = await createChatSession(f.owner, {
         workspaceId: f.workspace,
         title: 'After experience',

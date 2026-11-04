@@ -781,8 +781,10 @@ export async function searchToolBrokerMemories(
     from allrice_memories m
     where organization_id = ${context.organizationId}
       and workspace_id = ${context.workspaceId} and archived_at is null
-      and owner_id = ${context.policySnapshot.subjectId} and instance_id=${instanceId}
-      and lifecycle_state='durable' and trust_level='user_confirmed'
+      and (owner_id=${context.policySnapshot.subjectId} or visibility<>'private')
+      and (exists(select 1 from allrice_experience_reviews governed where governed.memory_id=m.id)
+        or (owner_id=${context.policySnapshot.subjectId} and instance_id=${instanceId}
+          and lifecycle_state='durable' and trust_level='user_confirmed'))
       and (expires_at is null or expires_at > now())
       and not exists(select 1 from allrice_experience_reviews er
         where er.memory_id=m.id and (er.origin_kind in ('incremental','derived') or er.status<>'approved'

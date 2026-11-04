@@ -2068,7 +2068,7 @@ suite(
       const f = await boundedFixture();
       const id = randomUUID();
       const text = 'BOUNDARY ' + '中文'.repeat(1500) + '；不得计入退款。';
-      await db`insert into allrice_memories(id,organization_id,workspace_id,owner_id,content) values(${id},${f.org},${f.workspace},${f.user},${text})`;
+      await db`insert into allrice_memories(id,organization_id,workspace_id,owner_id,instance_id,content) values(${id},${f.org},${f.workspace},${f.user},${f.instance.id},${text})`;
       const result = await readToolBrokerMemoryContext(
         f.context,
         'BOUNDARY',

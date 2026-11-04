@@ -1276,8 +1276,9 @@ async function loadWorkspaceMemoryRecallCandidates(
     where c.organization_id = ${input.context.organizationId}
       and c.workspace_id = ${input.workspaceId}
       and m.archived_at is null
-      and m.owner_id=${requireUser(input.context)} and m.instance_id=${input.instanceId}
-      and m.lifecycle_state='durable' and m.trust_level='user_confirmed'
+      and (exists(select 1 from allrice_experience_reviews governed where governed.memory_id=m.id)
+        or (m.owner_id=${requireUser(input.context)} and m.instance_id=${input.instanceId}
+          and m.lifecycle_state='durable' and m.trust_level='user_confirmed'))
       and not exists(select 1 from allrice_experience_reviews er
         where er.memory_id=m.id and (er.origin_kind in ('incremental','derived') or er.status<>'approved'
           or exists(select 1 from allrice_employee_runs origin where origin.run_id=er.run_id and origin.method_authoring)))
@@ -3132,7 +3133,7 @@ export async function getEmployeeWorkspace(
   const { listEmployeeHub } = await import('../employees/employeehub.ts');
   const employeeHub = await listEmployeeHub(context, workspaceId);
   const defaultMemoryInstance = employeeHub.assignments
-    .flatMap((item) => item.instances)
+    .flatMap((item) => item.instances ?? [])
     .find((item) => item.id === assignment?.id && !item.archivedAt)?.id;
   const [sessions, memories] = await Promise.all([
     listChatSessions(context, workspaceId, {

@@ -1251,11 +1251,10 @@ export async function filterEmployeeMethodMemories<
   >`select m.id,m.revision,m.content from allrice_memories m
     where m.id=any(${memories.map((m) => m.id)}::uuid[])
       and m.organization_id=${scope.organizationId} and m.workspace_id=${scope.workspaceId}
-      and m.owner_id=${scope.ownerId} and m.instance_id=${instanceId} and m.archived_at is null
-      and (m.expires_at is null or m.expires_at>now()) and m.lifecycle_state='durable'
-      and (m.trust_level='user_confirmed' or exists(select 1 from allrice_experience_reviews governed
-        where governed.memory_id=m.id and governed.origin_kind='derived' and governed.status='approved'
-          and governed.instance_id=m.instance_id and governed.owner_id=m.owner_id))
+      and (m.owner_id=${scope.ownerId} or m.visibility<>'private') and m.archived_at is null
+      and (exists(select 1 from allrice_experience_reviews governed where governed.memory_id=m.id)
+        or (m.owner_id=${scope.ownerId} and m.instance_id=${instanceId}
+          and (m.expires_at is null or m.expires_at>now()) and m.lifecycle_state='durable' and m.trust_level='user_confirmed'))
       and not exists(select 1 from allrice_employee_runs er
         where er.organization_id=m.organization_id and er.workspace_id=m.workspace_id and er.method_authoring
           and ((m.source_type='message' and m.source_id in (er.user_message_id,er.assistant_message_id))
