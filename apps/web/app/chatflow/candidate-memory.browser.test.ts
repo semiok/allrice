@@ -826,6 +826,9 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
           })
           .click();
         await arrived;
+        expect(await ui.page.getByRole('button', { name: '已过期', exact: true }).isDisabled()).toBe(true);
+        expect(await ui.page.getByRole('button', { name: '下一页', exact: true }).isDisabled()).toBe(true);
+        expect(await card(ui.page, fast.id).getByRole('button', { name: '确认并记住' }).isEnabled()).toBe(true);
         const refreshed = ui.page.waitForResponse(
           (response) =>
             ['/api/v1/memories', '/api/v1/memories/manage'].includes(
@@ -882,6 +885,9 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
         await card(ui.page, fast.id)
           .getByText('长期记忆', { exact: true })
           .waitFor();
+        await ui.page.getByRole('button', { name: '已过期', exact: true }).click();
+        await ui.page.getByText('正在读取记忆…', { exact: true }).waitFor({ state: 'hidden' });
+        expect(await ui.page.getByRole('alert').count()).toBe(0);
       } finally {
         release();
         failDeleteFor = '';

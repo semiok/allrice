@@ -106,7 +106,7 @@ async function readPage(
       Row[]
     >`with memories as (${scopedRows(tx, scope)})
       select * from memories where state='confirmed' and octet_length(content)<=1000
-      order by updated_at desc,id desc limit 20`;
+      order by updated_at desc,id desc`;
     budget = previewEmployeeMemoryCapacity(candidates, eligible!.count);
   }
   return EmployeeMemoryPageSchema.parse({
@@ -149,7 +149,12 @@ export async function listPersonalEmployeeMemories(
         UuidSchema.parse(instanceInput),
         tx,
       );
-      return readPage(tx, scope, query, true);
+      return readPage(tx, {
+        organizationId: scope.organizationId,
+        workspaceId: scope.workspaceId,
+        ownerId: scope.ownerId,
+        instanceId: scope.instanceId,
+      }, query, true);
     },
   );
 }

@@ -101,8 +101,11 @@ suite(
       idempotencyKey: randomUUID(),
     });
     it('lists the current owner instance; direct edit confirms exactly what was saved; old confirmation conflicts', async () => {
-      const s = await setup(),
-        memory = await s.save('月报常用入口', 'candidate');
+      const s = await setup();
+      const empty = await s.page();
+      expect(empty.memories).toEqual([]);
+      expect(empty).not.toHaveProperty('employeeId');
+      const memory = await s.save('月报常用入口', 'candidate');
       await s.save('别的实例入口', 'durable', s.other.id);
       expect(
         (await s.page({ state: 'pending' })).memories.map((m) => m.id),
@@ -168,6 +171,18 @@ suite(
       ).toEqual([expired.id]);
       expect((await s.page()).budget!.selectedIds).not.toContain(expired.id);
       await expect(s.page({ after: 'not-an-id' })).rejects.toThrow();
+    });
+    it('considers older short memories after the first twenty exceed the byte budget', async () => {
+      const s = await setup(), short = await s.save('短入口');
+      await fixture.db`update allrice_memories set updated_at=now()-interval '1 hour' where id=${short.id}`;
+      await fixture.db`insert into allrice_memories(organization_id,workspace_id,employee_id,owner_id,instance_id,content,visibility,source_type,trust_level,lifecycle_state,memory_class)
+        select organization_id,workspace_id,employee_id,owner_id,instance_id,repeat('x',1000),'private','user','user_confirmed','durable','user_preference' from allrice_memories cross join generate_series(1,20) n where id=${short.id}`;
+      const { budget } = await s.page();
+      expect(budget!.eligibleCount).toBe(21);
+      expect(budget!.selectedIds).toContain(short.id);
+      expect(budget!.selectedIds.length).toBeLessThan(20);
+      expect(budget!.usedBytes).toBeLessThanOrEqual(6000);
+      expect(budget!.omittedCount).toBe(21-budget!.selectedIds.length);
     });
     it('rejects other people, foreign organizations and revoked owner access', async () => {
       const s = await setup(),

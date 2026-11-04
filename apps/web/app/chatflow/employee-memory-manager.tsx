@@ -48,6 +48,7 @@ function Manager(props: Props) {
     ),
     [text, setText] = useState('');
   const [clearExpiry, setClearExpiry] = useState(false);
+  const [pendingCount, setPendingCount] = useState(0);
   const alive = useRef(true),
     generation = useRef(0),
     pending = useRef(new Set<string>());
@@ -134,6 +135,7 @@ function Manager(props: Props) {
     return () => window.removeEventListener('allrice:memory-changed', listener);
   }, [props.scopeId, busy]);
   function changeState(value: typeof state) {
+    if (busy || pending.current.size) return;
     setState(value);
     setCursors([]);
     setPage(null);
@@ -287,7 +289,7 @@ function Manager(props: Props) {
             key={value}
             type="button"
             variant="ghost"
-            disabled={busy}
+            disabled={busy || pendingCount > 0}
             aria-pressed={state === value}
             onClick={() => changeState(value as typeof state)}
           >
@@ -420,6 +422,7 @@ function Manager(props: Props) {
                     ++generation.current;
                     if (value) pending.current.add(memory.id);
                     else pending.current.delete(memory.id);
+                    setPendingCount(pending.current.size);
                   }}
                   onChange={(updated) => {
                     setPage((previous) =>
@@ -466,7 +469,7 @@ function Manager(props: Props) {
               <Button
                 type="button"
                 variant="ghost"
-                disabled={busy || !cursors.length}
+                disabled={busy || pendingCount > 0 || !cursors.length}
                 onClick={() => {
                   setPage(null);
                   setCursors((value) => value.slice(0, -1));
@@ -478,7 +481,7 @@ function Manager(props: Props) {
               <Button
                 type="button"
                 variant="ghost"
-                disabled={busy || !page.nextCursor}
+                disabled={busy || pendingCount > 0 || !page.nextCursor}
                 onClick={() => {
                   setPage(null);
                   setCursors((value) => [...value, page.nextCursor!]);
