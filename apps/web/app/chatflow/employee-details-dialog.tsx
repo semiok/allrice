@@ -33,6 +33,7 @@ import {
   PersonalSceneFilePanel,
   type PersonalSceneFileWriteStore,
 } from './personal-scene-files';
+import { PersonalSceneReadPanel } from './personal-scene-reads';
 import {
   workbenchJson,
   parseArtifactPreview,
@@ -377,13 +378,21 @@ function EmployeeDetailsReader(
             workflowContent={
               !props.organizationView &&
               props.instanceId && (
-                <PersonalSceneFilePanel
-                  scopeId={props.scopeId}
-                  instanceId={props.instanceId}
-                  workspaceId={props.workspaceId}
-                  headers={props.headers}
-                  writes={props.fileWrites}
-                />
+                <>
+                  <PersonalSceneReadPanel
+                    scopeId={props.scopeId}
+                    instanceId={props.instanceId}
+                    workspaceId={props.workspaceId}
+                    headers={props.headers}
+                  />
+                  <PersonalSceneFilePanel
+                    scopeId={props.scopeId}
+                    instanceId={props.instanceId}
+                    workspaceId={props.workspaceId}
+                    headers={props.headers}
+                    writes={props.fileWrites}
+                  />
+                </>
               )
             }
             experienceContent={
