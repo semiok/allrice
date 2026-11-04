@@ -915,9 +915,7 @@ function TopicsPanel({
       </div>
       {!topics.length && (
         <Empty>
-          {filter === 'candidate'
-            ? '暂无待决定选题。'
-            : '暂无此状态的选题。'}
+          {filter === 'candidate' ? '暂无待决定选题。' : '暂无此状态的选题。'}
         </Empty>
       )}
       <div className={css.stack}>
@@ -1111,11 +1109,7 @@ function ArticlesPanel({
         title="稿件与审稿"
         detail="审核只对展示的当前版本生效；替换配图后需要重新审核。"
       />
-      {!board.articles.length && (
-        <Empty>
-          暂无稿件。
-        </Empty>
-      )}
+      {!board.articles.length && <Empty>暂无稿件。</Empty>}
       <div className={css.stack}>
         {[...board.articles]
           .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
@@ -1128,7 +1122,7 @@ function ArticlesPanel({
               disabled={disabled}
               draftKey={`${draftKey}.${article.id}.${article.revision}`}
               onMutate={onMutate}
-                onOpenSession={onOpenSession}
+              onOpenSession={onOpenSession}
               onPlans={onPlans}
               headers={headers}
             />
