@@ -203,7 +203,9 @@
    - **线上问题诊断（Sol `max`）**：只读排查 Dev 或日志，给出根因、证据和建议修法，不直接改代码和数据。
    - `-s danger-full-access` 只给明确授权的实现或需要跑测试的活，复核保持只读：10-24 在本机实测，`workspace-write` 沙箱连不上本机 Postgres、写不了 worktree 的 git 元数据、也上不了网。M1 是专用开发机，约束靠本文件，不靠沙箱。M5 是用户的个人电脑，`m5-test` 在 M5 上用 `workspace-write` 加网络（`sandbox_workspace_write.network_access=true`）：Codex 只能写测试 worktree 和临时目录，能连 M5 的测试库（10-26 实测）；这个沙箱不限制读文件和网络。`m5-test` 还关掉 Codex 的登录 shell（`-c allow_login_shell=false`，否则用户的 shell 配置会把别的 Node 和 psql 排到 PATH 前面），让它跑的命令用 `~/allrice-test/home` 做 HOME，并用 `--ephemeral` 不在用户的 `~/.codex` 里留会话记录。
 
-7. **重的测试和可迁移检查用 `m5-test`（用户 10-26、11-04）**：全仓 typecheck、lint、format 检查，多文件或全量测试、数据库集成测试、浏览器测试和 Codex 补测，以及其他可离开 M1 的高频临时检查，都通过 `m5-test` 优先放到 M5，减轻 M1 的负载。M5 不可用时照常自动退回 M1，不要因此等待或改流程。单文件或单包的快速检查也可在自己的 M1 worktree 里直接跑，不必为了快查先提交。`qa-instance`（含构建）、真实模型验收、共享 Dev 的部署和冒烟仍在 M1；第 1 节不往 M5 放任何凭证的边界不变。
+7. **重的测试和可迁移检查用 `m5-test`（用户 10-26、11-04）**：全仓 typecheck、lint、format 检查，多文件或全量测试、数据库集成测试、浏览器测试和 Codex 补测，以及其他可离开 M1 的高频临时检查，都通过 `m5-test` 优先放到 M5，减轻 M1 的负载。M5 离线时先按下条提醒并最多等待 30 分钟，之后通过 `m5-test` 默认模式自动回退 M1。单文件或单包的快速检查也可在自己的 M1 worktree 里直接跑，不必为了快查先提交。`qa-instance`（含构建）、真实模型验收、共享 Dev 的部署和冒烟仍在 M1；第 1 节不往 M5 放任何凭证的边界不变。
+
+   - **M5 请求与等待（用户 11-04）**：开发需要依靠 M5 跑一批重检查时，开始前按第 11 节的 Linear 写入分工在 MET-244 发一条 `[M5请求]` 评论，写明哪条开发线、做什么、预计多久，由“云端通知”转给用户；尚未发过时发现 M5 离线，也先发这条。同一段工作只发一次，开批前已发过的，离线不重复发。M5 在线不用等回复；离线从发现时起最多等 30 分钟，按本节第 4 条既有等待与唤醒方式记录和恢复，不 sleep 轮询。期间恢复在线即可继续；30 分钟后仍离线，就用 `m5-test` 默认的 `--on auto` 自动退回 M1，不继续强制 `--on m5`。等待由会话处理，`--wait` 只等运行名额，不是 SSH 上线等待。用户回复只确认 M5 开着，不算其他批准。
 
    ```bash
    ~/allrice-dev/bin/m5-test --wait 0 --on m5 --build 'pnpm typecheck' -- --help
@@ -214,12 +216,12 @@
    ~/allrice-dev/bin/m5-test status
    ```
 
-   - 上面的 typecheck、lint 两条保留强制 M5 实测时的 `--on m5`；日常调用去掉该参数，保持 M5 不可用时自动回退 M1。检查通过 `--build` 执行后，工具仍会追加 `vitest run`；这里传入原生 `--help`，只打印帮助后退出，不收集或运行测试。不要用 `--version` 替代：`vitest run --version` 仍会运行测试。
+   - 上面的 typecheck、lint 两条保留强制 M5 实测时的 `--on m5`；日常调用去掉该参数，离线等待结束后使用默认自动回退，不继续强制 M5。检查通过 `--build` 执行后，工具仍会追加 `vitest run`；这里传入原生 `--help`，只打印帮助后退出，不收集或运行测试。不要用 `--version` 替代：`vitest run --version` 仍会运行测试。
    - 交给 `m5-test` 的检查只处理已提交的内容：默认当前 worktree 的 HEAD；没提交的改动先提交（可以是本地临时提交，不必 push）。`--` 后面原样交给 `vitest run`，开关和参数照 `ci.yml` 里对应的步骤抄（例如 `--testTimeout=30000`、`-e ALLRICE_RUN_BRAND_CONTENT_BROWSER=1`）。`--db`、`--browser` 打开对应的测试开关，`-e ALLRICE_RUN_<名字>=<值>` 加别的开关（只收 `ALLRICE_RUN_*`，值只能是字母、数字和 `. _ , : -`）。默认先跑 `pnpm --filter @allrice/contracts build`，`--build "<命令>"` 换成别的，`--no-build` 不构建。
    - 测试拿到的环境只有：这些开关、测试库变量（`ALLRICE_TEST_DATABASE_URL` 和 `PGHOST` 等）、`ci.yml` 给数据库步骤设的两个路径变量（`ALLRICE_NATIVE_ONCE_PROBE_MODULE_BASE`、`TSX_TSCONFIG_PATH`）；`TMPDIR` 取真实路径，所以第 10 节第 3 条说的 `/var` 别名问题在这里不会出现，`m5-test` 过了不代表直接跑也过。要别的环境变量的测试是本条的例外，在自己的 worktree 里直接跑，带 `--maxWorkers=2`：native-schedule 的主机测试（`native-schedule-calendar`、`native-schedule-monthly`）、`p27-assistant-fixture`、要云端沙箱（`ALLRICE_RUN_CLOUD_INTEGRATION`）或 Bridge 的 native 测试。
    - 跑得久：Claude 一律用 `run_in_background`；Codex 会话用 `nohup … &` 后台跑，看 `~/allrice-dev/qa/m5-test/` 里的日志。调用方被杀，这一轮就白跑了。
    - 输出实时打印，最后一行写明在哪台机器跑完。退出码：测试的退出码（0 通过，1 有失败；装依赖或构建失败时原因写在 `done on …` 那一行）；2 参数错误；3 M1 也没有空位（结束本轮、说明在等什么，不要循环重试）；4 `--on m5` 而 M5 用不了；5 取不回 Codex 的报告；75 测试在 M1 上被信号结束；124 在 M1 上 20 分钟（Codex 补测 60 分钟）没有输出，按卡住停掉；130 被中断。
-   - 改在 M1 跑之前都先打印一句原因：M5 不在线（`ssh m5` 5 秒内连不上，不等待、不重试）、推送失败、没配好、测试库起不来或 Codex 不可用、内存压力严重、等了 `--wait` 秒（默认 600）还没有空位。跑到一半断开（SSH 断开、20 分钟没有输出、测试或装依赖被信号结束）记为“M5 中断”，不算测试失败，自动在 M1 从头重跑。`--on m5` 只在 M5 跑，`--on m1` 直接在 M1 跑。
+   - 工具改在 M1 跑之前都先打印一句原因：M5 不在线（`ssh m5` 单次连接超时 5 秒；会话级离线等待按前文）、推送失败、没配好、测试库起不来或 Codex 不可用、内存压力严重、等了 `--wait` 秒（默认 600）还没有空位。跑到一半断开（SSH 断开、20 分钟没有输出、测试或装依赖被信号结束）记为“M5 中断”，不算测试失败，自动在 M1 从头重跑。`--on m5` 只在 M5 跑，`--on m1` 直接在 M1 跑。
    - 名额：M5 上所有运行合计 16 个 vitest worker、4 个运行；每个运行默认 8 个，Codex 补测 4 个；`--maxWorkers` 可以设 1 到 12，比份额小的照用（`--maxWorkers=1` 仍是串行），大的压到份额。份额由 `node_modules/.bin/vitest` 的包装执行，同一轮里的 vitest 依次跑，Codex 自己起的也一样。拿到份额的一半以上就开跑。M1 上最多 2 个运行、各 2 个 worker。`limits` 的键：`MEMORY_GB=48`、`PG_GB=6`、`GB_PER_WORKER=2`（worker 名额取 `(MEMORY_GB-PG_GB)/GB_PER_WORKER` 和 `WORKERS_TOTAL` 的小者）、`WORKERS_TOTAL=16`、`WORKERS_DEFAULT=8`、`WORKERS_MAX=12`、`CODEX_WORKERS=4`、`RUNS=4`；写错的行会被忽略，改完用 `m5-test status` 核对。
    - 遗留运行：M1 这边每个 M5 运行在连上 M5 之前就持有一个租约（`~/allrice-dev/qa/m5-test/leases/`），放弃那一轮时才释放。之后在 M5 上开跑时，`m5-test` 停掉租约已经释放、却还占着名额的运行，以及上一轮留下的测试进程（用 `m5-test` 装的 Node 运行、工作目录在该 worktree 里或命令行带着它的进程，以及它们的子进程；用户在那里开的终端不会被动）；没有别的运行时，再清掉测试库里遗留的 schema 和库。合盖带走时，M1 在 1 到 1.5 分钟内发现、改在 M1 从头重跑；M5 上每一轮（包括排队等名额的阶段）都在自己的进程组里，由一个监督进程带着；M5 醒来后，监督进程发现 M5 睡了超过半分钟（按计入睡眠、不受校时影响的系统时钟），就结束这一轮的所有进程（包括另开会话的，测试库除外；M1 那时可能还没放弃，代价只是在 M1 重跑），运行中睡过的结果一律不算，在 M1 重跑，记在 M5 的 `~/allrice-test/stopped.log`，`m5-test status` 显示最近一次。一轮正常结束时，它留下的进程也一并结束。
    - M5 上的环境由发布负责人用 `m5-test setup` 准备，在 M5 空闲、用户方便时做（编译 PostgreSQL 会占满 CPU 几分钟）；装了会改变环境版本或测试库设置的新工具后要重跑。别的会话看到“没配好”的提示，在 MET 卡上告诉发布负责人，不要自己跑。`m5-test status` 看两台机器的运行和 worker 名额、测试库、预算、内存压力和 Codex 登录状态。
