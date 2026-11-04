@@ -203,16 +203,19 @@
    - **线上问题诊断（Sol `max`）**：只读排查 Dev 或日志，给出根因、证据和建议修法，不直接改代码和数据。
    - `-s danger-full-access` 只给明确授权的实现或需要跑测试的活，复核保持只读：10-24 在本机实测，`workspace-write` 沙箱连不上本机 Postgres、写不了 worktree 的 git 元数据、也上不了网。M1 是专用开发机，约束靠本文件，不靠沙箱。M5 是用户的个人电脑，`m5-test` 在 M5 上用 `workspace-write` 加网络（`sandbox_workspace_write.network_access=true`）：Codex 只能写测试 worktree 和临时目录，能连 M5 的测试库（10-26 实测）；这个沙箱不限制读文件和网络。`m5-test` 还关掉 Codex 的登录 shell（`-c allow_login_shell=false`，否则用户的 shell 配置会把别的 Node 和 psql 排到 PATH 前面），让它跑的命令用 `~/allrice-test/home` 做 HOME，并用 `--ephemeral` 不在用户的 `~/.codex` 里留会话记录。
 
-7. **重的测试用 `m5-test`（用户 10-26）**：数据库集成测试、浏览器测试、整套单元测试（`vitest run` 全量）和 Codex 补测都用 `m5-test`，不在 M1 上直接跑这几类；在自己的 worktree 里只跑单个或少量单元测试文件。验收实例、共享 Dev 的部署和冒烟仍在 M1。M5 不在时 `m5-test` 自己改在 M1 跑，不要因此等待或改流程。
+7. **重的测试和可迁移检查用 `m5-test`（用户 10-26、11-04）**：全仓 typecheck、lint、format 检查，多文件或全量测试、数据库集成测试、浏览器测试和 Codex 补测，以及其他可离开 M1 的高频临时检查，都通过 `m5-test` 优先放到 M5，减轻 M1 的负载。M5 不可用时照常自动退回 M1，不要因此等待或改流程。单文件或单包的快速检查也可在自己的 M1 worktree 里直接跑，不必为了快查先提交。`qa-instance`（含构建）、真实模型验收、共享 Dev 的部署和冒烟仍在 M1；第 1 节不往 M5 放任何凭证的边界不变。
 
    ```bash
+   ~/allrice-dev/bin/m5-test --wait 0 --on m5 --build 'pnpm typecheck' -- --help
+   ~/allrice-dev/bin/m5-test --wait 0 --on m5 --build 'pnpm lint' -- --help
    ~/allrice-dev/bin/m5-test [<提交>] --db -- packages/database/src/<名字>.integration.test.ts
    ~/allrice-dev/bin/m5-test --browser -- apps/web/app/chatflow/<名字>.browser.test.ts
    ~/allrice-dev/bin/m5-test --wait 0 --build 'pnpm --filter @allrice/contracts build && node --test --test-concurrency=1 scripts/ci-integration-tests.node.test.mjs' -- --maxWorkers=2  # 完整自测及全量 Vitest，顶层顺序避免嵌套锁
    ~/allrice-dev/bin/m5-test status
    ```
 
-   - 只测已提交的内容：默认当前 worktree 的 HEAD；没提交的改动先提交（可以是本地临时提交，不必 push）。`--` 后面原样交给 `vitest run`，开关和参数照 `ci.yml` 里对应的步骤抄（例如 `--testTimeout=30000`、`-e ALLRICE_RUN_BRAND_CONTENT_BROWSER=1`）。`--db`、`--browser` 打开对应的测试开关，`-e ALLRICE_RUN_<名字>=<值>` 加别的开关（只收 `ALLRICE_RUN_*`，值只能是字母、数字和 `. _ , : -`）。默认先跑 `pnpm --filter @allrice/contracts build`，`--build "<命令>"` 换成别的，`--no-build` 不构建。
+   - 上面的 typecheck、lint 两条保留强制 M5 实测时的 `--on m5`；日常调用去掉该参数，保持 M5 不可用时自动回退 M1。检查通过 `--build` 执行后，工具仍会追加 `vitest run`；这里传入原生 `--help`，只打印帮助后退出，不收集或运行测试。不要用 `--version` 替代：`vitest run --version` 仍会运行测试。
+   - 交给 `m5-test` 的检查只处理已提交的内容：默认当前 worktree 的 HEAD；没提交的改动先提交（可以是本地临时提交，不必 push）。`--` 后面原样交给 `vitest run`，开关和参数照 `ci.yml` 里对应的步骤抄（例如 `--testTimeout=30000`、`-e ALLRICE_RUN_BRAND_CONTENT_BROWSER=1`）。`--db`、`--browser` 打开对应的测试开关，`-e ALLRICE_RUN_<名字>=<值>` 加别的开关（只收 `ALLRICE_RUN_*`，值只能是字母、数字和 `. _ , : -`）。默认先跑 `pnpm --filter @allrice/contracts build`，`--build "<命令>"` 换成别的，`--no-build` 不构建。
    - 测试拿到的环境只有：这些开关、测试库变量（`ALLRICE_TEST_DATABASE_URL` 和 `PGHOST` 等）、`ci.yml` 给数据库步骤设的两个路径变量（`ALLRICE_NATIVE_ONCE_PROBE_MODULE_BASE`、`TSX_TSCONFIG_PATH`）；`TMPDIR` 取真实路径，所以第 10 节第 3 条说的 `/var` 别名问题在这里不会出现，`m5-test` 过了不代表直接跑也过。要别的环境变量的测试是本条的例外，在自己的 worktree 里直接跑，带 `--maxWorkers=2`：native-schedule 的主机测试（`native-schedule-calendar`、`native-schedule-monthly`）、`p27-assistant-fixture`、要云端沙箱（`ALLRICE_RUN_CLOUD_INTEGRATION`）或 Bridge 的 native 测试。
    - 跑得久：Claude 一律用 `run_in_background`；Codex 会话用 `nohup … &` 后台跑，看 `~/allrice-dev/qa/m5-test/` 里的日志。调用方被杀，这一轮就白跑了。
    - 输出实时打印，最后一行写明在哪台机器跑完。退出码：测试的退出码（0 通过，1 有失败；装依赖或构建失败时原因写在 `done on …` 那一行）；2 参数错误；3 M1 也没有空位（结束本轮、说明在等什么，不要循环重试）；4 `--on m5` 而 M5 用不了；5 取不回 Codex 的报告；75 测试在 M1 上被信号结束；124 在 M1 上 20 分钟（Codex 补测 60 分钟）没有输出，按卡住停掉；130 被中断。
