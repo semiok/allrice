@@ -23,7 +23,7 @@ export type ModelFailure = z.infer<typeof ModelFailureSchema>;
 export const hiddenModelFailure = '原文无法安全展示';
 
 const copies: Record<ModelFailureCategory, string> = {
-  auth: '模型服务授权失效。请联系管理员重新授权，反复重试无法恢复授权。',
+  auth: '模型服务认证或授权失败。请联系管理员检查授权配置，反复重试无法修复认证问题。',
   quota: '模型服务额度已用完。请联系管理员处理额度，反复重试无法解除限制。',
   rate_limit: '模型服务请求过于频繁。请稍后重试；持续出现请联系管理员。',
   service: '上游模型服务暂时不可用。请稍后重试；持续出现请联系管理员。',
@@ -55,7 +55,25 @@ export function classifyModelFailure(
   code?: unknown,
 ): ModelFailureCategory {
   // Native dsh-llm rc.2 codes are explicit provider failure states.
-  if (code === 'QUOTA' || code === 'ACCOUNT_QUOTA') return 'quota';
+  switch (code) {
+    case 'AUTH':
+    case 'INVALID_CREDENTIAL':
+    case 'MISSING_CREDENTIAL':
+      return 'auth';
+    case 'QUOTA':
+    case 'ACCOUNT_QUOTA':
+      return 'quota';
+    case 'RATE_LIMIT':
+      return 'rate_limit';
+    case 'SERVER':
+      return 'service';
+    case 'TRANSPORT':
+    case 'TIMEOUT':
+    case 'STREAM_CLOSED':
+      return 'transport';
+    case 'CONTEXT_WINDOW_EXCEEDED':
+      return 'context';
+  }
   if (
     status === 401 ||
     /\b(?:authentication|access|auth) token (?:has )?expired\b|\b(?:invalid|expired|revoked) (?:authentication|access) token\b|\binvalid (?:api key|credentials)\b|\bauthentication (?:failed|required)\b/i.test(
@@ -92,6 +110,9 @@ export function classifyModelFailure(
     return 'transport';
   if (
     status === 413 ||
+    /^pi-ai detected context overflow(?: for model "[^"\r\n]+")?$/i.test(
+      message,
+    ) ||
     /\b(?:maximum )?context (?:window|length) (?:has been )?(?:exceeded|exhausted)\b|\bexceeds? (?:the )?(?:maximum )?context (?:window|length)\b|\b(?:payload|request body) too large\b/i.test(
       message,
     )
@@ -103,15 +124,37 @@ export function classifyModelFailure(
 // A credential signal is broader than a reliably bounded assignment. Natural
 // or folded labels without a value boundary must fail closed before replacing.
 // Generic "token" nouns stay readable; explicit token assignments are filtered.
-const credentialLabel = String.raw`(?:authorization|api[\s_-]*key|(?:access|refresh)[\s_-]*token|password|secret|cookie)`;
-const credentialScheme = String.raw`(?:Bearer|Basic)`;
-const credentialSignal = String.raw`\b(?:${credentialLabel}|${credentialScheme})\b`;
-const credentialSignals = new RegExp(credentialSignal, 'gi');
-const credentialPrefix = String.raw`\b(?:(?:${credentialLabel}|token)["']?\s*[:=]|${credentialScheme}\s+)`;
-const credentialPrefixAtStart = new RegExp(`^${credentialPrefix}`, 'i');
+const credentialWord = (word: string) =>
+  [...word]
+    .map((letter) => `[${letter.toLowerCase()}${letter.toUpperCase()}]`)
+    .join('');
+const credentialWords = (...words: string[]) =>
+  words.map(credentialWord).join(String.raw`[\s_-]*`);
+// Natural ID-token labels use field/camel boundaries. A complete identifier
+// suffix also covers folded/acronym prefixes; whitespace is excluded there so
+// "valid token", valid_tokens and validTokenCount remain ordinary token facts.
+const idTokenLabel = String.raw`(?:(?<![A-Za-z0-9])|(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z]))${credentialWords('id', 'token')}|${credentialWord('id')}[_-]*${credentialWord('token')}(?=$|[^A-Za-z0-9_-])`;
+const credentialLabel = `(?:${[
+  credentialWords('authorization'),
+  credentialWords('api', 'key'),
+  credentialWords('access', 'token'),
+  credentialWords('refresh', 'token'),
+  credentialWords('auth', 'token'),
+  credentialWords('client', 'secret'),
+  credentialWords('private', 'key'),
+  credentialWords('password'),
+  credentialWords('secret'),
+  credentialWords('cookie'),
+  idTokenLabel,
+].join('|')})(?=$|[^A-Za-z0-9]|(?<=[a-z])[A-Z])`;
+const credentialScheme = `(?:${credentialWord('Bearer')}|${credentialWord('Basic')})`;
+const credentialSignal = String.raw`(?:${credentialLabel}|\b${credentialScheme}\b)`;
+const credentialSignals = new RegExp(credentialSignal, 'g');
+const credentialPrefix = String.raw`(?:(?<![A-Za-z0-9_-])[A-Za-z0-9_-]*${credentialLabel}["']?\s*[:=]|\b${credentialWord('token')}["']?\s*[:=]|\b${credentialScheme}\s+)`;
+const credentialPrefixAtStart = new RegExp(`^${credentialPrefix}`);
 const credentialForms = new RegExp(
   String.raw`${credentialPrefix}[^\r\n]*(?:\r\n?|\n)?`,
-  'gi',
+  'g',
 );
 
 const sensitiveForms = [
@@ -130,8 +173,7 @@ const sensitiveForms = [
   /\b[\w-]*id["']?\s*[:=][^\r\n]*/gi,
 ];
 const residualSensitive = new RegExp(
-  String.raw`${credentialSignal}|${credentialPrefix}|\b[\w-]*id["']?\s*[:=]|:\/\/|\bsk-|[\w.+-]+@[\w.-]+`,
-  'i',
+  String.raw`${credentialSignal}|${credentialPrefix}|\b[\w-]*[iI][dD]["']?\s*[:=]|:\/\/|\b[sS][kK]-|[\w.+-]+@[\w.-]+`,
 );
 
 /** Unreliable input, redaction exceptions or residual credentials hide the

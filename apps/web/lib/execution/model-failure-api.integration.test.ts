@@ -33,7 +33,11 @@ import { GET as eventsGet } from '../../app/api/v1/runs/[id]/events/route';
 import { GET as sessionGet } from '../../app/api/v1/sessions/[id]/route';
 import { GET as taskGet } from '../../app/api/v1/scheduled-tasks/[taskId]/route';
 import { POST as approvalPost } from '../../app/api/v1/workflow-approvals/[id]/route';
-import { GET as adminGet } from '../../app/api/v1/admin/technical-assistant/route';
+import {
+  GET as adminGet,
+  POST as adminPost,
+} from '../../app/api/v1/admin/technical-assistant/route';
+import { GET as adminIssueGet } from '../../app/api/v1/admin/technical-assistant/issues/[id]/route';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -621,15 +625,19 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
         runId: f.run,
       }),
     ).toEqual({ failures: [], truncated: false });
+    // Diagnostics end at a JS millisecond timestamp. Keep this just-written
+    // synthetic row inside that window without relying on PostgreSQL microseconds.
+    await db.db`update allrice_runs set updated_at=date_trunc('milliseconds',clock_timestamp()) where id=${f.run}`;
     platformAdmin();
     const response = await adminGet(
       new Request('http://localhost/api/v1/admin/technical-assistant'),
     );
-    expect(
-      (await response.json()).diagnostics.runs.value.find(
-        (row: { runId: string }) => row.runId === f.run,
-      ).modelFailures,
-    ).toBeUndefined();
+    expect(response.status).toBe(200);
+    const row = (await response.json()).diagnostics.runs.value.find(
+      (row: { runId: string }) => row.runId === f.run,
+    );
+    expect(row).toBeDefined();
+    expect(row.modelFailures).toBeUndefined();
   });
   it('review regression: non-chat Runs cannot use the legacy administrator raw-message fallback', async () => {
     const f = await runFixture(db.db);
@@ -673,5 +681,97 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
       { category: 'service', attempts: 1 },
       { category: 'unknown', attempts: 2 },
     ]);
+  });
+  it.each([
+    'client_secret',
+    'AUTH_TOKEN',
+    'providerIdToken',
+    'tls-private-key',
+    'AWSIDToken',
+  ])(
+    'keeps compound %s credentials private in the actual root receipt, administrator and public APIs',
+    async (label) => {
+      const sensitiveValue = 'SyntheticCredentialValueQWER';
+      const f = await seed(
+        'DSH_AUTH',
+        `Provider authentication failed. ${label}=${sensitiveValue}`,
+        true,
+      );
+      const [event] =
+        await db.db`select payload from allrice_run_events where run_id=${f.run} and event_type='harness.native'`;
+      expect(JSON.stringify(event!.payload)).not.toContain(sensitiveValue);
+      auth.context = f.owner;
+      for (const response of [
+        await runGet(request(f), route(f)),
+        ...(await Promise.all(
+          ['application/json', 'text/event-stream'].map((accept) =>
+            eventsGet(request(f, '/events', { headers: { accept } }), route(f)),
+          ),
+        )),
+      ])
+        expect(await publicBody(response)).not.toContain(sensitiveValue);
+      platformAdmin();
+      const response = await adminGet(
+        new Request('http://localhost/api/v1/admin/technical-assistant'),
+      );
+      expect(response.status).toBe(200);
+      const row = (await response.json()).diagnostics.runs.value.find(
+        (item: { runId: string }) => item.runId === f.run,
+      );
+      expect(row.modelFailures[0]).toMatchObject({
+        category: 'auth',
+        code: 'AUTH',
+      });
+      expect(row.modelFailures[0].upstreamMessage).toContain('[已隐藏]');
+      expect(JSON.stringify(row)).not.toContain(sensitiveValue);
+    },
+  );
+  it('re-redacts an old administrator evidence snapshot at the real detail API without rewriting stored category, status or raw record', async () => {
+    const f = await seed('DSH_PI_AI_ERROR', 'Synthetic provider receipt');
+    platformAdmin();
+    const capture = await adminPost(
+      new Request('http://localhost/api/v1/admin/technical-assistant', {
+        method: 'POST',
+        headers: {
+          origin: 'http://localhost',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ kind: 'run', id: f.run }),
+      }),
+    );
+    expect(capture.status).toBe(200);
+    const issueId = (await capture.json()).detail.issue.id;
+    const sensitiveValue = 'SyntheticStoredCredentialQWER';
+    const oldReceipt = {
+      category: 'unknown',
+      code: 'AUTH',
+      status: 401,
+      upstreamMessage: `Provider receipt. client_secret=${sensitiveValue}`,
+    };
+    await db.db`update allrice_platform_technical_evidence set record=jsonb_set(record,'{modelFailures}',${json([oldReceipt])}) where issue_id=${issueId}`;
+    const detailRequest = () =>
+      new Request(
+        `http://localhost/api/v1/admin/technical-assistant/issues/${issueId}`,
+      );
+    const detailRoute = { params: Promise.resolve({ id: issueId }) };
+    for (const context of [f.owner, await f.member('admin')]) {
+      auth.context = context;
+      const denied = await adminIssueGet(detailRequest(), detailRoute);
+      expect(denied.status).toBe(403);
+      expect(await denied.text()).not.toContain(sensitiveValue);
+    }
+    platformAdmin();
+    const response = await adminIssueGet(detailRequest(), detailRoute);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('private, no-store');
+    const detail = await response.json();
+    expect(detail.records[0].modelFailures[0]).toEqual({
+      ...oldReceipt,
+      upstreamMessage: 'Provider receipt. [已隐藏]',
+    });
+    expect(JSON.stringify(detail)).not.toContain(sensitiveValue);
+    const [stored] =
+      await db.db`select record from allrice_platform_technical_evidence where issue_id=${issueId}`;
+    expect(stored!.record.modelFailures).toEqual([oldReceipt]);
   });
 });
