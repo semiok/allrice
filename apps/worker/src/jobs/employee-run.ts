@@ -1465,7 +1465,7 @@ export async function executeEmployeeRun({
       try {
         await assertEmployeeChatHumanSource({
           context: execution.context,
-          userMessageId: resolved.userMessageId,
+          userMessageId,
         });
         humanText = resolved.currentUserRequest;
       } catch (error) {
