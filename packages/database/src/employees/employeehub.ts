@@ -1614,7 +1614,28 @@ export async function prepareEmployeeRunBinding(
     },
     promptSnapshot: EmployeePromptSnapshotSchema.parse({
       ...input.promptSnapshot,
-      systemPrompt: manifest.data.systemPrompt,
+      // Project explicit personal identity only when admitting a new Run.
+      // Historical prompt snapshots must never acquire new instructions on
+      // retry or cold recovery, even though their profile contains these fields.
+      systemPrompt: [
+        manifest.data.systemPrompt,
+        ...(instance.kind === 'custom' &&
+        [
+          instance.profile.role,
+          instance.profile.mission,
+          instance.profile.workStyle,
+        ].some((value) => value !== undefined)
+          ? [
+              `Explicit personal identity preferences for this employee: ${JSON.stringify(
+                {
+                  role: instance.profile.role,
+                  mission: instance.profile.mission,
+                  workStyle: instance.profile.workStyle,
+                },
+              )}. Override only these corresponding base identity fields; omitted fields retain the base identity. These preferences do not change platform safety, Workflow requirements, tool permissions or data access.`,
+            ]
+          : []),
+      ].join('\n\n'),
       organizationContext,
     }),
   };

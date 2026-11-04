@@ -93,7 +93,6 @@ import {
   releaseConversationRuntime,
 } from '../conversation/conversation-runtime.ts';
 import { resolveEmployeeExecution } from './employeehub.ts';
-import { employeeInstanceInstructions } from '../../../../apps/worker/src/employee-kernel.ts';
 import * as contentRuntimeModule from './employee-runtime-content.ts';
 import {
   prepareEmployeeContentContext,
@@ -535,6 +534,23 @@ suite(
       });
       it('personal identity in an ordinary Run agrees with owner details and stays frozen after a later edit', async () => {
         const s = await setup();
+        const defaults = await runtimeRun(
+          s,
+          undefined,
+          true,
+          [],
+          [],
+          '按基础身份处理资料',
+          true,
+        );
+        expect(defaults.resolved.promptSnapshot.systemPrompt).toBe(
+          defaults.resolved.executionSnapshot!.employee.definition.systemPrompt,
+        );
+        expect(
+          defaults.resolved.executionSnapshot?.schemaVersion === 2 &&
+            defaults.resolved.executionSnapshot.instance?.profile.role,
+        ).toBeUndefined();
+        await defaults.finish();
         const changed = await updateEmployeeInstance(s.a, s.instance.id, {
           workspaceId: s.company.workspaceId,
           requestId: randomUUID(),
@@ -556,12 +572,13 @@ suite(
           true,
         );
         const worker = await sceneLease(run);
-        const instructions = employeeInstanceInstructions(
-          run.resolved.executionSnapshot,
-        ).join('\n');
+        const instructions = run.resolved.promptSnapshot.systemPrompt;
         expect(instructions).toContain(details.profile.identity.role);
         expect(instructions).toContain(details.profile.identity.mission);
         expect(instructions).toContain(details.profile.identity.workStyle);
+        const [stored] =
+          await f.db`select prompt_snapshot from allrice_employee_runs where run_id=${run.scope.runId}`;
+        expect(stored!.prompt_snapshot.systemPrompt).toBe(instructions);
         await updateEmployeeInstance(s.a, s.instance.id, {
           workspaceId: s.company.workspaceId,
           requestId: randomUUID(),
@@ -569,9 +586,7 @@ suite(
           profile: { role: '新的资料分析员' },
         });
         const retained = await resolveEmployeeExecution(run.scope);
-        expect(
-          employeeInstanceInstructions(retained.executionSnapshot).join('\n'),
-        ).toBe(instructions);
+        expect(retained.promptSnapshot.systemPrompt).toBe(instructions);
         await releaseConversationRuntime({
           ...run.scope,
           workerId: worker.workerId,
@@ -588,11 +603,22 @@ suite(
           true,
         );
         const nextWorker = await sceneLease(next);
+        expect(next.resolved.promptSnapshot.systemPrompt).toContain(
+          '新的资料分析员',
+        );
+        expect(next.resolved.promptSnapshot.systemPrompt).not.toContain(
+          '先列缺失资料',
+        );
+        expect(next.resolved.promptSnapshot.systemPrompt).not.toContain(
+          '根据本人提供的来源组织周报',
+        );
         expect(
-          employeeInstanceInstructions(next.resolved.executionSnapshot).join(
-            '\n',
-          ),
-        ).toContain('新的资料分析员');
+          next.resolved.executionSnapshot?.capabilitySnapshot
+            .grantedCapabilities,
+        ).toEqual(
+          run.resolved.executionSnapshot?.capabilitySnapshot
+            .grantedCapabilities,
+        );
         expect(
           next.resolved.executionSnapshot?.schemaVersion === 2 &&
             next.resolved.executionSnapshot.instance?.id,
