@@ -6,9 +6,11 @@ import { resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Browser } from '../../../worker/node_modules/playwright-core/index.js';
 import type {
+  EmployeeInstance,
   PersonalSceneSkill,
   PersonalSceneReadHistory,
 } from '@allrice/contracts';
+import { employeeDetailsFixture } from '../../test/employee-details-fixture';
 import { skillBytesChecksum } from '../../../../packages/database/src/skill-bundles.ts';
 
 const suite =
@@ -157,7 +159,11 @@ suite(
       }
     }, 30000);
 
-    async function open(width = 1280, dark = false) {
+    async function open(
+      width = 1280,
+      dark = false,
+      dialog?: 'readonly' | 'archived' | 'withdrawn',
+    ) {
       const page = await browser.newPage({ viewport: { width, height: 960 } });
       page.setDefaultTimeout(8000);
       const initializationErrors: string[] = [];
@@ -184,11 +190,55 @@ suite(
       });
       const state = {
         revoked: false,
+        directoryStatus:
+          dialog === 'archived' || dialog === 'withdrawn' ? 403 : 0,
+        historyStatus: 0,
         ledgerReads: 0,
         contentRefs: [] as string[],
       };
+      const details = employeeDetailsFixture();
+      details.profile.kind = 'custom';
+      details.profile.instanceId = instanceId;
+      details.profile.name = '本人读取核对助理';
+      details.profile.canMaintainPersonal = dialog !== 'readonly';
+      details.content.instanceId = instanceId;
+      const historicalInstance: EmployeeInstance = {
+        id: instanceId,
+        assignmentId: id(15),
+        organizationId: id(11),
+        workspaceId: id(10),
+        ownerId: id(12),
+        kind: 'custom',
+        revision: details.profile.revision,
+        profile: { name: details.profile.name },
+        creationSource: details.profile.source,
+        source: details.profile.source,
+        createdAt: readAt,
+        updatedAt: readAt,
+        archivedAt: dialog === 'archived' ? readAt : null,
+      };
+      await page.route('**/employee-instances/*/content?**', (route) =>
+        route.fulfill(
+          dialog === 'archived' || dialog === 'withdrawn'
+            ? json(
+                { error: { message: 'private current detail denied' } },
+                dialog === 'archived' ? 409 : 403,
+              )
+            : json(details),
+        ),
+      );
+      await page.route('**/employee-instances/*?**', (route) =>
+        route.fulfill(json({ instance: historicalInstance })),
+      );
       await page.route('**/scene-skills/reads?**', async (route) => {
         state.ledgerReads++;
+        if (state.historyStatus)
+          return route.fulfill(
+            json(
+              { error: { message: 'private refresh denied' } },
+              state.historyStatus,
+            ),
+          );
         const other = route.request().url().includes(id(2));
         await route.fulfill(
           json(
@@ -204,7 +254,7 @@ suite(
         )!;
         state.contentRefs.push(ref);
         await route.fulfill(
-          state.revoked
+          state.revoked || dialog === 'archived' || dialog === 'withdrawn'
             ? json(
                 {
                   error: {
@@ -212,7 +262,7 @@ suite(
                     message: 'secret token=do-not-display',
                   },
                 },
-                404,
+                dialog === 'archived' || dialog === 'withdrawn' ? 403 : 404,
               )
             : json(skill(ref === 'exact-1.0.0' ? '1.0.0' : '2.0.0')),
         );
@@ -238,6 +288,13 @@ suite(
           );
         } else if (query.has('sceneId'))
           await route.fulfill(json(skill('2.0.0')));
+        else if (state.directoryStatus)
+          await route.fulfill(
+            json(
+              { error: { message: 'private refresh denied' } },
+              state.directoryStatus,
+            ),
+          );
         else
           await route.fulfill(
             json({
@@ -266,7 +323,7 @@ suite(
       try {
         await Promise.race([
           (async () => {
-            await page.goto(origin);
+            await page.goto(`${origin}${dialog ? '?dialog=1' : ''}`);
             if (dark)
               await page.evaluate(() =>
                 document.body.setAttribute('data-ds-dark-theme', ''),
@@ -274,12 +331,13 @@ suite(
             await page
               .getByText('本人 Workflow · 目录与读取记录', { exact: true })
               .click();
-            await page
-              .getByRole('button', {
-                name: '查看当前包：本人周报',
-                exact: true,
-              })
-              .waitFor();
+            if (dialog !== 'archived' && dialog !== 'withdrawn')
+              await page
+                .getByRole('button', {
+                  name: '查看当前包：本人周报',
+                  exact: true,
+                })
+                .waitFor();
             await page.getByRole('region', { name: '准确读取回执' }).waitFor();
           })(),
           initializationFailed,
@@ -477,6 +535,192 @@ suite(
         expect(await page.locator('body').innerText()).not.toContain(
           '准确正文',
         );
+      } finally {
+        await page.close();
+      }
+    });
+    it.each(['readonly', 'archived', 'withdrawn'] as const)(
+      'keeps owner Workflow audit reachable in the real details dialog when %s',
+      async (mode) => {
+        const { page } = await open(1280, false, mode);
+        try {
+          expect(
+            await page.getByRole('region', { name: '准确读取回执' }).count(),
+          ).toBe(1);
+          expect(
+            await page
+              .getByText('本人 Workflow · 文件与修改记录', { exact: true })
+              .count(),
+          ).toBe(0);
+          expect(
+            await page
+              .getByRole('button', { name: '编辑', exact: true })
+              .count(),
+          ).toBe(0);
+          if (mode !== 'readonly') {
+            expect(
+              await page
+                .getByRole('button', {
+                  name: '查看当前包：本人周报',
+                  exact: true,
+                })
+                .count(),
+            ).toBe(0);
+            await page
+              .getByRole('button', { name: '查看这次读取的包', exact: true })
+              .click();
+            await expect.poll(() => page.getByRole('alert').count()).toBe(2);
+            expect(
+              await page
+                .getByRole('region', { name: '本人包与精确资源' })
+                .count(),
+            ).toBe(0);
+            expect(
+              await page.getByRole('region', { name: '准确读取回执' }).count(),
+            ).toBe(1);
+          }
+        } finally {
+          await page.close();
+        }
+      },
+    );
+    for (const target of ['directory', 'history'] as const)
+      for (const status of [401, 403, 404])
+        it(`clears displayed private bytes and download after ${target} refresh rejects with ${status}`, async () => {
+          const { page, state } = await open();
+          try {
+            await page
+              .getByRole('button', { name: '查看这次读取的包', exact: true })
+              .click();
+            await page.getByText('准确正文 1.0.0', { exact: true }).waitFor();
+            await page
+              .getByRole('button', {
+                name: '读取资源：references/template.md',
+                exact: true,
+              })
+              .click();
+            await page
+              .getByRole('region', { name: '已核验的资源文件' })
+              .waitFor();
+            if (target === 'directory') state.directoryStatus = status;
+            else state.historyStatus = status;
+            await page
+              .getByRole('button', {
+                name:
+                  target === 'directory' ? '重新读取目录' : '重新读取工作记录',
+                exact: true,
+              })
+              .click();
+            await page.getByRole('alert').waitFor();
+            expect(
+              await page
+                .getByRole('region', { name: '本人包与精确资源' })
+                .count(),
+            ).toBe(0);
+            expect(
+              await page
+                .getByRole('region', { name: '已核验的资源文件' })
+                .count(),
+            ).toBe(0);
+            expect(
+              await page
+                .getByRole('button', { name: '下载资源文件', exact: true })
+                .count(),
+            ).toBe(0);
+            expect(await page.locator('body').innerText()).not.toContain(
+              'private refresh denied',
+            );
+          } finally {
+            await page.close();
+          }
+        });
+    it('ignores a late old body after a confirmed authorization failure on refresh', async () => {
+      const { page, state } = await open();
+      let release!: () => void;
+      const gate = new Promise<void>((done) => {
+        release = done;
+      });
+      try {
+        let started = false;
+        await page.route('**/scene-skills/content?**', async (route) => {
+          started = true;
+          await gate;
+          try {
+            await route.fulfill(json(skill('1.0.0')));
+          } catch {
+            /* An aborted browser request must not become a test transport failure. */
+          }
+        });
+        await page
+          .getByRole('button', { name: '查看这次读取的包', exact: true })
+          .click();
+        await expect.poll(() => started).toBe(true);
+        state.historyStatus = 403;
+        await page
+          .getByRole('button', { name: '重新读取工作记录', exact: true })
+          .click();
+        await page.getByRole('alert').waitFor();
+        release();
+        // Wait until the old transport settles, then let React render any stale update.
+        await page.waitForLoadState('networkidle');
+        expect(
+          await page.getByRole('region', { name: '本人包与精确资源' }).count(),
+        ).toBe(0);
+        expect(await page.locator('body').innerText()).not.toContain(
+          '准确正文 1.0.0',
+        );
+      } finally {
+        release();
+        await page.close();
+      }
+    });
+    it('uses the semantic link color with readable contrast in dark mode', async () => {
+      const { page } = await open(390, true);
+      try {
+        const colors = await page
+          .getByRole('link', { name: '回到原工作记录', exact: true })
+          .evaluate((node) => {
+            const expected = document.createElement('span');
+            expected.style.color = 'var(--ar-link)';
+            node.parentElement!.append(expected);
+            const semantic = getComputedStyle(expected).color;
+            expected.remove();
+            const actual = getComputedStyle(node).color;
+            let background: Element | null = node;
+            while (
+              background &&
+              getComputedStyle(background).backgroundColor ===
+                'rgba(0, 0, 0, 0)'
+            )
+              background = background.parentElement;
+            return {
+              actual,
+              semantic,
+              background: getComputedStyle(background!).backgroundColor,
+            };
+          });
+        expect(colors.actual).toBe(colors.semantic);
+        const luminance = (color: string) =>
+          color
+            .match(/[\d.]+/g)!
+            .slice(0, 3)
+            .map(Number)
+            .map((value) => value / 255)
+            .map((value) =>
+              value <= 0.04045
+                ? value / 12.92
+                : ((value + 0.055) / 1.055) ** 2.4,
+            )
+            .reduce(
+              (sum, value, index) =>
+                sum + value * [0.2126, 0.7152, 0.0722][index]!,
+              0,
+            );
+        const a = luminance(colors.actual),
+          b = luminance(colors.background);
+        expect(
+          (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05),
+        ).toBeGreaterThanOrEqual(4.5);
       } finally {
         await page.close();
       }
