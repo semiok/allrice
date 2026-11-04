@@ -1,3 +1,4 @@
+import { assembleEmployeeKernel } from '../../../../apps/worker/src/employee-kernel.ts';
 import {
   savePlatformEmployeeDraft,
   publishPlatformEmployee,
@@ -155,7 +156,7 @@ suite(
       vi.unstubAllEnvs();
       await f?.close();
     }, 30000);
-    async function setup() {
+    async function setup(source = publication) {
       const created = await createManagedOrganization(admin, {
         name: `Content-${randomUUID()}`,
       });
@@ -219,17 +220,17 @@ suite(
           company.organizationId,
           company.workspaceId,
         )
-      ).employees.find((e) => e.employeeId === publication.employeeId)!;
+      ).employees.find((e) => e.employeeId === source.employeeId)!;
       await changeAdminTenantEmployee(admin, company.organizationId, {
         workspaceId: company.workspaceId,
-        employeeId: publication.employeeId,
+        employeeId: source.employeeId,
         action: 'assign',
         revisionId: employee.revisionId,
         expectedVersion: employee.deployment?.version ?? null,
       });
       const assigned = (
         await getEmployeeWorkspace(a, company.workspaceId)
-      ).employees.find((e) => e.employeeKey === publication.definition.key)!;
+      ).employees.find((e) => e.employeeKey === source.definition.key)!;
       const [assignmentRow] = await f.db<
         { employee_id: string }[]
       >`select employee_id from allrice_employee_assignments where id=${assigned.id}`;
@@ -532,6 +533,19 @@ suite(
           ).bundleChecksum,
         ).toBe(saved.bundleChecksum);
       });
+      function identityKernel(
+        s: Setup,
+        run: Awaited<ReturnType<typeof runtimeRun>>,
+      ) {
+        return assembleEmployeeKernel({
+          employeeAssignmentId: s.instance.assignmentId,
+          employeeVersionId: run.resolved.executionSnapshot!.employee.versionId,
+          sessionId: run.scope.sessionId,
+          userMessageId: randomUUID(),
+          assistantMessageId: randomUUID(),
+          resolved: run.resolved,
+        });
+      }
       it('personal identity in an ordinary Run agrees with owner details and stays frozen after a later edit', async () => {
         const s = await setup();
         const defaults = await runtimeRun(
@@ -572,13 +586,18 @@ suite(
           true,
         );
         const worker = await sceneLease(run);
-        const instructions = run.resolved.promptSnapshot.systemPrompt;
+        const instructions = identityKernel(s, run).systemInstructions;
         expect(instructions).toContain(details.profile.identity.role);
         expect(instructions).toContain(details.profile.identity.mission);
         expect(instructions).toContain(details.profile.identity.workStyle);
         const [stored] =
           await f.db`select prompt_snapshot from allrice_employee_runs where run_id=${run.scope.runId}`;
-        expect(stored!.prompt_snapshot.systemPrompt).toBe(instructions);
+        expect(stored!.prompt_snapshot.personalIdentity).toEqual(
+          changed.profile,
+        );
+        expect(run.resolved.promptSnapshot.personalIdentity).toEqual(
+          changed.profile,
+        );
         await updateEmployeeInstance(s.a, s.instance.id, {
           workspaceId: s.company.workspaceId,
           requestId: randomUUID(),
@@ -586,7 +605,10 @@ suite(
           profile: { role: '新的资料分析员' },
         });
         const retained = await resolveEmployeeExecution(run.scope);
-        expect(retained.promptSnapshot.systemPrompt).toBe(instructions);
+        expect(retained.promptSnapshot).toEqual(run.resolved.promptSnapshot);
+        expect(
+          identityKernel(s, { ...run, resolved: retained }).systemInstructions,
+        ).toBe(instructions);
         await releaseConversationRuntime({
           ...run.scope,
           workerId: worker.workerId,
@@ -603,13 +625,13 @@ suite(
           true,
         );
         const nextWorker = await sceneLease(next);
-        expect(next.resolved.promptSnapshot.systemPrompt).toContain(
+        expect(identityKernel(s, next).systemInstructions).toContain(
           '新的资料分析员',
         );
-        expect(next.resolved.promptSnapshot.systemPrompt).not.toContain(
+        expect(identityKernel(s, next).systemInstructions).not.toContain(
           '先列缺失资料',
         );
-        expect(next.resolved.promptSnapshot.systemPrompt).not.toContain(
+        expect(identityKernel(s, next).systemInstructions).not.toContain(
           '根据本人提供的来源组织周报',
         );
         expect(
@@ -637,6 +659,74 @@ suite(
           outcome: 'idle',
         });
         await next.finish();
+      });
+      it('admits a 9000-character base and maximum explicit identity without truncation or raising source limits', async () => {
+        const source = await createEmployeeAdministrationFixture(f.db);
+        await source.preview();
+        expect((await source.publish()).valid).toBe(true);
+        const s = await setup(source);
+        const before = await runtimeRun(
+          s,
+          undefined,
+          true,
+          [],
+          [],
+          '检查基础身份',
+          true,
+        );
+        const overhead =
+          before.resolved.promptSnapshot.systemPrompt.length -
+          source.definition.systemPrompt.length;
+        await before.finish();
+        const draft = await savePlatformEmployeeDraft(source.employeeId, {
+          definition: {
+            ...source.definition,
+            systemPrompt: 'B'.repeat(9000 - overhead),
+          },
+          expectedRevisionId: source.revisionId,
+        });
+        await source.preview();
+        expect(
+          (
+            await publishPlatformEmployee(source.employeeId, {
+              scope: 'assigned',
+              expectedRevisionId: draft!.currentDraft!.id,
+            })
+          ).valid,
+        ).toBe(true);
+        const profile = {
+          role: 'R'.repeat(120),
+          mission: 'M'.repeat(500),
+          workStyle: '"'.repeat(1000),
+        };
+        await updateEmployeeInstance(s.a, s.instance.id, {
+          workspaceId: s.company.workspaceId,
+          requestId: randomUUID(),
+          expectedRevision: s.instance.revision,
+          profile,
+        });
+        const run = await runtimeRun(
+          s,
+          undefined,
+          true,
+          [],
+          [],
+          '按完整身份处理资料',
+          true,
+        );
+        expect(run.resolved.promptSnapshot.systemPrompt).toHaveLength(9000);
+        expect(run.resolved.promptSnapshot.personalIdentity).toEqual(profile);
+        expect(identityKernel(s, run).systemInstructions).toContain(
+          JSON.stringify(profile),
+        );
+        const [stored] =
+          await f.db`select prompt_snapshot from allrice_employee_runs where run_id=${run.scope.runId}`;
+        expect(stored!.prompt_snapshot.personalIdentity).toEqual(profile);
+        expect(
+          run.resolved.executionSnapshot?.schemaVersion === 2 &&
+            run.resolved.executionSnapshot.instance?.id,
+        ).toBe(s.instance.id);
+        await run.finish();
       });
       it('loads a newly saved Workflow in the same native context across Runs, retaining exact resources and all historical revocations', async () => {
         const s = await setup();

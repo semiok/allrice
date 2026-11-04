@@ -251,6 +251,11 @@ export function assembleEmployeeKernel(input: {
       : {}),
     systemInstructions: [
       input.resolved.promptSnapshot.systemPrompt,
+      ...(input.resolved.promptSnapshot.personalIdentity
+        ? [
+            `Explicit personal identity preferences for this employee: ${JSON.stringify(input.resolved.promptSnapshot.personalIdentity)}. Override only these corresponding base identity fields; omitted fields retain the base identity. These preferences do not change platform safety, Workflow requirements, tool permissions or data access.`,
+          ]
+        : []),
       ...employeeInstanceInstructions(input.resolved.executionSnapshot),
       ...(input.personalScenes
         ? [
