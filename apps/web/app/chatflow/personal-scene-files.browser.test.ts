@@ -14,6 +14,7 @@ import type {
   PersonalSceneSkill,
 } from '@allrice/contracts';
 import { sceneSkillFixture } from '../../../../packages/database/src/employees/employee-scene-skills.fixture.ts';
+import { employeeDetailsFixture } from '../../test/employee-details-fixture';
 
 const suite =
   process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1'
@@ -173,7 +174,7 @@ suite(
         await new Promise<void>((done) => server.close(() => done()));
       }
     }, 30000);
-    async function open(width = 1280, dark = false) {
+    async function open(width = 1280, dark = false, dialog = false) {
       const page = await browser.newPage({ viewport: { width, height: 960 } });
       page.setDefaultTimeout(8000);
       await page.route('**/scene-skills/files?**', (route) =>
@@ -192,7 +193,17 @@ suite(
         const input = route.request().postDataJSON();
         await route.fulfill(json(preview(input.file)));
       });
-      await page.goto(origin);
+      await page.route('**/employee-instances/*/content?**', async (route) => {
+        const details = employeeDetailsFixture();
+        details.profile.kind = 'custom';
+        details.profile.name = '我的周报助理';
+        details.profile.instanceId = route.request().url().includes(id(2))
+          ? id(2)
+          : instanceId;
+        details.content.instanceId = details.profile.instanceId;
+        await route.fulfill(json(details));
+      });
+      await page.goto(`${origin}${dialog ? '?dialog=1' : ''}`);
       if (dark)
         await page.evaluate(() =>
           document.body.setAttribute('data-ds-dark-theme', ''),
@@ -464,6 +475,129 @@ suite(
           'Synthetic scene',
         );
       } finally {
+        await page.close();
+      }
+    });
+
+    it('recovers the same committed request after the real employee dialog closes and reopens, isolated from another viewer', async () => {
+      const page = await open(1280, false, true);
+      const writes: Record<string, unknown>[] = [],
+        committed = new Map<string, unknown>();
+      const file = artifact();
+      await page.route('**/scene-skills', async (route) => {
+        const input = route.request().postDataJSON();
+        writes.push(input);
+        if (!committed.has(input.requestId))
+          committed.set(input.requestId, saved(file, input));
+        if (writes.length === 1) await route.abort('failed');
+        else await route.fulfill(json(committed.get(input.requestId)));
+      });
+      const reopen = async () => {
+        await page
+          .getByRole('button', { name: '打开员工详情', exact: true })
+          .click();
+        await page
+          .getByText('本人 Workflow · 文件与修改记录', { exact: true })
+          .click();
+      };
+      try {
+        await upload(page, file);
+        await page
+          .getByRole('button', { name: '确认修改并生效', exact: true })
+          .click();
+        await page
+          .getByRole('button', { name: '重试同一次保存', exact: true })
+          .waitFor();
+        await page.keyboard.press('Escape');
+        await page.getByRole('dialog').waitFor({ state: 'hidden' });
+        await page
+          .getByRole('button', { name: '切换查看者', exact: true })
+          .click();
+        await reopen();
+        expect(
+          await page
+            .getByRole('region', { name: '待核对的原保存请求' })
+            .count(),
+        ).toBe(0);
+        expect(
+          await page
+            .getByRole('button', { name: '重试同一次保存', exact: true })
+            .count(),
+        ).toBe(0);
+        await page.keyboard.press('Escape');
+        await page.getByRole('dialog').waitFor({ state: 'hidden' });
+        await page
+          .getByRole('button', { name: '切换查看者', exact: true })
+          .click();
+        await reopen();
+        await page
+          .getByRole('region', { name: '待核对的原保存请求' })
+          .waitFor();
+        expect(
+          await page
+            .getByRole('region', { name: '当前正文', exact: true })
+            .count(),
+        ).toBe(0);
+        await page
+          .getByRole('button', { name: '重试同一次保存', exact: true })
+          .click();
+        await page
+          .getByText('已保存并生效 · 修订 2', { exact: true })
+          .waitFor();
+        expect(writes).toHaveLength(2);
+        expect(writes[1]).toEqual(writes[0]);
+        expect(committed.size).toBe(1);
+      } finally {
+        await page.close();
+      }
+    });
+
+    it('keeps a verified late save receipt when its original dialog reader has unmounted', async () => {
+      const page = await open(1280, false, true);
+      let release!: () => void, started!: () => void;
+      const waiting = new Promise<void>((done) => {
+        release = done;
+      });
+      const called = new Promise<void>((done) => {
+        started = done;
+      });
+      let writes = 0;
+      await page.route('**/scene-skills', async (route) => {
+        writes++;
+        const input = route.request().postDataJSON();
+        started();
+        await waiting;
+        await route.fulfill(json(saved(artifact(), input)));
+      });
+      try {
+        await upload(page);
+        await page
+          .getByRole('button', { name: '确认修改并生效', exact: true })
+          .click();
+        await called;
+        await page.keyboard.press('Escape');
+        await page.getByRole('dialog').waitFor({ state: 'hidden' });
+        const response = page.waitForResponse((value) =>
+          value.url().endsWith('/scene-skills'),
+        );
+        release();
+        await (await response).finished();
+        await page.evaluate(
+          () =>
+            new Promise<void>((done) => requestAnimationFrame(() => done())),
+        );
+        await page
+          .getByRole('button', { name: '打开员工详情', exact: true })
+          .click();
+        await page
+          .getByText('本人 Workflow · 文件与修改记录', { exact: true })
+          .click();
+        await page
+          .getByText('已保存并生效 · 修订 2', { exact: true })
+          .waitFor();
+        expect(writes).toBe(1);
+      } finally {
+        release();
         await page.close();
       }
     });

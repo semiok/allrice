@@ -3,6 +3,7 @@ import {
   PersonalSceneFilePreviewSchema,
   PreviewPersonalSceneFileSchema,
   EmployeeContentTextSchema,
+  EmployeeContentManifestSchema,
   type PersonalSceneFilePreview,
   type PersonalSceneSkill,
   type RequestContext,
@@ -187,11 +188,35 @@ export async function listPersonalSceneFileHistory(
       select revision_id from allrice_employee_content_publications
       where set_id=${view.layer.setId}`;
     const published = new Set(publications.map((row) => row.revision_id));
-    const seen = new Set<string>();
+    const revisions = history.revisions.filter((revision) =>
+      published.has(revision.id),
+    );
+    // A collection snapshot contains unchanged scenes too. Compare with the
+    // previous published snapshot, including one predecessor beyond this page,
+    // so the scene keeps the summary/time of the save that actually changed it.
+    const oldest = revisions.at(-1);
+    const [predecessor] = oldest
+      ? await tx<{ manifest: unknown }[]>`
+      select r.manifest from allrice_employee_content_revisions r
+      join allrice_employee_content_publications p on p.set_id=r.set_id and p.revision_id=r.id
+      where r.set_id=${view.layer.setId} and r.number<${oldest.number}
+      order by r.number desc limit 1`
+      : [];
+    const predecessorManifest = predecessor
+      ? EmployeeContentManifestSchema.parse(predecessor.manifest)
+      : null;
     const entries = [];
-    for (const revision of history.revisions) {
-      if (!published.has(revision.id)) continue;
+    for (const [index, revision] of revisions.entries()) {
+      const previous = revisions[index + 1]?.manifest ?? predecessorManifest;
       for (const scene of revision.manifest.scenes) {
+        const previousScene = previous?.scenes.find(
+          (entry) => entry.id === scene.id,
+        );
+        if (
+          previousScene &&
+          runtimePolicyDigest(previousScene) === runtimePolicyDigest(scene)
+        )
+          continue;
         const procedures = scene.references.filter(
           (ref) => ref.sourceKind === 'procedure',
         );
@@ -203,9 +228,6 @@ export async function listPersonalSceneFileHistory(
           where organization_id=${context.organizationId} and asset_id=${reference.contentId}
             and id=${reference.revisionId} and digest=${reference.digest}`;
         if (!source?.packaged) continue;
-        const identity = runtimePolicyDigest(scene);
-        if (seen.has(identity)) continue;
-        seen.add(identity);
         const contentRef = personalSceneContentRef({
           setId: view.layer.setId,
           revisionId: revision.id,

@@ -353,6 +353,16 @@ suite(
       const [source] =
         await f.db`select asset_id from allrice_company_asset_revisions where id=${pin.sourceRevisionId}`;
       await f.db`update allrice_company_assets set state='withdrawn' where id=${source!.asset_id}`;
+      const revokedHistory = await listPersonalSceneFileHistory(
+        s.owner,
+        s.instance.id,
+      );
+      expect(revokedHistory.entries).toMatchObject([
+        { contentRef: first.receipt.contentRef, available: false },
+      ]);
+      expect(Object.hasOwn(revokedHistory.entries[0]!, 'contentChecksum')).toBe(
+        false,
+      );
       const preview = await previewPersonalSceneFile(s.owner, s.instance.id, {
         workspaceId: s.workspaceId,
         file: file('2.0.0', original.scene.id),
@@ -375,6 +385,60 @@ suite(
           .bundleVersion,
       ).toBe('2.0.0');
     });
+
+    it('attributes scene changes to their own save and compares across the history page boundary', async () => {
+      const s = await setup(),
+        original = file();
+      const first = await install(s, original);
+      const initial = (
+        await listPersonalSceneFileHistory(s.owner, s.instance.id)
+      ).entries[0]!;
+      const pin = parsePersonalSceneContentRef(first.receipt.contentRef);
+      const [row] =
+        await f.db`select manifest from allrice_employee_content_revisions where id=${pin.revisionId}`;
+      let currentRevision = first.receipt.revision;
+      // Normal unpublished edits fill the existing 100-revision history page.
+      // They do not alter any publication or immutable historical revision.
+      for (let index = 0; index < 100; index++) {
+        const draft = await mutateEmployeeContent(s.owner, {
+          workspaceId: s.workspaceId,
+          setId: pin.setId,
+          ownership: {
+            scope: 'personal',
+            organizationId: s.owner.organizationId,
+            ownerId: s.owner.actor.id,
+          },
+          target: { kind: 'instance', instanceId: s.instance.id },
+          requestId: randomUUID(),
+          expectedRevision: currentRevision,
+          changeSummary: `Unpublished edit ${index}`,
+          operation: 'save_draft',
+          manifest: row!.manifest,
+          textEdits: [],
+        });
+        currentRevision = draft.revision;
+      }
+      const other = file('2.0.0');
+      other.scene.name = '另一场景';
+      await install(s, other);
+      const page = await listPersonalSceneFileHistory(s.owner, s.instance.id);
+      expect(page.nextBeforeRevision).not.toBeNull();
+      expect(page.entries.map((entry) => entry.sceneId)).toEqual([
+        other.scene.id,
+      ]);
+      const older = await listPersonalSceneFileHistory(
+        s.owner,
+        s.instance.id,
+        page.nextBeforeRevision!,
+      );
+      expect(older.entries).toEqual([initial]);
+      expect(older.entries[0]).toMatchObject({
+        revision: first.receipt.revision,
+        changeSummary: first.input.changeSummary,
+        createdAt: initial.createdAt,
+        contentRef: first.receipt.contentRef,
+      });
+    }, 60000);
 
     it('stops concurrent saves on CAS and rejects a stale or wrong old reference', async () => {
       const s = await setup(),
@@ -492,8 +556,8 @@ suite(
             file: artifact,
           })
         ).status,
-      ).toBe(404);
-      expect((await http(s, 'save', saved.input)).status).toBe(404);
+      ).toBe(403);
+      expect((await http(s, 'save', saved.input)).status).toBe(403);
     });
 
     it('rejects invalid bytes and ambiguous immutable package identities without guessing an empty target', async () => {

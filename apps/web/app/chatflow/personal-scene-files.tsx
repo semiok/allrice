@@ -21,10 +21,22 @@ type Props = {
   instanceId: string;
   workspaceId: string;
   headers: Record<string, string>;
+  writes: PersonalSceneFileWriteStore;
 };
 type Receipt = ReturnType<typeof PersonalSceneSkillSaveReceiptSchema.parse> & {
   requestId: string;
 };
+/** Owned by the existing employee-details dialog, never global or persistent.
+ * Only a matching viewer/workspace/instance may recover a pending request. */
+export type PersonalSceneFileWriteStore = Map<
+  string,
+  {
+    input?: SavePersonalSceneSkill;
+    receipt?: Receipt;
+  }
+>;
+const writeKey = (props: Props) =>
+  JSON.stringify([props.scopeId, props.workspaceId, props.instanceId]);
 
 export class PersonalSceneHttpError extends Error {
   constructor(
@@ -254,15 +266,12 @@ export function PersonalSceneFileDiff({
 
 /** Viewer/instance changes remount all private state before the first frame. */
 export function PersonalSceneFilePanel(props: Props) {
-  return (
-    <FilePanel
-      key={`${props.scopeId}/${props.workspaceId}/${props.instanceId}`}
-      {...props}
-    />
-  );
+  return <FilePanel key={writeKey(props)} {...props} />;
 }
 
 function FilePanel(props: Props) {
+  const key = writeKey(props);
+  const recovered = props.writes.get(key);
   const [open, setOpen] = useState(false);
   const [file, setFile] = useState<PersonalSceneFile | null>(null);
   const [preview, setPreview] = useState<PersonalSceneFilePreview | null>(null);
@@ -271,9 +280,13 @@ function FilePanel(props: Props) {
   const [error, setError] = useState('');
   const [historyError, setHistoryError] = useState('');
   const [busy, setBusy] = useState(false);
-  const [uncertain, setUncertain] = useState(false);
-  const [receipt, setReceipt] = useState<Receipt | null>(null);
-  const pending = useRef<SavePersonalSceneSkill | null>(null);
+  const [uncertain, setUncertain] = useState(Boolean(recovered?.input));
+  const [receipt, setReceipt] = useState<Receipt | null>(
+    recovered?.receipt ?? null,
+  );
+  const pending = useRef<SavePersonalSceneSkill | null>(
+    recovered?.input ?? null,
+  );
   const reading = useRef<AbortController | null>(null);
   const historyReading = useRef<AbortController | null>(null);
   const mounted = useRef(true);
@@ -363,6 +376,7 @@ function FilePanel(props: Props) {
     const selected = input.files?.[0];
     if (!selected || busy || uncertain) return;
     pending.current = null;
+    props.writes.delete(key);
     setFile(null);
     setPreview(null);
     setReceipt(null);
@@ -392,10 +406,12 @@ function FilePanel(props: Props) {
   }
 
   async function save() {
-    if (busy || !preview || receipt || (!uncertain && !summary.trim())) return;
-    const next =
-      pending.current ??
-      SavePersonalSceneSkillSchema.parse({
+    if (busy || receipt || (!pending.current && (!preview || !summary.trim())))
+      return;
+    let next = pending.current;
+    if (!next) {
+      if (!preview) return;
+      next = SavePersonalSceneSkillSchema.parse({
         workspaceId: props.workspaceId,
         requestId: crypto.randomUUID(),
         expectedRevision: preview.expectedRevision,
@@ -409,7 +425,18 @@ function FilePanel(props: Props) {
         references: preview.file.references,
         changeSummary: summary,
       });
+    }
+    const known = props.writes.get(key)?.receipt;
+    if (known?.requestId === next.requestId) {
+      pending.current = null;
+      setReceipt(known);
+      setUncertain(false);
+      setError('');
+      return;
+    }
     pending.current = next;
+    const write = { input: next };
+    props.writes.set(key, write);
     setBusy(true);
     setError('');
     try {
@@ -432,20 +459,40 @@ function FilePanel(props: Props) {
         saved.revision <= next.expectedRevision
       )
         throw Error('receipt_mismatch');
+      const confirmed = { ...saved, requestId: next.requestId };
+      // Writes continue after a preview/reader unmount. Keep their outcome in
+      // the original private scope; aborting a read never cancels this save.
+      pending.current = null;
+      const current = props.writes.get(key);
+      if (
+        !current ||
+        current.input?.requestId === next.requestId ||
+        current.receipt?.requestId === next.requestId
+      )
+        props.writes.set(key, { receipt: confirmed });
       if (mounted.current) {
-        pending.current = null;
-        setReceipt({ ...saved, requestId: next.requestId });
+        setReceipt(confirmed);
         setUncertain(false);
         void loadHistory();
       }
     } catch (cause) {
-      if (!mounted.current) return;
       if (cause instanceof PersonalSceneHttpError && cause.status < 500) {
         pending.current = null;
+        const confirmed = props.writes.get(key)?.receipt;
+        if (confirmed?.requestId === next.requestId) {
+          if (mounted.current) {
+            setReceipt(confirmed);
+            setUncertain(false);
+          }
+          return;
+        }
+        if (props.writes.get(key) === write) props.writes.delete(key);
+        if (!mounted.current) return;
         setUncertain(false);
         setPreview(null);
         setError(cause.message);
       } else {
+        if (!mounted.current) return;
         setUncertain(true);
         setError(
           '保存结果尚不明确。保留了这次请求，请重试同一次保存以取得准确回执。',
@@ -492,6 +539,18 @@ function FilePanel(props: Props) {
             <p role="alert" className={css.error}>
               {error}
             </p>
+          )}
+          {uncertain && !preview && pending.current && (
+            <section aria-label="待核对的原保存请求" className={css.history}>
+              <strong>尚未取得明确回执：{pending.current.scene.name}</strong>
+              <p>{pending.current.changeSummary}</p>
+              <p className={css.hint}>
+                保留了原请求与文件入参。请重试同一次保存，核对服务端的准确回执。
+              </p>
+              <Button disabled={busy} onClick={() => void save()}>
+                重试同一次保存
+              </Button>
+            </section>
           )}
           {preview && (
             <>
