@@ -93,6 +93,7 @@ import {
   releaseConversationRuntime,
 } from '../conversation/conversation-runtime.ts';
 import { resolveEmployeeExecution } from './employeehub.ts';
+import { employeeInstanceInstructions } from '../../../../apps/worker/src/employee-kernel.ts';
 import * as contentRuntimeModule from './employee-runtime-content.ts';
 import {
   prepareEmployeeContentContext,
@@ -531,6 +532,85 @@ suite(
             )
           ).bundleChecksum,
         ).toBe(saved.bundleChecksum);
+      });
+      it('personal identity in an ordinary Run agrees with owner details and stays frozen after a later edit', async () => {
+        const s = await setup();
+        const changed = await updateEmployeeInstance(s.a, s.instance.id, {
+          workspaceId: s.company.workspaceId,
+          requestId: randomUUID(),
+          expectedRevision: s.instance.revision,
+          profile: {
+            role: '我的资料分析员',
+            mission: '根据本人提供的来源组织周报',
+            workStyle: '先列缺失资料',
+          },
+        });
+        const details = await getEmployeeDetails(s.a, s.instance.id);
+        const run = await runtimeRun(
+          s,
+          undefined,
+          true,
+          [],
+          [],
+          '按我设置的职责整理周报',
+          true,
+        );
+        const worker = await sceneLease(run);
+        const instructions = employeeInstanceInstructions(
+          run.resolved.executionSnapshot,
+        ).join('\n');
+        expect(instructions).toContain(details.profile.identity.role);
+        expect(instructions).toContain(details.profile.identity.mission);
+        expect(instructions).toContain(details.profile.identity.workStyle);
+        await updateEmployeeInstance(s.a, s.instance.id, {
+          workspaceId: s.company.workspaceId,
+          requestId: randomUUID(),
+          expectedRevision: changed.revision,
+          profile: { role: '新的资料分析员' },
+        });
+        const retained = await resolveEmployeeExecution(run.scope);
+        expect(
+          employeeInstanceInstructions(retained.executionSnapshot).join('\n'),
+        ).toBe(instructions);
+        await releaseConversationRuntime({
+          ...run.scope,
+          workerId: worker.workerId,
+          outcome: 'idle',
+        });
+        await run.finish();
+        const next = await runtimeRun(
+          s,
+          run.scope.sessionId,
+          true,
+          [],
+          [],
+          '按更新后的职责继续',
+          true,
+        );
+        const nextWorker = await sceneLease(next);
+        expect(
+          employeeInstanceInstructions(next.resolved.executionSnapshot).join(
+            '\n',
+          ),
+        ).toContain('新的资料分析员');
+        expect(
+          next.resolved.executionSnapshot?.schemaVersion === 2 &&
+            next.resolved.executionSnapshot.instance?.id,
+        ).toBe(s.instance.id);
+        await f.db`update allrice_employee_assignments set active=false where id=${s.instance.assignmentId}`;
+        await expect(
+          assertEmployeeContentContext(
+            next.scope,
+            next.runtime.generationId,
+            nextWorker,
+          ),
+        ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+        await releaseConversationRuntime({
+          ...next.scope,
+          workerId: nextWorker.workerId,
+          outcome: 'idle',
+        });
+        await next.finish();
       });
       it('loads a newly saved Workflow in the same native context across Runs, retaining exact resources and all historical revocations', async () => {
         const s = await setup();

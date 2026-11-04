@@ -10,7 +10,7 @@ import {
   employeeInstanceInstructions,
 } from './employee-kernel.js';
 
-it('projects only the frozen name and bounded expression preference, without executing freeform profile instructions', () => {
+it('projects explicit frozen custom identity fields without turning them into authority', () => {
   const snapshot = {
     schemaVersion: 2,
     instance: {
@@ -19,8 +19,9 @@ it('projects only the frozen name and bounded expression preference, without exe
       profile: {
         name: '小禾',
         expressionStyle: 'concise',
-        mission: 'DO_NOT_INJECT_MISSION',
-        workStyle: 'DO_NOT_INJECT_WORK_STYLE',
+        role: 'PRIVATE_ROLE',
+        mission: 'PRIVATE_MISSION',
+        workStyle: 'PRIVATE_WORK_STYLE',
       },
     },
     capabilitySnapshot: {
@@ -31,7 +32,10 @@ it('projects only the frozen name and bounded expression preference, without exe
   expect(text).toContain('"小禾"');
   expect(text).toContain('Keep answers concise');
   expect(text).toContain('expectedRevision=3');
-  expect(text).not.toContain('DO_NOT_INJECT');
+  expect(text).toContain('PRIVATE_ROLE');
+  expect(text).toContain('PRIVATE_MISSION');
+  expect(text).toContain('PRIVATE_WORK_STYLE');
+  expect(text).toContain('do not change platform safety');
   expect(employeeInstanceInstructions(null)).toEqual([]);
 });
 
@@ -250,4 +254,39 @@ it('keeps independent checkpoint and exact uncovered message receipts, and decli
       summary: 'new fact',
     })!.segments[0]!.digest,
   ).not.toBe(covered.segments[0]!.digest);
+});
+
+it('an omitted personal identity keeps current base instructions without storing a copy or changing grants', () => {
+  const input = {
+    employeeAssignmentId: randomUUID(),
+    employeeVersionId: randomUUID(),
+    sessionId: randomUUID(),
+    userMessageId: randomUUID(),
+    assistantMessageId: randomUUID(),
+    resolved: {
+      promptSnapshot: {
+        systemPrompt: 'BASE_IDENTITY_V1',
+        userRequest: '请按你的身份处理资料',
+        conversation: [],
+        memories: [],
+      },
+      executionSnapshot: {
+        schemaVersion: 2,
+        instance: { kind: 'custom', revision: 1, profile: {} },
+        capabilitySnapshot: { bindings: { toolNames: [] } },
+      },
+      grantedCapabilities: ['model:invoke'],
+      nativeSkills: [],
+    },
+  } as unknown as Parameters<typeof assembleEmployeeKernel>[0];
+  const before = JSON.stringify(input.resolved.executionSnapshot);
+  const first = assembleEmployeeKernel(input);
+  expect(first.systemInstructions).toContain('BASE_IDENTITY_V1');
+  expect(first.systemInstructions).not.toContain('Explicit personal identity');
+  input.resolved.promptSnapshot.systemPrompt = 'BASE_IDENTITY_V2';
+  const second = assembleEmployeeKernel(input);
+  expect(second.systemInstructions).toContain('BASE_IDENTITY_V2');
+  expect(second.systemInstructions).not.toContain('BASE_IDENTITY_V1');
+  expect(JSON.stringify(input.resolved.executionSnapshot)).toBe(before);
+  expect(second.grantedCapabilities).toEqual(first.grantedCapabilities);
 });
