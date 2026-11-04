@@ -81,36 +81,12 @@ export const SignFileInputSchema = z
   })
   .strict();
 
-export const CreateMemoryInputSchema = z
-  .object({
-    workspaceId: UuidSchema,
-    instanceId: UuidSchema,
-    employeeId: UuidSchema.nullable().default(null),
-    projectId: UuidSchema.nullable().default(null),
-    content: z.string().min(1).max(100_000),
-    metadata: z.record(z.string(), z.json()).default({}),
-    visibility: VisibilitySchema.default('private'),
-    sourceType: MemorySourceTypeSchema.default('user'),
-    sourceId: UuidSchema.nullable().default(null),
-  })
-  .strict();
-
 export const VectorRecallInputSchema = z
   .object({
     workspaceId: UuidSchema,
     instanceId: UuidSchema.optional(),
     embedding: z.array(z.number().finite()).length(1536),
     limit: z.number().int().min(1).max(50).default(10),
-  })
-  .strict();
-
-export const CreateRagChunkInputSchema = z
-  .object({
-    workspaceId: UuidSchema,
-    instanceId: UuidSchema,
-    memoryId: UuidSchema,
-    content: z.string().min(1).max(100_000),
-    embedding: z.array(z.number().finite()).length(1536),
   })
   .strict();
 

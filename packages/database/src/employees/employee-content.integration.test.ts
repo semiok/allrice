@@ -3522,8 +3522,8 @@ suite(
       await f.db`insert into allrice_employee_workflow_bindings(organization_id,workspace_id,employee_id,workflow_revision_id,bound_by)
       values(${s.company.organizationId},${s.company.workspaceId},${s.employeeId},${workflowRevisionId},${s.a.actor.id})`;
       const body = 'Use the original data dictionary.';
-      await f.db`insert into allrice_memories(id,organization_id,workspace_id,employee_id,owner_id,content)
-      values(${memoryId},${s.company.organizationId},${s.company.workspaceId},${s.employeeId},${s.a.actor.id},${body})`;
+      await f.db`insert into allrice_memories(id,organization_id,workspace_id,employee_id,owner_id,instance_id,content)
+      values(${memoryId},${s.company.organizationId},${s.company.workspaceId},${s.employeeId},${s.a.actor.id},${s.instance.id},${body})`;
       await f.db`insert into allrice_memory_revisions(id,organization_id,workspace_id,memory_id,revision,content,trust_level,confidence,reason,changed_by)
       values(${memoryRevisionId},${s.company.organizationId},${s.company.workspaceId},${memoryId},1,${body},'user_confirmed',1,'Confirmed fixture',${s.a.actor.id})`;
       const memoryRef: EmployeeContentReference = {

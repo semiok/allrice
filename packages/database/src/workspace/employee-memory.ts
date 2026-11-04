@@ -5,9 +5,9 @@ import {
   WorkspaceMemorySchema,
   type RequestContext,
 } from '@allrice/contracts';
-import { z } from 'zod';
+import type { z } from 'zod';
 import { DataAccessError } from '../data.ts';
-import { getDatabase } from '../core/client.ts';
+import type { getDatabase } from '../core/client.ts';
 import { readContentPrincipal } from '../content-maintenance.ts';
 import { resolveEmployeeSessionInstance } from '../employees/employee-instances.ts';
 import type { ResourcePrincipal } from '../resource-principal.ts';

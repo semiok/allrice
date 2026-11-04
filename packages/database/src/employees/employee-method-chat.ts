@@ -1261,13 +1261,8 @@ export async function filterEmployeeMethodMemories<
           and ((m.source_type='message' and m.source_id in (er.user_message_id,er.assistant_message_id))
             or (m.source_type='checkpoint' and exists(select 1 from allrice_context_checkpoints cp
               where cp.id=m.source_id and cp.covered_through_message_id in (er.user_message_id,er.assistant_message_id)))))`;
-  const readable = new Map(rows.map((row) => [row.id, row]));
-  return memories.filter((memory) => {
-    const row = readable.get(memory.id);
-    return (
-      row &&
-      memory.content === row.content &&
-      (memory.revision === undefined || memory.revision === row.revision)
-    );
-  });
+  // Ordinary edits apply to the next Run. Keep this Run's frozen bytes;
+  // only current eligibility (including archival/revocation) may remove them.
+  const readable = new Set(rows.map((row) => row.id));
+  return memories.filter((memory) => readable.has(memory.id));
 }

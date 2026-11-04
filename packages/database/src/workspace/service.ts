@@ -81,8 +81,6 @@ import type { TransactionSql } from 'postgres';
 
 import {
   DataAccessError,
-  createMemory,
-  createRagChunk,
   getStoredFile,
 } from '../data.ts';
 import { getDatabase } from '../core/client.ts';
@@ -2680,27 +2678,14 @@ export async function createTraceableMemory(
       key,
       { ...memory, instanceId, lifecycleState },
       async () => {
-        const created = await createMemory(
-          identity,
-          {
-            workspaceId,
-            instanceId,
-            employeeId: scope.employeeId,
-            projectId: null,
-            content: memory.content,
-            metadata: {},
-            visibility: 'private',
-            sourceType: memory.sourceType,
-            sourceId: memory.sourceId,
-          },
-          tx,
-        );
         const [row] = await tx<MemoryRow[]>`
-        update allrice_memories set trust_level=${trust}, confidence=${memory.confidence},
-          source_label=${memory.sourceLabel},captured_at=now(),lifecycle_state=${lifecycleState},
-          memory_class=${memory.memoryClass},expires_at=${memory.expiresAt},
-          last_verified_at=${trust === 'user_confirmed' ? new Date() : null},updated_at=now()
-        where id=${created.id} returning *`;
+          insert into allrice_memories(organization_id,workspace_id,employee_id,owner_id,instance_id,
+            content,visibility,source_type,source_id,trust_level,confidence,source_label,
+            lifecycle_state,memory_class,expires_at,last_verified_at)
+          values(${scope.organizationId},${workspaceId},${scope.employeeId},${scope.ownerId},${scope.instanceId},
+            ${memory.content},'private',${memory.sourceType},${memory.sourceId},${trust},${memory.confidence},
+            ${memory.sourceLabel},${lifecycleState},${memory.memoryClass},${memory.expiresAt},
+            ${trust === 'user_confirmed' ? new Date() : null}) returning *`;
         if (!row) throw new Error('memory creation failed');
         await insertMemoryRevision(
           tx,
@@ -2708,17 +2693,7 @@ export async function createTraceableMemory(
           row,
           `created from ${memory.sourceLabel}`,
         );
-        await createRagChunk(
-          identity,
-          {
-            workspaceId,
-            instanceId: scope.instanceId,
-            memoryId: row.id,
-            content: row.content,
-            embedding: embedWorkspaceText(row.content),
-          },
-          tx,
-        );
+        await insertMemoryChunk(tx, row);
         await audit(
           {
             context,
@@ -2734,6 +2709,13 @@ export async function createTraceableMemory(
       },
     );
   });
+}
+
+/** Chunks are a projection of the exact saved row, never a second write API. */
+async function insertMemoryChunk(tx: TransactionSql, row: MemoryRow) {
+  const embedding = `[${embedWorkspaceText(row.content).join(',')}]`;
+  await tx`insert into allrice_rag_chunks(organization_id,workspace_id,memory_id,owner_id,content,embedding,visibility)
+    values(${row.organization_id},${row.workspace_id},${row.id},${row.owner_id},${row.content},${embedding}::vector,${row.visibility})`;
 }
 
 async function insertMemoryRevision(
@@ -2820,17 +2802,7 @@ export async function correctWorkspaceMemory(
         await insertMemoryRevision(tx, context, row, correction.reason);
         await tx`delete from allrice_rag_chunks where memory_id=${memoryId}
         and organization_id=${scope.organizationId} and workspace_id=${workspaceId}`;
-        await createRagChunk(
-          context,
-          {
-            workspaceId,
-            instanceId: scope.instanceId,
-            memoryId,
-            content: row.content,
-            embedding: embedWorkspaceText(row.content),
-          },
-          tx,
-        );
+        await insertMemoryChunk(tx, row);
         await audit(
           {
             context,
@@ -3144,13 +3116,16 @@ export async function getEmployeeWorkspace(
   const assignment = await ensureDefaultEmployee(context, requestedWorkspaceId);
   const { listEmployeeHub } = await import('../employees/employeehub.ts');
   const employeeHub = await listEmployeeHub(context, workspaceId);
+  const defaultMemoryInstance = employeeHub.assignments
+    .flatMap((item) => item.instances)
+    .find((item) => item.id === assignment?.id && !item.archivedAt)?.id;
   const [sessions, memories] = await Promise.all([
     listChatSessions(context, workspaceId, {
       includeArchived: true,
     }),
-    instanceId || assignment
+    instanceId || defaultMemoryInstance
       ? listWorkspaceMemories(context, workspaceId, undefined, {
-          instanceId: instanceId ?? assignment!.id,
+          instanceId: instanceId ?? defaultMemoryInstance,
         })
       : Promise.resolve([]),
   ]);
