@@ -609,25 +609,73 @@ suite(
         await run.finish();
       });
       it('records a resource-first read then body and another package without losing either receipt', async () => {
-        const s = await setup(), a = input(s), b = input(s, '2.0.0');
+        const s = await setup(),
+          a = input(s),
+          b = input(s, '2.0.0');
         const first = await savePersonalSceneSkill(s.a, s.instance.id, a);
-        await savePersonalSceneSkill(s.a, s.instance.id, { ...b, expectedRevision: first.revision });
-        const current = await getPersonalSceneSkill(s.a, s.instance.id, a.scene.id);
-        const run = await runtimeRun(s), worker = await sceneLease(run);
-        const resourceSelection = { contentRef: current.contentRef, resourcePath: 'assets/template.csv' };
-        const resource = await loadPersonalRuntimeSceneSkill(run.scope, run.runtime.generationId, resourceSelection, worker);
-        const body = await loadPersonalRuntimeSceneSkill(run.scope, run.runtime.generationId, { sceneId: a.scene.id }, worker);
-        const other = await loadPersonalRuntimeSceneSkill(run.scope, run.runtime.generationId, { sceneId: b.scene.id }, worker);
-        const repeated = await loadPersonalRuntimeSceneSkill(run.scope, run.runtime.generationId, resourceSelection, worker);
+        await savePersonalSceneSkill(s.a, s.instance.id, {
+          ...b,
+          expectedRevision: first.revision,
+        });
+        const current = await getPersonalSceneSkill(
+          s.a,
+          s.instance.id,
+          a.scene.id,
+        );
+        const run = await runtimeRun(s),
+          worker = await sceneLease(run);
+        const resourceSelection = {
+          contentRef: current.contentRef,
+          resourcePath: 'assets/template.csv',
+        };
+        const resource = await loadPersonalRuntimeSceneSkill(
+          run.scope,
+          run.runtime.generationId,
+          resourceSelection,
+          worker,
+        );
+        const body = await loadPersonalRuntimeSceneSkill(
+          run.scope,
+          run.runtime.generationId,
+          { sceneId: a.scene.id },
+          worker,
+        );
+        const other = await loadPersonalRuntimeSceneSkill(
+          run.scope,
+          run.runtime.generationId,
+          { sceneId: b.scene.id },
+          worker,
+        );
+        const repeated = await loadPersonalRuntimeSceneSkill(
+          run.scope,
+          run.runtime.generationId,
+          resourceSelection,
+          worker,
+        );
         expect(body.receipt.receiptId).toBe(resource.receipt.receiptId);
         expect(repeated.receipt.receiptId).toBe(resource.receipt.receiptId);
         expect(other.receipt.receiptId).not.toBe(resource.receipt.receiptId);
-        const [row] = await f.db`select content_scene_state from allrice_employee_runs where run_id=${run.scope.runId}`;
+        const [row] =
+          await f.db`select content_scene_state from allrice_employee_runs where run_id=${run.scope.runId}`;
         expect(row!.content_scene_state.reads).toHaveLength(2);
-        expect(row!.content_scene_state.reads[0].personal).toMatchObject({ contentRef: current.contentRef, contentRead: true, resources: [{ path: 'assets/template.csv' }] });
-        expect(row!.content_scene_state.reads[0].personal.resources).toHaveLength(1);
-        await assertEmployeeContentContext(run.scope, run.runtime.generationId, worker);
-        await releaseConversationRuntime({ ...run.scope, workerId: worker.workerId, outcome: 'idle' });
+        expect(row!.content_scene_state.reads[0].personal).toMatchObject({
+          contentRef: current.contentRef,
+          contentRead: true,
+          resources: [{ path: 'assets/template.csv' }],
+        });
+        expect(
+          row!.content_scene_state.reads[0].personal.resources,
+        ).toHaveLength(1);
+        await assertEmployeeContentContext(
+          run.scope,
+          run.runtime.generationId,
+          worker,
+        );
+        await releaseConversationRuntime({
+          ...run.scope,
+          workerId: worker.workerId,
+          outcome: 'idle',
+        });
         await run.finish();
       });
       it('returns no bytes and commits no receipt if the lease expires behind a source lock', async () => {
