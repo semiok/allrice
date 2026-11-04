@@ -34,12 +34,6 @@ interface CheckpointRow {
   created_at: Date;
 }
 
-export interface CheckpointMessage {
-  id: string;
-  role: 'user' | 'assistant' | 'system' | 'tool';
-  text: string;
-}
-
 function canonicalCheckpoint(input: {
   sessionId: string;
   harness: HarnessKind;
@@ -101,38 +95,6 @@ export function shouldCreateContextCheckpoint(input: {
     Boolean(input.coveredThroughMessageId) &&
     input.coveredThroughMessageId !== input.latestCoveredThroughMessageId
   );
-}
-
-export function buildExtractiveContextSummary(input: {
-  previousSummary?: string;
-  messages: CheckpointMessage[];
-  maximumCharacters?: number;
-}) {
-  const limit = input.maximumCharacters ?? 12_000;
-  const importantPattern =
-    /目标|决定|决策|文件|结果|待办|偏好|风险|约束|goal|decision|file|result|todo|preference|risk|constraint/i;
-  const important = input.messages.filter((message) =>
-    importantPattern.test(message.text),
-  );
-  const recent = input.messages.slice(-12);
-  const selected = [
-    ...new Map(
-      [...important, ...recent].map((message) => [message.id, message]),
-    ).values(),
-  ];
-  const sections = [
-    input.previousSummary?.trim()
-      ? `Previous checkpoint:\n${input.previousSummary.trim()}`
-      : '',
-    selected.length
-      ? `Covered conversation (${input.messages.length} messages):\n${selected
-          .map((message) => `[${message.role} ${message.id}] ${message.text}`)
-          .join('\n')}`
-      : '',
-  ].filter(Boolean);
-  const summary = sections.join('\n\n');
-  if (summary.length <= limit) return summary;
-  return `${summary.slice(0, Math.max(0, limit - 28))}\n[checkpoint truncated safely]`;
 }
 
 export async function getLatestContextCheckpoint(input: {
