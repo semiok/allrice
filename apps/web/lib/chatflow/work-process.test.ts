@@ -134,3 +134,33 @@ it.each([
 ])('keeps %s in the native activity category', (toolName, expected) => {
   expect(workProcessTitle([call(1, { toolName })], false)).toBe(expected);
 });
+
+it('joins fixed locale actions without interpreting title text', () => {
+  expect(
+    workProcessTitle(
+      [call(1, { toolName: 'read' }), call(2, { toolName: 'web_search' })],
+      false,
+    ),
+  ).toBe('已读取文件并搜索网页');
+  expect(
+    workProcessTitle(
+      [call(1, { toolName: 'edit' }), call(2, { toolName: 'read' })],
+      false,
+    ),
+  ).toBe('修改了文件并已读取文件');
+  expect(
+    workProcessTitle(
+      [call(1, { toolName: 'read' }), call(2, { toolName: 'todo_write' })],
+      false,
+    ),
+  ).toBe('已读取文件并更新了计划');
+  expect(
+    workProcessTitle(
+      [
+        call(1, { kind: 'compaction', title: '已整理上下文' }),
+        call(2, { toolName: 'read' }),
+      ],
+      false,
+    ),
+  ).toBe('已整理上下文并已读取文件');
+});

@@ -181,21 +181,22 @@ export function summarizeWorkProcess(items: NativeExperienceItem[]) {
 
 // DSH Chat uses action phrases, not category labels and step counts. Its title
 // helper is private. Match its tool-name registry; unknown SaaS tools stay tools.
+// Third field is the fixed locale prefix length omitted when joining two actions.
 const processTitles = {
-  thinking: ['正在分析请求', '已完成分析'],
-  read: ['正在读取文件', '已读取文件'],
-  readImage: ['正在读取图片', '已读取图片'],
-  search: ['正在搜索代码', '已搜索代码'],
-  write: ['正在写入文件', '已写入文件'],
-  edit: ['正在编辑文件', '修改了文件'],
-  commands: ['正在运行命令', '执行了命令'],
-  code: ['正在运行代码', '运行了代码'],
-  webSearch: ['正在搜索网页', '已搜索网页'],
-  webFetch: ['正在访问网页', '已访问网页'],
-  subagents: ['正在协调子智能体', '已协调子智能体'],
-  questions: ['等待你的操作', '向用户提出了问题'],
-  plan: ['正在更新计划', '更新了计划'],
-  tools: ['正在调用工具', '已调用工具'],
+  thinking: ['正在分析请求', '已完成分析', 1],
+  read: ['正在读取文件', '已读取文件', 1],
+  readImage: ['正在读取图片', '已读取图片', 1],
+  search: ['正在搜索代码', '已搜索代码', 1],
+  write: ['正在写入文件', '已写入文件', 1],
+  edit: ['正在编辑文件', '修改了文件', 0],
+  commands: ['正在运行命令', '执行了命令', 0],
+  code: ['正在运行代码', '运行了代码', 0],
+  webSearch: ['正在搜索网页', '已搜索网页', 1],
+  webFetch: ['正在访问网页', '已访问网页', 1],
+  subagents: ['正在协调子智能体', '已协调子智能体', 1],
+  questions: ['等待你的操作', '向用户提出了问题', 0],
+  plan: ['正在更新计划', '更新了计划', 0],
+  tools: ['正在调用工具', '已调用工具', 1],
 } as const;
 const nativeToolActivities: Record<string, keyof typeof processTitles> = {
   read: 'read',
@@ -230,7 +231,8 @@ export function workProcessTitle(
   const title = (item: NativeExperienceItem, live: boolean) => {
     // Keep actual compaction and waiting notices; memory is an ordinary tool,
     // so a completed call does not claim its candidate has been accepted.
-    if (item.kind === 'compaction' || item.modelWait) return item.title;
+    if (item.kind === 'compaction' || item.modelWait)
+      return { text: item.title, donePrefixLength: 0 };
     const name = item.toolName ?? item.title;
     const activity =
       item.kind === 'think'
@@ -246,7 +248,10 @@ export function workProcessTitle(
                   ? 'subagents'
                   : 'tools'));
     const phrases = processTitles[activity];
-    return phrases[live ? 0 : 1]!;
+    return {
+      text: phrases[live ? 0 : 1],
+      donePrefixLength: live ? 0 : phrases[2],
+    };
   };
   const ordered = items
     .filter(
@@ -258,21 +263,34 @@ export function workProcessTitle(
   const live = ordered.findLast((item) =>
     ['started', 'updated'].includes(item.status),
   );
-  if (running) return live ? title(live, true) : '正在分析请求';
+  if (running) return live ? title(live, true).text : '正在分析请求';
   const actions = ordered.filter(
     (item) => !item.modelWait && item.kind !== 'think',
   );
-  const counts = new Map<string, number>();
+  const counts = new Map<
+    string,
+    { text: string; donePrefixLength: number; count: number }
+  >();
   for (const item of actions) {
-    const text = title(item, false);
-    counts.set(text, (counts.get(text) ?? 0) + 1);
+    const phrase = title(item, false);
+    counts.set(phrase.text, {
+      ...phrase,
+      count: (counts.get(phrase.text)?.count ?? 0) + 1,
+    });
   }
-  const titles = [...counts].sort((a, b) => b[1] - a[1]).map(([text]) => text);
+  const titles = [...counts.values()].sort((a, b) => b.count - a.count);
   if (!titles.length) return '已完成分析';
-  if (titles.length === 1) return titles[0]!;
+  if (titles.length === 1) return titles[0]!.text;
   if (titles.length === 2) {
-    const [first, second] = titles as [string, string];
-    return `${first}并${first.startsWith('已') && second.startsWith('已') ? second.slice(1) : second}`;
+    const [first, second] = titles;
+    const suffix =
+      first!.donePrefixLength && second!.donePrefixLength
+        ? second!.text.slice(second!.donePrefixLength)
+        : second!.text;
+    return `${first!.text}并${suffix}`;
   }
-  return `${titles.slice(0, 3).join('，')}${titles.length > 3 ? '等' : ''}`;
+  return `${titles
+    .slice(0, 3)
+    .map((phrase) => phrase.text)
+    .join('，')}${titles.length > 3 ? '等' : ''}`;
 }
