@@ -383,14 +383,20 @@ export async function savePersonalSceneSkill(
           const packages = [];
           for (const ref of scene?.references ?? []) {
             if (ref.sourceKind !== 'procedure') continue;
-            const [source] = await tx<{
-              digest: string;
-              kind: string;
-              packaged: boolean;
-            }[]>`select digest,content->>'kind' as kind,content ? 'skillPackage' as packaged
+            const [source] = await tx<
+              {
+                digest: string;
+                kind: string;
+                packaged: boolean;
+              }[]
+            >`select digest,content->>'kind' as kind,content ? 'skillPackage' as packaged
               from allrice_company_asset_revisions
               where organization_id=${context.organizationId} and asset_id=${ref.contentId} and id=${ref.revisionId}`;
-            if (!source || source.digest !== ref.digest || source.kind !== 'procedure')
+            if (
+              !source ||
+              source.digest !== ref.digest ||
+              source.kind !== 'procedure'
+            )
               throw new EmployeeContentError('source_changed');
             if (source.packaged) packages.push(ref);
           }
