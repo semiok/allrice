@@ -116,7 +116,6 @@ export function WorkbenchExperiencePanel(props: {
       <div className={css.toolbar}>
         <select
           aria-label="经验所属 AllRice 助手"
-          disabled={tab === 'memories'}
           value={employee}
           onChange={(event) => setEmployee(event.target.value)}
         >
@@ -256,17 +255,19 @@ export function WorkbenchExperiencePanel(props: {
             )}
           </>
         ) : tab === 'memories' ? (
-          selected.map((item) => <section key={item.id} className={css.history}>
-          <h3>{item.name}</h3>
-          <MemoryPanel
-            key={`${props.scopeId}/${item.id}`}
-            scopeId={props.scopeId}
-            workspaceId={props.workspaceId}
-            instanceId={item.id}
-            headers={props.headers}
-            refreshKey={String(revision)}
-          />
-          </section>)
+          selected.map((item) => (
+            <section key={item.id} className={css.history}>
+              <h3>{item.name}</h3>
+              <MemoryPanel
+                key={`${props.scopeId}/${item.id}`}
+                scopeId={props.scopeId}
+                workspaceId={props.workspaceId}
+                instanceId={item.id}
+                headers={props.headers}
+                refreshKey={String(revision)}
+              />
+            </section>
+          ))
         ) : (
           selected.map((item) => (
             <section key={item.id} className={css.history}>

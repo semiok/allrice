@@ -57,7 +57,12 @@ export async function DELETE(
     if (!workspaceId) throw new DataAccessError('not_found');
     const { id } = await route.params;
     const body = await request.text();
-    await deleteWorkspaceMemory(context, workspaceId, id, body ? JSON.parse(body) : undefined);
+    await deleteWorkspaceMemory(
+      context,
+      workspaceId,
+      id,
+      body ? JSON.parse(body) : undefined,
+    );
     return new Response(null, {
       status: 204,
       headers: { 'cache-control': 'private, no-store' },

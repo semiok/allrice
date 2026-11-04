@@ -168,8 +168,8 @@ function App({ fixture }: { fixture: Fixture }) {
         <WorkbenchExperiencePanel
           scopeId={workspaceId}
           workspaceId={workspaceId}
-          instanceId="not-a-memory-employee-id"
-          employees={[]}
+          instanceId={fixture.assignmentId}
+          employees={[{id:fixture.assignmentId,name:'测试助手'}]}
           headers={headers}
           active
           automatic={false}

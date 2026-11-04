@@ -23,8 +23,11 @@ import {
 import {
   createTraceableMemory,
   listWorkspaceMemories,
+  ensureDefaultEmployee,
 } from '../../../../packages/database/src/workspace/service.ts';
 import { GET as list, POST as create } from '../api/v1/memories/route';
+import { GET as instanceContent } from '../api/v1/employee-instances/[id]/content/route';
+import { ensureGeneralEmployeeInstance } from '../../../../packages/database/src/employees/employee-instances.ts';
 import { POST as promote } from '../api/v1/memories/[id]/promote/route';
 import {
   DELETE as discard,
@@ -60,6 +63,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
     identity = await createRunAuthorityFixture(f.db);
     foreign = await createRunAuthorityFixture(f.db);
+    await ensureGeneralEmployeeInstance(f.db, foreign.assignment);
     ownerToken = (await createSession(identity.user)).token;
     foreignToken = (await createSession(foreign.user)).token;
     owner = (await authenticateSession(ownerToken, {
@@ -78,15 +82,19 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     await f.db`insert into allrice_workspaces(id,organization_id,slug,name) values(${otherWorkspace},${identity.org},'other','Other')`;
     await f.db`insert into allrice_memberships(id,organization_id,workspace_id,user_id,role) values(${randomUUID()},${identity.org},${otherWorkspace},${identity.user},'admin')`;
     candidate = await remember('真实候选：看数据时先看表格，再看文字说明。');
+    const readerAssignment = await ensureDefaultEmployee(reader, identity.workspace);
     shared = await createTraceableMemory(reader, {
       workspaceId: identity.workspace,
+      instanceId: readerAssignment!.id,
+      idempotencyKey: randomUUID(),
       content: '他人的工作区可见候选',
-      visibility: 'workspace',
+      visibility: 'private',
       sourceType: 'user',
       sourceLabel: 'fixture',
       lifecycleState: 'candidate',
       memoryClass: 'work_note',
     });
+    await f.db`update allrice_memories set visibility='workspace' where id=${shared.id}`;
     // Only Next's per-request cookie accessor is adapted to the fixture server.
     // getRequestContext, authenticateSession and scope validation stay real.
     ports.cookies.mockImplementation(async () => ({
@@ -210,6 +218,8 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
               req.method === 'GET'
             )
               return Response.json({ operations: [] });
+            if (parts[3] === 'employee-instances' && parts[5] === 'content')
+              return instanceContent(request, {params:Promise.resolve({id})});
             if (parts[3] !== 'memories') {
               failures.push(
                 'Unexpected API/model request: ' +
@@ -317,7 +327,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
         path +
         (path.includes('?') ? '&' : '?') +
         'workspaceId=' +
-        workspace,
+        workspace + '&instanceId=' + (token === foreignToken ? foreign.assignment : identity.assignment),
       {
         ...init,
         headers: {
@@ -370,11 +380,11 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     ).toBe(true);
   }
 
-  it('keeps legacy GET visibility, narrows personal/source/run before the 100-row limit, and isolates scope', async () => {
+  it('requires owner/instance scope and narrows source/run before the 100-row limit', async () => {
     expect((await (await api('')).json()).memories).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ id: candidate.id }),
-        expect.objectContaining({ id: shared.id, ownedByMe: false }),
+
       ]),
     );
     expect(
@@ -384,11 +394,11 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     ).toEqual([candidate.id]);
     const [run] =
       await f.db`select user_message_id from allrice_employee_runs where run_id=${identity.rootRunId}`;
-    await f.db`insert into allrice_memories(organization_id,workspace_id,owner_id,content,visibility,source_type,lifecycle_state,memory_class,trust_level,source_label)
-      select ${identity.org},${identity.workspace},${identity.user},'Newer unrelated fixture ' || n,'private','user','candidate','work_note','derived','fixture'
+    await f.db`insert into allrice_memories(organization_id,workspace_id,owner_id,instance_id,content,visibility,source_type,lifecycle_state,memory_class,trust_level,source_label)
+      select ${identity.org},${identity.workspace},${identity.user},${identity.assignment},'Newer unrelated fixture ' || n,'private','user','candidate','work_note','derived','fixture'
       from generate_series(1,105) n`;
     expect(
-      (await listWorkspaceMemories(owner, identity.workspace)).some(
+      (await listWorkspaceMemories(owner, identity.workspace, undefined, {instanceId:identity.assignment})).some(
         (m) => m.id === candidate.id,
       ),
     ).toBe(false);
@@ -403,13 +413,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
         (await response.json()).memories.map((m: WorkspaceMemory) => m.id),
       ).toEqual([candidate.id]);
     }
-    expect(
-      (
-        await (
-          await api('?sourceId=' + run!.user_message_id, {}, readerToken)
-        ).json()
-      ).memories,
-    ).toEqual([]);
+    expect((await api('?sourceId=' + run!.user_message_id, {}, readerToken)).status).toBe(404);
     expect(
       (await api('?runId=' + identity.rootRunId, {}, readerToken)).status,
     ).toBe(404);
@@ -493,7 +497,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
 
   it('rejects missing cookie, cross-site writes, other owners and foreign orgs; duplicate confirmation adds one revision', async () => {
     const path = '/' + candidate.id + '/promote';
-    const write = { method: 'POST' };
+    const write = { method: 'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({instanceId:candidate.instanceId,expectedRevision:candidate.revision,contentDigest:candidate.contentDigest,idempotencyKey:randomUUID()}) };
     expect(
       (
         await api(path, {
@@ -520,7 +524,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     expect(
       (await api(path, write, foreignToken, foreign.workspace)).status,
     ).toBe(404);
-    expect((await api('/' + shared.id, { method: 'DELETE' })).status).toBe(404);
+    expect((await api('/' + shared.id, { ...write, method: 'DELETE' })).status).toBe(404);
     const responses = await Promise.all([api(path, write), api(path, write)]);
     expect(responses.map((r) => r.status)).toEqual([200, 200]);
     const rows = await Promise.all(responses.map((r) => r.json()));

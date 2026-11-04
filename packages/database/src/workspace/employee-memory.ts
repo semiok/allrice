@@ -1,6 +1,10 @@
 import { createHash } from 'node:crypto';
 import type { TransactionSql } from 'postgres';
-import { UuidSchema, WorkspaceMemorySchema, type RequestContext } from '@allrice/contracts';
+import {
+  UuidSchema,
+  WorkspaceMemorySchema,
+  type RequestContext,
+} from '@allrice/contracts';
 import { z } from 'zod';
 import { DataAccessError } from '../data.ts';
 import { getDatabase } from '../core/client.ts';
@@ -9,7 +13,8 @@ import { resolveEmployeeSessionInstance } from '../employees/employee-instances.
 import type { ResourcePrincipal } from '../resource-principal.ts';
 
 type Sql = ReturnType<typeof getDatabase> | TransactionSql;
-export type EmployeeMemoryIdentity = ResourcePrincipal & Partial<Pick<RequestContext, 'sessionId'>>;
+export type EmployeeMemoryIdentity = ResourcePrincipal &
+  Partial<Pick<RequestContext, 'sessionId'>>;
 export type EmployeeMemoryScope = {
   organizationId: string;
   workspaceId: string;
@@ -57,7 +62,13 @@ export async function employeeMemoryScope(
       select id assignment_id,employee_id from allrice_employee_assignments where id=${instanceId}`;
   }
   if (!row) throw new DataAccessError('not_found');
-  await resolveEmployeeSessionInstance(who, row.assignment_id, instanceId, tx, write);
+  await resolveEmployeeSessionInstance(
+    who,
+    row.assignment_id,
+    instanceId,
+    tx,
+    write,
+  );
   return {
     organizationId: context.organizationId,
     workspaceId: who.workspaceId,
@@ -71,13 +82,24 @@ export async function employeeMemoryScope(
  * a model-supplied employee ID. This helper only narrows an existing read. */
 export async function memoryInstanceForRun(
   sql: Sql,
-  scope: { organizationId: string; workspaceId: string; ownerId: string; runId: string },
+  scope: {
+    organizationId: string;
+    workspaceId: string;
+    ownerId: string;
+    runId: string;
+  },
 ) {
-  if (!(await readContentPrincipal({
-    actor: { type: 'user', id: scope.ownerId },
-    organizationId: scope.organizationId,
-    workspaceId: scope.workspaceId,
-  }, sql))) return null;
+  if (
+    !(await readContentPrincipal(
+      {
+        actor: { type: 'user', id: scope.ownerId },
+        organizationId: scope.organizationId,
+        workspaceId: scope.workspaceId,
+      },
+      sql,
+    ))
+  )
+    return null;
   const [row] = await sql<{ instance_id: string }[]>`
     select i.id instance_id from allrice_employee_runs r
     join allrice_chat_sessions s on s.id=r.session_id and s.organization_id=r.organization_id
@@ -101,8 +123,10 @@ export function assertMemoryRevision(
   current: { revision: number; content: string },
   expected: { expectedRevision: number; contentDigest: string },
 ) {
-  if (current.revision !== expected.expectedRevision ||
-      memoryContentDigest(current.content) !== expected.contentDigest)
+  if (
+    current.revision !== expected.expectedRevision ||
+    memoryContentDigest(current.content) !== expected.contentDigest
+  )
     throw new EmployeeMemoryConflict();
 }
 
@@ -120,7 +144,14 @@ export async function memoryOperation(
   const digest = memoryContentDigest(JSON.stringify({ operation, request }));
   const lockKey = `employee-memory:${scope.organizationId}:${scope.workspaceId}:${scope.ownerId}:${scope.instanceId}:${key}`;
   await tx`select pg_advisory_xact_lock(hashtextextended(${lockKey},0))`;
-  const [prior] = await tx<{ request_digest: string; response: unknown; revision: number; archived_at: Date | null }[]>`
+  const [prior] = await tx<
+    {
+      request_digest: string;
+      response: unknown;
+      revision: number;
+      archived_at: Date | null;
+    }[]
+  >`
     select op.request_digest,op.response,m.revision,m.archived_at
     from allrice_employee_memory_operations op join allrice_memories m
       on m.id=op.memory_id and m.organization_id=op.organization_id and m.workspace_id=op.workspace_id
@@ -130,8 +161,11 @@ export async function memoryOperation(
     for share of m`;
   if (prior) {
     const response = WorkspaceMemorySchema.parse(prior.response);
-    if (prior.request_digest !== digest || prior.revision !== response.revision ||
-        Boolean(prior.archived_at) !== (operation === 'archive'))
+    if (
+      prior.request_digest !== digest ||
+      prior.revision !== response.revision ||
+      Boolean(prior.archived_at) !== (operation === 'archive')
+    )
       throw new EmployeeMemoryConflict();
     return response;
   }

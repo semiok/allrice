@@ -58,7 +58,12 @@ function MemoryCard(props: {
   const [error, setError] = useState('');
   const live = useRef(true);
   const lastMemory = useRef(memory);
-  const operation = useRef<{ action: string; revision: number; digest: string; key: string } | null>(null);
+  const operation = useRef<{
+    action: string;
+    revision: number;
+    digest: string;
+    key: string;
+  } | null>(null);
   useEffect(() => {
     // Accepted reads replace settled rows; pending rows retain their object.
     // Starting or failing a read must leave the operation error visible.
@@ -77,17 +82,30 @@ function MemoryCard(props: {
     setBusy(action);
     setError('');
     props.onPending(true);
-    if (!operation.current || operation.current.action !== action ||
-        operation.current.revision !== memory.revision || operation.current.digest !== memory.contentDigest)
-      operation.current = { action, revision: memory.revision, digest: memory.contentDigest, key: crypto.randomUUID() };
+    if (
+      !operation.current ||
+      operation.current.action !== action ||
+      operation.current.revision !== memory.revision ||
+      operation.current.digest !== memory.contentDigest
+    )
+      operation.current = {
+        action,
+        revision: memory.revision,
+        digest: memory.contentDigest,
+        key: crypto.randomUUID(),
+      };
     try {
       const response = await fetch(
         `/api/v1/memories/${encodeURIComponent(memory.id)}${action === 'promote' ? '/promote' : ''}?workspaceId=${encodeURIComponent(props.workspaceId)}`,
         {
           method: action === 'promote' ? 'POST' : 'DELETE',
           headers: { ...props.headers, 'content-type': 'application/json' },
-          body: JSON.stringify({ instanceId: memory.instanceId, expectedRevision: memory.revision,
-            contentDigest: memory.contentDigest, idempotencyKey: operation.current.key }),
+          body: JSON.stringify({
+            instanceId: memory.instanceId,
+            expectedRevision: memory.revision,
+            contentDigest: memory.contentDigest,
+            idempotencyKey: operation.current.key,
+          }),
         },
       );
       const result = await memoryResponse(response);
@@ -108,8 +126,13 @@ function MemoryCard(props: {
         throw Error('记忆确认回执不匹配，请重新读取。');
       if (live.current) props.onChange(updated);
     } catch (error) {
-      if (live.current) setError(error instanceof Error && error.message === '记忆已变化，请重新读取后再操作。'
-        ? error.message : '暂时无法确认操作结果，请重新读取记忆。');
+      if (live.current)
+        setError(
+          error instanceof Error &&
+            error.message === '记忆已变化，请重新读取后再操作。'
+            ? error.message
+            : '暂时无法确认操作结果，请重新读取记忆。',
+        );
     } finally {
       props.onPending(false);
       if (live.current) setBusy(null);
@@ -246,8 +269,10 @@ export function MemoryPanel(props: {
         if (
           memories.some(
             (memory) =>
-              memory.workspaceId !== props.workspaceId || !memory.ownedByMe ||
-              (props.instanceId !== undefined && memory.instanceId !== props.instanceId),
+              memory.workspaceId !== props.workspaceId ||
+              !memory.ownedByMe ||
+              (props.instanceId !== undefined &&
+                memory.instanceId !== props.instanceId),
           )
         )
           throw Error('记忆读取范围已变化，请重新打开。');

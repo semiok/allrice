@@ -1231,8 +1231,15 @@ export async function isEmployeeMethodAuthoringRun(scope: {
 
 /** Frozen recall can predate another Run entering authoring. Recheck at the
  * Worker execution boundary, preserving frozen bodies and historical records. */
-export async function filterEmployeeMethodMemories<T extends { id: string; revision?: number; content?: string }>(
-  scope: { organizationId: string; workspaceId: string; ownerId: string; runId: string },
+export async function filterEmployeeMethodMemories<
+  T extends { id: string; revision?: number; content?: string },
+>(
+  scope: {
+    organizationId: string;
+    workspaceId: string;
+    ownerId: string;
+    runId: string;
+  },
   memories: T[],
 ): Promise<T[]> {
   if (!memories.length) return memories;
@@ -1257,7 +1264,10 @@ export async function filterEmployeeMethodMemories<T extends { id: string; revis
   const readable = new Map(rows.map((row) => [row.id, row]));
   return memories.filter((memory) => {
     const row = readable.get(memory.id);
-    return row && memory.content === row.content &&
-      (memory.revision === undefined || memory.revision === row.revision);
+    return (
+      row &&
+      memory.content === row.content &&
+      (memory.revision === undefined || memory.revision === row.revision)
+    );
   });
 }

@@ -454,18 +454,32 @@ export async function resolveStorageGrant(grant: SignedAccessGrant) {
   return mapStoredFile(row);
 }
 
-export async function createMemory(context: ResourcePrincipal & Partial<Pick<RequestContext, 'sessionId'>>, input: unknown, transaction?: TransactionSql) {
+export async function createMemory(
+  context: ResourcePrincipal & Partial<Pick<RequestContext, 'sessionId'>>,
+  input: unknown,
+  transaction?: TransactionSql,
+) {
   const memory = CreateMemoryInputSchema.parse(input);
   const owner = actorId(context);
   if (!hasWorkspaceMembership(context, memory.workspaceId)) {
     throw new DataAccessError('authorization_denied');
   }
   const write = async (sql: TransactionSql) => {
-  const { employeeMemoryScope } = await import('./workspace/employee-memory.ts');
-  const scope = await employeeMemoryScope(context, memory.workspaceId, memory.instanceId, sql, true);
-  if (memory.visibility !== 'private' || (memory.employeeId && memory.employeeId !== scope.employeeId))
-    throw new DataAccessError('authorization_denied');
-  const rows = await sql<{ id: string }[]>`
+    const { employeeMemoryScope } =
+      await import('./workspace/employee-memory.ts');
+    const scope = await employeeMemoryScope(
+      context,
+      memory.workspaceId,
+      memory.instanceId,
+      sql,
+      true,
+    );
+    if (
+      memory.visibility !== 'private' ||
+      (memory.employeeId && memory.employeeId !== scope.employeeId)
+    )
+      throw new DataAccessError('authorization_denied');
+    const rows = await sql<{ id: string }[]>`
     insert into allrice_memories (
       organization_id, workspace_id, project_id, employee_id, owner_id, instance_id,
       content, metadata, visibility, source_type, source_id
@@ -477,13 +491,17 @@ export async function createMemory(context: ResourcePrincipal & Partial<Pick<Req
     )
     returning id
   `;
-  if (!rows[0]) throw new Error('memory creation failed');
-  return { id: rows[0].id };
+    if (!rows[0]) throw new Error('memory creation failed');
+    return { id: rows[0].id };
   };
   return transaction ? write(transaction) : getDatabase().begin(write);
 }
 
-export async function createRagChunk(context: ResourcePrincipal, input: unknown, transaction?: TransactionSql) {
+export async function createRagChunk(
+  context: ResourcePrincipal,
+  input: unknown,
+  transaction?: TransactionSql,
+) {
   const chunk = CreateRagChunkInputSchema.parse(input);
   const owner = actorId(context);
   if (!hasWorkspaceMembership(context, chunk.workspaceId)) {
@@ -529,11 +547,26 @@ export async function recallRagChunks(context: RequestContext, input: unknown) {
     throw new DataAccessError('authorization_denied');
   const embedding = vectorLiteral(query.embedding);
   return getDatabase().begin(async (sql) => {
-    const { employeeMemoryScope } = await import('./workspace/employee-memory.ts');
-    if (query.instanceId) await employeeMemoryScope(context, query.workspaceId, query.instanceId, sql);
+    const { employeeMemoryScope } =
+      await import('./workspace/employee-memory.ts');
+    if (query.instanceId)
+      await employeeMemoryScope(
+        context,
+        query.workspaceId,
+        query.instanceId,
+        sql,
+      );
     // This generic RAG entrypoint may read governed shared knowledge. Ordinary
     // personal entries additionally require an explicit current instance.
-    return sql<{ id: string; memory_id: string; content: string; owner_id: string; similarity: number }[]>`
+    return sql<
+      {
+        id: string;
+        memory_id: string;
+        content: string;
+        owner_id: string;
+        similarity: number;
+      }[]
+    >`
       select c.id,c.memory_id,c.content,c.owner_id,1-(c.embedding <=> ${embedding}::vector) similarity
       from allrice_rag_chunks c join allrice_memories m
         on m.id=c.memory_id and m.organization_id=c.organization_id and m.workspace_id=c.workspace_id

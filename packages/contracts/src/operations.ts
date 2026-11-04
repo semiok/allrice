@@ -97,14 +97,12 @@ export const MemoryMutationInputSchema = z
   })
   .strict();
 
-export const CorrectMemoryInputSchema = MemoryMutationInputSchema
-  .extend({
-    content: z.string().trim().min(1).max(100_000),
-    reason: z.string().trim().min(1).max(500),
-    confidence: z.number().min(0).max(1).default(1),
-    expiresAt: TimestampSchema.nullable().default(null),
-  })
-  .strict();
+export const CorrectMemoryInputSchema = MemoryMutationInputSchema.extend({
+  content: z.string().trim().min(1).max(100_000),
+  reason: z.string().trim().min(1).max(500),
+  confidence: z.number().min(0).max(1).default(1),
+  expiresAt: TimestampSchema.nullable().default(null),
+}).strict();
 
 export const CreateCheckpointMemoryCandidateInputSchema = z
   .object({
