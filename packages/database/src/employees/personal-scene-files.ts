@@ -101,10 +101,18 @@ export async function previewPersonalSceneFile(
         const text = EmployeeContentTextSchema.parse(source?.content);
         if (!('skillPackage' in text))
           throw new EmployeeContentError('source_changed');
-        const { resources: _, ...bundle } = pkg.bundle;
         currentMetadata = {
           title: text.title,
-          bundle,
+          bundle: {
+            schemaVersion: pkg.bundle.schemaVersion,
+            version: pkg.bundle.version,
+            checksum: pkg.bundle.checksum,
+            contentChecksum: pkg.bundle.contentChecksum,
+            sourceRef: pkg.bundle.sourceRef,
+            license: pkg.bundle.license,
+            reviewedBy: pkg.bundle.reviewedBy,
+            dependencies: pkg.bundle.dependencies,
+          },
           resourceSources: text.skillPackage.resourceSources,
         };
       } catch (error) {

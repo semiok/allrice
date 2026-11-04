@@ -69,7 +69,12 @@ function preview(
     contentChecksum: old.skillPackage.bundle.contentChecksum,
     bundleVersion: '1.0.0',
     bundleChecksum: old.skillPackage.bundle.checksum,
-    resources: resources.map(({ contentBase64: _, ...resource }) => resource),
+    resources: resources.map(({ path, mediaType, byteLength, checksum }) => ({
+      path,
+      mediaType,
+      byteLength,
+      checksum,
+    })),
     sources: references.map((reference) => ({
       reference,
       title: '合成受控资料',

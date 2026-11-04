@@ -151,8 +151,17 @@ suite(
         contentBase64: bytes.toString('base64'),
         checksum: skillBytesChecksum(bytes),
       });
-      const { checksum: _, ...bundlePayload } = payload.skillPackage.bundle;
-      payload.skillPackage.bundle.checksum = skillBundleChecksum(bundlePayload);
+      const bundle = payload.skillPackage.bundle;
+      bundle.checksum = skillBundleChecksum({
+        schemaVersion: bundle.schemaVersion,
+        version: bundle.version,
+        contentChecksum: bundle.contentChecksum,
+        sourceRef: bundle.sourceRef,
+        license: bundle.license,
+        reviewedBy: bundle.reviewedBy,
+        dependencies: bundle.dependencies,
+        resources: bundle.resources,
+      });
       return {
         schemaVersion: 1,
         scene: {
@@ -168,13 +177,16 @@ suite(
       };
     }
     function saveBody(s: Setup, preview: PersonalSceneFilePreview) {
-      const { nativeName: _, ...scene } = preview.file.scene;
       return {
         workspaceId: s.workspaceId,
         requestId: randomUUID(),
         expectedRevision: preview.expectedRevision,
         expectedContentRef: preview.expectedContentRef,
-        scene,
+        scene: {
+          id: preview.file.scene.id,
+          name: preview.file.scene.name,
+          appliesWhen: preview.file.scene.appliesWhen,
+        },
         procedure: preview.file.procedure,
         references: preview.file.references,
         changeSummary: '根据实际周报结果修改文件',
@@ -186,12 +198,13 @@ suite(
       body?: unknown,
       instanceId = s.instance.id,
       origin = 'https://example.test',
-    ) {
+    ): Promise<Response> {
       const base = `https://example.test/api/v1/employee-instances/${instanceId}/scene-skills`;
       const params = { params: Promise.resolve({ id: instanceId }) };
       if (operation === 'save') {
-        const { POST } =
-          await import('../../../../apps/web/app/api/v1/employee-instances/[id]/scene-skills/route.ts');
+        const routePath =
+          '../../../../apps/web/app/api/v1/employee-instances/[id]/scene-skills/route.ts';
+        const { POST } = await import(routePath);
         return POST(
           new Request(base, {
             method: 'POST',
@@ -201,8 +214,9 @@ suite(
           params,
         );
       }
-      const { GET, POST } =
-        await import('../../../../apps/web/app/api/v1/employee-instances/[id]/scene-skills/files/route.ts');
+      const routePath =
+        '../../../../apps/web/app/api/v1/employee-instances/[id]/scene-skills/files/route.ts';
+      const { GET, POST } = await import(routePath);
       return operation === 'history'
         ? GET(new Request(`${base}/files?workspaceId=${s.workspaceId}`), params)
         : POST(
@@ -457,11 +471,10 @@ suite(
           ).status,
         ).toBe(400);
       await expect(
-        previewPersonalSceneFile(
-          { ...s.owner, sessionId: undefined },
-          s.instance.id,
-          { workspaceId: s.workspaceId, file: artifact },
-        ),
+        previewPersonalSceneFile({ ...s.owner, sessionId: '' }, s.instance.id, {
+          workspaceId: s.workspaceId,
+          file: artifact,
+        }),
       ).rejects.toMatchObject({ code: 'authorization_denied' });
       await f.db`update allrice_employee_assignments set active=false where id=${s.assigned.id}`;
       expect(

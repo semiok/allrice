@@ -54,7 +54,21 @@ export const PersonalSceneFilePreviewSchema = z
     currentMetadata: z
       .object({
         title: z.string(),
-        bundle: SkillBundleSchema.omit({ resources: true }),
+        // The complete bundle is validated by the existing package reader.
+        // Metadata is a projection: omitting resources from the refined full
+        // schema would discard the input required by its cross-field checks.
+        bundle: z
+          .object({
+            schemaVersion: SkillBundleSchema.shape.schemaVersion,
+            version: SkillBundleSchema.shape.version,
+            checksum: SkillBundleSchema.shape.checksum,
+            contentChecksum: SkillBundleSchema.shape.contentChecksum,
+            sourceRef: SkillBundleSchema.shape.sourceRef,
+            license: SkillBundleSchema.shape.license,
+            reviewedBy: SkillBundleSchema.shape.reviewedBy,
+            dependencies: SkillBundleSchema.shape.dependencies,
+          })
+          .strict(),
         resourceSources: EmployeeSceneSkillPayloadSchema.shape.resourceSources,
       })
       .strict()
