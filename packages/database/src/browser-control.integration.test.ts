@@ -359,7 +359,9 @@ suite('P21 real PostgreSQL control and exact admission', () => {
           return db.begin(async (tx) => {
             await tx`set local statement_timeout='8s'`;
             creatorPid = (await tx`select pg_backend_pid() pid`)[0]!.pid;
-            await locked;
+            // A writer failure before acquiring Job must also release this
+            // transaction; statement_timeout cannot interrupt a JS promise.
+            await Promise.race([locked, writer!]);
             return body(tx);
           });
         };
