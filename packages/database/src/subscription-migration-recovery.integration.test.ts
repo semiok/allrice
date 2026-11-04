@@ -262,6 +262,9 @@ integration('subscription incremental migration and cold SQL readers', () => {
       expect(historical!.no_preferences).toBe(true);
       expect(historical!.no_execution_binding).toBe(true);
       expect(historical!.employee_run.status).toBe('running');
+      expect(historical!.employee_run.prompt_snapshot).not.toHaveProperty(
+        'personalIdentity',
+      );
       expect(historical!.employee_run.execution_snapshot).not.toHaveProperty(
         'nativePreferences',
       );

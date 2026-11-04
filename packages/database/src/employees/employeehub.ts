@@ -1621,7 +1621,7 @@ export async function prepareEmployeeRunBinding(
       // Only new Runs freeze this explicit projection. Do not synthesize it
       // while resolving an older Run whose profile happened to have fields.
       personalIdentity:
-        instance.kind === 'custom' &&
+        instance?.kind === 'custom' &&
         [
           instance.profile.role,
           instance.profile.mission,
