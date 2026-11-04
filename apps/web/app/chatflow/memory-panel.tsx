@@ -38,8 +38,11 @@ export function memoryReadRevision(events: ChatFlowEventEnvelope[]) {
     .join(',');
 }
 
+class MemoryRevisionConflict extends Error {}
+
 async function memoryResponse(response: Response) {
-  if (response.status === 409) throw Error('记忆已变化，请重新读取后再操作。');
+  if (response.status === 409)
+    throw new MemoryRevisionConflict('记忆已变化，请重新读取后再操作。');
   if (!response.ok) throw Error('暂时无法确认操作结果，请重新读取记忆。');
   return response.status === 204 ? null : response.json();
 }
@@ -128,8 +131,7 @@ function MemoryCard(props: {
     } catch (error) {
       if (live.current)
         setError(
-          error instanceof Error &&
-            error.message === '记忆已变化，请重新读取后再操作。'
+          error instanceof MemoryRevisionConflict
             ? error.message
             : '暂时无法确认操作结果，请重新读取记忆。',
         );
