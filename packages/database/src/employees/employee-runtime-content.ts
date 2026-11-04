@@ -557,7 +557,11 @@ async function contentGraph(scope: RunScope, sql: ContentSql) {
   const add = async (
     row: Pick<
       RunRow,
-      'content' | 'personal_skills' | 'session_references' | 'brand_workflow' | 'personal_instance_id'
+      | 'content'
+      | 'personal_skills'
+      | 'session_references'
+      | 'brand_workflow'
+      | 'personal_instance_id'
     >,
   ) => {
     if (row.personal_instance_id) instances.add(row.personal_instance_id);
@@ -749,7 +753,8 @@ async function generationIsReadable(
         if (
           state.reads.some(
             (r) =>
-              !r.personal && !scenes.some(
+              !r.personal &&
+              !scenes.some(
                 (s) => s.id === r.sceneId && s.digest === r.sceneDigest,
               ),
           )
@@ -1021,8 +1026,8 @@ function parseSceneState(raw: unknown) {
   const parsed = EmployeeSceneStateSchema.safeParse(raw ?? { reads: [] });
   if (
     !parsed.success ||
-    new Set(parsed.data.reads.map((r) => r.personal?.contentRef ?? r.sceneId)).size !==
-      parsed.data.reads.length
+    new Set(parsed.data.reads.map((r) => r.personal?.contentRef ?? r.sceneId))
+      .size !== parsed.data.reads.length
   )
     return unavailable();
   if (
@@ -1052,15 +1057,34 @@ async function assertPersonalSceneReads(
     if (read.instanceId !== row.personal_instance_id) return unavailable();
     try {
       const pkg = await readPersonalSceneSkillInTransaction(
-        { ...reader, requestId: receipt.receiptId }, read.instanceId,
-        { contentRef: read.contentRef }, sql, lock,
+        { ...reader, requestId: receipt.receiptId },
+        read.instanceId,
+        { contentRef: read.contentRef },
+        sql,
+        lock,
       );
-      if (pkg.skill.sceneId !== receipt.sceneId || pkg.skill.bundleChecksum !== receipt.sceneDigest ||
-          pkg.skill.contentChecksum !== read.contentChecksum || pkg.skill.bundleChecksum !== read.bundleChecksum ||
-          read.resources.some((resource) => !pkg.bundle.resources.some((item) => item.path === resource.path && item.checksum === resource.checksum)))
+      if (
+        pkg.skill.sceneId !== receipt.sceneId ||
+        pkg.skill.bundleChecksum !== receipt.sceneDigest ||
+        pkg.skill.contentChecksum !== read.contentChecksum ||
+        pkg.skill.bundleChecksum !== read.bundleChecksum ||
+        read.resources.some(
+          (resource) =>
+            !pkg.bundle.resources.some(
+              (item) =>
+                item.path === resource.path &&
+                item.checksum === resource.checksum,
+            ),
+        )
+      )
         return unavailable();
     } catch (error) {
-      if (error instanceof DataAccessError || error instanceof EmployeeContentError || error instanceof EmployeeInstanceError || error instanceof ZodError)
+      if (
+        error instanceof DataAccessError ||
+        error instanceof EmployeeContentError ||
+        error instanceof EmployeeInstanceError ||
+        error instanceof ZodError
+      )
         return unavailable();
       throw error;
     }
@@ -1070,64 +1094,132 @@ async function assertPersonalSceneReads(
 /** Storage-facing model read. No Provider/Host changes here: the later native
  * wiring must use this leased entry point rather than the human preview API. */
 export async function loadPersonalRuntimeSceneSkill(
-  scope: RunScope, generationId: string,
+  scope: RunScope,
+  generationId: string,
   selection: { sceneId: string } | { contentRef: string; resourcePath: string },
   worker: ContentWorker,
 ) {
   if (!worker) return unavailable();
-  const path = 'resourcePath' in selection ? SkillResourcePathSchema.parse(selection.resourcePath) : null;
+  const path =
+    'resourcePath' in selection
+      ? SkillResourcePathSchema.parse(selection.resourcePath)
+      : null;
   const result = await withContentLocks(scope, async (tx) => {
     const run = await ownedRun(scope, tx);
-    if (!run.personal_instance_id || run.content_generation_id !== generationId || !(await validContentLease(scope, worker, tx)))
+    if (
+      !run.personal_instance_id ||
+      run.content_generation_id !== generationId ||
+      !(await validContentLease(scope, worker, tx))
+    )
       return unavailable();
-    if (!(await generationIsReadable(scope, generationId, tx, identity(scope), new Set(), true))) {
+    if (
+      !(await generationIsReadable(
+        scope,
+        generationId,
+        tx,
+        identity(scope),
+        new Set(),
+        true,
+      ))
+    ) {
       await tx`update allrice_employee_content_contexts set invalidated_at=clock_timestamp() where generation_id=${generationId}`;
       return { rejected: true as const };
     }
     const pkg = await readPersonalSceneSkillInTransaction(
-      { ...identity(scope), requestId: scope.runId }, run.personal_instance_id,
-      selection, tx, true,
+      { ...identity(scope), requestId: scope.runId },
+      run.personal_instance_id,
+      selection,
+      tx,
+      true,
     );
-    const resource = path ? pkg.bundle.resources.find((item) => item.path === path) : undefined;
+    const resource = path
+      ? pkg.bundle.resources.find((item) => item.path === path)
+      : undefined;
     if (path && !resource) return unavailable();
     const state = parseSceneState(run.content_scene_state);
     const reads = state.reads;
-    if (reads.some(({ personal }) => personal && (personal.runId !== scope.runId || personal.generationId !== generationId))) return unavailable();
-    let receipt = reads.find((read) => read.personal?.contentRef === pkg.skill.contentRef);
+    if (
+      reads.some(
+        ({ personal }) =>
+          personal &&
+          (personal.runId !== scope.runId ||
+            personal.generationId !== generationId),
+      )
+    )
+      return unavailable();
+    let receipt = reads.find(
+      (read) => read.personal?.contentRef === pkg.skill.contentRef,
+    );
     if (!receipt) {
       if (reads.length >= employeeContentLimits.scenes) return unavailable();
       receipt = EmployeeSceneReadSchema.parse({
-        receiptId: randomUUID(), sceneId: pkg.skill.sceneId, sceneDigest: pkg.skill.bundleChecksum,
-        personal: { instanceId: run.personal_instance_id, contentRef: pkg.skill.contentRef,
-        contentChecksum: pkg.skill.contentChecksum, bundleChecksum: pkg.skill.bundleChecksum,
-        resources: [], runId: scope.runId, generationId,
-        jobId: worker.jobId, workerId: worker.workerId, readAt: new Date().toISOString(),
+        receiptId: randomUUID(),
+        sceneId: pkg.skill.sceneId,
+        sceneDigest: pkg.skill.bundleChecksum,
+        personal: {
+          instanceId: run.personal_instance_id,
+          contentRef: pkg.skill.contentRef,
+          contentChecksum: pkg.skill.contentChecksum,
+          bundleChecksum: pkg.skill.bundleChecksum,
+          resources: [],
+          runId: scope.runId,
+          generationId,
+          jobId: worker.jobId,
+          workerId: worker.workerId,
+          readAt: new Date().toISOString(),
         },
       });
       reads.push(receipt);
     }
     const personal = receipt.personal!;
     if (!path) personal.contentRead = true;
-    if (resource && !personal.resources.some((item) => item.path === resource.path))
-      personal.resources.push({ path: resource.path, checksum: resource.checksum });
+    if (
+      resource &&
+      !personal.resources.some((item) => item.path === resource.path)
+    )
+      personal.resources.push({
+        path: resource.path,
+        checksum: resource.checksum,
+      });
     // Include every actually read package's body in the established body budget.
     let bodyBytes = 0;
     const sourceRefs = new Set<string>();
     for (const read of reads) {
       if (!read.personal) return unavailable();
-      const exact = read.personal.contentRef === pkg.skill.contentRef ? pkg : await readPersonalSceneSkillInTransaction(
-        { ...identity(scope), requestId: scope.runId }, run.personal_instance_id,
-        { contentRef: read.personal.contentRef }, tx, true,
-      );
+      const exact =
+        read.personal.contentRef === pkg.skill.contentRef
+          ? pkg
+          : await readPersonalSceneSkillInTransaction(
+              { ...identity(scope), requestId: scope.runId },
+              run.personal_instance_id,
+              { contentRef: read.personal.contentRef },
+              tx,
+              true,
+            );
       bodyBytes += Buffer.byteLength(exact.skill.content);
-      for (const source of exact.resolved) sourceRefs.add(employeeContentReferenceKey(source.dto.reference));
+      for (const source of exact.resolved)
+        sourceRefs.add(employeeContentReferenceKey(source.dto.reference));
     }
-    if (bodyBytes > employeeContentLimits.textBytes || sourceRefs.size > employeeContentLimits.references || !(await validContentLease(scope, worker, tx))) return unavailable();
+    if (
+      bodyBytes > employeeContentLimits.textBytes ||
+      sourceRefs.size > employeeContentLimits.references ||
+      !(await validContentLease(scope, worker, tx))
+    )
+      return unavailable();
     await tx`update allrice_employee_runs set content_scene_state=${tx.json(EmployeeSceneStateSchema.parse(state))} where run_id=${scope.runId}`;
     if (!(await validContentLease(scope, worker, tx))) return unavailable();
-    return { receipt, ...(resource ? {
-      resource: PersonalSceneSkillResourceSchema.parse({ ...resource, contentRef: pkg.skill.contentRef, bundleChecksum: pkg.skill.bundleChecksum }),
-    } : { skill: pkg.skill }) };
+    return {
+      receipt,
+      ...(resource
+        ? {
+            resource: PersonalSceneSkillResourceSchema.parse({
+              ...resource,
+              contentRef: pkg.skill.contentRef,
+              bundleChecksum: pkg.skill.bundleChecksum,
+            }),
+          }
+        : { skill: pkg.skill }),
+    };
   });
   if ('rejected' in result) return unavailable();
   return result;

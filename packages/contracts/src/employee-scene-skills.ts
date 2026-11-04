@@ -98,7 +98,9 @@ export const PersonalSceneSkillSchema = PersonalSceneSkillSummarySchema.extend({
   bundleChecksum: ChecksumSchema,
   resources: z.array(EmployeeSceneSkillResourceDescriptorSchema),
   sources: z.array(
-    z.object({ reference: EmployeeContentReferenceSchema, title: z.string() }).strict(),
+    z
+      .object({ reference: EmployeeContentReferenceSchema, title: z.string() })
+      .strict(),
   ),
 });
 export type PersonalSceneSkill = z.infer<typeof PersonalSceneSkillSchema>;
@@ -115,16 +117,24 @@ export const PersonalSceneSkillResourceSchema =
     bundleChecksum: ChecksumSchema,
     contentBase64: z.string(),
   });
-export const PersonalSceneSkillQuerySchema = z.object({
-  workspaceId: UuidSchema.optional(),
-  sceneId: UuidSchema.optional(),
-  contentRef: PersonalSceneContentRefSchema.optional(),
-  resourcePath: SkillResourcePathSchema.optional(),
-}).strict().superRefine((query, ctx) => {
-  if ((query.sceneId && (query.contentRef || query.resourcePath)) ||
-      Boolean(query.contentRef) !== Boolean(query.resourcePath))
-    ctx.addIssue({ code: 'custom', message: 'Select a scene or an exact resource.' });
-});
+export const PersonalSceneSkillQuerySchema = z
+  .object({
+    workspaceId: UuidSchema.optional(),
+    sceneId: UuidSchema.optional(),
+    contentRef: PersonalSceneContentRefSchema.optional(),
+    resourcePath: SkillResourcePathSchema.optional(),
+  })
+  .strict()
+  .superRefine((query, ctx) => {
+    if (
+      (query.sceneId && (query.contentRef || query.resourcePath)) ||
+      Boolean(query.contentRef) !== Boolean(query.resourcePath)
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Select a scene or an exact resource.',
+      });
+  });
 
 /** No scope, owner, publication controls or execution permission are inputs. */
 export const SavePersonalSceneSkillSchema = z
@@ -133,16 +143,22 @@ export const SavePersonalSceneSkillSchema = z
     requestId: UuidSchema,
     expectedRevision: z.number().int().nonnegative(),
     expectedContentRef: PersonalSceneContentRefSchema.nullable(),
-    scene: EmployeeContentManifestSchema.shape.scenes.element.omit({ references: true }),
+    scene: EmployeeContentManifestSchema.shape.scenes.element.omit({
+      references: true,
+    }),
     procedure: EmployeeContentTextSchema.refine(
       (text) => text.kind === 'procedure' && 'skillPackage' in text,
       'A complete packaged procedure is required.',
     ),
-    references: z.array(EmployeeContentReferenceSchema).max(employeeContentLimits.references),
+    references: z
+      .array(EmployeeContentReferenceSchema)
+      .max(employeeContentLimits.references),
     changeSummary: z.string().trim().min(1).max(1000),
   })
   .strict();
-export type SavePersonalSceneSkill = z.infer<typeof SavePersonalSceneSkillSchema>;
+export type SavePersonalSceneSkill = z.infer<
+  typeof SavePersonalSceneSkillSchema
+>;
 export const PersonalSceneSkillSaveReceiptSchema = z
   .object({
     instanceId: UuidSchema,

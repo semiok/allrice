@@ -1,4 +1,7 @@
-import { EmployeeSceneSkillPinSchema, PersonalSceneSkillQuerySchema } from '@allrice/contracts';
+import {
+  EmployeeSceneSkillPinSchema,
+  PersonalSceneSkillQuerySchema,
+} from '@allrice/contracts';
 import {
   DataAccessError,
   listEmployeeSceneSkills,
@@ -30,13 +33,25 @@ export async function GET(
     const instanceId = (await params).id;
     const instance = await getEmployeeInstance(scope, instanceId);
     if (instance.kind === 'custom') {
-      const selection = PersonalSceneSkillQuerySchema.parse(Object.fromEntries(query));
+      const selection = PersonalSceneSkillQuerySchema.parse(
+        Object.fromEntries(query),
+      );
       const result = selection.contentRef
-        ? await getPersonalSceneSkillResource(scope, instanceId, selection.contentRef, selection.resourcePath!)
+        ? await getPersonalSceneSkillResource(
+            scope,
+            instanceId,
+            selection.contentRef,
+            selection.resourcePath!,
+          )
         : selection.sceneId
           ? await getPersonalSceneSkill(scope, instanceId, selection.sceneId)
           : await listPersonalSceneSkills(scope, instanceId);
-      return Response.json(result, { headers: { 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' } });
+      return Response.json(result, {
+        headers: {
+          'Cache-Control': 'private, no-store',
+          'X-Content-Type-Options': 'nosniff',
+        },
+      });
     }
     const fields = [
       'setId',
@@ -74,13 +89,29 @@ export async function GET(
   }
 }
 
-export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function POST(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
   try {
-    if (!sameOriginBrowserWrite(request)) throw new DataAccessError('authorization_denied');
+    if (!sameOriginBrowserWrite(request))
+      throw new DataAccessError('authorization_denied');
     const context = await getRequestContext(request);
     if (!context) throw new DataAccessError('authentication_required');
-    const receipt = await savePersonalSceneSkill(context, (await params).id, await request.json());
-    return Response.json({ receipt }, { headers: { 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' } });
+    const receipt = await savePersonalSceneSkill(
+      context,
+      (await params).id,
+      await request.json(),
+    );
+    return Response.json(
+      { receipt },
+      {
+        headers: {
+          'Cache-Control': 'private, no-store',
+          'X-Content-Type-Options': 'nosniff',
+        },
+      },
+    );
   } catch (error) {
     const response = employeeHubErrorResponse(error);
     response.headers.set('Cache-Control', 'private, no-store');
