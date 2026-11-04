@@ -9,6 +9,7 @@ import { join, resolve } from 'node:path';
 import ExcelJS from 'exceljs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readRetiredExecutionHistory } from './retired-execution-history.fixture.ts';
+import { freezeEmployeeRunExecutionBinding } from '../../../../packages/database/src/conversation/current-execution-binding.ts';
 import * as DatabaseClient from '../../../../packages/database/src/core/client.ts';
 import {
   createRuntimeFixtureDatabase,
@@ -3157,7 +3158,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     45000,
   );
 
-  it('用户提到工作流仍走普通 DSH 回答与完整交付检查，不创建旧执行记录', async () => {
+  it.each([false, true])('用户提到工作流仍走普通 DSH 回答，历史目录 %s 不成为旧执行', async (legacyCatalog) => {
     const f = await setup(async () => ({
       text: '数组比较函数返回负数、零或正数来决定顺序。',
     }));
@@ -3166,6 +3167,39 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       '按工作流执行排序流程，解释数组比较函数，不需要文件。',
     );
     expect(task.snapshot.capabilitySnapshot.workflows).toEqual([]);
+    if (legacyCatalog) {
+      // Seed a previously admitted snapshot in this isolated fixture only.
+      // Production snapshots are immutable; the retired catalog is passive.
+      const snapshot = structuredClone(task.snapshot), now = new Date().toISOString();
+      snapshot.capabilitySnapshot.workflows = [{
+        bindingId: randomUUID(), effective: true, disabledReason: null,
+        boundBy: f.identity.user, boundAt: now,
+        revision: {
+          kind: 'workflow', id: randomUUID(), workflowId: randomUUID(), slug: 'legacy',
+          name: 'Legacy', description: 'Historical catalog', revision: 1, status: 'published',
+          checksum: `sha256:${'d'.repeat(64)}`, publishedAt: now,
+          definition: { schemaVersion: 1, inputSchema: {}, outputSchema: {},
+            failurePolicy: 'fail_fast', recoveryPolicy: 'checkpoint',
+            steps: [{ key: 'draft', name: 'Draft', kind: 'model', dependsOn: [], input: {},
+              timeoutMs: 300000, maxAttempts: 1, approval: 'none' }] },
+        },
+      }];
+      const [row] = await f.db`select c.native_root_origin,v.id,v.config_checksum,v.manifest
+        from allrice_employee_runs er join allrice_chat_sessions c on c.id=er.session_id
+        join allrice_employee_versions v on v.id=er.employee_version_id where er.run_id=${task.runId}`;
+      const binding = freezeEmployeeRunExecutionBinding({
+        origin: row!.native_root_origin,
+        scope: { organizationId: f.identity.org, workspaceId: f.identity.workspace,
+          ownerId: f.identity.user, sessionId: f.chat.id, runId: task.runId },
+        source: { employeeVersionId: row!.id, configChecksum: row!.config_checksum, manifest: row!.manifest },
+        executionSnapshot: snapshot,
+      });
+      await f.db.begin(async (tx) => {
+        await tx`alter table allrice_employee_runs disable trigger user`;
+        await tx`update allrice_employee_runs set execution_snapshot=${tx.json(snapshot)},native_execution_binding=${tx.json(binding)} where run_id=${task.runId}`;
+        await tx`alter table allrice_employee_runs enable trigger user`;
+      });
+    }
     try {
       const result = await task.run();
       const coverage = readCheckedFinalDeliveryForExecution(
@@ -3194,6 +3228,46 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       await task.isolation.cleanup();
     }
   }, 45000);
+
+  it.each(['historical-route', 'execution-row'] as const)(
+    '旧 Workflow %s 跨 attempt 恢复仍拒绝，不调用模型',
+    async (kind) => {
+      const f = await setup(async () => ({ text: '不应执行。' }));
+      const first = await prepare(f, '解释数组比较函数，不需要文件。');
+      try {
+        if (kind === 'historical-route') {
+          await f.db`insert into allrice_route_decisions
+            (id,organization_id,workspace_id,actor_id,employee_id,run_id,input_checksum,candidates,
+             selected_kind,selected_candidate_id,harness,provider,model,generation,attempt,reason_codes,created_at)
+            values(${randomUUID()},${f.identity.org},${f.identity.workspace},${f.identity.user},
+              ${f.identity.employee},${first.runId},${`sha256:${'a'.repeat(64)}`},'[]','workflow','legacy',
+              'dsh','openai-compatible','pr1b-synthetic',0,${first.execution.job.attempt},'[]',now())`;
+        } else {
+          const workflowId = randomUUID(), revisionId = randomUUID();
+          await f.db`insert into allrice_workflows(id,organization_id,workspace_id,slug,name,description,created_by)
+            values(${workflowId},${f.identity.org},${f.identity.workspace},'legacy','Legacy','Historical fixture',${f.identity.user})`;
+          await f.db`insert into allrice_workflow_revisions
+            (id,organization_id,workspace_id,workflow_id,revision,name,description,status,definition,checksum,created_by,published_at)
+            values(${revisionId},${f.identity.org},${f.identity.workspace},${workflowId},1,'Legacy','Historical fixture','published','{}',
+              ${`sha256:${'b'.repeat(64)}`},${f.identity.user},now())`;
+          await f.db`insert into allrice_workflow_runs
+            (organization_id,workspace_id,owner_id,run_id,employee_id,workflow_revision_id,status,definition_snapshot)
+            values(${f.identity.org},${f.identity.workspace},${f.identity.user},${first.runId},
+              ${f.identity.employee},${revisionId},'running','{}')`;
+        }
+        await f.db`update allrice_jobs set max_attempts=3 where id=${first.execution.job.id}`;
+        await failJob({ ...first.workflowLease, code: 'SYNTHETIC_RETRY', message: 'Retry fixture', retryable: true, retryBaseMs: 0 });
+        await maintainQueue();
+        const retry = await claim(f, first.runId);
+        try {
+          expect(retry.execution.job.attempt).toBe(first.execution.job.attempt + 1);
+          await expect(retry.run()).rejects.toMatchObject({ code: 'LEGACY_WORKFLOW_RETIRED', retryable: false });
+          expect(model!.requests).toHaveLength(0);
+          expect(await f.db`select id from allrice_route_decisions where run_id=${first.runId} and attempt=${retry.execution.job.attempt}`).toEqual([]);
+        } finally { await retry.isolation.cleanup(); }
+      } finally { await first.isolation.cleanup(); }
+    }, 45000,
+  );
 
   it.each(['missing-frozen-revision', 'unauthorized'] as const)(
     '已存旧 Workflow 路由 %s 在模型调用前拒绝',

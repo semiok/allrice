@@ -215,7 +215,10 @@ for (const [method, path] of [
       body: JSON.stringify({
         workspaceId,
         kind: 'workflow',
-        status: method === 'PATCH' && path.endsWith('/revisions') ? 'deprecated' : 'archived',
+        status:
+          method === 'PATCH' && path.endsWith('/revisions')
+            ? 'deprecated'
+            : 'archived',
       }),
     },
     422,

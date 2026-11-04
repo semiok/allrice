@@ -209,8 +209,9 @@ export async function executeEmployeeRun({
     runId: execution.context.runId,
   });
   if (
-    resolved.executionSnapshot?.schemaVersion === 2 &&
-    resolved.executionSnapshot.workflowInvocation
+    resolved.legacyWorkflowExecution ||
+    (resolved.executionSnapshot?.schemaVersion === 2 &&
+      resolved.executionSnapshot.workflowInvocation)
   ) {
     throw new HandlerError(
       'LEGACY_WORKFLOW_RETIRED',

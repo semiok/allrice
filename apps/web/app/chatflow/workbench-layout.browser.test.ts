@@ -1050,7 +1050,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const instanceId = brandContentPath[1]!;
         if (brandContentPath[2] === 'workflow') {
           state.brandContentLaunches.push(route.request().postDataJSON());
-          return answer({error:{message:'Retired Workflow entry'}},404);
+          return answer({ error: { message: 'Retired Workflow entry' } }, 404);
         }
         const packages = state.brandContentRegistered
           ? [brandContentPackage()]
@@ -2616,7 +2616,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       });
       await dialog.getByLabel('品牌名称').waitFor();
       await dialog.getByRole('button', { name: '选题', exact: true }).click();
-      expect(await dialog.getByRole('button', {name:'生成候选',exact:true}).count()).toBe(0);
+      expect(
+        await dialog
+          .getByRole('button', { name: '生成候选', exact: true })
+          .count(),
+      ).toBe(0);
       expect(f.state.brandContentLaunches).toEqual([]);
       expect(confirmations).toBe(0);
       expect(f.state.messageInputs).toEqual([]);
@@ -6985,7 +6989,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(await textProcedures.innerText()).toContain('对账流程正文');
         expect(await textProcedures.innerText()).not.toContain(workflow.title);
         expect(await executableWorkflows.count()).toBe(0);
-        expect(await dialog.getByText(workflow.body, {exact:true}).count()).toBe(0);
+        expect(
+          await dialog.getByText(workflow.body, { exact: true }).count(),
+        ).toBe(0);
         expect(
           await dialog.getByRole('tabpanel').getByRole('button').count(),
         ).toBe(0);

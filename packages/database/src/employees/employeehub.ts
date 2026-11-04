@@ -1629,6 +1629,7 @@ export async function resolveEmployeeExecution(input: {
       native_skills: unknown;
       execution_snapshot: unknown;
       native_execution_binding: unknown;
+      legacy_workflow_execution: boolean;
       native_root_origin: { schemaVersion?: number } | null;
       session_id: string;
       project_id: string | null;
@@ -1647,7 +1648,13 @@ export async function resolveEmployeeExecution(input: {
       er.execution_snapshot,er.native_execution_binding,er.session_id,er.employee_version_id,
       c.project_id,c.native_root_origin,v.config_checksum,bv.id birth_version_id,bv.manifest birth_manifest,bv.config_checksum birth_config_checksum,
       m.content->>'text' current_user_request,
-      v.system_prompt, v.manifest
+      v.system_prompt, v.manifest,
+      (exists (select 1 from allrice_workflow_runs wr
+        where wr.run_id=er.run_id and wr.organization_id=er.organization_id
+          and wr.workspace_id=er.workspace_id and wr.owner_id=er.owner_id)
+       or exists (select 1 from allrice_route_decisions rd
+        where rd.run_id=er.run_id and rd.organization_id=er.organization_id
+          and rd.workspace_id=er.workspace_id and rd.selected_kind='workflow')) legacy_workflow_execution
     from allrice_employee_runs er
     join allrice_employee_versions v on v.id = er.employee_version_id
       and v.organization_id=er.organization_id and v.workspace_id=er.workspace_id
@@ -1754,6 +1761,9 @@ export async function resolveEmployeeExecution(input: {
     storageObject: ReturnType<typeof StorageObjectSchema.parse>;
   }[] = [];
   return {
+    // Run identity spans attempts; a recovered legacy task must never become
+    // a fresh ordinary model turn. A passive catalog entry is not execution.
+    legacyWorkflowExecution: row.legacy_workflow_execution,
     projectId: row.project_id,
     providerSnapshot: HarnessExecutionSnapshotSchema.parse(
       row.provider_snapshot,

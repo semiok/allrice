@@ -448,22 +448,22 @@ suite('shared storage quota: actual PostgreSQL increment entrypoints', () => {
       }),
     ).rejects.toThrow('quota_exceeded');
   });
-  it('pending reserves bytes, ready does not double count, tombstones release, and export retry is idempotent', async () => {
+  it('pending reserves bytes, ready does not double count, tombstones release, and workbench retry is idempotent', async () => {
     const { f, calls, metadata } = await sources();
     const baseline = await used(f);
     await quota(f, baseline + calls.upload.size);
     await calls.upload.run();
     expect(await used(f)).toBe(baseline + calls.upload.size);
-    await expect(calls.export.run()).rejects.toThrow('quota_exceeded');
+    await expect(calls.workbench.run()).rejects.toThrow('quota_exceeded');
     await abandonStorageMetadata(f.context, metadata.id);
     expect(await used(f)).toBe(baseline);
     await expect(markStorageReady(f.context, metadata.id)).rejects.toThrow(
       'not_found',
     );
-    const first = await calls.export.run();
-    expect(await calls.export.run()).toEqual(first);
-    expect(await used(f)).toBe(baseline + calls.export.size);
-    await quota(f, baseline + calls.export.size + calls.upload.size);
+    const first = await calls.workbench.run();
+    expect(await calls.workbench.run()).toEqual(first);
+    expect(await used(f)).toBe(baseline + calls.workbench.size);
+    await quota(f, baseline + calls.workbench.size + calls.upload.size);
     const next = { ...metadata, id: randomUUID() };
     await createStorageMetadata(f.context, next);
     const pending = await used(f);

@@ -30,7 +30,7 @@ describe('retained read-only brand tool', () => {
         managedBrowserJobLeaseToken: randomUUID(),
         call: { id: randomUUID() },
       },
-    } as RiceToolHandlerContext);
+    } as unknown as RiceToolHandlerContext);
     expect(ports.authorize).toHaveBeenCalledWith(
       expect.anything(),
       'workspace.brand_content.read',
