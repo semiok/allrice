@@ -33,9 +33,14 @@ const statusNames = {
   canceled: '已取消',
   needs_attention: '需要处理',
 };
+function isArchivedInstance(cause: PersonalSceneHttpError) {
+  return cause.status === 409 && cause.code === 'EMPLOYEE_INSTANCE_ARCHIVED';
+}
 function readError(cause: unknown) {
   return cause instanceof PersonalSceneHttpError
-    ? cause.message
+    ? isArchivedInstance(cause)
+      ? 'AI 员工已归档，可以查看历史；恢复后才能继续工作。'
+      : cause.message
     : '当前读取未完成，请重新读取。';
 }
 function resourceBytes(resource: Resource) {
@@ -97,7 +102,7 @@ function ReadPanel(props: Props) {
   function invalidateDeniedRead(cause: unknown, audit = false) {
     if (
       !(cause instanceof PersonalSceneHttpError) ||
-      ![401, 403, 404].includes(cause.status)
+      (![401, 403, 404].includes(cause.status) && !isArchivedInstance(cause))
     )
       return;
     clearPrivatePreview();
