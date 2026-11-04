@@ -320,7 +320,9 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       // Later independent proposals have fresh human input with a persisted
       // native adoption receipt, so the real Run-scoped card read can see them.
       sourceId = randomUUID();
-      const followup = randomUUID(), reply = randomUUID(), inputId = randomUUID();
+      const followup = randomUUID(),
+        reply = randomUUID(),
+        inputId = randomUUID();
       const turn = 'ui-fixture-' + randomUUID();
       await f.db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input)
         values(${followup},${identity.org},${identity.workspace},${identity.user},'succeeded','{}','{}')`;
@@ -332,7 +334,15 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       await f.db`insert into allrice_run_events(organization_id,workspace_id,run_id,sequence,event_type,payload)
         select ${identity.org},${identity.workspace},${identity.rootRunId},coalesce(max(sequence),0)+1,'turn.started',${f.db.json({ turnId: turn, generation: 1 })}
         from allrice_run_events where run_id=${identity.rootRunId}`;
-      const proof = { status: 'adopted', inputId, messageId: 'native-input', sequence: 9, turnId: turn, runId: identity.rootRunId, checkpoint: 'step_user_message' };
+      const proof = {
+        status: 'adopted',
+        inputId,
+        messageId: 'native-input',
+        sequence: 9,
+        turnId: turn,
+        runId: identity.rootRunId,
+        checkpoint: 'step_user_message',
+      };
       await f.db`insert into allrice_conversation_commands(organization_id,workspace_id,session_id,owner_id,followup_run_id,command_type,client_user_message_id,expected_generation,expected_turn_id,message,input_kind,state,native_proof)
         values(${identity.org},${identity.workspace},${identity.session},${identity.user},${followup},'steer',${inputId},1,${turn},${content},'steer_current','consumed',${f.db.json(proof)})`;
     }
