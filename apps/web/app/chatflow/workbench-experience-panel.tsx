@@ -13,7 +13,7 @@ import {
 import { workbenchJson } from '../../lib/chatflow/workbench-model';
 import { WorkbenchIcon } from './workbench-modules';
 import css from './workbench-experience-panel.module.css';
-import { MemoryPanel } from './memory-panel';
+import { EmployeeMemoryManager } from './employee-memory-manager';
 const scopes = {
   personal: '个人',
   department: '部门',
@@ -262,7 +262,7 @@ export function WorkbenchExperiencePanel(props: {
           selected.map((item) => (
             <section key={item.id} className={css.history}>
               <h3>{item.name}</h3>
-              <MemoryPanel
+              <EmployeeMemoryManager
                 key={`${props.scopeId}/${item.id}`}
                 scopeId={props.scopeId}
                 workspaceId={props.workspaceId}

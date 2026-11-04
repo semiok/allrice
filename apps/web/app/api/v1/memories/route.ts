@@ -3,6 +3,7 @@ import {
   createTraceableMemory,
   listWorkspaceMemories,
 } from '@allrice/database';
+import { EmployeeMemoryTextSchema } from '@allrice/contracts';
 
 import { getRequestContext } from '../../../../lib/identity/session';
 import { sameOriginBrowserWrite } from '../../../../lib/identity/request-origin';
@@ -56,6 +57,7 @@ export async function POST(request: Request) {
     // proposals are bound by their existing server-side producer gates.
     if (input?.sourceType !== 'user')
       throw new DataAccessError('authorization_denied');
+    EmployeeMemoryTextSchema.parse(input.content);
     const memory = await createTraceableMemory(context, input);
     return Response.json(
       {

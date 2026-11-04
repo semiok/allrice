@@ -15,6 +15,7 @@ import { organizationErrorMessage } from './organization-api';
 import { useAdminRead as useRead } from './admin-read';
 import { loadOrganizationDepartmentOptions } from './organization-departments';
 import { EmployeeDetailsDialog } from '../chatflow/employee-details-dialog';
+import { EmployeeMemoryView } from './employee-memory-view';
 import css from './organization-ai-directory.module.css';
 
 const headers: Record<string, string> = {};
@@ -224,6 +225,7 @@ function PersonInstances({
 }) {
   const [cursors, setCursors] = useState<string[]>([]);
   const [selected, setSelected] = useState<OrganizationAiInstance | null>(null);
+  const [memoryInstance, setMemoryInstance] = useState<string | null>(null);
   const view = useMemo(
     () => ({ organizationId, userId }),
     [organizationId, userId],
@@ -307,6 +309,10 @@ function PersonInstances({
           >
             查看共享详情
           </AdminButton>
+          <AdminButton onClick={() => setMemoryInstance(value => value === instance.id ? null : instance.id)}>
+            {memoryInstance === instance.id ? '收起记忆' : '查看记忆'}
+          </AdminButton>
+          {memoryInstance === instance.id && <EmployeeMemoryView organizationId={organizationId} ownerId={userId} instanceId={instance.id} />}
         </article>
       ))}
       {!data.instances.length && (
