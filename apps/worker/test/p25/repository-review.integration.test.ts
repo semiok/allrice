@@ -3,6 +3,8 @@ import { createReadPathProbe } from '../../../../packages/database/src/read-path
 import { readRetiredExecutionHistory } from './retired-execution-history.fixture.ts';
 import {
   closeReviewRuntime,
+  reviewCloseRpc,
+  reviewCloseReceipt,
   reviewCloseError as closeOrderingError,
 } from './repository-review-close-diagnostics.fixture.js';
 import {
@@ -539,8 +541,10 @@ suite(
         const jobFailureCommitted = readPathSignal();
         const closeResultHeld = readPathSignal();
         const trace: Record<string, unknown>[] = [];
-        const mark = (event: string, details: Record<string, unknown> = {}) =>
-          trace.push({ event, at: performance.now(), ...details });
+        const mark = (event: string, details: Record<string, unknown> = {}) => {
+          if (trace.length < 256)
+            trace.push({ event, at: performance.now(), ...details });
+        };
         const nativeClients = new Set<DshProtocolClient>();
         const unsubscribe: (() => void)[] = [];
         const legacyHistory = await readRetiredExecutionHistory(f.db);
@@ -587,6 +591,7 @@ suite(
             }
             if (mode === 'revoked') {
               await f.db`update allrice_employee_assignments set active=false where id=(select employee_assignment_id from allrice_employee_runs where run_id=${review.runId})`;
+              mark('assignment_revoked');
             }
             return command({ action: 'inspect' });
           }
@@ -661,7 +666,7 @@ suite(
             })
           : undefined;
         const actualHeartbeat = queue.heartbeatJob;
-        const heartbeatObserver = closeOrdering
+        const heartbeatObserver = diagnoseClose
           ? vi
               .spyOn(queue, 'heartbeatJob')
               .mockImplementation(async (...args) => {
@@ -699,11 +704,6 @@ suite(
           ? vi
               .spyOn(DshProtocolClient.prototype, 'setRequestHandler')
               .mockImplementation(function (this: DshProtocolClient, handler) {
-                if (!closeOrdering) {
-                  if (handler) nativeClients.add(this);
-                  actualSetHandler.call(this, handler);
-                  return;
-                }
                 if (handler && !nativeClients.has(this)) {
                   nativeClients.add(this);
                   const child = Reflect.get(
@@ -713,9 +713,10 @@ suite(
                   mark('host', { pid: child.pid });
                   // This fixture uses only synthetic credentials. Keep stderr
                   // test-local; production deliberately discards this channel.
-                  child.stderr.on('data', (chunk: Buffer) =>
-                    mark('host_stderr', { text: chunk.toString() }),
-                  );
+                  if (closeOrdering)
+                    child.stderr.on('data', (chunk: Buffer) =>
+                      mark('host_stderr', { text: chunk.toString() }),
+                    );
                   let buffered = '';
                   child.stdout.on('data', (chunk: Buffer) => {
                     buffered += chunk.toString();
@@ -726,7 +727,9 @@ suite(
                         const frame = JSON.parse(line);
                         if (frame.result?.allriceClose)
                           mark('shutdown_receipt', {
-                            receipt: frame.result.allriceClose,
+                            receipt: reviewCloseReceipt(
+                              frame.result.allriceClose,
+                            ),
                           });
                       } catch {
                         /* The protocol client owns malformed frames. */
@@ -735,7 +738,10 @@ suite(
                   });
                   unsubscribe.push(
                     this.subscribe(({ method, params }) => {
-                      if (JSON.stringify(params).includes('turn/end'))
+                      if (
+                        closeOrdering &&
+                        JSON.stringify(params).includes('turn/end')
+                      )
                         mark('native_turn_end', { method, params });
                     }),
                   );
@@ -744,15 +750,18 @@ suite(
                   this,
                   handler &&
                     (async (method, params) => {
-                      const details = {
-                        method,
-                        action: params.action,
-                        kind: params.kind,
-                        callId: params.callId,
-                        nativeSessionId: params.nativeSessionId,
-                      };
+                      const details = closeOrdering
+                        ? {
+                            method,
+                            action: params.action,
+                            kind: params.kind,
+                            callId: params.callId,
+                            nativeSessionId: params.nativeSessionId,
+                          }
+                        : reviewCloseRpc(method, params);
                       try {
                         if (
+                          closeOrdering &&
                           method === 'allrice/tool-call' &&
                           !interceptedTool
                         ) {
@@ -1123,6 +1132,18 @@ suite(
                 '[revoked-close-ordering]',
                 JSON.stringify({ mode, trace }),
               );
+            }
+            if (mode === 'revoked') {
+              // Only bounded structural observations; no native frames, stderr,
+              // arguments, arbitrary error text or model messages. No barriers.
+              try {
+                console.info(
+                  '[revoked-close-observation]',
+                  JSON.stringify({ trace }),
+                );
+              } catch {
+                /* Preserve the original test/cleanup outcome. */
+              }
             }
             for (const stop of unsubscribe) stop();
             closeObserver?.mockRestore();

@@ -17,6 +17,7 @@ const identities = new Set([
   'PLATFORM_TECHNICAL_AUTH_REVOKED',
   'EMPLOYEE_CONTENT_UNAVAILABLE',
   'task_progress_lease_lost',
+  'task_progress_call_missing',
   'lease_lost',
   'DSH_CLOSE_EVIDENCE_INVALID',
   'DSH_CLOSE_EVIDENCE_WRITE_UNCONFIRMED',
@@ -196,4 +197,29 @@ export async function closeReviewRuntime(input: {
   } finally {
     logReviewCloseDiagnostics({ ...input, cleanupError });
   }
+}
+
+// Closed projections for ordinary revoked diagnostics. Payloads and IDs are
+// unnecessary to distinguish the one synthetic tool's start/finish ordering.
+export function reviewCloseRpc(method: unknown, params: unknown) {
+  return {
+    method: choice(method, ['allrice/progress', 'allrice/tool-call']),
+    action: choice(field(params, 'action'), [
+      'check',
+      'model_prepare',
+      'start',
+      'finish',
+      'decide',
+    ]),
+    kind: choice(field(params, 'kind'), ['tool', 'model']),
+  };
+}
+
+export function reviewCloseReceipt(value: unknown) {
+  return {
+    version: choice(field(value, 'version'), [1, 2]),
+    sdkShutdown: boolean(field(value, 'sdkShutdown')),
+    rootDisposed: boolean(field(value, 'rootDisposed')),
+    priorFramesFlushed: boolean(field(value, 'priorFramesFlushed')),
+  };
 }
