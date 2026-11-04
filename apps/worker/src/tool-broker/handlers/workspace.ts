@@ -507,6 +507,7 @@ export const rememberWorkspaceMemory: RiceToolHandler = async ({
       lifecycleState: 'candidate',
       memoryClass: memoryClassValue(args.memoryClass),
     },
+    input.context,
   );
   return {
     modelContent: JSON.stringify({

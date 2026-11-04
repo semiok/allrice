@@ -56,7 +56,8 @@ export async function DELETE(
     const workspaceId = new URL(request.url).searchParams.get('workspaceId');
     if (!workspaceId) throw new DataAccessError('not_found');
     const { id } = await route.params;
-    await deleteWorkspaceMemory(context, workspaceId, id);
+    const body = await request.text();
+    await deleteWorkspaceMemory(context, workspaceId, id, body ? JSON.parse(body) : undefined);
     return new Response(null, {
       status: 204,
       headers: { 'cache-control': 'private, no-store' },

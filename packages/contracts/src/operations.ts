@@ -88,8 +88,17 @@ export const MemoryRevisionSchema = z
   .strict();
 export type MemoryRevision = z.infer<typeof MemoryRevisionSchema>;
 
-export const CorrectMemoryInputSchema = z
+export const MemoryMutationInputSchema = z
   .object({
+    instanceId: UuidSchema,
+    expectedRevision: z.number().int().positive(),
+    contentDigest: ChecksumSchema,
+    idempotencyKey: UuidSchema,
+  })
+  .strict();
+
+export const CorrectMemoryInputSchema = MemoryMutationInputSchema
+  .extend({
     content: z.string().trim().min(1).max(100_000),
     reason: z.string().trim().min(1).max(500),
     confidence: z.number().min(0).max(1).default(1),

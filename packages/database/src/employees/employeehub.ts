@@ -443,6 +443,12 @@ export async function listEmployeeHub(
     where organization_id = ${context.organizationId}
       and workspace_id = ${workspaceId}
       and employee_id is not null
+      and owner_id=${userId(context)}
+      and instance_id in (select i.id from allrice_employee_instances i
+        join allrice_employee_assignments a on a.id=i.assignment_id
+        where i.organization_id=${context.organizationId} and i.workspace_id=${workspaceId}
+          and i.owner_id=${userId(context)} and i.archived_at is null and a.active)
+      and not exists(select 1 from allrice_experience_reviews er where er.memory_id=allrice_memories.id)
       and archived_at is null
     group by employee_id
   `;

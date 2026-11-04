@@ -46,6 +46,7 @@ export * from './organization-employee-assignments.ts';
 export * from './employee-administration.ts';
 export * from './data.ts';
 export * from './workspace.ts';
+export { EmployeeMemoryConflict } from './workspace/employee-memory.ts';
 export * from './workspace-readiness.ts';
 export * from './experience.ts';
 export { collectPendingExperienceEvidence } from './experience-evidence.ts';

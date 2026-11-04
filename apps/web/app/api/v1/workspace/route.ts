@@ -17,6 +17,7 @@ export async function GET(request: Request) {
     const workspace = await getEmployeeWorkspace(
       context,
       workspaceId ?? undefined,
+      new URL(request.url).searchParams.get('instanceId') ?? undefined,
     );
     return Response.json(
       {

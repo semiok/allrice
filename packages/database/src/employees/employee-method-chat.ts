@@ -14,6 +14,7 @@ import { lockWorkspaceStorageQuota } from '../core/storage-quota.ts';
 import { DataAccessError } from '../data.ts';
 import { readContentPrincipal } from '../content-maintenance.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
+import { memoryInstanceForRun } from '../workspace/employee-memory.ts';
 import { employeeAccessTransaction } from './employee-access-cancellation.ts';
 import {
   getEmployeeInstance,
@@ -1230,22 +1231,33 @@ export async function isEmployeeMethodAuthoringRun(scope: {
 
 /** Frozen recall can predate another Run entering authoring. Recheck at the
  * Worker execution boundary, preserving frozen bodies and historical records. */
-export async function filterEmployeeMethodMemories<T extends { id: string }>(
-  scope: { organizationId: string; workspaceId: string; ownerId: string },
+export async function filterEmployeeMethodMemories<T extends { id: string; revision?: number; content?: string }>(
+  scope: { organizationId: string; workspaceId: string; ownerId: string; runId: string },
   memories: T[],
 ): Promise<T[]> {
   if (!memories.length) return memories;
+  const sql = getDatabase();
+  const instanceId = await memoryInstanceForRun(sql, scope);
+  if (!instanceId) return [];
   const rows = await getDatabase()<
-    { id: string }[]
-  >`select m.id from allrice_memories m
+    { id: string; revision: number; content: string }[]
+  >`select m.id,m.revision,m.content from allrice_memories m
     where m.id=any(${memories.map((m) => m.id)}::uuid[])
       and m.organization_id=${scope.organizationId} and m.workspace_id=${scope.workspaceId}
-      and (m.owner_id=${scope.ownerId} or m.visibility<>'private') and m.archived_at is null
+      and m.owner_id=${scope.ownerId} and m.instance_id=${instanceId} and m.archived_at is null
+      and (m.expires_at is null or m.expires_at>now()) and m.lifecycle_state='durable'
+      and (m.trust_level='user_confirmed' or exists(select 1 from allrice_experience_reviews governed
+        where governed.memory_id=m.id and governed.origin_kind='derived' and governed.status='approved'
+          and governed.instance_id=m.instance_id and governed.owner_id=m.owner_id))
       and not exists(select 1 from allrice_employee_runs er
         where er.organization_id=m.organization_id and er.workspace_id=m.workspace_id and er.method_authoring
           and ((m.source_type='message' and m.source_id in (er.user_message_id,er.assistant_message_id))
             or (m.source_type='checkpoint' and exists(select 1 from allrice_context_checkpoints cp
               where cp.id=m.source_id and cp.covered_through_message_id in (er.user_message_id,er.assistant_message_id)))))`;
-  const readable = new Set(rows.map((row) => row.id));
-  return memories.filter((memory) => readable.has(memory.id));
+  const readable = new Map(rows.map((row) => [row.id, row]));
+  return memories.filter((memory) => {
+    const row = readable.get(memory.id);
+    return row && memory.content === row.content &&
+      (memory.revision === undefined || memory.revision === row.revision);
+  });
 }

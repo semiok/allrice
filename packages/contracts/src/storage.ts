@@ -84,6 +84,7 @@ export const SignFileInputSchema = z
 export const CreateMemoryInputSchema = z
   .object({
     workspaceId: UuidSchema,
+    instanceId: UuidSchema,
     employeeId: UuidSchema.nullable().default(null),
     projectId: UuidSchema.nullable().default(null),
     content: z.string().min(1).max(100_000),
@@ -97,6 +98,7 @@ export const CreateMemoryInputSchema = z
 export const VectorRecallInputSchema = z
   .object({
     workspaceId: UuidSchema,
+    instanceId: UuidSchema.optional(),
     embedding: z.array(z.number().finite()).length(1536),
     limit: z.number().int().min(1).max(50).default(10),
   })

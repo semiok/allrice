@@ -35,6 +35,7 @@ import {
 import { CompanyAssetError } from '../company-assets.ts';
 import { resolveWorkspaceId } from '../workspace/service.ts';
 import { memorySearchPatterns } from '../memory/search-patterns.ts';
+import { memoryInstanceForRun } from '../workspace/employee-memory.ts';
 
 interface ResourceRow {
   id: string;
@@ -757,6 +758,13 @@ export async function searchToolBrokerMemories(
 ) {
   if (!context.workspaceId) throw new DataAccessError('authorization_denied');
   const sql = transaction ?? getDatabase();
+  const instanceId = await memoryInstanceForRun(sql, {
+    organizationId: context.organizationId,
+    workspaceId: context.workspaceId,
+    ownerId: context.policySnapshot.subjectId,
+    runId: context.runId,
+  });
+  if (!instanceId) return [];
   const { exact, patterns } = memorySearchPatterns(query);
   if (!patterns.length) return [];
   const rows = await sql<
@@ -773,8 +781,9 @@ export async function searchToolBrokerMemories(
     from allrice_memories m
     where organization_id = ${context.organizationId}
       and workspace_id = ${context.workspaceId} and archived_at is null
-      and (owner_id = ${context.policySnapshot.subjectId}
-        or visibility <> 'private')
+      and owner_id = ${context.policySnapshot.subjectId} and instance_id=${instanceId}
+      and lifecycle_state='durable' and trust_level='user_confirmed'
+      and not exists(select 1 from allrice_experience_reviews personal_review where personal_review.memory_id=m.id)
       and (expires_at is null or expires_at > now())
       and not exists(select 1 from allrice_experience_reviews er
         where er.memory_id=m.id and (er.origin_kind in ('incremental','derived') or er.status<>'approved'

@@ -256,13 +256,17 @@ export function WorkbenchExperiencePanel(props: {
             )}
           </>
         ) : tab === 'memories' ? (
+          selected.map((item) => <section key={item.id} className={css.history}>
+          <h3>{item.name}</h3>
           <MemoryPanel
-            key={props.scopeId}
+            key={`${props.scopeId}/${item.id}`}
             scopeId={props.scopeId}
             workspaceId={props.workspaceId}
+            instanceId={item.id}
             headers={props.headers}
             refreshKey={String(revision)}
           />
+          </section>)
         ) : (
           selected.map((item) => (
             <section key={item.id} className={css.history}>
