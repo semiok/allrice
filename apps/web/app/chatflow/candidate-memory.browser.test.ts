@@ -1286,7 +1286,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       await ui.page.getByText(memory.content, { exact: true }).waitFor();
       expect(
         await ui.page
-          .getByRole('button', { name: /编辑|确认并记住|撤回|新增记忆/ })
+          .getByRole('button', { name: /^(编辑|确认并记住|撤回|新增记忆)$/ })
           .count(),
       ).toBe(0);
       expect(await ui.page.locator('a[href]').count()).toBe(0);
