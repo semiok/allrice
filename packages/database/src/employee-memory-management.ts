@@ -149,12 +149,17 @@ export async function listPersonalEmployeeMemories(
         UuidSchema.parse(instanceInput),
         tx,
       );
-      return readPage(tx, {
-        organizationId: scope.organizationId,
-        workspaceId: scope.workspaceId,
-        ownerId: scope.ownerId,
-        instanceId: scope.instanceId,
-      }, query, true);
+      return readPage(
+        tx,
+        {
+          organizationId: scope.organizationId,
+          workspaceId: scope.workspaceId,
+          ownerId: scope.ownerId,
+          instanceId: scope.instanceId,
+        },
+        query,
+        true,
+      );
     },
   );
 }

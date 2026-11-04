@@ -826,9 +826,21 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
           })
           .click();
         await arrived;
-        expect(await ui.page.getByRole('button', { name: '已过期', exact: true }).isDisabled()).toBe(true);
-        expect(await ui.page.getByRole('button', { name: '下一页', exact: true }).isDisabled()).toBe(true);
-        expect(await card(ui.page, fast.id).getByRole('button', { name: '确认并记住' }).isEnabled()).toBe(true);
+        expect(
+          await ui.page
+            .getByRole('button', { name: '已过期', exact: true })
+            .isDisabled(),
+        ).toBe(true);
+        expect(
+          await ui.page
+            .getByRole('button', { name: '下一页', exact: true })
+            .isDisabled(),
+        ).toBe(true);
+        expect(
+          await card(ui.page, fast.id)
+            .getByRole('button', { name: '确认并记住' })
+            .isEnabled(),
+        ).toBe(true);
         const refreshed = ui.page.waitForResponse(
           (response) =>
             ['/api/v1/memories', '/api/v1/memories/manage'].includes(
@@ -885,8 +897,12 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
         await card(ui.page, fast.id)
           .getByText('长期记忆', { exact: true })
           .waitFor();
-        await ui.page.getByRole('button', { name: '已过期', exact: true }).click();
-        await ui.page.getByText('正在读取记忆…', { exact: true }).waitFor({ state: 'hidden' });
+        await ui.page
+          .getByRole('button', { name: '已过期', exact: true })
+          .click();
+        await ui.page
+          .getByText('正在读取记忆…', { exact: true })
+          .waitFor({ state: 'hidden' });
         expect(await ui.page.getByRole('alert').count()).toBe(0);
       } finally {
         release();
@@ -1264,6 +1280,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', user!.email);
     const ui = await open('admin', 'dark', 360);
     try {
+      await ui.page.getByRole('button', { name: '待确认', exact: true }).click();
       await ui.page.getByText(memory.content, { exact: true }).waitFor();
       expect(
         await ui.page

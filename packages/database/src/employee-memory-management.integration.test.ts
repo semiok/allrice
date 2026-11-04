@@ -173,7 +173,8 @@ suite(
       await expect(s.page({ after: 'not-an-id' })).rejects.toThrow();
     });
     it('considers older short memories after the first twenty exceed the byte budget', async () => {
-      const s = await setup(), short = await s.save('短入口');
+      const s = await setup(),
+        short = await s.save('短入口');
       await fixture.db`update allrice_memories set updated_at=now()-interval '1 hour' where id=${short.id}`;
       await fixture.db`insert into allrice_memories(organization_id,workspace_id,employee_id,owner_id,instance_id,content,visibility,source_type,trust_level,lifecycle_state,memory_class)
         select organization_id,workspace_id,employee_id,owner_id,instance_id,repeat('x',1000),'private','user','user_confirmed','durable','user_preference' from allrice_memories cross join generate_series(1,20) n where id=${short.id}`;
@@ -182,7 +183,7 @@ suite(
       expect(budget!.selectedIds).toContain(short.id);
       expect(budget!.selectedIds.length).toBeLessThan(20);
       expect(budget!.usedBytes).toBeLessThanOrEqual(6000);
-      expect(budget!.omittedCount).toBe(21-budget!.selectedIds.length);
+      expect(budget!.omittedCount).toBe(21 - budget!.selectedIds.length);
     });
     it('rejects other people, foreign organizations and revoked owner access', async () => {
       const s = await setup(),
