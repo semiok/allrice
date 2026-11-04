@@ -786,6 +786,13 @@ export const EmployeeRunStatusSchema = z.enum([
 export const EmployeePromptSnapshotSchema = z
   .object({
     systemPrompt: z.string().min(1).max(10_000),
+    // Explicit owner preferences frozen at admission, separate from the base
+    // prompt's unchanged limit. Absence preserves historical Run semantics.
+    personalIdentity: EmployeeInstanceProfileSchema.pick({
+      role: true,
+      mission: true,
+      workStyle: true,
+    }).optional(),
     companyAssets: CompanyRunSnapshotSchema.optional(),
     referenceSelections: ReferenceSelectionsSchema.optional(),
     organizationContext: z

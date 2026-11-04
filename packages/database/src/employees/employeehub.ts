@@ -232,6 +232,9 @@ export interface EmployeeRunBinding {
       typeof EmployeePromptSnapshotSchema.parse
     >['sessionReferences'];
     systemPrompt: string;
+    personalIdentity?: ReturnType<
+      typeof EmployeePromptSnapshotSchema.parse
+    >['personalIdentity'];
     organizationContext?: ReturnType<
       typeof EmployeePromptSnapshotSchema.parse
     >['organizationContext'];
@@ -1615,6 +1618,21 @@ export async function prepareEmployeeRunBinding(
     promptSnapshot: EmployeePromptSnapshotSchema.parse({
       ...input.promptSnapshot,
       systemPrompt: manifest.data.systemPrompt,
+      // Only new Runs freeze this explicit projection. Do not synthesize it
+      // while resolving an older Run whose profile happened to have fields.
+      personalIdentity:
+        instance?.kind === 'custom' &&
+        [
+          instance.profile.role,
+          instance.profile.mission,
+          instance.profile.workStyle,
+        ].some((value) => value !== undefined)
+          ? {
+              role: instance.profile.role,
+              mission: instance.profile.mission,
+              workStyle: instance.profile.workStyle,
+            }
+          : undefined,
       organizationContext,
     }),
   };

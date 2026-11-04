@@ -19,6 +19,7 @@ it('projects only the frozen name and bounded expression preference, without exe
       profile: {
         name: '小禾',
         expressionStyle: 'concise',
+        role: 'DO_NOT_INJECT_LEGACY_ROLE',
         mission: 'DO_NOT_INJECT_MISSION',
         workStyle: 'DO_NOT_INJECT_WORK_STYLE',
       },
