@@ -126,7 +126,10 @@ suite(
         outdir: '/fixture',
         jsx: 'automatic',
         loader: { '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl' },
-        define: { 'process.env.NODE_ENV': '"development"' },
+        define: {
+          'process.env.NODE_ENV': '"development"',
+          'process.env': '{}',
+        },
       });
       const assets = new Map<string, Uint8Array>(
         built.outputFiles.map(
