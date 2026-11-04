@@ -1,12 +1,13 @@
 import { RuntimeNativeInputProofSchema } from '@allrice/contracts';
 import { getDatabase } from '../core/client.ts';
+import type { TransactionSql } from 'postgres';
 
 /** Project only receipt/order facts. Never expose command bodies or native prompts. */
 export async function readSessionSteering(
   organizationId: string,
   workspaceId: string,
   sessionId: string,
-  db = getDatabase(),
+  db: ReturnType<typeof getDatabase> | TransactionSql = getDatabase(),
 ) {
   const rows = await db<
     {

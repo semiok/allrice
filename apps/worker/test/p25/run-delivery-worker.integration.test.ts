@@ -1511,11 +1511,8 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           );
           expect(searchIndex).toBeGreaterThanOrEqual(0);
           const search = await broker.mock.results[searchIndex]!.value;
-          expect(JSON.parse(search.modelContent).items).toContainEqual(
-            expect.objectContaining({
-              id: memories[0]!.id,
-              provenance: expect.objectContaining({ trust: 'derived' }),
-            }),
+          expect(JSON.parse(search.modelContent).items).not.toContainEqual(
+            expect.objectContaining({ id: memories[0]!.id }),
           );
           const coverage = readCheckedFinalDeliveryForExecution(
             task.workflowLease,
@@ -1540,10 +1537,18 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           // The real owner action changes lifecycle; a fresh chat then uses the
           // existing automatic recall path. This is deterministic overlap, not
           // a replacement for the frozen SB02 semantic-recall acceptance case.
-          await promoteWorkspaceMemory(
+          const promoted = await promoteWorkspaceMemory(
             f.context,
             f.identity.workspace,
             memories[0]!.id,
+            {
+              instanceId: f.identity.assignment,
+              expectedRevision: memories[0]!.revision,
+              contentDigest:
+                'sha256:' +
+                createHash('sha256').update(memories[0]!.content).digest('hex'),
+              idempotencyKey: randomUUID(),
+            },
           );
           const confirmedChat = await createAssignedChatSession(f.context, {
             workspaceId: f.identity.workspace,
@@ -1568,6 +1573,12 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
             f.context,
             f.identity.workspace,
             memories[0]!.id,
+            {
+              instanceId: promoted.instanceId,
+              expectedRevision: promoted.revision,
+              contentDigest: promoted.contentDigest,
+              idempotencyKey: randomUUID(),
+            },
           );
           const discardedChat = await createAssignedChatSession(f.context, {
             workspaceId: f.identity.workspace,
@@ -2037,6 +2048,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           f.context,
           f.identity.workspace,
           f.identity.employee,
+          { instanceId: f.chat.employeeInstanceId ?? f.identity.assignment },
         )
       ).map(
         ({ id, content, lifecycleState, sourceId, sourceType, revision }) => ({

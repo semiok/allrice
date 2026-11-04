@@ -18,9 +18,19 @@ export async function GET(
     const workspaceId = new URL(request.url).searchParams.get('workspaceId');
     if (!workspaceId) throw new DataAccessError('not_found');
     const { id } = await route.params;
-    return Response.json({
-      revisions: await listWorkspaceMemoryRevisions(context, workspaceId, id),
-    });
+    const instanceId = new URL(request.url).searchParams.get('instanceId');
+    if (!instanceId) throw new DataAccessError('authorization_denied');
+    return Response.json(
+      {
+        revisions: await listWorkspaceMemoryRevisions(
+          context,
+          workspaceId,
+          id,
+          instanceId,
+        ),
+      },
+      { headers: { 'cache-control': 'private, no-store' } },
+    );
   } catch (error) {
     return storageErrorResponse(error);
   }

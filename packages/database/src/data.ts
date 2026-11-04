@@ -2,8 +2,6 @@ import type { ResourcePrincipal } from './resource-principal.ts';
 import { randomUUID } from 'node:crypto';
 
 import {
-  CreateMemoryInputSchema,
-  CreateRagChunkInputSchema,
   ObjectKeySchema,
   StorageCategorySchema,
   UuidSchema,
@@ -21,6 +19,7 @@ import type { TransactionSql } from 'postgres';
 
 import { getDatabase } from './core/client.ts';
 import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
+import { readContentPrincipal } from './content-maintenance.ts';
 import { workbenchFileAccess } from './workbench-file-access.ts';
 
 const CreateStorageMetadataSchema = z
@@ -454,64 +453,6 @@ export async function resolveStorageGrant(grant: SignedAccessGrant) {
   return mapStoredFile(row);
 }
 
-export async function createMemory(context: RequestContext, input: unknown) {
-  const memory = CreateMemoryInputSchema.parse(input);
-  const owner = actorId(context);
-  if (!hasWorkspaceMembership(context, memory.workspaceId)) {
-    throw new DataAccessError('authorization_denied');
-  }
-  const sql = getDatabase();
-  const rows = await sql<{ id: string }[]>`
-    insert into allrice_memories (
-      organization_id, workspace_id, project_id, employee_id, owner_id,
-      content, metadata, visibility, source_type, source_id
-    ) values (
-      ${context.organizationId}, ${memory.workspaceId}, ${memory.projectId},
-      ${memory.employeeId},
-      ${owner}, ${memory.content}, ${sql.json(memory.metadata)},
-      ${memory.visibility}, ${memory.sourceType}, ${memory.sourceId}
-    )
-    returning id
-  `;
-  if (!rows[0]) throw new Error('memory creation failed');
-  return { id: rows[0].id };
-}
-
-export async function createRagChunk(context: RequestContext, input: unknown) {
-  const chunk = CreateRagChunkInputSchema.parse(input);
-  const owner = actorId(context);
-  if (!hasWorkspaceMembership(context, chunk.workspaceId)) {
-    throw new DataAccessError('authorization_denied');
-  }
-  const sql = getDatabase();
-  const memories = await sql<
-    { id: string; owner_id: string; visibility: Visibility }[]
-  >`
-    select id, owner_id, visibility from allrice_memories
-    where id = ${chunk.memoryId}
-      and organization_id = ${context.organizationId}
-      and workspace_id = ${chunk.workspaceId}
-      and archived_at is null
-  `;
-  const memory = memories[0];
-  if (!memory || memory.owner_id !== owner) {
-    throw new DataAccessError('authorization_denied');
-  }
-  const rows = await sql<{ id: string }[]>`
-    insert into allrice_rag_chunks (
-      organization_id, workspace_id, memory_id, owner_id,
-      content, embedding, visibility
-    ) values (
-      ${context.organizationId}, ${chunk.workspaceId}, ${chunk.memoryId},
-      ${owner}, ${chunk.content}, ${vectorLiteral(chunk.embedding)}::vector,
-      ${memory.visibility}
-    )
-    returning id
-  `;
-  if (!rows[0]) throw new Error('RAG chunk creation failed');
-  return { id: rows[0].id };
-}
-
 function vectorLiteral(values: number[]) {
   return `[${values.join(',')}]`;
 }
@@ -519,29 +460,49 @@ function vectorLiteral(values: number[]) {
 export async function recallRagChunks(context: RequestContext, input: unknown) {
   const query = VectorRecallInputSchema.parse(input);
   const owner = actorId(context);
-  if (!hasWorkspaceMembership(context, query.workspaceId)) {
+  if (!hasWorkspaceMembership(context, query.workspaceId))
     throw new DataAccessError('authorization_denied');
-  }
   const embedding = vectorLiteral(query.embedding);
-  const sql = getDatabase();
-  return sql<
-    {
-      id: string;
-      memory_id: string;
-      content: string;
-      owner_id: string;
-      similarity: number;
-    }[]
-  >`
-    select id, memory_id, content, owner_id,
-           1 - (embedding <=> ${embedding}::vector) as similarity
-    from allrice_rag_chunks
-    where organization_id = ${context.organizationId}
-      and workspace_id = ${query.workspaceId}
-      and (owner_id = ${owner} or visibility <> 'private')
-    order by embedding <=> ${embedding}::vector
-    limit ${query.limit}
-  `;
+  return getDatabase().begin(async (sql) => {
+    const { employeeMemoryScope } =
+      await import('./workspace/employee-memory.ts');
+    if (
+      !(await readContentPrincipal(
+        { ...context, workspaceId: query.workspaceId },
+        sql,
+      ))
+    )
+      throw new DataAccessError('authorization_denied');
+    if (query.instanceId)
+      await employeeMemoryScope(
+        context,
+        query.workspaceId,
+        query.instanceId,
+        sql,
+      );
+    // This generic RAG entrypoint may read governed shared knowledge. Ordinary
+    // personal entries additionally require an explicit current instance.
+    return sql<
+      {
+        id: string;
+        memory_id: string;
+        content: string;
+        owner_id: string;
+        similarity: number;
+      }[]
+    >`
+      select c.id,c.memory_id,c.content,c.owner_id,1-(c.embedding <=> ${embedding}::vector) similarity
+      from allrice_rag_chunks c join allrice_memories m
+        on m.id=c.memory_id and m.organization_id=c.organization_id and m.workspace_id=c.workspace_id
+      where c.organization_id=${context.organizationId} and c.workspace_id=${query.workspaceId}
+        and (c.owner_id=${owner} or c.visibility<>'private')
+        and m.archived_at is null and (m.expires_at is null or m.expires_at>now())
+        and ((m.owner_id=${owner} and m.instance_id=${query.instanceId ?? null}
+          and m.lifecycle_state='durable' and m.trust_level='user_confirmed')
+          or exists(select 1 from allrice_experience_reviews er where er.memory_id=m.id
+            and er.origin_kind='manual' and er.status='approved' and m.visibility<>'private'))
+      order by c.embedding <=> ${embedding}::vector limit ${query.limit}`;
+  });
 }
 
 export function newStorageObjectId() {

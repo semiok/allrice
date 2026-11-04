@@ -27,6 +27,17 @@ import {
 } from './automation-sources.ts';
 import { platformEmployeeModelPolicy } from '../providers/platform-model-settings.ts';
 import { createHash, randomUUID } from 'node:crypto';
+import {
+  assertMemoryRevision,
+  EmployeeMemoryConflict,
+  employeeMemoryScope,
+  memoryContentDigest,
+  memoryOperation,
+  lockMemorySource,
+  type EmployeeMemoryIdentity,
+} from './employee-memory.ts';
+import { assertEmployeeChatHumanSource } from '../employees/employee-chat-authority.ts';
+import { employeeAccessTransaction } from '../employees/employee-access-cancellation.ts';
 import { captureReferenceSelections } from '../reference-runtime.ts';
 import {
   captureCompanyRunAssets,
@@ -47,6 +58,7 @@ import {
   CreateChatSessionInputSchema,
   CreateWorkspaceMemoryInputSchema,
   MemoryRevisionSchema,
+  MemoryMutationInputSchema,
   SessionModelSnapshotSchema,
   SendChatMessageInputSchema,
   RequestContextSchema,
@@ -58,6 +70,7 @@ import {
   type EmployeeAssignmentSchema,
   type ImageMediaType,
   type RequestContext,
+  type ExecutionContext,
   type Visibility,
   type MemoryClass,
   type MemoryLifecycleState,
@@ -68,12 +81,7 @@ import { z } from 'zod';
 import { newCurrentEmployeeChatOrigin } from '../conversation/current-execution-binding.ts';
 import type { TransactionSql } from 'postgres';
 
-import {
-  DataAccessError,
-  createMemory,
-  createRagChunk,
-  getStoredFile,
-} from '../data.ts';
+import { DataAccessError, getStoredFile } from '../data.ts';
 import { getDatabase } from '../core/client.ts';
 import { workbenchFileSchemaReady } from '../workbench-file-access.ts';
 import {
@@ -186,6 +194,7 @@ interface MemoryRow {
   organization_id: string;
   workspace_id: string;
   employee_id: string | null;
+  instance_id: string | null;
   owner_id: string;
   content: string;
   visibility: Visibility;
@@ -1237,6 +1246,7 @@ async function loadWorkspaceMemoryRecallCandidates(
     context: ResourcePrincipal;
     workspaceId: string;
     employeeId?: string;
+    instanceId: string;
     query: string;
     poolSize: number;
     durableOnly: boolean;
@@ -1266,6 +1276,9 @@ async function loadWorkspaceMemoryRecallCandidates(
     where c.organization_id = ${input.context.organizationId}
       and c.workspace_id = ${input.workspaceId}
       and m.archived_at is null
+      and (exists(select 1 from allrice_experience_reviews governed where governed.memory_id=m.id)
+        or (m.owner_id=${requireUser(input.context)} and m.instance_id=${input.instanceId}
+          and m.lifecycle_state='durable' and m.trust_level='user_confirmed'))
       and not exists(select 1 from allrice_experience_reviews er
         where er.memory_id=m.id and (er.origin_kind in ('incremental','derived') or er.status<>'approved'
           or exists(select 1 from allrice_employee_runs origin where origin.run_id=er.run_id and origin.method_authoring)))
@@ -1315,13 +1328,15 @@ async function recallForReply(
   workspaceId: string,
   employeeId: string | undefined,
   text: string,
-  sql: WorkspaceSql = getDatabase(),
+  sql: WorkspaceSql,
+  instanceId: string,
 ) {
   const candidates = await loadWorkspaceMemoryRecallCandidates(
     {
       context,
       workspaceId,
       employeeId,
+      instanceId,
       query: text,
       poolSize: 60,
       durableOnly: true,
@@ -1361,37 +1376,54 @@ async function recallForReply(
 
 export async function searchWorkspaceMemories(
   context: RequestContext,
-  input: { workspaceId: string; query: string; limit?: number },
+  input: {
+    workspaceId: string;
+    instanceId: string;
+    query: string;
+    limit?: number;
+  },
 ) {
   const workspaceId = await resolveWorkspaceId(context, input.workspaceId);
   const query = z.string().trim().min(1).max(4_000).parse(input.query);
   const limit = z.number().int().min(1).max(20).default(5).parse(input.limit);
-  const candidates = await loadWorkspaceMemoryRecallCandidates({
-    context,
-    workspaceId,
-    query,
-    poolSize: Math.min(
-      workspaceMemoryRecallPolicy.maximumCandidatePool,
-      Math.max(60, limit * 12),
-    ),
-    durableOnly: false,
+  return getDatabase().begin(async (sql) => {
+    const scope = await employeeMemoryScope(
+      context,
+      workspaceId,
+      UuidSchema.parse(input.instanceId),
+      sql,
+    );
+    const candidates = await loadWorkspaceMemoryRecallCandidates(
+      {
+        context,
+        workspaceId,
+        instanceId: scope.instanceId,
+        query,
+        poolSize: Math.min(
+          workspaceMemoryRecallPolicy.maximumCandidatePool,
+          Math.max(60, limit * 12),
+        ),
+        durableOnly: true,
+      },
+      sql,
+    );
+    return rankWorkspaceMemoryRecallCandidates(candidates, {
+      threshold: workspaceMemoryRecallPolicy.explicitThreshold,
+      limit,
+      durableOnly: true,
+    }).map((memory) => ({
+      id: memory.id,
+      content: memory.content,
+      source_type: memory.sourceType,
+      source_id: memory.sourceId,
+      lifecycle_state: memory.lifecycleState,
+      memory_class: memory.memoryClass,
+      trust_level: memory.trust,
+      confidence: memory.confidence,
+      source_label: memory.sourceLabel,
+      relevance_score: memory.relevanceScore,
+    }));
   });
-  return rankWorkspaceMemoryRecallCandidates(candidates, {
-    threshold: workspaceMemoryRecallPolicy.explicitThreshold,
-    limit,
-    durableOnly: false,
-  }).map((memory) => ({
-    id: memory.id,
-    content: memory.content,
-    source_type: memory.sourceType,
-    source_id: memory.sourceId,
-    lifecycle_state: memory.lifecycleState,
-    memory_class: memory.memoryClass,
-    trust_level: memory.trust,
-    confidence: memory.confidence,
-    source_label: memory.sourceLabel,
-    relevance_score: memory.relevanceScore,
-  }));
 }
 
 export async function authorizeSessionOwner(
@@ -1861,6 +1893,7 @@ async function prepareChatRunBinding(
     result.currentAssignment.employee_id,
     message.text,
     sql,
+    session.employee_instance_id ?? session.employee_assignment_id,
   );
   const { prepareEmployeeRunBinding } =
     await import('../employees/employeehub.ts');
@@ -2430,6 +2463,8 @@ function mapMemory(row: MemoryRow): WorkspaceMemory {
     organizationId: row.organization_id,
     workspaceId: row.workspace_id,
     employeeId: row.employee_id,
+    instanceId: row.instance_id,
+    contentDigest: memoryContentDigest(row.content),
     ownerId: row.owner_id,
     content: row.content,
     visibility: row.visibility,
@@ -2456,208 +2491,285 @@ export async function listWorkspaceMemories(
   context: RequestContext,
   workspaceIdInput: string,
   employeeIdInput?: string,
-  options: { personal?: boolean; sourceId?: string; runId?: string } = {},
+  options: {
+    personal?: boolean;
+    sourceId?: string;
+    runId?: string;
+    instanceId?: string;
+  } = {},
 ) {
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
-  const employeeId = employeeIdInput ? UuidSchema.parse(employeeIdInput) : null;
-  const sql = getDatabase();
-  const personal = options.personal || !!options.sourceId || !!options.runId;
-  let sourceIds = options.sourceId
-    ? [UuidSchema.parse(options.sourceId)]
-    : null;
-  if (options.runId) {
-    const [run] = await sql<{ session_id: string; user_message_id: string }[]>`
-      select session_id, user_message_id from allrice_employee_runs
-      where run_id = ${UuidSchema.parse(options.runId)}
-        and organization_id = ${context.organizationId}
-        and workspace_id = ${workspaceId} and owner_id = ${requireUser(context)}
-    `;
-    if (!run) throw new DataAccessError('not_found');
-    const steering = await readSessionSteering(
-      context.organizationId,
+  return getDatabase().begin(async (tx) => {
+    let instanceId = options.instanceId;
+    let sourceIds = options.sourceId
+      ? [UuidSchema.parse(options.sourceId)]
+      : null;
+    if (options.runId) {
+      const [run] = await tx<
+        { session_id: string; user_message_id: string; instance_id: string }[]
+      >`
+        select r.session_id,r.user_message_id,coalesce(s.employee_instance_id,s.employee_assignment_id) instance_id
+        from allrice_employee_runs r join allrice_chat_sessions s on s.id=r.session_id
+          and s.organization_id=r.organization_id and s.workspace_id=r.workspace_id and s.owner_id=r.owner_id
+        where r.run_id=${UuidSchema.parse(options.runId)} and r.organization_id=${context.organizationId}
+          and r.workspace_id=${workspaceId} and r.owner_id=${requireUser(context)} and s.archived_at is null`;
+      if (!run || (instanceId && instanceId !== run.instance_id))
+        throw new DataAccessError('not_found');
+      instanceId = run.instance_id;
+      const steering = await readSessionSteering(
+        context.organizationId,
+        workspaceId,
+        run.session_id,
+        tx,
+      );
+      const bound = new Set([
+        run.user_message_id,
+        ...steering
+          .filter(
+            (item) =>
+              item.steering.runId === options.runId &&
+              item.steering.status === 'adopted',
+          )
+          .map((item) => item.messageId),
+      ]);
+      sourceIds = sourceIds
+        ? sourceIds.filter((id) => bound.has(id))
+        : [...bound];
+    }
+    if (!instanceId) throw new DataAccessError('authorization_denied');
+    const scope = await employeeMemoryScope(
+      context,
       workspaceId,
-      run.session_id,
-      sql,
+      instanceId,
+      tx,
     );
-    const bound = new Set([
-      run.user_message_id,
-      ...steering
-        .filter(
-          (item) =>
-            item.steering.runId === options.runId &&
-            item.steering.status === 'adopted',
-        )
-        .map((item) => item.messageId),
-    ]);
-    sourceIds = sourceIds
-      ? sourceIds.filter((id) => bound.has(id))
-      : [...bound];
-  }
-  if (sourceIds?.length === 0) return [];
-  const rows = await sql<MemoryRow[]>`
-    select * from allrice_memories
-    where organization_id = ${context.organizationId}
-      and workspace_id = ${workspaceId}
-      and (${employeeId}::uuid is null or employee_id = ${employeeId})
-      and archived_at is null
-      and (not ${personal} or (owner_id = ${requireUser(context)}
-        and not exists (select 1 from allrice_experience_reviews review
-          where review.memory_id = allrice_memories.id)))
-      ${sourceIds ? sql`and source_type = 'message' and source_id in ${sql(sourceIds)}` : sql``}
-    order by updated_at desc, id desc
-    limit 100
-  `;
-  return rows
-    .filter(
-      (row) =>
-        authorize(
-          {
-            type: 'memory',
-            id: row.id,
-            organizationId: row.organization_id,
-            workspaceId: row.workspace_id,
-            ownerId: row.owner_id,
-            visibility: row.visibility,
-            archivedAt: null,
-          },
-          'resource:read',
-          context,
-        ).allowed,
+    if (
+      employeeIdInput &&
+      UuidSchema.parse(employeeIdInput) !== scope.employeeId
     )
-    .map(mapMemory);
+      throw new DataAccessError('authorization_denied');
+    if (sourceIds?.length === 0) return [];
+    const rows = await tx<MemoryRow[]>`select * from allrice_memories m
+      where m.organization_id=${context.organizationId} and m.workspace_id=${workspaceId}
+        and m.owner_id=${scope.ownerId} and m.instance_id=${scope.instanceId} and m.archived_at is null
+        and not exists(select 1 from allrice_experience_reviews er where er.memory_id=m.id)
+        ${sourceIds ? tx`and m.source_type='message' and m.source_id in ${tx(sourceIds)}` : tx``}
+      order by m.updated_at desc,m.id desc limit 100`;
+    return rows.map(mapMemory);
+  });
 }
 
 export async function createTraceableMemory(
   context: RequestContext,
   input: unknown,
+  executionContext?: ExecutionContext,
 ) {
   const memory = CreateWorkspaceMemoryInputSchema.parse(input);
   const workspaceId = await resolveWorkspaceId(context, memory.workspaceId);
-  const sql = getDatabase();
-  // A candidate discussion is not a source for long-term memory. Also checked
-  // at recall time, covering a memory committed before authoring was entered.
-  const [candidateSource] =
-    await sql`select er.run_id from allrice_employee_runs er
-    where er.organization_id=${context.organizationId} and er.workspace_id=${workspaceId} and er.method_authoring
-      and ((${memory.sourceType}='message' and ${memory.sourceId}::uuid in (er.user_message_id,er.assistant_message_id))
-        or (${memory.sourceType}='checkpoint' and exists(select 1 from allrice_context_checkpoints cp
-          where cp.id=${memory.sourceId}::uuid and cp.covered_through_message_id in (er.user_message_id,er.assistant_message_id)))) limit 1`;
-  if (candidateSource) throw new DataAccessError('authorization_denied');
-  if (memory.sourceType === 'user' && memory.sourceId !== null) {
-    throw new DataAccessError('authorization_denied');
-  }
-  if (memory.sourceType === 'message') {
-    if (!memory.sourceId) throw new DataAccessError('not_found');
-    const messages = await sql<{ id: string }[]>`
-      select m.id
-      from allrice_messages m
-      join allrice_chat_sessions s on s.id = m.session_id
-      where m.id = ${memory.sourceId}
-        and m.organization_id = ${context.organizationId}
-        and m.workspace_id = ${workspaceId}
-        and (s.owner_id = ${requireUser(context)} or s.visibility <> 'private')
-    `;
-    if (!messages[0]) throw new DataAccessError('authorization_denied');
-  }
-  if (memory.sourceType === 'file') {
-    if (!memory.sourceId) throw new DataAccessError('not_found');
-    const file = await getStoredFile(context, memory.sourceId);
-    if (file.object.workspaceId !== workspaceId) {
-      throw new DataAccessError('authorization_denied');
-    }
-  }
-  if (memory.sourceType === 'checkpoint') {
-    if (!memory.sourceId) throw new DataAccessError('not_found');
-    const checkpoints = await sql<{ id: string }[]>`
-      select id from allrice_context_checkpoints
-      where id = ${memory.sourceId}
-        and organization_id = ${context.organizationId}
-        and workspace_id = ${workspaceId}
-        and owner_id = ${requireUser(context)}
-    `;
-    if (!checkpoints[0]) throw new DataAccessError('authorization_denied');
-  }
-  if (
-    (memory.sourceType === 'tool' || memory.sourceType === 'connector') &&
-    !memory.sourceId
-  ) {
-    throw new DataAccessError('not_found');
-  }
-  if (memory.employeeId) {
-    const assignments = await sql<{ id: string }[]>`
-      select id from allrice_employee_assignments
-      where organization_id = ${context.organizationId}
-        and workspace_id = ${workspaceId}
-        and employee_id = ${memory.employeeId}
-        and user_id = ${requireUser(context)}
-        and active
-    `;
-    if (!assignments[0]) throw new DataAccessError('authorization_denied');
-  }
-  const created = await createMemory(context, {
-    workspaceId,
-    employeeId: memory.employeeId,
-    projectId: null,
-    content: memory.content,
-    metadata: {},
-    visibility: memory.visibility,
-    sourceType: memory.sourceType,
-    sourceId: memory.sourceId,
-  });
-  const trust =
-    memory.sourceType === 'user' ||
-    (memory.sourceType === 'message' && memory.lifecycleState === 'durable')
-      ? 'user_confirmed'
-      : memory.sourceType === 'tool' || memory.sourceType === 'connector'
-        ? 'untrusted_external'
-        : 'derived';
-  await sql.begin(async (transaction) => {
-    await transaction`
-      update allrice_memories
-      set trust_level = ${trust}, confidence = ${memory.confidence},
-          source_label = ${memory.sourceLabel}, captured_at = now(),
-          lifecycle_state = ${memory.lifecycleState},
-          memory_class = ${memory.memoryClass},
-          expires_at = ${memory.expiresAt},
-          last_verified_at = ${trust === 'user_confirmed' ? new Date() : null},
-          updated_at = now()
-      where id = ${created.id}
-        and organization_id = ${context.organizationId}
-        and workspace_id = ${workspaceId}
-    `;
-    await transaction`
-      insert into allrice_memory_revisions (
-        organization_id, workspace_id, memory_id, revision, content,
-        trust_level, lifecycle_state, memory_class, confidence, expires_at,
-        reason, changed_by
-      ) values (
-        ${context.organizationId}, ${workspaceId}, ${created.id}, 1,
-        ${memory.content}, ${trust}, ${memory.lifecycleState},
-        ${memory.memoryClass}, ${memory.confidence}, ${memory.expiresAt},
-        ${`created from ${memory.sourceLabel}`}, ${requireUser(context)}
+  return employeeAccessTransaction(getDatabase(), async (tx) => {
+    let identity: EmployeeMemoryIdentity = context;
+    if (executionContext) {
+      if (
+        memory.sourceType !== 'message' ||
+        !memory.sourceId ||
+        executionContext.organizationId !== context.organizationId ||
+        executionContext.workspaceId !== workspaceId ||
+        executionContext.delegatedBy.type !== 'user' ||
+        executionContext.delegatedBy.id !== requireUser(context) ||
+        executionContext.policySnapshot.subjectId !== requireUser(context)
       )
-    `;
+        throw new DataAccessError('authorization_denied');
+      await assertEmployeeChatHumanSource(
+        { context: executionContext, userMessageId: memory.sourceId },
+        tx,
+      );
+      // A Worker Run ID is not a browser authentication-session ID.
+      identity = {
+        actor: context.actor,
+        organizationId: context.organizationId,
+        workspaceId,
+        requestId: context.requestId,
+        memberships: context.memberships,
+      };
+    }
+    // Only stored Session identity can bind a message/checkpoint proposal.
+    // The existing Worker HumanSource gate remains the authority for tool calls.
+    const source =
+      memory.sourceId && ['message', 'checkpoint'].includes(memory.sourceType)
+        ? (
+            await tx<{ session_id: string; instance_id: string }[]>`
+          select s.id session_id,coalesce(s.employee_instance_id,s.employee_assignment_id) instance_id
+          from allrice_chat_sessions s
+          where s.organization_id=${context.organizationId} and s.workspace_id=${workspaceId}
+            and s.owner_id=${requireUser(context)} and s.archived_at is null
+            and ((${memory.sourceType}='message' and exists(select 1 from allrice_messages m
+              where m.id=${memory.sourceId} and m.session_id=s.id and m.organization_id=s.organization_id
+                and m.workspace_id=s.workspace_id and m.owner_id=s.owner_id))
+              or (${memory.sourceType}='checkpoint' and exists(select 1 from allrice_context_checkpoints cp
+                where cp.id=${memory.sourceId} and cp.session_id=s.id and cp.organization_id=s.organization_id
+                  and cp.workspace_id=s.workspace_id and cp.owner_id=s.owner_id)))`
+          )[0]
+        : undefined;
+    if (['message', 'checkpoint'].includes(memory.sourceType) && !source)
+      throw new DataAccessError('authorization_denied');
+    const instanceId = source?.instance_id ?? memory.instanceId;
+    if (
+      !instanceId ||
+      (memory.instanceId && memory.instanceId !== instanceId) ||
+      memory.visibility !== 'private'
+    )
+      throw new DataAccessError('authorization_denied');
+    const scope = await employeeMemoryScope(
+      identity,
+      workspaceId,
+      instanceId,
+      tx,
+      true,
+    );
+    if (memory.employeeId && memory.employeeId !== scope.employeeId)
+      throw new DataAccessError('authorization_denied');
+    if (source) {
+      const [session] = await tx`select id from allrice_chat_sessions
+        where id=${source.session_id} and owner_id=${scope.ownerId} and organization_id=${scope.organizationId}
+          and workspace_id=${workspaceId} and coalesce(employee_instance_id,employee_assignment_id)=${scope.instanceId}
+          and archived_at is null for share`;
+      if (!session) throw new DataAccessError('authorization_denied');
+    }
+    const [candidateSource] =
+      await tx`select er.run_id from allrice_employee_runs er
+      where er.organization_id=${context.organizationId} and er.workspace_id=${workspaceId} and er.method_authoring
+        and ((${memory.sourceType}='message' and ${memory.sourceId}::uuid in (er.user_message_id,er.assistant_message_id))
+          or (${memory.sourceType}='checkpoint' and exists(select 1 from allrice_context_checkpoints cp
+            where cp.id=${memory.sourceId}::uuid and cp.covered_through_message_id in (er.user_message_id,er.assistant_message_id)))) limit 1`;
+    if (
+      candidateSource ||
+      (memory.sourceType === 'user' && memory.sourceId !== null)
+    )
+      throw new DataAccessError('authorization_denied');
+    if (memory.sourceType === 'file') {
+      if (!memory.sourceId) throw new DataAccessError('not_found');
+      const file = await getStoredFile(context, memory.sourceId, tx);
+      if (file.object.workspaceId !== workspaceId)
+        throw new DataAccessError('authorization_denied');
+    }
+    if (['tool', 'connector'].includes(memory.sourceType) && !memory.sourceId)
+      throw new DataAccessError('not_found');
+    if (source) {
+      await lockMemorySource(tx, scope, memory.sourceType, memory.sourceId);
+    }
+    const key = source
+      ? `source:${memory.sourceType}:${memory.sourceId}:${memoryContentDigest(memory.content)}`
+      : memory.idempotencyKey;
+    if (!key) throw new DataAccessError('authorization_denied');
+    // The existing Worker handler supplies candidate; keep its model-facing
+    // contract unchanged. Browser writes can only be direct user records.
+    const lifecycleState = executionContext
+      ? 'candidate'
+      : memory.lifecycleState;
+    const trust =
+      memory.sourceType === 'user' ||
+      (memory.sourceType === 'message' && lifecycleState === 'durable')
+        ? 'user_confirmed'
+        : ['tool', 'connector'].includes(memory.sourceType)
+          ? 'untrusted_external'
+          : 'derived';
+    return memoryOperation(
+      tx,
+      scope,
+      'create',
+      key,
+      { ...memory, instanceId, lifecycleState },
+      async () => {
+        // An existing, current receipt may still be replayed when a different
+        // proposal from this source was discarded. Only new creation is barred.
+        if (source) {
+          const [discarded] = await tx`select id from allrice_memories
+            where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
+              and owner_id=${scope.ownerId} and instance_id=${scope.instanceId}
+              and source_type=${memory.sourceType} and source_id=${memory.sourceId}
+              and archived_at is not null limit 1`;
+          if (discarded) throw new EmployeeMemoryConflict();
+        }
+        const [row] = await tx<MemoryRow[]>`
+          insert into allrice_memories(organization_id,workspace_id,employee_id,owner_id,instance_id,
+            content,visibility,source_type,source_id,trust_level,confidence,source_label,
+            lifecycle_state,memory_class,expires_at,last_verified_at)
+          values(${scope.organizationId},${workspaceId},${scope.employeeId},${scope.ownerId},${scope.instanceId},
+            ${memory.content},'private',${memory.sourceType},${memory.sourceId},${trust},${memory.confidence},
+            ${memory.sourceLabel},${lifecycleState},${memory.memoryClass},${memory.expiresAt},
+            ${trust === 'user_confirmed' ? new Date() : null}) returning *`;
+        if (!row) throw new Error('memory creation failed');
+        await insertMemoryRevision(
+          tx,
+          context,
+          row,
+          `created from ${memory.sourceLabel}`,
+        );
+        await insertMemoryChunk(tx, row);
+        await audit(
+          {
+            context,
+            workspaceId,
+            action: 'memory.create',
+            resourceType: 'memory',
+            resourceId: row.id,
+            reason: `explicit_${memory.sourceType}_source`,
+          },
+          tx,
+        );
+        return mapMemory(row);
+      },
+    );
   });
-  await createRagChunk(context, {
-    workspaceId,
-    memoryId: created.id,
-    content: memory.content,
-    embedding: embedWorkspaceText(memory.content),
-  });
-  const rows = await sql<MemoryRow[]>`
-    select * from allrice_memories where id = ${created.id}
-  `;
-  const row = rows[0];
-  if (!row) throw new Error('memory creation failed');
-  await audit({
-    context,
-    workspaceId,
-    action: 'memory.create',
-    resourceType: 'memory',
-    resourceId: row.id,
-    reason: `explicit_${memory.sourceType}_source`,
-  });
-  return mapMemory(row);
+}
+
+/** Chunks are a projection of the exact saved row, never a second write API. */
+async function insertMemoryChunk(tx: TransactionSql, row: MemoryRow) {
+  const embedding = `[${embedWorkspaceText(row.content).join(',')}]`;
+  await tx`insert into allrice_rag_chunks(organization_id,workspace_id,memory_id,owner_id,content,embedding,visibility)
+    values(${row.organization_id},${row.workspace_id},${row.id},${row.owner_id},${row.content},${embedding}::vector,${row.visibility})`;
+}
+
+async function insertMemoryRevision(
+  tx: TransactionSql,
+  context: RequestContext,
+  row: MemoryRow,
+  reason: string,
+) {
+  await tx`insert into allrice_memory_revisions
+    (organization_id,workspace_id,memory_id,revision,content,trust_level,lifecycle_state,memory_class,
+      confidence,expires_at,reason,changed_by)
+    values(${row.organization_id},${row.workspace_id},${row.id},${row.revision},${row.content},
+      ${row.trust_level},${row.lifecycle_state},${row.memory_class},${row.confidence},${row.expires_at},
+      ${reason},${requireUser(context)})`;
+}
+
+async function lockPersonalMemory(
+  tx: TransactionSql,
+  context: RequestContext,
+  workspaceId: string,
+  memoryId: string,
+  instanceId: string,
+) {
+  const [row] = await tx<MemoryRow[]>`select * from allrice_memories m
+    where m.id=${memoryId} and m.organization_id=${context.organizationId} and m.workspace_id=${workspaceId}
+      and m.owner_id=${requireUser(context)} and m.instance_id=${instanceId} and m.archived_at is null
+      and not exists(select 1 from allrice_experience_reviews e where e.memory_id=m.id)
+    for update`;
+  if (!row) throw new DataAccessError('not_found');
+  return row;
+}
+
+async function rejectGovernedMemoryMutation(
+  context: RequestContext,
+  workspaceId: string,
+  memoryId: string,
+) {
+  const [review] =
+    await getDatabase()`select memory_id from allrice_experience_reviews
+    where memory_id=${UuidSchema.parse(memoryId)} and organization_id=${context.organizationId}
+      and workspace_id=${UuidSchema.parse(workspaceId)} and owner_id=${requireUser(context)}`;
+  if (review) throw new DataAccessError('authorization_denied');
 }
 
 export async function correctWorkspaceMemory(
@@ -2666,217 +2778,190 @@ export async function correctWorkspaceMemory(
   memoryIdInput: string,
   input: unknown,
 ) {
+  await rejectGovernedMemoryMutation(context, workspaceIdInput, memoryIdInput);
   const correction = CorrectMemoryInputSchema.parse(input);
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
   const memoryId = UuidSchema.parse(memoryIdInput);
-  const sql = getDatabase();
-  const row = await sql.begin(async (transaction) => {
-    const currentRows = await transaction<MemoryRow[]>`
-      select * from allrice_memories
-      where id = ${memoryId}
-        and organization_id = ${context.organizationId}
-        and workspace_id = ${workspaceId}
-        and owner_id = ${requireUser(context)}
-        and archived_at is null
-      for update
-    `;
-    const current = currentRows[0];
-    if (!current) throw new DataAccessError('not_found');
-    const governed =
-      await transaction`select memory_id from allrice_experience_reviews where memory_id=${current.id}`;
-    if (governed.length) throw new DataAccessError('authorization_denied');
-    const revision = current.revision + 1;
-    const updatedRows = await transaction<MemoryRow[]>`
-      update allrice_memories
-      set content = ${correction.content}, revision = ${revision},
-          trust_level = 'user_confirmed', confidence = ${correction.confidence},
-          lifecycle_state = 'durable',
-          source_label = '用户更正', expires_at = ${correction.expiresAt},
-          last_verified_at = now(), updated_at = now()
-      where id = ${current.id}
-      returning *
-    `;
-    await transaction`
-      insert into allrice_memory_revisions (
-        organization_id, workspace_id, memory_id, revision, content,
-        trust_level, lifecycle_state, memory_class, confidence, expires_at,
-        reason, changed_by
-      ) values (
-        ${context.organizationId}, ${workspaceId}, ${current.id}, ${revision},
-        ${correction.content}, 'user_confirmed', 'durable',
-        ${current.memory_class}, ${correction.confidence},
-        ${correction.expiresAt}, ${correction.reason}, ${requireUser(context)}
-      )
-    `;
-    await transaction`
-      delete from allrice_rag_chunks
-      where organization_id = ${context.organizationId}
-        and workspace_id = ${workspaceId}
-        and memory_id = ${current.id}
-    `;
-    const updated = updatedRows[0];
-    if (!updated) throw new Error('memory correction failed');
-    return updated;
+  return employeeAccessTransaction(getDatabase(), async (tx) => {
+    const scope = await employeeMemoryScope(
+      context,
+      workspaceId,
+      correction.instanceId,
+      tx,
+      true,
+    );
+    return memoryOperation(
+      tx,
+      scope,
+      'correct',
+      correction.idempotencyKey,
+      { memoryId, ...correction },
+      async () => {
+        const current = await lockPersonalMemory(
+          tx,
+          context,
+          workspaceId,
+          memoryId,
+          scope.instanceId,
+        );
+        assertMemoryRevision(current, correction);
+        const [row] = await tx<MemoryRow[]>`update allrice_memories
+        set content=${correction.content},revision=revision+1,trust_level='user_confirmed',
+          confidence=${correction.confidence},lifecycle_state='durable',source_label='用户更正',
+          expires_at=${correction.expiresAt},last_verified_at=now(),updated_at=now()
+        where id=${memoryId} returning *`;
+        if (!row) throw new Error('memory correction failed');
+        await insertMemoryRevision(tx, context, row, correction.reason);
+        await tx`delete from allrice_rag_chunks where memory_id=${memoryId}
+        and organization_id=${scope.organizationId} and workspace_id=${workspaceId}`;
+        await insertMemoryChunk(tx, row);
+        await audit(
+          {
+            context,
+            workspaceId,
+            action: 'memory.correct',
+            resourceType: 'memory',
+            resourceId: memoryId,
+            reason: correction.reason,
+          },
+          tx,
+        );
+        return mapMemory(row);
+      },
+    );
   });
-  await createRagChunk(context, {
-    workspaceId,
-    memoryId: row.id,
-    content: correction.content,
-    embedding: embedWorkspaceText(correction.content),
-  });
-  await audit({
-    context,
-    workspaceId,
-    action: 'memory.correct',
-    resourceType: 'memory',
-    resourceId: row.id,
-    reason: correction.reason,
-  });
-  return mapMemory(row);
 }
 
 export async function listWorkspaceMemoryRevisions(
   context: RequestContext,
   workspaceIdInput: string,
   memoryIdInput: string,
+  instanceId: string,
 ) {
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
   const memoryId = UuidSchema.parse(memoryIdInput);
-  const sql = getDatabase();
-  const memories = await sql<MemoryRow[]>`
-    select * from allrice_memories
-    where id = ${memoryId}
-      and organization_id = ${context.organizationId}
-      and workspace_id = ${workspaceId}
-  `;
-  const memory = memories[0];
-  if (!memory) throw new DataAccessError('not_found');
-  const allowed = authorize(
-    {
-      type: 'memory',
-      id: memory.id,
-      organizationId: memory.organization_id,
-      workspaceId: memory.workspace_id,
-      ownerId: memory.owner_id,
-      visibility: memory.visibility,
-      archivedAt: null,
-    },
-    'resource:read',
-    context,
-  );
-  if (!allowed.allowed) throw new DataAccessError('authorization_denied');
-  const rows = await sql<
-    {
-      id: string;
-      organization_id: string;
-      workspace_id: string;
-      memory_id: string;
-      revision: number;
-      content: string;
-      trust_level:
-        | 'user_confirmed'
-        | 'platform_verified'
-        | 'derived'
-        | 'untrusted_external';
-      lifecycle_state: MemoryLifecycleState;
-      memory_class: MemoryClass;
-      confidence: string | number;
-      expires_at: Date | null;
-      reason: string;
-      changed_by: string;
-      changed_at: Date;
-    }[]
-  >`
+  return getDatabase().begin(async (sql) => {
+    const scope = await employeeMemoryScope(
+      context,
+      workspaceId,
+      instanceId,
+      sql,
+    );
+    const [memory] = await sql`select id from allrice_memories m
+    where m.id=${memoryId} and m.organization_id=${context.organizationId} and m.workspace_id=${workspaceId}
+      and m.owner_id=${scope.ownerId} and m.instance_id=${scope.instanceId}
+      and not exists(select 1 from allrice_experience_reviews e where e.memory_id=m.id)`;
+    if (!memory) throw new DataAccessError('not_found');
+    const rows = await sql<
+      {
+        id: string;
+        organization_id: string;
+        workspace_id: string;
+        memory_id: string;
+        revision: number;
+        content: string;
+        trust_level:
+          | 'user_confirmed'
+          | 'platform_verified'
+          | 'derived'
+          | 'untrusted_external';
+        lifecycle_state: MemoryLifecycleState;
+        memory_class: MemoryClass;
+        confidence: string | number;
+        expires_at: Date | null;
+        reason: string;
+        changed_by: string;
+        changed_at: Date;
+      }[]
+    >`
     select * from allrice_memory_revisions
     where organization_id = ${context.organizationId}
       and workspace_id = ${workspaceId}
       and memory_id = ${memoryId}
     order by revision desc
   `;
-  return rows.map((row) =>
-    MemoryRevisionSchema.parse({
-      id: row.id,
-      organizationId: row.organization_id,
-      workspaceId: row.workspace_id,
-      memoryId: row.memory_id,
-      revision: row.revision,
-      content: row.content,
-      trust: row.trust_level,
-      lifecycleState: row.lifecycle_state,
-      memoryClass: row.memory_class,
-      confidence: Number(row.confidence),
-      expiresAt: row.expires_at?.toISOString() ?? null,
-      reason: row.reason,
-      changedBy: row.changed_by,
-      changedAt: row.changed_at.toISOString(),
-    }),
-  );
+    return rows.map((row) =>
+      MemoryRevisionSchema.parse({
+        id: row.id,
+        organizationId: row.organization_id,
+        workspaceId: row.workspace_id,
+        memoryId: row.memory_id,
+        revision: row.revision,
+        content: row.content,
+        trust: row.trust_level,
+        lifecycleState: row.lifecycle_state,
+        memoryClass: row.memory_class,
+        confidence: Number(row.confidence),
+        expiresAt: row.expires_at?.toISOString() ?? null,
+        reason: row.reason,
+        changedBy: row.changed_by,
+        changedAt: row.changed_at.toISOString(),
+      }),
+    );
+  });
 }
 
 export async function promoteWorkspaceMemory(
   context: RequestContext,
   workspaceIdInput: string,
   memoryIdInput: string,
+  input?: unknown,
 ) {
+  await rejectGovernedMemoryMutation(context, workspaceIdInput, memoryIdInput);
+  const expected = MemoryMutationInputSchema.parse(input);
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
   const memoryId = UuidSchema.parse(memoryIdInput);
-  const sql = getDatabase();
-  const result = await sql.begin(async (transaction) => {
-    const currentRows = await transaction<MemoryRow[]>`
-      select * from allrice_memories
-      where id = ${memoryId}
-        and organization_id = ${context.organizationId}
-        and workspace_id = ${workspaceId}
-        and owner_id = ${requireUser(context)}
-        and archived_at is null
-      for update
-    `;
-    const current = currentRows[0];
-    if (!current) throw new DataAccessError('not_found');
-    const governed =
-      await transaction`select memory_id from allrice_experience_reviews where memory_id=${current.id}`;
-    if (governed.length) throw new DataAccessError('authorization_denied');
-    if (current.lifecycle_state === 'durable') {
-      return { memory: current, promoted: false };
-    }
-    const revision = current.revision + 1;
-    const updatedRows = await transaction<MemoryRow[]>`
-      update allrice_memories
-      set lifecycle_state = 'durable', revision = ${revision},
-          trust_level = 'user_confirmed',
-          confidence = greatest(confidence, 0.8),
-          source_label = ${`${current.source_label} · 用户确认`},
-          last_verified_at = now(), updated_at = now()
-      where id = ${current.id}
-      returning *
-    `;
-    const updated = updatedRows[0];
-    if (!updated) throw new Error('memory promotion failed');
-    await transaction`
-      insert into allrice_memory_revisions (
-        organization_id, workspace_id, memory_id, revision, content,
-        trust_level, lifecycle_state, memory_class, confidence, expires_at,
-        reason, changed_by
-      ) values (
-        ${context.organizationId}, ${workspaceId}, ${updated.id}, ${revision},
-        ${updated.content}, 'user_confirmed', 'durable',
-        ${updated.memory_class}, ${updated.confidence}, ${updated.expires_at},
-        'candidate promoted by user', ${requireUser(context)}
-      )
-    `;
-    return { memory: updated, promoted: true };
-  });
-  if (result.promoted) {
-    await audit({
+  return employeeAccessTransaction(getDatabase(), async (tx) => {
+    const scope = await employeeMemoryScope(
       context,
       workspaceId,
-      action: 'memory.promote',
-      resourceType: 'memory',
-      resourceId: result.memory.id,
-      reason: 'candidate_promoted_by_owner',
-    });
-  }
-  return mapMemory(result.memory);
+      expected.instanceId,
+      tx,
+      true,
+    );
+    return memoryOperation(
+      tx,
+      scope,
+      'promote',
+      expected.idempotencyKey,
+      { memoryId, ...expected },
+      async () => {
+        const current = await lockPersonalMemory(
+          tx,
+          context,
+          workspaceId,
+          memoryId,
+          scope.instanceId,
+        );
+        assertMemoryRevision(current, expected);
+        if (current.lifecycle_state === 'durable') return mapMemory(current);
+        const [row] = await tx<MemoryRow[]>`update allrice_memories
+        set lifecycle_state='durable',revision=revision+1,trust_level='user_confirmed',
+          confidence=greatest(confidence,0.8),source_label=${`${current.source_label} · 用户确认`},
+          last_verified_at=now(),updated_at=now()
+        where id=${memoryId} returning *`;
+        if (!row) throw new Error('memory promotion failed');
+        await insertMemoryRevision(
+          tx,
+          context,
+          row,
+          'candidate promoted by user',
+        );
+        await audit(
+          {
+            context,
+            workspaceId,
+            action: 'memory.promote',
+            resourceType: 'memory',
+            resourceId: memoryId,
+            reason: 'candidate_promoted_by_owner',
+          },
+          tx,
+        );
+        return mapMemory(row);
+      },
+    );
+  });
 }
 
 export async function createCheckpointMemoryCandidate(
@@ -2911,16 +2996,6 @@ export async function createCheckpointMemoryCandidate(
       and owner_id = ${requireUser(context)}
   `;
   if (!checkpoints[0]) throw new DataAccessError('authorization_denied');
-  const existing = await sql<MemoryRow[]>`
-    select * from allrice_memories
-    where organization_id = ${context.organizationId}
-      and workspace_id = ${workspaceId}
-      and source_type = 'checkpoint'
-      and source_id = ${candidate.checkpointId}
-      and archived_at is null
-    limit 1
-  `;
-  if (existing[0]) return mapMemory(existing[0]);
   return createTraceableMemory(context, {
     workspaceId,
     employeeId: candidate.employeeId,
@@ -2937,6 +3012,77 @@ export async function createCheckpointMemoryCandidate(
 }
 
 export async function deleteWorkspaceMemory(
+  context: RequestContext,
+  workspaceId: string,
+  memoryId: string,
+  input?: unknown,
+) {
+  workspaceId = await resolveWorkspaceId(context, workspaceId);
+  memoryId = UuidSchema.parse(memoryId);
+  // Existing governed experience has its own immutable proof/forget contract.
+  // It is not a personal MEMORY entry; never fall through to the ordinary API.
+  const [experience] =
+    await getDatabase()`select memory_id from allrice_experience_reviews
+    where memory_id=${memoryId} and organization_id=${context.organizationId}
+      and workspace_id=${workspaceId} and owner_id=${requireUser(context)}`;
+  if (experience)
+    return archiveGovernedWorkspaceMemory(context, workspaceId, memoryId);
+  const expected = MemoryMutationInputSchema.parse(input);
+  await employeeAccessTransaction(getDatabase(), async (tx) => {
+    const scope = await employeeMemoryScope(
+      context,
+      workspaceId,
+      expected.instanceId,
+      tx,
+      true,
+    );
+    const [origin] = await tx<
+      { source_type: string; source_id: string | null }[]
+    >`
+      select source_type,source_id from allrice_memories
+      where id=${memoryId} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
+        and owner_id=${scope.ownerId} and instance_id=${scope.instanceId}`;
+    if (origin)
+      await lockMemorySource(tx, scope, origin.source_type, origin.source_id);
+    await memoryOperation(
+      tx,
+      scope,
+      'archive',
+      expected.idempotencyKey,
+      { memoryId, ...expected },
+      async () => {
+        const current = await lockPersonalMemory(
+          tx,
+          context,
+          workspaceId,
+          memoryId,
+          scope.instanceId,
+        );
+        assertMemoryRevision(current, expected);
+        const [row] = await tx<MemoryRow[]>`update allrice_memories
+        set archived_at=now(),updated_at=now(),revision=revision+1 where id=${memoryId} returning *`;
+        if (!row) throw new Error('memory archival failed');
+        await insertMemoryRevision(tx, context, row, 'archived by owner');
+        await tx`delete from allrice_rag_chunks where memory_id=${memoryId}
+        and organization_id=${scope.organizationId} and workspace_id=${workspaceId}`;
+        await audit(
+          {
+            context,
+            workspaceId,
+            action: 'memory.delete',
+            resourceType: 'memory',
+            resourceId: memoryId,
+            reason: 'resource_owner',
+          },
+          tx,
+        );
+        return mapMemory(row);
+      },
+    );
+  });
+}
+
+async function archiveGovernedWorkspaceMemory(
   context: RequestContext,
   workspaceId: string,
   memoryId: string,
@@ -2958,6 +3104,7 @@ export async function deleteWorkspaceMemory(
         and workspace_id = ${UuidSchema.parse(workspaceId)}
         and owner_id = ${requireUser(context)}
         and archived_at is null
+        and exists(select 1 from allrice_experience_reviews review where review.memory_id=allrice_memories.id)
       returning *
     `;
     const row = rows[0];
@@ -2983,17 +3130,25 @@ export async function deleteWorkspaceMemory(
 export async function getEmployeeWorkspace(
   context: RequestContext,
   requestedWorkspaceId?: string,
+  instanceId?: string,
 ) {
   const workspaceId = await resolveWorkspaceId(context, requestedWorkspaceId);
   const assignment = await ensureDefaultEmployee(context, requestedWorkspaceId);
+  const { listEmployeeHub } = await import('../employees/employeehub.ts');
+  const employeeHub = await listEmployeeHub(context, workspaceId);
+  const defaultMemoryInstance = employeeHub.assignments
+    .flatMap((item) => item.instances ?? [])
+    .find((item) => item.id === assignment?.id && !item.archivedAt)?.id;
   const [sessions, memories] = await Promise.all([
     listChatSessions(context, workspaceId, {
       includeArchived: true,
     }),
-    listWorkspaceMemories(context, workspaceId),
+    instanceId || defaultMemoryInstance
+      ? listWorkspaceMemories(context, workspaceId, undefined, {
+          instanceId: instanceId ?? defaultMemoryInstance,
+        })
+      : Promise.resolve([]),
   ]);
-  const { listEmployeeHub } = await import('../employees/employeehub.ts');
-  const employeeHub = await listEmployeeHub(context, workspaceId);
   // Published employee manifests stay immutable. New Runs inherit the current
   // platform model, so the employee's public details must read that same policy.
   const currentModelPolicy = await platformEmployeeModelPolicy();

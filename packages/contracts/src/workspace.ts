@@ -364,6 +364,8 @@ export const LinkSessionAttachmentInputSchema = z
 export const CreateWorkspaceMemoryInputSchema = z
   .object({
     workspaceId: UuidSchema,
+    instanceId: UuidSchema.optional(),
+    idempotencyKey: UuidSchema.optional(),
     employeeId: UuidSchema.nullable().default(null),
     content: z.string().trim().min(1).max(100_000),
     visibility: VisibilitySchema.default('private'),
@@ -383,6 +385,8 @@ export const WorkspaceMemorySchema = z
     organizationId: UuidSchema,
     workspaceId: UuidSchema,
     employeeId: UuidSchema.nullable(),
+    instanceId: UuidSchema.nullable(),
+    contentDigest: z.string(),
     ownerId: UuidSchema,
     content: z.string(),
     visibility: VisibilitySchema,

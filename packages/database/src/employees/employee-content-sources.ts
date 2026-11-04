@@ -365,6 +365,8 @@ export async function resolveEmployeeContentSource(
     from allrice_memories m join allrice_memory_revisions r on r.memory_id=m.id and r.revision=m.revision
     where m.id=${ref.contentId} and r.id=${ref.revisionId} and m.organization_id=${context.organizationId}
       and m.workspace_id=${context.workspaceId} and m.employee_id=${input.employeeId} and m.archived_at is null
+      and (exists(select 1 from allrice_experience_reviews governed where governed.memory_id=m.id)
+        or (m.owner_id=${context.actor.id} and m.instance_id=${input.instanceId ?? null} and m.trust_level='user_confirmed'))
       and m.lifecycle_state='durable' and m.trust_level in ('user_confirmed','platform_verified')
       and (m.expires_at is null or m.expires_at>clock_timestamp())
       and (m.visibility<>'private' or m.owner_id=${context.actor.id})

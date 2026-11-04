@@ -277,6 +277,7 @@ describe('Codex hosted search Tool Broker integration', () => {
         memoryClass: 'user_preference',
         confidence: 0.8,
       }),
+      context,
     );
     expect(result.summary).toBe('已记为候选，确认后才生效');
   });
@@ -324,6 +325,7 @@ describe('Codex hosted search Tool Broker integration', () => {
         lifecycleState: 'candidate',
         confidence: 0.8,
       }),
+      context,
     );
   });
 
@@ -342,8 +344,9 @@ describe('Codex hosted search Tool Broker integration', () => {
         trust: 'derived',
         confidence: 0.8,
       });
+      const context = executionContext();
       const result = await executeRiceTool({
-        context: executionContext(),
+        context,
         capabilities: ['storage:write'],
         storageRoot: '.local/storage',
         employeeId: randomUUID(),
@@ -366,6 +369,7 @@ describe('Codex hosted search Tool Broker integration', () => {
           sourceLabel: '模型提取候选',
           confidence: 0.8,
         }),
+        context,
       );
       expect(JSON.parse(result.modelContent)).toMatchObject({
         lifecycleState: 'candidate',
@@ -385,8 +389,9 @@ describe('Codex hosted search Tool Broker integration', () => {
         trust: 'derived',
         confidence: 0.8,
       });
+      const context = executionContext();
       const result = await executeRiceTool({
-        context: executionContext(),
+        context,
         capabilities: ['storage:write'],
         storageRoot: '.local/storage',
         employeeId: randomUUID(),
@@ -404,6 +409,7 @@ describe('Codex hosted search Tool Broker integration', () => {
           lifecycleState: 'candidate',
           confidence: 0.8,
         }),
+        context,
       );
       expect(JSON.parse(result.modelContent)).toMatchObject({
         lifecycleState: 'candidate',

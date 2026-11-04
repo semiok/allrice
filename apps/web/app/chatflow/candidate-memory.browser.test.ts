@@ -23,8 +23,11 @@ import {
 import {
   createTraceableMemory,
   listWorkspaceMemories,
+  ensureDefaultEmployee,
 } from '../../../../packages/database/src/workspace/service.ts';
 import { GET as list, POST as create } from '../api/v1/memories/route';
+import { GET as instanceContent } from '../api/v1/employee-instances/[id]/content/route';
+import { ensureGeneralEmployeeInstance } from '../../../../packages/database/src/employees/employee-instances.ts';
 import { POST as promote } from '../api/v1/memories/[id]/promote/route';
 import {
   DELETE as discard,
@@ -47,6 +50,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
   let foreign: Awaited<ReturnType<typeof createRunAuthorityFixture>>;
   let owner: RequestContext, reader: RequestContext;
   let ownerToken: string, readerToken: string, foreignToken: string;
+  let otherInstance: string;
   let otherWorkspace: string, browser: Browser, server: Server, origin: string;
   let candidate: WorkspaceMemory, shared: WorkspaceMemory;
   const failures: string[] = [],
@@ -60,6 +64,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
     identity = await createRunAuthorityFixture(f.db);
     foreign = await createRunAuthorityFixture(f.db);
+    await ensureGeneralEmployeeInstance(f.db, foreign.assignment);
     ownerToken = (await createSession(identity.user)).token;
     foreignToken = (await createSession(foreign.user)).token;
     owner = (await authenticateSession(ownerToken, {
@@ -77,16 +82,30 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     otherWorkspace = randomUUID();
     await f.db`insert into allrice_workspaces(id,organization_id,slug,name) values(${otherWorkspace},${identity.org},'other','Other')`;
     await f.db`insert into allrice_memberships(id,organization_id,workspace_id,user_id,role) values(${randomUUID()},${identity.org},${otherWorkspace},${identity.user},'admin')`;
+    const otherOwner = (await authenticateSession(ownerToken, {
+      organizationId: identity.org,
+      workspaceId: otherWorkspace,
+    }))!;
+    otherInstance = (await ensureDefaultEmployee(otherOwner, otherWorkspace))!
+      .id;
+    await ensureGeneralEmployeeInstance(f.db, otherInstance);
     candidate = await remember('真实候选：看数据时先看表格，再看文字说明。');
+    const readerAssignment = await ensureDefaultEmployee(
+      reader,
+      identity.workspace,
+    );
     shared = await createTraceableMemory(reader, {
       workspaceId: identity.workspace,
+      instanceId: readerAssignment!.id,
+      idempotencyKey: randomUUID(),
       content: '他人的工作区可见候选',
-      visibility: 'workspace',
+      visibility: 'private',
       sourceType: 'user',
       sourceLabel: 'fixture',
       lifecycleState: 'candidate',
       memoryClass: 'work_note',
     });
+    await f.db`update allrice_memories set visibility='workspace' where id=${shared.id}`;
     // Only Next's per-request cookie accessor is adapted to the fixture server.
     // getRequestContext, authenticateSession and scope validation stay real.
     ports.cookies.mockImplementation(async () => ({
@@ -133,6 +152,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
               organizationId: identity.org,
               workspaceId: identity.workspace,
               otherWorkspaceId: otherWorkspace,
+              otherInstanceId: otherInstance,
               runId: identity.rootRunId,
               userMessageId: run!.user_message_id,
               assistantMessageId: run!.assistant_message_id,
@@ -210,6 +230,10 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
               req.method === 'GET'
             )
               return Response.json({ operations: [] });
+            if (parts[3] === 'employee-instances' && parts[5] === 'content')
+              return instanceContent(request, {
+                params: Promise.resolve({ id }),
+              });
             if (parts[3] !== 'memories') {
               failures.push(
                 'Unexpected API/model request: ' +
@@ -291,13 +315,44 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
   async function remember(content: string, expiresAt: string | null = null) {
     const [run] =
       await f.db`select user_message_id from allrice_employee_runs where run_id=${identity.rootRunId}`;
+    let sourceId = run!.user_message_id as string;
+    if (candidate) {
+      // Later independent proposals have fresh human input with a persisted
+      // native adoption receipt, so the real Run-scoped card read can see them.
+      sourceId = randomUUID();
+      const followup = randomUUID(),
+        reply = randomUUID(),
+        inputId = randomUUID();
+      const turn = 'ui-fixture-' + randomUUID();
+      await f.db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input)
+        values(${followup},${identity.org},${identity.workspace},${identity.user},'succeeded','{}','{}')`;
+      await f.db`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content)
+        values(${sourceId},${identity.org},${identity.workspace},${identity.session},${identity.user},'user',${f.db.json({ text: content, citations: [] })}),
+          (${reply},${identity.org},${identity.workspace},${identity.session},${identity.user},'assistant','{"text":"","citations":[]}')`;
+      await f.db`insert into allrice_conversation_followups(run_id,organization_id,workspace_id,session_id,owner_id,user_message_id,assistant_message_id,client_user_message_id,mode,state)
+        values(${followup},${identity.org},${identity.workspace},${identity.session},${identity.user},${sourceId},${reply},${inputId},'follow_up','consumed')`;
+      await f.db`insert into allrice_run_events(organization_id,workspace_id,run_id,sequence,event_type,payload)
+        select ${identity.org},${identity.workspace},${identity.rootRunId},coalesce(max(sequence),0)+1,'turn.started',${f.db.json({ turnId: turn, generation: 1 })}
+        from allrice_run_events where run_id=${identity.rootRunId}`;
+      const proof = {
+        status: 'adopted',
+        inputId,
+        messageId: 'native-input',
+        sequence: 9,
+        turnId: turn,
+        runId: identity.rootRunId,
+        checkpoint: 'step_user_message',
+      };
+      await f.db`insert into allrice_conversation_commands(organization_id,workspace_id,session_id,owner_id,followup_run_id,command_type,client_user_message_id,expected_generation,expected_turn_id,message,input_kind,state,native_proof)
+        values(${identity.org},${identity.workspace},${identity.session},${identity.user},${followup},'steer',${inputId},1,${turn},${content},'steer_current','consumed',${f.db.json(proof)})`;
+    }
     return createTraceableMemory(owner, {
       workspaceId: identity.workspace,
       employeeId: identity.employee,
       content,
       visibility: 'private',
       sourceType: 'message',
-      sourceId: run!.user_message_id,
+      sourceId,
       sourceLabel: '模型提取候选',
       confidence: 0.8,
       expiresAt,
@@ -317,7 +372,9 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
         path +
         (path.includes('?') ? '&' : '?') +
         'workspaceId=' +
-        workspace,
+        workspace +
+        '&instanceId=' +
+        (token === foreignToken ? foreign.assignment : identity.assignment),
       {
         ...init,
         headers: {
@@ -370,12 +427,9 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     ).toBe(true);
   }
 
-  it('keeps legacy GET visibility, narrows personal/source/run before the 100-row limit, and isolates scope', async () => {
+  it('requires owner/instance scope and narrows source/run before the 100-row limit', async () => {
     expect((await (await api('')).json()).memories).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ id: candidate.id }),
-        expect.objectContaining({ id: shared.id, ownedByMe: false }),
-      ]),
+      expect.arrayContaining([expect.objectContaining({ id: candidate.id })]),
     );
     expect(
       (await (await api('?personal=1')).json()).memories.map(
@@ -384,13 +438,15 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     ).toEqual([candidate.id]);
     const [run] =
       await f.db`select user_message_id from allrice_employee_runs where run_id=${identity.rootRunId}`;
-    await f.db`insert into allrice_memories(organization_id,workspace_id,owner_id,content,visibility,source_type,lifecycle_state,memory_class,trust_level,source_label)
-      select ${identity.org},${identity.workspace},${identity.user},'Newer unrelated fixture ' || n,'private','user','candidate','work_note','derived','fixture'
+    await f.db`insert into allrice_memories(organization_id,workspace_id,owner_id,instance_id,content,visibility,source_type,lifecycle_state,memory_class,trust_level,source_label)
+      select ${identity.org},${identity.workspace},${identity.user},${identity.assignment},'Newer unrelated fixture ' || n,'private','user','candidate','work_note','derived','fixture'
       from generate_series(1,105) n`;
     expect(
-      (await listWorkspaceMemories(owner, identity.workspace)).some(
-        (m) => m.id === candidate.id,
-      ),
+      (
+        await listWorkspaceMemories(owner, identity.workspace, undefined, {
+          instanceId: identity.assignment,
+        })
+      ).some((m) => m.id === candidate.id),
     ).toBe(false);
     for (const filter of [
       'sourceId=' + run!.user_message_id,
@@ -404,12 +460,8 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       ).toEqual([candidate.id]);
     }
     expect(
-      (
-        await (
-          await api('?sourceId=' + run!.user_message_id, {}, readerToken)
-        ).json()
-      ).memories,
-    ).toEqual([]);
+      (await api('?sourceId=' + run!.user_message_id, {}, readerToken)).status,
+    ).toBe(404);
     expect(
       (await api('?runId=' + identity.rootRunId, {}, readerToken)).status,
     ).toBe(404);
@@ -493,7 +545,16 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
 
   it('rejects missing cookie, cross-site writes, other owners and foreign orgs; duplicate confirmation adds one revision', async () => {
     const path = '/' + candidate.id + '/promote';
-    const write = { method: 'POST' };
+    const write = {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        instanceId: candidate.instanceId,
+        expectedRevision: candidate.revision,
+        contentDigest: candidate.contentDigest,
+        idempotencyKey: randomUUID(),
+      }),
+    };
     expect(
       (
         await api(path, {
@@ -516,11 +577,13 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       expect(
         (await api(suffix!, { method, headers: { origin: '' } })).status,
       ).toBe(403);
-    expect((await api(path, write, readerToken)).status).toBe(404);
+    expect((await api(path, write, readerToken)).status).toBe(403);
     expect(
       (await api(path, write, foreignToken, foreign.workspace)).status,
+    ).toBe(403);
+    expect(
+      (await api('/' + shared.id, { ...write, method: 'DELETE' })).status,
     ).toBe(404);
-    expect((await api('/' + shared.id, { method: 'DELETE' })).status).toBe(404);
     const responses = await Promise.all([api(path, write), api(path, write)]);
     expect(responses.map((r) => r.status)).toEqual([200, 200]);
     const rows = await Promise.all(responses.map((r) => r.json()));
@@ -594,7 +657,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     },
   );
 
-  it('management is available with automatic experience disabled and ignores assistant instance filtering', async () => {
+  it('management is available with automatic experience disabled and uses the selected instance', async () => {
     const pending = await remember('个人记忆入口待确认');
     const ui = await open('management', 'dark', 320);
     try {
@@ -605,7 +668,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
         await ui.page
           .getByRole('combobox', { name: '经验所属 AllRice 助手' })
           .isDisabled(),
-      ).toBe(true);
+      ).toBe(false);
       expect(await card(ui.page, shared.id).count()).toBe(0);
       await noOverflow(ui.page);
       await card(ui.page, pending.id)
@@ -807,6 +870,60 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       }
     },
   );
+
+  it('rejects a stale card after another view edits the exact revision and refreshes to the saved content', async () => {
+    const pending = await remember('月报入口使用原始账单');
+    const ui = await open();
+    try {
+      await card(ui.page, pending.id)
+        .getByRole('button', { name: '确认并记住' })
+        .waitFor();
+      const changed = await api('/' + pending.id, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          instanceId: pending.instanceId,
+          expectedRevision: pending.revision,
+          contentDigest: pending.contentDigest,
+          idempotencyKey: randomUUID(),
+          content: '月报入口使用本人校订后的原始账单',
+          reason: 'Another owner view edited this proposal',
+          confidence: 1,
+          expiresAt: null,
+        }),
+      });
+      expect(changed.status).toBe(200);
+      const response = ui.page.waitForResponse(
+        (r) =>
+          r.request().method() === 'POST' &&
+          r.url().includes('/' + pending.id + '/promote'),
+      );
+      await card(ui.page, pending.id)
+        .getByRole('button', { name: '确认并记住' })
+        .click();
+      expect((await response).status()).toBe(409);
+      await card(ui.page, pending.id)
+        .getByText('记忆已变化，请重新读取后再操作。', { exact: false })
+        .waitFor();
+      await card(ui.page, pending.id)
+        .getByRole('button', { name: '重新读取记忆' })
+        .click();
+      await card(ui.page, pending.id)
+        .getByText('月报入口使用本人校订后的原始账单', { exact: true })
+        .waitFor();
+      await card(ui.page, pending.id)
+        .getByText('长期记忆', { exact: true })
+        .waitFor();
+      expect(
+        await f.db`select revision,content from allrice_memories where id=${pending.id}`,
+      ).toEqual([{ revision: 2, content: '月报入口使用本人校订后的原始账单' }]);
+      expect(
+        await f.db`select id from allrice_audit_events where resource_id=${pending.id} and action='memory.promote'`,
+      ).toHaveLength(0);
+    } finally {
+      await ui.close();
+    }
+  });
 
   it('keeps candidate on lost confirmation acknowledgement, recovers by rereading, and retains failed discard', async () => {
     const pending = await remember('确认回执丢失的候选');

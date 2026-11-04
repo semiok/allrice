@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 const baseUrl = process.env.ALLRICE_SMOKE_BASE_URL;
 const encodedState = process.env.ALLRICE_SMOKE_STATE;
 if (!baseUrl || !encodedState) {
@@ -58,9 +60,27 @@ if (
   throw new Error('message did not survive database restart');
 }
 
+const beforeDelete = await request(
+  `/api/v1/memories?workspaceId=${state.workspaceId}&instanceId=${state.memoryInstanceId}`,
+  { headers },
+);
+const saved = (await beforeDelete.json()).memories;
+const memory = saved.find((item) => item.id === state.messageMemoryId);
+if (!memory || !saved.some((item) => item.id === state.fileMemoryId)) {
+  throw new Error('private memories did not survive database restart');
+}
 await request(
   `/api/v1/memories/${state.messageMemoryId}?workspaceId=${state.workspaceId}`,
-  { method: 'DELETE', headers },
+  {
+    method: 'DELETE',
+    headers: { ...headers, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      instanceId: state.memoryInstanceId,
+      expectedRevision: memory.revision,
+      contentDigest: memory.contentDigest,
+      idempotencyKey: randomUUID(),
+    }),
+  },
   204,
 );
 await request(
@@ -71,7 +91,7 @@ await request(
 await request(state.signedUrl, {}, 403);
 
 const memoriesResponse = await request(
-  `/api/v1/memories?workspaceId=${state.workspaceId}`,
+  `/api/v1/memories?workspaceId=${state.workspaceId}&instanceId=${state.memoryInstanceId}`,
   { headers },
 );
 const memories = (await memoriesResponse.json()).memories;
@@ -88,6 +108,7 @@ const recallResponse = await request('/api/v1/memories/recall', {
   headers: { ...headers, 'content-type': 'application/json' },
   body: JSON.stringify({
     workspaceId: state.workspaceId,
+    instanceId: state.memoryInstanceId,
     query: 'restart proof private memory',
     limit: 20,
   }),

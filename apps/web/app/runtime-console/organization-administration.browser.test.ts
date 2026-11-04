@@ -1225,7 +1225,11 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
       const excerpt = '金额必须保留原始出处，缺失数据须明确列出。';
       const authored = `${excerpt} 正式报告还须由财务人员核对。`;
       await fixture.db`update allrice_organizations set name=${companyName} where id=${a.target.organizationId}`;
+      const [memoryAssignment] =
+        await fixture.db`select id from allrice_employee_assignments where organization_id=${owner.organizationId} and workspace_id=${owner.workspaceId!} and user_id=${owner.actor.id} and active`;
       const memory = await createTraceableMemory(owner, {
+        instanceId: memoryAssignment!.id,
+        idempotencyKey: randomUUID(),
         workspaceId: owner.workspaceId,
         content: excerpt,
         sourceType: 'user',
@@ -1298,6 +1302,10 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
         // A later Memory correction must not silently replace the selected
         // revision or the separately authored rule body.
         await correctWorkspaceMemory(owner, owner.workspaceId!, memory.id, {
+          instanceId: memory.instanceId!,
+          expectedRevision: memory.revision,
+          contentDigest: memory.contentDigest,
+          idempotencyKey: randomUUID(),
           content: '后续记忆修订：此内容不是所选择的原摘录。',
           confidence: 1,
           reason: 'Browser regression: selected revision remains pinned',

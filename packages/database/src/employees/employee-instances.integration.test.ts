@@ -6177,6 +6177,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     expect(
       await searchWorkspaceMemories(f.a.context, {
         workspaceId: f.a.workspaceId,
+        instanceId: instance.id,
         query: 'DRAFT_MEMORY_MARKER',
       }),
     ).toHaveLength(1);
@@ -6207,6 +6208,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     expect(
       await searchWorkspaceMemories(f.a.context, {
         workspaceId: f.a.workspaceId,
+        instanceId: instance.id,
         query: 'DRAFT_MEMORY_MARKER',
       }),
     ).toHaveLength(0);
@@ -7307,6 +7309,8 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       };
       const memory = await createTraceableMemory(f.a.context, {
         workspaceId: f.a.workspaceId,
+        instanceId,
+        idempotencyKey: randomUUID(),
         content: input.text,
         sourceType: 'user',
       });

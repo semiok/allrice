@@ -18,7 +18,12 @@ export async function POST(
     const workspaceId = new URL(request.url).searchParams.get('workspaceId');
     if (!workspaceId) throw new DataAccessError('not_found');
     const { id } = await route.params;
-    const memory = await promoteWorkspaceMemory(context, workspaceId, id);
+    const memory = await promoteWorkspaceMemory(
+      context,
+      workspaceId,
+      id,
+      await request.json(),
+    );
     return Response.json(
       {
         memory: {

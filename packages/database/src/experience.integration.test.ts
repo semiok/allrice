@@ -12,6 +12,7 @@ import { createExperienceFixture } from './experience.fixture.ts';
 import { approveSyntheticCurrentEmployeeExecution } from './current-execution.fixture.ts';
 import {
   createChatSession,
+  getEmployeeWorkspace,
   sendChatMessage,
   correctWorkspaceMemory,
   promoteWorkspaceMemory,
@@ -58,7 +59,7 @@ const suite =
     : describe.skip;
 const store = createExperienceStore();
 async function fixture() {
-  return createExperienceFixture(db);
+  return createExperienceFixture(db, { authenticated: true });
 }
 /** Synthetic saved report and completed assistant message. No model request or
  * claim of real publication metrics is made by this isolated SQL fixture. */
@@ -363,6 +364,8 @@ suite(
       expect(
         await searchWorkspaceMemories(f.owner, {
           workspaceId: f.workspace,
+          instanceId:
+            f.session.employeeInstanceId ?? f.session.employeeAssignmentId,
           query: 'Reconciliation rule',
         }),
       ).toEqual([]);
@@ -578,6 +581,8 @@ suite(
       expect(
         await searchWorkspaceMemories(f.owner, {
           workspaceId: f.workspace,
+          instanceId:
+            f.session.employeeInstanceId ?? f.session.employeeAssignmentId,
           query: f.input.content,
         }),
       ).toEqual([]);
@@ -948,6 +953,8 @@ suite(
         (
           await searchWorkspaceMemories(f.neighbor, {
             workspaceId: f.workspace,
+            instanceId: (await getEmployeeWorkspace(f.neighbor, f.workspace))
+              .employee!.id,
             query: 'Reconciliation rule',
           })
         ).map((m) => m.id),
@@ -1018,6 +1025,8 @@ suite(
       expect(
         await searchWorkspaceMemories(f.owner, {
           workspaceId: f.workspace,
+          instanceId:
+            f.session.employeeInstanceId ?? f.session.employeeAssignmentId,
           query: 'Reconciliation rule',
         }),
       ).toEqual([]);
@@ -1075,6 +1084,8 @@ suite(
       expect(
         await searchWorkspaceMemories(f.owner, {
           workspaceId: f.workspace,
+          instanceId:
+            f.session.employeeInstanceId ?? f.session.employeeAssignmentId,
           query: f.input.content,
         }),
       ).toEqual([]);

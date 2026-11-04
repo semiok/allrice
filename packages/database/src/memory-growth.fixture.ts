@@ -26,6 +26,7 @@ type Target = {
   workspace: string;
   user: string;
   sourceRunId: string;
+  instanceId: string;
   rule: { id: string };
   frozen: { occurrence: ExperienceOccurrence };
 };
@@ -61,9 +62,9 @@ export async function memoryGrowthFixture(sql: Sql, target: Target) {
         };
       });
       ordinaryIds = records.map((r) => r.id);
-      await sql`insert into allrice_memories(id,organization_id,workspace_id,owner_id,content,visibility,
+      await sql`insert into allrice_memories(id,organization_id,workspace_id,owner_id,instance_id,content,visibility,
         source_type,lifecycle_state,memory_class,revision,trust_level,confidence,source_label)
-        select x.id,${target.org},${target.workspace},${target.user},x.content,'private',
+        select x.id,${target.org},${target.workspace},${target.user},${target.instanceId},x.content,'private',
           'user','durable','work_note',1,'user_confirmed',1,${marker}
         from jsonb_to_recordset(${sql.json(records)}) x(id uuid,content text)`;
       await sql`insert into allrice_rag_chunks(organization_id,workspace_id,memory_id,owner_id,content,embedding,visibility)

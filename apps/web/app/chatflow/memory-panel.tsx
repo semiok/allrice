@@ -38,7 +38,11 @@ export function memoryReadRevision(events: ChatFlowEventEnvelope[]) {
     .join(',');
 }
 
+class MemoryRevisionConflict extends Error {}
+
 async function memoryResponse(response: Response) {
+  if (response.status === 409)
+    throw new MemoryRevisionConflict('记忆已变化，请重新读取后再操作。');
   if (!response.ok) throw Error('暂时无法确认操作结果，请重新读取记忆。');
   return response.status === 204 ? null : response.json();
 }
@@ -57,6 +61,12 @@ function MemoryCard(props: {
   const [error, setError] = useState('');
   const live = useRef(true);
   const lastMemory = useRef(memory);
+  const operation = useRef<{
+    action: string;
+    revision: number;
+    digest: string;
+    key: string;
+  } | null>(null);
   useEffect(() => {
     // Accepted reads replace settled rows; pending rows retain their object.
     // Starting or failing a read must leave the operation error visible.
@@ -75,12 +85,30 @@ function MemoryCard(props: {
     setBusy(action);
     setError('');
     props.onPending(true);
+    if (
+      !operation.current ||
+      operation.current.action !== action ||
+      operation.current.revision !== memory.revision ||
+      operation.current.digest !== memory.contentDigest
+    )
+      operation.current = {
+        action,
+        revision: memory.revision,
+        digest: memory.contentDigest,
+        key: crypto.randomUUID(),
+      };
     try {
       const response = await fetch(
         `/api/v1/memories/${encodeURIComponent(memory.id)}${action === 'promote' ? '/promote' : ''}?workspaceId=${encodeURIComponent(props.workspaceId)}`,
         {
           method: action === 'promote' ? 'POST' : 'DELETE',
-          headers: props.headers,
+          headers: { ...props.headers, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            instanceId: memory.instanceId,
+            expectedRevision: memory.revision,
+            contentDigest: memory.contentDigest,
+            idempotencyKey: operation.current.key,
+          }),
         },
       );
       const result = await memoryResponse(response);
@@ -93,13 +121,20 @@ function MemoryCard(props: {
         (updated.id !== memory.id ||
           updated.workspaceId !== props.workspaceId ||
           updated.ownerId !== memory.ownerId ||
+          updated.instanceId !== memory.instanceId ||
+          updated.contentDigest !== memory.contentDigest ||
           !updated.ownedByMe ||
           updated.lifecycleState !== 'durable')
       )
         throw Error('记忆确认回执不匹配，请重新读取。');
       if (live.current) props.onChange(updated);
-    } catch {
-      if (live.current) setError('暂时无法确认操作结果，请重新读取记忆。');
+    } catch (error) {
+      if (live.current)
+        setError(
+          error instanceof MemoryRevisionConflict
+            ? error.message
+            : '暂时无法确认操作结果，请重新读取记忆。',
+        );
     } finally {
       props.onPending(false);
       if (live.current) setBusy(null);
@@ -174,10 +209,11 @@ export function MemoryPanel(props: {
   scopeId: string;
   headers: Record<string, string>;
   runId?: string;
+  instanceId?: string;
   refreshKey?: string;
 }) {
   const inline = !!props.runId;
-  const scope = `${props.scopeId}/${props.workspaceId}/${props.runId ?? 'personal'}`;
+  const scope = `${props.scopeId}/${props.workspaceId}/${props.instanceId ?? 'run-bound'}/${props.runId ?? 'personal'}`;
   const active = useRef(scope);
   active.current = scope;
   const pending = useRef(new Set<string>());
@@ -221,6 +257,7 @@ export function MemoryPanel(props: {
       workspaceId: props.workspaceId,
       personal: '1',
       ...(props.runId ? { runId: props.runId } : {}),
+      ...(props.instanceId ? { instanceId: props.instanceId } : {}),
     });
     void fetch('/api/v1/memories?' + query, {
       cache: 'no-store',
@@ -234,7 +271,10 @@ export function MemoryPanel(props: {
         if (
           memories.some(
             (memory) =>
-              memory.workspaceId !== props.workspaceId || !memory.ownedByMe,
+              memory.workspaceId !== props.workspaceId ||
+              !memory.ownedByMe ||
+              (props.instanceId !== undefined &&
+                memory.instanceId !== props.instanceId),
           )
         )
           throw Error('记忆读取范围已变化，请重新打开。');
@@ -274,6 +314,7 @@ export function MemoryPanel(props: {
     scope,
     props.workspaceId,
     props.runId,
+    props.instanceId,
     props.refreshKey,
     attempt,
     headers,

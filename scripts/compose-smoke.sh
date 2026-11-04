@@ -156,6 +156,22 @@ if [[ -z "${smoke_state}" ]]; then
   exit 1
 fi
 
+# Trusted fixture setup retains coverage of historical file-derived memory.
+# The browser smoke above now proves that callers cannot forge this source.
+memory_fixture_json="$(node -e "process.stdout.write(Buffer.from(process.argv[1], 'base64url').toString('utf8'))" "${smoke_state}")"
+memory_fixture_id="$(printf '%s' "${memory_fixture_json}" | jq -r '.fileMemoryId')"
+memory_source_id="$(printf '%s' "${memory_fixture_json}" | jq -r '.fileId')"
+memory_instance_id="$(printf '%s' "${memory_fixture_json}" | jq -r '.memoryInstanceId')"
+memory_fixture_updated="$({
+  docker compose --project-name "${compose_project}" exec -T postgres \
+    psql -U "${POSTGRES_USER:-allrice}" -d "${POSTGRES_DB:-allrice}" -Atq -c \
+    "update allrice_memories set source_type='file', source_id='${memory_source_id}' where id='${memory_fixture_id}' and instance_id='${memory_instance_id}' and organization_id='${bootstrap_organization_id}' and workspace_id='${bootstrap_workspace_id}' returning id;"
+} | tr -d '\r')"
+if [[ "${memory_fixture_updated}" != "${memory_fixture_id}" ]]; then
+  echo "File-derived memory fixture setup failed" >&2
+  exit 1
+fi
+
 capability_output="$(ALLRICE_SMOKE_BASE_URL="http://127.0.0.1:${proxy_port}" \
 ALLRICE_SMOKE_STATE="${smoke_state}" \
   node scripts/capability-http-smoke.mjs)"

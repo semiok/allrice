@@ -26,6 +26,7 @@ export async function GET(request: Request) {
         personal: query.get('personal') === '1',
         sourceId: query.get('sourceId') ?? undefined,
         runId: query.get('runId') ?? undefined,
+        instanceId: query.get('instanceId') ?? undefined,
       },
     );
     return Response.json(
@@ -50,7 +51,12 @@ export async function POST(request: Request) {
       throw new DataAccessError('authorization_denied');
     const context = await getRequestContext(request);
     if (!context) throw new DataAccessError('authentication_required');
-    const memory = await createTraceableMemory(context, await request.json());
+    const input = await request.json();
+    // Browser edits are the owner speaking directly. Message/checkpoint
+    // proposals are bound by their existing server-side producer gates.
+    if (input?.sourceType !== 'user')
+      throw new DataAccessError('authorization_denied');
+    const memory = await createTraceableMemory(context, input);
     return Response.json(
       {
         memory: {
