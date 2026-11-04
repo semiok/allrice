@@ -60,9 +60,9 @@ import {
   mutateEmployeeContent,
 } from '../employees/employee-content.ts';
 import {
-  registerWorkflowPackage,
-  setWorkflowPackageBinding,
-} from '../capabilities/workflow-packages.ts';
+  seedLegacyWorkflowPackage,
+  seedLegacyWorkflowBinding,
+} from '../capabilities/legacy-workflow.fixture.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
 import { runAutomationNow } from '../execution/automation.ts';
 import { getWorkAutomation, updateWorkAutomation } from '../work-automation.ts';
@@ -581,7 +581,7 @@ async function prepareReminderPackage(
     new Blob([Uint8Array.from(bytes)]).stream(),
   );
   await markStorageReady(actor.context, source.object.id, fixture.db);
-  const value = await registerWorkflowPackage(
+  const value = await seedLegacyWorkflowPackage(
     actor.context,
     {
       workspaceId: actor.workspace,
@@ -607,13 +607,12 @@ async function prepareReminderPackage(
         assets: [],
       },
     },
-    { storage: runtimeFixtureStorage(fixture.db) },
   );
   const [binding] = await fixture.db<
     { binding_revision: number }[]
   >`select binding_revision from allrice_employee_workflow_bindings
     where instance_id=${actor.instance.id} and workflow_id=${value.workflow.workflowId} and scene_id is null`;
-  await setWorkflowPackageBinding(actor.context, {
+  await seedLegacyWorkflowBinding(actor.context, {
     workspaceId: actor.workspace,
     instanceId: actor.instance.id,
     sceneId: null,
@@ -2606,7 +2605,7 @@ suite(
                 { binding_revision: number }[]
               >`select binding_revision from allrice_employee_workflow_bindings where instance_id=${a.instance.id} and workflow_id=${value.workflow.workflowId} and scene_id is null`;
               expect(binding).toBeDefined();
-              const disabled = await setWorkflowPackageBinding(a.context, {
+              const disabled = await seedLegacyWorkflowBinding(a.context, {
                 ...a.scope,
                 sceneId: null,
                 workflowRevisionId: value.workflow.id,
@@ -2615,7 +2614,7 @@ suite(
                 enabled: false,
               });
               restore = async () => {
-                await setWorkflowPackageBinding(a.context, {
+                await seedLegacyWorkflowBinding(a.context, {
                   ...a.scope,
                   sceneId: null,
                   workflowRevisionId: value.workflow.id,

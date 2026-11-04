@@ -1,7 +1,6 @@
 import {
   RouteCandidateSchema,
   RouteRequestSchema,
-  BrandContentWorkflowInvocationSchema,
   type EmployeeExecutionSnapshot,
   type RouteCandidate,
   type RouteKind,
@@ -44,7 +43,7 @@ const familyTerms: Record<RouteKind, string[]> = {
     'document base',
   ],
   agent_skill: ['技能', 'skill', '专项能力'],
-  workflow: ['工作流', 'workflow', '按流程', '流程执行'],
+  workflow: [],
   tool: ['调用工具', '使用工具', 'tool'],
 };
 
@@ -88,7 +87,6 @@ function authorization(input: {
   grantedCapabilities: SkillCapability[];
   requiresApproval: boolean;
   approvalPolicy: 'confirm_side_effects' | 'confirm_external' | 'autonomous';
-  approvalHandledByWorkflow?: boolean;
 }): Pick<RouteCandidate, 'authorized' | 'exclusionReason'> {
   if (!input.effective) {
     return { authorized: false, exclusionReason: 'excluded_not_effective' };
@@ -114,7 +112,6 @@ function authorization(input: {
   }
   if (
     input.requiresApproval &&
-    !input.approvalHandledByWorkflow &&
     input.approvalPolicy !== 'autonomous'
   ) {
     return {
@@ -123,37 +120,6 @@ function authorization(input: {
     };
   }
   return { authorized: true, exclusionReason: null };
-}
-
-function workflowCapabilities(
-  definition: Extract<
-    EmployeeExecutionSnapshot,
-    { schemaVersion: 2 }
-  >['capabilitySnapshot']['workflows'][number]['revision']['definition'],
-) {
-  const required: SkillCapability[] = [];
-  for (const step of definition.steps) {
-    if (step.kind === 'model' || step.kind === 'agent_skill') {
-      required.push('model:invoke');
-    } else if (step.kind === 'knowledge') {
-      required.push('storage:read');
-    } else if (step.kind === 'tool') {
-      const capability = step.input.requiredCapability;
-      if (typeof capability === 'string') {
-        const parsed = [
-          'network:outbound',
-          'storage:read',
-          'storage:write',
-          'secret:use',
-          'model:invoke',
-          'automation:write',
-        ].find((candidate) => candidate === capability) as
-          SkillCapability | undefined;
-        if (parsed) required.push(parsed);
-      }
-    }
-  }
-  return unique(required);
 }
 
 function toolTerms(name: string, description: string) {
@@ -184,10 +150,9 @@ export function decideCapabilityRoute(input: {
   const request = RouteRequestSchema.parse(input.request);
   const prompt = normalize(request.prompt);
   const snapshot = input.executionSnapshot;
-  const invocation =
-    snapshot?.schemaVersion === 2 && snapshot.workflowInvocation
-      ? BrandContentWorkflowInvocationSchema.parse(snapshot.workflowInvocation)
-      : undefined;
+  if (snapshot?.schemaVersion === 2 && snapshot.workflowInvocation) {
+    throw new Error('Legacy Workflow execution is retired');
+  }
   if (
     snapshot &&
     (snapshot.tenantContext.organizationId !== request.organizationId ||
@@ -265,51 +230,6 @@ export function decideCapabilityRoute(input: {
     // DSH-native Skills are selected by DSH's own skill-catalog tool. They are
     // deliberately absent from the AllRice pre-routing candidate list so the
     // control plane cannot second-guess or duplicate the Harness Agent Loop.
-    for (const binding of snapshot.capabilitySnapshot.workflows) {
-      const businessStage =
-        binding.revision.definition.inputSchema['x-allrice-brand-content'];
-      const invocationMatches =
-        invocation?.workflowRevisionId === binding.revision.id &&
-        invocation.input.stage === businessStage &&
-        snapshot.instance?.kind === 'custom' &&
-        invocation.instanceId === snapshot.instance.id;
-      const requiredCapabilities = workflowCapabilities(
-        binding.revision.definition,
-      );
-      const requiresApproval = binding.revision.definition.steps.some(
-        (step) => step.approval === 'required',
-      );
-      facts.push({
-        candidate: RouteCandidateSchema.parse({
-          id: `workflow:${binding.revision.id}`,
-          kind: 'workflow',
-          name: binding.revision.name,
-          bindingId: binding.bindingId,
-          requiredCapabilities,
-          risk: requiresApproval ? 'high' : 'medium',
-          requiresApproval,
-          ...authorization({
-            effective:
-              binding.effective &&
-              (businessStage
-                ? invocationMatches
-                : invocation?.workflowRevisionId !== binding.revision.id),
-            requiredCapabilities,
-            grantedCapabilities,
-            requiresApproval,
-            approvalPolicy,
-            approvalHandledByWorkflow: true,
-          }),
-          score: 0,
-        }),
-        terms: [
-          binding.revision.name,
-          binding.revision.slug,
-          binding.revision.description,
-        ],
-        explicitTerms: familyTerms.workflow,
-      });
-    }
   }
   for (const tool of input.tools) {
     // Scheduling checks current human provenance and leased execution authority.
@@ -378,18 +298,7 @@ export function decideCapabilityRoute(input: {
   if (!best) {
     throw new Error('No authorized route can invoke the employee model');
   }
-  const fixed = invocation
-    ? candidates.find(
-        (candidate) =>
-          candidate.id === `workflow:${invocation.workflowRevisionId}` &&
-          candidate.authorized,
-      )
-    : undefined;
-  if (invocation && !fixed)
-    throw new Error(
-      'The requested business workflow is not authorized in this Run',
-    );
-  const selected = fixed ?? (best.score > 1 ? best : candidates[0]!);
+  const selected = best.score > 1 ? best : candidates[0]!;
   const reasonCodes: RouteReasonCode[] = [];
   if (selected.kind === 'direct') {
     reasonCodes.push(
@@ -415,8 +324,7 @@ export function decideCapabilityRoute(input: {
     selectedSkillVersionIds: [],
     selectedKnowledgeRevisionIds:
       selected.kind === 'knowledge' ? [revisionId] : [],
-    selectedWorkflowRevisionIds:
-      selected.kind === 'workflow' ? [revisionId] : [],
+    selectedWorkflowRevisionIds: [],
     selectedToolNames: selected.kind === 'tool' ? [revisionId] : [],
   };
 }

@@ -4,7 +4,6 @@ import { createHash } from 'node:crypto';
 import {
   CapabilityCatalogSchema,
   CreateKnowledgeSourceInputSchema,
-  CreateWorkflowInputSchema,
   EmployeeCapabilityDirectorySchema,
   FrozenKnowledgeBindingSchema,
   FrozenWorkflowBindingSchema,
@@ -12,7 +11,6 @@ import {
   KnowledgeRevisionSchema,
   ManageEmployeeCapabilitiesInputSchema,
   PublishKnowledgeRevisionInputSchema,
-  PublishWorkflowRevisionInputSchema,
   UpdateCapabilityRevisionStatusInputSchema,
   UpdateCapabilityStatusInputSchema,
   UuidSchema,
@@ -489,22 +487,14 @@ export async function updateCapabilityStatus(
   input: unknown,
 ) {
   const update = UpdateCapabilityStatusInputSchema.parse(input);
+  if (update.kind === 'workflow') throw new CapabilityRegistryError('invalid_binding');
   const workspaceId = await resolveWorkspaceId(context, update.workspaceId);
   await requireCapabilityAdmin(context, workspaceId);
   const capabilityId = UuidSchema.parse(capabilityIdInput);
   const sql = getDatabase();
   await sql.begin(async (transaction) => {
     const rows =
-      update.kind === 'workflow'
-        ? await transaction<{ id: string }[]>`
-            update allrice_workflows set status = ${update.status},
-              updated_at = now()
-            where id = ${capabilityId}
-              and organization_id = ${context.organizationId}
-              and workspace_id = ${workspaceId}
-            returning id
-          `
-        : await transaction<{ id: string }[]>`
+      await transaction<{ id: string }[]>`
             update allrice_knowledge_sources set status = ${update.status},
               updated_at = now()
             where id = ${capabilityId} and ownership is null
@@ -535,22 +525,13 @@ export async function updateCapabilityRevisionStatus(
   const workspaceId = await resolveWorkspaceId(context, update.workspaceId);
   await requireCapabilityAdmin(context, workspaceId);
   const revisionId = UuidSchema.parse(revisionIdInput);
-  if (update.kind === 'agent_skill') {
+  if (update.kind !== 'knowledge') {
     throw new CapabilityRegistryError('invalid_binding');
   }
   const sql = getDatabase();
   await sql.begin(async (transaction) => {
     const rows =
-      update.kind === 'workflow'
-        ? await transaction<{ id: string }[]>`
-              update allrice_workflow_revisions set status = ${update.status}
-              where id = ${revisionId}
-                and organization_id = ${context.organizationId}
-                and workspace_id = ${workspaceId}
-                and status in ('published', 'deprecated')
-              returning id
-            `
-        : await transaction<{ id: string }[]>`
+      await transaction<{ id: string }[]>`
               update allrice_knowledge_revisions set status = ${update.status}
               where id = ${revisionId} and file_object_id is null
                 and organization_id = ${context.organizationId}
@@ -626,143 +607,6 @@ export async function resolveEmployeeCapabilitiesForRun(
     },
     sql,
   );
-}
-
-export async function createWorkflow(context: RequestContext, input: unknown) {
-  const creation = CreateWorkflowInputSchema.parse(input);
-  const workspaceId = await resolveWorkspaceId(context, creation.workspaceId);
-  const userId = await requireCapabilityAdmin(context, workspaceId);
-  const checksum = capabilityChecksum({
-    name: creation.name,
-    description: creation.description,
-    definition: creation.definition,
-  });
-  const sql = getDatabase();
-  try {
-    return await sql.begin(async (transaction) => {
-      const workflows = await transaction<{ id: string }[]>`
-        insert into allrice_workflows (
-          organization_id, workspace_id, slug, name, description, created_by
-        ) values (
-          ${context.organizationId}, ${workspaceId}, ${creation.slug},
-          ${creation.name}, ${creation.description}, ${userId}
-        ) returning id
-      `;
-      const workflowId = workflows[0]?.id;
-      if (!workflowId) throw new Error('workflow creation failed');
-      const revisions = await transaction<WorkflowBindingRow[]>`
-        insert into allrice_workflow_revisions (
-          organization_id, workspace_id, workflow_id, revision,
-          name, description, status, definition, checksum,
-          created_by, published_at
-        ) values (
-          ${context.organizationId}, ${workspaceId}, ${workflowId}, 1,
-          ${creation.name}, ${creation.description}, 'published',
-          ${transaction.json(toJsonValue(creation.definition))}, ${checksum},
-          ${userId}, now()
-        ) returning id as revision_id, workflow_id, name, description,
-          revision, status, checksum, definition, published_at,
-          ${creation.slug}::text as slug,
-          ${userId}::uuid as bound_by, now() as bound_at,
-          gen_random_uuid() as binding_id
-      `;
-      const revision = revisions[0];
-      if (!revision) throw new Error('workflow revision creation failed');
-      await audit(transaction, {
-        context,
-        workspaceId,
-        action: 'workflow.create',
-        resourceType: 'workflow',
-        resourceId: workflowId,
-        reason: 'admin_created_immutable_workflow_revision',
-        metadata: { revisionId: revision.revision_id, checksum },
-      });
-      return mapWorkflow(revision).revision;
-    });
-  } catch (error) {
-    if (
-      typeof error === 'object' &&
-      error !== null &&
-      'code' in error &&
-      error.code === '23505'
-    ) {
-      throw new CapabilityRegistryError('version_conflict');
-    }
-    throw error;
-  }
-}
-
-export async function publishWorkflowRevision(
-  context: RequestContext,
-  workflowIdInput: string,
-  input: unknown,
-) {
-  const publication = PublishWorkflowRevisionInputSchema.parse(input);
-  const workspaceId = await resolveWorkspaceId(
-    context,
-    publication.workspaceId,
-  );
-  const userId = await requireCapabilityAdmin(context, workspaceId);
-  const workflowId = UuidSchema.parse(workflowIdInput);
-  const sql = getDatabase();
-  return sql.begin(async (transaction) => {
-    const workflows = await transaction<
-      { id: string; slug: string; name: string; description: string }[]
-    >`
-      select id, slug, name, description from allrice_workflows
-      where id = ${workflowId}
-        and organization_id = ${context.organizationId}
-        and workspace_id = ${workspaceId} and status = 'active'
-        and not exists(select 1 from allrice_workflow_packages p
-          join allrice_workflow_revisions r on r.id=p.workflow_revision_id where r.workflow_id=${workflowId})
-      for update
-    `;
-    const workflow = workflows[0];
-    if (!workflow) throw new CapabilityRegistryError('not_found');
-    const nextRows = await transaction<{ revision: number }[]>`
-      select coalesce(max(revision), 0)::integer + 1 as revision
-      from allrice_workflow_revisions where workflow_id = ${workflow.id}
-    `;
-    const name = publication.name ?? workflow.name;
-    const description = publication.description ?? workflow.description;
-    const checksum = capabilityChecksum({
-      name,
-      description,
-      definition: publication.definition,
-    });
-    const revisions = await transaction<WorkflowBindingRow[]>`
-      insert into allrice_workflow_revisions (
-        organization_id, workspace_id, workflow_id, revision,
-        name, description, status, definition, checksum,
-        created_by, published_at
-      ) values (
-        ${context.organizationId}, ${workspaceId}, ${workflow.id},
-        ${nextRows[0]?.revision ?? 1}, ${name}, ${description}, 'published',
-        ${transaction.json(toJsonValue(publication.definition))}, ${checksum},
-        ${userId}, now()
-      ) returning id as revision_id, workflow_id, name, description,
-        revision, status, checksum, definition, published_at,
-        ${workflow.slug}::text as slug,
-        ${userId}::uuid as bound_by, now() as bound_at,
-        gen_random_uuid() as binding_id
-    `;
-    const revision = revisions[0];
-    if (!revision) throw new Error('workflow revision publication failed');
-    await transaction`
-      update allrice_workflows set name = ${name}, description = ${description},
-        updated_at = now() where id = ${workflow.id}
-    `;
-    await audit(transaction, {
-      context,
-      workspaceId,
-      action: 'workflow.revision.publish',
-      resourceType: 'workflow_revision',
-      resourceId: revision.revision_id,
-      reason: 'admin_published_immutable_workflow_revision',
-      metadata: { workflowId: workflow.id, checksum },
-    });
-    return mapWorkflow(revision).revision;
-  });
 }
 
 export async function createKnowledgeSource(
@@ -984,11 +828,10 @@ export async function manageEmployeeCapabilities(
   const userId = await requireCapabilityAdmin(context, workspaceId);
   const employeeId = UuidSchema.parse(update.employeeId);
   const skillVersionIds: string[] = [];
-  const workflowRevisionIds = [...new Set(update.workflowRevisionIds)].sort();
   const knowledgeRevisionIds = [...new Set(update.knowledgeRevisionIds)].sort();
   if (
     update.agentSkills.length > 0 ||
-    workflowRevisionIds.length !== update.workflowRevisionIds.length ||
+    update.workflowRevisionIds.length > 0 ||
     knowledgeRevisionIds.length !== update.knowledgeRevisionIds.length
   ) {
     throw new CapabilityRegistryError('invalid_binding');
@@ -1003,23 +846,6 @@ export async function manageEmployeeCapabilities(
       for update
     `;
     if (!employees[0]) throw new CapabilityRegistryError('not_found');
-
-    if (workflowRevisionIds.length > 0) {
-      const rows = await transaction<{ id: string }[]>`
-        select r.id from allrice_workflow_revisions r
-        join allrice_workflows w on w.id = r.workflow_id
-        where r.organization_id = ${context.organizationId}
-          and r.workspace_id = ${workspaceId}
-          and r.id in ${transaction(workflowRevisionIds)}
-          and r.status = 'published' and w.status = 'active'
-          and not exists(select 1 from allrice_workflow_packages p where p.workflow_revision_id=r.id)
-      `;
-      if (
-        new Set(rows.map((row) => row.id)).size !== workflowRevisionIds.length
-      ) {
-        throw new CapabilityRegistryError('invalid_binding');
-      }
-    }
 
     if (knowledgeRevisionIds.length > 0) {
       const rows = await transaction<{ id: string }[]>`
@@ -1038,33 +864,12 @@ export async function manageEmployeeCapabilities(
     }
 
     await transaction`
-      update allrice_employee_workflow_bindings set enabled = false,
-        updated_at = now()
-      where organization_id = ${context.organizationId}
-        and workspace_id = ${workspaceId} and employee_id = ${employeeId}
-        and instance_id is null
-    `;
-    await transaction`
       update allrice_employee_knowledge_bindings set enabled = false,
         updated_at = now()
       where organization_id = ${context.organizationId}
         and workspace_id = ${workspaceId} and employee_id = ${employeeId}
     `;
 
-    for (const revisionId of workflowRevisionIds) {
-      await transaction`
-        insert into allrice_employee_workflow_bindings (
-          organization_id, workspace_id, employee_id,
-          workflow_revision_id, enabled, bound_by, bound_at
-        ) values (
-          ${context.organizationId}, ${workspaceId}, ${employeeId},
-          ${revisionId}, true, ${userId}, now()
-        )
-        on conflict (organization_id, workspace_id, employee_id, workflow_revision_id)
-        do update set enabled = true, bound_by = excluded.bound_by,
-          bound_at = excluded.bound_at, updated_at = now()
-      `;
-    }
     for (const revisionId of knowledgeRevisionIds) {
       await transaction`
         insert into allrice_employee_knowledge_bindings (
@@ -1094,7 +899,6 @@ export async function manageEmployeeCapabilities(
       reason: 'admin_replaced_employee_capability_bindings',
       metadata: {
         skillVersionIds,
-        workflowRevisionIds,
         knowledgeRevisionIds,
       },
     });

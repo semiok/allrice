@@ -57,7 +57,6 @@ import {
   type ChatSessionSchema,
   type EmployeeAssignmentSchema,
   type ImageMediaType,
-  type BrandContentWorkflowInvocation,
   type RequestContext,
   type Visibility,
   type MemoryClass,
@@ -1415,7 +1414,6 @@ type ChatMessagePersistenceInput = {
   requestDigest: string;
   options: {
     folderEventId?: string;
-    workflowInvocation?: BrandContentWorkflowInvocation;
   };
 };
 
@@ -1875,9 +1873,6 @@ async function prepareChatRunBinding(
       sessionId: session.id,
       userMessageId: result.userMessage.id,
       assistantMessageId: result.assistantMessage.id,
-      ...(input.options.workflowInvocation
-        ? { workflowInvocation: input.options.workflowInvocation }
-        : {}),
       promptSnapshot: {
         systemPrompt: '',
         referenceSelections: ChatMessageContentSchema.parse(
@@ -2139,18 +2134,12 @@ export async function sendChatMessage(
   input: unknown,
   options: {
     folderEventId?: string;
-    /** Only the authenticated business-stage endpoint supplies this value. */
-    workflowInvocation?: BrandContentWorkflowInvocation;
   } = {},
 ) {
   const message = SendChatMessageInputSchema.parse(input);
   const requestDigest = `sha256:${createHash('sha256')
     .update(
-      JSON.stringify(
-        options.workflowInvocation
-          ? { message, workflowInvocation: options.workflowInvocation }
-          : message,
-      ),
+      JSON.stringify(message),
     )
     .digest('hex')}`;
   const conversationMessage = message.userQuestionAnswer

@@ -9,7 +9,6 @@ import { executePlatformTechnicalTask } from './platform-technical.js';
 import { executePlatformRepositoryAction } from './platform-repository.js';
 import { executePlatformRepositoryMerge } from './platform-repository-merge.js';
 import { executeSystemEcho } from './system-echo.js';
-import { executeWorkflowRun } from './workflow-run.js';
 
 const handlers = {
   'allrice.experience.consolidate': executeExperienceConsolidation,
@@ -18,7 +17,6 @@ const handlers = {
   'allrice.platform.repository': executePlatformRepositoryAction,
   'allrice.platform.repository.merge': executePlatformRepositoryMerge,
   'allrice.system.echo': executeSystemEcho,
-  'allrice.workflow.run': executeWorkflowRun,
 } satisfies Record<string, ClaimedJobHandler>;
 
 export function resolveJobHandler(payloadType: string): ClaimedJobHandler {

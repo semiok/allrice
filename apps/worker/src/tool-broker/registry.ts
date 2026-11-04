@@ -14,7 +14,6 @@ import {
 import { generateImage } from './handlers/image.js';
 import {
   readBrandContent,
-  executeBrandContentStep,
 } from './handlers/brand-content.js';
 import { updateEmployeeProfile } from './handlers/employee-profile.js';
 import { runProjectWorkspace } from './handlers/project.js';
@@ -85,10 +84,6 @@ function researchHandler(name: ResearchToolName): RiceToolHandler {
  */
 export const riceToolHandlerRegistry = Object.freeze({
   'workspace.brand_content.read': registration('workspace', readBrandContent),
-  'workspace.brand_content.step': registration(
-    'workspace',
-    executeBrandContentStep,
-  ),
   'workspace.employee.method.prepare_activation': registration(
     'workspace',
     prepareEmployeeMethodActivation,

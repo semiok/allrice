@@ -3,7 +3,6 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createJobNativeBinding } from '../harness/native-session-binding.js';
 import { documentDeliveryGuard } from './document-delivery.js';
 import { LocalStorageAdapter } from '@allrice/storage';
-import { workflowModelUsage } from '../workflow-model-usage.js';
 
 import {
   withPlatformImageTools,
@@ -36,7 +35,6 @@ import {
   freezeRouteSubscriptionSnapshot,
   recordToolBrokerAudit,
   recordConversationNativeContext,
-  ensureWorkflowRunForExecution,
   releaseConversationRuntime,
   resolveEmployeeExecution,
   filterEmployeeMethodMemories,
@@ -125,7 +123,6 @@ import {
   providerSnapshotForModelTarget,
   replayProviderSnapshot,
 } from '../routing/provider-snapshot.js';
-import { executeDurableWorkflow, WorkflowPaused } from '../workflow-engine.js';
 import { loadHarnessImages } from '../harness/prompt-images.js';
 import { getExecutionFailureUsage } from '../harness/dsh/execution-failure-usage.js';
 import { mcpCatalogAdmissionInstructions } from '../harness/dsh/native-tools.js';
@@ -211,6 +208,9 @@ export async function executeEmployeeRun({
     ownerId: execution.job.ownerId,
     runId: execution.context.runId,
   });
+  if (resolved.executionSnapshot?.schemaVersion === 2 && resolved.executionSnapshot.workflowInvocation) {
+    throw new HandlerError('LEGACY_WORKFLOW_RETIRED', '旧 Workflow 执行入口已停用。', false);
+  }
   if (typeof input.qualityRequestId === 'string')
     return executePlatformQualityCheck(
       { execution, isolation, signal, onHarnessEvent, workflowLease },
@@ -951,6 +951,9 @@ export async function executeEmployeeRun({
       createdAt: new Date().toISOString(),
     });
     routeDecision = await recordRouteDecision(proposedDecision);
+    if (routeDecision.selectedKind === 'workflow') {
+      throw new HandlerError('LEGACY_WORKFLOW_RETIRED', '旧 Workflow 执行入口已停用。', false);
+    }
     if (
       routeDecision.inputChecksum !== proposedDecision.inputChecksum ||
       routeDecision.employeeId !== proposedDecision.employeeId
@@ -1022,7 +1025,7 @@ export async function executeEmployeeRun({
     );
     const modelBudgetScope = {
       verifiedSubscription: !!subscriptionSnapshot,
-      workflow: routeDecision.selectedKind === 'workflow',
+      workflow: false,
     };
     const taskProgress =
       executionSnapshot.schemaVersion === 2 &&
@@ -1030,7 +1033,7 @@ export async function executeEmployeeRun({
         ? createTaskProgressRuntime({
             context: execution.context,
             sessionId:
-              repairTask || routeDecision.selectedKind === 'workflow'
+              repairTask
                 ? undefined
                 : input.sessionId,
             worker: workflowLease,
@@ -1128,36 +1131,16 @@ export async function executeEmployeeRun({
       : routeDecision.selectedKind === 'knowledge'
         ? [revisionId]
         : [];
-    const selectedWorkflow =
-      routeDecision.selectedKind === 'workflow' && capabilitySnapshot
-        ? capabilitySnapshot.workflows.find(
-            (binding) => binding.revision.id === revisionId,
-          )
-        : undefined;
-    // Admission precedes capability routing. Only a selected frozen Workflow
-    // revision is outside this check; installing a Workflow does not exempt
-    // this employee's ordinary turns or rewrite the immutable Run snapshot.
     const officeFirstDeliveryPolicy =
-      !selectedWorkflow && executionSnapshot.schemaVersion === 2
+      executionSnapshot.schemaVersion === 2
         ? executionSnapshot.officeFirstDeliveryPolicy
         : undefined;
     const finalDeliveryMode =
-      !selectedWorkflow &&
       executionSnapshot.schemaVersion === 2 &&
       executionSnapshot.finalDeliveryPolicy?.mode === 'checked_native_v1'
         ? ('checked_native_v1' as const)
         : ('legacy' as const);
-    const workflowToolNames =
-      selectedWorkflow?.revision.definition.steps.flatMap((step) => {
-        const name = step.input.toolName;
-        return step.kind === 'tool' && typeof name === 'string' ? [name] : [];
-      }) ?? [];
-    const selectedToolNames =
-      routeDecision.selectedKind === 'tool'
-        ? [revisionId]
-        : routeDecision.selectedKind === 'workflow'
-          ? workflowToolNames
-          : [];
+    const selectedToolNames = routeDecision.selectedKind === 'tool' ? [revisionId] : [];
     const tools = repositoryReviewTask
       ? authorizedTools
       : repairTask
@@ -1233,7 +1216,6 @@ export async function executeEmployeeRun({
     const independentDelivery =
       finalDeliveryMode === 'checked_native_v1' &&
       adapter.kind === 'dsh' &&
-      !selectedWorkflow &&
       !repositoryReviewTask &&
       !repairTask;
     if (
@@ -1275,7 +1257,6 @@ export async function executeEmployeeRun({
       taskProgress &&
       !repairTask &&
       !repositoryReviewTask &&
-      !selectedWorkflow &&
       nativeQuestionMode !== 'timed' &&
       adapter.kind === 'dsh'
     ) {
@@ -1355,7 +1336,6 @@ export async function executeEmployeeRun({
         },
       };
     }
-    const workflowCitations: typeof knowledge.citations = [];
     // Costs stay unknown until the frozen subscription receipt is verified.
     if (subscriptionSnapshot) {
       routeCostCents = null;
@@ -1422,354 +1402,7 @@ export async function executeEmployeeRun({
           });
       },
     });
-    const result: HarnessExecutionResult =
-      routeDecision.selectedKind === 'workflow'
-        ? await (async () => {
-            if (!selectedWorkflow || !capabilitySnapshot) {
-              throw new HandlerError(
-                'WORKFLOW_SNAPSHOT_MISSING',
-                'Selected workflow is missing from the frozen employee snapshot',
-                false,
-              );
-            }
-            const invocation =
-              executionSnapshot.schemaVersion === 2
-                ? executionSnapshot.workflowInvocation
-                : undefined;
-            const checkWorkflowContent = async () => {
-              await contentGuard?.check();
-              if (invocation) {
-                const {
-                  assertWorkflowPackageExecution,
-                  assertEmployeeBrandWorkflowContext,
-                } = await import('@allrice/database');
-                await assertEmployeeBrandWorkflowContext(contentScope);
-                await assertWorkflowPackageExecution(
-                  {
-                    actor: execution.context.delegatedBy,
-                    organizationId: execution.context.organizationId,
-                    workspaceId: execution.context.workspaceId,
-                  },
-                  {
-                    workspaceId: execution.context.workspaceId!,
-                    instanceId: invocation.instanceId,
-                    sceneId: invocation.sceneId,
-                    workflowRevisionId: invocation.workflowRevisionId,
-                    frozenPackageDigest: invocation.packageDigest,
-                  },
-                );
-              }
-            };
-            await checkWorkflowContent();
-            await ensureWorkflowRunForExecution({
-              context: execution.context,
-              ownerId: execution.job.ownerId,
-              employeeId: executionSnapshot.employee.id,
-              workflowRevisionId: selectedWorkflow.revision.id,
-              sessionId: kernel.sessionId,
-              value: {
-                request: kernel.userRequest,
-                ...(invocation ? { business: invocation.input } : {}),
-              },
-              ...(invocation
-                ? {
-                    frozenDefinition: selectedWorkflow.revision.definition,
-                    workflowPackage: {
-                      instanceId: invocation.instanceId,
-                      sceneId: invocation.sceneId,
-                      packageDigest: invocation.packageDigest,
-                    },
-                  }
-                : {}),
-            });
-            const usage = {
-              inputTokens: 0,
-              cachedInputTokens: 0,
-              outputTokens: 0,
-            };
-            const durable = await executeDurableWorkflow({
-              ...(invocation ? { recordEvaluation: false } : {}),
-              checkContent: checkWorkflowContent,
-              execution,
-              ...workflowLease,
-              storageRoot: process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
-              evaluation: {
-                routingAccurate: true,
-                citationsAccurate: true,
-                approvalExpected:
-                  selectedWorkflow.revision.definition.steps.some(
-                    (step) => step.approval === 'required',
-                  ),
-              },
-              executeStep: async ({ step, value, idempotencyKey }) => {
-                await checkWorkflowContent();
-                if (step.kind === 'knowledge') {
-                  const allowed = new Set(
-                    capabilitySnapshot.knowledge
-                      .filter((binding) => binding.effective)
-                      .map((binding) => binding.revision.id),
-                  );
-                  const configured = step.input.knowledgeRevisionIds;
-                  const requested = Array.isArray(configured)
-                    ? configured.filter(
-                        (item): item is string =>
-                          typeof item === 'string' && allowed.has(item),
-                      )
-                    : [];
-                  const revisionIds = requested.length
-                    ? requested
-                    : [...allowed];
-                  const retrieved = await buildAuthorizedKnowledgeContext({
-                    context: execution.context,
-                    employeeId: executionSnapshot.employee.id,
-                    knowledgeRevisionIds: revisionIds,
-                    query:
-                      typeof step.input.query === 'string'
-                        ? step.input.query
-                        : kernel.userRequest,
-                    storageRoot:
-                      process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
-                  });
-                  workflowCitations.push(...retrieved.citations);
-                  return {
-                    output: {
-                      context: retrieved.context,
-                      citations: retrieved.citations,
-                    },
-                  };
-                }
-                if (step.kind === 'tool') {
-                  const name = step.input.toolName;
-                  if (
-                    typeof name !== 'string' ||
-                    !tools.some((tool) => tool.name === name)
-                  ) {
-                    throw new HandlerError(
-                      'WORKFLOW_TOOL_DENIED',
-                      'Workflow tool is not in the frozen authorized tool set',
-                      false,
-                    );
-                  }
-                  const configuredArguments = step.input.arguments;
-                  const argumentsValue =
-                    configuredArguments &&
-                    typeof configuredArguments === 'object' &&
-                    !Array.isArray(configuredArguments)
-                      ? (configuredArguments as Record<string, unknown>)
-                      : value;
-                  const toolResult = await executeRiceTool({
-                    nativeSkills: resolved.nativeSkills,
-                    localMcp:
-                      executionSnapshot.schemaVersion === 2
-                        ? executionSnapshot.localMcp
-                        : undefined,
-                    frozenMcpTools:
-                      executionSnapshot.schemaVersion === 2
-                        ? executionSnapshot.mcpTools
-                        : [],
-                    context: execution.context,
-                    memoryReadAuthority: {
-                      scope: contentScope,
-                      worker: {
-                        ...workflowLease,
-                        attempt: execution.job.attempt,
-                      },
-                    },
-                    managedBrowserJobAttempt: execution.job.attempt,
-                    managedBrowserJobLeaseToken: workflowLease.leaseToken,
-                    capabilities: resolved.grantedCapabilities,
-                    storageRoot:
-                      process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
-                    sessionId: kernel.sessionId,
-                    employeeId: executionSnapshot.employee.id,
-                    userMessageId,
-                    userRequest:
-                      name === 'workspace.memory.remember'
-                        ? resolved.currentUserRequest
-                        : kernel.userRequest,
-                    signal,
-                    call: {
-                      id: idempotencyKey,
-                      name,
-                      arguments: argumentsValue,
-                    },
-                  });
-                  return {
-                    output: toolResult,
-                    sideEffectCommitted: step.sideEffect !== 'none',
-                  };
-                }
-                if (step.kind !== 'model' && step.kind !== 'agent_skill') {
-                  throw new HandlerError(
-                    'WORKFLOW_STEP_UNSUPPORTED',
-                    `Workflow step ${step.kind} cannot execute directly`,
-                    false,
-                  );
-                }
-                const requestedSkillId =
-                  step.kind === 'agent_skill' &&
-                  typeof step.input.agentSkillRevisionId === 'string'
-                    ? step.input.agentSkillRevisionId
-                    : null;
-                const allowedSkillIds = new Set(
-                  resolved.nativeSkills.map((skill) => skill.id),
-                );
-                if (
-                  requestedSkillId &&
-                  !allowedSkillIds.has(requestedSkillId)
-                ) {
-                  throw new HandlerError(
-                    'WORKFLOW_SKILL_DENIED',
-                    'Workflow skill is not in the frozen authorized skill set',
-                    false,
-                  );
-                }
-                const skillIds = requestedSkillId ? [requestedSkillId] : [];
-                const stepKernel = EmployeeKernelRequestSchema.parse({
-                  ...routedKernel,
-                  // A workflow input/output is not the original SQL chat
-                  // message or its final answer. Only inherited history has
-                  // a coverage identity in this synthetic step.
-                  ...(routedKernel.bootstrapContext
-                    ? {
-                        bootstrapContext: {
-                          segments: routedKernel.bootstrapContext.segments,
-                        },
-                      }
-                    : {}),
-                  systemInstructions: [
-                    routedKernel.systemInstructions,
-                    `Execute only workflow step ${step.key} (${step.name}). Return this step's business result; the Workflow Engine controls progression, approval and retry.`,
-                    ...(invocation && typeof step.input.instruction === 'string'
-                      ? [step.input.instruction]
-                      : []),
-                  ].join('\n\n'),
-                  userRequest: JSON.stringify(value),
-                  authorizedMemoryContext: [
-                    routedKernel.authorizedMemoryContext,
-                    JSON.stringify(value.dependencies),
-                  ]
-                    .filter(Boolean)
-                    .join('\n\n'),
-                  skillVersionIds: skillIds,
-                });
-                const stepResult = await adapter.execute({
-                  nativeQuestionMode,
-                  contentGuard,
-                  progress: taskProgress,
-                  nativeQuestionWait:
-                    executionSnapshot.schemaVersion === 2
-                      ? executionSnapshot.nativePreferences?.questionWait
-                      : undefined,
-                  kernel: stepKernel,
-                  nativeSkills: resolved.nativeSkills,
-                  baseSkillCatalog:
-                    executionSnapshot.schemaVersion === 2
-                      ? executionSnapshot.baseSkillCatalog
-                      : undefined,
-                  storageObjects: [],
-                  images: [],
-                  workDirectory: isolation.workDirectory,
-                  // Workflow steps keep their Run and lease while asking. The
-                  // existing zero release point selects blocking program asks.
-                  executionEnvironment: {
-                    ...isolation.environment,
-                    ALLRICE_QUESTION_RELEASE_MS: '0',
-                  },
-                  providerSnapshot,
-                  signal,
-                  attempt: execution.job.attempt,
-                  generation: runtime.generation,
-                  maxOutputTokens: runLimits?.maxOutputTokens,
-                  onEvent: invocation
-                    ? async (event) => {
-                        // Structured node output is private Workflow data. The
-                        // user receives the validated saved-stage receipt.
-                        if (
-                          event.type !== 'assistant.delta' &&
-                          event.type !== 'assistant.completed'
-                        )
-                          await guardedHarnessEvent(event);
-                      }
-                    : guardedHarnessEvent,
-                  authorizedToolNames: invocation
-                    ? []
-                    : authorizedTools.map((tool) => tool.name),
-                  tools: [],
-                  threadId: runtime.threadId,
-                  nativeBinding,
-                  onThreadBound: async ({
-                    threadId,
-                    resumed,
-                    replacedThreadId,
-                  }) => {
-                    runtime = await bindEmployeeConversationThread({
-                      ownership,
-                      adapterKind: adapter.kind,
-                      threadId,
-                      resumed,
-                      replacedThreadId,
-                      appendEvent: appendChatFlowEvent,
-                    });
-                    return { generation: runtime.generation };
-                  },
-                  onTurnStarted: async ({ threadId, turnId }) => {
-                    runtime = await beginEmployeeConversationTurn({
-                      ownership,
-                      adapterKind: adapter.kind,
-                      threadId,
-                      turnId,
-                      appendEvent: appendChatFlowEvent,
-                    });
-                  },
-                });
-                await appendChatFlowEvent('turn.completed', {
-                  source: adapter.kind,
-                  threadId: stepResult.threadId ?? runtime.threadId,
-                  turnId: stepResult.turnId ?? runtime.activeTurnId,
-                  generation: runtime.generation,
-                });
-                usage.inputTokens += stepResult.usage.inputTokens;
-                usage.cachedInputTokens += stepResult.usage.cachedInputTokens;
-                usage.outputTokens += stepResult.usage.outputTokens;
-                return {
-                  output: {
-                    answer: stepResult.answer,
-                    usage: stepResult.usage,
-                    usageComplete: stepResult.usageComplete ?? false,
-                    cacheUsageKnown: stepResult.cacheUsageKnown ?? false,
-                  },
-                };
-              },
-            });
-            const answers = Object.values(durable.output).flatMap((value) =>
-              value &&
-              typeof value === 'object' &&
-              typeof (value as { answer?: unknown }).answer === 'string'
-                ? [(value as { answer: string }).answer]
-                : [],
-            );
-            const savedSummary = objectInput(durable.output.save).summary;
-            return {
-              answer:
-                (invocation && typeof savedSummary === 'string'
-                  ? savedSummary
-                  : answers.at(-1)) ??
-                `工作流已完成，共执行 ${selectedWorkflow.revision.definition.steps.length} 个步骤。`,
-              usage,
-              ...(invocation
-                ? workflowModelUsage(
-                    selectedWorkflow.revision.definition,
-                    durable.output,
-                  )
-                : {}),
-              provider: providerName(providerSnapshot),
-              model: providerSnapshot.model,
-              threadId: runtime.threadId,
-              turnId: runtime.activeTurnId,
-            };
-          })()
-        : await adapter
+    const result: HarnessExecutionResult = await adapter
             .execute({
               nativeQuestionMode,
               nativeSubagents:
@@ -2086,14 +1719,12 @@ export async function executeEmployeeRun({
         worker: workflowLease,
         attempt: execution.job.attempt,
       });
-    if (routeDecision.selectedKind !== 'workflow') {
-      await appendChatFlowEvent('turn.completed', {
+    await appendChatFlowEvent('turn.completed', {
         source: adapter.kind,
         threadId: result.threadId ?? runtime.threadId,
         turnId: result.turnId ?? runtime.activeTurnId,
         generation: runtime.generation,
       });
-    }
     routeUsage = result.usage;
     // Keep subscription accounting incomplete until identity-bound receipts
     // are verified. A forged/mismatched result cannot claim successful delivery.
@@ -2224,7 +1855,6 @@ export async function executeEmployeeRun({
         ...(contentRuntime
           ? await readEmployeeReferenceCitations(contentScope)
           : []),
-        ...workflowCitations,
       ].filter(
         (citation, index, values) =>
           values.findIndex(
@@ -2260,10 +1890,6 @@ export async function executeEmployeeRun({
       routeUsageComplete = failedUsage.usageComplete;
       routeCacheUsageKnown = failedUsage.cacheUsageKnown;
     }
-    if (error instanceof WorkflowPaused) {
-      outcome = 'idle';
-      throw error;
-    }
     outcome = signal.aborted ? 'interrupted' : 'error';
     if (runtime.activeTurnId) {
       await appendChatFlowEvent(
@@ -2285,8 +1911,7 @@ export async function executeEmployeeRun({
         organizationId: execution.context.organizationId,
         workspaceId: execution.context.workspaceId!,
         ...(!routeExecutionStarted ||
-        (decision.selectedKind !== 'workflow' &&
-          error instanceof DshStartupRejection &&
+        (error instanceof DshStartupRejection &&
           error.belongsTo(execution.context.runId, execution.job.attempt))
           ? { undispatched: { subscriptionSnapshotCreated } }
           : {}),

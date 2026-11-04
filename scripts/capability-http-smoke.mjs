@@ -61,37 +61,11 @@ const rice = employeeHub.directory.find(
 );
 if (!rice) throw new Error('Rice is missing from the admin directory');
 
-const workflowResponse = await jsonRequest(
-  '/api/v1/admin/capabilities',
-  {
-    method: 'POST',
-    headers: {
-      ...tenantHeaders(admin.cookie),
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      kind: 'workflow',
-      workspaceId,
-      slug: 'met68-smoke-workflow',
-      name: 'MET-68 验收工作流',
-      description: '验证独立 Workflow revision 与员工绑定。',
-      definition: {
-        schemaVersion: 1,
-        steps: [
-          { key: 'research', name: '研究', kind: 'knowledge' },
-          {
-            key: 'approve',
-            name: '确认',
-            kind: 'approval',
-            dependsOn: ['research'],
-          },
-        ],
-      },
-    }),
-  },
-  201,
-);
-const workflowRevision = (await workflowResponse.json()).revision;
+// The retired creation endpoint must fail even for an administrator.
+await jsonRequest('/api/v1/admin/capabilities', {
+  method: 'POST', headers: {...tenantHeaders(admin.cookie), 'content-type':'application/json'},
+  body: JSON.stringify({kind:'workflow',workspaceId}),
+}, 422);
 
 async function createKnowledge({ slug, name, principalId }) {
   const response = await jsonRequest(
@@ -145,7 +119,6 @@ const catalogResponse = await jsonRequest(
 );
 const catalog = (await catalogResponse.json()).catalog;
 if (
-  !catalog.workflows.some((item) => item.id === workflowRevision.id) ||
   !catalog.knowledge.some((item) => item.id === workspaceKnowledge.id) ||
   !catalog.knowledge.some((item) => item.id === adminOnlyKnowledge.id)
 ) {
@@ -165,7 +138,7 @@ await jsonRequest(`/api/v1/employees/${rice.employeeId}/capabilities`, {
       skillVersionId: skill.revision.id,
       grantedCapabilities: skill.grantedCapabilities,
     })),
-    workflowRevisionIds: [workflowRevision.id],
+    workflowRevisionIds: [],
     knowledgeRevisionIds: [workspaceKnowledge.id, adminOnlyKnowledge.id],
   }),
 });
@@ -175,7 +148,7 @@ const directoryResponse = await jsonRequest(
   { headers: tenantHeaders(admin.cookie) },
 );
 const directory = (await directoryResponse.json()).capabilities;
-if (directory.workflows.length !== 1 || directory.knowledge.length !== 2) {
+if (directory.workflows.length !== 0 || directory.knowledge.length !== 2) {
   throw new Error('employee capability binding did not persist');
 }
 await jsonRequest(
@@ -201,106 +174,18 @@ await jsonRequest(
   403,
 );
 
-const foreignWorkflowResponse = await jsonRequest(
-  '/api/v1/admin/capabilities',
-  {
-    method: 'POST',
-    headers: {
-      ...tenantHeaders(admin.cookie, secondWorkspaceId),
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      kind: 'workflow',
-      workspaceId: secondWorkspaceId,
-      slug: 'met68-foreign-workflow',
-      name: 'MET-68 隔离工作流',
-      description: '验证跨工作区 revision 不能绑定。',
-      definition: {
-        schemaVersion: 1,
-        steps: [{ key: 'answer', name: '回答', kind: 'model' }],
-      },
-    }),
-  },
-  201,
-);
-const foreignWorkflowRevision = (await foreignWorkflowResponse.json()).revision;
-await jsonRequest(
-  `/api/v1/employees/${rice.employeeId}/capabilities`,
-  {
-    method: 'PUT',
-    headers: {
-      ...tenantHeaders(admin.cookie),
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      workspaceId,
-      agentSkills: catalog.agentSkills.map((skill) => ({
-        installationId: skill.installationId,
-        skillVersionId: skill.revision.id,
-        grantedCapabilities: skill.grantedCapabilities,
-      })),
-      workflowRevisionIds: [workflowRevision.id, foreignWorkflowRevision.id],
-      knowledgeRevisionIds: [workspaceKnowledge.id, adminOnlyKnowledge.id],
-    }),
-  },
-  422,
-);
-
-const secondWorkflowResponse = await jsonRequest(
-  `/api/v1/admin/capabilities/${workflowRevision.workflowId}/revisions`,
-  {
-    method: 'POST',
-    headers: {
-      ...tenantHeaders(admin.cookie),
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      kind: 'workflow',
-      workspaceId,
-      definition: {
-        schemaVersion: 1,
-        steps: [
-          { key: 'research', name: '研究新版', kind: 'knowledge' },
-          {
-            key: 'approve',
-            name: '确认新版',
-            kind: 'approval',
-            dependsOn: ['research'],
-          },
-        ],
-      },
-    }),
-  },
-  201,
-);
-const secondWorkflowRevision = (await secondWorkflowResponse.json()).revision;
-if (secondWorkflowRevision.revision !== 2) {
-  throw new Error('workflow revision did not advance immutably');
-}
-await jsonRequest(
-  `/api/v1/admin/capabilities/${secondWorkflowRevision.id}/revisions`,
-  {
-    method: 'PATCH',
-    headers: {
-      ...tenantHeaders(admin.cookie),
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      workspaceId,
-      kind: 'workflow',
-      status: 'deprecated',
-    }),
-  },
-);
-const unchangedDirectory = await jsonRequest(
-  `/api/v1/employees/${rice.employeeId}/capabilities?workspaceId=${workspaceId}`,
-  { headers: tenantHeaders(admin.cookie) },
-);
-if (
-  (await unchangedDirectory.json()).capabilities.workflows[0]?.revision.id !==
-  workflowRevision.id
-) {
-  throw new Error('publishing a revision rewrote an existing employee binding');
+// The retired binding/publication/status branches reject without changing data.
+await jsonRequest(`/api/v1/employees/${rice.employeeId}/capabilities`, {
+  method:'PUT', headers:{...tenantHeaders(admin.cookie),'content-type':'application/json'},
+  body:JSON.stringify({workspaceId,workflowRevisionIds:[randomUUID()],knowledgeRevisionIds:[]}),
+},422);
+for (const [method,path] of [
+  ['POST',`/api/v1/admin/capabilities/${randomUUID()}/revisions`],
+  ['PATCH',`/api/v1/admin/capabilities/${randomUUID()}/revisions`],
+  ['PATCH',`/api/v1/admin/capabilities/${randomUUID()}`],
+]) await jsonRequest(path, {method,headers:{...tenantHeaders(admin.cookie),'content-type':'application/json'},body:JSON.stringify({workspaceId,kind:'workflow',status:'archived'})},422);
+for (const path of ['/api/v1/workflow-runs', `/api/v1/workflow-runs/${randomUUID()}`, `/api/v1/workflow-approvals/${randomUUID()}`]) {
+  await jsonRequest(path,{headers:tenantHeaders(admin.cookie)},404);
 }
 
 await jsonRequest(
@@ -400,7 +285,6 @@ console.info(
       runId: message.run.id,
       memberUserId: member.userId,
       employeeId: memberRice.employeeId,
-      workflowRevisionId: workflowRevision.id,
       workspaceKnowledgeRevisionId: workspaceKnowledge.id,
       adminOnlyKnowledgeRevisionId: adminOnlyKnowledge.id,
     }),

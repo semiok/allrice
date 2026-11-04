@@ -26,7 +26,6 @@ export interface AllRiceToolManifestEntry {
  * different instance kind or a delegated child. */
 export const employeeCustomizationTools = [
   { name: 'workspace.brand_content.read', capability: 'storage:read' },
-  { name: 'workspace.brand_content.step', capability: 'storage:write' },
   { name: 'workspace.personal_skill.install', capability: 'storage:write' },
   { name: 'workspace.personal_skill.version', capability: 'storage:write' },
   { name: 'workspace.employee.profile.update', capability: 'storage:write' },
@@ -120,12 +119,6 @@ export const allRiceToolManifest = [
     risk: 'read_only',
     transport: 'dsh_broker_native',
     dshWireName: 'workspace_brand_content_read',
-  },
-  {
-    canonicalName: 'workspace.brand_content.step',
-    capability: 'storage:write',
-    risk: 'managed_write',
-    transport: 'envelope',
   },
   {
     canonicalName: 'workspace.personal_skill.version',
