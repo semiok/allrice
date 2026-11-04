@@ -80,6 +80,7 @@ function EmployeeDetailsReader(
     attempt: number;
     data?: EmployeeDetails;
     experienceSummary?: ExperienceSummary;
+    historicalCustom?: { name: string };
     error?: string;
   }>();
   const [reference, setReference] = useState<ReferenceSelection | null>(null);
@@ -95,6 +96,8 @@ function EmployeeDetailsReader(
   const writeRequest = useRef<{ payload: string; id: string } | null>(null);
   const data = result?.attempt === attempt ? result.data : undefined;
   const error = result?.attempt === attempt ? result.error : undefined;
+  const historicalCustom =
+    result?.attempt === attempt ? result.historicalCustom : undefined;
   useEffect(
     () => () => {
       editRead.current?.abort();
@@ -128,7 +131,7 @@ function EmployeeDetailsReader(
         const next = shared?.details ?? EmployeeDetailsSchema.parse(value);
         if (
           next.profile.instanceId !== props.instanceId ||
-          next.content.employeeId !== props.employeeId
+          (props.employeeId && next.content.employeeId !== props.employeeId)
         )
           throw new Error('Employee detail target changed');
         if (!controller.signal.aborted)
@@ -138,13 +141,36 @@ function EmployeeDetailsReader(
             experienceSummary: shared?.experienceSummary,
           });
       })
-      .catch(() => {
-        if (!controller.signal.aborted)
-          setResult({
-            attempt,
-            error:
-              '无法读取这位 AI 员工的当前详情，请重新打开或联系管理员核对配发。',
-          });
+      .catch(async () => {
+        if (controller.signal.aborted) return;
+        const error =
+          '无法读取这位 AI 员工的当前详情，请重新打开或联系管理员核对配发。';
+        setResult({ attempt, error });
+        if (props.organizationView) return;
+        // Current content can be unavailable while the owner still has audit
+        // access. This existing endpoint rechecks the real owner/history gate;
+        // a navigation ID or old profile never grants read/edit authority.
+        try {
+          const value = (await workbenchJson(
+            `/api/v1/employee-instances/${encodeURIComponent(props.instanceId!)}?workspaceId=${encodeURIComponent(props.workspaceId)}`,
+            props.headers,
+            { signal: controller.signal, cache: 'no-store' },
+          )) as { instance: unknown };
+          const instance = EmployeeInstanceSchema.parse(value.instance);
+          if (
+            instance.id !== props.instanceId ||
+            instance.workspaceId !== props.workspaceId
+          )
+            throw Error('History instance target changed');
+          if (!controller.signal.aborted && instance.kind === 'custom')
+            setResult({
+              attempt,
+              error,
+              historicalCustom: { name: instance.profile.name ?? 'AI 员工' },
+            });
+        } catch {
+          // Keep the safe current-detail error when history is also denied.
+        }
       });
     return () => controller.abort();
   }, [
@@ -289,6 +315,15 @@ function EmployeeDetailsReader(
       );
     }
   }
+  const workflowReadContent =
+    !props.organizationView && props.instanceId ? (
+      <PersonalSceneReadPanel
+        scopeId={props.scopeId}
+        instanceId={props.instanceId}
+        workspaceId={props.workspaceId}
+        headers={props.headers}
+      />
+    ) : null;
   return (
     <DshDialog
       ariaLabel={
@@ -296,7 +331,9 @@ function EmployeeDetailsReader(
           ? '编辑员工'
           : data
             ? `${data.profile.name}员工详情`
-            : 'AI 员工详情'
+            : historicalCustom
+              ? `${historicalCustom.name}员工详情`
+              : 'AI 员工详情'
       }
       bodyClassName={editor ? formCss.body : css.body}
       className={
@@ -345,6 +382,7 @@ function EmployeeDetailsReader(
           <button type="button" className={css.retry} onClick={refresh}>
             重新读取
           </button>
+          {historicalCustom && workflowReadContent}
         </>
       ) : !data ? (
         <EmployeeProfileSkeleton />
@@ -375,24 +413,17 @@ function EmployeeDetailsReader(
               props.organizationView || !props.onPrepare ? undefined : prepare
             }
             view={props.organizationView ? 'shared' : 'personal'}
+            workflowReadContent={workflowReadContent}
             workflowContent={
               !props.organizationView &&
               props.instanceId && (
-                <>
-                  <PersonalSceneReadPanel
-                    scopeId={props.scopeId}
-                    instanceId={props.instanceId}
-                    workspaceId={props.workspaceId}
-                    headers={props.headers}
-                  />
-                  <PersonalSceneFilePanel
-                    scopeId={props.scopeId}
-                    instanceId={props.instanceId}
-                    workspaceId={props.workspaceId}
-                    headers={props.headers}
-                    writes={props.fileWrites}
-                  />
-                </>
+                <PersonalSceneFilePanel
+                  scopeId={props.scopeId}
+                  instanceId={props.instanceId}
+                  workspaceId={props.workspaceId}
+                  headers={props.headers}
+                  writes={props.fileWrites}
+                />
               )
             }
             experienceContent={

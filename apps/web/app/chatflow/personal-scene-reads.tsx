@@ -86,6 +86,32 @@ function ReadPanel(props: Props) {
       contentRequest.current?.abort();
     };
   }, []);
+  function clearPrivatePreview() {
+    contentRequest.current?.abort();
+    contentRequest.current = null;
+    setSkill(null);
+    setResource(null);
+    setContentError('');
+    setLoading(false);
+  }
+  function invalidateDeniedRead(cause: unknown, audit = false) {
+    if (
+      !(cause instanceof PersonalSceneHttpError) ||
+      ![401, 403, 404].includes(cause.status)
+    )
+      return;
+    clearPrivatePreview();
+    // Current content can be withdrawn while the owner still has audit access.
+    // A denial of the audit scope or session invalidates both metadata requests.
+    if (audit || cause.status === 401) {
+      catalogRequest.current?.abort();
+      historyRequest.current?.abort();
+      setCatalog(null);
+      setHistory(null);
+      setCatalogError(readError(cause));
+      setHistoryError(readError(cause));
+    }
+  }
   async function directory() {
     catalogRequest.current?.abort();
     const controller = new AbortController();
@@ -101,8 +127,10 @@ function ReadPanel(props: Props) {
       if (next.instanceId !== props.instanceId) throw Error('target_changed');
       if (!controller.signal.aborted && mounted.current) setCatalog(next);
     } catch (cause) {
-      if (!controller.signal.aborted && mounted.current)
+      if (!controller.signal.aborted && mounted.current) {
+        invalidateDeniedRead(cause);
         setCatalogError(readError(cause));
+      }
     }
   }
   async function reads(
@@ -133,6 +161,7 @@ function ReadPanel(props: Props) {
         );
     } catch (cause) {
       if (!controller.signal.aborted && mounted.current) {
+        invalidateDeniedRead(cause, true);
         setHistory(null);
         setHistoryError(readError(cause));
       }
@@ -163,8 +192,10 @@ function ReadPanel(props: Props) {
         throw Error('target_changed');
       if (!controller.signal.aborted && mounted.current) setSkill(next);
     } catch (cause) {
-      if (!controller.signal.aborted && mounted.current)
+      if (!controller.signal.aborted && mounted.current) {
+        invalidateDeniedRead(cause);
         setContentError(readError(cause));
+      }
     } finally {
       if (!controller.signal.aborted && mounted.current) setLoading(false);
     }
@@ -198,6 +229,7 @@ function ReadPanel(props: Props) {
       if (!controller.signal.aborted && mounted.current) setResource(next);
     } catch (cause) {
       if (!controller.signal.aborted && mounted.current) {
+        invalidateDeniedRead(cause);
         setContentError(readError(cause));
         // A failed current authorization must not leave an old preview behind.
         setSkill(null);
@@ -344,7 +376,9 @@ function ReadPanel(props: Props) {
             <p className={css.hint}>
               只展示已提交的读取事实。当前记录未提供准确注入或原生调用关联，读取不表示已遵循。
             </p>
-            {historyError && <p role="alert">{historyError}</p>}
+            {historyError && historyError !== catalogError && (
+              <p role="alert">{historyError}</p>
+            )}
             {!history && !historyError && (
               <p role="status">正在读取工作记录…</p>
             )}
@@ -357,6 +391,7 @@ function ReadPanel(props: Props) {
                     {statusNames[run.status]}
                   </strong>
                   <a
+                    className={css.link}
                     href={`/chatflow?session=${run.sessionId}#message-${run.messageId}`}
                   >
                     回到原工作记录

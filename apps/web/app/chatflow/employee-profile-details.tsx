@@ -150,6 +150,7 @@ export function EmployeeProfileDetails({
   view = 'personal',
   experienceContent,
   workflowContent,
+  workflowReadContent,
   onEdit,
   onPrepare,
 }: {
@@ -158,6 +159,7 @@ export function EmployeeProfileDetails({
   view?: 'personal' | 'shared';
   experienceContent?: ReactNode;
   workflowContent?: ReactNode;
+  workflowReadContent?: ReactNode;
   onEdit?: () => void;
   onPrepare?: (text: string) => void;
 }) {
@@ -272,6 +274,7 @@ export function EmployeeProfileDetails({
           )}
         </dl>
       </section>
+      {view === 'personal' && profile.kind === 'custom' && workflowReadContent}
       {personal && workflowContent}
       <section className={css.workArea} aria-label="工作场景与内容">
         <aside className={css.sceneRail} aria-label="工作场景导航">

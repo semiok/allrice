@@ -1455,6 +1455,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           state.employeeDetailStatus,
         );
       }
+      if (
+        options.employeeDetails &&
+        path === `/api/v1/employee-instances/${id(7)}` &&
+        state.employeeDetailStatus !== 200
+      )
+        // The real dialog also checks the existing owner/history endpoint.
+        // This fixture models revoked membership, so both read gates deny it.
+        return answer(
+          { error: { message: 'No access' } },
+          state.employeeDetailStatus,
+        );
       if (path === '/api/v1/experiences') {
         state.experienceReads++;
         const body = {
@@ -2957,7 +2968,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         ).toBe(0);
         expect(
           await dialog
-            .getByRole('button', { name: '编辑', exact: true })
+            .getByRole('button', { name: '编辑员工', exact: true })
             .count(),
         ).toBe(0);
         expect(f.writes).toEqual([]);

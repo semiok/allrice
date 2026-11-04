@@ -2546,9 +2546,9 @@ export function ChatFlowClient({
         open={employeeDetailsOpen}
         scopeId={settingsScope}
         instanceId={
-          detailsAssignmentId
-            ? employeeChoice(workspace, detailsAssignmentId)?.instanceId
-            : undefined
+          // Historical groups retain their existing instance key after the
+          // active choice disappears. The owner/history API is authority.
+          detailsAssignmentId ?? undefined
         }
         employeeId={
           detailsAssignmentId

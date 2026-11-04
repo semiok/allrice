@@ -554,7 +554,7 @@ suite(
           ).toBe(0);
           expect(
             await page
-              .getByRole('button', { name: '编辑', exact: true })
+              .getByRole('button', { name: '编辑员工', exact: true })
               .count(),
           ).toBe(0);
           if (mode !== 'readonly') {
@@ -569,7 +569,15 @@ suite(
             await page
               .getByRole('button', { name: '查看这次读取的包', exact: true })
               .click();
-            await expect.poll(() => page.getByRole('alert').count()).toBe(2);
+            await expect
+              .poll(() =>
+                page
+                  .getByText('本人 Workflow · 目录与读取记录', { exact: true })
+                  .locator('..')
+                  .getByRole('alert')
+                  .count(),
+              )
+              .toBe(2);
             expect(
               await page
                 .getByRole('region', { name: '本人包与精确资源' })
