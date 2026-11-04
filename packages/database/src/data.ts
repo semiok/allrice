@@ -21,6 +21,7 @@ import type { TransactionSql } from 'postgres';
 
 import { getDatabase } from './core/client.ts';
 import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
+import { readContentPrincipal } from './content-maintenance.ts';
 import { workbenchFileAccess } from './workbench-file-access.ts';
 
 const CreateStorageMetadataSchema = z
@@ -498,42 +499,29 @@ export async function createMemory(
 }
 
 export async function createRagChunk(
-  context: ResourcePrincipal,
+  context: ResourcePrincipal & Partial<Pick<RequestContext, 'sessionId'>>,
   input: unknown,
   transaction?: TransactionSql,
 ) {
   const chunk = CreateRagChunkInputSchema.parse(input);
   const owner = actorId(context);
-  if (!hasWorkspaceMembership(context, chunk.workspaceId)) {
-    throw new DataAccessError('authorization_denied');
-  }
-  const sql = transaction ?? getDatabase();
-  const memories = await sql<
-    { id: string; owner_id: string; visibility: Visibility }[]
-  >`
-    select id, owner_id, visibility from allrice_memories
-    where id = ${chunk.memoryId}
-      and organization_id = ${context.organizationId}
-      and workspace_id = ${chunk.workspaceId}
-      and archived_at is null
-  `;
-  const memory = memories[0];
-  if (!memory || memory.owner_id !== owner) {
-    throw new DataAccessError('authorization_denied');
-  }
-  const rows = await sql<{ id: string }[]>`
-    insert into allrice_rag_chunks (
-      organization_id, workspace_id, memory_id, owner_id,
-      content, embedding, visibility
-    ) values (
-      ${context.organizationId}, ${chunk.workspaceId}, ${chunk.memoryId},
-      ${owner}, ${chunk.content}, ${vectorLiteral(chunk.embedding)}::vector,
-      ${memory.visibility}
-    )
-    returning id
-  `;
-  if (!rows[0]) throw new Error('RAG chunk creation failed');
-  return { id: rows[0].id };
+  const write = async (sql: TransactionSql) => {
+    const { employeeMemoryScope } = await import('./workspace/employee-memory.ts');
+    const scope = await employeeMemoryScope(context, chunk.workspaceId, chunk.instanceId, sql, true);
+    const [memory] = await sql<{ id: string; visibility: Visibility }[]>`
+      select id,visibility from allrice_memories
+      where id=${chunk.memoryId} and organization_id=${scope.organizationId}
+        and workspace_id=${scope.workspaceId} and owner_id=${owner}
+        and instance_id=${scope.instanceId} and archived_at is null for share`;
+    if (!memory) throw new DataAccessError('authorization_denied');
+    const [row] = await sql<{ id: string }[]>`
+      insert into allrice_rag_chunks(organization_id,workspace_id,memory_id,owner_id,content,embedding,visibility)
+      values(${scope.organizationId},${scope.workspaceId},${chunk.memoryId},${owner},
+        ${chunk.content},${vectorLiteral(chunk.embedding)}::vector,${memory.visibility}) returning id`;
+    if (!row) throw new Error('RAG chunk creation failed');
+    return { id: row.id };
+  };
+  return transaction ? write(transaction) : getDatabase().begin(write);
 }
 
 function vectorLiteral(values: number[]) {
@@ -549,6 +537,8 @@ export async function recallRagChunks(context: RequestContext, input: unknown) {
   return getDatabase().begin(async (sql) => {
     const { employeeMemoryScope } =
       await import('./workspace/employee-memory.ts');
+    if (!(await readContentPrincipal({ ...context, workspaceId: query.workspaceId }, sql)))
+      throw new DataAccessError('authorization_denied');
     if (query.instanceId)
       await employeeMemoryScope(
         context,

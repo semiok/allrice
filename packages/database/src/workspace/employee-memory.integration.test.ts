@@ -13,7 +13,7 @@ import {
 } from '../employees/employee-instances.ts';
 import { filterEmployeeMethodMemories } from '../employees/employee-method-chat.ts';
 import { searchToolBrokerMemories } from '../execution/tool-broker.ts';
-import { createMemory, recallRagChunks } from '../data.ts';
+import { createMemory, createRagChunk, recallRagChunks } from '../data.ts';
 import {
   createTraceableMemory,
   correctWorkspaceMemory,
@@ -66,7 +66,7 @@ suite(
         runId: f.rootRunId,
         jobId: f.worker.jobId,
         worker: { type: 'worker', id: f.worker.workerId },
-        delegatedBy: context.actor,
+        delegatedBy: { type: 'user', id: context.actor.id },
         organizationId: f.org,
         workspaceId: f.workspace,
         startedAt: new Date().toISOString(),
@@ -191,6 +191,10 @@ suite(
           instanceId: foreign.assignment,
         }),
       ).rejects.toThrow();
+      await expect(createRagChunk(f.context, {
+        workspaceId: f.workspace, instanceId: f.other.id, memoryId: good.id,
+        content: good.content, embedding: embedWorkspaceText(good.content),
+      })).rejects.toThrow('authorization_denied');
       await expect(
         createMemory(f.context, {
           workspaceId: f.workspace,

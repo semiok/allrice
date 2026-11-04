@@ -1532,7 +1532,7 @@ suite(
               const ordinary = await observeMemorySql(arm.api.sql, () =>
                 arm.api.workspace.searchWorkspaceMemories(f.owner, {
                   workspaceId: f.workspace,
-          instanceId: f.instance.id,
+                  instanceId: f.instance.id,
                   query: '合成名单',
                   limit: 3,
                 }),

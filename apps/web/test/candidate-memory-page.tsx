@@ -169,7 +169,7 @@ function App({ fixture }: { fixture: Fixture }) {
           scopeId={workspaceId}
           workspaceId={workspaceId}
           instanceId={fixture.assignmentId}
-          employees={[{id:fixture.assignmentId,name:'测试助手'}]}
+          employees={[{ id: fixture.assignmentId, name: '测试助手' }]}
           headers={headers}
           active
           automatic={false}

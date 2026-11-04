@@ -107,6 +107,7 @@ export const VectorRecallInputSchema = z
 export const CreateRagChunkInputSchema = z
   .object({
     workspaceId: UuidSchema,
+    instanceId: UuidSchema,
     memoryId: UuidSchema,
     content: z.string().min(1).max(100_000),
     embedding: z.array(z.number().finite()).length(1536),

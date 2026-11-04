@@ -50,7 +50,8 @@ export async function createExperienceFixture(
     neighbor = await member('member');
   await authorizeFixturePlatformAdministrator(db, reviewer.actor.id);
   const defaultAssignment = await ensureDefaultEmployee(owner, workspace);
-  if (defaultAssignment) await ensureGeneralEmployeeInstance(db, defaultAssignment.id);
+  if (defaultAssignment)
+    await ensureGeneralEmployeeInstance(db, defaultAssignment.id);
   let publishedVersion: string | null = null;
   if (options.published) {
     const source = await createEmployeeAdministrationFixture(db);

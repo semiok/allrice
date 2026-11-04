@@ -2709,9 +2709,10 @@ export async function createTraceableMemory(
           `created from ${memory.sourceLabel}`,
         );
         await createRagChunk(
-          context,
+          identity,
           {
             workspaceId,
+            instanceId: scope.instanceId,
             memoryId: row.id,
             content: row.content,
             embedding: embedWorkspaceText(row.content),
@@ -2765,8 +2766,13 @@ async function lockPersonalMemory(
   return row;
 }
 
-async function rejectGovernedMemoryMutation(context: RequestContext, workspaceId: string, memoryId: string) {
-  const [review] = await getDatabase()`select memory_id from allrice_experience_reviews
+async function rejectGovernedMemoryMutation(
+  context: RequestContext,
+  workspaceId: string,
+  memoryId: string,
+) {
+  const [review] =
+    await getDatabase()`select memory_id from allrice_experience_reviews
     where memory_id=${UuidSchema.parse(memoryId)} and organization_id=${context.organizationId}
       and workspace_id=${UuidSchema.parse(workspaceId)} and owner_id=${requireUser(context)}`;
   if (review) throw new DataAccessError('authorization_denied');
@@ -2818,6 +2824,7 @@ export async function correctWorkspaceMemory(
           context,
           {
             workspaceId,
+            instanceId: scope.instanceId,
             memoryId,
             content: row.content,
             embedding: embedWorkspaceText(row.content),

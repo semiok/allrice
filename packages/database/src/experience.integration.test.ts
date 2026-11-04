@@ -364,7 +364,8 @@ suite(
       expect(
         await searchWorkspaceMemories(f.owner, {
           workspaceId: f.workspace,
-          instanceId: f.session.employeeInstanceId ?? f.session.employeeAssignmentId,
+          instanceId:
+            f.session.employeeInstanceId ?? f.session.employeeAssignmentId,
           query: 'Reconciliation rule',
         }),
       ).toEqual([]);
@@ -580,7 +581,8 @@ suite(
       expect(
         await searchWorkspaceMemories(f.owner, {
           workspaceId: f.workspace,
-          instanceId: f.session.employeeInstanceId ?? f.session.employeeAssignmentId,
+          instanceId:
+            f.session.employeeInstanceId ?? f.session.employeeAssignmentId,
           query: f.input.content,
         }),
       ).toEqual([]);
@@ -951,7 +953,8 @@ suite(
         (
           await searchWorkspaceMemories(f.neighbor, {
             workspaceId: f.workspace,
-            instanceId: (await getEmployeeWorkspace(f.neighbor, f.workspace)).employee!.id,
+            instanceId: (await getEmployeeWorkspace(f.neighbor, f.workspace))
+              .employee!.id,
             query: 'Reconciliation rule',
           })
         ).map((m) => m.id),
@@ -1022,7 +1025,8 @@ suite(
       expect(
         await searchWorkspaceMemories(f.owner, {
           workspaceId: f.workspace,
-          instanceId: f.session.employeeInstanceId ?? f.session.employeeAssignmentId,
+          instanceId:
+            f.session.employeeInstanceId ?? f.session.employeeAssignmentId,
           query: 'Reconciliation rule',
         }),
       ).toEqual([]);
@@ -1080,7 +1084,8 @@ suite(
       expect(
         await searchWorkspaceMemories(f.owner, {
           workspaceId: f.workspace,
-          instanceId: f.session.employeeInstanceId ?? f.session.employeeAssignmentId,
+          instanceId:
+            f.session.employeeInstanceId ?? f.session.employeeAssignmentId,
           query: f.input.content,
         }),
       ).toEqual([]);

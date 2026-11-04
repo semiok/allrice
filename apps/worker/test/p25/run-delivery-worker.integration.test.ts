@@ -1541,7 +1541,14 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
             f.context,
             f.identity.workspace,
             memories[0]!.id,
-            { instanceId: f.identity.assignment, expectedRevision: memories[0]!.revision, contentDigest: 'sha256:' + createHash('sha256').update(memories[0]!.content).digest('hex'), idempotencyKey: randomUUID() },
+            {
+              instanceId: f.identity.assignment,
+              expectedRevision: memories[0]!.revision,
+              contentDigest:
+                'sha256:' +
+                createHash('sha256').update(memories[0]!.content).digest('hex'),
+              idempotencyKey: randomUUID(),
+            },
           );
           const confirmedChat = await createAssignedChatSession(f.context, {
             workspaceId: f.identity.workspace,
@@ -1566,7 +1573,12 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
             f.context,
             f.identity.workspace,
             memories[0]!.id,
-            { instanceId: promoted.instanceId, expectedRevision: promoted.revision, contentDigest: promoted.contentDigest, idempotencyKey: randomUUID() },
+            {
+              instanceId: promoted.instanceId,
+              expectedRevision: promoted.revision,
+              contentDigest: promoted.contentDigest,
+              idempotencyKey: randomUUID(),
+            },
           );
           const discardedChat = await createAssignedChatSession(f.context, {
             workspaceId: f.identity.workspace,
