@@ -145,6 +145,10 @@ export interface HarnessExecutionInput {
     nativeContextKey?: string;
     check: () => Promise<void>;
     scenes?: EmployeeRuntimeScene[];
+    personalScenes?: {
+      list: () => Promise<Record<string, unknown>>;
+      load: (sceneId: string) => Promise<Record<string, unknown>>;
+    };
     loadScene?: (selection: {
       sceneId: string;
       sceneDigest: string;

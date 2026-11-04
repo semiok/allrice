@@ -169,3 +169,27 @@ export const PersonalSceneSkillSaveReceiptSchema = z
     bundleChecksum: ChecksumSchema,
   })
   .strict();
+
+/** Resource locators do not confer authority. Legacy names and exact personal
+ * package addresses are disjoint, so neither can silently fall back to latest. */
+export const SkillResourceReadSchema = z.union([
+  z
+    .object({
+      skill: z
+        .string()
+        .min(1)
+        .max(100)
+        .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+      path: SkillResourcePathSchema,
+    })
+    .strict(),
+  z
+    .object({
+      contentRef: PersonalSceneContentRefSchema,
+      path: SkillResourcePathSchema,
+    })
+    .strict(),
+]);
+export type PersonalSceneSkillResource = z.infer<
+  typeof PersonalSceneSkillResourceSchema
+>;

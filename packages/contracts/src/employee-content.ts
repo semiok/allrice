@@ -577,6 +577,8 @@ export type EmployeeEffectiveContent = z.infer<
 export const EmployeeRuntimeContentSchema = z
   .object({
     schemaVersion: z.literal(1),
+    // Server-selected read contract; absent on historical frozen snapshots.
+    personalScenes: z.literal(true).optional(),
     instanceId: UuidSchema,
     employeeId: UuidSchema,
     employeeVersionId: UuidSchema,

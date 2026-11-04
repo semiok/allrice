@@ -25,7 +25,7 @@ function fixture() {
     organizationId: context.organizationId,
     workspaceId: context.workspaceId,
     ownerId: context.actor.id,
-    kind: 'custom',
+    kind: 'general',
     revision: 1,
     profile: {},
     creationSource: version,
@@ -302,4 +302,26 @@ describe('employee runtime content preparation transaction forwarding', () => {
     });
     expect(pool).not.toHaveBeenCalled();
   });
+});
+
+it('personal admission freezes only the platform source and never reads shared business layers', async () => {
+  const pool = forbidPool(),
+    f = fixture();
+  f.input.instance.kind = 'custom';
+  f.instanceRow.kind = 'custom';
+  const tx = reader(f);
+  const content = await prepareEmployeeRuntimeContent(
+    f.context,
+    f.input,
+    tx.sql,
+  );
+  expect(content.personalScenes).toBe(true);
+  expect(content.layers).toEqual([]);
+  expect(pool).not.toHaveBeenCalled();
+  expect(
+    tx.statements.some((t) => t.includes('from allrice_employee_content_sets')),
+  ).toBe(false);
+  expect(
+    tx.statements.some((t) => t.includes('from allrice_company_assets')),
+  ).toBe(false);
 });

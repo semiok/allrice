@@ -1021,7 +1021,12 @@ async function publishContentRevision(
  * bodies stay unloaded; an unrelated stale scene cannot block an ordinary task. */
 export async function freezeEmployeeRuntimeContent(
   context: ContentIdentity,
-  input: { instanceId: string; employeeId: string; employeeVersionId: string },
+  input: {
+    instanceId: string;
+    employeeId: string;
+    employeeVersionId: string;
+    personalScenes?: true;
+  },
   sql: ContentSql = getDatabase(),
 ) {
   const instance = await getEmployeeInstance(context, input.instanceId, sql);
@@ -1035,16 +1040,20 @@ export async function freezeEmployeeRuntimeContent(
     instanceId: input.instanceId,
   };
   const platform = await platformContent(context, target, sql);
-  const rows = await inheritedRows(
-    context,
-    target,
-    {
-      scope: 'personal',
-      organizationId: context.organizationId,
-      ownerId: context.actor.id,
-    },
-    sql,
-  );
+  if (input.personalScenes && instance.kind !== 'custom')
+    throw new DataAccessError('authorization_denied');
+  const rows = input.personalScenes
+    ? []
+    : await inheritedRows(
+        context,
+        target,
+        {
+          scope: 'personal',
+          organizationId: context.organizationId,
+          ownerId: context.actor.id,
+        },
+        sql,
+      );
   const layers = [];
   for (const row of rows) {
     const revision = await readRevision(sql, row.active_revision_id);

@@ -218,6 +218,7 @@ export class DshProtocolClient {
     nativeTools?: string[];
     nativeSkills?: DshNativeSkillSnapshot[];
     contentScenes?: EmployeeRuntimeScene[];
+    personalContentScenes?: boolean;
     maxTokens?: number;
     expectedVersion?: string;
     requireTaskProgress?: boolean;
@@ -257,7 +258,7 @@ export class DshProtocolClient {
       );
     const serverInfo = record(result.serverInfo);
     if (
-      input.contentScenes?.length &&
+      (input.contentScenes?.length || input.personalContentScenes) &&
       record(result.capabilities)?.contentScenes !== true
     )
       throw new HandlerError(

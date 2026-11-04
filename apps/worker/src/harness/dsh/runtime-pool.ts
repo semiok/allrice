@@ -971,6 +971,7 @@ export class DshRuntimePool {
       taskProgress: !!input.input.progress,
       nativeAccounting: !!input.input.nativeAccounting,
       contentGuard: !!input.input.contentGuard,
+      personalContentScenes: !!input.input.contentGuard?.personalScenes,
       ...(input.input.contentGuard?.nativeContextKey &&
       input.input.contentGuard.nativeContextKey !==
         input.input.contentGuard.generationId
@@ -1219,6 +1220,7 @@ export class DshRuntimePool {
         nativeTools,
         nativeSkills: input.nativeSkills,
         contentScenes: input.input.contentGuard?.scenes,
+        personalContentScenes: !!input.input.contentGuard?.personalScenes,
         maxTokens,
         expectedVersion:
           nativeIdentity?.version ?? DSH_DISTRIBUTION_CURRENT_VERSION,

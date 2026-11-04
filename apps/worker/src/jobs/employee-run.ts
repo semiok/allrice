@@ -16,6 +16,7 @@ import {
 
 import {
   ConversationRuntimeError,
+  DataAccessError,
   workbenchEnabled,
   getDatabase,
   readWorkAutomation,
@@ -44,6 +45,8 @@ import {
   assertEmployeeContentContext,
   assertNativeRunAuthority,
   loadEmployeeRuntimeScene,
+  loadPersonalRuntimeSceneSkill,
+  listPersonalRuntimeSceneSkills,
   loadEmployeeRuntimeReferences,
   readEmployeeReferenceCitations,
   adoptEmployeeRuntimeScene,
@@ -338,12 +341,54 @@ export async function executeEmployeeRun({
       },
     };
   }
+  const personalSceneRead = async <T>(read: () => Promise<T>): Promise<T> => {
+    try {
+      return await read();
+    } catch (error) {
+      if (
+        error instanceof EmployeeRuntimeContentError ||
+        (error instanceof DataAccessError &&
+          (error.code === 'not_found' || error.code === 'authorization_denied'))
+      ) {
+        const unavailable = new EmployeeRuntimeContentError();
+        throw new HandlerError(unavailable.code, unavailable.message, false);
+      }
+      throw error;
+    }
+  };
   let contentEvidence: Promise<unknown> | undefined;
   const contentGuard = contentRuntime
     ? {
         generationId: contentRuntime.generationId,
         nativeContextKey: contentRuntime.nativeContextKey,
         scenes: contentRuntime.scenes,
+        ...(contentRuntime.snapshot.personalScenes
+          ? {
+              personalScenes: {
+                list: () =>
+                  personalSceneRead(() =>
+                    listPersonalRuntimeSceneSkills(
+                      contentScope,
+                      contentRuntime!.generationId,
+                      workflowLease,
+                    ),
+                  ),
+                load: async (sceneId: string) => {
+                  const loaded = await personalSceneRead(() =>
+                    loadPersonalRuntimeSceneSkill(
+                      contentScope,
+                      contentRuntime!.generationId,
+                      { sceneId },
+                      workflowLease,
+                    ),
+                  );
+                  if (!('skill' in loaded))
+                    throw new EmployeeRuntimeContentError();
+                  return loaded.skill;
+                },
+              },
+            }
+          : {}),
         loadScene: async (selection: {
           sceneId: string;
           sceneDigest: string;
@@ -552,6 +597,7 @@ export async function executeEmployeeRun({
     resolved,
     commonContent: contentRuntime?.sources,
     hasContentScenes: !!contentRuntime?.scenes.length,
+    personalScenes: contentRuntime?.snapshot.personalScenes,
     companyMaterials: companyInputBindings,
     workAutomation: workAutomation.settings,
   };
@@ -1569,6 +1615,25 @@ export async function executeEmployeeRun({
                     ? taskTool(call)
                     : executeRiceTool({
                         nativeSkills: resolved.nativeSkills,
+                        ...(contentRuntime?.snapshot.personalScenes
+                          ? {
+                              readPersonalSceneResource: async (
+                                contentRef: string,
+                                path: string,
+                              ) => {
+                                const loaded =
+                                  await loadPersonalRuntimeSceneSkill(
+                                    contentScope,
+                                    contentRuntime!.generationId,
+                                    { contentRef, resourcePath: path },
+                                    workflowLease,
+                                  );
+                                if (!('resource' in loaded))
+                                  throw new EmployeeRuntimeContentError();
+                                return loaded.resource;
+                              },
+                            }
+                          : {}),
                         localMcp:
                           executionSnapshot.schemaVersion === 2
                             ? executionSnapshot.localMcp

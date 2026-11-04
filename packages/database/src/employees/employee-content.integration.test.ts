@@ -64,6 +64,7 @@ import {
   getEmployeeContentSet,
   getEmployeeContentHistory,
   mutateEmployeeContent,
+  freezeEmployeeRuntimeContent,
 } from './employee-content.ts';
 import {
   getCompanyAsset,
@@ -92,6 +93,7 @@ import {
   releaseConversationRuntime,
 } from '../conversation/conversation-runtime.ts';
 import { resolveEmployeeExecution } from './employeehub.ts';
+import * as contentRuntimeModule from './employee-runtime-content.ts';
 import {
   prepareEmployeeContentContext,
   loadEmployeeRuntimeScene,
@@ -102,6 +104,7 @@ import {
   readEmployeeRuntimeContent,
   assertEmployeeContentReferenceMessages,
   loadPersonalRuntimeSceneSkill,
+  listPersonalRuntimeSceneSkills,
 } from './employee-runtime-content.ts';
 const browser = vi.hoisted(() => ({ context: null as RequestContext | null }));
 function contentGate<T>() {
@@ -529,11 +532,131 @@ suite(
           ).bundleChecksum,
         ).toBe(saved.bundleChecksum);
       });
+      it('loads a newly saved Workflow in the same native context across Runs, retaining exact resources and all historical revocations', async () => {
+        const s = await setup();
+        const first = await runtimeRun(
+          s,
+          undefined,
+          true,
+          [],
+          [],
+          '用我自己的周报 Workflow 整理这些资料',
+          true,
+        );
+        expect(first.runtime.snapshot.personalScenes).toBe(true);
+        expect(first.runtime.snapshot.layers).toEqual([]);
+        const worker = await sceneLease(first);
+        expect(
+          (
+            await listPersonalRuntimeSceneSkills(
+              first.scope,
+              first.runtime.generationId,
+              worker,
+            )
+          ).skills,
+        ).toEqual([]);
+        const v1 = input(s),
+          saved = await savePersonalSceneSkill(s.a, s.instance.id, v1);
+        const directory = await listPersonalRuntimeSceneSkills(
+          first.scope,
+          first.runtime.generationId,
+          worker,
+        );
+        expect(directory.skills.map((s) => s.sceneId)).toEqual([v1.scene.id]);
+        const loaded = await loadPersonalRuntimeSceneSkill(
+          first.scope,
+          first.runtime.generationId,
+          { sceneId: v1.scene.id },
+          worker,
+        );
+        expect('skill' in loaded && loaded.skill.contentRef).toBe(
+          saved.contentRef,
+        );
+        const v2 = {
+          ...input(s, '2.0.0'),
+          scene: v1.scene,
+          expectedRevision: saved.revision,
+          expectedContentRef: saved.contentRef,
+        };
+        const updated = await savePersonalSceneSkill(s.a, s.instance.id, v2);
+        const oldResource = await loadPersonalRuntimeSceneSkill(
+          first.scope,
+          first.runtime.generationId,
+          { contentRef: saved.contentRef, resourcePath: 'assets/template.csv' },
+          worker,
+        );
+        expect(
+          'resource' in oldResource && oldResource.resource.bundleChecksum,
+        ).toBe(saved.bundleChecksum);
+        await releaseConversationRuntime({
+          ...first.scope,
+          workerId: worker.workerId,
+          outcome: 'idle',
+        });
+        await first.finish();
+        const second = await runtimeRun(
+          s,
+          first.scope.sessionId,
+          true,
+          [],
+          [],
+          '继续，再加载当前周报 Workflow',
+          true,
+        );
+        const secondWorker = await sceneLease(second);
+        expect(second.runtime.nativeContextKey).toBe(
+          first.runtime.nativeContextKey,
+        );
+        const latest = await loadPersonalRuntimeSceneSkill(
+          second.scope,
+          second.runtime.generationId,
+          { sceneId: v1.scene.id },
+          secondWorker,
+        );
+        expect('skill' in latest && latest.skill.contentRef).toBe(
+          updated.contentRef,
+        );
+        const [state] =
+          await f.db`select content_scene_state from allrice_employee_runs where run_id=${first.scope.runId}`;
+        expect(state!.content_scene_state.reads[0].personal.contentRef).toBe(
+          saved.contentRef,
+        );
+        const pin = parsePersonalSceneContentRef(saved.contentRef);
+        await f.db`update allrice_employee_content_publications set invalidated_at=now() where set_id=${pin.setId} and revision_id=${pin.revisionId}`;
+        await expect(
+          assertEmployeeContentContext(
+            second.scope,
+            second.runtime.generationId,
+            secondWorker,
+          ),
+        ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+        await expect(
+          listPersonalRuntimeSceneSkills(
+            second.scope,
+            second.runtime.generationId,
+            secondWorker,
+          ),
+        ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+        await releaseConversationRuntime({
+          ...second.scope,
+          workerId: secondWorker.workerId,
+          outcome: 'idle',
+        });
+        await second.finish();
+      });
       it('records exact package/resource reads before returning bytes and revokes retained history', async () => {
         const s = await setup(),
           body = input(s);
         const saved = await savePersonalSceneSkill(s.a, s.instance.id, body);
-        const run = await runtimeRun(s),
+        const run = await runtimeRun(
+            s,
+            undefined,
+            true,
+            [],
+            [],
+            'Use current Workflow',
+            true,
+          ),
           worker = await sceneLease(run);
         const loaded = await loadPersonalRuntimeSceneSkill(
           run.scope,
@@ -622,7 +745,15 @@ suite(
           s.instance.id,
           a.scene.id,
         );
-        const run = await runtimeRun(s),
+        const run = await runtimeRun(
+            s,
+            undefined,
+            true,
+            [],
+            [],
+            'Use current Workflow',
+            true,
+          ),
           worker = await sceneLease(run);
         const resourceSelection = {
           contentRef: current.contentRef,
@@ -682,7 +813,15 @@ suite(
         const s = await setup(),
           body = input(s);
         const saved = await savePersonalSceneSkill(s.a, s.instance.id, body);
-        const run = await runtimeRun(s),
+        const run = await runtimeRun(
+            s,
+            undefined,
+            true,
+            [],
+            [],
+            'Use current Workflow',
+            true,
+          ),
           worker = await sceneLease(run);
         const pin = parsePersonalSceneContentRef(saved.contentRef);
         const ready = contentGate<number>(),
@@ -1599,6 +1738,7 @@ suite(
       sessionReferenceIds: string[] = [],
       referenceRevisionIds: string[] = [],
       request = 'Use current requirements',
+      personalScenes = false,
     ) {
       const session = sessionId
         ? { id: sessionId }
@@ -1609,6 +1749,26 @@ suite(
               ? { employeeInstanceId: s.instance.id }
               : { employeeAssignmentId: s.assigned.id }),
           });
+      // Build retained historical snapshots through the real admission pipeline;
+      // never mutate an immutable Run or loosen its source/lease assertions.
+      const historical =
+        !personalScenes && custom
+          ? vi
+              .spyOn(contentRuntimeModule, 'prepareEmployeeRuntimeContent')
+              .mockImplementation(async (context, input, sql) => {
+                const content = await freezeEmployeeRuntimeContent(
+                  context,
+                  {
+                    instanceId: input.instance.id,
+                    employeeId: input.employeeId,
+                    employeeVersionId: input.employeeVersionId,
+                  },
+                  sql,
+                );
+                await readEmployeeRuntimeContent(context, content, sql);
+                return content;
+              })
+          : undefined;
       const sent = await sendChatMessage(
         s.a,
         s.company.workspaceId,
@@ -1622,7 +1782,7 @@ suite(
             ? { deliveryMode: 'follow_up' }
             : {}),
         },
-      );
+      ).finally(() => historical?.mockRestore());
       const scope = {
         organizationId: s.company.organizationId,
         workspaceId: s.company.workspaceId,

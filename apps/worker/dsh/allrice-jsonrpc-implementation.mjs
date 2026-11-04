@@ -85,7 +85,10 @@ import {
 import { UserQuestionError } from '@deepseek-ai/dsh-user-questions';
 import { installModelErrorNormalization } from './allrice-model-errors.mjs';
 import { installContentGuard } from './allrice-content-guard.mjs';
-import { installSceneProvider } from './allrice-scene-provider.mjs';
+import {
+  installSceneProvider,
+  installPersonalSceneProvider,
+} from './allrice-scene-provider.mjs';
 import {
   applicationCancelLabel,
   applicationConnectedLabel,
@@ -1172,6 +1175,7 @@ export async function createAllRiceRuntime(
     async prompt(params) {
       this.runFinalDelivery?.assertAccepting(params.sessionId);
       const confirmAdmission = this.runAdmission?.prompt(params.runId);
+      this.sceneProvider?.invalidate?.();
       const images = Array.isArray(params?.images) ? params.images : [];
       const imageBlocks = images.length
         ? await this.ctx.attachments.admitPromptContent(
@@ -1246,14 +1250,15 @@ export async function createAllRiceRuntime(
       const scenes = Array.isArray(params?.contentScenes)
         ? params.contentScenes
         : [];
-      if (scenes.length) {
+      if (scenes.length || params.personalContentScenes === true) {
         if (!params.requireContentGuard || !this.sceneBridge)
           throw Error('employee_scene_guard_required');
-        this.sceneProvider = installSceneProvider(
-          this.ctx,
-          scenes,
-          this.sceneBridge,
-        );
+        if (params.personalContentScenes === true && scenes.length)
+          throw Error('employee_scene_contract_mixed');
+        this.sceneProvider =
+          params.personalContentScenes === true
+            ? installPersonalSceneProvider(this.ctx, this.sceneBridge)
+            : installSceneProvider(this.ctx, scenes, this.sceneBridge);
       }
       // Human/progress waits happen before content authorization and accounting.
       if (this.progressBridge && !this.taskProgress)

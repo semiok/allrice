@@ -61,7 +61,10 @@ import {
 } from './employee-content-model.ts';
 import { freezeEmployeeRuntimeContent } from './employee-content.ts';
 import { employeeRuntimeScenes } from './employee-runtime-scenes.ts';
-import { readPersonalSceneSkillInTransaction } from './personal-scene-skills.ts';
+import {
+  readPersonalSceneSkillInTransaction,
+  listPersonalSceneSkillsInTransaction,
+} from './personal-scene-skills.ts';
 import { EmployeeContentError } from './employee-content-model.ts';
 
 export class EmployeeRuntimeContentError extends Error {
@@ -93,6 +96,9 @@ export async function prepareEmployeeRuntimeContent(
       instanceId: input.instance.id,
       employeeId: input.employeeId,
       employeeVersionId: input.employeeVersionId,
+      ...(input.instance.kind === 'custom'
+        ? { personalScenes: true as const }
+        : {}),
     },
     sql,
   );
@@ -135,6 +141,11 @@ export async function readEmployeeRuntimeContent(
       snapshot.instanceId,
       sql,
     );
+    if (
+      snapshot.personalScenes &&
+      (instance.kind !== 'custom' || snapshot.layers.length)
+    )
+      return unavailable();
     const [version] = await sql<
       { config_checksum: string }[]
     >`select v.config_checksum
@@ -266,6 +277,7 @@ export async function assertEmployeeContentAdmission(
       instanceId: raw.instanceId,
       employeeId: raw.employeeId,
       employeeVersionId: raw.employeeVersionId,
+      ...(raw.personalScenes ? { personalScenes: true as const } : {}),
     },
     sql,
   );
@@ -998,7 +1010,7 @@ export async function prepareEmployeeContentContext(scope: RunScope) {
     // A new task must not inherit previous scene tool results or native
     // summaries. Ordinary visible messages retain their provenance above.
     const [priorScene] =
-      await tx`select run_id from allrice_employee_runs where content_generation_id=${context!.generation_id} and (execution_snapshot->'workflowInvocation' is not null or execution_snapshot->'personalSkills' is not null or content_scene_state is not null or reference_reads is not null or jsonb_array_length(experience_reads)>0 or jsonb_array_length(coalesce(prompt_snapshot->'referenceSelections','[]'::jsonb))>0) limit 1`;
+      await tx`select run_id from allrice_employee_runs where content_generation_id=${context!.generation_id} and (execution_snapshot->'workflowInvocation' is not null or execution_snapshot->'personalSkills' is not null or (content_scene_state is not null and (execution_snapshot->'content'->>'personalScenes' is distinct from 'true' or content_scene_state->'adopted' is not null or exists(select 1 from jsonb_array_elements(content_scene_state->'reads') r where not (r ? 'personal')))) or reference_reads is not null or jsonb_array_length(experience_reads)>0 or jsonb_array_length(coalesce(prompt_snapshot->'referenceSelections','[]'::jsonb))>0) limit 1`;
     return {
       ...current,
       generationId: context!.generation_id,
@@ -1089,6 +1101,41 @@ async function assertPersonalSceneReads(
       throw error;
     }
   }
+}
+
+/** Native directory metadata only. Current owner/instance and lease are checked
+ * independently of the catalog cache; list is never recorded as a body read. */
+export async function listPersonalRuntimeSceneSkills(
+  scope: RunScope,
+  generationId: string,
+  worker: ContentWorker,
+) {
+  return withContentLocks(scope, async (tx) => {
+    const run = await ownedRun(scope, tx);
+    if (
+      !run.personal_instance_id ||
+      !EmployeeRuntimeContentSchema.parse(run.content).personalScenes ||
+      run.content_generation_id !== generationId ||
+      !(await validContentLease(scope, worker, tx)) ||
+      !(await generationIsReadable(
+        scope,
+        generationId,
+        tx,
+        identity(scope),
+        new Set(),
+        true,
+      ))
+    )
+      return unavailable();
+    const catalog = await listPersonalSceneSkillsInTransaction(
+      { ...identity(scope), requestId: scope.runId },
+      run.personal_instance_id,
+      tx,
+      true,
+    );
+    if (!(await validContentLease(scope, worker, tx))) return unavailable();
+    return catalog;
+  });
 }
 
 /** Storage-facing model read. No Provider/Host changes here: the later native

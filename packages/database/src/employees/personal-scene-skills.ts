@@ -213,38 +213,52 @@ export async function readPersonalSceneSkillInTransaction(
   return pkg;
 }
 
+export async function listPersonalSceneSkillsInTransaction(
+  context: Context,
+  instanceId: string,
+  tx: ContentSql,
+  lock = false,
+) {
+  const view = await readPersonalEmployeeSceneLayer(
+    context,
+    instanceId,
+    tx,
+    undefined,
+    lock,
+  );
+  const skills = [];
+  if (view.layer)
+    for (const scene of view.layer.revision.manifest.scenes) {
+      try {
+        await resolvePackage(
+          context,
+          view.instanceId,
+          view.employeeId,
+          view.layer,
+          scene,
+          tx,
+          lock,
+        );
+        skills.push(summary(scene));
+      } catch (error) {
+        if (!(error instanceof DataAccessError && error.code === 'not_found'))
+          throw error;
+      }
+    }
+  return PersonalSceneSkillCatalogSchema.parse({
+    instanceId: view.instanceId,
+    revision: view.revision,
+    skills,
+  });
+}
 export async function listPersonalSceneSkills(
   context: Context,
   instanceId: string,
   db = getDatabase(),
 ) {
-  return db.begin('isolation level repeatable read read only', async (tx) => {
-    const view = await readPersonalEmployeeSceneLayer(context, instanceId, tx);
-    const skills = [];
-    if (view.layer)
-      for (const scene of view.layer.revision.manifest.scenes) {
-        try {
-          await resolvePackage(
-            context,
-            view.instanceId,
-            view.employeeId,
-            view.layer,
-            scene,
-            tx,
-            false,
-          );
-          skills.push(summary(scene));
-        } catch (error) {
-          if (!(error instanceof DataAccessError && error.code === 'not_found'))
-            throw error;
-        }
-      }
-    return PersonalSceneSkillCatalogSchema.parse({
-      instanceId: view.instanceId,
-      revision: view.revision,
-      skills,
-    });
-  });
+  return db.begin('isolation level repeatable read read only', async (tx) =>
+    listPersonalSceneSkillsInTransaction(context, instanceId, tx),
+  );
 }
 export async function getPersonalSceneSkill(
   context: Context,

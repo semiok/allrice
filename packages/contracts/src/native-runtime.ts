@@ -83,3 +83,10 @@ export {
   BootstrapReceiptSchema,
   BootstrapCoverageQuerySchema,
 } from './bootstrap-context.ts';
+
+export {
+  PersonalSceneSkillSchema,
+  PersonalSceneSkillCatalogSchema,
+  PersonalSceneContentRefSchema,
+  SkillResourceReadSchema,
+} from './employee-scene-skills.ts';
