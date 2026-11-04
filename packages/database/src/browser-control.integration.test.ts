@@ -325,11 +325,19 @@ suite('P21 real PostgreSQL control and exact admission', () => {
       { targetId: f.target, ownerId: f.user, profile, enabled: true },
       db,
     );
-    const [job] = await db`select attempt,lease_token from allrice_jobs where id=${f.execution.jobId}`;
+    const [job] =
+      await db`select attempt,lease_token from allrice_jobs where id=${f.execution.jobId}`;
     let releaseWriter!: () => void, writerLocked!: () => void;
-    const gate = new Promise<void>((resolve) => { releaseWriter = resolve; });
-    const locked = new Promise<void>((resolve) => { writerLocked = resolve; });
-    let writer: Promise<unknown> | undefined, writerPid = 0, creatorPid = 0, transactions = 0;
+    const gate = new Promise<void>((resolve) => {
+      releaseWriter = resolve;
+    });
+    const locked = new Promise<void>((resolve) => {
+      writerLocked = resolve;
+    });
+    let writer: Promise<unknown> | undefined,
+      writerPid = 0,
+      creatorPid = 0,
+      transactions = 0;
     // Gate only the final workspace INSERT transaction. Managed task creation
     // uses the real global db and has already completed before this race starts.
     const creationDb = new Proxy(db, {
@@ -357,21 +365,28 @@ suite('P21 real PostgreSQL control and exact admission', () => {
         };
       },
     });
-    const creation = createBrowserWorkspace({
-      context: f.execution,
-      callId: randomUUID(),
-      url: profile.origins[0] + '/',
-      jobAttempt: job!.attempt,
-      jobLeaseToken: job!.lease_token,
-    }, creationDb);
+    const creation = createBrowserWorkspace(
+      {
+        context: f.execution,
+        callId: randomUUID(),
+        url: profile.origins[0] + '/',
+        jobAttempt: job!.attempt,
+        jobLeaseToken: job!.lease_token,
+      },
+      creationDb,
+    );
     void creation.catch(() => undefined);
     try {
       let blocked = false;
       const until = Date.now() + 5000;
       while (Date.now() < until) {
         if (creatorPid && writerPid) {
-          const [row] = await db`select ${writerPid}::int=any(pg_blocking_pids(${creatorPid})) blocked`;
-          if (row?.blocked) { blocked = true; break; }
+          const [row] =
+            await db`select ${writerPid}::int=any(pg_blocking_pids(${creatorPid})) blocked`;
+          if (row?.blocked) {
+            blocked = true;
+            break;
+          }
         }
         await yieldTurn();
       }
@@ -380,16 +395,28 @@ suite('P21 real PostgreSQL control and exact admission', () => {
       const results = await Promise.allSettled([writer!, creation]);
       // Before the fix the creator holds Run while its INSERT's Job FK waits;
       // releasing the writer then creates a real PostgreSQL 40P01 wait cycle.
-      expect(results.map((r) => r.status === 'fulfilled' ? r.status : r.reason.code)).toEqual(['fulfilled', 'fulfilled']);
+      expect(
+        results.map((r) =>
+          r.status === 'fulfilled' ? r.status : r.reason.code,
+        ),
+      ).toEqual(['fulfilled', 'fulfilled']);
       const workspace = await creation;
       expect(workspace).toMatchObject({
-        run_id: f.execution.runId, job_id: f.execution.jobId,
-        job_attempt: job!.attempt, job_lease_token: job!.lease_token,
+        run_id: f.execution.runId,
+        job_id: f.execution.jobId,
+        job_attempt: job!.attempt,
+        job_lease_token: job!.lease_token,
       });
-      const [after] = await db`select j.status,j.cancel_requested_at,j.attempt,j.lease_token,r.state
+      const [after] =
+        await db`select j.status,j.cancel_requested_at,j.attempt,j.lease_token,r.state
         from allrice_jobs j join allrice_runs r on r.id=j.run_id where j.id=${f.execution.jobId}`;
-      expect(after).toMatchObject({ status: 'running', state: 'running', cancel_requested_at: null,
-        attempt: job!.attempt, lease_token: job!.lease_token });
+      expect(after).toMatchObject({
+        status: 'running',
+        state: 'running',
+        cancel_requested_at: null,
+        attempt: job!.attempt,
+        lease_token: job!.lease_token,
+      });
     } finally {
       releaseWriter();
       await Promise.allSettled([creation, ...(writer ? [writer] : [])]);

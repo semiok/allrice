@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough, Writable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DshCloseObservationDetails } from '@allrice/database';
+import { HandlerError } from '../errors.js';
 import {
   DshProtocolClient,
   type DshNeverCreatedCloseReceipt,
@@ -146,6 +147,92 @@ afterEach(async () => {
 });
 
 describe('strict standalone empty transport contract', () => {
+  it.each([false, true])(
+    'logs database error codes internally without exposing diagnostic content (wrapped=%s)',
+    async (wrapped) => {
+      const f = fixture();
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const secret = 'synthetic-private-token';
+      const databaseError = Object.assign(
+        new Error(`deadlock detected ${secret}`),
+        {
+          code: '40P01',
+          detail: `SQL and credentials ${secret}`,
+          query: `select '${secret}'`,
+        },
+      );
+      const failure = wrapped
+        ? new Error(`wrapper ${secret}`, { cause: databaseError })
+        : databaseError;
+      f.client.setRequestHandler(async () => {
+        throw failure;
+      });
+      try {
+        f.stdout.write(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 91,
+            method: 'allrice/tool-call',
+            params: {
+              toolCallId: 'native-browser-call',
+              name: 'browser.workspace',
+              arguments: { password: secret },
+            },
+          }) + '\n',
+        );
+        await vi.waitFor(() => expect(f.frames).toHaveLength(1));
+        expect(f.frames[0]).toEqual({
+          jsonrpc: '2.0',
+          id: 91,
+          error: {
+            code: -32603,
+            message: 'AllRice Tool Broker request failed',
+          },
+        });
+        expect(logged).toHaveBeenCalledTimes(1);
+        expect(logged.mock.calls[0]![0]).toBe(
+          '[AllRice:tool-broker-request-failed]',
+        );
+        expect(JSON.parse(logged.mock.calls[0]![1] as string)).toMatchObject({
+          toolCallId: 'native-browser-call',
+          toolName: 'browser.workspace',
+          errorType: 'Error',
+          errorCode: wrapped ? null : '40P01',
+          causeCode: wrapped ? '40P01' : null,
+        });
+        expect(JSON.stringify([f.frames, logged.mock.calls])).not.toContain(
+          secret,
+        );
+      } finally {
+        logged.mockRestore();
+      }
+    },
+  );
+  it('preserves the existing handled tool error response', async () => {
+    const f = fixture();
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    f.client.setRequestHandler(async () => {
+      throw new HandlerError('BROWSER_DENIED', 'Browser access denied', false);
+    });
+    try {
+      f.stdout.write(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: 92,
+          method: 'allrice/tool-call',
+          params: {},
+        }) + '\n',
+      );
+      await vi.waitFor(() => expect(f.frames).toHaveLength(1));
+      expect(f.frames[0]).toEqual({
+        jsonrpc: '2.0',
+        id: 92,
+        error: { code: -32603, message: 'Browser access denied' },
+      });
+    } finally {
+      logged.mockRestore();
+    }
+  });
   it('accepts exactly seven empty keys without claiming SDK/root cleanup', async () => {
     const f = fixture();
     await expect(f.client.close()).resolves.toBeUndefined();

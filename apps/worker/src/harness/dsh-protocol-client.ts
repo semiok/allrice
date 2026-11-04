@@ -10,7 +10,10 @@ import {
   type BootstrapReceipt,
 } from '@allrice/contracts';
 import { NativeSubagentSnapshotSchema } from '@allrice/contracts/native-runtime';
-import type { DshCloseObservationDetails } from '@allrice/database';
+import {
+  databaseErrorCode,
+  type DshCloseObservationDetails,
+} from '@allrice/database';
 import type { SessionReferenceSnapshot } from '@allrice/contracts';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface, type Interface } from 'node:readline';
@@ -890,6 +893,32 @@ export class DshProtocolClient {
         `${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`,
       );
     } catch (error) {
+      if (method === 'allrice/tool-call') {
+        // Internal correlation and machine codes only. Never log arguments,
+        // SQL/detail/stack or error messages, nor return them over JSON-RPC.
+        console.error(
+          '[AllRice:tool-broker-request-failed]',
+          JSON.stringify({
+            runId: this.runId,
+            toolCallId:
+              typeof params.toolCallId === 'string'
+                ? params.toolCallId.slice(0, 240)
+                : null,
+            toolName:
+              typeof params.name === 'string'
+                ? params.name.slice(0, 120)
+                : null,
+            errorType:
+              error instanceof HandlerError
+                ? 'HandlerError'
+                : error instanceof Error
+                  ? 'Error'
+                  : 'NonError',
+            errorCode: databaseErrorCode(error),
+            causeCode: databaseErrorCode(record(error)?.cause),
+          }),
+        );
+      }
       if (this.terminalError || !this.child.stdin.writable) return;
       const message =
         error instanceof HandlerError
