@@ -783,6 +783,16 @@ export async function mutateEmployeeContentInTransaction(
     buildInput?: (
       row: ContentSetRow | undefined,
     ) => Promise<EmployeeContentMutation>;
+    /** A server-owned personal package validator; never selected by raw input.
+     * It keeps personal saves out of the shared additive assembly path. */
+    validateCandidate?: (candidate: {
+      row: ContentSetRow;
+      revision: ContentRevisionRow;
+      target: ResolvedTarget;
+    }) => Promise<{
+      validation: EmployeeContentValidation;
+      resolved: ResolvedContentSource[];
+    }>;
   } = {},
 ): Promise<EmployeeContentReceipt> {
   if (
@@ -880,7 +890,9 @@ export async function mutateEmployeeContentInTransaction(
         ${restoredFrom}) returning *`;
     candidate = revision!;
     if (options.publishOnSave) {
-      const result = await assemble(
+      const result = options.validateCandidate
+        ? await options.validateCandidate({ row, revision: candidate, target })
+        : await assemble(
         context,
         target,
         input.ownership,
@@ -1230,6 +1242,48 @@ export async function readPublishedEmployeeSceneLayers(
     });
   }
   return { instanceId, employeeId: target.employeeId, layers };
+}
+
+/** Current owner/instance authority is independent from exact content identity.
+ * This reader never consults inheritedRows or another instance's personal set. */
+export async function readPersonalEmployeeSceneLayer(
+  context: EmployeeContentContext,
+  instanceIdInput: string,
+  sql: ContentSql,
+  pin?: { setId: string; revisionId: string },
+  lock = false,
+) {
+  const instanceId = UuidSchema.parse(instanceIdInput);
+  const target = await resolveTarget(context, { kind: 'instance', instanceId }, sql, lock);
+  const instance = await getEmployeeInstance(context, instanceId, sql);
+  if (instance.kind !== 'custom') throw new DataAccessError('not_found');
+  const [row] = await sql<ContentSetRow[]>`
+    select * from allrice_employee_content_sets
+    where organization_id=${context.organizationId} and workspace_id=${context.workspaceId}
+      and employee_id=${target.employeeId} and instance_id=${instanceId}
+      and scope='personal' and owner_id=${context.actor.id}
+    ${lock ? sql`for share` : sql``}`;
+  const base = { instanceId, employeeId: target.employeeId, revision: row?.revision ?? 0 };
+  if (pin && (!row || row.id !== pin.setId)) throw new DataAccessError('not_found');
+  if (!row || (!pin && !row.active_revision_id)) return { ...base, layer: null };
+  const ownership = contentOwnership(row);
+  if (!(await getContentAccess(context, ownership, sql, lock)).canRead)
+    throw new DataAccessError('not_found');
+  const revision = await readRevision(sql, pin?.revisionId ?? row.active_revision_id);
+  if (!revision || revision.set_id !== row.id || runtimePolicyDigest(revision.manifest) !== revision.digest)
+    throw new DataAccessError('not_found');
+  const [publication] = await sql<{ published_at: Date }[]>`
+    select published_at from allrice_employee_content_publications
+    where set_id=${row.id} and revision_id=${revision.id} and invalidated_at is null
+    ${lock ? sql`for share` : sql``}`;
+  if (!publication) throw new DataAccessError('not_found');
+  return {
+    ...base,
+    layer: {
+      setId: row.id, ownership, revision: revisionDto(revision),
+      publishedAt: publication.published_at.toISOString(),
+    },
+  };
 }
 
 async function readEffectiveContent(

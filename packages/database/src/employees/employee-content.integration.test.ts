@@ -74,6 +74,13 @@ import {
 import { runtimePolicyDigest } from '../runtime-policy.ts';
 import { sceneSkillFixture } from './employee-scene-skills.fixture.ts';
 import {
+  listPersonalSceneSkills,
+  getPersonalSceneSkill,
+  getPersonalSceneSkillResource,
+  savePersonalSceneSkill,
+  parsePersonalSceneContentRef,
+} from './personal-scene-skills.ts';
+import {
   listEmployeeSceneSkills,
   getEmployeeSceneSkill,
   getEmployeeSceneSkillResource,
@@ -93,6 +100,7 @@ import {
   assertEmployeeContentContext,
   readEmployeeRuntimeContent,
   assertEmployeeContentReferenceMessages,
+  loadPersonalRuntimeSceneSkill,
 } from './employee-runtime-content.ts';
 const browser = vi.hoisted(() => ({ context: null as RequestContext | null }));
 function contentGate<T>() {
@@ -273,6 +281,140 @@ suite(
       };
     }
     type Setup = Awaited<ReturnType<typeof setup>>;
+    describe('C2-a personal packages and E2 owner submissions', () => {
+      function input(s: Setup, version = '1.0.0') {
+        return {
+          workspaceId: s.company.workspaceId, requestId: randomUUID(), expectedRevision: 0,
+          expectedContentRef: null as string | null,
+          scene: { id: randomUUID(), name: '我的周报', appliesWhen: '整理周报草稿' },
+          procedure: { kind: 'procedure' as const, title: '周报方法', ...sceneSkillFixture(version) },
+          references: [] as EmployeeContentReference[], changeSummary: '本人保存完整周报包',
+        };
+      }
+      it('saves a complete current package through the human HTTP entry, replays exactly and exposes only the domain contract', async () => {
+        const s = await setup(), body = input(s);
+        const routePath = '../../../../apps/web/app/api/v1/employee-instances/[id]/scene-skills/route.ts';
+        const { GET, POST } = await import(routePath);
+        const url = `https://example.test/api/v1/employee-instances/${s.instance.id}/scene-skills`;
+        const params = { params: Promise.resolve({ id: s.instance.id }) };
+        browser.context = s.a;
+        const submit = () => POST(new Request(url, { method: 'POST', headers: { origin: 'https://example.test', 'content-type': 'application/json' }, body: JSON.stringify(body) }), params);
+        const first = await submit();
+        expect(first.status).toBe(200);
+        const result = await first.json();
+        expect(await (await submit()).json()).toEqual(result);
+        const current = await GET(new Request(`${url}?sceneId=${body.scene.id}`), params);
+        expect(current.status).toBe(200);
+        expect(current.headers.get('cache-control')).toBe('private, no-store');
+        const pkg = await current.json();
+        expect(pkg.content).toBe(body.procedure.body);
+        expect(pkg.contentRef).toBe(result.receipt.contentRef);
+        expect(Object.keys(pkg).sort()).toEqual(['sceneId', 'name', 'description', 'nativeName', 'contentRef', 'revision', 'content', 'contentChecksum', 'bundleVersion', 'bundleChecksum', 'resources', 'sources'].sort());
+        const catalog = await (await GET(new Request(url), params)).json();
+        expect(catalog.skills).toEqual([{ sceneId: body.scene.id, name: body.scene.name, description: body.scene.appliesWhen, nativeName: `allrice-scene-${body.scene.id}` }]);
+        for (const query of ['legacy=true', `setId=${parsePersonalSceneContentRef(pkg.contentRef).setId}`, `sceneId=${body.scene.id}&sharedTarget=company`])
+          expect((await GET(new Request(`${url}?${query}`), params)).status).toBe(400);
+        await expect(savePersonalSceneSkill(s.a, s.instance.id, { ...body, changeSummary: 'different' })).rejects.toMatchObject({ code: 'request_conflict' });
+        const [count] = await f.db`select count(*)::int as n from allrice_employee_content_requests where request_id=${body.requestId}`;
+        expect(count!.n).toBe(1);
+        browser.context = null;
+        expect((await GET(new Request(url), params)).status).toBe(401);
+      });
+      it('keeps precise old resources after another save and never inherits company or another instance content', async () => {
+        const s = await setup(), body = input(s);
+        const first = await savePersonalSceneSkill(s.a, s.instance.id, body);
+        const old = await getPersonalSceneSkill(s.a, s.instance.id, body.scene.id);
+        const next = { ...input(s, '2.0.0'), scene: body.scene, expectedRevision: first.revision, expectedContentRef: old.contentRef };
+        const second = await savePersonalSceneSkill(s.a, s.instance.id, next);
+        expect(second.contentRef).not.toBe(old.contentRef);
+        expect((await getPersonalSceneSkill(s.a, s.instance.id, body.scene.id)).content).toBe(next.procedure.body);
+        expect((await getPersonalSceneSkillResource(s.a, s.instance.id, old.contentRef, 'assets/template.csv')).bundleChecksum).toBe(old.bundleChecksum);
+        const peer = await createEmployeeInstance(s.a, { workspaceId: s.company.workspaceId, assignmentId: s.assigned.id, requestId: randomUUID(), profile: { name: 'Another own instance' } });
+        expect((await listPersonalSceneSkills(s.a, peer.id)).skills).toEqual([]);
+        await expect(getPersonalSceneSkillResource(s.a, peer.id, old.contentRef, 'assets/template.csv')).rejects.toMatchObject({ code: 'not_found' });
+        await expect(savePersonalSceneSkill(s.a, s.instance.id, { ...next, requestId: randomUUID() })).rejects.toMatchObject({ code: 'version_conflict' });
+        const pin = parsePersonalSceneContentRef(old.contentRef);
+        const [history] = await f.db`select content from allrice_company_asset_revisions where id=${pin.sourceRevisionId}`;
+        expect(history!.content.body).toBe(body.procedure.body);
+      });
+      it('rejects other owners, tenants, withdrawn assignments and raw authority fields', async () => {
+        const s = await setup(), other = await setup(), body = input(s);
+        const saved = await savePersonalSceneSkill(s.a, s.instance.id, body);
+        for (const context of [s.b, other.a]) {
+          await expect(getPersonalSceneSkill(context, s.instance.id, body.scene.id)).rejects.toBeDefined();
+          await expect(getPersonalSceneSkillResource(context, s.instance.id, saved.contentRef, 'assets/template.csv')).rejects.toBeDefined();
+          await expect(savePersonalSceneSkill(context, s.instance.id, body)).rejects.toBeDefined();
+        }
+        for (const extra of [{ ownerId: s.b.actor.id }, { sharedTarget: { scope: 'company' } }, { legacy: true }, { publication: {} }])
+          await expect(savePersonalSceneSkill(s.a, s.instance.id, { ...body, ...extra })).rejects.toBeDefined();
+        await f.db`update allrice_employee_assignments set active=false where id=${s.assigned.id}`;
+        await expect(getPersonalSceneSkill(s.a, s.instance.id, body.scene.id)).rejects.toBeDefined();
+        await expect(getPersonalSceneSkillResource(s.a, s.instance.id, saved.contentRef, 'assets/template.csv')).rejects.toBeDefined();
+      });
+      it('requires a complete single package and leaves existing unrelated scenes and immutable revisions intact', async () => {
+        const s = await setup(), first = input(s);
+        const saved = await savePersonalSceneSkill(s.a, s.instance.id, first);
+        const next = { ...input(s), expectedRevision: saved.revision };
+        const second = await savePersonalSceneSkill(s.a, s.instance.id, next);
+        expect((await listPersonalSceneSkills(s.a, s.instance.id)).skills.map((skill) => skill.sceneId)).toEqual([first.scene.id, next.scene.id]);
+        const plain = { kind: 'procedure', title: 'plain', body: 'not packaged' };
+        await expect(savePersonalSceneSkill(s.a, s.instance.id, { ...input(s), expectedRevision: second.revision, procedure: plain })).rejects.toBeDefined();
+        const pin = parsePersonalSceneContentRef(saved.contentRef);
+        const [source] = await f.db`select manifest from allrice_employee_content_revisions where id=${pin.revisionId}`;
+        const duplicate = source!.manifest.scenes[0].references[0];
+        await expect(savePersonalSceneSkill(s.a, s.instance.id, { ...input(s), expectedRevision: second.revision, references: [duplicate] })).rejects.toMatchObject({ code: 'validation_failed' });
+        expect((await getPersonalSceneSkillResource(s.a, s.instance.id, saved.contentRef, 'assets/template.csv')).bundleChecksum).toBe(saved.bundleChecksum);
+      });
+      it('records exact package/resource reads before returning bytes and revokes retained history', async () => {
+        const s = await setup(), body = input(s);
+        const saved = await savePersonalSceneSkill(s.a, s.instance.id, body);
+        const run = await runtimeRun(s), worker = await sceneLease(run);
+        const loaded = await loadPersonalRuntimeSceneSkill(run.scope, run.runtime.generationId, { sceneId: body.scene.id }, worker);
+        expect(loaded.skill!.content).toBe(body.procedure.body);
+        const resource = await loadPersonalRuntimeSceneSkill(run.scope, run.runtime.generationId, { contentRef: saved.contentRef, resourcePath: 'assets/template.csv' }, worker);
+        expect(resource.resource!.checksum).toBe(body.procedure.skillPackage.bundle.resources[0]!.checksum);
+        const [record] = await f.db`select content_scene_state from allrice_employee_runs where run_id=${run.scope.runId}`;
+        expect(record!.content_scene_state.reads).toHaveLength(1);
+        expect(record!.content_scene_state.reads[0].personal).toMatchObject({ contentRef: saved.contentRef, contentRead: true, runId: run.scope.runId, generationId: run.runtime.generationId, resources: [{ path: 'assets/template.csv' }] });
+        const next = { ...input(s, '2.0.0'), scene: body.scene, expectedRevision: saved.revision, expectedContentRef: saved.contentRef };
+        await savePersonalSceneSkill(s.a, s.instance.id, next);
+        expect((await loadPersonalRuntimeSceneSkill(run.scope, run.runtime.generationId, { sceneId: body.scene.id }, worker)).skill!.content).toBe(next.procedure.body);
+        await assertEmployeeContentContext(run.scope, run.runtime.generationId, worker);
+        const pin = parsePersonalSceneContentRef(saved.contentRef);
+        await f.db`update allrice_employee_content_publications set invalidated_at=now() where set_id=${pin.setId} and revision_id=${pin.revisionId}`;
+        await expect(getPersonalSceneSkillResource(s.a, s.instance.id, saved.contentRef, 'assets/template.csv')).rejects.toMatchObject({ code: 'not_found' });
+        await expect(assertEmployeeContentContext(run.scope, run.runtime.generationId, worker)).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+        await releaseConversationRuntime({ ...run.scope, workerId: worker.workerId, outcome: 'idle' });
+        await run.finish();
+      });
+      it('returns no bytes and commits no receipt if the lease expires behind a source lock', async () => {
+        const s = await setup(), body = input(s);
+        const saved = await savePersonalSceneSkill(s.a, s.instance.id, body);
+        const run = await runtimeRun(s), worker = await sceneLease(run);
+        const pin = parsePersonalSceneContentRef(saved.contentRef);
+        const ready = contentGate<number>(), release = contentGate<void>();
+        const holder = f.db.begin(async (tx) => {
+          const [pid] = await tx`select pg_backend_pid() as id`;
+          await tx`select revision_id from allrice_employee_content_publications where set_id=${pin.setId} for update`;
+          ready.resolve(pid!.id); await release.promise;
+        });
+        const pid = await ready.promise;
+        const reading = loadPersonalRuntimeSceneSkill(run.scope, run.runtime.generationId, { sceneId: body.scene.id }, worker).then(() => null, (error: unknown) => error);
+        try {
+          await expect.poll(async () => {
+            const [row] = await f.db`select count(*)::int as n from pg_stat_activity where ${pid}::int=any(pg_blocking_pids(pid))`;
+            return row!.n;
+          }, { timeout: 5000 }).toBeGreaterThan(0);
+          await f.db`update allrice_jobs set lease_expires_at=now()-interval '1 second' where id=${worker.jobId}`;
+        } finally { release.resolve(); }
+        await holder;
+        expect(await reading).toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+        const [record] = await f.db`select content_scene_state from allrice_employee_runs where run_id=${run.scope.runId}`;
+        expect(record!.content_scene_state).toBeNull();
+        await releaseConversationRuntime({ ...run.scope, workerId: worker.workerId, outcome: 'idle' });
+        await run.finish();
+      });
+    });
     describe('C1 published scene packages, without a runtime connection', () => {
       function packageDraft(
         s: Setup,
@@ -447,15 +589,16 @@ suite(
         const params = { params: Promise.resolve({ id: s.instance.id }) };
         browser.context = s.a;
         const response = await GET(
-          new Request(`${url}?${new URLSearchParams(pin)}`),
+          new Request(`${url}?sceneId=${pin.sceneId}`),
           params,
         );
         expect(response.status).toBe(200);
         expect(response.headers.get('cache-control')).toBe('private, no-store');
-        expect((await response.json()).content).toBe(p.edit.body);
+        const personal = await response.json();
+        expect(personal.content).toBe(p.edit.body);
         const fileResponse = await GET(
           new Request(
-            `${url}?${new URLSearchParams({ ...pin, resourcePath: 'assets/template.csv' })}`,
+            `${url}?${new URLSearchParams({ contentRef: personal.contentRef, resourcePath: 'assets/template.csv' })}`,
           ),
           params,
         );

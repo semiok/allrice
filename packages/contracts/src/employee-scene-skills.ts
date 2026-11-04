@@ -7,6 +7,8 @@ import {
   EmployeeContentOwnershipSchema,
   EmployeeContentReferenceSchema,
   EmployeeSceneSkillPayloadSchema,
+  EmployeeContentTextSchema,
+  employeeContentLimits,
 } from './employee-content.ts';
 
 /** These are immutable content locators, not execution or authorization tokens. */
@@ -75,3 +77,79 @@ export type EmployeePublishedSceneSkill = z.infer<
 export type EmployeeSceneSkillCatalog = z.infer<
   typeof EmployeeSceneSkillCatalogSchema
 >;
+
+/** A serializable content address. Possession is never authorization. The
+ * storage implementation owns its encoding; callers must not construct pins. */
+export const PersonalSceneContentRefSchema = z.string().min(1).max(512);
+export const PersonalSceneSkillSummarySchema = z
+  .object({
+    sceneId: UuidSchema,
+    name: z.string(),
+    description: z.string(),
+    nativeName: z.string(),
+  })
+  .strict();
+export const PersonalSceneSkillSchema = PersonalSceneSkillSummarySchema.extend({
+  contentRef: PersonalSceneContentRefSchema,
+  revision: z.number().int().positive(),
+  content: z.string(),
+  contentChecksum: ChecksumSchema,
+  bundleVersion: z.string(),
+  bundleChecksum: ChecksumSchema,
+  resources: z.array(EmployeeSceneSkillResourceDescriptorSchema),
+  sources: z.array(
+    z.object({ reference: EmployeeContentReferenceSchema, title: z.string() }).strict(),
+  ),
+});
+export type PersonalSceneSkill = z.infer<typeof PersonalSceneSkillSchema>;
+export const PersonalSceneSkillCatalogSchema = z
+  .object({
+    instanceId: UuidSchema,
+    revision: z.number().int().nonnegative(),
+    skills: z.array(PersonalSceneSkillSummarySchema),
+  })
+  .strict();
+export const PersonalSceneSkillResourceSchema =
+  EmployeeSceneSkillResourceDescriptorSchema.extend({
+    contentRef: PersonalSceneContentRefSchema,
+    bundleChecksum: ChecksumSchema,
+    contentBase64: z.string(),
+  });
+export const PersonalSceneSkillQuerySchema = z.object({
+  workspaceId: UuidSchema.optional(),
+  sceneId: UuidSchema.optional(),
+  contentRef: PersonalSceneContentRefSchema.optional(),
+  resourcePath: SkillResourcePathSchema.optional(),
+}).strict().superRefine((query, ctx) => {
+  if ((query.sceneId && (query.contentRef || query.resourcePath)) ||
+      Boolean(query.contentRef) !== Boolean(query.resourcePath))
+    ctx.addIssue({ code: 'custom', message: 'Select a scene or an exact resource.' });
+});
+
+/** No scope, owner, publication controls or execution permission are inputs. */
+export const SavePersonalSceneSkillSchema = z
+  .object({
+    workspaceId: UuidSchema,
+    requestId: UuidSchema,
+    expectedRevision: z.number().int().nonnegative(),
+    expectedContentRef: PersonalSceneContentRefSchema.nullable(),
+    scene: EmployeeContentManifestSchema.shape.scenes.element.omit({ references: true }),
+    procedure: EmployeeContentTextSchema.refine(
+      (text) => text.kind === 'procedure' && 'skillPackage' in text,
+      'A complete packaged procedure is required.',
+    ),
+    references: z.array(EmployeeContentReferenceSchema).max(employeeContentLimits.references),
+    changeSummary: z.string().trim().min(1).max(1000),
+  })
+  .strict();
+export type SavePersonalSceneSkill = z.infer<typeof SavePersonalSceneSkillSchema>;
+export const PersonalSceneSkillSaveReceiptSchema = z
+  .object({
+    instanceId: UuidSchema,
+    sceneId: UuidSchema,
+    revision: z.number().int().positive(),
+    contentRef: PersonalSceneContentRefSchema,
+    contentChecksum: ChecksumSchema,
+    bundleChecksum: ChecksumSchema,
+  })
+  .strict();

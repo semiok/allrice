@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ReferenceSelectionSchema } from './reference-library.ts';
-import { UuidSchema } from './common.ts';
+import { UuidSchema, TimestampSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
 import { SkillBundleSchema, SkillResourcePathSchema } from './skill-bundle.ts';
 import {
@@ -621,12 +621,30 @@ export const EmployeeSceneReadSchema = z
     sceneId: UuidSchema,
     sceneDigest: ChecksumSchema,
     receiptId: UuidSchema,
+    // Exact personal content provenance within the existing append-only reads.
+    // Optional so historical JSON and its digests stay unchanged.
+    personal: z.object({
+      instanceId: UuidSchema,
+      contentRef: z.string().min(1).max(512),
+      contentChecksum: ChecksumSchema,
+      bundleChecksum: ChecksumSchema,
+      contentRead: z.literal(true).optional(),
+      resources: z.array(z.object({
+        path: SkillResourcePathSchema,
+        checksum: ChecksumSchema,
+      }).strict()).max(32),
+      runId: UuidSchema,
+      generationId: UuidSchema,
+      jobId: UuidSchema,
+      workerId: z.string().min(1),
+      readAt: TimestampSchema,
+    }).strict().optional(),
   })
   .strict();
 export const EmployeeSceneStateSchema = z
   .object({
     reads: z.array(EmployeeSceneReadSchema).max(employeeContentLimits.scenes),
-    adopted: EmployeeSceneReadSchema.extend({
+    adopted: EmployeeSceneReadSchema.omit({ personal: true }).extend({
       nativeSessionId: z.string().min(1).max(240),
       callId: z.string().min(1).max(240),
     }).optional(),

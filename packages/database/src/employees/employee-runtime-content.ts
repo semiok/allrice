@@ -34,6 +34,9 @@ import {
   type EmployeeRuntimeContent,
   type EmployeeResolvedContent,
   type EmployeeInstanceSnapshot,
+  SkillResourcePathSchema,
+  PersonalSceneSkillResourceSchema,
+  employeeContentLimits,
 } from '@allrice/contracts';
 import { getDatabase } from '../core/client.ts';
 import { DataAccessError } from '../data.ts';
@@ -58,6 +61,8 @@ import {
 } from './employee-content-model.ts';
 import { freezeEmployeeRuntimeContent } from './employee-content.ts';
 import { employeeRuntimeScenes } from './employee-runtime-scenes.ts';
+import { readPersonalSceneSkillInTransaction } from './personal-scene-skills.ts';
+import { EmployeeContentError } from './employee-content-model.ts';
 
 export class EmployeeRuntimeContentError extends Error {
   readonly code = 'EMPLOYEE_CONTENT_UNAVAILABLE';
@@ -552,9 +557,10 @@ async function contentGraph(scope: RunScope, sql: ContentSql) {
   const add = async (
     row: Pick<
       RunRow,
-      'content' | 'personal_skills' | 'session_references' | 'brand_workflow'
+      'content' | 'personal_skills' | 'session_references' | 'brand_workflow' | 'personal_instance_id'
     >,
   ) => {
+    if (row.personal_instance_id) instances.add(row.personal_instance_id);
     const brand = await brandSourceSessions(scope, row.brand_workflow, sql);
     if (brand.instanceId) instances.add(brand.instanceId);
     for (const id of brand.sessions) sessions.add(id);
@@ -720,6 +726,7 @@ async function generationIsReadable(
       )
         return false;
       await assertPersonalProvenance(reader, row, sql);
+      await assertPersonalSceneReads(reader, row, sql, locked);
       await assertReferenceSelections(
         reader,
         row.reference_selections,
@@ -742,7 +749,7 @@ async function generationIsReadable(
         if (
           state.reads.some(
             (r) =>
-              !scenes.some(
+              !r.personal && !scenes.some(
                 (s) => s.id === r.sceneId && s.digest === r.sceneDigest,
               ),
           )
@@ -754,7 +761,7 @@ async function generationIsReadable(
           sql,
           scope.ownerId,
           locked,
-          state.reads.map((r) => r.sceneId),
+          state.reads.filter((r) => !r.personal).map((r) => r.sceneId),
         );
       }
       for (const ref of row.session_references ?? [])
@@ -1014,7 +1021,7 @@ function parseSceneState(raw: unknown) {
   const parsed = EmployeeSceneStateSchema.safeParse(raw ?? { reads: [] });
   if (
     !parsed.success ||
-    new Set(parsed.data.reads.map((r) => r.sceneId)).size !==
+    new Set(parsed.data.reads.map((r) => r.personal?.contentRef ?? r.sceneId)).size !==
       parsed.data.reads.length
   )
     return unavailable();
@@ -1022,6 +1029,7 @@ function parseSceneState(raw: unknown) {
     parsed.data.adopted &&
     !parsed.data.reads.some(
       (r) =>
+        !r.personal &&
         r.receiptId === parsed.data.adopted!.receiptId &&
         r.sceneId === parsed.data.adopted!.sceneId &&
         r.sceneDigest === parsed.data.adopted!.sceneDigest,
@@ -1029,6 +1037,97 @@ function parseSceneState(raw: unknown) {
   )
     return unavailable();
   return parsed.data;
+}
+
+async function assertPersonalSceneReads(
+  reader: ContentIdentity,
+  row: Pick<RunRow, 'content_scene_state' | 'personal_instance_id'>,
+  sql: ContentSql,
+  lock: boolean,
+) {
+  const reads = parseSceneState(row.content_scene_state).reads;
+  for (const receipt of reads) {
+    const read = receipt.personal;
+    if (!read) continue;
+    if (read.instanceId !== row.personal_instance_id) return unavailable();
+    try {
+      const pkg = await readPersonalSceneSkillInTransaction(
+        { ...reader, requestId: receipt.receiptId }, read.instanceId,
+        { contentRef: read.contentRef }, sql, lock,
+      );
+      if (pkg.skill.sceneId !== receipt.sceneId || pkg.skill.bundleChecksum !== receipt.sceneDigest ||
+          pkg.skill.contentChecksum !== read.contentChecksum || pkg.skill.bundleChecksum !== read.bundleChecksum ||
+          read.resources.some((resource) => !pkg.bundle.resources.some((item) => item.path === resource.path && item.checksum === resource.checksum)))
+        return unavailable();
+    } catch (error) {
+      if (error instanceof DataAccessError || error instanceof EmployeeContentError || error instanceof EmployeeInstanceError || error instanceof ZodError)
+        return unavailable();
+      throw error;
+    }
+  }
+}
+
+/** Storage-facing model read. No Provider/Host changes here: the later native
+ * wiring must use this leased entry point rather than the human preview API. */
+export async function loadPersonalRuntimeSceneSkill(
+  scope: RunScope, generationId: string,
+  selection: { sceneId: string } | { contentRef: string; resourcePath: string },
+  worker: ContentWorker,
+) {
+  if (!worker) return unavailable();
+  const path = 'resourcePath' in selection ? SkillResourcePathSchema.parse(selection.resourcePath) : null;
+  const result = await withContentLocks(scope, async (tx) => {
+    const run = await ownedRun(scope, tx);
+    if (!run.personal_instance_id || run.content_generation_id !== generationId || !(await validContentLease(scope, worker, tx)))
+      return unavailable();
+    if (!(await generationIsReadable(scope, generationId, tx, identity(scope), new Set(), true))) {
+      await tx`update allrice_employee_content_contexts set invalidated_at=clock_timestamp() where generation_id=${generationId}`;
+      return { rejected: true as const };
+    }
+    const pkg = await readPersonalSceneSkillInTransaction(
+      { ...identity(scope), requestId: scope.runId }, run.personal_instance_id,
+      selection, tx, true,
+    );
+    const resource = path ? pkg.bundle.resources.find((item) => item.path === path) : undefined;
+    if (path && !resource) return unavailable();
+    const state = parseSceneState(run.content_scene_state);
+    const reads = state.reads;
+    if (reads.some(({ personal }) => personal && (personal.runId !== scope.runId || personal.generationId !== generationId))) return unavailable();
+    let receipt = reads.find((read) => read.personal?.contentRef === pkg.skill.contentRef);
+    if (!receipt) {
+      if (reads.length >= employeeContentLimits.scenes) return unavailable();
+      receipt = EmployeeSceneReadSchema.parse({
+        receiptId: randomUUID(), sceneId: pkg.skill.sceneId, sceneDigest: pkg.skill.bundleChecksum,
+        personal: { instanceId: run.personal_instance_id, contentRef: pkg.skill.contentRef,
+        contentChecksum: pkg.skill.contentChecksum, bundleChecksum: pkg.skill.bundleChecksum,
+        resources: [], runId: scope.runId, generationId,
+        jobId: worker.jobId, workerId: worker.workerId, readAt: new Date().toISOString(),
+        },
+      });
+      reads.push(receipt);
+    }
+    const personal = receipt.personal!;
+    if (!path) personal.contentRead = true;
+    if (resource && !personal.resources.some((item) => item.path === resource.path))
+      personal.resources.push({ path: resource.path, checksum: resource.checksum });
+    // Include every actually read package's body in the established body budget.
+    let bodyBytes = 0;
+    for (const read of reads) {
+      if (!read.personal) return unavailable();
+      const exact = read.personal.contentRef === pkg.skill.contentRef ? pkg : await readPersonalSceneSkillInTransaction(
+        { ...identity(scope), requestId: scope.runId }, run.personal_instance_id,
+        { contentRef: read.personal.contentRef }, tx, true,
+      );
+      bodyBytes += Buffer.byteLength(exact.skill.content);
+    }
+    if (bodyBytes > employeeContentLimits.textBytes || !(await validContentLease(scope, worker, tx))) return unavailable();
+    await tx`update allrice_employee_runs set content_scene_state=${tx.json(EmployeeSceneStateSchema.parse(state))} where run_id=${scope.runId}`;
+    return { receipt, ...(resource ? {
+      resource: PersonalSceneSkillResourceSchema.parse({ ...resource, contentRef: pkg.skill.contentRef, bundleChecksum: pkg.skill.bundleChecksum }),
+    } : { skill: pkg.skill }) };
+  });
+  if ('rejected' in result) return unavailable();
+  return result;
 }
 async function validContentLease(
   scope: RunScope,
@@ -1280,6 +1379,7 @@ export async function loadEmployeeRuntimeScene(
     const state = parseSceneState(run.content_scene_state);
     if (state.adopted && state.adopted.sceneId !== scene.id)
       return unavailable();
+    if (state.reads.some((read) => read.personal)) return unavailable();
     // Include every actual read for conflict and total-body limits. A failed
     // additional read never erases dependencies already exposed to the model.
     const selected = [
@@ -1400,6 +1500,7 @@ export async function adoptEmployeeRuntimeScene(
       !state.reads.some(
         (r) =>
           r.sceneId === adopted.sceneId &&
+          !r.personal &&
           r.sceneDigest === adopted.sceneDigest &&
           r.receiptId === adopted.receiptId,
       )
