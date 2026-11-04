@@ -71,16 +71,19 @@ describe('EmployeeProfileDetails', () => {
           onPreview={() => {}}
           onEdit={() => {}}
           onPrepare={() => {}}
+          workflowContent={<p>本人文件入口</p>}
         />,
       );
       if (editable) {
         expect(html).toContain('编辑');
         expect(html).toContain('AI 新增');
         expect(html).toContain('AI 调整');
+        expect(html).toContain('本人文件入口');
       } else {
         expect(html).not.toContain('AI 新增');
         expect(html).not.toContain('AI 调整');
         expect(html).not.toContain('>编辑<');
+        expect(html).not.toContain('本人文件入口');
       }
     },
   );

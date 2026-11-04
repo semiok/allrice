@@ -29,6 +29,7 @@ import {
 } from '../workspace/experience/experience-panel';
 import { NativeDocumentPreview } from './native-document-preview';
 import { DocumentToolbar } from './document-reader';
+import { PersonalSceneFilePanel } from './personal-scene-files';
 import {
   workbenchJson,
   parseArtifactPreview,
@@ -362,6 +363,17 @@ function EmployeeDetailsReader(props: EmployeeDetailsDialogProps) {
               props.organizationView || !props.onPrepare ? undefined : prepare
             }
             view={props.organizationView ? 'shared' : 'personal'}
+            workflowContent={
+              !props.organizationView &&
+              props.instanceId && (
+                <PersonalSceneFilePanel
+                  scopeId={props.scopeId}
+                  instanceId={props.instanceId}
+                  workspaceId={props.workspaceId}
+                  headers={props.headers}
+                />
+              )
+            }
             experienceContent={
               props.organizationView
                 ? result?.experienceSummary && (

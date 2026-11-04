@@ -149,6 +149,7 @@ export function EmployeeProfileDetails({
   onPreview,
   view = 'personal',
   experienceContent,
+  workflowContent,
   onEdit,
   onPrepare,
 }: {
@@ -156,6 +157,7 @@ export function EmployeeProfileDetails({
   onPreview: (reference: ReferenceSelection) => void;
   view?: 'personal' | 'shared';
   experienceContent?: ReactNode;
+  workflowContent?: ReactNode;
   onEdit?: () => void;
   onPrepare?: (text: string) => void;
 }) {
@@ -270,6 +272,7 @@ export function EmployeeProfileDetails({
           )}
         </dl>
       </section>
+      {personal && workflowContent}
       <section className={css.workArea} aria-label="工作场景与内容">
         <aside className={css.sceneRail} aria-label="工作场景导航">
           <h4>工作场景</h4>

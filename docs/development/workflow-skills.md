@@ -70,7 +70,7 @@ node --import tsx scripts/workflow-skill-pack.mjs \
 
 相同输入、参数和工具版本产生相同 JSON；没有时间戳、随机 ID、绝对路径或临时目录。
 正文 checksum 不等于源 SKILL.md checksum；bundle.version 是作者元数据，不是服务端 revision。
-精确发布版本以后由 C1 publication/source revision 和 checksum 标识。
+保存后的准确内容由服务端修订、contentRef 和 checksum 标识；bundle.version 不能代替服务端修订。
 
 受控资料必须保留来源。可选 `sources.json` 示例：
 
@@ -136,17 +136,25 @@ pnpm exec vitest run --maxWorkers=2 scripts/workflow-skill-pack.test.mjs \
 C2 将接 Provider、普通加载、`/name` 和准确资源；A5 将展示实际加载版本与错误。
 在这些功能就绪前，不把离线打包成功当作会话内验收通过。
 
-## 发布、更新与回退边界
+## 在本人员工详情导入与更新
 
-D0 输出不是完整 HTTP mutation，也不会自动保存或发布。现 C1 底层内容接口见
-[员工内容说明](../features/employee-content.md)：`save_draft → validate → activate`。
-完整请求还需要当前登录身份、目标、集合 CAS、稳定 requestId、content/revision ID 和完整 manifest；
-更新须保留未编辑条目并准确替换旧引用，不能盲目覆盖。由 C4 的本人文件提交入口连接这些字段，
-该入口尚未实现。本版不提供绕过它的 SQL、cookie 导出或自动发布脚本。
+打包命令只生成文件，不自动保存。登录后打开本人创建的 AI 员工详情，展开
+“本人 Workflow · 文件与修改记录”，选择完整 JSON 文件。页面显示员工名、目标场景、
+当前修订和文件中的准确正文、资源、来源及元数据差异。目标来自当前员工与文件场景，
+不需要填写 owner、集合或发布 ID，也不需要导出 cookie。
 
-修改文件后重新打包，建议升 bundle.version，并核对 diff/checksum。服务端的候选与发布仍由本人确认。
-未来正常发布后的回退使用同集合 `restore_draft → validate → activate` 生成新候选/新发布，
-不是删除新版本，也不默认 invalidatePrevious。账号和当前权限仍在服务端核验。
+填写本次修改说明，核对后点击“确认修改并生效”。服务端重新核验本人、实例、包、来源、
+集合 CAS 和确切旧引用；只有保存成功并取得准确回执才显示“已保存并生效”，没有第二发布步骤。
+其他场景、旧修订和旧资源保留。工具依赖声明不授予工具权限，脚本不会执行或安装依赖。
+
+修改本地文件后重新打包并导入。若内容已被另一处修改，页面停止保存，需主动重新预览并核对，
+不会自动覆盖。若网络中断而保存结果不明确，页面保留原 requestId 和原参数，
+点击“重试同一次保存”取得同一次操作回执，不自动换 ID 重发。
+
+“修改记录”展示本人该实例的历史修订、准确内容地址和当前可读性；来源撤销后不返回旧正文。
+当前旧包不可读时，文件预览仍显示准确替换目标，允许用无失效来源的新文件替换。
+历史恢复须在同一事务重验旧来源后追加新修订；本次入口尚未开放恢复操作，不用旧文件复制冒充原子恢复。
+后台既有内容管理沿原路径，见[员工内容说明](../features/employee-content.md)。
 旧 Workflow 的历史删除属于 A6，不由此工具处理。
 
 D0 本身没有数据库或部署状态；出现问题可单独 revert 本功能 PR，删除离线产物即可。

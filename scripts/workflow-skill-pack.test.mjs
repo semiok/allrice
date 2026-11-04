@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { EmployeeContentTextSchema } from '../packages/contracts/src/employee-content.ts';
+import { PersonalSceneFileSchema } from '../packages/contracts/src/personal-scene-files.ts';
 import {
   skillBytesChecksum,
   validateSkillBundle,
@@ -80,6 +81,7 @@ describe('developer packs a native skill into C1 content without publishing', ()
       }),
     ).toBe(first);
     const result = JSON.parse(first);
+    expect(PersonalSceneFileSchema.parse(result).scene.id).toBe(sceneId);
     const procedure = EmployeeContentTextSchema.parse(result.procedure);
     expect(procedure.kind).toBe('procedure');
     expect(procedure.title).toBe('本人方法');

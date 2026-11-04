@@ -144,6 +144,7 @@ export * from './project-service.ts';
 export * from './project-preview.ts';
 export * from './employee-content.ts';
 export * from './employee-scene-skills.ts';
+export * from './personal-scene-files.ts';
 export * from './employee-details.ts';
 export * from './reference-library.ts';
 
