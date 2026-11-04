@@ -106,7 +106,7 @@ function eventsFor(runId: string): ChatFlowEventEnvelope[] {
     });
     add('assistant.text.completed', {
       replyId: 'answer',
-      text: '已提出记忆候选，请确认。',
+      text: '这次记忆请求已处理。',
     });
     return events;
   }
@@ -143,6 +143,8 @@ declare global {
 window.readingWrites = [];
 window.fetch = async (input, init) => {
   const url = String(input);
+  if (memoryScenario && url.startsWith('/api/v1/memories?'))
+    return Response.json({ memories: [] });
   if (url.startsWith('/api/v1/runtime/cloud-operations'))
     return Response.json({
       operations: Array.from(
@@ -188,11 +190,18 @@ function Fixture() {
     <main
       data-stage={current}
       data-run={run}
-      style={{ maxWidth: 780, margin: '0 auto', padding: 16 }}
+      style={{
+        maxWidth: 780,
+        margin: '0 auto',
+        padding: 16,
+        fontFamily: 'var(--dsw-font-family)',
+      }}
     >
-      <label>
-        另外阅读的位置 <input aria-label="另外阅读的位置" />
-      </label>
+      {!memoryScenario && (
+        <label>
+          另外阅读的位置 <input aria-label="另外阅读的位置" />
+        </label>
+      )}
       {mounted && (
         <ChatTranscript
           atBottom
@@ -208,7 +217,7 @@ function Fixture() {
               runId: run,
               content: {
                 text: memoryScenario
-                  ? '已提出记忆候选，请确认。'
+                  ? '这次记忆请求已处理。'
                   : '最后结论保留在这里。',
               },
             },

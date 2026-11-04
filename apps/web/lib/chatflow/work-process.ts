@@ -180,16 +180,45 @@ export function summarizeWorkProcess(items: NativeExperienceItem[]) {
 }
 
 // DSH Chat uses action phrases, not category labels and step counts. Its title
-// helper is private; adapt our existing public step categories to those phrases.
-const processTitles: Partial<Record<WorkProcessCategory, [string, string]>> = {
-  think: ['正在分析请求', '已完成分析'],
-  search: ['正在搜索代码', '已搜索代码'],
+// helper is private. Match its tool-name registry; unknown SaaS tools stay tools.
+const processTitles = {
+  thinking: ['正在分析请求', '已完成分析'],
   read: ['正在读取文件', '已读取文件'],
+  readImage: ['正在读取图片', '已读取图片'],
+  search: ['正在搜索代码', '已搜索代码'],
   write: ['正在写入文件', '已写入文件'],
   edit: ['正在编辑文件', '修改了文件'],
-  execute: ['正在运行命令', '执行了命令'],
-  question: ['等待你的操作', '向用户提出了问题'],
+  commands: ['正在运行命令', '执行了命令'],
+  code: ['正在运行代码', '运行了代码'],
+  webSearch: ['正在搜索网页', '已搜索网页'],
+  webFetch: ['正在访问网页', '已访问网页'],
+  subagents: ['正在协调子智能体', '已协调子智能体'],
+  questions: ['等待你的操作', '向用户提出了问题'],
   plan: ['正在更新计划', '更新了计划'],
+  tools: ['正在调用工具', '已调用工具'],
+} as const;
+const nativeToolActivities: Record<string, keyof typeof processTitles> = {
+  read: 'read',
+  read_image: 'readImage',
+  grep: 'search',
+  glob: 'search',
+  write: 'write',
+  edit: 'edit',
+  apply_patch: 'edit',
+  bash: 'commands',
+  pwsh: 'commands',
+  exec_command: 'commands',
+  write_stdin: 'commands',
+  run_code: 'code',
+  web_search: 'webSearch',
+  web_fetch: 'webFetch',
+  subagent: 'subagents',
+  todo_write: 'plan',
+  create_goal: 'plan',
+  update_goal: 'plan',
+  get_goal: 'plan',
+  ask_user_question: 'questions',
+  request_user_input: 'questions',
 };
 
 export function workProcessTitle(
@@ -201,17 +230,20 @@ export function workProcessTitle(
     // so a completed call does not claim its candidate has been accepted.
     if (item.kind === 'compaction' || item.modelWait) return item.title;
     const name = item.toolName ?? item.title;
-    const phrases =
-      name === 'web_search' || name === 'web.search' || item.kind === 'search'
-        ? ['正在搜索网页', '已搜索网页']
-        : name === 'web_fetch' || name === 'web.fetch'
-          ? ['正在访问网页', '已访问网页']
-          : name === 'run_code'
-            ? ['正在运行代码', '运行了代码']
-            : (processTitles[classification(item)[0]] ?? [
-                '正在调用工具',
-                '已调用工具',
-              ]);
+    const activity =
+      item.kind === 'think'
+        ? 'thinking'
+        : item.kind === 'todo'
+          ? 'plan'
+          : (nativeToolActivities[name] ??
+            (name.endsWith('_inspect')
+              ? 'search'
+              : name.startsWith('terminal_')
+                ? 'commands'
+                : name.startsWith('subagent_')
+                  ? 'subagents'
+                  : 'tools'));
+    const phrases = processTitles[activity];
     return phrases[live ? 0 : 1]!;
   };
   const ordered = items

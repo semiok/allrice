@@ -150,10 +150,15 @@ suite('reading a receipt while late native trace changes its group', () => {
           ).toBe(0);
           expect(
             await page
-              .getByText('已提出记忆候选，请确认。', { exact: true })
+              .getByText('这次记忆请求已处理。', { exact: true })
               .count(),
           ).toBe(1);
           expect(await page.locator('body').innerText()).not.toContain('6 项');
+          expect(
+            await page
+              .getByText('记忆读取失败，请重新读取。', { exact: true })
+              .count(),
+          ).toBe(0);
           expect(await page.evaluate(() => window.readingWrites)).toEqual([]);
           if (replay === 0) await page.reload();
         }
