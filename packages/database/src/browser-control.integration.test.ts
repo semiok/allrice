@@ -316,6 +316,85 @@ suite('P21 real PostgreSQL control and exact admission', () => {
       await Promise.allSettled([writer, ...(reader ? [reader] : [])]);
     }
   }, 15000);
+  it('creates a workspace without a Run/Job foreign-key deadlock against a Job-first writer', async () => {
+    const f = await createCloudExecutionFixture(db, storageRoot, {
+      browserControl: true,
+    });
+    await installBrowserControlGrant(
+      f.context,
+      { targetId: f.target, ownerId: f.user, profile, enabled: true },
+      db,
+    );
+    const [job] = await db`select attempt,lease_token from allrice_jobs where id=${f.execution.jobId}`;
+    let releaseWriter!: () => void, writerLocked!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseWriter = resolve; });
+    const locked = new Promise<void>((resolve) => { writerLocked = resolve; });
+    let writer: Promise<unknown> | undefined, writerPid = 0, creatorPid = 0, transactions = 0;
+    // Gate only the final workspace INSERT transaction. Managed task creation
+    // uses the real global db and has already completed before this race starts.
+    const creationDb = new Proxy(db, {
+      get(target, key, receiver) {
+        if (key !== 'begin') return Reflect.get(target, key, receiver);
+        return (body: (tx: postgres.TransactionSql) => Promise<unknown>) => {
+          if (++transactions !== 2) return db.begin(body);
+          writer = db.begin(async (tx) => {
+            await tx`set local statement_timeout='8s'`;
+            writerPid = (await tx`select pg_backend_pid() pid`)[0]!.pid;
+            await tx`select id from allrice_jobs where id=${f.execution.jobId} for update`;
+            writerLocked();
+            await gate;
+            // Same Job -> Run row-lock order as delivery authority/queue writes.
+            await tx`select id from allrice_runs where id=${f.execution.runId} for update`;
+            await tx`update allrice_jobs set heartbeat_at=clock_timestamp() where id=${f.execution.jobId}`;
+          });
+          void writer.catch(() => undefined);
+          return db.begin(async (tx) => {
+            await tx`set local statement_timeout='8s'`;
+            creatorPid = (await tx`select pg_backend_pid() pid`)[0]!.pid;
+            await locked;
+            return body(tx);
+          });
+        };
+      },
+    });
+    const creation = createBrowserWorkspace({
+      context: f.execution,
+      callId: randomUUID(),
+      url: profile.origins[0] + '/',
+      jobAttempt: job!.attempt,
+      jobLeaseToken: job!.lease_token,
+    }, creationDb);
+    void creation.catch(() => undefined);
+    try {
+      let blocked = false;
+      const until = Date.now() + 5000;
+      while (Date.now() < until) {
+        if (creatorPid && writerPid) {
+          const [row] = await db`select ${writerPid}::int=any(pg_blocking_pids(${creatorPid})) blocked`;
+          if (row?.blocked) { blocked = true; break; }
+        }
+        await yieldTurn();
+      }
+      expect(blocked).toBe(true);
+      releaseWriter();
+      const results = await Promise.allSettled([writer!, creation]);
+      // Before the fix the creator holds Run while its INSERT's Job FK waits;
+      // releasing the writer then creates a real PostgreSQL 40P01 wait cycle.
+      expect(results.map((r) => r.status === 'fulfilled' ? r.status : r.reason.code)).toEqual(['fulfilled', 'fulfilled']);
+      const workspace = await creation;
+      expect(workspace).toMatchObject({
+        run_id: f.execution.runId, job_id: f.execution.jobId,
+        job_attempt: job!.attempt, job_lease_token: job!.lease_token,
+      });
+      const [after] = await db`select j.status,j.cancel_requested_at,j.attempt,j.lease_token,r.state
+        from allrice_jobs j join allrice_runs r on r.id=j.run_id where j.id=${f.execution.jobId}`;
+      expect(after).toMatchObject({ status: 'running', state: 'running', cancel_requested_at: null,
+        attempt: job!.attempt, lease_token: job!.lease_token });
+    } finally {
+      releaseWriter();
+      await Promise.allSettled([creation, ...(writer ? [writer] : [])]);
+    }
+  }, 15000);
   it('MET-159 default automatic work admits a scoped cloud browser action without an approval', async () => {
     const f = await fixture();
     await db`delete from allrice_member_work_automation where organization_id=${f.org}`;
