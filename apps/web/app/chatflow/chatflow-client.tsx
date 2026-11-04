@@ -1776,7 +1776,6 @@ export function ChatFlowClient({
             recommendedTemplates
               ? {
                   employeeId: activeEmployee?.employeeId,
-                  taskText: draftStore.getSnapshot().slice(0, 512),
                 }
               : undefined
           }

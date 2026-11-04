@@ -234,11 +234,9 @@ export async function listCompanyTemplateRecommendations(
   context: RequestContext,
   org: string,
   employeeInput: string,
-  taskInput = '',
   db: Db = getDatabase(),
 ) {
-  const employeeId = UuidSchema.parse(employeeInput),
-    task = taskInput.slice(0, 512);
+  const employeeId = UuidSchema.parse(employeeInput);
   return db.begin('isolation level repeatable read read only', async (tx) => {
     const principal =
       (await requireCompanyAssetReader(context, org, tx)) ?? null;
@@ -253,9 +251,7 @@ export async function listCompanyTemplateRecommendations(
         and o.checksum=r.file_metadata->>'checksum' and o.size_bytes=(r.file_metadata->>'sizeBytes')::bigint
         and o.media_type=r.file_metadata->>'mediaType' and o.size_bytes<=20971520
         and (jsonb_array_length(r.content->'appliesToEmployeeIds')=0 or r.content->'appliesToEmployeeIds' ? ${employeeId})
-      order by a.pinned desc,
-        exists(select 1 from jsonb_array_elements_text(r.content->'taskKeywords') k where strpos(lower(${task}),lower(k))>0) desc,
-        a.id limit 6
+      order by a.pinned desc,a.id limit 6
     `;
     const [budget] = await tx<
       { bytes: number }[]

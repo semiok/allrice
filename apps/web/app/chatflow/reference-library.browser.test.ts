@@ -314,7 +314,7 @@ suite(
               body: '使用本次期间数据',
               category: '',
               appliesToEmployeeIds: [],
-              taskKeywords: [],
+              taskKeywords: ['周报', '遗留关键词'],
               sourceVersionId: a.artifact.artifactId,
               slots: [
                 {
@@ -391,6 +391,36 @@ suite(
             .getByText('新草稿不代替共享版', { exact: true })
             .first()
             .waitFor();
+          await page
+            .getByRole('button', { name: '查看范本', exact: true })
+            .click();
+          expect(
+            await page.getByText('适用任务：周报、遗留关键词').count(),
+          ).toBe(0);
+          await page
+            .getByRole('button', { name: '编辑范本草稿', exact: true })
+            .click();
+          expect(await page.getByLabel('范本推荐关键词').count()).toBe(0);
+          await page
+            .getByLabel('范本用途与说明')
+            .fill('编辑用途不清除历史关键词');
+          const save = page.waitForResponse(
+            (response) =>
+              response.url().includes('/api/v1/company-assets') &&
+              response.request().method() === 'POST',
+          );
+          await page
+            .getByRole('button', { name: '保存范本草稿', exact: true })
+            .click();
+          const response = await save;
+          expect(response.status()).toBe(200);
+          expect(
+            response.request().postDataJSON().content.taskKeywords,
+          ).toEqual(fixed.content.taskKeywords);
+          expect((await response.json()).latest.content).toMatchObject({
+            body: '编辑用途不清除历史关键词',
+            taskKeywords: fixed.content.taskKeywords,
+          });
           expect(
             await page.evaluate(
               () => document.documentElement.scrollWidth <= innerWidth,
@@ -403,6 +433,40 @@ suite(
       },
       45000,
     );
+    it('saves a new template with empty legacy keywords and no recommendation input', async () => {
+      const a = await tenantValidationFixture(f.db);
+      const token = (await createSession(a.context.actor.id)).token;
+      const c = await browser.newContext({
+        viewport: { width: 1440, height: 900 },
+      });
+      await c.addCookies([
+        { name: 'fixture_session', value: token, url: origin },
+      ]);
+      const page = await c.newPage();
+      try {
+        await page.goto(
+          `${origin}/?workspaceId=${a.context.workspaceId}&templateVersionId=${a.artifact.artifactId}`,
+        );
+        expect(await page.getByLabel('范本推荐关键词').count()).toBe(0);
+        await page.getByLabel('范本用途与说明').fill('填写实际期间并核对数据');
+        const save = page.waitForResponse(
+          (response) =>
+            response.url().includes('/api/v1/company-assets') &&
+            response.request().method() === 'POST',
+        );
+        await page
+          .getByRole('button', { name: '保存范本草稿', exact: true })
+          .click();
+        const response = await save;
+        expect(response.status()).toBe(200);
+        expect(response.request().postDataJSON().content.taskKeywords).toEqual(
+          [],
+        );
+        expect((await response.json()).latest.content.taskKeywords).toEqual([]);
+      } finally {
+        await c.close();
+      }
+    });
     it.each([1440, 390])(
       'saves an exact business artifact through the dialog and reads its retained file at %ipx',
       async (width) => {

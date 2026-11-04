@@ -62,7 +62,7 @@ export function ReferenceLibrary({
   onSelect?: (reference: ReferenceRevision) => void;
   initialReference?: { sourceId: string; revisionId: string } | null;
   onPrepareTemplate?: (reference: CompanyDraftReference) => Promise<void>;
-  initialTemplates?: { employeeId?: string; taskText: string };
+  initialTemplates?: { employeeId?: string };
 }) {
   const [directory, setDirectory] = useState<z.infer<
       typeof responseSchema
@@ -303,7 +303,6 @@ export function ReferenceLibrary({
         title={initialTemplates ? '参考资料' : '历史资料与草稿'}
         recommended={!!initialTemplates}
         employeeId={initialTemplates?.employeeId}
-        taskText={initialTemplates?.taskText}
         workspaceId={workspaceId}
         headers={headers}
         onPrepare={onPrepareTemplate}

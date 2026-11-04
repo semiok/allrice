@@ -81,7 +81,6 @@ export async function companyAssetsHttp(
           context,
           org,
           UuidSchema.parse(p.get('employeeId')),
-          p.get('task') ?? '',
         ),
         { headers },
       );

@@ -5196,6 +5196,20 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           },
         }),
       );
+      const ownDraft = {
+        ...asset,
+        id: id(8408),
+        state: 'draft',
+        publishedRevisionId: null,
+        pinned: false,
+        canEdit: true,
+        latest: {
+          ...asset.latest,
+          id: id(8409),
+          content: { ...asset.latest.content, title: '本人未发布范本草稿' },
+        },
+      };
+      const directoryQueries: Record<string, string>[] = [];
       let withdrawn = false,
         deniedWrites = 0;
       await f.page.route('**/api/v1/company-assets*', async (route) => {
@@ -5208,6 +5222,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           ...asset,
           state: withdrawn ? 'withdrawn' : 'published',
         };
+        if (
+          !url.searchParams.has('history') &&
+          !url.searchParams.has('preview')
+        )
+          directoryQueries.push(Object.fromEntries(url.searchParams));
         const result = url.searchParams.get('history')
           ? {
               asset: value,
@@ -5217,8 +5236,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           : url.searchParams.get('preview')
             ? f.state.filePreview
             : {
-                assets: [value],
-                nextCursor: null,
+                assets: url.searchParams.has('after') ? [ownDraft] : [value],
+                nextCursor:
+                  !url.searchParams.has('recommendations') &&
+                  !url.searchParams.has('after')
+                    ? assetId
+                    : null,
                 ruleBudget: {
                   maximumBytes: 16000,
                   maximumRules: 32,
@@ -5229,8 +5252,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       });
       try {
         const input = f.page.getByRole('textbox', { name: /给 .* 的消息/ });
-        await input.fill('保留原有草稿');
-        if (recommended) {
+        const openQuickDirectory = async () => {
           await f.page
             .getByRole('button', { name: '常用任务', exact: true })
             .click();
@@ -5243,7 +5265,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             await f.page
               .getByRole('menuitem', { name: '参考资料', exact: true })
               .click();
-        } else if (width > 760) {
+        };
+        const finalDraft = recommended
+          ? '请汇总这一周的工作回顾'
+          : '保留原有草稿';
+        await input.fill(recommended ? '请整理本周周报' : finalDraft);
+        if (recommended) await openQuickDirectory();
+        else if (width > 760) {
           await f.page
             .locator('header')
             .getByRole('button', { name: '工作区文件', exact: true })
@@ -5292,6 +5320,71 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               dialog.getByText('公司置顶', { exact: true }).isVisible(),
             )
             .toBe(true);
+          expect(
+            await dialog
+              .getByRole('button', { name: '适用范本快览', exact: true })
+              .getAttribute('aria-pressed'),
+          ).toBe('true');
+          expect(await dialog.textContent()).toContain(
+            '最多 6 项，公司置顶优先',
+          );
+          const titles = dialog.locator(
+            '[aria-label="公司范本目录"] article > strong',
+          );
+          const firstOrder = await titles.allTextContents();
+          expect(firstOrder).toEqual(['季度经营简报']);
+          expect(f.state.messageInputs).toHaveLength(0);
+          expect(
+            await f.page
+              .getByRole('button', { name: '移除范本 季度经营简报' })
+              .count(),
+          ).toBe(0);
+          await dialog
+            .getByRole('button', { name: '全部范本与本人草稿', exact: true })
+            .click();
+          await dialog
+            .getByRole('button', { name: '更多公司资料', exact: true })
+            .click();
+          await dialog
+            .getByText('本人未发布范本草稿', { exact: true })
+            .waitFor();
+          expect(await titles.allTextContents()).toEqual([
+            '季度经营简报',
+            '本人未发布范本草稿',
+          ]);
+          expect(directoryQueries.at(-1)).toMatchObject({
+            workspaceId: workspace,
+            after: assetId,
+          });
+          await dialog
+            .getByRole('button', { name: '关闭', exact: true })
+            .click();
+          await dialog
+            .getByRole('button', { name: '关闭', exact: true })
+            .click();
+          await expect.poll(() => dialog.count()).toBe(0);
+          await input.fill(finalDraft);
+          await openQuickDirectory();
+          await expect.poll(() => titles.allTextContents()).toEqual(firstOrder);
+          const quickQueries = directoryQueries.filter(
+            (query) => query.recommendations === '1',
+          );
+          expect(quickQueries).toHaveLength(2);
+          expect(quickQueries[1]).toEqual(quickQueries[0]);
+          expect(quickQueries[0]).toMatchObject({
+            workspaceId: workspace,
+            employeeId: expect.any(String),
+          });
+          for (const query of directoryQueries) {
+            expect(query).not.toHaveProperty('task');
+            expect(query).not.toHaveProperty('taskText');
+          }
+          expect(f.state.messageInputs).toHaveLength(0);
+          expect(
+            await f.page
+              .getByRole('button', { name: '移除范本 季度经营简报' })
+              .count(),
+          ).toBe(0);
           await dialog
             .getByRole('combobox', { name: '范本分类', exact: true })
             .selectOption('运营');
@@ -5354,7 +5447,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByRole('button', { name: '加入消息草稿', exact: true })
           .click();
         await expect.poll(() => dialog.count()).toBe(0);
-        expect(await input.inputValue()).toContain('保留原有草稿');
+        expect(await input.inputValue()).toContain(finalDraft);
         await expect
           .poll(() =>
             f.page

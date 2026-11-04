@@ -209,6 +209,7 @@ describe('company template UI publication and fixed revision boundaries', () => 
       expect(html).toContain('保存范本草稿');
       expect(html).toContain('私人会话');
       expect(html).not.toContain('自动复用');
+      expect(html).not.toContain('推荐关键词');
       expect(fetch).not.toHaveBeenCalled();
       const newDraft = {
         ...row,
@@ -228,6 +229,31 @@ describe('company template UI publication and fixed revision boundaries', () => 
       vi.unstubAllGlobals();
     }
   });
+  it.each(['template', 'rule'] as const)(
+    'shows legacy task keywords only for rules, retaining the %s revision and lifecycle controls',
+    (kind) => {
+      const row = asset();
+      row.kind = kind;
+      row.latest.content = {
+        ...row.latest.content,
+        kind,
+        taskKeywords: ['汇总', '报销'],
+        ...(kind === 'rule' ? { sourceVersionId: undefined, slots: [] } : {}),
+      };
+      if (kind === 'rule') row.latest.file = null;
+      const html = renderToStaticMarkup(
+        <CompanyAssetRevisionView
+          initial={row}
+          base="/api/v1/company-assets"
+          headers={{}}
+        />,
+      );
+      expect(html).toContain('固定修订');
+      expect(html.includes('适用任务：汇总、报销')).toBe(kind === 'rule');
+      expect(html.includes('置顶范本')).toBe(kind === 'template');
+      expect(html).toContain('暂停共享');
+    },
+  );
   it.each([403, 404])(
     'keeps a %i denial but uses company-content wording without retrying',
     async (status) => {
