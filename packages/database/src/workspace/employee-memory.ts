@@ -54,7 +54,7 @@ export async function employeeMemoryScope(
       and a.organization_id=i.organization_id and a.workspace_id=i.workspace_id
     where i.id=${UuidSchema.parse(instanceId)} and i.organization_id=${context.organizationId}
       and i.workspace_id=${who.workspaceId} and i.owner_id=${context.actor.id}`;
-  if (!row && write) {
+  if (write && !row) {
     // The existing general-instance resolver owns this mapping. This creates
     // no memory mapping and cannot select a different user's assignment.
     await resolveEmployeeSessionInstance(who, instanceId, undefined, tx, true);

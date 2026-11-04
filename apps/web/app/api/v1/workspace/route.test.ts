@@ -56,7 +56,11 @@ describe('workspace viewer identity for layout preferences', () => {
         },
       },
     });
-    expect(mocks.workspace).toHaveBeenCalledWith(context, undefined);
+    expect(mocks.workspace).toHaveBeenCalledWith(
+      context,
+      undefined,
+      undefined,
+    );
   });
   it('does not create a shared identity for non-user actors and still rejects missing authentication', async () => {
     mocks.context.mockResolvedValue({
