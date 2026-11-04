@@ -57,7 +57,10 @@ export interface RiceToolExecutionInput {
   skillVersionIds?: string[];
   nativeSkills?: readonly DshNativeSkillSnapshot[];
   /** Worker-owned generation and lease closure, never reconstructed from args. */
-  readPersonalSceneResource?: (contentRef: string, path: string) => Promise<PersonalSceneSkillResource>;
+  readPersonalSceneResource?: (
+    contentRef: string,
+    path: string,
+  ) => Promise<PersonalSceneSkillResource>;
   sessionId?: string;
   employeeId?: string;
   userMessageId?: string;

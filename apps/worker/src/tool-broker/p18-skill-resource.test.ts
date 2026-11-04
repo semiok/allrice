@@ -164,16 +164,33 @@ describe('P18 immutable Skill resource reader', () => {
 it('exact Workflow resources require the Worker closure and cannot fall back to a frozen Skill', async () => {
   const f = fixture();
   const args = { contentRef: 'exact-v1', path: 'scripts/inert.mjs' };
-  await expect(readSkillResource({input:f.input, arguments:args})).rejects.toThrow('employee_scene_unbound');
+  await expect(
+    readSkillResource({ input: f.input, arguments: args }),
+  ).rejects.toThrow('employee_scene_unbound');
   const seen: string[][] = [];
-  const input = {...f.input, readPersonalSceneResource: async (ref: string, path: string) => {
-    seen.push([ref,path]);
-    if (ref !== 'exact-v1') throw Error('revoked');
-    return {...f.skill.bundle.resources[0]!, contentRef:ref, bundleChecksum:f.skill.bundle.checksum};
-  }};
-  const result = await readSkillResource({input, arguments:args});
-  expect(JSON.parse(result.modelContent)).toMatchObject({contentRef:'exact-v1', text:f.script, executionPermission:false});
-  expect(seen).toEqual([['exact-v1','scripts/inert.mjs']]);
-  await expect(readSkillResource({input,arguments:{...args,contentRef:'revoked'}})).rejects.toThrow('revoked');
-  await expect(readSkillResource({input,arguments:{...args,skill:f.skill.name}})).rejects.toThrow();
+  const input = {
+    ...f.input,
+    readPersonalSceneResource: async (ref: string, path: string) => {
+      seen.push([ref, path]);
+      if (ref !== 'exact-v1') throw Error('revoked');
+      return {
+        ...f.skill.bundle.resources[0]!,
+        contentRef: ref,
+        bundleChecksum: f.skill.bundle.checksum,
+      };
+    },
+  };
+  const result = await readSkillResource({ input, arguments: args });
+  expect(JSON.parse(result.modelContent)).toMatchObject({
+    contentRef: 'exact-v1',
+    text: f.script,
+    executionPermission: false,
+  });
+  expect(seen).toEqual([['exact-v1', 'scripts/inert.mjs']]);
+  await expect(
+    readSkillResource({ input, arguments: { ...args, contentRef: 'revoked' } }),
+  ).rejects.toThrow('revoked');
+  await expect(
+    readSkillResource({ input, arguments: { ...args, skill: f.skill.name } }),
+  ).rejects.toThrow();
 });

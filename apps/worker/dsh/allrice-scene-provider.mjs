@@ -185,24 +185,46 @@ export function installPersonalSceneProvider(ctx, bridge) {
       name: providerName,
       list: async (options) => {
         const catalog = PersonalSceneSkillCatalogSchema.parse(
-          await bridge('personal-list', {}, options?.signal));
+          await bridge('personal-list', {}, options?.signal),
+        );
         return catalog.skills.map((skill) => ({
           name: skill.nativeName,
           description: `工作场景：${skill.name}。适用：${skill.description}`,
-          invocation, provider: providerName, source: 'allrice-managed', rank: 100,
+          invocation,
+          provider: providerName,
+          source: 'allrice-managed',
+          rank: 100,
           locator: { id: skill.sceneId },
         }));
       },
       get: async (candidate, options) => {
-        if (candidate.name !== `allrice-scene-${candidate.locator?.id}`) return undefined;
+        if (candidate.name !== `allrice-scene-${candidate.locator?.id}`)
+          return undefined;
         options?.signal?.throwIfAborted();
-        const skill = PersonalSceneSkillSchema.parse(await bridge('personal-load', { sceneId: candidate.locator.id }, options?.signal));
+        const skill = PersonalSceneSkillSchema.parse(
+          await bridge(
+            'personal-load',
+            { sceneId: candidate.locator.id },
+            options?.signal,
+          ),
+        );
         options?.signal?.throwIfAborted();
-        if (skill.sceneId !== candidate.locator.id || skill.nativeName !== candidate.name) throw Error('employee_scene_receipt_invalid');
+        if (
+          skill.sceneId !== candidate.locator.id ||
+          skill.nativeName !== candidate.name
+        )
+          throw Error('employee_scene_receipt_invalid');
         return {
-          name: skill.nativeName, description: `工作场景：${skill.name}。适用：${skill.description}`,
-          invocation, provider: providerName, source: 'allrice-managed', content: skill.content,
-          resourceBase: { kind: 'opaque', description: `AllRice Workflow resources: use workspace_skill_read with contentRef=${JSON.stringify(skill.contentRef)} and path. Exact package ${skill.bundleChecksum}; content ${skill.contentChecksum}. Resources: ${JSON.stringify(skill.resources)}. Read only; scripts are not executed.` },
+          name: skill.nativeName,
+          description: `工作场景：${skill.name}。适用：${skill.description}`,
+          invocation,
+          provider: providerName,
+          source: 'allrice-managed',
+          content: skill.content,
+          resourceBase: {
+            kind: 'opaque',
+            description: `AllRice Workflow resources: use workspace_skill_read with contentRef=${JSON.stringify(skill.contentRef)} and path. Exact package ${skill.bundleChecksum}; content ${skill.contentChecksum}. Resources: ${JSON.stringify(skill.resources)}. Read only; scripts are not executed.`,
+          },
         };
       },
     };
@@ -211,6 +233,8 @@ export function installPersonalSceneProvider(ctx, bridge) {
     invalidate: () => control.invalidate(),
     // Invalidate the native catalog for the next pre-step. Body get has no
     // cache. Historical reads are checked by the same durable content guard.
-    async beforeDispatch() { control.invalidate(); },
+    async beforeDispatch() {
+      control.invalidate();
+    },
   };
 }

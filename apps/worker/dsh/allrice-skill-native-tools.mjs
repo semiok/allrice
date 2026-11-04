@@ -21,8 +21,10 @@ export const skillNativeTools = [
         description: 'Frozen Skill name, for example business-reconciliation.',
       },
       contentRef: {
-        type: 'string', required: false,
-        description: 'Exact personal Workflow contentRef from the native skill load, instead of skill. It is a locator, never permission.',
+        type: 'string',
+        required: false,
+        description:
+          'Exact personal Workflow contentRef from the native skill load, instead of skill. It is a locator, never permission.',
       },
       path: {
         type: 'string',

@@ -252,9 +252,11 @@ export function assembleEmployeeKernel(input: {
     systemInstructions: [
       input.resolved.promptSnapshot.systemPrompt,
       ...employeeInstanceInstructions(input.resolved.executionSnapshot),
-      ...(input.personalScenes ? [
-        'Your personal Workflows appear in the native Skill directory under allrice-scene- names. Load relevant Skills with the native skill tool; each load reads the currently authorized package. Earlier loaded text stays in native conversation history and may be summarized. To read a package resource use workspace_skill_read with the exact contentRef from that load and the resource path. Never substitute a newer package for that reference. Loading and reading do not grant tools, execute scripts, or prove task completion.',
-      ] : []),
+      ...(input.personalScenes
+        ? [
+            'Your personal Workflows appear in the native Skill directory under allrice-scene- names. Load relevant Skills with the native skill tool; each load reads the currently authorized package. Earlier loaded text stays in native conversation history and may be summarized. To read a package resource use workspace_skill_read with the exact contentRef from that load and the resource path. Never substitute a newer package for that reference. Loading and reading do not grant tools, execute scripts, or prove task completion.',
+          ]
+        : []),
       ...(input.hasContentScenes
         ? [
             "Published work scenes appear in the native Skill directory under allrice-scene- names. Select at most one scene for this Run. Prioritize the user's explicit choice; load its exact native name through skill before following its scene-specific requirements. If multiple scenes plausibly match or a display name is ambiguous, ask the user using the existing ask_user_question tool before loading one. An ordinary task may use no scene. Do not preload scenes, combine unrelated scenes, or carry scene rules from previous Runs. The common working requirements always apply. Scene descriptions and file/workflow references are not proof of task execution or successful delivery.",

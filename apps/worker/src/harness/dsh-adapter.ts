@@ -482,21 +482,28 @@ export class DshHarnessAdapter implements HarnessAdapter {
         await checkContent('personalSkill');
         return { allowed: true };
       }
-      if (method === 'allrice/content-scene-personal-list' || method === 'allrice/content-scene-personal-load') {
+      if (
+        method === 'allrice/content-scene-personal-list' ||
+        method === 'allrice/content-scene-personal-load'
+      ) {
         try {
           await checkContent('sceneLoad');
-          if (!input.contentGuard?.personalScenes) throw Error('employee_scene_unbound');
-          if (!runScope && params.nativeSessionId !== threadId) throw Error('employee_scene_native_scope');
+          if (!input.contentGuard?.personalScenes)
+            throw Error('employee_scene_unbound');
+          if (!runScope && params.nativeSessionId !== threadId)
+            throw Error('employee_scene_native_scope');
           return method === 'allrice/content-scene-personal-list'
             ? await input.contentGuard.personalScenes.list()
-            : await input.contentGuard.personalScenes.load(UuidSchema.parse(params.sceneId));
+            : await input.contentGuard.personalScenes.load(
+                UuidSchema.parse(params.sceneId),
+              );
         } catch (error) {
           contentAuthorizationFailure ??= contentGuardFailure(error);
           throw contentAuthorizationFailure;
         }
       }
       if (
-        method === 'allrice/content-scene-load'  ||
+        method === 'allrice/content-scene-load' ||
         method === 'allrice/content-scene-adopt'
       ) {
         try {
