@@ -49,9 +49,6 @@ import {
 } from '../../../../packages/database/src/conversation/conversation-checkpoint.ts';
 import { upsertEmployeeModelPolicy } from '../../../../packages/database/src/providers/model-pool.ts';
 import { updateUserPreferences } from '../../../../packages/database/src/user-preferences.ts';
-import {
-  manageEmployeeCapabilities,
-} from '../../../../packages/database/src/capabilities/capability-registry.ts';
 import * as ModelPool from '../../../../packages/database/src/providers/model-pool.ts';
 import * as RouteDecisions from '../../../../packages/database/src/execution/route-decision.ts';
 import { createRuntimeOperationLedger } from '../../../../packages/database/src/runtime-ledger/ledger.ts';

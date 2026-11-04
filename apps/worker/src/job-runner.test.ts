@@ -27,9 +27,6 @@ vi.mock('@allrice/database', () => ({
 vi.mock('./isolation.js', () => ({
   prepareExecutionIsolation: ports.isolation,
 }));
-vi.mock('./workflow-engine.js', () => ({
-  WorkflowPaused: class extends Error {},
-}));
 import { runClaimedJob, type ClaimedJobRunnerInput } from './job-runner.js';
 import { QueueError } from '@allrice/database';
 import { HandlerError } from './errors.js';

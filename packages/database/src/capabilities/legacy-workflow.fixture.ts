@@ -2,10 +2,8 @@
  * no production registration/binding entry point. Remove with A6-2 tables. */
 import { randomUUID } from 'node:crypto';
 import {
-  CreateWorkflowInputSchema,
   RegisterWorkflowPackageInputSchema,
   SetWorkflowPackageBindingInputSchema,
-  WorkflowRevisionSchema,
   WorkflowPackageBindingSchema,
   type RequestContext,
 } from '@allrice/contracts';
@@ -13,19 +11,6 @@ import { getDatabase } from '../core/client.ts';
 import { capabilityChecksum } from './capability-registry.ts';
 import { workflowPackageChecksum } from './workflow-package-model.ts';
 import { resolveWorkflowPackageForInstance } from './workflow-packages.ts';
-
-export async function seedLegacyWorkflow(context: RequestContext, input: unknown) {
-  const value = CreateWorkflowInputSchema.parse(input);
-  const sql = getDatabase();
-  const id = randomUUID(), workflowId = randomUUID();
-  const checksum = capabilityChecksum({name:value.name, description:value.description, definition:value.definition});
-  await sql`insert into allrice_workflows(id,organization_id,workspace_id,slug,name,description,created_by)
-    values(${workflowId},${context.organizationId},${value.workspaceId},${value.slug},${value.name},${value.description},${context.actor.id})`;
-  const [row] = await sql`insert into allrice_workflow_revisions
-    (id,organization_id,workspace_id,workflow_id,revision,name,description,status,definition,checksum,created_by,published_at)
-    values(${id},${context.organizationId},${value.workspaceId},${workflowId},1,${value.name},${value.description},'published',${sql.json(JSON.parse(JSON.stringify(value.definition)))},${checksum},${context.actor.id},now()) returning published_at`;
-  return WorkflowRevisionSchema.parse({kind:'workflow', id, workflowId, slug:value.slug, name:value.name, description:value.description, revision:1, status:'published', definition:value.definition, checksum, publishedAt:row!.published_at.toISOString()});
-}
 
 export async function seedLegacyWorkflowPackage(context: RequestContext, input: unknown) {
   const value = RegisterWorkflowPackageInputSchema.parse(input);

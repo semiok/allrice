@@ -1,4 +1,4 @@
-/** Real Worker, queue, Workflow Engine and PG. Only native execution and the
+/** Real Worker, queue and PG. Only native execution and the
  * maintenance repository service are synthetic; no provider credentials. */
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
@@ -6,10 +6,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createP27CodexWorkerFixture } from '../../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
-import { authorizeFixturePlatformAdministrator } from '../../../../packages/database/src/platform-authority.fixture.ts';
-import {
-  manageEmployeeCapabilities,
-} from '../../../../packages/database/src/capabilities/capability-registry.ts';
 import {
   claimNextJob,
   completeJob,
@@ -57,7 +53,7 @@ const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
     : describe.skip;
-suite('MET-210 real Worker continuation and Workflow waiting', () => {
+suite('MET-210 real Worker continuation', () => {
   let f: Awaited<ReturnType<typeof createP27CodexWorkerFixture>>;
   let root: string;
   afterEach(async () => {

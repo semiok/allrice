@@ -27,7 +27,6 @@ import {
   registerToolBrokerExport,
 } from './execution/tool-broker.ts';
 import { registerManagedBrowserEvidenceArtifact } from './execution/p1-runtime.ts';
-import { registerWorkflowArtifact } from './execution/workflow-runtime.ts';
 import {
   assertWorkbenchSession,
   publishWorkbenchArtifact,
@@ -135,19 +134,7 @@ async function sources() {
   };
   const uploadId = randomUUID(),
     exported = object(),
-    workflowObject = object('artifacts'),
     evidenceObject = object('artifacts');
-  const workflowId = randomUUID(),
-    revisionId = randomUUID();
-  const [employee] = await db<
-    { employee_id: string }[]
-  >`select employee_id from allrice_employee_assignments where user_id=${f.user} and workspace_id=${f.workspace}`;
-  await db`insert into allrice_workflows(id,organization_id,workspace_id,slug,name,description,created_by)
-    values(${workflowId},${f.org},${f.workspace},'quota','Quota fixture','Synthetic only',${f.user})`;
-  await db`insert into allrice_workflow_revisions(id,organization_id,workspace_id,workflow_id,revision,name,description,definition,checksum,created_by,published_at)
-    values(${revisionId},${f.org},${f.workspace},${workflowId},1,'Quota fixture','Synthetic only','{}',${sha(bytes)},${f.user},clock_timestamp())`;
-  await db`insert into allrice_workflow_runs(organization_id,workspace_id,owner_id,run_id,employee_id,workflow_revision_id,session_id,status,definition_snapshot)
-    values(${f.org},${f.workspace},${f.user},${f.run},${employee!.employee_id},${revisionId},${f.session},'running','{}')`;
   await installBrowserControlGrant(
     f.context,
     {
@@ -203,13 +190,6 @@ async function sources() {
     visibility: 'private',
     retentionUntil: null,
     immutable: false,
-  };
-  const workflowInput = {
-    context: f.execution,
-    ownerId: f.user,
-    stepKey: 'quota',
-    object: workflowObject,
-    name: 'Synthetic',
   };
   const calls = {
     upload: {
@@ -308,12 +288,8 @@ async function sources() {
           },
         }),
     },
-    workflow: {
-      size: bytes.length,
-      run: () => registerWorkflowArtifact(workflowInput),
-    },
   };
-  return { f, calls, metadata, workflowInput };
+  return { f, calls, metadata };
 }
 suite('shared storage quota: actual PostgreSQL increment entrypoints', () => {
   afterEach(async () => {
@@ -367,7 +343,6 @@ suite('shared storage quota: actual PostgreSQL increment entrypoints', () => {
     'cloud',
     'capture',
     'managed',
-    'workflow',
   ] as const)(
     '%s takes the common gate before its first transactional row lock and rejects excess bytes',
     async (name) => {
@@ -401,7 +376,7 @@ suite('shared storage quota: actual PostgreSQL increment entrypoints', () => {
   it.each([
     ['upload', 'export'],
     ['capture', 'browser'],
-    ['workbench', 'workflow'],
+    ['workbench', 'export'],
     ['managed', 'cloud'],
   ] as const)(
     'serializes concurrent real %s / %s increments, admitting exactly one without overspending',
@@ -473,26 +448,22 @@ suite('shared storage quota: actual PostgreSQL increment entrypoints', () => {
       }),
     ).rejects.toThrow('quota_exceeded');
   });
-  it('pending reserves bytes, ready does not double count, tombstones release, and workflow retry is idempotent', async () => {
-    const { f, calls, metadata, workflowInput } = await sources();
+  it('pending reserves bytes, ready does not double count, tombstones release, and export retry is idempotent', async () => {
+    const { f, calls, metadata } = await sources();
     const baseline = await used(f);
     await quota(f, baseline + calls.upload.size);
     await calls.upload.run();
     expect(await used(f)).toBe(baseline + calls.upload.size);
-    await expect(calls.workflow.run()).rejects.toThrow('quota_exceeded');
+    await expect(calls.export.run()).rejects.toThrow('quota_exceeded');
     await abandonStorageMetadata(f.context, metadata.id);
     expect(await used(f)).toBe(baseline);
     await expect(markStorageReady(f.context, metadata.id)).rejects.toThrow(
       'not_found',
     );
-    const first = await calls.workflow.run();
-    expect(await calls.workflow.run()).toEqual(first);
-    await registerWorkflowArtifact({
-      ...workflowInput,
-      stepKey: 'same-object-new-link',
-    });
-    expect(await used(f)).toBe(baseline + calls.workflow.size);
-    await quota(f, baseline + calls.workflow.size + calls.upload.size);
+    const first = await calls.export.run();
+    expect(await calls.export.run()).toEqual(first);
+    expect(await used(f)).toBe(baseline + calls.export.size);
+    await quota(f, baseline + calls.export.size + calls.upload.size);
     const next = { ...metadata, id: randomUUID() };
     await createStorageMetadata(f.context, next);
     const pending = await used(f);

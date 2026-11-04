@@ -21,8 +21,6 @@ import { listPlatformEmployees as canonicalListPlatformEmployees } from './emplo
 import { applyEmployeeUserProfilePolicy as legacyUserProfilePolicy } from './employee-config.ts';
 import { evaluateEmployeeReleaseGate as legacyReleaseGate } from './employee-quality.ts';
 import { nativeSkillCapabilityGrants as legacySkillGrants } from './employeehub.ts';
-import { workflowDigest as canonicalWorkflowDigest } from './execution/workflow-runtime.ts';
-import { workflowDigest as legacyWorkflowDigest } from './workflow-runtime.ts';
 import { embedKnowledgeText as canonicalEmbedKnowledgeText } from './memory/knowledge-retrieval.ts';
 import { embedKnowledgeText as legacyEmbedKnowledgeText } from './knowledge-retrieval.ts';
 import { replaceWorkerDshRuntimeInventory as replaceCanonicalInventory } from './providers/dsh-runtime-registry.ts';
@@ -62,9 +60,8 @@ describe('database domain compatibility facades', () => {
     expect(legacyListPlatformEmployees).toBe(canonicalListPlatformEmployees);
   });
 
-  it('keeps memory, workflow, and workspace root paths compatible', () => {
+  it('keeps memory and workspace root paths compatible', () => {
     expect(legacyEmbedKnowledgeText).toBe(canonicalEmbedKnowledgeText);
-    expect(legacyWorkflowDigest).toBe(canonicalWorkflowDigest);
     expect(legacyEnsureDefaultEmployee).toBe(canonicalEnsureDefaultEmployee);
   });
 });

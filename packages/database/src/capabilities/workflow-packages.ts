@@ -1,7 +1,4 @@
-import { randomUUID } from 'node:crypto';
 import {
-  RegisterWorkflowPackageInputSchema,
-  SetWorkflowPackageBindingInputSchema,
   StorageObjectSchema,
   UuidSchema,
   WorkflowPackageBindingSchema,
@@ -9,11 +6,8 @@ import {
   WorkflowPackageResolutionSchema,
   WorkflowPackageSchema,
   WorkflowPackageSelectionSchema,
-  type RequestContext,
   type StorageObject,
   type StoragePort,
-  type WorkflowPackage,
-  type WorkflowPackageBinding,
   type WorkflowPackageManifest,
   type WorkflowPackageSelection,
 } from '@allrice/contracts';
@@ -52,12 +46,6 @@ type ScopeInput = {
   instanceId: string;
   sceneId: string | null;
 };
-type JsonValue = Parameters<ContentTx['json']>[0];
-function toJson(value: unknown): JsonValue {
-  const encoded = JSON.stringify(value);
-  if (encoded === undefined) throw new WorkflowPackageError('invalid_package');
-  return JSON.parse(encoded) as JsonValue;
-}
 type PackageRow = {
   workflow_revision_id: string;
   organization_id: string;
