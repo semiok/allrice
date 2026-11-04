@@ -1,7 +1,4 @@
-import { randomUUID } from 'node:crypto';
 import {
-  RegisterWorkflowPackageInputSchema,
-  SetWorkflowPackageBindingInputSchema,
   StorageObjectSchema,
   UuidSchema,
   WorkflowPackageBindingSchema,
@@ -9,11 +6,8 @@ import {
   WorkflowPackageResolutionSchema,
   WorkflowPackageSchema,
   WorkflowPackageSelectionSchema,
-  type RequestContext,
   type StorageObject,
   type StoragePort,
-  type WorkflowPackage,
-  type WorkflowPackageBinding,
   type WorkflowPackageManifest,
   type WorkflowPackageSelection,
 } from '@allrice/contracts';
@@ -26,11 +20,7 @@ import {
 import { freezeEmployeeRuntimeContent } from '../employees/employee-content.ts';
 import { getEmployeeInstance } from '../employees/employee-instances.ts';
 import { resolveEmployeeContentSource } from '../employees/employee-content-sources.ts';
-import type {
-  ContentSql,
-  ContentTx,
-} from '../employees/employee-content-model.ts';
-import { runtimePolicyDigest } from '../runtime-policy.ts';
+import type { ContentSql } from '../employees/employee-content-model.ts';
 import { capabilityChecksum } from './capability-registry.ts';
 import {
   readWorkflowPackageObject,
@@ -52,12 +42,6 @@ type ScopeInput = {
   instanceId: string;
   sceneId: string | null;
 };
-type JsonValue = Parameters<ContentTx['json']>[0];
-function toJson(value: unknown): JsonValue {
-  const encoded = JSON.stringify(value);
-  if (encoded === undefined) throw new WorkflowPackageError('invalid_package');
-  return JSON.parse(encoded) as JsonValue;
-}
 type PackageRow = {
   workflow_revision_id: string;
   organization_id: string;
@@ -375,252 +359,6 @@ async function resolution(
       scope.references,
       available,
     ),
-  });
-}
-
-async function priorRequest(
-  scope: Scope,
-  requestId: string,
-  operation: 'register' | 'binding',
-  inputDigest: string,
-  sql: ContentSql,
-) {
-  const [prior] = await sql<
-    {
-      operation: string;
-      input_digest: string;
-      instance_id: string;
-      response: unknown;
-    }[]
-  >`
-    select operation,input_digest,instance_id,response from allrice_workflow_package_requests
-    where organization_id=${scope.context.organizationId} and workspace_id=${scope.context.workspaceId}
-      and owner_id=${scope.context.actor.id} and request_id=${requestId}`;
-  if (
-    prior &&
-    (prior.operation !== operation ||
-      prior.input_digest !== inputDigest ||
-      prior.instance_id !== scope.instance.id)
-  )
-    throw new WorkflowPackageError('conflict');
-  return prior?.response;
-}
-
-async function saveRequest(
-  scope: Scope,
-  requestId: string,
-  operation: 'register' | 'binding',
-  inputDigest: string,
-  response: WorkflowPackage | WorkflowPackageBinding,
-  tx: ContentTx,
-) {
-  await tx`insert into allrice_workflow_package_requests
-    (organization_id,workspace_id,owner_id,instance_id,request_id,operation,input_digest,response)
-    values(${scope.context.organizationId},${scope.context.workspaceId},${scope.context.actor.id},${scope.instance.id},
-      ${requestId},${operation},${inputDigest},${tx.json(toJson(response))})`;
-  await tx`insert into allrice_audit_events
-    (organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata)
-    values(${scope.context.organizationId},${scope.context.workspaceId},${scope.context.actor.id},${`workflow.package.${operation}`},
-      'workflow_revision',${'workflow' in response ? response.workflow.id : response.workflowRevisionId},
-      'allowed','owner_custom_instance_exact_package',${tx.json({ instanceId: scope.instance.id, sceneId: scope.sceneId, requestId, inputDigest })})`;
-}
-
-/** Register a new immutable revision. Does not enable it or mutate personal methods. */
-export async function registerWorkflowPackage(
-  context: RequestContext,
-  input: unknown,
-  options: { storage?: StoragePort } = {},
-) {
-  const request = RegisterWorkflowPackageInputSchema.parse(input);
-  validateWorkflowPackageDefinition(request.definition, request.manifest);
-  const digest = runtimePolicyDigest(request);
-  const db = getDatabase();
-  const prepared = await db.begin(
-    'isolation level repeatable read read only',
-    async (tx) => {
-      const scope = await readScope(context, request, tx, false, false, true);
-      const prior = await priorRequest(
-        scope,
-        request.requestId,
-        'register',
-        digest,
-        tx,
-      );
-      if (prior) return { prior: WorkflowPackageSchema.parse(prior) };
-      const method = await readMethod(scope, request.manifest, tx, false);
-      if (
-        !method.dto.available ||
-        typeof method.dto.body !== 'string' ||
-        workflowPackageMethodSync(request.manifest, scope.references, true) !==
-          'in_sync'
-      )
-        throw new WorkflowPackageError('source_changed');
-      return {
-        body: method.dto.body,
-        objects: await packageObjects(scope, request.manifest, tx, false),
-      };
-    },
-  );
-  if ('prior' in prepared) return prepared.prior!;
-  if (prepared.objects.length && !options.storage)
-    throw new WorkflowPackageError('source_verification_required');
-  for (const object of prepared.objects) {
-    const bytes = await readWorkflowPackageObject(
-      options.storage!,
-      object,
-      512_000,
-    );
-    if (object.id === request.manifest.source?.objectId)
-      validateWorkflowPackageSource(
-        bytes,
-        request.manifest,
-        request.definition,
-        prepared.body,
-      );
-  }
-  return db.begin(async (tx) => {
-    const scope = await readScope(context, request, tx, 'write');
-    const prior = await priorRequest(
-      scope,
-      request.requestId,
-      'register',
-      digest,
-      tx,
-    );
-    if (prior) return WorkflowPackageSchema.parse(prior);
-    const method = await readMethod(scope, request.manifest, tx, true);
-    if (
-      !method.dto.available ||
-      method.dto.body !== prepared.body ||
-      workflowPackageMethodSync(request.manifest, scope.references, true) !==
-        'in_sync'
-    )
-      throw new WorkflowPackageError('source_changed');
-    const objects = await packageObjects(scope, request.manifest, tx, true);
-    if (runtimePolicyDigest(objects) !== runtimePolicyDigest(prepared.objects))
-      throw new WorkflowPackageError('source_changed');
-    const workflowId = request.workflowId ?? randomUUID();
-    if (request.workflowId) {
-      const [workflow] = await tx<
-        { id: string; max_revision: number }[]
-      >`select w.id,
-          (select max(r.revision)::int from allrice_workflow_revisions r where r.workflow_id=w.id) as max_revision
-        from allrice_workflows w where w.id=${workflowId} and w.organization_id=${scope.context.organizationId}
-          and w.workspace_id=${scope.context.workspaceId} and w.status='active'
-          and exists(select 1 from allrice_workflow_packages p join allrice_workflow_revisions r on r.id=p.workflow_revision_id
-            where r.workflow_id=w.id and p.owner_id=${scope.context.actor.id} and p.instance_id=${scope.instance.id}
-              and p.assignment_id=${scope.instance.assignmentId} and p.scene_id is not distinct from ${scope.sceneId}::uuid)
-        for update of w`;
-      if (!workflow) throw new WorkflowPackageError('not_found');
-      if (workflow.max_revision !== request.expectedRevision)
-        throw new WorkflowPackageError('conflict');
-    } else {
-      await tx`insert into allrice_workflows(id,organization_id,workspace_id,slug,name,description,created_by)
-        values(${workflowId},${scope.context.organizationId},${scope.context.workspaceId},
-          ${`${request.slug}-${workflowId.slice(0, 8)}`},${request.name},${request.description},${scope.context.actor.id})`;
-    }
-    const revisionId = randomUUID();
-    const workflowChecksum = capabilityChecksum({
-      name: request.name,
-      description: request.description,
-      definition: request.definition,
-    });
-    const checksum = workflowPackageChecksum({
-      workflowChecksum,
-      manifest: request.manifest,
-    });
-    await tx`insert into allrice_workflow_revisions
-      (id,organization_id,workspace_id,workflow_id,revision,name,description,status,definition,checksum,created_by,published_at)
-      values(${revisionId},${scope.context.organizationId},${scope.context.workspaceId},${workflowId},${request.expectedRevision + 1},
-        ${request.name},${request.description},'published',${tx.json(toJson(request.definition))},${workflowChecksum},${scope.context.actor.id},clock_timestamp())`;
-    await tx`insert into allrice_workflow_packages
-      (workflow_revision_id,organization_id,workspace_id,owner_id,assignment_id,employee_id,instance_id,scene_id,manifest,checksum,source_object_id)
-      values(${revisionId},${scope.context.organizationId},${scope.context.workspaceId},${scope.context.actor.id},
-        ${scope.instance.assignmentId},${scope.employeeId},${scope.instance.id},${scope.sceneId},${tx.json(request.manifest)},${checksum},${request.manifest.source?.objectId ?? null})`;
-    const result = (await readPackage(scope, revisionId, tx, false)).package;
-    await saveRequest(scope, request.requestId, 'register', digest, result, tx);
-    return result;
-  });
-}
-
-/** CAS activation changes only this package's instance/scene slot. */
-export async function setWorkflowPackageBinding(
-  context: RequestContext,
-  input: unknown,
-) {
-  const request = SetWorkflowPackageBindingInputSchema.parse(input);
-  const digest = runtimePolicyDigest(request);
-  return getDatabase().begin(async (tx) => {
-    const scope = await readScope(
-      context,
-      request,
-      tx,
-      'write',
-      !request.enabled,
-    );
-    const value = await readPackage(
-      scope,
-      request.workflowRevisionId,
-      tx,
-      true,
-    );
-    if (value.package.sceneId !== request.sceneId)
-      throw new WorkflowPackageError('not_found');
-    // The existing content gate serializes creation of the absent personal slot.
-    const [current] = await tx<
-      BindingRow[]
-    >`select * from allrice_employee_workflow_bindings
-      where organization_id=${scope.context.organizationId} and workspace_id=${scope.context.workspaceId}
-        and owner_id=${scope.context.actor.id} and assignment_id=${scope.instance.assignmentId}
-        and instance_id=${scope.instance.id} and workflow_id=${value.package.workflow.workflowId}
-        and scene_id is not distinct from ${scope.sceneId}::uuid for update`;
-    const prior = await priorRequest(
-      scope,
-      request.requestId,
-      'binding',
-      digest,
-      tx,
-    );
-    if (prior) {
-      const saved = WorkflowPackageBindingSchema.parse(prior);
-      if (
-        !current ||
-        runtimePolicyDigest(mapBinding(current)) !== runtimePolicyDigest(saved)
-      )
-        throw new WorkflowPackageError('conflict');
-      return saved;
-    }
-    if (
-      (current?.binding_revision ?? 0) !== request.expectedRevision ||
-      (!current && !request.enabled)
-    )
-      throw new WorkflowPackageError('conflict');
-    if (request.enabled) {
-      const state = await resolution(
-        scope,
-        request.workflowRevisionId,
-        tx,
-        true,
-      );
-      if (state.syncStatus !== 'in_sync')
-        throw new WorkflowPackageError('source_changed');
-    }
-    const [bound] = current
-      ? await tx<BindingRow[]>`update allrice_employee_workflow_bindings
-          set workflow_revision_id=${request.workflowRevisionId},package_checksum=${value.package.checksum},
-            enabled=${request.enabled},binding_revision=binding_revision+1,bound_by=${scope.context.actor.id},
-            bound_at=clock_timestamp(),updated_at=clock_timestamp()
-          where id=${current.id} and binding_revision=${request.expectedRevision} returning *`
-      : await tx<BindingRow[]>`insert into allrice_employee_workflow_bindings
-          (organization_id,workspace_id,employee_id,owner_id,assignment_id,instance_id,scene_id,workflow_id,
-            workflow_revision_id,package_checksum,enabled,bound_by,bound_at)
-          values(${scope.context.organizationId},${scope.context.workspaceId},${scope.employeeId},${scope.context.actor.id},
-            ${scope.instance.assignmentId},${scope.instance.id},${scope.sceneId},${value.package.workflow.workflowId},
-            ${request.workflowRevisionId},${value.package.checksum},true,${scope.context.actor.id},clock_timestamp()) returning *`;
-    if (!bound) throw new WorkflowPackageError('conflict');
-    const result = mapBinding(bound);
-    await saveRequest(scope, request.requestId, 'binding', digest, result, tx);
-    return result;
   });
 }
 

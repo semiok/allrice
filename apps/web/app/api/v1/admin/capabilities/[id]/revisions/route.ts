@@ -2,7 +2,6 @@ import {
   CapabilityRegistryError,
   DataAccessError,
   publishKnowledgeRevision,
-  publishWorkflowRevision,
   updateCapabilityRevisionStatus,
 } from '@allrice/database';
 
@@ -21,12 +20,6 @@ export async function POST(
     const { id } = await route.params;
     const body = (await request.json()) as Record<string, unknown>;
     const { kind, ...input } = body;
-    if (kind === 'workflow') {
-      return Response.json(
-        { revision: await publishWorkflowRevision(context, id, input) },
-        { status: 201 },
-      );
-    }
     if (kind === 'knowledge') {
       return Response.json(
         { revision: await publishKnowledgeRevision(context, id, input) },

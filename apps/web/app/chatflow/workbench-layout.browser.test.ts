@@ -1050,7 +1050,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const instanceId = brandContentPath[1]!;
         if (brandContentPath[2] === 'workflow') {
           state.brandContentLaunches.push(route.request().postDataJSON());
-          return answer({ sessionId: id(8300), runId: id(8301) });
+          return answer({ error: { message: 'Retired Workflow entry' } }, 404);
         }
         const packages = state.brandContentRegistered
           ? [brandContentPackage()]
@@ -2589,7 +2589,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     30000,
   );
 
-  it('MET194 exposes a registered custom workspace and opens its returned Run Session without sending the draft', async () => {
+  it('A6 keeps the content workspace readable without offering retired Workflow launch actions or consuming the draft', async () => {
     const f = await fixture({
       brandContent: { kind: 'custom', registered: true },
     });
@@ -2616,29 +2616,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       });
       await dialog.getByLabel('品牌名称').waitFor();
       await dialog.getByRole('button', { name: '选题', exact: true }).click();
-      await dialog.getByLabel('发布平台').fill('小红书');
-      await dialog.getByLabel('候选数量').fill('3');
-      await dialog
-        .getByRole('button', { name: '生成候选', exact: true })
-        .click();
-      await expect.poll(() => dialog.count()).toBe(0);
-      await expect
-        .poll(() => f.page.locator('header h1').innerText())
-        .toBe('内容选题工作');
-      expect(confirmations).toBe(1);
-      expect(f.state.brandContentLaunches).toHaveLength(1);
-      expect(f.state.brandContentLaunches[0]).toMatchObject({
-        workspaceId: workspace,
-        brandId: id(8210),
-        stage: 'topics',
-        platform: '小红书',
-        count: 3,
-      });
-      expect(f.state.brandContentLaunches[0]!.requestId).toMatch(
-        /^[a-f0-9-]{36}$/,
-      );
+      expect(
+        await dialog
+          .getByRole('button', { name: '生成候选', exact: true })
+          .count(),
+      ).toBe(0);
+      expect(f.state.brandContentLaunches).toEqual([]);
+      expect(confirmations).toBe(0);
       expect(f.state.messageInputs).toEqual([]);
-      expect(await composer.inputValue()).toBe('');
+      expect(await composer.inputValue()).toBe('尚未发送的真实草稿应先确认');
     } finally {
       await f.close();
     }
@@ -7002,10 +6988,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         });
         expect(await textProcedures.innerText()).toContain('对账流程正文');
         expect(await textProcedures.innerText()).not.toContain(workflow.title);
-        expect(await executableWorkflows.innerText()).toContain(workflow.body);
-        expect(await executableWorkflows.innerText()).not.toContain(
-          '对账流程正文',
-        );
+        expect(await executableWorkflows.count()).toBe(0);
+        expect(
+          await dialog.getByText(workflow.body, { exact: true }).count(),
+        ).toBe(0);
         expect(
           await dialog.getByRole('tabpanel').getByRole('button').count(),
         ).toBe(0);
@@ -7018,14 +7004,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .getByRole('tab', { name: '执行流程', exact: true })
             .getAttribute('aria-selected'),
         ).toBe('true');
-        await executableWorkflows
-          .getByText('暂无已绑定的可执行工作流。', { exact: true })
-          .waitFor();
+        expect(await executableWorkflows.count()).toBe(0);
         expect(await textProcedures.innerText()).toContain('对账流程正文');
         await scene('每月审计').click();
-        await executableWorkflows
-          .getByText(workflow.body, { exact: true })
-          .waitFor();
+        expect(await executableWorkflows.count()).toBe(0);
         expect(f.state.experienceReads).toBe(0);
         await dialog
           .getByRole('tab', { name: '经验积累', exact: true })

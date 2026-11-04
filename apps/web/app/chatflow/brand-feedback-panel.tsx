@@ -54,24 +54,19 @@ function saved(key: string): Draft {
 export function BrandFeedbackPanel({
   board,
   disabled,
-  available,
   draftKey,
   onMutate,
-  onStart,
   onOpenSession,
   onForget,
 }: {
   board: BrandContentBoard;
   disabled: boolean;
-  available: boolean;
   draftKey: string;
   onMutate: Mutate;
-  onStart: (feedbackIds: string[]) => Promise<void>;
   onOpenSession: (id: string) => void;
   onForget: (id: string) => Promise<void>;
 }) {
   const [draft, setDraft] = useState<Draft>(() => saved(draftKey));
-  const [selection, setSelected] = useState<string[]>([]);
   const [error, setError] = useState('');
   useEffect(() => {
     try {
@@ -82,9 +77,6 @@ export function BrandFeedbackPanel({
   }, [draft, draftKey]);
   const feedback = board.feedback ?? [],
     experiences = board.experiences ?? [];
-  const selected = selection.filter((id) =>
-    feedback.some((row) => row.id === id),
-  );
   const patch = (key: keyof Draft, value: string) =>
     setDraft((old) => ({ ...old, [key]: value }));
   const fields: Array<{ key: keyof Draft; label: string; type?: string }> = [
@@ -144,7 +136,6 @@ export function BrandFeedbackPanel({
       setError('请填写有效时间和非负整数指标；不清楚的指标留空。');
     }
   };
-  const group = feedback.find((f) => f.id === selected[0]);
   return (
     <div className={css.stack}>
       <h3>发布反馈与复盘</h3>
@@ -278,31 +269,7 @@ export function BrandFeedbackPanel({
       )}
       {feedback.map((sample) => (
         <article key={sample.id} className={css.card}>
-          <label className={css.field}>
-            <input
-              type="checkbox"
-              aria-label={`选择复盘样本 ${sample.title}`}
-              checked={selected.includes(sample.id)}
-              disabled={
-                disabled ||
-                Boolean(
-                  group &&
-                  (group.contextRevisionId !== sample.contextRevisionId ||
-                    group.platform !== sample.platform) &&
-                  !selected.includes(sample.id),
-                ) ||
-                (selected.length >= 20 && !selected.includes(sample.id))
-              }
-              onChange={(e) =>
-                setSelected(
-                  e.target.checked
-                    ? [...selected, sample.id]
-                    : selected.filter((id) => id !== sample.id),
-                )
-              }
-            />{' '}
-            {sample.title}
-          </label>
+          <h4>{sample.title}</h4>
           <p>
             {sample.publicationKind === 'imported_publication'
               ? '外部已发布样本'
@@ -331,17 +298,6 @@ export function BrandFeedbackPanel({
           <p className={css.muted}>局限：{sample.limitations}</p>
         </article>
       ))}
-      <button
-        className={css.button}
-        type="button"
-        disabled={disabled || !available || !selected.length}
-        onClick={() => void onStart(selected)}
-      >
-        复盘选中样本（{selected.length}）
-      </button>
-      {!available && (
-        <p className={css.notice}>当前员工尚未启用发布复盘流程。</p>
-      )}
       {(board.retrospectives ?? []).map((report) => {
         const experience = experiences.find(
           (row) => row.retrospectiveId === report.id,

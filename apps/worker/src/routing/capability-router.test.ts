@@ -419,20 +419,20 @@ describe('capability route decision', () => {
     expect(plan.reasonCodes).toContain('direct_no_capability_match');
   });
 
-  it.each([
-    ['请根据知识库查产品定价', 'knowledge'],
-    ['运行周报工作流', 'workflow'],
-  ] as const)('routes %s to %s', (prompt, expected) => {
-    const input = base();
-    const snapshot = withCapabilities(input.snapshot);
-    const plan = decideCapabilityRoute({
-      request: { ...input.request, prompt },
-      executionSnapshot: snapshot,
-      tools,
-    });
-    expect(plan.selectedKind).toBe(expected);
-    expect(plan.reasonCodes).toContain('minimum_necessary_capability');
-  });
+  it.each([['请根据知识库查产品定价', 'knowledge']] as const)(
+    'routes %s to %s',
+    (prompt, expected) => {
+      const input = base();
+      const snapshot = withCapabilities(input.snapshot);
+      const plan = decideCapabilityRoute({
+        request: { ...input.request, prompt },
+        executionSnapshot: snapshot,
+        tools,
+      });
+      expect(plan.selectedKind).toBe(expected);
+      expect(plan.reasonCodes).toContain('minimum_necessary_capability');
+    },
+  );
 
   it('leaves DSH-native Skill selection to the DSH Agent Loop', () => {
     const input = base();
@@ -467,26 +467,23 @@ describe('capability route decision', () => {
     });
   });
 
-  it('keeps approval-bearing workflows routable for the durable engine', () => {
-    const input = base({ approvalPolicy: 'confirm_side_effects' });
-    const snapshot = withCapabilities(input.snapshot);
-    if (snapshot.schemaVersion !== 2) throw new Error('v2 required');
-    snapshot.capabilitySnapshot.workflows[0]!.revision.definition.steps[0]!.approval =
-      'required';
-    const plan = decideCapabilityRoute({
-      request: { ...input.request, prompt: '运行周报工作流' },
-      executionSnapshot: snapshot,
-      tools,
-    });
-    expect(
-      plan.candidates.find((candidate) => candidate.id.startsWith('workflow:')),
-    ).toMatchObject({
-      authorized: true,
-      requiresApproval: true,
-      exclusionReason: null,
-    });
-    expect(plan.selectedKind).toBe('workflow');
-  });
+  it.each(['运行周报工作流', '请用技能和工作流处理这件事'])(
+    'ignores retired directory entries for %s',
+    (prompt) => {
+      const input = base();
+      const snapshot = withCapabilities(input.snapshot);
+      const before = structuredClone(snapshot);
+      const plan = decideCapabilityRoute({
+        request: { ...input.request, prompt },
+        executionSnapshot: snapshot,
+        tools,
+      });
+      expect(plan.selectedKind).toBe('direct');
+      expect(plan.candidates.some((c) => c.kind === 'workflow')).toBe(false);
+      expect(plan.selectedWorkflowRevisionIds).toEqual([]);
+      expect(snapshot).toEqual(before);
+    },
+  );
 
   it('allows the same tool only under an explicit autonomous policy', () => {
     const input = base({ approvalPolicy: 'autonomous' });
@@ -535,27 +532,6 @@ describe('capability route decision', () => {
         tools,
       }),
     ).toThrow('frozen tenant snapshot');
-  });
-
-  it('keeps workflow routing stable when a Skill is also mentioned', () => {
-    const input = base();
-    const snapshot = withCapabilities(input.snapshot);
-    const request = {
-      ...input.request,
-      prompt: '请用技能和工作流处理这件事',
-    };
-    const first = decideCapabilityRoute({
-      request,
-      executionSnapshot: snapshot,
-      tools,
-    });
-    const second = decideCapabilityRoute({
-      request,
-      executionSnapshot: snapshot,
-      tools,
-    });
-    expect(first.selectedCandidateId).toBe(second.selectedCandidateId);
-    expect(first.selectedKind).toBe('workflow');
   });
 
   it('routes Knowledge while leaving the accompanying Skill to DSH', () => {
@@ -671,153 +647,18 @@ function businessWorkflowRouteFixture() {
   };
 }
 
-describe('MET194 explicit fixed business workflow routing', () => {
-  it.each([
-    '你好',
-    '请生成品牌内容选题',
-    '新版品牌内容流程，请采用最新发布的方法',
-  ])(
-    'does not infer a private business invocation from prompt %s or a matching employee name',
+describe('retired explicit Workflow invocation', () => {
+  it.each(['你好', '运行周报工作流', '请生成品牌内容选题'])(
+    'rejects a stored invocation without falling back for %s',
     (prompt) => {
       const f = businessWorkflowRouteFixture();
-      delete f.snapshot.workflowInvocation;
-      if (f.snapshot.instance)
-        f.snapshot.instance.profile.name = '品牌内容选题专员';
-      const plan = decideCapabilityRoute({
-        request: { ...f.request, prompt },
-        executionSnapshot: f.snapshot,
-        tools,
-      });
-      expect(plan.selectedKind).toBe('direct');
-      expect(plan.selectedWorkflowRevisionIds).toEqual([]);
-      for (const binding of [f.old, f.newer])
-        expect(
-          plan.candidates.find(
-            (candidate) => candidate.id === `workflow:${binding.revision.id}`,
-          ),
-        ).toMatchObject({
-          authorized: false,
-          exclusionReason: 'excluded_not_effective',
-        });
-    },
-  );
-
-  it('preserves ordinary authorized workflow routing without turning it into a private business invocation', () => {
-    const f = businessWorkflowRouteFixture();
-    delete f.snapshot.workflowInvocation;
-    const plan = decideCapabilityRoute({
-      request: { ...f.request, prompt: '运行周报工作流' },
-      executionSnapshot: f.snapshot,
-      tools,
-    });
-    expect(plan.selectedWorkflowRevisionIds).toEqual([f.ordinary.revision.id]);
-  });
-
-  it('keeps the frozen v1 selection when v2 is present, first in the directory, and explicitly named', () => {
-    const f = businessWorkflowRouteFixture();
-    const pinBefore = structuredClone(f.snapshot.workflowInvocation);
-    const plan = decideCapabilityRoute({
-      request: {
-        ...f.request,
-        prompt: '新版品牌内容流程 brand-content-topics-v2，请使用最新版本',
-      },
-      executionSnapshot: f.snapshot,
-      tools,
-    });
-    expect(plan.selectedKind).toBe('workflow');
-    expect(plan.selectedWorkflowRevisionIds).toEqual([f.old.revision.id]);
-    expect(plan.selectedCandidateId).toBe(
-      `workflow:${f.snapshot.workflowInvocation!.workflowRevisionId}`,
-    );
-    const v2 = plan.candidates.find(
-      (candidate) => candidate.id === `workflow:${f.newer.revision.id}`,
-    )!;
-    const v1 = plan.candidates.find(
-      (candidate) => candidate.id === `workflow:${f.old.revision.id}`,
-    )!;
-    expect(v2.score).toBeGreaterThan(v1.score);
-    expect(v2.authorized).toBe(false);
-    expect(f.snapshot.workflowInvocation).toEqual(pinBefore);
-  });
-
-  it.each(['missing_v1', 'disabled_v1', 'unknown_pin'] as const)(
-    'fails closed for %s even when v2 and an ordinary named workflow remain available',
-    (change) => {
-      const f = businessWorkflowRouteFixture();
-      if (change === 'missing_v1')
-        f.snapshot.capabilitySnapshot.workflows =
-          f.snapshot.capabilitySnapshot.workflows.filter(
-            (binding) => binding.revision.id !== f.old.revision.id,
-          );
-      if (change === 'disabled_v1') {
-        f.old.effective = false;
-        f.old.disabledReason = 'binding_disabled';
-      }
-      if (change === 'unknown_pin')
-        f.snapshot.workflowInvocation!.workflowRevisionId = randomUUID();
       expect(() =>
         decideCapabilityRoute({
-          request: { ...f.request, prompt: '运行周报工作流或新版品牌内容流程' },
+          request: { ...f.request, prompt },
           executionSnapshot: f.snapshot,
           tools,
         }),
-      ).toThrow('business workflow is not authorized');
-    },
-  );
-
-  it.each(['workflowRevisionId', 'packageDigest', 'startId'] as const)(
-    'rejects a persisted invocation missing %s instead of falling through to a named workflow',
-    (field) => {
-      const f = businessWorkflowRouteFixture();
-      // Simulate corrupt historical JSON at the execution boundary; no schema
-      // wrapper in the test may sanitize this before the router sees it.
-      Reflect.deleteProperty(f.snapshot.workflowInvocation!, field);
-      expect(() =>
-        decideCapabilityRoute({
-          request: { ...f.request, prompt: '运行周报工作流' },
-          executionSnapshot: f.snapshot,
-          tools,
-        }),
-      ).toThrow();
-    },
-  );
-
-  it.each([
-    'digest_format',
-    'template_stage',
-    'binding_stage',
-    'missing_business_marker',
-    'ordinary_workflow_pin',
-    'other_instance',
-    'general_instance',
-  ] as const)(
-    'rejects %s rather than borrowing another workflow or package scope',
-    (mismatch) => {
-      const f = businessWorkflowRouteFixture();
-      if (mismatch === 'digest_format')
-        f.snapshot.workflowInvocation!.packageDigest = 'not-a-package-digest';
-      if (mismatch === 'template_stage')
-        f.snapshot.workflowInvocation!.templateKey =
-          brandContentTemplateKeys.article;
-      if (mismatch === 'binding_stage')
-        f.old.revision.definition.inputSchema['x-allrice-brand-content'] =
-          'article';
-      if (mismatch === 'missing_business_marker')
-        delete f.old.revision.definition.inputSchema['x-allrice-brand-content'];
-      if (mismatch === 'ordinary_workflow_pin')
-        f.snapshot.workflowInvocation!.workflowRevisionId =
-          f.ordinary.revision.id;
-      if (mismatch === 'other_instance')
-        f.snapshot.workflowInvocation!.instanceId = randomUUID();
-      if (mismatch === 'general_instance')
-        f.snapshot.instance!.kind = 'general';
-      expect(() =>
-        decideCapabilityRoute({
-          request: { ...f.request, prompt: '运行周报工作流' },
-          executionSnapshot: f.snapshot,
-          tools,
-        }),
-      ).toThrow();
+      ).toThrow('Legacy Workflow execution is retired');
     },
   );
 });

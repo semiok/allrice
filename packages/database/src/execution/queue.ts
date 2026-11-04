@@ -434,11 +434,6 @@ type EnqueueOptions = {
   };
   reviewContinuation?: ReviewContinuationInput;
   changesetAction?: ChangesetActionInput;
-  workflowBinding?: {
-    employeeId: string;
-    workflowRevisionId: string;
-    sessionId: string | null;
-  };
 };
 type RunAdmission =
   | { kind: 'browser'; context: RequestContext }
@@ -613,6 +608,14 @@ async function prepareEnqueueRun(
 ) {
   const context = admission.context;
   const submission = CreateRunInputSchema.parse(input);
+  // Retired types must not create a queued job or fall back to an employee turn.
+  if (
+    submission.type === 'allrice.workflow.run' ||
+    'workflowBinding' in options ||
+    options.employeeBinding?.executionSnapshot.workflowInvocation
+  ) {
+    throw new QueueError('policy_denied');
+  }
   if (
     (submission.type === experienceConsolidationJobType) !==
     (admission.kind === 'experience')
@@ -703,7 +706,6 @@ async function prepareEnqueueRun(
       options.qualityBinding ||
       options.technicalBinding ||
       options.skillBinding ||
-      options.workflowBinding ||
       options.reviewContinuation ||
       options.changesetAction ||
       options.folderEventId ||
@@ -738,7 +740,6 @@ async function prepareEnqueueRun(
         }) ||
       options.employeeBinding ||
       options.skillBinding ||
-      options.workflowBinding ||
       options.conversationDelivery
     )
       throw new QueueError('policy_denied');
@@ -1377,15 +1378,6 @@ async function enqueueRunInTransaction(
                   },
                 ]
               : []),
-            ...(options.workflowBinding
-              ? ['storage_object', 'memory', 'chat_session'].map(
-                  (resourceType) => ({
-                    resourceType,
-                    action: 'resource:read' as const,
-                    workspaceId,
-                  }),
-                )
-              : []),
           ],
         }),
       )},
@@ -1417,9 +1409,6 @@ async function enqueueRunInTransaction(
             options.skillBinding || options.employeeBinding ? 'codex' : null,
           skillVersionIds:
             options.employeeBinding?.skillVersionIds ?? undefined,
-          workflowRevisionId:
-            options.workflowBinding?.workflowRevisionId ?? undefined,
-          employeeId: options.workflowBinding?.employeeId ?? undefined,
         }),
       )},
       ${transaction.json(toJsonValue(submission.input))}, ${context.requestId}
@@ -1582,7 +1571,6 @@ async function enqueueRunInTransaction(
       !options.repositoryBinding &&
       !options.repositoryMergeBinding &&
       !options.technicalBinding &&
-      !options.workflowBinding &&
       !options.skillBinding &&
       runtimeFeatureEnabled('ALLRICE_WORKBENCH_ENABLED') &&
       options.employeeBinding.providerSnapshot.provider === 'dsh' &&

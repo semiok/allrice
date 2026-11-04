@@ -8,13 +8,11 @@ import {
   BrandContentBoardSchema,
   BrandFeedbackInputSchema,
   type BrandContentBoard,
-  type WorkflowPackage,
 } from '@allrice/contracts';
 import {
   BrandContentArticleCard,
   BrandContentPlanCard,
   BrandContentTopicCard,
-  brandContentStageAvailable,
   brandContentZonedTime,
   currentBrandContentApproval,
   currentBrandContentBundle,
@@ -228,10 +226,8 @@ describe('current brand-content versions', () => {
         disabled={false}
         draftKey="test.article"
         onMutate={act}
-        onStart={start}
         onOpenSession={() => {}}
         onPlans={() => {}}
-        revisionAvailable
         headers={{}}
       />,
     );
@@ -245,7 +241,7 @@ describe('current brand-content versions', () => {
     expect(html).not.toContain('<script>');
   });
 
-  it('retains rejection feedback and starts revision only for a returned draft', () => {
+  it('retains rejection feedback without offering the retired revision action', () => {
     const board = boardFixture();
     board.articles[0]!.state = 'changes_requested';
     board.reviews.push({
@@ -264,20 +260,18 @@ describe('current brand-content versions', () => {
         disabled={false}
         draftKey="test.revision"
         onMutate={act}
-        onStart={start}
         onOpenSession={() => {}}
         onPlans={() => {}}
-        revisionAvailable
         headers={{}}
       />,
     );
     expect(html).toContain('请补充事实出处');
-    expect(html).toContain('按审稿意见重新起草');
+    expect(html).not.toContain('按审稿意见重新起草');
     expect(html).not.toContain('去排期');
     expect(html).not.toContain('对当前稿件 v2 的审稿意见');
   });
 
-  it('uses the topic context for reasons and facts and permits drafting only after acceptance', () => {
+  it('preserves topic decisions and facts without offering the retired draft action', () => {
     const board = boardFixture();
     const render = () =>
       renderToStaticMarkup(
@@ -288,13 +282,11 @@ describe('current brand-content versions', () => {
           disabled={false}
           draftKey="test.topic"
           onMutate={act}
-          onStart={start}
-          articleAvailable
           onArticles={() => {}}
         />,
       );
     board.articles = [];
-    expect(render()).toContain('让 AI 员工起草');
+    expect(render()).not.toContain('让 AI 员工起草');
     expect(render()).toContain('因为事实可核对');
     expect(render()).toContain('仅用于单测的事实 &lt;script&gt;');
     board.topics[0]!.state = 'candidate';
@@ -435,31 +427,6 @@ describe('publication and image honesty', () => {
     expect(choices.map((file) => file.objectId)).toEqual([id(31), id(33)]);
   });
 
-  it('matches business workflow template keys exactly', () => {
-    const packageFor = (templateKey: string) =>
-      ({ manifest: { templateKey } }) as WorkflowPackage;
-    expect(
-      brandContentStageAvailable(
-        [packageFor('other-brand-content-operations.topics')],
-        'topics',
-      ),
-    ).toBe(false);
-    expect(
-      brandContentStageAvailable(
-        [packageFor('brand-content-operations.topics')],
-        'article',
-      ),
-    ).toBe(false);
-    expect(
-      brandContentStageAvailable(
-        [packageFor('brand-content-operations.topics')],
-        'topics',
-      ),
-    ).toBe(true);
-  });
-});
-
-describe('IANA publication time conversion', () => {
   it('interprets wall time in the selected zone independently from the browser zone', () => {
     expect(brandContentZonedTime('2026-10-21T10:00', 'Asia/Shanghai')).toBe(
       '2026-10-21T02:00:00.000Z',
@@ -822,9 +789,12 @@ browserSuite(
         });
         expect(posts.at(-1)).not.toHaveProperty('receiptId');
         expect(reads).toBeGreaterThan(previousReads);
-        await dialog
-          .getByLabel('选择复盘样本 合成 UI 反馈样本', { exact: true })
-          .waitFor();
+        await dialog.getByText('合成 UI 反馈样本', { exact: true }).waitFor();
+        expect(
+          await dialog
+            .getByLabel('选择复盘样本 合成 UI 反馈样本', { exact: true })
+            .count(),
+        ).toBe(0);
         expect(
           await dialog
             .getByText(
@@ -841,11 +811,8 @@ browserSuite(
         expect(
           await dialog
             .getByRole('button', { name: '复盘选中样本（0）', exact: true })
-            .isDisabled(),
-        ).toBe(true);
-        await dialog
-          .getByLabel('选择复盘样本 合成 UI 反馈样本', { exact: true })
-          .check();
+            .count(),
+        ).toBe(0);
         board.feedback = [];
         await dialog.getByRole('button', { name: '刷新', exact: true }).click();
         await dialog
@@ -856,8 +823,8 @@ browserSuite(
         expect(
           await dialog
             .getByRole('button', { name: '复盘选中样本（0）', exact: true })
-            .isDisabled(),
-        ).toBe(true);
+            .count(),
+        ).toBe(0);
       } finally {
         delete board.unavailableFeedbackSources;
         await page.close();
@@ -901,9 +868,12 @@ browserSuite(
       await dialog
         .getByRole('button', { name: '退回修改', exact: true })
         .click();
-      await dialog
-        .getByRole('button', { name: '按审稿意见重新起草', exact: true })
-        .waitFor();
+      await dialog.getByText('请补充事实出处', { exact: true }).waitFor();
+      expect(
+        await dialog
+          .getByRole('button', { name: '按审稿意见重新起草', exact: true })
+          .count(),
+      ).toBe(0);
       expect(posts.at(-1)).toMatchObject({
         operation: 'article.review',
         articleId: id(6),

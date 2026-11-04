@@ -32,7 +32,6 @@ import { POST as cancelPost } from '../../app/api/v1/runs/[id]/cancel/route';
 import { GET as eventsGet } from '../../app/api/v1/runs/[id]/events/route';
 import { GET as sessionGet } from '../../app/api/v1/sessions/[id]/route';
 import { GET as taskGet } from '../../app/api/v1/scheduled-tasks/[taskId]/route';
-import { POST as approvalPost } from '../../app/api/v1/workflow-approvals/[id]/route';
 import {
   GET as adminGet,
   POST as adminPost,
@@ -438,57 +437,6 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
         ),
       ),
     ).not.toContain(raw);
-  });
-  it('review regression: decided Workflow approval replay maps the public step error slot', async () => {
-    const f = await seed('DSH_PI_AI_ERROR', raw),
-      workflowId = randomUUID(),
-      revisionId = randomUUID(),
-      workflowRunId = randomUUID(),
-      stepId = randomUUID(),
-      approvalId = randomUUID();
-    const definition = {
-      schemaVersion: 1,
-      steps: [
-        { key: 'load', name: 'Synthetic model', kind: 'model', input: {} },
-      ],
-    };
-    const [assignment] =
-      await db.db`select a.employee_id from allrice_employee_runs er join allrice_employee_assignments a on a.id=er.employee_assignment_id where er.run_id=${f.run}`;
-    await db.db`insert into allrice_workflows(id,organization_id,workspace_id,slug,name,description,created_by) values(${workflowId},${f.org},${f.workspace},${'privacy-' + workflowId},'Synthetic workflow','Synthetic only',${f.user})`;
-    await db.db`insert into allrice_workflow_revisions(id,organization_id,workspace_id,workflow_id,revision,name,description,definition,checksum,created_by,published_at) values(${revisionId},${f.org},${f.workspace},${workflowId},1,'Synthetic workflow','Synthetic only',${json(definition)},${'sha256:' + 'a'.repeat(64)},${f.user},now())`;
-    await db.db`insert into allrice_workflow_runs(id,organization_id,workspace_id,owner_id,run_id,employee_id,workflow_revision_id,session_id,status,definition_snapshot,input)
-      values(${workflowRunId},${f.org},${f.workspace},${f.user},${f.run},${assignment!.employee_id},${revisionId},${f.session.id},'failed',${json(definition)},'{}')`;
-    await db.db`insert into allrice_workflow_step_runs(id,organization_id,workspace_id,workflow_run_id,step_key,name,step_kind,status,attempt,max_attempts,idempotency_key,error_code,error_message)
-      values(${stepId},${f.org},${f.workspace},${workflowRunId},'load','Synthetic model','model','failed',1,1,${randomUUID()},'DSH_PI_AI_ERROR',${raw + ' ' + secret})`;
-    await db.db`insert into allrice_approval_requests(id,organization_id,workspace_id,run_id,actor_id,resource_type,resource_id,action,input_digest,status,decided_by,decided_at,decision_reason)
-      values(${approvalId},${f.org},${f.workspace},${f.run},${f.user},'workflow_step',${stepId},'workflow.step.execute',${'sha256:' + 'a'.repeat(64)},'approved',${f.user},now(),'Already approved')`;
-    auth.context = f.owner;
-    const body = await publicBody(
-      await approvalPost(
-        new Request(
-          `http://localhost/api/v1/workflow-approvals/${approvalId}`,
-          {
-            method: 'POST',
-            body: JSON.stringify({
-              workspaceId: f.workspace,
-              decision: 'approved',
-              reason: 'Replay existing decision',
-            }),
-          },
-        ),
-        { params: Promise.resolve({ id: approvalId }) },
-      ),
-    );
-    expect(JSON.parse(body).workflowRun.steps[0]).toMatchObject({
-      status: 'failed',
-      errorCode: 'DSH_PI_AI_ERROR',
-    });
-    const [approval] =
-      await db.db`select status,decision_reason from allrice_approval_requests where id=${approvalId}`;
-    expect(approval).toMatchObject({
-      status: 'approved',
-      decision_reason: 'Already approved',
-    });
   });
   it('review regression: natural API key credentials are absent from the actual administrator response', async () => {
     await seed('DSH_PI_AI_ERROR', 'Invalid API key: P4ssW0rdQWER123');

@@ -321,14 +321,18 @@ suite('muted words stay readable in both themes', { timeout: 60_000 }, () => {
     await readable('D08 执行要求标签', tab('执行要求'));
     for (const words of [
       '用文字说明工作方法，由 AI 结合当前任务灵活执行。',
-      '将固定业务流程写成程序，由系统按预设规则执行。',
-      '暂无已绑定的可执行工作流。',
       '已生效',
     ])
       await readable(
         `D08 流程 ${words}`,
         page.getByText(words, { exact: true }),
       );
+    for (const retired of [
+      '可执行的工作流',
+      '将固定业务流程写成程序，由系统按预设规则执行。',
+      '暂无已绑定的可执行工作流。',
+    ])
+      expect(await page.getByText(retired, { exact: true }).count()).toBe(0);
     await tab('参考资料').click();
     await readable(
       '员工资料链接',

@@ -1549,9 +1549,7 @@ export async function compilePlatformEmployee(
     // shared catalog above. An unused identity mode is not an executable tool
     // grant and must not prevent removing the last connector Skill.
     if (definition.capabilities.workflowRevisionIds.length > 0) {
-      errors.push(
-        '平台 Workflow 发布目录尚未启用，不能引用租户 Workflow revision',
-      );
+      errors.push('旧 Workflow 执行入口已停用，不能发布 Workflow 引用');
     }
     if (definition.capabilities.knowledgeRevisionIds.length > 0) {
       errors.push(

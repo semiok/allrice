@@ -15,7 +15,6 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   ExecutionContextSchema,
   EmployeeDefinitionSchema,
-  BrandContentWorkflowInvocationSchema,
   brandContentWorkflowTemplates,
   makeObjectKey,
   type BrandContentBoard,
@@ -60,9 +59,9 @@ import {
   mutateEmployeeContent,
 } from '../employees/employee-content.ts';
 import {
-  registerWorkflowPackage,
-  setWorkflowPackageBinding,
-} from '../capabilities/workflow-packages.ts';
+  seedLegacyWorkflowPackage,
+  seedLegacyWorkflowBinding,
+} from '../capabilities/legacy-workflow.fixture.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
 import { runAutomationNow } from '../execution/automation.ts';
 import { getWorkAutomation, updateWorkAutomation } from '../work-automation.ts';
@@ -90,10 +89,6 @@ import {
 } from './service.ts';
 import type { PlanRow, Tx } from './types.ts';
 import { brandContentDigest } from './rules.ts';
-import {
-  assertBrandContentWorkflowStart,
-  brandContentStageInput,
-} from './workflow-start.ts';
 import {
   registerBrandContentReminder,
   lockBrandContentReminder,
@@ -581,39 +576,35 @@ async function prepareReminderPackage(
     new Blob([Uint8Array.from(bytes)]).stream(),
   );
   await markStorageReady(actor.context, source.object.id, fixture.db);
-  const value = await registerWorkflowPackage(
-    actor.context,
-    {
-      workspaceId: actor.workspace,
-      instanceId: actor.instance.id,
-      sceneId: null,
-      requestId: randomUUID(),
-      ...(previous ? { workflowId: previous.workflow.workflowId } : {}),
-      expectedRevision: previous?.workflow.revision ?? 0,
-      slug: 'met194-isolated-reminder-handoff',
-      name: 'MET194 synthetic reminder handoff',
-      description: 'Only isolated reminder acceptance.',
-      definition: template.definition,
-      manifest: {
-        schemaVersion: 1,
-        templateKey: template.templateKey,
-        method: method.reference,
-        definitionChecksum: runtimePolicyDigest(template.definition),
-        source: {
-          objectId: source.object.id,
-          checksum: source.object.checksum,
-        },
-        files: files.map(({ path, checksum }) => ({ path, checksum })),
-        assets: [],
+  const value = await seedLegacyWorkflowPackage(actor.context, {
+    workspaceId: actor.workspace,
+    instanceId: actor.instance.id,
+    sceneId: null,
+    requestId: randomUUID(),
+    ...(previous ? { workflowId: previous.workflow.workflowId } : {}),
+    expectedRevision: previous?.workflow.revision ?? 0,
+    slug: 'met194-isolated-reminder-handoff',
+    name: 'MET194 synthetic reminder handoff',
+    description: 'Only isolated reminder acceptance.',
+    definition: template.definition,
+    manifest: {
+      schemaVersion: 1,
+      templateKey: template.templateKey,
+      method: method.reference,
+      definitionChecksum: runtimePolicyDigest(template.definition),
+      source: {
+        objectId: source.object.id,
+        checksum: source.object.checksum,
       },
+      files: files.map(({ path, checksum }) => ({ path, checksum })),
+      assets: [],
     },
-    { storage: runtimeFixtureStorage(fixture.db) },
-  );
+  });
   const [binding] = await fixture.db<
     { binding_revision: number }[]
   >`select binding_revision from allrice_employee_workflow_bindings
     where instance_id=${actor.instance.id} and workflow_id=${value.workflow.workflowId} and scene_id is null`;
-  await setWorkflowPackageBinding(actor.context, {
+  await seedLegacyWorkflowBinding(actor.context, {
     workspaceId: actor.workspace,
     instanceId: actor.instance.id,
     sceneId: null,
@@ -1061,88 +1052,6 @@ suite(
         ),
       ).rejects.toMatchObject({ code: 'not_found' });
       expect((await board(brand)).feedback).toHaveLength(1);
-    });
-
-    it('validates an uncommitted authenticated start and user message on the caller transaction, rejects another owner, and leaves no rows after rollback', async () => {
-      const brand = await prepareBrand(a, 'caller-transaction-start');
-      const request = {
-        workspaceId: a.workspace,
-        brandId: brand.brandId,
-        requestId: randomUUID(),
-        sessionId: a.session.id,
-        stage: 'topics' as const,
-        platform: '小红书',
-        count: 3,
-      };
-      const invocation = BrandContentWorkflowInvocationSchema.parse({
-        schemaVersion: 1,
-        startId: randomUUID(),
-        instanceId: a.instance.id,
-        sceneId: null,
-        // This synthetic fixture exercises authenticated-start SQL visibility.
-        // Package execution is separately checked by the real Start admission.
-        workflowRevisionId: randomUUID(),
-        packageDigest: runtimePolicyDigest({ fixture: request.requestId }),
-        templateKey: 'brand-content-operations.topics',
-        input: brandContentStageInput(await board(brand), request),
-      });
-      const messageId = randomUUID();
-      const rollback = new Error('isolated caller transaction rollback');
-      await expect(
-        fixture.db.begin(async (tx) => {
-          await tx`insert into allrice_brand_content_workflow_starts
-            (id,organization_id,workspace_id,owner_id,instance_id,brand_id,
-              request_id,request_digest,request,invocation,session_id)
-            values (${invocation.startId},${a.org},${a.workspace},${a.user},
-              ${a.instance.id},${brand.brandId},${request.requestId},
-              ${runtimePolicyDigest(request)},${tx.json(request)},
-              ${tx.json(invocation)},${a.session.id})`;
-          await tx`insert into allrice_messages
-            (id,organization_id,workspace_id,session_id,owner_id,role,content,
-              visibility,client_message_id,status,completed_at)
-            values (${messageId},${a.org},${a.workspace},${a.session.id},
-              ${a.user},'user',${tx.json({ text: 'Synthetic caller transaction topics start.' })},
-              'private',${request.requestId},'completed',now())`;
-
-          await expect(
-            assertBrandContentWorkflowStart(
-              a.context,
-              a.session.id,
-              messageId,
-              invocation,
-              tx,
-            ),
-          ).resolves.toBeUndefined();
-          // The default pool is a different real connection. Before COMMIT it
-          // must not see this start/message, reproducing the former failure.
-          await expect(
-            assertBrandContentWorkflowStart(
-              a.context,
-              a.session.id,
-              messageId,
-              invocation,
-            ),
-          ).rejects.toMatchObject({ code: 'authorization_denied' });
-          await expect(
-            assertBrandContentWorkflowStart(
-              { ...a.context, actor: b.context.actor },
-              a.session.id,
-              messageId,
-              invocation,
-              tx,
-            ),
-          ).rejects.toMatchObject({ code: 'authorization_denied' });
-          throw rollback;
-        }),
-      ).rejects.toBe(rollback);
-      const rows = await fixture.db<{ starts: number; messages: number }[]>`
-        select
-          (select count(*)::int from allrice_brand_content_workflow_starts
-            where id=${invocation.startId}) as starts,
-          (select count(*)::int from allrice_messages
-            where id=${messageId}) as messages`;
-      expect(rows).toHaveLength(1);
-      expect(rows[0]!).toMatchObject({ starts: 0, messages: 0 });
     });
 
     it('persists review-directed native file revisions, a one-slot image revision, approved handoff and a user-provided receipt', async () => {
@@ -2606,7 +2515,7 @@ suite(
                 { binding_revision: number }[]
               >`select binding_revision from allrice_employee_workflow_bindings where instance_id=${a.instance.id} and workflow_id=${value.workflow.workflowId} and scene_id is null`;
               expect(binding).toBeDefined();
-              const disabled = await setWorkflowPackageBinding(a.context, {
+              const disabled = await seedLegacyWorkflowBinding(a.context, {
                 ...a.scope,
                 sceneId: null,
                 workflowRevisionId: value.workflow.id,
@@ -2615,7 +2524,7 @@ suite(
                 enabled: false,
               });
               restore = async () => {
-                await setWorkflowPackageBinding(a.context, {
+                await seedLegacyWorkflowBinding(a.context, {
                   ...a.scope,
                   sceneId: null,
                   workflowRevisionId: value.workflow.id,

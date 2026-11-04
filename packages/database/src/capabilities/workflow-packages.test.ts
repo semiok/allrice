@@ -35,10 +35,7 @@ vi.mock('../employees/employee-content-sources.ts', async (original) => ({
   resolveEmployeeContentSource: stubs.source,
 }));
 
-import {
-  assertWorkflowPackageExecution,
-  registerWorkflowPackage,
-} from './workflow-packages.ts';
+import { assertWorkflowPackageExecution } from './workflow-packages.ts';
 
 function setup() {
   const scope = {
@@ -336,27 +333,5 @@ describe('Workflow package execution admission (scripted DB ports, no SQL server
     await expect(
       assertWorkflowPackageExecution(f.context, f.request),
     ).rejects.toThrow('not_found');
-  });
-
-  it('rejects a non-current method before registering any immutable package or source', async () => {
-    const f = setup();
-    f.state.methodPins = [];
-    await expect(
-      registerWorkflowPackage(f.context, {
-        workspaceId: f.request.workspaceId,
-        instanceId: f.request.instanceId,
-        sceneId: null,
-        requestId: randomUUID(),
-        expectedRevision: 0,
-        slug: 'brand-topics',
-        name: '品牌选题',
-        description: '按品牌方法策划',
-        definition: f.definition,
-        manifest: f.manifest,
-      }),
-    ).rejects.toThrow('source_changed');
-    expect(f.queries.some((query) => /^(insert|update) /i.test(query))).toBe(
-      false,
-    );
   });
 });

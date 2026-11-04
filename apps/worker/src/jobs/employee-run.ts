@@ -3,7 +3,6 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createJobNativeBinding } from '../harness/native-session-binding.js';
 import { documentDeliveryGuard } from './document-delivery.js';
 import { LocalStorageAdapter } from '@allrice/storage';
-import { workflowModelUsage } from '../workflow-model-usage.js';
 
 import {
   withPlatformImageTools,
@@ -36,7 +35,6 @@ import {
   freezeRouteSubscriptionSnapshot,
   recordToolBrokerAudit,
   recordConversationNativeContext,
-  ensureWorkflowRunForExecution,
   releaseConversationRuntime,
   resolveEmployeeExecution,
   filterEmployeeMethodMemories,
@@ -125,7 +123,6 @@ import {
   providerSnapshotForModelTarget,
   replayProviderSnapshot,
 } from '../routing/provider-snapshot.js';
-import { executeDurableWorkflow, WorkflowPaused } from '../workflow-engine.js';
 import { loadHarnessImages } from '../harness/prompt-images.js';
 import { getExecutionFailureUsage } from '../harness/dsh/execution-failure-usage.js';
 import { mcpCatalogAdmissionInstructions } from '../harness/dsh/native-tools.js';
@@ -211,6 +208,17 @@ export async function executeEmployeeRun({
     ownerId: execution.job.ownerId,
     runId: execution.context.runId,
   });
+  if (
+    resolved.legacyWorkflowExecution ||
+    (resolved.executionSnapshot?.schemaVersion === 2 &&
+      resolved.executionSnapshot.workflowInvocation)
+  ) {
+    throw new HandlerError(
+      'LEGACY_WORKFLOW_RETIRED',
+      '旧 Workflow 执行入口已停用。',
+      false,
+    );
+  }
   if (typeof input.qualityRequestId === 'string')
     return executePlatformQualityCheck(
       { execution, isolation, signal, onHarnessEvent, workflowLease },
@@ -951,6 +959,13 @@ export async function executeEmployeeRun({
       createdAt: new Date().toISOString(),
     });
     routeDecision = await recordRouteDecision(proposedDecision);
+    if (routeDecision.selectedKind === 'workflow') {
+      throw new HandlerError(
+        'LEGACY_WORKFLOW_RETIRED',
+        '旧 Workflow 执行入口已停用。',
+        false,
+      );
+    }
     if (
       routeDecision.inputChecksum !== proposedDecision.inputChecksum ||
       routeDecision.employeeId !== proposedDecision.employeeId
@@ -1022,17 +1037,14 @@ export async function executeEmployeeRun({
     );
     const modelBudgetScope = {
       verifiedSubscription: !!subscriptionSnapshot,
-      workflow: routeDecision.selectedKind === 'workflow',
+      workflow: false,
     };
     const taskProgress =
       executionSnapshot.schemaVersion === 2 &&
       executionSnapshot.taskRuntimePolicy
         ? createTaskProgressRuntime({
             context: execution.context,
-            sessionId:
-              repairTask || routeDecision.selectedKind === 'workflow'
-                ? undefined
-                : input.sessionId,
+            sessionId: repairTask ? undefined : input.sessionId,
             worker: workflowLease,
           })
         : undefined;
@@ -1128,36 +1140,17 @@ export async function executeEmployeeRun({
       : routeDecision.selectedKind === 'knowledge'
         ? [revisionId]
         : [];
-    const selectedWorkflow =
-      routeDecision.selectedKind === 'workflow' && capabilitySnapshot
-        ? capabilitySnapshot.workflows.find(
-            (binding) => binding.revision.id === revisionId,
-          )
-        : undefined;
-    // Admission precedes capability routing. Only a selected frozen Workflow
-    // revision is outside this check; installing a Workflow does not exempt
-    // this employee's ordinary turns or rewrite the immutable Run snapshot.
     const officeFirstDeliveryPolicy =
-      !selectedWorkflow && executionSnapshot.schemaVersion === 2
+      executionSnapshot.schemaVersion === 2
         ? executionSnapshot.officeFirstDeliveryPolicy
         : undefined;
     const finalDeliveryMode =
-      !selectedWorkflow &&
       executionSnapshot.schemaVersion === 2 &&
       executionSnapshot.finalDeliveryPolicy?.mode === 'checked_native_v1'
         ? ('checked_native_v1' as const)
         : ('legacy' as const);
-    const workflowToolNames =
-      selectedWorkflow?.revision.definition.steps.flatMap((step) => {
-        const name = step.input.toolName;
-        return step.kind === 'tool' && typeof name === 'string' ? [name] : [];
-      }) ?? [];
     const selectedToolNames =
-      routeDecision.selectedKind === 'tool'
-        ? [revisionId]
-        : routeDecision.selectedKind === 'workflow'
-          ? workflowToolNames
-          : [];
+      routeDecision.selectedKind === 'tool' ? [revisionId] : [];
     const tools = repositoryReviewTask
       ? authorizedTools
       : repairTask
@@ -1233,7 +1226,6 @@ export async function executeEmployeeRun({
     const independentDelivery =
       finalDeliveryMode === 'checked_native_v1' &&
       adapter.kind === 'dsh' &&
-      !selectedWorkflow &&
       !repositoryReviewTask &&
       !repairTask;
     if (
@@ -1275,7 +1267,6 @@ export async function executeEmployeeRun({
       taskProgress &&
       !repairTask &&
       !repositoryReviewTask &&
-      !selectedWorkflow &&
       nativeQuestionMode !== 'timed' &&
       adapter.kind === 'dsh'
     ) {
@@ -1355,7 +1346,6 @@ export async function executeEmployeeRun({
         },
       };
     }
-    const workflowCitations: typeof knowledge.citations = [];
     // Costs stay unknown until the frozen subscription receipt is verified.
     if (subscriptionSnapshot) {
       routeCostCents = null;
@@ -1422,643 +1412,282 @@ export async function executeEmployeeRun({
           });
       },
     });
-    const result: HarnessExecutionResult =
-      routeDecision.selectedKind === 'workflow'
-        ? await (async () => {
-            if (!selectedWorkflow || !capabilitySnapshot) {
-              throw new HandlerError(
-                'WORKFLOW_SNAPSHOT_MISSING',
-                'Selected workflow is missing from the frozen employee snapshot',
-                false,
-              );
-            }
-            const invocation =
-              executionSnapshot.schemaVersion === 2
-                ? executionSnapshot.workflowInvocation
-                : undefined;
-            const checkWorkflowContent = async () => {
-              await contentGuard?.check();
-              if (invocation) {
-                const {
-                  assertWorkflowPackageExecution,
-                  assertEmployeeBrandWorkflowContext,
-                } = await import('@allrice/database');
-                await assertEmployeeBrandWorkflowContext(contentScope);
-                await assertWorkflowPackageExecution(
-                  {
-                    actor: execution.context.delegatedBy,
-                    organizationId: execution.context.organizationId,
-                    workspaceId: execution.context.workspaceId,
-                  },
-                  {
-                    workspaceId: execution.context.workspaceId!,
-                    instanceId: invocation.instanceId,
-                    sceneId: invocation.sceneId,
-                    workflowRevisionId: invocation.workflowRevisionId,
-                    frozenPackageDigest: invocation.packageDigest,
-                  },
-                );
-              }
-            };
-            await checkWorkflowContent();
-            await ensureWorkflowRunForExecution({
-              context: execution.context,
-              ownerId: execution.job.ownerId,
-              employeeId: executionSnapshot.employee.id,
-              workflowRevisionId: selectedWorkflow.revision.id,
-              sessionId: kernel.sessionId,
-              value: {
-                request: kernel.userRequest,
-                ...(invocation ? { business: invocation.input } : {}),
-              },
-              ...(invocation
-                ? {
-                    frozenDefinition: selectedWorkflow.revision.definition,
-                    workflowPackage: {
-                      instanceId: invocation.instanceId,
-                      sceneId: invocation.sceneId,
-                      packageDigest: invocation.packageDigest,
-                    },
+    const result: HarnessExecutionResult = await adapter
+      .execute({
+        nativeQuestionMode,
+        nativeSubagents:
+          !repairTask &&
+          !repositoryReviewTask &&
+          executionSnapshot.schemaVersion === 2
+            ? executionSnapshot.nativePreferences?.subagents
+            : undefined,
+        nativeAccounting:
+          adapter.kind === 'dsh'
+            ? {
+                bind: (rootSessionId: string) => {
+                  const decisionId = routeDecision!.id;
+                  let price;
+                  try {
+                    price =
+                      readModelPricing()[
+                        `${providerName(providerSnapshot)}:${providerSnapshot.model}`
+                      ];
+                  } catch {
+                    /* Optional tariff stays unknown. */
                   }
-                : {}),
-            });
-            const usage = {
-              inputTokens: 0,
-              cachedInputTokens: 0,
-              outputTokens: 0,
-            };
-            const durable = await executeDurableWorkflow({
-              ...(invocation ? { recordEvaluation: false } : {}),
-              checkContent: checkWorkflowContent,
-              execution,
-              ...workflowLease,
-              storageRoot: process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
-              evaluation: {
-                routingAccurate: true,
-                citationsAccurate: true,
-                approvalExpected:
-                  selectedWorkflow.revision.definition.steps.some(
-                    (step) => step.approval === 'required',
-                  ),
-              },
-              executeStep: async ({ step, value, idempotencyKey }) => {
-                await checkWorkflowContent();
-                if (step.kind === 'knowledge') {
-                  const allowed = new Set(
-                    capabilitySnapshot.knowledge
-                      .filter((binding) => binding.effective)
-                      .map((binding) => binding.revision.id),
-                  );
-                  const configured = step.input.knowledgeRevisionIds;
-                  const requested = Array.isArray(configured)
-                    ? configured.filter(
-                        (item): item is string =>
-                          typeof item === 'string' && allowed.has(item),
-                      )
-                    : [];
-                  const revisionIds = requested.length
-                    ? requested
-                    : [...allowed];
-                  const retrieved = await buildAuthorizedKnowledgeContext({
-                    context: execution.context,
-                    employeeId: executionSnapshot.employee.id,
-                    knowledgeRevisionIds: revisionIds,
-                    query:
-                      typeof step.input.query === 'string'
-                        ? step.input.query
-                        : kernel.userRequest,
-                    storageRoot:
-                      process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
+                  const captured: NativeModelSettlement = (nativeSettlement = {
+                    rootSessionId,
+                    jobId: execution.job.id,
+                    jobAttempt: execution.job.attempt,
+                    delivery: { calls: 0, complete: false },
+                    price,
                   });
-                  workflowCitations.push(...retrieved.citations);
                   return {
-                    output: {
-                      context: retrieved.context,
-                      citations: retrieved.citations,
-                    },
-                  };
-                }
-                if (step.kind === 'tool') {
-                  const name = step.input.toolName;
-                  if (
-                    typeof name !== 'string' ||
-                    !tools.some((tool) => tool.name === name)
-                  ) {
-                    throw new HandlerError(
-                      'WORKFLOW_TOOL_DENIED',
-                      'Workflow tool is not in the frozen authorized tool set',
-                      false,
-                    );
-                  }
-                  const configuredArguments = step.input.arguments;
-                  const argumentsValue =
-                    configuredArguments &&
-                    typeof configuredArguments === 'object' &&
-                    !Array.isArray(configuredArguments)
-                      ? (configuredArguments as Record<string, unknown>)
-                      : value;
-                  const toolResult = await executeRiceTool({
-                    nativeSkills: resolved.nativeSkills,
-                    localMcp:
-                      executionSnapshot.schemaVersion === 2
-                        ? executionSnapshot.localMcp
-                        : undefined,
-                    frozenMcpTools:
-                      executionSnapshot.schemaVersion === 2
-                        ? executionSnapshot.mcpTools
-                        : [],
-                    context: execution.context,
-                    memoryReadAuthority: {
-                      scope: contentScope,
-                      worker: {
+                    record: (fact) =>
+                      appendNativeModelReceipt({
                         ...workflowLease,
-                        attempt: execution.job.attempt,
-                      },
+                        rootSessionId,
+                        routeDecisionId: decisionId,
+                        fact,
+                      }),
+                    delivered: (value) => {
+                      captured.delivery = value;
                     },
-                    managedBrowserJobAttempt: execution.job.attempt,
-                    managedBrowserJobLeaseToken: workflowLease.leaseToken,
-                    capabilities: resolved.grantedCapabilities,
-                    storageRoot:
-                      process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
-                    sessionId: kernel.sessionId,
-                    employeeId: executionSnapshot.employee.id,
-                    userMessageId,
-                    userRequest:
-                      name === 'workspace.memory.remember'
-                        ? resolved.currentUserRequest
-                        : kernel.userRequest,
-                    signal,
-                    call: {
-                      id: idempotencyKey,
-                      name,
-                      arguments: argumentsValue,
-                    },
-                  });
-                  return {
-                    output: toolResult,
-                    sideEffectCommitted: step.sideEffect !== 'none',
                   };
-                }
-                if (step.kind !== 'model' && step.kind !== 'agent_skill') {
-                  throw new HandlerError(
-                    'WORKFLOW_STEP_UNSUPPORTED',
-                    `Workflow step ${step.kind} cannot execute directly`,
-                    false,
-                  );
-                }
-                const requestedSkillId =
-                  step.kind === 'agent_skill' &&
-                  typeof step.input.agentSkillRevisionId === 'string'
-                    ? step.input.agentSkillRevisionId
-                    : null;
-                const allowedSkillIds = new Set(
-                  resolved.nativeSkills.map((skill) => skill.id),
-                );
-                if (
-                  requestedSkillId &&
-                  !allowedSkillIds.has(requestedSkillId)
-                ) {
-                  throw new HandlerError(
-                    'WORKFLOW_SKILL_DENIED',
-                    'Workflow skill is not in the frozen authorized skill set',
-                    false,
-                  );
-                }
-                const skillIds = requestedSkillId ? [requestedSkillId] : [];
-                const stepKernel = EmployeeKernelRequestSchema.parse({
-                  ...routedKernel,
-                  // A workflow input/output is not the original SQL chat
-                  // message or its final answer. Only inherited history has
-                  // a coverage identity in this synthetic step.
-                  ...(routedKernel.bootstrapContext
-                    ? {
-                        bootstrapContext: {
-                          segments: routedKernel.bootstrapContext.segments,
-                        },
-                      }
-                    : {}),
-                  systemInstructions: [
-                    routedKernel.systemInstructions,
-                    `Execute only workflow step ${step.key} (${step.name}). Return this step's business result; the Workflow Engine controls progression, approval and retry.`,
-                    ...(invocation && typeof step.input.instruction === 'string'
-                      ? [step.input.instruction]
-                      : []),
-                  ].join('\n\n'),
-                  userRequest: JSON.stringify(value),
-                  authorizedMemoryContext: [
-                    routedKernel.authorizedMemoryContext,
-                    JSON.stringify(value.dependencies),
-                  ]
-                    .filter(Boolean)
-                    .join('\n\n'),
-                  skillVersionIds: skillIds,
-                });
-                const stepResult = await adapter.execute({
-                  nativeQuestionMode,
-                  contentGuard,
-                  progress: taskProgress,
-                  nativeQuestionWait:
-                    executionSnapshot.schemaVersion === 2
-                      ? executionSnapshot.nativePreferences?.questionWait
-                      : undefined,
-                  kernel: stepKernel,
-                  nativeSkills: resolved.nativeSkills,
-                  baseSkillCatalog:
-                    executionSnapshot.schemaVersion === 2
-                      ? executionSnapshot.baseSkillCatalog
-                      : undefined,
-                  storageObjects: [],
-                  images: [],
-                  workDirectory: isolation.workDirectory,
-                  // Workflow steps keep their Run and lease while asking. The
-                  // existing zero release point selects blocking program asks.
-                  executionEnvironment: {
-                    ...isolation.environment,
-                    ALLRICE_QUESTION_RELEASE_MS: '0',
+                },
+              }
+            : undefined,
+        ...(!repairTask && !repositoryReviewTask
+          ? {
+              nativeRunAuthority: (generation: number) => () =>
+                assertNativeRunAuthority({
+                  scope: {
+                    organizationId: execution.context.organizationId,
+                    workspaceId: execution.context.workspaceId!,
+                    projectId: resolved.projectId,
                   },
-                  providerSnapshot,
-                  signal,
-                  attempt: execution.job.attempt,
-                  generation: runtime.generation,
-                  maxOutputTokens: runLimits?.maxOutputTokens,
-                  onEvent: invocation
-                    ? async (event) => {
-                        // Structured node output is private Workflow data. The
-                        // user receives the validated saved-stage receipt.
-                        if (
-                          event.type !== 'assistant.delta' &&
-                          event.type !== 'assistant.completed'
-                        )
-                          await guardedHarnessEvent(event);
-                      }
-                    : guardedHarnessEvent,
-                  authorizedToolNames: invocation
-                    ? []
-                    : authorizedTools.map((tool) => tool.name),
-                  tools: [],
-                  threadId: runtime.threadId,
-                  nativeBinding,
-                  onThreadBound: async ({
-                    threadId,
-                    resumed,
-                    replacedThreadId,
-                  }) => {
-                    runtime = await bindEmployeeConversationThread({
-                      ownership,
-                      adapterKind: adapter.kind,
-                      threadId,
-                      resumed,
-                      replacedThreadId,
-                      appendEvent: appendChatFlowEvent,
-                    });
-                    return { generation: runtime.generation };
+                  rootRunId: execution.context.runId,
+                  worker: {
+                    ...workflowLease,
+                    attempt: execution.job.attempt,
+                    generation,
                   },
-                  onTurnStarted: async ({ threadId, turnId }) => {
-                    runtime = await beginEmployeeConversationTurn({
-                      ownership,
-                      adapterKind: adapter.kind,
-                      threadId,
-                      turnId,
-                      appendEvent: appendChatFlowEvent,
-                    });
-                  },
-                });
-                await appendChatFlowEvent('turn.completed', {
-                  source: adapter.kind,
-                  threadId: stepResult.threadId ?? runtime.threadId,
-                  turnId: stepResult.turnId ?? runtime.activeTurnId,
-                  generation: runtime.generation,
-                });
-                usage.inputTokens += stepResult.usage.inputTokens;
-                usage.cachedInputTokens += stepResult.usage.cachedInputTokens;
-                usage.outputTokens += stepResult.usage.outputTokens;
-                return {
-                  output: {
-                    answer: stepResult.answer,
-                    usage: stepResult.usage,
-                    usageComplete: stepResult.usageComplete ?? false,
-                    cacheUsageKnown: stepResult.cacheUsageKnown ?? false,
-                  },
-                };
+                }),
+            }
+          : {}),
+        modelPreflight: async () =>
+          preflightSubscription(subscriptionPreflightInput),
+        contentGuard,
+        progress: taskProgress,
+        questionWait,
+        nativeQuestionWait:
+          executionSnapshot.schemaVersion === 2
+            ? executionSnapshot.nativePreferences?.questionWait
+            : undefined,
+        ...(independentDelivery
+          ? {
+              runDelivery: {
+                rootRunId: execution.context.runId,
+                bind: (generation: number) =>
+                  createRunDeliveryPort({
+                    scope: {
+                      organizationId: execution.context.organizationId,
+                      workspaceId: execution.context.workspaceId!,
+                      projectId: resolved.projectId,
+                    },
+                    rootRunId: execution.context.runId,
+                    worker: {
+                      ...workflowLease,
+                      attempt: execution.job.attempt,
+                      generation,
+                    },
+                  }),
+                pauseInput: async () => {
+                  steerPolling = false;
+                  await steerLoop;
+                  signal.throwIfAborted();
+                },
+              },
+            }
+          : {}),
+        kernel: routedKernel,
+        currentUserRequest: resolved.currentUserRequest,
+        nativeSkills:
+          repairTask || repositoryReviewTask ? [] : resolved.nativeSkills,
+        baseSkillCatalog:
+          repairTask ||
+          repositoryReviewTask ||
+          executionSnapshot.schemaVersion !== 2
+            ? undefined
+            : executionSnapshot.baseSkillCatalog,
+        storageObjects: selectedStorageObjects,
+        images: harnessImages,
+        workDirectory: isolation.workDirectory,
+        executionEnvironment: {
+          ...isolation.environment,
+          ...(repairTask?.frozen.version === 2
+            ? {
+                ALLRICE_MAINTENANCE_OUTPUT_TOKENS: String(
+                  repairTask.frozen.maintenance.maxOutputTokens,
+                ),
+              }
+            : {}),
+        },
+        providerSnapshot,
+        signal: nativeSignal,
+        attempt: execution.job.attempt,
+        generation: runtime.generation,
+        maxOutputTokens: runLimits?.maxOutputTokens,
+        onEvent: async (event) => {
+          if (
+            event.type === 'tool.completed' &&
+            event.source === 'harness' &&
+            (event.name === 'web.search' ||
+              event.name === 'web.fetch' ||
+              event.name === 'browser.run' ||
+              event.name === 'wechat.article.search' ||
+              event.name === 'wechat.article.read')
+          ) {
+            await recordToolBrokerAudit({
+              context: execution.context,
+              toolName: event.name,
+              metadata: {
+                skillVersionIds: resolved.nativeSkills.map((skill) => skill.id),
+                capability: 'network:outbound',
               },
             });
-            const answers = Object.values(durable.output).flatMap((value) =>
-              value &&
-              typeof value === 'object' &&
-              typeof (value as { answer?: unknown }).answer === 'string'
-                ? [(value as { answer: string }).answer]
-                : [],
-            );
-            const savedSummary = objectInput(durable.output.save).summary;
-            return {
-              answer:
-                (invocation && typeof savedSummary === 'string'
-                  ? savedSummary
-                  : answers.at(-1)) ??
-                `工作流已完成，共执行 ${selectedWorkflow.revision.definition.steps.length} 个步骤。`,
-              usage,
-              ...(invocation
-                ? workflowModelUsage(
-                    selectedWorkflow.revision.definition,
-                    durable.output,
-                  )
-                : {}),
-              provider: providerName(providerSnapshot),
-              model: providerSnapshot.model,
-              threadId: runtime.threadId,
-              turnId: runtime.activeTurnId,
-            };
-          })()
-        : await adapter
-            .execute({
-              nativeQuestionMode,
-              nativeSubagents:
-                !repairTask &&
-                !repositoryReviewTask &&
-                executionSnapshot.schemaVersion === 2
-                  ? executionSnapshot.nativePreferences?.subagents
-                  : undefined,
-              nativeAccounting:
-                adapter.kind === 'dsh'
-                  ? {
-                      bind: (rootSessionId: string) => {
-                        const decisionId = routeDecision!.id;
-                        let price;
-                        try {
-                          price =
-                            readModelPricing()[
-                              `${providerName(providerSnapshot)}:${providerSnapshot.model}`
-                            ];
-                        } catch {
-                          /* Optional tariff stays unknown. */
-                        }
-                        const captured: NativeModelSettlement =
-                          (nativeSettlement = {
-                            rootSessionId,
-                            jobId: execution.job.id,
-                            jobAttempt: execution.job.attempt,
-                            delivery: { calls: 0, complete: false },
-                            price,
-                          });
-                        return {
-                          record: (fact) =>
-                            appendNativeModelReceipt({
-                              ...workflowLease,
-                              rootSessionId,
-                              routeDecisionId: decisionId,
-                              fact,
-                            }),
-                          delivered: (value) => {
-                            captured.delivery = value;
+          }
+          await guardedHarnessEvent(event);
+        },
+        authorizedToolNames: authorizedTools.map((tool) => tool.name),
+        tools,
+        onToolCall:
+          tools.length > 0
+            ? (call) =>
+                delivery.execute(call, () =>
+                  taskTool
+                    ? taskTool(call)
+                    : executeRiceTool({
+                        nativeSkills: resolved.nativeSkills,
+                        localMcp:
+                          executionSnapshot.schemaVersion === 2
+                            ? executionSnapshot.localMcp
+                            : undefined,
+                        frozenMcpTools:
+                          executionSnapshot.schemaVersion === 2
+                            ? executionSnapshot.mcpTools
+                            : [],
+                        context: execution.context,
+                        memoryReadAuthority: {
+                          scope: contentScope,
+                          worker: {
+                            ...workflowLease,
+                            attempt: execution.job.attempt,
                           },
-                        };
-                      },
-                    }
-                  : undefined,
-              ...(!repairTask && !repositoryReviewTask
-                ? {
-                    nativeRunAuthority: (generation: number) => () =>
-                      assertNativeRunAuthority({
+                        },
+                        managedBrowserJobAttempt: execution.job.attempt,
+                        managedBrowserJobLeaseToken: workflowLease.leaseToken,
+                        capabilities: resolved.grantedCapabilities,
+                        storageRoot:
+                          process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
+                        skillVersionIds: resolved.nativeSkills.map(
+                          (skill) => skill.id,
+                        ),
+                        sessionId:
+                          typeof input.sessionId === 'string'
+                            ? input.sessionId
+                            : undefined,
+                        employeeId: executionSnapshot.employee.id,
+                        userMessageId,
+                        userRequest:
+                          call.name === 'workspace.memory.remember'
+                            ? resolved.currentUserRequest
+                            : kernel.userRequest,
+                        signal,
+                        call,
+                      }),
+                )
+            : undefined,
+        threadId: runtime.threadId,
+        nativeBinding,
+        onThreadBound: async ({ threadId, resumed, replacedThreadId }) => {
+          runtime = await bindEmployeeConversationThread({
+            ownership,
+            adapterKind: adapter.kind,
+            threadId,
+            resumed,
+            replacedThreadId,
+            appendEvent: appendChatFlowEvent,
+          });
+          return { generation: runtime.generation };
+        },
+        onTurnStarted: async ({ threadId, turnId }) => {
+          runtime = await beginEmployeeConversationTurn({
+            ownership,
+            adapterKind: adapter.kind,
+            threadId,
+            turnId,
+            appendEvent: appendChatFlowEvent,
+          });
+          if (steerLoop || (independentDelivery && !steerPolling)) return;
+          const generation = runtime.generation;
+          steerLoop = pollEmployeeConversationSteers({
+            ownership,
+            generation: runtime.generation,
+            threadId,
+            turnId,
+            signal: nativeSignal,
+            adapter,
+            polling: () => steerPolling,
+            pollNativeControl:
+              !repairTask && !repositoryReviewTask
+                ? () =>
+                    pollNativeSubagentControl({
+                      authority: {
                         scope: {
-                          organizationId: execution.context.organizationId,
-                          workspaceId: execution.context.workspaceId!,
+                          organizationId: ownership.organizationId,
+                          workspaceId: ownership.workspaceId,
                           projectId: resolved.projectId,
                         },
-                        rootRunId: execution.context.runId,
+                        rootRunId: ownership.runId,
                         worker: {
                           ...workflowLease,
                           attempt: execution.job.attempt,
                           generation,
                         },
-                      }),
-                  }
-                : {}),
-              modelPreflight: async () =>
-                preflightSubscription(subscriptionPreflightInput),
-              contentGuard,
-              progress: taskProgress,
-              questionWait,
-              nativeQuestionWait:
-                executionSnapshot.schemaVersion === 2
-                  ? executionSnapshot.nativePreferences?.questionWait
-                  : undefined,
-              ...(independentDelivery
-                ? {
-                    runDelivery: {
-                      rootRunId: execution.context.runId,
-                      bind: (generation: number) =>
-                        createRunDeliveryPort({
-                          scope: {
-                            organizationId: execution.context.organizationId,
-                            workspaceId: execution.context.workspaceId!,
-                            projectId: resolved.projectId,
-                          },
-                          rootRunId: execution.context.runId,
-                          worker: {
-                            ...workflowLease,
-                            attempt: execution.job.attempt,
-                            generation,
-                          },
-                        }),
-                      pauseInput: async () => {
-                        steerPolling = false;
-                        await steerLoop;
-                        signal.throwIfAborted();
                       },
-                    },
-                  }
-                : {}),
-              kernel: routedKernel,
-              currentUserRequest: resolved.currentUserRequest,
-              nativeSkills:
-                repairTask || repositoryReviewTask ? [] : resolved.nativeSkills,
-              baseSkillCatalog:
-                repairTask ||
-                repositoryReviewTask ||
-                executionSnapshot.schemaVersion !== 2
-                  ? undefined
-                  : executionSnapshot.baseSkillCatalog,
-              storageObjects: selectedStorageObjects,
-              images: harnessImages,
-              workDirectory: isolation.workDirectory,
-              executionEnvironment: {
-                ...isolation.environment,
-                ...(repairTask?.frozen.version === 2
-                  ? {
-                      ALLRICE_MAINTENANCE_OUTPUT_TOKENS: String(
-                        repairTask.frozen.maintenance.maxOutputTokens,
-                      ),
-                    }
-                  : {}),
-              },
-              providerSnapshot,
-              signal: nativeSignal,
-              attempt: execution.job.attempt,
-              generation: runtime.generation,
-              maxOutputTokens: runLimits?.maxOutputTokens,
-              onEvent: async (event) => {
-                if (
-                  event.type === 'tool.completed' &&
-                  event.source === 'harness' &&
-                  (event.name === 'web.search' ||
-                    event.name === 'web.fetch' ||
-                    event.name === 'browser.run' ||
-                    event.name === 'wechat.article.search' ||
-                    event.name === 'wechat.article.read')
-                ) {
-                  await recordToolBrokerAudit({
-                    context: execution.context,
-                    toolName: event.name,
-                    metadata: {
-                      skillVersionIds: resolved.nativeSkills.map(
-                        (skill) => skill.id,
-                      ),
-                      capability: 'network:outbound',
-                    },
-                  });
-                }
-                await guardedHarnessEvent(event);
-              },
-              authorizedToolNames: authorizedTools.map((tool) => tool.name),
-              tools,
-              onToolCall:
-                tools.length > 0
-                  ? (call) =>
-                      delivery.execute(call, () =>
-                        taskTool
-                          ? taskTool(call)
-                          : executeRiceTool({
-                              nativeSkills: resolved.nativeSkills,
-                              localMcp:
-                                executionSnapshot.schemaVersion === 2
-                                  ? executionSnapshot.localMcp
-                                  : undefined,
-                              frozenMcpTools:
-                                executionSnapshot.schemaVersion === 2
-                                  ? executionSnapshot.mcpTools
-                                  : [],
-                              context: execution.context,
-                              memoryReadAuthority: {
-                                scope: contentScope,
-                                worker: {
-                                  ...workflowLease,
-                                  attempt: execution.job.attempt,
-                                },
-                              },
-                              managedBrowserJobAttempt: execution.job.attempt,
-                              managedBrowserJobLeaseToken:
-                                workflowLease.leaseToken,
-                              capabilities: resolved.grantedCapabilities,
-                              storageRoot:
-                                process.env.ALLRICE_STORAGE_ROOT ??
-                                '.local/storage',
-                              skillVersionIds: resolved.nativeSkills.map(
-                                (skill) => skill.id,
-                              ),
-                              sessionId:
-                                typeof input.sessionId === 'string'
-                                  ? input.sessionId
-                                  : undefined,
-                              employeeId: executionSnapshot.employee.id,
-                              userMessageId,
-                              userRequest:
-                                call.name === 'workspace.memory.remember'
-                                  ? resolved.currentUserRequest
-                                  : kernel.userRequest,
-                              signal,
-                              call,
-                            }),
-                      )
-                  : undefined,
-              threadId: runtime.threadId,
-              nativeBinding,
-              onThreadBound: async ({
-                threadId,
-                resumed,
-                replacedThreadId,
-              }) => {
-                runtime = await bindEmployeeConversationThread({
-                  ownership,
-                  adapterKind: adapter.kind,
-                  threadId,
-                  resumed,
-                  replacedThreadId,
-                  appendEvent: appendChatFlowEvent,
-                });
-                return { generation: runtime.generation };
-              },
-              onTurnStarted: async ({ threadId, turnId }) => {
-                runtime = await beginEmployeeConversationTurn({
-                  ownership,
-                  adapterKind: adapter.kind,
-                  threadId,
-                  turnId,
-                  appendEvent: appendChatFlowEvent,
-                });
-                if (steerLoop || (independentDelivery && !steerPolling)) return;
-                const generation = runtime.generation;
-                steerLoop = pollEmployeeConversationSteers({
-                  ownership,
-                  generation: runtime.generation,
-                  threadId,
-                  turnId,
-                  signal: nativeSignal,
-                  adapter,
-                  polling: () => steerPolling,
-                  pollNativeControl:
-                    !repairTask && !repositoryReviewTask
-                      ? () =>
-                          pollNativeSubagentControl({
-                            authority: {
-                              scope: {
-                                organizationId: ownership.organizationId,
-                                workspaceId: ownership.workspaceId,
-                                projectId: resolved.projectId,
-                              },
-                              rootRunId: ownership.runId,
-                              worker: {
-                                ...workflowLease,
-                                attempt: execution.job.attempt,
-                                generation,
-                              },
-                            },
-                            ownerId: execution.job.ownerId,
-                            sessionId: ownership.sessionId,
-                            adapter,
-                            open: () => steerPolling && !nativeSignal.aborted,
-                            revoke: (error) => controlFailure.abort(error),
-                          })
-                      : undefined,
-                });
-                void steerLoop.catch(() => {}); // The existing finally reports it.
-              },
-            })
-            .finally(async () => {
-              steerPolling = false;
-              await steerLoop?.catch((error) => {
-                console.error('[M5] Active turn steer polling failed', {
-                  sessionId: input.sessionId,
-                  message:
-                    error instanceof Error ? error.message : 'unknown error',
-                });
-              });
-              if (
-                !independentDelivery &&
-                runtime.threadId &&
-                runtime.activeTurnId
-              ) {
-                await pollEmployeeConversationSteers({
-                  ownership,
-                  generation: runtime.generation,
-                  threadId: runtime.threadId,
-                  turnId: runtime.activeTurnId,
-                  signal,
-                  adapter,
-                  polling: () => false,
-                  drain: true,
-                });
-              }
-            });
+                      ownerId: execution.job.ownerId,
+                      sessionId: ownership.sessionId,
+                      adapter,
+                      open: () => steerPolling && !nativeSignal.aborted,
+                      revoke: (error) => controlFailure.abort(error),
+                    })
+                : undefined,
+          });
+          void steerLoop.catch(() => {}); // The existing finally reports it.
+        },
+      })
+      .finally(async () => {
+        steerPolling = false;
+        await steerLoop?.catch((error) => {
+          console.error('[M5] Active turn steer polling failed', {
+            sessionId: input.sessionId,
+            message: error instanceof Error ? error.message : 'unknown error',
+          });
+        });
+        if (!independentDelivery && runtime.threadId && runtime.activeTurnId) {
+          await pollEmployeeConversationSteers({
+            ownership,
+            generation: runtime.generation,
+            threadId: runtime.threadId,
+            turnId: runtime.activeTurnId,
+            signal,
+            adapter,
+            polling: () => false,
+            drain: true,
+          });
+        }
+      });
     const waitingForProgress = !!result.waitingForUser;
     if (waitingForProgress) {
       const progress = await taskProgress?.({
@@ -2086,14 +1715,12 @@ export async function executeEmployeeRun({
         worker: workflowLease,
         attempt: execution.job.attempt,
       });
-    if (routeDecision.selectedKind !== 'workflow') {
-      await appendChatFlowEvent('turn.completed', {
-        source: adapter.kind,
-        threadId: result.threadId ?? runtime.threadId,
-        turnId: result.turnId ?? runtime.activeTurnId,
-        generation: runtime.generation,
-      });
-    }
+    await appendChatFlowEvent('turn.completed', {
+      source: adapter.kind,
+      threadId: result.threadId ?? runtime.threadId,
+      turnId: result.turnId ?? runtime.activeTurnId,
+      generation: runtime.generation,
+    });
     routeUsage = result.usage;
     // Keep subscription accounting incomplete until identity-bound receipts
     // are verified. A forged/mismatched result cannot claim successful delivery.
@@ -2224,7 +1851,6 @@ export async function executeEmployeeRun({
         ...(contentRuntime
           ? await readEmployeeReferenceCitations(contentScope)
           : []),
-        ...workflowCitations,
       ].filter(
         (citation, index, values) =>
           values.findIndex(
@@ -2260,10 +1886,6 @@ export async function executeEmployeeRun({
       routeUsageComplete = failedUsage.usageComplete;
       routeCacheUsageKnown = failedUsage.cacheUsageKnown;
     }
-    if (error instanceof WorkflowPaused) {
-      outcome = 'idle';
-      throw error;
-    }
     outcome = signal.aborted ? 'interrupted' : 'error';
     if (runtime.activeTurnId) {
       await appendChatFlowEvent(
@@ -2285,8 +1907,7 @@ export async function executeEmployeeRun({
         organizationId: execution.context.organizationId,
         workspaceId: execution.context.workspaceId!,
         ...(!routeExecutionStarted ||
-        (decision.selectedKind !== 'workflow' &&
-          error instanceof DshStartupRejection &&
+        (error instanceof DshStartupRejection &&
           error.belongsTo(execution.context.runId, execution.job.attempt))
           ? { undispatched: { subscriptionSnapshotCreated } }
           : {}),

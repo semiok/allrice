@@ -1,3 +1,8 @@
+import { enqueueRun } from '../execution/queue.ts';
+import {
+  seedLegacyWorkflowPackage,
+  seedLegacyWorkflowBinding,
+} from './legacy-workflow.fixture.ts';
 /** Real PostgreSQL/StoragePort integration. Opt-in isolated fixture only; no
  * provider, Worker, Dev server, real tenant or native Host is invoked here. */
 import { randomUUID } from 'node:crypto';
@@ -40,17 +45,16 @@ import { manageEmployeeAssignments } from '../employees/employeehub.ts';
 import { authorizeFixturePlatformAdministrator } from '../platform-authority.fixture.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
 import {
-  createWorkflow,
-  manageEmployeeCapabilities,
   resolveEmployeeCapabilitiesForRun,
+  manageEmployeeCapabilities,
+  updateCapabilityStatus,
+  updateCapabilityRevisionStatus,
 } from './capability-registry.ts';
 import {
   assertWorkflowPackageExecution,
   listWorkflowPackages,
   readWorkflowPackageSourceForInstance,
-  registerWorkflowPackage,
   resolveWorkflowPackageForInstance,
-  setWorkflowPackageBinding,
 } from './workflow-packages.ts';
 import { workflowPackageBytesChecksum } from './workflow-package-model.ts';
 
@@ -411,12 +415,9 @@ suite(
     const register = (
       s: Setup,
       input: Awaited<ReturnType<typeof packageInput>>['request'],
-    ) =>
-      registerWorkflowPackage(s.owner.context, input, {
-        storage: runtimeFixtureStorage(fixture.db),
-      });
+    ) => seedLegacyWorkflowPackage(s.owner.context, input);
     const enable = (s: Setup, value: WorkflowPackage, expectedRevision = 0) =>
-      setWorkflowPackageBinding(s.owner.context, {
+      seedLegacyWorkflowBinding(s.owner.context, {
         ...selection(s, value),
         requestId: randomUUID(),
         expectedRevision,
@@ -438,7 +439,59 @@ suite(
       return runId;
     }
 
-    it('registers actual ready source bytes with exact published procedure pins and source readback', async () => {
+    it('rejects retired execution and admin writes, preserving old bindings during ordinary capability updates', async () => {
+      const s = await setup();
+      await authorizeFixturePlatformAdministrator(fixture.db, s.owner.user.id);
+      const methods = await installMethods(s);
+      const prepared = await packageInput(s, methods.common);
+      const value = await register(s, prepared.request);
+      await enable(s, value);
+      const before =
+        await fixture.db`select * from allrice_employee_workflow_bindings where instance_id=${s.instance.id}`;
+      await expect(
+        enqueueRun(s.owner.context, {
+          workspaceId: s.owner.workspaceId,
+          type: 'allrice.workflow.run',
+          idempotencyKey: randomUUID(),
+          input: { prompt: '执行旧工作流' },
+        }),
+      ).rejects.toMatchObject({ code: 'policy_denied' });
+      await expect(
+        manageEmployeeCapabilities(s.owner.context, {
+          workspaceId: s.owner.workspaceId,
+          employeeId: s.employeeId,
+          workflowRevisionIds: [value.workflow.id],
+        }),
+      ).rejects.toMatchObject({ code: 'invalid_binding' });
+      await expect(
+        updateCapabilityStatus(s.owner.context, value.workflow.workflowId, {
+          workspaceId: s.owner.workspaceId,
+          kind: 'workflow',
+          status: 'archived',
+        }),
+      ).rejects.toMatchObject({ code: 'invalid_binding' });
+      await expect(
+        updateCapabilityRevisionStatus(s.owner.context, value.workflow.id, {
+          workspaceId: s.owner.workspaceId,
+          kind: 'workflow',
+          status: 'deprecated',
+        }),
+      ).rejects.toMatchObject({ code: 'invalid_binding' });
+      await manageEmployeeCapabilities(s.owner.context, {
+        workspaceId: s.owner.workspaceId,
+        employeeId: s.employeeId,
+        workflowRevisionIds: [],
+        knowledgeRevisionIds: [],
+      });
+      expect(
+        await fixture.db`select * from allrice_employee_workflow_bindings where instance_id=${s.instance.id}`,
+      ).toEqual(before);
+      expect(
+        await fixture.db`select id from allrice_jobs where organization_id=${s.owner.organizationId} and payload->>'type'='allrice.workflow.run'`,
+      ).toEqual([]);
+    });
+
+    it('reads existing ready source bytes with exact published procedure pins', async () => {
       const s = await setup();
       const methods = await installMethods(s);
       const prepared = await packageInput(s, methods.common);
@@ -547,46 +600,6 @@ suite(
       30_000,
     );
 
-    it('serializes identical concurrent registration into one immutable version and rejects changed-input replay', async () => {
-      const s = await setup();
-      const methods = await installMethods(s);
-      const { request } = await packageInput(s, methods.common);
-      const [first, replay] = await Promise.all([
-        register(s, request),
-        register(s, request),
-      ]);
-      expect(replay).toEqual(first);
-      const [counts] = await fixture.db`select
-      (select count(*)::int from allrice_workflow_packages where owner_id=${s.owner.user.id}) as packages,
-      (select count(*)::int from allrice_workflow_package_requests where owner_id=${s.owner.user.id} and request_id=${request.requestId}) as receipts`;
-      expect(counts).toMatchObject({ packages: 1, receipts: 1 });
-      await expect(
-        register(s, {
-          ...request,
-          description: 'Different input under the same request',
-        }),
-      ).rejects.toMatchObject({ code: 'conflict' });
-      const bindRequest = {
-        ...selection(s, first),
-        requestId: randomUUID(),
-        expectedRevision: 0,
-        enabled: true,
-      };
-      const bound = await setWorkflowPackageBinding(
-        s.owner.context,
-        bindRequest,
-      );
-      expect(
-        await setWorkflowPackageBinding(s.owner.context, bindRequest),
-      ).toEqual(bound);
-      await expect(
-        setWorkflowPackageBinding(s.owner.context, {
-          ...bindRequest,
-          enabled: false,
-        }),
-      ).rejects.toMatchObject({ code: 'conflict' });
-    }, 30_000);
-
     it('keeps v1 immutable through a v2 upgrade, preserves its frozen Run and refuses historical selection for a new Run', async () => {
       const s = await setup();
       const methods = await installMethods(s);
@@ -653,14 +666,6 @@ suite(
       await expect(
         fixture.db`update allrice_workflow_revisions set name='Tampered after revocation' where id=${v1.workflow.id}`,
       ).rejects.toThrow('immutable');
-      const stale = await packageInput(s, methods.common, {
-        workflowId: v1.workflow.workflowId,
-        expectedRevision: 1,
-        definitionLabel: 'stale-CAS',
-      });
-      await expect(register(s, stale.request)).rejects.toMatchObject({
-        code: 'conflict',
-      });
     }, 30_000);
 
     it('enforces owner, sibling-instance, general-instance, workspace and company isolation without granting source metadata', async () => {
@@ -685,13 +690,6 @@ suite(
         }),
       ).rejects.toMatchObject({ code: 'not_found' });
       await expect(
-        registerWorkflowPackage(
-          s.owner.context,
-          { ...request, requestId: randomUUID(), instanceId: s.assignmentId },
-          { storage: runtimeFixtureStorage(fixture.db) },
-        ),
-      ).rejects.toThrow();
-      await expect(
         resolveWorkflowPackageForInstance(s.owner.context, {
           ...selection(s, value),
           workspaceId: randomUUID(),
@@ -704,29 +702,6 @@ suite(
           workspaceId: foreign.workspaceId,
         }),
       ).rejects.toThrow();
-      await expect(
-        setWorkflowPackageBinding(s.owner.context, {
-          ...selection(s, value),
-          instanceId: s.sibling.id,
-          requestId: randomUUID(),
-          expectedRevision: 0,
-          enabled: true,
-        }),
-      ).rejects.toMatchObject({ code: 'not_found' });
-      const peerSource = await storedSource(
-        s.peer.context,
-        Buffer.from('Foreign owner source'),
-      );
-      await expect(
-        register(s, {
-          ...request,
-          requestId: randomUUID(),
-          manifest: {
-            ...request.manifest,
-            source: { objectId: peerSource.id, checksum: peerSource.checksum },
-          },
-        }),
-      ).rejects.toMatchObject({ code: 'source_unavailable' });
     }, 30_000);
 
     it('does not make scene-only bindings runnable from common or another scene', async () => {
@@ -791,76 +766,7 @@ suite(
       expect((await read(s.otherSceneId)).dto).not.toHaveProperty('body');
     }, 30_000);
 
-    it('preserves legacy NULL employee bindings across private activation and preserves private bindings across legacy replacement', async () => {
-      const s = await setup();
-      await authorizeFixturePlatformAdministrator(fixture.db, s.owner.user.id);
-      const legacy = await createWorkflow(s.owner.context, {
-        workspaceId: s.owner.workspaceId,
-        slug: `legacy-${randomUUID()}`,
-        name: 'Legacy employee workflow',
-        description: 'Original NULL scope semantics',
-        definition: WorkflowDefinitionSchema.parse({
-          schemaVersion: 1,
-          steps: [{ key: 'read', name: 'Legacy read', kind: 'knowledge' }],
-        }),
-      });
-      const manage = () =>
-        manageEmployeeCapabilities(s.owner.context, {
-          workspaceId: s.owner.workspaceId,
-          employeeId: s.employeeId,
-          agentSkills: [],
-          knowledgeRevisionIds: [],
-          workflowRevisionIds: [legacy.id],
-        });
-      await manage();
-      const [oldBinding] =
-        await fixture.db`select * from allrice_employee_workflow_bindings where workflow_revision_id=${legacy.id}`;
-      const methods = await installMethods(s);
-      const { request } = await packageInput(s, methods.common);
-      const value = await register(s, request);
-      const privateBinding = await enable(s, value);
-      await manage();
-      const [preserved] =
-        await fixture.db`select * from allrice_employee_workflow_bindings where id=${oldBinding!.id}`;
-      expect(preserved).toMatchObject({
-        enabled: true,
-        instance_id: null,
-        owner_id: null,
-        assignment_id: null,
-        scene_id: null,
-        workflow_id: null,
-        package_checksum: null,
-      });
-      const [privateRow] =
-        await fixture.db`select enabled,workflow_revision_id from allrice_employee_workflow_bindings where id=${privateBinding.id}`;
-      expect(privateRow).toMatchObject({
-        enabled: true,
-        workflow_revision_id: value.workflow.id,
-      });
-      const legacyOnly = await resolveEmployeeCapabilitiesForRun({
-        organizationId: s.owner.organizationId,
-        workspaceId: s.owner.workspaceId,
-        employeeId: s.employeeId,
-        actorId: s.owner.user.id,
-      });
-      expect(
-        legacyOnly.workflows.map((binding) => binding.revision.id),
-      ).toEqual([legacy.id]);
-      await expect(
-        manageEmployeeCapabilities(s.owner.context, {
-          workspaceId: s.owner.workspaceId,
-          employeeId: s.employeeId,
-          workflowRevisionIds: [value.workflow.id],
-        }),
-      ).rejects.toMatchObject({ code: 'invalid_binding' });
-      await expect(fixture.db`insert into allrice_employee_workflow_bindings
-      (organization_id,workspace_id,employee_id,workflow_revision_id,bound_by)
-      values(${s.owner.organizationId},${s.owner.workspaceId},${s.employeeId},${value.workflow.id},${s.owner.user.id})`).rejects.toThrow(
-        'employee-wide',
-      );
-    }, 30_000);
-
-    it('rejects new and frozen admission immediately after the exact binding is disabled, including stale enable replay', async () => {
+    it('rejects new and frozen admission immediately after the exact binding is disabled', async () => {
       const s = await setup();
       const methods = await installMethods(s);
       const { request } = await packageInput(s, methods.common);
@@ -871,11 +777,11 @@ suite(
         expectedRevision: 0,
         enabled: true,
       };
-      const bound = await setWorkflowPackageBinding(
+      const bound = await seedLegacyWorkflowBinding(
         s.owner.context,
         enableRequest,
       );
-      const disabled = await setWorkflowPackageBinding(s.owner.context, {
+      const disabled = await seedLegacyWorkflowBinding(s.owner.context, {
         ...selection(s, value),
         requestId: randomUUID(),
         expectedRevision: bound.revision,
@@ -891,9 +797,6 @@ suite(
           frozenPackageDigest: value.checksum,
         }),
       ).rejects.toMatchObject({ code: 'source_unavailable' });
-      await expect(
-        setWorkflowPackageBinding(s.owner.context, enableRequest),
-      ).rejects.toMatchObject({ code: 'conflict' });
       expect(
         (
           await resolveWorkflowPackageForInstance(
@@ -947,7 +850,7 @@ suite(
       ).rejects.toThrow();
     }, 30_000);
 
-    it('keeps the old executable while a new method awaits synchronization, without registering a stale method pin again', async () => {
+    it('keeps the old executable while a new method awaits synchronization', async () => {
       const s = await setup();
       const methods = await installMethods(s);
       const { request } = await packageInput(s, methods.common);
@@ -960,76 +863,6 @@ suite(
       });
       expect(state.syncStatus).toBe('method_changed');
       expect(state.package.manifest.method).toEqual(methods.common.method);
-      await expect(
-        register(s, { ...request, requestId: randomUUID() }),
-      ).rejects.toMatchObject({ code: 'source_changed' });
     }, 30_000);
-
-    it.each([
-      'method_bytes',
-      'file_hash',
-      'object_hash',
-      'definition_hash',
-      'method_pin',
-    ] as const)(
-      'rejects the real source %s counterexample without committing a package',
-      async (fault) => {
-        const s = await setup();
-        const methods = await installMethods(s, '实际保存的方法正文\n');
-        expect(methods.common.body).toBe('实际保存的方法正文');
-        const prepared = await packageInput(s, methods.common, {
-          ...(fault === 'method_bytes'
-            ? { methodFileBody: `${methods.common.body}\n` }
-            : {}),
-          fileHashFault: fault === 'file_hash',
-        });
-        if (fault === 'object_hash') {
-          // Deliberate corruption inside this isolated fixture's storage, while DB
-          // and manifest retain their original exact object checksum.
-          const bytes = Buffer.from('tampered physical package bytes');
-          await runtimeFixtureStorage(fixture.db).put(
-            {
-              ...prepared.source,
-              checksum: workflowPackageBytesChecksum(bytes),
-              sizeBytes: bytes.length,
-            },
-            new ReadableStream<Uint8Array>({
-              start(controller) {
-                controller.enqueue(bytes);
-                controller.close();
-              },
-            }),
-          );
-        }
-        const request =
-          fault === 'definition_hash'
-            ? {
-                ...prepared.request,
-                manifest: {
-                  ...prepared.request.manifest,
-                  definitionChecksum: `sha256:${'f'.repeat(64)}`,
-                },
-              }
-            : fault === 'method_pin'
-              ? {
-                  ...prepared.request,
-                  manifest: {
-                    ...prepared.request.manifest,
-                    method: {
-                      ...prepared.request.manifest.method,
-                      digest: `sha256:${'f'.repeat(64)}`,
-                    },
-                  },
-                }
-              : prepared.request;
-        await expect(register(s, request)).rejects.toMatchObject({
-          code: 'source_changed',
-        });
-        const [row] =
-          await fixture.db`select count(*)::int as count from allrice_workflow_packages where owner_id=${s.owner.user.id}`;
-        expect(row!.count).toBe(0);
-      },
-      30_000,
-    );
   },
 );

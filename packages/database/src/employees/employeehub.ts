@@ -49,7 +49,6 @@ import {
   UuidSchema,
   type EmployeeManifest,
   type EmployeeExecutionSnapshot,
-  type BrandContentWorkflowInvocation,
   type RequestContext,
   type SkillCapability,
   type StorageObjectSchema,
@@ -1168,7 +1167,6 @@ export async function prepareEmployeeRunBinding(
     sessionId: string;
     userMessageId: string;
     assistantMessageId: string;
-    workflowInvocation?: BrandContentWorkflowInvocation;
     promptSnapshot: EmployeeRunBinding['promptSnapshot'];
   },
   transaction?: TransactionSql,
@@ -1245,66 +1243,10 @@ export async function prepareEmployeeRunBinding(
       // Current admission requires a real instance; historical seed readers
       // can omit the optional instance snapshot and retain an empty directory.
       instanceId: instance?.id,
-      sceneId: input.workflowInvocation?.sceneId ?? null,
+      sceneId: null,
     },
     transaction,
   );
-  if (input.workflowInvocation) {
-    const { BrandContentWorkflowInvocationSchema } =
-      await import('@allrice/contracts');
-    const invocation = BrandContentWorkflowInvocationSchema.parse(
-      input.workflowInvocation,
-    );
-    if (
-      !instance ||
-      instance.kind !== 'custom' ||
-      invocation.instanceId !== instance.id
-    )
-      throw new DataAccessError('authorization_denied');
-    const { assertBrandContentWorkflowStart } =
-      await import('../brand-content/workflow-start.ts');
-    await assertBrandContentWorkflowStart(
-      input.context,
-      input.sessionId,
-      input.userMessageId,
-      invocation,
-      transaction,
-    );
-    const { assertWorkflowPackageExecution } =
-      await import('../capabilities/workflow-packages.ts');
-    const resolvedPackage = await assertWorkflowPackageExecution(
-      { ...input.context, workspaceId: input.workspaceId },
-      {
-        workspaceId: input.workspaceId,
-        instanceId: instance.id,
-        sceneId: invocation.sceneId,
-        workflowRevisionId: invocation.workflowRevisionId,
-        frozenPackageDigest: invocation.packageDigest,
-      },
-      transaction,
-    );
-    if (
-      !resolvedPackage.binding ||
-      resolvedPackage.package.checksum !== invocation.packageDigest ||
-      resolvedPackage.package.manifest.templateKey !== invocation.templateKey
-    )
-      throw new DataAccessError('authorization_denied');
-    // A persisted start may predate a pointer upgrade. Its verified immutable
-    // revision must enter the Run snapshot, rather than today's directory
-    // revision. Only the server-owned start receipt permits this old pin.
-    const frozen = resolvedPackage.package.workflow;
-    capabilityDirectory.workflows = capabilityDirectory.workflows.filter(
-      (binding) => binding.revision.workflowId !== frozen.workflowId,
-    );
-    capabilityDirectory.workflows.push({
-      bindingId: resolvedPackage.binding.id,
-      revision: frozen,
-      effective: true,
-      disabledReason: null,
-      boundBy: resolvedPackage.package.ownerId,
-      boundAt: resolvedPackage.binding.boundAt,
-    });
-  }
   const mutableSkillRows = await sql<
     {
       id: string;
@@ -1592,9 +1534,6 @@ export async function prepareEmployeeRunBinding(
     executionSnapshot: {
       schemaVersion: 2,
       instance,
-      ...(input.workflowInvocation
-        ? { workflowInvocation: input.workflowInvocation }
-        : {}),
       content,
       ...(baseSkillCatalog ? { baseSkillCatalog } : {}),
       ...(personalSkills ? { personalSkills } : {}),
@@ -1656,14 +1595,12 @@ export async function prepareEmployeeRunBinding(
               ),
             ),
           ],
-          workflowIds: capabilityDirectory.workflows.map(
-            (binding) => binding.revision.id,
-          ),
+          workflowIds: [],
         },
         skillBindings:
           FrozenEmployeeSkillBindingSchema.array().parse(skillBindings),
         agentSkills: [],
-        workflows: capabilityDirectory.workflows,
+        workflows: [],
         knowledge: capabilityDirectory.knowledge,
         resolvedForActorId: actorId,
       },
@@ -1692,6 +1629,7 @@ export async function resolveEmployeeExecution(input: {
       native_skills: unknown;
       execution_snapshot: unknown;
       native_execution_binding: unknown;
+      legacy_workflow_execution: boolean;
       native_root_origin: { schemaVersion?: number } | null;
       session_id: string;
       project_id: string | null;
@@ -1710,7 +1648,13 @@ export async function resolveEmployeeExecution(input: {
       er.execution_snapshot,er.native_execution_binding,er.session_id,er.employee_version_id,
       c.project_id,c.native_root_origin,v.config_checksum,bv.id birth_version_id,bv.manifest birth_manifest,bv.config_checksum birth_config_checksum,
       m.content->>'text' current_user_request,
-      v.system_prompt, v.manifest
+      v.system_prompt, v.manifest,
+      (exists (select 1 from allrice_workflow_runs wr
+        where wr.run_id=er.run_id and wr.organization_id=er.organization_id
+          and wr.workspace_id=er.workspace_id and wr.owner_id=er.owner_id)
+       or exists (select 1 from allrice_route_decisions rd
+        where rd.run_id=er.run_id and rd.organization_id=er.organization_id
+          and rd.workspace_id=er.workspace_id and rd.selected_kind='workflow')) legacy_workflow_execution
     from allrice_employee_runs er
     join allrice_employee_versions v on v.id = er.employee_version_id
       and v.organization_id=er.organization_id and v.workspace_id=er.workspace_id
@@ -1817,6 +1761,9 @@ export async function resolveEmployeeExecution(input: {
     storageObject: ReturnType<typeof StorageObjectSchema.parse>;
   }[] = [];
   return {
+    // Run identity spans attempts; a recovered legacy task must never become
+    // a fresh ordinary model turn. A passive catalog entry is not execution.
+    legacyWorkflowExecution: row.legacy_workflow_execution,
     projectId: row.project_id,
     providerSnapshot: HarnessExecutionSnapshotSchema.parse(
       row.provider_snapshot,

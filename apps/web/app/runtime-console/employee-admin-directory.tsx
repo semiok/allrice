@@ -284,16 +284,7 @@ function SavedRevision({
       ) : (
         <p>此版本没有冻结的发布技能，未用当前技能目录代替历史记录。</p>
       )}
-      <p>
-        Workflow 引用 {d.capabilities.workflowRevisionIds.length} · Knowledge
-        引用 {d.capabilities.knowledgeRevisionIds.length}
-      </p>
-      {d.capabilities.workflowRevisionIds.length > 0 && (
-        <details>
-          <summary>Workflow 版本 ID</summary>
-          <pre>{d.capabilities.workflowRevisionIds.join('\n')}</pre>
-        </details>
-      )}
+      <p>Knowledge 引用 {d.capabilities.knowledgeRevisionIds.length}</p>
       {d.capabilities.knowledgeRevisionIds.length > 0 && (
         <details>
           <summary>Knowledge 版本 ID</summary>

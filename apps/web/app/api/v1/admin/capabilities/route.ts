@@ -2,7 +2,6 @@ import {
   CapabilityRegistryError,
   DataAccessError,
   createKnowledgeSource,
-  createWorkflow,
   listCapabilityCatalog,
 } from '@allrice/database';
 
@@ -31,12 +30,6 @@ export async function POST(request: Request) {
     if (!context) throw new DataAccessError('authentication_required');
     const body = (await request.json()) as Record<string, unknown>;
     const { kind, ...input } = body;
-    if (kind === 'workflow') {
-      return Response.json(
-        { revision: await createWorkflow(context, input) },
-        { status: 201 },
-      );
-    }
     if (kind === 'knowledge') {
       return Response.json(
         { revision: await createKnowledgeSource(context, input) },

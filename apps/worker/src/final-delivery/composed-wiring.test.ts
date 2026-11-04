@@ -33,9 +33,6 @@ vi.mock('@allrice/database', () => ({
 vi.mock('../isolation.js', () => ({
   prepareExecutionIsolation: ports.isolation,
 }));
-vi.mock('../workflow-engine.js', () => ({
-  WorkflowPaused: class extends Error {},
-}));
 import { runClaimedJob } from '../job-runner.js';
 
 const body = '原文与 UTF-8 ☃️\n';

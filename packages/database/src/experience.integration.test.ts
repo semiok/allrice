@@ -42,7 +42,6 @@ import { authenticateSession, createSession } from './identity.ts';
 import { prepareStorageDelete, completeStorageDelete } from './data.ts';
 import { getBrandContentBoard } from './brand-content/reads.ts';
 import { mutateBrandContent } from './brand-content/service.ts';
-import { brandContentStageInput } from './brand-content/workflow-start.ts';
 import {
   assertBrandFeedbackInput,
   readBrandFeedback,
@@ -426,19 +425,24 @@ suite(
       await db`insert into allrice_brand_content_experience_uses
         (organization_id,workspace_id,owner_id,instance_id,brand_id,entity_id,memory_id,revision,digest,reason)
         values(${f.org},${f.workspace},${f.user},${f.instanceId},${f.brandId},${entityId},${approved.id},${approved.revision},${approved.digest},'Synthetic historical use with private source details.')`;
-      const request = {
-        workspaceId: f.workspace,
-        brandId: f.brandId,
-        requestId: randomUUID(),
-        stage: 'topics' as const,
-        platform: f.invocation.input.platform!,
-        count: 2,
-      };
       const before = await readBoard();
       expect(before.feedback).toHaveLength(2);
       expect(before.experiences).toHaveLength(1);
       expect(before.experienceUses).toHaveLength(1);
-      const frozen = brandContentStageInput(before, request);
+      const frozen = {
+        ...f.invocation.input,
+        experiences: [
+          BrandExperiencePinSchema.parse({
+            id: approved.id,
+            revision: approved.revision,
+            digest: approved.digest,
+            content: approved.content,
+            retrospectiveId: f.reportId,
+            platform: f.invocation.input.platform,
+            campaignKey: f.invocation.input.context.campaign?.key ?? null,
+          }),
+        ],
+      };
       expect(frozen.experiences?.[0]?.id).toBe(approved.id);
       await prepareStorageDelete(owner, f.evidenceId);
       await completeStorageDelete(owner, f.evidenceId);
@@ -448,23 +452,6 @@ suite(
       expect(after.retrospectives).toEqual([]);
       expect(after.experiences).toEqual([]);
       expect(after.experienceUses).toEqual([]);
-      expect(brandContentStageInput(after, request).experiences ?? []).toEqual(
-        [],
-      );
-      expect(
-        brandContentStageInput(after, {
-          ...request,
-          stage: 'retrospective',
-          feedbackIds: [valid.result.entityId],
-        }).feedback,
-      ).toHaveLength(1);
-      expect(() =>
-        brandContentStageInput(after, {
-          ...request,
-          stage: 'retrospective',
-          feedbackIds: [f.feedbackId],
-        }),
-      ).toThrow('source_unavailable');
       await expect(
         db.begin((tx) =>
           readBrandFeedback(tx, owner, ownerScope, f.brandId, f.feedbackId),

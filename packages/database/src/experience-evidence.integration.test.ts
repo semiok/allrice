@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os';
 import { LocalStorageAdapter } from '@allrice/storage';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { WorkflowDefinitionSchema } from '@allrice/contracts';
 import type {
   ExecutionContext,
   RequestContext,
@@ -41,11 +40,6 @@ import {
   rejectConversationSteer,
   cancelUnadoptedSteers,
 } from './conversation/conversation-input.ts';
-import {
-  decideWorkflowApproval,
-  ensureWorkflowRunForExecution,
-  pauseWorkflowForApproval,
-} from './execution/workflow-runtime.ts';
 import { embedWorkspaceText } from './workspace/memory-recall.ts';
 import {
   listCompanyRuleSources,
@@ -629,61 +623,6 @@ suite('MET183 incremental evidence — isolated database, no model', () => {
       } else expect(items).toEqual([]);
     },
   );
-  it('captures the original feedback when a real workflow approval rejection ends its Run', async () => {
-    const f = await fixture(),
-      r = await runningChat(f, feedback);
-    const workflowId = randomUUID(),
-      revisionId = randomUUID();
-    const definition = WorkflowDefinitionSchema.parse({
-      schemaVersion: 1,
-      steps: [
-        { key: 'review', name: 'Review synthetic task', kind: 'approval' },
-      ],
-    });
-    const [assignment] =
-      await db`select a.employee_id from allrice_employee_runs er join allrice_employee_assignments a on a.id=er.employee_assignment_id where er.run_id=${r.sent.run.id}`;
-    await db`insert into allrice_workflows(id,organization_id,workspace_id,slug,name,description,created_by) values(${workflowId},${f.org},${f.workspace},'feedback-review','Synthetic review','Synthetic review',${f.user})`;
-    await db`insert into allrice_workflow_revisions(id,organization_id,workspace_id,workflow_id,revision,name,description,definition,checksum,created_by,published_at) values(${revisionId},${f.org},${f.workspace},${workflowId},1,'Synthetic review','Synthetic review',${db.json(definition as unknown as postgres.JSONValue)},${'sha256:' + 'b'.repeat(64)},${f.user},clock_timestamp())`;
-    await db`insert into allrice_employee_workflow_bindings(organization_id,workspace_id,employee_id,workflow_revision_id,bound_by) values(${f.org},${f.workspace},${assignment!.employee_id},${revisionId},${f.user})`;
-    const context = {
-      ...execution(f),
-      runId: r.sent.run.id,
-      jobId: r.jobId,
-      worker: { type: 'worker' as const, id: r.workerId },
-    };
-    await ensureWorkflowRunForExecution({
-      context,
-      ownerId: f.user,
-      employeeId: assignment!.employee_id,
-      workflowRevisionId: revisionId,
-      sessionId: r.session.id,
-      value: {},
-    });
-    const approval = await pauseWorkflowForApproval({
-      context,
-      workerId: r.workerId,
-      jobId: r.jobId,
-      leaseToken: r.leaseToken,
-      stepKey: 'review',
-      value: {},
-    });
-    await decideWorkflowApproval(f.owner, approval.approvalId, {
-      workspaceId: f.workspace,
-      decision: 'rejected',
-      reason: 'Reject this synthetic operation',
-    });
-    const [terminal] =
-      await db`select status,experience_capture_state from allrice_employee_runs where run_id=${r.sent.run.id}`;
-    expect(terminal).toMatchObject({
-      status: 'failed',
-      experience_capture_state: 'pending',
-    });
-    await collectPendingExperienceEvidence({ database: db, limit: 16 });
-    expect((await store.list(f.owner))[0]).toMatchObject({
-      content: feedback,
-      source: { runId: r.sent.run.id },
-    });
-  });
   it('marks real completed chat jobs and keeps two ordinary owners of the same template separate', async () => {
     const f = await fixture();
     await ensureDefaultEmployee(f.neighbor, f.workspace);

@@ -17,14 +17,10 @@ import {
   BrandContentBrandSchema,
   BrandContentFileRefSchema,
   BrandContentMutationReceiptSchema,
-  StartBrandContentWorkflowSchema,
-  WorkflowPackageSchema,
-  brandContentTemplateKeys,
   type BrandContentBoard,
   type BrandContentFileRef,
   type BrandContentImage,
   type BrandContextContent,
-  type WorkflowPackage,
 } from '@allrice/contracts';
 import { DshDialog } from './dsh-upstream/Dialog';
 import css from './brand-content-panel.module.css';
@@ -40,7 +36,6 @@ const FileSchema = BrandContentFileRefSchema.extend({
 const ReadSchema = z.object({
   brands: z.array(BrandContentBrandSchema),
   board: BrandContentBoardSchema.nullable(),
-  packages: z.array(WorkflowPackageSchema),
   files: z.array(FileSchema),
 });
 type BoardRead = z.infer<typeof ReadSchema>;
@@ -49,25 +44,12 @@ type Topic = BrandContentBoard['topics'][number];
 type Article = BrandContentBoard['articles'][number];
 type Bundle = BrandContentBoard['bundles'][number];
 type Plan = BrandContentBoard['plans'][number];
-type Stage = 'topics' | 'article' | 'revision' | 'handoff' | 'retrospective';
 type Tab = 'context' | 'topics' | 'articles' | 'plans' | 'feedback';
 type Mutate = (
   input: Record<string, unknown>,
   success: string,
 ) => Promise<boolean>;
 type RegisterReminder = (plan: Plan) => Promise<void>;
-type Start = (
-  stage: Stage,
-  options?: {
-    topicId?: string;
-    articleId?: string;
-    sessionId?: string;
-    count?: number;
-    platform?: string;
-    feedbackIds?: string[];
-  },
-) => Promise<void>;
-
 export interface BrandContentPanelProps {
   embedded?: boolean;
   active?: boolean;
@@ -94,13 +76,6 @@ function BrandContentShell({
   );
 }
 
-const stageNames: Record<Stage, string> = {
-  topics: '生成选题',
-  article: '起草',
-  revision: '按意见修订',
-  handoff: '整理交接清单',
-  retrospective: '复盘发布数据',
-};
 const tabs: Array<{ key: Tab; label: string }> = [
   { key: 'context', label: '品牌资料' },
   { key: 'topics', label: '选题' },
@@ -108,15 +83,6 @@ const tabs: Array<{ key: Tab; label: string }> = [
   { key: 'plans', label: '排期与回执' },
   { key: 'feedback', label: '反馈与经验' },
 ];
-
-export function brandContentStageAvailable(
-  packages: WorkflowPackage[],
-  stage: Stage,
-) {
-  return packages.some(
-    (item) => item.manifest.templateKey === brandContentTemplateKeys[stage],
-  );
-}
 
 /** Never infer the current version from array order or a historical approval. */
 export function currentBrandContentBundle(
@@ -363,46 +329,6 @@ function BrandContentReader(props: BrandContentPanelProps) {
       setBusy(false);
     }
   };
-  const start: Start = async (stage, options = {}) => {
-    if (inFlight.current || !data?.board) return;
-    inFlight.current = true;
-    setBusy(true);
-    setError('');
-    setNotice('');
-    const input = {
-      workspaceId: props.workspaceId,
-      brandId: data.board.brand.id,
-      stage,
-      ...options,
-    };
-    try {
-      const startInput = StartBrandContentWorkflowSchema.parse({
-        ...input,
-        requestId: requestIdFor(input),
-      });
-      const result = z.object({ sessionId: z.uuid(), runId: z.uuid() }).parse(
-        await fetchJson(`${base}/workflow`, headersRef.current, {
-          method: 'POST',
-          body: JSON.stringify(startInput),
-        }),
-      );
-      if (!mounted.current) return;
-      finishRequest(input);
-      await read(data.board.brand.id);
-      if (!mounted.current) return;
-      setNotice(
-        `${stageNames[stage]}任务已启动，请在对话中查看。完成后回到工作台刷新。`,
-      );
-      props.onOpenSession(result.sessionId);
-    } catch (cause) {
-      setError(
-        errorText(cause, '任务未能启动，输入仍保留。可重试核对上次请求。'),
-      );
-    } finally {
-      inFlight.current = false;
-      setBusy(false);
-    }
-  };
   const forgetExperience = async (id: string) => {
     if (
       inFlight.current ||
@@ -607,7 +533,7 @@ function BrandContentReader(props: BrandContentPanelProps) {
             )}
             {!board && tab !== 'context' && (
               <Empty>
-                先保存品牌资料，再开始选题与写稿。
+                先保存品牌资料。
                 <button
                   type="button"
                   className={css.linkButton}
@@ -620,24 +546,20 @@ function BrandContentReader(props: BrandContentPanelProps) {
             {board && tab === 'topics' && (
               <TopicsPanel
                 board={board}
-                packages={data.packages}
                 files={data.files}
                 disabled={disabled}
                 draftKey={`${scope}.topics.${board.brand.id}`}
                 onMutate={mutate}
-                onStart={start}
                 onArticles={() => setTab('articles')}
               />
             )}
             {board && tab === 'articles' && (
               <ArticlesPanel
                 board={board}
-                packages={data.packages}
                 files={data.files}
                 disabled={disabled}
                 draftKey={`${scope}.articles`}
                 onMutate={mutate}
-                onStart={start}
                 onOpenSession={props.onOpenSession}
                 onPlans={() => setTab('plans')}
                 headers={props.headers}
@@ -648,27 +570,18 @@ function BrandContentReader(props: BrandContentPanelProps) {
                 key={board.brand.id}
                 board={board}
                 disabled={disabled}
-                available={brandContentStageAvailable(
-                  data.packages,
-                  'retrospective',
-                )}
                 draftKey={`${scope}.feedback.${board.brand.id}`}
                 onMutate={mutate}
                 onForget={forgetExperience}
-                onStart={(feedbackIds) =>
-                  start('retrospective', { feedbackIds })
-                }
                 onOpenSession={props.onOpenSession}
               />
             )}
             {board && tab === 'plans' && (
               <PlansPanel
                 board={board}
-                packages={data.packages}
                 disabled={disabled}
                 draftKey={`${scope}.plans`}
                 onMutate={mutate}
-                onStart={start}
                 onRegisterReminder={registerReminder}
                 onOpenSession={props.onOpenSession}
               />
@@ -940,7 +853,7 @@ function BrandForm({
           <button type="submit" className={css.primary}>
             保存品牌资料
           </button>
-          <span className={css.muted}>保存后可生成候选选题</span>
+          <span className={css.muted}>品牌资料供后续内容工作参考</span>
         </div>
       </fieldset>
     </form>
@@ -949,29 +862,20 @@ function BrandForm({
 
 function TopicsPanel({
   board,
-  packages,
   files,
   disabled,
   draftKey,
   onMutate,
-  onStart,
   onArticles,
 }: {
   board: BrandContentBoard;
-  packages: WorkflowPackage[];
   files: ContentFile[];
   disabled: boolean;
   draftKey: string;
   onMutate: Mutate;
-  onStart: Start;
   onArticles: () => void;
 }) {
-  const [generation, setGeneration] = useDraft(draftKey, {
-    platform: '小红书',
-    count: 5,
-  });
   const [filter, setFilter] = useState('candidate');
-  const available = brandContentStageAvailable(packages, 'topics');
   const topics = [...board.topics]
     .filter((topic) => filter === 'all' || topic.state === filter)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -985,50 +889,7 @@ function TopicsPanel({
   };
   return (
     <>
-      <SectionTitle title="候选选题" detail="先确认方向，再让 AI 员工起草。" />
-      <form
-        className={css.generation}
-        onSubmit={(event) => {
-          event.preventDefault();
-          void onStart('topics', generation);
-        }}
-      >
-        <fieldset disabled={disabled} className={css.inlineFields}>
-          <Field label="发布平台">
-            <input
-              required
-              maxLength={80}
-              value={generation.platform}
-              onChange={(event) =>
-                setGeneration((current) => ({
-                  ...current,
-                  platform: event.target.value,
-                }))
-              }
-              list="brand-content-platforms"
-            />
-          </Field>
-          <Field label="候选数量">
-            <input
-              required
-              type="number"
-              min={1}
-              max={40}
-              value={generation.count}
-              onChange={(event) =>
-                setGeneration((current) => ({
-                  ...current,
-                  count: Number(event.target.value),
-                }))
-              }
-            />
-          </Field>
-          <button className={css.primary} disabled={!available} type="submit">
-            生成候选
-          </button>
-        </fieldset>
-        <WorkflowHint available={available} stage="topics" />
-      </form>
+      <SectionTitle title="候选选题" detail="查看并确认已有选题。" />
       <div className={css.filters} aria-label="选题状态">
         {(
           [
@@ -1054,9 +915,7 @@ function TopicsPanel({
       </div>
       {!topics.length && (
         <Empty>
-          {filter === 'candidate'
-            ? '暂无待决定选题。生成任务完成后，点击刷新读取候选。'
-            : '暂无此状态的选题。'}
+          {filter === 'candidate' ? '暂无待决定选题。' : '暂无此状态的选题。'}
         </Empty>
       )}
       <div className={css.stack}>
@@ -1069,8 +928,6 @@ function TopicsPanel({
             disabled={disabled}
             draftKey={`${draftKey}.${topic.id}.${topic.revision}`}
             onMutate={decideTopic}
-            onStart={onStart}
-            articleAvailable={brandContentStageAvailable(packages, 'article')}
             onArticles={onArticles}
           />
         ))}
@@ -1093,8 +950,6 @@ export function BrandContentTopicCard({
   disabled,
   draftKey,
   onMutate,
-  onStart,
-  articleAvailable,
   onArticles,
 }: {
   topic: Topic;
@@ -1103,8 +958,6 @@ export function BrandContentTopicCard({
   disabled: boolean;
   draftKey: string;
   onMutate: Mutate;
-  onStart: Start;
-  articleAvailable: boolean;
   onArticles: () => void;
 }) {
   const [reason, setReason] = useDraft(draftKey, '');
@@ -1220,24 +1073,11 @@ export function BrandContentTopicCard({
           {topic.decisionReason && (
             <p className={css.muted}>决定说明：{topic.decisionReason}</p>
           )}
-          {topic.state === 'accepted' &&
-            (article ? (
-              <button type="button" className={css.button} onClick={onArticles}>
-                查看已有稿件
-              </button>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  className={css.primary}
-                  disabled={disabled || !articleAvailable}
-                  onClick={() => void onStart('article', { topicId: topic.id })}
-                >
-                  让 AI 员工起草
-                </button>
-                <WorkflowHint stage="article" available={articleAvailable} />
-              </>
-            ))}
+          {topic.state === 'accepted' && article && (
+            <button type="button" className={css.button} onClick={onArticles}>
+              查看已有稿件
+            </button>
+          )}
         </>
       )}
     </article>
@@ -1246,23 +1086,19 @@ export function BrandContentTopicCard({
 
 function ArticlesPanel({
   board,
-  packages,
   files,
   disabled,
   draftKey,
   onMutate,
-  onStart,
   onOpenSession,
   onPlans,
   headers,
 }: {
   board: BrandContentBoard;
-  packages: WorkflowPackage[];
   files: ContentFile[];
   disabled: boolean;
   draftKey: string;
   onMutate: Mutate;
-  onStart: Start;
   onOpenSession: (id: string) => void;
   onPlans: () => void;
   headers: Record<string, string>;
@@ -1273,11 +1109,7 @@ function ArticlesPanel({
         title="稿件与审稿"
         detail="审核只对展示的当前版本生效；替换配图后需要重新审核。"
       />
-      {!board.articles.length && (
-        <Empty>
-          暂无稿件。先在选题中采纳一个方向，再发起起草。任务完成后刷新。
-        </Empty>
-      )}
+      {!board.articles.length && <Empty>暂无稿件。</Empty>}
       <div className={css.stack}>
         {[...board.articles]
           .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
@@ -1290,13 +1122,8 @@ function ArticlesPanel({
               disabled={disabled}
               draftKey={`${draftKey}.${article.id}.${article.revision}`}
               onMutate={onMutate}
-              onStart={onStart}
               onOpenSession={onOpenSession}
               onPlans={onPlans}
-              revisionAvailable={brandContentStageAvailable(
-                packages,
-                'revision',
-              )}
               headers={headers}
             />
           ))}
@@ -1312,10 +1139,8 @@ export function BrandContentArticleCard({
   disabled,
   draftKey,
   onMutate,
-  onStart,
   onOpenSession,
   onPlans,
-  revisionAvailable,
   headers,
 }: {
   article: Article;
@@ -1324,10 +1149,8 @@ export function BrandContentArticleCard({
   disabled: boolean;
   draftKey: string;
   onMutate: Mutate;
-  onStart: Start;
   onOpenSession: (id: string) => void;
   onPlans: () => void;
-  revisionAvailable: boolean;
   headers: Record<string, string>;
 }) {
   const bundle = currentBrandContentBundle(board, article);
@@ -1513,24 +1336,6 @@ export function BrandContentArticleCard({
                 </div>
               </fieldset>
             </form>
-          )}
-          {article.state === 'changes_requested' && (
-            <div className={css.actions}>
-              <button
-                type="button"
-                className={css.primary}
-                disabled={disabled || !revisionAvailable}
-                onClick={() =>
-                  void onStart('revision', {
-                    articleId: article.id,
-                    sessionId: article.sessionId,
-                  })
-                }
-              >
-                按审稿意见重新起草
-              </button>
-              <WorkflowHint stage="revision" available={revisionAvailable} />
-            </div>
           )}
           {approval && (
             <div className={css.actions}>
@@ -1744,20 +1549,16 @@ function ImageEditor({
 
 function PlansPanel({
   board,
-  packages,
   disabled,
   draftKey,
   onMutate,
-  onStart,
   onRegisterReminder,
   onOpenSession,
 }: {
   board: BrandContentBoard;
-  packages: WorkflowPackage[];
   disabled: boolean;
   draftKey: string;
   onMutate: Mutate;
-  onStart: Start;
   onRegisterReminder: RegisterReminder;
   onOpenSession: (sessionId: string) => void;
 }) {
@@ -1806,29 +1607,6 @@ function PlansPanel({
                 draftKey={`${draftKey}.${article.id}.${article.revision}`}
                 onMutate={onMutate}
               />
-            )}
-            {article && (
-              <div className={css.actions}>
-                <button
-                  type="button"
-                  className={css.button}
-                  disabled={
-                    disabled || !brandContentStageAvailable(packages, 'handoff')
-                  }
-                  onClick={() =>
-                    void onStart('handoff', {
-                      articleId: article.id,
-                      sessionId: article.sessionId,
-                    })
-                  }
-                >
-                  整理发布交接清单
-                </button>
-                <WorkflowHint
-                  stage="handoff"
-                  available={brandContentStageAvailable(packages, 'handoff')}
-                />
-              </div>
             )}
           </>
         )}
@@ -2322,19 +2100,6 @@ function RecordInfo({
       {extra ? ` · ${extra}` : ''}
     </p>
   );
-}
-function WorkflowHint({
-  available,
-  stage,
-}: {
-  available: boolean;
-  stage: Stage;
-}) {
-  return !available ? (
-    <p className={css.muted}>
-      该员工暂未配置“{stageNames[stage]}”能力，请联系管理员。
-    </p>
-  ) : null;
 }
 function safePublicationUrl(value: string) {
   try {
