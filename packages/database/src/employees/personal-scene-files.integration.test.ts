@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type {
   PersonalSceneFile,
   PersonalSceneFilePreview,
+  PersonalSceneRestorePreview,
   RequestContext,
 } from '@allrice/contracts';
 import * as client from '../core/client.ts';
@@ -27,14 +28,19 @@ import { sceneSkillFixture } from './employee-scene-skills.fixture.ts';
 import {
   previewPersonalSceneFile,
   listPersonalSceneFileHistory,
+  previewPersonalSceneRestore,
+  restorePersonalSceneFile,
 } from './personal-scene-files.ts';
 import {
   getPersonalSceneSkill,
   getPersonalSceneSkillResource,
   parsePersonalSceneContentRef,
+  personalSceneContentRef,
+  savePersonalSceneSkillInTransaction,
 } from './personal-scene-skills.ts';
 import { mutateEmployeeContent } from './employee-content.ts';
 import { skillBundleChecksum, skillBytesChecksum } from '../skill-bundles.ts';
+import { runtimePolicyDigest } from '../runtime-policy-digest.ts';
 
 const browser = vi.hoisted(() => ({ context: null as RequestContext | null }));
 vi.mock('../../../../apps/web/lib/identity/session', () => ({
@@ -194,13 +200,26 @@ suite(
     }
     async function http(
       s: Setup,
-      operation: 'preview' | 'save' | 'history',
+      operation: 'preview' | 'save' | 'history' | 'restore-preview' | 'restore',
       body?: unknown,
       instanceId = s.instance.id,
       origin = 'https://example.test',
     ): Promise<Response> {
       const base = `https://example.test/api/v1/employee-instances/${instanceId}/scene-skills`;
       const params = { params: Promise.resolve({ id: instanceId }) };
+      if (operation === 'restore-preview' || operation === 'restore') {
+        const routePath =
+          '../../../../apps/web/app/api/v1/employee-instances/[id]/scene-skills/restore/route.ts';
+        const { POST, PUT } = await import(routePath);
+        return (operation === 'restore' ? PUT : POST)(
+          new Request(`${base}/restore`, {
+            method: operation === 'restore' ? 'PUT' : 'POST',
+            headers: { origin, 'content-type': 'application/json' },
+            body: JSON.stringify(body),
+          }),
+          params,
+        );
+      }
       if (operation === 'save') {
         const routePath =
           '../../../../apps/web/app/api/v1/employee-instances/[id]/scene-skills/route.ts';
@@ -241,6 +260,556 @@ suite(
       expect(saved.status).toBe(200);
       return { preview, input, receipt: (await saved.json()).receipt };
     }
+    function restoreBody(s: Setup, preview: PersonalSceneRestorePreview) {
+      if (!('skillPackage' in preview.file.procedure))
+        throw Error('fixture package required');
+      return {
+        workspaceId: s.workspaceId,
+        requestId: randomUUID(),
+        expectedRevision: preview.expectedRevision,
+        expectedContentRef: preview.expectedContentRef,
+        restoreContentRef: preview.restoreContentRef,
+        sceneId: preview.file.scene.id,
+        contentChecksum:
+          preview.file.procedure.skillPackage.bundle.contentChecksum,
+        bundleChecksum: preview.file.procedure.skillPackage.bundle.checksum,
+        changeSummary: '恢复已核对的原始周报方法',
+      };
+    }
+    async function restorePreview(s: Setup, contentRef: string) {
+      browser.context = s.owner;
+      const response = await http(s, 'restore-preview', {
+        workspaceId: s.workspaceId,
+        restoreContentRef: contentRef,
+      });
+      expect(response.status).toBe(200);
+      return (await response.json()) as PersonalSceneRestorePreview;
+    }
+    async function snapshot(s: Setup) {
+      const [row] = await f.db`select
+        (select count(*)::int from allrice_employee_content_sets where created_by=${s.owner.actor.id}) as sets,
+        (select count(*)::int from allrice_employee_content_revisions where created_by=${s.owner.actor.id}) as revisions,
+        (select count(*)::int from allrice_employee_content_requests where actor_id=${s.owner.actor.id}) as requests,
+        (select count(*)::int from allrice_company_asset_revisions where created_by=${s.owner.actor.id}) as sources`;
+      return row;
+    }
+    async function knowledge(s: Setup) {
+      const sourceId = randomUUID(),
+        revisionId = randomUUID(),
+        bindingId = randomUUID();
+      const definition = {
+        schemaVersion: 1,
+        sourceKind: 'managed',
+        connectorBindingId: null,
+        resourceRef: `synthetic:${sourceId}`,
+        indexing: 'none',
+        updatePolicy: 'manual',
+        citationRequired: true,
+        allowedScopes: ['workspace'],
+      };
+      const digest = runtimePolicyDigest(definition);
+      await f.db`insert into allrice_knowledge_sources(id,organization_id,workspace_id,slug,name,description,created_by)
+        values(${sourceId},${s.owner.organizationId},${s.workspaceId},${`source-${sourceId}`},'来源','合成来源',${s.owner.actor.id})`;
+      await f.db`insert into allrice_knowledge_revisions(id,organization_id,workspace_id,knowledge_source_id,revision,name,description,status,definition,checksum,created_by)
+        values(${revisionId},${s.owner.organizationId},${s.workspaceId},${sourceId},1,'来源','合成来源','draft',${f.db.json(definition)},${digest},${s.owner.actor.id})`;
+      await f.db`insert into allrice_knowledge_acl_entries(organization_id,workspace_id,knowledge_revision_id,principal_type,principal_id,permission)
+        values(${s.owner.organizationId},${s.workspaceId},${revisionId},'workspace',${s.workspaceId},'read')`;
+      await f.db`update allrice_knowledge_revisions set status='published',published_at=now() where id=${revisionId}`;
+      await f.db`insert into allrice_employee_knowledge_bindings(id,organization_id,workspace_id,employee_id,knowledge_revision_id,bound_by)
+        values(${bindingId},${s.owner.organizationId},${s.workspaceId},${s.assigned.employeeId},${revisionId},${s.owner.actor.id})`;
+      return {
+        ref: {
+          sourceKind: 'knowledge' as const,
+          contentId: sourceId,
+          revisionId,
+          digest,
+        },
+        bindingId,
+      };
+    }
+
+    it('restores v1 as a new current revision with exact old sources, immutable history and untouched other scenes', async () => {
+      const s = await setup(),
+        original = file(),
+        dependency = await knowledge(s);
+      original.references.push(dependency.ref);
+      if (!('skillPackage' in original.procedure))
+        throw Error('fixture package required');
+      original.procedure.skillPackage.resourceSources = [
+        { path: 'assets/template.csv', references: [dependency.ref] },
+      ];
+      const a = await install(s, original);
+      await install(s, file('2.0.0', original.scene.id));
+      const other = file('3.0.0');
+      await install(s, other);
+      const beforeHistory = await listPersonalSceneFileHistory(
+        s.owner,
+        s.instance.id,
+      );
+      const oldPin = parsePersonalSceneContentRef(a.receipt.contentRef);
+      const [oldRevision] =
+        await f.db`select manifest,digest,change_summary,created_at from allrice_employee_content_revisions where id=${oldPin.revisionId}`;
+      const [currentRevision] =
+        await f.db`select manifest from allrice_employee_content_revisions where set_id=${oldPin.setId} and number=${beforeHistory.revision}`;
+      const before = await snapshot(s);
+      const preview = await restorePreview(s, a.receipt.contentRef);
+      expect(preview).toMatchObject({
+        expectedRevision: 3,
+        restoreRevision: 1,
+        restoreContentRef: a.receipt.contentRef,
+      });
+      expect(preview.file.procedure.body).toBe(original.procedure.body);
+      expect(preview.file.references).toEqual(
+        oldRevision!.manifest.scenes[0].references,
+      );
+      expect(preview.current!.bundleVersion).toBe('2.0.0');
+      expect(await snapshot(s)).toEqual(before);
+      const input = restoreBody(s, preview);
+      const response = await http(s, 'restore', input);
+      expect(response.status).toBe(200);
+      expect(response.headers.get('cache-control')).toBe('private, no-store');
+      const result = await response.json();
+      expect(result.receipt).toMatchObject({
+        revision: 4,
+        sceneId: original.scene.id,
+        contentChecksum: a.receipt.contentChecksum,
+        bundleChecksum: a.receipt.bundleChecksum,
+      });
+      expect(result.receipt.contentRef).not.toBe(a.receipt.contentRef);
+      const newPin = parsePersonalSceneContentRef(result.receipt.contentRef);
+      expect(newPin.sourceRevisionId).toBe(oldPin.sourceRevisionId);
+      const [restored] =
+        await f.db`select manifest from allrice_employee_content_revisions where id=${newPin.revisionId}`;
+      expect(
+        restored!.manifest.scenes.find(
+          (scene: { id: string }) => scene.id === other.scene.id,
+        ),
+      ).toEqual(
+        currentRevision!.manifest.scenes.find(
+          (scene: { id: string }) => scene.id === other.scene.id,
+        ),
+      );
+      expect(
+        restored!.manifest.scenes.find(
+          (scene: { id: string }) => scene.id === original.scene.id,
+        ),
+      ).toEqual(oldRevision!.manifest.scenes[0]);
+      expect(
+        (await getPersonalSceneSkill(s.owner, s.instance.id, original.scene.id))
+          .content,
+      ).toBe(original.procedure.body);
+      const resource = await getPersonalSceneSkillResource(
+        s.owner,
+        s.instance.id,
+        result.receipt.contentRef,
+        'assets/template.csv',
+      );
+      expect(
+        Buffer.from(resource.contentBase64, 'base64').toString(),
+      ).toContain('1.0.0');
+      const [oldAfter] =
+        await f.db`select manifest,digest,change_summary,created_at from allrice_employee_content_revisions where id=${oldPin.revisionId}`;
+      expect(oldAfter).toEqual(oldRevision);
+      const afterHistory = await listPersonalSceneFileHistory(
+        s.owner,
+        s.instance.id,
+      );
+      expect(
+        afterHistory.entries.filter((entry) => entry.revision <= 3),
+      ).toEqual(beforeHistory.entries);
+      expect(afterHistory.entries[0]).toMatchObject({
+        revision: 4,
+        changeSummary: input.changeSummary,
+      });
+      const after = await snapshot(s);
+      expect(after).toEqual({
+        sets: before!.sets,
+        revisions: before!.revisions + 1,
+        requests: before!.requests + 1,
+        sources: before!.sources,
+      });
+      expect(await (await http(s, 'restore', input)).json()).toEqual(result);
+      expect(await snapshot(s)).toEqual(after);
+      expect(
+        (
+          await http(s, 'restore', {
+            ...input,
+            changeSummary: 'same id, different input',
+          })
+        ).status,
+      ).toBe(409);
+      await f.db`update allrice_employee_knowledge_bindings set enabled=false where id=${dependency.bindingId}`;
+      await expect(
+        getPersonalSceneSkillResource(
+          s.owner,
+          s.instance.id,
+          result.receipt.contentRef,
+          'assets/template.csv',
+        ),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      // A prior confirmed mutation can replay its exact receipt, without granting a body read.
+      expect(await (await http(s, 'restore', input)).json()).toEqual(result);
+      expect(await snapshot(s)).toEqual(after);
+    });
+
+    it('rejects an unreadable mixed legacy scene rather than silently restoring hidden plain procedures', async () => {
+      const s = await setup(),
+        original = file();
+      const a = await install(s, original),
+        pin = parsePersonalSceneContentRef(a.receipt.contentRef);
+      const [stored] =
+        await f.db`select manifest from allrice_employee_content_revisions where id=${pin.revisionId}`;
+      const manifest = structuredClone(stored!.manifest);
+      const plain = {
+        contentId: randomUUID(),
+        revisionId: randomUUID(),
+        expectedRevision: 0,
+        kind: 'procedure' as const,
+        title: '旧场景附加方法',
+        body: 'PLAIN_SOURCE_TO_RESTORE',
+      };
+      manifest.scenes[0].references.push({
+        sourceKind: 'draft_text',
+        contentId: plain.contentId,
+      });
+      const target = {
+        workspaceId: s.workspaceId,
+        setId: pin.setId,
+        ownership: {
+          scope: 'personal' as const,
+          organizationId: s.owner.organizationId,
+          ownerId: s.owner.actor.id,
+        },
+        target: { kind: 'instance' as const, instanceId: s.instance.id },
+        changeSummary: '增加附加方法',
+      };
+      let revision = await mutateEmployeeContent(s.owner, {
+        ...target,
+        requestId: randomUUID(),
+        expectedRevision: 1,
+        operation: 'save_draft',
+        manifest,
+        textEdits: [plain],
+      });
+      revision = await mutateEmployeeContent(s.owner, {
+        ...target,
+        requestId: randomUUID(),
+        expectedRevision: revision.revision,
+        operation: 'validate',
+        candidateRevisionId: revision.candidate.id,
+        candidateDigest: revision.candidate.digest,
+      });
+      expect(revision.validation?.valid).toBe(true);
+      const active = await mutateEmployeeContent(s.owner, {
+        ...target,
+        requestId: randomUUID(),
+        expectedRevision: revision.revision,
+        operation: 'activate',
+        candidateRevisionId: revision.candidate.id,
+        candidateDigest: revision.candidate.digest,
+      });
+      const mixedRef = personalSceneContentRef({
+        ...pin,
+        revisionId: active.active!.id,
+      });
+      const [mixed] =
+        await f.db`select manifest from allrice_employee_content_revisions where id=${active.active!.id}`;
+      const b = await install(s, file('2.0.0', original.scene.id));
+      const before = await snapshot(s);
+      expect(
+        (
+          await http(s, 'restore-preview', {
+            workspaceId: s.workspaceId,
+            restoreContentRef: mixedRef,
+          })
+        ).status,
+      ).toBe(404);
+      expect(
+        (
+          await http(s, 'restore', {
+            workspaceId: s.workspaceId,
+            requestId: randomUUID(),
+            expectedRevision: b.receipt.revision,
+            expectedContentRef: b.receipt.contentRef,
+            restoreContentRef: mixedRef,
+            sceneId: original.scene.id,
+            contentChecksum: a.receipt.contentChecksum,
+            bundleChecksum: a.receipt.bundleChecksum,
+            changeSummary: '拒绝隐藏附加引用',
+          })
+        ).status,
+      ).toBe(404);
+      expect(
+        (
+          await http(s, 'preview', {
+            workspaceId: s.workspaceId,
+            file: {
+              ...original,
+              references: mixed!.manifest.scenes[0].references,
+            },
+          })
+        ).status,
+      ).toBe(400);
+      expect(await snapshot(s)).toEqual(before);
+      expect(
+        (await getPersonalSceneSkill(s.owner, s.instance.id, original.scene.id))
+          .contentRef,
+      ).toBe(b.receipt.contentRef);
+    });
+
+    it('rechecks old package and resource source qualification after preview, without partial writes', async () => {
+      for (const revoked of ['package', 'source', 'publication'] as const) {
+        const s = await setup(),
+          original = file(),
+          dependency = await knowledge(s);
+        original.references.push(dependency.ref);
+        if (!('skillPackage' in original.procedure))
+          throw Error('fixture package required');
+        original.procedure.skillPackage.resourceSources = [
+          { path: 'assets/template.csv', references: [dependency.ref] },
+        ];
+        const a = await install(s, original);
+        const b = await install(s, file('2.0.0', original.scene.id));
+        const preview = await restorePreview(s, a.receipt.contentRef),
+          before = await snapshot(s);
+        const pin = parsePersonalSceneContentRef(a.receipt.contentRef);
+        if (revoked === 'package') {
+          const [source] =
+            await f.db`select asset_id from allrice_company_asset_revisions where id=${pin.sourceRevisionId}`;
+          await f.db`update allrice_company_assets set state='withdrawn' where id=${source!.asset_id}`;
+        } else if (revoked === 'source') {
+          await f.db`update allrice_employee_knowledge_bindings set enabled=false where id=${dependency.bindingId}`;
+        } else {
+          await f.db`update allrice_employee_content_publications set invalidated_at=now() where revision_id=${pin.revisionId}`;
+        }
+        expect(
+          (
+            await http(s, 'restore-preview', {
+              workspaceId: s.workspaceId,
+              restoreContentRef: a.receipt.contentRef,
+            })
+          ).status,
+          revoked,
+        ).toBe(404);
+        expect(
+          (await http(s, 'restore', restoreBody(s, preview))).status,
+          revoked,
+        ).toBe(404);
+        expect(await snapshot(s), revoked).toEqual(before);
+        expect(
+          (
+            await getPersonalSceneSkill(
+              s.owner,
+              s.instance.id,
+              original.scene.id,
+            )
+          ).contentRef,
+        ).toBe(b.receipt.contentRef);
+      }
+    });
+
+    it('keeps restore exact and scoped to the current human owner, tenant and instance', async () => {
+      const s = await setup(),
+        foreign = await setup(),
+        original = file();
+      const a = await install(s, original);
+      await install(s, file('2.0.0', original.scene.id));
+      const preview = await restorePreview(s, a.receipt.contentRef),
+        input = restoreBody(s, preview),
+        before = await snapshot(s);
+      const selection = {
+        workspaceId: s.workspaceId,
+        restoreContentRef: a.receipt.contentRef,
+      };
+      for (const { context, expected } of [
+        { context: s.peer, expected: 404 },
+        { context: foreign.owner, expected: 403 },
+        { context: null, expected: 401 },
+      ]) {
+        browser.context = context;
+        expect((await http(s, 'restore-preview', selection)).status).toBe(
+          expected,
+        );
+        expect((await http(s, 'restore', input)).status).toBe(expected);
+      }
+      const other = await createEmployeeInstance(s.owner, {
+        workspaceId: s.workspaceId,
+        assignmentId: s.assigned.id,
+        requestId: randomUUID(),
+        profile: { name: '另一本人员工' },
+      });
+      browser.context = s.owner;
+      expect(
+        (await http(s, 'restore-preview', selection, other.id)).status,
+      ).toBe(404);
+      expect(
+        (
+          await http(
+            s,
+            'restore',
+            { ...input, expectedRevision: 0, expectedContentRef: null },
+            other.id,
+          )
+        ).status,
+      ).toBe(404);
+      expect(
+        (await http(s, 'restore', { ...input, sceneId: randomUUID() })).status,
+      ).toBe(404);
+      expect(
+        (
+          await http(s, 'restore', {
+            ...input,
+            bundleChecksum: `sha256:${'0'.repeat(64)}`,
+          })
+        ).status,
+      ).toBe(409);
+      expect(
+        (await http(s, 'restore', { ...input, expectedContentRef: null }))
+          .status,
+      ).toBe(409);
+      expect(
+        (
+          await http(
+            s,
+            'restore-preview',
+            selection,
+            s.instance.id,
+            'https://other.test',
+          )
+        ).status,
+      ).toBe(403);
+      expect(
+        (await http(s, 'restore', input, s.instance.id, 'https://other.test'))
+          .status,
+      ).toBe(403);
+      expect(
+        (await http(s, 'restore', { ...input, procedure: original.procedure }))
+          .status,
+      ).toBe(400);
+      expect(
+        (
+          await http(s, 'restore-preview', {
+            ...selection,
+            ownerId: s.owner.actor.id,
+          })
+        ).status,
+      ).toBe(400);
+      await expect(
+        previewPersonalSceneRestore(
+          { ...s.owner, sessionId: '' },
+          s.instance.id,
+          selection,
+        ),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+      await expect(
+        restorePersonalSceneFile(
+          { ...s.owner, sessionId: '' },
+          s.instance.id,
+          input,
+        ),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+      expect(await snapshot(s)).toEqual(before);
+      await f.db`update allrice_employee_assignments set active=false where id=${s.assigned.id}`;
+      expect((await http(s, 'restore-preview', selection)).status).toBe(403);
+      expect((await http(s, 'restore', input)).status).toBe(403);
+    });
+
+    it('serializes restore with concurrent saves and replays only one immutable new revision', async () => {
+      const s = await setup(),
+        original = file();
+      const a = await install(s, original);
+      await install(s, file('2.0.0', original.scene.id));
+      const preview = await restorePreview(s, a.receipt.contentRef),
+        input = restoreBody(s, preview);
+      const savePreview = await previewPersonalSceneFile(
+        s.owner,
+        s.instance.id,
+        { workspaceId: s.workspaceId, file: file('3.0.0', original.scene.id) },
+      );
+      const before = await snapshot(s);
+      const replies = await Promise.all([
+        http(s, 'restore', input),
+        http(s, 'save', saveBody(s, savePreview)),
+      ]);
+      expect(replies.map((reply) => reply.status).sort()).toEqual([200, 409]);
+      expect((await snapshot(s))!.revisions).toBe(before!.revisions + 1);
+      expect(
+        (await http(s, 'restore', { ...input, requestId: randomUUID() }))
+          .status,
+      ).toBe(409);
+      const nextPreview = await restorePreview(s, a.receipt.contentRef),
+        next = restoreBody(s, nextPreview);
+      const count = await snapshot(s);
+      const replays = await Promise.all([
+        http(s, 'restore', next),
+        http(s, 'restore', next),
+      ]);
+      expect(replays.map((reply) => reply.status)).toEqual([200, 200]);
+      expect(await replays[0]!.json()).toEqual(await replays[1]!.json());
+      expect((await snapshot(s))!.revisions).toBe(count!.revisions + 1);
+      expect((await snapshot(s))!.requests).toBe(count!.requests + 1);
+    });
+
+    it('holds exact old source locks until restore commits and preserves withdrawal enforcement afterwards', async () => {
+      const s = await setup(),
+        original = file();
+      const a = await install(s, original);
+      await install(s, file('2.0.0', original.scene.id));
+      const input = restoreBody(
+        s,
+        await restorePreview(s, a.receipt.contentRef),
+      );
+      const pin = parsePersonalSceneContentRef(a.receipt.contentRef);
+      const [source] =
+        await f.db`select asset_id from allrice_company_asset_revisions where id=${pin.sourceRevisionId}`;
+      let ready!: () => void, release!: () => void;
+      const prepared = new Promise<void>((done) => {
+        ready = done;
+      });
+      const commit = new Promise<void>((done) => {
+        release = done;
+      });
+      const restoring = f.db.begin(async (tx) => {
+        const receipt = await savePersonalSceneSkillInTransaction(
+          s.owner,
+          s.instance.id,
+          input,
+          tx,
+        );
+        ready();
+        await commit;
+        return receipt;
+      });
+      try {
+        await Promise.race([
+          prepared,
+          restoring.then(() => {
+            throw Error('restore committed before release');
+          }),
+        ]);
+        await expect(
+          f.db.begin(async (tx) => {
+            await tx`set local lock_timeout='100ms'`;
+            await tx`update allrice_company_assets set state='withdrawn' where id=${source!.asset_id}`;
+          }),
+        ).rejects.toMatchObject({ code: '55P03' });
+      } finally {
+        release();
+      }
+      const receipt = await restoring;
+      await f.db`update allrice_company_assets set state='withdrawn' where id=${source!.asset_id}`;
+      expect(await (await http(s, 'restore', input)).json()).toEqual({
+        receipt,
+      });
+      await expect(
+        getPersonalSceneSkillResource(
+          s.owner,
+          s.instance.id,
+          receipt.contentRef,
+          'assets/template.csv',
+        ),
+      ).rejects.toMatchObject({ code: 'not_found' });
+    });
 
     it('previews the named personal target without writing, then saves current bytes and an exact replay receipt', async () => {
       const s = await setup(),

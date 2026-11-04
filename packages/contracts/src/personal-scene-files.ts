@@ -82,6 +82,46 @@ export type PersonalSceneFilePreview = z.infer<
   typeof PersonalSceneFilePreviewSchema
 >;
 
+/** Exact historical selection. A preview is not authority to restore bytes. */
+export const PreviewPersonalSceneRestoreSchema = z
+  .object({
+    workspaceId: UuidSchema,
+    restoreContentRef: PersonalSceneContentRefSchema,
+  })
+  .strict();
+export const PersonalSceneRestorePreviewSchema =
+  PersonalSceneFilePreviewSchema.extend({
+    // Restore retains the original package ref as well as its sources. Show
+    // every exact reference it will retain; portable imports stay stricter.
+    file: z
+      .object({
+        ...PersonalSceneFileSchema.shape,
+        references: SavePersonalSceneSkillSchema.shape.references,
+      })
+      .strict(),
+    restoreContentRef: PersonalSceneContentRefSchema,
+    restoreRevision: z.number().int().positive(),
+  }).strict();
+export type PersonalSceneRestorePreview = z.infer<
+  typeof PersonalSceneRestorePreviewSchema
+>;
+export const RestorePersonalSceneFileSchema = z
+  .object({
+    workspaceId: UuidSchema,
+    requestId: UuidSchema,
+    expectedRevision: z.number().int().nonnegative(),
+    expectedContentRef: PersonalSceneContentRefSchema.nullable(),
+    restoreContentRef: PersonalSceneContentRefSchema,
+    sceneId: UuidSchema,
+    contentChecksum: ChecksumSchema,
+    bundleChecksum: ChecksumSchema,
+    changeSummary: SavePersonalSceneSkillSchema.shape.changeSummary,
+  })
+  .strict();
+export type RestorePersonalSceneFile = z.infer<
+  typeof RestorePersonalSceneFileSchema
+>;
+
 export const PersonalSceneFileHistoryQuerySchema = z
   .object({
     workspaceId: UuidSchema.optional(),

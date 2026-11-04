@@ -2,10 +2,14 @@ import {
   PersonalSceneFileHistorySchema,
   PersonalSceneFilePreviewSchema,
   PreviewPersonalSceneFileSchema,
+  PreviewPersonalSceneRestoreSchema,
+  PersonalSceneRestorePreviewSchema,
+  RestorePersonalSceneFileSchema,
   EmployeeContentTextSchema,
   EmployeeContentManifestSchema,
   type PersonalSceneFilePreview,
   type PersonalSceneSkill,
+  type PersonalSceneFile,
   type RequestContext,
 } from '@allrice/contracts';
 import { getDatabase } from '../core/client.ts';
@@ -20,9 +24,13 @@ import { resolveEmployeeContentSource } from './employee-content-sources.ts';
 import {
   personalSceneContentRef,
   readPersonalSceneSkillInTransaction,
+  savePersonalSceneSkillInTransaction,
 } from './personal-scene-skills.ts';
 import { validateSceneSkillPackage } from './employee-scene-skill-package.ts';
-import { EmployeeContentError } from './employee-content-model.ts';
+import {
+  EmployeeContentError,
+  type ContentTx,
+} from './employee-content-model.ts';
 
 function humanContext(context: RequestContext, workspaceId: string) {
   if (!context.sessionId || context.actor.type !== 'user')
@@ -41,7 +49,24 @@ export async function previewPersonalSceneFile(
 ) {
   const input = PreviewPersonalSceneFileSchema.parse(raw);
   const context = humanContext(contextInput, input.workspaceId);
-  const { file } = input;
+  return db.begin('isolation level repeatable read read only', async (tx) =>
+    PersonalSceneFilePreviewSchema.parse(
+      await previewPersonalSceneFileInTransaction(
+        context,
+        instanceId,
+        input.file,
+        tx,
+      ),
+    ),
+  );
+}
+
+async function previewPersonalSceneFileInTransaction(
+  context: RequestContext,
+  instanceId: string,
+  file: PersonalSceneFile,
+  tx: ContentTx,
+) {
   if (!('skillPackage' in file.procedure))
     throw new DataAccessError('not_found');
   validateSceneSkillPackage(
@@ -49,114 +74,177 @@ export async function previewPersonalSceneFile(
     file.procedure.body,
     file.references,
   );
-  return db.begin('isolation level repeatable read read only', async (tx) => {
-    const view = await readPersonalEmployeeSceneLayer(context, instanceId, tx);
-    const instance = await getEmployeeInstance(context, instanceId, tx);
-    const currentScene = view.layer?.revision.manifest.scenes.find(
-      (scene) => scene.id === file.scene.id,
-    );
-    // Read-only identity projection from the already authorized manifest. Do
-    // not require old bytes to remain readable just to replace a revoked pack.
-    // The save builder independently rechecks this identity under its lock.
-    const packages = [];
-    for (const ref of currentScene?.references ?? []) {
-      if (ref.sourceKind !== 'procedure') continue;
-      const [source] = await tx<
-        { kind: string; digest: string; packaged: boolean }[]
-      >`select content->>'kind' as kind,digest,content ? 'skillPackage' as packaged
+  const view = await readPersonalEmployeeSceneLayer(context, instanceId, tx);
+  const instance = await getEmployeeInstance(context, instanceId, tx);
+  const currentScene = view.layer?.revision.manifest.scenes.find(
+    (scene) => scene.id === file.scene.id,
+  );
+  // Read-only identity projection from the already authorized manifest. Do
+  // not require old bytes to remain readable just to replace a revoked pack.
+  // The save builder independently rechecks this identity under its lock.
+  const packages = [];
+  for (const ref of currentScene?.references ?? []) {
+    if (ref.sourceKind !== 'procedure') continue;
+    const [source] = await tx<
+      { kind: string; digest: string; packaged: boolean }[]
+    >`select content->>'kind' as kind,digest,content ? 'skillPackage' as packaged
         from allrice_company_asset_revisions
         where organization_id=${context.organizationId} and asset_id=${ref.contentId} and id=${ref.revisionId}`;
-      if (
-        !source ||
-        source.kind !== 'procedure' ||
-        source.digest !== ref.digest
-      )
-        throw new EmployeeContentError('source_changed');
-      if (source.packaged) packages.push(ref);
-    }
-    if (packages.length > 1) throw new EmployeeContentError('version_conflict');
-    const expectedContentRef = packages[0]
-      ? personalSceneContentRef({
-          setId: view.layer!.setId,
-          revisionId: view.layer!.revision.id,
-          sceneId: file.scene.id,
-          sourceRevisionId: packages[0].revisionId,
-        })
-      : null;
-    let current: PersonalSceneSkill | null = null;
-    let currentMetadata: PersonalSceneFilePreview['currentMetadata'] = null;
-    if (expectedContentRef)
-      try {
-        const pkg = await readPersonalSceneSkillInTransaction(
-          context,
-          instanceId,
-          { contentRef: expectedContentRef },
-          tx,
-        );
-        current = pkg.skill;
-        // Exact bytes have just been authorized by the existing reader. Read
-        // their authoring metadata in the same immutable snapshot for the diff.
-        const [source] = await tx<{ content: unknown }[]>`
-          select content from allrice_company_asset_revisions
-          where organization_id=${context.organizationId} and id=${pkg.pin.sourceRevisionId}`;
-        const text = EmployeeContentTextSchema.parse(source?.content);
-        if (!('skillPackage' in text))
-          throw new EmployeeContentError('source_changed');
-        currentMetadata = {
-          title: text.title,
-          bundle: {
-            schemaVersion: pkg.bundle.schemaVersion,
-            version: pkg.bundle.version,
-            checksum: pkg.bundle.checksum,
-            contentChecksum: pkg.bundle.contentChecksum,
-            sourceRef: pkg.bundle.sourceRef,
-            license: pkg.bundle.license,
-            reviewedBy: pkg.bundle.reviewedBy,
-            dependencies: pkg.bundle.dependencies,
-          },
-          resourceSources: text.skillPackage.resourceSources,
-        };
-      } catch (error) {
-        if (!(error instanceof DataAccessError && error.code === 'not_found'))
-          throw error;
-      }
-    const ownership = {
-      scope: 'personal' as const,
-      organizationId: context.organizationId,
-      ownerId: context.actor.id,
-    };
-    for (const ref of file.references) {
-      const source = await resolveEmployeeContentSource({
+    if (!source || source.kind !== 'procedure' || source.digest !== ref.digest)
+      throw new EmployeeContentError('source_changed');
+    if (source.packaged) packages.push(ref);
+  }
+  if (packages.length > 1) throw new EmployeeContentError('version_conflict');
+  const expectedContentRef = packages[0]
+    ? personalSceneContentRef({
+        setId: view.layer!.setId,
+        revisionId: view.layer!.revision.id,
+        sceneId: file.scene.id,
+        sourceRevisionId: packages[0].revisionId,
+      })
+    : null;
+  let current: PersonalSceneSkill | null = null;
+  let currentMetadata: PersonalSceneFilePreview['currentMetadata'] = null;
+  if (expectedContentRef)
+    try {
+      const pkg = await readPersonalSceneSkillInTransaction(
         context,
         instanceId,
-        employeeId: view.employeeId,
-        sceneId: file.scene.id,
-        ownership,
-        ref,
-        sql: tx,
-        lock: false,
-        allowDraft: false,
-        frozenPublication: true,
-      });
-      if (!source.dto.available) throw new DataAccessError('not_found');
+        { contentRef: expectedContentRef },
+        tx,
+      );
+      current = pkg.skill;
+      // Exact bytes have just been authorized by the existing reader. Read
+      // their authoring metadata in the same immutable snapshot for the diff.
+      const [source] = await tx<{ content: unknown }[]>`
+          select content from allrice_company_asset_revisions
+          where organization_id=${context.organizationId} and id=${pkg.pin.sourceRevisionId}`;
+      const text = EmployeeContentTextSchema.parse(source?.content);
+      if (!('skillPackage' in text))
+        throw new EmployeeContentError('source_changed');
+      currentMetadata = {
+        title: text.title,
+        bundle: {
+          schemaVersion: pkg.bundle.schemaVersion,
+          version: pkg.bundle.version,
+          checksum: pkg.bundle.checksum,
+          contentChecksum: pkg.bundle.contentChecksum,
+          sourceRef: pkg.bundle.sourceRef,
+          license: pkg.bundle.license,
+          reviewedBy: pkg.bundle.reviewedBy,
+          dependencies: pkg.bundle.dependencies,
+        },
+        resourceSources: text.skillPackage.resourceSources,
+      };
+    } catch (error) {
+      if (!(error instanceof DataAccessError && error.code === 'not_found'))
+        throw error;
     }
-    return PersonalSceneFilePreviewSchema.parse({
-      instanceId: view.instanceId,
-      instanceName: instance.profile.name ?? '我的 AI 员工',
-      expectedRevision: view.revision,
-      expectedContentRef,
-      currentScene: currentScene ?? null,
-      // Drop the untrusted D0 report: actual package fields are authoritative.
-      file: {
-        schemaVersion: file.schemaVersion,
-        scene: file.scene,
-        procedure: file.procedure,
-        references: file.references,
+  const ownership = {
+    scope: 'personal' as const,
+    organizationId: context.organizationId,
+    ownerId: context.actor.id,
+  };
+  for (const ref of file.references) {
+    const source = await resolveEmployeeContentSource({
+      context,
+      instanceId,
+      employeeId: view.employeeId,
+      sceneId: file.scene.id,
+      ownership,
+      ref,
+      sql: tx,
+      lock: false,
+      allowDraft: false,
+      frozenPublication: true,
+    });
+    if (!source.dto.available) throw new DataAccessError('not_found');
+  }
+  return {
+    instanceId: view.instanceId,
+    instanceName: instance.profile.name ?? '我的 AI 员工',
+    expectedRevision: view.revision,
+    expectedContentRef,
+    currentScene: currentScene ?? null,
+    // Drop the untrusted D0 report: actual package fields are authoritative.
+    file: {
+      schemaVersion: file.schemaVersion,
+      scene: file.scene,
+      procedure: file.procedure,
+      references: file.references,
+    },
+    current,
+    currentMetadata,
+  };
+}
+
+/** Human preview only. Commit reads this locator again under the writer's
+ * publication/source locks; these returned bytes never become commit input. */
+export async function previewPersonalSceneRestore(
+  contextInput: RequestContext,
+  instanceId: string,
+  raw: unknown,
+  db = getDatabase(),
+) {
+  const input = PreviewPersonalSceneRestoreSchema.parse(raw);
+  const context = humanContext(contextInput, input.workspaceId);
+  return db.begin('isolation level repeatable read read only', async (tx) => {
+    const pkg = await readPersonalSceneSkillInTransaction(
+      context,
+      instanceId,
+      { contentRef: input.restoreContentRef },
+      tx,
+    );
+    const source = await readPersonalEmployeeSceneLayer(
+      context,
+      instanceId,
+      tx,
+      pkg.pin,
+    );
+    const scene = source.layer?.revision.manifest.scenes.find(
+      (item) => item.id === pkg.skill.sceneId,
+    );
+    if (!scene) throw new DataAccessError('not_found');
+    const [row] = await tx<
+      { content: unknown }[]
+    >`select content from allrice_company_asset_revisions where organization_id=${context.organizationId} and id=${pkg.pin.sourceRevisionId}`;
+    const procedure = EmployeeContentTextSchema.parse(row?.content);
+    const file: PersonalSceneFile = {
+      schemaVersion: 1,
+      scene: {
+        id: scene.id,
+        name: scene.name,
+        appliesWhen: scene.appliesWhen,
+        nativeName: pkg.skill.nativeName,
       },
-      current,
-      currentMetadata,
+      procedure,
+      references: scene.references,
+    };
+    const preview = await previewPersonalSceneFileInTransaction(
+      context,
+      instanceId,
+      file,
+      tx,
+    );
+    return PersonalSceneRestorePreviewSchema.parse({
+      ...preview,
+      restoreContentRef: input.restoreContentRef,
+      restoreRevision: pkg.skill.revision,
     });
   });
+}
+
+export async function restorePersonalSceneFile(
+  contextInput: RequestContext,
+  instanceId: string,
+  raw: unknown,
+  db = getDatabase(),
+) {
+  const input = RestorePersonalSceneFileSchema.parse(raw);
+  const context = humanContext(contextInput, input.workspaceId);
+  return db.begin((tx) =>
+    savePersonalSceneSkillInTransaction(context, instanceId, input, tx),
+  );
 }
 
 /** Only domain metadata is returned. Every body's later read still checks the

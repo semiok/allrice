@@ -8,11 +8,15 @@ import {
   PersonalSceneFileHistorySchema,
   PersonalSceneSkillSaveReceiptSchema,
   SavePersonalSceneSkillSchema,
+  PersonalSceneRestorePreviewSchema,
+  RestorePersonalSceneFileSchema,
   type PersonalSceneFile,
   type PersonalSceneFileHistory,
   type PersonalSceneFilePreview,
   type EmployeeContentReference,
   type SavePersonalSceneSkill,
+  type RestorePersonalSceneFile,
+  type PersonalSceneRestorePreview,
 } from '@allrice/contracts';
 import css from './personal-scene-files.module.css';
 
@@ -26,12 +30,13 @@ type Props = {
 type Receipt = ReturnType<typeof PersonalSceneSkillSaveReceiptSchema.parse> & {
   requestId: string;
 };
+type PendingWrite = SavePersonalSceneSkill | RestorePersonalSceneFile;
 /** Owned by the existing employee-details dialog, never global or persistent.
  * Only a matching viewer/workspace/instance may recover a pending request. */
 export type PersonalSceneFileWriteStore = Map<
   string,
   {
-    input?: SavePersonalSceneSkill;
+    input?: PendingWrite;
     receipt?: Receipt;
   }
 >;
@@ -239,7 +244,9 @@ export function PersonalSceneFileDiff({
       <details>
         <summary>来源与准确版本</summary>
         <p className={css.hint}>
-          只保存文件声明的来源；服务端会重新核验当前权限。
+          {'restoreContentRef' in preview
+            ? '将恢复以下历史内容；保存时会再次检查是否仍可用。'
+            : '只保存文件声明的来源；服务端会重新核验当前权限。'}
         </p>
         <div className={css.columns}>
           <section>
@@ -274,7 +281,14 @@ function FilePanel(props: Props) {
   const recovered = props.writes.get(key);
   const [open, setOpen] = useState(false);
   const [file, setFile] = useState<PersonalSceneFile | null>(null);
-  const [preview, setPreview] = useState<PersonalSceneFilePreview | null>(null);
+  const [preview, setPreview] = useState<
+    PersonalSceneFilePreview | PersonalSceneRestorePreview | null
+  >(null);
+  const [restoreRef, setRestoreRef] = useState<string | null>(
+    recovered?.input && 'restoreContentRef' in recovered.input
+      ? recovered.input.restoreContentRef
+      : null,
+  );
   const [history, setHistory] = useState<PersonalSceneFileHistory | null>(null);
   const [summary, setSummary] = useState('');
   const [error, setError] = useState('');
@@ -284,9 +298,7 @@ function FilePanel(props: Props) {
   const [receipt, setReceipt] = useState<Receipt | null>(
     recovered?.receipt ?? null,
   );
-  const pending = useRef<SavePersonalSceneSkill | null>(
-    recovered?.input ?? null,
-  );
+  const pending = useRef<PendingWrite | null>(recovered?.input ?? null);
   const reading = useRef<AbortController | null>(null);
   const historyReading = useRef<AbortController | null>(null);
   const mounted = useRef(true);
@@ -378,6 +390,7 @@ function FilePanel(props: Props) {
     pending.current = null;
     props.writes.delete(key);
     setFile(null);
+    setRestoreRef(null);
     setPreview(null);
     setReceipt(null);
     setError('');
@@ -405,26 +418,89 @@ function FilePanel(props: Props) {
     }
   }
 
+  async function prepareRestore(contentRef: string) {
+    if (busy || uncertain) return;
+    reading.current?.abort();
+    const controller = new AbortController();
+    reading.current = controller;
+    pending.current = null;
+    props.writes.delete(key);
+    setRestoreRef(contentRef);
+    setFile(null);
+    setPreview(null);
+    setReceipt(null);
+    setError('');
+    setBusy(true);
+    try {
+      const next = PersonalSceneRestorePreviewSchema.parse(
+        await personalSceneJson(`${base}/restore`, props.headers, {
+          method: 'POST',
+          signal: controller.signal,
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            workspaceId: props.workspaceId,
+            restoreContentRef: contentRef,
+          }),
+        }),
+      );
+      if (
+        next.instanceId !== props.instanceId ||
+        next.restoreContentRef !== contentRef
+      )
+        throw Error('target_changed');
+      if (!controller.signal.aborted && mounted.current) {
+        setPreview(next);
+        setSummary(
+          `恢复 ${next.file.scene.name} 的修订 ${next.restoreRevision}`,
+        );
+      }
+    } catch (cause) {
+      if (!controller.signal.aborted && mounted.current)
+        setError(
+          cause instanceof PersonalSceneHttpError
+            ? cause.message
+            : '历史版本暂不可读取，请重新核对。',
+        );
+    } finally {
+      if (!controller.signal.aborted && mounted.current) setBusy(false);
+    }
+  }
+
   async function save() {
     if (busy || receipt || (!pending.current && (!preview || !summary.trim())))
       return;
     let next = pending.current;
     if (!next) {
       if (!preview) return;
-      next = SavePersonalSceneSkillSchema.parse({
-        workspaceId: props.workspaceId,
-        requestId: crypto.randomUUID(),
-        expectedRevision: preview.expectedRevision,
-        expectedContentRef: preview.expectedContentRef,
-        scene: {
-          id: preview.file.scene.id,
-          name: preview.file.scene.name,
-          appliesWhen: preview.file.scene.appliesWhen,
-        },
-        procedure: preview.file.procedure,
-        references: preview.file.references,
-        changeSummary: summary,
-      });
+      if ('restoreContentRef' in preview) {
+        if (!('skillPackage' in preview.file.procedure)) return;
+        const bundle = preview.file.procedure.skillPackage.bundle;
+        next = RestorePersonalSceneFileSchema.parse({
+          workspaceId: props.workspaceId,
+          requestId: crypto.randomUUID(),
+          expectedRevision: preview.expectedRevision,
+          expectedContentRef: preview.expectedContentRef,
+          restoreContentRef: preview.restoreContentRef,
+          sceneId: preview.file.scene.id,
+          contentChecksum: bundle.contentChecksum,
+          bundleChecksum: bundle.checksum,
+          changeSummary: summary,
+        });
+      } else
+        next = SavePersonalSceneSkillSchema.parse({
+          workspaceId: props.workspaceId,
+          requestId: crypto.randomUUID(),
+          expectedRevision: preview.expectedRevision,
+          expectedContentRef: preview.expectedContentRef,
+          scene: {
+            id: preview.file.scene.id,
+            name: preview.file.scene.name,
+            appliesWhen: preview.file.scene.appliesWhen,
+          },
+          procedure: preview.file.procedure,
+          references: preview.file.references,
+          changeSummary: summary,
+        });
     }
     const known = props.writes.get(key)?.receipt;
     if (known?.requestId === next.requestId) {
@@ -440,22 +516,32 @@ function FilePanel(props: Props) {
     setBusy(true);
     setError('');
     try {
-      const result = (await personalSceneJson(base, props.headers, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(next),
-      })) as { receipt?: unknown };
+      const restoring = 'restoreContentRef' in next;
+      const result = (await personalSceneJson(
+        restoring ? `${base}/restore` : base,
+        props.headers,
+        {
+          method: restoring ? 'PUT' : 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(next),
+        },
+      )) as { receipt?: unknown };
       const saved = PersonalSceneSkillSaveReceiptSchema.parse(result?.receipt);
       const bundle =
-        'skillPackage' in next.procedure
+        'procedure' in next && 'skillPackage' in next.procedure
           ? next.procedure.skillPackage.bundle
           : null;
       if (
-        !bundle ||
         saved.instanceId !== props.instanceId ||
-        saved.sceneId !== next.scene.id ||
-        saved.contentChecksum !== bundle.contentChecksum ||
-        saved.bundleChecksum !== bundle.checksum ||
+        saved.sceneId !== ('scene' in next ? next.scene.id : next.sceneId) ||
+        saved.contentChecksum !==
+          ('contentChecksum' in next
+            ? next.contentChecksum
+            : bundle?.contentChecksum) ||
+        saved.bundleChecksum !==
+          ('bundleChecksum' in next ? next.bundleChecksum : bundle?.checksum) ||
+        ('restoreContentRef' in next &&
+          saved.contentRef === next.restoreContentRef) ||
         saved.revision <= next.expectedRevision
       )
         throw Error('receipt_mismatch');
@@ -542,10 +628,15 @@ function FilePanel(props: Props) {
           )}
           {uncertain && !preview && pending.current && (
             <section aria-label="待核对的原保存请求" className={css.history}>
-              <strong>尚未取得明确回执：{pending.current.scene.name}</strong>
+              <strong>
+                尚未取得明确回执：
+                {'scene' in pending.current
+                  ? pending.current.scene.name
+                  : '恢复历史 Workflow'}
+              </strong>
               <p>{pending.current.changeSummary}</p>
               <p className={css.hint}>
-                保留了原请求与文件入参。请重试同一次保存，核对服务端的准确回执。
+                保留了原请求和入参。请重试同一次保存，核对服务端的准确回执。
               </p>
               <Button disabled={busy} onClick={() => void save()}>
                 重试同一次保存
@@ -554,6 +645,12 @@ function FilePanel(props: Props) {
           )}
           {preview && (
             <>
+              {'restoreContentRef' in preview && (
+                <p>
+                  恢复来源：修订 {preview.restoreRevision}
+                  。确认后追加新的当前修订，保留原记录和来源引用。
+                </p>
+              )}
               <PersonalSceneFileDiff preview={preview} />
               {!receipt && (
                 <label>
@@ -573,7 +670,11 @@ function FilePanel(props: Props) {
                   onClick={() => void save()}
                   disabled={busy || (!uncertain && !summary.trim())}
                 >
-                  {uncertain ? '重试同一次保存' : '确认修改并生效'}
+                  {uncertain
+                    ? '重试同一次保存'
+                    : 'restoreContentRef' in preview
+                      ? '确认恢复并生效'
+                      : '确认修改并生效'}
                 </Button>
               )}
             </>
@@ -581,6 +682,14 @@ function FilePanel(props: Props) {
           {file && !preview && !busy && !uncertain && (
             <Button variant="outline" onClick={() => void prepare(file)}>
               重新预览当前目标
+            </Button>
+          )}
+          {restoreRef && !preview && !busy && !uncertain && !receipt && (
+            <Button
+              variant="outline"
+              onClick={() => void prepareRestore(restoreRef)}
+            >
+              重新预览恢复目标
             </Button>
           )}
           {receipt && (
@@ -629,6 +738,13 @@ function FilePanel(props: Props) {
                     <code>完整包：{entry.bundleChecksum}</code>
                   )}
                 </details>
+                <Button
+                  variant="outline"
+                  disabled={busy || uncertain || !entry.available}
+                  onClick={() => void prepareRestore(entry.contentRef)}
+                >
+                  预览恢复：{entry.name} · 修订 {entry.revision}
+                </Button>
               </article>
             ))}
             {history?.nextBeforeRevision && (

@@ -11,6 +11,7 @@ import type {
 import type {
   PersonalSceneFile,
   PersonalSceneFilePreview,
+  PersonalSceneRestorePreview,
   PersonalSceneSkill,
 } from '@allrice/contracts';
 import { sceneSkillFixture } from '../../../../packages/database/src/employees/employee-scene-skills.fixture.ts';
@@ -108,6 +109,32 @@ const json = (body: unknown, status = 200) => ({
   contentType: 'application/json',
   body: JSON.stringify(body),
 });
+const historicalRef = 'historical-personal-v1';
+const packageReference = {
+  sourceKind: 'procedure' as const,
+  contentId: id(60),
+  revisionId: id(61),
+  digest: `sha256:${'c'.repeat(64)}`,
+};
+function restorePreview(): PersonalSceneRestorePreview {
+  const file = artifact('1.0.0');
+  file.references.push(packageReference);
+  const result = preview(file, 3),
+    current = sceneSkillFixture('2.0.0');
+  result.current!.content = current.body;
+  result.current!.bundleVersion = '2.0.0';
+  result.current!.contentChecksum = current.skillPackage.bundle.contentChecksum;
+  result.current!.bundleChecksum = current.skillPackage.bundle.checksum;
+  result.current!.resources = current.skillPackage.bundle.resources.map(
+    ({ path, mediaType, byteLength, checksum }) => ({
+      path,
+      mediaType,
+      byteLength,
+      checksum,
+    }),
+  );
+  return { ...result, restoreContentRef: historicalRef, restoreRevision: 1 };
+}
 
 suite(
   'personal Workflow file preview, confirmation and truthful receipts',
@@ -272,6 +299,364 @@ suite(
         },
       };
     }
+    async function historyForRestore(page: Page) {
+      await page.route('**/scene-skills/files?**', (route) =>
+        route.fulfill(
+          json(
+            route.request().url().includes(id(2))
+              ? {
+                  instanceId: id(2),
+                  revision: 0,
+                  entries: [],
+                  nextBeforeRevision: null,
+                }
+              : {
+                  instanceId,
+                  revision: 3,
+                  nextBeforeRevision: null,
+                  entries: [
+                    {
+                      sceneId,
+                      name: '我的周报',
+                      revision: 1,
+                      contentRef: historicalRef,
+                      changeSummary: '最初保存的周报',
+                      createdAt: '2026-11-04T10:00:00.000Z',
+                      available: true,
+                    },
+                    {
+                      sceneId,
+                      name: '已撤销方法',
+                      revision: 2,
+                      contentRef: 'revoked-ref',
+                      changeSummary: '已撤销的来源',
+                      createdAt: '2026-11-04T11:00:00.000Z',
+                      available: false,
+                    },
+                  ],
+                },
+          ),
+        ),
+      );
+      await page
+        .getByRole('button', { name: '重新读取修改记录', exact: true })
+        .click();
+      await page
+        .getByRole('button', {
+          name: '预览恢复：我的周报 · 修订 1',
+          exact: true,
+        })
+        .waitFor();
+    }
+    for (const width of [1280, 390])
+      for (const dark of [false, true]) {
+        it(`previews exact history before restoring, keeps a lost restore request through dialog reopen at ${width}px ${dark ? 'dark' : 'light'}`, async () => {
+          const page = await open(width, dark, true),
+            writes: Record<string, unknown>[] = [],
+            committed = new Map<string, unknown>();
+          const old = restorePreview();
+          await page.route('**/scene-skills/restore', async (route) => {
+            const input = route.request().postDataJSON();
+            if (route.request().method() === 'POST') {
+              expect(input).toEqual({
+                workspaceId,
+                restoreContentRef: historicalRef,
+              });
+              await route.fulfill(json(old));
+              return;
+            }
+            expect(route.request().method()).toBe('PUT');
+            writes.push(input);
+            if (!committed.has(input.requestId)) {
+              const response = saved(old.file, input);
+              response.receipt.revision = 4;
+              committed.set(input.requestId, response);
+            }
+            if (writes.length === 1) await route.abort('failed');
+            else await route.fulfill(json(committed.get(input.requestId)));
+          });
+          try {
+            await historyForRestore(page);
+            expect(
+              await page
+                .getByRole('button', {
+                  name: '预览恢复：已撤销方法 · 修订 2',
+                  exact: true,
+                })
+                .isDisabled(),
+            ).toBe(true);
+            await page
+              .getByRole('button', {
+                name: '预览恢复：我的周报 · 修订 1',
+                exact: true,
+              })
+              .click();
+            await page
+              .getByRole('region', { name: '文件与当前内容差异' })
+              .waitFor();
+            expect(writes).toHaveLength(0);
+            expect(
+              await page
+                .getByRole('region', { name: '当前正文', exact: true })
+                .innerText(),
+            ).toContain('2.0.0');
+            expect(
+              await page
+                .getByRole('region', { name: '文件正文', exact: true })
+                .innerText(),
+            ).toContain('1.0.0');
+            await page.getByText('来源与准确版本', { exact: true }).click();
+            expect(
+              await page
+                .getByText('文件引用', { exact: true })
+                .locator('..')
+                .innerText(),
+            ).toContain(packageReference.revisionId);
+            expect(
+              await page
+                .getByText(
+                  '恢复来源：修订 1。确认后追加新的当前修订，保留原记录和来源引用。',
+                  { exact: true },
+                )
+                .count(),
+            ).toBe(1);
+            expect(
+              await page.evaluate(
+                () => document.documentElement.scrollWidth <= innerWidth,
+              ),
+            ).toBe(true);
+            const typography = await page
+              .getByRole('region', { name: '文件正文' })
+              .locator('pre')
+              .evaluate((node) => ({
+                font: getComputedStyle(node).fontSize,
+                line: getComputedStyle(node).lineHeight,
+              }));
+            expect(typography).toEqual({ font: '13px', line: '20px' });
+            await page.screenshot({
+              path: resolve(
+                screenshotDir,
+                `restore-preview-${width}-${dark ? 'dark' : 'light'}.png`,
+              ),
+              fullPage: true,
+            });
+            await page
+              .getByRole('button', { name: '确认恢复并生效', exact: true })
+              .click();
+            await page
+              .getByRole('button', { name: '重试同一次保存', exact: true })
+              .waitFor();
+            expect(
+              await page
+                .getByText('已保存并生效 · 修订 4', { exact: true })
+                .count(),
+            ).toBe(0);
+            await page.keyboard.press('Escape');
+            await page.getByRole('dialog').waitFor({ state: 'hidden' });
+            await page
+              .getByRole('button', { name: '切换查看者', exact: true })
+              .click();
+            const reopen = async () => {
+              await page
+                .getByRole('button', { name: '打开员工详情', exact: true })
+                .click();
+              await page
+                .getByText('本人 Workflow · 文件与修改记录', { exact: true })
+                .click();
+            };
+            await reopen();
+            expect(
+              await page
+                .getByRole('region', { name: '待核对的原保存请求' })
+                .count(),
+            ).toBe(0);
+            await page.keyboard.press('Escape');
+            await page.getByRole('dialog').waitFor({ state: 'hidden' });
+            await page
+              .getByRole('button', { name: '切换查看者', exact: true })
+              .click();
+            await reopen();
+            await page
+              .getByRole('region', { name: '待核对的原保存请求' })
+              .waitFor();
+            expect(
+              await page.getByRole('region', { name: '文件正文' }).count(),
+            ).toBe(0);
+            await page
+              .getByRole('button', { name: '重试同一次保存', exact: true })
+              .click();
+            await page
+              .getByText('已保存并生效 · 修订 4', { exact: true })
+              .waitFor();
+            expect(writes).toHaveLength(2);
+            expect(writes[1]).toEqual(writes[0]);
+            expect(committed.size).toBe(1);
+            expect(writes[0]).toMatchObject({
+              workspaceId,
+              restoreContentRef: historicalRef,
+              sceneId,
+              expectedRevision: 3,
+              expectedContentRef: 'old-ref-3',
+            });
+            expect(Object.keys(writes[0]!).sort()).toEqual(
+              [
+                'workspaceId',
+                'requestId',
+                'expectedRevision',
+                'expectedContentRef',
+                'restoreContentRef',
+                'sceneId',
+                'contentChecksum',
+                'bundleChecksum',
+                'changeSummary',
+              ].sort(),
+            );
+            expect(JSON.stringify(writes[0])).not.toContain('Synthetic scene');
+            await page.getByText('查看准确回执', { exact: true }).click();
+            expect(
+              await page
+                .getByText(`请求：${writes[0]!.requestId}`, { exact: true })
+                .count(),
+            ).toBe(1);
+            await page.screenshot({
+              path: resolve(
+                screenshotDir,
+                `restore-receipt-${width}-${dark ? 'dark' : 'light'}.png`,
+              ),
+              fullPage: true,
+            });
+          } finally {
+            await page.close();
+          }
+        });
+      }
+    it('stops a denied or conflicting restore and requires a new preview without exposing raw errors', async () => {
+      const page = await open();
+      let previews = 0,
+        writes = 0;
+      await page.route('**/scene-skills/restore', async (route) => {
+        if (route.request().method() === 'POST') {
+          previews++;
+          await route.fulfill(
+            previews === 1
+              ? json(
+                  {
+                    error: { code: 'NOT_FOUND', message: 'raw private detail' },
+                  },
+                  404,
+                )
+              : json(restorePreview()),
+          );
+        } else {
+          writes++;
+          await route.fulfill(
+            json(
+              {
+                error: {
+                  code: 'VERSION_CONFLICT',
+                  message: 'raw private detail',
+                },
+              },
+              409,
+            ),
+          );
+        }
+      });
+      try {
+        await historyForRestore(page);
+        await page
+          .getByRole('button', {
+            name: '预览恢复：我的周报 · 修订 1',
+            exact: true,
+          })
+          .click();
+        await page.getByRole('alert').waitFor();
+        expect(
+          await page
+            .getByRole('region', { name: '文件与当前内容差异' })
+            .count(),
+        ).toBe(0);
+        expect(writes).toBe(0);
+        await page
+          .getByRole('button', { name: '重新预览恢复目标', exact: true })
+          .click();
+        await page
+          .getByRole('button', { name: '确认恢复并生效', exact: true })
+          .click();
+        await page
+          .getByRole('button', { name: '重新预览恢复目标', exact: true })
+          .waitFor();
+        expect(
+          await page
+            .getByRole('button', { name: '确认恢复并生效', exact: true })
+            .count(),
+        ).toBe(0);
+        expect(
+          await page.getByText('已保存并生效', { exact: false }).count(),
+        ).toBe(0);
+        expect(writes).toBe(1);
+        expect(await page.locator('body').innerText()).not.toContain(
+          'raw private detail',
+        );
+        await page
+          .getByRole('button', { name: '重新预览恢复目标', exact: true })
+          .click();
+        await page
+          .getByRole('region', { name: '文件与当前内容差异' })
+          .waitFor();
+        expect(writes).toBe(1);
+      } finally {
+        await page.close();
+      }
+    });
+    it('discards a late restore preview after switching the viewer and instance', async () => {
+      const page = await open();
+      let started!: () => void, release!: () => void;
+      const called = new Promise<void>((done) => {
+        started = done;
+      });
+      const waiting = new Promise<void>((done) => {
+        release = done;
+      });
+      await page.route('**/scene-skills/restore', async (route) => {
+        started();
+        await waiting;
+        await route.fulfill(json(restorePreview())).catch(() => undefined);
+      });
+      try {
+        await historyForRestore(page);
+        await page
+          .getByRole('button', {
+            name: '预览恢复：我的周报 · 修订 1',
+            exact: true,
+          })
+          .click();
+        await called;
+        await page
+          .getByRole('button', { name: '切换另一员工', exact: true })
+          .click();
+        release();
+        await page
+          .getByText('本人 Workflow · 文件与修改记录', { exact: true })
+          .click();
+        await page
+          .getByText('还没有保存过 Workflow 文件。', { exact: true })
+          .waitFor();
+        expect(
+          await page
+            .getByRole('region', { name: '文件与当前内容差异' })
+            .count(),
+        ).toBe(0);
+        expect(
+          await page
+            .getByRole('button', { name: '确认恢复并生效', exact: true })
+            .count(),
+        ).toBe(0);
+      } finally {
+        release();
+        await page.close();
+      }
+    });
     for (const width of [1280, 390])
       for (const dark of [false, true]) {
         it(`requires a reviewed diff, replays the same uncertain request and shows the real receipt at ${width}px ${dark ? 'dark' : 'light'}`, async () => {
