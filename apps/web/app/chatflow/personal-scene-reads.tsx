@@ -379,7 +379,7 @@ function ReadPanel(props: Props) {
               </Button>
             </div>
             <p className={css.hint}>
-              只展示已提交的读取事实。当前记录未提供准确注入或原生调用关联，读取不表示已遵循。
+              正文、资源读取与原生注入分别记录。这些事实不证明模型已照做；暂无注入记录也不代表没有读取。
             </p>
             {historyError && historyError !== catalogError && (
               <p role="alert">{historyError}</p>
@@ -420,8 +420,13 @@ function ReadPanel(props: Props) {
                     className={css.resource}
                   >
                     <p>
-                      {read.contentRead ? '已记录正文读取' : '未记录正文读取'} ·
-                      已读资源 {read.resources.length} 项
+                      {read.contentRead ? '已读取正文' : '暂无正文读取记录'} ·
+                      已读取资源 {read.resources.length} 项
+                    </p>
+                    <p>
+                      {read.uses.length
+                        ? `已注入 · ${read.uses.length} 条原生记录`
+                        : '暂无注入记录'}
                     </p>
                     <TechnicalDetails
                       rows={[
@@ -451,6 +456,60 @@ function ReadPanel(props: Props) {
                         {entry.path}
                         <code>{entry.checksum}</code>
                       </p>
+                    ))}
+                    {read.uses.map((use) => (
+                      <section
+                        key={use.eventId}
+                        aria-label="原生注入记录"
+                        className={css.resource}
+                      >
+                        <strong>
+                          {use.kind === 'skill-invocation'
+                            ? '原生指令载入'
+                            : '原生 skill 工具返回正文'}
+                        </strong>
+                        <span>
+                          修订 {use.revision} ·{' '}
+                          {new Date(use.recordedAt).toLocaleString()}
+                        </span>
+                        <TechnicalDetails
+                          rows={[
+                            ['事件', <code key="event">{use.eventId}</code>],
+                            ['工作记录序号', use.eventSequence],
+                            [
+                              '原生会话',
+                              <code key="native-session">
+                                {use.nativeSessionId}
+                              </code>,
+                            ],
+                            ['原生事件序号', use.nativeSequence],
+                            [
+                              use.kind === 'tool-result'
+                                ? '原生调用'
+                                : '原生指令',
+                              <code key="native-id">{use.nativeId}</code>,
+                            ],
+                            [
+                              '原生命令',
+                              <code key="native-name">/{use.nativeName}</code>,
+                            ],
+                            [
+                              '准确内容地址',
+                              <code key="use-ref">{use.contentRef}</code>,
+                            ],
+                            [
+                              '注入正文哈希',
+                              <code key="use-body">{use.contentChecksum}</code>,
+                            ],
+                            [
+                              '注入完整包哈希',
+                              <code key="use-bundle">
+                                {use.bundleChecksum}
+                              </code>,
+                            ],
+                          ]}
+                        />
+                      </section>
                     ))}
                     <Button
                       variant="outline"

@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { RequestContext } from '@allrice/contracts';
+import {
+  HarnessEventSchema,
+  type PersonalSceneSkill,
+  type RequestContext,
+} from '@allrice/contracts';
+import { normalizeHarnessRunEvent } from '../../../../apps/worker/src/harness/runtime-contract.ts';
 import * as client from '../core/client.ts';
 import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
 import { skillBundleChecksum, skillBytesChecksum } from '../skill-bundles.ts';
@@ -24,7 +29,12 @@ import {
   sendChatMessage,
 } from '../workspace/service.ts';
 import { acquireConversationRuntime } from '../conversation/conversation-runtime.ts';
-import { failJob } from '../execution/queue.ts';
+import {
+  failJob,
+  bindJobNativeSession,
+  appendJobEvent,
+} from '../execution/queue.ts';
+import { nativeBindingDescriptor } from '../native-session-binding.fixture.ts';
 import {
   createEmployeeInstance,
   changeEmployeeInstanceLifecycle,
@@ -63,6 +73,7 @@ suite(
       ReturnType<typeof createEmployeeAdministrationFixture>
     >;
     beforeAll(async () => {
+      vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', `sha256:${'c'.repeat(64)}`);
       f = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
       const principal = await ensureBootstrapPortalPrincipal({
@@ -225,6 +236,107 @@ suite(
       });
       return { scope, content: content!, worker };
     }
+    type Runtime = Awaited<ReturnType<typeof runtime>>;
+    async function native(run: Runtime) {
+      const descriptor = nativeBindingDescriptor({
+        ...run.scope,
+        contextKey: run.scope.sessionId,
+      });
+      await f.db`update allrice_jobs set attempt=1 where id=${run.worker.jobId}`;
+      const [current] = await f.db<
+        {
+          config_checksum: string;
+          thread_generation: number;
+          thread_id: string | null;
+        }[]
+      >`select config_checksum,thread_generation,thread_id from allrice_conversation_runtimes where session_id=${run.scope.sessionId}`;
+      await bindJobNativeSession({
+        ...run.worker,
+        attempt: 1,
+        descriptor,
+        subject: {
+          kind: 'chat',
+          id: run.scope.sessionId,
+          configChecksum: current!.config_checksum,
+          generation: current!.thread_generation,
+          expectedThreadId: current!.thread_id,
+        },
+      });
+      const [employee] = await f.db<
+        { assistant_message_id: string }[]
+      >`select assistant_message_id from allrice_employee_runs where run_id=${run.scope.runId}`;
+      return {
+        descriptor,
+        generation: current!.thread_generation,
+        messageId: employee!.assistant_message_id,
+      };
+    }
+    function useEvent(
+      run: Runtime,
+      identity: Awaited<ReturnType<typeof native>>,
+      skill: PersonalSceneSkill,
+      kind: 'skill-invocation' | 'tool-result' = 'skill-invocation',
+      nativeSequence = 100,
+    ) {
+      const evidence = {
+        sceneId: skill.sceneId,
+        nativeName: skill.nativeName,
+        contentRef: skill.contentRef,
+        revision: skill.revision,
+        contentChecksum: skill.contentChecksum,
+        bundleChecksum: skill.bundleChecksum,
+        nativeSessionId: identity.descriptor.nativeSessionId,
+        nativeSequence,
+        kind,
+        nativeId: `${kind}-${nativeSequence}`,
+      };
+      return {
+        evidence,
+        ...normalizeHarnessRunEvent(
+          HarnessEventSchema.parse({
+            schemaVersion: 1,
+            harness: 'dsh',
+            type: 'native.event',
+            generation: identity.generation,
+            attempt: 1,
+            order: nativeSequence,
+            threadId: evidence.nativeSessionId,
+            turnId: `${evidence.nativeSessionId}:turn:1`,
+            sessionId: run.scope.sessionId,
+            messageId: identity.messageId,
+            presentation: 'context',
+            status: 'completed',
+            label: 'synthetic Workflow use',
+            sourceEventType: 'allrice/scene-use',
+            sourceEventId: `scene-use:${evidence.nativeSessionId}:${nativeSequence}`,
+            sourceOccurredAt: new Date().toISOString(),
+            sourcePayload: evidence,
+          }),
+        ),
+      };
+    }
+    async function appendUse(run: Runtime, event: ReturnType<typeof useEvent>) {
+      await appendJobEvent({
+        ...run.worker,
+        type: event.type,
+        payload: event.payload,
+      });
+      const [row] = await f.db<
+        { id: string; sequence: number; occurred_at: Date }[]
+      >`select id,sequence,occurred_at from allrice_run_events
+        where run_id=${run.scope.runId} and payload->>'sourceEventId'=${String(event.payload.sourceEventId)} order by sequence desc limit 1`;
+      return row!;
+    }
+    async function body(run: Runtime, sceneId: string) {
+      const loaded = await loadPersonalRuntimeSceneSkill(
+        run.scope,
+        run.content.generationId,
+        { sceneId },
+        run.worker,
+      );
+      if (!('skill' in loaded)) throw Error('fixture body read required');
+      return loaded.skill;
+    }
     async function http(
       s: Setup,
       mode: 'reads' | 'content' | 'resource',
@@ -301,6 +413,7 @@ suite(
         sceneId: installed.sceneId,
         contentRef: installed.contentRef,
         contentRead: true,
+        uses: [],
         contentChecksum: installed.contentChecksum,
         bundleChecksum: installed.bundleChecksum,
         resources: resource.receipt.personal!.resources,
@@ -317,6 +430,7 @@ suite(
           'resources',
           'generationId',
           'readAt',
+          'uses',
         ].sort(),
       );
       expect(JSON.stringify(history)).not.toContain(run.worker.leaseToken);
@@ -329,6 +443,184 @@ suite(
           })
         ).runs,
       ).toEqual([]);
+    });
+
+    it('projects only canonical native use events, with exact v1/v2 revisions and original native identities', async () => {
+      const s = await setup(),
+        a = await save(s),
+        run = await runtime(s);
+      const first = await body(run, a.sceneId),
+        identity = await native(run);
+      const invocation = useEvent(run, identity, first);
+      // A successful ordinary tool event and directory/get metadata do not
+      // acquire injection meaning from having similar fields or timing.
+      await appendJobEvent({
+        ...run.worker,
+        type: 'harness.native',
+        payload: { ...invocation.payload, sourceEventType: 'tool/result' },
+      });
+      await appendJobEvent({
+        ...run.worker,
+        type: 'harness.native',
+        payload: { ...invocation.payload, sourceEventType: 'skill/summary' },
+      });
+      expect(
+        (await listPersonalSceneReads(s.owner, s.instance.id)).runs[0]!
+          .reads[0]!.uses,
+      ).toEqual([]);
+      const stored = await appendUse(run, invocation);
+      await appendUse(run, invocation); // Duplicate durable delivery is one native fact.
+      const b = await save(s, '2.0.0', a),
+        second = await body(run, b.sceneId);
+      const result = useEvent(run, identity, second, 'tool-result', 101);
+      await appendUse(run, result);
+      browser.context = s.owner;
+      const response = await http(s, 'reads', { runId: run.scope.runId });
+      expect(response.status).toBe(200);
+      const history = await response.json();
+      expect(history.runs[0].reads[0].uses).toEqual([
+        {
+          ...invocation.evidence,
+          eventId: stored.id,
+          eventSequence: stored.sequence,
+          recordedAt: stored.occurred_at.toISOString(),
+        },
+      ]);
+      expect(history.runs[0].reads[1].uses).toMatchObject([
+        { ...result.evidence, revision: b.revision },
+      ]);
+      expect(
+        history.runs[0].reads.map(
+          (read: { uses: unknown[] }) => read.uses.length,
+        ),
+      ).toEqual([1, 1]);
+      expect(response.headers.get('cache-control')).toBe('private, no-store');
+      expect(JSON.stringify(history)).not.toContain(
+        identity.descriptor.storageNamespace,
+      );
+      expect(JSON.stringify(history)).not.toContain('synthetic Workflow use');
+      expect(JSON.stringify(history)).not.toContain(first.content);
+    });
+
+    it.each([
+      'revision',
+      'checksum',
+      'native name',
+      'other chat binding',
+      'assistant message',
+      'nested task',
+      'malformed payload',
+      'resource only',
+    ] as const)(
+      'rejects a claimed use with %s mismatch without returning its private fields',
+      async (fault) => {
+        const s = await setup(),
+          installed = await save(s),
+          run = await runtime(s);
+        let loaded: PersonalSceneSkill;
+        if (fault === 'resource only') {
+          await loadPersonalRuntimeSceneSkill(
+            run.scope,
+            run.content.generationId,
+            {
+              contentRef: installed.contentRef,
+              resourcePath: 'assets/template.csv',
+            },
+            run.worker,
+          );
+          loaded = await inspectPersonalSceneSkill(
+            s.owner,
+            s.instance.id,
+            installed.contentRef,
+          );
+        } else loaded = await body(run, installed.sceneId);
+        const identity = await native(run),
+          event = useEvent(run, identity, loaded);
+        if (fault === 'revision')
+          event.payload.nativePayload = {
+            ...event.evidence,
+            revision: installed.revision + 1,
+          };
+        if (fault === 'checksum')
+          event.payload.nativePayload = {
+            ...event.evidence,
+            contentChecksum: `sha256:${'0'.repeat(64)}`,
+          };
+        if (fault === 'native name')
+          event.payload.nativePayload = {
+            ...event.evidence,
+            nativeName: `allrice-scene-${randomUUID()}`,
+          };
+        if (fault === 'other chat binding') {
+          const other = await native(await runtime(s));
+          event.payload.nativePayload = {
+            ...event.evidence,
+            nativeSessionId: other.descriptor.nativeSessionId,
+          };
+          event.payload.threadId = other.descriptor.nativeSessionId;
+          event.payload.sourceEventId = `scene-use:${other.descriptor.nativeSessionId}:${event.evidence.nativeSequence}`;
+        }
+        if (fault === 'assistant message')
+          event.payload.messageId = randomUUID();
+        if (fault === 'nested task')
+          event.payload.internalTask = {
+            kind: 'private task',
+            private: 'do-not-return',
+          };
+        if (fault === 'malformed payload')
+          event.payload.nativePayload = {
+            ...event.evidence,
+            nativeId: 0,
+            private: 'do-not-return',
+          };
+        await appendUse(run, event);
+        browser.context = s.owner;
+        const response = await http(s, 'reads', { runId: run.scope.runId });
+        expect(response.status).toBe(409);
+        const text = await response.text();
+        expect(text).not.toContain('do-not-return');
+        expect(text).not.toContain(identity.descriptor.nativeSessionId);
+        expect(text).not.toContain(installed.contentRef);
+        expect(text).not.toContain(loaded.content);
+      },
+    );
+
+    it('rejects a cross-instance exact ref even when a malformed read and use agree on its hashes', async () => {
+      const s = await setup(),
+        installed = await save(s),
+        run = await runtime(s);
+      const first = await body(run, installed.sceneId),
+        identity = await native(run);
+      const other = await createEmployeeInstance(s.owner, {
+        workspaceId: s.workspaceId,
+        assignmentId: s.assigned.id,
+        requestId: randomUUID(),
+        profile: { name: '另一个本人实例' },
+      });
+      const otherVersion = await save({ ...s, instance: other });
+      const [row] =
+        await f.db`select content_scene_state from allrice_employee_runs where run_id=${run.scope.runId}`;
+      const corrupted = structuredClone(row!.content_scene_state);
+      corrupted.reads[0].sceneId = otherVersion.sceneId;
+      Object.assign(corrupted.reads[0].personal, {
+        contentRef: otherVersion.contentRef,
+        contentChecksum: otherVersion.contentChecksum,
+        bundleChecksum: otherVersion.bundleChecksum,
+      });
+      await f.db`update allrice_employee_runs set content_scene_state=${f.db.json(corrupted)} where run_id=${run.scope.runId}`;
+      await appendUse(
+        run,
+        useEvent(run, identity, {
+          ...first,
+          sceneId: otherVersion.sceneId,
+          nativeName: `allrice-scene-${otherVersion.sceneId}`,
+          contentRef: otherVersion.contentRef,
+        }),
+      );
+      browser.context = s.owner;
+      const response = await http(s, 'reads', { runId: run.scope.runId });
+      expect(response.status).toBe(409);
+      expect(await response.text()).not.toContain(otherVersion.contentRef);
     });
 
     it('keeps exact v1/v2 body reads separate and never interprets resource-only reads as body injection', async () => {
@@ -393,12 +685,9 @@ suite(
       const s = await setup(),
         a = await save(s),
         run = await runtime(s);
-      await loadPersonalRuntimeSceneSkill(
-        run.scope,
-        run.content.generationId,
-        { sceneId: a.sceneId },
-        run.worker,
-      );
+      const loaded = await body(run, a.sceneId),
+        identity = await native(run);
+      await appendUse(run, useEvent(run, identity, loaded));
       const [source] =
         await f.db`select asset_id from allrice_company_asset_revisions where id=${parsePersonalSceneContentRef(a.contentRef).sourceRevisionId}`;
       await f.db`update allrice_company_assets set state='withdrawn' where id=${source!.asset_id}`;
@@ -436,6 +725,12 @@ suite(
         message: '工作要求或其引用资料已失效，请确认当前版本后重新发起任务。',
       });
       expect(history.runs[0].reads[0].contentRef).toBe(a.contentRef);
+      expect(history.runs[0].reads[0].uses).toMatchObject([
+        {
+          contentRef: a.contentRef,
+          nativeSessionId: identity.descriptor.nativeSessionId,
+        },
+      ]);
       expect(JSON.stringify(history)).not.toContain('do-not-return');
       expect(JSON.stringify(history)).not.toContain('/Users/secret');
     });
@@ -445,12 +740,9 @@ suite(
         foreign = await setup(),
         installed = await save(s),
         run = await runtime(s);
-      await loadPersonalRuntimeSceneSkill(
-        run.scope,
-        run.content.generationId,
-        { sceneId: installed.sceneId },
-        run.worker,
-      );
+      const loaded = await body(run, installed.sceneId),
+        identity = await native(run);
+      await appendUse(run, useEvent(run, identity, loaded));
       for (const { context, status } of [
         { context: s.peer, status: 404 },
         { context: foreign.owner, status: 403 },
@@ -541,12 +833,9 @@ suite(
       const s = await setup(),
         installed = await save(s),
         run = await runtime(s);
-      await loadPersonalRuntimeSceneSkill(
-        run.scope,
-        run.content.generationId,
-        { sceneId: installed.sceneId },
-        run.worker,
-      );
+      const loaded = await body(run, installed.sceneId),
+        identity = await native(run);
+      await appendUse(run, useEvent(run, identity, loaded));
       const archived = await changeEmployeeInstanceLifecycle(
         s.owner,
         s.instance.id,
@@ -578,7 +867,11 @@ suite(
       const audit = await http(s, 'reads', { runId: run.scope.runId });
       expect(audit.status).toBe(200);
       expect((await audit.json()).runs[0].reads).toMatchObject([
-        { contentRef: installed.contentRef, contentRead: true },
+        {
+          contentRef: installed.contentRef,
+          contentRead: true,
+          uses: [{ nativeSessionId: identity.descriptor.nativeSessionId }],
+        },
       ]);
     });
 

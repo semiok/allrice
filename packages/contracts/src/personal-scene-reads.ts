@@ -2,7 +2,10 @@ import { z } from 'zod';
 import { TimestampSchema, UuidSchema } from './common.ts';
 import { RunStatusSchema } from './runs.ts';
 import { EmployeeSceneReadSchema } from './employee-content.ts';
-import { PersonalSceneContentRefSchema } from './employee-scene-skills.ts';
+import {
+  PersonalSceneContentRefSchema,
+  PersonalSceneUseSchema,
+} from './employee-scene-skills.ts';
 
 const cursor = z
   .object({ createdAt: TimestampSchema, runId: UuidSchema })
@@ -32,7 +35,8 @@ export const PersonalSceneContentQuerySchema = z
   })
   .strict();
 
-/** A projection of committed personal reads, never an injection/call claim.
+/** Committed reads and separately attested native uses. Neither proves that
+ * the model followed the content; missing use evidence is not a negative fact.
  * No body, resource bytes, private server context or legacy adopted receipt. */
 export const PersonalSceneReadHistorySchema = z
   .object({
@@ -70,6 +74,15 @@ export const PersonalSceneReadHistorySchema = z
                     .resources,
                 generationId: UuidSchema,
                 readAt: TimestampSchema,
+                uses: z
+                  .array(
+                    PersonalSceneUseSchema.extend({
+                      eventId: UuidSchema,
+                      eventSequence: z.number().int().nonnegative(),
+                      recordedAt: TimestampSchema,
+                    }).strict(),
+                  )
+                  .default([]),
               })
               .strict(),
           ),

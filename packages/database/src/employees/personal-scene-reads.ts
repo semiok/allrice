@@ -1,10 +1,15 @@
 import {
   EmployeeSceneStateSchema,
+  EmployeeContentManifestSchema,
+  PersonalSceneUseSchema,
+  UuidSchema,
   PersonalSceneContentRefSchema,
   PersonalSceneReadHistorySchema,
   PersonalSceneReadQuerySchema,
+  type PersonalSceneReadHistory,
   type RequestContext,
 } from '@allrice/contracts';
+import { z } from 'zod';
 import { getDatabase } from '../core/client.ts';
 import { DataAccessError } from '../data.ts';
 import {
@@ -13,10 +18,28 @@ import {
 } from './employee-instances.ts';
 import { EmployeeContentError } from './employee-content-model.ts';
 import { EmployeeRuntimeContentError } from './employee-runtime-content.ts';
+import { runtimePolicyDigest } from '../runtime-policy-digest.ts';
 import {
   parsePersonalSceneContentRef,
   readPersonalSceneSkillInTransaction,
 } from './personal-scene-skills.ts';
+
+// Read only the existing normalized root-event envelope. Extra display slots
+// (label/summary/etc.) are never copied into the API response.
+const useEnvelope = z.object({
+  source: z.literal('dsh'),
+  sourceEventType: z.literal('allrice/scene-use'),
+  presentation: z.literal('context'),
+  status: z.literal('completed'),
+  conversationId: UuidSchema,
+  messageId: UuidSchema,
+  internalTask: z.null().optional(),
+  threadId: z.string(),
+  attempt: z.number().int().positive(),
+  generation: z.number().int().nonnegative(),
+  sourceEventId: z.string(),
+  nativePayload: PersonalSceneUseSchema,
+});
 
 function human(context: RequestContext) {
   if (
@@ -76,13 +99,14 @@ export async function listPersonalSceneReads(
         run_id: string;
         session_id: string;
         user_message_id: string;
+        assistant_message_id: string | null;
         created_at: Date;
         cursor_created_at: string;
         status: string;
         error_code: string | null;
         content_scene_state: unknown;
       }[]
-    >`select er.run_id,er.session_id,er.user_message_id,er.created_at,
+    >`select er.run_id,er.session_id,er.user_message_id,er.assistant_message_id,er.created_at,
       to_char(er.created_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as cursor_created_at,r.state as status,
       r.error_code,er.content_scene_state
       from allrice_employee_runs er
@@ -98,12 +122,39 @@ export async function listPersonalSceneReads(
         ${input.beforeRunId ? tx`and (er.created_at,er.run_id)<(${input.beforeCreatedAt!}::timestamptz,${input.beforeRunId}::uuid)` : tx``}
       order by er.created_at desc,er.run_id desc limit 21`;
     if (input.runId && !rows.length) throw new DataAccessError('not_found');
-    const runs = rows.slice(0, 20).map((row) => {
+    const page = rows.slice(0, 20);
+    const events = page.length
+      ? await tx<
+          {
+            id: string;
+            run_id: string;
+            sequence: number;
+            occurred_at: Date;
+            payload: unknown;
+            bound_session_id: string | null;
+          }[]
+        >`select e.id,e.run_id,e.sequence,e.occurred_at,e.payload,b.native_session_id as bound_session_id
+      from allrice_run_events e
+      left join allrice_native_session_bindings b
+        on b.native_session_id=e.payload#>>'{nativePayload,nativeSessionId}'
+        and b.organization_id=${scope.organizationId} and b.workspace_id=${scope.workspaceId}
+        and b.owner_id=${scope.actor.id} and b.context_kind='chat'
+        and b.context_id::text=e.payload->>'conversationId'
+      where e.organization_id=${scope.organizationId} and e.workspace_id=${scope.workspaceId}
+        and e.run_id in ${tx(page.map((row) => row.run_id))}
+        and e.event_type='harness.native' and e.payload->>'sourceEventType'='allrice/scene-use'
+      order by e.sequence,e.id`
+      : [];
+    const claims = new Map<string, string>();
+    const runs = [];
+    for (const row of page) {
       const parsed = EmployeeSceneStateSchema.safeParse(
         row.content_scene_state ?? { reads: [] },
       );
       if (!parsed.success) throw new EmployeeContentError('source_changed');
-      const reads = parsed.data.reads.flatMap((receipt) => {
+      const reads = parsed.data.reads.flatMap<
+        PersonalSceneReadHistory['runs'][number]['reads'][number]
+      >((receipt) => {
         const read = receipt.personal;
         if (!read) return [];
         if (
@@ -125,10 +176,94 @@ export async function listPersonalSceneReads(
             resources: read.resources,
             generationId: read.generationId,
             readAt: read.readAt,
+            uses: [],
           },
         ];
       });
-      return {
+      for (const event of events.filter((item) => item.run_id === row.run_id)) {
+        const parsedEvent = useEnvelope.safeParse(event.payload);
+        if (!parsedEvent.success)
+          throw new EmployeeContentError('source_changed');
+        const envelope = parsedEvent.data,
+          use = envelope.nativePayload;
+        const read = reads.find((item) => item.contentRef === use.contentRef);
+        if (
+          !read ||
+          !read.contentRead ||
+          read.sceneId !== use.sceneId ||
+          read.contentChecksum !== use.contentChecksum ||
+          read.bundleChecksum !== use.bundleChecksum ||
+          use.nativeName !== `allrice-scene-${read.sceneId}` ||
+          envelope.threadId !== use.nativeSessionId ||
+          event.bound_session_id !== use.nativeSessionId ||
+          envelope.conversationId !== row.session_id ||
+          envelope.messageId !== row.assistant_message_id ||
+          envelope.sourceEventId !==
+            `scene-use:${use.nativeSessionId}:${use.nativeSequence}`
+        )
+          throw new EmployeeContentError('source_changed');
+        // Immutable identity only, independent of current publication/source
+        // authorization. Revocation must not erase a proven historical use.
+        const pin = parsePersonalSceneContentRef(read.contentRef);
+        const [identity] = await tx<
+          {
+            number: number;
+            manifest: unknown;
+            digest: string;
+            source_digest: string;
+            source_content_id: string;
+            content_checksum: string | null;
+            bundle_checksum: string | null;
+          }[]
+        >`select r.number,r.manifest,r.digest,a.digest as source_digest,a.asset_id as source_content_id,
+          a.content#>>'{skillPackage,bundle,contentChecksum}' as content_checksum,
+          a.content#>>'{skillPackage,bundle,checksum}' as bundle_checksum
+          from allrice_employee_content_sets s
+          join allrice_employee_content_revisions r on r.set_id=s.id and r.id=${pin.revisionId}
+          join allrice_company_asset_revisions a on a.id=${pin.sourceRevisionId} and a.organization_id=s.organization_id
+          where s.id=${pin.setId} and s.organization_id=${scope.organizationId} and s.workspace_id=${scope.workspaceId}
+            and s.scope='personal' and s.owner_id=${scope.actor.id} and s.instance_id=${instanceId}`;
+        const manifest = EmployeeContentManifestSchema.safeParse(
+          identity?.manifest,
+        );
+        const procedures = manifest.success
+          ? (manifest.data.scenes
+              .find((scene) => scene.id === read.sceneId)
+              ?.references.filter((ref) => ref.sourceKind === 'procedure') ??
+            [])
+          : [];
+        if (
+          !identity ||
+          !manifest.success ||
+          identity.number !== use.revision ||
+          runtimePolicyDigest(manifest.data) !== identity.digest ||
+          procedures.length !== 1 ||
+          procedures[0]!.revisionId !== pin.sourceRevisionId ||
+          procedures[0]!.contentId !== identity.source_content_id ||
+          procedures[0]!.digest !== identity.source_digest ||
+          identity.content_checksum !== use.contentChecksum ||
+          identity.bundle_checksum !== use.bundleChecksum
+        )
+          throw new EmployeeContentError('source_changed');
+        const claim = runtimePolicyDigest({
+          runId: row.run_id,
+          attempt: envelope.attempt,
+          generation: envelope.generation,
+          use,
+        });
+        const previous = claims.get(envelope.sourceEventId);
+        if (previous && previous !== claim)
+          throw new EmployeeContentError('source_changed');
+        if (!previous)
+          read.uses.push({
+            ...use,
+            eventId: event.id,
+            eventSequence: event.sequence,
+            recordedAt: event.occurred_at.toISOString(),
+          });
+        claims.set(envelope.sourceEventId, claim);
+      }
+      runs.push({
         runId: row.run_id,
         sessionId: row.session_id,
         messageId: row.user_message_id,
@@ -150,8 +285,8 @@ export async function listPersonalSceneReads(
                 }
               : null,
         reads,
-      };
-    });
+      });
+    }
     const last = rows[19];
     return PersonalSceneReadHistorySchema.parse({
       instanceId,

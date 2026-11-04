@@ -51,7 +51,7 @@ function skill(version: string): PersonalSceneSkill {
     sources: [],
   };
 }
-function history(): PersonalSceneReadHistory {
+function history(injected = false): PersonalSceneReadHistory {
   const read = skill('1.0.0');
   return {
     instanceId,
@@ -80,6 +80,28 @@ function history(): PersonalSceneReadHistory {
             })),
             generationId: id(41),
             readAt,
+            uses: injected
+              ? (['skill-invocation', 'tool-result'] as const).map(
+                  (kind, index) => ({
+                    sceneId,
+                    nativeName: read.nativeName,
+                    contentRef: read.contentRef,
+                    revision: read.revision,
+                    contentChecksum: read.contentChecksum,
+                    bundleChecksum: read.bundleChecksum,
+                    nativeSessionId: `dsh-original-${id(31)}`,
+                    nativeSequence: 100 + index,
+                    kind,
+                    nativeId:
+                      kind === 'skill-invocation'
+                        ? 'original-invocation'
+                        : 'original-call',
+                    eventId: id(50 + index),
+                    eventSequence: 200 + index,
+                    recordedAt: readAt,
+                  }),
+                )
+              : [],
           },
         ],
       },
@@ -202,6 +224,7 @@ suite(
         directoryCode: 'UNKNOWN',
         historyStatus: 0,
         ledgerReads: 0,
+        injected: false,
         contentRefs: [] as string[],
       };
       const details = employeeDetailsFixture();
@@ -254,7 +277,7 @@ suite(
           json(
             other
               ? { instanceId: id(2), runs: [], nextCursor: null }
-              : history(),
+              : history(state.injected),
           ),
         );
       });
@@ -386,7 +409,7 @@ suite(
               await page.getByRole('region', { name: '准确读取回执' }).count(),
             ).toBe(1);
             expect(await page.locator('body').innerText()).toContain(
-              '当前记录未提供准确注入或原生调用关联',
+              '正文、资源读取与原生注入分别记录',
             );
             expect(await page.locator('body').innerText()).not.toContain(
               '已注入',
@@ -499,6 +522,140 @@ suite(
             await page.close();
           }
         });
+    for (const width of [1280, 390])
+      for (const dark of [false, true])
+        it(`separates read facts from exact native injection records at ${width}px ${dark ? 'dark' : 'light'}`, async () => {
+          const { page, state } = await open(width, dark);
+          try {
+            const read = page.getByRole('region', { name: '准确读取回执' });
+            expect(await read.innerText()).toContain('已读取正文');
+            expect(await read.innerText()).toContain('已读取资源 1 项');
+            expect(
+              await read.getByText('暂无注入记录', { exact: true }).count(),
+            ).toBe(1);
+            expect(
+              await page.getByRole('region', { name: '原生注入记录' }).count(),
+            ).toBe(0);
+            const originalReads = state.ledgerReads;
+            await page
+              .getByRole('button', {
+                name: '查看当前包：本人周报',
+                exact: true,
+              })
+              .click();
+            await page.getByText('准确正文 2.0.0', { exact: true }).waitFor();
+            expect(state.ledgerReads).toBe(originalReads);
+            expect(
+              await page.getByRole('region', { name: '原生注入记录' }).count(),
+            ).toBe(0);
+            state.injected = true;
+            await page
+              .getByRole('button', { name: '重新读取工作记录', exact: true })
+              .click();
+            await read
+              .getByText('已注入 · 2 条原生记录', { exact: true })
+              .waitFor();
+            const invocation = page
+              .getByRole('region', { name: '原生注入记录' })
+              .filter({ hasText: '原生指令载入' });
+            const tool = page
+              .getByRole('region', { name: '原生注入记录' })
+              .filter({ hasText: '原生 skill 工具返回正文' });
+            expect(await invocation.count()).toBe(1);
+            expect(await tool.count()).toBe(1);
+            await invocation.getByText('技术详情', { exact: true }).click();
+            await tool.getByText('技术详情', { exact: true }).click();
+            expect(await invocation.innerText()).toContain(
+              'original-invocation',
+            );
+            expect(await tool.innerText()).toContain('original-call');
+            expect(await tool.innerText()).toContain(`dsh-original-${id(31)}`);
+            expect(await tool.innerText()).toContain('exact-1.0.0');
+            expect(await tool.innerText()).toContain(
+              skill('1.0.0').contentChecksum,
+            );
+            expect(await tool.innerText()).toContain(
+              skill('1.0.0').bundleChecksum,
+            );
+            expect(await tool.innerText()).toContain('修订 1');
+            expect(await page.locator('body').innerText()).toContain(
+              '这些事实不证明模型已照做',
+            );
+            const typography = await tool
+              .locator('code')
+              .first()
+              .evaluate((node) => ({
+                font: getComputedStyle(node).fontSize,
+                line: getComputedStyle(node).lineHeight,
+              }));
+            expect(typography).toEqual({ font: '13px', line: '20px' });
+            const contrast = await tool.locator('strong').evaluate((node) => {
+              let background: Element = node;
+              while (
+                getComputedStyle(background).backgroundColor ===
+                  'rgba(0, 0, 0, 0)' &&
+                background.parentElement
+              )
+                background = background.parentElement;
+              const luminance = (color: string) =>
+                color
+                  .match(/[\d.]+/g)!
+                  .slice(0, 3)
+                  .map(Number)
+                  .map((value) => value / 255)
+                  .map((value) =>
+                    value <= 0.04045
+                      ? value / 12.92
+                      : ((value + 0.055) / 1.055) ** 2.4,
+                  )
+                  .reduce(
+                    (sum, value, index) =>
+                      sum + value * [0.2126, 0.7152, 0.0722][index]!,
+                    0,
+                  );
+              const foreground = luminance(getComputedStyle(node).color),
+                bg = luminance(getComputedStyle(background).backgroundColor);
+              return (
+                (Math.max(foreground, bg) + 0.05) /
+                (Math.min(foreground, bg) + 0.05)
+              );
+            });
+            expect(contrast).toBeGreaterThanOrEqual(4.5);
+            expect(
+              await page.evaluate(
+                () => document.documentElement.scrollWidth <= innerWidth,
+              ),
+            ).toBe(true);
+            await page.screenshot({
+              path: resolve(
+                screenshots,
+                `native-use-${width}-${dark ? 'dark' : 'light'}.png`,
+              ),
+              fullPage: true,
+            });
+            state.revoked = true;
+            await page
+              .getByRole('button', { name: '查看这次读取的包', exact: true })
+              .click();
+            await page.getByRole('alert').waitFor();
+            expect(
+              await page
+                .getByRole('region', { name: '本人包与精确资源' })
+                .count(),
+            ).toBe(0);
+            expect(
+              await page.getByRole('region', { name: '原生注入记录' }).count(),
+            ).toBe(2);
+            expect(
+              await read
+                .getByText('已注入 · 2 条原生记录', { exact: true })
+                .count(),
+            ).toBe(1);
+          } finally {
+            await page.close();
+          }
+        });
+
     it('clears a prior body after a revoked exact read while keeping safe audit metadata', async () => {
       const { page, state } = await open();
       try {
@@ -531,8 +688,15 @@ suite(
       }
     });
     it('drops another viewer/instance read state before rendering its new directory', async () => {
-      const { page } = await open();
+      const { page, state } = await open();
       try {
+        state.injected = true;
+        await page
+          .getByRole('button', { name: '重新读取工作记录', exact: true })
+          .click();
+        await page
+          .getByText('已注入 · 2 条原生记录', { exact: true })
+          .waitFor();
         await page
           .getByRole('button', { name: '查看这次读取的包', exact: true })
           .click();
@@ -545,6 +709,9 @@ suite(
         ).toBe(0);
         expect(
           await page.getByRole('region', { name: '准确读取回执' }).count(),
+        ).toBe(0);
+        expect(
+          await page.getByRole('region', { name: '原生注入记录' }).count(),
         ).toBe(0);
         await page
           .getByText('本人 Workflow · 目录与读取记录', { exact: true })
