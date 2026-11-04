@@ -698,16 +698,7 @@ export const baseline: readonly BaselineEntry[] = [
       String.raw`["资料没有可检索的文本","资料已停用","资料文件校验失败"].includes()`,
     ],
   },
-  {
-    file: 'apps/worker/src/tool-broker/handlers/brand-content.ts',
-    owner: 'renderBrandContentArticleMarkdown',
-    kind: 'own-text',
-    use: '判断品牌文章末尾是否已带系统生成的“资料依据”段，避免重复追加',
-    sites: [
-      '=== "---\\n\\n资料依据：本次品牌资料中的文字要求。${\\n\\n待核实：\\n- ${…}|}"',
-      'endsWith("\\n\\n---\\n\\n资料依据：本次品牌资料中的文字要求。${\\n\\n待核实：\\n- ${…}|}")',
-    ],
-  },
+
   {
     file: 'packages/database/src/employees/recurring-task-confirmation.ts',
     owner: 'recurringConfirmation',
