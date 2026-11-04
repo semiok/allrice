@@ -30,7 +30,9 @@ export function readBootstrapCoverage(session, input) {
       if (source?.kind === 'user') assistantMessageId = undefined;
       const parsed = BootstrapReceiptSchema.safeParse(source?.allriceBootstrap);
       if (
-        source?.kind !== 'user' ||
+        !['user', 'allrice-context', 'session-reference'].includes(
+          source?.kind,
+        ) ||
         !parsed.success ||
         parsed.data.scope !== scope
       )

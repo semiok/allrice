@@ -3532,10 +3532,24 @@ it('personal Workflow loads current versions on one native thread and keeps exac
     },
   };
   first.contentGuard = guard;
+  const uses: HarnessEvent[] = [];
+  first.onEvent = async (event) => {
+    if (event.sourceEventType === 'allrice/scene-use') uses.push(event);
+  };
   let cold: DshHarnessAdapter | undefined;
   try {
     const a = await runtime.adapter.execute(first);
     expect(reads).toEqual([1, 2]);
+    expect(uses.map((e) => e.sourcePayload?.contentRef)).toEqual([
+      'exact-v1',
+      'exact-v2',
+    ]);
+    expect(
+      uses.every(
+        (e) =>
+          e.type === 'native.event' && e.sourcePayload?.kind === 'tool-result',
+      ),
+    ).toBe(true);
     expect(JSON.stringify(runtime.requests[2])).toContain('WORKFLOW_BODY_1');
     expect(JSON.stringify(runtime.requests[2])).toContain('WORKFLOW_BODY_2');
     expect(JSON.stringify(runtime.requests[2])).toContain('exact-v1');
@@ -3548,9 +3562,15 @@ it('personal Workflow loads current versions on one native thread and keeps exac
     second.workDirectory = runtime.root;
     second.tools = [];
     second.contentGuard = guard;
+    second.onEvent = first.onEvent;
     const b = await runtime.adapter.execute(second);
     expect(b.threadId).toBe(a.threadId);
     expect(reads).toEqual([1, 2, 2]);
+    expect(uses.map((e) => e.sourcePayload?.contentRef)).toEqual([
+      'exact-v1',
+      'exact-v2',
+      'exact-v2',
+    ]);
     await runtime.adapter.close();
     cold = new DshHarnessAdapter({
       credentialResolver: {
@@ -3569,8 +3589,10 @@ it('personal Workflow loads current versions on one native thread and keeps exac
     third.workDirectory = runtime.root;
     third.tools = [];
     third.contentGuard = guard;
+    third.onEvent = first.onEvent;
     const c = await cold.execute(third);
     expect(c.threadId).toBe(a.threadId);
+    expect(uses).toHaveLength(3); // Cold history is not a new native use event.
     expect(reads).toEqual([1, 2, 2]);
     expect(JSON.stringify(runtime.requests[5])).toContain('WORKFLOW_BODY_1');
     revoked = true;

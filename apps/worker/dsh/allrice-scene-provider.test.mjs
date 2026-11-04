@@ -171,6 +171,7 @@ it('personal native get uses current content, preserves exact resource addresses
     description: '整理资料',
   };
   const ctx = {
+    on() {},
     skills: {
       registerProvider(factory) {
         provider = factory({
@@ -207,7 +208,7 @@ it('personal native get uses current content, preserves exact resource addresses
     },
   );
   const candidate = (await provider.list())[0];
-  expect(candidate.invocation.userInvocable).toBe(false); // C2-c is separate.
+  expect(candidate.invocation.userInvocable).toBe(true);
   const first = await provider.get(candidate);
   const firstText = renderSkillContent(first);
   version = 2;

@@ -104,6 +104,23 @@ export const PersonalSceneSkillSchema = PersonalSceneSkillSummarySchema.extend({
   ),
 });
 export type PersonalSceneSkill = z.infer<typeof PersonalSceneSkillSchema>;
+/** Single-way projection of a real public native event, not a get/read receipt,
+ * model assertion, stage pin or authority to load content. Contains no bytes. */
+export const PersonalSceneUseSchema = PersonalSceneSkillSchema.pick({
+  sceneId: true,
+  nativeName: true,
+  contentRef: true,
+  revision: true,
+  contentChecksum: true,
+  bundleChecksum: true,
+})
+  .extend({
+    nativeSessionId: z.string().min(1).max(200),
+    nativeSequence: z.number().int().nonnegative(),
+    kind: z.enum(['skill-invocation', 'tool-result']),
+    nativeId: z.string().min(1).max(200),
+  })
+  .strict();
 export const PersonalSceneSkillCatalogSchema = z
   .object({
     instanceId: UuidSchema,

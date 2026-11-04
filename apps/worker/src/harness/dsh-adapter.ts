@@ -1,4 +1,8 @@
 import {
+  personalScenePromptParts,
+  type PersonalScenePromptPart,
+} from './personal-scene-prompt.js';
+import {
   NativeModelFactSchema,
   NativeModelDeliverySchema,
 } from '@allrice/database';
@@ -16,6 +20,8 @@ import {
   NativeQuestionCheckpointSchema,
   RuntimeNativeInputProofSchema,
   EmployeeSceneReadSchema,
+  PersonalSceneSkillSchema,
+  PersonalSceneUseSchema,
   UuidSchema,
   EmployeeSceneStateSchema,
   ModelStreamDiagnosticSchema,
@@ -316,6 +322,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
     // Project only the successful server-authored profile receipt onto its
     // native completion event; raw model/tool output is not a public receipt.
     const profileReceipts = new Map<string, string>();
+    const personalSceneReads = new Map<
+      string,
+      ReturnType<typeof PersonalSceneSkillSchema.parse>
+    >();
     const runId = input.executionEnvironment.ALLRICE_RUN_ID;
     const runScope = runId
       ? nativeRunScope(runtime.client, threadId, runId)
@@ -484,7 +494,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
       }
       if (
         method === 'allrice/content-scene-personal-list' ||
-        method === 'allrice/content-scene-personal-load'
+        method === 'allrice/content-scene-personal-load' ||
+        method === 'allrice/content-scene-personal-use'
       ) {
         try {
           await checkContent('sceneLoad');
@@ -492,11 +503,48 @@ export class DshHarnessAdapter implements HarnessAdapter {
             throw Error('employee_scene_unbound');
           if (!runScope && params.nativeSessionId !== threadId)
             throw Error('employee_scene_native_scope');
-          return method === 'allrice/content-scene-personal-list'
-            ? await input.contentGuard.personalScenes.list()
-            : await input.contentGuard.personalScenes.load(
+          if (method === 'allrice/content-scene-personal-list')
+            return await input.contentGuard.personalScenes.list();
+          if (method === 'allrice/content-scene-personal-load') {
+            const skill = PersonalSceneSkillSchema.parse(
+              await input.contentGuard.personalScenes.load(
                 UuidSchema.parse(params.sceneId),
-              );
+              ),
+            );
+            personalSceneReads.set(skill.contentRef, skill);
+            return skill;
+          }
+          const evidence = PersonalSceneUseSchema.parse(params);
+          const read = personalSceneReads.get(evidence.contentRef);
+          if (
+            !read ||
+            (
+              [
+                'sceneId',
+                'nativeName',
+                'revision',
+                'contentChecksum',
+                'bundleChecksum',
+              ] as const
+            ).some((key) => read[key] !== evidence[key])
+          )
+            throw Error('employee_scene_native_use_invalid');
+          // A real public native event, never a synthetic skill tool result.
+          // Await the existing durable Run event sink before model dispatch.
+          await emit({
+            type: 'native.event',
+            presentation: 'context',
+            status: 'completed',
+            label: `Workflow · ${read.name}`,
+            summary:
+              evidence.kind === 'skill-invocation'
+                ? '原生指令已载入'
+                : '原生 skill 工具已返回正文',
+            sourceEventType: 'allrice/scene-use',
+            sourceEventId: `scene-use:${evidence.nativeSessionId}:${evidence.nativeSequence}`,
+            sourcePayload: { ...evidence },
+          });
+          return { recorded: true };
         } catch (error) {
           contentAuthorizationFailure ??= contentGuardFailure(error);
           throw contentAuthorizationFailure;
@@ -695,6 +743,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       ? performance.now() - skillEventsStarted
       : 0;
     let prompt = '';
+    let personalScenePrompt: PersonalScenePromptPart[] | undefined;
     let bootstrapReceipt: BootstrapReceipt | undefined;
     let answer = '';
     let waitingForUser: HarnessExecutionResult['waitingForUser'];
@@ -806,14 +855,22 @@ export class DshHarnessAdapter implements HarnessAdapter {
             : {}),
         };
       }
-      prompt = [
+      const promptContext = [
         dshToolBridgeInstructions(input, new Set(runtime.nativeTools)),
         bootstrap ? `Conversation context:\n${bootstrap}` : '',
         input.kernel.authorizedMemoryContext,
-        input.kernel.userRequest,
       ]
         .filter(Boolean)
         .join('\n\n');
+      prompt = [promptContext, input.kernel.userRequest]
+        .filter(Boolean)
+        .join('\n\n');
+      if (input.contentGuard?.personalScenes)
+        personalScenePrompt = personalScenePromptParts(
+          promptContext,
+          input.kernel.userRequest,
+          input.personalScenePromptSource,
+        );
       const preparationMs = performance.now() - preparationStarted;
       timing.mark('preparationCompleted');
       // This receipt measures preparation before prompting. Its own write is
@@ -878,6 +935,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
             : undefined,
           onTimingPoint: (point) => timing.mark(point),
           prompt,
+          personalScenePrompt:
+            callIndex === 0 ? personalScenePrompt : undefined,
           bootstrapReceipt: callIndex === 0 ? bootstrapReceipt : undefined,
           images: callIndex === 0 ? (input.images ?? []) : [],
           sessionReferences:
@@ -1572,6 +1631,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
     onTimingPoint(point: DshRunTimingPoint): void;
     sessionReferences?: SessionReferenceSnapshot[];
     bootstrapReceipt?: BootstrapReceipt;
+    personalScenePrompt?: PersonalScenePromptPart[];
     runtime: DshRuntime;
     prompt: string;
     start?(): Promise<unknown>;
@@ -2295,6 +2355,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
                 input.images,
                 input.sessionReferences,
                 input.bootstrapReceipt,
+                input.personalScenePrompt,
               )
       ).catch(async (error: unknown) => {
         await eventChain;

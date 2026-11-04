@@ -1,5 +1,6 @@
 import type { createRunDeliveryPort } from '../final-delivery/run-delivery.js';
 import type { NativeSubagentFollowInput } from './native-subagent-follow.js';
+import type { PersonalScenePromptSource } from './personal-scene-prompt.js';
 import type {
   NativeRootOrigin,
   NativeModelFact,
@@ -89,6 +90,9 @@ export interface HarnessExecutionInput {
   /** Server-loaded current human message before attachment/template augmentation.
    * Selects an existing tool transport only; database admission grants writes. */
   currentUserRequest?: string;
+  /** Only personal Workflow prompts: database-checked source, never inferred
+   * from currentUserRequest, model content or a frozen role=user label. */
+  personalScenePromptSource?: PersonalScenePromptSource;
   /**
    * Worker-only, same-Run deterministic delivery check before native finish.
    * Employee jobs must bind this closure; optionality preserves other adapters/callers.

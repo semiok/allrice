@@ -86,6 +86,7 @@ export {
 
 export {
   PersonalSceneSkillSchema,
+  PersonalSceneUseSchema,
   PersonalSceneSkillCatalogSchema,
   PersonalSceneContentRefSchema,
   SkillResourceReadSchema,

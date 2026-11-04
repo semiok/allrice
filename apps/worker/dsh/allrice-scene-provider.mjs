@@ -1,7 +1,9 @@
 import { readDshToolResult } from '@allrice/contracts/native-runtime';
+import { createHash } from 'node:crypto';
 import { renderSkillContent } from '@deepseek-ai/dsh-skill';
 import {
   PersonalSceneSkillSchema,
+  PersonalSceneUseSchema,
   PersonalSceneSkillCatalogSchema,
   EmployeeRuntimeSceneSchema,
   EmployeeSceneReadSchema,
@@ -179,6 +181,28 @@ export function installSceneProvider(ctx, rawScenes, bridge) {
  * durable actual-read evidence; neither reload nor cold recovery replays loads. */
 export function installPersonalSceneProvider(ctx, bridge) {
   let control;
+  const personalInvocation = Object.freeze({
+    modelInvocable: true,
+    userInvocable: true,
+  });
+  // Correlate only live public events with bytes just returned by this Provider.
+  // This is ephemeral audit correlation, not a content/version cache. Restored
+  // or fork-inherited history never becomes a new Run's use claim.
+  const loadedByRendering = new Map(),
+    calls = new Map();
+  const renderKey = (text) =>
+    typeof text === 'string'
+      ? createHash('sha256').update(text).digest('hex')
+      : undefined;
+  let pending = Promise.resolve(),
+    failure;
+  const track = (promise) => {
+    pending = Promise.all([pending, promise])
+      .then(() => undefined)
+      .catch((error) => {
+        failure ??= error;
+      });
+  };
   ctx.skills.registerProvider((registration) => {
     control = registration;
     return {
@@ -190,7 +214,7 @@ export function installPersonalSceneProvider(ctx, bridge) {
         return catalog.skills.map((skill) => ({
           name: skill.nativeName,
           description: `工作场景：${skill.name}。适用：${skill.description}`,
-          invocation,
+          invocation: personalInvocation,
           provider: providerName,
           source: 'allrice-managed',
           rank: 100,
@@ -214,10 +238,10 @@ export function installPersonalSceneProvider(ctx, bridge) {
           skill.nativeName !== candidate.name
         )
           throw Error('employee_scene_receipt_invalid');
-        return {
+        const definition = {
           name: skill.nativeName,
           description: `工作场景：${skill.name}。适用：${skill.description}`,
-          invocation,
+          invocation: personalInvocation,
           provider: providerName,
           source: 'allrice-managed',
           content: skill.content,
@@ -226,14 +250,80 @@ export function installPersonalSceneProvider(ctx, bridge) {
             description: `AllRice Workflow resources: use workspace_skill_read with contentRef=${JSON.stringify(skill.contentRef)} and path. Exact package ${skill.bundleChecksum}; content ${skill.contentChecksum}. Resources: ${JSON.stringify(skill.resources)}. Read only; scripts are not executed.`,
           },
         };
+        loadedByRendering.set(renderKey(renderSkillContent(definition)), skill);
+        return definition;
       },
     };
   });
+  ctx.on('session/event', (session, event) => {
+    if (event.surfaceOp === 'replace' || event.surfaceOp?.op === 'replace')
+      return;
+    const data = event.data;
+    if (event.type === 'tool/call' && data.name === 'skill') {
+      let args = data.arguments;
+      try {
+        if (typeof args === 'string') args = JSON.parse(args);
+      } catch {
+        return;
+      }
+      if (typeof args?.name === 'string')
+        calls.set(`${session.id}:${data.callId}`, args.name);
+      return;
+    }
+    let name, text, kind, nativeId;
+    if (
+      event.type === 'user/message' &&
+      data.source?.kind === 'skill-invocation' &&
+      data.source.form === 'instructions'
+    ) {
+      name = data.source.name;
+      text = output({ content: data.content });
+      kind = 'skill-invocation';
+      nativeId = data.id;
+    } else if (event.type === 'tool/result') {
+      const block = readDshToolResult(data.message);
+      nativeId =
+        block?.toolCallId ?? data.message?.toolCallId ?? data.message?.callId;
+      const key = `${session.id}:${nativeId}`;
+      name = calls.get(key);
+      calls.delete(key);
+      if (data.error || block?.isError === true) return;
+      text = output(block);
+      kind = 'tool-result';
+    } else return;
+    const loaded = loadedByRendering.get(renderKey(text));
+    if (!loaded || loaded.nativeName !== name) return;
+    const evidence = PersonalSceneUseSchema.parse({
+      sceneId: loaded.sceneId,
+      nativeName: loaded.nativeName,
+      contentRef: loaded.contentRef,
+      revision: loaded.revision,
+      contentChecksum: loaded.contentChecksum,
+      bundleChecksum: loaded.bundleChecksum,
+      nativeSessionId: session.id,
+      nativeSequence: event.seq,
+      kind,
+      nativeId,
+    });
+    track(bridge('personal-use', evidence));
+  });
   return {
-    invalidate: () => control.invalidate(),
+    invalidate: () => {
+      // Worker prompt admission is the next root input boundary. Never replay
+      // a previous Run's reads as this Run's injection evidence.
+      loadedByRendering.clear();
+      calls.clear();
+      control.invalidate();
+    },
     // Invalidate the native catalog for the next pre-step. Body get has no
     // cache. Historical reads are checked by the same durable content guard.
     async beforeDispatch() {
+      let observed;
+      do {
+        observed = pending;
+        await observed;
+      } while (observed !== pending);
+      if (failure) throw failure;
       control.invalidate();
     },
   };
