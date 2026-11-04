@@ -2656,12 +2656,6 @@ export async function createTraceableMemory(
       throw new DataAccessError('not_found');
     if (source) {
       await lockMemorySource(tx, scope, memory.sourceType, memory.sourceId);
-      const [discarded] = await tx`select id from allrice_memories
-        where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
-          and owner_id=${scope.ownerId} and instance_id=${scope.instanceId}
-          and source_type=${memory.sourceType} and source_id=${memory.sourceId}
-          and archived_at is not null limit 1`;
-      if (discarded) throw new EmployeeMemoryConflict();
     }
     const key = source
       ? `source:${memory.sourceType}:${memory.sourceId}:${memoryContentDigest(memory.content)}`
@@ -2686,6 +2680,16 @@ export async function createTraceableMemory(
       key,
       { ...memory, instanceId, lifecycleState },
       async () => {
+        // An existing, current receipt may still be replayed when a different
+        // proposal from this source was discarded. Only new creation is barred.
+        if (source) {
+          const [discarded] = await tx`select id from allrice_memories
+            where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
+              and owner_id=${scope.ownerId} and instance_id=${scope.instanceId}
+              and source_type=${memory.sourceType} and source_id=${memory.sourceId}
+              and archived_at is not null limit 1`;
+          if (discarded) throw new EmployeeMemoryConflict();
+        }
         const [row] = await tx<MemoryRow[]>`
           insert into allrice_memories(organization_id,workspace_id,employee_id,owner_id,instance_id,
             content,visibility,source_type,source_id,trust_level,confidence,source_label,

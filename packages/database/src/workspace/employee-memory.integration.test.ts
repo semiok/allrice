@@ -354,12 +354,25 @@ suite(
       expect((await createTraceableMemory(f.context, proposal)).id).toBe(
         first.id,
       );
+      const secondProposal = { ...proposal, content: '同条消息的另一项偏好' };
+      const second = await createTraceableMemory(f.context, secondProposal);
       await deleteWorkspaceMemory(
         f.context,
         f.workspace,
         first.id,
         exact(first),
       );
+      expect(await createTraceableMemory(f.context, secondProposal)).toEqual(
+        second,
+      );
+      expect(
+        await listWorkspaceMemoryRevisions(
+          f.context,
+          f.workspace,
+          second.id,
+          f.assignment,
+        ),
+      ).toHaveLength(1);
       await expect(
         createTraceableMemory(f.context, proposal),
       ).rejects.toBeInstanceOf(EmployeeMemoryConflict);

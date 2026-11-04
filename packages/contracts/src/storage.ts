@@ -1,7 +1,6 @@
 import { z } from 'zod';
 
 import { TimestampSchema, UuidSchema, VisibilitySchema } from './common.ts';
-import { MemorySourceTypeSchema } from './operations.ts';
 import { ChecksumSchema } from './runs.ts';
 
 export const StorageCategorySchema = z.enum([
