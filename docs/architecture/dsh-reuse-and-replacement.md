@@ -587,6 +587,8 @@ AllRice 通过公开的 `llm/stream` middleware 请求 Worker 校验，覆盖原
 
 `allrice-progressive-scene-provider-v1` 使用固定 DSH 的公开 Skill Provider list/get 和 session/event、llm/stream。目录不带正文；Worker 按冻结引用与当前权限、lease 提交读取回执后才返回内容。原生 get（包括不可调用 slash 的探查）只算读取；匹配的成功 tool/result 才登记采用，下一派发等待采用事务。场景读取接入既有 content generation，撤权后压缩、恢复和跨会话引用同样失效。跨 Run 使用独立原生线程，保留已授权的普通历史，避免上一场景的工具结果或 summary 自动沿用。可删除条件：上游提供同等租户来源读取/采用持久化接口后替换适配；没有改动 DSH 核心或另造 Skill/Agent 循环。
 
+MET-227 C2-b 使用 rc.2 同一公开 Provider 接缝为新个人 custom Run 读取当前获准单包；新的 `personalScenes` 快照标记只区分读取合同，旧快照及后台冻结读口不变。目录使用原生 invalidate，在真人新一轮和每次 llm/stream 检查时失效，get 始终按稳定场景身份读当前包。contentRef 是现有精确修订定位，资源通过 workspace.skill.read 重验当前身份/同实例/来源/hash/lease 并提交实际读账本后返回；不 fallback latest，不授予执行权限。个人 Provider 不复制旧 adoption 单场景状态，也不在冷恢复时重放 get；历史来源由现 content generation 门卫检查，跨 Run 仅取消个人场景导致的线程隔离，其他既有隔离原因保留。/name 仍禁用，真人来源接线属于 C2-c。用户已批存储、门卫和单向账本适配，无新表、阶段凭据或子智能体修改；撤销后的 fork 真实验收仍是合并硬门禁。
+
 ### 2026-10-14：执行时限与后台计算复用复评
 
 固定上游仍为 `0.1.5-rc.3`。工具外层超时继续复用

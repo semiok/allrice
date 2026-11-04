@@ -93,6 +93,7 @@ import {
   releaseConversationRuntime,
 } from '../conversation/conversation-runtime.ts';
 import { resolveEmployeeExecution } from './employeehub.ts';
+import * as contentRuntimeModule from './employee-runtime-content.ts';
 import {
   prepareEmployeeContentContext,
   loadEmployeeRuntimeScene,
@@ -1748,6 +1749,26 @@ suite(
               ? { employeeInstanceId: s.instance.id }
               : { employeeAssignmentId: s.assigned.id }),
           });
+      // Build retained historical snapshots through the real admission pipeline;
+      // never mutate an immutable Run or loosen its source/lease assertions.
+      const historical =
+        !personalScenes && custom
+          ? vi
+              .spyOn(contentRuntimeModule, 'prepareEmployeeRuntimeContent')
+              .mockImplementation(async (context, input, sql) => {
+                const content = await freezeEmployeeRuntimeContent(
+                  context,
+                  {
+                    instanceId: input.instance.id,
+                    employeeId: input.employeeId,
+                    employeeVersionId: input.employeeVersionId,
+                  },
+                  sql,
+                );
+                await readEmployeeRuntimeContent(context, content, sql);
+                return content;
+              })
+          : undefined;
       const sent = await sendChatMessage(
         s.a,
         s.company.workspaceId,
@@ -1761,7 +1782,7 @@ suite(
             ? { deliveryMode: 'follow_up' }
             : {}),
         },
-      );
+      ).finally(() => historical?.mockRestore());
       const scope = {
         organizationId: s.company.organizationId,
         workspaceId: s.company.workspaceId,
@@ -1769,16 +1790,6 @@ suite(
         sessionId: session.id,
         runId: sent.run.id,
       };
-      if (!personalScenes && custom) {
-        // Retained historical Run fixture. Production admission now chooses the
-        // dynamic personal contract; these tests still exercise old snapshots.
-        const frozen = await freezeEmployeeRuntimeContent(s.a, {
-          instanceId: s.instance.id,
-          employeeId: s.employeeId,
-          employeeVersionId: s.assigned.currentVersion.id,
-        });
-        await f.db`update allrice_employee_runs set execution_snapshot=jsonb_set(execution_snapshot,'{content}',${f.db.json(frozen)}) where run_id=${scope.runId}`;
-      }
       const resolved = await resolveEmployeeExecution(scope);
       const runtime = await prepareEmployeeContentContext(scope);
       expect(runtime).not.toBeNull();

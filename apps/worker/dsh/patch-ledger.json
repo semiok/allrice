@@ -19,11 +19,11 @@
     },
     {
       "id": "allrice-progressive-scene-provider-v1",
-      "issue": "MET-179",
+      "issue": "MET-179 / MET-227",
       "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-scene-provider.mjs",
-      "reason": "Public native Skill Provider freezes metadata only, reads exact scene content through Worker ACL/lease and persists dependencies before returning bytes. Successful native tool results register adoption before dispatch. No core patch, new agent loop, or permission grant."
+      "reason": "Public native Skill Provider keeps the backend frozen scene/adoption contract and connects new personal custom Runs to current authorized packages. Native invalidation refreshes the directory; exact resource locators, Worker ACL/lease and durable reads protect every returned byte and retained history. No core patch, stage credential, alternative cache, agent loop or permission grant."
     },
     {
       "id": "allrice-employee-content-authorization-v1",

@@ -3465,3 +3465,130 @@ describe('idle close lease (MET-216)', () => {
     expect(order.at(-1)).toBe(`prepared:${fresh.id}`);
   });
 });
+
+it('personal Workflow loads current versions on one native thread and keeps exact resource hints across warm and cold Runs', async () => {
+  const sceneId = randomUUID(),
+    instanceId = randomUUID(),
+    generationId = randomUUID();
+  const nativeName = `allrice-scene-${sceneId}`;
+  let version = 1,
+    revoked = false;
+  const reads: number[] = [];
+  const runtime = await schedulingRuntime(
+    [
+      { id: 'load-v1', wireName: 'skill', arguments: { name: nativeName } },
+      { id: 'load-v2', wireName: 'skill', arguments: { name: nativeName } },
+      'TWO_VERSIONS_READ',
+      { id: 'load-warm', wireName: 'skill', arguments: { name: nativeName } },
+      'WARM_DONE',
+      'COLD_DONE',
+    ],
+    {
+      beforeFinish: async (index) => {
+        if (index === 1) version = 2;
+      },
+    },
+  );
+  const first = executionInput({
+    prompt: '用我的周报 Workflow，然后重新加载最新版本',
+    provider: runtime.provider,
+  });
+  first.workDirectory = runtime.root;
+  first.tools = [];
+  const summary = {
+    sceneId,
+    nativeName,
+    name: '周报',
+    description: '整理资料',
+  };
+  const guard: NonNullable<HarnessExecutionInput['contentGuard']> = {
+    generationId,
+    nativeContextKey: generationId,
+    check: async () => {
+      if (revoked)
+        throw new HandlerError(
+          'EMPLOYEE_CONTENT_UNAVAILABLE',
+          'revoked',
+          false,
+        );
+    },
+    personalScenes: {
+      list: async () => ({ instanceId, revision: version, skills: [summary] }),
+      load: async (id) => {
+        expect(id).toBe(sceneId);
+        reads.push(version);
+        return {
+          ...summary,
+          contentRef: `exact-v${version}`,
+          revision: version,
+          content: `WORKFLOW_BODY_${version}`,
+          contentChecksum: `sha256:${'a'.repeat(64)}`,
+          bundleChecksum: `sha256:${'b'.repeat(64)}`,
+          bundleVersion: `${version}.0.0`,
+          resources: [],
+          sources: [],
+        };
+      },
+    },
+  };
+  first.contentGuard = guard;
+  let cold: DshHarnessAdapter | undefined;
+  try {
+    const a = await runtime.adapter.execute(first);
+    expect(reads).toEqual([1, 2]);
+    expect(JSON.stringify(runtime.requests[2])).toContain('WORKFLOW_BODY_1');
+    expect(JSON.stringify(runtime.requests[2])).toContain('WORKFLOW_BODY_2');
+    expect(JSON.stringify(runtime.requests[2])).toContain('exact-v1');
+    const second = executionInput({
+      prompt: '继续读取周报',
+      provider: runtime.provider,
+      sameSessionAs: first,
+      threadId: a.threadId,
+    });
+    second.workDirectory = runtime.root;
+    second.tools = [];
+    second.contentGuard = guard;
+    const b = await runtime.adapter.execute(second);
+    expect(b.threadId).toBe(a.threadId);
+    expect(reads).toEqual([1, 2, 2]);
+    await runtime.adapter.close();
+    cold = new DshHarnessAdapter({
+      credentialResolver: {
+        resolve: async () => ({ apiKey: 'synthetic-only' }),
+      },
+      runtimeRoot: runtime.root,
+      requestTimeoutMs: 15000,
+    });
+    adapters.push(cold);
+    const third = executionInput({
+      prompt: '根据前面已读内容继续，不重新加载',
+      provider: runtime.provider,
+      sameSessionAs: first,
+      threadId: b.threadId,
+    });
+    third.workDirectory = runtime.root;
+    third.tools = [];
+    third.contentGuard = guard;
+    const c = await cold.execute(third);
+    expect(c.threadId).toBe(a.threadId);
+    expect(reads).toEqual([1, 2, 2]);
+    expect(JSON.stringify(runtime.requests[5])).toContain('WORKFLOW_BODY_1');
+    revoked = true;
+    const denied = executionInput({
+      prompt: '撤权后继续',
+      provider: runtime.provider,
+      sameSessionAs: first,
+      threadId: c.threadId,
+    });
+    denied.workDirectory = runtime.root;
+    denied.tools = [];
+    denied.contentGuard = guard;
+    await expect(cold.execute(denied)).rejects.toMatchObject({
+      code: 'EMPLOYEE_CONTENT_UNAVAILABLE',
+    });
+    expect(runtime.requests).toHaveLength(6);
+  } finally {
+    await cold?.close();
+    await runtime.close();
+  }
+}, 45000);

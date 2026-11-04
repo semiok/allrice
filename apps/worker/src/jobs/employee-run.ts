@@ -16,6 +16,7 @@ import {
 
 import {
   ConversationRuntimeError,
+  DataAccessError,
   workbenchEnabled,
   getDatabase,
   readWorkAutomation,
@@ -340,6 +341,21 @@ export async function executeEmployeeRun({
       },
     };
   }
+  const personalSceneRead = async <T>(read: () => Promise<T>): Promise<T> => {
+    try {
+      return await read();
+    } catch (error) {
+      if (
+        error instanceof EmployeeRuntimeContentError ||
+        (error instanceof DataAccessError &&
+          (error.code === 'not_found' || error.code === 'authorization_denied'))
+      ) {
+        const unavailable = new EmployeeRuntimeContentError();
+        throw new HandlerError(unavailable.code, unavailable.message, false);
+      }
+      throw error;
+    }
+  };
   let contentEvidence: Promise<unknown> | undefined;
   const contentGuard = contentRuntime
     ? {
@@ -350,17 +366,21 @@ export async function executeEmployeeRun({
           ? {
               personalScenes: {
                 list: () =>
-                  listPersonalRuntimeSceneSkills(
-                    contentScope,
-                    contentRuntime!.generationId,
-                    workflowLease,
+                  personalSceneRead(() =>
+                    listPersonalRuntimeSceneSkills(
+                      contentScope,
+                      contentRuntime!.generationId,
+                      workflowLease,
+                    ),
                   ),
                 load: async (sceneId: string) => {
-                  const loaded = await loadPersonalRuntimeSceneSkill(
-                    contentScope,
-                    contentRuntime!.generationId,
-                    { sceneId },
-                    workflowLease,
+                  const loaded = await personalSceneRead(() =>
+                    loadPersonalRuntimeSceneSkill(
+                      contentScope,
+                      contentRuntime!.generationId,
+                      { sceneId },
+                      workflowLease,
+                    ),
                   );
                   if (!('skill' in loaded))
                     throw new EmployeeRuntimeContentError();
