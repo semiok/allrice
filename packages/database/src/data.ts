@@ -506,8 +506,15 @@ export async function createRagChunk(
   const chunk = CreateRagChunkInputSchema.parse(input);
   const owner = actorId(context);
   const write = async (sql: TransactionSql) => {
-    const { employeeMemoryScope } = await import('./workspace/employee-memory.ts');
-    const scope = await employeeMemoryScope(context, chunk.workspaceId, chunk.instanceId, sql, true);
+    const { employeeMemoryScope } =
+      await import('./workspace/employee-memory.ts');
+    const scope = await employeeMemoryScope(
+      context,
+      chunk.workspaceId,
+      chunk.instanceId,
+      sql,
+      true,
+    );
     const [memory] = await sql<{ id: string; visibility: Visibility }[]>`
       select id,visibility from allrice_memories
       where id=${chunk.memoryId} and organization_id=${scope.organizationId}
@@ -537,7 +544,12 @@ export async function recallRagChunks(context: RequestContext, input: unknown) {
   return getDatabase().begin(async (sql) => {
     const { employeeMemoryScope } =
       await import('./workspace/employee-memory.ts');
-    if (!(await readContentPrincipal({ ...context, workspaceId: query.workspaceId }, sql)))
+    if (
+      !(await readContentPrincipal(
+        { ...context, workspaceId: query.workspaceId },
+        sql,
+      ))
+    )
       throw new DataAccessError('authorization_denied');
     if (query.instanceId)
       await employeeMemoryScope(

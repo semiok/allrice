@@ -191,10 +191,15 @@ suite(
           instanceId: foreign.assignment,
         }),
       ).rejects.toThrow();
-      await expect(createRagChunk(f.context, {
-        workspaceId: f.workspace, instanceId: f.other.id, memoryId: good.id,
-        content: good.content, embedding: embedWorkspaceText(good.content),
-      })).rejects.toThrow('authorization_denied');
+      await expect(
+        createRagChunk(f.context, {
+          workspaceId: f.workspace,
+          instanceId: f.other.id,
+          memoryId: good.id,
+          content: good.content,
+          embedding: embedWorkspaceText(good.content),
+        }),
+      ).rejects.toThrow('authorization_denied');
       await expect(
         createMemory(f.context, {
           workspaceId: f.workspace,

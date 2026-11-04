@@ -835,25 +835,54 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     const pending = await remember('月报入口使用原始账单');
     const ui = await open();
     try {
-      await card(ui.page, pending.id).getByRole('button', { name: '确认并记住' }).waitFor();
+      await card(ui.page, pending.id)
+        .getByRole('button', { name: '确认并记住' })
+        .waitFor();
       const changed = await api('/' + pending.id, {
-        method: 'PATCH', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({instanceId: pending.instanceId, expectedRevision: pending.revision,
-          contentDigest: pending.contentDigest, idempotencyKey: randomUUID(),
-          content: '月报入口使用本人校订后的原始账单', reason: 'Another owner view edited this proposal',
-          confidence: 1, expiresAt: null}),
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          instanceId: pending.instanceId,
+          expectedRevision: pending.revision,
+          contentDigest: pending.contentDigest,
+          idempotencyKey: randomUUID(),
+          content: '月报入口使用本人校订后的原始账单',
+          reason: 'Another owner view edited this proposal',
+          confidence: 1,
+          expiresAt: null,
+        }),
       });
       expect(changed.status).toBe(200);
-      const response = ui.page.waitForResponse(r => r.request().method() === 'POST' && r.url().includes('/' + pending.id + '/promote'));
-      await card(ui.page, pending.id).getByRole('button', { name: '确认并记住' }).click();
+      const response = ui.page.waitForResponse(
+        (r) =>
+          r.request().method() === 'POST' &&
+          r.url().includes('/' + pending.id + '/promote'),
+      );
+      await card(ui.page, pending.id)
+        .getByRole('button', { name: '确认并记住' })
+        .click();
       expect((await response).status()).toBe(409);
-      await card(ui.page, pending.id).getByText('记忆已变化，请重新读取后再操作。', { exact: false }).waitFor();
-      await card(ui.page, pending.id).getByRole('button', { name: '重新读取记忆' }).click();
-      await card(ui.page, pending.id).getByText('月报入口使用本人校订后的原始账单', { exact: true }).waitFor();
-      await card(ui.page, pending.id).getByText('长期记忆', { exact: true }).waitFor();
-      expect(await f.db`select revision,content from allrice_memories where id=${pending.id}`).toEqual([{revision: 2, content: '月报入口使用本人校订后的原始账单'}]);
-      expect(await f.db`select id from allrice_audit_events where resource_id=${pending.id} and action='memory.promote'`).toHaveLength(0);
-    } finally { await ui.close(); }
+      await card(ui.page, pending.id)
+        .getByText('记忆已变化，请重新读取后再操作。', { exact: false })
+        .waitFor();
+      await card(ui.page, pending.id)
+        .getByRole('button', { name: '重新读取记忆' })
+        .click();
+      await card(ui.page, pending.id)
+        .getByText('月报入口使用本人校订后的原始账单', { exact: true })
+        .waitFor();
+      await card(ui.page, pending.id)
+        .getByText('长期记忆', { exact: true })
+        .waitFor();
+      expect(
+        await f.db`select revision,content from allrice_memories where id=${pending.id}`,
+      ).toEqual([{ revision: 2, content: '月报入口使用本人校订后的原始账单' }]);
+      expect(
+        await f.db`select id from allrice_audit_events where resource_id=${pending.id} and action='memory.promote'`,
+      ).toHaveLength(0);
+    } finally {
+      await ui.close();
+    }
   });
 
   it('keeps candidate on lost confirmation acknowledgement, recovers by rereading, and retains failed discard', async () => {
