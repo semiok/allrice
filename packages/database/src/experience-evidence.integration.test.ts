@@ -248,6 +248,7 @@ suite('MET183 incremental evidence — isolated database, no model', () => {
     expect(
       await searchWorkspaceMemories(f.owner, {
         workspaceId: f.workspace,
+          instanceId: f.session.employeeInstanceId ?? f.session.employeeAssignmentId,
         query: '退款',
       }),
     ).toEqual([]);

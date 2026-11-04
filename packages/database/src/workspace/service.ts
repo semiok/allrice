@@ -2765,12 +2765,20 @@ async function lockPersonalMemory(
   return row;
 }
 
+async function rejectGovernedMemoryMutation(context: RequestContext, workspaceId: string, memoryId: string) {
+  const [review] = await getDatabase()`select memory_id from allrice_experience_reviews
+    where memory_id=${UuidSchema.parse(memoryId)} and organization_id=${context.organizationId}
+      and workspace_id=${UuidSchema.parse(workspaceId)} and owner_id=${requireUser(context)}`;
+  if (review) throw new DataAccessError('authorization_denied');
+}
+
 export async function correctWorkspaceMemory(
   context: RequestContext,
   workspaceIdInput: string,
   memoryIdInput: string,
   input: unknown,
 ) {
+  await rejectGovernedMemoryMutation(context, workspaceIdInput, memoryIdInput);
   const correction = CorrectMemoryInputSchema.parse(input);
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
   const memoryId = UuidSchema.parse(memoryIdInput);
@@ -2908,6 +2916,7 @@ export async function promoteWorkspaceMemory(
   memoryIdInput: string,
   input?: unknown,
 ) {
+  await rejectGovernedMemoryMutation(context, workspaceIdInput, memoryIdInput);
   const expected = MemoryMutationInputSchema.parse(input);
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
   const memoryId = UuidSchema.parse(memoryIdInput);

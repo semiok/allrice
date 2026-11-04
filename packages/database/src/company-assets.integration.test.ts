@@ -17,6 +17,7 @@ import {
   authenticateSession,
   createSession,
 } from './identity.ts';
+import { ensureDefaultEmployee } from './employees/employeehub.ts';
 import { getStoredFile } from './data.ts';
 import { readArtifactBytes } from './artifact-review.ts';
 import {
@@ -470,7 +471,10 @@ suite(
       );
     });
     it('pins an explicitly selected Memory revision while preserving the separately authored rule body', async () => {
+      const [memoryAssignment] = await f.db`select id from allrice_employee_assignments where organization_id=${owner.organizationId} and workspace_id=${owner.workspaceId!} and user_id=${owner.actor.id} and active`;
       const memory = await createTraceableMemory(owner, {
+        instanceId: memoryAssignment!.id,
+        idempotencyKey: randomUUID(),
         workspaceId: owner.workspaceId,
         content: 'Selected original memory excerpt',
         sourceType: 'user',
@@ -480,6 +484,7 @@ suite(
       ).sources.find((s) => s.id === memory.id)!;
       expect(chosen.revision).toBe(1);
       await correctWorkspaceMemory(owner, owner.workspaceId!, memory.id, {
+        instanceId: memory.instanceId!, expectedRevision: memory.revision, contentDigest: memory.contentDigest, idempotencyKey: randomUUID(),
         content: 'Current memory changed after selection',
         confidence: 1,
         reason: 'Correction for revision provenance',
@@ -522,7 +527,10 @@ suite(
         source_memory_revision_id: chosen.revisionId,
         content: chosen.content,
       });
+      const memberEmployee = await ensureDefaultEmployee(member, member.workspaceId!);
       const otherMemory = await createTraceableMemory(member, {
+        instanceId: memberEmployee.assignment!.id,
+        idempotencyKey: randomUUID(),
         workspaceId: member.workspaceId,
         content: 'Unrelated private memory',
         sourceType: 'user',

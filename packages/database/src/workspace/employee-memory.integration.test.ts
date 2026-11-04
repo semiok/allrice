@@ -131,9 +131,8 @@ suite(
       const other = await f.create('月报资料入口 WRONG_INSTANCE', {
         instanceId: f.other.id,
       });
-      const expired = await f.create('月报资料入口 EXPIRED', {
-        expiresAt: '2020-01-01T00:00:00Z',
-      });
+      const expired = await f.create('月报资料入口 EXPIRED');
+      await fixture.db`update allrice_memories set captured_at=now()-interval '2 days', expires_at=now()-interval '1 day' where id=${expired.id}`;
       const foreign = await setup();
       await foreign.create('月报资料入口 WRONG_TENANT');
       const input = {

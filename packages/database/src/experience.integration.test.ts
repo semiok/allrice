@@ -12,6 +12,7 @@ import { createExperienceFixture } from './experience.fixture.ts';
 import { approveSyntheticCurrentEmployeeExecution } from './current-execution.fixture.ts';
 import {
   createChatSession,
+  getEmployeeWorkspace,
   sendChatMessage,
   correctWorkspaceMemory,
   promoteWorkspaceMemory,
@@ -363,6 +364,7 @@ suite(
       expect(
         await searchWorkspaceMemories(f.owner, {
           workspaceId: f.workspace,
+          instanceId: f.session.employeeInstanceId ?? f.session.employeeAssignmentId,
           query: 'Reconciliation rule',
         }),
       ).toEqual([]);
@@ -578,6 +580,7 @@ suite(
       expect(
         await searchWorkspaceMemories(f.owner, {
           workspaceId: f.workspace,
+          instanceId: f.session.employeeInstanceId ?? f.session.employeeAssignmentId,
           query: f.input.content,
         }),
       ).toEqual([]);
@@ -948,10 +951,11 @@ suite(
         (
           await searchWorkspaceMemories(f.neighbor, {
             workspaceId: f.workspace,
+            instanceId: (await getEmployeeWorkspace(f.neighbor, f.workspace)).employee!.id,
             query: 'Reconciliation rule',
           })
         ).map((m) => m.id),
-      ).toContain(c.id);
+      ).not.toContain(c.id);
     });
     it('guards legacy promote/correct endpoints instead of silently bypassing scope review', async () => {
       const f = await fixture();
@@ -1018,6 +1022,7 @@ suite(
       expect(
         await searchWorkspaceMemories(f.owner, {
           workspaceId: f.workspace,
+          instanceId: f.session.employeeInstanceId ?? f.session.employeeAssignmentId,
           query: 'Reconciliation rule',
         }),
       ).toEqual([]);
@@ -1075,6 +1080,7 @@ suite(
       expect(
         await searchWorkspaceMemories(f.owner, {
           workspaceId: f.workspace,
+          instanceId: f.session.employeeInstanceId ?? f.session.employeeAssignmentId,
           query: f.input.content,
         }),
       ).toEqual([]);

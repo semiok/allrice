@@ -838,6 +838,7 @@ suite(
       expect(
         await searchWorkspaceMemories(f.owner, {
           workspaceId: f.workspace,
+          instanceId: f.instance.id,
           query: '到场',
         }),
       ).toEqual([]);
@@ -1416,6 +1417,7 @@ suite(
           workspace: f.workspace,
           user: f.user,
           sourceRunId: f.sourceRunId,
+          instanceId: f.instance.id,
           rule: { id: f.rule.id },
           frozen: f.frozen,
         });
@@ -1530,6 +1532,7 @@ suite(
               const ordinary = await observeMemorySql(arm.api.sql, () =>
                 arm.api.workspace.searchWorkspaceMemories(f.owner, {
                   workspaceId: f.workspace,
+          instanceId: f.instance.id,
                   query: '合成名单',
                   limit: 3,
                 }),
@@ -2680,6 +2683,7 @@ suite(
       expect(
         await searchWorkspaceMemories(f.owner, {
           workspaceId: f.workspace,
+          instanceId: f.instance.id,
           query: '到场',
         }),
       ).toEqual([]);
@@ -3790,6 +3794,7 @@ suite(
       expect(
         await searchWorkspaceMemories(f.owner, {
           workspaceId: f.workspace,
+          instanceId: f.instance.id,
           query: '退款',
         }),
       ).toEqual([]);

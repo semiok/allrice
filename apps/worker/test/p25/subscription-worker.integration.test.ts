@@ -213,6 +213,8 @@ integration(
               fixture.context,
               {
                 workspaceId: fixture.workspaceId,
+                instanceId: draftMemory.instanceId!,
+                idempotencyKey: randomUUID(),
                 content: 'ORDINARY_MEMORY_RETAINED',
                 visibility: 'private',
                 sourceType: 'user',

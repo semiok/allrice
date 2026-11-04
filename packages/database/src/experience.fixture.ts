@@ -2,7 +2,8 @@ import { createEmployeeAdministrationFixture } from './employee-administration.f
 import { assignPublishedPlatformEmployeeToWorkspace } from './employees/platform-employees.ts';
 /** Synthetic P20 evidence only; callers must provide their dedicated schema. */
 import { authorizeFixturePlatformAdministrator } from './platform-authority.fixture.ts';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { ensureGeneralEmployeeInstance } from './employees/employee-instances.ts';
 import type postgres from 'postgres';
 import type { RequestContext, Role } from '@allrice/contracts';
 import {
@@ -41,13 +42,15 @@ export async function createExperienceFixture(
         },
       ],
     };
+    await db`insert into allrice_sessions(id,user_id,token_hash,expires_at) values(${context.sessionId},${id},${createHash('sha256').update(randomUUID()).digest('hex')},now()+interval '1 hour')`;
     return context;
   }
   const owner = await member('member', user),
     reviewer = await member('member'),
     neighbor = await member('member');
   await authorizeFixturePlatformAdministrator(db, reviewer.actor.id);
-  await ensureDefaultEmployee(owner, workspace);
+  const defaultAssignment = await ensureDefaultEmployee(owner, workspace);
+  if (defaultAssignment) await ensureGeneralEmployeeInstance(db, defaultAssignment.id);
   let publishedVersion: string | null = null;
   if (options.published) {
     const source = await createEmployeeAdministrationFixture(db);
