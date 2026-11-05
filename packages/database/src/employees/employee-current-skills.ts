@@ -23,8 +23,11 @@ export async function readCurrentEmployeeBaseSkills(
   if (!row) throw new DataAccessError('not_found');
   const manifest = EmployeeManifestSchema.parse(row.manifest);
   let original: DshNativeSkillSnapshot[];
+  const versions = new Map<string, string>();
   if (manifest.schemaVersion === 2 && manifest.runtimePackage) {
     original = frozenPackageSkills(manifest.runtimePackage);
+    for (const entry of manifest.runtimePackage.runtimeManifest.skillGovernance)
+      versions.set(entry.id, entry.version);
   } else {
     const skills = await tx`
       select s.* from allrice_employee_dsh_skill_bindings b
@@ -33,6 +36,7 @@ export async function readCurrentEmployeeBaseSkills(
       where b.organization_id=${instance.organizationId}
         and b.workspace_id=${instance.workspaceId} and b.employee_id=${row.employee_id}
         and b.enabled and s.enabled order by s.name,s.id`;
+    for (const skill of skills) versions.set(skill.id, skill.version);
     original = skills.map((skill) =>
       validateFrozenSkill({
         id: skill.id,
@@ -49,5 +53,8 @@ export async function readCurrentEmployeeBaseSkills(
       }),
     );
   }
-  return freezeEmployeeBaseSkills(original, tx);
+  const current = await freezeEmployeeBaseSkills(original, tx);
+  for (const entry of current.catalog?.skills ?? [])
+    versions.set(entry.id, entry.version);
+  return { ...current, versions };
 }
