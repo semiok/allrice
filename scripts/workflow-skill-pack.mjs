@@ -137,7 +137,9 @@ function checkRepresentableFrontmatter(bytes) {
   );
   if (delimiter(lines[0]) !== '---' || end < 0)
     fail('SKILL.md', 'expected YAML frontmatter delimited by ---');
-  const document = parseDocument(lines.slice(1, end).join('\n'));
+  // Inspect YAML with normalized line endings, including its last CRLF line.
+  // The native parser still receives the original file bytes below.
+  const document = parseDocument(lines.slice(1, end).map(delimiter).join('\n'));
   if (document.errors.length)
     fail('SKILL.md', `invalid YAML: ${document.errors[0].message}`);
   objectKeys(
