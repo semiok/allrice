@@ -2,13 +2,15 @@ import { createRuntimeOperationLedger } from '../../../../packages/database/src/
 import { readRetiredExecutionHistory } from './retired-execution-history.fixture.ts';
 // @ts-expect-error Native test host is JavaScript and runs the production DSH module unchanged.
 import { host, text } from '../native-subagent/fixture.mjs';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   ExecutionContextSchema,
   runtimePolicyActionDecision,
 } from '@allrice/contracts';
 import * as client from '../../../../packages/database/src/core/client.ts';
+import { createStorageMetadata, markStorageReady } from '../../../../packages/database/src/data.ts';
+import { getToolBrokerFile } from '../../../../packages/database/src/execution/tool-broker.ts';
 import { assertNativeRunAuthority } from '../../../../packages/database/src/run-delivery-authority.ts';
 import {
   createRuntimeFixtureDatabase,
@@ -137,7 +139,7 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
         db,
       );
     const validate = async (answer: string) => {
-      const snapshot = await port.readSnapshot();
+      const snapshot = await port.readSnapshot(answer);
       const decision = checkFinalDelivery({
         candidate: answer,
         expectedScope: snapshot.scope,
@@ -162,7 +164,7 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
         snapshot,
         decision,
         proof,
-        guard: port.createCommitGuard(proof, origin),
+        guard: port.createCommitGuard(proof, origin, answer),
       };
     };
     const complete = (
@@ -187,6 +189,7 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
       ...f,
       native,
       authority,
+      readContext: context,
       origin,
       port,
       publish,
@@ -196,6 +199,82 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
     };
   }
   type Subject = Awaited<ReturnType<typeof subject>>;
+
+  async function upload(f: Subject, shared = false) {
+    const db = fixture.db;
+    let principal = f.context;
+    if (shared) {
+      const other = randomUUID(), membership = randomUUID();
+      await db`insert into allrice_users(id,email,display_name,password_hash) values(${other},${other+'@example.test'},'Citation fixture','not-login')`;
+      await db`insert into allrice_memberships(id,organization_id,workspace_id,user_id,role) values(${membership},${f.org},${f.workspace},${other},'member')`;
+      principal = {...f.context, actor: {type: 'user', id: other}, memberships: [{
+        id: membership, userId: other, organizationId: f.org, workspaceId: f.workspace, role: 'member', active: true,
+      }]};
+    }
+    const content = '本周已确认收入 128000，成本 116000，结余 12000。';
+    const pending = await createStorageMetadata(principal, {
+      id: randomUUID(), workspaceId: f.workspace, category: 'uploads',
+      mediaType: 'text/plain', sizeBytes: Buffer.byteLength(content),
+      checksum: 'sha256:'+createHash('sha256').update(content).digest('hex'),
+      visibility: shared ? 'workspace' : 'private', immutable: false, retentionUntil: null,
+    }, db);
+    await runtimeFixtureStorage(db).put(pending.object, new Blob([content]).stream());
+    return markStorageReady(principal, pending.object.id, db);
+  }
+
+  it.each(['?name=周报资料.txt', ''])(
+    'B2/B3 ordinary source citation accepts the same authorized object with query %s and no read receipt',
+    async query => {
+      const f = await subject(), file = await upload(f);
+      const answer = `[资料](/api/v1/files/${file.object.id}/download${query})`;
+      const checked = await f.validate(answer);
+      expect(checked.snapshot.artifacts).toEqual([]);
+      expect(checked.decision.linked).toEqual([]);
+      expect(checked.snapshot.ordinaryFileCitations).toEqual([{objectId: file.object.id, retentionUntil: null}]);
+      await f.complete(checked.guard, answer);
+      expect(await f.state()).toMatchObject({status: 'succeeded', state: 'succeeded', answer, text: answer, successes: 1});
+    },
+  );
+
+  it('ordinary citation cannot survive revocation between validation and the commit transaction', async () => {
+    const f = await subject(), file = await upload(f, true);
+    expect((await getToolBrokerFile(f.readContext, file.object.id, fixture.db)).object.id).toBe(file.object.id);
+    const answer = `[资料](/api/v1/files/${file.object.id}/download)`;
+    const checked = await f.validate(answer);
+    await fixture.db`update allrice_storage_objects set visibility='private' where id=${file.object.id}`;
+    await expect(getToolBrokerFile(f.readContext, file.object.id, fixture.db)).rejects.toMatchObject({code: 'authorization_denied'});
+    await expect(f.complete(checked.guard, answer)).rejects.toThrow();
+    expect(await f.state()).toMatchObject({status: 'running', state: 'running', successes: 0});
+  });
+
+  it.each(['missing', 'foreign', 'revoked', 'forged'])(
+    'ordinary citation rejects %s without borrowing a broader principal',
+    async mode => {
+      const f = await subject();
+      const foreign = mode === 'foreign' ? await subject() : f;
+      const file = await upload(foreign, mode === 'revoked');
+      if (mode === 'revoked') await fixture.db`update allrice_storage_objects set visibility='private' where id=${file.object.id}`;
+      const id = mode === 'missing' ? randomUUID() : file.object.id;
+      const answer = `[资料](${mode === 'forged' ? 'https://foreign.example.test' : ''}/api/v1/files/${id}/download)`;
+      const facts = await f.port.readSnapshot(answer);
+      expect(facts.ordinaryFileCitations).toEqual([]);
+      expect(checkFinalDelivery({candidate: answer, snapshot: facts, expectedScope: facts.scope, markup: createDeliveryMarkup(), managedOrigins: []}).status).toBe('invalid_response');
+      if (mode !== 'forged') await expect(getToolBrokerFile(f.readContext, id, fixture.db)).rejects.toThrow();
+    },
+  );
+
+  it('ordinary citation is current ACL evidence, not a guarantee that content stayed unchanged', async () => {
+    const f = await subject(), file = await upload(f);
+    const answer = `[资料](/api/v1/files/${file.object.id}/download)`;
+    const checked = await f.validate(answer);
+    const content = '更新后的资料';
+    const checksum = 'sha256:'+createHash('sha256').update(content).digest('hex');
+    await fixture.db`update allrice_storage_objects set checksum=${checksum},size_bytes=${Buffer.byteLength(content)} where id=${file.object.id}`;
+    const changed = await getToolBrokerFile(f.readContext, file.object.id, fixture.db);
+    await runtimeFixtureStorage(fixture.db).put(changed.object, new Blob([content]).stream());
+    await f.complete(checked.guard, answer);
+    expect(await f.state()).toMatchObject({status: 'succeeded', successes: 1});
+  });
 
   it.each(['current', 'tenant', 'generation', 'lease', 'revoked'] as const)(
     'PR3a 工具门卫只读复用 Run 权限：%s',

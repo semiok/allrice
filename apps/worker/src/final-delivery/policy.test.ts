@@ -90,6 +90,17 @@ const tick = String.fromCharCode(96);
 const fence = tick.repeat(3);
 
 describe('deterministic final delivery policy', () => {
+  it('ordinary citations never fill a delivery slot or satisfy required quality checks', () => {
+    const objectId = id(99);
+    const ordinaryFileCitations = [{objectId, retentionUntil: null}];
+    const answer = `[引用](/api/v1/files/${objectId}/download)`;
+    const missing = check(answer, snapshot({ordinaryFileCitations}));
+    expect(codes(missing)).toContain('missing_delivery_link');
+    expect(missing.linked).toEqual([]);
+    const a = artifact();
+    const incomplete = check(answer+'\n'+link(a), snapshot({ordinaryFileCitations, requirements: [required(a, {requiredChecks: ['office.visual']})]}));
+    expect(codes(incomplete)).toContain('required_check_incomplete');
+  });
   it('rechecks expiry with the current clock while hashing stable facts', () => {
     const a = artifact();
     a.retentionUntil = '2026-10-19T12:00:30.000Z';
