@@ -1,6 +1,7 @@
+import console from 'node:console';
 import { randomUUID } from 'node:crypto';
 import { expect, it } from 'vitest';
-import { host, text } from './fixture.mjs';
+import { host } from './fixture.mjs';
 
 it.each([false, true])(
   'actual registration: ordinary root selected=%s; child/fork unchanged, resume restored',

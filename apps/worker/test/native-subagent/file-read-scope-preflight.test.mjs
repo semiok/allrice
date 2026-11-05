@@ -1,4 +1,4 @@
-/* global AbortController */
+import console from 'node:console';
 import { randomUUID } from 'node:crypto';
 import { expect, it } from 'vitest';
 import { defineTool } from '@deepseek-ai/dsh-tools';
