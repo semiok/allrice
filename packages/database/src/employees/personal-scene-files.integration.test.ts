@@ -1,3 +1,5 @@
+import { loadPlatformContentCatalog } from '../platform-content/catalog.ts';
+import { synchronizePlatformContent } from '../platform-content/sync.ts';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type {
@@ -435,6 +437,70 @@ suite(
           )
         ).nativeName,
       ).toBe(`allrice-scene-${legacy.scene.id}`);
+    });
+
+    it('native names: refuses historical duplicate names and later platform collisions without breaking exact historical reads', async () => {
+      const s = await setup(),
+        artifact = authored('weekly-brief'),
+        saved = await install(s, artifact);
+      const pin = parsePersonalSceneContentRef(saved.receipt.contentRef);
+      const [row] =
+        await f.db`select manifest from allrice_employee_content_revisions where id=${pin.revisionId}`;
+      const manifest = structuredClone(row!.manifest);
+      manifest.scenes.push({ ...manifest.scenes[0], id: randomUUID() });
+      // Seed a complete pre-U1 publication, which allowed equal frontmatter
+      // names under distinct UUID commands. Do not alter an immutable revision.
+      const revisionId = randomUUID();
+      await f.db`insert into allrice_employee_content_revisions(id,set_id,number,manifest,digest,change_summary,created_by)
+        values(${revisionId},${pin.setId},2,${f.db.json(manifest)},${runtimePolicyDigest(manifest)},'pre-U1 fixture',${s.owner.actor.id})`;
+      await f.db`insert into allrice_employee_content_publications(set_id,revision_id) values(${pin.setId},${revisionId})`;
+      await f.db`update allrice_employee_content_sets set active_revision_id=${revisionId},candidate_revision_id=${revisionId},revision=2 where id=${pin.setId}`;
+      await expect(
+        listPersonalSceneSkills(s.owner, s.instance.id),
+      ).rejects.toMatchObject({ code: 'version_conflict' });
+      await expect(
+        getPersonalSceneSkill(s.owner, s.instance.id, artifact.scene.id),
+      ).rejects.toMatchObject({ code: 'version_conflict' });
+      expect(
+        (
+          await inspectPersonalSceneSkill(
+            s.owner,
+            s.instance.id,
+            saved.receipt.contentRef,
+          )
+        ).nativeName,
+      ).toBe('weekly-brief');
+      // Restore only this disposable fixture's current pointer.
+      await f.db`update allrice_employee_content_sets set active_revision_id=${pin.revisionId} where id=${pin.setId}`;
+      const platform = await loadPlatformContentCatalog();
+      const template = platform.skills[0]!;
+      await synchronizePlatformContent({
+        ...platform,
+        catalogChecksum: 'sha256:' + '8'.repeat(64),
+        skills: [
+          ...platform.skills,
+          { ...template, id: randomUUID(), name: 'weekly-brief' },
+        ],
+      });
+      try {
+        await expect(
+          listPersonalSceneSkills(s.owner, s.instance.id),
+        ).rejects.toMatchObject({ code: 'version_conflict' });
+        await expect(
+          getPersonalSceneSkill(s.owner, s.instance.id, artifact.scene.id),
+        ).rejects.toMatchObject({ code: 'version_conflict' });
+        expect(
+          (
+            await inspectPersonalSceneSkill(
+              s.owner,
+              s.instance.id,
+              saved.receipt.contentRef,
+            )
+          ).nativeName,
+        ).toBe('weekly-brief');
+      } finally {
+        await synchronizePlatformContent(platform);
+      }
     });
 
     it('keeps author framework metadata through human preview, save and exact read without exposing execution details as display sections', async () => {

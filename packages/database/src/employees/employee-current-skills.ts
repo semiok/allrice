@@ -3,7 +3,7 @@ import {
   type EmployeeInstance,
   type DshNativeSkillSnapshot,
 } from '@allrice/contracts';
-import type { ContentTx } from './employee-content-model.ts';
+import type { ContentSql, ContentTx } from './employee-content-model.ts';
 import { DataAccessError } from '../data.ts';
 import { frozenPackageSkills, validateFrozenSkill } from '../skill-bundles.ts';
 import { freezeEmployeeBaseSkills } from './employee-base-skills.ts';
@@ -12,6 +12,17 @@ import { freezeEmployeeBaseSkills } from './employee-base-skills.ts';
  * legacy fallback as Run admission. Does not create or consult a Run, freeze
  * grants, or confer tool permissions. Caller first authorizes the instance. */
 export async function readCurrentEmployeeBaseSkills(
+  sql: ContentSql,
+  instance: EmployeeInstance,
+): Promise<Awaited<ReturnType<typeof readBaseInTransaction>>> {
+  return 'begin' in sql
+    ? sql.begin('isolation level repeatable read read only', (tx) =>
+        readBaseInTransaction(tx, instance),
+      )
+    : readBaseInTransaction(sql, instance);
+}
+
+async function readBaseInTransaction(
   tx: ContentTx,
   instance: EmployeeInstance,
 ) {
