@@ -185,7 +185,7 @@ export function EmployeeSceneDialog(props: {
 }) {
   const { controller: catalog } = props;
   const pending = catalog.mutation;
-  const [page, setPage] = useState<Page>(() =>
+  const [requestedPage, setPage] = useState<Page>(() =>
     pending?.uncertain && pending.kind === 'confirm' ? 'confirm' : 'list',
   );
   const [entry, setEntry] = useState<Entry>();
@@ -243,7 +243,20 @@ export function EmployeeSceneDialog(props: {
       : selected.value.skillPackage.frontmatter?.invocation.userInvocable
     : false;
   const writable = catalog.canMaintain && !catalog.loading && !catalog.error;
+  const page = catalog.accessUnavailable ? 'list' : requestedPage;
   useEffect(() => setMounted(true), []);
+  useEffect(() => {
+    if (!catalog.accessUnavailable) return;
+    sourceGeneration.current += 1;
+    setPage('list');
+    setSourceTarget(undefined);
+    setPreview(undefined);
+    setRemoving(undefined);
+    setFile(undefined);
+    setUrl('');
+    setReading(false);
+    setError('');
+  }, [catalog.accessUnavailable]);
   useEffect(() => {
     if (props.open) void currentCatalog.current.load();
   }, [props.open, catalog.key]);
@@ -859,7 +872,7 @@ export function EmployeeSceneDialog(props: {
           </footer>
         )}
       </Modal>
-      {removing && (
+      {removing && !catalog.accessUnavailable && (
         <Modal
           open={props.open && mounted}
           headless

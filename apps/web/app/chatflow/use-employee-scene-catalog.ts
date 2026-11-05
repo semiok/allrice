@@ -624,6 +624,7 @@ export function useEmployeeSceneCatalog(input: Scope) {
     catalog: visible.catalog,
     loading: visible.loading,
     error: visible.error,
+    accessUnavailable: Boolean(visible.error && !visible.profile),
     detail,
     canMaintain,
     mutation,
