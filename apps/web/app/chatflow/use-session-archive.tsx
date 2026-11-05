@@ -43,16 +43,20 @@ export function useSessionArchive({
   headers,
   onUpdated,
   selectedSession,
+  initialFilter = 'default',
+  onShowArchived,
 }: {
   selectedSession?: Session;
   workspace: Workspace | null;
   headers: Record<string, string>;
   onUpdated: (session: Session) => void;
+  initialFilter?: ArchivedFilter;
+  onShowArchived?: () => void;
 }) {
   const scope = `${workspace?.organizationId}/${workspace?.workspaceId}/${workspace?.viewerId}`;
   const currentScope = useRef(scope);
   currentScope.current = scope;
-  const [filter, setFilter] = useState<ArchivedFilter>('default');
+  const [filter, setFilter] = useState<ArchivedFilter>(initialFilter);
   const [page, setPage] = useState<
     (Page & { scope: string; filter: ArchivedFilter }) | null
   >(null);
@@ -232,8 +236,8 @@ export function useSessionArchive({
     setError('');
     setLoadError(null);
     pending.current.clear();
-    setFilter('default');
-  }, [scope]);
+    setFilter(initialFilter);
+  }, [scope, initialFilter]);
   useEffect(() => {
     const refresh = () => {
       void load();
@@ -605,7 +609,7 @@ export function useSessionArchive({
           useToast={(select) => select(toast)}
           dismissToast={() => setToast(null)}
           undoArchive={(id) => act(id, false)}
-          showArchived={() => setFilter('only')}
+          showArchived={onShowArchived ?? (() => setFilter('only'))}
           t={employeeTranslate}
         />
       </>

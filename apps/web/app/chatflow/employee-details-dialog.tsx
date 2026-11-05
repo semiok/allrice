@@ -6,6 +6,7 @@ import {
   EmployeeInstanceSchema,
   OrganizationAiSharedDetailsSchema,
   type EmployeeDetails,
+  type EmployeeDetailsProfile,
   type EmployeeInstance,
   type ReferenceSelection,
   type ExperienceSummary,
@@ -48,6 +49,7 @@ import {
   type ArtifactPreview,
 } from '../../lib/chatflow/workbench-model';
 import css from './employee-profile-details.module.css';
+import archiveCss from './employee-archive.module.css';
 
 interface EmployeeDetailsDialogProps {
   open: boolean;
@@ -60,6 +62,7 @@ interface EmployeeDetailsDialogProps {
   onPrepare?: (text: string, instanceId: string) => void;
   onProfileUpdated?: (instance: EmployeeInstance) => void;
   onOpenMemory?: (instanceId: string) => void;
+  onArchive?: (profile: EmployeeDetailsProfile) => void;
   organizationView?: { organizationId: string; userId: string };
   sceneCatalog?: EmployeeSceneCatalogController;
   reuseSceneSnapshot?: boolean;
@@ -604,6 +607,19 @@ function EmployeeDetailsReader(
                   )
             }
           />
+          {!props.organizationView &&
+            data.profile.canArchive === true &&
+            props.onArchive && (
+              <div className={archiveCss.archiveZone}>
+                <button
+                  type="button"
+                  className={archiveCss.archiveAction}
+                  onClick={() => props.onArchive?.(data.profile)}
+                >
+                  归档这个员工
+                </button>
+              </div>
+            )}
         </>
       )}
     </DshDialog>
