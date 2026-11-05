@@ -102,6 +102,8 @@ import {
   sessionCompactionStatus,
 } from '../conversation/usage.ts';
 import {
+  applyWorkspaceMemoryRecallBudget,
+  rankWorkspaceMemoryRecallCandidates,
   embedWorkspaceText,
   workspaceMemoryRecallPolicy,
 } from './memory-recall.ts';
@@ -1322,6 +1324,57 @@ async function loadWorkspaceMemoryRecallCandidates(
   }));
 }
 
+async function recallForReply(
+  context: ResourcePrincipal,
+  workspaceId: string,
+  employeeId: string | undefined,
+  text: string,
+  sql: WorkspaceSql,
+  instanceId: string,
+) {
+  const candidates = await loadWorkspaceMemoryRecallCandidates(
+    {
+      context,
+      workspaceId,
+      employeeId,
+      instanceId,
+      query: text,
+      poolSize: 60,
+      durableOnly: true,
+    },
+    sql,
+  );
+  const recalled = applyWorkspaceMemoryRecallBudget(
+    rankWorkspaceMemoryRecallCandidates(candidates, {
+      threshold: workspaceMemoryRecallPolicy.automaticThreshold,
+      limit: workspaceMemoryRecallPolicy.maximumAutomaticResults,
+      durableOnly: true,
+    }),
+    workspaceMemoryRecallPolicy.maximumAutomaticBytes,
+  );
+  if (recalled.length > 0) {
+    const recalledIds = recalled.map((memory) => memory.id);
+    await sql`
+      update allrice_memories
+      set last_recalled_at = now(), recall_count = recall_count + 1
+      where organization_id = ${context.organizationId}
+        and workspace_id = ${workspaceId}
+        and id in ${sql(recalledIds)}
+    `;
+  }
+  return recalled.map((memory) => ({
+    id: memory.id,
+    revision: memory.revision,
+    content: memory.content,
+    lifecycleState: memory.lifecycleState,
+    memoryClass: memory.memoryClass,
+    sourceLabel: memory.sourceLabel,
+    trust: memory.trust,
+    confidence: memory.confidence,
+    capturedAt: memory.capturedAt,
+  }));
+}
+
 export async function searchWorkspaceMemories(
   context: RequestContext,
   input: {
@@ -1810,6 +1863,7 @@ async function prepareChatRunBinding(
   input: ChatRunPreparationInput,
   runContext: ChatRunContext,
   database: ChatRunDatabase,
+  employeeDocuments = false,
 ) {
   const {
     context,
@@ -1823,12 +1877,17 @@ async function prepareChatRunBinding(
   const sql = database.sql;
   const transaction =
     database.kind === 'transaction' ? database.sql : undefined;
+  // Scheduling/automation keeps its existing binding and recall semantics.
+  const memories = employeeDocuments ? [] : await recallForReply(
+    context, workspaceId, result.currentAssignment.employee_id, message.text,
+    sql, session.employee_instance_id ?? session.employee_assignment_id,
+  );
   const { prepareEmployeeRunBinding } =
     await import('../employees/employeehub.ts');
   const binding = await prepareEmployeeRunBinding(
     {
       context,
-      employeeDocuments: true,
+      employeeDocuments,
       workspaceId,
       assignmentId: session.employee_assignment_id,
       employeeVersionId: effectiveEmployeeVersionId,
@@ -1848,7 +1907,7 @@ async function prepareChatRunBinding(
           role: row.role,
           text: ChatMessageContentSchema.parse(row.content).text,
         })),
-        memories: [],
+        memories,
         userRequest,
         imageAttachments,
         sessionReferences: SessionReferenceSnapshotsSchema.parse(
@@ -2194,6 +2253,7 @@ export async function sendChatMessage(
       runPreparation,
       runContext,
       database,
+      true,
     );
     const { enqueueRun, getRun } = await import('../execution/queue.ts');
     const { submission, enqueueOptions } = await prepareChatRunInput(
