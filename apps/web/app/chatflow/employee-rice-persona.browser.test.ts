@@ -178,6 +178,7 @@ suite('U1 Rice full persona from the real employee entry', () => {
       }),
     );
     const rawGate = gate(),
+      rawSent = gate(),
       writeGate = gate();
     const state = {
       instances,
@@ -245,14 +246,17 @@ suite('U1 Rice full persona from the real employee entry', () => {
         const index = instances.findIndex((item) => item.id === target);
         if (request.method() === 'GET') {
           state.rawReads.push(target!);
-          if (state.rawGate && target === id(7)) await state.rawGate;
+          const heldRaw = target === id(7) && state.rawGate;
+          if (heldRaw) await heldRaw;
           if (state.rawStatus !== 200)
             return route.fulfill(
               json({ error: { message: 'No access' } }, state.rawStatus),
             );
-          return route.fulfill(
+          await route.fulfill(
             json({ instance: { ...instances[index]!, ...state.rawOverride } }),
           );
+          if (heldRaw) rawSent.release();
+          return;
         }
         if (request.method() === 'PATCH') {
           const body = UpdateEmployeeInstanceInputSchema.parse(
@@ -462,6 +466,7 @@ suite('U1 Rice full persona from the real employee entry', () => {
         state.rawGate = rawGate.promise;
       },
       releaseRaw: rawGate.release,
+      rawSent: rawSent.promise,
       holdWrite: () => {
         state.writeGate = writeGate.promise;
       },
@@ -795,6 +800,7 @@ suite('U1 Rice full persona from the real employee entry', () => {
         .getByRole('textbox', { name: '员工名字', exact: true })
         .waitFor();
       f.releaseRaw();
+      await f.rawSent;
       expect(
         await other
           .getByRole('textbox', { name: '员工名字', exact: true })
