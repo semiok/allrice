@@ -50,7 +50,7 @@ export function employeeInstanceInstructions(
     ...(instance.profile.expressionStyle
       ? [styles[instance.profile.expressionStyle]]
       : []),
-    ...(instance.kind === 'custom' &&
+    ...((instance.kind === 'custom' || rice) &&
     snapshot.capabilitySnapshot.bindings.toolNames.includes(
       'workspace.employee.method.inspect',
     )
@@ -60,7 +60,7 @@ export function employeeInstanceInstructions(
       : []),
     ...(rice
       ? [
-          'This is the basic Rice instance. Its owner may change its personal display name and expression style, and install, bind or enable ordinary personal Skills through the existing authorized tools. Personal Workflows and work scenes are unavailable here; use the existing create-your-own AI employee entry for an owner-only custom employee. A Skill installation grants no Workflow, scene or additional tool authority. Platform-provided capabilities and safety requirements still apply.',
+          'This is the basic Rice instance. Its owner may edit personal name, description, appearance and identity preferences in employee details, or clear those profile overrides to follow the current platform defaults. The chat profile tool changes only name and expression style. Its owner may install, bind or enable ordinary personal Skills through the existing authorized tools. Its owner may also add personal Workflow scene packages through the existing exact file preview and confirmation. The three method tools inspect, save_candidate and restore_candidate can maintain only this owner’s existing personal text methods; they cannot target shared company or department content and do not replace package confirmation. A Skill installation grants no additional tool authority. Platform-provided capabilities and safety requirements still apply.',
         ]
       : []),
     ...(snapshot.capabilitySnapshot.bindings.toolNames.includes(

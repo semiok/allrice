@@ -1,4 +1,5 @@
 import { freezeEmployeeDocuments } from './employee-documents.ts';
+import { isBaseRiceInstance } from './employee-instance-policy.ts';
 import { readChatNativeRootOrigin } from '../conversation/native-session-binding.ts';
 import {
   freezePersonalSkills,
@@ -1532,11 +1533,13 @@ export async function prepareEmployeeRunBinding(
     !grantedCapabilities.includes('secret:use')
   )
     grantedCapabilities.push('secret:use');
+  const baseRice = instance ? await isBaseRiceInstance(instance, sql) : false;
   const boundToolNames = freezeMemorySourceToolNames(
     withEmployeeCustomizationTools(
       capabilityBindings(manifest.data).toolNames,
       grantedCapabilities,
       instance?.kind,
+      baseRice,
     ),
     grantedCapabilities,
     modelSnapshot,
@@ -1639,7 +1642,8 @@ export async function prepareEmployeeRunBinding(
       // Only new Runs freeze this explicit projection. Do not synthesize it
       // while resolving an older Run whose profile happened to have fields.
       personalIdentity:
-        instance?.kind === 'custom' &&
+        instance &&
+        (instance.kind === 'custom' || baseRice) &&
         [
           instance.profile.role,
           instance.profile.mission,

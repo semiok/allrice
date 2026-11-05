@@ -536,3 +536,56 @@ it.each([
   },
   45000,
 );
+
+it.each([
+  { action: 'inspect', args: { view: 'effective' } },
+  {
+    action: 'save_candidate',
+    args: {
+      expectedRevision: 0,
+      section: 'scene',
+      scene: { name: 'Owner method', appliesWhen: 'Owner asks' },
+      procedure: 'Use the supplied sources.',
+      changeSummary: 'Owner edit',
+    },
+  },
+  {
+    action: 'restore_candidate',
+    args: {
+      expectedRevision: 1,
+      sourceRevisionId: '00000000-0000-4000-8000-000000000001',
+      changeSummary: 'Owner restore',
+    },
+  },
+])(
+  'exposes only the personal native schema for Rice $action',
+  async ({ action, args }) => {
+    await nativeBrokerRoundtrip({
+      personalMethodToolsOnly: true,
+      canonicalName: `workspace.employee.method.${action}`,
+      wireName: `workspace_employee_method_${action}`,
+      args,
+      invalidArgs:
+        action === 'inspect'
+          ? { ...args, scope: 'company' }
+          : { ...args, sharedTarget: companyTarget },
+      inspectSchema(schema) {
+        for (const key of [
+          'sharedTarget',
+          'scope',
+          'departmentId',
+          'beforeTestId',
+        ])
+          expect(schema.properties).not.toHaveProperty(key);
+      },
+      onToolCall: async (call) => {
+        expect(call.arguments).toEqual(args);
+        return {
+          modelContent: 'Synthetic personal receipt',
+          summary: 'Personal tool reached the broker',
+        };
+      },
+    });
+  },
+  45000,
+);

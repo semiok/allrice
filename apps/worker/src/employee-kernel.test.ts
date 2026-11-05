@@ -336,7 +336,7 @@ it('keeps independent checkpoint and exact uncovered message receipts, and decli
   ).not.toBe(covered.segments[0]!.digest);
 });
 
-it('E3 projects the frozen basic Rice name/style and allows ordinary Skills but declines personal Workflows without altering professional general instructions', () => {
+it('E3 projects the frozen basic Rice name/style and allows personal Skills and scene packages without altering professional general instructions', () => {
   const snapshot = {
     schemaVersion: 2,
     employee: {
@@ -376,7 +376,7 @@ it('E3 projects the frozen basic Rice name/style and allows ordinary Skills but 
     'save the personal display name or default expression style',
   );
   expect(text).toContain(
-    'Personal Workflows and work scenes are unavailable here',
+    'personal Workflow scene packages through the existing exact file preview and confirmation',
   );
   expect(text).toContain('workspace_personal_skill_install');
   expect(text).toContain('workspace_personal_skill_version');
@@ -393,6 +393,6 @@ it('E3 projects the frozen basic Rice name/style and allows ordinary Skills but 
   expect(other).toContain('do not send name or edit business methods');
   expect(other).not.toContain('"小米"');
   expect(other).not.toContain(
-    'Personal Workflows and work scenes are unavailable here',
+    'personal Workflow scene packages through the existing exact file preview and confirmation',
   );
 });

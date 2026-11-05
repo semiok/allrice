@@ -15,6 +15,7 @@ import { dshInboundToolHandler } from './dsh/tool-bridge.js';
 
 export async function nativeBrokerRoundtrip(input: {
   cordisConfig?: string;
+  personalMethodToolsOnly?: true;
   systemPrompt?: string;
   progress?: HarnessExecutionInput['progress'];
   denyBeforeModel?: boolean;
@@ -214,6 +215,9 @@ export async function nativeBrokerRoundtrip(input: {
       provider: 'openai-compatible',
       model: 'native-contract',
       nativeTools: [input.canonicalName],
+      ...(input.personalMethodToolsOnly
+        ? { personalMethodToolsOnly: true }
+        : {}),
       expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
       requireTaskProgress: !!input.progress,
     });
