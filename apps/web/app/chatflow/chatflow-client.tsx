@@ -1444,10 +1444,11 @@ export function ChatFlowClient({
   };
   const sceneOpen = Boolean(currentSceneRequest);
   function openSceneDirectory() {
-    if (!workspace?.viewerId || !activeEmployee?.instanceId) return;
+    const instanceId = activeEmployee?.instanceId;
+    if (!workspace?.viewerId || !instanceId) return;
     setSceneRequest((previous) => ({
       scope: settingsScope,
-      instanceId: activeEmployee.instanceId,
+      instanceId,
       origin: 'top',
       revision: (previous?.revision ?? 0) + 1,
     }));
@@ -2593,7 +2594,8 @@ export function ChatFlowClient({
                     instanceId: (memoryInstanceId ??
                       activeEmployee?.instanceId)!,
                     revision:
-                      currentMemoryRequest?.id === memoryInstanceId
+                      currentMemoryRequest &&
+                      currentMemoryRequest.id === memoryInstanceId
                         ? currentMemoryRequest.revision
                         : 0,
                   }}
