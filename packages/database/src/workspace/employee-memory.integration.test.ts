@@ -231,7 +231,8 @@ suite(
       const f = await setup();
       const older = await f.create('较早的常用入口');
       // Cross the byte limit, so omitting locator cost would select extra IDs.
-      for (let i = 0; i < 9; i++) await f.create(`新入口${i}${'x'.repeat(700)}`);
+      for (let i = 0; i < 9; i++)
+        await f.create(`新入口${i}${'x'.repeat(700)}`);
       const preference = { ...exact(older), pinned: true };
       const saved = await setPersonalEmployeeMemoryPin(
         f.context,
