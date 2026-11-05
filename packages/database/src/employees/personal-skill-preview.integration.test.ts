@@ -1160,14 +1160,16 @@ suite('browser Skill source preview and confirmation', () => {
       },
       verified.bytes,
     );
-    expect(
-      (
-        await confirm(s.owner.context, s.assigned.id, s.owner.workspaceId, {
-          ...preview,
-          previewId: expired,
-        })
-      ).status,
-    ).toBe(422);
+    const expiredResponse = await confirm(
+      s.owner.context,
+      s.assigned.id,
+      s.owner.workspaceId,
+      { ...preview, previewId: expired },
+    );
+    expect(expiredResponse.status).toBe(422);
+    expect(expiredResponse.headers.get('X-AllRice-Skill-Error')).toBe(
+      'preview_expired',
+    );
     expect(await counts()).toEqual(before);
   });
 
