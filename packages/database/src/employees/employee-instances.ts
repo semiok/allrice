@@ -81,7 +81,10 @@ export async function readEmployeeVersionPublication(
 }
 
 export class EmployeeInstanceError extends Error {
-  constructor(public readonly code: 'instance_conflict' | 'instance_archived') {
+  constructor(
+    public readonly code:
+      'instance_conflict' | 'instance_archived' | 'default_protected',
+  ) {
     super(code);
   }
 }
@@ -557,6 +560,10 @@ export async function changeEmployeeInstanceLifecycle(
     const [row] = await tx<
       InstanceRow[]
     >`select * from allrice_employee_instances where id=${id} for update`;
+    // Default identity is immutable provenance, not a mutable display name or
+    // assignment selection. Refuse before receipts, revisions or cancellation.
+    if (value.operation === 'archive' && (await isBaseRiceInstance(before, tx)))
+      throw new EmployeeInstanceError('default_protected');
     const [prior] =
       await tx`select response,request_input=${tx.json(value)}::jsonb matches
       from allrice_employee_instance_revisions where instance_id=${id} and request_id=${value.requestId}`;
