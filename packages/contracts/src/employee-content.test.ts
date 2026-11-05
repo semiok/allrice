@@ -185,7 +185,7 @@ describe('employee content input boundaries', () => {
       skillPackage: {
         bundle: {
           schemaVersion: 1,
-          version: '1',
+          version: '1.0.0',
           contentChecksum: hash,
           checksum: hash,
           sourceRef: 'https://example.test/skill',

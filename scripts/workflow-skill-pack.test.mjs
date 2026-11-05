@@ -349,12 +349,12 @@ describe('developer packs a native skill into C1 content without publishing', ()
     await expect(pack()).rejects.toThrow('skill_bundle_unknown_tool');
   });
 
-  it('enforces existing C1 body and resource limits', async () => {
+  it('enforces the approved body limit and existing C1 resource limit', async () => {
     await writeFile(
       join(directory, 'SKILL.md'),
-      `---\nname: review\ndescription: test\nwhenToUse: weekly\nmetadata: { displayName: Review, version: v1 }\n---\n## 工作步骤\n${'x'.repeat(8001)}\n## 交付内容\nresult\n## 执行细节\ndetails`,
+      `---\nname: review\ndescription: test\nwhenToUse: weekly\nmetadata: { displayName: Review, version: v1 }\n---\n## 工作步骤\n${'x'.repeat(262145)}\n## 交付内容\nresult\n## 执行细节\ndetails`,
     );
-    await expect(pack()).rejects.toThrow('C1 procedure');
+    await expect(pack()).rejects.toThrow('body exceeds 262144 UTF-8 bytes');
     await cp(join(example, 'SKILL.md'), join(directory, 'SKILL.md'));
     await writeFile(
       join(directory, 'assets/example-input.json'),
