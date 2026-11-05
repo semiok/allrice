@@ -226,7 +226,11 @@ export function installPersonalSceneProvider(ctx, bridge) {
     'agent/pre-step',
     async ({ signal }, next) => {
       await assertDirectory(signal);
-      return next();
+      const decision = await next();
+      // A provider failure discovered while native slash resolution ran must
+      // escape before its queued injections become durable history.
+      await assertDirectory(signal);
+      return decision;
     },
     { prepend: true },
   );
@@ -359,6 +363,9 @@ export function installPersonalSceneProvider(ctx, bridge) {
       calls.clear();
       control.invalidate();
     },
+    // Ordinary Skill bodies share the same namespace. Check immediately before
+    // any provider body is returned, including native tool execution.
+    beforeSkillRead: assertDirectory,
     // Invalidate the native catalog for the next pre-step. Body get has no
     // cache. Historical reads are checked by the same durable content guard.
     async beforeDispatch(_nativeSessionId, signal) {
