@@ -15,6 +15,7 @@ import { dshInboundToolHandler } from './dsh/tool-bridge.js';
 
 export async function nativeBrokerRoundtrip(input: {
   cordisConfig?: string;
+  systemPrompt?: string;
   progress?: HarnessExecutionInput['progress'];
   denyBeforeModel?: boolean;
   expectedToolNames?: string[];
@@ -30,6 +31,10 @@ export async function nativeBrokerRoundtrip(input: {
   /** Fixed real backends may take longer than a transport-only stub. */
   timeoutMs?: number;
   inspectSchema?: (schema: Record<string, unknown>) => void;
+  inspectTool?: (tool: {
+    description?: string;
+    parameters?: Record<string, unknown>;
+  }) => void;
   onToolCall?: HarnessExecutionInput['onToolCall'];
 }) {
   const root = await mkdtemp(join(tmpdir(), 'allrice-native-broker-'));
@@ -138,7 +143,8 @@ export async function nativeBrokerRoundtrip(input: {
       DSH_MODEL: 'native-contract',
       DSH_CODEX_MODEL: 'gpt-5.6-luna',
       DSH_OPENAI_COMPATIBLE_MODEL: 'native-contract',
-      DSH_SYSTEM_PROMPT: 'Synthetic protocol test; only the selected tool.',
+      DSH_SYSTEM_PROMPT:
+        input.systemPrompt ?? 'Synthetic protocol test; only the selected tool.',
       OPENAI_COMPATIBLE_API_KEY: 'synthetic-only',
       OPENAI_COMPATIBLE_BASE_URL: `http://127.0.0.1:${port}/v1`,
     },
@@ -217,7 +223,11 @@ export async function nativeBrokerRoundtrip(input: {
       .poll(() => completed, { timeout: input.timeoutMs ?? 15000 })
       .toBe(1);
     const tools = requests[0]!.tools as {
-      function?: { name?: string; parameters?: Record<string, unknown> };
+      function?: {
+        name?: string;
+        description?: string;
+        parameters?: Record<string, unknown>;
+      };
     }[];
     expect(tools.some((tool) => tool.function?.name === input.wireName)).toBe(
       true,
@@ -230,6 +240,13 @@ export async function nativeBrokerRoundtrip(input: {
       tools.find((tool) => tool.function?.name === input.wireName)!.function!
         .parameters!,
     );
+    input.inspectTool?.(
+      tools.find((tool) => tool.function?.name === input.wireName)!.function!,
+    );
+    if (input.systemPrompt)
+      expect(JSON.stringify(requests[0]!.messages)).toContain(
+        JSON.stringify(input.systemPrompt).slice(1, -1),
+      );
     expect(received).toHaveLength(1);
     if (input.expectedToolError) expect(nativeToolFailures[0]).toBe(true);
     for (const request of requests.slice(1, 2 + (input.retryAfterTool ?? 0)))
