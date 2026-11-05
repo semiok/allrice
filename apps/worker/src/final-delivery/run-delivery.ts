@@ -6,7 +6,7 @@ import {
   type RunDeliveryAuthority,
 } from '@allrice/database';
 import type { FinalDeliveryCandidate, FinalDeliveryProof } from './guard.js';
-import { checkFinalDelivery } from './policy.js';
+import { checkFinalDelivery, ordinaryFileCitationCandidates } from './policy.js';
 import { createDeliveryMarkup } from './markup.js';
 import { createDeliveryRepairInspection } from './repair.js';
 import { normalizeAllRiceManagedFileLinks } from '../harness/dsh/tool-bridge.js';
@@ -27,8 +27,9 @@ function finalDeliveryUnavailable(): never {
 export function createRunDeliveryPort(authority: RunDeliveryAuthority) {
   const captured = structuredClone(authority);
   let checked:
-    { proof: FinalDeliveryProof; origin: FinalDeliveryReplyOrigin } | undefined;
-  const readSnapshot = () => readDeliverySnapshot(captured);
+    { proof: FinalDeliveryProof; origin: FinalDeliveryReplyOrigin; citationIds: string[] } | undefined;
+  const citationIds = (text = '') => ordinaryFileCitationCandidates(text, createDeliveryMarkup());
+  const readSnapshot = (text?: string) => readDeliverySnapshot(captured, citationIds(text));
   const readOrigin = () => readRunDeliveryReplyOrigin(captured);
   return {
     rootRunId: captured.rootRunId,
@@ -37,7 +38,8 @@ export function createRunDeliveryPort(authority: RunDeliveryAuthority) {
     createCommitGuard: (
       proof: FinalDeliveryProof,
       origin: FinalDeliveryReplyOrigin,
-    ) => createDeliveryCommitGuard({ authority: captured, proof, origin }),
+      candidate = '',
+    ) => createDeliveryCommitGuard({ authority: captured, proof, origin, ordinaryReferenceObjectIds: citationIds(candidate) }),
     async inspect(candidate: unknown) {
       const facts = await readSnapshot();
       const origin = await readOrigin();
@@ -68,7 +70,7 @@ export function createRunDeliveryPort(authority: RunDeliveryAuthority) {
           normalizeAllRiceManagedFileLinks(candidate.nativeText)
       )
         finalDeliveryUnavailable();
-      const snapshot = await readSnapshot();
+      const snapshot = await readSnapshot(candidate.projectedText);
       const policy = {
         snapshot,
         expectedScope: snapshot.scope,
@@ -97,6 +99,7 @@ export function createRunDeliveryPort(authority: RunDeliveryAuthority) {
       if (decision.status === 'valid')
         checked = {
           origin,
+          citationIds: citationIds(candidate.projectedText),
           proof: {
             nativeSessionId: candidate.nativeSessionId,
             publicMessageId: candidate.publicMessageId!,
@@ -129,6 +132,7 @@ export function createRunDeliveryPort(authority: RunDeliveryAuthority) {
           authority: captured,
           proof,
           origin: checked.origin,
+          ordinaryReferenceObjectIds: checked.citationIds,
         }),
       );
       checked = undefined;

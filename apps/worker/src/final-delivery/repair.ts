@@ -43,7 +43,7 @@ export interface RepairInspection {
 export function createDeliveryRepairInspection(input: {
   nativeSessionId: string;
   scope: DeliveryScope;
-  read(): Promise<DeliverySnapshot>;
+  read(candidate?: string): Promise<DeliverySnapshot>;
   assertAuthority(): Promise<void>;
 }) {
   return async (raw: unknown): Promise<RepairInspection> => {
@@ -55,7 +55,7 @@ export function createDeliveryRepairInspection(input: {
     )
       throw Error('FINAL_DELIVERY_REPAIR_IDENTITY_MISMATCH');
     await input.assertAuthority();
-    const snapshot = await input.read();
+    const snapshot = await input.read(candidate.text);
     const decision = checkFinalDelivery({
       candidate: candidate.text,
       expectedScope: input.scope,

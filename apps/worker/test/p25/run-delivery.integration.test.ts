@@ -59,7 +59,7 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
     await fixture?.close();
   });
 
-  async function subject() {
+  async function subject(allowedTools = ['workspace.export.create', 'workspace.document.read']) {
     vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
     const db = fixture.db;
@@ -68,7 +68,7 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
       configure: false,
 
       memberRole: 'member',
-      allowedTools: ['workspace.export.create', 'workspace.document.read'],
+      allowedTools,
       controls: {
         version: 1,
         enabled: true,
@@ -274,6 +274,15 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
     await runtimeFixtureStorage(fixture.db).put(changed.object, new Blob([content]).stream());
     await f.complete(checked.guard, answer);
     expect(await f.state()).toMatchObject({status: 'succeeded', successes: 1});
+  });
+
+  it('ordinary citation cannot manufacture the storage read capability', async () => {
+    const f = await subject(['web.search']), file = await upload(f);
+    expect(f.snapshot.capabilitySnapshot.grantedCapabilities).not.toContain('storage:read');
+    const answer = `[资料](/api/v1/files/${file.object.id}/download)`;
+    const facts = await f.port.readSnapshot(answer);
+    expect(facts.ordinaryFileCitations).toEqual([]);
+    expect(checkFinalDelivery({candidate: answer, snapshot: facts, expectedScope: facts.scope, markup: createDeliveryMarkup(), managedOrigins: []}).status).toBe('invalid_response');
   });
 
   it.each(['current', 'tenant', 'generation', 'lease', 'revoked'] as const)(
