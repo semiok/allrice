@@ -95,10 +95,25 @@ suite(
         er!.employee_assignment_id,
         er!.employee_version_id,
       );
-      await db`update allrice_employee_runs set execution_snapshot=${db.json({ instance, personalSkills: { skills: [] } })} where run_id=${f.run}`;
-      const sourceId = await seedHistoricalExperienceSource(db, f.run);
-      const rule = await seedHistoricalExperienceRule(db, f.run);
-      const h = await seedHistoricalExperienceOccurrence(db, f.run, rule.id);
+      // Historical execution snapshots are immutable; create the synthetic source
+      // with its snapshot at birth, never mutate a completed employee Run.
+      const sourceRunId = randomUUID(),
+        messageId = randomUUID(),
+        assistantId = randomUUID();
+      await db`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content,status)
+        values(${messageId},${f.org},${f.workspace},${f.session.id},${f.user},'user','{"text":"Synthetic historical feedback","citations":[]}','completed'),
+          (${assistantId},${f.org},${f.workspace},${f.session.id},${f.user},'assistant','{"text":"Synthetic historical reply","citations":[]}','completed')`;
+      await db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input)
+        values(${sourceRunId},${f.org},${f.workspace},${f.user},'succeeded','{}','{}')`;
+      await db`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,session_id,user_message_id,assistant_message_id,status,completed_at,provider_snapshot,prompt_snapshot,execution_snapshot)
+        values(${sourceRunId},${f.org},${f.workspace},${f.user},${er!.employee_assignment_id},${er!.employee_version_id},${f.session.id},${messageId},${assistantId},'succeeded',clock_timestamp(),'{}','{}',${db.json({ instance, personalSkills: { skills: [] } })})`;
+      const sourceId = await seedHistoricalExperienceSource(db, sourceRunId);
+      const rule = await seedHistoricalExperienceRule(db, sourceRunId);
+      const h = await seedHistoricalExperienceOccurrence(
+        db,
+        sourceRunId,
+        rule.id,
+      );
       const output = {
         schemaVersion: 1 as const,
         drafts: [
