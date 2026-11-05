@@ -7778,7 +7778,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     const f = await setup(true, true),
       id = f.assignment.id;
     legacyMethodTools = false;
-    const run = await methodRun(f, id, '把这套办法留下。');
+    let run = await methodRun(f, id, '把这套办法留下。');
     const foreign = await createChatSession(f.b.context, {
       workspaceId: f.b.workspaceId,
       employeeInstanceId: f.bAssignment.id,
@@ -7816,17 +7816,33 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
           arguments: call.arguments,
         }),
       ).rejects.toThrow();
-    const narrowed = structuredClone(run.frozen);
-    narrowed.capabilitySnapshot.bindings.toolNames =
-      narrowed.capabilitySnapshot.bindings.toolNames.filter(
-        (name: string) => !name.startsWith('workspace.employee.method.'),
+    await run.finish();
+    let missing!: Awaited<ReturnType<typeof methodRun>>;
+    // Freeze an old-style grant set at creation, never rewrite the immutable
+    // execution snapshot to simulate missing authority.
+    await vi
+      .mocked(toolSelection.withEmployeeCustomizationTools)
+      .withImplementation(
+        (names, capabilities, kind) =>
+          currentMethodTools(names, capabilities, kind, false),
+        async () => {
+          missing = await methodRun(f, id, '此前未授予方法工具。');
+        },
       );
-    await fixture.db`update allrice_employee_runs set execution_snapshot=${fixture.db.json(narrowed)} where run_id=${run.context.runId}`;
+    expect(
+      missing.frozen.capabilitySnapshot.bindings.toolNames.filter(
+        (name: string) => name.startsWith('workspace.employee.method.'),
+      ),
+    ).toEqual([]);
     for (const call of calls)
       await expect(
-        call.invoke({ ...run, arguments: call.arguments }),
+        call.invoke({ ...missing, arguments: call.arguments }),
       ).rejects.toMatchObject({ code: 'authorization_denied' });
-    await fixture.db`update allrice_employee_runs set execution_snapshot=${fixture.db.json(run.frozen)} where run_id=${run.context.runId}`;
+    await missing.finish();
+    run = await methodRun(f, id, '检查当前租约和消息来源。');
+    expect(run.frozen.capabilitySnapshot.bindings.toolNames).toContain(
+      'workspace.employee.method.inspect',
+    );
     await fixture.db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${run.context.jobId}`;
     for (const call of calls)
       await expect(
@@ -7949,7 +7965,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       references: [],
       changeSummary: 'Owner package',
     };
-    const save = (id: string) =>
+    const save = (id: string, requestId = randomUUID()) =>
       POST(
         new Request(
           `https://allrice.test/api/v1/employee-instances/${id}/scene-skills`,
@@ -7959,7 +7975,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
               origin: 'https://allrice.test',
               'content-type': 'application/json',
             },
-            body: JSON.stringify(body),
+            body: JSON.stringify({ ...body, requestId }),
           },
         ),
         { params: Promise.resolve({ id }) },
