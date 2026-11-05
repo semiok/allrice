@@ -40,6 +40,10 @@ const key = 'synthetic-skill-preview-key-000000000000';
 const sourceText =
   '---\nname: weekly\ndescription: Prepare a weekly summary.\nwhenToUse: When summarizing a week.\nmetadata:\n  displayName: Weekly summary\n  version: 1.2.0\n---\nRead references/rules.md.\n';
 const root = 'https://github.com/acme/skills';
+// Web owns the route's Bundler typecheck; the DB suite loads its runtime entry
+// like the existing personal-scene and personal-skill HTTP regressions.
+const routePath =
+  '../../../../apps/web/app/api/v1/employee-instances/[id]/skills/preview/route.ts';
 
 suite('authenticated browser Skill source preview without installation', () => {
   let f: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
@@ -150,8 +154,7 @@ suite('authenticated browser Skill source preview without installation', () => {
     const form = new FormData();
     form.set('input', JSON.stringify({ workspaceId, target }));
     form.set('file', new Blob([Buffer.from(bytes)]), 'weekly.zip');
-    const { POST } =
-      await import('../../../../apps/web/app/api/v1/employee-instances/[id]/skills/preview/route.ts');
+    const { POST } = await import(routePath);
     return POST(
       new Request(
         'http://localhost:3000/api/v1/employee-instances/' +
@@ -263,8 +266,7 @@ suite('authenticated browser Skill source preview without installation', () => {
     const s = await setup(),
       before = await counts();
     browser.context = s.owner.context;
-    const { POST } =
-      await import('../../../../apps/web/app/api/v1/employee-instances/[id]/skills/preview/route.ts');
+    const { POST } = await import(routePath);
     for (const [contentType, body] of [
       ['multipart/form-data', Buffer.from('missing boundary')],
       [
@@ -342,8 +344,7 @@ suite('authenticated browser Skill source preview without installation', () => {
       );
       browser.context = s.owner.context;
       const before = await counts();
-      const { POST } =
-        await import('../../../../apps/web/app/api/v1/employee-instances/[id]/skills/preview/route.ts');
+      const { POST } = await import(routePath);
       const response = await POST(
         new Request('http://localhost:3000/preview', {
           method: 'POST',
