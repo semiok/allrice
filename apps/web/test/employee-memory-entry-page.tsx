@@ -5,6 +5,8 @@ import { ChatFlowClient } from '../app/chatflow/chatflow-client';
 import { EmployeeDetailsDialog } from '../app/chatflow/employee-details-dialog';
 import { ArtifactWorkbench } from '../app/chatflow/artifact-workbench';
 import { WorkbenchExperiencePanel } from '../app/chatflow/workbench-experience-panel';
+import { setAppearance } from '../lib/theme/appearance';
+import { useThemeSync } from '../components/theme/theme-controller';
 import '../app/dsh-upstream/design-platform.css';
 import '../app/dsh-upstream/base.css';
 import '../app/dsh-upstream/scrollbar.css';
@@ -17,9 +19,11 @@ const id = (n: number) =>
 const query = new URLSearchParams(location.search);
 const headers = {};
 const scopeId = `${id(3)}/${id(4)}/${id(5)}`;
-if (query.get('theme') === 'dark') {
-  document.documentElement.dataset.theme = 'dark';
-  document.body.setAttribute('data-ds-dark-theme', '');
+setAppearance(query.get('theme') === 'dark' ? 'dark' : 'light');
+
+function ProductThemeSync() {
+  useThemeSync(location.pathname);
+  return null;
 }
 
 // Test controls vary only the same public props used by the tenant host.
@@ -103,16 +107,19 @@ function LifecycleHost() {
 }
 
 createRoot(document.getElementById('root')!).render(
-  query.get('host') === 'details' ? (
-    <DetailsHost />
-  ) : query.get('host') === 'compact' ? (
-    <CompactHost />
-  ) : query.get('host') === 'lifecycle' ? (
-    <LifecycleHost />
-  ) : (
-    <ChatFlowClient
-      workbenchEnabled={!query.has('disabled')}
-      experienceEnabled={query.has('legacy')}
-    />
-  ),
+  <>
+    <ProductThemeSync />
+    {query.get('host') === 'details' ? (
+      <DetailsHost />
+    ) : query.get('host') === 'compact' ? (
+      <CompactHost />
+    ) : query.get('host') === 'lifecycle' ? (
+      <LifecycleHost />
+    ) : (
+      <ChatFlowClient
+        workbenchEnabled={!query.has('disabled')}
+        experienceEnabled={query.has('legacy')}
+      />
+    )}
+  </>,
 );
