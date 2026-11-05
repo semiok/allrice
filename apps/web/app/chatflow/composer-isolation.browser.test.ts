@@ -1436,7 +1436,11 @@ suite(
           await f.waitPending(1);
           await f.choose(B);
           if (overlap) {
-            await f.choose(A);
+            await f.page.locator(`[data-row-key="session:${A}"]`).click();
+            await f.page
+              .getByRole('heading', { name: 'Session A', exact: true })
+              .waitFor();
+            expect(new URL(f.page.url()).searchParams.get('session')).toBe(A);
             await f.send('A newer attempt');
             await f.waitPending(2);
             await f.choose(B);
