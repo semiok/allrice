@@ -55,6 +55,30 @@
   font-size: 22px;
 }
 
+.headerWithBack {
+  align-items: center;
+  gap: 12px;
+}
+
+.headerTitle {
+  flex: 1;
+  min-width: 0;
+}
+
+.back.back {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+
+.headerWithBack > button:last-child:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .body {
   min-height: 0;
   flex: 1 1 auto;
