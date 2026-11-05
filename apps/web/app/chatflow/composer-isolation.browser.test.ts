@@ -4620,6 +4620,7 @@ suite(
         f.showTiming();
         await f.respond(1);
         await expect.poll(createdReads).toBe(2);
+        await f.page.getByLabel('本轮运行时间', { exact: true }).waitFor();
         await f.page.clock.runFor(2_000);
         await expect.poll(createdReads).toBe(3);
         expect(
