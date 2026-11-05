@@ -418,7 +418,7 @@ MET181 公司组合验收发现固定 `dsh-tool-ask-user@0.1.5-rc.3` 的 Consume
 ### allrice-final-delivery-v1
 
 - ID：`allrice-final-delivery-v1`；归属 MET-184；**保留平台交付适配**。复用固定 `0.2.1-rc.2` 的公开 Agent、turn、消息日志、steer 和工具 middleware；不修改 DSH 核心、不增加另一套 Agent 循环。DSH 不持有 AllRice 成果对象、当前权限或业务完成事务。
-- MET-246 F1（用户 2026-11-05 方案 B）：普通非成果文件的受管链接在校验及完成事务中按对象 ID 复用 `getToolBrokerFile` 和本 Run 冻结权限、当前成员/租约检查；`?name=` 不参与身份。普通引用不进入成果版本和质量义务，成果、Knowledge/企业保留副本仍按原来源合同校验。无读取回执、表/列或持久状态；明确不能证明模型实际读过或内容未变。不改 DSH 完成/修正机制，不解析用户措辞；新增部分仅为既有 SaaS 文件 ACL 门卫接线，依据为本次用户批准。
+- MET-246 F1（用户 2026-11-05 方案 B）：普通非成果文件的受管链接在校验及完成事务中按对象 ID 复用 `getToolBrokerFile` 和本 Run 冻结读取工具名单（file.read 或 document.read）、storage:read、当前成员/租约检查；不能从员工默认定义补回冻结时未授予的工具；`?name=` 不参与身份。普通引用不进入成果版本和质量义务，成果、Knowledge/企业保留副本仍按原来源合同校验。无读取回执、表/列或持久状态；明确不能证明模型实际读过或内容未变。不改 DSH 完成/修正机制，不解析用户措辞；新增部分仅为既有 SaaS 文件 ACL 门卫接线，依据为本次用户批准。
 - MET-210 PR1b 来源端口：不开助手的根 Run 通过通用 job/member/conversation/native binding 权限闭包读取 `turn.started`，不查助手表或 `run_links`。原生持久消息核验后的 proof 与该组来源锚点绑定，`completeJob` 重读并拒绝来源变化；资格仍由后续 PR1c 与旧层删除同窗放开。
 - Worker 将当前根 Run 的真实成果版本、授权与 Office 字节检查事实交给独立的 Markdown/GFM 链接检查器。独立路径复用 SDK `session/wait`，停止并等待输入投递，随后以公开 `Agent.runMaintenance` 持有当前日志；私有 proof 绑定原生消息、序号和 Run 来源，直到 Job 同一事务重验权限、租约、来源与事实摘要。模型正文、工具参数和公开事件不能签发该凭据。
 - 独立交付的 `active_turn_id` 保留到 `completeJob` 原子重验与终态释放；原检查点继续保存，但仅凭已注册完成守卫，在写前和写后复核同一来源、答复和租约。用量/压力仍记录，不新增压缩；失败、取消由既有所有权清理，未采用独立交付的普通路径保持原检查点边界。

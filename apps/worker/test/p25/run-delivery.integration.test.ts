@@ -286,45 +286,95 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
       // The employee default remains broader than this Run. No fallback may
       // restore either read tool removed from the frozen bindings.
       const f = await subject(
-        ['workspace.project', 'workspace.file.list', 'workspace.file.read', 'workspace.document.read'],
+        [
+          'workspace.project',
+          'workspace.file.list',
+          'workspace.file.read',
+          'workspace.document.read',
+        ],
         true,
-        ['workspace.project', 'workspace.file.list', ...(readTool ? [readTool] : [])],
+        [
+          'workspace.project',
+          'workspace.file.list',
+          ...(readTool ? [readTool] : []),
+        ],
       );
       const file = await upload(f);
       const answer = `[source](/api/v1/files/${file.object.id}/download?name=source.txt)`;
-      expect((await getToolBrokerFile(f.readContext, file.object.id, fixture.db)).object.id).toBe(file.object.id);
+      expect(
+        (await getToolBrokerFile(f.readContext, file.object.id, fixture.db))
+          .object.id,
+      ).toBe(file.object.id);
       const inspection = await f.port.inspect({
-        nativeSessionId: f.native, turn: 1, publicMessageId: randomUUID(), durableSeq: 1,
-        text: answer, candidateDigest: finalDeliveryTextDigest(answer), provider: 'fixture', model: 'fixture',
+        nativeSessionId: f.native,
+        turn: 1,
+        publicMessageId: randomUUID(),
+        durableSeq: 1,
+        text: answer,
+        candidateDigest: finalDeliveryTextDigest(answer),
+        provider: 'fixture',
+        model: 'fixture',
       });
       expect(inspection.decision === 'pass').toBe(Boolean(readTool));
       const candidate = {
-        nativeText: answer, projectedText: answer, nativeSessionId: f.native,
-        publicMessageId: randomUUID(), durableSeq: 1, nativeBindingId: randomUUID(),
-        rootRunId: f.rootRunId, attempt: 1, generation: 1,
+        nativeText: answer,
+        projectedText: answer,
+        nativeSessionId: f.native,
+        publicMessageId: randomUUID(),
+        durableSeq: 1,
+        nativeBindingId: randomUUID(),
+        rootRunId: f.rootRunId,
+        attempt: 1,
+        generation: 1,
       };
       const decision = await f.port.check(candidate);
       expect(decision.status).toBe(readTool ? 'valid' : 'invalid_response');
       if (readTool) {
-        const {guard} = await f.validate(answer);
+        const { guard } = await f.validate(answer);
         await f.complete(guard, answer);
-        expect(await f.state()).toMatchObject({status: 'succeeded', successes: 1});
+        expect(await f.state()).toMatchObject({
+          status: 'succeeded',
+          successes: 1,
+        });
       } else {
         // Even an erroneous upstream proof cannot grant missing frozen tools:
         // commit must rebuild the facts from the real Run, independently.
         const snapshot = await f.port.readSnapshot(answer);
-        const forged = checkFinalDelivery({candidate: answer, snapshot: {...snapshot,
-          ordinaryFileCitations: [{objectId: file.object.id, retentionUntil: null}]},
-          expectedScope: snapshot.scope, markup: createDeliveryMarkup(), managedOrigins: []});
+        const forged = checkFinalDelivery({
+          candidate: answer,
+          snapshot: {
+            ...snapshot,
+            ordinaryFileCitations: [
+              { objectId: file.object.id, retentionUntil: null },
+            ],
+          },
+          expectedScope: snapshot.scope,
+          markup: createDeliveryMarkup(),
+          managedOrigins: [],
+        });
         expect(forged.status).toBe('valid');
-        const guard = f.port.createCommitGuard({
-          nativeSessionId: f.native, publicMessageId: candidate.publicMessageId,
-          durableSeq: 1, nativeBindingId: candidate.nativeBindingId,
-          nativeCandidateDigest: finalDeliveryTextDigest(answer), candidateDigest: forged.candidateDigest,
-          factSetDigest: forged.factSetDigest, attempt: 1, generation: 1,
-        }, f.origin, answer);
-        await expect(f.complete(guard, answer)).rejects.toMatchObject({code: 'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE'});
-        expect(await f.state()).toMatchObject({status: 'running', successes: 0});
+        const guard = f.port.createCommitGuard(
+          {
+            nativeSessionId: f.native,
+            publicMessageId: candidate.publicMessageId,
+            durableSeq: 1,
+            nativeBindingId: candidate.nativeBindingId,
+            nativeCandidateDigest: finalDeliveryTextDigest(answer),
+            candidateDigest: forged.candidateDigest,
+            factSetDigest: forged.factSetDigest,
+            attempt: 1,
+            generation: 1,
+          },
+          f.origin,
+          answer,
+        );
+        await expect(f.complete(guard, answer)).rejects.toMatchObject({
+          code: 'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE',
+        });
+        expect(await f.state()).toMatchObject({
+          status: 'running',
+          successes: 0,
+        });
       }
     },
   );
@@ -358,142 +408,255 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
       const f = await subject(['workspace.project', readTool]);
       const file = await upload(f);
       const answer = `[source](/api/v1/files/${file.object.id}/download)`;
-      const native = await host({rootId: f.native, model: async () => text(answer),
+      const native = await host({
+        rootId: f.native,
+        model: async () => text(answer),
         bridge: async (method: string) => {
           expect(method).toBe('allrice/final-delivery-origin');
-          return {origin: await f.port.readOrigin()};
+          return { origin: await f.port.readOrigin() };
         },
       });
       vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
-      await native.server.handleRequest('allrice/final-delivery/bind', {sessionId: f.native, rootRunId: f.rootRunId});
+      await native.server.handleRequest('allrice/final-delivery/bind', {
+        sessionId: f.native,
+        rootRunId: f.rootRunId,
+      });
       await native.prompt('请引用这份资料回答，不生成新成果。');
-      const candidate = await native.server.handleRequest('allrice/final-delivery/candidate', {sessionId: f.native});
-      const inspection = await f.port.inspect({nativeSessionId: f.native, turn: 1,
-        publicMessageId: candidate.publicMessageId, durableSeq: candidate.durableSeq,
-        text: candidate.answer, candidateDigest: candidate.textDigest, provider: 'fixture', model: 'fixture'});
-      expect(inspection).toMatchObject({decision: 'pass', references: []});
-      const decision = await f.port.check({nativeText: candidate.answer, projectedText: candidate.answer,
-        nativeSessionId: f.native, publicMessageId: candidate.publicMessageId, durableSeq: candidate.durableSeq,
-        nativeBindingId: candidate.rootBinding.bindingId, rootRunId: f.rootRunId, attempt: 1, generation: 1});
-      expect(decision).toMatchObject({status: 'valid', linked: []});
-      const proof = {nativeSessionId: f.native, publicMessageId: candidate.publicMessageId,
-        durableSeq: candidate.durableSeq, nativeBindingId: candidate.rootBinding.bindingId,
-        nativeCandidateDigest: candidate.textDigest, candidateDigest: decision.candidateDigest,
-        factSetDigest: decision.factSetDigest, attempt: 1, generation: 1};
-      await native.server.handleRequest('allrice/final-delivery/finish', {sessionId: f.native,
-        completionToken: candidate.completionToken, candidateDigest: candidate.textDigest, factSetDigest: decision.factSetDigest});
+      const candidate = await native.server.handleRequest(
+        'allrice/final-delivery/candidate',
+        { sessionId: f.native },
+      );
+      const inspection = await f.port.inspect({
+        nativeSessionId: f.native,
+        turn: 1,
+        publicMessageId: candidate.publicMessageId,
+        durableSeq: candidate.durableSeq,
+        text: candidate.answer,
+        candidateDigest: candidate.textDigest,
+        provider: 'fixture',
+        model: 'fixture',
+      });
+      expect(inspection).toMatchObject({ decision: 'pass', references: [] });
+      const decision = await f.port.check({
+        nativeText: candidate.answer,
+        projectedText: candidate.answer,
+        nativeSessionId: f.native,
+        publicMessageId: candidate.publicMessageId,
+        durableSeq: candidate.durableSeq,
+        nativeBindingId: candidate.rootBinding.bindingId,
+        rootRunId: f.rootRunId,
+        attempt: 1,
+        generation: 1,
+      });
+      expect(decision).toMatchObject({ status: 'valid', linked: [] });
+      const proof = {
+        nativeSessionId: f.native,
+        publicMessageId: candidate.publicMessageId,
+        durableSeq: candidate.durableSeq,
+        nativeBindingId: candidate.rootBinding.bindingId,
+        nativeCandidateDigest: candidate.textDigest,
+        candidateDigest: decision.candidateDigest,
+        factSetDigest: decision.factSetDigest,
+        attempt: 1,
+        generation: 1,
+      };
+      await native.server.handleRequest('allrice/final-delivery/finish', {
+        sessionId: f.native,
+        completionToken: candidate.completionToken,
+        candidateDigest: candidate.textDigest,
+        factSetDigest: decision.factSetDigest,
+      });
       f.port.finish(proof);
-      const execution = {}, result = {answer};
+      const execution = {},
+        result = { answer };
       beginCheckedFinalDeliveryExecution(execution);
       requireCheckedFinalDelivery(execution);
       attachCheckedFinalDelivery(result, proof);
       transferCheckedFinalDeliveryForExecution(execution, result, result);
       const coverage = readCheckedFinalDeliveryForExecution(execution, result);
-      if (coverage.coverage !== 'checked_native_v1') throw Error('missing native proof');
+      if (coverage.coverage !== 'checked_native_v1')
+        throw Error('missing native proof');
       await f.complete(coverage.checkedDelivery, answer);
-      expect(await f.state()).toMatchObject({status: 'succeeded', text: answer, successes: 1});
-      expect(await fixture.db`select id from allrice_deliverable_versions where object_id=${file.object.id}`).toEqual([]);
+      expect(await f.state()).toMatchObject({
+        status: 'succeeded',
+        text: answer,
+        successes: 1,
+      });
+      expect(
+        await fixture.db`select id from allrice_deliverable_versions where object_id=${file.object.id}`,
+      ).toEqual([]);
     },
   );
 
   function barrier() {
     let resolve!: () => void;
-    const promise = new Promise<void>(r => { resolve = r; });
-    return {promise, resolve};
+    const promise = new Promise<void>((r) => {
+      resolve = r;
+    });
+    return { promise, resolve };
   }
   async function blockedBy(pid: number, table = 'allrice_storage_objects') {
-    await vi.waitFor(async () => {
-      const rows = await fixture.db`select pid,query from pg_stat_activity
+    await vi.waitFor(
+      async () => {
+        const rows = await fixture.db`select pid,query from pg_stat_activity
         where datname=current_database() and ${pid}=any(pg_blocking_pids(pid))`;
-      expect(rows.some(row => row.query.includes(table))).toBe(true);
-    }, {timeout: 5000, interval: 20});
+        expect(rows.some((row) => row.query.includes(table))).toBe(true);
+      },
+      { timeout: 5000, interval: 20 },
+    );
   }
-  const classifyOrdinaryFile = (tx: Parameters<Parameters<typeof registerJobCompletionGuard>[0]>[0], f: Subject, id: string) =>
+  const classifyOrdinaryFile = (
+    tx: Parameters<Parameters<typeof registerJobCompletionGuard>[0]>[0],
+    f: Subject,
+    id: string,
+  ) =>
     tx`insert into allrice_deliverable_versions(id,organization_id,workspace_id,owner_id,object_id,series_id,version,session_id,file_name,format)
       values(${randomUUID()},${f.org},${f.workspace},${f.user},${id},${randomUUID()},1,${f.session},'new-artifact.txt','text')`;
 
   it.each(['revoke', 'classify'] as const)(
     'F1 object lock rejects completion when %s commits first',
-    async mode => {
-      const f = await citationSubject(), file = await upload(f, mode === 'revoke');
+    async (mode) => {
+      const f = await citationSubject(),
+        file = await upload(f, mode === 'revoke');
       const answer = `[source](/api/v1/files/${file.object.id}/download)`;
-      const {guard} = await f.validate(answer);
-      const locked = barrier(), release = barrier();
+      const { guard } = await f.validate(answer);
+      const locked = barrier(),
+        release = barrier();
       let pid = 0;
-      const writer = fixture.db.begin(async tx => {
+      const writer = fixture.db.begin(async (tx) => {
         await tx`set local statement_timeout='8s'`;
         pid = (await tx`select pg_backend_pid() pid`)[0]!.pid;
         await tx`select id from allrice_storage_objects where id=${file.object.id} for update`;
-        if (mode === 'revoke') await tx`update allrice_storage_objects set visibility='private' where id=${file.object.id}`;
+        if (mode === 'revoke')
+          await tx`update allrice_storage_objects set visibility='private' where id=${file.object.id}`;
         else await classifyOrdinaryFile(tx, f, file.object.id);
-        locked.resolve(); await release.promise;
+        locked.resolve();
+        await release.promise;
       });
       await Promise.race([locked.promise, writer]);
-      const completion = f.complete(guard, answer).then(() => ({ok: true, error: null}), error => ({ok: false, error}));
-      try { await blockedBy(pid); } finally { release.resolve(); }
+      const completion = f.complete(guard, answer).then(
+        () => ({ ok: true, error: null }),
+        (error) => ({ ok: false, error }),
+      );
+      try {
+        await blockedBy(pid);
+      } finally {
+        release.resolve();
+      }
       await writer;
-      expect(await completion).toMatchObject({ok: false, error: {code: 'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE'}});
-      expect(await f.state()).toMatchObject({status: 'running', successes: 0});
+      expect(await completion).toMatchObject({
+        ok: false,
+        error: { code: 'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE' },
+      });
+      expect(await f.state()).toMatchObject({
+        status: 'running',
+        successes: 0,
+      });
     },
   );
 
   it.each(['revoke', 'classify'] as const)(
     'F1 object lock defers %s until successful completion commits',
-    async mode => {
-      const f = await citationSubject(), file = await upload(f, mode === 'revoke');
+    async (mode) => {
+      const f = await citationSubject(),
+        file = await upload(f, mode === 'revoke');
       const answer = `[source](/api/v1/files/${file.object.id}/download)`;
-      const {guard} = await f.validate(answer);
-      const locked = barrier(), release = barrier();
+      const { guard } = await f.validate(answer);
+      const locked = barrier(),
+        release = barrier();
       let pid = 0;
       const heldGuard = registerJobCompletionGuard(async (tx, job, result) => {
         const checked = await guard.assertCurrent(tx, job, result);
         pid = (await tx`select pg_backend_pid() pid`)[0]!.pid;
-        locked.resolve(); await release.promise;
+        locked.resolve();
+        await release.promise;
         return checked;
       });
       const completion = f.complete(heldGuard, answer);
       await Promise.race([locked.promise, completion]);
-      const writer = fixture.db.begin(async tx => {
+      const writer = fixture.db.begin(async (tx) => {
         await tx`set local statement_timeout='8s'`;
-        if (mode === 'revoke') await tx`update allrice_storage_objects set visibility='private' where id=${file.object.id}`;
+        if (mode === 'revoke')
+          await tx`update allrice_storage_objects set visibility='private' where id=${file.object.id}`;
         else await classifyOrdinaryFile(tx, f, file.object.id);
       });
-      try { await blockedBy(pid, mode === 'classify' ? 'allrice_deliverable_versions' : 'allrice_storage_objects'); } finally { release.resolve(); }
+      try {
+        await blockedBy(
+          pid,
+          mode === 'classify'
+            ? 'allrice_deliverable_versions'
+            : 'allrice_storage_objects',
+        );
+      } finally {
+        release.resolve();
+      }
       await Promise.all([completion, writer]);
-      expect(await f.state()).toMatchObject({status: 'succeeded', text: answer, successes: 1});
-      if (mode === 'revoke') await expect(getToolBrokerFile(f.readContext, file.object.id, fixture.db)).rejects.toMatchObject({code: 'authorization_denied'});
-      else expect((await getToolBrokerFile(f.readContext, file.object.id, fixture.db)).artifactVersionId).not.toBeNull();
+      expect(await f.state()).toMatchObject({
+        status: 'succeeded',
+        text: answer,
+        successes: 1,
+      });
+      if (mode === 'revoke')
+        await expect(
+          getToolBrokerFile(f.readContext, file.object.id, fixture.db),
+        ).rejects.toMatchObject({ code: 'authorization_denied' });
+      else
+        expect(
+          (await getToolBrokerFile(f.readContext, file.object.id, fixture.db))
+            .artifactVersionId,
+        ).not.toBeNull();
     },
   );
 
   it.each(['lease', 'retention'] as const)(
     'F1 completion cannot outlive %s while waiting for the citation object lock',
-    async mode => {
-      const f = await citationSubject(), file = await upload(f);
+    async (mode) => {
+      const f = await citationSubject(),
+        file = await upload(f);
       const answer = `[source](/api/v1/files/${file.object.id}/download)`;
-      const deadlines = await fixture.db`select clock_timestamp()+interval '3 seconds' deadline`;
+      const deadlines =
+        await fixture.db`select clock_timestamp()+interval '3 seconds' deadline`;
       const deadline = deadlines[0]!.deadline as Date;
-      if (mode === 'lease') await fixture.db`update allrice_jobs set lease_expires_at=${deadline} where id=${f.worker.jobId}`;
-      else await fixture.db`update allrice_storage_objects set retention_until=${deadline} where id=${file.object.id}`;
-      const {guard} = await f.validate(answer);
-      const locked = barrier(), release = barrier();
+      if (mode === 'lease')
+        await fixture.db`update allrice_jobs set lease_expires_at=${deadline} where id=${f.worker.jobId}`;
+      else
+        await fixture.db`update allrice_storage_objects set retention_until=${deadline} where id=${file.object.id}`;
+      const { guard } = await f.validate(answer);
+      const locked = barrier(),
+        release = barrier();
       let pid = 0;
-      const holder = fixture.db.begin(async tx => {
+      const holder = fixture.db.begin(async (tx) => {
         pid = (await tx`select pg_backend_pid() pid`)[0]!.pid;
         await tx`select id from allrice_storage_objects where id=${file.object.id} for update`;
-        locked.resolve(); await release.promise;
+        locked.resolve();
+        await release.promise;
       });
       await Promise.race([locked.promise, holder]);
-      const completion = f.complete(guard, answer).then(() => ({ok: true}), () => ({ok: false}));
+      const completion = f.complete(guard, answer).then(
+        () => ({ ok: true }),
+        () => ({ ok: false }),
+      );
       try {
         await blockedBy(pid);
-        await vi.waitFor(async () => {
-          expect((await fixture.db`select clock_timestamp()>=${deadline} expired`)[0]!.expired).toBe(true);
-        }, {timeout: 5000, interval: 25});
-      } finally { release.resolve(); }
+        await vi.waitFor(
+          async () => {
+            expect(
+              (
+                await fixture.db`select clock_timestamp()>=${deadline} expired`
+              )[0]!.expired,
+            ).toBe(true);
+          },
+          { timeout: 5000, interval: 25 },
+        );
+      } finally {
+        release.resolve();
+      }
       await holder;
-      expect(await completion).toEqual({ok: false});
-      expect(await f.state()).toMatchObject({status: 'running', successes: 0});
+      expect(await completion).toEqual({ ok: false });
+      expect(await f.state()).toMatchObject({
+        status: 'running',
+        successes: 0,
+      });
     },
   );
 
