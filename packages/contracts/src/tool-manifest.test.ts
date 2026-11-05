@@ -77,9 +77,10 @@ describe('AllRice tool manifest', () => {
         risk: 'managed_write',
       },
     ]);
-    expect(envelopeTools.map((tool) => tool.canonicalName)).toEqual([
-      'workspace.file.read',
-    ]);
+    expect(envelopeTools.map((tool) => tool.canonicalName)).toEqual([]);
+    expect(allRiceToolManifest.find((tool) => tool.canonicalName === 'workspace.file.read')).toMatchObject({
+      transport: 'dsh_broker_native', dshWireName: 'workspace_file_read', risk: 'read_only', capability: 'storage:read',
+    });
     expect(searchTools.map((tool) => tool.canonicalName)).toEqual([
       'web.search',
     ]);
