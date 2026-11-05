@@ -300,7 +300,9 @@ export async function executeEmployeeRun({
   };
   let contentRuntime: Awaited<ReturnType<typeof prepareEmployeeContentContext>>;
   try {
-    const experience = await prepareRunExperiences(contentScope, {
+    const experience = resolved.promptSnapshot.employeeDocuments
+      ? { memories: [], receipt: null }
+      : await prepareRunExperiences(contentScope, {
       ...workflowLease,
       attempt: execution.job.attempt,
     });
@@ -589,6 +591,7 @@ export async function executeEmployeeRun({
       worker: { ...workflowLease, attempt: execution.job.attempt },
     },
     resolved.promptSnapshot.memories,
+    resolved.promptSnapshot.employeeDocuments?.memory,
   );
   const kernelInput = {
     employeeAssignmentId: input.employeeAssignmentId,
@@ -619,6 +622,8 @@ export async function executeEmployeeRun({
           bootstrapConversation: '',
           bootstrapContext: undefined,
           authorizedMemoryContext: '',
+          employeeDocuments: undefined,
+          rootSystemInstructions: undefined,
           skillVersionIds: [],
           imageAttachments: [],
         })
@@ -1291,7 +1296,9 @@ export async function executeEmployeeRun({
     if (runLimits) {
       const estimatedInputTokens = estimateConversationTokens(
         [
-          routedKernel.systemInstructions,
+          routedKernel.rootSystemInstructions ?? routedKernel.systemInstructions,
+          routedKernel.employeeDocuments?.user ?? '',
+          routedKernel.employeeDocuments?.memory ?? '',
           ...(routedKernel.mcpToolCatalog?.length
             ? [mcpCatalogAdmissionInstructions(routedKernel.mcpToolCatalog)]
             : []),

@@ -236,28 +236,10 @@ export function assembleEmployeeKernel(input: {
     input.resolved.executionSnapshot?.schemaVersion === 2
       ? input.resolved.executionSnapshot.localMcp
       : undefined;
-  return EmployeeKernelRequestSchema.parse({
-    schemaVersion: 1,
-    harness: runtimeHarness,
-    employeeAssignmentId: input.employeeAssignmentId,
-    employeeVersionId: input.employeeVersionId,
-    sessionId: input.sessionId,
-    userMessageId: input.userMessageId,
-    assistantMessageId: input.assistantMessageId,
-    ...(mcpTools.length
-      ? {
-          mcpToolCatalog: mcpTools.map(
-            ({ connectionId, name, description, inputSchema, risk }) => ({
-              connectionId,
-              name,
-              description,
-              inputSchema,
-              risk,
-            }),
-          ),
-        }
-      : {}),
-    systemInstructions: [
+  const commonContent = (documents: boolean) => documents
+    ? input.commonContent?.filter((source) => source.reference.sourceKind !== 'experience')
+    : input.commonContent;
+  const systemInstructions = (documents: boolean) => [
       input.resolved.promptSnapshot.systemPrompt,
       ...(input.resolved.promptSnapshot.personalIdentity
         ? [
@@ -275,11 +257,11 @@ export function assembleEmployeeKernel(input: {
             "Published work scenes appear in the native Skill directory under allrice-scene- names. Select at most one scene for this Run. Prioritize the user's explicit choice; load its exact native name through skill before following its scene-specific requirements. If multiple scenes plausibly match or a display name is ambiguous, ask the user using the existing ask_user_question tool before loading one. An ordinary task may use no scene. Do not preload scenes, combine unrelated scenes, or carry scene rules from previous Runs. The common working requirements always apply. Scene descriptions and file/workflow references are not proof of task execution or successful delivery.",
           ]
         : []),
-      ...(input.commonContent?.length
+      ...(commonContent(documents)?.length
         ? [
             'Frozen common working requirements for this Run, assembled from authorized company, department and personal publications. Apply these together with platform requirements. References do not grant tools or data permissions. A knowledge/workflow description below is a reference directory, not evidence of reading its files or executing its workflow.',
             JSON.stringify(
-              input.commonContent.map(
+              commonContent(documents)!.map(
                 ({ reference, ownership, title, body }) => ({
                   reference,
                   scope: ownership?.scope ?? 'authorized_reference',
@@ -321,10 +303,10 @@ export function assembleEmployeeKernel(input: {
             ),
           ]
         : []),
-      ...(input.resolved.promptSnapshot.organizationContext
+      ...(!documents && input.resolved.promptSnapshot.organizationContext
         ? [
             'Current company and employee context. Tailor the work to these facts; resource authority continues to come from the granted capabilities.',
-            JSON.stringify(input.resolved.promptSnapshot.organizationContext),
+            JSON.stringify(Object.fromEntries(Object.entries(input.resolved.promptSnapshot.organizationContext!).filter(([key]) => key !== 'departmentName'))),
           ]
         : []),
       ...(localMcp?.connections.length
@@ -357,7 +339,33 @@ export function assembleEmployeeKernel(input: {
         : []),
       // MET-210: the chat page sends "跳过本题" as DSH's skipped item.
       'In ask_user_question answers, an item with an empty selected list and no custom text means the user explicitly skipped that question. It chooses no option, including a recommended one, and approves nothing. Continue without that input, or ask again only if the work cannot proceed without it.',
-    ].join('\n\n'),
+    ].join('\n\n');
+  return EmployeeKernelRequestSchema.parse({
+    schemaVersion: 1,
+    harness: runtimeHarness,
+    employeeAssignmentId: input.employeeAssignmentId,
+    employeeVersionId: input.employeeVersionId,
+    sessionId: input.sessionId,
+    userMessageId: input.userMessageId,
+    assistantMessageId: input.assistantMessageId,
+    ...(mcpTools.length
+      ? {
+          mcpToolCatalog: mcpTools.map(
+            ({ connectionId, name, description, inputSchema, risk }) => ({
+              connectionId,
+              name,
+              description,
+              inputSchema,
+              risk,
+            }),
+          ),
+        }
+      : {}),
+    systemInstructions: systemInstructions(false),
+    ...(input.resolved.promptSnapshot.employeeDocuments ? {
+      rootSystemInstructions: systemInstructions(true),
+      employeeDocuments: input.resolved.promptSnapshot.employeeDocuments,
+    } : {}),
     userRequest: [
       input.resolved.promptSnapshot.userRequest,
       ...(input.resolved.promptSnapshot.companyAssets?.templates.length
@@ -385,7 +393,7 @@ export function assembleEmployeeKernel(input: {
     ].join('\n\n'),
     bootstrapConversation,
     ...(bootstrapContext ? { bootstrapContext } : {}),
-    authorizedMemoryContext: memories,
+    authorizedMemoryContext: input.resolved.promptSnapshot.employeeDocuments ? '' : memories,
     grantedCapabilities: input.resolved.grantedCapabilities,
     skillVersionIds: input.resolved.nativeSkills.map((skill) => skill.id),
     runtimePackageChecksum:

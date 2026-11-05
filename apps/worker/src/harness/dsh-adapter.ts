@@ -815,7 +815,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           throw nativeSessionRecoveryFailure(error);
         }
       }
-      if (runId) await runtime.client.beginRun(threadId, runId);
+      if (runId) await runtime.client.beginRun(threadId, runId, input.kernel.employeeDocuments);
       let bootstrap = fresh ? input.kernel.bootstrapConversation : '';
       if (
         runtime.bootstrapCoverage &&

@@ -1,3 +1,4 @@
+import { freezeEmployeeDocuments } from './employee-documents.ts';
 import { readChatNativeRootOrigin } from '../conversation/native-session-binding.ts';
 import {
   freezePersonalSkills,
@@ -1177,6 +1178,7 @@ export async function prepareEmployeeRunBinding(
     userMessageId: string;
     assistantMessageId: string;
     promptSnapshot: EmployeeRunBinding['promptSnapshot'];
+    employeeDocuments?: boolean;
   },
   transaction?: TransactionSql,
 ): Promise<EmployeeRunBinding> {
@@ -1530,6 +1532,17 @@ export async function prepareEmployeeRunBinding(
     !grantedCapabilities.includes('secret:use')
   )
     grantedCapabilities.push('secret:use');
+  const boundToolNames = freezeMemorySourceToolNames(
+    withEmployeeCustomizationTools(capabilityBindings(manifest.data).toolNames,
+      grantedCapabilities, instance?.kind), grantedCapabilities, modelSnapshot,
+  );
+  const documentProjection = input.employeeDocuments && instance
+    ? await freezeEmployeeDocuments(sql, {
+        organizationId: input.context.organizationId, workspaceId: input.workspaceId,
+        ownerId: actorId, instanceId: instance.id,
+      }, organizationContext, grantedCapabilities.includes('storage:read') &&
+        boundToolNames.includes('workspace.experience.read'))
+    : undefined;
   return {
     employeeAssignmentId: assignment.assignment_id,
     employeeVersionId: assignment.id,
@@ -1585,15 +1598,7 @@ export async function prepareEmployeeRunBinding(
           ...capabilityBindings(manifest.data),
           // Exact intrinsic bindings are computed from existing grants, never
           // widened by the guidance Skill or shared employee publication.
-          toolNames: freezeMemorySourceToolNames(
-            withEmployeeCustomizationTools(
-              capabilityBindings(manifest.data).toolNames,
-              grantedCapabilities,
-              instance?.kind,
-            ),
-            grantedCapabilities,
-            modelSnapshot,
-          ),
+          toolNames: boundToolNames,
           ...(managedPython ? { managedPython } : {}),
           ...(managedPdf ? { managedPdf } : {}),
           skillVersionIds,
@@ -1634,6 +1639,7 @@ export async function prepareEmployeeRunBinding(
             }
           : undefined,
       organizationContext,
+      ...documentProjection,
     }),
   };
 }

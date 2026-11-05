@@ -1,3 +1,4 @@
+import { confirmedMemoryHandle } from './employees/employee-documents.ts';
 import type postgres from 'postgres';
 import {
   memoryContextBytes,
@@ -7,6 +8,7 @@ import {
   RunMemoryContextStateSchema,
   type MemoryContextItem,
   type RunMemoryContextState,
+  type ConfirmedMemoryReadPin,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
 import { readContentPrincipal } from './content-maintenance.ts';
@@ -84,10 +86,14 @@ async function save(tx: Tx, runId: string, state: RunMemoryContextState) {
 export async function prepareRunMemoryContext<T extends MemoryContextItem>(
   auth: RunMemoryAuthority,
   items: T[],
+  document?: string,
 ) {
   return withRun(auth, async (tx, raw) => {
     // An upgrade cannot invent a fresh allowance for an already running task.
-    if (raw === null) return [];
+    if (raw === null) {
+      if (document !== undefined) return unavailable();
+      return [];
+    }
     if (
       runtimePolicyDigest(raw) !==
       runtimePolicyDigest({ schemaVersion: 1, pending: true })
@@ -98,16 +104,18 @@ export async function prepareRunMemoryContext<T extends MemoryContextItem>(
       );
       if (
         selected.some((m) => !m) ||
-        runtimePolicyDigest(selected) !== state.initial.digest
+        runtimePolicyDigest(selected) !== state.initial.digest ||
+        (document === undefined ? state.initial.documentDigest !== undefined :
+          runtimePolicyDigest(document) !== state.initial.documentDigest)
       )
         return unavailable();
       return selected as T[];
     }
-    const selected = selectWholeMemories(
-      items,
-      memoryContextPolicy.maximumInitialBytes,
-    );
-    const bytes = initialMemoryContextBytes(selected);
+    const selected = document === undefined ? selectWholeMemories(
+      items, memoryContextPolicy.maximumInitialBytes,
+    ) : items;
+    const bytes = document === undefined ? initialMemoryContextBytes(selected) : Buffer.byteLength(document, 'utf8');
+    if (bytes > memoryContextPolicy.maximumInitialBytes || selected.length > 20) return unavailable();
     await save(tx, auth.scope.runId, {
       schemaVersion: 1,
       meter: 'utf8_bytes',
@@ -116,7 +124,9 @@ export async function prepareRunMemoryContext<T extends MemoryContextItem>(
         ids: selected.map((m) => m.id),
         digest: runtimePolicyDigest(selected),
         bytes,
+        ...(document === undefined ? {} : { documentDigest: runtimePolicyDigest(document) }),
       },
+      ...(document === undefined ? {} : { confirmedPins: selected.map(confirmedMemoryPin) }),
       spentBytes: bytes,
       toolReads: 0,
     });
@@ -129,7 +139,8 @@ export async function prepareRunMemoryContext<T extends MemoryContextItem>(
 export async function readRunMemoryContext<T>(
   auth: RunMemoryAuthority,
   kind: 'memory_search' | 'experience_source',
-  read: (tx: Tx) => Promise<T[]>,
+  read: (tx: Tx, state: RunMemoryContextState) => Promise<T[]>,
+  pinItems?: (items: T[]) => MemoryContextItem[],
 ) {
   return withRun(auth, async (tx, raw) => {
     if (
@@ -145,7 +156,7 @@ export async function readRunMemoryContext<T>(
       remainingBytes < 512
     )
       throw new MemoryContextError('MEMORY_CONTEXT_BUDGET_EXHAUSTED');
-    const candidates = await read(tx);
+    const candidates = await read(tx, state);
     const items: T[] = [];
     const response = () => ({
       kind,
@@ -170,9 +181,27 @@ export async function readRunMemoryContext<T>(
       throw new MemoryContextError('MEMORY_CONTEXT_BUDGET_EXHAUSTED');
     await save(tx, auth.scope.runId, {
       ...state,
+      ...(pinItems ? { confirmedPins: mergeConfirmedMemoryPins(state.confirmedPins ?? [], pinItems(items)) } : {}),
       spentBytes: state.spentBytes + bytes,
       toolReads: state.toolReads + 1,
     });
     return result;
   });
+}
+
+export function confirmedMemoryPin(item: MemoryContextItem): ConfirmedMemoryReadPin {
+  if (!item.revision) return unavailable();
+  return { id: item.id, revision: item.revision, contentDigest: runtimePolicyDigest(item.content),
+    handle: confirmedMemoryHandle(item) };
+}
+function mergeConfirmedMemoryPins(previous: ConfirmedMemoryReadPin[], items: MemoryContextItem[]) {
+  const pins = new Map(previous.map((pin) => [pin.id, pin]));
+  for (const item of items) {
+    const pin = confirmedMemoryPin(item);
+    const frozen = pins.get(item.id);
+    // An explicit read cannot silently replace an already issued version.
+    if (frozen && runtimePolicyDigest(frozen) !== runtimePolicyDigest(pin)) return unavailable();
+    pins.set(item.id, pin);
+  }
+  return [...pins.values()];
 }

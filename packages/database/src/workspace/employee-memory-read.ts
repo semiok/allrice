@@ -61,18 +61,29 @@ export async function searchConfirmedEmployeeMemories(
   scope: ReadScope,
   query: string,
   limit: number,
+  pins: readonly { id: string; revision: number }[] = [],
 ) {
   const { exact, patterns } = memorySearchPatterns(query);
   if (!patterns.length) return [];
   return sql<SearchRow[]>`
-    select m.id,m.organization_id,m.workspace_id,m.owner_id,m.visibility,m.revision,
-      m.content,m.source_type,m.source_id,m.lifecycle_state,m.memory_class,m.trust_level,
-      m.confidence,m.source_label,m.captured_at,m.updated_at,
+    with eligible as (
+      select m.*,p.revision as pinned_revision,r.content as pinned_content
+      from allrice_memories m
+      left join unnest(${pins.map((p) => p.id)}::uuid[],${pins.map((p) => p.revision)}::integer[]) p(id,revision) on p.id=m.id
+      left join allrice_memory_revisions r on r.memory_id=m.id and r.organization_id=m.organization_id
+        and r.workspace_id=m.workspace_id and r.revision=p.revision
+      where ${employeeMemoryReadPredicate(sql, scope)} and (p.id is null or r.memory_id is not null)
+    ), readable as (
+      select id,organization_id,workspace_id,owner_id,visibility,
+        coalesce(pinned_revision,revision) as revision,coalesce(pinned_content,content) as content,
+        source_type,source_id,lifecycle_state,memory_class,trust_level,confidence,source_label,captured_at,updated_at
+      from eligible
+    )
+    select m.*,
       (select count(*)::float / ${patterns.length} from unnest(${patterns}::text[]) term(pattern)
         where m.content ilike term.pattern) as relevance_score
-    from allrice_memories m
-    where ${employeeMemoryReadPredicate(sql, scope)}
-      and m.content ilike any(${patterns}::text[])
+    from readable m
+    where m.content ilike any(${patterns}::text[])
     order by (m.content ilike ${exact}) desc, relevance_score desc, m.updated_at desc, m.id
     limit ${Math.min(Math.max(limit, 1), 20)}
   `;

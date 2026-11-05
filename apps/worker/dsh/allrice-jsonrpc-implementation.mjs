@@ -1,3 +1,4 @@
+import { installEmployeeDocuments } from './allrice-employee-documents.mjs';
 import { installNativeAccounting } from './allrice-native-accounting.mjs';
 import { createRunFinalDelivery } from './allrice-final-delivery.mjs';
 import { readBootstrapCoverage } from './allrice-bootstrap-coverage.mjs';
@@ -1255,7 +1256,13 @@ export async function createAllRiceRuntime(
       }
       if (params.requireRunAdmission && !this.runAdmission)
         this.runAdmission = installRunAdmission(this);
+      if (params.rootSystemInstructions !== undefined) {
+        if (!params.requireRunAdmission || typeof params.rootSystemInstructions !== 'string' || !params.rootSystemInstructions)
+          throw Error('EMPLOYEE_DOCUMENT_ROOT_REQUIRED');
+        this.employeeDocuments = installEmployeeDocuments(this, params.rootSystemInstructions);
+      }
       const forwardedParams = { ...params };
+      delete forwardedParams.rootSystemInstructions;
       const requestedTools = Array.isArray(params?.nativeTools)
         ? params.nativeTools.filter((name) => typeof name === 'string')
         : [];
@@ -2098,6 +2105,9 @@ export async function createAllRiceRuntime(
           return replyNativeQuestion(this, params);
         case 'run/begin': {
           const result = await this.runAdmission.begin(params);
+          if (params.employeeDocuments && !this.employeeDocuments)
+            throw Error('EMPLOYEE_DOCUMENT_PROVIDER_REQUIRED');
+          this.employeeDocuments?.bind(params.sessionId, params.employeeDocuments);
           this.nativeAccounting?.begin(params.sessionId);
           return result;
         }

@@ -14,9 +14,10 @@ export async function readEmployeeOrganizationContext(
 ): Promise<OrganizationContext> {
   const [person] = await db`
     select o.name as company_name,o.business_context,coalesce(p.display_name,u.display_name) as display_name,
-      coalesce(p.job_title,'') as job_title,coalesce(p.responsibilities,'') as responsibilities
+      d.name as department_name,coalesce(p.job_title,'') as job_title,coalesce(p.responsibilities,'') as responsibilities
     from allrice_organizations o join allrice_users u on u.id=${userId}
     left join allrice_organization_people p on p.organization_id=o.id and p.user_id=u.id
+    left join allrice_departments d on d.organization_id=o.id and d.id=p.department_id and d.archived_at is null
     where o.id=${organizationId} and o.archived_at is null`;
   if (!person) throw Error('employee_organization_context_not_found');
   return {
@@ -25,6 +26,7 @@ export async function readEmployeeOrganizationContext(
     companyName: person.company_name,
     businessContext: person.business_context,
     displayName: person.display_name,
+    ...(person.department_name ? { departmentName: person.department_name } : {}),
     jobTitle: person.job_title,
     responsibilities: person.responsibilities,
   };

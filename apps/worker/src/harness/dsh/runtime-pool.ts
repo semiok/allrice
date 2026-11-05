@@ -896,6 +896,11 @@ export class DshRuntimePool {
     ]
       .filter(Boolean)
       .join('\n\n');
+    const rootSystemInstructions = input.input.kernel.rootSystemInstructions
+      ? [input.input.kernel.rootSystemInstructions,
+          mcpCatalogInstructions(input.input.kernel.mcpToolCatalog, deferredMcpSchemas),
+          dshHostCapabilityInstructions(input.input.tools)].filter(Boolean).join('\n\n')
+      : undefined;
     // Store only per-field hashes in memory so diagnostics can name changed
     // configuration without recording its values.
     const questionWait = QuestionWaitSchema.parse(
@@ -974,6 +979,7 @@ export class DshRuntimePool {
           }
         : {}),
       systemInstructions,
+      rootSystemInstructions,
       taskProgress: !!input.input.progress,
       nativeAccounting: !!input.input.nativeAccounting,
       contentGuard: !!input.input.contentGuard,
@@ -1231,6 +1237,7 @@ export class DshRuntimePool {
         expectedVersion:
           nativeIdentity?.version ?? DSH_DISTRIBUTION_CURRENT_VERSION,
         requireRunAdmission: !!input.input.executionEnvironment.ALLRICE_RUN_ID,
+        rootSystemInstructions,
         requireTaskProgress: !!input.input.progress,
         requireNativeAccounting: !!input.input.nativeAccounting,
         requireDurableQuestions: !!input.input.questionWait,
