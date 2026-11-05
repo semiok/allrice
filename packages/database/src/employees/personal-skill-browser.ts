@@ -128,7 +128,7 @@ async function browserOperation(
   validPackage(manifest, packageChecksum, definitionChecksum);
   if (
     definition.checksum !== skillBytesChecksum(definition.content) ||
-    Buffer.byteLength(definition.content) > personalSkillLimits.sourceBytes ||
+    Buffer.byteLength(definition.content) > personalSkillLimits.bodyBytes ||
     Buffer.byteLength(input.originalText) > personalSkillLimits.sourceBytes ||
     (source.kind === 'attachment' &&
       source.objectId !== manifest.archiveObjectId)

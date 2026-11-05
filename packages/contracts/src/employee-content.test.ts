@@ -171,6 +171,63 @@ describe('employee content input boundaries', () => {
         false,
       );
   });
+  it('L1: expands only exact personal packages, preserving shared and ordinary-text budgets', () => {
+    const base = input();
+    const body = '字'.repeat(87381) + 'x';
+    const hash = 'sha256:' + 'a'.repeat(64);
+    const edit = {
+      kind: 'procedure',
+      title: 'Maximum package',
+      body,
+      contentId: randomUUID(),
+      revisionId: randomUUID(),
+      expectedRevision: 0,
+      skillPackage: {
+        bundle: {
+          schemaVersion: 1,
+          version: '1',
+          contentChecksum: hash,
+          checksum: hash,
+          sourceRef: 'https://example.test/skill',
+          license: 'test',
+          reviewedBy: 'author',
+          resources: [],
+          dependencies: [],
+        },
+        resourceSources: [],
+      },
+    };
+    const value = {
+      ...base,
+      textEdits: [edit],
+      manifest: {
+        ...base.manifest,
+        common: [{ sourceKind: 'draft_text', contentId: edit.contentId }],
+      },
+    };
+    expect(EmployeeContentMutationSchema.safeParse(value).success).toBe(true);
+    expect(
+      EmployeeContentMutationSchema.safeParse({
+        ...value,
+        textEdits: [{ ...edit, body: body + 'x' }],
+      }).success,
+    ).toBe(false);
+    expect(
+      EmployeeContentMutationSchema.safeParse({
+        ...value,
+        ownership: {
+          scope: 'company',
+          organizationId: base.ownership.organizationId,
+        },
+        target: { kind: 'employee', employeeId: randomUUID() },
+      }).success,
+    ).toBe(false);
+    const { skillPackage: _package, ...plain } = edit;
+    expect(
+      EmployeeContentMutationSchema.safeParse({ ...value, textEdits: [plain] })
+        .success,
+    ).toBe(false);
+  });
   it('bounds total references and UTF-8 text without silently truncating requirements', () => {
     const base = input(),
       id = randomUUID(),

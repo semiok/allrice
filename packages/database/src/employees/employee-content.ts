@@ -457,8 +457,16 @@ async function assemble(
   if (
     scenes.length > employeeContentLimits.scenes ||
     sources.size > employeeContentLimits.references ||
-    resolved.reduce((n, s) => n + Buffer.byteLength(s.dto.body ?? ''), 0) >
-      employeeContentLimits.textBytes
+    resolved.reduce(
+      (n, s) =>
+        n +
+        Buffer.byteLength(s.dto.body ?? '') -
+        (ownership.scope === 'personal' ? (s.personalPackageBytes ?? 0) : 0),
+      0,
+    ) > employeeContentLimits.textBytes ||
+    (ownership.scope === 'personal' &&
+      resolved.reduce((n, s) => n + (s.personalPackageBytes ?? 0), 0) >
+        employeeContentLimits.personalSceneBodyBytes)
   )
     issues.push({
       code: 'content_budget_exceeded',
