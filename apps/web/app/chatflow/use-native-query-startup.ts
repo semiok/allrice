@@ -5,7 +5,7 @@ import type { History, Workspace } from './chatflow-types';
 import { createSessionRunStream } from './session-run-stream';
 import { nativeSubagentReadyKey } from './use-native-subagents';
 
-type Entry = { runId: string | null; pending: boolean };
+type Entry = { runId: string | null; pending: boolean; admission?: string };
 
 /** Keep only a known first binding's read gate alive after leaving its Session. */
 export function useNativeQueryStartup(
@@ -116,11 +116,25 @@ export function useNativeQueryStartup(
         .filter(([, entry]) => entry.pending)
         .map(([id]) => id),
     ),
-    admitted(sessionId: string, runId: string | null) {
+    beginAdmission(sessionId: string, admission: string) {
+      setState((current) =>
+        current.scope === scope && current.entries[sessionId]?.runId === null
+          ? {
+              ...current,
+              entries: {
+                ...current.entries,
+                [sessionId]: { runId: null, pending: true, admission },
+              },
+            }
+          : current,
+      );
+    },
+    admitted(sessionId: string, runId: string | null, admission: string) {
       // A late POST receipt may update this read-only observer, never the
       // departed selection's transcript, draft, attachments or execution.
       setState((current) =>
         current.scope === scope &&
+        current.entries[sessionId]?.admission === admission &&
         current.entries[sessionId]?.pending &&
         current.entries[sessionId]?.runId === null
           ? {

@@ -836,6 +836,7 @@ export function ChatFlowClient({
     const draftCompanyReferences = [...companyReferences];
     let clientMessageId = crypto.randomUUID();
     let nativeAdmissionSessionId: string | null = null;
+    const nativeAdmission = crypto.randomUUID();
     const optimisticUserId = `optimistic-user:${clientMessageId}`;
     const optimisticAssistantId = `optimistic-assistant:${clientMessageId}`;
     followTranscript.current = true;
@@ -932,6 +933,7 @@ export function ChatFlowClient({
       clientMessageId = retry.id;
       setSubmission({ ...echo, sessionId, preparing: false });
       nativeAdmissionSessionId = sessionId;
+      beginNativeAdmission(sessionId, nativeAdmission);
       const result = await readJson<unknown>(
         await fetch(
           `/api/v1/sessions/${sessionId}/messages?workspaceId=${workspace.workspaceId}`,
@@ -949,7 +951,7 @@ export function ChatFlowClient({
       // unreadable answer must not create a second task.
       if (!isSendReceipt(result)) throw new Error('结果待确认，请刷新页面查看');
       retry.confirmed();
-      recordNativeAdmission(sessionId, result.run.id);
+      recordNativeAdmission(sessionId, result.run.id, nativeAdmission);
       if (!action.current()) return;
       const retainedPreviews = imageCache.handoff(
         `${settingsScope}/${sessionId}`,
@@ -1017,7 +1019,7 @@ export function ChatFlowClient({
       void interactions.reload();
     } catch (cause) {
       if (nativeAdmissionSessionId)
-        recordNativeAdmission(nativeAdmissionSessionId, null);
+        recordNativeAdmission(nativeAdmissionSessionId, null, nativeAdmission);
       if (!action.current()) return;
       setSubmission(null);
       setDraft(text);
@@ -1334,14 +1336,17 @@ export function ChatFlowClient({
           message.runId &&
           message.status !== 'pending',
       ));
-  const { pending: pendingNativeSessions, admitted: recordNativeAdmission } =
-    useNativeQueryStartup(
-      workspace,
-      tenantHeaders,
-      activeId,
-      history,
-      nativeReadyKey,
-    );
+  const {
+    pending: pendingNativeSessions,
+    admitted: recordNativeAdmission,
+    beginAdmission: beginNativeAdmission,
+  } = useNativeQueryStartup(
+    workspace,
+    tenantHeaders,
+    activeId,
+    history,
+    nativeReadyKey,
+  );
   // The active header includes durable children; background rows stay live-only.
   const nativeObservation = useNativeSubagents(
     workspace?.workspaceId ?? '',
