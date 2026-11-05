@@ -73,8 +73,8 @@
   display: grid;
   flex: none;
   place-items: center;
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   padding: 0;
   border: 0;
   border-radius: 8px;
@@ -282,6 +282,7 @@
   background: var(--ar-surface-subtle);
 }
 .delivery > div {
+  flex: 1;
   min-width: 0;
 }
 .link {
@@ -295,6 +296,12 @@
   font-weight: 500;
   white-space: nowrap;
   cursor: pointer;
+}
+.link.deliveryLink {
+  flex: none;
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 500;
 }
 .dangerZone {
   border-top: 1px solid var(--ar-border-subtle);
@@ -572,7 +579,7 @@
   }
   .detailHeader {
     display: grid;
-    grid-template-columns: 32px minmax(0, 1fr);
+    grid-template-columns: 40px minmax(0, 1fr);
     padding: 12px 20px;
     gap: 4px 8px;
   }
@@ -600,9 +607,18 @@
     min-height: 72px;
   }
   .delivery {
-    align-items: flex-start;
-    flex-direction: column;
     padding: 16px;
+  }
+  .link.deliveryLink {
+    min-height: 32px;
+  }
+  .input {
+    font-size: 16px;
+    line-height: 24px;
+  }
+  .iconButton {
+    width: 40px;
+    height: 40px;
   }
   .dangerZone .link {
     min-height: 36px;
@@ -643,5 +659,11 @@
   }
   .confirmation .footer > button {
     flex: 1;
+  }
+}
+@media (pointer: coarse) {
+  .iconButton {
+    min-width: 40px;
+    min-height: 40px;
   }
 }

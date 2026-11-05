@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   ApiErrorSchema,
+  UuidSchema,
   InteractionStatusSchema,
   TaskNextStepsSchema,
   defaultUserPreferences,
@@ -203,13 +204,14 @@ suite('U1 mounted employee Workflow host', () => {
       frozen?: boolean;
       session?: boolean;
       disabled?: boolean;
+      coarse?: boolean;
     } = {},
   ) {
     const width = options.width ?? 1440;
     const page = await browser.newPage({
       viewport: { width, height: 950 },
       isMobile: width < 600,
-      hasTouch: width < 600,
+      hasTouch: options.coarse ?? width < 600,
       colorScheme: options.dark ? 'dark' : 'light',
       reducedMotion: 'reduce',
     });
@@ -219,7 +221,7 @@ suite('U1 mounted employee Workflow host', () => {
       appearance: options.dark ? ('dark' as const) : ('light' as const),
     };
     const collections = new Map(
-      [7, 17].map((n) => [
+      [7, 17, 107, 117].map((n) => [
         id(n),
         {
           revision: 1,
@@ -232,6 +234,10 @@ suite('U1 mounted employee Workflow host', () => {
     const removeReceipts = new Map<string, PersonalSceneRemoveReceipt>();
     const state = {
       reads: [] as string[],
+      requests: [] as Array<{ path: string; method: string; input: unknown }>,
+      scope: { workspaceId: id(4), viewerId: id(5), offset: 0 },
+      workspaceGate: null as Promise<void> | null,
+      workspaceReplies: [] as string[],
       unexpected: [] as string[],
       errors: [] as string[],
       writes: [] as Array<{ path: string; method: string; input: unknown }>,
@@ -253,24 +259,31 @@ suite('U1 mounted employee Workflow host', () => {
       confirmReceipts,
       removeReceipts,
     };
+    function employeeScope(instanceId: string) {
+      return [id(7), id(17)].includes(instanceId)
+        ? { workspaceId: id(4), viewerId: id(5) }
+        : { workspaceId: id(104), viewerId: id(105) };
+    }
     function details(instanceId: string) {
+      const rice = [id(7), id(107)].includes(instanceId);
+      const offset = [id(107), id(117)].includes(instanceId) ? 100 : 0;
       const data = employeeDetailsFixture();
       data.profile.instanceId = instanceId;
       data.content.instanceId = instanceId;
       data.profile.name = options.frozen
         ? '配发员工'
-        : instanceId === id(7)
+        : rice
           ? 'Rice'
           : '流程哥';
-      data.profile.kind =
-        options.frozen || instanceId === id(7) ? 'general' : 'custom';
-      data.profile.source.employeeVersionId =
-        instanceId === id(7) ? id(8) : id(18);
+      data.profile.kind = options.frozen || rice ? 'general' : 'custom';
+      data.profile.source.employeeVersionId = rice
+        ? id(8 + offset)
+        : id(18 + offset);
       data.profile.editableFields = options.frozen
         ? ['expressionStyle']
         : ['name', 'appearance', 'mission', 'workStyle', 'expressionStyle'];
-      data.profile.isDefaultRice = !options.frozen && instanceId === id(7);
-      data.content.employeeId = instanceId === id(7) ? id(9) : id(19);
+      data.profile.isDefaultRice = !options.frozen && rice;
+      data.content.employeeId = rice ? id(9 + offset) : id(19 + offset);
       return data;
     }
     function instance(instanceId: string) {
@@ -279,8 +292,8 @@ suite('U1 mounted employee Workflow host', () => {
         id: instanceId,
         assignmentId: instanceId,
         organizationId: id(3),
-        workspaceId: id(4),
-        ownerId: id(5),
+        workspaceId: employeeScope(instanceId).workspaceId,
+        ownerId: employeeScope(instanceId).viewerId,
         kind: profile.kind,
         revision: profile.revision,
         profile: { name: profile.name },
@@ -351,55 +364,59 @@ suite('U1 mounted employee Workflow host', () => {
     function workspace(): Workspace {
       return {
         organizationId: id(3),
-        workspaceId: id(4),
-        viewerId: id(5),
+        workspaceId: state.scope.workspaceId,
+        viewerId: state.scope.viewerId,
         preferences,
         canAdminister: false,
         sessions: options.session ? [existing] : [],
         sessionModels: [],
-        employees: [7, 17].map((n) => ({
-          id: id(n),
-          instanceId: id(n),
-          employeeId: id(n + 2),
-          employeeKey:
-            n === 7 && !options.frozen
-              ? 'default-assistant'
-              : 'synthetic-professional',
-          isDefault: n === 7,
-          instances: [instance(id(n))],
-          versions: [],
-          currentVersion: {
-            id: id(n + 1),
-            manifest: {
-              name: details(id(n)).profile.name,
-              schemaVersion: 2,
-              key:
-                n === 7 && !options.frozen
-                  ? 'default-assistant'
-                  : 'synthetic-professional',
-              isDefaultRice: n === 7 && !options.frozen,
-              runtimePolicy: { harness: 'dsh', provider: 'codex' },
-            },
-          },
-        })),
-        employeeProfiles: [7, 17].map((n) => {
-          const profile = details(id(n)).profile;
-          return {
-            assignmentId: id(n),
+        employees: [7 + state.scope.offset, 17 + state.scope.offset].map(
+          (n) => ({
+            id: id(n),
+            instanceId: id(n),
             employeeId: id(n + 2),
-            name: profile.name,
-            description: profile.description,
-            appearance: profile.appearance,
-            identity: profile.identity,
-            skills: [],
-            model: {
-              harness: 'dsh',
-              provider: 'codex',
-              model: 'gpt-6.1-sol',
-              reasoningEffort: 'max',
+            employeeKey:
+              n % 100 === 7 && !options.frozen
+                ? 'default-assistant'
+                : 'synthetic-professional',
+            isDefault: n % 100 === 7,
+            instances: [instance(id(n))],
+            versions: [],
+            currentVersion: {
+              id: id(n + 1),
+              manifest: {
+                name: details(id(n)).profile.name,
+                schemaVersion: 2,
+                key:
+                  n % 100 === 7 && !options.frozen
+                    ? 'default-assistant'
+                    : 'synthetic-professional',
+                isDefaultRice: n % 100 === 7 && !options.frozen,
+                runtimePolicy: { harness: 'dsh', provider: 'codex' },
+              },
             },
-          };
-        }),
+          }),
+        ),
+        employeeProfiles: [7 + state.scope.offset, 17 + state.scope.offset].map(
+          (n) => {
+            const profile = details(id(n)).profile;
+            return {
+              assignmentId: id(n),
+              employeeId: id(n + 2),
+              name: profile.name,
+              description: profile.description,
+              appearance: profile.appearance,
+              identity: profile.identity,
+              skills: [],
+              model: {
+                harness: 'dsh',
+                provider: 'codex',
+                model: 'gpt-6.1-sol',
+                reasoningEffort: 'max',
+              },
+            };
+          },
+        ),
       };
     }
     page.on('pageerror', (error) => state.errors.push(error.message));
@@ -409,24 +426,59 @@ suite('U1 mounted employee Workflow host', () => {
         path = url.pathname;
       const method = request.method();
       if (method === 'GET') state.reads.push(path);
+      let attemptedInput: unknown = request.postData();
+      if (request.headers()['content-type']?.includes('application/json'))
+        attemptedInput = request.postDataJSON();
+      const attempt = { path, method, input: attemptedInput };
+      state.requests.push(attempt);
+      if (
+        method !== 'GET' &&
+        !(method === 'POST' && path.endsWith('/scene-skills/preview'))
+      )
+        state.writes.push(attempt);
       const match = path.match(
         /^\/api\/v1\/employee-instances\/([^/]+)(?:\/(.*))?$/,
       );
       if (match) {
         const target = match[1]!,
           resource = match[2] ?? '';
-        expect([id(7), id(17)]).toContain(target);
+        expect([id(7), id(17), id(107), id(117)]).toContain(target);
+        const supported =
+          (method === 'GET' &&
+            ['', 'content', 'scene-skills'].includes(resource)) ||
+          (method === 'POST' &&
+            ['scene-skills/preview', 'scene-skills/confirm'].includes(
+              resource,
+            )) ||
+          (method === 'DELETE' &&
+            resource.startsWith('scene-skills/') &&
+            UuidSchema.safeParse(resource.slice('scene-skills/'.length))
+              .success);
+        if (!supported) {
+          state.unexpected.push(`${method} ${path}`);
+          return route.fulfill(problem(405, 'VALIDATION_FAILED'));
+        }
+        const targetScope = employeeScope(target);
+        if (
+          request.headers()['x-allrice-workspace-id'] !==
+            targetScope.workspaceId ||
+          (method === 'GET' &&
+            url.searchParams.get('workspaceId') !== targetScope.workspaceId) ||
+          targetScope.viewerId !== state.scope.viewerId
+        )
+          return route.fulfill(problem(403, 'AUTHORIZATION_DENIED'));
         if (state.deny)
           return route.fulfill(
             problem(403, 'AUTHORIZATION_DENIED', 'Access denied'),
           );
-        if (resource === 'content') return route.fulfill(json(details(target)));
-        if (!resource)
+        if (resource === 'content' && method === 'GET')
+          return route.fulfill(json(details(target)));
+        if (!resource && method === 'GET')
           return route.fulfill(json({ instance: instance(target) }));
         const collection = collections.get(target)!;
         if (resource === 'scene-skills' && method === 'GET') {
-          if (state.failDirectory) return route.fulfill(problem());
           const selected = url.searchParams.get('sceneId');
+          if (state.failDirectory && !selected) return route.fulfill(problem());
           const value = selected
             ? collection.skills.find((item) => item.sceneId === selected)
             : undefined;
@@ -493,8 +545,8 @@ suite('U1 mounted employee Workflow host', () => {
             expect(await upload.text()).toBe('synthetic ZIP bytes');
           } else raw = request.postDataJSON();
           const input = PersonalScenePreviewRequestSchema.parse(raw);
-          state.writes.push({ path, method, input });
-          expect(input.workspaceId).toBe(id(4));
+          attempt.input = input;
+          expect(input.workspaceId).toBe(targetScope.workspaceId);
           if (state.previewReason) {
             const response = problem(
               state.previewReason === 'name_mismatch' ||
@@ -577,10 +629,10 @@ suite('U1 mounted employee Workflow host', () => {
           const input = PersonalSceneConfirmRequestSchema.parse(
             request.postDataJSON(),
           );
-          state.writes.push({ path, method, input });
+          attempt.input = input;
           const preview = previews.get(input.previewId)!;
           expect(preview).toBeDefined();
-          expect(input.workspaceId).toBe(id(4));
+          expect(input.workspaceId).toBe(targetScope.workspaceId);
           expect(input.digest).toBe(preview.digest);
           if (state.writeGate) await state.writeGate;
           if (state.failConfirm)
@@ -644,7 +696,8 @@ suite('U1 mounted employee Workflow host', () => {
           const input = PersonalSceneRemoveRequestSchema.parse(
             request.postDataJSON(),
           );
-          state.writes.push({ path, method, input });
+          attempt.input = input;
+          expect(input.workspaceId).toBe(targetScope.workspaceId);
           let receipt = removeReceipts.get(input.requestId);
           if (state.writeGate) await state.writeGate;
           if (!receipt) {
@@ -679,13 +732,21 @@ suite('U1 mounted employee Workflow host', () => {
       }
       if (path === '/api/v1/memories/manage' && method === 'GET') {
         const target = url.searchParams.get('instanceId');
-        expect([id(7), id(17)]).toContain(target);
+        expect([id(7), id(17), id(107), id(117)]).toContain(target);
+        const targetScope = employeeScope(target!);
+        if (
+          url.searchParams.get('workspaceId') !== targetScope.workspaceId ||
+          request.headers()['x-allrice-workspace-id'] !==
+            targetScope.workspaceId ||
+          state.scope.viewerId !== targetScope.viewerId
+        )
+          return route.fulfill(problem(403, 'AUTHORIZATION_DENIED'));
         return route.fulfill(
           json(
             EmployeeMemoryPageSchema.parse({
               organizationId: id(3),
-              workspaceId: id(4),
-              ownerId: id(5),
+              workspaceId: employeeScope(target!).workspaceId,
+              ownerId: employeeScope(target!).viewerId,
               instanceId: target,
               state: url.searchParams.get('state'),
               total: 0,
@@ -704,9 +765,15 @@ suite('U1 mounted employee Workflow host', () => {
           ),
         );
       }
-      if (path === '/api/v1/workspace')
-        return route.fulfill(json({ workspace: workspace() }));
-      if (path === '/api/v1/saas/capabilities')
+      if (path === '/api/v1/workspace' && method === 'GET') {
+        if (state.workspaceGate) await state.workspaceGate;
+        const current = workspace();
+        state.workspaceReplies.push(
+          `${current.workspaceId}/${current.viewerId}`,
+        );
+        return route.fulfill(json({ workspace: current }));
+      }
+      if (path === '/api/v1/saas/capabilities' && method === 'GET')
         return route.fulfill(
           json({
             capabilities: {
@@ -718,26 +785,28 @@ suite('U1 mounted employee Workflow host', () => {
             },
           }),
         );
-      if (path === '/api/v1/me/preferences')
-        return route.fulfill(json({ viewerId: id(5), preferences }));
-      if (path === '/api/v1/me/work-automation')
+      if (path === '/api/v1/me/preferences' && method === 'GET')
+        return route.fulfill(
+          json({ viewerId: state.scope.viewerId, preferences }),
+        );
+      if (path === '/api/v1/me/work-automation' && method === 'GET')
         return route.fulfill(
           json({
-            workspaceId: id(4),
+            workspaceId: state.scope.workspaceId,
             revision: 0,
             settings: defaultWorkAutomation,
             editable: true,
           }),
         );
-      if (path === '/api/v1/bridge/devices')
+      if (path === '/api/v1/bridge/devices' && method === 'GET')
         return route.fulfill(json({ devices: [] }));
-      if (path === '/api/v1/connections')
+      if (path === '/api/v1/connections' && method === 'GET')
         return route.fulfill(json({ connections: [] }));
-      if (path === '/api/v1/workspace/monthly-quota')
+      if (path === '/api/v1/workspace/monthly-quota' && method === 'GET')
         return route.fulfill(problem(404, 'RESOURCE_NOT_FOUND'));
-      if (path === '/api/v1/workbench/updates')
+      if (path === '/api/v1/workbench/updates' && method === 'GET')
         return route.fulfill(json({ fileIds: [], experienceIds: [] }));
-      if (path === '/api/v1/workbench/files')
+      if (path === '/api/v1/workbench/files' && method === 'GET')
         return route.fulfill(
           json({
             files: [],
@@ -815,8 +884,6 @@ suite('U1 mounted employee Workflow host', () => {
         );
       if (path.endsWith('/subagents') && method === 'GET')
         return route.fulfill(problem(404, 'RESOURCE_NOT_FOUND'));
-      if (method !== 'GET')
-        state.writes.push({ path, method, input: request.postData() });
       state.unexpected.push(`${method} ${path}`);
       return route.fulfill(problem(404, 'RESOURCE_NOT_FOUND'));
     });
@@ -948,6 +1015,22 @@ suite('U1 mounted employee Workflow host', () => {
       .fill('https://github.com/example/weekly-brief');
     await form.getByRole('button', { name: '读取', exact: true }).click();
   }
+  async function chooseZip(
+    f: Fixture,
+    form: Locator,
+    name: string,
+    action: '选择文件' | '重新选择' = '选择文件',
+  ) {
+    const chooser = f.page.waitForEvent('filechooser');
+    await form.getByRole('button', { name: action, exact: true }).click();
+    await (
+      await chooser
+    ).setFiles({
+      name,
+      mimeType: 'application/zip',
+      buffer: Buffer.from('synthetic ZIP bytes'),
+    });
+  }
   function confirmation(f: Fixture, update = false) {
     return f.page.getByRole('dialog', {
       name: update ? '确认更新' : '确认安装',
@@ -955,7 +1038,9 @@ suite('U1 mounted employee Workflow host', () => {
     });
   }
   const previewWrites = (f: Fixture) =>
-    f.state.writes.filter((item) => item.path.endsWith('/preview'));
+    f.state.requests.filter(
+      (item) => item.method === 'POST' && item.path.endsWith('/preview'),
+    );
   const confirmWrites = (f: Fixture) =>
     f.state.writes.filter((item) => item.path.endsWith('/confirm'));
   async function deleteConfirmation(f: Fixture, detail: Locator) {
@@ -984,6 +1069,11 @@ suite('U1 mounted employee Workflow host', () => {
               .count(),
           ).toBe(0);
           expect(await root.locator('footer').count()).toBe(0);
+          const closeBox = await root
+            .getByRole('button', { name: '关闭工作场景', exact: true })
+            .boundingBox();
+          expect(closeBox?.width).toBe(width < 700 ? 40 : 36);
+          expect(closeBox?.height).toBe(width < 700 ? 40 : 36);
           await root.getByRole('button', { name: /写周报/ }).click();
           const detail = f.page.getByRole('dialog', {
             name: '写周报',
@@ -999,6 +1089,11 @@ suite('U1 mounted employee Workflow host', () => {
               .count(),
           ).toBe(0);
           expect(await detail.locator('footer').count()).toBe(0);
+          const backBox = await detail
+            .getByRole('button', { name: '返回工作场景列表', exact: true })
+            .boundingBox();
+          expect(backBox?.width).toBe(width < 700 ? 40 : 36);
+          expect(backBox?.height).toBe(width < 700 ? 40 : 36);
           const measure = async () =>
             detail.evaluate((node) => {
               const rect = node.getBoundingClientRect(),
@@ -1432,13 +1527,7 @@ suite('U1 mounted employee Workflow host', () => {
       ).toBe(true);
       const delayed = gate();
       f.state.previewGate = delayed.promise;
-      await form
-        .getByLabel('选择 Workflow 压缩包', { exact: true })
-        .setInputFiles({
-          name: 'weekly-brief.zip',
-          mimeType: 'application/zip',
-          buffer: Buffer.from('synthetic ZIP bytes'),
-        });
+      await chooseZip(f, form, 'weekly-brief.zip', '选择文件');
       await expect.poll(() => previewWrites(f).length).toBe(1);
       expect(
         PersonalScenePreviewRequestSchema.parse(previewWrites(f)[0]!.input)
@@ -1451,13 +1540,7 @@ suite('U1 mounted employee Workflow host', () => {
       expect(confirmWrites(f)).toHaveLength(0);
       f.state.previewGate = null;
       await form.getByRole('tab', { name: '压缩包', exact: true }).click();
-      await form
-        .getByLabel('选择 Workflow 压缩包', { exact: true })
-        .setInputFiles({
-          name: 'fresh.zip',
-          mimeType: 'application/zip',
-          buffer: Buffer.from('synthetic ZIP bytes'),
-        });
+      await chooseZip(f, form, 'fresh.zip', '重新选择');
       const confirm = confirmation(f);
       await confirm.waitFor();
       await contains(confirm, 'fresh.zip');
@@ -1543,7 +1626,7 @@ suite('U1 mounted employee Workflow host', () => {
       await contains(form.getByRole('alert'), message);
       expect(await form.getByRole('alert').locator('img').count()).toBe(0);
       f.state.previewReason = 'version_conflict';
-      await form.getByRole('button', { name: '读取', exact: true }).click();
+      await form.getByRole('button', { name: '重试', exact: true }).click();
       await contains(
         form.getByRole('alert'),
         '内容或请求已有变化。请重新预览当前目标，再核对差异。',
@@ -1587,13 +1670,7 @@ suite('U1 mounted employee Workflow host', () => {
         const form = await f.sourceForm();
         if (entry.zip) {
           await form.getByRole('tab', { name: '压缩包', exact: true }).click();
-          await form
-            .getByLabel('选择 Workflow 压缩包', { exact: true })
-            .setInputFiles({
-              name: 'invalid.zip',
-              mimeType: 'application/zip',
-              buffer: Buffer.from('synthetic ZIP bytes'),
-            });
+          await chooseZip(f, form, 'weekly-brief.zip');
         } else await readGithub(form);
         await contains(form.getByRole('alert'), entry.copy);
         expect(
@@ -1895,7 +1972,11 @@ suite('U1 mounted employee Workflow host', () => {
         exact: true,
       });
       await form.waitFor();
-      await form.getByRole('button', { name: '读取', exact: true }).click();
+      expect(
+        await form
+          .getByRole('button', { name: '读取', exact: true })
+          .isDisabled(),
+      ).toBe(true);
       expect(previewWrites(f)).toHaveLength(1);
       await form.getByRole('button', { name: '取消', exact: true }).click();
       await f
@@ -1951,7 +2032,11 @@ suite('U1 mounted employee Workflow host', () => {
         exact: true,
       });
       await form.waitFor();
-      await form.getByRole('button', { name: '读取', exact: true }).click();
+      expect(
+        await form
+          .getByRole('button', { name: '读取', exact: true })
+          .isDisabled(),
+      ).toBe(true);
       expect(previewWrites(f)).toHaveLength(1);
       await form.getByRole('button', { name: '取消', exact: true }).click();
       expect(
@@ -1991,7 +2076,7 @@ suite('U1 mounted employee Workflow host', () => {
       expect(
         await root.getByText('安装工作场景', { exact: true }).count(),
       ).toBe(0);
-      expect(confirmWrites(f)).toHaveLength(1);
+      expect(confirmWrites(f)).toHaveLength(2);
       await root
         .getByRole('button', { name: '关闭工作场景', exact: true })
         .click();
@@ -2003,10 +2088,398 @@ suite('U1 mounted employee Workflow host', () => {
           .getByRole('button', { name: '新建场景', exact: true })
           .isDisabled(),
       ).toBe(true);
-      expect(confirmWrites(f)).toHaveLength(1);
+      expect(confirmWrites(f)).toHaveLength(2);
       expect(confirmWrites(f)[0]!.input).toEqual(original);
+      expect(confirmWrites(f)[1]!.input).toEqual(original);
       expect(previewWrites(f)).toHaveLength(1);
       expect(f.state.confirmReceipts.size).toBe(1);
     });
   });
+
+  it('ZIP failure can reselect the same real file and confirmation can return to a visible reread action', async () => {
+    await inFixture({}, async (f) => {
+      const form = await f.sourceForm();
+      await form.getByRole('tab', { name: '压缩包', exact: true }).click();
+      f.state.previewReason = 'skill_missing';
+      await chooseZip(f, form, 'weekly-brief.zip');
+      await contains(
+        form.getByRole('alert'),
+        '没找到 SKILL.md。请确认它在压缩包根目录，不要多包一层文件夹。',
+      );
+      expect(
+        await form
+          .getByRole('button', { name: '重新选择', exact: true })
+          .isVisible(),
+      ).toBe(true);
+      expect(
+        await form
+          .getByRole('button', { name: '重试', exact: true })
+          .isEnabled(),
+      ).toBe(true);
+      f.state.previewReason = undefined;
+      await chooseZip(f, form, 'weekly-brief.zip', '重新选择');
+      const confirm = confirmation(f);
+      await confirm.waitFor();
+      await contains(confirm, 'weekly-brief.zip');
+      await confirm
+        .getByRole('button', { name: '返回上一层', exact: true })
+        .click();
+      await form.getByRole('button', { name: '读取', exact: true }).click();
+      await confirm.waitFor();
+      expect(previewWrites(f)).toHaveLength(3);
+      expect(
+        previewWrites(f).map(
+          (request) =>
+            PersonalScenePreviewRequestSchema.parse(request.input).source,
+        ),
+      ).toEqual(Array(3).fill({ kind: 'zip', fileName: 'weekly-brief.zip' }));
+      expect(f.state.writes).toEqual([]);
+    });
+  });
+
+  for (const origin of ['top', 'employee'] as const)
+    for (const operation of ['install', 'update'] as const)
+      for (const exit of ['arrow', 'Escape', 'backdrop'] as const)
+        it(`success ${origin} ${operation} ${exit} returns to the exact parent during ${exit === 'backdrop' ? 'failed' : 'pending'} catalog refresh`, async () => {
+          await inFixture({}, async (f) => {
+            let form: Locator;
+            if (origin === 'employee') {
+              const employee = await f.openEmployeeDetails('流程哥');
+              if (operation === 'update') {
+                await employee.getByRole('button', { name: /写周报/ }).click();
+                const detail = f.page.getByRole('dialog', {
+                  name: '写周报',
+                  exact: true,
+                });
+                await detail
+                  .getByRole('heading', { name: '什么时候用', exact: true })
+                  .waitFor();
+                await detail
+                  .getByRole('button', { name: '更新', exact: true })
+                  .click();
+              } else
+                await employee
+                  .getByRole('button', { name: '新建场景', exact: true })
+                  .click();
+              form = f.page.getByRole('dialog', {
+                name: operation === 'update' ? '更新“写周报”' : '新建工作场景',
+                exact: true,
+              });
+              await form
+                .getByRole('heading', { name: '文件要求', exact: true })
+                .waitFor();
+            } else form = await f.sourceForm(operation === 'update');
+            await readGithub(form);
+            const confirm = confirmation(f, operation === 'update');
+            await confirm.waitFor();
+            const refresh = gate();
+            try {
+              if (exit === 'backdrop') f.state.failDirectory = true;
+              else f.state.directoryGate = refresh.promise;
+              await confirm
+                .getByRole('button', {
+                  name: operation === 'update' ? '确认更新' : '确认安装',
+                  exact: true,
+                })
+                .click();
+              const success = f.page.getByRole('dialog', {
+                name: operation === 'update' ? '更新完成' : '安装完成',
+                exact: true,
+              });
+              await success.waitFor();
+              if (exit === 'arrow')
+                await success
+                  .getByRole('button', { name: '返回上一层', exact: true })
+                  .click();
+              else if (exit === 'Escape') await f.page.keyboard.press('Escape');
+              else {
+                expect(
+                  await f.page.evaluate(() =>
+                    Boolean(
+                      document
+                        .elementFromPoint(1, 1)
+                        ?.closest('[role="dialog"]'),
+                    ),
+                  ),
+                ).toBe(false);
+                await f.page.mouse.click(1, 1);
+              }
+              const parent =
+                operation === 'update'
+                  ? f.page.getByRole('dialog', { name: '写周报', exact: true })
+                  : origin === 'employee'
+                    ? f.page.getByRole('dialog', {
+                        name: '流程哥员工详情',
+                        exact: true,
+                      })
+                    : f.directory();
+              await parent.waitFor();
+              if (operation === 'update') {
+                await parent
+                  .getByRole('heading', { name: '什么时候用', exact: true })
+                  .waitFor();
+                await contains(parent, '1.3.0');
+              } else if (origin === 'employee')
+                await parent
+                  .getByRole('region', { name: '基础与人设', exact: true })
+                  .waitFor();
+              await expect
+                .poll(() =>
+                  parent.evaluate((node) =>
+                    node.contains(document.activeElement),
+                  ),
+                )
+                .toBe(true);
+              expect(
+                await confirmation(f, operation === 'update').count(),
+              ).toBe(0);
+              expect(confirmWrites(f)).toHaveLength(1);
+              expect(confirmWrites(f)[0]!.path).toContain(
+                origin === 'employee' ? id(17) : id(7),
+              );
+              refresh.release();
+              expect(await parent.isVisible()).toBe(true);
+            } finally {
+              refresh.release();
+            }
+          });
+        });
+
+  it.each([1440, 390])(
+    'long delivery stays left of its right centered link with approved independent typography at %ipx',
+    async (width) => {
+      await inFixture({ width }, async (f) => {
+        const collection = f.state.collections.get(id(7))!;
+        collection.skills[0] = PersonalSceneSkillSchema.parse({
+          ...collection.skills[0],
+          deliverablesMarkdown:
+            '一份周报草稿：已知事实、待确认事项、对应来源和下一步计划。'.repeat(
+              12,
+            ),
+        });
+        const detail = await f.openDetail();
+        const card = detail.locator('section').filter({
+          has: f.page.getByRole('heading', { name: '交付内容', exact: true }),
+        });
+        const link = card.getByRole('button', { name: /^查看交付结果/ });
+        await link.scrollIntoViewIfNeeded();
+        const geometry = await link.evaluate((node) => {
+          const card = node.parentElement!,
+            copy = card.querySelector(':scope > div')!;
+          const left = copy.getBoundingClientRect(),
+            right = node.getBoundingClientRect(),
+            css = getComputedStyle(node);
+          return {
+            left: {
+              x: left.x,
+              right: left.right,
+              y: left.y,
+              height: left.height,
+            },
+            right: {
+              x: right.x,
+              y: right.y,
+              height: right.height,
+              bottom: right.bottom,
+            },
+            font: css.fontSize,
+            line: css.lineHeight,
+            weight: css.fontWeight,
+            direction: getComputedStyle(card).flexDirection,
+          };
+        });
+        expect(geometry.direction).toBe('row');
+        expect(geometry.right.x).toBeGreaterThan(geometry.left.right);
+        expect(
+          Math.abs(
+            geometry.left.y +
+              geometry.left.height / 2 -
+              geometry.right.y -
+              geometry.right.height / 2,
+          ),
+        ).toBeLessThan(1);
+        expect([geometry.font, geometry.line, geometry.weight]).toEqual([
+          '12px',
+          '18px',
+          '500',
+        ]);
+        expect(geometry.right.y).toBeGreaterThanOrEqual(0);
+        expect(geometry.right.bottom).toBeLessThanOrEqual(
+          f.page.viewportSize()!.height,
+        );
+        if (width < 700)
+          expect(geometry.right.height).toBeGreaterThanOrEqual(32);
+        expect(
+          await detail
+            .getByRole('button', { name: '删除场景', exact: true })
+            .evaluate((node) => {
+              const css = getComputedStyle(node);
+              return [css.fontSize, css.lineHeight, css.fontWeight];
+            }),
+        ).toEqual(['14px', '20px', '500']);
+      });
+    },
+  );
+
+  it.each([1440, 390])(
+    'coarse source controls have real 40px hit targets and approved input typography at %ipx',
+    async (width) => {
+      await inFixture({ width, coarse: true }, async (f) => {
+        expect(
+          await f.page.evaluate(() => matchMedia('(pointer: coarse)').matches),
+        ).toBe(true);
+        const root = await f.openDirectory();
+        const close = await root
+          .getByRole('button', { name: '关闭工作场景', exact: true })
+          .boundingBox();
+        expect(close?.width).toBe(40);
+        expect(close?.height).toBe(40);
+        await root
+          .getByRole('button', { name: '新建场景', exact: true })
+          .click();
+        const form = f.page.getByRole('dialog', {
+          name: '新建工作场景',
+          exact: true,
+        });
+        const back = await form
+          .getByRole('button', { name: '返回上一层', exact: true })
+          .boundingBox();
+        expect(back?.width).toBe(40);
+        expect(back?.height).toBe(40);
+        expect(
+          await form
+            .getByRole('textbox', { name: '仓库链接', exact: true })
+            .evaluate((node) => {
+              const css = getComputedStyle(node);
+              return [css.fontSize, css.lineHeight];
+            }),
+        ).toEqual(width < 700 ? ['16px', '24px'] : ['14px', '22px']);
+        expect(
+          await form.evaluate((node) => node.scrollWidth <= node.clientWidth),
+        ).toBe(true);
+      });
+    },
+  );
+
+  for (const operation of ['confirm', 'remove'] as const)
+    for (const phase of ['lost', 'pending'] as const)
+      it(`unresolved ${operation} ${phase} keeps only its scoped technical identity across workspace and viewer changes in one mounted host`, async () => {
+        await inFixture({}, async (f) => {
+          const scopeRefresh = gate(),
+            write = gate();
+          try {
+            f.state.workspaceGate = scopeRefresh.promise;
+            const employee = await f.openEmployeeDetails();
+            let dialog: Locator;
+            if (operation === 'confirm') {
+              await employee
+                .getByRole('button', { name: '新建场景', exact: true })
+                .click();
+              const form = f.page.getByRole('dialog', {
+                name: '新建工作场景',
+                exact: true,
+              });
+              await readGithub(form);
+              dialog = confirmation(f);
+              await dialog.waitFor();
+              f.state.loseConfirm = phase === 'lost';
+            } else {
+              await employee.getByRole('button', { name: /写周报/ }).click();
+              const detail = f.page.getByRole('dialog', {
+                name: '写周报',
+                exact: true,
+              });
+              await detail
+                .getByRole('heading', { name: '什么时候用', exact: true })
+                .waitFor();
+              dialog = await deleteConfirmation(f, detail);
+              f.state.loseRemove = phase === 'lost';
+            }
+            if (phase === 'pending') f.state.writeGate = write.promise;
+            await dialog
+              .getByRole('button', {
+                name: operation === 'confirm' ? '确认安装' : '删除',
+                exact: true,
+              })
+              .click();
+            await expect.poll(() => f.state.writes.length).toBe(1);
+            if (phase === 'lost')
+              await expect
+                .poll(() =>
+                  dialog
+                    .getByRole('button', { name: '重试', exact: true })
+                    .isEnabled(),
+                )
+                .toBe(true);
+            else
+              expect(
+                await dialog
+                  .getByRole('button', { name: '取消', exact: true })
+                  .isDisabled(),
+              ).toBe(true);
+            const original = f.state.writes[0]!.input;
+            f.state.scope = {
+              workspaceId: id(104),
+              viewerId: id(105),
+              offset: 100,
+            };
+            scopeRefresh.release();
+            f.state.workspaceGate = null;
+            await expect
+              .poll(() => f.state.workspaceReplies.at(-1))
+              .toBe(`${id(104)}/${id(105)}`);
+            await expect.poll(() => dialog.count()).toBe(0);
+            const other = await f.openDirectory();
+            expect(
+              await other
+                .getByRole('button', { name: '新建场景', exact: true })
+                .isEnabled(),
+            ).toBe(true);
+            expect(await confirmation(f).count()).toBe(0);
+            write.release();
+            f.state.writeGate = null;
+            await expect
+              .poll(() =>
+                operation === 'confirm'
+                  ? f.state.confirmReceipts.size
+                  : f.state.removeReceipts.size,
+              )
+              .toBe(1);
+            await other
+              .getByRole('button', { name: '关闭工作场景', exact: true })
+              .click();
+            f.state.scope = { workspaceId: id(4), viewerId: id(5), offset: 0 };
+            await f.page
+              .getByRole('button', { name: '查看Rice详情', exact: true })
+              .click();
+            await expect
+              .poll(() => f.state.workspaceReplies.at(-1))
+              .toBe(`${id(4)}/${id(5)}`);
+            const parent = f.page.getByRole('dialog', { name: /员工详情/ });
+            await parent.waitFor();
+            await parent
+              .getByRole('button', { name: '关闭', exact: true })
+              .click();
+            const restored = await f.openDirectory();
+            expect(await confirmation(f).count()).toBe(0);
+            expect(
+              await restored
+                .getByRole('button', { name: '新建场景', exact: true })
+                .isDisabled(),
+            ).toBe(true);
+            expect(f.state.writes).toHaveLength(1);
+            expect(f.state.writes[0]!.input).toEqual(original);
+            expect(
+              f.state.requests.filter(
+                (request) =>
+                  request.method !== 'GET' &&
+                  !request.path.endsWith('/preview'),
+              ),
+            ).toHaveLength(1);
+          } finally {
+            scopeRefresh.release();
+            write.release();
+          }
+        });
+      });
 });

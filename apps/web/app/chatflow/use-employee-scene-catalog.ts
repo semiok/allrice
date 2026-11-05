@@ -61,7 +61,7 @@ type ReadView = {
 type Mutation = (
   | {
       kind: 'confirm';
-      input: Omit<PersonalSceneConfirmRequest, 'previewId'>;
+      input: PersonalSceneConfirmRequest;
       preview: PersonalScenePreviewResponse;
       receipt?: PersonalSceneConfirmReceipt;
     }
@@ -77,7 +77,7 @@ type Mutation = (
 type UnresolvedWrite =
   | {
       kind: 'confirm';
-      input: PersonalSceneConfirmRequest;
+      input: Omit<PersonalSceneConfirmRequest, 'previewId'>;
       target: PersonalScenePreviewResponse['target'];
     }
   | {
@@ -85,6 +85,24 @@ type UnresolvedWrite =
       input: PersonalSceneRemoveRequest;
       sceneId: PersonalSceneSkill['sceneId'];
     };
+
+function unresolvedIdentity(operation: Mutation): UnresolvedWrite {
+  return operation.kind === 'confirm'
+    ? {
+        kind: 'confirm',
+        input: {
+          workspaceId: operation.input.workspaceId,
+          requestId: operation.input.requestId,
+          digest: operation.input.digest,
+        },
+        target: operation.preview.target,
+      }
+    : {
+        kind: 'remove',
+        input: operation.input,
+        sceneId: operation.scene.sceneId,
+      };
+}
 
 export class SceneSourceHttpError extends PersonalSceneHttpError {
   constructor(
@@ -196,8 +214,12 @@ export function useEmployeeSceneCatalog(input: Scope) {
   const lastOwner = useRef(ownerScope);
   if (lastOwner.current !== ownerScope) {
     lastOwner.current = ownerScope;
+    for (const [previousKey, operation] of pending.current)
+      if (operation.busy || operation.uncertain)
+        unresolved.current.set(previousKey, unresolvedIdentity(operation));
     pending.current.clear();
-    unresolved.current.clear();
+    // Memory-only technical identities survive a return to this exact scope.
+    // Private previews never do. A whole-page reload has no persistence promise.
   }
   const current = () =>
     mounted.current &&
@@ -226,6 +248,12 @@ export function useEmployeeSceneCatalog(input: Scope) {
   }
   useEffect(() => {
     mounted.current = true;
+    setView((previous) =>
+      previous.key === key ? previous : { key, loading: false },
+    );
+    setSelection((previous) =>
+      previous.key === key ? previous : { key, loading: false },
+    );
     return () => {
       mounted.current = false;
       directoryRead.current?.abort();
@@ -259,24 +287,7 @@ export function useEmployeeSceneCatalog(input: Scope) {
       setView({ key, loading: false, error: cause.message });
       const operation = pending.current.get(key);
       if (operation?.uncertain)
-        unresolved.current.set(
-          key,
-          operation.kind === 'confirm'
-            ? {
-                kind: 'confirm',
-                input: {
-                  workspaceId: operation.input.workspaceId,
-                  requestId: operation.input.requestId,
-                  digest: operation.input.digest,
-                },
-                target: operation.preview.target,
-              }
-            : {
-                kind: 'remove',
-                input: operation.input,
-                sceneId: operation.scene.sceneId,
-              },
-        );
+        unresolved.current.set(key, unresolvedIdentity(operation));
       pending.current.delete(key);
       changed((value) => value + 1);
       return true;
@@ -382,7 +393,7 @@ export function useEmployeeSceneCatalog(input: Scope) {
     }
   }
   async function inspect(entry: SceneCatalog['value']['skills'][number]) {
-    if (!visible.catalog) return;
+    if (!visible.profile || !visible.instance) return;
     detailRead.current?.abort();
     const controller = new AbortController();
     detailRead.current = controller;

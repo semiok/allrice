@@ -164,7 +164,11 @@ function SceneDetails({
             <p className={css.secondary}>未提供</p>
           )}
         </div>
-        <button type="button" className={css.link} onClick={onDeliveries}>
+        <button
+          type="button"
+          className={`${css.link} ${css.deliveryLink}`}
+          onClick={onDeliveries}
+        >
           查看交付结果 →
         </button>
       </section>
@@ -424,7 +428,7 @@ export function EmployeeSceneDialog(props: {
     setPage('source');
   }
   async function read(nextFile?: File) {
-    if (reading || busy || !writable) return;
+    if (reading || busy || !writable || catalog.uncertain) return;
     const zip = Boolean(nextFile) || tab === 'zip';
     const selectedFile = nextFile ?? file;
     if (zip && !selectedFile) return;
@@ -467,10 +471,15 @@ export function EmployeeSceneDialog(props: {
     }
   }
   function upload(next?: File) {
-    if (!next || reading || busy) return;
+    if (!next || reading || busy || catalog.uncertain) return;
     setTab('zip');
     setFile(next);
     void read(next);
+  }
+  function chooseFile() {
+    if (reading || busy || catalog.uncertain || !fileInput.current) return;
+    fileInput.current.value = '';
+    fileInput.current.click();
   }
   function switchTab(next: typeof tab) {
     if (busy) return;
@@ -510,20 +519,18 @@ export function EmployeeSceneDialog(props: {
     }
   }
   function finish() {
-    if (preview?.operation === 'install' && props.onBackToEmployee) {
-      props.onBackToEmployee();
-      return;
-    }
-    const entry =
-      preview?.operation === 'update' &&
-      catalog.catalog?.personal &&
-      !catalog.loading &&
-      !catalog.error
-        ? catalog.catalog.value.skills.find(
-            (item) => item.sceneId === preview.target.sceneId,
-          )
-        : undefined;
-    if (entry) choose(entry);
+    if (busy || !preview) return;
+    const receipt = pending?.kind === 'confirm' ? pending.receipt : undefined;
+    if (preview.operation === 'update' && sourceTarget && receipt) {
+      // The exact verified receipt is enough to address the real detail read;
+      // navigation never depends on the background catalog refresh finishing.
+      choose({
+        ...sourceTarget,
+        name: preview.item.frontmatter.metadata.displayName,
+        revision: receipt.revision,
+        contentRef: receipt.contentRef,
+      });
+    } else if (props.onBackToEmployee) props.onBackToEmployee();
     else {
       setPage('list');
       setError('');
@@ -563,9 +570,11 @@ export function EmployeeSceneDialog(props: {
         onClose={
           removing
             ? () => {}
-            : page === 'list' || page === 'success'
-              ? close
-              : back
+            : page === 'success'
+              ? finish
+              : page === 'list'
+                ? close
+                : back
         }
         className={`${css.panel} ${page === 'detail' ? css.detailPanel : css.formPanel}`}
       >
@@ -757,7 +766,8 @@ export function EmployeeSceneDialog(props: {
                         <p>把 .zip 文件拖到这里</p>
                         <Button
                           variant="outline"
-                          onClick={() => fileInput.current?.click()}
+                          disabled={reading || busy || catalog.uncertain}
+                          onClick={chooseFile}
                         >
                           选择文件
                         </Button>
@@ -769,7 +779,7 @@ export function EmployeeSceneDialog(props: {
                       ref={fileInput}
                       aria-label="选择 Workflow 压缩包"
                       accept=".zip,application/zip"
-                      disabled={reading || busy}
+                      disabled={reading || busy || catalog.uncertain}
                       onChange={(event) =>
                         upload(event.currentTarget.files?.[0])
                       }
@@ -898,12 +908,7 @@ export function EmployeeSceneDialog(props: {
         {(page === 'source' || page === 'confirm' || page === 'success') && (
           <footer className={css.footer}>
             {page === 'success' ? (
-              <Button
-                variant="primary"
-                disabled={catalog.loading}
-                aria-busy={catalog.loading}
-                onClick={finish}
-              >
+              <Button variant="primary" onClick={finish}>
                 完成
               </Button>
             ) : (
@@ -925,14 +930,27 @@ export function EmployeeSceneDialog(props: {
                         : '确认安装'}
                   </Button>
                 ) : (
-                  !zip && (
-                    <Button
-                      variant="primary"
-                      disabled={reading || busy || !writable}
-                      onClick={() => void read()}
-                    >
-                      {reading ? '正在读取…' : '读取'}
-                    </Button>
+                  (!zip || file) && (
+                    <>
+                      {zip && !reading && (
+                        <Button
+                          variant="outline"
+                          disabled={busy || catalog.uncertain}
+                          onClick={chooseFile}
+                        >
+                          重新选择
+                        </Button>
+                      )}
+                      <Button
+                        variant="primary"
+                        disabled={
+                          reading || busy || !writable || catalog.uncertain
+                        }
+                        onClick={() => void read()}
+                      >
+                        {reading ? '正在读取…' : error ? '重试' : '读取'}
+                      </Button>
+                    </>
                   )
                 )}
               </>
