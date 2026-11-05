@@ -132,6 +132,7 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
           });
         }
         const root = node.parentElement;
+        const rootBox = root?.getBoundingClientRect();
         const activeAnimations = (
           root?.getAnimations({ subtree: true }) ?? []
         ).filter(
@@ -145,6 +146,16 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
           box: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
           background: style.backgroundColor,
           text: heading ? getComputedStyle(heading).color : null,
+          modalRoot:
+            root && rootBox
+              ? {
+                  role: root.getAttribute('role'),
+                  x: rootBox.x,
+                  y: rootBox.y,
+                  width: root.clientWidth,
+                  height: root.clientHeight,
+                }
+              : null,
           ancestors,
           activeAnimations,
           hitInside: target !== null && node.contains(target),
@@ -246,13 +257,23 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
           expect(detailPaint.background).toBe(paint.background);
           expect(detailPaint.text).toBe(paint.text);
           const box = detailPaint.box;
+          const modalRoot = detailPaint.modalRoot;
+          if (!modalRoot) throw Error('Missing native Modal root geometry');
+          expect(modalRoot.role).toBe('presentation');
           expect(box.x).toBeGreaterThanOrEqual(0);
           expect(box.x + box.width).toBeLessThanOrEqual(width);
           if (width === 390) {
-            expect(box).toEqual({ x: 0, y: 0, width: 390, height: 844 });
+            expect(box).toEqual({
+              x: modalRoot.x,
+              y: modalRoot.y,
+              width: modalRoot.width,
+              height: modalRoot.height,
+            });
           } else {
             expect(box.width).toBe(552);
-            expect(box.x).toBe((width - 552) / 2);
+            expect(box.x + box.width / 2).toBe(
+              modalRoot.x + modalRoot.width / 2,
+            );
           }
           await f.page.screenshot({
             path: resolve(evidence, `s1-base-detail-${width}-${theme}.png`),
