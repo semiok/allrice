@@ -1997,6 +1997,186 @@ suite('U1 mounted employee Workflow host', () => {
     });
   });
 
+  for (const origin of ['top', 'employee'] as const)
+    it(`unknown update ${origin} reopens in the same scope and replays the original request before returning to the exact detail during ${origin === 'top' ? 'pending' : 'failed'} catalog refresh`, async () => {
+      await inFixture({}, async (f) => {
+        const target = origin === 'employee' ? id(17) : id(7);
+        let form: Locator;
+        if (origin === 'employee') {
+          const employee = await f.openEmployeeDetails('流程哥');
+          await employee.getByRole('button', { name: /写周报/ }).click();
+          const detail = f.page.getByRole('dialog', {
+            name: '写周报',
+            exact: true,
+          });
+          await detail
+            .getByRole('heading', { name: '什么时候用', exact: true })
+            .waitFor();
+          await detail
+            .getByRole('button', { name: '更新', exact: true })
+            .click();
+          form = f.page.getByRole('dialog', {
+            name: '更新“写周报”',
+            exact: true,
+          });
+          await form
+            .getByRole('heading', { name: '文件要求', exact: true })
+            .waitFor();
+        } else form = await f.sourceForm(true);
+        await readGithub(form);
+        const confirm = confirmation(f, true);
+        await confirm.waitFor();
+        f.state.loseConfirm = true;
+        await confirm
+          .getByRole('button', { name: '确认更新', exact: true })
+          .click();
+        await expect
+          .poll(() =>
+            confirm
+              .getByRole('button', { name: '重试', exact: true })
+              .isEnabled(),
+          )
+          .toBe(true);
+        const original = PersonalSceneConfirmRequestSchema.parse(
+          confirmWrites(f)[0]!.input,
+        );
+        const frozen = f.state.previews.get(original.previewId)!;
+        expect(frozen.operation).toBe('update');
+        expect(frozen.instanceId).toBe(target);
+        expect(frozen.target.sceneId).toBe(id(50));
+        expect(frozen.current?.contentRef).toBe(scene(target).contentRef);
+        expect(f.state.confirmReceipts.size).toBe(1);
+        expect(
+          await f.page
+            .getByRole('dialog', { name: '更新完成', exact: true })
+            .count(),
+        ).toBe(0);
+        expect(await confirm.getByRole('alert').count()).toBe(0);
+
+        await confirm
+          .getByRole('button', { name: '取消', exact: true })
+          .click();
+        await form.waitFor();
+        await form.getByRole('button', { name: '取消', exact: true }).click();
+        const detail = f.page.getByRole('dialog', {
+          name: '写周报',
+          exact: true,
+        });
+        await detail.waitFor();
+        const parentName =
+          origin === 'employee' ? '返回员工详情' : '返回工作场景列表';
+        await detail
+          .getByRole('button', { name: parentName, exact: true })
+          .click();
+        const parent =
+          origin === 'employee'
+            ? f.page.getByRole('dialog', {
+                name: '流程哥员工详情',
+                exact: true,
+              })
+            : f.directory();
+        await parent.waitFor();
+        await parent
+          .getByRole('button', {
+            name: origin === 'employee' ? '关闭' : '关闭工作场景',
+            exact: true,
+          })
+          .click();
+        await parent.waitFor({ state: 'detached' });
+        if (origin === 'employee') {
+          const employee = await f.openEmployeeDetails('流程哥');
+          await employee.getByRole('button', { name: /写周报/ }).click();
+        } else
+          await f.page
+            .getByRole('button', { name: '工作场景', exact: true })
+            .click();
+        await confirm.waitFor();
+        const retry = confirm.getByRole('button', {
+          name: '重试',
+          exact: true,
+        });
+        await expect.poll(() => retry.isEnabled()).toBe(true);
+        expect(previewWrites(f)).toHaveLength(1);
+        expect(confirmWrites(f)).toHaveLength(1);
+        const refresh = gate();
+        try {
+          if (origin === 'top') f.state.directoryGate = refresh.promise;
+          else f.state.failDirectory = true;
+          await retry.click();
+          const success = f.page.getByRole('dialog', {
+            name: '更新完成',
+            exact: true,
+          });
+          await success.waitFor();
+          expect(confirmWrites(f)).toHaveLength(2);
+          expect(confirmWrites(f)[1]!.input).toEqual(original);
+          expect(f.state.confirmReceipts.size).toBe(1);
+          const receipt = f.state.confirmReceipts.get(original.requestId)!;
+          expect(receipt.instanceId).toBe(target);
+          expect(receipt.sceneId).toBe(frozen.target.sceneId);
+          const detailRead = f.page.waitForRequest((request) => {
+            const url = new URL(request.url());
+            return (
+              request.method() === 'GET' &&
+              url.pathname ===
+                `/api/v1/employee-instances/${target}/scene-skills` &&
+              url.searchParams.get('sceneId') === receipt.sceneId &&
+              url.searchParams.get('workspaceId') === original.workspaceId
+            );
+          });
+          if (origin === 'top') await f.page.keyboard.press('Escape');
+          else
+            await success
+              .getByRole('button', { name: '完成', exact: true })
+              .click();
+          await detailRead;
+          await detail
+            .getByRole('heading', { name: '什么时候用', exact: true })
+            .waitFor();
+          await contains(detail, '1.3.0');
+          await expect
+            .poll(() =>
+              detail.evaluate((node) => node.contains(document.activeElement)),
+            )
+            .toBe(true);
+          expect(
+            f.state.collections
+              .get(target)!
+              .skills.find((item) => item.sceneId === receipt.sceneId)
+              ?.contentRef,
+          ).toBe(receipt.contentRef);
+          expect(
+            f.state.collections
+              .get(target)!
+              .skills.find((item) => item.sceneId === id(51)),
+          ).toEqual(scene(target, 51));
+          const otherTarget = origin === 'employee' ? id(7) : id(17);
+          expect(f.state.collections.get(otherTarget)!.revision).toBe(1);
+          expect(await confirm.count()).toBe(0);
+          await detail
+            .getByRole('button', { name: parentName, exact: true })
+            .click();
+          await parent.waitFor();
+          if (origin === 'employee')
+            await parent
+              .getByRole('region', { name: '基础与人设', exact: true })
+              .waitFor();
+          else await contains(parent, 'Rice');
+          await expect
+            .poll(() =>
+              parent.evaluate((node) => node.contains(document.activeElement)),
+            )
+            .toBe(true);
+          refresh.release();
+          expect(await parent.isVisible()).toBe(true);
+          expect(previewWrites(f)).toHaveLength(1);
+          expect(confirmWrites(f)).toHaveLength(2);
+        } finally {
+          refresh.release();
+        }
+      });
+    });
+
   it('an unknown committed confirmation remains locked when its preview expires instead of clearing uncertainty or creating another request', async () => {
     await inFixture({}, async (f) => {
       await readGithub(await f.sourceForm());

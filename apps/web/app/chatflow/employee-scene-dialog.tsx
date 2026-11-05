@@ -292,7 +292,23 @@ export function EmployeeSceneDialog(props: {
   const [entry, setEntry] = useState<Entry | undefined>(
     initial?.page === 'detail' ? initial.entry : undefined,
   );
-  const [sourceTarget, setSourceTarget] = useState<PersonalSceneSkill>();
+  const [sourceTarget, setSourceTarget] = useState<
+    PersonalSceneSkill | undefined
+  >(() => {
+    if (
+      pending?.kind !== 'confirm' ||
+      !pending.uncertain ||
+      pending.preview.operation !== 'update'
+    )
+      return undefined;
+    // Only the intact, same-scope preview owns the original update target.
+    // Redacted unresolved identities cannot restore private source content.
+    const { current, target } = pending.preview;
+    return current?.sceneId === target.sceneId &&
+      current.contentRef === target.expectedContentRef
+      ? current
+      : undefined;
+  });
   const [tab, setTab] = useState<'github' | 'zip'>('github');
   const [url, setUrl] = useState('');
   const [file, setFile] = useState<File>();
