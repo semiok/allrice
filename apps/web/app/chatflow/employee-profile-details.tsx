@@ -150,6 +150,7 @@ export function EmployeeProfileDetails({
   experienceContent,
   workflowContent,
   workflowReadContent,
+  memoryEntry,
   onEdit,
   onPrepare,
 }: {
@@ -159,6 +160,7 @@ export function EmployeeProfileDetails({
   experienceContent?: ReactNode;
   workflowContent?: ReactNode;
   workflowReadContent?: ReactNode;
+  memoryEntry?: ReactNode;
   onEdit?: () => void;
   onPrepare?: (text: string) => void;
 }) {
@@ -223,6 +225,7 @@ export function EmployeeProfileDetails({
         view={view}
         onEdit={personal ? onEdit : undefined}
       />
+      {view === 'personal' && memoryEntry}
       {view === 'personal' && profile.kind === 'custom' && workflowReadContent}
       {personal && workflowContent}
       <section className={css.workArea} aria-label="工作场景与内容">

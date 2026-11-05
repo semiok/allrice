@@ -11,6 +11,7 @@ import {
   type ExperienceSummary,
 } from '@allrice/contracts';
 import { DshDialog } from './dsh-upstream/Dialog';
+import { EmployeeMemoryEntry } from './employee-memory-entry';
 import {
   EmployeeProfileDetails,
   EmployeeProfileSkeleton,
@@ -51,6 +52,7 @@ interface EmployeeDetailsDialogProps {
   onClose: () => void;
   onPrepare?: (text: string, instanceId: string) => void;
   onProfileUpdated?: (instance: EmployeeInstance) => void;
+  onOpenMemory?: (instanceId: string) => void;
   organizationView?: { organizationId: string; userId: string };
 }
 
@@ -417,6 +419,18 @@ function EmployeeDetailsReader(
               props.organizationView || !props.onPrepare ? undefined : prepare
             }
             view={props.organizationView ? 'shared' : 'personal'}
+            memoryEntry={
+              !props.organizationView &&
+              props.onOpenMemory && (
+                <EmployeeMemoryEntry
+                  scopeId={props.scopeId}
+                  workspaceId={props.workspaceId}
+                  instanceId={data.profile.instanceId}
+                  headers={props.headers}
+                  onOpen={props.onOpenMemory}
+                />
+              )
+            }
             workflowReadContent={workflowReadContent}
             workflowContent={
               !props.organizationView &&
