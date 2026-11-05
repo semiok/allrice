@@ -396,9 +396,14 @@ export async function recoverMcpRuntimeOperations(
     failed = 0;
   for (const binding of await listAbandonedNativeMcpOperations(db)) {
     try {
-      // A live request, if still owned by this Worker, settles through its
-      // original native signal. A cold Host is never opened by this port.
-      await options.cancelNative?.(binding);
+      // Deliver to the original signal if that Host/Run is still owned here.
+      // A later Run or closed Host may reject this best-effort delivery; that
+      // cannot block durable cleanup of a proven cut-off, undispatched call.
+      try {
+        await options.cancelNative?.(binding);
+      } catch {
+        // This is not an acknowledgement that the native request has ended.
+      }
       const ledger = createMcpOperationLedger(
         {
           actor: binding.requestedBy,

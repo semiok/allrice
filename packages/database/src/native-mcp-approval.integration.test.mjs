@@ -30,6 +30,7 @@ import {
 } from './cloud-operation-view.ts';
 import * as TaskClock from './task-clock.ts';
 import { mcpStableId } from './mcp-authority.ts';
+import { nativeBindingDescriptor } from './native-session-binding.fixture.ts';
 import {
   host,
   text,
@@ -41,8 +42,10 @@ import { executeRiceTool } from '../../../apps/worker/src/tool-broker.ts';
 import * as McpExecutor from '../../../apps/worker/src/mcp/executor.ts';
 import { createNativeActionApprovalHttpHandler } from '../../../apps/worker/src/native-action-approval-http.ts';
 import { createMcpTransport } from '../../../apps/worker/src/mcp/transport.ts';
+import { DshRuntimePool } from '../../../apps/worker/src/harness/dsh/runtime-pool.ts';
 import { POST as stopCloudOperations } from '../../../apps/web/app/api/v1/runtime/cloud-operations/route.ts';
 import { POST as decideNativeApproval } from '../../../apps/web/app/api/v1/runtime/approvals/[id]/route.ts';
+import { requestNativeActionApproval } from '../../../apps/web/lib/execution/native-action-approval.ts';
 
 /* global process, URL, fetch, Request */
 
@@ -60,7 +63,9 @@ vi.mock('../../../apps/web/lib/identity/session', () => ({
   getRequestContext: async () => login.context,
   sessionCookieName: 'synthetic_session',
 }));
-vi.mock('next/headers', () => ({
+// This suite is in the database package, which does not depend on Next. Mock
+// the Web package's public entry, not an unresolved database-local module ID.
+vi.mock('../../../apps/web/node_modules/next/headers.js', () => ({
   cookies: async () => ({ get: () => ({ value: login.token }) }),
 }));
 vi.mock('./mcp-owned-records-service.ts', () => ({
@@ -348,6 +353,9 @@ suite('MET-248 native approval → exact owned append', () => {
           .toBe(200);
         expect(await approvalCount(operationId)).toBe(0); // no shadow PG wait
         expect((await operation(f, operationId)).status).toBe('waiting_user');
+        expect(
+          await requestNativeActionApproval(f.context, operationId, 'read'),
+        ).toEqual(pending);
         const views = await listCloudRuntimeOperations(f.context, f.run, db);
         expect(views[0].proposal).toMatchObject({
           endpoint: f.service.endpoint,
@@ -607,20 +615,101 @@ suite('MET-248 native approval → exact owned append', () => {
       ).toEqual({ recovered: 0, failed: 0 });
       if (phase === 'root-cutoff') {
         await cancelCloudRuntimeRun(f.context, f.run, db);
-        expect(
-          await McpExecutor.recoverMcpRuntimeOperations({
-            database: db,
-            cancelNative: async () => {
-              throw Error('live cancellation unacknowledged');
-            },
-          }),
-        ).toEqual({ recovered: 0, failed: 1 });
         expect((await operation(f, id)).status).toBe('cancel_requested');
       } else
         await db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${f.job}`;
-      expect(
-        await McpExecutor.recoverMcpRuntimeOperations({ database: db }),
-      ).toEqual({ recovered: 1, failed: 0 });
+      // Use the actual owning-pool checks called by the production recovery
+      // callback: same session has advanced to another Run, or Host is closed.
+      // The client never spawns, reconnects or receives a native request.
+      const pool = new DshRuntimePool({ idleCloseMs: 0 });
+      const descriptor = nativeBindingDescriptor({
+        organizationId: f.org,
+        workspaceId: f.workspace,
+        ownerId: f.context.actor.id,
+      });
+      const target = {
+        organizationId: f.org,
+        workspaceId: f.workspace,
+        ownerId: f.context.actor.id,
+        sessionId: f.session,
+        generation: 1,
+        rootOriginDigest: runtimePolicyDigest('fixture-root'),
+        descriptor,
+      };
+      const client = {
+        processState: () => ({ state: 'running' }),
+        nativeActionApproval: vi.fn(),
+        close: vi.fn(async () => {}),
+      };
+      const runtime = {
+        id: randomUUID(),
+        sessionId: descriptor.nativeSessionId,
+        organizationId: f.org,
+        workspaceId: f.workspace,
+        ownerId: target.ownerId,
+        productSessionId: f.session,
+        nativeGeneration: 1,
+        nativeTools: [],
+        executionObservation: { runId: randomUUID() },
+        nativePin: {
+          ...descriptor,
+          organizationId: f.org,
+          workspaceId: f.workspace,
+          ownerId: target.ownerId,
+          contextKind: 'chat',
+          contextId: f.session,
+          bindingBasis: 'business_root_origin',
+          rootOriginDigest: target.rootOriginDigest,
+        },
+        client,
+      };
+      Reflect.get(pool, 'runtimes').set(runtime.sessionId, runtime);
+      if (phase === 'root-cutoff') await pool.close();
+      const failures = [];
+      const cancelNative = async (binding) => {
+        try {
+          await pool.nativeActionApproval(
+            target,
+            {
+              action: 'cancel',
+              approvalId: binding.attempt.operationId,
+              runId: binding.task.runId,
+              actorId: binding.requestedBy.id,
+            },
+            new AbortController().signal,
+          );
+        } catch (error) {
+          failures.push(error.message);
+          throw error;
+        }
+      };
+      try {
+        const concurrent = await Promise.all([
+          McpExecutor.recoverMcpRuntimeOperations({
+            database: db,
+            cancelNative,
+          }),
+          McpExecutor.recoverMcpRuntimeOperations({
+            database: db,
+            cancelNative,
+          }),
+        ]);
+        expect(concurrent.every((result) => result.failed === 0)).toBe(true);
+        expect(
+          concurrent.reduce((sum, result) => sum + result.recovered, 0),
+        ).toBeGreaterThanOrEqual(1);
+        expect(failures.length).toBeGreaterThanOrEqual(1);
+        expect(new Set(failures)).toEqual(
+          new Set([
+            phase === 'root-cutoff'
+              ? 'NATIVE_QUERY_HOST_UNAVAILABLE'
+              : 'NATIVE_ACTION_NOT_LIVE',
+          ]),
+        );
+        expect(client.nativeActionApproval).not.toHaveBeenCalled();
+      } finally {
+        await pool.close();
+      }
       expect(
         await McpExecutor.recoverMcpRuntimeOperations({ database: db }),
       ).toEqual({ recovered: 0, failed: 0 });
