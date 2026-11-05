@@ -18,9 +18,9 @@ import { parseDocument } from 'yaml';
 import {
   EmployeeContentReferenceSchema,
   EmployeeContentTextSchema,
-  EmployeeRuntimeSceneSchema,
   EmployeeSceneSkillPayloadSchema,
 } from '../packages/contracts/src/employee-content.ts';
+import { PersonalSceneFileSchema } from '../packages/contracts/src/personal-scene-files.ts';
 import { SkillBundleSchema } from '../packages/contracts/src/skill-bundle.ts';
 import {
   WorkflowSkillFrontmatterSchema,
@@ -329,10 +329,10 @@ export async function packWorkflowSkill({ directory, sceneId, title }) {
     { kind: 'procedure', title, body: skill.content, skillPackage },
     'C1 procedure',
   );
-  // Reuse the runtime contract to validate the mapping, without manufacturing a
-  // scene digest (the server computes it from the final authorized manifest).
+  // The personal import contract uses the native author name. The backend
+  // shared scene snapshot keeps its original UUID contract.
   const scene = checked(
-    EmployeeRuntimeSceneSchema.omit({ digest: true }),
+    PersonalSceneFileSchema.shape.scene,
     {
       id: sceneId,
       name: frontmatter.metadata.displayName,
