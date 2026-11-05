@@ -555,7 +555,7 @@ suite(
         });
         const [state] =
           await f.db`select content_scene_state from allrice_employee_runs where run_id=${run.scope.runId}`;
-        expect(state!.content_scene_state.reads).toEqual([]);
+        expect(state!.content_scene_state).toBeNull();
         expect(
           (
             await inspectPersonalSceneSkill(

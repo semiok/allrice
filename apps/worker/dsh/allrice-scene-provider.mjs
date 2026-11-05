@@ -344,13 +344,21 @@ export function installPersonalSceneProvider(ctx, bridge) {
     },
     // Invalidate the native catalog for the next pre-step. Body get has no
     // cache. Historical reads are checked by the same durable content guard.
-    async beforeDispatch() {
+    async beforeDispatch(_nativeSessionId, signal) {
       let observed;
       do {
         observed = pending;
         await observed;
       } while (observed !== pending);
       if (failure) throw failure;
+      signal?.throwIfAborted();
+      // Native discovery tolerates a failing Provider and can select another
+      // same-name candidate. Recheck directly at our existing dispatch guard,
+      // before model/usage, so a denied namespace cannot become that fallback.
+      PersonalSceneSkillCatalogSchema.parse(
+        await bridge('personal-list', {}, signal),
+      );
+      signal?.throwIfAborted();
       control.invalidate();
     },
   };
