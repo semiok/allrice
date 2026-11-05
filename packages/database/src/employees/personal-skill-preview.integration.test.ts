@@ -700,6 +700,8 @@ suite('browser Skill source preview and confirmation', () => {
     const [previous] =
       await f.db`select source from allrice_personal_skill_versions where id=${old.skill.versionId}`;
     expect(previous!.source.fileName).toBe('weekly.zip');
+    if (old.skill.source.kind !== 'attachment')
+      throw new Error('ZIP fixture must retain its attachment source');
     expect(result.skill.source.objectId).toBe(old.skill.source.objectId);
     expect(await counts()).toEqual(before);
   });
