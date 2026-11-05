@@ -1514,7 +1514,10 @@ suite(
           system: JSON.stringify(
             calls[0].messages
               .filter((m: { role: string }) => m.role === 'system')
-              .map(({ id: _messageId, ...message }: { id?: string }) => message)
+              .map(({ id, ...message }: { id?: string }) => {
+                expect(id).toEqual(expect.any(String));
+                return message;
+              })
               .at(-1),
           )
             .split(h.directory)

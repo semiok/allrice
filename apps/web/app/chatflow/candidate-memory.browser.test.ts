@@ -1281,28 +1281,45 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       idempotencyKey: randomUUID(),
     });
     for (let i = 0; i < 8; i++) {
-      const created = await api('', write({
-        workspaceId: identity.workspace,
-        instanceId: identity.assignment,
-        content: `预算入口${i}`,
-        sourceType: 'user',
-        sourceLabel: '本人新增',
-        lifecycleState: 'durable',
-        memoryClass: 'user_preference',
-        idempotencyKey: randomUUID(),
-      }));
+      const created = await api(
+        '',
+        write({
+          workspaceId: identity.workspace,
+          instanceId: identity.assignment,
+          content: `预算入口${i}`,
+          sourceType: 'user',
+          sourceLabel: '本人新增',
+          lifecycleState: 'durable',
+          memoryClass: 'user_preference',
+          idempotencyKey: randomUUID(),
+        }),
+      );
       expect(created.status).toBe(201);
       const memory = (await created.json()).memory;
-      const pinned = await api('/' + memory.id + '/pin', write({ ...exact(memory), pinned: true }));
+      const pinned = await api(
+        '/' + memory.id + '/pin',
+        write({ ...exact(memory), pinned: true }),
+      );
       expect(pinned.status).toBe(200);
       saved.push((await pinned.json()).memory);
     }
     let blocked: WorkspaceMemory | undefined;
     for (const memory of saved) {
-      const response = await api('/' + memory.id, write({
-        ...exact(memory), content: 'x'.repeat(1000), reason: '本人编辑',
-      }, 'PATCH'));
-      if (response.status === 422) { blocked = memory; break; }
+      const response = await api(
+        '/' + memory.id,
+        write(
+          {
+            ...exact(memory),
+            content: 'x'.repeat(1000),
+            reason: '本人编辑',
+          },
+          'PATCH',
+        ),
+      );
+      if (response.status === 422) {
+        blocked = memory;
+        break;
+      }
       expect(response.status).toBe(200);
     }
     expect(blocked).toBeDefined();
@@ -1310,26 +1327,46 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     try {
       const row = card(ui.page, blocked!.id);
       await row.getByRole('button', { name: '取消置顶', exact: true }).click();
-      await ui.page.getByRole('status').filter({ hasText: '已取消置顶' }).waitFor();
+      await ui.page
+        .getByRole('status')
+        .filter({ hasText: '已取消置顶' })
+        .waitFor();
       await row.getByRole('button', { name: '置顶', exact: true }).click();
       await ui.page.getByRole('status').filter({ hasText: '已置顶' }).waitFor();
-      const before = await f.db`select content,revision from allrice_memories where id=${blocked!.id}`;
+      const before =
+        await f.db`select content,revision from allrice_memories where id=${blocked!.id}`;
       await row.getByRole('button', { name: '编辑', exact: true }).click();
       await ui.page.getByLabel('编辑记忆内容').fill('x'.repeat(1000));
-      const rejected = ui.page.waitForResponse((r) => r.request().method() === 'PATCH' && r.url().includes(blocked!.id));
-      await ui.page.getByRole('button', { name: '保存记忆', exact: true }).click();
+      const rejected = ui.page.waitForResponse(
+        (r) =>
+          r.request().method() === 'PATCH' && r.url().includes(blocked!.id),
+      );
+      await ui.page
+        .getByRole('button', { name: '保存记忆', exact: true })
+        .click();
       expect((await rejected).status()).toBe(422);
-      await ui.page.getByRole('alert').filter({ hasText: '编辑内容已保留' }).waitFor();
-      expect(await ui.page.getByLabel('编辑记忆内容').inputValue()).toBe('x'.repeat(1000));
-      expect(await f.db`select content,revision from allrice_memories where id=${blocked!.id}`).toEqual(before);
+      await ui.page
+        .getByRole('alert')
+        .filter({ hasText: '编辑内容已保留' })
+        .waitFor();
+      expect(await ui.page.getByLabel('编辑记忆内容').inputValue()).toBe(
+        'x'.repeat(1000),
+      );
+      expect(
+        await f.db`select content,revision from allrice_memories where id=${blocked!.id}`,
+      ).toEqual(before);
       await ui.page.locator('summary').filter({ hasText: '容量预览' }).click();
-      await ui.page.getByText('预留来源定位信息空间', { exact: false }).waitFor();
+      await ui.page
+        .getByText('预留来源定位信息空间', { exact: false })
+        .waitFor();
       await noOverflow(ui.page);
       await capture(ui.page, 'm3-pin-capacity-desktop');
       await ui.page.setViewportSize({ width: 320, height: 900 });
       await noOverflow(ui.page);
       await capture(ui.page, 'm3-pin-capacity-narrow');
-    } finally { await ui.close(); }
+    } finally {
+      await ui.close();
+    }
   }, 60000);
 
   it('administrator sees only the memory projection and a read audit; ordinary account is denied', async () => {
