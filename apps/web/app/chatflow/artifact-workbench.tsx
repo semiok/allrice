@@ -107,6 +107,13 @@ class DiffBoundary extends Component<
     );
   }
 }
+const personalMemoryPagePrefix = 'employee-memory:';
+function personalMemoryTarget(kind: string, contentId: string) {
+  return kind === 'experience' && contentId.startsWith(personalMemoryPagePrefix)
+    ? contentId.slice(personalMemoryPagePrefix.length) || undefined
+    : undefined;
+}
+
 type Props = {
   desktop?: boolean;
   terminalIdentity?: { organizationId: string; ownerId: string };
@@ -116,6 +123,7 @@ type Props = {
     revision: number;
     id?: string;
     title?: string;
+    view?: 'personal-memory';
   };
   workflowAvailable?: boolean;
   experienceAvailable?: boolean;
@@ -123,8 +131,9 @@ type Props = {
     kind: WorkbenchModule,
     active: boolean,
     onOpenFile: (id: string, title: string) => void,
+    memoryInstanceId?: string,
   ) => ReactNode;
-  onModuleViewed?: (kind: WorkbenchModule) => void;
+  onModuleViewed?: (kind: WorkbenchModule, memoryInstanceId?: string) => void;
   onActiveModule?: (kind: WorkbenchModule | 'schedule' | null) => void;
   open: boolean;
   width: number;
@@ -162,6 +171,12 @@ type Props = {
 
 /** Focus-contained narrow panel; keeps the same component mounted when resized. */
 export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
+  const memoryRequest =
+    props.moduleRequest?.kind === 'experience' &&
+    props.moduleRequest.view === 'personal-memory' &&
+    props.moduleRequest.id
+      ? props.moduleRequest
+      : undefined;
   const panel = useRef<HTMLElement>(null),
     previousFocus = useRef<HTMLElement | null>(null);
   const close = props.onClose;
@@ -261,14 +276,17 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
           ? dock.surface.layout.tabs[pane.activeTabId]
           : null;
       if (tab && ['files', 'experience', 'workflow'].includes(tab.kind))
-        props.onModuleViewed?.(tab.kind as WorkbenchModule);
+        props.onModuleViewed?.(
+          tab.kind as WorkbenchModule,
+          personalMemoryTarget(tab.kind, tab.contentId),
+        );
     }
   }, [props.open, props.desktop, dock.surface.layout, props.onModuleViewed]);
   const lastModuleRequest = useRef(0);
   useEffect(() => {
     const request = props.moduleRequest;
     if (
-      !props.desktop ||
+      (!props.desktop && !memoryRequest) ||
       !request ||
       request.revision === lastModuleRequest.current
     )
@@ -276,7 +294,9 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
     lastModuleRequest.current = request.revision;
     dock.open(
       request.kind,
-      request.id ?? pageAddress(request.kind),
+      memoryRequest
+        ? personalMemoryPagePrefix + memoryRequest.id
+        : (request.id ?? pageAddress(request.kind)),
       request.title ??
         (request.kind === 'guide'
           ? '开始'
@@ -356,9 +376,11 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
         aria-label={
           props.desktop
             ? '工作台'
-            : props.taskRequest
-              ? '任务与交付成果'
-              : '交付成果'
+            : memoryRequest
+              ? '记忆'
+              : props.taskRequest
+                ? '任务与交付成果'
+                : '交付成果'
         }
         aria-modal={fullscreen ? true : undefined}
         data-fullscreen={fullscreen || undefined}
@@ -559,7 +581,10 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                   );
                 }}
               />
-            ) : props.desktop &&
+            ) : (props.desktop ||
+                (memoryRequest &&
+                  personalMemoryTarget(tab.kind, tab.contentId) ===
+                    memoryRequest.id)) &&
               ['files', 'experience', 'workflow'].includes(tab.kind) ? (
               props.renderModule?.(
                 tab.kind as WorkbenchModule,
@@ -573,6 +598,7 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                     title,
                     findTabPane(dock.surface.layout, tab.id).id,
                   ),
+                personalMemoryTarget(tab.kind, tab.contentId),
               )
             ) : tab.kind === 'reference' ? (
               <ReferenceSnapshotPreview
@@ -692,10 +718,14 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
               <button
                 type="button"
                 className={moduleUi.iconButton}
-                aria-label="关闭工作台"
+                aria-label={memoryRequest ? '返回员工详情' : '关闭工作台'}
                 onClick={close}
               >
-                {props.desktop ? <WorkbenchIcon kind="panel" /> : '×'}
+                {props.desktop && !memoryRequest ? (
+                  <WorkbenchIcon kind="panel" />
+                ) : (
+                  '×'
+                )}
               </button>
             </>
           }

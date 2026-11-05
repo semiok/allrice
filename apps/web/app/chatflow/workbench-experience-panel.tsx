@@ -20,7 +20,7 @@ const scopes = {
   company: '公司',
   platform: '平台',
 };
-export function WorkbenchExperiencePanel(props: {
+type Props = {
   scopeId: string;
   workspaceId: string;
   instanceId?: string;
@@ -28,8 +28,36 @@ export function WorkbenchExperiencePanel(props: {
   headers: Record<string, string>;
   active: boolean;
   automatic: boolean;
+  memoryRequest?: { instanceId: string; revision: number };
   onCorrect: (instanceId: string, text: string) => void;
-}) {
+};
+
+export function WorkbenchExperiencePanel(props: Props) {
+  // An explicit employee-memory entry never mounts the old experience reader,
+  // selector or collector UI. Its target is not the active chat's employee.
+  if (props.memoryRequest)
+    return (
+      <section
+        className={css.panel}
+        aria-label="记忆"
+        hidden={!props.active}
+        style={!props.active ? { display: 'none' } : undefined}
+      >
+        <div className={css.body}>
+          <EmployeeMemoryManager
+            key={`${props.scopeId}/${props.workspaceId}/${props.memoryRequest.instanceId}`}
+            scopeId={props.scopeId}
+            workspaceId={props.workspaceId}
+            instanceId={props.memoryRequest.instanceId}
+            headers={props.headers}
+          />
+        </div>
+      </section>
+    );
+  return <ExperienceBrowser {...props} />;
+}
+
+function ExperienceBrowser(props: Props) {
   const [employee, setEmployee] = useState(props.instanceId ?? 'all'),
     [scope, setScope] = useState('all'),
     [query, setQuery] = useState(''),
