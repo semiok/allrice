@@ -202,7 +202,7 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
 
   async function upload(f: Subject, shared = false) {
     const db = fixture.db;
-    let principal = f.context;
+    let principal = {...f.context, memberships: f.readContext.policySnapshot.memberships};
     if (shared) {
       const other = randomUUID(), membership = randomUUID();
       await db`insert into allrice_users(id,email,display_name,password_hash) values(${other},${other+'@example.test'},'Citation fixture','not-login')`;
@@ -232,7 +232,7 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
       expect(checked.decision.linked).toEqual([]);
       expect(checked.snapshot.ordinaryFileCitations).toEqual([{objectId: file.object.id, retentionUntil: null}]);
       await f.complete(checked.guard, answer);
-      expect(await f.state()).toMatchObject({status: 'succeeded', state: 'succeeded', answer, text: answer, successes: 1});
+      expect(await f.state()).toMatchObject({status: 'succeeded', state: 'succeeded', result: {answer}, text: answer, successes: 1});
     },
   );
 
