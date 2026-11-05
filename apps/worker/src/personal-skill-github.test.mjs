@@ -236,13 +236,43 @@ test('SKILL.md template resources are preserved but never added to explicit cand
   }
 });
 
-test('archive file limit is preserved, without widening existing Bridge or storage bounds', async () => {
+test('GitHub web and chat preserve SKILL.md plus all 32 resources', async () => {
+  for (const rootOnly of [true, false]) {
+    const prefix = rootOnly ? '' : 'weekly/';
+    const contents = [
+      [prefix + 'SKILL.md', definition],
+      ...Array.from({ length: 32 }, (_, n) => [
+        `${prefix}assets/template${n}.txt`,
+        Buffer.from(`Template ${n}`),
+      ]),
+    ];
+    const fixture = setup({ contents });
+    const result = await readPublicGitHubSource(root, { ...fixture, rootOnly });
+    assert.equal(result.files.length, 33);
+    assert.deepEqual(result.candidatePaths, [prefix + 'SKILL.md']);
+    assert.equal(result.provenance.commitSha, commit);
+    for (const [path, bytes] of contents) {
+      const actual = result.files.find((file) => file.path === path);
+      assert.deepEqual(actual.bytes, bytes);
+      assert.equal(actual.gitBlobSha, hash(bytes));
+    }
+    assert.equal(
+      fixture.requests.filter((request) =>
+        request.address.includes('raw.githubusercontent.com'),
+      ).length,
+      33,
+    );
+  }
+});
+
+test('combined candidate archive limit rejects before downloading any source bytes', async () => {
   const contents = [
     ['weekly/SKILL.md', definition],
     ...Array.from({ length: 32 }, (_, n) => [
       `weekly/assets/template${n}.txt`,
       Buffer.from(`Template ${n}`),
     ]),
+    ['second/SKILL.md', definition],
   ];
   const fixture = setup({ contents });
   await assert.rejects(
@@ -414,7 +444,7 @@ test('per-file and per-package resource limits are checked before downloading', 
   for (const [changeTree, code] of [
     [
       (tree) => {
-        tree[2].size = 262145;
+        tree[2].size = 8_000_001;
       },
       'source_too_large',
     ],

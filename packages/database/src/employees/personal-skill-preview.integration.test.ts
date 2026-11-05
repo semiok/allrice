@@ -310,10 +310,16 @@ suite('browser Skill source preview and confirmation', () => {
     const bad = await createFileArchive([
       { path: 'SKILL.md', bytes: Buffer.from(raw + 'x') },
     ]);
-    expect(
-      (await send(s.owner.context, s.assigned.id, s.owner.workspaceId, bad))
-        .status,
-    ).toBe(400);
+    const rejected = await send(
+      s.owner.context,
+      s.assigned.id,
+      s.owner.workspaceId,
+      bad,
+    );
+    expect(rejected.status).toBe(422);
+    expect(await rejected.json()).toMatchObject({
+      error: { code: 'VALIDATION_FAILED', retryable: false },
+    });
     expect(await counts()).toEqual(before);
   });
   it.each(['rice', 'custom', 'professional'] as const)(
