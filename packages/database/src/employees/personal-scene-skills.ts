@@ -16,6 +16,7 @@ import {
   type EmployeeSceneSkillPin,
   type RequestContext,
   type WorkflowSkillFrontmatter,
+  type PersonalSceneSkill,
 } from '@allrice/contracts';
 import { getDatabase } from '../core/client.ts';
 import { DataAccessError } from '../data.ts';
@@ -178,11 +179,23 @@ async function resolvePackage(
 function summary(scene: Scene, frontmatter?: WorkflowSkillFrontmatter) {
   return {
     sceneId: scene.id,
-    name: frontmatter?.metadata.displayName ?? scene.name,
-    description: frontmatter?.description ?? scene.appliesWhen,
+    name: scene.name,
+    description: scene.appliesWhen,
     nativeName: `allrice-scene-${scene.id}`,
     ...(frontmatter ? { version: frontmatter.metadata.version } : {}),
   };
+}
+
+/** Human presentation only. Runtime directory semantics change in U1-3b,
+ * never as a side effect of adding author metadata to this reader. */
+export function personalSceneSkillAuthorView(skill: PersonalSceneSkill) {
+  return skill.frontmatter
+    ? {
+        ...skill,
+        name: skill.frontmatter.metadata.displayName,
+        description: skill.frontmatter.description,
+      }
+    : skill;
 }
 
 /** Internal transaction reader. Runtime callers must use the leased, recorded
@@ -231,6 +244,7 @@ export async function listPersonalSceneSkillsInTransaction(
   instanceId: string,
   tx: ContentSql,
   lock = false,
+  forAuthor = false,
 ) {
   const view = await readPersonalEmployeeSceneLayer(
     context,
@@ -252,14 +266,17 @@ export async function listPersonalSceneSkillsInTransaction(
           tx,
           lock,
         );
+        const skill = forAuthor
+          ? personalSceneSkillAuthorView(pkg.skill)
+          : pkg.skill;
         skills.push({
-          sceneId: pkg.skill.sceneId,
-          name: pkg.skill.name,
-          description: pkg.skill.description,
-          nativeName: pkg.skill.nativeName,
-          ...(pkg.skill.version ? { version: pkg.skill.version } : {}),
-          contentRef: pkg.skill.contentRef,
-          revision: pkg.skill.revision,
+          sceneId: skill.sceneId,
+          name: skill.name,
+          description: skill.description,
+          nativeName: skill.nativeName,
+          ...(skill.version ? { version: skill.version } : {}),
+          contentRef: skill.contentRef,
+          revision: skill.revision,
         });
       } catch (error) {
         if (!(error instanceof DataAccessError && error.code === 'not_found'))
@@ -278,7 +295,7 @@ export async function listPersonalSceneSkills(
   db = getDatabase(),
 ) {
   return db.begin('isolation level repeatable read read only', async (tx) =>
-    listPersonalSceneSkillsInTransaction(context, instanceId, tx),
+    listPersonalSceneSkillsInTransaction(context, instanceId, tx, false, true),
   );
 }
 export async function getPersonalSceneSkill(
@@ -287,9 +304,8 @@ export async function getPersonalSceneSkill(
   sceneId: string,
   db = getDatabase(),
 ) {
-  return db.begin(
-    'isolation level repeatable read read only',
-    async (tx) =>
+  return db.begin('isolation level repeatable read read only', async (tx) =>
+    personalSceneSkillAuthorView(
       (
         await readPersonalSceneSkillInTransaction(
           context,
@@ -298,6 +314,7 @@ export async function getPersonalSceneSkill(
           tx,
         )
       ).skill,
+    ),
   );
 }
 export async function getPersonalSceneSkillResource(

@@ -38,6 +38,8 @@ import {
   personalSceneContentRef,
   savePersonalSceneSkillInTransaction,
   listPersonalSceneSkills,
+  listPersonalSceneSkillsInTransaction,
+  readPersonalSceneSkillInTransaction,
 } from './personal-scene-skills.ts';
 import { mutateEmployeeContent } from './employee-content.ts';
 import { skillBundleChecksum, skillBytesChecksum } from '../skill-bundles.ts';
@@ -392,6 +394,27 @@ suite(
         version: 'v2-preview',
         contentRef: current.contentRef,
         revision: current.revision,
+      });
+      const runtime = await f.db.begin(async (tx) => ({
+        catalog: await listPersonalSceneSkillsInTransaction(
+          s.owner,
+          s.instance.id,
+          tx,
+        ),
+        package: await readPersonalSceneSkillInTransaction(
+          s.owner,
+          s.instance.id,
+          { sceneId: artifact.scene.id },
+          tx,
+        ),
+      }));
+      expect(runtime.catalog.skills[0]).toMatchObject({
+        name: artifact.scene.name,
+        description: artifact.scene.appliesWhen,
+      });
+      expect(runtime.package.skill).toMatchObject({
+        name: artifact.scene.name,
+        description: artifact.scene.appliesWhen,
       });
       const pin = parsePersonalSceneContentRef(current.contentRef);
       const [source] = await f.db<

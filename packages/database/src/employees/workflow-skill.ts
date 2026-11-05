@@ -26,9 +26,12 @@ export function parseWorkflowSkillSections(body: string) {
       .find((next) => next.type === 'heading' && next.depth <= 2);
     sections.set(
       title,
+      // Strip only boundary blank lines. trim() would remove indentation from
+      // an initial code block and change what the author's Markdown means.
       body
         .slice(node.position!.end.offset!, end?.position?.start.offset)
-        .trim(),
+        .replace(/^(?:[ \t]*\r?\n)+/, '')
+        .replace(/(?:\r?\n[ \t]*)+$/, ''),
     );
   }
   if (sections.size !== titles.length)

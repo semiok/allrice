@@ -23,6 +23,7 @@ import {
 import { resolveEmployeeContentSource } from './employee-content-sources.ts';
 import {
   personalSceneContentRef,
+  personalSceneSkillAuthorView,
   readPersonalSceneSkillInTransaction,
   savePersonalSceneSkillInTransaction,
 } from './personal-scene-skills.ts';
@@ -113,7 +114,7 @@ async function previewPersonalSceneFileInTransaction(
         { contentRef: expectedContentRef },
         tx,
       );
-      current = pkg.skill;
+      current = personalSceneSkillAuthorView(pkg.skill);
       // Exact bytes have just been authorized by the existing reader. Read
       // their authoring metadata in the same immutable snapshot for the diff.
       const [source] = await tx<{ content: unknown }[]>`

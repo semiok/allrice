@@ -56,6 +56,19 @@ afterEach(async () => {
 });
 
 describe('developer packs a native skill into C1 content without publishing', () => {
+  it('keeps the complete brand-content example packable under the same author framework', async () => {
+    const result = await packWorkflowSkill({
+      directory: join(repository, 'examples/workflow-skills/brand-content'),
+      sceneId,
+      title: '品牌内容方法',
+    });
+    expect(result.procedure.skillPackage.frontmatter.metadata).toEqual({
+      displayName: '品牌内容草稿',
+      version: '1.0.0',
+    });
+    expect(result.procedure.skillPackage.bundle.resources).toHaveLength(5);
+    expect(result.report.scriptsExecuted).toBe(false);
+  });
   it('runs the documented CLI twice, returns identical C1 content and exact resource bytes', async () => {
     const args = [
       '--import',
