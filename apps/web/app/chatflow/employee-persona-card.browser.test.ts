@@ -591,10 +591,22 @@ suite('U1 employee persona card', () => {
       });
       await editor
         .getByRole('button', { name: '返回员工详情', exact: true })
-        .click();
-      await page.getByRole('region', { name: '基础与人设' }).waitFor();
+        .focus();
+      await page.keyboard.press('Enter');
+      const details = page.getByRole('dialog', {
+        name: '流程哥员工详情',
+        exact: true,
+      });
+      await details.getByRole('region', { name: '基础与人设' }).waitFor();
+      await expect
+        .poll(() =>
+          details.evaluate((node) => node.contains(document.activeElement)),
+        )
+        .toBe(true);
       await page.getByRole('button', { name: '关闭', exact: true }).click();
-      await page.getByRole('button', { name: '切换员工' }).click();
+      await page
+        .getByRole('button', { name: '切换另一员工', exact: true })
+        .click();
       const other = await showDetails(page);
       await other
         .getByRole('heading', { name: '另一位员工', exact: true })
@@ -612,6 +624,42 @@ suite('U1 employee persona card', () => {
       await page.close();
     }
   }, 30_000);
+
+  it('keeps keyboard focus in employee details after a failed persona read', async () => {
+    const { page, state } = await open({ width: 390 });
+    await page.route(`**/api/v1/employee-instances/${id(7)}?*`, (route) =>
+      route.fulfill(json({ error: { message: '读取人设暂时失败。' } }, 503)),
+    );
+    try {
+      const card = await showDetails(page);
+      await card.getByRole('button', { name: '编辑员工', exact: true }).click();
+      const editor = page.getByRole('dialog', {
+        name: '编辑人设',
+        exact: true,
+      });
+      await editor.getByRole('alert').waitFor();
+      expect(await editor.getByRole('textbox').count()).toBe(0);
+      await editor
+        .getByRole('button', { name: '返回员工详情', exact: true })
+        .focus();
+      await page.keyboard.press('Enter');
+      const details = page.getByRole('dialog', {
+        name: '流程哥员工详情',
+        exact: true,
+      });
+      await card.waitFor();
+      await expect
+        .poll(() =>
+          details.evaluate((node) => node.contains(document.activeElement)),
+        )
+        .toBe(true);
+      expect(await editor.count()).toBe(0);
+      expect(state.writes).toEqual([]);
+      expect(state.errors).toEqual([]);
+    } finally {
+      await page.close();
+    }
+  });
 
   it('shows an unset expression preference only in the owner general persona', async () => {
     const { page, state } = await open({ width: 1440, general: true });

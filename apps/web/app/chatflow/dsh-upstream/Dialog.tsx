@@ -37,6 +37,7 @@ export function DshDialog({
   const dialog = useRef<HTMLElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  const hasBack = !!onBack;
 
   useEffect(() => {
     setMounted(true);
@@ -102,7 +103,7 @@ export function DshDialog({
       document.removeEventListener('keydown', trap);
       if (previous?.isConnected) previous.focus();
     };
-  }, [mounted, initialFocusSelector]);
+  }, [mounted, initialFocusSelector, hasBack]);
 
   if (!mounted) return null;
 
