@@ -5,6 +5,7 @@ import { UuidSchema, TimestampSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
 import { SkillBundleSchema, SkillResourcePathSchema } from './skill-bundle.ts';
 import { WorkflowSkillFrontmatterSchema } from './workflow-skill.ts';
+import { SkillPackageSourceSchema } from './skill-package-source.ts';
 import {
   ContentOwnershipSchema,
   ContentAccessDecisionSchema,
@@ -300,6 +301,7 @@ export const EmployeeSceneSkillPayloadSchema = z
     bundle: SkillBundleSchema,
     // Optional only for existing packages; never synthesize metadata for them.
     frontmatter: WorkflowSkillFrontmatterSchema.optional(),
+    source: SkillPackageSourceSchema.optional(),
     resourceSources: z
       .array(
         z

@@ -1,6 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { SkillPreviewTokens, type SkillPreview } from './preview-token.ts';
+import {
+  SkillPreviewTokens,
+  ScenePreviewTokens,
+  type SkillPreview,
+} from './preview-token.ts';
 
 const secret = 'synthetic-preview-test-key-0000000000';
 const tokens = new SkillPreviewTokens(secret);
@@ -117,5 +121,34 @@ describe('exact browser preview source attestation', () => {
     expect(() => tokens.issue(f.preview, Buffer.from('changed'))).toThrow(
       'source_invalid',
     );
+  });
+});
+
+describe('Workflow preview purpose separation', () => {
+  it('binds scene target and denies crossing ordinary/scene signatures', () => {
+    const f = fixture();
+    const scenes = new ScenePreviewTokens(secret);
+    const preview = {
+      ...f.preview,
+      target: {
+        operation: 'install' as const,
+        sceneId: randomUUID(),
+        expectedRevision: 0,
+        expectedContentRef: null,
+      },
+    };
+    const token = scenes.issue(preview, f.bytes);
+    expect(scenes.verify(token, f.scope).preview).toEqual(preview);
+    expect(() => tokens.verify(token, f.scope)).toThrow('preview_invalid');
+    expect(() => scenes.verify(f.token, f.scope)).toThrow('preview_invalid');
+    const [payload, archive, signature] = token.split('.');
+    const changed = JSON.parse(Buffer.from(payload!, 'base64url').toString());
+    changed.target.sceneId = randomUUID();
+    expect(() =>
+      scenes.verify(
+        `${Buffer.from(JSON.stringify(changed)).toString('base64url')}.${archive}.${signature}`,
+        f.scope,
+      ),
+    ).toThrow('preview_invalid');
   });
 });

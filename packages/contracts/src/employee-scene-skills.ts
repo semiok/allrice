@@ -110,6 +110,7 @@ export const PersonalSceneSkillSchema = PersonalSceneSkillSummarySchema.extend({
       .strict(),
   ),
   frontmatter: WorkflowSkillFrontmatterSchema.optional(),
+  source: EmployeeSceneSkillPayloadSchema.shape.source,
   whenToUse: z.string().optional(),
   stepsMarkdown: z.string().optional(),
   deliverablesMarkdown: z.string().optional(),

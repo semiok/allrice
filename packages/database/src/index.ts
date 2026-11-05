@@ -19,6 +19,7 @@ export * from './content-maintenance.ts';
 export * from './employees/employee-content.ts';
 export * from './employees/employee-scene-skills.ts';
 export * from './employees/personal-scene-files.ts';
+export { parseWorkflowSkillSections } from './employees/workflow-skill.ts';
 export { canUsePersonalEmployeeScenes } from './employees/employee-instance-policy.ts';
 export * from './employees/personal-scene-reads.ts';
 export {
