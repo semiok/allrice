@@ -1,16 +1,13 @@
 import { createHash } from 'node:crypto';
-import { z } from 'zod';
 import type postgres from 'postgres';
 import {
   ExperienceAdoptionProofSchema,
   ExperienceReadPinsSchema,
   ExperienceAdoptionViewSchema,
   supportedExperienceRule,
-  REPORT_STYLE_RECOGNIZER_VERSION,
   type ExperienceReadPin,
-  UuidSchema,
 } from '@allrice/contracts';
-import { getDatabase } from './core/client.ts';
+import type { getDatabase } from './core/client.ts';
 import { type ContentIdentity } from './content-maintenance.ts';
 import { readExperienceValidationSource } from './experience-consolidation.ts';
 import { readPassedExperienceProof } from './experience-validation.ts';
@@ -38,32 +35,29 @@ const deny = (): never => {
 const contentFor = (d: { rule: string; applicability: string }) =>
   `${d.rule}\n适用范围：${d.applicability}`;
 
-const digestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
-const ReportStyleReassessmentInputSchema = z
-  .object({
-    occurrenceId: UuidSchema,
-    draftIndex: z.number().int().min(0).max(7),
-    expectedOutputDigest: digestSchema,
-    expectedPlanDigest: digestSchema,
-  })
-  .strict();
-const ReportStyleReassessmentResultSchema = z.object({
-  auditId: UuidSchema,
-  occurrenceId: UuidSchema,
-  draftIndex: z.number().int().min(0).max(7),
-  recognizerVersion: z.literal(REPORT_STYLE_RECOGNIZER_VERSION),
-  decision: z.enum(['adopted', 'not_adopted']),
-  memoryId: UuidSchema.nullable(),
-  reason: z.string().nullable(),
-});
+type ReportStyleReassessmentInput = {
+  occurrenceId: string;
+  draftIndex: number;
+  expectedOutputDigest: string;
+  expectedPlanDigest: string;
+};
+type ReportStyleReassessmentResult = {
+  auditId: string;
+  occurrenceId: string;
+  draftIndex: number;
+  recognizerVersion: 'report-style-clauses-v2';
+  decision: 'adopted' | 'not_adopted';
+  memoryId: string | null;
+  reason: string | null;
+};
 /** Historical receipts and plans are read-only; no automatic adoption. */
 export async function syncExperienceAdoptions() {}
 
 /** The targeted old recognizer continuation is closed too. */
 export async function reassessReportStyleAdoption(
   who: ContentIdentity,
-  input: z.input<typeof ReportStyleReassessmentInputSchema>,
-): Promise<z.infer<typeof ReportStyleReassessmentResultSchema>> {
+  input: ReportStyleReassessmentInput,
+): Promise<ReportStyleReassessmentResult> {
   void who;
   void input;
   throw new ExperienceError('disabled');

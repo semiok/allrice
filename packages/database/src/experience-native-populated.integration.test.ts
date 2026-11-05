@@ -321,8 +321,10 @@ suite(
               };
         // The public finalizer determines actual outcome from error/cancellation. A
         // canceled synthetic execution has the same existing stop evidence as before.
-        if (status === 'canceled')
-          await db`update allrice_runs set state='canceled' where id=${test.validationRun}`;
+        await db`update allrice_runs set execution_spec=${db.json({ platformEmployeeTestRunId: test.testId })} where id=${test.validationRun}`;
+        await db`insert into allrice_jobs(id,organization_id,workspace_id,owner_id,run_id,status,idempotency_key,timeout_at,payload,cancel_requested_at)
+          values(${randomUUID()},${f.org},${f.workspace},${f.user},${test.validationRun},'running',${randomUUID()},clock_timestamp()+interval '5 minutes',
+            ${db.json({ schemaVersion: 1, type: 'allrice.platform_employee.test', input: { testRunId: test.testId } })},${status === 'canceled' ? new Date() : null})`;
         await completePlatformEmployeeTestRun(test.testId, {
           answer: JSON.stringify(attendanceAnswer),
           provider: test.binding.model.provider,
@@ -341,6 +343,7 @@ suite(
         });
         const [saved] =
           await db`select status,experience_assertion from allrice_platform_employee_test_runs where id=${test.testId}`;
+        expect(saved!.status).toBe(status);
         expect(saved!.experience_assertion).toMatchObject({
           passed: false,
           reason: 'authority_changed',

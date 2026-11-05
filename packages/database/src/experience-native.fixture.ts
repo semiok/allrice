@@ -201,8 +201,8 @@ export async function seedHistoricalExperienceCalendar(
       id: randomUUID(),
       kind: 'at',
       scheduledAt: current.arm.nativeAt,
-      title: 'Synthetic historical calendar',
-      prompt: 'No model. Synthetic historical receipt only.',
+      title: 'AllRice once control',
+      prompt: 'Synthetic schedule control only. Never execute business work.',
     },
   };
   async function put() {

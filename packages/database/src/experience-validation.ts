@@ -16,7 +16,7 @@ import {
 } from '@allrice/contracts';
 
 import { ExperienceError } from './experience.ts';
-import { readExperienceValidationSource } from './experience-consolidation.ts';
+import type { readExperienceValidationSource } from './experience-consolidation.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
 
 import {
