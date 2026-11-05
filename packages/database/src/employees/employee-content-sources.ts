@@ -351,7 +351,7 @@ export async function resolveEmployeeContentSource(
   }
   // A shared administration read never fetches personal memory, even if a
   // malformed shared manifest contains its reference.
-  if (input.sharedReader || !input.instanceId)
+  if (input.sharedReader || !input.instanceId || !context.workspaceId)
     return unavailable(ref, 'source_scope_mismatch');
   const [memory] = await sql<
     {
