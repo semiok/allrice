@@ -131,6 +131,7 @@ suite('U1 employee details personal-memory entry', () => {
       host?: 'details' | 'compact' | 'lifecycle';
       shared?: boolean;
       disabled?: boolean;
+      legacy?: boolean;
       holdCounts?: boolean;
       failCounts?: boolean;
       zero?: boolean;
@@ -212,6 +213,43 @@ suite('U1 employee details personal-memory entry', () => {
                 : 0;
         return route.fulfill(json(memoryPage(instanceId!, filter, count)));
       }
+      if (path === '/api/v1/experiences')
+        return route.fulfill(
+          json({
+            candidates: [],
+            draftBatches: [],
+            overview: {
+              visibility: 'owner',
+              workspaceId: id(4),
+              instanceId,
+              summary: {
+                enabled: true,
+                policy: {
+                  frequency: 'weekly',
+                  timezone: 'Asia/Shanghai',
+                  time: '03:00',
+                  weekday: 1,
+                  monthDay: 1,
+                  source: 'platform',
+                  revision: 2,
+                  validationMode: 'supported_cases',
+                  adoptionMode: 'supported_private',
+                },
+                schedule: {
+                  state: 'not_scheduled',
+                  lastCheckedAt: null,
+                  nextRunAt: null,
+                  lastOccurrence: null,
+                },
+                counts: {
+                  pendingSources: 0,
+                  awaitingValidation: 0,
+                  adoptedTotal: 0,
+                },
+              },
+            },
+          }),
+        );
       if (path === '/api/v1/memories' && request.method() === 'POST') {
         const body = request.postDataJSON();
         if (state.writeGate) await state.writeGate;
@@ -368,6 +406,7 @@ suite('U1 employee details personal-memory entry', () => {
     if (options.dark) params.set('theme', 'dark');
     if (options.shared) params.set('shared', '1');
     if (options.disabled) params.set('disabled', '1');
+    if (options.legacy) params.set('legacy', '1');
     await page.goto(`${origin}/?${params}`);
     const openDetails = async (name = '流程哥') => {
       const entry = page.getByRole('button', {
@@ -714,6 +753,13 @@ suite('U1 employee details personal-memory entry', () => {
       ).toBe('真实工作台切标签保留草稿');
       expect(f.state.writes).toEqual([]);
       expect(f.state.errors).toEqual([]);
+      await f.page
+        .getByRole('button', { name: '返回员工详情', exact: true })
+        .click();
+      await contains(
+        f.page.getByRole('dialog', { name: '流程哥员工详情', exact: true }),
+        '65 条',
+      );
     } finally {
       await f.close();
     }
@@ -776,6 +822,29 @@ suite('U1 employee details personal-memory entry', () => {
           f.page.getByRole('dialog', { name: 'Rice员工详情', exact: true }),
           '6 条',
         );
+        if (width === 1440) {
+          await f.page
+            .getByRole('dialog', { name: 'Rice员工详情', exact: true })
+            .getByRole('region', { name: '记忆', exact: true })
+            .getByRole('button', { name: '查看', exact: true })
+            .click();
+          await f.page.setViewportSize({ width: 390, height: 844 });
+          await memoryTabs.last().click();
+          expect(
+            await f.page
+              .getByRole('region', { name: '个人记忆', exact: true })
+              .getByRole('textbox', { name: '新增记忆内容', exact: true })
+              .inputValue(),
+          ).toBe('流程哥独立记忆草稿');
+          await memoryTabs.first().click();
+          await f.page
+            .getByRole('button', { name: '返回员工详情', exact: true })
+            .click();
+          await contains(
+            f.page.getByRole('dialog', { name: 'Rice员工详情', exact: true }),
+            '6 条',
+          );
+        }
         expect(f.state.writes).toEqual([]);
         expect(f.state.errors).toEqual([]);
       } finally {
@@ -784,6 +853,56 @@ suite('U1 employee details personal-memory entry', () => {
     },
     30_000,
   );
+
+  it('opens personal memory without reactivating a retained old experience/collector tab', async () => {
+    const f = await fixture({ legacy: true });
+    try {
+      await f.page
+        .getByRole('button', { name: '经验管理', exact: true })
+        .click();
+      const old = f.page.getByRole('region', { name: '经验管理', exact: true });
+      await old
+        .getByRole('button', { name: '积累与采用记录', exact: true })
+        .click();
+      await expect
+        .poll(
+          () =>
+            f.state.reads.filter((read) => read.path === '/api/v1/experiences')
+              .length,
+        )
+        .toBeGreaterThan(0);
+      await f.page
+        .getByRole('button', { name: '关闭工作台', exact: true })
+        .click();
+      const dialog = await f.openDetails();
+      await contains(
+        dialog.getByRole('region', { name: '记忆', exact: true }),
+        '65 条',
+      );
+      const before = f.state.reads.length;
+      await dialog
+        .getByRole('region', { name: '记忆', exact: true })
+        .getByRole('button', { name: '查看', exact: true })
+        .click();
+      await contains(
+        f.page.getByRole('region', { name: '个人记忆', exact: true }),
+        '全部 · 共 0 条',
+      );
+      expect(
+        f.state.reads
+          .slice(before)
+          .filter(
+            (read) =>
+              /experience|accumulation/.test(read.path) ||
+              read.path.endsWith('/content'),
+          ),
+      ).toEqual([]);
+      expect(f.state.writes).toEqual([]);
+      expect(f.state.errors).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
 
   it('keeps M3 drafts and in-flight writes mounted while hidden and when reopening the same target', async () => {
     const f = await fixture({ host: 'lifecycle' });
