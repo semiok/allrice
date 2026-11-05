@@ -1,3 +1,4 @@
+import * as instancePolicy from './employee-instance-policy.ts';
 import { sceneSkillFixture } from './employee-scene-skills.fixture.ts';
 import type { RequestContext } from '@allrice/contracts';
 import { listPersonalSceneSkills } from './personal-scene-skills.ts';
@@ -92,11 +93,13 @@ import {
 } from '../providers/platform-model-settings.ts';
 import { resolveSubscriptionSnapshot } from '@allrice/contracts';
 import {
+  readEmployeeRuntimeContent,
   prepareEmployeeContentContext,
   assertEmployeeContentContext,
   assertEmployeeContentReferenceMessages,
 } from './employee-runtime-content.ts';
 import {
+  freezeEmployeeRuntimeContent,
   getEmployeeContentSet,
   getEffectiveEmployeeContent,
   getEmployeeDetails,
@@ -7589,6 +7592,18 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     const [old] =
       await fixture.db`select execution_snapshot from allrice_employee_runs where run_id=${first.context.runId}`;
     expect(old!.execution_snapshot).toEqual(first.frozen);
+    const listed = await listChatSessions(f.a.context, f.a.workspaceId, {
+      includeEmployeeGroups: true,
+    });
+    expect(
+      listed.sessions
+        .filter((s) => s.employeeInstanceId === id)
+        .map((s) => s.employeeName),
+    ).toEqual(['小饭', '小饭']);
+    expect(
+      listed.employeeGroups.find((g) => g.employeeInstanceId === id)
+        ?.employeeName,
+    ).toBe('小饭');
     const restored = await changeEmployeeInstanceLifecycle(f.a.context, id, {
       workspaceId: f.a.workspaceId,
       requestId: randomUUID(),
@@ -7701,6 +7716,76 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     expect(
       (await listPersonalSceneSkills(f.a.context, custom.id)).skills,
     ).toHaveLength(1);
+  });
+
+  it('E3 rejects a valid pre-boundary Rice personal content snapshot without deleting its immutable history', async () => {
+    const f = await setup(true, true),
+      id = f.assignment.id;
+    // Reproduce the old eligibility only while creating a legacy publication.
+    // Both the stored publication and snapshot are real; the E3 read is unmocked.
+    const legacyPolicy = vi
+      .spyOn(instancePolicy, 'isBaseRiceInstance')
+      .mockResolvedValue(false);
+    const input = {
+      instanceId: id,
+      employeeId: f.assignment.employeeId,
+      employeeVersionId: f.assignment.currentVersion.id,
+    };
+    const setId = randomUUID();
+    let old;
+    try {
+      await fixture.db.begin((tx) =>
+        mutateEmployeeContentInTransaction(
+          f.a.context,
+          {
+            workspaceId: f.a.workspaceId,
+            requestId: randomUUID(),
+            setId,
+            expectedRevision: 0,
+            operation: 'save_draft',
+            ownership: {
+              scope: 'personal',
+              organizationId: f.a.organizationId,
+              ownerId: f.a.user.id,
+            },
+            target: { kind: 'instance', instanceId: id },
+            manifest: {
+              schemaVersion: 1,
+              common: [],
+              scenes: [],
+              declaredConflicts: [],
+            },
+            textEdits: [],
+            changeSummary: 'Pre-E3 legacy personal layer',
+          },
+          tx as unknown as ContentTx,
+          { publishOnSave: true, authorize: async () => undefined },
+        ),
+      );
+      old = await freezeEmployeeRuntimeContent(f.a.context, input, fixture.db);
+      expect(old.layers).toHaveLength(1);
+      await readEmployeeRuntimeContent(f.a.context, old, fixture.db);
+    } finally {
+      legacyPolicy.mockRestore();
+    }
+    await expect(
+      readEmployeeRuntimeContent(f.a.context, old, fixture.db),
+    ).rejects.toThrow();
+    const next = await freezeEmployeeRuntimeContent(
+      f.a.context,
+      input,
+      fixture.db,
+    );
+    expect(next.layers).toEqual([]);
+    await readEmployeeRuntimeContent(f.a.context, next, fixture.db);
+    const [history] =
+      await fixture.db`select manifest from allrice_employee_content_revisions where set_id=${setId}`;
+    expect(history!.manifest).toEqual({
+      schemaVersion: 1,
+      common: [],
+      scenes: [],
+      declaredConflicts: [],
+    });
   });
 
   it('upgrades Rice through its established tenant alias without allowing the alias to rename the platform identity', async () => {

@@ -17,7 +17,7 @@ export function isBaseRiceInstanceDefinition(
 ) {
   return (
     instance.kind === 'general' &&
-    instance.source.kind === 'platform' &&
+    instance.source?.kind === 'platform' &&
     instance.source.employeeVersionId === employee.versionId &&
     employee.key === 'default-assistant' &&
     employee.definition.schemaVersion === 2 &&
