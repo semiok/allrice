@@ -65,6 +65,7 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
   async function subject(
     allowedTools = ['workspace.export.create', 'workspace.document.read'],
     storageRead = true,
+    frozenToolNames = allowedTools,
   ) {
     vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
@@ -79,6 +80,10 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
         ...value,
         capabilitySnapshot: {
           ...value.capabilitySnapshot,
+          bindings: {
+            ...value.capabilitySnapshot.bindings,
+            toolNames: frozenToolNames,
+          },
           grantedCapabilities:
             value.capabilitySnapshot.grantedCapabilities.filter(
               (c) => storageRead || c !== 'storage:read',
@@ -274,6 +279,55 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
     );
     return markStorageReady(principal, pending.object.id, db);
   }
+
+  it.each([null, 'workspace.file.read', 'workspace.document.read'] as const)(
+    'F1 frozen read-tool qualification is shared by inspect/check/commit: %s',
+    async (readTool) => {
+      // The employee default remains broader than this Run. No fallback may
+      // restore either read tool removed from the frozen bindings.
+      const f = await subject(
+        ['workspace.project', 'workspace.file.list', 'workspace.file.read', 'workspace.document.read'],
+        true,
+        ['workspace.project', 'workspace.file.list', ...(readTool ? [readTool] : [])],
+      );
+      const file = await upload(f);
+      const answer = `[source](/api/v1/files/${file.object.id}/download?name=source.txt)`;
+      expect((await getToolBrokerFile(f.readContext, file.object.id, fixture.db)).object.id).toBe(file.object.id);
+      const inspection = await f.port.inspect({
+        nativeSessionId: f.native, turn: 1, publicMessageId: randomUUID(), durableSeq: 1,
+        text: answer, candidateDigest: finalDeliveryTextDigest(answer), provider: 'fixture', model: 'fixture',
+      });
+      expect(inspection.decision === 'pass').toBe(Boolean(readTool));
+      const candidate = {
+        nativeText: answer, projectedText: answer, nativeSessionId: f.native,
+        publicMessageId: randomUUID(), durableSeq: 1, nativeBindingId: randomUUID(),
+        rootRunId: f.rootRunId, attempt: 1, generation: 1,
+      };
+      const decision = await f.port.check(candidate);
+      expect(decision.status).toBe(readTool ? 'valid' : 'invalid_response');
+      if (readTool) {
+        const {guard} = await f.validate(answer);
+        await f.complete(guard, answer);
+        expect(await f.state()).toMatchObject({status: 'succeeded', successes: 1});
+      } else {
+        // Even an erroneous upstream proof cannot grant missing frozen tools:
+        // commit must rebuild the facts from the real Run, independently.
+        const snapshot = await f.port.readSnapshot(answer);
+        const forged = checkFinalDelivery({candidate: answer, snapshot: {...snapshot,
+          ordinaryFileCitations: [{objectId: file.object.id, retentionUntil: null}]},
+          expectedScope: snapshot.scope, markup: createDeliveryMarkup(), managedOrigins: []});
+        expect(forged.status).toBe('valid');
+        const guard = f.port.createCommitGuard({
+          nativeSessionId: f.native, publicMessageId: candidate.publicMessageId,
+          durableSeq: 1, nativeBindingId: candidate.nativeBindingId,
+          nativeCandidateDigest: finalDeliveryTextDigest(answer), candidateDigest: forged.candidateDigest,
+          factSetDigest: forged.factSetDigest, attempt: 1, generation: 1,
+        }, f.origin, answer);
+        await expect(f.complete(guard, answer)).rejects.toMatchObject({code: 'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE'});
+        expect(await f.state()).toMatchObject({status: 'running', successes: 0});
+      }
+    },
+  );
 
   it.each(['?name=周报资料.txt', ''])(
     'B2/B3 ordinary source citation accepts the same authorized object with query %s and no read receipt',
