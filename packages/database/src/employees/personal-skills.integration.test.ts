@@ -348,7 +348,11 @@ suite(
         // Revocation is checked before receipt replay; a signed-in owner cannot
         // use an old successful request to bypass today's assignment gate.
         await f.db`update allrice_employee_assignments set active=false where id=${x.assignment.id}`;
-        expect((await send()).status).toBe(404);
+        const revoked = await send();
+        expect(revoked.status).toBe(403);
+        expect(await revoked.json()).toMatchObject({
+          error: { code: 'AUTHORIZATION_DENIED' },
+        });
       },
     );
     it('browser instance removal rejects foreign owners, tenant, CSRF and global-operation substitution without writes', async () => {
