@@ -82,6 +82,25 @@ export async function assertPersonalSceneNames(
   const names = await namesInManifest(tx, context, manifest);
   if (!names.length) return;
   const old = previous ? await namesInManifest(tx, context, previous) : [];
+  for (const scene of names) {
+    const prior = old.find((entry) => entry.sceneId === scene.sceneId);
+    if (prior?.authorName && prior.authorName !== scene.authorName)
+      throw new EmployeeContentError('version_conflict');
+  }
+  await assertPersonalSceneNamespace(tx, context, instance, names);
+}
+
+/** Current catalogs can change after an author saves. Check the native names
+ * again at discovery/load rather than letting DSH silently choose a winner.
+ * The caller supplies only currently authorized scenes; exact historical reads
+ * retain their content address and do not re-enter today's command namespace. */
+export async function assertPersonalSceneNamespace(
+  tx: ContentSql,
+  context: ContentIdentity,
+  instance: EmployeeInstance,
+  names: readonly { sceneId: string; name: string }[],
+) {
+  if (!names.length) return;
   const base = await readCurrentEmployeeBaseSkills(tx, instance);
   const ordinary = await tx<
     { name: string }[]
@@ -93,11 +112,7 @@ export async function assertPersonalSceneNames(
     [...base.nativeSkills, ...ordinary].map((skill) => [skill.name, null]),
   );
   for (const scene of names) {
-    const prior = old.find((entry) => entry.sceneId === scene.sceneId);
-    if (
-      (prior?.authorName && prior.authorName !== scene.authorName) ||
-      (occupied.has(scene.name) && occupied.get(scene.name) !== scene.sceneId)
-    )
+    if (occupied.has(scene.name) && occupied.get(scene.name) !== scene.sceneId)
       throw new EmployeeContentError('version_conflict');
     occupied.set(scene.name, scene.sceneId);
   }

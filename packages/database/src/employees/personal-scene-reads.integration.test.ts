@@ -1,3 +1,5 @@
+import { loadPlatformContentCatalog } from '../platform-content/catalog.ts';
+import { synchronizePlatformContent } from '../platform-content/sync.ts';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
@@ -43,6 +45,7 @@ import {
 import { resolveEmployeeExecution } from './employeehub.ts';
 import {
   prepareEmployeeContentContext,
+  listPersonalRuntimeSceneSkills,
   loadPersonalRuntimeSceneSkill,
 } from './employee-runtime-content.ts';
 import {
@@ -490,6 +493,10 @@ suite(
           101,
         ),
       );
+      const history = await listPersonalSceneReads(s.owner, s.instance.id);
+      expect(
+        history.runs[0]!.reads[0]!.uses.map((use) => use.nativeName),
+      ).toEqual(['weekly-brief', `allrice-scene-${loaded.sceneId}`]);
       await appendUse(
         run,
         useEvent(
@@ -500,10 +507,67 @@ suite(
           102,
         ),
       );
-      const history = await listPersonalSceneReads(s.owner, s.instance.id);
+      await expect(
+        listPersonalSceneReads(s.owner, s.instance.id),
+      ).rejects.toMatchObject({ code: 'source_changed' });
+    });
+
+    it('native names: refuses a collision with the Run frozen Skills after the current platform catalog removes that name', async () => {
+      const s = await setup(),
+        first = await save(s),
+        run = await runtime(s);
+      const platform = await loadPlatformContentCatalog();
+      const oldName = `p18-${publication.skillId}`;
+      const [frozen] =
+        await f.db`select native_skills from allrice_employee_runs where run_id=${run.scope.runId}`;
       expect(
-        history.runs[0]!.reads[0]!.uses.map((use) => use.nativeName),
-      ).toEqual(['weekly-brief', `allrice-scene-${loaded.sceneId}`]);
+        frozen!.native_skills.some(
+          (skill: { name: string }) => skill.name === oldName,
+        ),
+      ).toBe(true);
+      await synchronizePlatformContent({
+        ...platform,
+        catalogChecksum: 'sha256:' + '9'.repeat(64),
+        skills: platform.skills.map((skill, index) =>
+          index === 0
+            ? {
+                ...skill,
+                replaces: [...(skill.replaces ?? []), publication.skillId],
+              }
+            : skill,
+        ),
+      });
+      try {
+        const next = await save(s, '2.0.0', first, oldName);
+        expect(
+          (await listPersonalSceneSkills(s.owner, s.instance.id)).skills[0]!
+            .nativeName,
+        ).toBe(oldName);
+        await expect(
+          listPersonalRuntimeSceneSkills(
+            run.scope,
+            run.content.generationId,
+            run.worker,
+          ),
+        ).rejects.toMatchObject({ code: 'version_conflict' });
+        await expect(body(run, next.sceneId)).rejects.toMatchObject({
+          code: 'version_conflict',
+        });
+        const [state] =
+          await f.db`select content_scene_state from allrice_employee_runs where run_id=${run.scope.runId}`;
+        expect(state!.content_scene_state.reads).toEqual([]);
+        expect(
+          (
+            await inspectPersonalSceneSkill(
+              s.owner,
+              s.instance.id,
+              next.contentRef,
+            )
+          ).nativeName,
+        ).toBe(oldName);
+      } finally {
+        await synchronizePlatformContent(platform);
+      }
     });
 
     it('projects only canonical native use events, with exact v1/v2 revisions and original native identities', async () => {
