@@ -814,7 +814,7 @@ describe('personal Workflow native slash source and use evidence', () => {
       ],
     });
     expect(r.requests).toEqual([]);
-    expect(r.toolCalls).toBe(0);
+    expect(r.toolCalls).toEqual([]);
     expect(
       r.bridgeCalls.some(
         (call) => call.method === 'allrice/content-scene-personal-list',
