@@ -438,10 +438,12 @@ suite('browser Skill source preview and confirmation', () => {
       ).status,
     ).toBe(409);
   });
-  it('records a provenance-only ZIP rename as a new immutable version', async () => {
+  it('records a provenance-only ZIP rename at full quota while sharing immutable archive bytes', async () => {
     const s = await setup();
     const bytes = await zip();
     const { result: old } = await installWeb(s, s.assigned.id, bytes);
+    const before = await counts();
+    await f.db`insert into allrice_storage_quotas(organization_id,workspace_id,limit_bytes) values(${s.owner.organizationId},${s.owner.workspaceId},${bytes.byteLength})`;
     const preview = await (
       await send(
         s.owner.context,
@@ -475,6 +477,8 @@ suite('browser Skill source preview and confirmation', () => {
     const [previous] =
       await f.db`select source from allrice_personal_skill_versions where id=${old.skill.versionId}`;
     expect(previous!.source.fileName).toBe('weekly.zip');
+    expect(result.skill.source.objectId).toBe(old.skill.source.objectId);
+    expect(await counts()).toEqual(before);
   });
   it('binds an existing archive and confirms an unchanged update without additional quota or storage writes', async () => {
     const s = await setup(true),
@@ -1116,6 +1120,16 @@ suite('browser Skill source preview and confirmation', () => {
           installed.skill.versionId,
         );
         expect(changedResult.skill.source.kind).toBe('attachment');
+        const manifests =
+          await f.db`select resource_manifest from allrice_personal_skill_versions where installation_id=${installed.skill.id}`;
+        expect(manifests).toHaveLength(2);
+        expect(
+          new Set(manifests.map((v) => v.resource_manifest.archiveObjectId))
+            .size,
+        ).toBe(1);
+        expect(changedResult.skill.source.objectId).toBe(
+          manifests[0]!.resource_manifest.archiveObjectId,
+        );
         expect(noFetch).not.toHaveBeenCalled();
       }
     },
