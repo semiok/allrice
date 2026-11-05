@@ -7971,6 +7971,9 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     );
     expect(riceSkills.skills).toHaveLength(1);
     const ref = riceSkills.skills[0]!.contentRef;
+    expect(typeof ref).toBe('string');
+    if (!ref)
+      throw new Error('Rice personal package must expose an exact contentRef');
     const readHttp = (selection: Record<string, string>) =>
       GET(
         new Request(
