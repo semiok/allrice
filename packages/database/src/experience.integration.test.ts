@@ -12,6 +12,7 @@ import { createExperienceFixture } from './experience.fixture.ts';
 import { approveSyntheticCurrentEmployeeExecution } from './current-execution.fixture.ts';
 import {
   createChatSession,
+  createTraceableMemory,
   getEmployeeWorkspace,
   sendChatMessage,
   correctWorkspaceMemory,
@@ -1117,7 +1118,7 @@ suite(
         vi.stubEnv('ALLRICE_EXPERIENCE_REVIEW_ENABLED', '1');
       }
     });
-    it('freezes the approved memory revision into a real next queued Run and actual Worker kernel, preserving earlier Run', async () => {
+    it('freezes only current instance personal confirmation into the next Run and kernel, preserving the earlier Run', async () => {
       const f = await fixture();
       const oldSession = await createChatSession(f.owner, {
         workspaceId: f.workspace,
@@ -1134,6 +1135,20 @@ suite(
       );
       const c = await store.create(f.owner, f.input);
       await store.review(f.owner, c.id, decision(c));
+      const candidate = await createTraceableMemory(f.owner, {
+        workspaceId: f.workspace,
+        instanceId: oldSession.employeeInstanceId ?? oldSession.employeeAssignmentId,
+        content: f.input.content,
+        sourceType: 'user',
+        lifecycleState: 'candidate',
+        idempotencyKey: randomUUID(),
+      });
+      const confirmed = await promoteWorkspaceMemory(f.owner, f.workspace, candidate.id, {
+        instanceId: candidate.instanceId!,
+        expectedRevision: candidate.revision,
+        contentDigest: candidate.contentDigest,
+        idempotencyKey: randomUUID(),
+      });
       const newSession = await createChatSession(f.owner, {
         workspaceId: f.workspace,
         title: 'After experience',
@@ -1160,7 +1175,7 @@ suite(
       expect(rows[0]!.prompt_snapshot.memories).toEqual([]);
       expect(rows[1]!.prompt_snapshot.memories).toEqual([
         expect.objectContaining({
-          id: c.id,
+          id: confirmed.id,
           revision: 2,
           content: f.input.content,
         }),
