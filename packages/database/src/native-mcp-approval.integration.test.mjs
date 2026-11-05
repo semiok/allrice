@@ -42,6 +42,7 @@ import * as McpExecutor from '../../../apps/worker/src/mcp/executor.ts';
 import { createNativeActionApprovalHttpHandler } from '../../../apps/worker/src/native-action-approval-http.ts';
 import { createMcpTransport } from '../../../apps/worker/src/mcp/transport.ts';
 import { POST as stopCloudOperations } from '../../../apps/web/app/api/v1/runtime/cloud-operations/route.ts';
+import { POST as decideNativeApproval } from '../../../apps/web/app/api/v1/runtime/approvals/[id]/route.ts';
 
 /* global process, URL, fetch, Request */
 
@@ -56,6 +57,7 @@ const login = vi.hoisted(() => ({
 }));
 vi.mock('../../../apps/web/lib/identity/session', () => ({
   requireRequestContext: async () => login.context,
+  getRequestContext: async () => login.context,
   sessionCookieName: 'synthetic_session',
 }));
 vi.mock('next/headers', () => ({
@@ -316,6 +318,21 @@ suite('MET-248 native approval → exact owned append', () => {
             ...(response ? { response } : {}),
           }),
         });
+      const webAnswer = (response) =>
+        decideNativeApproval(
+          new Request(
+            `http://allrice.test/api/v1/runtime/approvals/${operationId}`,
+            {
+              method: 'POST',
+              headers: {
+                origin: 'http://allrice.test',
+                'content-type': 'application/json',
+              },
+              body: JSON.stringify(response),
+            },
+          ),
+          { params: Promise.resolve({ id: operationId }) },
+        );
       try {
         await h.prompt(userText);
         let pending;
@@ -356,11 +373,13 @@ suite('MET-248 native approval → exact owned append', () => {
           ).status,
         ).toBe(409);
         const waiting = h.wait();
+        const submitted = answer(
+          pending.request,
+          decision === 'rejected' ? 'rejected' : 'approved',
+        );
         if (decision === 'cancelled' || decision === 'cancel_after_start') {
           if (decision === 'cancel_after_start') {
-            expect((await http('answer', answer(pending.request))).status).toBe(
-              200,
-            );
+            expect((await webAnswer(submitted)).status).toBe(200);
             await expect.poll(() => f.service.state.calls).toBe(1);
             expect((await operation(f, operationId)).status).toBe('running');
           }
@@ -381,10 +400,7 @@ suite('MET-248 native approval → exact owned append', () => {
           expect((await http('answer', answer(pending.request))).status).toBe(
             409,
           );
-        } else
-          expect(
-            (await http('answer', answer(pending.request, decision))).status,
-          ).toBe(200);
+        } else expect((await webAnswer(submitted)).status).toBe(200);
         await waiting;
         const snapshot = await operation(f, operationId);
         expect(f.service.state.rows).toEqual(
@@ -426,6 +442,15 @@ suite('MET-248 native approval → exact owned append', () => {
         if (decision === 'cancelled')
           expect(decisions[0].data.outcome).toBe('cancelled');
         expect((await http('read')).status).toBe(409);
+        if (decision !== 'cancelled') {
+          expect((await webAnswer(submitted)).status).toBe(200);
+          expect(f.service.state.calls).toBe(decision === 'rejected' ? 0 : 1);
+          expect(
+            h.root.session
+              .snapshotEvents()
+              .filter((e) => e.type === 'approval/asked'),
+          ).toHaveLength(1);
+        }
       } finally {
         releaseReply.resolve();
         spy.mockRestore();
