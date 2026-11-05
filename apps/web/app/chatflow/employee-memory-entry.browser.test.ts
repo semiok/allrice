@@ -1063,7 +1063,8 @@ suite('U1 employee details personal-memory entry', () => {
       writeGate.release();
       await contains(oldManager, '记忆已保存。');
       expect(f.state.writes.length).toBe(1);
-      expect(f.state.writes[0].body.instanceId).toBe(id(7));
+      expect(f.state.writes[0]).toBeDefined();
+      expect(f.state.writes[0]?.body.instanceId).toBe(id(7));
       expect(
         await personal
           .getByRole('textbox', { name: '新增记忆内容', exact: true })
@@ -1122,7 +1123,8 @@ suite('U1 employee details personal-memory entry', () => {
       writeGate.release();
       await contains(manager, '记忆已保存。');
       expect(f.state.writes.length).toBe(1);
-      expect(f.state.writes[0].body.instanceId).toBe(id(17));
+      expect(f.state.writes[0]).toBeDefined();
+      expect(f.state.writes[0]?.body.instanceId).toBe(id(17));
       expect(f.state.errors).toEqual([]);
     } finally {
       writeGate.release();
