@@ -57,7 +57,10 @@ import {
   type ContentRevisionRow,
 } from './employee-content-model.ts';
 import { resolveEmployeeMethodTarget } from './employee-method-target.ts';
-import { isBaseRiceInstance } from './employee-instance-policy.ts';
+import {
+  isBaseRiceInstance,
+  canUsePersonalEmployeeScenes,
+} from './employee-instance-policy.ts';
 import { validateSceneSkillPackage } from './employee-scene-skill-package.ts';
 export { EmployeeContentError } from './employee-content-model.ts';
 
@@ -256,12 +259,7 @@ async function inheritedRows(
   const departmentId =
     scope.scope === 'department' ? scope.departmentId : principal.departmentId;
   const personalAllowed =
-    scope.scope === 'personal' &&
-    target.instanceId !== null &&
-    !(await isBaseRiceInstance(
-      await getEmployeeInstance(context, target.instanceId, sql),
-      sql,
-    ));
+    scope.scope === 'personal' && target.instanceId !== null;
   return sql<ContentSetRow[]>`select * from allrice_employee_content_sets
     where organization_id=${context.organizationId} and workspace_id=${context.workspaceId}
       and employee_id=${target.employeeId} and active_revision_id is not null
@@ -819,9 +817,12 @@ export async function mutateEmployeeContentInTransaction(
     input.ownership.ownerId !== context.actor.id
   )
     throw new DataAccessError('authorization_denied');
+  // Rice is admitted only through the existing controlled package or method
+  // writers. Do not expose the legacy raw draft/activate HTTP interface.
   if (
     input.ownership.scope === 'personal' &&
     target.instanceId &&
+    !options.authorize &&
     (await isBaseRiceInstance(
       await getEmployeeInstance(context, target.instanceId, tx),
       tx,
@@ -1057,7 +1058,10 @@ export async function freezeEmployeeRuntimeContent(
     instanceId: input.instanceId,
   };
   const platform = await platformContent(context, target, sql);
-  if (input.personalScenes && instance.kind !== 'custom')
+  if (
+    input.personalScenes &&
+    !(await canUsePersonalEmployeeScenes(instance, sql))
+  )
     throw new DataAccessError('authorization_denied');
   const rows = input.personalScenes
     ? []
@@ -1287,7 +1291,8 @@ export async function readPersonalEmployeeSceneLayer(
     lock,
   );
   const instance = await getEmployeeInstance(context, instanceId, sql);
-  if (instance.kind !== 'custom') throw new DataAccessError('not_found');
+  if (!(await canUsePersonalEmployeeScenes(instance, sql)))
+    throw new DataAccessError('not_found');
   const [row] = await sql<ContentSetRow[]>`
     select * from allrice_employee_content_sets
     where organization_id=${context.organizationId} and workspace_id=${context.workspaceId}

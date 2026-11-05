@@ -2,6 +2,7 @@ import {
   isBaseRiceInstanceDefinition,
   type EmployeeInstanceSnapshot,
 } from '@allrice/contracts';
+import { getDatabase } from '../core/client.ts';
 import type { ContentSql } from './employee-content-model.ts';
 
 /** This is a product boundary for the platform Rice, not all general instances.
@@ -64,4 +65,16 @@ export function personalInstanceNameSql(sql: ContentSql) {
       and v.manifest->>'key'='default-assistant' and v.manifest->>'isDefaultRice'='true'
       and p.employee_key='rice' and r.definition->>'key'='rice' and r.status='published'
   )))`;
+}
+
+/** Existing owner/assignment admission remains the caller's responsibility.
+ * Personal scene packages are available to custom instances and the real Rice,
+ * never every general employee or a mutable display-name match. */
+export async function canUsePersonalEmployeeScenes(
+  instance: Parameters<typeof isBaseRiceInstance>[0],
+  sql: ContentSql = getDatabase(),
+) {
+  return (
+    instance.kind === 'custom' || (await isBaseRiceInstance(instance, sql))
+  );
 }

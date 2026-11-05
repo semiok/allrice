@@ -47,9 +47,11 @@ export const employeeCustomizationTools = [
   { name: 'workspace.employee.method.activate', capability: 'storage:write' },
 ] as const;
 
-/** The same kind-specific boundary is used when freezing and authorizing tools. */
+/** Same selection at freeze and execution; baseRice must come from the
+ * server-verified published identity, never a model or browser field. */
 export function employeeCustomizationToolsForInstance(
   kind?: 'general' | 'custom',
+  baseRice = false,
 ) {
   return employeeCustomizationTools.filter(
     (tool) =>
@@ -57,7 +59,11 @@ export function employeeCustomizationToolsForInstance(
       (kind === 'general' &&
         (tool.name === 'workspace.employee.profile.update' ||
           tool.name === 'workspace.personal_skill.install' ||
-          tool.name === 'workspace.personal_skill.version')),
+          tool.name === 'workspace.personal_skill.version' ||
+          (baseRice &&
+            (tool.name === 'workspace.employee.method.inspect' ||
+              tool.name === 'workspace.employee.method.save_candidate' ||
+              tool.name === 'workspace.employee.method.restore_candidate')))),
   );
 }
 
@@ -67,6 +73,7 @@ export function withEmployeeCustomizationTools(
   toolNames: readonly string[],
   capabilities: readonly SkillCapability[],
   kind?: 'general' | 'custom',
+  baseRice = false,
 ) {
   return [
     ...new Set([
@@ -74,7 +81,7 @@ export function withEmployeeCustomizationTools(
         (name) =>
           !employeeCustomizationTools.some((tool) => tool.name === name),
       ),
-      ...employeeCustomizationToolsForInstance(kind)
+      ...employeeCustomizationToolsForInstance(kind, baseRice)
         .filter(
           (tool) =>
             capabilities.includes(tool.capability) &&

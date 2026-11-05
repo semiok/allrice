@@ -1,3 +1,4 @@
+import { canUsePersonalEmployeeScenes } from './employee-instance-policy.ts';
 import {
   EmployeeSceneStateSchema,
   EmployeeContentManifestSchema,
@@ -62,7 +63,12 @@ export async function inspectPersonalSceneSkill(
   human(context);
   const contentRef = PersonalSceneContentRefSchema.parse(contentRefInput);
   return db.begin('isolation level repeatable read read only', async (tx) => {
-    if ((await getEmployeeInstance(context, instanceId, tx)).kind !== 'custom')
+    if (
+      !(await canUsePersonalEmployeeScenes(
+        await getEmployeeInstance(context, instanceId, tx),
+        tx,
+      ))
+    )
       throw new DataAccessError('not_found');
     const result = await readPersonalSceneSkillInTransaction(
       context,
@@ -90,8 +96,10 @@ export async function listPersonalSceneReads(
   human(scope);
   return db.begin('isolation level repeatable read read only', async (tx) => {
     if (
-      (await getEmployeeInstanceForHistory(scope, instanceId, tx)).kind !==
-      'custom'
+      !(await canUsePersonalEmployeeScenes(
+        await getEmployeeInstanceForHistory(scope, instanceId, tx),
+        tx,
+      ))
     )
       throw new DataAccessError('not_found');
     const rows = await tx<

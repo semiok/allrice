@@ -8,6 +8,7 @@ import { LocalStorageAdapter } from '@allrice/storage';
 
 import {
   withPlatformImageTools,
+  isBaseRiceInstanceDefinition,
   modelProviderRuntimeSupported,
   EmployeeKernelRequestSchema,
   RouteDecisionSchema,
@@ -1609,6 +1610,14 @@ export async function executeEmployeeRun({
         modelPreflight: async () =>
           preflightSubscription(subscriptionPreflightInput),
         contentGuard,
+        ...(executionSnapshot.schemaVersion === 2 &&
+        executionSnapshot.instance &&
+        isBaseRiceInstanceDefinition(
+          executionSnapshot.instance,
+          executionSnapshot.employee,
+        )
+          ? { personalMethodToolsOnly: true as const }
+          : {}),
         progress: taskProgress,
         questionWait,
         nativeQuestionWait:

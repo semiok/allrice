@@ -167,3 +167,33 @@ it('ignores published intrinsic grants and gives general instances only private 
   for (const stage of ['test', 'test_status', 'prepare_activation', 'activate'])
     expect(custom).not.toContain(`workspace.employee.method.${stage}`);
 });
+
+it('adds exactly three owner methods for verified Rice without brand or legacy activation grants', () => {
+  const original = withEmployeeCustomizationTools(
+    [],
+    ['storage:read', 'storage:write'],
+    'general',
+  );
+  const rice = withEmployeeCustomizationTools(
+    ['workspace.brand_content.read', 'workspace.employee.method.activate'],
+    ['storage:read', 'storage:write'],
+    'general',
+    true,
+  );
+  expect(rice.filter((name) => !original.includes(name))).toEqual([
+    'workspace.employee.method.inspect',
+    'workspace.employee.method.save_candidate',
+    'workspace.employee.method.restore_candidate',
+  ]);
+  expect(
+    withEmployeeCustomizationTools([], ['storage:read'], 'general', true),
+  ).toEqual(['workspace.employee.method.inspect']);
+  expect(rice).not.toContain('workspace.brand_content.read');
+  for (const suffix of [
+    'test',
+    'test_status',
+    'prepare_activation',
+    'activate',
+  ])
+    expect(rice).not.toContain(`workspace.employee.method.${suffix}`);
+});
