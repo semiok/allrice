@@ -6,6 +6,7 @@ import {
   ExperienceAdoptionViewSchema,
   supportedExperienceRule,
   type ExperienceReadPin,
+  type REPORT_STYLE_RECOGNIZER_VERSION,
 } from '@allrice/contracts';
 import type { getDatabase } from './core/client.ts';
 import { type ContentIdentity } from './content-maintenance.ts';
@@ -45,7 +46,7 @@ type ReportStyleReassessmentResult = {
   auditId: string;
   occurrenceId: string;
   draftIndex: number;
-  recognizerVersion: 'report-style-clauses-v2';
+  recognizerVersion: typeof REPORT_STYLE_RECOGNIZER_VERSION;
   decision: 'adopted' | 'not_adopted';
   memoryId: string | null;
   reason: string | null;

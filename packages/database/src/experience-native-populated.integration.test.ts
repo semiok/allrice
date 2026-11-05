@@ -83,7 +83,10 @@ suite(
     }, 30000);
     async function historical() {
       const db = host.db,
-        f = await createExperienceFixture(db, { published: true });
+        f = await createExperienceFixture(db, {
+          published: true,
+          authenticated: true,
+        });
       const [er] =
         await db`select * from allrice_employee_runs where run_id=${f.run}`;
       const instance = await prepareEmployeeInstanceSnapshot(
