@@ -318,7 +318,24 @@ suite('U1 employee details personal-memory entry', () => {
               canAdminister: false,
               sessions: [],
               sessionModels: [],
-              employeeProfiles: [],
+              employeeProfiles: [7, 17].map((n) => {
+                const profile = detailsFor(id(n)).profile;
+                return {
+                  assignmentId: id(n),
+                  employeeId: id(n + 2),
+                  name: profile.name,
+                  description: profile.description,
+                  appearance: profile.appearance,
+                  identity: profile.identity,
+                  skills: [],
+                  model: {
+                    harness: 'dsh',
+                    provider: 'codex',
+                    model: 'gpt-6.1-sol',
+                    reasoningEffort: 'max',
+                  },
+                };
+              }),
               employees: [7, 17].map((n) => ({
                 id: id(n),
                 instanceId: id(n),
@@ -408,6 +425,10 @@ suite('U1 employee details personal-memory entry', () => {
     if (options.disabled) params.set('disabled', '1');
     if (options.legacy) params.set('legacy', '1');
     await page.goto(`${origin}/?${params}`);
+    if (!options.host)
+      await page
+        .getByRole('textbox', { name: '给 Rice 的消息', exact: true })
+        .waitFor();
     const openDetails = async (name = '流程哥') => {
       const entry = page.getByRole('button', {
         name: `查看${name}详情`,
@@ -943,6 +964,17 @@ suite('U1 employee details personal-memory entry', () => {
       const personal = f.page
         .getByRole('region', { name: '记忆', exact: true })
         .getByRole('region', { name: '个人记忆', exact: true });
+      await contains(personal, '全部 · 共 0 条');
+      expect(await oldEditor.isVisible()).toBe(true);
+      expect(await oldEditor.inputValue()).toBe('左栏旧入口的独立草稿');
+      // Reopening an existing resource reveals its original pane. The native
+      // planner does not replace the currently focused left-hand legacy pane.
+      await oldEditor.click();
+      const again = await f.openDetails('流程哥');
+      await again
+        .getByRole('region', { name: '记忆', exact: true })
+        .getByRole('button', { name: '查看', exact: true })
+        .click();
       await contains(personal, '全部 · 共 0 条');
       expect(await oldEditor.isVisible()).toBe(true);
       expect(await oldEditor.inputValue()).toBe('左栏旧入口的独立草稿');

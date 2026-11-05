@@ -2,7 +2,9 @@
 import {
   DockLayout,
   type TabId,
+  activeDockPaneId,
   dockPaneIds,
+  findContentTab,
   findPaneContentTab,
   findTabPane,
 } from '@deepseek-ai/dsh-client-ui-dockkit';
@@ -208,6 +210,21 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
     () => close(),
     props.desktop ? '开始' : '交付成果',
   );
+  // Match the native open's resource reveal and dock-pane fallback. A target
+  // already seated in another pane must not deactivate the current pane.
+  const existingMemoryTab =
+    enteringMemory && memoryRequest
+      ? findContentTab(
+          dock.surface.layout,
+          personalMemoryPagePrefix + memoryRequest.id,
+          'experience',
+        )
+      : undefined;
+  const enteringMemoryPaneId = enteringMemory
+    ? existingMemoryTab !== undefined
+      ? findTabPane(dock.surface.layout, existingMemoryTab).id
+      : activeDockPaneId(dock.surface.layout)
+    : undefined;
   const activePane =
     dock.surface.layout.nodes[dock.surface.layout.activePaneId];
   const activeTab =
@@ -295,8 +312,7 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
         tab &&
         ['files', 'experience', 'workflow'].includes(tab.kind) &&
         !(
-          enteringMemory &&
-          paneId === dock.surface.layout.activePaneId &&
+          paneId === enteringMemoryPaneId &&
           tab.kind === 'experience' &&
           !personalMemoryTarget(tab.kind, tab.contentId)
         )
@@ -311,7 +327,7 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
     props.desktop,
     dock.surface.layout,
     props.onModuleViewed,
-    enteringMemory,
+    enteringMemoryPaneId,
   ]);
   useEffect(() => {
     const request = props.moduleRequest;
@@ -620,9 +636,8 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                   findTabPane(dock.surface.layout, tab.id).activeTabId ===
                     tab.id &&
                   !(
-                    enteringMemory &&
                     findTabPane(dock.surface.layout, tab.id).id ===
-                      dock.surface.layout.activePaneId &&
+                      enteringMemoryPaneId &&
                     tab.kind === 'experience' &&
                     !personalMemoryTarget(tab.kind, tab.contentId)
                   ),
