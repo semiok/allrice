@@ -278,3 +278,58 @@ it.each([false, true])(
     ).resolves.toBeUndefined();
   },
 );
+
+it('keeps continuation admission ordering while checking real user slash admission and all reads', async () => {
+  const { installPersonalSceneProvider } =
+    await import('./allrice-scene-provider.mjs');
+  let preStep;
+  const calls = [];
+  const ctx = {
+    on(name, handler) {
+      if (name === 'agent/pre-step') preStep = handler;
+    },
+    skills: {
+      registerProvider(factory) {
+        factory({ invalidate() {} });
+      },
+    },
+  };
+  const runtime = installPersonalSceneProvider(ctx, async (action) => {
+    calls.push(action);
+    throw Error('EMPLOYEE_CONTENT_UNAVAILABLE');
+  });
+  const signal = new globalThis.AbortController().signal;
+  const decision = { kind: 'continue', messages: [] };
+  for (const messages of [
+    [],
+    [{ source: { kind: 'allrice-context' } }],
+    [{ source: { kind: 'tool-result' } }],
+  ]) {
+    expect(await preStep({ messages, signal }, async () => decision)).toBe(
+      decision,
+    );
+  }
+  expect(calls).toEqual([]);
+  const admissionFailure = Error('existing_admission_failure');
+  await expect(
+    preStep({ messages: [], signal }, async () => {
+      throw admissionFailure;
+    }),
+  ).rejects.toBe(admissionFailure);
+  expect(calls).toEqual([]);
+  let entered = false;
+  await expect(
+    preStep({ messages: [{ source: { kind: 'user' } }], signal }, async () => {
+      entered = true;
+      return decision;
+    }),
+  ).rejects.toThrow('EMPLOYEE_CONTENT_UNAVAILABLE');
+  expect(entered).toBe(false);
+  await expect(runtime.beforeSkillRead(signal)).rejects.toThrow(
+    'EMPLOYEE_CONTENT_UNAVAILABLE',
+  );
+  await expect(runtime.beforeDispatch('root', signal)).rejects.toThrow(
+    'EMPLOYEE_CONTENT_UNAVAILABLE',
+  );
+  expect(calls).toEqual(['personal-list', 'personal-list', 'personal-list']);
+});

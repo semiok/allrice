@@ -224,7 +224,12 @@ export function installPersonalSceneProvider(ctx, bridge) {
   // pre-step chain can append a same-name fallback Skill to durable history.
   ctx.on(
     'agent/pre-step',
-    async ({ signal }, next) => {
+    async ({ messages, signal }, next) => {
+      // Native slash loading only examines the claimed batch's user sources.
+      // Empty/tool-only continuation steps retain the existing model-admission
+      // ordering; body reads and dispatch still recheck the current directory.
+      if (!messages.some((message) => message.source.kind === 'user'))
+        return next();
       await assertDirectory(signal);
       const decision = await next();
       // A provider failure discovered while native slash resolution ran must
