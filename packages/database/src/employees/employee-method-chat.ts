@@ -677,7 +677,12 @@ export async function enterMethodChat<T>(
       tx,
     );
     const text = await assertEmployeeChatRun(tx, input, instance, tool);
-    await assertRicePersonalMethodCall(input, instance, tool, tx);
+    if (
+      tool === 'workspace.employee.method.inspect' ||
+      tool === 'workspace.employee.method.save_candidate' ||
+      tool === 'workspace.employee.method.restore_candidate'
+    )
+      await assertRicePersonalMethodCall(input, instance, tool, tx);
     if (retire) {
       await tx`select run_id from allrice_employee_runs where run_id=${input.context.runId} for update nowait`;
       await tx`update allrice_employee_runs set method_authoring=true where run_id=${input.context.runId}`;

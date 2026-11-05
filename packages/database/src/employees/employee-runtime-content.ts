@@ -94,20 +94,18 @@ export async function prepareEmployeeRuntimeContent(
   },
   sql?: ContentSql,
 ) {
+  const freezeSql = sql ?? getDatabase();
   const content = await freezeEmployeeRuntimeContent(
     context,
     {
       instanceId: input.instance.id,
       employeeId: input.employeeId,
       employeeVersionId: input.employeeVersionId,
-      ...((await canUsePersonalEmployeeScenes(
-        input.instance,
-        sql ?? getDatabase(),
-      ))
+      ...((await canUsePersonalEmployeeScenes(input.instance, freezeSql))
         ? { personalScenes: true as const }
         : {}),
     },
-    sql,
+    freezeSql,
   );
   await readEmployeeRuntimeContent(context, content, sql);
   return content;
