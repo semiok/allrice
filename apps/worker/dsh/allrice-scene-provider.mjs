@@ -213,6 +213,23 @@ export function installPersonalSceneProvider(ctx, bridge) {
         failure ??= error;
       });
   };
+  const assertDirectory = async (signal) => {
+    signal?.throwIfAborted();
+    PersonalSceneSkillCatalogSchema.parse(
+      await bridge('personal-list', {}, signal),
+    );
+    signal?.throwIfAborted();
+  };
+  // Native discovery tolerates a failing Provider. Reject before the public
+  // pre-step chain can append a same-name fallback Skill to durable history.
+  ctx.on(
+    'agent/pre-step',
+    async ({ signal }, next) => {
+      await assertDirectory(signal);
+      return next();
+    },
+    { prepend: true },
+  );
   ctx.skills.registerProvider((registration) => {
     control = registration;
     return {
@@ -351,14 +368,8 @@ export function installPersonalSceneProvider(ctx, bridge) {
         await observed;
       } while (observed !== pending);
       if (failure) throw failure;
-      signal?.throwIfAborted();
-      // Native discovery tolerates a failing Provider and can select another
-      // same-name candidate. Recheck directly at our existing dispatch guard,
-      // before model/usage, so a denied namespace cannot become that fallback.
-      PersonalSceneSkillCatalogSchema.parse(
-        await bridge('personal-list', {}, signal),
-      );
-      signal?.throwIfAborted();
+      // Recheck after native pre-step work/waits, before model and usage.
+      await assertDirectory(signal);
       control.invalidate();
     },
   };
