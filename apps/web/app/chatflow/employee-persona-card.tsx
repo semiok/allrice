@@ -18,9 +18,11 @@ const expressionStyleLabels = {
  * from its saved values. The caller supplies an action only when allowed. */
 export function EmployeePersonaCard({
   profile,
+  view = 'personal',
   onEdit,
 }: {
   profile: EmployeeDetailsProfile;
+  view?: 'personal' | 'shared';
   onEdit?: () => void;
 }) {
   return (
@@ -61,14 +63,16 @@ export function EmployeePersonaCard({
           <dt>工作方式</dt>
           <dd>{profile.identity.workStyle}</dd>
         </div>
-        <div className={css.field}>
-          <dt>表达偏好</dt>
-          <dd>
-            {profile.expressionStyle
-              ? expressionStyleLabels[profile.expressionStyle]
-              : '未设置'}
-          </dd>
-        </div>
+        {view === 'personal' && (
+          <div className={css.field}>
+            <dt>表达偏好</dt>
+            <dd>
+              {profile.expressionStyle
+                ? expressionStyleLabels[profile.expressionStyle]
+                : '未设置'}
+            </dd>
+          </div>
+        )}
       </dl>
     </section>
   );
