@@ -37,7 +37,6 @@ const pack = () =>
   packWorkflowSkill({
     directory,
     sceneId,
-    sceneName: '本人周报',
     title: '本人方法',
   });
 async function editBundle(edit) {
@@ -65,8 +64,6 @@ describe('developer packs a native skill into C1 content without publishing', ()
       directory,
       '--scene-id',
       sceneId,
-      '--scene-name',
-      '本人周报',
       '--title',
       '本人方法',
     ];
@@ -87,6 +84,13 @@ describe('developer packs a native skill into C1 content without publishing', ()
     expect(procedure.title).toBe('本人方法');
     expect(result.scene.nativeName).toBe(`allrice-scene-${sceneId}`);
     expect(result.report.authorName).toBe('weekly-brief');
+    expect(result.scene.name).toBe('我的周报草稿');
+    expect(result.procedure.skillPackage.frontmatter).toMatchObject({
+      name: 'weekly-brief',
+      whenToUse: expect.any(String),
+      metadata: { displayName: '我的周报草稿', version: '1.0.0' },
+      invocation: { modelInvocable: true, userInvocable: true },
+    });
     expect(result.report.nativeCommand).toBe(`/allrice-scene-${sceneId}`);
     expect(result.report.published).toBe(false);
     expect(result.report.scriptsExecuted).toBe(false);
@@ -112,15 +116,19 @@ describe('developer packs a native skill into C1 content without publishing', ()
   it('uses native multiline YAML and trimmed body, while preserving internal CRLF and resource bytes', async () => {
     await writeFile(
       join(directory, 'SKILL.md'),
-      '---\r\nname: "my-review"\r\ndescription: >-\r\n  review the\r\n  supplied facts\r\n---\r\n\r\n# Review\r\n\r\nbody\r\n\r\n',
+      '---\r\nname: "my-review"\r\ndescription: >-\r\n  review the\r\n  supplied facts\r\nwhenToUse: weekly\r\nmetadata: { displayName: Review, version: v1 }\r\n---\r\n\r\n## 工作步骤\r\n\r\nbody\r\n\r\n## 交付内容\r\n\r\nresult\r\n\r\n## 执行细节\r\n\r\nprivate\r\n\r\n',
     );
     const bytes = Buffer.from([0, 255, 254, 13, 10]);
     await writeFile(join(directory, 'assets/example-input.json'), bytes);
     const result = await pack();
     expect(result.scene.appliesWhen).toBe('review the supplied facts');
-    expect(result.procedure.body).toBe('# Review\r\n\r\nbody');
+    expect(result.procedure.body).toBe(
+      '## 工作步骤\r\n\r\nbody\r\n\r\n## 交付内容\r\n\r\nresult\r\n\r\n## 执行细节\r\n\r\nprivate',
+    );
     expect(result.report.contentChecksum).toBe(
-      skillBytesChecksum('# Review\r\n\r\nbody'),
+      skillBytesChecksum(
+        '## 工作步骤\r\n\r\nbody\r\n\r\n## 交付内容\r\n\r\nresult\r\n\r\n## 执行细节\r\n\r\nprivate',
+      ),
     );
     expect(result.report.contentChecksum).not.toBe(
       result.report.skillFileChecksum,
@@ -132,6 +140,39 @@ describe('developer packs a native skill into C1 content without publishing', ()
       ),
     ).toEqual(bytes);
   });
+
+  it('preserves native invocation and additional JSON metadata without inventing author versions', async () => {
+    const input = await readFile(join(directory, 'SKILL.md'), 'utf8');
+    await writeFile(
+      join(directory, 'SKILL.md'),
+      input
+        .replace(
+          'metadata:',
+          'disable-model-invocation: true\nuser-invocable: false\nmetadata:',
+        )
+        .replace(
+          '  version: 1.0.0',
+          '  version: preview-2\n  additional: { nested: [1, true] }',
+        ),
+    );
+    const result = await pack();
+    expect(result.procedure.skillPackage.frontmatter).toMatchObject({
+      invocation: { modelInvocable: false, userInvocable: false },
+      metadata: { version: 'preview-2', additional: { nested: [1, true] } },
+    });
+    expect(result.procedure.skillPackage.bundle.version).toBe('1.0.0');
+  });
+
+  it.each(['whenToUse: ', 'metadata: { displayName: Example }'])(
+    'rejects incomplete author fields: %s',
+    async (fields) => {
+      await writeFile(
+        join(directory, 'SKILL.md'),
+        `---\nname: review\ndescription: test\n${fields}\n---\n## 工作步骤\n## 交付内容\n## 执行细节`,
+      );
+      await expect(pack()).rejects.toThrow('该技能不符合 workflow 规范。');
+    },
+  );
 
   it('does not execute scripts or read undeclared files', async () => {
     const sentinel = join(root, 'executed');
@@ -177,13 +218,7 @@ describe('developer packs a native skill into C1 content without publishing', ()
     await expect(pack()).rejects.toThrow('distinct package resources');
   });
 
-  it.each([
-    'whenToUse: test',
-    'metadata: { x: y }',
-    'disable-model-invocation: true',
-    'user-invocable: false',
-    'unknown: value',
-  ])(
+  it.each(['unknown: value'])(
     'rejects unrepresentable frontmatter instead of dropping %s',
     async (field) => {
       await writeFile(
@@ -213,7 +248,7 @@ describe('developer packs a native skill into C1 content without publishing', ()
     [
       'empty body',
       '---\nname: review\ndescription: test\n---\n  ',
-      'C1 procedure',
+      '该技能不符合 workflow 规范。',
     ],
   ])('reports %s', async (_label, input, message) => {
     await writeFile(join(directory, 'SKILL.md'), input);
@@ -289,7 +324,7 @@ describe('developer packs a native skill into C1 content without publishing', ()
   it('enforces existing C1 body and resource limits', async () => {
     await writeFile(
       join(directory, 'SKILL.md'),
-      `---\nname: review\ndescription: test\n---\n${'x'.repeat(8001)}`,
+      `---\nname: review\ndescription: test\nwhenToUse: weekly\nmetadata: { displayName: Review, version: v1 }\n---\n## 工作步骤\n${'x'.repeat(8001)}\n## 交付内容\nresult\n## 执行细节\ndetails`,
     );
     await expect(pack()).rejects.toThrow('C1 procedure');
     await cp(join(example, 'SKILL.md'), join(directory, 'SKILL.md'));
@@ -312,12 +347,11 @@ describe('developer packs a native skill into C1 content without publishing', ()
       packWorkflowSkill({
         directory,
         sceneId: 'wrong',
-        sceneName: 'test',
         title: 'test',
       }),
     ).rejects.toThrow('scene mapping');
     await expect(
-      packWorkflowSkill({ directory, sceneId, sceneName: 'test', title: '' }),
+      packWorkflowSkill({ directory, sceneId, title: '' }),
     ).rejects.toThrow('C1 procedure');
   });
 
@@ -334,8 +368,6 @@ describe('developer packs a native skill into C1 content without publishing', ()
         directory,
         '--scene-id',
         sceneId,
-        '--scene-name',
-        'test',
         '--title',
         'test',
       ],

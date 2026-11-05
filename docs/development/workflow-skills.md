@@ -5,13 +5,14 @@ Workflow 是你发起的一套固定步骤，员工按步骤做；普通 Skill �
 本文件是 AllRice Workflow 的编写、格式、版本、限额和交付方式的唯一规范入口。
 每节标明“现在可用”或“U1 后才可用”。“现在可用”指当前仓库已有实现，
 不代表某个部署环境已经发布，也不代表某份业务 Workflow 已通过真实模型验收。
-U1 是尚未实施的网页安装与展示改版；本规范本身不启用这些功能。
+U1 按功能分片实施：本文已标出的作者框架和元数据合同由 U1-3a 提供，
+网页安装、原生作者名字接线和统一限额尚未全部完成。文档不是部署或验收回执。
 
 ## 先看现在能用什么
 
 | 规则                        | 现在可用                                                                    | U1 后才可用                                              |
 | --------------------------- | --------------------------------------------------------------------------- | -------------------------------------------------------- |
-| Workflow 的 `SKILL.md` 字段 | 当前打包工具只收 `name`、`description`                                      | 本文的五字段模板                                         |
+| Workflow 的 `SKILL.md` 字段 | 五字段框架及原生调用策略已可打包、保存                                      | 完整运行接线和新页面展示                                         |
 | 发起 Workflow               | 实际命令是 `/allrice-scene-<UUID>`                                          | 以作者 `name` 调用，例如 `/weekly-brief`                 |
 | 正文上限                    | Workflow 为 8,000 字符                                                      | 256 KB，超限拒绝、不截断                                 |
 | 包内资源                    | 最多 32 个，每个 128 KB，合计 512 KB                                        | 两种 Skill 共用同一组安全上限                            |
@@ -21,7 +22,7 @@ U1 是尚未实施的网页安装与展示改版；本规范本身不启用这�
 | 插件安装                    | 用户不能上传安装插件；包内脚本只存不执行                                    | 如以后采用插件，由平台在管理后台安装；当前不做，另行排期 |
 
 这里对 Workflow CLI 的限制不等于普通 Skill 的现状：当前个人 Skill 入口已有
-DSH 原生字段解析和部分上传限额；不能据此说 Workflow CLI 已支持五字段或 zip。
+DSH 原生字段解析和部分上传限额；Workflow CLI 已支持五字段，但仍不直接读取 zip。
 
 ## 选 Skill 还是插件
 
@@ -57,9 +58,9 @@ weekly-brief/
 
 ## U1 的 SKILL.md 模板
 
-**U1 后才可用：以下五字段模板不能直接交给当前 CLI。**
-当前 CLI 会拒绝 `whenToUse` 和 `metadata`；现在要打包，请用
-[品牌内容完整样例](../../examples/workflow-skills/brand-content)中的两字段版本。
+**现在可用（U1-3a 作者格式和精确存储）：** 以下模板可由 CLI 打包。
+`name` 直接作为命令、whenToUse 和调用策略影响原生加载由 U1-3b 接线；当前实际命令仍为 UUID。
+新详情页由界面线另行交付，字段保存不等于界面或运行变化已生效。
 
 ```markdown
 ---
@@ -84,7 +85,7 @@ metadata:
 写给模型的具体处理要求，以及何时读取 references/ 和 assets/。
 ```
 
-**U1 后才可用（字段和展示规则）：**
+**字段可保存；新页面展示与原生名字接线仍属后续 U1：**
 
 | 字段或正文             | 写什么、怎么用                                                                                  |
 | ---------------------- | ----------------------------------------------------------------------------------------------- |
@@ -111,11 +112,11 @@ metadata:
 
 `metadata.version` 是作者版本；它不代替服务端修订，也不定义一套新的版本递增策略。
 
-**现在可用（现有元数据）：** 当前 CLI 的作者版本放在 `bundle.json` 的 `version`，
+**现在可用（现有元数据）：** 当前 CLI 另有存储包版本放在 `bundle.json` 的 `version`，
 即输出里的 `bundle.version`。既有合同要求数字三段，例如 `1.0.0`；
 它不是服务端的 `revision`。保存后的准确内容仍由服务端修订、`contentRef` 和 checksum 标识。
-U1 模板的 `metadata.version` 尚未由当前 Workflow CLI 接收，不能把它写进去代替 `bundle.version`，
-也不能据作者版本号推断某次 Run 用了哪份内容。
+作者展示版本来自 `metadata.version`，它与现有 `bundle.version` 分开保留，
+不能据作者版本号推断某次 Run 用了哪份内容。旧包没有作者字段时不编造版本或改写历史。
 
 ## 大小和资源上限
 
@@ -148,7 +149,7 @@ U1 模板的 `metadata.version` 尚未由当前 Workflow CLI 接收，不能把�
 ## 完整样例：品牌内容
 
 **现在可用（文档样例与离线打包）：** [brand-content](../../examples/workflow-skills/brand-content)
-包含一份完整的两字段 `SKILL.md`、`bundle.json`、四份 `references/` 资料、
+包含一份完整的五字段框架 `SKILL.md`、`bundle.json`、四份 `references/` 资料、
 `assets/synthetic-brand.md` 和 `LICENSE`。虚构品牌“纸间小岛”仅在用户明确要求合成演练时使用，
 不含真实客户资料、凭据或 QA Run 记录。
 
@@ -161,7 +162,7 @@ U1 模板的 `metadata.version` 尚未由当前 Workflow CLI 接收，不能把�
 
 ## 现在怎么写打包输入
 
-**现在可用（当前 CLI 格式）：** 本节只说明现有两字段输入，不适用于上面的 U1 五字段模板。
+**现在可用（当前 CLI 格式）：** 本节说明五字段框架与现有 bundle 元数据的打包输入。
 
 可从 [brand-content 完整样例](../../examples/workflow-skills/brand-content)或
 [weekly-brief 样例](../../examples/workflow-skills/weekly-brief)开始。以下展示当前 CLI 的输入结构，
@@ -177,11 +178,16 @@ weekly-brief/
   scripts/check-example.mjs      # 仅作为文件资源，不执行
 ```
 
-`SKILL.md` 是原生 YAML frontmatter 加 Markdown 正文。本版仅支持 `name`、`description`。
-名称与正文由当前 rc.2 的公开 `FileSystemSkillProvider.list/get` 解析。
-原生支持而 C1 暂不能保存的 `whenToUse`、`metadata`、`disable-model-invocation`、
-`user-invocable` 等字段会明确报错，未知字段也不静默丢弃。
-支持 YAML 引号、多行 description 和 CRLF；正文采用原生 get 返回的内容，随后不另改空白。
+`SKILL.md` 是原生 YAML frontmatter 加 Markdown 正文，要求上面的五字段框架。
+名称、正文、whenToUse、metadata 和调用策略由当前 rc.2 的公开
+`FileSystemSkillProvider.list/get` 解析。metadata 的其他 JSON 字段完整保留；
+`disable-model-invocation`、`user-invocable` 沿原生布尔解析，字段存储不等于本片已改变运行行为。
+未知顶层字段明确拒绝。支持 YAML 引号、多行 description 和 CRLF；正文采用原生 get 内容。
+
+三个标题须按顺序为根级 H2；代码围栏、引用和列表里的标题不算，缺少或重复时报
+“该技能不符合 workflow 规范。”。前两节按原 Markdown 投影，不概括、不解释用户意图。
+旧库包没有新字段时仍按原身份读取；旧 JSON 写口的收口属于后续网页确认切片，
+不能把此片称作所有写入口已强制新格式。
 
 `bundle.json` 复用现有 SkillBundle 元数据：`schemaVersion: 1`、三段版本号、
 来源 URL `sourceRef`、`license`、`reviewedBy`、`dependencies` 和 `resources`。
@@ -215,11 +221,10 @@ pnpm --filter @allrice/contracts build
 node --import tsx scripts/workflow-skill-pack.mjs \
   examples/workflow-skills/brand-content \
   --scene-id 10000000-0000-4000-8000-000000000001 \
-  --scene-name '品牌内容草稿' \
   --title '品牌内容工作方法' > /tmp/brand-content.c1.json
 ```
 
-这里的 UUID 仅是合成示例。实际目标 scene ID、显示名、procedure 标题由本人明确选择；
+这里的 UUID 仅是合成示例。实际目标 scene ID 和 procedure 标题由本人明确选择；显示名来自 metadata.displayName。
 工具不猜测组织、员工、权限或发布目标，不生成内容操作 ID。
 输出文件不要指向输入包里的文件；失败时检查退出码和 stderr，stdout 不输出半成品 JSON。
 仅需说明时运行 `node --import tsx scripts/workflow-skill-pack.mjs --help`。
@@ -277,7 +282,7 @@ node --import tsx scripts/workflow-skill-pack.mjs \
 
 | 改动                                   | 预期                        |
 | -------------------------------------- | --------------------------- |
-| frontmatter 加 `user-invocable: false` | 不支持的 C1 字段，拒绝      |
+| 缺少 `## 交付内容`                     | Workflow 框架校验失败       |
 | 资源 path 写 `../secret`               | 路径校验失败                |
 | 为资源填错误 checksum                  | 指明该资源 checksum 不匹配  |
 | 声明不存在的工具依赖                   | `skill_bundle_unknown_tool` |

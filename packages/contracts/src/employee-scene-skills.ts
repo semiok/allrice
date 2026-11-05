@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { UuidSchema, TimestampSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
 import { SkillResourcePathSchema } from './skill-bundle.ts';
+import { WorkflowSkillFrontmatterSchema } from './workflow-skill.ts';
 import {
   EmployeeContentManifestSchema,
   EmployeeContentOwnershipSchema,
@@ -87,6 +88,9 @@ export const PersonalSceneSkillSummarySchema = z
     name: z.string(),
     description: z.string(),
     nativeName: z.string(),
+    version: z.string().optional(),
+    contentRef: PersonalSceneContentRefSchema.optional(),
+    revision: z.number().int().positive().optional(),
   })
   .strict();
 export const PersonalSceneSkillSchema = PersonalSceneSkillSummarySchema.extend({
@@ -102,6 +106,10 @@ export const PersonalSceneSkillSchema = PersonalSceneSkillSummarySchema.extend({
       .object({ reference: EmployeeContentReferenceSchema, title: z.string() })
       .strict(),
   ),
+  frontmatter: WorkflowSkillFrontmatterSchema.optional(),
+  whenToUse: z.string().optional(),
+  stepsMarkdown: z.string().optional(),
+  deliverablesMarkdown: z.string().optional(),
 });
 export type PersonalSceneSkill = z.infer<typeof PersonalSceneSkillSchema>;
 /** Single-way projection of a real public native event, not a get/read receipt,

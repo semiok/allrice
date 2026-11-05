@@ -15,6 +15,7 @@ import {
   type EmployeeContentReference,
   type EmployeeSceneSkillPin,
   type RequestContext,
+  type WorkflowSkillFrontmatter,
 } from '@allrice/contracts';
 import { getDatabase } from '../core/client.ts';
 import { DataAccessError } from '../data.ts';
@@ -28,6 +29,7 @@ import {
 } from './employee-content.ts';
 import { resolveEmployeeContentSource } from './employee-content-sources.ts';
 import { validateSceneSkillPackage } from './employee-scene-skill-package.ts';
+import { parseWorkflowSkillSections } from './workflow-skill.ts';
 import {
   EmployeeContentError,
   type ContentSql,
@@ -142,8 +144,16 @@ async function resolvePackage(
     sourceRevisionId: ref.revisionId,
   };
   const bundle = text.skillPackage.bundle;
+  const frontmatter = text.skillPackage.frontmatter;
   const skill = PersonalSceneSkillSchema.parse({
-    ...summary(scene),
+    ...summary(scene, frontmatter),
+    ...(frontmatter
+      ? {
+          frontmatter,
+          whenToUse: frontmatter.whenToUse,
+          ...parseWorkflowSkillSections(text.body),
+        }
+      : {}),
     contentRef: personalSceneContentRef(pin),
     revision: layer.revision.number,
     content: text.body,
@@ -165,12 +175,13 @@ async function resolvePackage(
   });
   return { skill, pin, bundle, resolved };
 }
-function summary(scene: Scene) {
+function summary(scene: Scene, frontmatter?: WorkflowSkillFrontmatter) {
   return {
     sceneId: scene.id,
-    name: scene.name,
-    description: scene.appliesWhen,
+    name: frontmatter?.metadata.displayName ?? scene.name,
+    description: frontmatter?.description ?? scene.appliesWhen,
     nativeName: `allrice-scene-${scene.id}`,
+    ...(frontmatter ? { version: frontmatter.metadata.version } : {}),
   };
 }
 
@@ -232,7 +243,7 @@ export async function listPersonalSceneSkillsInTransaction(
   if (view.layer)
     for (const scene of view.layer.revision.manifest.scenes) {
       try {
-        await resolvePackage(
+        const pkg = await resolvePackage(
           context,
           view.instanceId,
           view.employeeId,
@@ -241,7 +252,15 @@ export async function listPersonalSceneSkillsInTransaction(
           tx,
           lock,
         );
-        skills.push(summary(scene));
+        skills.push({
+          sceneId: pkg.skill.sceneId,
+          name: pkg.skill.name,
+          description: pkg.skill.description,
+          nativeName: pkg.skill.nativeName,
+          ...(pkg.skill.version ? { version: pkg.skill.version } : {}),
+          contentRef: pkg.skill.contentRef,
+          revision: pkg.skill.revision,
+        });
       } catch (error) {
         if (!(error instanceof DataAccessError && error.code === 'not_found'))
           throw error;

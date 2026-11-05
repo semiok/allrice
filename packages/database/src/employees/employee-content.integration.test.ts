@@ -366,6 +366,8 @@ suite(
             name: body.scene.name,
             description: body.scene.appliesWhen,
             nativeName: `allrice-scene-${body.scene.id}`,
+            contentRef: pkg.contentRef,
+            revision: pkg.revision,
           },
         ]);
         for (const query of [
