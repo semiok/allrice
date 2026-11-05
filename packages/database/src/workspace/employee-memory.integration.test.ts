@@ -267,7 +267,7 @@ suite(
             ...exact(item), content: 'x'.repeat(1000), reason: '本人编辑',
           });
         } catch (error) {
-          expect(error).toMatchObject({ code: 'memory_capacity' });
+          expect(error).toMatchObject({ message: 'employee_memory_capacity' });
           const [unchanged] = await fixture.db`select content,revision from allrice_memories where id=${item.id}`;
           expect(unchanged).toMatchObject({ content: item.content, revision: item.revision });
           rejected = true;
