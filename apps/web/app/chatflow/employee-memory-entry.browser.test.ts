@@ -544,16 +544,21 @@ suite('U1 employee details personal-memory entry', () => {
         });
         await contains(manager, '全部 · 共 0 条');
         const memoryVisual = await manager.evaluate((node) => {
-          const host = node.closest('#artifact-workbench')!;
+          // Native TabHost publishes these attributes on the same section;
+          // dockkit.module.css paints .tabHost:not(.float) with bg-base.
+          // The AllRice outer aside is deliberately transparent.
+          const host = node.closest(
+            '[data-dockkit-content][data-dockkit-pane]',
+          )!;
           const surface = getComputedStyle(host).backgroundColor;
           const text = getComputedStyle(node).color;
+          const rgba = surface.match(/[\d.]+/g)!.map(Number);
           return {
             background: surface,
+            backgroundAlpha: rgba.length === 4 ? rgba[3] : 1,
+            paintNode: 'native-dock-tab-host',
             text,
-            backgroundChannels: surface
-              .match(/[\d.]+/g)!
-              .slice(0, 3)
-              .map(Number),
+            backgroundChannels: rgba.slice(0, 3),
             textChannels: text
               .match(/[\d.]+/g)!
               .slice(0, 3)
@@ -562,6 +567,7 @@ suite('U1 employee details personal-memory entry', () => {
             darkAttribute: document.body.hasAttribute('data-ds-dark-theme'),
           };
         });
+        expect(memoryVisual.backgroundAlpha).toBe(1);
         if (dark) {
           expect(memoryVisual.theme).toBe('dark');
           expect(memoryVisual.darkAttribute).toBe(true);
