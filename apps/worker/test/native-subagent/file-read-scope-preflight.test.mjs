@@ -16,6 +16,10 @@ const definition = defineTool({
     offset: { type: 'integer' },
     limit: { type: 'integer' },
   },
+  output: {
+    schema: { type: 'object', properties: { content: { type: 'string', required: true } }, additionalProperties: false },
+    render: (_args, value) => text(value.content),
+  },
   execute: () => { throw Error('PREFLIGHT_MUST_NOT_EXECUTE_FILES'); },
 });
 const names = (r) => r.tools.map((t) => t.name).sort();
