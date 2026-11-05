@@ -295,7 +295,8 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
         tab &&
         ['files', 'experience', 'workflow'].includes(tab.kind) &&
         !(
-          personalMemoryView &&
+          enteringMemory &&
+          paneId === dock.surface.layout.activePaneId &&
           tab.kind === 'experience' &&
           !personalMemoryTarget(tab.kind, tab.contentId)
         )
@@ -310,7 +311,7 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
     props.desktop,
     dock.surface.layout,
     props.onModuleViewed,
-    personalMemoryView,
+    enteringMemory,
   ]);
   useEffect(() => {
     const request = props.moduleRequest;
@@ -619,7 +620,9 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                   findTabPane(dock.surface.layout, tab.id).activeTabId ===
                     tab.id &&
                   !(
-                    personalMemoryView &&
+                    enteringMemory &&
+                    findTabPane(dock.surface.layout, tab.id).id ===
+                      dock.surface.layout.activePaneId &&
                     tab.kind === 'experience' &&
                     !personalMemoryTarget(tab.kind, tab.contentId)
                   ),

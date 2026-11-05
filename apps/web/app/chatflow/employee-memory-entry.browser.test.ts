@@ -164,7 +164,7 @@ suite('U1 employee details personal-memory entry', () => {
         ? countGate.promise
         : (null as Promise<void> | null),
       writeGate: null as Promise<void> | null,
-      savedContent: '',
+      savedContents: {} as Record<string, string>,
     };
     page.on('pageerror', (cause) => state.errors.push(cause.message));
     await page.addInitScript(() => {
@@ -208,7 +208,7 @@ suite('U1 employee details personal-memory entry', () => {
               : 65
             : filter === 'pending'
               ? 1
-              : state.savedContent
+              : state.savedContents[instanceId!]
                 ? 1
                 : 0;
         return route.fulfill(json(memoryPage(instanceId!, filter, count)));
@@ -253,7 +253,7 @@ suite('U1 employee details personal-memory entry', () => {
       if (path === '/api/v1/memories' && request.method() === 'POST') {
         const body = request.postDataJSON();
         if (state.writeGate) await state.writeGate;
-        state.savedContent = body.content;
+        state.savedContents[body.instanceId] = body.content;
         return route.fulfill(
           json(
             {
@@ -900,6 +900,82 @@ suite('U1 employee details personal-memory entry', () => {
       expect(f.state.writes).toEqual([]);
       expect(f.state.errors).toEqual([]);
     } finally {
+      await f.close();
+    }
+  });
+
+  it('keeps the explicitly open legacy memory pane while another pane opens personal memory', async () => {
+    const f = await fixture({ legacy: true });
+    const writeGate = gate();
+    try {
+      await f.page
+        .getByRole('button', { name: '经验管理', exact: true })
+        .click();
+      const old = f.page.getByRole('region', { name: '经验管理', exact: true });
+      await old
+        .getByRole('combobox', { name: '经验所属 AllRice 助手', exact: true })
+        .selectOption(id(7));
+      await old.getByRole('button', { name: '个人记忆', exact: true }).click();
+      const oldManager = old.getByRole('region', {
+        name: '个人记忆',
+        exact: true,
+      });
+      await contains(oldManager, '全部 · 共 0 条');
+      await oldManager
+        .getByRole('button', { name: '新增记忆', exact: true })
+        .click();
+      const oldEditor = oldManager.getByRole('textbox', {
+        name: '新增记忆内容',
+        exact: true,
+      });
+      await oldEditor.fill('左栏旧入口的独立草稿');
+      await f.page
+        .getByRole('button', { name: '并排查看', exact: true })
+        .click();
+      await expect
+        .poll(() => f.page.locator('[data-dockkit-pane]').count())
+        .toBe(2);
+      const dialog = await f.openDetails('流程哥');
+      await dialog
+        .getByRole('region', { name: '记忆', exact: true })
+        .getByRole('button', { name: '查看', exact: true })
+        .click();
+      const personal = f.page
+        .getByRole('region', { name: '记忆', exact: true })
+        .getByRole('region', { name: '个人记忆', exact: true });
+      await contains(personal, '全部 · 共 0 条');
+      expect(await oldEditor.isVisible()).toBe(true);
+      expect(await oldEditor.inputValue()).toBe('左栏旧入口的独立草稿');
+      f.state.writeGate = writeGate.promise;
+      await oldManager
+        .getByRole('button', { name: '保存记忆', exact: true })
+        .click();
+      await expect.poll(() => f.state.writes.length).toBe(1);
+      await personal
+        .getByRole('button', { name: '新增记忆', exact: true })
+        .click();
+      await personal
+        .getByRole('textbox', { name: '新增记忆内容', exact: true })
+        .fill('右栏自己的记忆草稿');
+      expect(await oldEditor.isVisible()).toBe(true);
+      expect(await oldEditor.inputValue()).toBe('左栏旧入口的独立草稿');
+      expect(
+        await oldManager
+          .getByRole('button', { name: '正在保存…', exact: true })
+          .isDisabled(),
+      ).toBe(true);
+      writeGate.release();
+      await contains(oldManager, '记忆已保存。');
+      expect(f.state.writes.length).toBe(1);
+      expect(f.state.writes[0].body.instanceId).toBe(id(7));
+      expect(
+        await personal
+          .getByRole('textbox', { name: '新增记忆内容', exact: true })
+          .inputValue(),
+      ).toBe('右栏自己的记忆草稿');
+      expect(f.state.errors).toEqual([]);
+    } finally {
+      writeGate.release();
       await f.close();
     }
   });
