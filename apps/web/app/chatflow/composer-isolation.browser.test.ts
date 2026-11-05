@@ -1334,7 +1334,7 @@ suite(
             url.startsWith(`/api/v1/sessions/${A}/subagents?`),
           );
         await f.page
-          .getByRole('button', { name: '停止', exact: true })
+          .getByRole('button', { name: '停止生成', exact: true })
           .waitFor();
         await f.page.clock.runFor(6_000);
         await f.page
