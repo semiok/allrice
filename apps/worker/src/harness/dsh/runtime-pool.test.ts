@@ -1,5 +1,5 @@
 const oldGeneration = 'dsh-0.1.5-rc.3-a4c74a9' as const;
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   mkdir,
   mkdtemp,
@@ -777,13 +777,17 @@ it.each([false, true])(
     value.input.personalMethodToolsOnly = personalFirst ? true : undefined;
     const first = await runtimes.acquire(value);
     expect(first.runtime.fingerprintParts.personalMethodToolsOnly).toBe(
-      personalFirst ? true : undefined,
+      personalFirst
+        ? createHash('sha256').update('true').digest('hex')
+        : undefined,
     );
     value.input.personalMethodToolsOnly = personalFirst ? undefined : true;
     const second = await runtimes.acquire(value);
     expect(second.runtime).not.toBe(first.runtime);
     expect(second.runtime.fingerprintParts.personalMethodToolsOnly).toBe(
-      personalFirst ? undefined : true,
+      personalFirst
+        ? undefined
+        : createHash('sha256').update('true').digest('hex'),
     );
     expect(first.runtime.client.processState()).toMatchObject({
       state: 'exited',
