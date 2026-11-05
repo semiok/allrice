@@ -298,7 +298,7 @@ it('keeps continuation admission ordering while checking real user slash admissi
     calls.push(action);
     throw Error('EMPLOYEE_CONTENT_UNAVAILABLE');
   });
-  const signal = new AbortController().signal;
+  const signal = new globalThis.AbortController().signal;
   const decision = { kind: 'continue', messages: [] };
   for (const messages of [
     [],
@@ -309,6 +309,13 @@ it('keeps continuation admission ordering while checking real user slash admissi
       decision,
     );
   }
+  expect(calls).toEqual([]);
+  const admissionFailure = Error('existing_admission_failure');
+  await expect(
+    preStep({ messages: [], signal }, async () => {
+      throw admissionFailure;
+    }),
+  ).rejects.toBe(admissionFailure);
   expect(calls).toEqual([]);
   let entered = false;
   await expect(
