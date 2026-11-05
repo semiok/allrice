@@ -1,7 +1,7 @@
 import console from 'node:console';
 import { randomUUID } from 'node:crypto';
 import { expect, it } from 'vitest';
-import { host } from './fixture.mjs';
+import { gate, host, text } from './fixture.mjs';
 
 it.each([false, true])(
   'actual registration: ordinary root selected=%s; child/fork unchanged, resume restored',
@@ -60,4 +60,49 @@ it.each([false, true])(
     );
   },
   30000,
+);
+
+it.each(['success', 'denied'])(
+  'a native file timeout remains terminal even when the Broker later returns %s',
+  async (outcome) => {
+    const dispatched = gate(), release = gate(), aborted = gate();
+    const h = await host({
+      nativeTools: ['workspace.file.read'],
+      model: async (_request, count) => count === 1 ? [{
+        type: 'tool-call', id: 'timed-read', name: 'workspace_file_read',
+        arguments: JSON.stringify({objectId: randomUUID()}),
+      }] : text('must not continue after cancellation'),
+      bridge: async (method, params) => {
+        expect(method).toBe('allrice/tool-call');
+        dispatched.resolve();
+        await release.promise;
+        return outcome === 'success'
+          ? {modelContent: 'late contents', summary: 'late read'}
+          : {modelContent: '', summary: 'denied', fileReadDenied: {
+            callId: params.toolCallId, nativeSessionId: params.nativeSessionId,
+            code: 'TOOL_FILE_ACCESS_DENIED',
+          }};
+      },
+    });
+    // Only scale the public declaration's budget; production execution and
+    // DSH timeout policy remain unchanged, and the in-flight read is joined.
+    h.root.ctx.tools.get('workspace_file_read').timeoutMs = 100;
+    h.ctx.on('tools/execute', (exec, next) => {
+      if (exec.name === 'workspace_file_read')
+        exec.signal.addEventListener('abort', () => aborted.resolve(), {once: true});
+      return next();
+    });
+    try {
+      await h.prompt('读取我之前保存的资料入口并完成核对。');
+      await dispatched.promise;
+      await aborted.promise;
+      release.resolve();
+      await h.wait();
+      expect(h.calls).toHaveLength(1);
+      expect(h.root.session.snapshotEvents().findLast(e => e.type === 'turn/end').data.reason)
+        .toEqual({kind: 'aborted', reason: {kind: 'hook', reason: 'ALLRICE_FILE_READ_ABORTED'}});
+    } finally {
+      release.resolve();
+    }
+  }, 10000,
 );

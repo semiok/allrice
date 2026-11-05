@@ -17,7 +17,10 @@ import { nativeBrokerRoundtrip } from './dsh-native-broker.fixture.js';
 import { dshInboundToolHandler, parseDshToolCall } from './dsh/tool-bridge.js';
 import { textBlocks } from './dsh/event-projector.js';
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  ports.audit.mockResolvedValue(undefined);
+});
 function fixture() {
   const organizationId = randomUUID(),
     owner = randomUUID();
@@ -115,6 +118,13 @@ it.each(['legacy', 'not-found', 'unknown', 'canceled'])(
     ).toBe(false);
   },
 );
+it('a failed denial audit cannot become a confirmed native ACL result', async () => {
+  const input = fixture();
+  const auditFailure = Error('synthetic audit unavailable');
+  ports.file.mockRejectedValueOnce(new DataAccessError('authorization_denied'));
+  ports.audit.mockRejectedValueOnce(auditFailure);
+  await expect(executeRiceTool(input)).rejects.toBe(auditFailure);
+});
 it('读取我之前保存的资料入口并完成核对: one native denied read, safe error, normal final response; no envelope dispatch', async () => {
   const input = fixture();
   ports.file.mockRejectedValue(new DataAccessError('authorization_denied'));
@@ -124,7 +134,7 @@ it('读取我之前保存的资料入口并完成核对: one native denied read,
     canonicalName: input.call.name,
     wireName: 'workspace_file_read',
     args: input.call.arguments,
-    invalidArgs: { ...input.call.arguments, limit: 4001 },
+    invalidArgs: { ...input.call.arguments, ownerId: randomUUID() },
     expectedToolError: 'TOOL_FILE_ACCESS_DENIED',
     onToolCall: (call) => executeRiceTool({ ...input, call }),
     inspectSchema(schema) {
@@ -133,7 +143,7 @@ it('读取我之前保存的资料入口并完成核对: one native denied read,
         'objectId',
         'offset',
       ]);
-      expect(schema.additionalProperties).toBe(false);
+      expect(schema.required).toEqual(['objectId']);
     },
   });
   expect(ports.file).toHaveBeenCalledOnce();
