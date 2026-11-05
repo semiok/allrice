@@ -13,6 +13,7 @@ import {
   IconShieldOutlineRegular,
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import { EmployeePersonaCard } from './employee-persona-card';
+import { canEditEmployeePersona } from './employee-profile-form';
 import {
   createEmployeeScenePrompt,
   adjustEmployeeContentPrompt,
@@ -223,7 +224,11 @@ export function EmployeeProfileDetails({
       <EmployeePersonaCard
         profile={profile}
         view={view}
-        onEdit={personal ? onEdit : undefined}
+        onEdit={
+          view === 'personal' && canEditEmployeePersona(profile)
+            ? onEdit
+            : undefined
+        }
       />
       {view === 'personal' && memoryEntry}
       {view === 'personal' && profile.kind === 'custom' && workflowReadContent}

@@ -32,7 +32,7 @@ export function employeeChoices(workspace: Workspace): Employee[] {
           ...employee,
           instanceId: instance.id,
           isDefault: employee.isDefault && instance.kind === 'general',
-          ...(instance.kind === 'custom'
+          ...(instance.kind === 'custom' || isRice(employee, instance)
             ? {
                 currentVersion: {
                   ...employee.currentVersion,
@@ -50,17 +50,7 @@ export function employeeChoices(workspace: Workspace): Employee[] {
                   },
                 },
               }
-            : isRice(employee, instance) && instance.profile.name
-              ? {
-                  currentVersion: {
-                    ...employee.currentVersion,
-                    manifest: {
-                      ...employee.currentVersion.manifest,
-                      name: instance.profile.name,
-                    },
-                  },
-                }
-              : {}),
+            : {}),
         }))
       : [employee],
   );
@@ -86,10 +76,8 @@ export function employeeChoiceProfile(
     (i) => i.id === employee.instanceId,
   );
   if (!instance) return base;
-  if (instance.kind !== 'custom')
-    return employee && isRice(employee, instance) && instance.profile.name
-      ? { ...base, name: instance.profile.name }
-      : base;
+  if (instance.kind !== 'custom' && !(employee && isRice(employee, instance)))
+    return base;
   const personal = instance.profile;
   return {
     ...base,

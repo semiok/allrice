@@ -30,6 +30,17 @@ export const defaultEmployeeProfileFormValues: Readonly<EmployeeProfileFormValue
     expressionStyle: 'structured',
   };
 
+/** Full-form access comes from the current owner projection, never the saved
+ * values, instance kind or a mutable employee name. Missing capability is closed. */
+export function canEditEmployeePersona(profile: EmployeeDetailsProfile) {
+  return (
+    profile.canMaintainPersonal &&
+    ['name', 'appearance', 'mission', 'workStyle', 'expressionStyle'].every(
+      (field) => profile.editableFields?.some((allowed) => allowed === field),
+    )
+  );
+}
+
 /** Resolve only the visible fields. Keep the raw profile for the write merge;
  * the effective details projection intentionally omits private source fields. */
 export function employeeProfileFormFromRaw(
@@ -63,12 +74,14 @@ export function employeeProfileFormFromRaw(
 export function mergeEmployeeProfileForm(
   raw: EmployeeInstanceProfile,
   values: EmployeeProfileFormValues,
+  resolved?: EmployeeDetailsProfile,
 ): EmployeeInstanceProfile {
   const name = values.name.trim();
-  const appearance = raw.appearance ?? {
-    avatarType: 'initials' as const,
-    avatarValue: Array.from(name)[0] || '员',
-  };
+  const appearance = raw.appearance ??
+    resolved?.appearance ?? {
+      avatarType: 'initials' as const,
+      avatarValue: Array.from(name)[0] || '员',
+    };
   return EmployeeInstanceProfileSchema.parse({
     ...raw,
     name,
