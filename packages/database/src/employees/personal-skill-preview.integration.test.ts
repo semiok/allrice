@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { access } from 'node:fs/promises';
+import { join } from 'node:path';
 import {
   afterAll,
   afterEach,
@@ -12,6 +14,9 @@ import type { RequestContext, StoragePort } from '@allrice/contracts';
 import { createFileArchive, readFileArchive } from '@allrice/file-archives';
 import { SkillPreviewTokens, parsePersonalSkill } from '@allrice/skill-import';
 import * as client from '../core/client.ts';
+import * as data from '../data.ts';
+import * as browserWriter from './personal-skill-browser.ts';
+import { previewPersonalSkillUpdateTarget } from './personal-skill-versions.ts';
 import {
   createRuntimeFixtureDatabase,
   runtimeFixtureStorage,
@@ -167,11 +172,12 @@ suite('browser Skill source preview and confirmation', () => {
     bytes: Uint8Array,
     origin = 'http://localhost:3000',
     target: unknown = { operation: 'install' },
+    fileName = 'weekly.zip',
   ) {
     browser.context = context;
     const form = new FormData();
     form.set('input', JSON.stringify({ workspaceId, target }));
-    form.set('file', new Blob([Buffer.from(bytes)]), 'weekly.zip');
+    form.set('file', new Blob([Buffer.from(bytes)]), fileName);
     const { POST } = await import(routePath);
     return POST(
       new Request(
@@ -432,6 +438,189 @@ suite('browser Skill source preview and confirmation', () => {
       ).status,
     ).toBe(409);
   });
+  it('records a provenance-only ZIP rename as a new immutable version', async () => {
+    const s = await setup();
+    const bytes = await zip();
+    const { result: old } = await installWeb(s, s.assigned.id, bytes);
+    const preview = await (
+      await send(
+        s.owner.context,
+        s.assigned.id,
+        s.owner.workspaceId,
+        bytes,
+        undefined,
+        {
+          operation: 'update',
+          installationId: old.skill.id,
+          expectedRevision: old.skill.revision,
+          expectedVersionId: old.skill.versionId,
+        },
+        'renamed.zip',
+      )
+    ).json();
+    const response = await confirm(
+      s.owner.context,
+      s.assigned.id,
+      s.owner.workspaceId,
+      preview,
+    );
+    expect(response.status).toBe(200);
+    const result = await response.json();
+    expect(result.receipt.unchanged).toBe(false);
+    expect(result.skill.versionId).not.toBe(old.skill.versionId);
+    expect(result.skill.source).toMatchObject({
+      kind: 'attachment',
+      fileName: 'renamed.zip',
+    });
+    const [previous] =
+      await f.db`select source from allrice_personal_skill_versions where id=${old.skill.versionId}`;
+    expect(previous!.source.fileName).toBe('weekly.zip');
+  });
+  it('binds an existing archive and confirms an unchanged update without additional quota or storage writes', async () => {
+    const s = await setup(true),
+      bytes = await zip();
+    const first = await installWeb(s, s.assigned.id, bytes);
+    const second = await createEmployeeInstance(s.owner.context, {
+      workspaceId: s.owner.workspaceId,
+      assignmentId: s.assigned.id,
+      requestId: randomUUID(),
+      profile: { name: 'Second' },
+    });
+    const [usage] =
+      await f.db`select sum(size_bytes)::bigint bytes from allrice_storage_objects where workspace_id=${s.owner.workspaceId} and state<>'deleted'`;
+    await f.db`insert into allrice_storage_quotas(organization_id,workspace_id,limit_bytes) values(${s.owner.organizationId},${s.owner.workspaceId},${usage!.bytes})`;
+    const before = await counts();
+    const binding = first.result.skill.bindings[0];
+    const secondResult = await installWeb(s, second.id, bytes);
+    expect(secondResult.result.skill.versionId).toBe(
+      first.result.skill.versionId,
+    );
+    expect(
+      secondResult.result.skill.bindings.find(
+        (b: { instanceId: string }) => b.instanceId === s.assigned.id,
+      ),
+    ).toEqual(binding);
+    const old = secondResult.result.skill;
+    const preview = await (
+      await send(
+        s.owner.context,
+        second.id,
+        s.owner.workspaceId,
+        bytes,
+        undefined,
+        {
+          operation: 'update',
+          installationId: old.id,
+          expectedRevision: old.revision,
+          expectedVersionId: old.versionId,
+        },
+      )
+    ).json();
+    const response = await confirm(
+      s.owner.context,
+      second.id,
+      s.owner.workspaceId,
+      preview,
+    );
+    expect(response.status).toBe(200);
+    expect((await response.json()).receipt).toMatchObject({
+      unchanged: true,
+      versionId: old.versionId,
+      revision: old.revision,
+    });
+    expect(await counts()).toEqual({
+      ...before,
+      bindings: before!.bindings + 1,
+    });
+    const [versions] =
+      await f.db`select count(*)::int n from allrice_personal_skill_versions where installation_id=${old.id}`;
+    expect(versions!.n).toBe(1);
+  });
+  it.each([
+    'metadata_response',
+    'storage_put',
+    'receipt_insert',
+    'commit_response',
+  ] as const)(
+    'cleans only pending archives after %s failure and preserves committed immutable bytes',
+    async (failure) => {
+      const s = await setup(),
+        bytes = await zip();
+      const preview = await (
+        await send(s.owner.context, s.assigned.id, s.owner.workspaceId, bytes)
+      ).json();
+      const requestId = randomUUID();
+      const createMetadata = data.createStorageMetadata;
+      const write = browserWriter.confirmPersonalSkillBrowser;
+      const metadataSpy = vi.spyOn(data, 'createStorageMetadata');
+      const putSpy = vi.spyOn(browser.storage!, 'put');
+      const writerSpy = vi.spyOn(browserWriter, 'confirmPersonalSkillBrowser');
+      if (failure === 'metadata_response')
+        metadataSpy.mockImplementationOnce(async (...args) => {
+          await createMetadata(...args);
+          throw Error('synthetic metadata response failure');
+        });
+      if (failure === 'storage_put')
+        putSpy.mockRejectedValueOnce(Error('synthetic storage failure'));
+      if (failure === 'commit_response')
+        writerSpy.mockImplementationOnce(async (...args) => {
+          await write(...args);
+          throw Error('synthetic uncertain commit response');
+        });
+      if (failure === 'receipt_insert') {
+        await f.db`create function reject_browser_receipt() returns trigger language plpgsql as $$begin raise exception 'synthetic receipt failure'; end$$`;
+        await f.db`create trigger reject_browser_receipt before insert on allrice_personal_skill_receipts for each row execute function reject_browser_receipt()`;
+      }
+      try {
+        const response = await confirm(
+          s.owner.context,
+          s.assigned.id,
+          s.owner.workspaceId,
+          preview,
+          requestId,
+        );
+        expect(response.status).toBe(500);
+        expect(metadataSpy).toHaveBeenCalledTimes(1);
+        const rows =
+          await f.db`select state,immutable,object_key from allrice_storage_objects where owner_id=${s.owner.user.id}`;
+        expect(rows).toHaveLength(1);
+        const [row] = rows;
+        if (failure === 'commit_response') {
+          expect(row).toMatchObject({ state: 'ready', immutable: true });
+          await expect(
+            access(join(f.storageRoot, row!.object_key)),
+          ).resolves.toBeUndefined();
+          const recovered = await confirm(
+            s.owner.context,
+            s.assigned.id,
+            s.owner.workspaceId,
+            preview,
+            requestId,
+          );
+          expect(recovered.status).toBe(200);
+          expect(metadataSpy).toHaveBeenCalledTimes(1);
+          expect(putSpy).toHaveBeenCalledTimes(1);
+          expect(await listPersonalSkills(s.owner.context)).toHaveLength(1);
+        } else {
+          expect(row).toMatchObject({ state: 'deleted', immutable: false });
+          await expect(
+            access(join(f.storageRoot, row!.object_key)),
+          ).rejects.toMatchObject({ code: 'ENOENT' });
+          expect(await listPersonalSkills(s.owner.context)).toHaveLength(0);
+          if (failure === 'metadata_response')
+            expect(putSpy).not.toHaveBeenCalled();
+        }
+      } finally {
+        metadataSpy.mockRestore();
+        putSpy.mockRestore();
+        writerSpy.mockRestore();
+        if (failure === 'receipt_insert') {
+          await f.db`drop trigger reject_browser_receipt on allrice_personal_skill_receipts`;
+          await f.db`drop function reject_browser_receipt()`;
+        }
+      }
+    },
+  );
   it('rejects a changed impact set and an install preview predating revocation', async () => {
     const s = await setup();
     const { result } = await installWeb(s);
@@ -860,11 +1049,73 @@ suite('browser Skill source preview and confirmation', () => {
           body,
         );
         expect(confirmed.status).toBe(200);
-        expect((await confirmed.json()).receipt.source).toMatchObject({
+        const installed = await confirmed.json();
+        expect(installed.receipt.source).toMatchObject({
           kind: 'github',
           commitSha: commit,
           treeSha: tree,
         });
+        const target = {
+          operation: 'update' as const,
+          installationId: installed.skill.id,
+          expectedRevision: installed.skill.revision,
+          expectedVersionId: installed.skill.versionId,
+        };
+        const impact = await previewPersonalSkillUpdateTarget(
+          s.owner.context,
+          s.assigned.id,
+          target,
+        );
+        if (verified.preview.source.kind !== 'github')
+          throw Error('expected public source');
+        // A URL/ref alias resolving to the same commit has the same established
+        // source identity. Only provenance-bearing changes create versions.
+        const alias = new SkillPreviewTokens(key).issue(
+          {
+            ...verified.preview,
+            target: { ...target, bindingsDigest: impact.bindingsDigest },
+            source: {
+              ...verified.preview.source,
+              requestedUrl: root + '/tree/main',
+              resolvedRef: 'main',
+            },
+          },
+          verified.bytes,
+        );
+        const unchanged = await confirm(
+          s.owner.context,
+          s.assigned.id,
+          s.owner.workspaceId,
+          { previewId: alias, digest: body.digest },
+        );
+        expect(unchanged.status).toBe(200);
+        expect((await unchanged.json()).receipt).toMatchObject({
+          unchanged: true,
+          versionId: installed.skill.versionId,
+        });
+        const zipPreview = await (
+          await send(
+            s.owner.context,
+            s.assigned.id,
+            s.owner.workspaceId,
+            verified.bytes,
+            undefined,
+            target,
+          )
+        ).json();
+        const changed = await confirm(
+          s.owner.context,
+          s.assigned.id,
+          s.owner.workspaceId,
+          zipPreview,
+        );
+        expect(changed.status).toBe(200);
+        const changedResult = await changed.json();
+        expect(changedResult.receipt.unchanged).toBe(false);
+        expect(changedResult.skill.versionId).not.toBe(
+          installed.skill.versionId,
+        );
+        expect(changedResult.skill.source.kind).toBe('attachment');
         expect(noFetch).not.toHaveBeenCalled();
       }
     },

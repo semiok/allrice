@@ -224,7 +224,7 @@ export async function previewPersonalSkillUpdateTarget(
     };
   });
 }
-function sourceIdentity(raw: unknown) {
+export function personalSkillSourceIdentity(raw: unknown) {
   const source = PersonalSkillSourceSchema.parse(raw);
   return source.kind === 'attachment'
     ? {
@@ -278,8 +278,8 @@ async function stage(
       ? candidate.targetVersionId === row.current_version_id
       : row.definition_checksum === digest &&
         row.package_checksum === packageDigest &&
-        runtimePolicyDigest(sourceIdentity(source)) ===
-          runtimePolicyDigest(sourceIdentity(row.source));
+        runtimePolicyDigest(personalSkillSourceIdentity(source)) ===
+          runtimePolicyDigest(personalSkillSourceIdentity(row.source));
   const [count] =
     await tx`select count(*)::int n,coalesce(max(version),0)::int latest from allrice_personal_skill_versions where installation_id=${id}`;
   if (

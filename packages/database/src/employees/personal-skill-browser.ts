@@ -19,7 +19,10 @@ import { skillBytesChecksum } from '../skill-bundles.ts';
 import { employeeAccessTransaction } from './employee-access-cancellation.ts';
 import { getEmployeeInstance } from './employee-instances.ts';
 import { readCurrentEmployeeBaseSkills } from './employee-current-skills.ts';
-import { personalSkillUpdateImpact } from './personal-skill-versions.ts';
+import {
+  personalSkillUpdateImpact,
+  personalSkillSourceIdentity,
+} from './personal-skill-versions.ts';
 import {
   PersonalSkillError,
   owner,
@@ -96,9 +99,10 @@ export async function confirmPersonalSkillBrowser(
   return browserOperation(context, input, false);
 }
 
-/** Fast replay before allocating storage. The final writer repeats the same
- * check under its lock to coalesce concurrent confirmations. */
-export async function readPersonalSkillBrowserReceipt(
+/** Complete a replay or an existing-version operation without allocating a
+ * duplicate archive. A null result requires storage; the final writer repeats
+ * every guard under its lock before publishing that new version. */
+export async function preparePersonalSkillBrowserConfirmation(
   context: RequestContext,
   input: BrowserInput,
 ) {
@@ -108,7 +112,7 @@ export async function readPersonalSkillBrowserReceipt(
 async function browserOperation(
   context: RequestContext,
   input: BrowserInput,
-  receiptOnly: boolean,
+  withoutArchive: boolean,
 ) {
   const instanceId = UuidSchema.parse(input.instanceId);
   const requestId = UuidSchema.parse(input.requestId);
@@ -263,11 +267,11 @@ async function browserOperation(
       row.state === 'installed' &&
       row.definition_checksum === definitionChecksum &&
       row.package_checksum === packageChecksum &&
-      row.source.originalChecksum === source.originalChecksum &&
-      (source.kind !== 'github' ||
-        runtimePolicyDigest(row.source) === runtimePolicyDigest(source));
-    if (receiptOnly) return null;
-    if (!row || (target.operation === 'update' && !unchanged)) {
+      runtimePolicyDigest(personalSkillSourceIdentity(row.source)) ===
+        runtimePolicyDigest(personalSkillSourceIdentity(source));
+    const needsArchive = !row || (target.operation === 'update' && !unchanged);
+    if (withoutArchive && needsArchive) return null;
+    if (needsArchive) {
       const [count] =
         await tx`select count(*)::int n,coalesce(max(version),0)::int latest
         from allrice_personal_skill_versions where installation_id=${id}`;
