@@ -35,8 +35,7 @@ export function employeeInstanceInstructions(
       'Explore relevant alternatives and explain their tradeoffs without inventing facts.',
   };
   return [
-    ...(!rice &&
-    snapshot.capabilitySnapshot.bindings.toolNames.includes(
+    ...(snapshot.capabilitySnapshot.bindings.toolNames.includes(
       'workspace.personal_skill.version',
     )
       ? [
@@ -61,11 +60,10 @@ export function employeeInstanceInstructions(
       : []),
     ...(rice
       ? [
-          'This is the basic Rice assistant. Its owner may change only its personal display name and expression style. Personal Skill installation, binding and personal Workflows are unavailable here; use the existing create-your-own AI employee entry for an owner-only custom employee. Platform-provided capabilities and safety requirements still apply.',
+          'This is the basic Rice instance. Its owner may change its personal display name and expression style, and install, bind or enable ordinary personal Skills through the existing authorized tools. Personal Workflows and work scenes are unavailable here; use the existing create-your-own AI employee entry for an owner-only custom employee. A Skill installation grants no Workflow, scene or additional tool authority. Platform-provided capabilities and safety requirements still apply.',
         ]
       : []),
-    ...(!rice &&
-    snapshot.capabilitySnapshot.bindings.toolNames.includes(
+    ...(snapshot.capabilitySnapshot.bindings.toolNames.includes(
       'workspace.personal_skill.install',
     )
       ? [

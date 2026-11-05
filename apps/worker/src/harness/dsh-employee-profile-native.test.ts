@@ -64,7 +64,7 @@ it.each(['rice', 'custom', 'professional'] as const)(
         // Inspect what the real DSH runtime sent to the loopback provider,
         // not a duplicate tool definition or just the kernel string.
         expect(tool.description).toContain(
-          "The owner's basic Rice assistant and personal custom AI employee accept name and expressionStyle",
+          "The owner's basic Rice instance and personal custom AI employee accept name and expressionStyle",
         );
         expect(tool.description).toContain(
           'professional general employees accept expressionStyle only',
@@ -77,7 +77,7 @@ it.each(['rice', 'custom', 'professional'] as const)(
           { description: string }
         >;
         expect(properties.name!.description).toContain(
-          'basic Rice assistant or personal custom AI employee',
+          'basic Rice instance or personal custom AI employee',
         );
         expect(properties.name!.description).toContain(
           'Never send name for a platform-provided professional general employee',

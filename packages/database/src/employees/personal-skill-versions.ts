@@ -20,7 +20,7 @@ import {
 } from '../content-maintenance.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
 import { getEmployeeInstance } from './employee-instances.ts';
-import { enterPersonalSkillChat } from './personal-skill-authority.ts';
+import { enterMethodChat } from './employee-method-chat.ts';
 import {
   employeeChatIdentity,
   employeeChatUuid,
@@ -330,7 +330,7 @@ export async function personalSkillVersionConfirmationFiles(
   const args = PersonalSkillVersionInputSchema.parse(input.arguments);
   if (args.operation !== 'confirm') return [];
   const { scope } = employeeChatIdentity(input);
-  return enterPersonalSkillChat(
+  return enterMethodChat(
     input,
     'workspace.personal_skill.version',
     false,
@@ -390,7 +390,7 @@ export async function personalSkillVersionFromChat(input: EmployeeChatCall) {
   if (args.operation === 'update')
     throw new PersonalSkillError('source_invalid');
   const { scope } = employeeChatIdentity(input);
-  return enterPersonalSkillChat(
+  return enterMethodChat(
     input,
     'workspace.personal_skill.version',
     false,

@@ -1,11 +1,9 @@
-import { personalSkillVersionFromChat } from './personal-skill-versions.ts';
 import type { RequestContext } from '@allrice/contracts';
 import { createHash, randomUUID } from 'node:crypto';
 import { access, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
 import { PersonalSkillItemSchema } from '@allrice/contracts';
-import { runtimePolicyDigest } from '../runtime-policy.ts';
 import { employeeChatUuid } from './employee-chat-authority.ts';
 import * as client from '../core/client.ts';
 import * as queue from '../execution/queue.ts';
@@ -254,46 +252,53 @@ suite(
       });
       return JSON.parse(result.modelContent);
     }
-    it('E3 rejects real Rice install, bind and HTTP enable, ignores legacy bindings on freeze and denies old pins while keeping its custom usable', async () => {
+    it('E3 allows real Rice binding and HTTP enable with ordinary frozen reads and unchanged revocation', async () => {
       const x = await setup(false, true);
       const { item } = await install(x, x.custom.id);
       const task = await x.run(
         x.assignment.id,
-        '请安装我上传的 SKILL.md。',
-        raw(),
+        '请把个人技能 private-checklist 启用给当前 AI 员工。',
       );
-      await expect(
-        preparePersonalSkillImport(task.input),
-      ).rejects.toMatchObject({ code: 'authorization_denied' });
-      await expect(
-        installPersonalSkillFromChat(
-          task.input,
-          await parsePersonalSkill(Buffer.from(raw())),
-        ),
-      ).rejects.toMatchObject({ code: 'authorization_denied' });
-      const bind = {
+      const bound = await broker(task, {
         operation: 'bind',
         installationId: item.id,
         versionId: item.versionId,
         expectedRevision: item.revision,
-      };
-      await expect(
-        personalSkillVersionFromChat({ ...task.input, arguments: bind }),
-      ).rejects.toMatchObject({ code: 'authorization_denied' });
-      await expect(broker(task, bind)).rejects.toMatchObject({
-        code: 'PERSONAL_SKILL_REJECTED',
-        retryable: false,
       });
+      expect(bound.status).toBe('bound');
       expect(
-        (await listPersonalSkills(x.context))[0]!.bindings.map(
-          (b) => b.instanceId,
-        ),
-      ).toEqual([x.custom.id]);
+        bound.current.bindings
+          .map((b: { instanceId: string }) => b.instanceId)
+          .sort(),
+      ).toEqual([x.custom.id, x.assignment.id].sort());
       await task.finish();
-      // Seed only a pre-E3 binding: this cannot be created through an E3 write.
-      const bindingId = randomUUID();
-      await f.db`insert into allrice_personal_skill_bindings (id, organization_id, workspace_id, owner_id, instance_id, installation_id, enabled, epoch)
-        values (${bindingId},${x.source.organizationId},${x.source.workspaceId},${x.source.ownerId},${x.assignment.id},${item.id},true,1)`;
+      const frozen = await freezePersonalSkills(
+        x.context,
+        { id: x.assignment.id },
+        { nativeSkills: [] },
+      );
+      expect(frozen.personalSkills!.skills).toHaveLength(1);
+      expect(frozen.personalSkills!.skills[0]).toMatchObject({
+        installationId: item.id,
+        versionId: item.versionId,
+        instanceId: x.assignment.id,
+      });
+      await assertPersonalSkillsReadable(
+        x.context,
+        frozen.personalSkills,
+        f.db,
+      );
+      const disabled = await managePersonalSkill(x.context, {
+        workspaceId: x.source.workspaceId,
+        instanceId: x.assignment.id,
+        installationId: item.id,
+        expectedRevision: bound.current.revision,
+        requestId: randomUUID(),
+        operation: 'disable',
+      });
+      await expect(
+        assertPersonalSkillsReadable(x.context, frozen.personalSkills, f.db),
+      ).rejects.toThrow('personal_skill_unavailable');
       e3SkillHttpAuth.context = x.context;
       const routePath =
         '../../../../apps/web/app/api/v1/personal-skills/route.ts';
@@ -309,55 +314,30 @@ suite(
             workspaceId: x.source.workspaceId,
             instanceId: x.assignment.id,
             installationId: item.id,
-            expectedRevision: item.revision,
+            expectedRevision: disabled.revision,
             requestId: randomUUID(),
             operation: 'enable',
           }),
         }),
       );
-      expect(response.status).toBe(403);
-      const customFrozen = await freezePersonalSkills(x.context, x.custom, {
-        nativeSkills: [],
-      });
-      expect(customFrozen.personalSkills!.skills).toHaveLength(1);
-      const pin = {
-        ...customFrozen.personalSkills!.skills[0]!,
-        instanceId: x.assignment.id,
-        bindingId,
-      };
-      const index = {
-        schemaVersion: 1,
-        instanceId: x.assignment.id,
-        skills: [pin],
-      };
+      expect(response.status).toBe(200);
+      const current = (await listPersonalSkills(x.context))[0]!;
+      expect(
+        current.bindings.find((b) => b.instanceId === x.assignment.id)?.enabled,
+      ).toBe(true);
+      expect(
+        current.bindings.find((b) => b.instanceId === x.custom.id)?.enabled,
+      ).toBe(true);
       await expect(
-        assertPersonalSkillsReadable(
-          x.context,
-          { ...index, checksum: runtimePolicyDigest(index) },
-          f.db,
-        ),
+        assertPersonalSkillsReadable(x.context, frozen.personalSkills, f.db),
       ).rejects.toThrow('personal_skill_unavailable');
-      const base = { nativeSkills: [] };
-      expect(
-        await freezePersonalSkills(x.context, { id: x.assignment.id }, base),
-      ).toEqual({ ...base, personalSkills: undefined });
-      await assertPersonalSkillsReadable(
+      const fresh = await freezePersonalSkills(
         x.context,
-        customFrozen.personalSkills,
-        f.db,
+        { id: x.assignment.id },
+        { nativeSkills: [] },
       );
-      expect(
-        (
-          await managePersonalSkill(x.context, {
-            workspaceId: x.source.workspaceId,
-            instanceId: x.assignment.id,
-            installationId: item.id,
-            expectedRevision: item.revision,
-            requestId: randomUUID(),
-            operation: 'disable',
-          })
-        ).bindings.find((b) => b.instanceId === x.assignment.id)?.enabled,
-      ).toBe(false);
+      expect(fresh.personalSkills!.skills).toHaveLength(1);
+      await assertPersonalSkillsReadable(x.context, fresh.personalSkills, f.db);
     });
 
     it('reports root lock contention as busy without retrying the whole Run, then reads the same general employee library without changing authority', async () => {
@@ -1926,11 +1906,11 @@ suite(
       expect(await listPersonalSkills(x.context)).toEqual([]);
       await task.finish();
     });
-    it.each(['general', 'custom'] as const)(
+    it.each(['rice', 'general', 'custom'] as const)(
       'installs through the real Broker handler for %s and freezes exact provenance without new grants',
       async (kind) => {
-        const x = await setup(),
-          instanceId = kind === 'general' ? x.assignment.id : x.custom.id;
+        const x = await setup(false, kind === 'rice'),
+          instanceId = kind === 'custom' ? x.custom.id : x.assignment.id;
         const { item } = await install(x, instanceId);
         expect(item.bindings).toMatchObject([
           { instanceId, enabled: true, epoch: 1 },
@@ -1968,7 +1948,7 @@ suite(
           f.db`update allrice_personal_skill_versions set original_text='changed' where id=${item.versionId}`,
         ).rejects.toThrow('immutable');
         const other = await x.run(
-          kind === 'general' ? x.custom.id : x.assignment.id,
+          kind === 'custom' ? x.assignment.id : x.custom.id,
           'Unbound instance',
         );
         expect(

@@ -2,7 +2,6 @@ import {
   isBaseRiceInstanceDefinition,
   type EmployeeInstanceSnapshot,
 } from '@allrice/contracts';
-import { DataAccessError } from '../data.ts';
 import type { ContentSql } from './employee-content-model.ts';
 
 /** This is a product boundary for the platform Rice, not all general instances.
@@ -47,14 +46,6 @@ export async function isBaseRiceInstance(
       definition: row.manifest,
     })
   );
-}
-
-export async function assertPersonalSkillInstanceAllowed(
-  instance: Parameters<typeof isBaseRiceInstance>[0],
-  sql: ContentSql,
-) {
-  if (await isBaseRiceInstance(instance, sql))
-    throw new DataAccessError('authorization_denied');
 }
 
 /** Display-only predicate for an instance aliased `i`. The enclosing query
