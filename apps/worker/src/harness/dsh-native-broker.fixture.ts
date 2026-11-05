@@ -144,7 +144,8 @@ export async function nativeBrokerRoundtrip(input: {
       DSH_CODEX_MODEL: 'gpt-5.6-luna',
       DSH_OPENAI_COMPATIBLE_MODEL: 'native-contract',
       DSH_SYSTEM_PROMPT:
-        input.systemPrompt ?? 'Synthetic protocol test; only the selected tool.',
+        input.systemPrompt ??
+        'Synthetic protocol test; only the selected tool.',
       OPENAI_COMPATIBLE_API_KEY: 'synthetic-only',
       OPENAI_COMPATIBLE_BASE_URL: `http://127.0.0.1:${port}/v1`,
     },

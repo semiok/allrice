@@ -37,7 +37,9 @@ it.each(['rice', 'custom', 'professional'] as const)(
       );
       expect(systemPrompt).not.toContain('do not send name');
     } else {
-      expect(systemPrompt).toContain('do not send name or edit business methods');
+      expect(systemPrompt).toContain(
+        'do not send name or edit business methods',
+      );
       expect(systemPrompt).not.toContain('Your personal display name is');
     }
     const args = {
@@ -67,7 +69,9 @@ it.each(['rice', 'custom', 'professional'] as const)(
         expect(tool.description).toContain(
           'professional general employees accept expressionStyle only',
         );
-        expect(tool.description).toContain('server authorization authoritative');
+        expect(tool.description).toContain(
+          'server authorization authoritative',
+        );
         const properties = tool.parameters!.properties as Record<
           string,
           { description: string }
