@@ -19,7 +19,7 @@ export function EmployeeSkillPage({
   footer,
 }: {
   title: string;
-  backLabel: string;
+  backLabel?: string;
   blocked?: boolean;
   onBack: () => void;
   children: ReactNode;
@@ -28,37 +28,47 @@ export function EmployeeSkillPage({
   return (
     <div className={css.page}>
       <header className={css.header}>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className={css.back}
-          aria-label={backLabel}
-          disabled={blocked}
-          onClick={onBack}
-          data-modal-autofocus
-          icon={
-            <svg
-              width="20"
-              height="20"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.75"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <path d="m10 5-7 7 7 7M3 12h18" />
-            </svg>
-          }
-        />
+        {backLabel && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className={css.back}
+            aria-label={backLabel}
+            disabled={blocked}
+            onClick={onBack}
+            data-modal-autofocus
+            icon={
+              <svg
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.75"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="m10 5-7 7 7 7M3 12h18" />
+              </svg>
+            }
+          />
+        )}
         <h2>{title}</h2>
       </header>
       <div className={css.body}>{children}</div>
       {footer && <footer className={css.footer}>{footer}</footer>}
     </div>
   );
+}
+
+/** The public native card remains focusable while an explicit action disables
+ * its controls. No trap or document keyboard listener is added here. */
+export function focusEmployeeSkillDialog(control: HTMLElement) {
+  control
+    .closest<HTMLElement>('[role="dialog"]')
+    ?.focus({ preventScroll: true });
 }
 
 export function EmployeeSkillFeedback({
@@ -129,7 +139,10 @@ export function EmployeeSkillSourceForm({
             type="button"
             variant="primary"
             disabled={reading || (zip && !draft.file)}
-            onClick={onRead}
+            onClick={(event) => {
+              focusEmployeeSkillDialog(event.currentTarget);
+              onRead();
+            }}
           >
             {reading ? '读取中' : error ? '重试' : '读取'}
           </Button>

@@ -348,6 +348,21 @@
   opacity: 0.9;
 }
 
+/* a46c submodal: its own compact layout, not a smaller ordinary form. */
+.small .header {
+  min-height: 0;
+  padding-bottom: 0;
+  border: 0;
+}
+.small .body {
+  padding-top: 16px;
+  padding-bottom: 24px;
+}
+.small .footer {
+  padding-top: 0;
+  border: 0;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -386,6 +401,18 @@
     max-height: calc(100dvh - 40px);
     border-radius: var(--ar-radius-xl);
     box-shadow: var(--dsw-elevation-prominent);
+  }
+  .small .header {
+    padding: 24px 20px 0;
+  }
+  .small .body {
+    padding: 16px 20px 24px;
+  }
+  .small .footer {
+    padding: 0 20px 20px;
+  }
+  .small .footer button {
+    flex: 1;
   }
   .header {
     gap: 8px;

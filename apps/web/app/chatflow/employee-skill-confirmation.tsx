@@ -12,13 +12,23 @@ import {
 import {
   EmployeeSkillFeedback,
   EmployeeSkillPage,
+  focusEmployeeSkillDialog,
 } from './employee-skill-source-form';
 import css from './employee-skills-host.module.css';
 
 export function employeeSkillPreviewName(
   preview: PersonalSkillPreviewResponse,
 ) {
-  return preview.item.displayName ?? preview.item.name;
+  return preview.item.displayName?.trim()
+    ? preview.item.displayName
+    : preview.item.name;
+}
+
+export function employeeSkillPreviewVersion(
+  preview: PersonalSkillPreviewResponse,
+) {
+  const version = preview.item.version;
+  return employeeSkillVersion(version?.trim() ? version : null);
 }
 
 export function EmployeeSkillConfirmation({
@@ -63,7 +73,10 @@ export function EmployeeSkillConfirmation({
             variant="primary"
             disabled={pending}
             aria-busy={pending}
-            onClick={onConfirm}
+            onClick={(event) => {
+              focusEmployeeSkillDialog(event.currentTarget);
+              onConfirm();
+            }}
           >
             {pending && <span className={css.spinner} aria-hidden="true" />}
             {pending && update
@@ -89,12 +102,10 @@ export function EmployeeSkillConfirmation({
               <span className={css.versions}>
                 <span>{employeeSkillVersion(current?.version ?? null)}</span>
                 <span aria-hidden="true">→</span>
-                <span>
-                  {employeeSkillVersion(preview.item.version ?? null)}
-                </span>
+                <span>{employeeSkillPreviewVersion(preview)}</span>
               </span>
             ) : (
-              employeeSkillVersion(preview.item.version ?? null)
+              employeeSkillPreviewVersion(preview)
             )}
           </dd>
         </div>
@@ -202,12 +213,10 @@ export function EmployeeSkillRemoval({
   skill,
   pending,
   error,
-  backLabel,
   onBack,
   onConfirm,
 }: {
   employeeName: string;
-  backLabel: string;
   skill: EmployeePersonalSkill;
   pending: boolean;
   error?: string;
@@ -217,7 +226,6 @@ export function EmployeeSkillRemoval({
   return (
     <EmployeeSkillPage
       title={`卸载“${skill.displayName}”？`}
-      backLabel={backLabel}
       blocked={pending}
       onBack={onBack}
       footer={
@@ -227,6 +235,7 @@ export function EmployeeSkillRemoval({
             variant="outline"
             disabled={pending}
             onClick={onBack}
+            data-modal-autofocus
           >
             取消
           </Button>
@@ -236,7 +245,10 @@ export function EmployeeSkillRemoval({
             className={css.dangerButton}
             disabled={pending}
             aria-busy={pending}
-            onClick={onConfirm}
+            onClick={(event) => {
+              focusEmployeeSkillDialog(event.currentTarget);
+              onConfirm();
+            }}
           >
             {pending && <span className={css.spinner} aria-hidden="true" />}
             {error ? '重试' : '卸载'}

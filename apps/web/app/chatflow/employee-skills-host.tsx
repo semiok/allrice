@@ -32,6 +32,7 @@ import {
   EmployeeSkillConfirmation,
   EmployeeSkillRemoval,
   EmployeeSkillSuccess,
+  employeeSkillPreviewName,
 } from './employee-skill-confirmation';
 import css from './employee-skills-host.module.css';
 
@@ -130,6 +131,7 @@ type Page =
   | ConfirmPage
   | RemovePage
   | { kind: 'detail'; skill: EmployeeSkill }
+  | { kind: 'detail-read'; installationId: string; title: string }
   | {
       kind: 'success';
       payload: ConfirmPayload;
@@ -140,6 +142,7 @@ type Page =
 
 export interface EmployeeSkillLayer {
   title: string;
+  navigationKey: string;
   content: ReactNode;
   small: boolean;
   blocked: boolean;
@@ -156,6 +159,7 @@ export function EmployeeSkillLayerDialog({
   if (!layer) return null;
   return (
     <Modal
+      key={layer.navigationKey}
       open
       headless
       title={layer.title}
@@ -769,10 +773,11 @@ function EmployeeSkillsReader({
       current.kind === 'success' &&
       current.result.receipt.operation === 'update'
     ) {
-      const skill = catalog.current?.personalSkills.find(
-        (item) => item.installationId === current.result.receipt.installationId,
-      );
-      show(skill ? { kind: 'detail', skill } : null);
+      show({
+        kind: 'detail-read',
+        installationId: current.result.receipt.installationId,
+        title: employeeSkillPreviewName(current.payload.preview),
+      });
       return;
     }
     show(null);
@@ -792,6 +797,38 @@ function EmployeeSkillsReader({
           onUpdate={openSource}
           onUninstall={(skill) => openRemoval(skill, true)}
         />
+      );
+    } else if (page.kind === 'detail-read') {
+      const skill =
+        view.status === 'ready'
+          ? view.catalog.personalSkills.find(
+              (item) => item.installationId === page.installationId,
+            )
+          : undefined;
+      title = skill?.displayName ?? page.title;
+      content = skill ? (
+        <EmployeeSkillDetails
+          skill={skill}
+          canInstall={view.status === 'ready' && view.catalog.canInstall}
+          onBack={back}
+          onUpdate={openSource}
+          onUninstall={(item) => openRemoval(item, true)}
+        />
+      ) : (
+        <EmployeeSkillPage title={title} backLabel="返回员工详情" onBack={back}>
+          <EmployeeSkillFeedback busy={view.status === 'loading'}>
+            {view.status === 'loading'
+              ? copy.loading
+              : view.status === 'error'
+                ? view.message
+                : copy.accessLost}
+          </EmployeeSkillFeedback>
+          {view.status === 'error' && view.onRetry && (
+            <Button type="button" variant="outline" onClick={view.onRetry}>
+              重试
+            </Button>
+          )}
+        </EmployeeSkillPage>
       );
     } else if (page.kind === 'source') {
       title = page.current ? `更新“${page.current.displayName}”` : '添加技能';
@@ -846,7 +883,6 @@ function EmployeeSkillsReader({
           skill={page.payload.skill}
           pending={page.pending}
           error={page.error}
-          backLabel={page.payload.fromDetail ? '返回技能详情' : '返回员工详情'}
           onBack={back}
           onConfirm={() => void remove()}
         />
@@ -875,8 +911,21 @@ function EmployeeSkillsReader({
         </EmployeeSkillPage>
       );
     }
+    const navigationKey =
+      page.kind === 'detail'
+        ? `detail/${page.skill.kind === 'personal' ? page.skill.installationId : page.skill.id}`
+        : page.kind === 'detail-read'
+          ? `detail-read/${page.installationId}/${view.status}`
+          : page.kind === 'source'
+            ? `source/${page.current?.installationId ?? 'install'}`
+            : page.kind === 'confirm' || page.kind === 'remove'
+              ? `${page.kind}/${page.write.requestId}`
+              : page.kind === 'success'
+                ? `success/${page.result.receipt.requestId}`
+                : `unresolved/${page.operation}`;
     layer = {
       title,
+      navigationKey,
       content,
       small: page.kind === 'remove',
       blocked: pending.current,

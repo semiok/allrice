@@ -1,0 +1,72 @@
+.fixture {
+  min-height: 100dvh;
+  padding: 24px;
+  background: var(--ar-surface-subtle);
+  color: var(--ar-text);
+  font: var(--ar-font-body);
+}
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  max-width: 848px;
+  margin: 0 auto 20px;
+  color: var(--ar-text-secondary);
+  font: var(--ar-font-caption);
+}
+.toolbar p {
+  flex-basis: 100%;
+  margin: 0;
+}
+.toolbar label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.toolbar select,
+.toolbar button {
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 1px solid var(--ar-border);
+  border-radius: var(--ar-radius-sm);
+  background: var(--ar-surface);
+  color: var(--ar-text);
+}
+.card {
+  max-width: 848px;
+  margin: auto;
+  overflow: hidden;
+  border: 1px solid var(--ar-border);
+  border-radius: var(--ar-radius-panel);
+  background: var(--ar-surface);
+}
+.card > header {
+  padding: 22px 24px 18px;
+  border-bottom: 1px solid var(--ar-border);
+}
+.card h2 {
+  margin: 0;
+  font: var(--ar-font-title);
+}
+.card p {
+  margin: 4px 0 0;
+  color: var(--ar-text-secondary);
+}
+.body {
+  padding: 20px 24px;
+}
+@media (max-width: 700px) {
+  .fixture {
+    padding: 12px;
+  }
+  .card {
+    border-radius: var(--ar-radius-xl);
+  }
+  .card > header {
+    padding: 16px 20px;
+  }
+  .body {
+    padding: 20px;
+  }
+}
