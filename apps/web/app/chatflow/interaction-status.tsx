@@ -21,14 +21,30 @@ export function useInteractionStatus(
     [error, setError] = useState('');
   const scope = `${workspaceId}/${sessionId}`;
   const generation = useRef(0);
+  const request = useRef<AbortController | null>(null);
+  const nextPollAt = useRef(0);
   const reload = useCallback(
     async (signal?: AbortSignal) => {
-      if (!sessionId || !workspaceId) return;
+      if (
+        !sessionId ||
+        !workspaceId ||
+        signal?.aborted ||
+        document.visibilityState === 'hidden'
+      )
+        return;
+      // Background ticks join the current read; explicit actions can refresh it.
+      if (signal && request.current && !request.current.signal.aborted) return;
+      request.current?.abort();
+      const controller = new AbortController();
+      request.current = controller;
+      const abort = () => controller.abort();
+      signal?.addEventListener('abort', abort, { once: true });
       const requestGeneration = ++generation.current;
+      const startedAt = Date.now();
       try {
         const response = await fetch(
           `/api/v1/sessions/${sessionId}/${workbenchEnabled ? 'interactions' : 'timings'}?workspaceId=${workspaceId}${workbenchEnabled ? '' : '&inputs=1'}`,
-          { headers, cache: 'no-store', signal },
+          { headers, cache: 'no-store', signal: controller.signal },
         );
         if (!response.ok) throw new Error('交互状态暂不可用');
         const body = await response.json();
@@ -44,12 +60,29 @@ export function useInteractionStatus(
               pendingActions: [],
             }
           : schema.parse(body);
-        if (!signal?.aborted && requestGeneration === generation.current) {
+        if (
+          !controller.signal.aborted &&
+          requestGeneration === generation.current
+        ) {
+          const active =
+            data.runtime?.state === 'running' ||
+            data.pendingActions.length > 0 ||
+            data.inputs.some((input) =>
+              ['pending', 'received', 'queued', 'running'].includes(
+                input.status,
+              ),
+            ) ||
+            data.runTimings?.some((run) => run.timing.phase !== 'terminal');
+          nextPollAt.current = startedAt + (active ? 2_000 : 15_000);
           setValue({ scope, data });
           setError('');
         }
       } catch {
-        if (!signal?.aborted && requestGeneration === generation.current) {
+        if (
+          !controller.signal.aborted &&
+          requestGeneration === generation.current
+        ) {
+          nextPollAt.current = Date.now() + 2_000;
           setValue(null);
           setError(
             workbenchEnabled
@@ -57,18 +90,32 @@ export function useInteractionStatus(
               : '运行时间暂不可用',
           );
         }
+      } finally {
+        signal?.removeEventListener('abort', abort);
+        if (request.current === controller) request.current = null;
       }
     },
     [workbenchEnabled, sessionId, workspaceId, headers, scope],
   );
   useEffect(() => {
     const abort = new AbortController();
+    nextPollAt.current = 0;
     void reload(abort.signal);
-    const timer = setInterval(() => void reload(abort.signal), 2000);
+    const timer = setInterval(() => {
+      if (Date.now() >= nextPollAt.current) void reload(abort.signal);
+    }, 2000);
+    const visible = () => {
+      if (document.visibilityState === 'hidden') request.current?.abort();
+      else void reload(abort.signal);
+    };
+    document.addEventListener('visibilitychange', visible);
     return () => {
       generation.current++;
       abort.abort();
+      request.current?.abort();
+      request.current = null;
       clearInterval(timer);
+      document.removeEventListener('visibilitychange', visible);
     };
   }, [reload]);
   return { data: value?.scope === scope ? value.data : null, error, reload };
