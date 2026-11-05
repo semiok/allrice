@@ -506,6 +506,9 @@ export async function getNativeMcpApprovalTarget(
     const binding = RuntimeActionBindingSchema.parse(row.binding);
     const payload = McpExecutionPayloadSchema.parse(row.payload);
     if (!isOwnedRecordAppendBinding(binding, payload)) return null;
+    const sessionId = binding.task.chatSessionId;
+    if (!sessionId)
+      throw new RuntimePolicyError('native_action_not_applicable');
     const displayed = await createMcpStore({ database }).redactForDisplay(
       {
         organizationId: context.organizationId,
@@ -516,7 +519,7 @@ export async function getNativeMcpApprovalTarget(
       payload.arguments,
     );
     return {
-      sessionId: binding.task.chatSessionId,
+      sessionId,
       runId: binding.task.runId,
       approvalId: binding.attempt.operationId,
       displayable: digest(displayed) === digest(payload.arguments),

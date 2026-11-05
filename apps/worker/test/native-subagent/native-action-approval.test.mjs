@@ -109,11 +109,11 @@ it.each(['approved', 'rejected'])(
                 type: 'tool-call',
                 id: 'append-call',
                 name: 'cloud_mcp_call',
-                arguments: {
+                arguments: JSON.stringify({
                   connectionId: randomUUID(),
                   tool: 'records.append',
                   arguments: { value: 'S-Q2' },
-                },
+                }),
               },
             ]
           : text('完成'),
@@ -197,11 +197,11 @@ it('native cancellation removes the borrowed answerer; late approval cannot exec
               type: 'tool-call',
               id: 'cancel-call',
               name: 'cloud_mcp_call',
-              arguments: {
+              arguments: JSON.stringify({
                 connectionId: randomUUID(),
                 tool: 'records.append',
                 arguments: { value: 'cancel' },
-              },
+              }),
             },
           ]
         : text('完成'),

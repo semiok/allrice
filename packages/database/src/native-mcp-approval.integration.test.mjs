@@ -35,6 +35,8 @@ import { executeRiceTool } from '../../../apps/worker/src/tool-broker.ts';
 import * as McpExecutor from '../../../apps/worker/src/mcp/executor.ts';
 import { createNativeActionApprovalHttpHandler } from '../../../apps/worker/src/native-action-approval-http.ts';
 
+/* global process, URL, fetch */
+
 // Real PostgreSQL, production DSH approval, Broker and owned MCP HTTP. Only
 // the model, login/session-pin issuer and fixed service identity are fixtures;
 // this is not real-model, public HTTPS or browser acceptance.
@@ -92,7 +94,7 @@ function syntheticPort(decision = 'approved', live = true) {
 }
 async function operation(f, id) {
   const [row] =
-    await db`select snapshot from allrice_runtime_operations where id=${id}`;
+    await db`select snapshot from allrice_runtime_operations where id=${id} and organization_id=${f.org} and workspace_id=${f.workspace}`;
   return row.snapshot;
 }
 async function approvalCount(id) {
@@ -226,7 +228,7 @@ suite('MET-248 native approval → exact owned append', () => {
                   type: 'tool-call',
                   id: callId,
                   name: 'cloud_mcp_call',
-                  arguments: args,
+                  arguments: JSON.stringify(args),
                 },
               ]
             : text('完成'),
@@ -401,9 +403,8 @@ suite('MET-248 native approval → exact owned append', () => {
     await expect(created.stopNativeAction()).rejects.toThrow();
     await expect(f.create()).rejects.toThrow();
     expect(
-      (await operation(f, created.snapshot.binding.attempt.operationId)).result
-        .effects,
-    ).toBe('unknown');
+      await operation(f, created.snapshot.binding.attempt.operationId),
+    ).toMatchObject({ status: 'unknown', result: null });
   });
 
   it('approval/cancel racing cannot label a dispatched write as effects:none', async () => {
