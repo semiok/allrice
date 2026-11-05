@@ -10,6 +10,7 @@ import type {
 } from '@allrice/database';
 import type { FinalDeliveryPort } from '../final-delivery/guard.js';
 import type {
+  NativeActionApprovalPort,
   EmployeeKernelRequest,
   InternalKernelRequest,
   DshNativeSkillSnapshot,
@@ -35,7 +36,7 @@ export interface HarnessToolCall {
   name: string;
   arguments: Record<string, unknown>;
   nativeSessionId?: string;
-  nativeActionApproval?: import('@allrice/contracts').NativeActionApprovalPort;
+  nativeActionApproval?: NativeActionApprovalPort;
 }
 
 export interface HarnessToolDefinition {
@@ -289,7 +290,7 @@ export interface HarnessRuntimeProcessSnapshot {
  */
 export interface HarnessAdapter {
   nativeActionApproval?(
-    target: import('@allrice/database').NativeSubagentQueryTarget,
+    target: NativeSubagentQueryTarget,
     query: Record<string, unknown>,
     signal: AbortSignal,
   ): Promise<Record<string, unknown> | undefined>;

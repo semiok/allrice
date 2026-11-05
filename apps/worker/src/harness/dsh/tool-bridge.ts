@@ -1,4 +1,5 @@
 import { allRiceToolManifest } from '@allrice/contracts';
+import type { NativeActionApprovalPort } from '@allrice/contracts';
 
 import { HandlerError } from '../../errors.js';
 import type { HarnessExecutionInput, HarnessToolCall } from '../adapter.js';
@@ -164,9 +165,7 @@ export function parseDshToolCall(text: string): HarnessToolCall | null {
 
 export function dshInboundToolHandler(
   input: Pick<HarnessExecutionInput, 'tools' | 'onToolCall'>,
-  nativeAction?: (
-    call: HarnessToolCall,
-  ) => import('@allrice/contracts').NativeActionApprovalPort,
+  nativeAction?: (call: HarnessToolCall) => NativeActionApprovalPort,
 ) {
   return async (method: string, params: Record<string, unknown>) => {
     if (method !== 'allrice/tool-call') {
