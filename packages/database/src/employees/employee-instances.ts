@@ -21,6 +21,7 @@ import {
 import { getDatabase } from '../core/client.ts';
 import { DataAccessError } from '../data.ts';
 import { readContentPrincipal } from '../content-maintenance.ts';
+import { isBaseRiceInstance } from './employee-instance-policy.ts';
 import {
   cancelEmployeeAccessRuns,
   employeeAccessTransaction,
@@ -377,10 +378,13 @@ export async function updateEmployeeInstance(
           ? { ...current, ...value.profile }
           : value.profile,
       async (before) => {
+        const allowed = (await isBaseRiceInstance(before, tx))
+          ? ['name', 'expressionStyle']
+          : ['expressionStyle'];
         if (
           before.kind === 'general' &&
-          (value.profile.expressionStyle === undefined ||
-            Object.keys(value.profile).some((key) => key !== 'expressionStyle'))
+          (!Object.keys(value.profile).length ||
+            Object.keys(value.profile).some((key) => !allowed.includes(key)))
         )
           throw new DataAccessError('authorization_denied');
       },
@@ -512,7 +516,11 @@ export async function updateEmployeeProfileFromChat(input: {
       },
       (current) => ({ ...current, ...patch }),
       async (before) => {
-        if (before.kind === 'general' && args.name !== undefined)
+        if (
+          before.kind === 'general' &&
+          args.name !== undefined &&
+          !(await isBaseRiceInstance(before, tx))
+        )
           throw new EmployeeProfileChatError('general_profile_style_only');
         await assertEmployeeChatRun(
           tx,
@@ -559,14 +567,19 @@ export async function changeEmployeeInstanceLifecycle(
       if (!source) throw new DataAccessError('not_found');
       if (before.kind === 'general') {
         const current = EmployeeInstanceProfileSchema.parse(row.profile);
-        const sourceStyle = EmployeeInstanceProfileSchema.parse(
+        const sourceProfile = EmployeeInstanceProfileSchema.parse(
           source.profile,
-        ).expressionStyle;
+        );
+        const rice = await isBaseRiceInstance(before, tx);
         const retained = { ...current };
         delete retained.expressionStyle;
+        if (rice) delete retained.name;
         profile = {
           ...retained,
-          ...(sourceStyle ? { expressionStyle: sourceStyle } : {}),
+          ...(rice && sourceProfile.name ? { name: sourceProfile.name } : {}),
+          ...(sourceProfile.expressionStyle
+            ? { expressionStyle: sourceProfile.expressionStyle }
+            : {}),
         };
       } else profile = source.profile;
     } else if (row.archived_at)

@@ -184,6 +184,15 @@ import {
   updateEmployeeStatus,
 } from './employeehub.ts';
 
+const e3HttpAuth = vi.hoisted(() => ({
+  context: null as import('@allrice/contracts').RequestContext | null,
+}));
+vi.mock('../../../../apps/web/lib/identity/session', () => ({
+  getRequestContext: async () => e3HttpAuth.context,
+}));
+import { PATCH as patchInstance } from '../../../../apps/web/app/api/v1/employee-instances/[id]/route';
+import { POST as postInstanceContent } from '../../../../apps/web/app/api/v1/employee-content/route';
+
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
@@ -249,14 +258,28 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     if (!context) throw Error('fixture_login');
     return { ...p, login, context };
   }
-  async function setup(profileWrite = false) {
+  async function setup(profileWrite = false, basicRice = false) {
     const slug = `instance-${randomUUID()}`;
     const admin = await principal(undefined, 'admin'),
       a = await principal(slug),
       b = await principal(slug);
     vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', admin.user.email);
-    const source = await createEmployeeAdministrationFixture(fixture.db);
-    if (profileWrite)
+    const original = await createEmployeeAdministrationFixture(fixture.db);
+    const [rice] = basicRice
+      ? await fixture.db`select id from allrice_platform_employees where employee_key='rice'`
+      : [];
+    const source = basicRice
+      ? {
+          ...original,
+          employeeId: rice!.id as string,
+          definition: {
+            ...original.definition,
+            key: 'rice',
+            name: 'Platform assistant',
+          },
+        }
+      : original;
+    if (profileWrite || basicRice)
       await savePlatformEmployeeDraft(source.employeeId, {
         definition: {
           ...source.definition,
@@ -265,10 +288,10 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
             toolNames: ['workspace.skill.read', 'workspace.export.create'],
           },
         },
-        expectedRevisionId: source.revisionId,
+        ...(!basicRice ? { expectedRevisionId: source.revisionId } : {}),
       });
-    await source.preview();
-    expect((await source.publish()).valid).toBe(true);
+    await source.preview(source.employeeId);
+    expect((await source.publish(source.employeeId)).valid).toBe(true);
     const entry = async () =>
       (
         await listAdminTenantEmployees(
@@ -289,10 +312,20 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       });
     };
     await change('assign');
-    const assignment = (await getEmployeeWorkspace(a.context, a.workspaceId))
-      .employees[0]!;
-    const bAssignment = (await getEmployeeWorkspace(b.context, b.workspaceId))
-      .employees[0]!;
+    const assignment = (
+      await getEmployeeWorkspace(a.context, a.workspaceId)
+    ).employees.find(
+      (e) =>
+        e.employeeKey ===
+        (basicRice ? 'default-assistant' : source.definition.key),
+    )!;
+    const bAssignment = (
+      await getEmployeeWorkspace(b.context, b.workspaceId)
+    ).employees.find(
+      (e) =>
+        e.employeeKey ===
+        (basicRice ? 'default-assistant' : source.definition.key),
+    )!;
     const input = (name: string) => ({
       workspaceId: a.workspaceId,
       assignmentId: assignment.id,
@@ -7487,6 +7520,131 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       ),
     ).not.toContain(i.id);
   });
+  it('E3 lets only the real platform Rice owner change name/style through HTTP and chat with CAS, receipts and immutable Run profiles', async () => {
+    const f = await setup(true, true),
+      id = f.assignment.id;
+    e3HttpAuth.context = f.a.context;
+    const patch = (
+      profile: Record<string, string>,
+      expectedRevision: number,
+      requestId = randomUUID(),
+    ) =>
+      patchInstance(
+        new Request(`https://allrice.test/api/v1/employee-instances/${id}`, {
+          method: 'PATCH',
+          headers: {
+            origin: 'https://allrice.test',
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            workspaceId: f.a.workspaceId,
+            requestId,
+            expectedRevision,
+            profile,
+          }),
+        }),
+        { params: Promise.resolve({ id }) },
+      );
+    const first = await profileRun(f, id, '请把名字改为小米，回答简短一点。');
+    const call = {
+      ...first,
+      arguments: {
+        expectedRevision: 1,
+        name: '小米',
+        expressionStyle: 'concise',
+      },
+    };
+    const saved = await updateEmployeeProfileFromChat(call);
+    expect(saved.profile).toEqual({ name: '小米', expressionStyle: 'concise' });
+    expect(await updateEmployeeProfileFromChat(call)).toEqual(saved);
+    expect((await getEmployeeDetails(f.a.context, id)).profile).toMatchObject({
+      name: '小米',
+      expressionStyle: 'concise',
+    });
+    const requestId = randomUUID();
+    const response = await patch({ name: '小饭' }, 2, requestId);
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.instance.profile).toEqual({
+      name: '小饭',
+      expressionStyle: 'concise',
+    });
+    expect(await (await patch({ name: '小饭' }, 2, requestId)).json()).toEqual(
+      body,
+    );
+    expect((await patch({ name: 'stale' }, 2)).status).toBe(409);
+    expect(
+      (await patch({ mission: 'grant extra capabilities' }, 3)).status,
+    ).toBe(403);
+    const next = await profileRun(f, id, '看看资料。');
+    expect(next.frozen.instance.profile).toEqual({
+      name: '小饭',
+      expressionStyle: 'concise',
+    });
+    const [old] =
+      await fixture.db`select execution_snapshot from allrice_employee_runs where run_id=${first.context.runId}`;
+    expect(old!.execution_snapshot).toEqual(first.frozen);
+    const restored = await changeEmployeeInstanceLifecycle(f.a.context, id, {
+      workspaceId: f.a.workspaceId,
+      requestId: randomUUID(),
+      expectedRevision: 3,
+      operation: 'restore',
+      sourceRevision: 2,
+    });
+    expect(restored.profile).toEqual(saved.profile);
+    e3HttpAuth.context = f.b.context;
+    expect((await patch({ name: 'foreign' }, 4)).status).not.toBe(200);
+    expect((await getEmployeeInstance(f.a.context, id)).profile).toEqual(
+      saved.profile,
+    );
+    expect(
+      (await getEmployeeInstance(f.b.context, f.bAssignment.id)).profile,
+    ).toEqual({});
+  });
+
+  it('E3 blocks Rice personal Workflow writes at the legacy HTTP boundary before storing content', async () => {
+    const f = await setup(true, true),
+      id = f.assignment.id;
+    e3HttpAuth.context = f.a.context;
+    const response = await postInstanceContent(
+      new Request(
+        `https://allrice.test/api/v1/employee-instances/${id}/content`,
+        {
+          method: 'POST',
+          headers: {
+            origin: 'https://allrice.test',
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            workspaceId: f.a.workspaceId,
+            requestId: randomUUID(),
+            setId: randomUUID(),
+            operation: 'save_draft',
+            expectedRevision: 0,
+            ownership: {
+              scope: 'personal',
+              organizationId: f.a.organizationId,
+              ownerId: f.a.user.id,
+            },
+            target: { kind: 'instance', instanceId: id },
+            manifest: {
+              schemaVersion: 1,
+              common: [],
+              scenes: [],
+              declaredConflicts: [],
+            },
+            textEdits: [],
+            changeSummary: 'Synthetic blocked personal Workflow',
+          }),
+        },
+      ),
+    );
+    expect(response.status).toBe(403);
+    expect(
+      await fixture.db`select id from allrice_employee_content_sets where instance_id=${id}`,
+    ).toHaveLength(0);
+  });
+
   it('upgrades Rice through its established tenant alias without allowing the alias to rename the platform identity', async () => {
     const source = await createEmployeeAdministrationFixture(fixture.db);
     const [rice] =

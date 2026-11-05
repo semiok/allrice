@@ -57,6 +57,7 @@ import {
   type ContentRevisionRow,
 } from './employee-content-model.ts';
 import { resolveEmployeeMethodTarget } from './employee-method-target.ts';
+import { isBaseRiceInstance } from './employee-instance-policy.ts';
 import { validateSceneSkillPackage } from './employee-scene-skill-package.ts';
 export { EmployeeContentError } from './employee-content-model.ts';
 
@@ -254,11 +255,18 @@ async function inheritedRows(
   if (!principal) throw new DataAccessError('authorization_denied');
   const departmentId =
     scope.scope === 'department' ? scope.departmentId : principal.departmentId;
+  const personalAllowed =
+    scope.scope === 'personal' &&
+    target.instanceId !== null &&
+    !(await isBaseRiceInstance(
+      await getEmployeeInstance(context, target.instanceId, sql),
+      sql,
+    ));
   return sql<ContentSetRow[]>`select * from allrice_employee_content_sets
     where organization_id=${context.organizationId} and workspace_id=${context.workspaceId}
       and employee_id=${target.employeeId} and active_revision_id is not null
       and (scope='company' or (scope='department' and department_id=${departmentId} and ${scope.scope !== 'company'})
-        or (scope='personal' and instance_id=${target.instanceId} and owner_id=${context.actor.id} and ${scope.scope === 'personal'}))
+        or (scope='personal' and instance_id=${target.instanceId} and owner_id=${context.actor.id} and ${personalAllowed}))
     order by case scope when 'company' then 0 when 'department' then 1 else 2 end,id`;
 }
 
@@ -809,6 +817,15 @@ export async function mutateEmployeeContentInTransaction(
   if (
     input.ownership.scope === 'personal' &&
     input.ownership.ownerId !== context.actor.id
+  )
+    throw new DataAccessError('authorization_denied');
+  if (
+    input.ownership.scope === 'personal' &&
+    target.instanceId &&
+    (await isBaseRiceInstance(
+      await getEmployeeInstance(context, target.instanceId, tx),
+      tx,
+    ))
   )
     throw new DataAccessError('authorization_denied');
   await options.authorize?.();
@@ -1409,12 +1426,23 @@ async function readDetailsProfile(
         };
   const personal = instance.profile;
   const custom = instance.kind === 'custom' ? personal : {};
+  const rice =
+    instance.kind === 'general' &&
+    personal.name !== undefined &&
+    (await isBaseRiceInstance(
+      await getEmployeeInstance(context, instance.id, tx),
+      tx,
+    ));
   return EmployeeDetailsProfileSchema.parse({
     instanceId,
     kind: instance.kind,
     revision: instance.revision,
     source: instance.source,
-    name: custom.name ?? manifest?.name ?? row.name,
+    name:
+      custom.name ??
+      (rice ? personal.name : undefined) ??
+      manifest?.name ??
+      row.name,
     description: custom.description ?? manifest?.description ?? row.description,
     appearance:
       custom.appearance ??
@@ -1429,9 +1457,12 @@ async function readDetailsProfile(
     personalFields: Object.keys(
       instance.kind === 'custom'
         ? personal
-        : personal.expressionStyle
-          ? { expressionStyle: personal.expressionStyle }
-          : {},
+        : {
+            ...(rice && personal.name ? { name: personal.name } : {}),
+            ...(personal.expressionStyle
+              ? { expressionStyle: personal.expressionStyle }
+              : {}),
+          },
     ),
     canMaintainPersonal: canMaintainPersonal,
   });

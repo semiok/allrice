@@ -37,7 +37,11 @@ import { getToolBrokerFile } from '../execution/tool-broker.ts';
 import { skillBytesChecksum, validateFrozenSkill } from '../skill-bundles.ts';
 import { employeeAccessTransaction } from './employee-access-cancellation.ts';
 import { getEmployeeInstance } from './employee-instances.ts';
-import { enterMethodChat } from './employee-method-chat.ts';
+import { enterPersonalSkillChat } from './personal-skill-authority.ts';
+import {
+  isBaseRiceInstance,
+  assertPersonalSkillInstanceAllowed,
+} from './employee-instance-policy.ts';
 import {
   employeeChatIdentity,
   employeeChatUuid,
@@ -367,7 +371,7 @@ export async function reservePersonalSkillPackage(
   )
     throw new PersonalSkillError('source_invalid');
   const { scope } = employeeChatIdentity(input);
-  return enterMethodChat(
+  return enterPersonalSkillChat(
     input,
     personalSkillImportTool(input),
     false,
@@ -448,7 +452,7 @@ export async function completePersonalSkillPackage(
   input: PersonalSkillImportCall,
 ) {
   const { scope } = employeeChatIdentity(input);
-  return enterMethodChat(
+  return enterPersonalSkillChat(
     input,
     personalSkillImportTool(input),
     false,
@@ -491,7 +495,7 @@ export async function cancelPersonalSkillPackage(
   const { scope } = employeeChatIdentity(input);
   const args = PersonalSkillInstallInputSchema.parse(input.arguments);
   if (!('operation' in args)) throw new PersonalSkillError('source_invalid');
-  return enterMethodChat(
+  return enterPersonalSkillChat(
     input,
     personalSkillImportTool(input),
     false,
@@ -525,7 +529,7 @@ export async function preparePersonalSkillImportCleanup(
   input: PersonalSkillImportCall,
 ) {
   const { scope } = employeeChatIdentity(input);
-  return enterMethodChat(
+  return enterPersonalSkillChat(
     input,
     personalSkillImportTool(input),
     false,
@@ -572,7 +576,7 @@ export async function completePersonalSkillImportCleanup(
 ) {
   if (!objectIds.length) return;
   const { scope } = employeeChatIdentity(input);
-  return enterMethodChat(
+  return enterPersonalSkillChat(
     input,
     personalSkillImportTool(input),
     false,
@@ -595,7 +599,7 @@ export async function preparePersonalSkillImport(
   input: PersonalSkillImportCall,
 ) {
   const { scope } = employeeChatIdentity(input);
-  return enterMethodChat(
+  return enterPersonalSkillChat(
     input,
     personalSkillImportTool(input),
     false,
@@ -675,7 +679,7 @@ export async function installPersonalSkillFromChat(
   if (skillBytesChecksum(definition.content) !== definition.checksum)
     throw new PersonalSkillError('source_invalid');
   const { scope } = employeeChatIdentity(input);
-  return enterMethodChat(
+  return enterPersonalSkillChat(
     input,
     personalSkillImportTool(input),
     false,
@@ -814,7 +818,9 @@ export async function managePersonalSkill(
       const instance = await getEmployeeInstance(context, args.instanceId, tx);
       await tx`select id from allrice_employee_assignments where id=${instance.assignmentId} for share`;
       await tx`select id from allrice_employee_instances where id=${instance.id} for share`;
-      await getEmployeeInstance(context, args.instanceId, tx);
+      const current = await getEmployeeInstance(context, args.instanceId, tx);
+      if (args.operation === 'enable')
+        await assertPersonalSkillInstanceAllowed(current, tx);
     }
     const prior = await priorReceipt(tx, context, args.requestId, args);
     if (prior) return prior;
@@ -871,7 +877,9 @@ export async function freezePersonalSkillsInTransaction(
   const instanceId = instance.id;
   if (!(await readContentPrincipal(context, tx, true))) return unavailable();
   await tx`select pg_advisory_xact_lock_shared(hashtextextended(${`employee-content:${context.organizationId}`},0))`;
-  await getEmployeeInstance(context, instanceId, tx);
+  const current = await getEmployeeInstance(context, instanceId, tx);
+  if (await isBaseRiceInstance(current, tx))
+    return { ...base, personalSkills: undefined };
   const rows =
     await tx`select b.*,v.id version_id,v.definition,v.definition_checksum,v.resource_manifest,v.package_checksum from allrice_personal_skill_bindings b
       join allrice_personal_skill_installations i on i.id=b.installation_id and i.state='installed'
@@ -1017,7 +1025,12 @@ export async function assertPersonalSkillsReadable(
   const { checksum, ...index } = snapshot;
   if (runtimePolicyDigest(index) !== checksum) return unavailable();
   try {
-    await getEmployeeInstance(context, snapshot.instanceId, sql);
+    const instance = await getEmployeeInstance(
+      context,
+      snapshot.instanceId,
+      sql,
+    );
+    await assertPersonalSkillInstanceAllowed(instance, sql);
   } catch (error) {
     if (error instanceof DataAccessError) return unavailable();
     throw error;
