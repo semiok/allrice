@@ -433,7 +433,7 @@ suite('browser exact Workflow source confirmation', () => {
           operation: 'shared_remove',
         })
       ).status,
-    ).toBe(422);
+    ).toBe(400);
     expect(await counts()).toEqual(before);
     const professional = await setup('professional');
     browser.context = professional.owner.context;
@@ -486,6 +486,7 @@ suite('browser exact Workflow source confirmation', () => {
       results.filter((r) => r.status === 'rejected').map((r) => r.reason.code),
     ).toEqual(['version_conflict']);
     const common = {
+      changeSummary: 'Synthetic archived source admission',
       workspaceId: s.owner.workspaceId,
       setId: pin.setId,
       target: { kind: 'instance', instanceId: s.instance.id },
