@@ -1,6 +1,7 @@
 import { cookies } from 'next/headers';
 import {
   RuntimeActionApprovalSnapshotSchema,
+  RuntimeActionApprovalResponseSchema,
   runtimeContractEqual,
   type RequestContext,
 } from '@allrice/contracts';
@@ -103,11 +104,12 @@ export async function completedNativeActionResponse(
   const saved = await getRuntimeActionApproval(context, id);
   if (!saved.response || !input || typeof input !== 'object')
     throw new RuntimePolicyError('native_action_unavailable');
+  const response = RuntimeActionApprovalResponseSchema.parse(saved.response);
   const actual = {
     ...(input as Record<string, unknown>),
-    respondedAt: saved.response.respondedAt,
+    respondedAt: response.respondedAt,
   };
-  if (!runtimeContractEqual(actual, saved.response))
+  if (!runtimeContractEqual(actual, response))
     throw new RuntimePolicyError('approval_response_conflict');
-  return { response: saved.response };
+  return { response };
 }

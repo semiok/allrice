@@ -219,9 +219,18 @@ it('native cancellation removes the borrowed answerer; late approval cannot exec
   });
   await h.prompt('只追加一条，取消后不要执行。');
   await started.promise;
+  // Capture the original Run's wait before interrupt recovers a new root.
+  // The replacement root correctly has no active Run to wait on.
+  const waiting = h.wait();
   await h.server.handleRequest('session/interrupt', { sessionId: h.root.id });
-  await h.wait();
+  await waiting;
   expect(outcome.outcome).toBe('cancelled');
+  expect(h.ctx.agents.get(h.root.id)).not.toBe(h.root);
+  expect(
+    h.root.session
+      .snapshotEvents()
+      .filter((e) => e.type === 'approval/decided'),
+  ).toHaveLength(1);
   await expect(
     h.server.handleRequest('native-action/answer', {
       sessionId: h.root.id,
