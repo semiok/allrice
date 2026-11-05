@@ -27,6 +27,7 @@ import {
   ReferenceRevisionSchema,
   type ReferenceRevision,
   EmployeeInstanceSchema,
+  EmployeeInstanceProfileSchema,
   EmployeeMemoryPageSchema,
   type PersonalSkillItem,
   type EmployeeInstance,
@@ -6750,6 +6751,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       try {
         f.state.createdEmployeeInstances = [instance];
         f.state.employeeDetails.profile.kind = 'custom';
+        f.state.employeeDetails.profile.editableFields =
+          EmployeeInstanceProfileSchema.keyof().options;
         await f.page.route(
           `**/api/v1/employee-instances/${id(7)}*`,
           async (route) => {
@@ -6926,6 +6929,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       let rawReads = 0;
       try {
         f.state.employeeDetails.profile.kind = 'custom';
+        f.state.employeeDetails.profile.editableFields =
+          EmployeeInstanceProfileSchema.keyof().options;
         await f.page.route(
           `**/api/v1/employee-instances/${id(7)}*`,
           async (route) => {
