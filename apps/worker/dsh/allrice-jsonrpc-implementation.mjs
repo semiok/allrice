@@ -1331,7 +1331,10 @@ export async function createAllRiceRuntime(
         this.contentGuard = installContentGuard(
           this.ctx,
           async (params, signal) => {
-            await this.sceneProvider?.beforeDispatch(params.nativeSessionId);
+            await this.sceneProvider?.beforeDispatch(
+              params.nativeSessionId,
+              signal,
+            );
             return this.contentBridge(params, signal);
           },
         );
@@ -1427,6 +1430,7 @@ export async function createAllRiceRuntime(
             if (checked?.allowed !== true)
               throw Error('personal_skill_unavailable');
           }
+          await this.sceneProvider?.beforeSkillRead?.(options?.signal);
           return {
             name: skill.name,
             description: skill.description,

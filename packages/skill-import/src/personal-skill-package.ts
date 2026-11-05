@@ -6,7 +6,7 @@ import {
 import { PersonalSkillError, skillBytesChecksum } from '@allrice/database';
 import { readFileArchive } from '@allrice/file-archives';
 import { ZodError } from 'zod';
-import { parsePersonalSkill } from './personal-skill-import.js';
+import { parsePersonalSkill } from './personal-skill-import.ts';
 
 // Package resources retain the existing platform bundle's bounds. Their bytes
 // will be stored privately, not copied into every execution snapshot.
@@ -29,15 +29,18 @@ type ResourceIssue = {
     | 'missing_resource';
   path: string;
 };
-export type PersonalSkillPackageCandidate = {
+export type SkillPackageCandidate<T> = {
   sourcePath: string;
-  parsed?: Awaited<ReturnType<typeof parsePersonalSkill>>;
+  parsed?: T;
   resources: Array<
     PersonalSkillPackageFile & { byteLength: number; checksum: string }
   >;
   manifestChecksum?: string;
   issues: ResourceIssue[];
 };
+export type PersonalSkillPackageCandidate = SkillPackageCandidate<
+  Awaited<ReturnType<typeof parsePersonalSkill>>
+>;
 
 export async function readPersonalSkillArchive(
   bytes: Uint8Array,
@@ -45,7 +48,10 @@ export async function readPersonalSkillArchive(
 ) {
   const timeout = AbortSignal.timeout(15_000);
   const bounded = signal ? AbortSignal.any([signal, timeout]) : timeout;
-  const files = await readFileArchive(bytes, { signal: bounded });
+  const files = await readFileArchive(bytes, {
+    maximumFiles: personalSkillLimits.packageResources + 1,
+    signal: bounded,
+  });
   return inspectPersonalSkillPackage(files, bounded);
 }
 
@@ -56,6 +62,18 @@ export async function inspectPersonalSkillPackage(
   signal?: AbortSignal,
   candidatePaths?: readonly string[],
 ): Promise<PersonalSkillPackageCandidate[]> {
+  return inspectSkillPackage(files, parsePersonalSkill, signal, candidatePaths);
+}
+
+/** Shared byte/resource safety; the parser owns its exact content contract. */
+export async function inspectSkillPackage<
+  T extends { definition: { content: string } },
+>(
+  files: readonly PersonalSkillPackageFile[],
+  parse: (bytes: Uint8Array) => Promise<T>,
+  signal?: AbortSignal,
+  candidatePaths?: readonly string[],
+): Promise<SkillPackageCandidate<T>[]> {
   signal?.throwIfAborted();
   const names = new Set<string>();
   for (const file of files) {
@@ -107,10 +125,10 @@ export async function inspectPersonalSkillPackage(
   if (!definitions.length) throw Error('personal_skill_package_missing_skill');
   if (definitions.length > personalSkillPackageLimits.candidates)
     throw Error('personal_skill_package_candidate_limit');
-  const candidates: PersonalSkillPackageCandidate[] = [];
+  const candidates: SkillPackageCandidate<T>[] = [];
   for (const file of definitions) {
     signal?.throwIfAborted();
-    const candidate: PersonalSkillPackageCandidate = {
+    const candidate: SkillPackageCandidate<T> = {
       sourcePath: file.path,
       resources: [],
       issues: [],
@@ -118,7 +136,7 @@ export async function inspectPersonalSkillPackage(
     try {
       // Isolate precisely one selected definition for the public native parser;
       // it must not discover repository README files or sibling candidates.
-      candidate.parsed = await parsePersonalSkill(file.bytes);
+      candidate.parsed = await parse(file.bytes);
     } catch (error) {
       // Invalid user content is a compatibility result. IO/native failures
       // remain errors, so a full disk cannot masquerade as a bad skill file.

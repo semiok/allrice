@@ -62,6 +62,7 @@ import {
   isBaseRiceInstance,
   canUsePersonalEmployeeScenes,
 } from './employee-instance-policy.ts';
+import { assertPersonalSceneNames } from './personal-scene-names.ts';
 import { validateSceneSkillPackage } from './employee-scene-skill-package.ts';
 export { EmployeeContentError } from './employee-content-model.ts';
 
@@ -456,8 +457,16 @@ async function assemble(
   if (
     scenes.length > employeeContentLimits.scenes ||
     sources.size > employeeContentLimits.references ||
-    resolved.reduce((n, s) => n + Buffer.byteLength(s.dto.body ?? ''), 0) >
-      employeeContentLimits.textBytes
+    resolved.reduce(
+      (n, s) =>
+        n +
+        Buffer.byteLength(s.dto.body ?? '') -
+        (ownership.scope === 'personal' ? (s.personalPackageBytes ?? 0) : 0),
+      0,
+    ) > employeeContentLimits.textBytes ||
+    (ownership.scope === 'personal' &&
+      resolved.reduce((n, s) => n + (s.personalPackageBytes ?? 0), 0) >
+        employeeContentLimits.personalSceneBodyBytes)
   )
     issues.push({
       code: 'content_budget_exceeded',
@@ -876,6 +885,18 @@ export async function mutateEmployeeContentInTransaction(
   let candidate: ContentRevisionRow,
     validation: EmployeeContentValidation | null = null;
   let active = await readRevision(tx, row.active_revision_id);
+  const validateNames = async (manifest: EmployeeContentManifest) => {
+    if (input.ownership.scope !== 'personal' || !target.instanceId) return;
+    const instance = await getEmployeeInstance(context, target.instanceId, tx);
+    if (await canUsePersonalEmployeeScenes(instance, tx))
+      await assertPersonalSceneNames(
+        tx,
+        context,
+        instance,
+        manifest,
+        active?.manifest,
+      );
+  };
   if (input.operation === 'save_draft' || input.operation === 'restore_draft') {
     let manifest: EmployeeContentManifest;
     if (input.operation === 'save_draft')
@@ -890,6 +911,7 @@ export async function mutateEmployeeContentInTransaction(
       if (invalidated) throw new EmployeeContentError('source_changed');
       manifest = source.manifest;
     }
+    await validateNames(manifest);
     const id = randomUUID(),
       digest = runtimePolicyDigest(manifest);
     // Unpublished edits continue the restored candidate's lineage. Otherwise a
@@ -967,6 +989,7 @@ export async function mutateEmployeeContentInTransaction(
     )
       throw new EmployeeContentError('version_conflict');
     candidate = saved;
+    await validateNames(candidate.manifest);
     const result = await assemble(
       context,
       target,

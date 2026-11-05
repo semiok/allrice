@@ -91,6 +91,9 @@ export const PersonalSceneSkillSummarySchema = z
     version: z.string().optional(),
     contentRef: PersonalSceneContentRefSchema.optional(),
     revision: z.number().int().positive().optional(),
+    whenToUse: WorkflowSkillFrontmatterSchema.shape.whenToUse.optional(),
+    invocation: WorkflowSkillFrontmatterSchema.shape.invocation.optional(),
+    metadata: WorkflowSkillFrontmatterSchema.shape.metadata.optional(),
   })
   .strict();
 export const PersonalSceneSkillSchema = PersonalSceneSkillSummarySchema.extend({
@@ -107,6 +110,7 @@ export const PersonalSceneSkillSchema = PersonalSceneSkillSummarySchema.extend({
       .strict(),
   ),
   frontmatter: WorkflowSkillFrontmatterSchema.optional(),
+  source: EmployeeSceneSkillPayloadSchema.shape.source,
   whenToUse: z.string().optional(),
   stepsMarkdown: z.string().optional(),
   deliverablesMarkdown: z.string().optional(),

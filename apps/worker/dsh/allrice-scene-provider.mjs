@@ -1,6 +1,6 @@
 import { readDshToolResult } from '@allrice/contracts/native-runtime';
 import { createHash } from 'node:crypto';
-import { renderSkillContent } from '@deepseek-ai/dsh-skill';
+import { renderSkillContent, isSkillName } from '@deepseek-ai/dsh-skill';
 import {
   PersonalSceneSkillSchema,
   PersonalSceneUseSchema,
@@ -213,6 +213,32 @@ export function installPersonalSceneProvider(ctx, bridge) {
         failure ??= error;
       });
   };
+  const assertDirectory = async (signal) => {
+    signal?.throwIfAborted();
+    PersonalSceneSkillCatalogSchema.parse(
+      await bridge('personal-list', {}, signal),
+    );
+    signal?.throwIfAborted();
+  };
+  // Native discovery tolerates a failing Provider. Reject before the public
+  // pre-step chain can append a same-name fallback Skill to durable history.
+  ctx.on(
+    'agent/pre-step',
+    async ({ messages, signal }, next) => {
+      // Native slash loading only examines the claimed batch's user sources.
+      // Empty/tool-only continuation steps retain the existing model-admission
+      // ordering; body reads and dispatch still recheck the current directory.
+      if (!messages.some((message) => message.source.kind === 'user'))
+        return next();
+      await assertDirectory(signal);
+      const decision = await next();
+      // A provider failure discovered while native slash resolution ran must
+      // escape before its queued injections become durable history.
+      await assertDirectory(signal);
+      return decision;
+    },
+    { prepend: true },
+  );
   ctx.skills.registerProvider((registration) => {
     control = registration;
     return {
@@ -223,8 +249,12 @@ export function installPersonalSceneProvider(ctx, bridge) {
         );
         return catalog.skills.map((skill) => ({
           name: skill.nativeName,
-          description: `工作场景：${skill.name}。适用：${skill.description}`,
-          invocation: personalInvocation,
+          description: skill.metadata
+            ? skill.description
+            : `工作场景：${skill.name}。适用：${skill.description}`,
+          invocation: skill.invocation ?? personalInvocation,
+          ...(skill.whenToUse ? { whenToUse: skill.whenToUse } : {}),
+          ...(skill.metadata ? { metadata: skill.metadata } : {}),
           provider: providerName,
           source: 'allrice-managed',
           rank: 100,
@@ -232,7 +262,12 @@ export function installPersonalSceneProvider(ctx, bridge) {
         }));
       },
       get: async (candidate, options) => {
-        if (candidate.name !== `allrice-scene-${candidate.locator?.id}`)
+        if (
+          !isSkillName(candidate.name) ||
+          !PersonalSceneSkillCatalogSchema.shape.skills.element.shape.sceneId.safeParse(
+            candidate.locator?.id,
+          ).success
+        )
           return undefined;
         options?.signal?.throwIfAborted();
         const skill = PersonalSceneSkillSchema.parse(
@@ -250,8 +285,16 @@ export function installPersonalSceneProvider(ctx, bridge) {
           throw Error('employee_scene_receipt_invalid');
         const definition = {
           name: skill.nativeName,
-          description: `工作场景：${skill.name}。适用：${skill.description}`,
-          invocation: personalInvocation,
+          description:
+            skill.frontmatter?.description ??
+            `工作场景：${skill.name}。适用：${skill.description}`,
+          invocation: skill.frontmatter?.invocation ?? personalInvocation,
+          ...(skill.frontmatter
+            ? {
+                whenToUse: skill.frontmatter.whenToUse,
+                metadata: skill.frontmatter.metadata,
+              }
+            : {}),
           provider: providerName,
           source: 'allrice-managed',
           content: skill.content,
@@ -325,15 +368,20 @@ export function installPersonalSceneProvider(ctx, bridge) {
       calls.clear();
       control.invalidate();
     },
+    // Ordinary Skill bodies share the same namespace. Check immediately before
+    // any provider body is returned, including native tool execution.
+    beforeSkillRead: assertDirectory,
     // Invalidate the native catalog for the next pre-step. Body get has no
     // cache. Historical reads are checked by the same durable content guard.
-    async beforeDispatch() {
+    async beforeDispatch(_nativeSessionId, signal) {
       let observed;
       do {
         observed = pending;
         await observed;
       } while (observed !== pending);
       if (failure) throw failure;
+      // Recheck after native pre-step work/waits, before model and usage.
+      await assertDirectory(signal);
       control.invalidate();
     },
   };
