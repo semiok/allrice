@@ -1,3 +1,4 @@
+import type { RequestContext } from '@allrice/contracts';
 import { createHash, randomUUID } from 'node:crypto';
 import { access, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -45,6 +46,7 @@ import {
   managePersonalSkill,
   assertFrozenPersonalSkills,
   assertPersonalSkillsReadable,
+  freezePersonalSkills,
 } from './personal-skills.ts';
 import { parsePersonalSkill } from '../../../../apps/worker/src/personal-skill-import.js';
 import { installPersonalSkill } from '../../../../apps/worker/src/tool-broker/handlers/personal-skills.js';
@@ -52,6 +54,13 @@ import { readSkillResource } from '../../../../apps/worker/src/tool-broker/handl
 import { resolveCloudToolArguments } from '../../../../apps/worker/src/tool-broker/handlers/cloud-frozen-script.js';
 import { createFileArchive } from '../../../file-archives/src/index.ts';
 import { LocalStorageAdapter } from '../../../storage/src/index.ts';
+
+const e3SkillHttpAuth = vi.hoisted(() => ({
+  context: null as RequestContext | null,
+}));
+vi.mock('../../../../apps/web/lib/identity/session', () => ({
+  getRequestContext: async () => e3SkillHttpAuth.context,
+}));
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -71,8 +80,22 @@ suite(
       vi.unstubAllEnvs();
       await f?.close();
     });
-    async function setup(cloud = false) {
-      const source = await createEmployeeAdministrationFixture(f.db);
+    async function setup(cloud = false, basicRice = false) {
+      const original = await createEmployeeAdministrationFixture(f.db);
+      const [rice] = basicRice
+        ? await f.db`select id from allrice_platform_employees where employee_key='rice'`
+        : [];
+      const source = basicRice
+        ? {
+            ...original,
+            employeeId: rice!.id as string,
+            definition: {
+              ...original.definition,
+              key: 'rice',
+              name: 'Platform assistant',
+            },
+          }
+        : original;
       await savePlatformEmployeeDraft(source.employeeId, {
         definition: {
           ...source.definition,
@@ -85,10 +108,10 @@ suite(
             ],
           },
         },
-        expectedRevisionId: source.revisionId,
+        ...(!basicRice ? { expectedRevisionId: source.revisionId } : {}),
       });
-      await source.preview();
-      expect((await source.publish()).valid).toBe(true);
+      await source.preview(source.employeeId);
+      expect((await source.publish(source.employeeId)).valid).toBe(true);
       await f.db`update allrice_memberships set role='member' where user_id=${source.ownerId}`;
       const context = (await authenticateSession(
         (await createSession(source.ownerId)).token,
@@ -99,7 +122,11 @@ suite(
       ))!;
       const assignment = (
         await getEmployeeWorkspace(context, source.workspaceId)
-      ).employees[0]!;
+      ).employees.find(
+        (e) =>
+          e.employeeKey ===
+          (basicRice ? 'default-assistant' : source.definition.key),
+      )!;
       const custom = await createEmployeeInstance(context, {
         workspaceId: source.workspaceId,
         assignmentId: assignment.id,
@@ -225,6 +252,94 @@ suite(
       });
       return JSON.parse(result.modelContent);
     }
+    it('E3 allows real Rice binding and HTTP enable with ordinary frozen reads and unchanged revocation', async () => {
+      const x = await setup(false, true);
+      const { item } = await install(x, x.custom.id);
+      const task = await x.run(
+        x.assignment.id,
+        '请把个人技能 private-checklist 启用给当前 AI 员工。',
+      );
+      const bound = await broker(task, {
+        operation: 'bind',
+        installationId: item.id,
+        versionId: item.versionId,
+        expectedRevision: item.revision,
+      });
+      expect(bound.status).toBe('bound');
+      expect(
+        bound.current.bindings
+          .map((b: { instanceId: string }) => b.instanceId)
+          .sort(),
+      ).toEqual([x.custom.id, x.assignment.id].sort());
+      await task.finish();
+      const frozen = await freezePersonalSkills(
+        x.context,
+        { id: x.assignment.id },
+        { nativeSkills: [] },
+      );
+      expect(frozen.personalSkills!.skills).toHaveLength(1);
+      expect(frozen.personalSkills!.skills[0]).toMatchObject({
+        installationId: item.id,
+        versionId: item.versionId,
+        instanceId: x.assignment.id,
+      });
+      await assertPersonalSkillsReadable(
+        x.context,
+        frozen.personalSkills,
+        f.db,
+      );
+      const disabled = await managePersonalSkill(x.context, {
+        workspaceId: x.source.workspaceId,
+        instanceId: x.assignment.id,
+        installationId: item.id,
+        expectedRevision: bound.current.revision,
+        requestId: randomUUID(),
+        operation: 'disable',
+      });
+      await expect(
+        assertPersonalSkillsReadable(x.context, frozen.personalSkills, f.db),
+      ).rejects.toThrow('personal_skill_unavailable');
+      e3SkillHttpAuth.context = x.context;
+      const routePath =
+        '../../../../apps/web/app/api/v1/personal-skills/route.ts';
+      const { POST: postPersonalSkill } = await import(routePath);
+      const response = await postPersonalSkill(
+        new Request('https://allrice.test/api/v1/personal-skills', {
+          method: 'POST',
+          headers: {
+            origin: 'https://allrice.test',
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            workspaceId: x.source.workspaceId,
+            instanceId: x.assignment.id,
+            installationId: item.id,
+            expectedRevision: disabled.revision,
+            requestId: randomUUID(),
+            operation: 'enable',
+          }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      const current = (await listPersonalSkills(x.context))[0]!;
+      expect(
+        current.bindings.find((b) => b.instanceId === x.assignment.id)?.enabled,
+      ).toBe(true);
+      expect(
+        current.bindings.find((b) => b.instanceId === x.custom.id)?.enabled,
+      ).toBe(true);
+      await expect(
+        assertPersonalSkillsReadable(x.context, frozen.personalSkills, f.db),
+      ).rejects.toThrow('personal_skill_unavailable');
+      const fresh = await freezePersonalSkills(
+        x.context,
+        { id: x.assignment.id },
+        { nativeSkills: [] },
+      );
+      expect(fresh.personalSkills!.skills).toHaveLength(1);
+      await assertPersonalSkillsReadable(x.context, fresh.personalSkills, f.db);
+    });
+
     it('reports root lock contention as busy without retrying the whole Run, then reads the same general employee library without changing authority', async () => {
       const x = await setup();
       const initial = await x.run(
@@ -1791,11 +1906,11 @@ suite(
       expect(await listPersonalSkills(x.context)).toEqual([]);
       await task.finish();
     });
-    it.each(['general', 'custom'] as const)(
+    it.each(['rice', 'general', 'custom'] as const)(
       'installs through the real Broker handler for %s and freezes exact provenance without new grants',
       async (kind) => {
-        const x = await setup(),
-          instanceId = kind === 'general' ? x.assignment.id : x.custom.id;
+        const x = await setup(false, kind === 'rice'),
+          instanceId = kind === 'custom' ? x.custom.id : x.assignment.id;
         const { item } = await install(x, instanceId);
         expect(item.bindings).toMatchObject([
           { instanceId, enabled: true, epoch: 1 },
@@ -1833,7 +1948,7 @@ suite(
           f.db`update allrice_personal_skill_versions set original_text='changed' where id=${item.versionId}`,
         ).rejects.toThrow('immutable');
         const other = await x.run(
-          kind === 'general' ? x.custom.id : x.assignment.id,
+          kind === 'custom' ? x.assignment.id : x.custom.id,
           'Unbound instance',
         );
         expect(

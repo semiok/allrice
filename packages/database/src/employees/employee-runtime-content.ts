@@ -62,6 +62,7 @@ import {
 } from './employee-content-model.ts';
 import { freezeEmployeeRuntimeContent } from './employee-content.ts';
 import { employeeRuntimeScenes } from './employee-runtime-scenes.ts';
+import { isBaseRiceInstance } from './employee-instance-policy.ts';
 import {
   readPersonalSceneSkillInTransaction,
   listPersonalSceneSkillsInTransaction,
@@ -144,6 +145,11 @@ export async function readEmployeeRuntimeContent(
       snapshot.instanceId,
       sql,
     );
+    if (
+      snapshot.layers.some((layer) => layer.ownership.scope === 'personal') &&
+      (await isBaseRiceInstance(instance, sql))
+    )
+      return unavailable();
     if (
       snapshot.personalScenes &&
       (instance.kind !== 'custom' || snapshot.layers.length)

@@ -283,3 +283,64 @@ it('keeps independent checkpoint and exact uncovered message receipts, and decli
     })!.segments[0]!.digest,
   ).not.toBe(covered.segments[0]!.digest);
 });
+
+it('E3 projects the frozen basic Rice name/style and allows ordinary Skills but declines personal Workflows without altering professional general instructions', () => {
+  const snapshot = {
+    schemaVersion: 2,
+    employee: {
+      key: 'default-assistant',
+      versionId: 'version',
+      definition: {
+        schemaVersion: 2,
+        key: 'default-assistant',
+        isDefaultRice: true,
+      },
+    },
+    instance: {
+      kind: 'general',
+      source: { kind: 'platform', employeeVersionId: 'version' },
+      revision: 3,
+      profile: {
+        name: '小米',
+        expressionStyle: 'concise',
+        mission: 'DO_NOT_INJECT',
+      },
+    },
+    capabilitySnapshot: {
+      bindings: {
+        toolNames: [
+          'workspace.employee.profile.update',
+          'workspace.personal_skill.install',
+          'workspace.personal_skill.version',
+        ],
+      },
+    },
+  } as unknown as Parameters<typeof employeeInstanceInstructions>[0];
+  const frozen = JSON.stringify(snapshot);
+  const text = employeeInstanceInstructions(snapshot).join('\n');
+  expect(text).toContain('"小米"');
+  expect(text).toContain('Keep answers concise');
+  expect(text).toContain(
+    'save the personal display name or default expression style',
+  );
+  expect(text).toContain(
+    'Personal Workflows and work scenes are unavailable here',
+  );
+  expect(text).toContain('workspace_personal_skill_install');
+  expect(text).toContain('workspace_personal_skill_version');
+  expect(text).not.toContain('DO_NOT_INJECT');
+  expect(JSON.stringify(snapshot)).toBe(frozen);
+  if (snapshot?.schemaVersion !== 2) throw Error('fixture');
+  const professional = {
+    ...snapshot,
+    employee: { ...snapshot.employee, key: 'professional' },
+  };
+  const other = employeeInstanceInstructions(professional).join('\n');
+  expect(other).toContain('workspace_personal_skill_install');
+  expect(other).toContain('workspace_personal_skill_version');
+  expect(other).toContain('do not send name or edit business methods');
+  expect(other).not.toContain('"小米"');
+  expect(other).not.toContain(
+    'Personal Workflows and work scenes are unavailable here',
+  );
+});

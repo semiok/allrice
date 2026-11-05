@@ -1,9 +1,21 @@
+import {
+  isBaseRiceInstanceDefinition,
+  type EmployeeInstance,
+} from '@allrice/contracts';
 import type {
   Employee,
   EmployeeProfile,
   Session,
   Workspace,
 } from './chatflow-types';
+
+function isRice(employee: Employee, instance: EmployeeInstance) {
+  return isBaseRiceInstanceDefinition(instance, {
+    key: employee.employeeKey,
+    versionId: employee.currentVersion.id,
+    definition: employee.currentVersion.manifest,
+  });
+}
 
 export const employeeChoiceId = (employee: Employee) =>
   employee.instanceId ?? employee.id;
@@ -38,7 +50,17 @@ export function employeeChoices(workspace: Workspace): Employee[] {
                   },
                 },
               }
-            : {}),
+            : isRice(employee, instance) && instance.profile.name
+              ? {
+                  currentVersion: {
+                    ...employee.currentVersion,
+                    manifest: {
+                      ...employee.currentVersion.manifest,
+                      name: instance.profile.name,
+                    },
+                  },
+                }
+              : {}),
         }))
       : [employee],
   );
@@ -63,7 +85,11 @@ export function employeeChoiceProfile(
   const instance = employee?.instances?.find(
     (i) => i.id === employee.instanceId,
   );
-  if (instance?.kind !== 'custom') return base;
+  if (!instance) return base;
+  if (instance.kind !== 'custom')
+    return employee && isRice(employee, instance) && instance.profile.name
+      ? { ...base, name: instance.profile.name }
+      : base;
   const personal = instance.profile;
   return {
     ...base,

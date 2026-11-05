@@ -415,3 +415,93 @@ it('keeps general employee list and details on published identity despite legacy
     identity: { role: 'Legacy role' },
   });
 });
+
+it('E3 applies only a proven basic Rice name preference, leaving professional general identity and all capabilities intact', () => {
+  const id = '00000000-0000-4000-8000-000000000001';
+  const source = {
+    kind: 'platform' as const,
+    employeeVersionId: id,
+    templateId: id,
+    templateRevisionId: id,
+    templateRevision: 1,
+    templateChecksum: 'sha256:' + 'a'.repeat(64),
+  };
+  const instance = EmployeeInstanceSchema.parse({
+    id,
+    assignmentId: id,
+    organizationId: id,
+    workspaceId: id,
+    ownerId: id,
+    kind: 'general',
+    revision: 2,
+    profile: {
+      name: 'My assistant',
+      description: 'ignored',
+      role: 'ignored',
+      expressionStyle: 'concise',
+    },
+    source,
+    creationSource: source,
+    createdAt: '2026-10-13T00:00:00Z',
+    updatedAt: '2026-10-13T00:00:00Z',
+  });
+  const base: Workspace['employeeProfiles'][number] = {
+    assignmentId: id,
+    employeeId: id,
+    name: 'Platform assistant',
+    description: 'Platform description',
+    identity: {
+      role: 'Platform role',
+      mission: 'Platform mission',
+      workStyle: 'Platform method',
+      behaviorRules: [],
+      safetyBoundaries: [],
+    },
+    skills: [],
+    model: {
+      harness: 'dsh',
+      provider: 'synthetic',
+      model: 'synthetic',
+      reasoningEffort: 'medium',
+    },
+  };
+  const view: Workspace = {
+    ...workspace,
+    employeeProfiles: [base],
+    employees: [
+      {
+        ...employee(id),
+        employeeKey: 'default-assistant',
+        isDefault: false,
+        currentVersion: {
+          id,
+          manifest: {
+            schemaVersion: 2,
+            key: 'default-assistant',
+            isDefaultRice: true,
+            name: base.name,
+            capabilityBindings: { toolNames: ['workspace.skill.read'] },
+          },
+        },
+        instances: [instance],
+      },
+    ],
+  };
+  expect(employeeChoice(view, id)?.currentVersion.manifest).toEqual({
+    ...view.employees[0]!.currentVersion.manifest,
+    name: 'My assistant',
+  });
+  expect(employeeChoiceProfile(view, id)).toEqual({
+    ...base,
+    name: 'My assistant',
+  });
+  // A display name and assignment default flag cannot make a specialist Rice.
+  view.employees[0]!.employeeKey = 'professional';
+  view.employees[0]!.isDefault = true;
+  view.employees[0]!.currentVersion.manifest.name = 'Rice';
+  expect(employeeChoice(view, id)?.currentVersion.manifest.name).toBe('Rice');
+  expect(employeeChoiceProfile(view, id)).toEqual(base);
+  view.employees[0]!.employeeKey = 'default-assistant';
+  instance.source = { kind: 'tenant_version', employeeVersionId: id };
+  expect(employeeChoiceProfile(view, id)).toEqual(base);
+});
