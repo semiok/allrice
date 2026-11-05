@@ -1326,12 +1326,12 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     const ui = await open('management');
     try {
       const row = card(ui.page, blocked!.id);
-      await row.getByRole('button', { name: '取消置顶', exact: true }).click();
+      await row.locator('..').getByRole('button', { name: '取消置顶', exact: true }).click();
       await ui.page
         .getByRole('status')
         .filter({ hasText: '已取消置顶' })
         .waitFor();
-      await row.getByRole('button', { name: '置顶', exact: true }).click();
+      await row.locator('..').getByRole('button', { name: '置顶', exact: true }).click();
       await ui.page.getByRole('status').filter({ hasText: '已置顶' }).waitFor();
       const before =
         await f.db`select content,revision from allrice_memories where id=${blocked!.id}`;
