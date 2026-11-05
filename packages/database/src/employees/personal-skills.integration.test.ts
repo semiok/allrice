@@ -3,7 +3,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import { access, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
-import { PersonalSkillItemSchema } from '@allrice/contracts';
+import {
+  PersonalSkillItemSchema,
+  PersonalSkillRemoveResponseSchema,
+} from '@allrice/contracts';
 import { employeeChatUuid } from './employee-chat-authority.ts';
 import * as client from '../core/client.ts';
 import * as queue from '../execution/queue.ts';
@@ -300,7 +303,9 @@ suite(
         const response = await send();
         expect(response.status).toBe(200);
         expect(response.headers.get('cache-control')).toBe('private, no-store');
-        const result = await response.json();
+        const result = PersonalSkillRemoveResponseSchema.parse(
+          await response.json(),
+        );
         expect(result.receipt).toEqual({
           operation: 'disable',
           scope: 'instance',
