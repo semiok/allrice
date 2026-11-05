@@ -8,7 +8,7 @@ function fixture() {
     digest = `sha256:${'a'.repeat(64)}`;
   const scene = {
     id,
-    nativeName: `allrice-scene-${id}`,
+    nativeName: authored ? 'weekly-brief' : `allrice-scene-${id}`,
     name: '周报',
     appliesWhen: '每周复盘',
     digest,
@@ -155,81 +155,118 @@ it('rejects a modified native receipt instead of adopting text or an unrelated s
   expect(f.bridgeCalls.map((c) => c.action)).toEqual(['load']);
 });
 
-it('personal native get uses current content, preserves exact resource addresses and never reloads historical results', async () => {
-  const { installPersonalSceneProvider } =
-    await import('./allrice-scene-provider.mjs');
-  const id = randomUUID(),
-    instanceId = randomUUID();
-  let provider,
-    version = 1,
-    denied = false,
-    invalidated = 0;
-  const calls = [];
-  const summary = {
-    sceneId: id,
-    nativeName: `allrice-scene-${id}`,
-    name: '周报',
-    description: '整理资料',
-  };
-  const ctx = {
-    on() {},
-    skills: {
-      registerProvider(factory) {
-        provider = factory({
-          invalidate() {
-            invalidated++;
-          },
-        });
+it.each([false, true])(
+  'personal native get uses current content and exact resources without replay (authored=%s)',
+  async (authored) => {
+    const { installPersonalSceneProvider } =
+      await import('./allrice-scene-provider.mjs');
+    const id = randomUUID(),
+      instanceId = randomUUID();
+    let provider,
+      version = 1,
+      denied = false,
+      invalidated = 0;
+    const calls = [];
+    const summary = {
+      sceneId: id,
+      nativeName: `allrice-scene-${id}`,
+      name: '周报',
+      description: '整理资料',
+      ...(authored
+        ? {
+            whenToUse: '每周核对',
+            invocation: { modelInvocable: false, userInvocable: true },
+            metadata: { displayName: '本人周报', version: 'preview-1' },
+          }
+        : {}),
+    };
+    const ctx = {
+      on() {},
+      skills: {
+        registerProvider(factory) {
+          provider = factory({
+            invalidate() {
+              invalidated++;
+            },
+          });
+        },
       },
-    },
-    sessions: {
-      get() {
-        throw Error('must not reconstruct historical loads');
+      sessions: {
+        get() {
+          throw Error('must not reconstruct historical loads');
+        },
       },
-    },
-  };
-  const runtime = installPersonalSceneProvider(
-    ctx,
-    async (action, selection) => {
-      calls.push({ action, selection });
-      if (denied) throw Error('EMPLOYEE_CONTENT_UNAVAILABLE');
-      if (action === 'personal-list')
-        return { instanceId, revision: version, skills: [summary] };
-      return {
-        ...summary,
-        contentRef: `ref-${version}`,
-        revision: version,
-        content: `BODY_${version}`,
-        contentChecksum: `sha256:${'a'.repeat(64)}`,
-        bundleChecksum: `sha256:${'b'.repeat(64)}`,
-        bundleVersion: `${version}.0.0`,
-        resources: [],
-        sources: [],
-      };
-    },
-  );
-  const candidate = (await provider.list())[0];
-  expect(candidate.invocation.userInvocable).toBe(true);
-  const first = await provider.get(candidate);
-  const firstText = renderSkillContent(first);
-  version = 2;
-  const second = await provider.get(candidate);
-  expect(firstText).toContain('BODY_1');
-  expect(first.resourceBase.description).toContain('ref-1');
-  expect(second.content).toBe('BODY_2');
-  expect(second.resourceBase.description).toContain('ref-2');
-  expect(second.resourceBase.description).not.toContain('receiptId');
-  expect(calls[2].selection).toEqual({ sceneId: id });
-  await runtime.beforeDispatch('cold-resumed-root');
-  runtime.invalidate();
-  expect(invalidated).toBe(2);
-  expect(calls).toHaveLength(3);
-  denied = true;
-  await expect(provider.get(candidate)).rejects.toThrow(
-    'EMPLOYEE_CONTENT_UNAVAILABLE',
-  );
-  await expect(provider.list()).rejects.toThrow('EMPLOYEE_CONTENT_UNAVAILABLE');
-  await expect(
-    provider.get({ ...candidate, name: 'other' }),
-  ).resolves.toBeUndefined();
-});
+    };
+    const runtime = installPersonalSceneProvider(
+      ctx,
+      async (action, selection) => {
+        calls.push({ action, selection });
+        if (denied) throw Error('EMPLOYEE_CONTENT_UNAVAILABLE');
+        if (action === 'personal-list')
+          return { instanceId, revision: version, skills: [summary] };
+        return {
+          ...summary,
+          ...(authored
+            ? {
+                frontmatter: {
+                  name: summary.nativeName,
+                  description: summary.description,
+                  whenToUse: summary.whenToUse,
+                  invocation: summary.invocation,
+                  metadata: summary.metadata,
+                },
+              }
+            : {}),
+          contentRef: `ref-${version}`,
+          revision: version,
+          content: `BODY_${version}`,
+          contentChecksum: `sha256:${'a'.repeat(64)}`,
+          bundleChecksum: `sha256:${'b'.repeat(64)}`,
+          bundleVersion: `${version}.0.0`,
+          resources: [],
+          sources: [],
+        };
+      },
+    );
+    const candidate = (await provider.list())[0];
+    expect(candidate.invocation.userInvocable).toBe(true);
+    if (authored)
+      expect(candidate).toMatchObject({
+        name: 'weekly-brief',
+        whenToUse: summary.whenToUse,
+        invocation: summary.invocation,
+        metadata: summary.metadata,
+      });
+    const first = await provider.get(candidate);
+    if (authored)
+      expect(first).toMatchObject({
+        name: 'weekly-brief',
+        whenToUse: summary.whenToUse,
+        invocation: summary.invocation,
+        metadata: summary.metadata,
+      });
+    const firstText = renderSkillContent(first);
+    version = 2;
+    const second = await provider.get(candidate);
+    expect(firstText).toContain('BODY_1');
+    expect(first.resourceBase.description).toContain('ref-1');
+    expect(second.content).toBe('BODY_2');
+    expect(second.resourceBase.description).toContain('ref-2');
+    expect(second.resourceBase.description).not.toContain('receiptId');
+    expect(calls[2].selection).toEqual({ sceneId: id });
+    await runtime.beforeDispatch('cold-resumed-root');
+    runtime.invalidate();
+    expect(invalidated).toBe(2);
+    expect(calls).toHaveLength(3);
+    denied = true;
+    await expect(provider.get(candidate)).rejects.toThrow(
+      'EMPLOYEE_CONTENT_UNAVAILABLE',
+    );
+    await expect(provider.list()).rejects.toThrow(
+      'EMPLOYEE_CONTENT_UNAVAILABLE',
+    );
+    await expect(
+      provider.get({ ...candidate, name: 'invalid/name' }),
+    ).resolves.toBeUndefined();
+  },
+);

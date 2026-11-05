@@ -163,6 +163,7 @@ suite(
       s: Setup,
       version = '1.0.0',
       previous?: Awaited<ReturnType<typeof savePersonalSceneSkill>>,
+      authorName?: string,
     ) {
       const payload = sceneSkillFixture(version),
         bytes = Buffer.from(`题目,版本\n周报,${version}\n`);
@@ -172,6 +173,11 @@ suite(
         checksum: skillBytesChecksum(bytes),
         contentBase64: bytes.toString('base64'),
       });
+      if (authorName) {
+        payload.body =
+          '## 工作步骤\n1. 核对资料\n## 交付内容\n- 周报\n## 执行细节\n读取原始版本。';
+        bundle.contentChecksum = skillBytesChecksum(payload.body);
+      }
       bundle.checksum = skillBundleChecksum({
         schemaVersion: bundle.schemaVersion,
         version: bundle.version,
@@ -192,7 +198,25 @@ suite(
           name: '本人周报',
           appliesWhen: '核对资料来源后整理',
         },
-        procedure: { kind: 'procedure', title: '核对方法', ...payload },
+        procedure: {
+          kind: 'procedure',
+          title: '核对方法',
+          ...payload,
+          skillPackage: {
+            ...payload.skillPackage,
+            ...(authorName
+              ? {
+                  frontmatter: {
+                    name: authorName,
+                    description: '核对资料',
+                    whenToUse: '每周',
+                    invocation: { modelInvocable: true, userInvocable: true },
+                    metadata: { displayName: '周报', version },
+                  },
+                }
+              : {}),
+          },
+        },
         references: [],
         changeSummary: '本人保存文件',
       });
@@ -446,6 +470,40 @@ suite(
           })
         ).runs,
       ).toEqual([]);
+    });
+
+    it('native names: audits the exact author name and original UUID without accepting another name for that package', async () => {
+      const s = await setup(),
+        saved = await save(s, '1.0.0', undefined, 'weekly-brief'),
+        run = await runtime(s);
+      const loaded = await body(run, saved.sceneId),
+        identity = await native(run);
+      expect(loaded.nativeName).toBe('weekly-brief');
+      await appendUse(run, useEvent(run, identity, loaded));
+      await appendUse(
+        run,
+        useEvent(
+          run,
+          identity,
+          { ...loaded, nativeName: `allrice-scene-${loaded.sceneId}` },
+          'tool-result',
+          101,
+        ),
+      );
+      await appendUse(
+        run,
+        useEvent(
+          run,
+          identity,
+          { ...loaded, nativeName: 'different-package' },
+          'tool-result',
+          102,
+        ),
+      );
+      const history = await listPersonalSceneReads(s.owner, s.instance.id);
+      expect(
+        history.runs[0]!.reads[0]!.uses.map((use) => use.nativeName),
+      ).toEqual(['weekly-brief', `allrice-scene-${loaded.sceneId}`]);
     });
 
     it('projects only canonical native use events, with exact v1/v2 revisions and original native identities', async () => {

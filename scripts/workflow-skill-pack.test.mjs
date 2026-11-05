@@ -95,7 +95,7 @@ describe('developer packs a native skill into C1 content without publishing', ()
     const procedure = EmployeeContentTextSchema.parse(result.procedure);
     expect(procedure.kind).toBe('procedure');
     expect(procedure.title).toBe('本人方法');
-    expect(result.scene.nativeName).toBe(`allrice-scene-${sceneId}`);
+    expect(result.scene.nativeName).toBe('weekly-brief');
     expect(result.report.authorName).toBe('weekly-brief');
     expect(result.scene.name).toBe('我的周报草稿');
     expect(result.procedure.skillPackage.frontmatter).toMatchObject({
@@ -104,7 +104,7 @@ describe('developer packs a native skill into C1 content without publishing', ()
       metadata: { displayName: '我的周报草稿', version: '1.0.0' },
       invocation: { modelInvocable: true, userInvocable: true },
     });
-    expect(result.report.nativeCommand).toBe(`/allrice-scene-${sceneId}`);
+    expect(result.report.nativeCommand).toBe('/weekly-brief');
     expect(result.report.published).toBe(false);
     expect(result.report.scriptsExecuted).toBe(false);
     expect(first).not.toContain(root);

@@ -62,6 +62,7 @@ async function scenario({
   sceneFirst = false,
   sceneProbe = false,
   personalScene = false,
+  personalSceneName = sceneName,
   scenePromptParts,
   rejectPersonalUse = false,
   rejectSceneAdoption = false,
@@ -138,7 +139,7 @@ async function scenario({
                       objectId: privatePin.versionId,
                     })
                   : sceneFirst
-                    ? { name: sceneName }
+                    ? { name: personalScene ? personalSceneName : sceneName }
                     : skillFirst
                       ? { name: 'synthetic-method' }
                       : { path: '.' },
@@ -296,7 +297,7 @@ async function scenario({
             skills: [
               {
                 sceneId,
-                nativeName: sceneName,
+                nativeName: personalScene ? personalSceneName : sceneName,
                 name: '周报',
                 description: '核对资料',
               },
@@ -305,7 +306,7 @@ async function scenario({
         if (method === 'allrice/content-scene-personal-load')
           return {
             sceneId,
-            nativeName: sceneName,
+            nativeName: personalScene ? personalSceneName : sceneName,
             name: '周报',
             description: '核对资料',
             contentRef: 'exact-package-v2',
@@ -385,7 +386,7 @@ async function scenario({
             ? [
                 {
                   id: sceneId,
-                  nativeName: sceneName,
+                  nativeName: personalScene ? personalSceneName : sceneName,
                   digest: sceneDigest,
                   name: '周报',
                   appliesWhen: '每周经营复盘',
@@ -797,6 +798,40 @@ it('cold native recovery reconciles the saved successful scene result before the
 }, 45000);
 
 describe('personal Workflow native slash source and use evidence', () => {
+  it.each(['slash', 'tool'])(
+    'loads an authored native name through the real %s entry and records its exact use',
+    async (entry) => {
+      const name = 'weekly-brief';
+      const r = await scenario({
+        failures: [],
+        personalScene: true,
+        personalSceneName: name,
+        ...(entry === 'slash'
+          ? {
+              scenePromptParts: [
+                { kind: 'user', text: `/${name} 整理本周资料` },
+              ],
+            }
+          : { sceneFirst: true }),
+      });
+      expect(JSON.stringify(r.requests.at(-1))).toContain(
+        'PERSONAL_SCENE_BODY_V2',
+      );
+      expect(
+        r.bridgeCalls.filter(
+          (c) => c.method === 'allrice/content-scene-personal-use',
+        ),
+      ).toMatchObject([
+        {
+          nativeName: name,
+          contentRef: 'exact-package-v2',
+          kind: entry === 'slash' ? 'skill-invocation' : 'tool-result',
+        },
+      ]);
+    },
+    45000,
+  );
+
   it('injects actual native instructions from the human gesture before the first model request', async () => {
     const r = await scenario({
       failures: [],
