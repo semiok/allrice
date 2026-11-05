@@ -63,9 +63,15 @@ export async function freezeEmployeeDocuments(
   // Selection reserves locator bytes even without the tool, so the owner's
   // default preview selects exactly the same IDs. Never advertise an unusable
   // handle; the ledger charges the actual smaller document when stripped.
-  const memories = selected.map(item => sourceTool ? item : {
-    id: item.id, revision: item.revision, content: item.content,
-  });
+  const memories: MemoryContextItem[] = selected.map((item) =>
+    sourceTool
+      ? item
+      : {
+          id: item.id,
+          revision: item.revision,
+          content: item.content,
+        },
+  );
   const user = selectEmployeeUserFacts(facts);
   return {
     eligibleCount: rows.length,
