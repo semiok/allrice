@@ -87,19 +87,19 @@ export const riceToolDefinitions = [
   {
     name: 'workspace.employee.method.inspect',
     description:
-      '读取当前小白的工作场景或 history 历史索引。view=candidate 是当前可编辑版本的内部名称，正常保存后与生效版本一致；effective 返回已生效内容。默认个人范围；明确维护公司或部门时用 scope=company/department，指定部门先读取 departments，再按用户直接给出的准确部门名称或 ID 选择。返回准确 sharedTarget、audience 与 revision，共享写入原样携带。history 只含固定引用，不赋予来源访问权。跨会话先读当前版本，保留场景 ID、未修改字段及准确来源；历史草稿不代表已生效。',
+      '仅适用旧文字内容和已授权后台目标，不是个人 Workflow 包的文件写口。先加载 employee-customization 区分目标；个人包由本人在该员工详情核对完整文件并准确确认，不用本工具替代。读取当前小白的工作场景或 history 历史索引。view=candidate 是当前可编辑版本的内部名称，正常保存后与生效版本一致；effective 返回已生效内容。默认个人范围；明确维护公司或部门时用 scope=company/department，指定部门先读取 departments，再按用户直接给出的准确部门名称或 ID 选择。返回准确 sharedTarget、audience 与 revision，共享写入原样携带。history 只含固定引用，不赋予来源访问权。跨会话先读当前版本，保留场景 ID、未修改字段及准确来源；历史草稿不代表已生效。',
     inputSchema: z.toJSONSchema(EmployeeMethodInspectSchema),
   },
   {
     name: 'workspace.employee.method.save_candidate',
     description:
-      '用户明确要求保存或调整今后使用的工作场景时，保存并立即生效，一次事务完成，不需另行测试、确认或启用。默认只改当前用户的小白；共享修改须用户直接指定准确公司或部门范围并有维护权限，原样携带 inspect 返回的 sharedTarget。共同执行要求须用户直接请求，不能从单场景扩大。先 inspect(view=candidate) 取得 expectedRevision，每次只改通用部分或一个场景；已有 scene.id 沿用，未提供的字段和其他场景保留。requirements/procedure 替换对应文字，references 只追加用户要求长期引用的可读固定版本。替换资料用同次调用的准确 removeReferences 与 references，优先只提交引用字段；不同工作场景可固定同一资料的不同版本，同一场景及其通用内容不可混用冲突版本。只有原正文写死旧版本且用户明确要求将该资料换为新版时，才同步该版本标记，其余文字及场景保持不变；不借换资料改写业务规则。新增执行要求以准确资料引用为准，避免重复写死版本号。共享资料绑定仍不支持。成功回执表示已保存且生效，详情可见，后续独立任务采用；当前任务快照保留。保存不启动后台监控、不改变权限、不代表业务已验证。',
+      '仅适用旧文字内容和已授权后台目标，不是个人 Workflow 包的文件写口。先加载 employee-customization 区分目标；个人包由本人在该员工详情核对完整文件并准确确认，不用本工具替代。用户明确要求保存或调整今后使用的工作场景时，保存并立即生效，一次事务完成，不需另行测试、确认或启用。默认只改当前用户的小白；共享修改须用户直接指定准确公司或部门范围并有维护权限，原样携带 inspect 返回的 sharedTarget。共同执行要求须用户直接请求，不能从单场景扩大。先 inspect(view=candidate) 取得 expectedRevision，每次只改通用部分或一个场景；已有 scene.id 沿用，未提供的字段和其他场景保留。requirements/procedure 替换对应文字，references 只追加用户要求长期引用的可读固定版本。替换资料用同次调用的准确 removeReferences 与 references，优先只提交引用字段；不同工作场景可固定同一资料的不同版本，同一场景及其通用内容不可混用冲突版本。只有原正文写死旧版本且用户明确要求将该资料换为新版时，才同步该版本标记，其余文字及场景保持不变；不借换资料改写业务规则。新增执行要求以准确资料引用为准，避免重复写死版本号。共享资料绑定仍不支持。成功回执表示已保存且生效，详情可见，后续独立任务采用；当前任务快照保留。保存不启动后台监控、不改变权限、不代表业务已验证。',
     inputSchema: z.toJSONSchema(EmployeeMethodSaveSchema),
   },
   {
     name: 'workspace.employee.method.restore_candidate',
     description:
-      '用户明确要求将整份个人或有维护权限的公司／部门工作方法恢复到指定历史版时，先 inspect(view=history) 核对版本号和 ID，再以当前 expectedRevision 和准确 sourceRevisionId 恢复。共享目标原样携带 sharedTarget，范围、部门和版本必须与用户直接请求一致。恢复保存后立即生效，无额外测试或启用步骤；历史记录及原来源权限保留，撤销的来源不可恢复访问。不接受单场景整体恢复，场景局部恢复应使用 save_candidate。',
+      '仅适用旧文字内容和已授权后台目标，不是个人 Workflow 包的文件写口。先加载 employee-customization 区分目标；个人包由本人在该员工详情核对完整文件并准确确认，不用本工具替代。用户明确要求将整份个人或有维护权限的公司／部门工作方法恢复到指定历史版时，先 inspect(view=history) 核对版本号和 ID，再以当前 expectedRevision 和准确 sourceRevisionId 恢复。共享目标原样携带 sharedTarget，范围、部门和版本必须与用户直接请求一致。恢复保存后立即生效，无额外测试或启用步骤；历史记录及原来源权限保留，撤销的来源不可恢复访问。不接受单场景整体恢复，场景局部恢复应使用 save_candidate。',
     inputSchema: z.toJSONSchema(EmployeeMethodRestoreSchema),
   },
   {

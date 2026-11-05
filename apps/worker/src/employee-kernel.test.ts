@@ -10,6 +10,37 @@ import {
   employeeInstanceInstructions,
 } from './employee-kernel.js';
 
+it.each([
+  ['custom', true, true],
+  ['custom', false, false],
+  ['general', true, false],
+] as const)(
+  'routes Workflow authoring only for the eligible instance (%s, method tool=%s)',
+  (kind, hasMethodTool, expected) => {
+    const snapshot = {
+      schemaVersion: 2,
+      instance: { kind, revision: 1, profile: {} },
+      capabilitySnapshot: {
+        bindings: {
+          toolNames: hasMethodTool ? ['workspace.employee.method.inspect'] : [],
+        },
+      },
+    } as unknown as Parameters<typeof employeeInstanceInstructions>[0];
+    const text = employeeInstanceInstructions(snapshot).join('\n');
+    expect(text.includes('employee-customization Skill')).toBe(expected);
+    if (!expected) return;
+    expect(text).toContain('native skill tool before taking actions');
+    expect(text).toContain('only to their creator and this employee instance');
+    expect(text).toContain('exact preview/confirmation in employee details');
+    expect(text).toContain('are not the personal package write path');
+    expect(text).toContain('real human source checks still apply');
+    expect(text).toContain('only from a successful receipt');
+    expect(text).toContain('Existing background content targets');
+    expect(text).not.toContain('First inspect(view=candidate)');
+    expect(text).not.toContain('Do not ask for separate testing');
+  },
+);
+
 it('projects only the frozen name and bounded expression preference, without executing freeform profile instructions', () => {
   const snapshot = {
     schemaVersion: 2,
