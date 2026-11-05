@@ -34,13 +34,15 @@ export const EmployeeMemoryTextSchema = z
     '记忆内容不能超过 1000 字节，请缩短为习惯、偏好或资料入口。',
   );
 
-export const EmployeeMemoryPinInputSchema = z.object({
-  instanceId: UuidSchema,
-  expectedRevision: z.number().int().positive(),
-  contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-  idempotencyKey: UuidSchema,
-  pinned: z.boolean(),
-}).strict();
+export const EmployeeMemoryPinInputSchema = z
+  .object({
+    instanceId: UuidSchema,
+    expectedRevision: z.number().int().positive(),
+    contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    idempotencyKey: UuidSchema,
+    pinned: z.boolean(),
+  })
+  .strict();
 
 // Explicit allowlist for both owner management and administrator projection.
 // No source IDs, excerpts, session URLs, tool output, or private profile.

@@ -47,11 +47,19 @@ export function installSceneProvider(ctx, rawScenes, bridge) {
         failure ??= e;
       });
   }
-  async function load(scene, signal, nativeSessionId = ctx.agents?.requireInitiator().id) {
+  async function load(
+    scene,
+    signal,
+    nativeSessionId = ctx.agents?.requireInitiator().id,
+  ) {
     signal?.throwIfAborted();
     const loaded = await bridge(
       'load',
-      { sceneId: scene.id, sceneDigest: scene.digest, ...(nativeSessionId ? { nativeSessionId } : {}) },
+      {
+        sceneId: scene.id,
+        sceneDigest: scene.digest,
+        ...(nativeSessionId ? { nativeSessionId } : {}),
+      },
       signal,
     );
     signal?.throwIfAborted();
@@ -144,7 +152,8 @@ export function installSceneProvider(ctx, rawScenes, bridge) {
           // scene through Worker, which must reauthorize and return the durable
           // receipt, then compare the canonical native rendering exactly.
           const readKey = `${session.id}:${name}`;
-          if (!loadedSkills.has(readKey)) await load(scene, undefined, session.id);
+          if (!loadedSkills.has(readKey))
+            await load(scene, undefined, session.id);
           const loaded = loadedSkills.get(readKey);
           if (value !== loaded.rendered)
             throw Error('employee_scene_native_result_invalid');

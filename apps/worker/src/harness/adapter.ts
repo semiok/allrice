@@ -155,10 +155,13 @@ export interface HarnessExecutionInput {
       list: () => Promise<Record<string, unknown>>;
       load: (sceneId: string) => Promise<Record<string, unknown>>;
     };
-    loadScene?: (selection: {
-      sceneId: string;
-      sceneDigest: string;
-    }, employeeDocuments?: boolean) => Promise<Record<string, unknown>>;
+    loadScene?: (
+      selection: {
+        sceneId: string;
+        sceneDigest: string;
+      },
+      employeeDocuments?: boolean,
+    ) => Promise<Record<string, unknown>>;
     adoptScene?: (evidence: {
       sceneId: string;
       sceneDigest: string;

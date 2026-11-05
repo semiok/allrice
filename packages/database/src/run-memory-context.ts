@@ -252,6 +252,9 @@ export async function assertRunMemoryContextCurrent(scope: ExperienceRunScope) {
   const rows = await sql<{ id: string }[]>`select m.id from allrice_memories m
     where m.id=any(${pins.map((pin) => pin.id)}::uuid[])
       and ${employeeMemoryReadPredicate(sql, { ...scope, instanceId })}`;
-  if (new Set(rows.map((row) => row.id)).size !== new Set(pins.map((pin) => pin.id)).size)
+  if (
+    new Set(rows.map((row) => row.id)).size !==
+    new Set(pins.map((pin) => pin.id)).size
+  )
     return unavailable();
 }

@@ -30,7 +30,9 @@ export class EmployeeMemoryConflict extends Error {
 }
 
 export class EmployeeMemoryCapacityError extends Error {
-  constructor(public readonly remainingBytes: number) { super('employee_memory_capacity'); }
+  constructor(public readonly remainingBytes: number) {
+    super('employee_memory_capacity');
+  }
 }
 
 export const memoryContentDigest = (content: string) =>

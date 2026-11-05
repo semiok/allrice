@@ -1,4 +1,7 @@
-import { freezeEmployeeDocuments, employeeMemoryDocument } from './employees/employee-documents.ts';
+import {
+  freezeEmployeeDocuments,
+  employeeMemoryDocument,
+} from './employees/employee-documents.ts';
 import { selectEmployeeDocumentMemories } from '@allrice/contracts';
 import type postgres from 'postgres';
 import {
@@ -58,7 +61,10 @@ export function previewEmployeeMemoryCapacity(
   total: number,
 ) {
   const selected = selectEmployeeDocumentMemories(rows, total);
-  const bytes = Buffer.byteLength(employeeMemoryDocument(selected, total), 'utf8');
+  const bytes = Buffer.byteLength(
+    employeeMemoryDocument(selected, total),
+    'utf8',
+  );
   return {
     mode: 'capacity_preview' as const,
     maxBytes: 6000 as const,
@@ -89,11 +95,15 @@ async function readPage(
     const projection = await freezeEmployeeDocuments(tx, scope, {}, true);
     const document = projection.employeeDocuments.memory;
     const eligibleCount = projection.eligibleCount;
-    budget = { mode: 'capacity_preview' as const, maxBytes: 6000 as const, maxItems: 20 as const,
-      usedBytes: Buffer.byteLength(document, 'utf8'), eligibleCount,
+    budget = {
+      mode: 'capacity_preview' as const,
+      maxBytes: 6000 as const,
+      maxItems: 20 as const,
+      usedBytes: Buffer.byteLength(document, 'utf8'),
+      eligibleCount,
       omittedCount: eligibleCount - projection.memories.length,
-      selectedIds: projection.memories.map((item) => item.id) };
-
+      selectedIds: projection.memories.map((item) => item.id),
+    };
   }
   return EmployeeMemoryPageSchema.parse({
     ...scope,

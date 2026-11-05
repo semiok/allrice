@@ -2764,23 +2764,45 @@ export async function correctWorkspaceMemory(
 /** Owner-only ordering preference, using the existing revision/idempotency/audit
  * transaction. No model tool can call this browser management operation. */
 export async function setPersonalEmployeeMemoryPin(
-  context: RequestContext, workspaceInput: string, memoryInput: string, input: unknown,
+  context: RequestContext,
+  workspaceInput: string,
+  memoryInput: string,
+  input: unknown,
 ) {
   const preference = EmployeeMemoryPinInputSchema.parse(input);
   const workspaceId = await resolveWorkspaceId(context, workspaceInput);
   const memoryId = UuidSchema.parse(memoryInput);
   return employeeAccessTransaction(getDatabase(), async (tx) => {
-    const scope = await employeeMemoryScope(context, workspaceId, preference.instanceId, tx, true);
+    const scope = await employeeMemoryScope(
+      context,
+      workspaceId,
+      preference.instanceId,
+      tx,
+      true,
+    );
     // Serialize ordering for this person's instance, never a tenant-wide UI lock.
     await tx`select pg_advisory_xact_lock(hashtextextended(${`memory-order:${scope.organizationId}:${scope.ownerId}:${scope.instanceId}`},0))`;
-    return memoryOperation(tx, scope, 'correct', preference.idempotencyKey,
-      { operation: 'pin', memoryId, ...preference }, async () => {
-        const current = await lockPersonalMemory(tx, context, workspaceId, memoryId, scope.instanceId);
+    return memoryOperation(
+      tx,
+      scope,
+      'correct',
+      preference.idempotencyKey,
+      { operation: 'pin', memoryId, ...preference },
+      async () => {
+        const current = await lockPersonalMemory(
+          tx,
+          context,
+          workspaceId,
+          memoryId,
+          scope.instanceId,
+        );
         assertMemoryRevision(current, preference);
-        const [eligible] = await tx`select m.id from allrice_memories m where m.id=${memoryId}
+        const [eligible] =
+          await tx`select m.id from allrice_memories m where m.id=${memoryId}
           and ${employeeMemoryReadPredicate(tx, scope)}`;
         if (!eligible) throw new DataAccessError('authorization_denied');
-        const [order] = await tx`select coalesce(max((metadata->>'memoryPinOrder')::numeric),0)+1 as next
+        const [order] =
+          await tx`select coalesce(max((metadata->>'memoryPinOrder')::numeric),0)+1 as next
           from allrice_memories where organization_id=${scope.organizationId} and workspace_id=${workspaceId}
             and owner_id=${scope.ownerId} and instance_id=${scope.instanceId}
             and jsonb_typeof(metadata->'memoryPinOrder')='number'`;
@@ -2791,15 +2813,41 @@ export async function setPersonalEmployeeMemoryPin(
         // Pinned entries must all fit intact, including source handles. Reject
         // atomically; never save an ordering that silently drops a pinned item.
         const projected = await freezeEmployeeDocuments(tx, scope, {}, true);
-        const pins = await tx<{ id: string }[]>`select m.id from allrice_memories m
+        const pins = await tx<
+          { id: string }[]
+        >`select m.id from allrice_memories m
           where ${employeeMemoryReadPredicate(tx, scope)} and m.metadata ? 'memoryPinOrder'`;
-        if (pins.some((pin) => !projected.memories.some((item) => item.id === pin.id)))
-          throw new EmployeeMemoryCapacityError(Math.max(0, 6000 - Buffer.byteLength(projected.employeeDocuments.memory)));
-        await insertMemoryRevision(tx, context, row!, preference.pinned ? '本人置顶记忆' : '本人取消置顶');
-        await audit({ context, workspaceId, action: 'memory.order', resourceType: 'memory',
-          resourceId: memoryId, reason: preference.pinned ? 'owner_pin' : 'owner_unpin' }, tx);
+        if (
+          pins.some(
+            (pin) => !projected.memories.some((item) => item.id === pin.id),
+          )
+        )
+          throw new EmployeeMemoryCapacityError(
+            Math.max(
+              0,
+              6000 - Buffer.byteLength(projected.employeeDocuments.memory),
+            ),
+          );
+        await insertMemoryRevision(
+          tx,
+          context,
+          row!,
+          preference.pinned ? '本人置顶记忆' : '本人取消置顶',
+        );
+        await audit(
+          {
+            context,
+            workspaceId,
+            action: 'memory.order',
+            resourceType: 'memory',
+            resourceId: memoryId,
+            reason: preference.pinned ? 'owner_pin' : 'owner_unpin',
+          },
+          tx,
+        );
         return mapMemory(row!);
-      });
+      },
+    );
   });
 }
 

@@ -1652,7 +1652,12 @@ export async function prepareEmployeeRunBinding(
             }
           : undefined,
       organizationContext,
-      ...(documentProjection ? { memories: documentProjection.memories, employeeDocuments: documentProjection.employeeDocuments } : {}),
+      ...(documentProjection
+        ? {
+            memories: documentProjection.memories,
+            employeeDocuments: documentProjection.employeeDocuments,
+          }
+        : {}),
     }),
   };
 }

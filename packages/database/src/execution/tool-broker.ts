@@ -1,5 +1,8 @@
 import { confirmedMemoryHandle } from '../employees/employee-documents.ts';
-import { hasMemorySourceTool, type ConfirmedMemoryReadPin } from '@allrice/contracts';
+import {
+  hasMemorySourceTool,
+  type ConfirmedMemoryReadPin,
+} from '@allrice/contracts';
 import {
   readRunMemoryContext,
   type RunMemoryAuthority,
@@ -814,9 +817,16 @@ export async function readToolBrokerMemoryContext(
     authority,
     'memory_search',
     async (tx, state) => {
-      const [run] = await tx`select execution_snapshot from allrice_employee_runs where run_id=${authority.scope.runId}`;
-      return searchToolBrokerMemories(context, query, limit, tx, state.confirmedPins,
-        hasMemorySourceTool(run?.execution_snapshot));
+      const [run] =
+        await tx`select execution_snapshot from allrice_employee_runs where run_id=${authority.scope.runId}`;
+      return searchToolBrokerMemories(
+        context,
+        query,
+        limit,
+        tx,
+        state.confirmedPins,
+        hasMemorySourceTool(run?.execution_snapshot),
+      );
     },
     (items) => items,
   );

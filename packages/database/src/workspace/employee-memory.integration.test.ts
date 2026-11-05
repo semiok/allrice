@@ -1,5 +1,8 @@
 import { freezeEmployeeDocuments } from '../employees/employee-documents.ts';
-import { prepareRunMemoryContext, assertRunMemoryContextCurrent } from '../run-memory-context.ts';
+import {
+  prepareRunMemoryContext,
+  assertRunMemoryContextCurrent,
+} from '../run-memory-context.ts';
 import { readRunExperienceSource } from '../run-experience-source.ts';
 import { readToolBrokerMemoryContext } from '../execution/tool-broker.ts';
 import { setPersonalEmployeeMemoryPin } from './service.ts';
@@ -137,49 +140,120 @@ suite(
       await f.create('未确认不得带入', { lifecycleState: 'candidate' });
       const scope = { ...f.scope, sessionId: f.session };
       const auth = { scope, worker: { ...f.worker, attempt: 1 } };
-      const document = await freezeEmployeeDocuments(fixture.db, { ...scope, instanceId: f.assignment },
-        { companyName: '企业', departmentName: '核对部', responsibilities: '不得越权' }, true);
+      const document = await freezeEmployeeDocuments(
+        fixture.db,
+        { ...scope, instanceId: f.assignment },
+        {
+          companyName: '企业',
+          departmentName: '核对部',
+          responsibilities: '不得越权',
+        },
+        true,
+      );
       expect(document.memories.map((m) => m.id)).toEqual([first.id]);
       expect(document.employeeDocuments.user).toContain('核对部');
       await fixture.db`update allrice_employee_runs set status='running',memory_context_state='{"schemaVersion":1,"pending":true}',
         execution_snapshot=jsonb_set(execution_snapshot,'{capabilitySnapshot,bindings,toolNames}','["workspace.memory.search","workspace.experience.read"]'),
         prompt_snapshot=${fixture.db.json({ memories: document.memories, employeeDocuments: document.employeeDocuments })}
         where run_id=${f.rootRunId}`;
-      await prepareRunMemoryContext(auth, document.memories, document.employeeDocuments.memory);
-      const [initial] = await fixture.db`select memory_context_state s from allrice_employee_runs where run_id=${f.rootRunId}`;
-      expect(initial!.s.initial.bytes).toBe(Buffer.byteLength(document.employeeDocuments.memory));
+      await prepareRunMemoryContext(
+        auth,
+        document.memories,
+        document.employeeDocuments.memory,
+      );
+      const [initial] =
+        await fixture.db`select memory_context_state s from allrice_employee_runs where run_id=${f.rootRunId}`;
+      expect(initial!.s.initial.bytes).toBe(
+        Buffer.byteLength(document.employeeDocuments.memory),
+      );
       await assertRunMemoryContextCurrent(scope);
       const handle = document.memories[0]!.sourceHandle!;
       const source = await readRunExperienceSource(auth, handle);
       expect(source.items[0]!.memory.content).toBe(first.content);
-      const edited = await correctWorkspaceMemory(f.context, f.workspace, first.id, {
-        ...exact(first), content: '新任务入口：按新说明核对。', reason: '本人更新',
-      });
+      const edited = await correctWorkspaceMemory(
+        f.context,
+        f.workspace,
+        first.id,
+        {
+          ...exact(first),
+          content: '新任务入口：按新说明核对。',
+          reason: '本人更新',
+        },
+      );
       await assertRunMemoryContextCurrent(scope);
-      expect((await readRunExperienceSource(auth, handle)).items[0]!.memory.content).toBe(first.content);
-      const search = await readToolBrokerMemoryContext(f.execution, '稳定资料入口', 20, auth);
+      expect(
+        (await readRunExperienceSource(auth, handle)).items[0]!.memory.content,
+      ).toBe(first.content);
+      const search = await readToolBrokerMemoryContext(
+        f.execution,
+        '稳定资料入口',
+        20,
+        auth,
+      );
       expect(search.items[0]!.revision).toBe(first.revision);
       expect(search.items[0]!.sourceHandle).toBe(handle);
-      const [spent] = await fixture.db`select memory_context_state s from allrice_employee_runs where run_id=${f.rootRunId}`;
-      await prepareRunMemoryContext(auth, document.memories, document.employeeDocuments.memory);
-      expect((await fixture.db`select memory_context_state s from allrice_employee_runs where run_id=${f.rootRunId}`)[0]!.s).toEqual(spent!.s);
-      await deleteWorkspaceMemory(f.context, f.workspace, first.id, exact(edited));
-      await expect(assertRunMemoryContextCurrent(scope)).rejects.toThrow('MEMORY_CONTEXT_UNAVAILABLE');
+      const [spent] =
+        await fixture.db`select memory_context_state s from allrice_employee_runs where run_id=${f.rootRunId}`;
+      await prepareRunMemoryContext(
+        auth,
+        document.memories,
+        document.employeeDocuments.memory,
+      );
+      expect(
+        (
+          await fixture.db`select memory_context_state s from allrice_employee_runs where run_id=${f.rootRunId}`
+        )[0]!.s,
+      ).toEqual(spent!.s);
+      await deleteWorkspaceMemory(
+        f.context,
+        f.workspace,
+        first.id,
+        exact(edited),
+      );
+      await expect(assertRunMemoryContextCurrent(scope)).rejects.toThrow(
+        'MEMORY_CONTEXT_UNAVAILABLE',
+      );
       await expect(readRunExperienceSource(auth, handle)).rejects.toThrow();
-      expect((await fixture.db`select memory_context_state s from allrice_employee_runs where run_id=${f.rootRunId}`)[0]!.s).toEqual(spent!.s);
+      expect(
+        (
+          await fixture.db`select memory_context_state s from allrice_employee_runs where run_id=${f.rootRunId}`
+        )[0]!.s,
+      ).toEqual(spent!.s);
     });
     it('owner pin order uses the same bounded selection, exact revision and idempotency without cross-instance writes', async () => {
       const f = await setup();
       const older = await f.create('较早的常用入口');
       await f.create('新入口');
       const preference = { ...exact(older), pinned: true };
-      const saved = await setPersonalEmployeeMemoryPin(f.context, f.workspace, older.id, preference);
-      expect(await setPersonalEmployeeMemoryPin(f.context, f.workspace, older.id, preference)).toEqual(saved);
-      const projected = await freezeEmployeeDocuments(fixture.db, { ...f.scope, instanceId: f.assignment }, {}, true);
+      const saved = await setPersonalEmployeeMemoryPin(
+        f.context,
+        f.workspace,
+        older.id,
+        preference,
+      );
+      expect(
+        await setPersonalEmployeeMemoryPin(
+          f.context,
+          f.workspace,
+          older.id,
+          preference,
+        ),
+      ).toEqual(saved);
+      const projected = await freezeEmployeeDocuments(
+        fixture.db,
+        { ...f.scope, instanceId: f.assignment },
+        {},
+        true,
+      );
       expect(projected.memories[0]!.id).toBe(older.id);
       expect(saved.content).toBe(older.content);
-      await expect(setPersonalEmployeeMemoryPin(f.context, f.workspace, older.id,
-        { ...exact(saved), instanceId: f.other.id, pinned: false })).rejects.toThrow();
+      await expect(
+        setPersonalEmployeeMemoryPin(f.context, f.workspace, older.id, {
+          ...exact(saved),
+          instanceId: f.other.id,
+          pinned: false,
+        }),
+      ).rejects.toThrow();
     });
 
     it('binds proposals from the stored source; list, recall, raw RAG, revisions, broker and resumed input cannot cross instances', async () => {

@@ -1270,13 +1270,25 @@ suite(
       );
       const auth = { scope, worker: scope.worker };
       const confirmed = await createTraceableMemory(f.owner, {
-        workspaceId: f.workspace, instanceId: f.instance.id, idempotencyKey: randomUUID(),
-        sourceType: 'user', content: '到场和未到人数分项列出；不得合并退款。',
+        workspaceId: f.workspace,
+        instanceId: f.instance.id,
+        idempotencyKey: randomUUID(),
+        sourceType: 'user',
+        content: '到场和未到人数分项列出；不得合并退款。',
       });
-      const document = await freezeEmployeeDocuments(db, { ...scope, instanceId: f.instance.id }, {}, true);
+      const document = await freezeEmployeeDocuments(
+        db,
+        { ...scope, instanceId: f.instance.id },
+        {},
+        true,
+      );
       await db`update allrice_employee_runs set memory_context_state='{"schemaVersion":1,"pending":true}',
         prompt_snapshot=prompt_snapshot||${db.json({ memories: document.memories, employeeDocuments: document.employeeDocuments })} where run_id=${scope.runId}`;
-      const selected = await prepareRunMemoryContext(auth, document.memories, document.employeeDocuments.memory);
+      const selected = await prepareRunMemoryContext(
+        auth,
+        document.memories,
+        document.employeeDocuments.memory,
+      );
       expect(selected).toHaveLength(1);
       const handle = selected[0]!.sourceHandle!;
       expect(handle).toMatch(/^experience:sha256:/);
@@ -1310,7 +1322,17 @@ suite(
         (
           await db`select memory_context_state from allrice_employee_runs where run_id=${scope.runId}`
         )[0]!.memory_context_state;
-      return { ...f, scope, auth, selected, handle, context, state, confirmed, document };
+      return {
+        ...f,
+        scope,
+        auth,
+        selected,
+        handle,
+        context,
+        state,
+        confirmed,
+        document,
+      };
     }
     it('measures bounded memory with real captured feedback and supported history growth', async () => {
       const evidenceDirectory = process.env.ALLRICE_MEMORY_GROWTH_EVIDENCE_DIR;
@@ -1648,11 +1670,11 @@ suite(
                 expect(item.handle).toBe(handle);
                 expect(reference).toBeTruthy();
                 expect(item.pin).toEqual(reference.pin);
-                expect(item.rule).toBe(reference.draft.rule);
-                expect(item.applicability).toBe(reference.draft.applicability);
+                expect(item).toHaveProperty('rule', reference.draft.rule);
+                expect(item).toHaveProperty('applicability', reference.draft.applicability);
                 expect(reference.sources).toHaveLength(1);
                 const original = reference.sources[0]!;
-                expect(item.source).toEqual({
+                expect(item).toHaveProperty('source', {
                   id: original.id,
                   runId: original.runId,
                   sessionId: original.sessionId,
@@ -2050,7 +2072,9 @@ suite(
     it('charges initial complete items once, repeated and concurrent reads each time, and preserves spend on recovery', async () => {
       const f = await boundedFixture();
       const initial = await f.state();
-      expect(initial.initial.bytes).toBe(Buffer.byteLength(f.document.employeeDocuments.memory));
+      expect(initial.initial.bytes).toBe(
+        Buffer.byteLength(f.document.employeeDocuments.memory),
+      );
       const responses = await Promise.all([
         readRunExperienceSource(f.auth, f.handle),
         readRunExperienceSource(f.auth, f.handle),
@@ -2061,9 +2085,13 @@ suite(
       );
       expect((await f.state()).toolReads).toBe(2);
       const accounted = await f.state();
-      expect(await prepareRunMemoryContext(f.auth, f.selected, f.document.employeeDocuments.memory)).toEqual(
-        f.selected,
-      );
+      expect(
+        await prepareRunMemoryContext(
+          f.auth,
+          f.selected,
+          f.document.employeeDocuments.memory,
+        ),
+      ).toEqual(f.selected);
       expect(await f.state()).toEqual(accounted);
       await expect(
         prepareRunMemoryContext(f.auth, [
@@ -2185,29 +2213,43 @@ suite(
       const current = await readRunExperienceSource(f.auth, f.handle);
       expect(current.items[0]!.memory.id).toBe(f.confirmed.id);
       await db`delete from allrice_rag_chunks where memory_id=${f.confirmed.id}`;
-      expect((await readRunExperienceSource(f.auth, f.handle)).items).toEqual(current.items);
+      expect((await readRunExperienceSource(f.auth, f.handle)).items).toEqual(
+        current.items,
+      );
       await db`alter table allrice_rag_chunks rename column experience_projection to qa_unavailable_projection`;
-      try { expect((await readRunExperienceSource(f.auth, f.handle)).items).toEqual(current.items); }
-      finally { await db`alter table allrice_rag_chunks rename column qa_unavailable_projection to experience_projection`; }
+      try {
+        expect((await readRunExperienceSource(f.auth, f.handle)).items).toEqual(
+          current.items,
+        );
+      } finally {
+        await db`alter table allrice_rag_chunks rename column qa_unavailable_projection to experience_projection`;
+      }
       const before = await f.state();
       await deleteWorkspaceMemory(f.owner, f.workspace, f.confirmed.id, {
-        instanceId: f.instance.id, expectedRevision: f.confirmed.revision,
-        contentDigest: f.confirmed.contentDigest, idempotencyKey: randomUUID(),
+        instanceId: f.instance.id,
+        expectedRevision: f.confirmed.revision,
+        contentDigest: f.confirmed.contentDigest,
+        idempotencyKey: randomUUID(),
       });
-      await expect(readRunExperienceSource(f.auth, f.handle)).rejects.toBeTruthy();
+      await expect(
+        readRunExperienceSource(f.auth, f.handle),
+      ).rejects.toBeTruthy();
       expect(await f.state()).toEqual(before);
     });
     it('legacy adopted Skill proof cannot grant a confirmed memory source read', async () => {
       const f = await boundedFixture(true);
       const legacy = await prepareRunExperiences(f.scope, f.scope.worker);
       const before = await f.state();
-      await expect(readRunExperienceSource(f.auth, legacy.memories[0]!.sourceHandle!))
-        .rejects.toMatchObject({ code: 'identity_denied' });
+      await expect(
+        readRunExperienceSource(f.auth, legacy.memories[0]!.sourceHandle!),
+      ).rejects.toMatchObject({ code: 'identity_denied' });
       expect(await f.state()).toEqual(before);
       // The unrelated ordinary confirmed record does not acquire a dependency
       // on the legacy adopted Skill merely because it exists in this account.
       await changeSkill(f, 'disable');
-      expect((await readRunExperienceSource(f.auth, f.handle)).items[0]!.memory.id).toBe(f.confirmed.id);
+      expect(
+        (await readRunExperienceSource(f.auth, f.handle)).items[0]!.memory.id,
+      ).toBe(f.confirmed.id);
     });
     async function changeSkill(
       f: Awaited<ReturnType<typeof validationFixture>>,
