@@ -95,6 +95,8 @@ export {
   describeMcpRuntimeTool,
   createMcpOperationLedger,
   getNativeMcpApprovalTarget,
+  listAbandonedNativeMcpOperations,
+  nativeMcpApprovalConfigured,
 } from './mcp-execution.ts';
 export {
   mcpStableId,

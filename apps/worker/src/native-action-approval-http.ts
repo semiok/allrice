@@ -16,7 +16,7 @@ const body = z
     organizationId: UuidSchema,
     workspaceId: UuidSchema,
     approvalId: UuidSchema,
-    action: z.enum(['read', 'answer']),
+    action: z.enum(['read', 'answer', 'cancel']),
     response: RuntimeActionApprovalResponseSchema.optional(),
   })
   .strict();
@@ -107,7 +107,11 @@ export function createNativeActionApprovalHttpHandler(
         send(404, {});
         return true;
       }
-      if (!locator.displayable) {
+      if (input.action === 'cancel' ? !locator.cutoff : locator.cutoff) {
+        send(409, { code: 'NATIVE_ACTION_NOT_LIVE' });
+        return true;
+      }
+      if (input.action !== 'cancel' && !locator.displayable) {
         send(409, { code: 'NATIVE_ACTION_NOT_DISPLAYABLE' });
         return true;
       }

@@ -55,6 +55,8 @@ import {
   installDevProducerLifecycle,
   readDevProducerLifecycle,
   recordNativeJournalContract,
+  getDatabase,
+  readSessionNativeSubagentTarget,
   type DevProducerContext,
 } from '@allrice/database';
 
@@ -286,7 +288,30 @@ let mcpRecoveryTask: Promise<void> | null = null;
 function mcpRecoveryTick() {
   if (mcpRecoveryTask || stopping || !databaseReady) return;
   mcpRecoveryTask = runProducer('mcp_recovery', () =>
-    recoverMcpRuntimeOperations(),
+    recoverMcpRuntimeOperations({
+      cancelNative: async (binding) => {
+        if (!binding.task.chatSessionId || binding.requestedBy.type !== 'user')
+          return;
+        const target = await readSessionNativeSubagentTarget(getDatabase(), {
+          organizationId: binding.task.scope.organizationId,
+          workspaceId: binding.task.scope.workspaceId,
+          ownerId: binding.requestedBy.id,
+          sessionId: binding.task.chatSessionId,
+        });
+        await getHarnessRouter()
+          .resolve('dsh')
+          .nativeActionApproval?.(
+            target,
+            {
+              action: 'cancel',
+              approvalId: binding.attempt.operationId,
+              runId: binding.task.runId,
+              actorId: binding.requestedBy.id,
+            },
+            AbortSignal.any([httpAborter.signal, AbortSignal.timeout(15_000)]),
+          );
+      },
+    }),
   )
     .then(() => undefined)
     .catch(() => {

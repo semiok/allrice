@@ -52,6 +52,9 @@ import {
 import { ownedRecordsServiceIdentity } from './mcp-owned-records-service.ts';
 
 type Database = ReturnType<typeof getDatabase>;
+export function nativeMcpApprovalConfigured() {
+  return ownedRecordsServiceIdentity() !== null;
+}
 const snapshotSchema = z.object({
   mcpTools: z.array(FrozenMcpToolSchema).max(128).default([]),
   capabilitySnapshot: z.object({
@@ -64,6 +67,7 @@ export function createMcpOperationLedger(
   liveNative?: () =>
     | { result: NativeActionApprovalResult; assertLive(): Promise<void> }
     | undefined,
+  cutoffOnly = false,
 ) {
   if (!context.workspaceId) throw new RuntimePolicyError('mcp_binding_denied');
   const policyOptions = {
@@ -127,6 +131,17 @@ export function createMcpOperationLedger(
           )
         )
           throw new RuntimePolicyError('native_action_not_applicable');
+        if (cutoffOnly) {
+          const [cutoff] =
+            await transaction`select 1 from allrice_runtime_roots r
+            join allrice_mcp_execution_inputs i on i.operation_id=${binding.attempt.operationId}
+            where r.root_run_id=${binding.task.rootRunId} and
+            (r.cancel_request_id is not null or r.deadline_at<=clock_timestamp() or not exists(
+              select 1 from allrice_jobs j where j.id=i.job_id and j.run_id=i.run_id and j.worker_id=i.worker_id
+                and j.lease_token::text=i.job_lease_token and j.status='running' and j.cancel_requested_at is null
+                and j.lease_expires_at>clock_timestamp() and j.timeout_at>clock_timestamp()))`;
+          if (!cutoff) throw new RuntimePolicyError('native_action_still_live');
+        }
       },
       persistLease: async ({ transaction, lease }) => {
         if (lease.snapshot.binding.action !== 'cloud.mcp.call')
@@ -410,25 +425,44 @@ export async function createMcpRuntimeOperation(
               : 0,
     })),
   });
-  await linkTaskOperationCall(
-    database,
-    binding.attempt.operationId,
-    input.callId,
-  );
-  const nativeApproval = native
-    ? await prepareNativeRuntimeActionApproval(
+  let nativeApproval: Awaited<
+    ReturnType<typeof prepareNativeRuntimeActionApproval>
+  > | null = null;
+  try {
+    await linkTaskOperationCall(
+      database,
+      binding.attempt.operationId,
+      input.callId,
+    );
+    if (native)
+      nativeApproval = await prepareNativeRuntimeActionApproval(
         ledger.policyOptions,
         binding,
         database,
-      )
-    : null;
-  if (!native && snapshot.status === 'waiting_user')
-    await requestRuntimeActionApproval(
-      ledger.policyOptions,
-      binding,
-      undefined,
-      database,
-    );
+      );
+    else if (snapshot.status === 'waiting_user')
+      await requestRuntimeActionApproval(
+        ledger.policyOptions,
+        binding,
+        undefined,
+        database,
+      );
+  } catch (cause) {
+    // The operation already exists, but the caller has not received its
+    // cleanup closure yet. A failed native prepare must not strand its wait.
+    if (native) {
+      try {
+        await ledger.stopUndispatchedOperation(
+          binding.task.scope,
+          operationId,
+          mcpStableId(`${key}:prepare-stop`),
+        );
+      } catch (cleanup) {
+        throw new AggregateError([cause, cleanup], 'MCP_NATIVE_PREPARE_FAILED');
+      }
+    }
+    throw cause;
+  }
   return {
     snapshot,
     payload,
@@ -498,8 +532,16 @@ export async function getNativeMcpApprovalTarget(
   if (!ownedRecordsServiceIdentity()) return null;
   return database.begin(async (tx) => {
     await assertRuntimePolicyIdentity(tx, context, false, false);
-    const [row] = await tx<{ binding: unknown; payload: unknown }[]>`
-      select i.binding,i.payload from allrice_mcp_execution_inputs i
+    const [row] = await tx<
+      { binding: unknown; payload: unknown; cutoff: boolean }[]
+    >`
+      select i.binding,i.payload,(r.cancel_request_id is not null or r.deadline_at<=clock_timestamp()
+        or o.snapshot->>'status' in ('cancel_requested','canceled','succeeded','failed','unknown')
+        or not exists(select 1 from allrice_jobs j where j.id=i.job_id and j.run_id=i.run_id and j.worker_id=i.worker_id
+          and j.lease_token::text=i.job_lease_token and j.status='running' and j.cancel_requested_at is null
+          and j.lease_expires_at>clock_timestamp() and j.timeout_at>clock_timestamp())) as cutoff
+      from allrice_mcp_execution_inputs i join allrice_runtime_operations o on o.id=i.operation_id
+      join allrice_runtime_roots r on r.root_run_id=o.root_run_id
       where i.operation_id=${operationId} and i.organization_id=${context.organizationId}
         and i.workspace_id=${context.workspaceId} and i.owner_id=${context.actor.id}`;
     if (!row) return null;
@@ -509,20 +551,51 @@ export async function getNativeMcpApprovalTarget(
     const sessionId = binding.task.chatSessionId;
     if (!sessionId)
       throw new RuntimePolicyError('native_action_not_applicable');
-    const displayed = await createMcpStore({ database }).redactForDisplay(
-      {
-        organizationId: context.organizationId,
-        workspaceId: context.workspaceId!,
-        actorId: context.actor.id,
-      },
-      payload.tool.connectionId,
-      payload.arguments,
-    );
+    const displayed = row.cutoff
+      ? null
+      : await createMcpStore({ database }).redactForDisplay(
+          {
+            organizationId: context.organizationId,
+            workspaceId: context.workspaceId!,
+            actorId: context.actor.id,
+          },
+          payload.tool.connectionId,
+          payload.arguments,
+        );
     return {
       sessionId,
       runId: binding.task.runId,
       approvalId: binding.attempt.operationId,
-      displayable: digest(displayed) === digest(payload.arguments),
+      displayable:
+        !row.cutoff && digest(displayed) === digest(payload.arguments),
+      cutoff: row.cutoff,
     };
   });
+}
+
+/** Candidates for the existing receipt-only recovery tick. This reads only
+ * the fixed owned adapter and original Job incarnation; no Host or grant is
+ * restored. stopUndispatchedOperation rechecks cutoff under root→operation. */
+export async function listAbandonedNativeMcpOperations(
+  database: Database = getDatabase(),
+) {
+  const identity = ownedRecordsServiceIdentity();
+  if (!identity) return [];
+  const rows = await database<{ snapshot: unknown }[]>`
+    select o.snapshot from allrice_mcp_execution_inputs i
+    join allrice_runtime_operations o on o.id=i.operation_id
+    join allrice_runtime_roots r on r.root_run_id=o.root_run_id
+    where o.lease_token_hash is null and not exists(select 1 from allrice_mcp_execution_attempts a where a.operation_id=o.id)
+      and o.snapshot->>'agentInstanceId' is null
+      and o.snapshot->>'status' in ('planned','ready','waiting_user','waiting_device','waiting_dependency','cancel_requested')
+      and i.binding->'command'->>'networkPolicyDigest'=${digest({ endpoint: identity.endpoint, redirects: false })}
+      and i.payload->'tool'->>'name'='records.append' and i.payload->'tool'->>'digest'=${identity.toolDigest}
+      and (r.cancel_request_id is not null or r.deadline_at<=clock_timestamp() or not exists(
+        select 1 from allrice_jobs j where j.id=i.job_id and j.run_id=i.run_id and j.worker_id=i.worker_id
+          and j.lease_token::text=i.job_lease_token and j.status='running' and j.cancel_requested_at is null
+          and j.lease_expires_at>clock_timestamp() and j.timeout_at>clock_timestamp()))
+    order by o.created_at limit 20`;
+  return rows.map(
+    (row) => RuntimeOperationSnapshotSchema.parse(row.snapshot).binding,
+  );
 }

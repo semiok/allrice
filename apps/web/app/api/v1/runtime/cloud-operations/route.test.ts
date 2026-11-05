@@ -2,11 +2,20 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DataAccessError, RuntimePolicyError } from '@allrice/database';
 import type * as Database from '@allrice/database';
+import type * as NativeApproval from '../../../../../lib/execution/native-action-approval';
 const mocks = vi.hoisted(() => ({
   context: vi.fn(),
   list: vi.fn(),
   cancel: vi.fn(),
+  nativeCancel: vi.fn(),
 }));
+vi.mock(
+  '../../../../../lib/execution/native-action-approval',
+  async (original) => ({
+    ...(await original<typeof NativeApproval>()),
+    cancelNativeActionApprovals: mocks.nativeCancel,
+  }),
+);
 vi.mock('../../../../../lib/identity/session', () => ({
   requireRequestContext: mocks.context,
 }));
@@ -34,6 +43,7 @@ describe('Cloud operation read/cancel HTTP boundary', () => {
     });
     mocks.list.mockResolvedValue([{ historical: true }]);
     mocks.cancel.mockResolvedValue({ accepted: true, remoteStopped: false });
+    mocks.nativeCancel.mockResolvedValue(undefined);
   });
   afterEach(() => vi.unstubAllEnvs());
   it('reads history with new-execution flags disabled and private no-store responses', async () => {
@@ -69,6 +79,24 @@ describe('Cloud operation read/cancel HTTP boundary', () => {
         .status,
     ).toBe(400);
     expect(mocks.cancel).not.toHaveBeenCalled();
+  });
+  it('delivers authenticated cancellation only after the durable cutoff and preserves acceptance when the live port is unavailable', async () => {
+    mocks.nativeCancel.mockRejectedValueOnce(
+      Error('native transport unavailable'),
+    );
+    const result = await POST(post({ runId, action: 'cancel' }));
+    expect(result.status).toBe(200);
+    expect(mocks.cancel.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.nativeCancel.mock.invocationCallOrder[0]!,
+    );
+    expect(mocks.nativeCancel).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId }),
+      runId,
+    );
+    expect(await result.json()).toEqual({
+      accepted: true,
+      remoteStopped: false,
+    });
   });
   it('requires login and current DB owner authority without reflecting errors', async () => {
     mocks.context.mockRejectedValueOnce(

@@ -7,7 +7,10 @@ import {
 import { UuidSchema } from '@allrice/contracts';
 import { requireRequestContext } from '../../../../../lib/identity/session';
 import { sameOriginBrowserWrite } from '../../../../../lib/identity/request-origin';
-import { projectNativeActionApprovals } from '../../../../../lib/execution/native-action-approval';
+import {
+  projectNativeActionApprovals,
+  cancelNativeActionApprovals,
+} from '../../../../../lib/execution/native-action-approval';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 const headers = { 'Cache-Control': 'private, no-store' };
@@ -65,9 +68,16 @@ async function handle(request: Request, cancel: boolean) {
     if (!workspace.success || !run.success)
       throw new RuntimePolicyError('invalid_request');
     const scoped = { ...context, workspaceId: workspace.data };
+    const cancellation = cancel
+      ? await cancelCloudRuntimeRun(scoped, run.data)
+      : null;
+    if (cancel)
+      await cancelNativeActionApprovals(scoped, run.data).catch(
+        () => undefined,
+      );
     return Response.json(
       cancel
-        ? await cancelCloudRuntimeRun(scoped, run.data)
+        ? cancellation
         : {
             operations: await projectNativeActionApprovals(
               scoped,

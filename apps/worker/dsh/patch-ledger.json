@@ -7,7 +7,7 @@
       "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-native-action-approval.mjs",
-      "reason": "A current root tool invocation borrows the public approval/request waterfall and native ApprovalService request/policy lifecycle. The authenticated SaaS answer port binds the original Run, request, actor and exact frozen operation; only that live allowed-once result can dispatch. Existing PG approvals receive decided audit facts only, never pending authority or restored permission. Fixed owned records.append is the sole enrolled effect adapter; its real service identity is not supplied, so production enrollment remains disabled. No DSH core/private interface, child/timed policy, new PG state, waiting registry, model argument grant or automatic unknown-effect replay."
+      "reason": "A current root tool invocation borrows the public approval/request waterfall and native ApprovalService request/policy lifecycle. The authenticated SaaS answer port binds the original Run, request, actor and exact frozen operation; only that live allowed-once result can dispatch. Existing PG approvals receive decided audit facts only, never pending authority or restored permission. The original card Stop delivers its durable cutoff to that native signal; the existing recovery tick closes only never-dispatched fixed bindings after original Job/root cutoff. Fixed owned records.append is the sole enrolled effect adapter; its real service identity is not supplied, so production enrollment remains disabled. No DSH core/private interface, child/timed policy, new PG state, waiting registry, model argument grant or automatic unknown-effect replay."
     },
     {
       "id": "allrice-brand-content-read-v1",

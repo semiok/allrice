@@ -8,6 +8,8 @@ import {
 import {
   getNativeMcpApprovalTarget,
   getRuntimeActionApproval,
+  listCloudRuntimeOperations,
+  nativeMcpApprovalConfigured,
   RuntimePolicyError,
   type CloudOperationView,
 } from '@allrice/database';
@@ -18,12 +20,14 @@ import { sessionCookieName } from '../identity/session';
 export async function requestNativeActionApproval(
   context: RequestContext,
   approvalId: string,
-  action: 'read' | 'answer',
+  action: 'read' | 'answer' | 'cancel',
   response?: unknown,
 ): Promise<Record<string, unknown> | null> {
   const target = await getNativeMcpApprovalTarget(context, approvalId);
   if (!target) return null;
-  if (!target.displayable)
+  if (action === 'cancel' ? !target.cutoff : target.cutoff)
+    throw new RuntimePolicyError('native_action_unavailable');
+  if (action !== 'cancel' && !target.displayable)
     throw new RuntimePolicyError('native_action_not_displayable');
   const token = (await cookies()).get(sessionCookieName)?.value;
   if (!token) throw new RuntimePolicyError('native_action_unavailable');
@@ -78,6 +82,7 @@ export async function projectNativeActionApprovals(
       if (operation.approval?.response) return operation;
       if (
         !target.displayable ||
+        target.cutoff ||
         operation.mcpAuthorization?.available === false
       )
         return { ...operation, approval: null };
@@ -92,6 +97,28 @@ export async function projectNativeActionApprovals(
       }
     }),
   );
+}
+
+/** Existing authenticated root cancellation is durable first. Deliver only
+ * its negative cutoff to the same live native signal; cold cleanup belongs
+ * to the existing Worker recovery tick, never a new waiting queue. */
+export async function cancelNativeActionApprovals(
+  context: RequestContext,
+  runId: string,
+) {
+  if (!nativeMcpApprovalConfigured()) return;
+  for (const operation of await listCloudRuntimeOperations(context, runId)) {
+    if (
+      operation.proposal?.kind !== 'mcp' ||
+      operation.snapshot.status !== 'cancel_requested'
+    )
+      continue;
+    await requestNativeActionApproval(
+      context,
+      operation.snapshot.binding.attempt.operationId,
+      'cancel',
+    ).catch(() => undefined);
+  }
 }
 
 /** An exact completed-response retry acknowledges only the immutable receipt;

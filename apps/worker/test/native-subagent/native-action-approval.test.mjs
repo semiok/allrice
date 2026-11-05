@@ -94,12 +94,26 @@ it.each(['approved', 'rejected'])(
         });
         started.resolve();
         result = await requested;
-        if (result.outcome === 'allowed-once')
+        if (result.outcome === 'allowed-once') {
           await h.server.handleRequest('native-action/verify', {
             sessionId: h.root.id,
             callId: params.toolCallId,
             requestId: request.requestId,
           });
+          await h.server.handleRequest('native-action/cancel', {
+            sessionId: h.root.id,
+            actorId: user,
+            runId,
+            approvalId: request.approvalId,
+          });
+          await expect(
+            h.server.handleRequest('native-action/verify', {
+              sessionId: h.root.id,
+              callId: params.toolCallId,
+              requestId: request.requestId,
+            }),
+          ).rejects.toThrow();
+        }
         return { modelContent: JSON.stringify(result), summary: 'controlled' };
       },
       model: async (_r, n) =>
@@ -140,6 +154,12 @@ it.each(['approved', 'rejected'])(
         ...query,
         actorId: randomUUID(),
         response: response(request, decision),
+      }),
+    ).rejects.toThrow();
+    await expect(
+      h.server.handleRequest('native-action/cancel', {
+        ...query,
+        actorId: randomUUID(),
       }),
     ).rejects.toThrow();
     await expect(

@@ -15,7 +15,7 @@ export const baseline: readonly BaselineEntry[] = [
     basis:
       'MET-248 SIMPLIFIED S-P1：公开 native approval 独占等待和 allowed-once；AllRice 只核当前本人/租户/root/精确业务绑定，并将已决定结果单向记入原账本。固定自有 records.append 适配，真实身份未给时不启用；无 PG 新状态或 child/定时语义。',
     approvedBy:
-      '用户 2026-11-05 批准首片，MET-248 65ee4e89-87ba-4b0b-af25-eebc1134c4a0 调整计划；原 SIMPLIFIED A3/A6/§6.1。',
+      '2026-11-05 用户批准首片，MET-248 65ee4e89-87ba-4b0b-af25-eebc1134c4a0 调整计划；原 SIMPLIFIED A3/A6/§6.1。',
   },
   {
     kind: 'table',

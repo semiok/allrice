@@ -6,7 +6,7 @@ import {
   runtimeContractEqual,
 } from '@allrice/contracts/native-runtime';
 
-/* global AbortSignal */
+/* global AbortSignal, AbortController */
 
 /** Transport an answer to the live native waterfall. There is no pending
  * registry or restored permission: the only handlers are borrowed by the
@@ -30,6 +30,7 @@ export function installNativeActionApproval(server) {
     async withCall({ agent, callId, toolName, signal }, execute) {
       let requested = false;
       let allowed;
+      let cancel = () => {};
       const verify = ctx.on(event('verify'), (params) => {
         if (params.sessionId !== agent.id || params.callId !== callId) return;
         signal.throwIfAborted();
@@ -56,8 +57,10 @@ export function installNativeActionApproval(server) {
         if (request.task.runId !== run.runId || requested)
           throw Error('NATIVE_ACTION_SCOPE_MISMATCH');
         requested = true;
+        const cancellation = new AbortController();
         const liveSignal = AbortSignal.any([
           signal,
+          cancellation.signal,
           AbortSignal.timeout(
             Math.max(1, Date.parse(request.expiresAt) - Date.now()),
           ),
@@ -70,6 +73,25 @@ export function installNativeActionApproval(server) {
           reason:
             'Confirm the exact prepared AllRice action shown in this operation.',
         };
+        const matches = (query) =>
+          query.sessionId === agent.id &&
+          query.approvalId === request.approvalId &&
+          query.actorId === request.respondentId &&
+          query.runId === request.task.runId;
+        // Borrowed until this tool call ends, including allowed→dispatch.
+        // Cancelling the same native signal never creates another decision.
+        cancel = ctx.on(event('cancel'), (query) => {
+          if (!matches(query)) return;
+          server.assertRoot(root, agent.id);
+          if (
+            server.runAdmission.attribute({ nativeSessionId: agent.id })
+              .runId !== run.runId
+          )
+            throw Error('NATIVE_ACTION_SCOPE_MISMATCH');
+          allowed = undefined;
+          cancellation.abort();
+          return { cancelled: true };
+        });
         let accepted = null;
         const answerer = ctx.on('approval/request', async (received, next) => {
           if (received !== native) return next();
@@ -77,11 +99,6 @@ export function installNativeActionApproval(server) {
           const responding = new Promise((resolve) => {
             answer = resolve;
           });
-          const matches = (query) =>
-            query.sessionId === agent.id &&
-            query.approvalId === request.approvalId &&
-            query.actorId === request.respondentId &&
-            query.runId === request.task.runId;
           const current = () => {
             liveSignal.throwIfAborted();
             server.assertRoot(root, agent.id);
@@ -156,6 +173,7 @@ export function installNativeActionApproval(server) {
       } finally {
         dispose();
         verify();
+        cancel();
       }
     },
   };

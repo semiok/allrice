@@ -769,4 +769,6 @@ AllRice 的差异归门卫及原有单向账本：真实网页登录身份经固
 
 唯一效果适配是固定自有 `records.append(value<=100)`，基于服务端固定身份和 tool digest 及原冻结绑定识别，不信外部工具自报 readOnly 或相同名字。展示必须与准确原参数一致，原端点从冻结 binding 识别；脱敏后不能显示内容则拒绝。真实自有 HTTPS 地址、部署归属与工具身份尚未提供，身份函数明确返回 null，生产新分支尚未启用；测试仅替换固定身份并用自有 HTTP fixture，不代表真实用户验收。
 
+既有操作卡“停止本轮”先持久化原 root cutoff，再经同一鉴权口取消当前调用的 native signal；cutoff 后 read/answer 不可再答。既有 MCP recovery tick 另扫本片无 attempt/lease 的固定绑定，只在原 Job incarnation 失效或 root 已停止/到期时收尾，锁内重核 cutoff 与无 dispatch/START；它不创建 Host、恢复 grant 或联系 MCP。若 live cancel 未获回执，留在同一既有 recovery 入口下次核查，不能伪造 native 已结束。prepare 在 operation 创建后失败也在返回前执行同一未派发收尾。原 cancelRoot/child 的缺省语义不变。
+
 依据为原 SIMPLIFIED A3/A6/§6.1 及 MET-248 已批准首片/评论 `65ee4e89-87ba-4b0b-af25-eebc1134c4a0`。升级时核对同一 request 对象进入 waterfall、原生取消及 decided 语义、root/child policy 隔离、公开 Cordis handler 释放、managed MCP RPC 等待包络及原 attempt/START 一次消费。DSH 若提供等价认证 answer port，可替换本传输门卫；保留 SaaS 身份与精确业务绑定。无私有接口或新表/状态。

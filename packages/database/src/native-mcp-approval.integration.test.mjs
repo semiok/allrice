@@ -24,24 +24,43 @@ import {
   setRuntimePolicyControls,
 } from './runtime-policy.ts';
 import { updateWorkAutomation } from './work-automation.ts';
-import { listCloudRuntimeOperations } from './cloud-operation-view.ts';
+import {
+  listCloudRuntimeOperations,
+  cancelCloudRuntimeRun,
+} from './cloud-operation-view.ts';
+import * as TaskClock from './task-clock.ts';
 import { mcpStableId } from './mcp-authority.ts';
 import {
   host,
   text,
+  gate,
+  hold,
 } from '../../../apps/worker/test/native-subagent/fixture.mjs';
 import { dshInboundToolHandler } from '../../../apps/worker/src/harness/dsh/tool-bridge.ts';
 import { executeRiceTool } from '../../../apps/worker/src/tool-broker.ts';
 import * as McpExecutor from '../../../apps/worker/src/mcp/executor.ts';
 import { createNativeActionApprovalHttpHandler } from '../../../apps/worker/src/native-action-approval-http.ts';
+import { createMcpTransport } from '../../../apps/worker/src/mcp/transport.ts';
+import { POST as stopCloudOperations } from '../../../apps/web/app/api/v1/runtime/cloud-operations/route.ts';
 
-/* global process, URL, fetch */
+/* global process, URL, fetch, Request */
 
 // Real PostgreSQL, production DSH approval, Broker and owned MCP HTTP. Only
 // the model, login/session-pin issuer and fixed service identity are fixtures;
 // this is not real-model, public HTTPS or browser acceptance.
 let db, admin;
 const identity = vi.hoisted(() => ({ current: null }));
+const login = vi.hoisted(() => ({
+  context: null,
+  token: 'synthetic_session_token_248',
+}));
+vi.mock('../../../apps/web/lib/identity/session', () => ({
+  requireRequestContext: async () => login.context,
+  sessionCookieName: 'synthetic_session',
+}));
+vi.mock('next/headers', () => ({
+  cookies: async () => ({ get: () => ({ value: login.token }) }),
+}));
 vi.mock('./mcp-owned-records-service.ts', () => ({
   ownedRecordsServiceIdentity: () => identity.current,
 }));
@@ -143,10 +162,13 @@ suite('MET-248 native approval → exact owned append', () => {
   it.each([
     { decision: 'approved', automation: true },
     { decision: 'rejected', automation: false },
+    { decision: 'cancelled', automation: true },
+    { decision: 'cancel_after_start', automation: true },
   ])(
     '“向记录服务只追加 S-Q2”：real Worker entry, native $decision and member automation=$automation',
     async ({ decision, automation }) => {
       const f = await fixture();
+      login.context = f.context;
       if (automation)
         await updateWorkAutomation(
           f.context,
@@ -170,9 +192,25 @@ suite('MET-248 native approval → exact owned append', () => {
             ...options,
             database: db,
             store: f.store,
-            transport: f.transport,
+            transport:
+              decision === 'cancel_after_start' ? heldTransport : f.transport,
           }),
         );
+      const releaseReply = gate();
+      const heldTransport = createMcpTransport({
+        fetchOverride: async (input, init) => {
+          const response = await f.service.fetchOverride(input, init);
+          if (f.service.state.calls > 0) {
+            const signal =
+              init?.signal ??
+              (input instanceof Request ? input.signal : undefined);
+            if (!signal)
+              throw Error('fixture requires the real execution signal');
+            await hold(signal, releaseReply);
+          }
+          return response;
+        },
+      });
       let h;
       const inbound = dshInboundToolHandler(
         {
@@ -233,7 +271,7 @@ suite('MET-248 native approval → exact owned append', () => {
               ]
             : text('完成'),
       });
-      const token = 'synthetic_session_token_248';
+      const token = login.token;
       const target = {
         workerId: f.worker,
         rootSessionId: h.root.id,
@@ -262,6 +300,7 @@ suite('MET-248 native approval → exact owned append', () => {
       server.listen(0, '127.0.0.1');
       await once(server, 'listening');
       const endpoint = `http://127.0.0.1:${server.address().port}/internal/native-action-approval`;
+      vi.stubEnv('ALLRICE_WORKER_INTERNAL_URL', endpoint);
       const http = (action, response, bearer = token) =>
         fetch(endpoint, {
           method: 'POST',
@@ -316,31 +355,79 @@ suite('MET-248 native approval → exact owned append', () => {
             })
           ).status,
         ).toBe(409);
-        expect(
-          (await http('answer', answer(pending.request, decision))).status,
-        ).toBe(200);
-        await h.wait();
+        const waiting = h.wait();
+        if (decision === 'cancelled' || decision === 'cancel_after_start') {
+          if (decision === 'cancel_after_start') {
+            expect((await http('answer', answer(pending.request))).status).toBe(
+              200,
+            );
+            await expect.poll(() => f.service.state.calls).toBe(1);
+            expect((await operation(f, operationId)).status).toBe('running');
+          }
+          const stopped = await stopCloudOperations(
+            new Request(
+              `http://allrice.test/api/v1/runtime/cloud-operations?workspaceId=${f.workspace}`,
+              {
+                method: 'POST',
+                headers: {
+                  origin: 'http://allrice.test',
+                  'content-type': 'application/json',
+                },
+                body: JSON.stringify({ action: 'cancel', runId: f.run }),
+              },
+            ),
+          );
+          expect(stopped.status).toBe(200);
+          expect((await http('answer', answer(pending.request))).status).toBe(
+            409,
+          );
+        } else
+          expect(
+            (await http('answer', answer(pending.request, decision))).status,
+          ).toBe(200);
+        await waiting;
         const snapshot = await operation(f, operationId);
         expect(f.service.state.rows).toEqual(
-          decision === 'approved' ? ['S-Q2'] : [],
+          ['approved', 'cancel_after_start'].includes(decision) ? ['S-Q2'] : [],
         );
         expect(snapshot.status).toBe(
-          decision === 'approved' ? 'succeeded' : 'canceled',
+          decision === 'approved'
+            ? 'succeeded'
+            : decision === 'cancel_after_start'
+              ? 'unknown'
+              : 'canceled',
         );
-        expect(snapshot.result.effects).toBe(
-          decision === 'approved' ? 'applied' : 'none',
-        );
+        if (decision === 'cancel_after_start')
+          expect(snapshot.result).toBeNull();
+        else
+          expect(snapshot.result.effects).toBe(
+            decision === 'approved' ? 'applied' : 'none',
+          );
         const [saved] =
           await db`select status,runtime_consumed_at from allrice_approval_requests where id=${operationId}`;
-        expect(saved.status).toBe(decision);
-        expect(!!saved.runtime_consumed_at).toBe(decision === 'approved');
+        if (decision === 'cancelled') expect(saved).toBeUndefined();
+        else {
+          expect(saved.status).toBe(
+            decision === 'cancel_after_start' ? 'approved' : decision,
+          );
+          expect(!!saved.runtime_consumed_at).toBe(
+            ['approved', 'cancel_after_start'].includes(decision),
+          );
+        }
         expect(
           h.root.session
             .snapshotEvents()
             .filter((e) => e.type === 'approval/asked'),
         ).toHaveLength(1);
+        const decisions = h.root.session
+          .snapshotEvents()
+          .filter((e) => e.type === 'approval/decided');
+        expect(decisions).toHaveLength(1);
+        if (decision === 'cancelled')
+          expect(decisions[0].data.outcome).toBe('cancelled');
         expect((await http('read')).status).toBe(409);
       } finally {
+        releaseReply.resolve();
         spy.mockRestore();
         server.closeAllConnections();
         await new Promise((done) => server.close(done));
@@ -480,5 +567,145 @@ suite('MET-248 native approval → exact owned append', () => {
     const rows =
       await db`select id from allrice_runtime_operations where id=${id}`;
     expect(rows).toHaveLength(0);
+  });
+
+  it.each(['waiting', 'allowed-before-dispatch', 'root-cutoff'])(
+    'cold PG recovery after %s has no original closure, sends nothing and releases each reservation once',
+    async (phase) => {
+      const f = await fixture(),
+        created = await f.create();
+      const id = created.snapshot.binding.attempt.operationId;
+      if (phase === 'allowed-before-dispatch')
+        await created.confirmNativeAction(syntheticPort());
+      expect(
+        await McpExecutor.recoverMcpRuntimeOperations({ database: db }),
+      ).toEqual({ recovered: 0, failed: 0 });
+      if (phase === 'root-cutoff') {
+        await cancelCloudRuntimeRun(f.context, f.run, db);
+        expect(
+          await McpExecutor.recoverMcpRuntimeOperations({
+            database: db,
+            cancelNative: async () => {
+              throw Error('live cancellation unacknowledged');
+            },
+          }),
+        ).toEqual({ recovered: 0, failed: 1 });
+        expect((await operation(f, id)).status).toBe('cancel_requested');
+      } else
+        await db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${f.job}`;
+      expect(
+        await McpExecutor.recoverMcpRuntimeOperations({ database: db }),
+      ).toEqual({ recovered: 1, failed: 0 });
+      expect(
+        await McpExecutor.recoverMcpRuntimeOperations({ database: db }),
+      ).toEqual({ recovered: 0, failed: 0 });
+      expect(await operation(f, id)).toMatchObject({
+        status: 'canceled',
+        result: { effects: 'none' },
+      });
+      expect(f.service.state.rows).toEqual([]);
+      const [receipts] =
+        await db`select count(*)::int as n from allrice_runtime_operation_receipts where operation_id=${id}`;
+      expect(receipts.n).toBe(1);
+      const reservations =
+        await db`select amount,settled_amount,observation from allrice_runtime_reservations where operation_id=${id}`;
+      expect(
+        reservations.every(
+          (r) => Number(r.settled_amount) === 0 && r.observation.amount === 0,
+        ),
+      ).toBe(true);
+      const budgets =
+        await db`select reserved from allrice_runtime_budgets where root_run_id=${f.run}`;
+      expect(budgets.every((r) => Number(r.reserved) === 0)).toBe(true);
+      if (phase === 'allowed-before-dispatch') {
+        const [approval] =
+          await db`select status,runtime_consumed_at from allrice_approval_requests where id=${id}`;
+        expect(approval).toMatchObject({
+          status: 'approved',
+          runtime_consumed_at: null,
+        });
+      }
+      expect((await getNativeMcpApprovalTarget(f.context, id, db)).cutoff).toBe(
+        true,
+      );
+    },
+  );
+
+  it('a real policy change after operation creation makes prepare fail and still records not-executed cleanup', async () => {
+    const f = await fixture(),
+      callId = 'prepare-race';
+    const id = mcpStableId(`mcp-call:${f.run}:${callId}`);
+    const realLink = TaskClock.linkTaskOperationCall;
+    const barrier = vi
+      .spyOn(TaskClock, 'linkTaskOperationCall')
+      .mockImplementationOnce(async (...args) => {
+        await realLink(...args);
+        await setRuntimePolicyControls(
+          f.context,
+          {
+            version: 2,
+            enabled: true,
+            mode: 'execute',
+            rules: [{ action: 'cloud.mcp.call', effect: 'deny' }],
+          },
+          1,
+          db,
+        );
+      });
+    try {
+      await expect(f.create(callId)).rejects.toThrow();
+    } finally {
+      barrier.mockRestore();
+    }
+    expect(await operation(f, id)).toMatchObject({
+      status: 'canceled',
+      result: { effects: 'none' },
+    });
+    expect(await approvalCount(id)).toBe(0);
+    expect(f.service.state.rows).toEqual([]);
+    const reservations =
+      await db`select settled_amount from allrice_runtime_reservations where operation_id=${id}`;
+    expect(reservations.every((r) => Number(r.settled_amount) === 0)).toBe(
+      true,
+    );
+  });
+
+  it('cold recovery after durable dispatch/START preserves unknown and refuses a none receipt', async () => {
+    const f = await fixture(),
+      created = await f.create();
+    await created.confirmNativeAction(syntheticPort());
+    const binding = created.snapshot.binding,
+      scope = binding.task.scope,
+      operationId = binding.attempt.operationId;
+    const { leaseToken } = await created.ledger.dispatch({
+      scope,
+      operationId,
+      leaseOwner: f.worker,
+      leaseMs: 15000,
+    });
+    expect(
+      (
+        await created.ledger.startOperation({
+          scope,
+          operationId,
+          leaseToken,
+          attempt: binding.attempt,
+          receiptId: mcpStableId(`${operationId}:start`),
+        })
+      ).mayExecute,
+    ).toBe(true);
+    await db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${f.job}`;
+    expect(
+      await McpExecutor.recoverMcpRuntimeOperations({ database: db }),
+    ).toEqual({ recovered: 1, failed: 0 });
+    expect(await operation(f, operationId)).toMatchObject({
+      status: 'unknown',
+      result: null,
+    });
+    await expect(created.stopNativeAction()).rejects.toThrow();
+    expect(
+      await McpExecutor.recoverMcpRuntimeOperations({ database: db }),
+    ).toEqual({ recovered: 0, failed: 0 });
+    expect(f.service.state.rows).toEqual([]);
   });
 });
