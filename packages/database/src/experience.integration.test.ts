@@ -1137,18 +1137,24 @@ suite(
       await store.review(f.owner, c.id, decision(c));
       const candidate = await createTraceableMemory(f.owner, {
         workspaceId: f.workspace,
-        instanceId: oldSession.employeeInstanceId ?? oldSession.employeeAssignmentId,
+        instanceId:
+          oldSession.employeeInstanceId ?? oldSession.employeeAssignmentId,
         content: f.input.content,
         sourceType: 'user',
         lifecycleState: 'candidate',
         idempotencyKey: randomUUID(),
       });
-      const confirmed = await promoteWorkspaceMemory(f.owner, f.workspace, candidate.id, {
-        instanceId: candidate.instanceId!,
-        expectedRevision: candidate.revision,
-        contentDigest: candidate.contentDigest,
-        idempotencyKey: randomUUID(),
-      });
+      const confirmed = await promoteWorkspaceMemory(
+        f.owner,
+        f.workspace,
+        candidate.id,
+        {
+          instanceId: candidate.instanceId!,
+          expectedRevision: candidate.revision,
+          contentDigest: candidate.contentDigest,
+          idempotencyKey: randomUUID(),
+        },
+      );
       const newSession = await createChatSession(f.owner, {
         workspaceId: f.workspace,
         title: 'After experience',
