@@ -37,7 +37,10 @@ import {
   lockMemorySource,
   type EmployeeMemoryIdentity,
 } from './employee-memory.ts';
-import { employeeMemoryReadPredicate, searchConfirmedEmployeeMemories } from './employee-memory-read.ts';
+import {
+  employeeMemoryReadPredicate,
+  searchConfirmedEmployeeMemories,
+} from './employee-memory-read.ts';
 import { assertEmployeeChatHumanSource } from '../employees/employee-chat-authority.ts';
 import { employeeAccessTransaction } from '../employees/employee-access-cancellation.ts';
 import { captureReferenceSelections } from '../reference-runtime.ts';
@@ -1388,7 +1391,12 @@ export async function searchWorkspaceMemories(
       UuidSchema.parse(input.instanceId),
       sql,
     );
-    const rows = await searchConfirmedEmployeeMemories(sql, scope, query, limit);
+    const rows = await searchConfirmedEmployeeMemories(
+      sql,
+      scope,
+      query,
+      limit,
+    );
     return rows.map((memory) => ({
       id: memory.id,
       content: memory.content,

@@ -478,7 +478,10 @@ export async function recallRagChunks(context: RequestContext, input: unknown) {
     // instance authority cannot fall back to a legacy shared review.
     if (!query.instanceId) return [];
     const scope = await employeeMemoryScope(
-      context, query.workspaceId, query.instanceId, sql,
+      context,
+      query.workspaceId,
+      query.instanceId,
+      sql,
     );
     return sql<
       {

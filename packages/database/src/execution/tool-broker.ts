@@ -764,12 +764,17 @@ export async function searchToolBrokerMemories(
     runId: context.runId,
   });
   if (!instanceId) return [];
-  const rows = await searchConfirmedEmployeeMemories(sql, {
-    organizationId: context.organizationId,
-    workspaceId: context.workspaceId,
-    ownerId: context.policySnapshot.subjectId,
-    instanceId,
-  }, query, limit);
+  const rows = await searchConfirmedEmployeeMemories(
+    sql,
+    {
+      organizationId: context.organizationId,
+      workspaceId: context.workspaceId,
+      ownerId: context.policySnapshot.subjectId,
+      instanceId,
+    },
+    query,
+    limit,
+  );
   return rows.map((row) => {
     authorizeRead(context, 'memory', row);
     return {
