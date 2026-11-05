@@ -113,7 +113,10 @@ export function DshDialog({
     <div
       className={styles.backdrop}
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
+        if (event.target === event.currentTarget) {
+          if (onBack && !showCloseButton) event.preventDefault();
+          onClose();
+        }
       }}
       role="presentation"
     >

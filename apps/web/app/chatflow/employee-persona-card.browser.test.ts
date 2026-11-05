@@ -497,6 +497,7 @@ suite('U1 employee persona card', () => {
             await page
               .getByRole('dialog')
               .evaluate((node) => node.contains(document.activeElement)),
+            `width=${width} exit=${exit}`,
           ).toBe(true);
           expect(state.writes).toEqual([]);
         }
