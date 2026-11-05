@@ -8,7 +8,7 @@ function fixture() {
     digest = `sha256:${'a'.repeat(64)}`;
   const scene = {
     id,
-    nativeName: authored ? 'weekly-brief' : `allrice-scene-${id}`,
+    nativeName: `allrice-scene-${id}`,
     name: '周报',
     appliesWhen: '每周复盘',
     digest,
@@ -169,7 +169,7 @@ it.each([false, true])(
     const calls = [];
     const summary = {
       sceneId: id,
-      nativeName: `allrice-scene-${id}`,
+      nativeName: authored ? 'weekly-brief' : `allrice-scene-${id}`,
       name: '周报',
       description: '整理资料',
       ...(authored
