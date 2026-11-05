@@ -33,6 +33,7 @@ export function useNativeQueryStartup(
       message.runId &&
       message.status !== 'pending',
   );
+  const firstTurn = selected?.messages.length === 0 || (!!runId && !settled);
   const owned =
     !!workspace &&
     !!selected &&
@@ -43,6 +44,7 @@ export function useNativeQueryStartup(
     setState((current) => {
       const entries = current.scope === scope ? current.entries : {};
       const previous = entries[activeId];
+      if (!previous && !firstTurn) return current;
       const pending = !readyKey && !settled;
       // A disconnected/terminal observer releases the normal error handling.
       if (previous?.runId === (runId ?? null) && !previous.pending)
@@ -54,7 +56,7 @@ export function useNativeQueryStartup(
         entries: { ...entries, [activeId]: { runId: runId ?? null, pending } },
       };
     });
-  }, [scope, owned, activeId, runId, readyKey, settled]);
+  }, [scope, owned, activeId, runId, readyKey, settled, firstTurn]);
 
   const entries = state.scope === scope ? state.entries : {};
   const observers = JSON.stringify(
@@ -108,9 +110,28 @@ export function useNativeQueryStartup(
     }
     return () => disposals.forEach((dispose) => dispose());
   }, [scope, observers]);
-  return new Set(
-    Object.entries(entries)
-      .filter(([, entry]) => entry.pending)
-      .map(([id]) => id),
-  );
+  return {
+    pending: new Set(
+      Object.entries(entries)
+        .filter(([, entry]) => entry.pending)
+        .map(([id]) => id),
+    ),
+    admitted(sessionId: string, runId: string | null) {
+      // A late POST receipt may update this read-only observer, never the
+      // departed selection's transcript, draft, attachments or execution.
+      setState((current) =>
+        current.scope === scope &&
+        current.entries[sessionId]?.pending &&
+        current.entries[sessionId]?.runId === null
+          ? {
+              ...current,
+              entries: {
+                ...current.entries,
+                [sessionId]: { runId, pending: runId !== null },
+              },
+            }
+          : current,
+      );
+    },
+  };
 }

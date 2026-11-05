@@ -1417,6 +1417,47 @@ suite(
       },
     );
 
+    it('MET-214 observes a late first POST receipt after leaving an empty session', async () => {
+      const f = await fixture({
+        nativeParents: 3,
+        emptyA: true,
+        nativeStartup: true,
+        immediateReply: true,
+        nativeClock: true,
+      });
+      try {
+        const reads = () =>
+          f.reads.filter((url) =>
+            url.startsWith(`/api/v1/sessions/${A}/subagents?`),
+          );
+        await f.send('First message before binding');
+        await f.waitPending(1);
+        await f.choose(B);
+        await f.page
+          .getByRole('textbox', { name: '给 Rice 的消息' })
+          .fill('B untouched');
+        await f.page.clock.runFor(6_000);
+        expect(reads()).toEqual([]);
+        expect(f.native.startupStreams()).toBe(0);
+        await f.respond(0);
+        await expect.poll(f.native.startupStreams).toBe(1);
+        expect(reads()).toEqual([]);
+        f.native.allowReady();
+        await expect.poll(() => reads().length).toBeGreaterThan(0);
+        await expect.poll(f.native.startupStreams).toBe(0);
+        expect(new URL(f.page.url()).searchParams.get('session')).toBe(B);
+        expect(
+          await f.page
+            .getByRole('textbox', { name: '给 Rice 的消息' })
+            .inputValue(),
+        ).toBe('B untouched');
+        expect(f.writes.filter((url) => url.endsWith('/cancel'))).toEqual([]);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    });
+
     it('MET-214 keeps the subagent entry for new work before its first message', async () => {
       const f = await fixture();
       try {
