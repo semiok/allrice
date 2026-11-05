@@ -7449,9 +7449,9 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
           content: input.text,
         }),
       ]);
-      expect(
-        restoredRun!.prompt_snapshot.employeeDocuments.memory,
-      ).toContain(input.text);
+      expect(restoredRun!.prompt_snapshot.employeeDocuments.memory).toContain(
+        input.text,
+      );
     },
   );
   it('waits for a concurrent archive before persisting a message from a stale Session read', async () => {
