@@ -70,7 +70,7 @@ it.each(['success', 'denied'])(
       nativeTools: ['workspace.file.read'],
       model: async (_request, count) => {
         if (count !== 1) return text('must not continue after cancellation');
-        h.root.ctx.tools.get('workspace_file_read').timeoutMs = 100;
+        h.ctx.tools.get('workspace_file_read', h.root).timeoutMs = 100;
         return [{
         type: 'tool-call', id: 'timed-read', name: 'workspace_file_read',
         arguments: JSON.stringify({objectId: randomUUID()}),
