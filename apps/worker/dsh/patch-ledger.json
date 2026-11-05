@@ -143,6 +143,14 @@
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-jsonrpc-runtime.mjs",
       "reason": "AllRice wrapper reports safe results of awaited public shutdown, root disposal and prior transport flush; its own final-response flush controls exit status. Worker records the original close request and exact owned child close with immutable per-boot readback. Nonzero/forced/unknown closure remains distinct from physical exit; no DSH core or dependency change, no historical success backfill."
+    },
+    {
+      "id": "allrice-employee-documents-v1",
+      "issue": "MET-246",
+      "upstreamVersion": "0.2.1-rc.2",
+      "kind": "protocol-extension",
+      "path": "apps/worker/dsh/allrice-employee-documents.mjs",
+      "reason": "Supply bounded confirmed owner/instance database documents only to an admitted human root through public systemPrompt.context and exact-Agent PERSONA_PREFIX_SECTION shadowing. Native snapshot update/clear/resume/fork owns history; no child implementation, permission widening, private interface or alternate lifecycle."
     }
   ]
 }

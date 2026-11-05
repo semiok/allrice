@@ -1,4 +1,6 @@
 import { personalInstanceNameSql } from '../employees/employee-instance-policy.ts';
+import { EmployeeMemoryPinInputSchema } from '@allrice/contracts';
+import { freezeEmployeeDocuments } from '../employees/employee-documents.ts';
 import { isModelFailureCode, modelFailure } from '@allrice/contracts';
 import { requireNativeQuestionAdmission } from '../native-questions.ts';
 import { archivePrivateExperience } from '../experience-runtime.ts';
@@ -31,12 +33,17 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   assertMemoryRevision,
   EmployeeMemoryConflict,
+  EmployeeMemoryCapacityError,
   employeeMemoryScope,
   memoryContentDigest,
   memoryOperation,
   lockMemorySource,
   type EmployeeMemoryIdentity,
 } from './employee-memory.ts';
+import {
+  employeeMemoryReadPredicate,
+  searchConfirmedEmployeeMemories,
+} from './employee-memory-read.ts';
 import { assertEmployeeChatHumanSource } from '../employees/employee-chat-authority.ts';
 import { employeeAccessTransaction } from '../employees/employee-access-cancellation.ts';
 import { captureReferenceSelections } from '../reference-runtime.ts';
@@ -96,8 +103,8 @@ import {
 } from '../conversation/usage.ts';
 import {
   applyWorkspaceMemoryRecallBudget,
-  embedWorkspaceText,
   rankWorkspaceMemoryRecallCandidates,
+  embedWorkspaceText,
   workspaceMemoryRecallPolicy,
 } from './memory-recall.ts';
 
@@ -191,6 +198,7 @@ interface AttachmentRow {
 }
 
 interface MemoryRow {
+  metadata?: Record<string, unknown>;
   id: string;
   organization_id: string;
   workspace_id: string;
@@ -1276,19 +1284,12 @@ async function loadWorkspaceMemoryRecallCandidates(
      and m.id = c.memory_id
     where c.organization_id = ${input.context.organizationId}
       and c.workspace_id = ${input.workspaceId}
-      and m.archived_at is null
-      and (exists(select 1 from allrice_experience_reviews governed where governed.memory_id=m.id)
-        or (m.owner_id=${requireUser(input.context)} and m.instance_id=${input.instanceId}
-          and m.lifecycle_state='durable' and m.trust_level='user_confirmed'))
-      and not exists(select 1 from allrice_experience_reviews er
-        where er.memory_id=m.id and (er.origin_kind in ('incremental','derived') or er.status<>'approved'
-          or exists(select 1 from allrice_employee_runs origin where origin.run_id=er.run_id and origin.method_authoring)))
-      and not exists(select 1 from allrice_brand_content_experiences brand where brand.memory_id=m.id)
-      and not exists(select 1 from allrice_employee_runs er
-        where er.organization_id=m.organization_id and er.workspace_id=m.workspace_id and er.method_authoring
-          and ((m.source_type='message' and m.source_id in (er.user_message_id,er.assistant_message_id))
-            or (m.source_type='checkpoint' and exists(select 1 from allrice_context_checkpoints cp
-              where cp.id=m.source_id and cp.covered_through_message_id in (er.user_message_id,er.assistant_message_id)))))
+      and ${employeeMemoryReadPredicate(sql, {
+        organizationId: input.context.organizationId,
+        workspaceId: input.workspaceId,
+        ownerId: requireUser(input.context),
+        instanceId: input.instanceId,
+      })}
       and (
         ${input.durableOnly}::boolean = false
         or (
@@ -1394,35 +1395,23 @@ export async function searchWorkspaceMemories(
       UuidSchema.parse(input.instanceId),
       sql,
     );
-    const candidates = await loadWorkspaceMemoryRecallCandidates(
-      {
-        context,
-        workspaceId,
-        instanceId: scope.instanceId,
-        query,
-        poolSize: Math.min(
-          workspaceMemoryRecallPolicy.maximumCandidatePool,
-          Math.max(60, limit * 12),
-        ),
-        durableOnly: true,
-      },
+    const rows = await searchConfirmedEmployeeMemories(
       sql,
-    );
-    return rankWorkspaceMemoryRecallCandidates(candidates, {
-      threshold: workspaceMemoryRecallPolicy.explicitThreshold,
+      scope,
+      query,
       limit,
-      durableOnly: true,
-    }).map((memory) => ({
+    );
+    return rows.map((memory) => ({
       id: memory.id,
       content: memory.content,
-      source_type: memory.sourceType,
-      source_id: memory.sourceId,
-      lifecycle_state: memory.lifecycleState,
-      memory_class: memory.memoryClass,
-      trust_level: memory.trust,
-      confidence: memory.confidence,
-      source_label: memory.sourceLabel,
-      relevance_score: memory.relevanceScore,
+      source_type: memory.source_type,
+      source_id: memory.source_id,
+      lifecycle_state: memory.lifecycle_state,
+      memory_class: memory.memory_class,
+      trust_level: memory.trust_level,
+      confidence: Number(memory.confidence),
+      source_label: memory.source_label,
+      relevance_score: Number(memory.relevance_score),
     }));
   });
 }
@@ -1875,6 +1864,7 @@ async function prepareChatRunBinding(
   input: ChatRunPreparationInput,
   runContext: ChatRunContext,
   database: ChatRunDatabase,
+  employeeDocuments = false,
 ) {
   const {
     context,
@@ -1888,19 +1878,23 @@ async function prepareChatRunBinding(
   const sql = database.sql;
   const transaction =
     database.kind === 'transaction' ? database.sql : undefined;
-  const memories = await recallForReply(
-    context,
-    workspaceId,
-    result.currentAssignment.employee_id,
-    message.text,
-    sql,
-    session.employee_instance_id ?? session.employee_assignment_id,
-  );
+  // Scheduling/automation keeps its existing binding and recall semantics.
+  const memories = employeeDocuments
+    ? []
+    : await recallForReply(
+        context,
+        workspaceId,
+        result.currentAssignment.employee_id,
+        message.text,
+        sql,
+        session.employee_instance_id ?? session.employee_assignment_id,
+      );
   const { prepareEmployeeRunBinding } =
     await import('../employees/employeehub.ts');
   const binding = await prepareEmployeeRunBinding(
     {
       context,
+      employeeDocuments,
       workspaceId,
       assignmentId: session.employee_assignment_id,
       employeeVersionId: effectiveEmployeeVersionId,
@@ -2266,6 +2260,7 @@ export async function sendChatMessage(
       runPreparation,
       runContext,
       database,
+      !options.folderEventId,
     );
     const { enqueueRun, getRun } = await import('../execution/queue.ts');
     const { submission, enqueueOptions } = await prepareChatRunInput(
@@ -2791,6 +2786,7 @@ export async function correctWorkspaceMemory(
       tx,
       true,
     );
+    await tx`select pg_advisory_xact_lock(hashtextextended(${`memory-order:${scope.organizationId}:${scope.ownerId}:${scope.instanceId}`},0))`;
     return memoryOperation(
       tx,
       scope,
@@ -2812,6 +2808,8 @@ export async function correctWorkspaceMemory(
           expires_at=${correction.expiresAt},last_verified_at=now(),updated_at=now()
         where id=${memoryId} returning *`;
         if (!row) throw new Error('memory correction failed');
+        if (current.metadata?.memoryPinOrder !== undefined)
+          await assertPinnedMemoryCapacity(tx, scope);
         await insertMemoryRevision(tx, context, row, correction.reason);
         await tx`delete from allrice_rag_chunks where memory_id=${memoryId}
         and organization_id=${scope.organizationId} and workspace_id=${workspaceId}`;
@@ -2828,6 +2826,101 @@ export async function correctWorkspaceMemory(
           tx,
         );
         return mapMemory(row);
+      },
+    );
+  });
+}
+
+/** Owner-only ordering preference, using the existing revision/idempotency/audit
+ * transaction. No model tool can call this browser management operation. */
+async function assertPinnedMemoryCapacity(
+  tx: TransactionSql,
+  scope: {
+    organizationId: string;
+    workspaceId: string;
+    ownerId: string;
+    instanceId: string;
+  },
+) {
+  const projected = await freezeEmployeeDocuments(tx, scope, {}, true);
+  const pins = await tx<{ id: string }[]>`select m.id from allrice_memories m
+          where ${employeeMemoryReadPredicate(tx, scope)} and m.metadata ? 'memoryPinOrder'`;
+  if (
+    pins.some((pin) => !projected.memories.some((item) => item.id === pin.id))
+  )
+    throw new EmployeeMemoryCapacityError(
+      Math.max(0, 6000 - Buffer.byteLength(projected.employeeDocuments.memory)),
+    );
+}
+
+export async function setPersonalEmployeeMemoryPin(
+  context: RequestContext,
+  workspaceInput: string,
+  memoryInput: string,
+  input: unknown,
+) {
+  const preference = EmployeeMemoryPinInputSchema.parse(input);
+  const workspaceId = await resolveWorkspaceId(context, workspaceInput);
+  const memoryId = UuidSchema.parse(memoryInput);
+  return employeeAccessTransaction(getDatabase(), async (tx) => {
+    const scope = await employeeMemoryScope(
+      context,
+      workspaceId,
+      preference.instanceId,
+      tx,
+      true,
+    );
+    // Serialize ordering for this person's instance, never a tenant-wide UI lock.
+    await tx`select pg_advisory_xact_lock(hashtextextended(${`memory-order:${scope.organizationId}:${scope.ownerId}:${scope.instanceId}`},0))`;
+    return memoryOperation(
+      tx,
+      scope,
+      'correct',
+      preference.idempotencyKey,
+      { operation: 'pin', memoryId, ...preference },
+      async () => {
+        const current = await lockPersonalMemory(
+          tx,
+          context,
+          workspaceId,
+          memoryId,
+          scope.instanceId,
+        );
+        assertMemoryRevision(current, preference);
+        const [eligible] =
+          await tx`select m.id from allrice_memories m where m.id=${memoryId}
+          and ${employeeMemoryReadPredicate(tx, scope)}`;
+        if (!eligible) throw new DataAccessError('authorization_denied');
+        const [order] =
+          await tx`select coalesce(max((metadata->>'memoryPinOrder')::numeric),0)+1 as next
+          from allrice_memories where organization_id=${scope.organizationId} and workspace_id=${workspaceId}
+            and owner_id=${scope.ownerId} and instance_id=${scope.instanceId}
+            and jsonb_typeof(metadata->'memoryPinOrder')='number'`;
+        const [row] = await tx<MemoryRow[]>`update allrice_memories set
+          metadata=case when ${preference.pinned} then jsonb_set(metadata,'{memoryPinOrder}',to_jsonb(${Number(order!.next)}::bigint))
+            else metadata-'memoryPinOrder' end,revision=revision+1,updated_at=clock_timestamp()
+          where id=${memoryId} returning *`;
+        // Pinned entries must all fit intact, including source handles. Reject
+        // atomically; never save an ordering that silently drops a pinned item.
+        if (preference.pinned) await assertPinnedMemoryCapacity(tx, scope);
+        await insertMemoryRevision(
+          tx,
+          context,
+          row!,
+          preference.pinned ? '本人置顶记忆' : '本人取消置顶',
+        );
+        await audit(
+          {
+            context,
+            workspaceId,
+            action: 'memory.order',
+            resourceType: 'memory',
+            resourceId: memoryId,
+            reason: preference.pinned ? 'owner_pin' : 'owner_unpin',
+          },
+          tx,
+        );
+        return mapMemory(row!);
       },
     );
   });

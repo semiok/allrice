@@ -221,6 +221,13 @@ function Manager(props: Props) {
         throw Error(
           '记忆已变化，请重新读取。编辑内容已保留。重新读取后，点该条“编辑”核对最新内容再保存。',
         );
+      if (response.status === 422) {
+        const result = await response.json();
+        if (result.error === 'memory_capacity')
+          throw Error(
+            `置顶内容超出整条预算，未保存。当前剩余${Number(result.remainingBytes)}字节。请先取消其他置顶或缩短记忆。编辑内容已保留。`,
+          );
+      }
       if (!response.ok)
         throw Error('暂时无法确认保存结果。请重新读取，编辑内容会保留。');
       if (action === 'archive') {
@@ -268,6 +275,65 @@ function Manager(props: Props) {
       if (alive.current) setBusy(false);
     }
   }
+  async function pin(memory: ManagedEmployeeMemory) {
+    if (busy || pending.current.size) return;
+    const body = {
+      instanceId: props.instanceId,
+      expectedRevision: memory.revision,
+      contentDigest: memory.contentDigest,
+      pinned: memory.pinOrder === null,
+    };
+    const signature = JSON.stringify({ action: 'pin', id: memory.id, body });
+    if (operation.current?.signature !== signature)
+      operation.current = { signature, key: crypto.randomUUID() };
+    ++generation.current;
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const response = await fetch(
+        `/api/v1/memories/${memory.id}/pin?workspaceId=${props.workspaceId}`,
+        {
+          method: 'POST',
+          headers: { ...headers, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            ...body,
+            idempotencyKey: operation.current.key,
+          }),
+        },
+      );
+      if (response.status === 422) {
+        const result = await response.json();
+        throw Error(
+          `置顶内容超出整条预算，未保存。最多20条、6000字节，当前剩余${Number(result.remainingBytes)}字节。请先取消其他置顶或缩短记忆。`,
+        );
+      }
+      if (!response.ok) throw Error('置顶结果未确认，请重新读取后再操作。');
+      const saved = WorkspaceMemorySchema.parse((await response.json()).memory);
+      if (
+        saved.id !== memory.id ||
+        saved.ownerId !== memory.ownerId ||
+        saved.instanceId !== props.instanceId ||
+        saved.workspaceId !== props.workspaceId ||
+        saved.revision !== memory.revision + 1 ||
+        saved.content !== memory.content
+      )
+        throw Error('置顶回执不匹配，请重新读取。');
+      if (!alive.current) return;
+      operation.current = null;
+      setNotice(
+        body.pinned ? '已置顶，从下一次独立任务优先带入。' : '已取消置顶。',
+      );
+      setRefresh((value) => value + 1);
+    } catch (cause) {
+      if (alive.current)
+        setError(
+          cause instanceof Error ? cause.message : '置顶未确认，请重新读取。',
+        );
+    } finally {
+      if (alive.current) setBusy(false);
+    }
+  }
   const bytes = new TextEncoder().encode(text).byteLength;
   return (
     <section className={css.panel} aria-label="个人记忆">
@@ -304,9 +370,10 @@ function Manager(props: Props) {
             {page.budget.eligibleCount} 条已确认记忆
           </summary>
           <p>
-            按最近确认或修改的顺序计算，整条保留；最多 20 条、6000 字节。当前{' '}
-            {page.budget.usedBytes} 字节，未纳入 {page.budget.omittedCount}{' '}
-            条。此预览不代表每次对话实际使用的记忆。
+            先按置顶先后，再按最近确认或修改排序，整条保留；最多 20 条、6000
+            字节。当前 {page.budget.usedBytes} 字节，未纳入{' '}
+            {page.budget.omittedCount}{' '}
+            条。预览与下次对话使用相同选择顺序，并预留来源定位信息空间；任务开始时会重新核对资格。
           </p>
         </details>
       )}
@@ -407,6 +474,17 @@ function Manager(props: Props) {
                   <p className={css.note}>
                     {memoryStateLabels[memory.state]} · 不用于后续对话
                   </p>
+                )}
+                {memory.state === 'confirmed' && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    disabled={busy || pendingCount > 0}
+                    aria-pressed={memory.pinOrder !== null}
+                    onClick={() => void pin(memory)}
+                  >
+                    {memory.pinOrder === null ? '置顶' : '取消置顶'}
+                  </Button>
                 )}
                 <MemoryCard
                   memory={memory}

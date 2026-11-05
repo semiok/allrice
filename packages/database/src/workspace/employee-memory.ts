@@ -29,6 +29,12 @@ export class EmployeeMemoryConflict extends Error {
   }
 }
 
+export class EmployeeMemoryCapacityError extends Error {
+  constructor(public readonly remainingBytes: number) {
+    super('employee_memory_capacity');
+  }
+}
+
 export const memoryContentDigest = (content: string) =>
   `sha256:${createHash('sha256').update(content).digest('hex')}`;
 

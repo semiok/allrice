@@ -1,3 +1,4 @@
+import type { EmployeeDocuments } from '@allrice/contracts';
 import {
   BootstrapCoverageResultSchema,
   NativeSubagentSummarySchema,
@@ -226,6 +227,7 @@ export class DshProtocolClient {
     requireDurableQuestions?: boolean;
     requireContentGuard?: boolean;
     requireRunAdmission?: boolean;
+    rootSystemInstructions?: string;
     requireNativeAccounting?: boolean;
   }) {
     const {
@@ -383,8 +385,12 @@ export class DshProtocolClient {
   /** DSH owns the tree wait, including follow-up turns and parked children.
    * Like assistant join, its lifetime belongs to Worker cancellation/lease,
    * not the short RPC acknowledgement timeout. Preserve native rejections. */
-  async beginRun(sessionId: string, runId: string) {
-    await this.request('run/begin', { sessionId, runId });
+  async beginRun(
+    sessionId: string,
+    runId: string,
+    employeeDocuments?: EmployeeDocuments,
+  ) {
+    await this.request('run/begin', { sessionId, runId, employeeDocuments });
     this.runId = runId;
   }
 

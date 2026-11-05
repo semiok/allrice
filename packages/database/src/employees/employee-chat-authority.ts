@@ -144,6 +144,18 @@ export async function assertEmployeeChatHumanSource(
   input: Pick<EmployeeChatCall, 'context' | 'userMessageId'>,
   tx: postgres.TransactionSql | ReturnType<typeof getDatabase> = getDatabase(),
 ) {
+  if ((await readEmployeeChatSourceKind(input, tx)) !== 'human')
+    throw new DataAccessError('authorization_denied');
+}
+
+/** Read-only classification of the existing gate, not a grant. The assertion
+ * above retains exactly the same predicate and denial contract. Memory rollout
+ * must distinguish frozen internal producers from unavailable old snapshots;
+ * a generic authorization denial must not authorize a legacy memory fallback. */
+export async function readEmployeeChatSourceKind(
+  input: Pick<EmployeeChatCall, 'context' | 'userMessageId'>,
+  tx: postgres.TransactionSql | ReturnType<typeof getDatabase> = getDatabase(),
+) {
   const [source] = await tx<
     { internal: boolean; execution_snapshot: unknown }[]
   >`
@@ -161,8 +173,8 @@ export async function assertEmployeeChatHumanSource(
       where er.run_id=${input.context.runId} and er.user_message_id=${input.userMessageId}
         and er.organization_id=${input.context.organizationId} and er.workspace_id=${input.context.workspaceId}
         and er.owner_id=${input.context.policySnapshot.subjectId}`;
-  if (!source || source.internal)
-    throw new DataAccessError('authorization_denied');
+  if (!source) return 'unavailable' as const;
+  if (source.internal) return 'internal' as const;
   const snapshot = EmployeeExecutionSnapshotSchema.safeParse(
     source.execution_snapshot,
   );
@@ -171,5 +183,6 @@ export async function assertEmployeeChatHumanSource(
     snapshot.data.schemaVersion !== 2 ||
     snapshot.data.workflowInvocation
   )
-    throw new DataAccessError('authorization_denied');
+    return 'unavailable' as const;
+  return 'human' as const;
 }

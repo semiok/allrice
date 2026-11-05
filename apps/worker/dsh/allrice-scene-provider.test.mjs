@@ -23,6 +23,7 @@ function fixture() {
   });
   const runtime = installSceneProvider(
     {
+      agents: { requireInitiator: () => ({ id: 'root' }) },
       skills: {
         registerProvider: (factory) => {
           provider = factory();

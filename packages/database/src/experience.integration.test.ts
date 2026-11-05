@@ -12,6 +12,7 @@ import { createExperienceFixture } from './experience.fixture.ts';
 import { approveSyntheticCurrentEmployeeExecution } from './current-execution.fixture.ts';
 import {
   createChatSession,
+  createTraceableMemory,
   getEmployeeWorkspace,
   sendChatMessage,
   correctWorkspaceMemory,
@@ -618,7 +619,8 @@ suite(
         (await resolve(candidate.id, approved.revision, f.input.content)).dto
           .available,
       ).toBe(false);
-      // The scope filter must not disable ordinary reviewed experiences.
+      // A legacy review without current instance confirmation is not an employee memory.
+      // Positive confirmed sourceKind=experience coverage lives in employee-memory.integration.
       const ordinary = await store.create(f.owner, {
         ...f.normalInput,
         clientRequestId: randomUUID(),
@@ -631,7 +633,7 @@ suite(
       expect(
         (await resolve(ordinary.id, reviewed.revision, f.normalInput.content))
           .dto.available,
-      ).toBe(true);
+      ).toBe(false);
     });
     it.each([
       'rewritten-rule',
@@ -930,7 +932,7 @@ suite(
         store.review(f.owner, c.id, decision(c)),
       ).rejects.toMatchObject({ code: 'identity_denied' });
     });
-    it('shares only owner-approved rewritten text to a current platform administrator; ordinary reply cannot approve', async () => {
+    it('keeps legacy review administration but never shares it into another owner memory search', async () => {
       const f = await fixture();
       const c = await store.create(f.owner, {
         ...f.input,
@@ -958,7 +960,7 @@ suite(
             query: 'Reconciliation rule',
           })
         ).map((m) => m.id),
-      ).toContain(c.id);
+      ).not.toContain(c.id);
     });
     it('guards legacy promote/correct endpoints instead of silently bypassing scope review', async () => {
       const f = await fixture();
@@ -1116,7 +1118,7 @@ suite(
         vi.stubEnv('ALLRICE_EXPERIENCE_REVIEW_ENABLED', '1');
       }
     });
-    it('freezes the approved memory revision into a real next queued Run and actual Worker kernel, preserving earlier Run', async () => {
+    it('freezes only current instance personal confirmation into the next Run and kernel, preserving the earlier Run', async () => {
       const f = await fixture();
       const oldSession = await createChatSession(f.owner, {
         workspaceId: f.workspace,
@@ -1133,6 +1135,26 @@ suite(
       );
       const c = await store.create(f.owner, f.input);
       await store.review(f.owner, c.id, decision(c));
+      const candidate = await createTraceableMemory(f.owner, {
+        workspaceId: f.workspace,
+        instanceId:
+          oldSession.employeeInstanceId ?? oldSession.employeeAssignmentId,
+        content: f.input.content,
+        sourceType: 'user',
+        lifecycleState: 'candidate',
+        idempotencyKey: randomUUID(),
+      });
+      const confirmed = await promoteWorkspaceMemory(
+        f.owner,
+        f.workspace,
+        candidate.id,
+        {
+          instanceId: candidate.instanceId!,
+          expectedRevision: candidate.revision,
+          contentDigest: candidate.contentDigest,
+          idempotencyKey: randomUUID(),
+        },
+      );
       const newSession = await createChatSession(f.owner, {
         workspaceId: f.workspace,
         title: 'After experience',
@@ -1159,7 +1181,7 @@ suite(
       expect(rows[0]!.prompt_snapshot.memories).toEqual([]);
       expect(rows[1]!.prompt_snapshot.memories).toEqual([
         expect.objectContaining({
-          id: c.id,
+          id: confirmed.id,
           revision: 2,
           content: f.input.content,
         }),
@@ -1179,8 +1201,18 @@ suite(
         userMessageId: next.user_message_id,
         assistantMessageId: next.assistant_message_id,
       });
-      expect(kernel.authorizedMemoryContext).toContain(`revision 2`);
-      expect(kernel.authorizedMemoryContext).toContain(f.input.content);
+      expect(kernel.authorizedMemoryContext).toBe('');
+      expect(
+        JSON.parse(
+          kernel.employeeDocuments!.memory.slice('# MEMORY.md\n'.length),
+        ).items,
+      ).toEqual([
+        expect.objectContaining({
+          id: confirmed.id,
+          revision: 2,
+          content: f.input.content,
+        }),
+      ]);
       const [old] =
         await db`select prompt_snapshot from allrice_employee_runs where run_id=${rows[0]!.run_id}`;
       expect(old?.prompt_snapshot.memories).toEqual([]);

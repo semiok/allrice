@@ -577,7 +577,11 @@ export class DshHarnessAdapter implements HarnessAdapter {
             }).parse(selectionParams);
             if (!input.contentGuard?.loadScene)
               throw Error('employee_scene_unbound');
-            return await input.contentGuard.loadScene(selection);
+            return await input.contentGuard.loadScene(
+              selection,
+              !!input.kernel.employeeDocuments &&
+                params.nativeSessionId === threadId,
+            );
           }
           const evidence = EmployeeSceneStateSchema.shape.adopted
             .unwrap()
@@ -815,7 +819,12 @@ export class DshHarnessAdapter implements HarnessAdapter {
           throw nativeSessionRecoveryFailure(error);
         }
       }
-      if (runId) await runtime.client.beginRun(threadId, runId);
+      if (runId)
+        await runtime.client.beginRun(
+          threadId,
+          runId,
+          input.kernel.employeeDocuments,
+        );
       let bootstrap = fresh ? input.kernel.bootstrapConversation : '';
       if (
         runtime.bootstrapCoverage &&

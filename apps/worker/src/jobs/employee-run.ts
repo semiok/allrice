@@ -3,6 +3,7 @@ import { admitsRootNativeFileRead } from '../native-file-read-admission.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { createJobNativeBinding } from '../harness/native-session-binding.js';
 import { documentDeliveryGuard } from './document-delivery.js';
+import { admitEmployeeDocuments } from './employee-document-admission.js';
 import { LocalStorageAdapter } from '@allrice/storage';
 
 import {
@@ -44,6 +45,7 @@ import {
   prepareEmployeeContentContext,
   prepareRunExperiences,
   prepareRunMemoryContext,
+  assertRunMemoryContextCurrent,
   assertEmployeeContentContext,
   assertNativeRunAuthority,
   loadEmployeeRuntimeScene,
@@ -298,12 +300,29 @@ export async function executeEmployeeRun({
     sessionId: input.sessionId,
     runId: execution.context.runId,
   };
+  const changesetRun = await getChangesetRun(
+    {
+      actor: execution.context.delegatedBy,
+      organizationId: execution.context.organizationId,
+      workspaceId: execution.context.workspaceId,
+    },
+    input.sessionId,
+    execution.context.runId,
+  );
+  if (!repairTask && !repositoryReviewTask && !changesetRun)
+    await admitEmployeeDocuments({
+      context: execution.context,
+      userMessageId,
+      documents: !!resolved.promptSnapshot.employeeDocuments,
+    });
   let contentRuntime: Awaited<ReturnType<typeof prepareEmployeeContentContext>>;
   try {
-    const experience = await prepareRunExperiences(contentScope, {
-      ...workflowLease,
-      attempt: execution.job.attempt,
-    });
+    const experience = resolved.promptSnapshot.employeeDocuments
+      ? { memories: [], receipt: null }
+      : await prepareRunExperiences(contentScope, {
+          ...workflowLease,
+          attempt: execution.job.attempt,
+        });
     resolved = {
       ...resolved,
       promptSnapshot: {
@@ -391,10 +410,13 @@ export async function executeEmployeeRun({
               },
             }
           : {}),
-        loadScene: async (selection: {
-          sceneId: string;
-          sceneDigest: string;
-        }) => {
+        loadScene: async (
+          selection: {
+            sceneId: string;
+            sceneDigest: string;
+          },
+          employeeDocuments = false,
+        ) => {
           const loaded = await loadEmployeeRuntimeScene(
             contentScope,
             contentRuntime!.generationId,
@@ -407,12 +429,18 @@ export async function executeEmployeeRun({
               `工作场景：${loaded.scene.name}。适用：${loaded.scene.appliesWhen}`,
               '本次任务采用以下已发布要求，与共同要求一同执行。引用不授予新工具或资料权限；Knowledge/Workflow 描述不代表已经读取或执行。其他场景和往次任务的场景要求不自动适用于本次任务。',
               JSON.stringify(
-                loaded.sources.map(({ reference, ownership, title, body }) => ({
-                  reference,
-                  scope: ownership?.scope,
-                  title,
-                  body,
-                })),
+                loaded.sources
+                  .filter(
+                    (source) =>
+                      !employeeDocuments ||
+                      source.reference.sourceKind !== 'experience',
+                  )
+                  .map(({ reference, ownership, title, body }) => ({
+                    reference,
+                    scope: ownership?.scope,
+                    title,
+                    body,
+                  })),
               ),
               formatKnowledgeExcerpts(loaded.knowledge),
             ].join('\n'),
@@ -573,15 +601,22 @@ export async function executeEmployeeRun({
       userId: execution.job.ownerId,
     }),
   );
+  const eligibleMemories = await filterEmployeeMethodMemories(
+    contentScope,
+    resolved.promptSnapshot.memories,
+  );
+  if (
+    resolved.promptSnapshot.employeeDocuments &&
+    eligibleMemories.length !== resolved.promptSnapshot.memories.length
+  )
+    throw new HandlerError(
+      'MEMORY_CONTEXT_UNAVAILABLE',
+      '本次记忆已撤回、过期或权限已变化，请新建任务以读取当前有效记忆。',
+      false,
+    );
   resolved = {
     ...resolved,
-    promptSnapshot: {
-      ...resolved.promptSnapshot,
-      memories: await filterEmployeeMethodMemories(
-        contentScope,
-        resolved.promptSnapshot.memories,
-      ),
-    },
+    promptSnapshot: { ...resolved.promptSnapshot, memories: eligibleMemories },
   };
   resolved.promptSnapshot.memories = await prepareRunMemoryContext(
     {
@@ -589,6 +624,7 @@ export async function executeEmployeeRun({
       worker: { ...workflowLease, attempt: execution.job.attempt },
     },
     resolved.promptSnapshot.memories,
+    resolved.promptSnapshot.employeeDocuments?.memory,
   );
   const kernelInput = {
     employeeAssignmentId: input.employeeAssignmentId,
@@ -619,6 +655,8 @@ export async function executeEmployeeRun({
           bootstrapConversation: '',
           bootstrapContext: undefined,
           authorizedMemoryContext: '',
+          employeeDocuments: undefined,
+          rootSystemInstructions: undefined,
           skillVersionIds: [],
           imageAttachments: [],
         })
@@ -770,17 +808,7 @@ export async function executeEmployeeRun({
         false,
       );
     }
-    if (
-      await getChangesetRun(
-        {
-          actor: execution.context.delegatedBy,
-          organizationId: execution.context.organizationId,
-          workspaceId: execution.context.workspaceId,
-        },
-        input.sessionId,
-        execution.context.runId,
-      )
-    ) {
+    if (changesetRun) {
       const result = await executeChangesetRun({
         execution,
         isolation,
@@ -1126,7 +1154,9 @@ export async function executeEmployeeRun({
             limits: frozenModelSnapshot.runLimits,
             estimatedInputTokens: estimateConversationTokens(
               [
-                kernel.systemInstructions,
+                kernel.rootSystemInstructions ?? kernel.systemInstructions,
+                kernel.employeeDocuments?.user ?? '',
+                kernel.employeeDocuments?.memory ?? '',
                 ...(kernel.mcpToolCatalog?.length
                   ? [mcpCatalogAdmissionInstructions(kernel.mcpToolCatalog)]
                   : []),
@@ -1242,14 +1272,24 @@ export async function executeEmployeeRun({
       query: kernel.userRequest,
       storageRoot: process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
     });
+    const routeInstructions = [
+      `Current date: ${new Date().toISOString().slice(0, 10)}. Treat this as the authoritative current date for relative dates such as today, yesterday, and latest. When using web tools, distinguish the retrieval date from dates mentioned inside search results, and cite only source URLs returned by the tool.`,
+      `AllRice authorized route for this turn: ${routeDecision.selectedKind} (${routeDecision.selectedCandidateId}). Tenant-authorized read-only tools are supplied as a stable capability set. Granted execution adapters, including local.process.execute, cloud.process.execute and cloud.mcp.call, are selected by the native DSH Agent Loop. The platform applies the member work settings above to each operation. Other side-effect tools require an explicit route selection. Tool visibility and user-question answers are never action approvals. Use only the capabilities and tools supplied for this turn.`,
+    ].join('\n\n');
     const routedKernel = EmployeeKernelRequestSchema.parse({
       ...kernel,
       harness: routeDecision.harness,
-      systemInstructions: [
-        kernel.systemInstructions,
-        `Current date: ${new Date().toISOString().slice(0, 10)}. Treat this as the authoritative current date for relative dates such as today, yesterday, and latest. When using web tools, distinguish the retrieval date from dates mentioned inside search results, and cite only source URLs returned by the tool.`,
-        `AllRice authorized route for this turn: ${routeDecision.selectedKind} (${routeDecision.selectedCandidateId}). Tenant-authorized read-only tools are supplied as a stable capability set. Granted execution adapters, including local.process.execute, cloud.process.execute and cloud.mcp.call, are selected by the native DSH Agent Loop. The platform applies the member work settings above to each operation. Other side-effect tools require an explicit route selection. Tool visibility and user-question answers are never action approvals. Use only the capabilities and tools supplied for this turn.`,
-      ].join('\n\n'),
+      systemInstructions: [kernel.systemInstructions, routeInstructions].join(
+        '\n\n',
+      ),
+      ...(kernel.rootSystemInstructions
+        ? {
+            rootSystemInstructions: [
+              kernel.rootSystemInstructions,
+              routeInstructions,
+            ].join('\n\n'),
+          }
+        : {}),
       authorizedMemoryContext: [
         kernel.authorizedMemoryContext,
         knowledge.context,
@@ -1291,7 +1331,10 @@ export async function executeEmployeeRun({
     if (runLimits) {
       const estimatedInputTokens = estimateConversationTokens(
         [
-          routedKernel.systemInstructions,
+          routedKernel.rootSystemInstructions ??
+            routedKernel.systemInstructions,
+          routedKernel.employeeDocuments?.user ?? '',
+          routedKernel.employeeDocuments?.memory ?? '',
           ...(routedKernel.mcpToolCatalog?.length
             ? [mcpCatalogAdmissionInstructions(routedKernel.mcpToolCatalog)]
             : []),
@@ -1537,8 +1580,8 @@ export async function executeEmployeeRun({
             : undefined,
         ...(!repairTask && !repositoryReviewTask
           ? {
-              nativeRunAuthority: (generation: number) => () =>
-                assertNativeRunAuthority({
+              nativeRunAuthority: (generation: number) => async () => {
+                const authority = await assertNativeRunAuthority({
                   scope: {
                     organizationId: execution.context.organizationId,
                     workspaceId: execution.context.workspaceId!,
@@ -1550,7 +1593,17 @@ export async function executeEmployeeRun({
                     attempt: execution.job.attempt,
                     generation,
                   },
-                }),
+                });
+                if (routedKernel.employeeDocuments) {
+                  await admitEmployeeDocuments({
+                    context: execution.context,
+                    userMessageId,
+                    documents: true,
+                  });
+                  await assertRunMemoryContextCurrent(contentScope);
+                }
+                return authority;
+              },
             }
           : {}),
         modelPreflight: async () =>

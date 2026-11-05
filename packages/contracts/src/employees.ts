@@ -1,3 +1,4 @@
+import { EmployeeDocumentsSchema } from './employee-documents.ts';
 import { SessionReferenceSnapshotsSchema } from './session-reference.ts';
 import { ReferenceSelectionsSchema } from './reference-library.ts';
 import { CompanyRunSnapshotSchema } from './company-assets.ts';
@@ -795,6 +796,7 @@ export const EmployeePromptSnapshotSchema = z
     }).optional(),
     companyAssets: CompanyRunSnapshotSchema.optional(),
     referenceSelections: ReferenceSelectionsSchema.optional(),
+    employeeDocuments: EmployeeDocumentsSchema.optional(),
     organizationContext: z
       .object({
         organizationId: UuidSchema,
@@ -802,6 +804,7 @@ export const EmployeePromptSnapshotSchema = z
         companyName: z.string().max(160),
         businessContext: z.string().max(8000),
         displayName: z.string().max(120),
+        departmentName: z.string().max(240).optional(),
         jobTitle: z.string().max(160),
         responsibilities: z.string().max(8000),
       })

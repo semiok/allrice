@@ -380,6 +380,15 @@ export const baseline: readonly BaselineEntry[] = [
   },
   {
     kind: 'patch',
+    id: 'allrice-employee-documents-v1',
+    category: '门卫',
+    basis:
+      'DSH owns native context snapshots and fork/resume. AllRice alone knows current tenant/owner/employee-instance confirmation, bounded document selection and the existing Run ledger. Only public exact-Agent scope is used.',
+    approvedBy:
+      '2026-11-04 用户批准 MET-246 M3 方案及原生继承边界：冻结 child 自身当前配置，允许 fork 继承 root 已完成文档快照。',
+  },
+  {
+    kind: 'patch',
     id: 'allrice-employee-content-authorization-v1',
     category: '门卫',
     basis:

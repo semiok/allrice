@@ -1,3 +1,4 @@
+import { employeeMemoryReadPredicate } from '../workspace/employee-memory-read.ts';
 import {
   EmployeeContentTextSchema,
   KnowledgeDefinitionSchema,
@@ -350,7 +351,8 @@ export async function resolveEmployeeContentSource(
   }
   // A shared administration read never fetches personal memory, even if a
   // malformed shared manifest contains its reference.
-  if (input.sharedReader) return unavailable(ref, 'source_scope_mismatch');
+  if (input.sharedReader || !input.instanceId || !context.workspaceId)
+    return unavailable(ref, 'source_scope_mismatch');
   const [memory] = await sql<
     {
       owner_id: string;
@@ -363,21 +365,16 @@ export async function resolveEmployeeContentSource(
     }[]
   >`select m.owner_id,m.visibility,r.content,r.revision,r.trust_level,r.lifecycle_state,m.expires_at
     from allrice_memories m join allrice_memory_revisions r on r.memory_id=m.id and r.revision=m.revision
-    where m.id=${ref.contentId} and r.id=${ref.revisionId} and m.organization_id=${context.organizationId}
-      and m.workspace_id=${context.workspaceId} and m.employee_id=${input.employeeId} and m.archived_at is null
-      and (exists(select 1 from allrice_experience_reviews governed where governed.memory_id=m.id)
-        or (m.owner_id=${context.actor.id} and m.instance_id=${input.instanceId ?? null} and m.trust_level='user_confirmed'))
-      and m.lifecycle_state='durable' and m.trust_level in ('user_confirmed','platform_verified')
-      and (m.expires_at is null or m.expires_at>clock_timestamp())
-      and (m.visibility<>'private' or m.owner_id=${context.actor.id})
-      and not exists(select 1 from allrice_experience_reviews e where e.memory_id=m.id
-        and (e.origin_kind='incremental' or e.status<>'approved'
-          or exists(select 1 from allrice_employee_runs origin where origin.run_id=e.run_id and origin.method_authoring)))
-      and not exists(select 1 from allrice_brand_content_experiences brand where brand.memory_id=m.id)
+    where m.id=${ref.contentId} and r.id=${ref.revisionId} and m.employee_id=${input.employeeId}
+      and ${employeeMemoryReadPredicate(sql, {
+        organizationId: context.organizationId,
+        workspaceId: context.workspaceId,
+        ownerId: context.actor.id,
+        instanceId: input.instanceId,
+      })}
     ${lock ? sql`for share of m,r` : sql``}`;
   if (!memory) return unavailable(ref);
-  // Workspace memory is not a new company/department publication. MET183
-  // provides automatic accumulation; this adapter only references existing trust.
+  // A confirmed personal memory is not a company/department publication.
   if (ownership.scope !== 'personal')
     return unavailable(ref, 'source_scope_mismatch');
   const digest = runtimePolicyDigest({

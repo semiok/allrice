@@ -59,6 +59,8 @@ export async function host({
   stream,
   active = 8,
   runId,
+  rootSystemInstructions,
+  employeeDocuments,
   progress = false,
   questionMode = 'timed',
   releaseMs,
@@ -193,10 +195,15 @@ export async function host({
     requireContentGuard: false,
     requireTaskProgress: false,
     requireRunAdmission: !!runId,
+    rootSystemInstructions,
   });
   const root = (await server.ensureRoot(rootId)).agent;
   if (runId)
-    await server.handleRequest('run/begin', { sessionId: rootId, runId });
+    await server.handleRequest('run/begin', {
+      sessionId: rootId,
+      runId,
+      employeeDocuments,
+    });
   const spawn = (parent = root, prompt = '子任务', options = {}) =>
     ctx.subagents.startActivation({
       provider: 'spawn',

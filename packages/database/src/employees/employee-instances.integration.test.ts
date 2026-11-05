@@ -7436,7 +7436,22 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         employee_version_id: updatedVersion,
         version_audits: 1,
       });
-      expect((await memoryState())[0]!.recall_count).toBe(1);
+      // Ordinary chat freezes confirmed documents instead of performing the
+      // retired recall write. Restoring the instance admits the exact memory,
+      // while retrying the same input must not create new recall side effects.
+      expect(await memoryState()).toEqual(memoryBefore);
+      const [restoredRun] =
+        await fixture.db`select prompt_snapshot from allrice_employee_runs where run_id=${sent.run.id}`;
+      expect(restoredRun!.prompt_snapshot.memories).toEqual([
+        expect.objectContaining({
+          id: memory.id,
+          revision: memory.revision,
+          content: input.text,
+        }),
+      ]);
+      expect(restoredRun!.prompt_snapshot.employeeDocuments.memory).toContain(
+        input.text,
+      );
     },
   );
   it('waits for a concurrent archive before persisting a message from a stale Session read', async () => {

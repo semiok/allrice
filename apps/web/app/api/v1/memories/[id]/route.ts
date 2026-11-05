@@ -1,5 +1,6 @@
 import {
   DataAccessError,
+  EmployeeMemoryCapacityError,
   correctWorkspaceMemory,
   deleteWorkspaceMemory,
 } from '@allrice/database';
@@ -43,6 +44,11 @@ export async function PATCH(
       { headers: { 'cache-control': 'private, no-store' } },
     );
   } catch (error) {
+    if (error instanceof EmployeeMemoryCapacityError)
+      return Response.json(
+        { error: 'memory_capacity', remainingBytes: error.remainingBytes },
+        { status: 422, headers: { 'cache-control': 'private, no-store' } },
+      );
     return storageErrorResponse(error);
   }
 }

@@ -282,7 +282,11 @@ async function scenario({
           };
         }
         if (method === 'allrice/content-scene-load') {
-          expect(p).toEqual({ sceneId, sceneDigest });
+          expect(p).toEqual({
+            sceneId,
+            sceneDigest,
+            nativeSessionId: sessionId,
+          });
           return { receipt: sceneReceipt, content: 'SCENE_WEEKLY_ONLY_85' };
         }
         if (method === 'allrice/content-scene-personal-list')

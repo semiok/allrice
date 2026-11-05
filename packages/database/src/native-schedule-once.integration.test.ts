@@ -316,7 +316,7 @@ suite(
       expect(await dispatchNextNativeOnceOccurrence(randomUUID())).toBe(true);
       const snapshot = async () => {
         const [row] = await f.db`
-          select r.owner_id, er.execution_snapshot->'nativePreferences' preferences
+          select r.owner_id, er.execution_snapshot->'nativePreferences' preferences, er.prompt_snapshot->'employeeDocuments' documents
           from allrice_automation_runs ar join allrice_runs r on r.id=ar.run_id
           join allrice_employee_runs er on er.run_id=ar.run_id
           where ar.automation_id=${t.task.id}`;
@@ -324,6 +324,7 @@ suite(
       };
       const expected = {
         owner_id: f.context.actor.id,
+        documents: null,
         preferences: {
           version: 1,
           questionWait: { mode: 'timed', seconds: 300 },

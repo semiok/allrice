@@ -91,3 +91,5 @@ export {
   PersonalSceneContentRefSchema,
   SkillResourceReadSchema,
 } from './employee-scene-skills.ts';
+
+export * from './employee-documents.ts';
