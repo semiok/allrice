@@ -10,6 +10,7 @@ import {
   vi,
 } from 'vitest';
 import {
+  ApiErrorSchema,
   PersonalScenePreviewResponseSchema,
   PersonalSceneConfirmResponseSchema,
   type PersonalScenePreviewResponse,
@@ -314,17 +315,37 @@ suite('browser exact Workflow source confirmation', () => {
       expectedRevision: old.revision,
       expectedContentRef: old.contentRef,
     };
-    expect(
-      (
-        await preview(
-          s.owner.context,
-          s.instance.id,
-          s.owner.workspaceId,
-          await createFileArchive(contentFiles('v2', 'renamed')),
-          target,
-        )
-      ).status,
-    ).toBe(409);
+    const beforeMismatch = await counts();
+    const renamedBytes = await createFileArchive(contentFiles('v2', 'renamed'));
+    const mismatch = await preview(
+      s.owner.context,
+      s.instance.id,
+      s.owner.workspaceId,
+      renamedBytes,
+      target,
+    );
+    expect(mismatch.status).toBe(409);
+    expect(mismatch.headers.get(skillSourceErrorHeader)).toBe('name_mismatch');
+    expect(ApiErrorSchema.parse(await mismatch.json()).error).toMatchObject({
+      code: 'VERSION_CONFLICT',
+      retryable: false,
+      message: `这是另一个 Workflow（renamed），不能更新到“${p.item.frontmatter.metadata.displayName}”。要安装它，请新建场景。`,
+    });
+    const stale = await preview(
+      s.owner.context,
+      s.instance.id,
+      s.owner.workspaceId,
+      renamedBytes,
+      { ...target, expectedRevision: target.expectedRevision + 1 },
+    );
+    expect(stale.status).toBe(409);
+    expect(stale.headers.get(skillSourceErrorHeader)).toBe('version_conflict');
+    expect(ApiErrorSchema.parse(await stale.json()).error).toMatchObject({
+      code: 'VERSION_CONFLICT',
+      retryable: false,
+      message: '内容版本或请求标识已变化，请读取最新版本后重试。',
+    });
+    expect(await counts()).toEqual(beforeMismatch);
     const next = await readPreview(
       s,
       await createFileArchive(contentFiles('v2')),
