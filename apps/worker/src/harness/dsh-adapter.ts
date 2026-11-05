@@ -318,7 +318,13 @@ export class DshHarnessAdapter implements HarnessAdapter {
     // Installed synchronously by runOnce before prompting. Keep it through
     // child join/retry; a later runOnce replaces it with its own turn barrier.
     let awaitTurnOrigin: ((settled?: boolean) => Promise<void>) | undefined;
-    const ordinaryHandler = dshInboundToolHandler(input);
+    const runId = input.executionEnvironment.ALLRICE_RUN_ID;
+    const ordinaryHandler = dshInboundToolHandler({
+      ...input,
+      ...(input.nativeFileRead && runtime.nativeTools.includes('workspace.file.read') && runId
+        ? { fileReadRoot: { nativeSessionId: threadId, runId, signal: input.signal } }
+        : {}),
+    });
     // Project only the successful server-authored profile receipt onto its
     // native completion event; raw model/tool output is not a public receipt.
     const profileReceipts = new Map<string, string>();
@@ -326,7 +332,6 @@ export class DshHarnessAdapter implements HarnessAdapter {
       string,
       ReturnType<typeof PersonalSceneSkillSchema.parse>
     >();
-    const runId = input.executionEnvironment.ALLRICE_RUN_ID;
     const runScope = runId
       ? nativeRunScope(runtime.client, threadId, runId)
       : undefined;
@@ -1266,6 +1271,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
           });
           break;
         }
+        if (toolCall.name === 'workspace.file.read' && runtime.nativeTools.includes(toolCall.name))
+          throw new HandlerError('DSH_TOOL_ENVELOPE_INVALID', 'File reads must use the supplied native tool.', false);
         if (!input.tools.some((tool) => tool.name === toolCall.name)) {
           throw new HandlerError(
             'TOOL_NOT_ALLOWED',

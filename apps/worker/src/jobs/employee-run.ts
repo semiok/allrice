@@ -1,4 +1,5 @@
 import { createRunDeliveryPort } from '../final-delivery/run-delivery.js';
+import { admitsRootNativeFileRead } from '../native-file-read-admission.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { createJobNativeBinding } from '../harness/native-session-binding.js';
 import { documentDeliveryGuard } from './document-delivery.js';
@@ -1482,8 +1483,11 @@ export async function executeEmployeeRun({
         humanText,
       };
     }
+    const nativeFileRead = tools.some((tool) => tool.name === 'workspace.file.read') &&
+      await admitsRootNativeFileRead({ context: execution.context, userMessageId });
     const result: HarnessExecutionResult = await adapter
       .execute({
+        nativeFileRead,
         nativeQuestionMode,
         nativeSubagents:
           !repairTask &&

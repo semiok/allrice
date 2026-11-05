@@ -136,7 +136,19 @@ export const readWorkspaceFile: RiceToolHandler = async ({
   const file = await getToolBrokerFile(
     input.context,
     stringValue(args.objectId, 'objectId'),
-  );
+  ).catch((cause: unknown) => {
+    input.signal?.throwIfAborted();
+    // Only a native invocation's actual database file ACL rejection is known
+    // to have read no bytes. Legacy/scheduled transport and unknown failures
+    // retain their prior behavior; a code supplied by a model is not a receipt.
+    if (!input.call.nativeSessionId || !(cause instanceof DataAccessError) ||
+        cause.code !== 'authorization_denied') throw cause;
+    const error = new HandlerError('TOOL_FILE_ACCESS_DENIED', '没有权限读取该文件；未读取内容。', false);
+    confirmToolFailure(error, {
+      runId: input.context.runId, callId: input.call.id, toolName: input.call.name,
+    });
+    throw error;
+  });
   // Extracted private attachments may have a generic MIME. Select only the
   // same supported text extensions, then validate the actual bytes below.
   const genericText =

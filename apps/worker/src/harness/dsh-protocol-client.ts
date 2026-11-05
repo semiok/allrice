@@ -897,6 +897,13 @@ export class DshProtocolClient {
         `${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`,
       );
     } catch (error) {
+      if (method === 'allrice/tool-call' && params.name === 'workspace.file.read') {
+        // The root-only file bridge returns an ordinary RPC result only for
+        // a call-bound ACL denial. Everything still thrown is unknown/fatal;
+        // reuse the transport's existing terminal path, not native retry.
+        this.fail(error instanceof Error ? error : new Error('FILE_READ_OUTCOME_UNKNOWN'));
+        return;
+      }
       if (method === 'allrice/tool-call') {
         // Internal correlation and machine codes only. Never log arguments,
         // SQL/detail/stack or error messages, nor return them over JSON-RPC.
