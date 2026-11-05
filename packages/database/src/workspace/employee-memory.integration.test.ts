@@ -221,6 +221,70 @@ suite(
       ).rejects.toThrow('authorization_denied');
     });
 
+    it('never lets an approved legacy review bypass owner instance confirmation, expiry or withdrawal', async () => {
+      const f = await setup();
+      const good = await f.create('月报核对流程 CURRENT');
+      const other = await f.create('月报核对流程 OTHER_INSTANCE', { instanceId: f.other.id });
+      const unbound = await f.create('月报核对流程 UNBOUND');
+      const candidate = await f.create('月报核对流程 PENDING', { lifecycleState: 'candidate' });
+      const verified = await f.create('月报核对流程 PLATFORM_VERIFIED');
+      const expired = await f.create('月报核对流程 EXPIRED');
+      const archived = await f.create('月报核对流程 WITHDRAWN');
+      await fixture.db`update allrice_memories set instance_id=null where id=${unbound.id}`;
+      await fixture.db`update allrice_memories set trust_level='platform_verified' where id=${verified.id}`;
+      await fixture.db`update allrice_memories set captured_at=now()-interval '2 days',expires_at=now()-interval '1 day' where id=${expired.id}`;
+      await fixture.db`update allrice_memories set archived_at=now() where id=${archived.id}`;
+      const memories = [good, other, unbound, candidate, verified, expired, archived];
+      for (const m of memories) {
+        const digest = memoryContentDigest(m.content);
+        await fixture.db`insert into allrice_experience_reviews
+          (memory_id,organization_id,workspace_id,owner_id,client_request_id,request_digest,
+           run_id,session_id,message_id,source_excerpt,source_digest,proposed_digest,
+           requested_scope,share_acknowledged,status,reviewed_by,reviewed_at,review_reason)
+          values(${m.id},${f.org},${f.workspace},${f.user},${randomUUID()},${digest},
+            ${f.rootRunId},${f.session},${f.messageId},'Synthetic source',${digest},${digest},
+            'private',false,'approved',${f.user},now(),'Synthetic legacy review')`;
+        const [revision] = await fixture.db`select id from allrice_memory_revisions where memory_id=${m.id} and revision=${m.revision}`;
+        const source = {
+          context: f.context, employeeId: m.employeeId!, instanceId: f.assignment,
+          ownership: { scope: 'personal' as const, organizationId: f.org, ownerId: f.user },
+          ref: {
+            sourceKind: 'experience' as const, contentId: m.id, revisionId: revision!.id,
+            digest: runtimePolicyDigest({ memoryId: m.id, revisionId: revision!.id, revision: m.revision, content: m.content }),
+          },
+          sql: fixture.db, lock: false, allowDraft: false,
+        };
+        expect((await resolveEmployeeContentSource(source)).dto.available).toBe(m.id === good.id);
+        expect((await resolveEmployeeContentSource({ ...source, instanceId: undefined })).dto.available).toBe(false);
+      }
+      expect((await searchWorkspaceMemories(f.context, {
+        workspaceId: f.workspace, instanceId: f.assignment, query: '月报核对流程', limit: 20,
+      })).map((m) => m.id)).toEqual([good.id]);
+      expect((await searchToolBrokerMemories(f.execution, '月报核对流程', 20)).map((m) => m.id)).toEqual([good.id]);
+      expect((await recallRagChunks(f.context, {
+        workspaceId: f.workspace, instanceId: f.assignment, embedding: embedWorkspaceText('月报核对流程'),
+      })).map((m) => m.memory_id)).toEqual([good.id]);
+      expect(await recallRagChunks(f.context, {
+        workspaceId: f.workspace, embedding: embedWorkspaceText('月报核对流程'),
+      })).toEqual([]);
+      expect(await filterEmployeeMethodMemories(f.scope, memories)).toEqual([good]);
+    });
+
+    it('finds the same bounded confirmed records through browser and model search without vector chunks', async () => {
+      const f = await setup();
+      const ids: string[] = [];
+      for (let i = 0; i < 22; i++) ids.push((await f.create(`月报资料入口 ${i}`)).id);
+      await fixture.db`delete from allrice_rag_chunks where memory_id=any(${ids}::uuid[])`;
+      const web = await searchWorkspaceMemories(f.context, {
+        workspaceId: f.workspace, instanceId: f.assignment, query: '月报资料入口', limit: 20,
+      });
+      const broker = await searchToolBrokerMemories(f.execution, '月报资料入口', 100);
+      expect(web).toHaveLength(20);
+      expect(broker.map((m) => m.id)).toEqual(web.map((m) => m.id));
+      expect(web.every((m) => ids.includes(m.id))).toBe(true);
+      expect((await fixture.db`select id from allrice_memories where id=any(${ids}::uuid[])`)).toHaveLength(22);
+    });
+
     it('keeps ordinary edits frozen for the current Run while every instance reference rechecks its own scope', async () => {
       const f = await setup();
       const m = await f.create('Confirmed monthly report source');

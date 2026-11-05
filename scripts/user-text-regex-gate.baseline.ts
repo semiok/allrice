@@ -471,13 +471,6 @@ export const baseline: readonly BaselineEntry[] = [
     ],
   },
   {
-    file: 'packages/database/src/execution/tool-broker.ts',
-    owner: 'searchToolBrokerMemories',
-    kind: 'decide',
-    use: '记忆检索词里有“经验/记忆”时返回全部经验，否则只返回包含检索词的',
-    sites: [String.raw`/经验|记忆/u`],
-  },
-  {
     file: 'packages/database/src/employees/schedule-conversation-intent.ts',
     owner: 'scheduleConversationIntent',
     kind: 'extract',

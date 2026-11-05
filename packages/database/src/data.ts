@@ -1,3 +1,4 @@
+import { employeeMemoryReadPredicate } from './workspace/employee-memory-read.ts';
 import type { ResourcePrincipal } from './resource-principal.ts';
 import { randomUUID } from 'node:crypto';
 
@@ -473,15 +474,12 @@ export async function recallRagChunks(context: RequestContext, input: unknown) {
       ))
     )
       throw new DataAccessError('authorization_denied');
-    if (query.instanceId)
-      await employeeMemoryScope(
-        context,
-        query.workspaceId,
-        query.instanceId,
-        sql,
-      );
-    // This generic RAG entrypoint may read governed shared knowledge. Ordinary
-    // personal entries additionally require an explicit current instance.
+    // These are memory chunks, not the enterprise knowledge source. Missing
+    // instance authority cannot fall back to a legacy shared review.
+    if (!query.instanceId) return [];
+    const scope = await employeeMemoryScope(
+      context, query.workspaceId, query.instanceId, sql,
+    );
     return sql<
       {
         id: string;
@@ -496,11 +494,7 @@ export async function recallRagChunks(context: RequestContext, input: unknown) {
         on m.id=c.memory_id and m.organization_id=c.organization_id and m.workspace_id=c.workspace_id
       where c.organization_id=${context.organizationId} and c.workspace_id=${query.workspaceId}
         and (c.owner_id=${owner} or c.visibility<>'private')
-        and m.archived_at is null and (m.expires_at is null or m.expires_at>now())
-        and ((m.owner_id=${owner} and m.instance_id=${query.instanceId ?? null}
-          and m.lifecycle_state='durable' and m.trust_level='user_confirmed')
-          or exists(select 1 from allrice_experience_reviews er where er.memory_id=m.id
-            and er.origin_kind='manual' and er.status='approved' and m.visibility<>'private'))
+        and ${employeeMemoryReadPredicate(sql, scope)}
       order by c.embedding <=> ${embedding}::vector limit ${query.limit}`;
   });
 }

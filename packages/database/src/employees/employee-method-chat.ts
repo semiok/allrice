@@ -1,3 +1,4 @@
+import { employeeMemoryReadPredicate } from '../workspace/employee-memory-read.ts';
 import {
   EmployeeMethodInspectSchema,
   EmployeeMethodSaveSchema,
@@ -1250,16 +1251,7 @@ export async function filterEmployeeMethodMemories<
     { id: string; revision: number; content: string }[]
   >`select m.id,m.revision,m.content from allrice_memories m
     where m.id=any(${memories.map((m) => m.id)}::uuid[])
-      and m.organization_id=${scope.organizationId} and m.workspace_id=${scope.workspaceId}
-      and (m.owner_id=${scope.ownerId} or m.visibility<>'private') and m.archived_at is null
-      and (exists(select 1 from allrice_experience_reviews governed where governed.memory_id=m.id)
-        or (m.owner_id=${scope.ownerId} and m.instance_id=${instanceId}
-          and (m.expires_at is null or m.expires_at>now()) and m.lifecycle_state='durable' and m.trust_level='user_confirmed'))
-      and not exists(select 1 from allrice_employee_runs er
-        where er.organization_id=m.organization_id and er.workspace_id=m.workspace_id and er.method_authoring
-          and ((m.source_type='message' and m.source_id in (er.user_message_id,er.assistant_message_id))
-            or (m.source_type='checkpoint' and exists(select 1 from allrice_context_checkpoints cp
-              where cp.id=m.source_id and cp.covered_through_message_id in (er.user_message_id,er.assistant_message_id)))))`;
+      and ${employeeMemoryReadPredicate(sql, { ...scope, instanceId })}`;
   // Ordinary edits apply to the next Run. Keep this Run's frozen bytes;
   // only current eligibility (including archival/revocation) may remove them.
   const readable = new Set(rows.map((row) => row.id));

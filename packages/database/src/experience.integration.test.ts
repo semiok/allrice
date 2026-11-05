@@ -618,7 +618,8 @@ suite(
         (await resolve(candidate.id, approved.revision, f.input.content)).dto
           .available,
       ).toBe(false);
-      // The scope filter must not disable ordinary reviewed experiences.
+      // A legacy review without current instance confirmation is not an employee memory.
+      // Positive confirmed sourceKind=experience coverage lives in employee-memory.integration.
       const ordinary = await store.create(f.owner, {
         ...f.normalInput,
         clientRequestId: randomUUID(),
@@ -631,7 +632,7 @@ suite(
       expect(
         (await resolve(ordinary.id, reviewed.revision, f.normalInput.content))
           .dto.available,
-      ).toBe(true);
+      ).toBe(false);
     });
     it.each([
       'rewritten-rule',
@@ -930,7 +931,7 @@ suite(
         store.review(f.owner, c.id, decision(c)),
       ).rejects.toMatchObject({ code: 'identity_denied' });
     });
-    it('shares only owner-approved rewritten text to a current platform administrator; ordinary reply cannot approve', async () => {
+    it('keeps legacy review administration but never shares it into another owner memory search', async () => {
       const f = await fixture();
       const c = await store.create(f.owner, {
         ...f.input,
@@ -958,7 +959,7 @@ suite(
             query: 'Reconciliation rule',
           })
         ).map((m) => m.id),
-      ).toContain(c.id);
+      ).not.toContain(c.id);
     });
     it('guards legacy promote/correct endpoints instead of silently bypassing scope review', async () => {
       const f = await fixture();

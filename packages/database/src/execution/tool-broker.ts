@@ -2,7 +2,6 @@ import {
   readRunMemoryContext,
   type RunMemoryAuthority,
 } from '../run-memory-context.ts';
-import { searchRunExperiences } from '../experience-runtime.ts';
 import { assertMethodFilePublication } from '../employees/employee-method-file-runtime.ts';
 import { randomUUID } from 'node:crypto';
 import type { TransactionSql } from 'postgres';
@@ -34,7 +33,7 @@ import {
 } from '../company-run-assets.ts';
 import { CompanyAssetError } from '../company-assets.ts';
 import { resolveWorkspaceId } from '../workspace/service.ts';
-import { memorySearchPatterns } from '../memory/search-patterns.ts';
+import { searchConfirmedEmployeeMemories } from '../workspace/employee-memory-read.ts';
 import { memoryInstanceForRun } from '../workspace/employee-memory.ts';
 
 interface ResourceRow {
@@ -765,79 +764,25 @@ export async function searchToolBrokerMemories(
     runId: context.runId,
   });
   if (!instanceId) return [];
-  const { exact, patterns } = memorySearchPatterns(query);
-  if (!patterns.length) return [];
-  const rows = await sql<
-    (ResourceRow & {
-      content: string;
-      updated_at: Date;
-      trust_level: string;
-      confidence: number | string;
-      source_label: string;
-    })[]
-  >`
-    select id, organization_id, workspace_id, owner_id, visibility,
-      content, updated_at, trust_level, confidence, source_label
-    from allrice_memories m
-    where organization_id = ${context.organizationId}
-      and workspace_id = ${context.workspaceId} and archived_at is null
-      and (owner_id=${context.policySnapshot.subjectId} or visibility<>'private')
-      and (exists(select 1 from allrice_experience_reviews governed where governed.memory_id=m.id)
-        or (owner_id=${context.policySnapshot.subjectId} and instance_id=${instanceId}
-          and lifecycle_state='durable' and trust_level='user_confirmed'))
-      and (expires_at is null or expires_at > now())
-      and not exists(select 1 from allrice_experience_reviews er
-        where er.memory_id=m.id and (er.origin_kind in ('incremental','derived') or er.status<>'approved'
-          or exists(select 1 from allrice_employee_runs origin where origin.run_id=er.run_id and origin.method_authoring)))
-      and not exists(select 1 from allrice_employee_runs er
-        where er.organization_id=m.organization_id and er.workspace_id=m.workspace_id and er.method_authoring
-          and m.source_type='message' and m.source_id in (er.user_message_id,er.assistant_message_id))
-      and content ilike any(${patterns}::text[])
-    order by (content ilike ${exact}) desc,
-      (select count(*) from unnest(${patterns}::text[]) term(pattern)
-        where content ilike term.pattern) desc,
-      updated_at desc, id
-    limit ${Math.min(Math.max(limit, 1), 20)}
-  `;
-  const experience = await searchRunExperiences(
-    {
-      organizationId: context.organizationId,
-      workspaceId: context.workspaceId,
-      ownerId: context.policySnapshot.subjectId,
-      runId: context.runId,
-    },
-    transaction,
-  );
-  return [
-    ...experience
-      .filter(
-        (m) => /经验|记忆/u.test(query) || m.content.includes(query.trim()),
-      )
-      .map((m) => ({
-        id: m.id,
-        sourceHandle: m.sourceHandle,
-        content: m.content,
-        provenance: {
-          trust: m.trust,
-          confidence: m.confidence,
-          sourceLabel: m.sourceLabel,
-        },
-        updatedAt: m.capturedAt,
-      })),
-    ...rows.map((row) => {
-      authorizeRead(context, 'memory', row);
-      return {
-        id: row.id,
-        content: row.content,
-        provenance: {
-          trust: row.trust_level,
-          confidence: Number(row.confidence),
-          sourceLabel: row.source_label,
-        },
-        updatedAt: row.updated_at.toISOString(),
-      };
-    }),
-  ].slice(0, Math.min(Math.max(limit, 1), 20));
+  const rows = await searchConfirmedEmployeeMemories(sql, {
+    organizationId: context.organizationId,
+    workspaceId: context.workspaceId,
+    ownerId: context.policySnapshot.subjectId,
+    instanceId,
+  }, query, limit);
+  return rows.map((row) => {
+    authorizeRead(context, 'memory', row);
+    return {
+      id: row.id,
+      content: row.content,
+      provenance: {
+        trust: row.trust_level,
+        confidence: Number(row.confidence),
+        sourceLabel: row.source_label,
+      },
+      updatedAt: row.updated_at.toISOString(),
+    };
+  });
 }
 
 export async function readToolBrokerMemoryContext(

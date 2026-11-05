@@ -37,6 +37,7 @@ import {
   lockMemorySource,
   type EmployeeMemoryIdentity,
 } from './employee-memory.ts';
+import { employeeMemoryReadPredicate, searchConfirmedEmployeeMemories } from './employee-memory-read.ts';
 import { assertEmployeeChatHumanSource } from '../employees/employee-chat-authority.ts';
 import { employeeAccessTransaction } from '../employees/employee-access-cancellation.ts';
 import { captureReferenceSelections } from '../reference-runtime.ts';
@@ -1276,19 +1277,12 @@ async function loadWorkspaceMemoryRecallCandidates(
      and m.id = c.memory_id
     where c.organization_id = ${input.context.organizationId}
       and c.workspace_id = ${input.workspaceId}
-      and m.archived_at is null
-      and (exists(select 1 from allrice_experience_reviews governed where governed.memory_id=m.id)
-        or (m.owner_id=${requireUser(input.context)} and m.instance_id=${input.instanceId}
-          and m.lifecycle_state='durable' and m.trust_level='user_confirmed'))
-      and not exists(select 1 from allrice_experience_reviews er
-        where er.memory_id=m.id and (er.origin_kind in ('incremental','derived') or er.status<>'approved'
-          or exists(select 1 from allrice_employee_runs origin where origin.run_id=er.run_id and origin.method_authoring)))
-      and not exists(select 1 from allrice_brand_content_experiences brand where brand.memory_id=m.id)
-      and not exists(select 1 from allrice_employee_runs er
-        where er.organization_id=m.organization_id and er.workspace_id=m.workspace_id and er.method_authoring
-          and ((m.source_type='message' and m.source_id in (er.user_message_id,er.assistant_message_id))
-            or (m.source_type='checkpoint' and exists(select 1 from allrice_context_checkpoints cp
-              where cp.id=m.source_id and cp.covered_through_message_id in (er.user_message_id,er.assistant_message_id)))))
+      and ${employeeMemoryReadPredicate(sql, {
+        organizationId: input.context.organizationId,
+        workspaceId: input.workspaceId,
+        ownerId: requireUser(input.context),
+        instanceId: input.instanceId,
+      })}
       and (
         ${input.durableOnly}::boolean = false
         or (
@@ -1394,35 +1388,18 @@ export async function searchWorkspaceMemories(
       UuidSchema.parse(input.instanceId),
       sql,
     );
-    const candidates = await loadWorkspaceMemoryRecallCandidates(
-      {
-        context,
-        workspaceId,
-        instanceId: scope.instanceId,
-        query,
-        poolSize: Math.min(
-          workspaceMemoryRecallPolicy.maximumCandidatePool,
-          Math.max(60, limit * 12),
-        ),
-        durableOnly: true,
-      },
-      sql,
-    );
-    return rankWorkspaceMemoryRecallCandidates(candidates, {
-      threshold: workspaceMemoryRecallPolicy.explicitThreshold,
-      limit,
-      durableOnly: true,
-    }).map((memory) => ({
+    const rows = await searchConfirmedEmployeeMemories(sql, scope, query, limit);
+    return rows.map((memory) => ({
       id: memory.id,
       content: memory.content,
-      source_type: memory.sourceType,
-      source_id: memory.sourceId,
-      lifecycle_state: memory.lifecycleState,
-      memory_class: memory.memoryClass,
-      trust_level: memory.trust,
-      confidence: memory.confidence,
-      source_label: memory.sourceLabel,
-      relevance_score: memory.relevanceScore,
+      source_type: memory.source_type,
+      source_id: memory.source_id,
+      lifecycle_state: memory.lifecycle_state,
+      memory_class: memory.memory_class,
+      trust_level: memory.trust_level,
+      confidence: Number(memory.confidence),
+      source_label: memory.source_label,
+      relevance_score: Number(memory.relevance_score),
     }));
   });
 }
