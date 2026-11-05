@@ -1,6 +1,6 @@
-import { z } from 'zod';
 import {
-  PersonalSkillGitHubUrlSchema,
+  PersonalSkillPreviewRequestSchema,
+  PersonalSkillPreviewResponseSchema,
   UuidSchema,
   personalSkillLimits,
   type RequestContext,
@@ -19,29 +19,7 @@ import {
   readPublicGitHubSource,
   SkillPreviewError,
   SkillPreviewTokens,
-  skillPreviewTargetSchema,
 } from '@allrice/skill-import';
-
-const inputSchema = z
-  .object({
-    workspaceId: UuidSchema,
-    target: skillPreviewTargetSchema,
-    source: z.discriminatedUnion('kind', [
-      z
-        .object({
-          kind: z.literal('github'),
-          url: PersonalSkillGitHubUrlSchema,
-        })
-        .strict(),
-      z
-        .object({
-          kind: z.literal('zip'),
-          fileName: z.string().min(1).max(255),
-        })
-        .strict(),
-    ]),
-  })
-  .strict();
 
 /** Same lifetime as existing signed file reads. A preview has no installation
  * or permission state; exact bytes are attested in the returned payload. */
@@ -65,7 +43,7 @@ export async function previewPersonalSkillSource(
   archive?: Uint8Array,
   signal?: AbortSignal,
 ) {
-  const input = inputSchema.parse(raw);
+  const input = PersonalSkillPreviewRequestSchema.parse(raw);
   const instanceId = UuidSchema.parse(instanceIdInput);
   if (!originalContext.sessionId || originalContext.actor.type !== 'user')
     throw new DataAccessError('authorization_denied');
@@ -170,7 +148,7 @@ export async function previewPersonalSkillSource(
     },
     bytes,
   );
-  return {
+  return PersonalSkillPreviewResponseSchema.parse({
     instanceId,
     operation: target.operation,
     previewId,
@@ -206,5 +184,5 @@ export async function previewPersonalSkillSource(
     effectiveFrom: 'next_task' as const,
     installed: false as const,
     scriptsExecuted: false as const,
-  };
+  });
 }
