@@ -817,6 +817,18 @@ export async function mutateEmployeeContentInTransaction(
     input.ownership.ownerId !== context.actor.id
   )
     throw new DataAccessError('authorization_denied');
+  // Rice is admitted only through the existing controlled package or method
+  // writers. Do not expose the legacy raw draft/activate HTTP interface.
+  if (
+    input.ownership.scope === 'personal' &&
+    target.instanceId &&
+    !options.authorize &&
+    (await isBaseRiceInstance(
+      await getEmployeeInstance(context, target.instanceId, tx),
+      tx,
+    ))
+  )
+    throw new DataAccessError('authorization_denied');
   await options.authorize?.();
   let [row] = await tx<
     ContentSetRow[]

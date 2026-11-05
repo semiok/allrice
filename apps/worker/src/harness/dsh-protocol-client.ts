@@ -260,6 +260,15 @@ export class DshProtocolClient {
         'DSH model receipts are unavailable',
         false,
       );
+    if (
+      input.personalMethodToolsOnly &&
+      record(result.capabilities)?.personalMethodToolsOnly !== 1
+    )
+      throw new HandlerError(
+        'DSH_PERSONAL_METHOD_SCOPE_UNAVAILABLE',
+        'DSH did not confirm personal-only method tools',
+        false,
+      );
     const serverInfo = record(result.serverInfo);
     if (
       (input.contentScenes?.length || input.personalContentScenes) &&

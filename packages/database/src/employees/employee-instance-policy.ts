@@ -2,6 +2,7 @@ import {
   isBaseRiceInstanceDefinition,
   type EmployeeInstanceSnapshot,
 } from '@allrice/contracts';
+import { getDatabase } from '../core/client.ts';
 import type { ContentSql } from './employee-content-model.ts';
 
 /** This is a product boundary for the platform Rice, not all general instances.
@@ -71,7 +72,7 @@ export function personalInstanceNameSql(sql: ContentSql) {
  * never every general employee or a mutable display-name match. */
 export async function canUsePersonalEmployeeScenes(
   instance: Parameters<typeof isBaseRiceInstance>[0],
-  sql: ContentSql,
+  sql: ContentSql = getDatabase(),
 ) {
   return (
     instance.kind === 'custom' || (await isBaseRiceInstance(instance, sql))

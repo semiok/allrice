@@ -1363,6 +1363,7 @@ export async function createAllRiceRuntime(
         },
         capabilities: {
           runAdmission: !!this.runAdmission,
+          personalMethodToolsOnly: 1,
           nativeAccounting: this.nativeAccounting ? 1 : 0,
           durableQuestions: true,
           taskProgress: !!this.taskProgress,

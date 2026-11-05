@@ -2,6 +2,7 @@ import { sceneSkillFixture } from './employee-scene-skills.fixture.ts';
 import type { RequestContext } from '@allrice/contracts';
 import {
   listPersonalSceneSkills,
+  savePersonalSceneSkill,
   getPersonalSceneSkillResource,
 } from './personal-scene-skills.ts';
 import {
@@ -7712,7 +7713,11 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       ...run,
       arguments: args,
     });
-    expect(first).toMatchObject({ revision: 1, validation: { valid: true } });
+    expect(first).toMatchObject({
+      revision: 1,
+      validation: { valid: true },
+      personalTextOnly: true,
+    });
     expect(first.active).toEqual(first.candidate);
     const inspected = await inspectEmployeeMethodFromChat({
       ...run,
@@ -7751,7 +7756,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         changeSummary: 'Restore exact owner method',
       },
     });
-    expect(restored.revision).toBe(3);
+    expect(restored).toMatchObject({ revision: 3, personalTextOnly: true });
     expect(
       (await getEmployeeContentSet(f.a.context, first.setId)).set.active!
         .manifest,
@@ -7873,7 +7878,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     await run.finish();
   });
 
-  it('U1 admits the real Rice owner at the existing personal content HTTP boundary', async () => {
+  it('U1 keeps the legacy unconfirmed content HTTP boundary closed for Rice', async () => {
     const f = await setup(true, true),
       id = f.assignment.id;
     e3HttpAuth.context = f.a.context;
@@ -7913,10 +7918,10 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         },
       ),
     );
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(403);
     expect(
       await fixture.db`select id from allrice_employee_content_sets where instance_id=${id}`,
-    ).toHaveLength(1);
+    ).toHaveLength(0);
   });
 
   it('U1 gives Rice and owner custom the same exact personal package HTTP, resource and runtime reads', async () => {
@@ -7925,7 +7930,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     e3HttpAuth.context = f.a.context;
     const routePath =
       '../../../../apps/web/app/api/v1/employee-instances/[id]/scene-skills/route.ts';
-    const { POST } = await import(routePath);
+    const { POST, GET } = await import(routePath);
     const body = {
       workspaceId: f.a.workspaceId,
       requestId: randomUUID(),
@@ -7966,6 +7971,24 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     );
     expect(riceSkills.skills).toHaveLength(1);
     const ref = riceSkills.skills[0]!.contentRef;
+    const readHttp = (selection: Record<string, string>) =>
+      GET(
+        new Request(
+          `https://allrice.test/api/v1/employee-instances/${f.assignment.id}/scene-skills?${new URLSearchParams(selection)}`,
+        ),
+        { params: Promise.resolve({ id: f.assignment.id }) },
+      );
+    const directory = await readHttp({});
+    expect(directory.status).toBe(200);
+    expect((await directory.json()).skills[0].contentRef).toBe(ref);
+    const exactHttp = await readHttp({
+      contentRef: ref,
+      resourcePath: 'assets/template.csv',
+    });
+    expect(exactHttp.status).toBe(200);
+    expect(
+      Buffer.from((await exactHttp.json()).contentBase64, 'base64').toString(),
+    ).toContain('synthetic');
     const skill = await inspectPersonalSceneSkill(
       f.a.context,
       f.assignment.id,
@@ -8039,6 +8062,10 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       ),
     ).rejects.toThrow();
     expect(
+      (await readHttp({ contentRef: ref, resourcePath: 'assets/template.csv' }))
+        .status,
+    ).toBe(404);
+    expect(
       (await listPersonalSceneSkills(f.a.context, custom.id)).skills,
     ).toHaveLength(1);
     expect(
@@ -8046,6 +8073,99 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         await fixture.db`select content_scene_state from allrice_employee_runs where run_id=${run.context.runId}`
       )[0]!.content_scene_state,
     ).toEqual(read!.content_scene_state);
+  });
+
+  it('U1 Rice text tools cannot remove, relink or restore a package around exact-file confirmation', async () => {
+    const f = await setup(true, true),
+      id = f.assignment.id;
+    const input = {
+      workspaceId: f.a.workspaceId,
+      requestId: randomUUID(),
+      expectedRevision: 0,
+      expectedContentRef: null,
+      scene: {
+        id: randomUUID(),
+        name: 'Exact package',
+        appliesWhen: 'Owner task',
+      },
+      procedure: {
+        kind: 'procedure',
+        title: 'Package',
+        ...sceneSkillFixture(),
+      },
+      references: [],
+      changeSummary: 'Package v1',
+    };
+    const first = await savePersonalSceneSkill(f.a.context, id, input);
+    const [before] =
+      await fixture.db`select id,active_revision_id from allrice_employee_content_sets where instance_id=${id}`;
+    const firstManifest = (await getEmployeeContentSet(f.a.context, before!.id))
+      .set.active!.manifest;
+    const packageRef = firstManifest.scenes[0]!.references.find(
+      (ref) => ref.sourceKind === 'procedure',
+    )!;
+    await savePersonalSceneSkill(f.a.context, id, {
+      ...input,
+      requestId: randomUUID(),
+      expectedRevision: first.revision,
+      expectedContentRef: first.contentRef,
+      procedure: { ...input.procedure, ...sceneSkillFixture('2.0.0') },
+      changeSummary: 'Package v2',
+    });
+    const current = (await getEmployeeContentSet(f.a.context, before!.id)).set;
+    const run = await methodRun(f, id, '调整本人方法。');
+    const base = {
+      expectedRevision: current.revision,
+      section: 'scene',
+      changeSummary: 'Text tool cannot change package',
+    };
+    for (const args of [
+      { ...base, operation: 'remove_scene', scene: { id: input.scene.id } },
+      {
+        ...base,
+        scene: {
+          id: input.scene.id,
+          name: 'Renamed outside file confirmation',
+        },
+      },
+      {
+        ...base,
+        scene: { id: input.scene.id },
+        procedure: 'Replace package with text',
+        replaceTextReferences: current.active!.manifest.scenes[0]!.references,
+      },
+      {
+        ...base,
+        scene: { name: 'Relink package', appliesWhen: 'Owner task' },
+        references: [packageRef],
+      },
+    ]) {
+      await expect(
+        saveEmployeeMethodAndPublishFromChat({
+          ...run,
+          callId: randomUUID(),
+          arguments: args,
+        }),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+    }
+    await expect(
+      restoreEmployeeMethodAndPublishFromChat({
+        ...run,
+        callId: randomUUID(),
+        arguments: {
+          expectedRevision: current.revision,
+          sourceRevisionId: before!.active_revision_id,
+          changeSummary: 'Cannot restore package via text tool',
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'authorization_denied' });
+    const after = (await getEmployeeContentSet(f.a.context, before!.id)).set;
+    expect(after.revision).toBe(current.revision);
+    expect(after.active).toEqual(current.active);
+    expect(
+      (await getEmployeeContentHistory(f.a.context, before!.id)).revisions,
+    ).toHaveLength(2);
+    await run.finish();
   });
 
   it('U1 reads existing authorized Rice personal history without rewriting snapshots or revisions', async () => {

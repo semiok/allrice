@@ -770,6 +770,28 @@ it.each([false, true])(
   },
 );
 
+it.each([false, true])(
+  'keeps Rice-only method projection in the runtime fingerprint, first=%s',
+  async (personalFirst) => {
+    const { runtimes, value } = currentExecutionRequest('current');
+    value.input.personalMethodToolsOnly = personalFirst ? true : undefined;
+    const first = await runtimes.acquire(value);
+    expect(first.runtime.fingerprintParts.personalMethodToolsOnly).toBe(
+      personalFirst ? true : undefined,
+    );
+    value.input.personalMethodToolsOnly = personalFirst ? undefined : true;
+    const second = await runtimes.acquire(value);
+    expect(second.runtime).not.toBe(first.runtime);
+    expect(second.runtime.fingerprintParts.personalMethodToolsOnly).toBe(
+      personalFirst ? undefined : true,
+    );
+    expect(first.runtime.client.processState()).toMatchObject({
+      state: 'exited',
+      stdioClosed: true,
+    });
+  },
+);
+
 it('reuses one current executor across Run bindings while rechecking the new Run identity', async () => {
   const { runtimes, value, payload } = currentExecutionRequest('current');
   const first = await runtimes.acquire(value);

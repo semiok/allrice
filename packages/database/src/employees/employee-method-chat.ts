@@ -846,6 +846,46 @@ export async function inspectEmployeeMethodFromChat(input: EmployeeChatCall) {
   );
 }
 
+/** The three text tools cannot replace a package's exact-file confirmation.
+ * Compare complete package-containing scenes, not prose or mutable labels.
+ * Plain methods outside those scenes remain independently editable. */
+type MethodManifest = Extract<
+  EmployeeContentMutation,
+  { operation: 'save_draft' }
+>['manifest'];
+async function assertUnchangedRicePackages(
+  organizationId: string,
+  before: MethodManifest,
+  after: MethodManifest,
+  tx: ContentTx,
+) {
+  const references = [before, after].flatMap((manifest) => [
+    ...manifest.common,
+    ...manifest.scenes.flatMap((scene) => scene.references),
+  ]);
+  const revisionIds = references.flatMap((ref) =>
+    ref.sourceKind === 'draft_text' ? [] : [ref.revisionId],
+  );
+  const packages = revisionIds.length
+    ? await tx<{ id: string }[]>`
+        select id from allrice_company_asset_revisions
+        where organization_id=${organizationId} and id in ${tx(revisionIds)}
+          and content ? 'skillPackage'`
+    : [];
+  const ids = new Set(packages.map((row) => row.id));
+  const isPackage = (ref: (typeof references)[number]) =>
+    ref.sourceKind !== 'draft_text' && ids.has(ref.revisionId);
+  const projection = (manifest: MethodManifest) => ({
+    common: manifest.common.filter(isPackage),
+    scenes: manifest.scenes.filter((scene) => scene.references.some(isPackage)),
+  });
+  if (
+    runtimePolicyDigest(projection(before)) !==
+    runtimePolicyDigest(projection(after))
+  )
+    throw new DataAccessError('authorization_denied');
+}
+
 export async function restoreEmployeeMethodFromChat(input: EmployeeChatCall) {
   return restoreEmployeeMethod(input, false);
 }
@@ -864,13 +904,14 @@ async function restoreEmployeeMethod(
   const args = EmployeeMethodRestoreSchema.parse(input.arguments);
   const { scope, requestId } = employeeChatIdentity(input);
   const tool = 'workspace.employee.method.restore_candidate';
-  const { instance, selection } = await enterMethodChat(
+  const { instance, selection, personalRice } = await enterMethodChat(
     input,
     tool,
     true,
     async (tx, instance) => {
       return {
         instance,
+        personalRice: await isBaseRiceInstance(instance, tx),
         selection: await resolveEmployeeMethodTarget(
           scope,
           instance.id,
@@ -880,7 +921,7 @@ async function restoreEmployeeMethod(
       };
     },
   );
-  return employeeAccessTransaction(getDatabase(), (tx) =>
+  const receipt = await employeeAccessTransaction(getDatabase(), (tx) =>
     mutateEmployeeContentInTransaction(
       scope,
       {
@@ -927,10 +968,24 @@ async function restoreEmployeeMethod(
           if (!personalRice && publishOnSave)
             assertImmediateSaveIntent(original);
           const [source] = await tx<
-            { id: string; number: number }[]
-          >`select id,number from allrice_employee_content_revisions
+            { id: string; number: number; manifest: unknown }[]
+          >`select id,number,manifest from allrice_employee_content_revisions
           where id=${args.sourceRevisionId} and set_id=${selection.setId}`;
           if (!source) throw new DataAccessError('not_found');
+          if (personalRice) {
+            const [active] = await tx<{ manifest: unknown }[]>`
+              select r.manifest from allrice_employee_content_sets s
+              join allrice_employee_content_revisions r on r.id=s.active_revision_id
+              where s.id=${selection.setId}`;
+            await assertUnchangedRicePackages(
+              scope.organizationId,
+              EmployeeContentManifestSchema.parse(
+                active?.manifest ?? emptyManifest(),
+              ),
+              EmployeeContentManifestSchema.parse(source.manifest),
+              tx,
+            );
+          }
           if (
             !personalRice &&
             !explicitEmployeeMethodRestoreIntent(
@@ -953,6 +1008,9 @@ async function restoreEmployeeMethod(
       },
     ),
   );
+  return personalRice
+    ? { ...receipt, personalTextOnly: true as const }
+    : receipt;
 }
 
 export async function saveEmployeeMethodFromChat(input: EmployeeChatCall) {
@@ -1011,7 +1069,7 @@ async function saveEmployeeMethod(
     manifest: emptyManifest(),
     textEdits: [],
   };
-  return employeeAccessTransaction(getDatabase(), (tx) =>
+  const receipt = await employeeAccessTransaction(getDatabase(), (tx) =>
     mutateEmployeeContentInTransaction(scope, base, tx, {
       publishOnSave,
       inputDigest: runtimePolicyDigest({
@@ -1069,6 +1127,7 @@ async function saveEmployeeMethod(
         const manifest = EmployeeContentManifestSchema.parse(
           revision?.manifest ?? emptyManifest(),
         );
+        const previousManifest = structuredClone(manifest);
         const sceneId =
           args.section === 'scene'
             ? (args.scene!.id ??
@@ -1082,13 +1141,18 @@ async function saveEmployeeMethod(
         if (args.scene?.id && !scene)
           throw new EmployeeContentError('version_conflict');
         if (args.operation === 'remove_scene') {
-          return {
-            ...base,
-            manifest: {
-              ...manifest,
-              scenes: manifest.scenes.filter((s) => s.id !== sceneId),
-            },
+          const nextManifest = {
+            ...manifest,
+            scenes: manifest.scenes.filter((s) => s.id !== sceneId),
           };
+          if (personalRice)
+            await assertUnchangedRicePackages(
+              scope.organizationId,
+              previousManifest,
+              nextManifest,
+              tx,
+            );
+          return { ...base, manifest: nextManifest };
         }
         if (args.section === 'scene') {
           if (!scene) {
@@ -1257,10 +1321,20 @@ async function saveEmployeeMethod(
             s.id === sceneId ? { ...s, references: updatedRefs } : s,
           ),
         };
+        if (personalRice)
+          await assertUnchangedRicePackages(
+            scope.organizationId,
+            previousManifest,
+            draft,
+            tx,
+          );
         return { ...base, manifest: draft, textEdits };
       },
     }),
   );
+  return personalRice
+    ? { ...receipt, personalTextOnly: true as const }
+    : receipt;
 }
 function referenceKey(ref: EmployeeContentReference) {
   return `${ref.sourceKind}:${ref.contentId}:${ref.revisionId}:${ref.digest}`;
