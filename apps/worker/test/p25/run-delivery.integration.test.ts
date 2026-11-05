@@ -75,9 +75,16 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
 
       memberRole: 'member',
       allowedTools,
-      snapshot: value => ({...value, capabilitySnapshot: {...value.capabilitySnapshot,
-        grantedCapabilities: value.capabilitySnapshot.grantedCapabilities.filter(c => storageRead || c !== 'storage:read'),
-      }}),
+      snapshot: (value) => ({
+        ...value,
+        capabilitySnapshot: {
+          ...value.capabilitySnapshot,
+          grantedCapabilities:
+            value.capabilitySnapshot.grantedCapabilities.filter(
+              (c) => storageRead || c !== 'storage:read',
+            ),
+        },
+      }),
       controls: {
         version: 1,
         enabled: true,
@@ -208,9 +215,15 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
     };
   }
   type Subject = Awaited<ReturnType<typeof subject>>;
-  const citationSubject = (storageRead = true) => subject(
-    ['workspace.export.create', 'workspace.document.read', 'workspace.project'], storageRead,
-  );
+  const citationSubject = (storageRead = true) =>
+    subject(
+      [
+        'workspace.export.create',
+        'workspace.document.read',
+        'workspace.project',
+      ],
+      storageRead,
+    );
 
   async function upload(f: Subject, shared = false) {
     const db = fixture.db;
