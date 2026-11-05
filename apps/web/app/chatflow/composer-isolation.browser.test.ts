@@ -1388,7 +1388,7 @@ suite(
           await f.page.clock.runFor(6_000);
           expect(reads()).toEqual([]);
           if (outcome === 'ready') f.native.allowReady();
-          else if (outcome === 'terminal') f.finish(A, 'canceled');
+          else if (outcome === 'terminal') f.finishRun(A, 'canceled');
           else {
             f.native.failStartupEvents();
             // Reuse the existing Run transport's bounded reconnect schedule.
