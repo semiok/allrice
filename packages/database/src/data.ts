@@ -458,13 +458,21 @@ function vectorLiteral(values: number[]) {
   return `[${values.join(',')}]`;
 }
 
+type RecalledMemoryChunk = {
+  id: string;
+  memory_id: string;
+  content: string;
+  owner_id: string;
+  similarity: number;
+};
+
 export async function recallRagChunks(context: RequestContext, input: unknown) {
   const query = VectorRecallInputSchema.parse(input);
   const owner = actorId(context);
   if (!hasWorkspaceMembership(context, query.workspaceId))
     throw new DataAccessError('authorization_denied');
   const embedding = vectorLiteral(query.embedding);
-  return getDatabase().begin(async (sql) => {
+  return getDatabase().begin(async (sql): Promise<RecalledMemoryChunk[]> => {
     const { employeeMemoryScope } =
       await import('./workspace/employee-memory.ts');
     if (
@@ -483,15 +491,7 @@ export async function recallRagChunks(context: RequestContext, input: unknown) {
       query.instanceId,
       sql,
     );
-    return sql<
-      {
-        id: string;
-        memory_id: string;
-        content: string;
-        owner_id: string;
-        similarity: number;
-      }[]
-    >`
+    return sql<RecalledMemoryChunk[]>`
       select c.id,c.memory_id,c.content,c.owner_id,1-(c.embedding <=> ${embedding}::vector) similarity
       from allrice_rag_chunks c join allrice_memories m
         on m.id=c.memory_id and m.organization_id=c.organization_id and m.workspace_id=c.workspace_id
