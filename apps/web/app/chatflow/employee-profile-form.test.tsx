@@ -40,7 +40,7 @@ describe('shared employee profile form', () => {
     expect(canEditEmployeePersona(profile)).toBe(false);
   });
 
-  it('uses the same named fields and ten approved colors for creation and editing', () => {
+  it('keeps creation fields while applying the approved edit label and ten colors', () => {
     for (const mode of ['create', 'edit'] as const) {
       const html = renderToStaticMarkup(
         <EmployeeProfileForm
@@ -54,16 +54,21 @@ describe('shared employee profile form', () => {
       for (const { label } of Object.values(employeeColorPalette))
         expect(html).toContain(label);
       for (const label of [
-        '员工名字',
+        mode === 'create' ? '员工名字' : '名字',
         '头像颜色',
         '使命',
         '工作方式',
         '表达偏好',
       ])
         expect(html).toContain(label);
-      expect(html).toContain(
-        'placeholder="例如： 文案专家、财务专员、商务分析师"',
-      );
+      if (mode === 'create')
+        expect(html).toContain(
+          'placeholder="例如： 文案专家、财务专员、商务分析师"',
+        );
+      else {
+        expect(html).not.toContain('员工名字');
+        expect(html).not.toContain('placeholder=');
+      }
       expect(html).toContain('取消');
       expect(html).toContain(
         mode === 'create' ? '创建</button>' : '保存</button>',
