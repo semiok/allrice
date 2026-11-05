@@ -7820,15 +7820,17 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     let missing!: Awaited<ReturnType<typeof methodRun>>;
     // Freeze an old-style grant set at creation, never rewrite the immutable
     // execution snapshot to simulate missing authority.
-    await vi
-      .mocked(toolSelection.withEmployeeCustomizationTools)
-      .withImplementation(
-        (names, capabilities, kind) =>
-          currentMethodTools(names, capabilities, kind, false),
-        async () => {
-          missing = await methodRun(f, id, '此前未授予方法工具。');
-        },
-      );
+    const selectionSpy = vi.mocked(toolSelection.withEmployeeCustomizationTools);
+    const originalSelection = selectionSpy.getMockImplementation();
+    if (!originalSelection) throw new Error('Missing tool selection fixture');
+    selectionSpy.mockImplementation((names, capabilities, kind) =>
+      currentMethodTools(names, capabilities, kind, false),
+    );
+    try {
+      missing = await methodRun(f, id, '此前未授予方法工具。');
+    } finally {
+      selectionSpy.mockImplementation(originalSelection);
+    }
     expect(
       missing.frozen.capabilitySnapshot.bindings.toolNames.filter(
         (name: string) => name.startsWith('workspace.employee.method.'),
