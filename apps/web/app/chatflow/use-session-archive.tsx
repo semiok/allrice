@@ -558,6 +558,7 @@ export function useSessionArchive({
   };
   return {
     sessions,
+    legacyOverlayOpen: rename?.scope === scope,
     filter,
     setFilter,
     loading,

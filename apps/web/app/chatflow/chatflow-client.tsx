@@ -2877,14 +2877,20 @@ export function ChatFlowClient({
           target={archiveConfirmation.profile}
           onCancel={() => {
             const target = archiveConfirmation;
+            const selection = captureSelection();
             setArchiveConfirmation(null);
-            if (
-              target.scope === settingsScope &&
-              !employeeArchive.mutation?.denied
-            ) {
+            if (employeeArchive.mutation?.denied) return;
+            // Native Escape is handled at document; the legacy detail listens
+            // on window. Enter only after that same event and layer cleanup.
+            void nextPaint().then(() => {
+              if (
+                target.scope !== currentSettingsScope.current ||
+                !selection.current()
+              )
+                return;
               setDetailsAssignmentId(target.profile.instanceId);
               setEmployeeDetailsOpen(true);
-            }
+            });
           }}
           onArchived={() => {
             setArchiveConfirmation(null);
