@@ -177,3 +177,38 @@ export type PersonalSkillConfirmReceipt = z.infer<
 export type PersonalSkillAffectedBindings = z.infer<
   typeof PersonalSkillAffectedBindingsSchema
 >;
+
+/** Employee-detail removal disables one binding; it never uninstalls the
+ * owner's library entry. The path, not this body, selects the employee. */
+export const PersonalSkillRemoveRequestSchema = z
+  .object({
+    workspaceId: UuidSchema,
+    expectedRevision: z.number().int().positive(),
+    requestId: UuidSchema,
+  })
+  .strict();
+export const PersonalSkillRemoveReceiptSchema = z
+  .object({
+    operation: z.literal('disable'),
+    scope: z.literal('instance'),
+    requestId: UuidSchema,
+    workspaceId: UuidSchema,
+    instanceId: UuidSchema,
+    installationId: UuidSchema,
+    revision: z.number().int().positive(),
+    versionId: UuidSchema,
+    binding: PersonalSkillItemSchema.shape.bindings.element,
+  })
+  .strict();
+export const PersonalSkillRemoveResponseSchema = z
+  .object({ receipt: PersonalSkillRemoveReceiptSchema })
+  .strict();
+export type PersonalSkillRemoveRequest = z.infer<
+  typeof PersonalSkillRemoveRequestSchema
+>;
+export type PersonalSkillRemoveReceipt = z.infer<
+  typeof PersonalSkillRemoveReceiptSchema
+>;
+export type PersonalSkillRemoveResponse = z.infer<
+  typeof PersonalSkillRemoveResponseSchema
+>;

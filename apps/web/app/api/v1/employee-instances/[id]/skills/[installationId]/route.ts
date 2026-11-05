@@ -1,5 +1,8 @@
-import { z } from 'zod';
-import { UuidSchema } from '@allrice/contracts';
+import {
+  UuidSchema,
+  PersonalSkillRemoveRequestSchema,
+  PersonalSkillRemoveResponseSchema,
+} from '@allrice/contracts';
 import {
   DataAccessError,
   PersonalSkillError,
@@ -12,13 +15,6 @@ import { apiProblem } from '../../../../../../../lib/api-problem';
 
 export const runtime = 'nodejs';
 const headers = { 'Cache-Control': 'private, no-store' };
-const inputSchema = z
-  .object({
-    workspaceId: UuidSchema,
-    expectedRevision: z.number().int().positive(),
-    requestId: UuidSchema,
-  })
-  .strict();
 
 /** The employee's "uninstall" action disables precisely this binding. The
  * owner's library and every other employee retain their existing versions. */
@@ -31,7 +27,7 @@ export async function DELETE(
       throw new DataAccessError('authorization_denied');
     const context = await getRequestContext(request);
     if (!context) throw new DataAccessError('authentication_required');
-    const input = inputSchema.parse(await request.json());
+    const input = PersonalSkillRemoveRequestSchema.parse(await request.json());
     const target = await params;
     const instanceId = UuidSchema.parse(target.id);
     const installationId = UuidSchema.parse(target.installationId);
@@ -46,7 +42,7 @@ export async function DELETE(
     );
     if (!binding || binding.enabled) throw new PersonalSkillError('conflict');
     return Response.json(
-      {
+      PersonalSkillRemoveResponseSchema.parse({
         receipt: {
           operation: 'disable',
           scope: 'instance',
@@ -58,7 +54,7 @@ export async function DELETE(
           versionId: skill.versionId,
           binding,
         },
-      },
+      }),
       { headers },
     );
   } catch (error) {
