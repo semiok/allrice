@@ -27,7 +27,10 @@ export async function parsePersonalSkill(bytes: Uint8Array) {
 
 /** Shared public native parser; caller-specific ordinary/Workflow contracts
  * are applied after the same isolated, non-executing read. */
-export async function parseNativeSkill(bytes: Uint8Array) {
+export async function parseNativeSkill(bytes: Uint8Array): Promise<{
+  originalText: string;
+  skill: NonNullable<Awaited<ReturnType<FileSystemSkillProvider['get']>>>;
+}> {
   if (!bytes.byteLength || bytes.byteLength > personalSkillLimits.sourceBytes)
     throw new PersonalSkillError('source_invalid');
   let originalText: string;
