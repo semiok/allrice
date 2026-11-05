@@ -9,6 +9,7 @@ import {
   useNativeSubagents,
 } from './use-native-subagents';
 import { nativeSubagentControlRoot } from './native-subagent-controls';
+import { useNativeQueryStartup } from './use-native-query-startup';
 import { presentationPolicyFor } from './dsh-upstream/presentation/presentation-policy';
 import {
   UnifiedWorkbenchControls,
@@ -1328,6 +1329,13 @@ export function ChatFlowClient({
           message.runId &&
           message.status !== 'pending',
       ));
+  const pendingNativeSessions = useNativeQueryStartup(
+    workspace,
+    tenantHeaders,
+    activeId,
+    history,
+    nativeReadyKey,
+  );
   // The active header includes durable children; background rows stay live-only.
   const nativeObservation = useNativeSubagents(
     workspace?.workspaceId ?? '',
@@ -1809,6 +1817,7 @@ export function ChatFlowClient({
         />
       )}
       <ChatSidebar
+        pendingNativeSessions={pendingNativeSessions}
         nativeReads={activeNativeReads}
         nativeReadyKey={nativeReadyKey}
         scheduledSessions={scheduledSessions}

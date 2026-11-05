@@ -328,6 +328,7 @@ suite(
       });
       let nativeDenied = false;
       let nativeBindingPending = options.nativeStartup ?? false;
+      let rejectStartupEvents = false;
       const nativeSource = {
         summary: (id: string) => nativeSummary(id),
         status: 0,
@@ -718,6 +719,10 @@ suite(
           return;
         }
         if (path.endsWith('/events')) {
+          if (rejectStartupEvents) {
+            answer(response, { error: 'synthetic_disconnect' }, 503);
+            return;
+          }
           if (url.searchParams.get('format') === 'json') {
             answer(response, { events: [] });
             return;
@@ -903,6 +908,11 @@ suite(
               response.write(
                 `data: ${JSON.stringify({ ...event(), eventId: 'ready-2', sequence: 2, cursor: `${runId}:2`, sourceEvent: { id: 'ready', type: 'request/header', occurredAt: now, payload: {} } })}\n\n`,
               );
+          },
+          startupStreams: () => streams.size,
+          failStartupEvents() {
+            rejectStartupEvents = true;
+            for (const response of streams) response.destroy();
           },
           switchWorkspace() {
             nativeWorkspace.id = C;
@@ -1355,6 +1365,57 @@ suite(
         await f.close();
       }
     });
+
+    it.each(['ready', 'terminal', 'disconnect'] as const)(
+      'MET-214 first binding follows the background session until %s without polling',
+      async (outcome) => {
+        const f = await fixture({
+          nativeParents: 3,
+          running: true,
+          nativeStartup: true,
+          nativeClock: true,
+        });
+        try {
+          const reads = () =>
+            f.reads.filter((url) =>
+              url.startsWith(`/api/v1/sessions/${A}/subagents?`),
+            );
+          await f.page
+            .getByRole('button', { name: '停止生成', exact: true })
+            .waitFor();
+          await f.choose(B);
+          await expect.poll(f.native.startupStreams).toBe(1);
+          await f.page.clock.runFor(6_000);
+          expect(reads()).toEqual([]);
+          if (outcome === 'ready') f.native.allowReady();
+          else if (outcome === 'terminal') f.finish(A, 'canceled');
+          else {
+            f.native.failStartupEvents();
+            // Reuse the existing Run transport's bounded reconnect schedule.
+            for (let i = 0; i < 8; i++) {
+              await f.page.clock.runFor(3_100);
+              await f.page.waitForTimeout(25);
+            }
+          }
+          await expect.poll(() => reads().length).toBeGreaterThan(0);
+          await expect.poll(f.native.startupStreams).toBe(0);
+          expect(reads().every((url) => url.includes('liveOnly=true'))).toBe(
+            true,
+          );
+          const count = reads().length;
+          await f.page.clock.runFor(6_000);
+          expect(reads().length).toBe(count);
+          expect(new URL(f.page.url()).searchParams.get('session')).toBe(B);
+          expect(
+            await f.page.getByText('Existing A', { exact: true }).count(),
+          ).toBe(0);
+          expect(f.writes).toEqual([]);
+          expect(f.errors).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      },
+    );
 
     it('MET-214 keeps the subagent entry for new work before its first message', async () => {
       const f = await fixture();
