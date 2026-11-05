@@ -396,6 +396,12 @@ suite('authenticated browser Skill source preview without installation', () => {
   it('previews updates only for the current owned binding, same name and exact version', async () => {
     const s = await setup(),
       bytes = await zip();
+    // Bootstrap grants organization-wide membership. Scope this fixture to
+    // the first workspace so removing the second grant really revokes access.
+    const memberships =
+      await f.db`update allrice_memberships set workspace_id=${s.owner.workspaceId}
+      where organization_id=${s.owner.organizationId} and user_id=${s.owner.user.id} and workspace_id is null returning id`;
+    expect(memberships).toHaveLength(1);
     const { definition, originalText } = await parsePersonalSkill(
       Buffer.from(sourceText),
     );
@@ -504,6 +510,10 @@ suite('authenticated browser Skill source preview without installation', () => {
       preview.target.bindingsDigest,
     );
     await f.db`delete from allrice_memberships where organization_id=${s.owner.organizationId} and workspace_id=${otherWorkspace} and user_id=${s.owner.user.id}`;
+    const remainingAccess = await f.db`select id from allrice_memberships
+      where organization_id=${s.owner.organizationId} and user_id=${s.owner.user.id}
+      and (workspace_id is null or workspace_id=${otherWorkspace})`;
+    expect(remainingAccess).toHaveLength(0);
     const inaccessible = await request(bytes);
     expect(inaccessible.status).toBe(403);
     const denied = await inaccessible.json();
