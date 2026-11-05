@@ -1,3 +1,5 @@
+import { sceneSkillFixture } from './employee-scene-skills.fixture.ts';
+import type { RequestContext } from '@allrice/contracts';
 import { listPersonalSceneSkills } from './personal-scene-skills.ts';
 import { heartbeatJob } from '../execution/queue.ts';
 import { createReadPathProbe } from '../read-path-probe.fixture.ts';
@@ -185,7 +187,7 @@ import {
 } from './employeehub.ts';
 
 const e3HttpAuth = vi.hoisted(() => ({
-  context: null as import('@allrice/contracts').RequestContext | null,
+  context: null as RequestContext | null,
 }));
 vi.mock('../../../../apps/web/lib/identity/session', () => ({
   getRequestContext: async () => e3HttpAuth.context,
@@ -7649,6 +7651,56 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     expect(
       await fixture.db`select id from allrice_employee_content_sets where instance_id=${id}`,
     ).toHaveLength(0);
+  });
+
+  it('E3 rejects the personal package HTTP writer for Rice and accepts the same complete package on its owner custom', async () => {
+    const f = await setup(true, true),
+      custom = await f.custom('My workflow employee');
+    e3HttpAuth.context = f.a.context;
+    const routePath =
+      '../../../../apps/web/app/api/v1/employee-instances/[id]/scene-skills/route.ts';
+    const { POST } = await import(routePath);
+    const body = {
+      workspaceId: f.a.workspaceId,
+      requestId: randomUUID(),
+      expectedRevision: 0,
+      expectedContentRef: null,
+      scene: {
+        id: randomUUID(),
+        name: 'Synthetic workflow',
+        appliesWhen: 'Synthetic test only',
+      },
+      procedure: {
+        kind: 'procedure',
+        title: 'Synthetic procedure',
+        ...sceneSkillFixture(),
+      },
+      references: [],
+      changeSummary: 'Owner package',
+    };
+    const save = (id: string) =>
+      POST(
+        new Request(
+          `https://allrice.test/api/v1/employee-instances/${id}/scene-skills`,
+          {
+            method: 'POST',
+            headers: {
+              origin: 'https://allrice.test',
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify(body),
+          },
+        ),
+        { params: Promise.resolve({ id }) },
+      );
+    expect((await save(f.assignment.id)).status).toBe(404);
+    expect(
+      await fixture.db`select id from allrice_employee_content_sets where instance_id=${f.assignment.id}`,
+    ).toHaveLength(0);
+    expect((await save(custom.id)).status).toBe(200);
+    expect(await listPersonalSceneSkills(f.a.context, custom.id)).toHaveLength(
+      1,
+    );
   });
 
   it('upgrades Rice through its established tenant alias without allowing the alias to rename the platform identity', async () => {

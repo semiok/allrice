@@ -1,3 +1,4 @@
+import type { RequestContext } from '@allrice/contracts';
 import { createHash, randomUUID } from 'node:crypto';
 import { access, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -56,7 +57,7 @@ import { createFileArchive } from '../../../file-archives/src/index.ts';
 import { LocalStorageAdapter } from '../../../storage/src/index.ts';
 
 const e3SkillHttpAuth = vi.hoisted(() => ({
-  context: null as import('@allrice/contracts').RequestContext | null,
+  context: null as RequestContext | null,
 }));
 vi.mock('../../../../apps/web/lib/identity/session', () => ({
   getRequestContext: async () => e3SkillHttpAuth.context,
