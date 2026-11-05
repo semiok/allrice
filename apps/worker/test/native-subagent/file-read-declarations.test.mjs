@@ -65,34 +65,47 @@ it.each([false, true])(
 it.each(['success', 'denied'])(
   'a native file timeout remains terminal even when the Broker later returns %s',
   async (outcome) => {
-    const dispatched = gate(), release = gate(), aborted = gate();
+    const dispatched = gate(),
+      release = gate(),
+      aborted = gate();
     const h = await host({
       nativeTools: ['workspace.file.read'],
       model: async (_request, count) => {
         if (count !== 1) return text('must not continue after cancellation');
         h.ctx.tools.get('workspace_file_read', h.root).timeoutMs = 100;
-        return [{
-        type: 'tool-call', id: 'timed-read', name: 'workspace_file_read',
-        arguments: JSON.stringify({objectId: randomUUID()}),
-        }];
+        return [
+          {
+            type: 'tool-call',
+            id: 'timed-read',
+            name: 'workspace_file_read',
+            arguments: JSON.stringify({ objectId: randomUUID() }),
+          },
+        ];
       },
       bridge: async (method, params) => {
         expect(method).toBe('allrice/tool-call');
         dispatched.resolve();
         await release.promise;
         return outcome === 'success'
-          ? {modelContent: 'late contents', summary: 'late read'}
-          : {modelContent: '', summary: 'denied', fileReadDenied: {
-            callId: params.toolCallId, nativeSessionId: params.nativeSessionId,
-            code: 'TOOL_FILE_ACCESS_DENIED',
-          }};
+          ? { modelContent: 'late contents', summary: 'late read' }
+          : {
+              modelContent: '',
+              summary: 'denied',
+              fileReadDenied: {
+                callId: params.toolCallId,
+                nativeSessionId: params.nativeSessionId,
+                code: 'TOOL_FILE_ACCESS_DENIED',
+              },
+            };
       },
     });
     // Only scale the public declaration's budget; production execution and
     // DSH timeout policy remain unchanged, and the in-flight read is joined.
     h.ctx.on('tools/execute', (exec, next) => {
       if (exec.name === 'workspace_file_read')
-        exec.signal.addEventListener('abort', () => aborted.resolve(), {once: true});
+        exec.signal.addEventListener('abort', () => aborted.resolve(), {
+          once: true,
+        });
       return next();
     });
     try {
@@ -102,10 +115,16 @@ it.each(['success', 'denied'])(
       release.resolve();
       await h.wait();
       expect(h.calls).toHaveLength(1);
-      expect(h.root.session.snapshotEvents().findLast(e => e.type === 'turn/end').data.reason)
-        .toEqual({kind: 'aborted', reason: {kind: 'hook', reason: 'ALLRICE_FILE_READ_ABORTED'}});
+      expect(
+        h.root.session.snapshotEvents().findLast((e) => e.type === 'turn/end')
+          .data.reason,
+      ).toEqual({
+        kind: 'aborted',
+        reason: { kind: 'hook', reason: 'ALLRICE_FILE_READ_ABORTED' },
+      });
     } finally {
       release.resolve();
     }
-  }, 10000,
+  },
+  10000,
 );

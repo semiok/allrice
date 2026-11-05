@@ -1661,11 +1661,15 @@ export async function createAllRiceRuntime(
                 : undefined;
             tool.validateArguments?.(args);
             const fileRead = tool.canonicalName === 'workspace.file.read';
-            const abortFileRead = () => agent.cancel({
-              kind: 'hook', reason: 'ALLRICE_FILE_READ_ABORTED',
-            });
+            const abortFileRead = () =>
+              agent.cancel({
+                kind: 'hook',
+                reason: 'ALLRICE_FILE_READ_ABORTED',
+              });
             if (fileRead) {
-              exec.signal.addEventListener('abort', abortFileRead, { once: true });
+              exec.signal.addEventListener('abort', abortFileRead, {
+                once: true,
+              });
               if (exec.signal.aborted) abortFileRead();
             }
             let response;
@@ -1683,7 +1687,8 @@ export async function createAllRiceRuntime(
               );
               if (fileRead) exec.signal.throwIfAborted();
             } finally {
-              if (fileRead) exec.signal.removeEventListener('abort', abortFileRead);
+              if (fileRead)
+                exec.signal.removeEventListener('abort', abortFileRead);
             }
             if (
               tool.canonicalName === 'workspace.file.read' &&

@@ -2876,6 +2876,12 @@ describe('DshHarnessAdapter', () => {
     },
   );
 
+  it('keeps the native file cancellation terminal instead of accepting an idle turn', async () => {
+    await expect(createAdapter().execute(executionInput({
+      prompt: 'native-file-read-aborted',
+    }))).rejects.toMatchObject({ code: 'DSH_FILE_READ_ABORTED', retryable: false });
+  });
+
   it.each(['TOOL_CAPABILITY_DENIED', 'COMPANY_REFERENCE_UNAVAILABLE'])(
     'keeps %s fatal at the read admission boundary',
     async (code) => {
