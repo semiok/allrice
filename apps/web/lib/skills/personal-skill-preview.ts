@@ -8,7 +8,8 @@ import {
 import {
   DataAccessError,
   getEmployeeInstance,
-  listPersonalSkills,
+  previewPersonalSkillUpdateTarget,
+  PersonalSkillError,
   skillBytesChecksum,
 } from '@allrice/database';
 import { createFileArchive, readFileArchive } from '@allrice/file-archives';
@@ -72,23 +73,17 @@ export async function previewPersonalSkillSource(
   const authorize = async () => {
     await getEmployeeInstance(context, instanceId);
     if (target.operation === 'install') return null;
-    const current = (await listPersonalSkills(context)).find(
-      (item) => item.id === target.installationId,
-    );
-    if (
-      !current ||
-      current.state !== 'installed' ||
-      !current.bindings.some(
-        (binding) => binding.instanceId === instanceId && binding.enabled,
-      )
-    )
-      throw new DataAccessError('not_found');
-    if (
-      current.revision !== target.expectedRevision ||
-      current.versionId !== target.expectedVersionId
-    )
-      throw new SkillPreviewError('version_conflict');
-    return current;
+    try {
+      return await previewPersonalSkillUpdateTarget(
+        context,
+        instanceId,
+        target,
+      );
+    } catch (error) {
+      if (error instanceof PersonalSkillError && error.code === 'conflict')
+        throw new SkillPreviewError('version_conflict');
+      throw error;
+    }
   };
   await authorize();
   signal?.throwIfAborted();
@@ -148,6 +143,10 @@ export async function previewPersonalSkillSource(
         byteLength: bytes.byteLength,
       };
   const tokens = getSkillPreviewTokens();
+  const attestedTarget =
+    target.operation === 'update'
+      ? { ...target, bindingsDigest: current!.bindingsDigest }
+      : target;
   const previewId = tokens.issue(
     {
       schemaVersion: 1,
@@ -157,7 +156,7 @@ export async function previewPersonalSkillSource(
       instanceId,
       source,
       sourcePath: 'SKILL.md',
-      target,
+      target: attestedTarget,
       expiresAt,
       digest,
     },
@@ -169,7 +168,8 @@ export async function previewPersonalSkillSource(
     previewId,
     digest,
     expiresAt,
-    target,
+    target: attestedTarget,
+    ...(current ? { affectedBindings: current.bindings } : {}),
     item: {
       name: definition.name,
       description: definition.description,

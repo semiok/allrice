@@ -31,6 +31,30 @@ function fixture() {
 }
 
 describe('exact browser preview source attestation', () => {
+  it('binds an update to the complete impact digest without changing the source digest', () => {
+    const f = fixture();
+    const target = {
+      operation: 'update' as const,
+      installationId: randomUUID(),
+      expectedRevision: 1,
+      expectedVersionId: randomUUID(),
+      bindingsDigest: 'sha256:' + 'a'.repeat(64),
+    };
+    const token = tokens.issue({ ...f.preview, target }, f.bytes);
+    const verified = tokens.verify(token, f.scope);
+    expect(verified.preview.target).toEqual(target);
+    expect(verified.preview.digest).toBe(f.scope.digest);
+    const [, archive, signature] = token.split('.');
+    const changed = Buffer.from(
+      JSON.stringify({
+        ...f.preview,
+        target: { ...target, bindingsDigest: 'sha256:' + 'b'.repeat(64) },
+      }),
+    ).toString('base64url');
+    expect(() =>
+      tokens.verify(`${changed}.${archive}.${signature}`, f.scope),
+    ).toThrow('preview_invalid');
+  });
   it('recovers the exact bytes and structured target without fetching or storing', () => {
     const f = fixture();
     expect(tokens.verify(f.token, f.scope)).toEqual({
