@@ -781,7 +781,7 @@ C3 云执行并发锁序修复（2026-10-31 Dev 已复现）：共用事务准�
 
 ### `allrice-employee-documents-v1` (MET-246 M3)
 
-用户已批准 M3 及原生继承边界（2026-11-04）。复用 rc.2 公开 `systemPrompt.context(PromptContext)`，required、interpolate:false；只在已准入真人 root 的 `agent.ctx` 注册。公开 `PERSONA_PREFIX_SECTION` 同名遮蔽只移出 root 的 USER/个人 memory，保留部署给 child 的自身 persona。DSH 执行快照相等比较、更新、清空及恢复；不建 once 标记、历史重写器或 fork 过滤器。fork 按原生继承 root 已完成文档历史，此差异已获批准；child 自身 system/context、工具、审批/权限保持原合同。
+用户已批准 M3 及原生继承边界（2026-11-04）。复用 rc.2 公开 `systemPrompt.context(PromptContext)`，required、interpolate:false；只在已准入真人 root 的 `agent.ctx` 注册。公开 `PERSONA_PREFIX_SECTION` 同名遮蔽只移出 root 的 USER/个人 memory，保留部署给 child 的自身 persona。DSH 执行快照相等比较、更新、清空及恢复；不建 once 标记、历史重写器或 fork 过滤器。fork 按原生继承 root 已完成文档历史，此差异已获批准；child 自身 system/context、参数、原生审批及其他行为保持原合同。用户后续批准唯一工具语义例外：新版文档 Run 内，root/child/fork 共用的 workspace.memory.search 与 workspace.experience.read 采用本人确认资格、新返回合同和对应说明；旧非文档 Run、其他工具与定时实现不变。真实原生 child → Broker → DB 差分验证自动派生不可读、本人确认可读，并断言其余工具、persona、审批和 profile root-only 不变。
 
 AllRice 独有部分归门卫：组织/本人/实例/本人确认/有效资格及根身份。原 Run memory_context_state 继续记初始6000、单读8000、总24000字节/12次，来源定位符不授予新权限。USER/MEMORY是数据库的有界冻结投影，不写文件，不新增表。合法 experience 引用归同一确认来源；root 的旧共同/场景 memory 正文退出输入，企业 knowledge 保留。旧场景读取的暂存回执按原生 session 区分，防止 root 文档投影与 child 原渲染并发相互覆盖；未改子任务或定时实现。来源工具拒绝未确认自动采用 proof，现有采集/验证生产者退休留 M5。
 

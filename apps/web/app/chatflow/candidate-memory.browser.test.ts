@@ -31,6 +31,7 @@ import { GET as list, POST as create } from '../api/v1/memories/route';
 import { GET as instanceContent } from '../api/v1/employee-instances/[id]/content/route';
 import { ensureGeneralEmployeeInstance } from '../../../../packages/database/src/employees/employee-instances.ts';
 import { POST as promote } from '../api/v1/memories/[id]/promote/route';
+import { POST as pin } from '../api/v1/memories/[id]/pin/route';
 import {
   DELETE as discard,
   PATCH as correct,
@@ -268,7 +269,9 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
                     ? await discard(request, params)
                     : req.method === 'PATCH'
                       ? await correct(request, params)
-                      : await promote(request, params);
+                      : parts[5] === 'pin'
+                        ? await pin(request, params)
+                        : await promote(request, params);
             if (id === loseAckFor && parts[5] === 'promote' && response.ok) {
               loseAckFor = '';
               return Response.json({}, { status: 503 });
@@ -1247,7 +1250,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       ).toBe(2);
       await ui.page.locator('summary').filter({ hasText: '容量预览' }).click();
       await ui.page
-        .getByText('此预览不代表每次对话实际使用的记忆。', { exact: false })
+        .getByText('任务开始时会重新核对资格。', { exact: false })
         .waitFor();
       await capture(ui.page, 'm2-owner-management');
       await row.getByRole('button', { name: '撤回', exact: true }).click();
@@ -1263,6 +1266,71 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       await ui.close();
     }
   });
+
+  it('owner pin receipts and a real capacity rejection retain the edit and preview at desktop and narrow widths', async () => {
+    const saved: WorkspaceMemory[] = [];
+    const write = (body: unknown, method = 'POST') => ({
+      method,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const exact = (memory: WorkspaceMemory) => ({
+      instanceId: identity.assignment,
+      expectedRevision: memory.revision,
+      contentDigest: memory.contentDigest,
+      idempotencyKey: randomUUID(),
+    });
+    for (let i = 0; i < 8; i++) {
+      const created = await api('', write({
+        workspaceId: identity.workspace,
+        instanceId: identity.assignment,
+        content: `预算入口${i}`,
+        sourceType: 'user',
+        sourceLabel: '本人新增',
+        lifecycleState: 'durable',
+        memoryClass: 'user_preference',
+        idempotencyKey: randomUUID(),
+      }));
+      expect(created.status).toBe(201);
+      const memory = (await created.json()).memory;
+      const pinned = await api('/' + memory.id + '/pin', write({ ...exact(memory), pinned: true }));
+      expect(pinned.status).toBe(200);
+      saved.push((await pinned.json()).memory);
+    }
+    let blocked: WorkspaceMemory | undefined;
+    for (const memory of saved) {
+      const response = await api('/' + memory.id, write({
+        ...exact(memory), content: 'x'.repeat(1000), reason: '本人编辑',
+      }, 'PATCH'));
+      if (response.status === 422) { blocked = memory; break; }
+      expect(response.status).toBe(200);
+    }
+    expect(blocked).toBeDefined();
+    const ui = await open('management');
+    try {
+      const row = card(ui.page, blocked!.id);
+      await row.getByRole('button', { name: '取消置顶', exact: true }).click();
+      await ui.page.getByRole('status').filter({ hasText: '已取消置顶' }).waitFor();
+      await row.getByRole('button', { name: '置顶', exact: true }).click();
+      await ui.page.getByRole('status').filter({ hasText: '已置顶' }).waitFor();
+      const before = await f.db`select content,revision from allrice_memories where id=${blocked!.id}`;
+      await row.getByRole('button', { name: '编辑', exact: true }).click();
+      await ui.page.getByLabel('编辑记忆内容').fill('x'.repeat(1000));
+      const rejected = ui.page.waitForResponse((r) => r.request().method() === 'PATCH' && r.url().includes(blocked!.id));
+      await ui.page.getByRole('button', { name: '保存记忆', exact: true }).click();
+      expect((await rejected).status()).toBe(422);
+      await ui.page.getByRole('alert').filter({ hasText: '编辑内容已保留' }).waitFor();
+      expect(await ui.page.getByLabel('编辑记忆内容').inputValue()).toBe('x'.repeat(1000));
+      expect(await f.db`select content,revision from allrice_memories where id=${blocked!.id}`).toEqual(before);
+      await ui.page.locator('summary').filter({ hasText: '容量预览' }).click();
+      await ui.page.getByText('预留来源定位信息空间', { exact: false }).waitFor();
+      await noOverflow(ui.page);
+      await capture(ui.page, 'm3-pin-capacity-desktop');
+      await ui.page.setViewportSize({ width: 320, height: 900 });
+      await noOverflow(ui.page);
+      await capture(ui.page, 'm3-pin-capacity-narrow');
+    } finally { await ui.close(); }
+  }, 60000);
 
   it('administrator sees only the memory projection and a read audit; ordinary account is denied', async () => {
     const memory = await remember('管理员只读记忆 ' + randomUUID());
