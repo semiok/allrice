@@ -230,7 +230,8 @@ suite(
     it('owner pin order uses the same bounded selection, exact revision and idempotency without cross-instance writes', async () => {
       const f = await setup();
       const older = await f.create('较早的常用入口');
-      await f.create('新入口');
+      // Cross the byte limit, so omitting locator cost would select extra IDs.
+      for (let i = 0; i < 9; i++) await f.create(`新入口${i}${'x'.repeat(700)}`);
       const preference = { ...exact(older), pinned: true };
       const saved = await setPersonalEmployeeMemoryPin(
         f.context,
@@ -253,6 +254,7 @@ suite(
         true,
       );
       expect(projected.memories[0]!.id).toBe(older.id);
+      expect(projected.memories.length).toBeLessThan(projected.eligibleCount);
       const withoutSourceTool = await freezeEmployeeDocuments(
         fixture.db,
         { ...f.scope, instanceId: f.assignment },
