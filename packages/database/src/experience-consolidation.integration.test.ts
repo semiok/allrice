@@ -547,12 +547,14 @@ suite(
       vi.spyOn(globalThis, 'fetch').mockRejectedValue(
         Error('No provider/network in SQL-only B2a acceptance'),
       );
-      vi.stubEnv('ALLRICE_EXPERIENCE_REVIEW_ENABLED', '1');
-      vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '1');
-      vi.stubEnv('ALLRICE_NATIVE_CALENDAR_ENABLED', '1');
       await synchronizePlatformContent(await loadPlatformContentCatalog());
     }, 120000);
     beforeEach(async () => {
+      // The imported native Host fixture restores environment stubs after
+      // every test, including tests which did not open a Host.
+      vi.stubEnv('ALLRICE_EXPERIENCE_REVIEW_ENABLED', '1');
+      vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '1');
+      vi.stubEnv('ALLRICE_NATIVE_CALENDAR_ENABLED', '1');
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
       // Prior fixtures must not consume this case's production daily quota.
       // Only this suite's disposable schema is changed; limits stay unchanged.

@@ -1201,8 +1201,17 @@ suite(
         userMessageId: next.user_message_id,
         assistantMessageId: next.assistant_message_id,
       });
-      expect(kernel.authorizedMemoryContext).toContain(`revision 2`);
-      expect(kernel.authorizedMemoryContext).toContain(f.input.content);
+      expect(kernel.authorizedMemoryContext).toBe('');
+      expect(
+        JSON.parse(kernel.employeeDocuments!.memory.slice('# MEMORY.md\n'.length))
+          .items,
+      ).toEqual([
+        expect.objectContaining({
+          id: confirmed.id,
+          revision: 2,
+          content: f.input.content,
+        }),
+      ]);
       const [old] =
         await db`select prompt_snapshot from allrice_employee_runs where run_id=${rows[0]!.run_id}`;
       expect(old?.prompt_snapshot.memories).toEqual([]);
