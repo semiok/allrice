@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type {
   Browser,
+  Locator,
   Page,
 } from '../../../worker/node_modules/playwright-core/index.js';
 
@@ -111,6 +112,70 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
     ) as Array<{ action: string; instanceId: string; installationId?: string }>;
   }
 
+  async function waitForDetailPaint(detail: Locator) {
+    const sample = () =>
+      detail.evaluate((node) => {
+        const rect = node.getBoundingClientRect();
+        const style = getComputedStyle(node);
+        const ancestors = [];
+        for (
+          let element: Element | null = node;
+          element;
+          element = element.parentElement
+        ) {
+          const current = getComputedStyle(element);
+          ancestors.push({
+            opacity: current.opacity,
+            visibility: current.visibility,
+            display: current.display,
+          });
+        }
+        const root = node.parentElement;
+        const activeAnimations = (
+          root?.getAnimations({ subtree: true }) ?? []
+        ).filter(
+          (animation) => animation.playState === 'running' || animation.pending,
+        ).length;
+        const target = document.elementFromPoint(
+          rect.x + rect.width / 2,
+          rect.y + rect.height / 2,
+        );
+        return {
+          box: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+          background: style.backgroundColor,
+          text: style.color,
+          ancestors,
+          activeAnimations,
+          hitInside: target !== null && node.contains(target),
+        };
+      });
+    let previous = '',
+      stableSamples = 0;
+    await expect
+      .poll(
+        async () => {
+          const paint = await sample();
+          const geometry = JSON.stringify(paint.box);
+          stableSamples = geometry === previous ? stableSamples + 1 : 0;
+          previous = geometry;
+          return {
+            opaque: paint.ancestors.every(
+              (ancestor) =>
+                Number(ancestor.opacity) === 1 &&
+                ancestor.visibility === 'visible' &&
+                ancestor.display !== 'none',
+            ),
+            settled: paint.activeAnimations === 0,
+            stable: stableSamples >= 2,
+            hitInside: paint.hitInside,
+          };
+        },
+        { timeout: 5000, interval: 20 },
+      )
+      .toEqual({ opaque: true, settled: true, stable: true, hitInside: true });
+    return { ...(await sample()), stableSamples };
+  }
+
   for (const width of [1440, 390]) {
     for (const theme of ['light', 'dark'] as const) {
       it(`renders the two groups and read-only detail at ${width}px ${theme}`, async () => {
@@ -176,11 +241,18 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
               .getByRole('button', { name: '关闭', exact: true })
               .count(),
           ).toBe(0);
-          const box = await detail.boundingBox();
-          expect(box).not.toBeNull();
-          if (!box) throw Error('Missing visible Skill detail bounds');
+          const detailPaint = await waitForDetailPaint(detail);
+          expect(detailPaint.background).toBe(paint.background);
+          expect(detailPaint.text).toBe(paint.text);
+          const box = detailPaint.box;
           expect(box.x).toBeGreaterThanOrEqual(0);
           expect(box.x + box.width).toBeLessThanOrEqual(width);
+          if (width === 390) {
+            expect(box).toEqual({ x: 0, y: 0, width: 390, height: 844 });
+          } else {
+            expect(box.width).toBe(552);
+            expect(box.x).toBe((width - 552) / 2);
+          }
           await f.page.screenshot({
             path: resolve(evidence, `s1-base-detail-${width}-${theme}.png`),
             fullPage: true,
@@ -188,7 +260,7 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
           await writeFile(
             resolve(evidence, `s1-paint-${width}-${theme}.json`),
             JSON.stringify(
-              { width, theme, typography, paint, detail: box },
+              { width, theme, typography, paint, detail: detailPaint },
               null,
               2,
             ),
