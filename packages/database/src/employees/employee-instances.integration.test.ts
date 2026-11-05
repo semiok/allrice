@@ -7731,12 +7731,20 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       assistantMessageId: randomUUID(),
       resolved,
     });
-    expect(kernel.systemInstructions).toContain(
-      JSON.stringify(resolved.promptSnapshot.personalIdentity),
+    expect(resolved.promptSnapshot.employeeDocuments).toBeDefined();
+    expect(kernel.employeeDocuments).toEqual(
+      resolved.promptSnapshot.employeeDocuments,
     );
-    expect(kernel.systemInstructions).toContain(
-      'do not change platform safety',
-    );
+    for (const instructions of [
+      kernel.systemInstructions,
+      kernel.rootSystemInstructions,
+    ]) {
+      expect(instructions).toContain(
+        JSON.stringify(resolved.promptSnapshot.personalIdentity),
+      );
+      expect(instructions).toContain('do not change platform safety');
+      expect(instructions).toContain(profile.name);
+    }
     expect(next.frozen.capabilitySnapshot).toEqual(
       before.frozen.capabilitySnapshot,
     );
