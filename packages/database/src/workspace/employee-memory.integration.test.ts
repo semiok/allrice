@@ -253,6 +253,10 @@ suite(
         true,
       );
       expect(projected.memories[0]!.id).toBe(older.id);
+      const withoutSourceTool = await freezeEmployeeDocuments(fixture.db,
+        { ...f.scope, instanceId: f.assignment }, {}, false);
+      expect(withoutSourceTool.memories.map(m => m.id)).toEqual(projected.memories.map(m => m.id));
+      expect(withoutSourceTool.employeeDocuments.memory).not.toContain('sourceHandle');
       expect(saved.content).toBe(older.content);
       await expect(
         setPersonalEmployeeMemoryPin(f.context, f.workspace, older.id, {

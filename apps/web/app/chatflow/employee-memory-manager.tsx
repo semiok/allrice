@@ -373,7 +373,7 @@ function Manager(props: Props) {
             先按置顶先后，再按最近确认或修改排序，整条保留；最多 20 条、6000
             字节。当前 {page.budget.usedBytes} 字节，未纳入{' '}
             {page.budget.omittedCount}{' '}
-            条。预览包含来源读取定位符预算；实际按任务开始时的权限冻结。
+            条。预览与下次对话使用相同选择顺序，并预留来源定位信息空间；任务开始时会重新核对资格。
           </p>
         </details>
       )}

@@ -51,15 +51,21 @@ export async function freezeEmployeeDocuments(
     order by case when jsonb_typeof(m.metadata->'memoryPinOrder')='number'
       then (m.metadata->>'memoryPinOrder')::numeric end asc nulls last,
       m.updated_at desc,m.id`;
-  const memories = selectEmployeeDocumentMemories(
+  const selected = selectEmployeeDocumentMemories(
     rows.map((row) => ({
       id: row.id,
       revision: row.revision,
       content: row.content,
-      ...(sourceTool ? { sourceHandle: confirmedMemoryHandle(row) } : {}),
+      sourceHandle: confirmedMemoryHandle(row),
     })),
     rows.length,
   );
+  // Selection reserves locator bytes even without the tool, so the owner's
+  // default preview selects exactly the same IDs. Never advertise an unusable
+  // handle; the ledger charges the actual smaller document when stripped.
+  const memories = selected.map(item => sourceTool ? item : {
+    id: item.id, revision: item.revision, content: item.content,
+  });
   const user = selectEmployeeUserFacts(facts);
   return {
     eligibleCount: rows.length,

@@ -1,3 +1,7 @@
+// The native fixture installs cleanup hooks during module collection, not in a test.
+const nativeHostFixturePath = '../../../apps/worker/test/native-subagent/fixture.mjs';
+const nativeHostFixture = process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
+  ? await import(nativeHostFixturePath) : undefined;
 import { freezeEmployeeDocuments } from './employees/employee-documents.ts';
 import { createReadPathProbe } from './read-path-probe.fixture.ts';
 import type * as NativeBudget from './run-memory-context.ts';
@@ -1333,6 +1337,88 @@ suite(
         document,
       };
     }
+    it('changes only shared memory reads for a real child: derived denied, confirmed readable, other tools and approval frozen', async () => {
+      const f = await boundedFixture();
+      const oldScope = await experienceRun(f, '请核对名单的到场和未到人数，分项列出。');
+      const oldAuth = { scope: oldScope, worker: oldScope.worker };
+      const old = await prepareRunExperiences(oldScope, oldScope.worker);
+      expect(old.memories.map(m => m.id)).toContain(f.memory.id);
+      await db`update allrice_employee_runs set memory_context_state='{"schemaVersion":1,"pending":true}' where run_id=${oldScope.runId}`;
+      await prepareRunMemoryContext(oldAuth, old.memories);
+      const oldHandle = old.memories.find(m => m.id === f.memory.id)!.sourceHandle!;
+      const comparisons: { tools: unknown; system: string; approval: unknown }[] = [];
+      for (const modern of [false, true]) {
+        const auth = modern ? f.auth : oldAuth;
+        const context = { ...f.context, runId: auth.scope.runId, jobId: auth.worker.jobId };
+        const steps = new Map<string, number>();
+        const replies = new Map<string, string>();
+        const rejected: string[] = [];
+        let childAgent: { session: { snapshotEvents(): { type: string; data: { policy?: string } }[] } } | undefined;
+        const call = (id: string, name: string, args: object) => ({ type: 'tool-call', id, name, arguments: JSON.stringify(args) });
+        const h = await nativeHostFixture!.host({
+          runId: auth.scope.runId,
+          rootId: 'memory-test-root',
+          rootSystemInstructions: modern ? 'ROOT_DOCUMENT_PERSONA' : undefined,
+          employeeDocuments: modern ? f.document.employeeDocuments : undefined,
+          nativeTools: ['workspace.memory.search', 'workspace.experience.read', 'workspace.employee.profile.update'],
+          prepare: async () => vi.stubEnv('DSH_SYSTEM_PROMPT', 'UNCHANGED_CHILD_PERSONA'),
+          model: async (request: { sessionId: string }) => {
+            if (request.sessionId === 'memory-test-root') return nativeHostFixture!.text('根任务完成');
+            childAgent = h.ctx.agents.get(request.sessionId);
+            const step = (steps.get(request.sessionId) ?? 0) + 1;
+            steps.set(request.sessionId, step);
+            if (step === 1) return [call('legacy-source', 'workspace_experience_read', { handle: oldHandle })];
+            if (step === 2) return [call('confirmed-search', 'workspace_memory_search', { query: '到场', limit: 20 })];
+            if (step === 3) return [call('confirmed-source', 'workspace_experience_read', { handle: f.handle })];
+            if (step === 4) return [call('profile-still-root-only', 'workspace_employee_profile_update', { expectedRevision: 1, expressionStyle: 'concise' })];
+            return nativeHostFixture!.text('子任务核对完成');
+          },
+          bridge: async (method: string, params: { nativeSessionId: string; toolCallId: string; name: string; arguments: Record<string, unknown> }) => {
+            if (method === 'allrice/run-authorize') return { allowed: true };
+            if (method !== 'allrice/tool-call') throw Error(method);
+            expect(params.nativeSessionId).not.toBe('memory-test-root');
+            try {
+              const reply = await executeRiceTool({
+                call: { id: params.toolCallId, name: params.name, arguments: params.arguments, nativeSessionId: params.nativeSessionId },
+                context, capabilities: ['storage:read'], memoryReadAuthority: auth,
+                sessionId: auth.scope.sessionId, storageRoot: h.directory,
+              });
+              replies.set(params.toolCallId, reply.modelContent);
+              return reply;
+            } catch (error) { rejected.push(params.toolCallId); throw error; }
+          },
+        });
+        const child = await h.spawn();
+        await child.result;
+        await h.wait();
+        const calls = h.calls.filter((request: { sessionId: string }) => request.sessionId === child.childId);
+        expect(calls).toHaveLength(5);
+        const search = JSON.parse(replies.get('confirmed-search')!);
+        expect(search.items.map((m: { id: string }) => m.id)).toEqual([f.confirmed.id]);
+        expect(search.items.map((m: { id: string }) => m.id)).not.toContain(f.memory.id);
+        if (modern) {
+          expect(rejected).toContain('legacy-source');
+          expect(JSON.parse(replies.get('confirmed-source')!).items[0]).toMatchObject({ kind: 'confirmed_employee_memory', memory: { id: f.confirmed.id, content: f.confirmed.content } });
+          expect(JSON.stringify(calls[0].tools)).toContain('personally confirmed');
+        } else {
+          expect(JSON.parse(replies.get('legacy-source')!).items[0]).toHaveProperty('source.excerpt');
+          expect(rejected).toContain('confirmed-source');
+          expect(JSON.stringify(calls[0].tools)).toContain('exact original feedback');
+        }
+        expect(replies.has('profile-still-root-only')).toBe(false);
+        expect(JSON.stringify(calls.at(-1).messages)).toContain('EMPLOYEE_PROFILE_ROOT_REQUIRED');
+        comparisons.push({
+          tools: calls[0].tools.map((tool: { name: string; description?: string }) =>
+            ['workspace_memory_search', 'workspace_experience_read'].includes(tool.name)
+              ? { ...tool, description: 'APPROVED_MEMORY_DESCRIPTION_DELTA' } : tool),
+          system: JSON.stringify(calls[0].messages.filter((m: { role: string }) => m.role === 'system').at(-1)).split(h.directory).join('FIXTURE_DIRECTORY'),
+          approval: childAgent!.session.snapshotEvents().filter(e => e.type === 'approval/policy').map(e => e.data.policy),
+        });
+      }
+      expect(comparisons[1]).toEqual(comparisons[0]);
+      expect(comparisons[1]!.approval).toContain('never');
+    }, 30000);
+
     it('measures bounded memory with real captured feedback and supported history growth', async () => {
       const evidenceDirectory = process.env.ALLRICE_MEMORY_GROWTH_EVIDENCE_DIR;
       const previousDatabaseUrl = process.env.DATABASE_URL;
