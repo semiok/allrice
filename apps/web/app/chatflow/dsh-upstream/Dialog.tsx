@@ -2,6 +2,7 @@
 
 import { createPortal } from 'react-dom';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
+import { Button } from '@deepseek-ai/dsh-client-ui-primitives';
 
 import styles from './Dialog.module.css';
 
@@ -11,6 +12,9 @@ interface DshDialogProps {
   title: string;
   children: ReactNode;
   onClose: () => void;
+  onBack?: () => void;
+  backLabel?: string;
+  closeDisabled?: boolean;
   className?: string;
   bodyClassName?: string;
   initialFocusSelector?: string;
@@ -22,6 +26,9 @@ export function DshDialog({
   title,
   children,
   onClose,
+  onBack,
+  backLabel = '返回',
+  closeDisabled = false,
   className = '',
   bodyClassName = '',
   initialFocusSelector,
@@ -115,12 +122,47 @@ export function DshDialog({
         className={`${styles.dialog} ${className}`.trim()}
         role="dialog"
       >
-        <header className={styles.header}>
-          <div>
+        <header
+          className={
+            onBack ? `${styles.header} ${styles.headerWithBack}` : styles.header
+          }
+        >
+          {onBack ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className={styles.back}
+              aria-label={backLabel}
+              onClick={onBack}
+              disabled={closeDisabled}
+              icon={
+                <svg
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.75"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="m10 5-7 7 7 7M3 12h18" />
+                </svg>
+              }
+            />
+          ) : null}
+          <div className={onBack ? styles.headerTitle : undefined}>
             {eyebrow ? <p>{eyebrow}</p> : null}
             <h2>{title}</h2>
           </div>
-          <button aria-label="关闭" onClick={onClose} type="button">
+          <button
+            aria-label="关闭"
+            onClick={onClose}
+            type="button"
+            disabled={closeDisabled}
+          >
             ×
           </button>
         </header>

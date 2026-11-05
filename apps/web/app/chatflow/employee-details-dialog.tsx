@@ -328,7 +328,7 @@ function EmployeeDetailsReader(
     <DshDialog
       ariaLabel={
         editor
-          ? '编辑员工'
+          ? '编辑人设'
           : data
             ? `${data.profile.name}员工详情`
             : historicalCustom
@@ -342,7 +342,10 @@ function EmployeeDetailsReader(
           : `${css.dialog} ${!reference ? css.profileDialog : ''}`
       }
       onClose={editor ? cancelEdit : props.onClose}
-      title={editor ? '编辑员工' : 'AI 员工详情'}
+      onBack={editor ? cancelEdit : undefined}
+      backLabel="返回员工详情"
+      closeDisabled={!!editor && saving}
+      title={editor ? '编辑人设' : 'AI 员工详情'}
       initialFocusSelector={editor?.instance ? 'input' : undefined}
     >
       {editor ? (

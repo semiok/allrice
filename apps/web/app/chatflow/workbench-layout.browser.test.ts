@@ -6764,7 +6764,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByRole('button', { name: '编辑员工', exact: true })
           .click();
         const editor = f.page.getByRole('dialog', {
-          name: '编辑员工',
+          name: '编辑人设',
           exact: true,
         });
         const field = (name: string) =>
@@ -6916,7 +6916,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByRole('button', { name: '编辑员工', exact: true })
           .click();
         const editor = f.page.getByRole('dialog', {
-          name: '编辑员工',
+          name: '编辑人设',
           exact: true,
         });
         await editor.getByRole('alert').waitFor();
