@@ -18,6 +18,9 @@ describe('EmployeeProfileDetails', () => {
     for (const text of [
       'Rice',
       '帮助完成研究',
+      '使命',
+      '工作方式',
+      '表达偏好',
       '简洁，结论优先',
       '公司核对标准正文',
       '个人输出偏好正文',

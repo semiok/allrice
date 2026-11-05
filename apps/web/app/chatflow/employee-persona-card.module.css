@@ -1,0 +1,89 @@
+.card {
+  min-width: 0;
+  padding: var(--ar-space-4);
+  border: 1px solid var(--ar-border);
+  border-radius: var(--ar-radius-lg);
+  background: var(--ar-surface-raised);
+  color: var(--ar-text);
+  font: var(--ar-font-body);
+  overflow-wrap: anywhere;
+}
+
+.identity {
+  display: flex;
+  align-items: center;
+  gap: var(--ar-space-3);
+  min-width: 0;
+}
+
+.avatar {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--ar-radius-md);
+  background: var(--employee-start);
+  color: var(--employee-avatar-foreground);
+  font: var(--ar-font-heading);
+  font-size: 20px;
+}
+
+.card .name {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font: var(--ar-font-heading);
+}
+
+.edit.edit {
+  flex: none;
+}
+
+.persona {
+  display: grid;
+  gap: var(--ar-space-2);
+  margin: var(--ar-space-3) 0 0;
+  padding-top: var(--ar-space-3);
+  border-top: 1px solid var(--ar-border-subtle);
+}
+
+.field {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: var(--ar-space-3);
+  min-width: 0;
+}
+
+.field dt {
+  color: var(--ar-text-secondary);
+  font: var(--ar-font-caption);
+  line-height: 22px;
+}
+
+.field dd {
+  min-width: 0;
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 700px) {
+  .persona {
+    gap: var(--ar-space-3);
+  }
+
+  .field {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--ar-space-1);
+  }
+
+  .edit.edit {
+    min-height: 36px;
+  }
+}
+
+@media (pointer: coarse) {
+  .edit.edit {
+    min-height: 44px;
+  }
+}
