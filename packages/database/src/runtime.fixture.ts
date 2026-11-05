@@ -55,7 +55,8 @@ export async function createRuntimeFixtureDatabase(
       | '0210_current_employee_execution_binding.sql'
       | '0217_brand_content_feedback.sql'
       | '0223_agent_preferences.sql'
-      | '0228_repository_review_jobs.sql';
+      | '0228_repository_review_jobs.sql'
+      | '0232_employee_memory_operations.sql';
   } = {},
 ) {
   if (options.ownSchemaOnly !== undefined && options.ownSchemaOnly !== true)
@@ -71,6 +72,7 @@ export async function createRuntimeFixtureDatabase(
       '0217_brand_content_feedback.sql',
       '0223_agent_preferences.sql',
       '0228_repository_review_jobs.sql',
+      '0232_employee_memory_operations.sql',
     ].includes(options.throughMigration)
   )
     throw Error('Unsupported isolated migration checkpoint');
