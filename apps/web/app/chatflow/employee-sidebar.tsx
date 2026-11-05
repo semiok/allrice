@@ -43,6 +43,8 @@ export function EmployeeSidebar({
   onDetails,
   archive,
   scheduledSessions,
+  excludedEmployeeInstanceIds,
+  onlyEmployeeInstanceId,
 }: {
   archive?: ReturnType<typeof useSessionArchive>;
   scheduledSessions?: ReadonlySet<string>;
@@ -55,7 +57,9 @@ export function EmployeeSidebar({
   collapsed: boolean;
   onSelectSession: (id: string) => void;
   onPrepareSession: (id: string) => void;
-  onDetails: (assignmentId: string) => void;
+  onDetails?: (assignmentId: string) => void;
+  excludedEmployeeInstanceIds?: ReadonlySet<string>;
+  onlyEmployeeInstanceId?: string;
 }) {
   const key = employeePreferenceKey(workspace);
   const root = useRef<HTMLDivElement>(null);
@@ -117,9 +121,9 @@ export function EmployeeSidebar({
     ? sessionEmployeeKey(activeSession)
     : undefined;
   useEffect(() => {
-    if (activeGroup)
-      setExpansion((current) => ({ ...current, [activeGroup]: true }));
-  }, [activeId, activeGroup]);
+    const target = onlyEmployeeInstanceId ?? activeGroup;
+    if (target) setExpansion((current) => ({ ...current, [target]: true }));
+  }, [activeId, activeGroup, onlyEmployeeInstanceId]);
   useEffect(() => {
     if (!key) return;
     try {
@@ -138,6 +142,10 @@ export function EmployeeSidebar({
         archive?.filter,
         archive?.employeeGroups,
         reads,
+      ).filter(
+        (group) =>
+          !excludedEmployeeInstanceIds?.has(group.key) &&
+          (!onlyEmployeeInstanceId || group.key === onlyEmployeeInstanceId),
       ),
     [
       workspace,
@@ -147,6 +155,8 @@ export function EmployeeSidebar({
       archive?.filter,
       archive?.employeeGroups,
       reads,
+      excludedEmployeeInstanceIds,
+      onlyEmployeeInstanceId,
     ],
   );
   useEffect(() => {
@@ -275,7 +285,7 @@ export function EmployeeSidebar({
                       {session.title}
                     </button>
                   ))}
-                  {(profile || group.sessionCount > 0) && (
+                  {onDetails && (profile || group.sessionCount > 0) && (
                     <button type="button" onClick={() => onDetails(group.key)}>
                       查看员工详情
                     </button>
@@ -332,7 +342,7 @@ export function EmployeeSidebar({
                   }
                   t={employeeTranslate}
                 />
-                {(profile || group.sessionCount > 0) && (
+                {onDetails && (profile || group.sessionCount > 0) && (
                   <button
                     type="button"
                     className={css.info}

@@ -6,6 +6,7 @@ import {
   type TaskNextSteps,
   type WorkspaceReadiness,
   type NativeSubagentSummary,
+  EmployeeInstanceSchema,
 } from '@allrice/contracts';
 import { NativeSubagentFixtureFeed } from '../../test/native-subagent-fixture-feed';
 import type { Attachment, Session, WorkspaceFile } from './chatflow-types';
@@ -59,8 +60,8 @@ function session(id: string) {
   return {
     id,
     title: id === A ? 'Session A' : id === B ? 'Session B' : 'Created Session',
-    employeeAssignmentId: 'employee',
-    employeeVersionId: 'version',
+    employeeAssignmentId: nextAssignmentId,
+    employeeVersionId: nextVersionId,
     visibility: 'private',
     updatedAt: now,
     archivedAt: null,
@@ -428,6 +429,40 @@ suite(
       const server = createServer(async (request, response) => {
         const url = new URL(request.url!, 'http://localhost');
         const path = url.pathname;
+        if (
+          request.method === 'GET' &&
+          (path === '/api/v1/employee-instances' ||
+            path === `/api/v1/employee-instances/${nextAssignmentId}`)
+        ) {
+          const instance = EmployeeInstanceSchema.parse({
+            id: nextAssignmentId,
+            assignmentId: nextAssignmentId,
+            organizationId: A,
+            workspaceId: nativeWorkspace.id,
+            ownerId: C,
+            kind: 'general',
+            revision: 1,
+            profile: {},
+            creationSource: {
+              kind: 'tenant_version',
+              employeeVersionId: nextVersionId,
+            },
+            source: {
+              kind: 'tenant_version',
+              employeeVersionId: nextVersionId,
+            },
+            createdAt: now,
+            updatedAt: now,
+            archivedAt: null,
+          });
+          answer(
+            response,
+            path === '/api/v1/employee-instances'
+              ? { instances: [instance], nextBeforeId: null }
+              : { instance },
+          );
+          return;
+        }
         if (options.nativeParents) {
           nativeRequests.push({
             at: Date.now(),
@@ -536,11 +571,7 @@ suite(
             workspace: {
               organizationId: A,
               workspaceId: nativeWorkspace.id,
-              ...(options.readiness ||
-              options.nextSteps ||
-              options.nativeParents
-                ? { viewerId: C }
-                : {}),
+              viewerId: C,
               canAdminister: false,
               sessions: (options.nativeParents ? nativeIds : [A, B]).map(
                 fixtureSession,
@@ -555,16 +586,15 @@ suite(
               employeeProfiles: [],
               employees: [
                 {
-                  id: options.nextSteps ? nextAssignmentId : 'employee',
+                  id: nextAssignmentId,
                   employeeId: 'employee',
                   isDefault: true,
                   versions: [],
                   currentVersion: {
-                    id: options.nextSteps
-                      ? nextVersionId
-                      : options.readiness
+                    id:
+                      options.readiness && !options.nextSteps
                         ? C
-                        : 'version',
+                        : nextVersionId,
                     taskSuggestions: options.taskSuggestions ?? [],
                     manifest: {
                       name: 'Rice',

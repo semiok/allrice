@@ -82,6 +82,12 @@ async function selectSessionAction(page: Page, row: Locator, name: string) {
   await page.getByRole('menuitem', { name, exact: true }).click();
 }
 
+async function archiveConversations(page: Page) {
+  const dialog = page.getByRole('dialog', { name: '已归档', exact: true });
+  await dialog.getByRole('tab', { name: '对话', exact: true }).click();
+  return dialog;
+}
+
 const id = (n: number) =>
   `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const A = id(1),
@@ -1592,6 +1598,62 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           { error: { message: 'No access' } },
           state.employeeDetailStatus,
         );
+      if (
+        route.request().method() === 'GET' &&
+        (path === '/api/v1/employee-instances' ||
+          /^\/api\/v1\/employee-instances\/[a-f0-9-]{36}$/.test(path))
+      ) {
+        if (options.employeeDetails && state.employeeDetailStatus !== 200)
+          return answer(
+            { error: { message: 'No access' } },
+            state.employeeDetailStatus,
+          );
+        const instances = [7, 17, 99].map((n) =>
+          EmployeeInstanceSchema.parse({
+            id: id(n),
+            assignmentId: id(n),
+            organizationId: org,
+            workspaceId: state.workspace,
+            ownerId: state.viewer,
+            kind: 'general',
+            revision: 1,
+            profile: {},
+            creationSource: {
+              kind: 'tenant_version',
+              employeeVersionId: id(n + 1),
+            },
+            source: { kind: 'tenant_version', employeeVersionId: id(n + 1) },
+            createdAt: now,
+            updatedAt: now,
+            archivedAt: null,
+          }),
+        );
+        for (const created of state.createdEmployeeInstances) {
+          const index = instances.findIndex(
+            (instance) => instance.id === created.id,
+          );
+          if (index < 0) instances.push(created);
+          else instances[index] = created;
+        }
+        if (options.brandContent)
+          instances.push(
+            EmployeeInstanceSchema.parse({
+              ...instances[0]!,
+              id: id(8100),
+              assignmentId: id(7),
+              kind: 'custom',
+              profile: { name: '内容同事' },
+            }),
+          );
+        if (path === '/api/v1/employee-instances')
+          return answer({ instances, nextBeforeId: null });
+        const instance = instances.find(
+          (row) => row.id === path.split('/').at(-1),
+        );
+        return instance
+          ? answer({ instance })
+          : answer({ error: { message: 'synthetic instance missing' } }, 404);
+      }
       if (path === '/api/v1/experiences') {
         state.experienceReads++;
         const body = {
@@ -14036,13 +14098,20 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getAttribute('href'),
       ).toContain(artifact(10).object.id);
       await archiveEntry.click();
-      await row.waitFor();
+      const archives = await archiveConversations(f.page);
+      await archives.locator(`[data-row-key="session:${A}"]`).waitFor();
       expect(await archiveEntry.getAttribute('aria-pressed')).toBe('true');
-      await f.page.getByRole('button', { name: '返回当前工作' }).click();
+      await archives
+        .getByRole('button', { name: '关闭归档', exact: true })
+        .click();
       await row.waitFor({ state: 'detached' });
       expect(await archiveEntry.getAttribute('aria-pressed')).toBe('false');
       await archiveEntry.click();
-      await row.waitFor();
+      await archiveConversations(f.page);
+      await f.page
+        .getByRole('dialog', { name: '已归档', exact: true })
+        .locator(`[data-row-key="session:${A}"]`)
+        .waitFor();
       if (process.env.ALLRICE_ARCHIVE_SCREENSHOTS === '1')
         await f.page.screenshot({ path: '.local/archive-desktop.png' });
       await f.page.reload();
@@ -14195,14 +14264,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await sidebar
         .getByRole('button', { name: '查看归档', exact: true })
         .click();
+      const archives = await archiveConversations(f.page);
       await expect
-        .poll(() => sidebar.getByText('65 个工作', { exact: true }).count())
+        .poll(() => archives.getByText('65 个工作', { exact: true }).count())
         .toBe(0);
       release();
       f.state.sessionPageDelay = null;
       await f.page.waitForTimeout(100);
       expect(
-        await sidebar.getByRole('treeitem', { name: /研究任务 B/ }).count(),
+        await archives.getByRole('treeitem', { name: /研究任务 B/ }).count(),
       ).toBe(0);
       expect(f.errors).toEqual([]);
     } finally {
@@ -14362,14 +14432,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page
         .getByRole('button', { name: '查看归档', exact: true })
         .click();
-      const more = f.page.getByRole('button', {
+      const archives = await archiveConversations(f.page);
+      const more = archives.getByRole('button', {
         name: /展开其余.*个会话/,
       });
       // The archive request completes after the filter click; wait for its
       // pagination control instead of skipping expansion during loading.
       await more.first().waitFor();
       await more.first().click();
-      await f.page.getByText('归档工作 35', { exact: true }).waitFor();
+      await archives.getByText('归档工作 35', { exact: true }).waitFor();
       expect(f.errors).toEqual([]);
     } finally {
       await f.context.close();
@@ -14424,10 +14495,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page
         .getByRole('button', { name: '查看归档', exact: true })
         .click();
-      await row.waitFor();
+      const archives = await archiveConversations(f.page);
+      const archivedRow = archives.locator(`[data-row-key="session:${A}"]`);
+      await archivedRow.waitFor();
       if (process.env.ALLRICE_ARCHIVE_SCREENSHOTS === '1')
         await f.page.screenshot({ path: '.local/archive-mobile.png' });
-      await selectSessionAction(f.page, row, '取消归档');
+      await selectSessionAction(f.page, archivedRow, '取消归档');
       await expect.poll(() => f.state.archivedIds.has(A)).toBe(false);
       expect(f.errors).toEqual([]);
     } finally {
