@@ -151,7 +151,7 @@ suite(
           inputChecksum: runtimePolicyDigest(model),
           candidates: [],
           selectedKind: 'direct',
-          selectedCandidateId: null,
+          selectedCandidateId: 'synthetic-direct',
           harness: model.harness,
           provider: model.provider,
           model: model.model,
@@ -164,6 +164,9 @@ suite(
           createdAt: new Date().toISOString(),
         }),
       );
+      // The original claim binds the route before freezing its subscription.
+      if (model.occurrenceId !== f.row.id)
+        await host.db`update allrice_platform_employee_test_runs set experience_route_id=${decision.id} where id=${model.occurrenceId} and experience_run_id=${runId}`;
       const subscription = resolveSubscriptionSnapshot({
         occurrenceId: model.occurrenceId,
         modelSnapshot: model,
@@ -342,7 +345,7 @@ suite(
         await db`update allrice_runs set execution_spec=${db.json({ platformEmployeeTestRunId: test.testId })} where id=${test.validationRun}`;
         await db`insert into allrice_jobs(id,organization_id,workspace_id,owner_id,run_id,status,idempotency_key,timeout_at,payload,cancel_requested_at)
           values(${randomUUID()},${f.org},${f.workspace},${f.user},${test.validationRun},'running',${randomUUID()},clock_timestamp()+interval '5 minutes',
-            ${db.json({ schemaVersion: 1, type: 'allrice.platform_employee.test', input: { testRunId: test.testId } })},${status === 'canceled' ? new Date() : null})`;
+            ${db.json({ schemaVersion: 1, type: 'platform_employee_preview', input: { testRunId: test.testId } })},${status === 'canceled' ? new Date() : null})`;
         await completePlatformEmployeeTestRun(test.testId, {
           answer: JSON.stringify(attendanceAnswer),
           provider: test.binding.model.provider,
