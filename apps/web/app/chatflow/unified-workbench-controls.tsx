@@ -31,24 +31,19 @@ export function UnifiedWorkbenchControls(props: {
   const directory = useWorkbenchDirectory({
     enabled: true,
     workspaceId: props.workspaceId,
-    instanceId: props.instanceId,
     scope: props.scope,
     headers: props.headers,
     refreshKey: props.refreshKey,
   });
   const files = useWorkbenchUnread(props.scopeId + '/files', directory.fileIds);
-  const experience = useWorkbenchUnread(
-    props.scope + '/experience',
-    directory.experienceIds,
-  );
   const marks = useRef({
     files: files.markRead,
-    experience: experience.markRead,
+    experience: () => {},
     workflow: () => {},
   });
   marks.current = {
     files: files.markRead,
-    experience: experience.markRead,
+    experience: () => {},
     workflow: () => {},
   };
   useEffect(() => {
@@ -65,7 +60,7 @@ export function UnifiedWorkbenchControls(props: {
     <WorkbenchEntries
       counts={{
         files: files.count,
-        experience: experience.count,
+        experience: 0,
         workflow: 0,
       }}
       experience={!!props.instanceId}
