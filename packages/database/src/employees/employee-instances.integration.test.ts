@@ -7601,7 +7601,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         .map((s) => s.employeeName),
     ).toEqual(['小饭', '小饭']);
     expect(
-      listed.employeeGroups.find((g) => g.employeeInstanceId === id)
+      listed.employeeGroups!.find((g) => g.employeeInstanceId === id)
         ?.employeeName,
     ).toBe('小饭');
     const restored = await changeEmployeeInstanceLifecycle(f.a.context, id, {
