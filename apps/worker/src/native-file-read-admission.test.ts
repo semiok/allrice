@@ -1,7 +1,8 @@
 import { expect, it, vi } from 'vitest';
 const gate = vi.hoisted(() => vi.fn());
 vi.mock('@allrice/database', async (original) => ({
-  ...(await original<object>()), assertEmployeeChatHumanSource: gate,
+  ...(await original<object>()),
+  assertEmployeeChatHumanSource: gate,
 }));
 import { DataAccessError } from '@allrice/database';
 import { admitsRootNativeFileRead } from './native-file-read-admission.js';

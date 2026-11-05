@@ -176,9 +176,15 @@ export async function nativeBrokerRoundtrip(input: {
       );
   });
   const inbound = dshInboundToolHandler({
-    ...(input.fileReadRunId ? {
-      fileReadRoot: { nativeSessionId: session, runId: input.fileReadRunId, signal: new AbortController().signal },
-    } : {}),
+    ...(input.fileReadRunId
+      ? {
+          fileReadRoot: {
+            nativeSessionId: session,
+            runId: input.fileReadRunId,
+            signal: new AbortController().signal,
+          },
+        }
+      : {}),
     tools: [
       {
         name: input.canonicalName,
@@ -224,7 +230,10 @@ export async function nativeBrokerRoundtrip(input: {
       expect(received).toEqual([]);
       return;
     }
-    await client.prompt(session, input.prompt ?? 'Invoke the selected native tool.');
+    await client.prompt(
+      session,
+      input.prompt ?? 'Invoke the selected native tool.',
+    );
     if (input.expectedTerminalError) {
       await expect.poll(() => failures.length, { timeout: 15000 }).toBe(1);
       expect(failures[0]!.message).toBe(input.expectedTerminalError);
@@ -294,7 +303,9 @@ export async function nativeBrokerRoundtrip(input: {
       });
     } finally {
       server.closeAllConnections();
-      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+      await new Promise<void>((resolveClose) =>
+        server.close(() => resolveClose()),
+      );
       await rm(root, { recursive: true, force: true });
     }
   }

@@ -1627,87 +1627,92 @@ export async function createAllRiceRuntime(
       for (const tool of requestedBrokerTools) {
         this.nativeToolsRegistered.add(tool.canonicalName);
         const definition = defineTool({
-            name: tool.wireName,
-            description: tool.description,
-            parameters: tool.parameters,
-            output: {
-              schema: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  content: { type: 'string', required: true },
-                },
+          name: tool.wireName,
+          description: tool.description,
+          parameters: tool.parameters,
+          output: {
+            schema: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                content: { type: 'string', required: true },
               },
-              render: (_args, value) => [{ type: 'text', text: value.content }],
             },
-            // Tool declarations are the single source for DSH's native enforcer.
-            timeoutMs: tool.timeoutMs ?? 65_000,
-            isConcurrencySafe: () =>
-              tool.isConcurrencySafe ??
-              tool.canonicalName !== 'local.process.execute',
-            execute: async (args, exec) => {
-              const agent = this.ctx.agents.requireInitiator();
+            render: (_args, value) => [{ type: 'text', text: value.content }],
+          },
+          // Tool declarations are the single source for DSH's native enforcer.
+          timeoutMs: tool.timeoutMs ?? 65_000,
+          isConcurrencySafe: () =>
+            tool.isConcurrencySafe ??
+            tool.canonicalName !== 'local.process.execute',
+          execute: async (args, exec) => {
+            const agent = this.ctx.agents.requireInitiator();
+            if (
+              tool.canonicalName === 'workspace.employee.profile.update' &&
+              (this.runAdmission
+                ? this.runAdmission.rootFor(agent) !== agent
+                : !this.ctx.agents.roots().includes(agent))
+            )
+              throw Error('EMPLOYEE_PROFILE_ROOT_REQUIRED');
+            const preparation =
+              tool.canonicalName ===
+              'workspace.employee.method.prepare_activation'
+                ? this.preparedMethodQuestions.begin(agent)
+                : undefined;
+            tool.validateArguments?.(args);
+            const response = await this.toolBrokerRequest(
+              {
+                nativeSessionId: exec.agent.id,
+                toolCallId: exec.callId,
+                name: tool.canonicalName,
+                arguments: args,
+              },
+              exec.signal,
+            );
+            exec.signal.throwIfAborted();
+            if (
+              tool.canonicalName === 'workspace.file.read' &&
+              response?.fileReadDenied
+            ) {
               if (
-                tool.canonicalName === 'workspace.employee.profile.update' &&
-                (this.runAdmission
-                  ? this.runAdmission.rootFor(agent) !== agent
-                  : !this.ctx.agents.roots().includes(agent))
+                response.fileReadDenied.callId !== exec.callId ||
+                response.fileReadDenied.nativeSessionId !== exec.agent.id ||
+                response.fileReadDenied.code !== 'TOOL_FILE_ACCESS_DENIED'
               )
-                throw Error('EMPLOYEE_PROFILE_ROOT_REQUIRED');
-              const preparation =
-                tool.canonicalName ===
-                'workspace.employee.method.prepare_activation'
-                  ? this.preparedMethodQuestions.begin(agent)
-                  : undefined;
-              tool.validateArguments?.(args);
-              const response = await this.toolBrokerRequest(
-                {
-                  nativeSessionId: exec.agent.id,
-                  toolCallId: exec.callId,
-                  name: tool.canonicalName,
-                  arguments: args,
-                },
-                exec.signal,
+                throw Error('FILE_READ_FAILURE_RECEIPT_INVALID');
+              // Public DSH execution turns this confirmed, safe rejection
+              // into the native error result bound to the same tool call.
+              throw Error(
+                'TOOL_FILE_ACCESS_DENIED: 没有权限读取该文件；未读取内容。请如实说明权限限制。',
               );
-              exec.signal.throwIfAborted();
-              if (tool.canonicalName === 'workspace.file.read' && response?.fileReadDenied) {
-                if (response.fileReadDenied.callId !== exec.callId ||
-                    response.fileReadDenied.nativeSessionId !== exec.agent.id ||
-                    response.fileReadDenied.code !== 'TOOL_FILE_ACCESS_DENIED')
-                  throw Error('FILE_READ_FAILURE_RECEIPT_INVALID');
-                // Public DSH execution turns this confirmed, safe rejection
-                // into the native error result bound to the same tool call.
-                throw Error('TOOL_FILE_ACCESS_DENIED: 没有权限读取该文件；未读取内容。请如实说明权限限制。');
-              }
-              if (
-                !response ||
-                typeof response !== 'object' ||
-                typeof response.modelContent !== 'string'
-              ) {
-                throw new Error(
-                  'AllRice Tool Broker returned an invalid result',
-                );
-              }
-              return this.waitForApplicationConnection(
-                tool.canonicalName,
-                response,
-                agent,
-                exec.signal,
-                preparation,
-              );
-            },
-            presentCall: (args) => ({
-              card: 'generic',
-              title:
-                typeof args.query === 'string'
-                  ? args.query
-                  : typeof args.url === 'string'
-                    ? args.url
-                    : tool.canonicalName,
-              kind: tool.presentation ?? 'tool',
-              rawInput: JSON.stringify(args),
-            }),
-          });
+            }
+            if (
+              !response ||
+              typeof response !== 'object' ||
+              typeof response.modelContent !== 'string'
+            ) {
+              throw new Error('AllRice Tool Broker returned an invalid result');
+            }
+            return this.waitForApplicationConnection(
+              tool.canonicalName,
+              response,
+              agent,
+              exec.signal,
+              preparation,
+            );
+          },
+          presentCall: (args) => ({
+            card: 'generic',
+            title:
+              typeof args.query === 'string'
+                ? args.query
+                : typeof args.url === 'string'
+                  ? args.url
+                  : tool.canonicalName,
+            kind: tool.presentation ?? 'tool',
+            rawInput: JSON.stringify(args),
+          }),
+        });
         if (tool.canonicalName === 'workspace.file.read') {
           // Only the Worker-admitted ordinary root requests this capability.
           // Agent-local registration never enlarges child/fork tool scopes;
@@ -1717,7 +1722,9 @@ export async function createAllRiceRuntime(
               agent.ctx.tools.register(definition);
           };
           for (const agent of this.ctx.agents.roots()) register(agent);
-          this.ownDisposers.push(this.ctx.on('agent/created', ({ agent }) => register(agent)));
+          this.ownDisposers.push(
+            this.ctx.on('agent/created', ({ agent }) => register(agent)),
+          );
         } else {
           this.ctx.tools.register(definition);
         }

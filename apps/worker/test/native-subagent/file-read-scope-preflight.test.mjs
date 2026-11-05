@@ -17,10 +17,16 @@ const definition = defineTool({
     limit: { type: 'integer' },
   },
   output: {
-    schema: { type: 'object', properties: { content: { type: 'string', required: true } }, additionalProperties: false },
+    schema: {
+      type: 'object',
+      properties: { content: { type: 'string', required: true } },
+      additionalProperties: false,
+    },
     render: (_args, value) => text(value.content),
   },
-  execute: () => { throw Error('PREFLIGHT_MUST_NOT_EXECUTE_FILES'); },
+  execute: () => {
+    throw Error('PREFLIGHT_MUST_NOT_EXECUTE_FILES');
+  },
 });
 const names = (r) => r.tools.map((t) => t.name).sort();
 
@@ -60,9 +66,14 @@ it.each(['baseline', 'global', 'root-local'])(
     await h.wait();
     const childRequest = h.calls.find((r) => r.sessionId === child.childId);
     const forkRequest = h.calls.find((r) => r.sessionId === fork.childId);
-    const approval = (id) => agents.get(id).session.snapshotEvents()
-      .filter((e) => e.type === 'approval/policy').map((e) => e.data.policy);
-    const priorHistory = h.root.session.snapshotEvents()
+    const approval = (id) =>
+      agents
+        .get(id)
+        .session.snapshotEvents()
+        .filter((e) => e.type === 'approval/policy')
+        .map((e) => e.data.policy);
+    const priorHistory = h.root.session
+      .snapshotEvents()
       .filter((e) => e.type === 'user/message');
     await h.server.handleRequest('run/end', { runId });
     await h.server.closeRoot(h.root.id);
@@ -83,8 +94,9 @@ it.each(['baseline', 'global', 'root-local'])(
       resume: names(resumed),
       childApproval: approval(child.childId),
       forkApproval: approval(fork.childId),
-      forkInheritedRootPrompt: JSON.stringify(forkRequest.messages)
-        .includes('完成根任务并保留公开历史'),
+      forkInheritedRootPrompt: JSON.stringify(forkRequest.messages).includes(
+        '完成根任务并保留公开历史',
+      ),
     };
     console.log('FILE_READ_SCOPE_PREFLIGHT', JSON.stringify(observed));
     expect(names(root).includes(wire)).toBe(mode !== 'baseline');

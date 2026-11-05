@@ -321,8 +321,16 @@ export class DshHarnessAdapter implements HarnessAdapter {
     const runId = input.executionEnvironment.ALLRICE_RUN_ID;
     const ordinaryHandler = dshInboundToolHandler({
       ...input,
-      ...(input.nativeFileRead && runtime.nativeTools.includes('workspace.file.read') && runId
-        ? { fileReadRoot: { nativeSessionId: threadId, runId, signal: input.signal } }
+      ...(input.nativeFileRead &&
+      runtime.nativeTools.includes('workspace.file.read') &&
+      runId
+        ? {
+            fileReadRoot: {
+              nativeSessionId: threadId,
+              runId,
+              signal: input.signal,
+            },
+          }
         : {}),
     });
     // Project only the successful server-authored profile receipt onto its
@@ -1271,8 +1279,15 @@ export class DshHarnessAdapter implements HarnessAdapter {
           });
           break;
         }
-        if (toolCall.name === 'workspace.file.read' && runtime.nativeTools.includes(toolCall.name))
-          throw new HandlerError('DSH_TOOL_ENVELOPE_INVALID', 'File reads must use the supplied native tool.', false);
+        if (
+          toolCall.name === 'workspace.file.read' &&
+          runtime.nativeTools.includes(toolCall.name)
+        )
+          throw new HandlerError(
+            'DSH_TOOL_ENVELOPE_INVALID',
+            'File reads must use the supplied native tool.',
+            false,
+          );
         if (!input.tools.some((tool) => tool.name === toolCall.name)) {
           throw new HandlerError(
             'TOOL_NOT_ALLOWED',

@@ -1,4 +1,7 @@
-import { assertEmployeeChatHumanSource, DataAccessError } from '@allrice/database';
+import {
+  assertEmployeeChatHumanSource,
+  DataAccessError,
+} from '@allrice/database';
 
 /** Select a transport for an already-authorized ordinary root, never a file
  * grant. Internal/scheduled and unidentified producers retain their transport. */
@@ -9,7 +12,10 @@ export async function admitsRootNativeFileRead(
     await assertEmployeeChatHumanSource(input);
     return true;
   } catch (error) {
-    if (error instanceof DataAccessError && error.code === 'authorization_denied')
+    if (
+      error instanceof DataAccessError &&
+      error.code === 'authorization_denied'
+    )
       return false;
     throw error;
   }

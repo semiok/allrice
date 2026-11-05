@@ -1483,8 +1483,12 @@ export async function executeEmployeeRun({
         humanText,
       };
     }
-    const nativeFileRead = tools.some((tool) => tool.name === 'workspace.file.read') &&
-      await admitsRootNativeFileRead({ context: execution.context, userMessageId });
+    const nativeFileRead =
+      tools.some((tool) => tool.name === 'workspace.file.read') &&
+      (await admitsRootNativeFileRead({
+        context: execution.context,
+        userMessageId,
+      }));
     const result: HarnessExecutionResult = await adapter
       .execute({
         nativeFileRead,

@@ -876,7 +876,11 @@ export class DshRuntimePool {
     const nativeTools = await selectDshNativeTools(
       input.input.tools
         .map((tool) => tool.name)
-        .filter((name) => name !== 'workspace.file.read' || input.input.nativeFileRead === true),
+        .filter(
+          (name) =>
+            name !== 'workspace.file.read' ||
+            input.input.nativeFileRead === true,
+        ),
       nativeIdentity?.args[0],
     );
     const deferredMcpSchemas =

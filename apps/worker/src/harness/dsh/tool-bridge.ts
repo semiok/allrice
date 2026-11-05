@@ -164,7 +164,11 @@ export function parseDshToolCall(text: string): HarnessToolCall | null {
 
 export function dshInboundToolHandler(
   input: Pick<HarnessExecutionInput, 'tools' | 'onToolCall'> & {
-    fileReadRoot?: { nativeSessionId: string; runId: string; signal: AbortSignal };
+    fileReadRoot?: {
+      nativeSessionId: string;
+      runId: string;
+      signal: AbortSignal;
+    };
   },
 ) {
   return async (method: string, params: Record<string, unknown>) => {
@@ -206,27 +210,51 @@ export function dshInboundToolHandler(
         false,
       );
     }
-    if (name === 'workspace.file.read' &&
-        (!input.fileReadRoot || params.nativeSessionId !== input.fileReadRoot.nativeSessionId))
-      throw new HandlerError('TOOL_NOT_ALLOWED', 'Native file reads require the admitted root.', false);
-    const result = await input.onToolCall({
-      id,
-      name,
-      arguments: args,
-      ...(typeof params.nativeSessionId === 'string'
-        ? { nativeSessionId: params.nativeSessionId }
-        : {}),
-    }).catch((error: unknown) => {
-      if (name !== 'workspace.file.read' || !input.fileReadRoot) throw error;
-      input.fileReadRoot.signal.throwIfAborted();
-      if (!(error instanceof HandlerError) || error.code !== 'TOOL_FILE_ACCESS_DENIED' ||
-          !isConfirmedToolFailure(error, { runId: input.fileReadRoot.runId, callId: id, toolName: name }))
-        throw error;
-      return { modelContent: '', summary: '没有权限读取该文件；未读取内容。', itemCount: 0, fileReadDenied: {
-        callId: id, nativeSessionId: input.fileReadRoot.nativeSessionId, code: 'TOOL_FILE_ACCESS_DENIED',
-      } };
-    });
-    if (name === 'workspace.file.read') input.fileReadRoot!.signal.throwIfAborted();
+    if (
+      name === 'workspace.file.read' &&
+      (!input.fileReadRoot ||
+        params.nativeSessionId !== input.fileReadRoot.nativeSessionId)
+    )
+      throw new HandlerError(
+        'TOOL_NOT_ALLOWED',
+        'Native file reads require the admitted root.',
+        false,
+      );
+    const result = await input
+      .onToolCall({
+        id,
+        name,
+        arguments: args,
+        ...(typeof params.nativeSessionId === 'string'
+          ? { nativeSessionId: params.nativeSessionId }
+          : {}),
+      })
+      .catch((error: unknown) => {
+        if (name !== 'workspace.file.read' || !input.fileReadRoot) throw error;
+        input.fileReadRoot.signal.throwIfAborted();
+        if (
+          !(error instanceof HandlerError) ||
+          error.code !== 'TOOL_FILE_ACCESS_DENIED' ||
+          !isConfirmedToolFailure(error, {
+            runId: input.fileReadRoot.runId,
+            callId: id,
+            toolName: name,
+          })
+        )
+          throw error;
+        return {
+          modelContent: '',
+          summary: '没有权限读取该文件；未读取内容。',
+          itemCount: 0,
+          fileReadDenied: {
+            callId: id,
+            nativeSessionId: input.fileReadRoot.nativeSessionId,
+            code: 'TOOL_FILE_ACCESS_DENIED',
+          },
+        };
+      });
+    if (name === 'workspace.file.read')
+      input.fileReadRoot!.signal.throwIfAborted();
     if ('fileReadDenied' in result) return result;
     return {
       modelContent: result.modelContent,
