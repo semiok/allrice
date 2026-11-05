@@ -1,3 +1,4 @@
+import { skillSourceErrorHeader } from '@allrice/contracts';
 import { savePersonalSceneSkill } from './personal-scene-skills.ts';
 import { sceneSkillFixture } from './employee-scene-skills.fixture.ts';
 import { skillBytesChecksum, skillBundleChecksum } from '../skill-bundles.ts';
@@ -1254,14 +1255,22 @@ suite('browser Skill source preview and confirmation', () => {
   it('rejects missing root SKILL.md and invalid archives without writes', async () => {
     const s = await setup(),
       before = await counts();
-    for (const bytes of [
-      await zip('nested/SKILL.md'),
-      Buffer.from('not a zip'),
-    ])
-      expect(
-        (await send(s.owner.context, s.assigned.id, s.owner.workspaceId, bytes))
-          .status,
-      ).toBe(422);
+    for (const [bytes, reason] of [
+      [await zip('nested/SKILL.md'), 'skill_missing'],
+      [Buffer.from('not a zip'), 'package_invalid'],
+    ] as const) {
+      const rejected = await send(
+        s.owner.context,
+        s.assigned.id,
+        s.owner.workspaceId,
+        bytes,
+      );
+      expect(rejected.status).toBe(422);
+      expect(rejected.headers.get(skillSourceErrorHeader)).toBe(reason);
+      expect(await rejected.json()).toMatchObject({
+        error: { code: 'VALIDATION_FAILED', retryable: false },
+      });
+    }
     expect(await counts()).toEqual(before);
   });
   it('returns non-retryable validation errors for malformed multipart and UTF-8 bodies', async () => {
@@ -1604,6 +1613,7 @@ suite('browser Skill source preview and confirmation', () => {
     expect(remainingAccess).toHaveLength(0);
     const inaccessible = await request(bytes);
     expect(inaccessible.status).toBe(403);
+    expect(inaccessible.headers.has(skillSourceErrorHeader)).toBe(false);
     const denied = await inaccessible.json();
     expect(denied).toMatchObject({
       error: { code: 'AUTHORIZATION_DENIED', retryable: false },
@@ -1632,7 +1642,18 @@ suite('browser Skill source preview and confirmation', () => {
         ),
       },
     ]);
-    expect((await request(different)).status).toBe(409);
+    const nameMismatch = await request(different);
+    expect(nameMismatch.status).toBe(409);
+    expect(nameMismatch.headers.get(skillSourceErrorHeader)).toBe(
+      'name_mismatch',
+    );
+    expect(await nameMismatch.json()).toMatchObject({
+      error: {
+        code: 'VALIDATION_FAILED',
+        message: '新包的 name 与当前技能不同，不能用于更新。',
+        retryable: false,
+      },
+    });
     await f.db`update allrice_personal_skill_bindings set enabled=false where installation_id=${id}`;
     expect((await request(bytes)).status).toBe(404);
     expect(await counts()).toEqual(before);

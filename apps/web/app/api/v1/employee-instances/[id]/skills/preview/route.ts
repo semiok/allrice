@@ -1,3 +1,4 @@
+import { addSkillSourceErrorReason } from '../../../../../../../lib/skills/source-error-reason';
 import { DataAccessError, PersonalSkillError } from '@allrice/database';
 import { FileArchiveError } from '@allrice/file-archives';
 import {
@@ -87,6 +88,6 @@ export async function POST(
     Object.entries(headers).forEach(([key, value]) =>
       response.headers.set(key, value),
     );
-    return response;
+    return addSkillSourceErrorReason(response, error, 'preview');
   }
 }

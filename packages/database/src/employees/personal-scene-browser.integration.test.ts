@@ -1,3 +1,4 @@
+import { skillSourceErrorHeader } from '@allrice/contracts';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   beforeAll,
@@ -924,6 +925,9 @@ suite('browser exact Workflow source confirmation', () => {
       bytes,
     );
     expect(response.status).toBe(422);
+    expect(response.headers.get(skillSourceErrorHeader)).toBe(
+      'workflow_invalid',
+    );
     expect(await response.json()).toMatchObject({
       error: {
         code: 'VALIDATION_FAILED',
