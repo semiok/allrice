@@ -511,16 +511,16 @@ suite('browser exact Workflow source confirmation', () => {
         )
       ).status,
     ).toBe(403);
-    expect(
-      (
-        await confirm(
-          s.owner.context,
-          other.instance.id,
-          other.owner.workspaceId,
-          p,
-        )
-      ).status,
-    ).toBe(404);
+    const foreign = await confirm(
+      s.owner.context,
+      other.instance.id,
+      other.owner.workspaceId,
+      p,
+    );
+    expect(foreign.status).toBe(403);
+    expect(await foreign.json()).toMatchObject({
+      error: { code: 'AUTHORIZATION_DENIED' },
+    });
     expect(
       (
         await confirm(s.owner.context, s.instance.id, s.owner.workspaceId, {

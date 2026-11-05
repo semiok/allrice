@@ -46,6 +46,12 @@ describe('native Workflow package framework', () => {
     );
   });
   it.each([
+    raw().replace(
+      'whenToUse:',
+      'allowed-tools: [workspace.command]\nwhenToUse:',
+    ),
+    raw().replace('whenToUse:', 'unknown: value\nwhenToUse:'),
+    raw().replace('whenToUse:', 'name: duplicate\nwhenToUse:'),
     raw().replace('whenToUse: Weekly review\n', ''),
     raw().replace('version: release-A', 'other: release-A'),
     raw(body.replace('## 工作步骤', '## Something else')),

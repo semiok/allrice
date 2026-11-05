@@ -11,12 +11,18 @@ import {
   skillBundleChecksum,
 } from '@allrice/database';
 import { parseNativeSkill } from './personal-skill-import.ts';
+import { assertWorkflowSkillFrontmatter } from './workflow-skill-frontmatter.ts';
 import {
   inspectSkillPackage,
   type PersonalSkillPackageFile,
 } from './personal-skill-package.ts';
 
 async function parseWorkflowSkill(bytes: Uint8Array) {
+  try {
+    assertWorkflowSkillFrontmatter(bytes);
+  } catch {
+    throw new EmployeeContentError('workflow_invalid');
+  }
   const { originalText, skill } = await parseNativeSkill(bytes);
   const frontmatter = WorkflowSkillFrontmatterSchema.parse({
     name: skill.name,
