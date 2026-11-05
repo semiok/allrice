@@ -71,6 +71,8 @@ export interface FinalDeliveryReplyOrigin {
 
 /** Private Worker control plane; never an input adoption acknowledgement. */
 export interface HarnessExecutionInput {
+  /** Worker-checked ordinary human root only. Selects transport, not file ACL. */
+  nativeFileRead?: boolean;
   /** Captured Worker accounting only; never a model/browser authority. */
   nativeAccounting?: {
     bind(rootSessionId: string): {

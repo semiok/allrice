@@ -477,6 +477,17 @@ lines.on('line', (line) => {
     notify('session.status', { sessionId, status: 'idle' });
     return;
   }
+  if (prompt.includes('native-file-read-aborted')) {
+    event(sessionId, 'turn/end', {
+      turn,
+      reason: {
+        kind: 'aborted',
+        reason: { kind: 'hook', reason: 'ALLRICE_FILE_READ_ABORTED' },
+      },
+    });
+    notify('session.status', { sessionId, status: 'idle' });
+    return;
+  }
   if (prompt.includes('terminal-model-error:')) {
     const code = prompt.match(/terminal-model-error:([A-Z_]+)/)[1];
     event(sessionId, 'tool/call', {

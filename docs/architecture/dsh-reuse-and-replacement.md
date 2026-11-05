@@ -383,6 +383,23 @@ Allrice 的公开事件不含原生推理正文，因此不伪造 ReasoningRow �
 
 ### allrice-jsonrpc-lifecycle-v1
 
+MET-246 F2 uses public `defineTool` and Agent-local `tools.register` for
+`workspace.file.read` only on an ordinary human root admitted by the existing
+database source gate. Internal/scheduled callers and older pinned artifacts
+retain their prior transport. Public `agent/created` restores the root-local
+declaration after cold recovery; child/fork current tool scopes and approvals
+are unchanged. Fork history is inherited natively, never filtered or rewritten.
+The Broker keeps the same file parameters, tenant ACL and audit. Only an actual
+file ACL rejection can produce an in-process failure receipt bound to the exact
+Run/call/tool; the Worker checks the root identity before handing a fixed safe
+failure to DSH's native tool-result path. All other thrown file-read failures,
+including cancellation and unknown outcomes, use the existing terminal protocol
+failure path. This does not convert other tools or deduplicate XML envelopes;
+multiple legacy envelopes remain fail-closed. There is no new DSH plugin, private
+interface, physical patch, table or child/schedule controller. Coverage lives in
+`dsh-file-read-native.test.ts`, `native-file-read.integration.test.ts`, and the
+native `file-read-declarations.test.mjs` scope differential.
+
 MET-222（用户 2026-10-30；root 核定单向运维账本）复用 `dsh-user-questions@0.2.1-rc.2` 公开 `user-questions/request` 的现有 provider：成功发布后只在原 pending 项冻结 Run/root/native/question 身份；原答案、超时、abort、clearRoot 删除即当前事实，不再新增 opened/ended 持久事件或专用写异常。只读 `session/projection` 用 roots.get 返回版本 1 的实际采样时间、完整性和必要 ID；无 root、归属缺失、未成功发布或旧 Host 是 unknown，完整空才代表采样时 0。无 ensure/resume/touch/park/续租，无题答正文，不改等待或用户 Run 结果。
 
 既有每 30 秒 WorkerOperations 经独立 diagnostics DB 写 runtime_metadata JSON；当前执行附 runtime/Worker boot/Job/attempt/generation，采样失效不借 Worker 心跳刷新。scope 明确为 default_harness_router；未采到的活跃 Job（包括独立 technical/experience adapters）必须逐 Run unknown，消费者核真实租约/绑定和关闭事实。没有新 PG 状态、全局注册器或恢复机制。守护为 `question-observation.integration.test.mjs`、`question-observation.test.mjs`；升级核 provider map 发布与清理语义，回退缺覆盖不可当健康 0。MET-225 关联 L14/L07/E08/L19 在线等答只读快照行。

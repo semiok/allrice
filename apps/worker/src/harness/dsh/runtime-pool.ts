@@ -874,7 +874,13 @@ export class DshRuntimePool {
     const credentialResolutionMs = performance.now() - credentialStarted;
     const maxTokens = input.input.maxOutputTokens;
     const nativeTools = await selectDshNativeTools(
-      input.input.tools.map((tool) => tool.name),
+      input.input.tools
+        .map((tool) => tool.name)
+        .filter(
+          (name) =>
+            name !== 'workspace.file.read' ||
+            input.input.nativeFileRead === true,
+        ),
       nativeIdentity?.args[0],
     );
     const deferredMcpSchemas =

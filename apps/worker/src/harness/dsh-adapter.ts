@@ -318,7 +318,21 @@ export class DshHarnessAdapter implements HarnessAdapter {
     // Installed synchronously by runOnce before prompting. Keep it through
     // child join/retry; a later runOnce replaces it with its own turn barrier.
     let awaitTurnOrigin: ((settled?: boolean) => Promise<void>) | undefined;
-    const ordinaryHandler = dshInboundToolHandler(input);
+    const runId = input.executionEnvironment.ALLRICE_RUN_ID;
+    const ordinaryHandler = dshInboundToolHandler({
+      ...input,
+      ...(input.nativeFileRead &&
+      runtime.nativeTools.includes('workspace.file.read') &&
+      runId
+        ? {
+            fileReadRoot: {
+              nativeSessionId: threadId,
+              runId,
+              signal: input.signal,
+            },
+          }
+        : {}),
+    });
     // Project only the successful server-authored profile receipt onto its
     // native completion event; raw model/tool output is not a public receipt.
     const profileReceipts = new Map<string, string>();
@@ -326,7 +340,6 @@ export class DshHarnessAdapter implements HarnessAdapter {
       string,
       ReturnType<typeof PersonalSceneSkillSchema.parse>
     >();
-    const runId = input.executionEnvironment.ALLRICE_RUN_ID;
     const runScope = runId
       ? nativeRunScope(runtime.client, threadId, runId)
       : undefined;
@@ -1266,6 +1279,15 @@ export class DshHarnessAdapter implements HarnessAdapter {
           });
           break;
         }
+        if (
+          toolCall.name === 'workspace.file.read' &&
+          runtime.nativeTools.includes(toolCall.name)
+        )
+          throw new HandlerError(
+            'DSH_TOOL_ENVELOPE_INVALID',
+            'File reads must use the supplied native tool.',
+            false,
+          );
         if (!input.tools.some((tool) => tool.name === toolCall.name)) {
           throw new HandlerError(
             'TOOL_NOT_ALLOWED',
@@ -2270,6 +2292,17 @@ export class DshHarnessAdapter implements HarnessAdapter {
       if (event.type === 'turn/end') {
         if (waitingForUser) return;
         const reason = record(data.reason);
+        const cancellation = record(reason?.reason);
+        if (
+          reason?.kind === 'aborted' &&
+          cancellation?.kind === 'hook' &&
+          cancellation.reason === 'ALLRICE_FILE_READ_ABORTED'
+        )
+          throw new HandlerError(
+            'DSH_FILE_READ_ABORTED',
+            'Native file read was interrupted; no model retry was started',
+            false,
+          );
         if (reason?.kind === 'error') {
           const failure = record(reason.error);
           throw new HandlerError(

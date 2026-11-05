@@ -20,6 +20,9 @@ export async function nativeBrokerRoundtrip(input: {
   denyBeforeModel?: boolean;
   expectedToolNames?: string[];
   canonicalName: string;
+  prompt?: string;
+  fileReadRunId?: string;
+  expectedTerminalError?: string;
   wireName: string;
   args: Record<string, unknown>;
   brokerArgs?: Record<string, unknown>;
@@ -154,6 +157,8 @@ export async function nativeBrokerRoundtrip(input: {
   let completed = 0;
   let nativeRetries = 0;
   const nativeToolFailures: boolean[] = [];
+  const failures: Error[] = [];
+  client.onFailure((error) => failures.push(error));
   client.subscribe((notice) => {
     const event = notice.params.event as
       | {
@@ -171,6 +176,15 @@ export async function nativeBrokerRoundtrip(input: {
       );
   });
   const inbound = dshInboundToolHandler({
+    ...(input.fileReadRunId
+      ? {
+          fileReadRoot: {
+            nativeSessionId: session,
+            runId: input.fileReadRunId,
+            signal: new AbortController().signal,
+          },
+        }
+      : {}),
     tools: [
       {
         name: input.canonicalName,
@@ -188,7 +202,7 @@ export async function nativeBrokerRoundtrip(input: {
       expectedModelContent = result.modelContent;
       return result;
     },
-  } satisfies Pick<HarnessExecutionInput, 'tools' | 'onToolCall'>);
+  });
   client.setRequestHandler((method, params) =>
     method === 'allrice/progress' && input.progress
       ? input.progress(params)
@@ -216,7 +230,18 @@ export async function nativeBrokerRoundtrip(input: {
       expect(received).toEqual([]);
       return;
     }
-    await client.prompt(session, 'Invoke the selected native tool.');
+    await client.prompt(
+      session,
+      input.prompt ?? 'Invoke the selected native tool.',
+    );
+    if (input.expectedTerminalError) {
+      await expect.poll(() => failures.length, { timeout: 15000 }).toBe(1);
+      expect(failures[0]!.message).toBe(input.expectedTerminalError);
+      expect(received).toHaveLength(1);
+      expect(requests).toHaveLength(1);
+      expect(nativeToolFailures).toEqual([]);
+      return;
+    }
     await expect
       .poll(() => requests.length, { timeout: input.timeoutMs ?? 15000 })
       .toBe(2 + (input.retryAfterTool ?? 0));
@@ -270,11 +295,18 @@ export async function nativeBrokerRoundtrip(input: {
     expect(nativeRetries).toBe(input.retryAfterTool ?? 0);
     expect(errors).toEqual([]);
   } finally {
-    await client.close();
-    server.closeAllConnections();
-    await new Promise<void>((resolveClose) =>
-      server.close(() => resolveClose()),
-    );
-    await rm(root, { recursive: true, force: true });
+    try {
+      await client.close().catch((error: unknown) => {
+        if (!input.expectedTerminalError) throw error;
+        expect(failures).toHaveLength(1);
+        // A terminal protocol has no semantic shutdown acknowledgement.
+      });
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolveClose) =>
+        server.close(() => resolveClose()),
+      );
+      await rm(root, { recursive: true, force: true });
+    }
   }
 }

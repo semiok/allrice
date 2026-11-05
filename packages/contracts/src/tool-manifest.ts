@@ -278,7 +278,10 @@ export const allRiceToolManifest = [
     canonicalName: 'workspace.file.read',
     capability: 'storage:read',
     risk: 'read_only',
-    transport: 'envelope',
+    // Current artifact capability; runtime admission/pinned older artifacts
+    // still select envelope. Keep the transport type capable of representing it.
+    transport: 'dsh_broker_native' as AllRiceToolTransport,
+    dshWireName: 'workspace_file_read',
   },
   {
     canonicalName: 'workspace.document.read',
