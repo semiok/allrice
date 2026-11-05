@@ -10,8 +10,12 @@ import {
   EmployeeDetailsSchema,
   EmployeeInstanceLifecycleInputSchema,
   EmployeeInstanceSchema,
+  employeeColorPalette,
 } from '@allrice/contracts';
-import type { Browser } from '../../../worker/node_modules/playwright-core/index.js';
+import type {
+  Browser,
+  Locator,
+} from '../../../worker/node_modules/playwright-core/index.js';
 import { employeeDetailsFixture } from '../../test/employee-details-fixture';
 
 const suite =
@@ -33,6 +37,34 @@ const json = (value: unknown, status = 200) => ({
   contentType: 'application/json',
   body: JSON.stringify(value),
 });
+async function expectMobileRoot(dialog: Locator) {
+  const geometry = await dialog.evaluate((node) => {
+    const rect = node.getBoundingClientRect();
+    const heading = node.querySelector('h2')!;
+    return {
+      x: rect.x,
+      y: rect.y,
+      width: rect.width,
+      height: rect.height,
+      viewportWidth: innerWidth,
+      viewportHeight: innerHeight,
+      radius: getComputedStyle(node).borderRadius,
+      font: getComputedStyle(heading).fontSize,
+      line: getComputedStyle(heading).lineHeight,
+    };
+  });
+  expect(geometry).toEqual({
+    x: 0,
+    y: 0,
+    width: geometry.viewportWidth,
+    height: geometry.viewportHeight,
+    viewportWidth: geometry.viewportWidth,
+    viewportHeight: geometry.viewportHeight,
+    radius: '0px',
+    font: '20px',
+    line: '28px',
+  });
+}
 function instance(n: number, archived = false) {
   return EmployeeInstanceSchema.parse({
     id: id(n),
@@ -161,6 +193,9 @@ suite('U1 employee archive lifecycle', () => {
       paginate?: boolean;
       holdWrite?: boolean;
       holdSelected?: boolean;
+      generalEmpty?: boolean;
+      sessionArchived?: boolean;
+      failArchivedSessions?: boolean;
     } = {},
   ) {
     const page = await browser.newPage({
@@ -192,6 +227,36 @@ suite('U1 employee archive lifecycle', () => {
       heldWrite: options.holdWrite ? writeGate.promise : null,
       heldSelected: options.holdSelected ? selectedGate.promise : null,
       selectedReads: 0,
+      archivedSessionReads: 0,
+      failArchivedSessions: Boolean(options.failArchivedSessions),
+      sessionTitles: new Map<string, string>(),
+    };
+    const flowName = options.generalEmpty ? '项目助理' : '流程哥';
+    if (options.generalEmpty) {
+      state.instances[1]!.kind = 'general';
+      state.instances[1]!.profile = {};
+    }
+    const currentDetails = (n: number, canArchive = n !== 7) => {
+      const data = details(n, canArchive);
+      if (n === 17 && options.generalEmpty) {
+        data.profile.kind = 'general';
+        data.profile.name = flowName;
+        data.profile.appearance = {
+          avatarType: 'initials',
+          avatarValue: '项',
+          accentColor: 'rose',
+        };
+      }
+      return EmployeeDetailsSchema.parse(data);
+    };
+    const currentSession = (n: number) => {
+      const row = session(n);
+      return {
+        ...row,
+        title: state.sessionTitles.get(row.id) ?? row.title,
+        employeeName: n === 17 ? flowName : row.employeeName,
+        archivedAt: n === 17 && options.sessionArchived ? now : null,
+      };
     };
     page.on('pageerror', (error) => state.errors.push(error.message));
     await page.route('**/api/v1/**', async (route) => {
@@ -281,7 +346,7 @@ suite('U1 employee archive lifecycle', () => {
                   409,
                 )
               : json(
-                  details(
+                  currentDetails(
                     current.id === id(7) ? 7 : 17,
                     current.id !== id(7) && !options.cannotArchive,
                   ),
@@ -316,7 +381,7 @@ suite('U1 employee archive lifecycle', () => {
         );
       }
       if (path.includes('/ai-instances/') && path.endsWith('/content')) {
-        const shared = details(17);
+        const shared = currentDetails(17);
         shared.profile.canArchive = false;
         shared.profile.canMaintainPersonal = false;
         shared.profile.editableFields = [];
@@ -344,12 +409,14 @@ suite('U1 employee archive lifecycle', () => {
               viewerId: id(5),
               preferences,
               canAdminister: false,
-              sessions: [session(17), session(7)],
+              sessions: [currentSession(17), currentSession(7)].filter(
+                (row) => !row.archivedAt,
+              ),
               sessionModels: [],
               employeeProfiles: [7, 17].map((n) => ({
                 assignmentId: id(n),
                 employeeId: id(n + 2),
-                ...details(n).profile,
+                ...currentDetails(n).profile,
                 skills: [],
                 model: {
                   harness: 'dsh',
@@ -369,7 +436,8 @@ suite('U1 employee archive lifecycle', () => {
                 currentVersion: {
                   id: id(n + 1),
                   manifest: {
-                    name: n === 7 ? 'Rice' : '流程哥',
+                    name: n === 7 ? 'Rice' : flowName,
+                    appearance: currentDetails(n).profile.appearance,
                     runtimePolicy: { harness: 'dsh', provider: 'codex' },
                   },
                 },
@@ -402,12 +470,21 @@ suite('U1 employee archive lifecycle', () => {
         );
       if (path === '/api/v1/sessions' && request.method() === 'GET') {
         const target = url.searchParams.get('employeeInstanceId');
-        const sessions =
-          url.searchParams.get('archived') === 'only'
-            ? []
-            : [session(17), session(7)].filter(
-                (row) => !target || row.employeeInstanceId === target,
-              );
+        const archived = url.searchParams.get('archived');
+        if (archived === 'only') {
+          state.archivedSessionReads++;
+          if (state.failArchivedSessions)
+            return route.fulfill(
+              json({ error: { message: '会话读取暂不可用。' } }, 503),
+            );
+        }
+        const sessions = [currentSession(17), currentSession(7)].filter(
+          (row) =>
+            (!target || row.employeeInstanceId === target) &&
+            (archived === 'only'
+              ? Boolean(row.archivedAt)
+              : archived === 'true' || !row.archivedAt),
+        );
         return route.fulfill(
           json({
             sessions,
@@ -426,11 +503,27 @@ suite('U1 employee archive lifecycle', () => {
         );
       }
       const history = /^\/api\/v1\/sessions\/([a-f0-9-]{36})$/.exec(path);
+      if (history && request.method() === 'PATCH') {
+        const body: unknown = request.postDataJSON();
+        if (
+          !body ||
+          typeof body !== 'object' ||
+          !('title' in body) ||
+          typeof body.title !== 'string'
+        )
+          return route.fulfill(
+            json({ error: { message: 'Invalid title' } }, 400),
+          );
+        state.sessionTitles.set(history[1]!, body.title);
+        return route.fulfill(
+          json({ session: currentSession(history[1] === id(1) ? 17 : 7) }),
+        );
+      }
       if (history && request.method() === 'GET')
         return route.fulfill(
           json({
             history: {
-              session: session(history[1] === id(1) ? 17 : 7),
+              session: currentSession(history[1] === id(1) ? 17 : 7),
               messages: [
                 {
                   id: id(90),
@@ -468,15 +561,21 @@ suite('U1 employee archive lifecycle', () => {
     await page.goto(
       `${origin}/?session=${id(1)}${options.shared ? '&shared=1' : ''}${options.dark ? '&theme=dark' : ''}`,
     );
-    const openDetails = async (name = '流程哥') => {
-      const button = page.getByRole('button', {
+    const openDetails = async (name = flowName) => {
+      // Wait for the real workspace and transcript, not an instantaneous
+      // visibility sample while the initial shell is still loading.
+      await page.getByText('原有对话内容继续可读', { exact: true }).waitFor();
+      const sidebar = page.locator('#chat-sidebar');
+      const toggle = sidebar.getByRole('button', {
+        name: /^(展开|收起)侧边栏$/,
+      });
+      await toggle.waitFor();
+      if ((await toggle.getAttribute('aria-label')) === '展开侧边栏')
+        await toggle.click();
+      const button = sidebar.getByRole('button', {
         name: `查看${name}详情`,
         exact: true,
       });
-      if (!(await button.isVisible()))
-        await page
-          .getByRole('button', { name: '展开侧边栏', exact: true })
-          .click();
       await button.click();
       const dialog = page.getByRole('dialog', {
         name: `${name}员工详情`,
@@ -491,7 +590,7 @@ suite('U1 employee archive lifecycle', () => {
         .getByRole('button', { name: '归档这个员工', exact: true })
         .click();
       const confirm = page.getByRole('dialog', {
-        name: '归档“流程哥”？',
+        name: `归档“${flowName}”？`,
         exact: true,
       });
       await confirm.waitFor();
@@ -553,26 +652,59 @@ suite('U1 employee archive lifecycle', () => {
           exact: true,
         });
         await composer.fill('仍需保留的草稿');
-        let confirm = await f.begin();
-        expect(
-          await confirm.getByRole('button', { name: /关闭/ }).count(),
-        ).toBe(0);
-        await f.page.keyboard.press('Escape');
-        await f.page
-          .getByRole('dialog', { name: '流程哥员工详情', exact: true })
-          .waitFor();
-        expect(f.state.writes).toEqual([]);
-        expect(
-          await f.page
-            .getByRole('dialog')
-            .evaluate((node) => node.contains(document.activeElement)),
-        ).toBe(true);
-        await f.page
-          .getByRole('dialog')
-          .getByRole('button', { name: '关闭', exact: true })
-          .click();
-        expect(await composer.inputValue()).toBe('仍需保留的草稿');
-        confirm = await f.begin();
+        for (const exit of ['Escape', '取消', '遮罩']) {
+          const confirm = await f.begin();
+          expect(
+            await confirm.getByRole('button', { name: /关闭/ }).count(),
+          ).toBe(0);
+          if (exit === 'Escape') await f.page.keyboard.press('Escape');
+          else if (exit === '取消')
+            await confirm
+              .getByRole('button', { name: '取消', exact: true })
+              .click();
+          else
+            await confirm
+              .locator('..')
+              .locator(':scope > [aria-hidden="true"]')
+              .click({ position: { x: 2, y: 2 } });
+          const returned = f.page.getByRole('dialog', {
+            name: '流程哥员工详情',
+            exact: true,
+          });
+          await returned.waitFor();
+          expect(f.state.writes, `exit=${exit}`).toEqual([]);
+          expect(
+            await returned.evaluate((node) =>
+              node.contains(document.activeElement),
+            ),
+            `exit=${exit} must return focus inside the same employee`,
+          ).toBe(true);
+          await returned
+            .getByRole('button', { name: '关闭', exact: true })
+            .click();
+          expect(await composer.inputValue(), `exit=${exit}`).toBe(
+            '仍需保留的草稿',
+          );
+        }
+        const confirm = await f.begin();
+        if (width === 390) {
+          const card = await confirm.evaluate((node) => ({
+            x: node.getBoundingClientRect().x,
+            width: node.getBoundingClientRect().width,
+            height: node.getBoundingClientRect().height,
+            radius: getComputedStyle(node).borderRadius,
+            font: getComputedStyle(node.querySelector('h2')!).fontSize,
+            line: getComputedStyle(node.querySelector('h2')!).lineHeight,
+          }));
+          expect(card).toMatchObject({
+            x: 20,
+            width: 350,
+            radius: '20px',
+            font: '20px',
+            line: '28px',
+          });
+          expect(card.height).toBeLessThan(910);
+        }
         await confirm.screenshot({
           path: resolve(evidence, `archive-confirm-${width}.png`),
         });
@@ -584,6 +716,7 @@ suite('U1 employee archive lifecycle', () => {
           exact: true,
         });
         await archived.getByText('流程哥', { exact: true }).waitFor();
+        if (width === 390) await expectMobileRoot(archived);
         expect(
           await f.page
             .locator('#chat-sidebar')
@@ -810,6 +943,209 @@ suite('U1 employee archive lifecycle', () => {
     }
   });
 
+  it('hands rename keyboard ownership back to the same archive page after Escape and save', async () => {
+    const f = await fixture({ sessionArchived: true });
+    try {
+      await f.page
+        .getByRole('button', { name: '查看归档', exact: true })
+        .last()
+        .click();
+      const dialog = f.page.getByRole('dialog', {
+        name: '已归档',
+        exact: true,
+      });
+      await dialog.getByRole('tab', { name: '对话', exact: true }).click();
+      const row = dialog.locator(`[data-row-key="session:${id(1)}"]`);
+      const openRename = async () => {
+        await row.hover();
+        await row.getByRole('button', { name: /^会话.*的操作$/ }).click();
+        await f.page
+          .getByRole('menuitem', { name: '重命名', exact: true })
+          .click();
+        const rename = f.page.getByRole('dialog', {
+          name: '重命名会话',
+          exact: true,
+        });
+        await rename
+          .getByRole('textbox', { name: '会话名称', exact: true })
+          .waitFor();
+        return rename;
+      };
+      let rename = await openRename();
+      expect(await dialog.count()).toBe(0);
+      const input = rename.getByRole('textbox', {
+        name: '会话名称',
+        exact: true,
+      });
+      expect(
+        await input.evaluate((node) => node === document.activeElement),
+      ).toBe(true);
+      await f.page.keyboard.press('Tab');
+      expect(
+        await rename
+          .getByRole('button', { name: '取消', exact: true })
+          .evaluate((node) => node === document.activeElement),
+      ).toBe(true);
+      await f.page.keyboard.press('Shift+Tab');
+      expect(
+        await input.evaluate((node) => node === document.activeElement),
+      ).toBe(true);
+      await f.page.keyboard.press('Shift+Tab');
+      expect(
+        await rename
+          .getByRole('button', { name: '关闭', exact: true })
+          .evaluate((node) => node === document.activeElement),
+      ).toBe(true);
+      await f.page.keyboard.press('Shift+Tab');
+      expect(
+        await rename
+          .getByRole('button', { name: '保存', exact: true })
+          .evaluate((node) => node === document.activeElement),
+      ).toBe(true);
+      await f.page.keyboard.press('Escape');
+      await dialog.getByRole('tab', { name: '对话', selected: true }).waitFor();
+      expect(await rename.count()).toBe(0);
+      expect(
+        await dialog.evaluate((node) => node.contains(document.activeElement)),
+      ).toBe(true);
+      await row.getByText('保留的员工旧对话', { exact: true }).waitFor();
+      rename = await openRename();
+      await rename
+        .getByRole('textbox', { name: '会话名称', exact: true })
+        .fill('改名后的旧对话');
+      await rename.getByRole('button', { name: '保存', exact: true }).click();
+      await row.getByText('改名后的旧对话', { exact: true }).waitFor();
+      expect(
+        await dialog.getByRole('tab', { name: '对话', selected: true }).count(),
+      ).toBe(1);
+      expect(
+        await dialog.evaluate((node) => node.contains(document.activeElement)),
+      ).toBe(true);
+      expect(f.state.sessionTitles.get(id(1))).toBe('改名后的旧对话');
+      expect(f.state.writes).toEqual([]);
+      expect(f.state.blockedWrites).toEqual([]);
+      expect(f.state.errors).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it.each([false, true])(
+    'retries failed archived conversation reads without claiming empty or losing retained rows: retained=%s',
+    async (retained) => {
+      const f = await fixture({
+        sessionArchived: true,
+        failArchivedSessions: !retained,
+      });
+      try {
+        await f.page
+          .getByRole('button', { name: '查看归档', exact: true })
+          .last()
+          .click();
+        const dialog = f.page.getByRole('dialog', {
+          name: '已归档',
+          exact: true,
+        });
+        await dialog.getByRole('tab', { name: '对话', exact: true }).click();
+        const title = dialog.getByText('保留的员工旧对话', { exact: true });
+        if (retained) {
+          await title.waitFor();
+          f.state.failArchivedSessions = true;
+          await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+        }
+        await dialog
+          .getByRole('alert')
+          .getByText('会话读取暂不可用。', { exact: true })
+          .waitFor();
+        expect(
+          await dialog.getByText('暂无已归档会话', { exact: true }).count(),
+        ).toBe(0);
+        expect(await title.count()).toBe(retained ? 1 : 0);
+        const before = f.state.archivedSessionReads;
+        f.state.failArchivedSessions = false;
+        await dialog
+          .getByRole('button', { name: '重新加载会话列表', exact: true })
+          .click();
+        await title.waitFor();
+        await expect.poll(() => dialog.getByRole('alert').count()).toBe(0);
+        expect(f.state.archivedSessionReads).toBeGreaterThan(before);
+        expect(f.state.writes).toEqual([]);
+        expect(f.state.blockedWrites).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
+  it('keeps a general employee with empty overrides identifiable by its real name and template color through archive and restore', async () => {
+    const f = await fixture({ generalEmpty: true });
+    try {
+      const confirm = await f.begin();
+      await confirm.getByRole('button', { name: '归档', exact: true }).click();
+      const dialog = f.page.getByRole('dialog', {
+        name: '已归档',
+        exact: true,
+      });
+      const heading = dialog.getByRole('heading', {
+        name: '项目助理',
+        exact: true,
+      });
+      await heading.waitFor();
+      const row = dialog.locator('article').filter({ has: heading });
+      expect(await row.locator('span[aria-hidden="true"]').textContent()).toBe(
+        '项',
+      );
+      expect(
+        await row
+          .locator('span[aria-hidden="true"]')
+          .evaluate((node) =>
+            (node as HTMLElement).style.getPropertyValue('--employee-start'),
+          ),
+      ).toBe(employeeColorPalette.rose.value);
+      expect(await dialog.getByText('AI 员工', { exact: true }).count()).toBe(
+        0,
+      );
+      expect(f.state.instances[1]!.profile).toEqual({});
+      expect(f.state.writes[0]?.path).toBe(
+        `/api/v1/employee-instances/${id(17)}/lifecycle`,
+      );
+      await row.getByRole('button', { name: '恢复员工', exact: true }).click();
+      await expect
+        .poll(() =>
+          dialog.getByText('还没有已归档员工', { exact: true }).count(),
+        )
+        .toBe(1);
+      expect(f.state.instances[1]!.profile).toEqual({});
+      expect(f.state.writes[1]?.body.operation).toBe('restore');
+      expect(f.state.writes[1]?.path).toBe(
+        `/api/v1/employee-instances/${id(17)}/lifecycle`,
+      );
+      expect(f.state.blockedWrites).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('uses the approved full-screen archive root through the 641 to 700 px mobile breakpoint', async () => {
+    const f = await fixture({ width: 680, archived: true });
+    try {
+      await f.page
+        .getByRole('button', { name: '查看归档', exact: true })
+        .last()
+        .click();
+      const dialog = f.page.getByRole('dialog', {
+        name: '已归档',
+        exact: true,
+      });
+      await dialog
+        .getByRole('heading', { name: '流程哥', exact: true })
+        .waitFor();
+      await expectMobileRoot(dialog);
+    } finally {
+      await f.close();
+    }
+  });
+
   it.each([1440, 390])(
     'keeps the archive surface in the saved real dark theme at width %s',
     async (width) => {
@@ -837,6 +1173,7 @@ suite('U1 employee archive lifecycle', () => {
         expect(paint.background).not.toBe('rgb(255, 255, 255)');
         expect(paint.color).not.toBe(paint.background);
         expect(paint.width).toBeLessThanOrEqual(paint.viewport);
+        if (width === 390) await expectMobileRoot(dialog);
         await dialog.screenshot({
           path: resolve(evidence, `archive-employees-dark-${width}.png`),
         });

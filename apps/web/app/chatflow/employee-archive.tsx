@@ -14,7 +14,10 @@ import type {
 import type { Session, Workspace } from './chatflow-types';
 import { EmployeeSidebar } from './employee-sidebar';
 import { employeeAccentStyle } from './employee-navigation';
-import { sessionEmployeeKey } from './employee-instances';
+import {
+  employeeChoiceProfile,
+  sessionEmployeeKey,
+} from './employee-instances';
 import type { useEmployeeArchive } from './use-employee-archive';
 import { useSessionArchive } from './use-session-archive';
 import css from './employee-archive.module.css';
@@ -143,6 +146,12 @@ export function EmployeeArchiveDialog({
   });
   const [tab, setTab] = useState<'employees' | 'conversations'>('employees');
   const [employeeId, setEmployeeId] = useState<string>();
+  const [rootReady, setRootReady] = useState(false);
+  // The existing rename dialog owns its own legacy focus trap. Release the
+  // native layer while it is open, then enter after its passive cleanup.
+  useEffect(() => {
+    setRootReady(!sessionArchive.legacyOverlayOpen);
+  }, [sessionArchive.legacyOverlayOpen]);
   const archived = archive.instances.filter((instance) => instance.archivedAt);
   const busy = Boolean(archive.mutation?.busy);
   const close = () => {
@@ -168,7 +177,13 @@ export function EmployeeArchiveDialog({
     : sessionArchive.sessions;
   return (
     <>
-      <Modal open headless title="已归档" onClose={close} className={css.panel}>
+      <Modal
+        open={rootReady && !sessionArchive.legacyOverlayOpen}
+        headless
+        title="已归档"
+        onClose={close}
+        className={`${css.panel} ${css.rootPanel}`}
+      >
         <header className={css.header}>
           <h2>已归档</h2>
           <button
@@ -245,7 +260,35 @@ export function EmployeeArchiveDialog({
                   {archived.length ? (
                     <div className={css.employees}>
                       {archived.map((instance) => {
-                        const name = instance.profile.name ?? 'AI 员工';
+                        // History contains raw overrides. Reuse the normal
+                        // assignment/profile projection with this real instance,
+                        // including the general/custom override rules.
+                        const profile = employeeChoiceProfile(
+                          {
+                            ...workspace,
+                            employees: workspace.employees.map((employee) =>
+                              employee.id === instance.assignmentId
+                                ? { ...employee, instances: [instance] }
+                                : employee,
+                            ),
+                          },
+                          instance.id,
+                        );
+                        const name =
+                          profile?.name ??
+                          (instance.kind === 'custom'
+                            ? instance.profile.name
+                            : undefined) ??
+                          workspace.sessions.find(
+                            (session) =>
+                              sessionEmployeeKey(session) === instance.id,
+                          )?.employeeName ??
+                          'AI 员工';
+                        const appearance =
+                          profile?.appearance ??
+                          (instance.kind === 'custom'
+                            ? instance.profile.appearance
+                            : undefined);
                         return (
                           <article className={css.employee} key={instance.id}>
                             <span
@@ -253,7 +296,7 @@ export function EmployeeArchiveDialog({
                               aria-hidden="true"
                               style={employeeAccentStyle(
                                 name,
-                                instance.profile.appearance?.accentColor,
+                                appearance?.accentColor,
                               )}
                             >
                               {Array.from(name)[0] || '员'}
@@ -303,11 +346,19 @@ export function EmployeeArchiveDialog({
             ) : (
               <>
                 {sessionArchive.error || sessionArchive.loadError ? (
-                  <p className={css.error} role="alert">
-                    {sessionArchive.error || sessionArchive.loadError}
-                  </p>
+                  <div className={css.error} role="alert">
+                    <p>{sessionArchive.error || sessionArchive.loadError}</p>
+                    <Button
+                      variant="outline"
+                      onClick={sessionArchive.reload}
+                      disabled={sessionArchive.loading}
+                      aria-label="重新加载会话列表"
+                    >
+                      {sessionArchive.loading ? '更新中' : '重试'}
+                    </Button>
+                  </div>
                 ) : null}
-                {sessionArchive.loading ? (
+                {sessionArchive.loading && !sessions.length ? (
                   <p className={css.loading} role="status">
                     正在读取…
                   </p>
@@ -322,7 +373,7 @@ export function EmployeeArchiveDialog({
                     onSelectSession={onSelectSession}
                     onPrepareSession={onPrepareSession}
                   />
-                ) : (
+                ) : sessionArchive.error || sessionArchive.loadError ? null : (
                   <div className={css.empty}>
                     <IconArchiveOutlineRegular size={28} />
                     <p>暂无已归档会话</p>
