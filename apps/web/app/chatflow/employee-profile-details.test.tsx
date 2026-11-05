@@ -81,6 +81,11 @@ describe('EmployeeProfileDetails', () => {
       expect(html.includes('本人读取入口')).toBe(
         view === 'personal' && kind === 'custom',
       );
+      if (view === 'shared') {
+        expect(html).not.toContain('表达偏好');
+        expect(html).not.toContain('简洁，结论优先');
+        expect(html).not.toContain('未设置');
+      }
       if (editable) {
         expect(html).toContain('编辑');
         expect(html).toContain('AI 新增');

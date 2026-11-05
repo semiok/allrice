@@ -255,10 +255,24 @@ suite('U1 employee persona card', () => {
               weight: style.fontWeight,
             };
           };
+          const avatarStyle = getComputedStyle(
+            node.querySelector('span[aria-hidden="true"]')!,
+          );
+          const personaStyle = getComputedStyle(node.querySelector('dl')!);
           return {
             name: styleOf(node.querySelector('h3')!),
             label: styleOf(node.querySelector('dt')!),
             body: styleOf(node.querySelector('dd')!),
+            avatar: {
+              width: avatarStyle.width,
+              height: avatarStyle.height,
+              size: avatarStyle.fontSize,
+            },
+            cardRadius: getComputedStyle(node).borderRadius,
+            personaSpacing: {
+              marginTop: personaStyle.marginTop,
+              paddingTop: personaStyle.paddingTop,
+            },
             allTextFits: Array.from(node.querySelectorAll('h3, dd')).every(
               (element) =>
                 element.scrollHeight <= element.clientHeight + 1 &&
@@ -275,8 +289,22 @@ suite('U1 employee persona card', () => {
           line: '24px',
           weight: '600',
         });
-        expect(measured.label).toMatchObject({ size: '12px', line: '22px' });
+        expect(measured.label).toMatchObject({
+          size: '12px',
+          line: width < 700 ? '18px' : '22px',
+        });
         expect(measured.body).toMatchObject({ size: '14px', line: '22px' });
+        expect(measured.avatar).toEqual(
+          width < 700
+            ? { width: '40px', height: '40px', size: '18px' }
+            : { width: '44px', height: '44px', size: '20px' },
+        );
+        expect(measured.cardRadius).toBe(width < 700 ? '12px' : '16px');
+        expect(measured.personaSpacing).toEqual(
+          width < 700
+            ? { marginTop: '16px', paddingTop: '16px' }
+            : { marginTop: '12px', paddingTop: '12px' },
+        );
         expect(measured.name.family).toBe(measured.body.family);
         expect(measured.allTextFits).toBe(true);
         expect(measured.cardFits).toBe(true);
@@ -347,45 +375,63 @@ suite('U1 employee persona card', () => {
     30_000,
   );
 
-  it.each([
-    { width: 1440, general: true, shared: false, dark: false },
-    { width: 390, general: false, shared: true, dark: true },
-  ])(
-    'keeps the complete $general/$shared persona read only at $width',
-    async (options) => {
-      const { page, state } = await open(options);
-      state.details.profile.expressionStyle = undefined;
-      try {
-        const card = await showDetails(page);
-        expect(await card.locator('dt').allTextContents()).toEqual([
-          '使命',
-          '工作方式',
-          '表达偏好',
-        ]);
-        expect(await card.locator('dd').last().innerText()).toBe('未设置');
-        expect(
-          await card
-            .getByRole('button', { name: '编辑员工', exact: true })
-            .count(),
-        ).toBe(0);
-        expect(state.writes).toEqual([]);
-        if (options.shared) {
-          expect(state.reads).toEqual([
-            `/api/v1/admin/organizations/${id(3)}/people/${id(5)}/ai-instances/${id(7)}/content`,
-          ]);
-          expect(await page.getByRole('form').count()).toBe(0);
-          expect(
-            await page
-              .getByText('未由人设表单修改的个人简介', { exact: true })
-              .count(),
-          ).toBe(0);
-        }
-        expect(state.errors).toEqual([]);
-      } finally {
-        await page.close();
-      }
-    },
-  );
+  it('shows an unset expression preference only in the owner general persona', async () => {
+    const { page, state } = await open({ width: 1440, general: true });
+    state.details.profile.expressionStyle = undefined;
+    try {
+      const card = await showDetails(page);
+      expect(await card.locator('dt').allTextContents()).toEqual([
+        '使命',
+        '工作方式',
+        '表达偏好',
+      ]);
+      expect(await card.locator('dd').last().innerText()).toBe('未设置');
+      expect(
+        await card
+          .getByRole('button', { name: '编辑员工', exact: true })
+          .count(),
+      ).toBe(0);
+      expect(state.writes).toEqual([]);
+      expect(state.errors).toEqual([]);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('keeps the shared persona read only and omits the hidden personal preference', async () => {
+    const { page, state } = await open({
+      width: 390,
+      shared: true,
+      dark: true,
+    });
+    state.details.profile.expressionStyle = undefined;
+    try {
+      const card = await showDetails(page);
+      expect(await card.locator('dt').allTextContents()).toEqual([
+        '使命',
+        '工作方式',
+      ]);
+      expect(await card.getByText('未设置', { exact: true }).count()).toBe(0);
+      expect(
+        await card
+          .getByRole('button', { name: '编辑员工', exact: true })
+          .count(),
+      ).toBe(0);
+      expect(state.writes).toEqual([]);
+      expect(state.reads).toEqual([
+        `/api/v1/admin/organizations/${id(3)}/people/${id(5)}/ai-instances/${id(7)}/content`,
+      ]);
+      expect(await page.getByRole('form').count()).toBe(0);
+      expect(
+        await page
+          .getByText('未由人设表单修改的个人简介', { exact: true })
+          .count(),
+      ).toBe(0);
+      expect(state.errors).toEqual([]);
+    } finally {
+      await page.close();
+    }
+  });
 
   it('keeps a failed or late detail response out of a newly selected employee', async () => {
     const { page, state } = await open({ width: 390 });

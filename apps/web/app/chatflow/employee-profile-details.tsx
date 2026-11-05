@@ -220,6 +220,7 @@ export function EmployeeProfileDetails({
       )}
       <EmployeePersonaCard
         profile={profile}
+        view={view}
         onEdit={personal ? onEdit : undefined}
       />
       {view === 'personal' && profile.kind === 'custom' && workflowReadContent}
