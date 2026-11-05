@@ -32,6 +32,7 @@ import type {
 import type { NativeExperienceItem } from '../../lib/chatflow/native-experience';
 import {
   summarizeWorkProcess,
+  workProcessTitle,
   type WorkProcessCategory,
   type WorkProcessStep,
 } from '../../lib/chatflow/work-process';
@@ -474,7 +475,6 @@ function NativeStepsGroup({
   const { steps } = summarizeWorkProcess(items);
   if (!steps.length || onlyLiveThinking(steps, running)) return null;
   if (!grouped) return <WorkProcessSteps items={items} running={running} />;
-  const categories = [...new Set(steps.map((step) => step.label))].join('、');
   const live = [...steps]
     .reverse()
     .find((step) => ['started', 'updated'].includes(step.status));
@@ -489,7 +489,7 @@ function NativeStepsGroup({
     <section aria-label="工作步骤">
       <DisclosureRow
         icon={stepIcons[steps[0]!.category]}
-        title={`${categories} · ${steps.length} 项`}
+        title={workProcessTitle(items, running)}
         open={open}
         expandable
         expandOnRowClick

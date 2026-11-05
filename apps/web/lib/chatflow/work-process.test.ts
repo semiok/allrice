@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { NativeExperienceItem } from './native-experience';
-import { summarizeWorkProcess } from './work-process';
+import { summarizeWorkProcess, workProcessTitle } from './work-process';
 
 function call(
   id: number,
@@ -83,4 +83,84 @@ describe('chronological public work process', () => {
       '加载技能',
     ]);
   });
+});
+
+it('uses native action titles for live, settled, failed and mixed work', () => {
+  const memory = call(1, { toolName: 'workspace.memory.remember' });
+  expect(workProcessTitle([memory], false)).toBe('已调用工具');
+  expect(workProcessTitle([{ ...memory, status: 'started' }], true)).toBe(
+    '正在调用工具',
+  );
+  expect(workProcessTitle([{ ...memory, status: 'failed' }], false)).toBe(
+    '已调用工具',
+  );
+  expect(
+    workProcessTitle(
+      [call(1, { kind: 'think' }), call(2, { toolName: 'read' }), memory],
+      false,
+    ),
+  ).toBe('已调用工具并读取文件');
+  expect(
+    workProcessTitle(
+      [call(1, { toolName: 'ask_user_question', status: 'info' })],
+      false,
+    ),
+  ).toBe('向用户提出了问题');
+  expect(
+    workProcessTitle(
+      [
+        call(1, {
+          kind: 'compaction',
+          title: '上下文整理未完成',
+          status: 'failed',
+        }),
+      ],
+      false,
+    ),
+  ).toBe('上下文整理未完成');
+});
+
+it.each([
+  ['todo_write', '更新了计划'],
+  ['read_image', '已读取图片'],
+  ['workspace.memory.search', '已调用工具'],
+  ['workspace.memory.read', '已调用工具'],
+  ['cloud_mcp_call', '已调用工具'],
+  ['web_search', '已搜索网页'],
+  ['web.search', '已搜索网页'],
+  ['web_fetch', '已访问网页'],
+  ['web.fetch', '已访问网页'],
+  ['apply_patch', '修改了文件'],
+])('keeps %s in the native activity category', (toolName, expected) => {
+  expect(workProcessTitle([call(1, { toolName })], false)).toBe(expected);
+});
+
+it('joins fixed locale actions without interpreting title text', () => {
+  expect(
+    workProcessTitle(
+      [call(1, { toolName: 'read' }), call(2, { toolName: 'web_search' })],
+      false,
+    ),
+  ).toBe('已读取文件并搜索网页');
+  expect(
+    workProcessTitle(
+      [call(1, { toolName: 'edit' }), call(2, { toolName: 'read' })],
+      false,
+    ),
+  ).toBe('修改了文件并已读取文件');
+  expect(
+    workProcessTitle(
+      [call(1, { toolName: 'read' }), call(2, { toolName: 'todo_write' })],
+      false,
+    ),
+  ).toBe('已读取文件并更新了计划');
+  expect(
+    workProcessTitle(
+      [
+        call(1, { kind: 'compaction', title: '已整理上下文' }),
+        call(2, { toolName: 'read' }),
+      ],
+      false,
+    ),
+  ).toBe('已整理上下文并已读取文件');
 });

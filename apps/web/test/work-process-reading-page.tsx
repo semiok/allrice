@@ -11,6 +11,7 @@ import '../app/dsh-upstream/base.css';
 
 type Stage = 'initial' | 'prefix' | 'split' | 'merge' | 'append';
 const at = new Date().toISOString();
+const memoryScenario = new URLSearchParams(location.search).has('memory');
 const longField = '核对这次对外发送的内容及附件。'.repeat(60);
 const longOutput = Array.from(
   { length: 160 },
@@ -81,6 +82,34 @@ function eventsFor(runId: string): ChatFlowEventEnvelope[] {
       payload,
     });
   };
+  if (memoryScenario) {
+    for (let i = 0; i < 5; i++) {
+      add('harness.native', {
+        presentation: 'compaction',
+        status: 'completed',
+        label: '工具结果已精简',
+      });
+      events.at(-1)!.sourceEvent = {
+        id: `prune-${i}`,
+        type: 'compaction/prune',
+        occurredAt: at,
+        payload: { entries: [], tokensPruned: 100 },
+      };
+    }
+    add('tool.started', {
+      toolCallId: 'memory',
+      name: 'workspace.memory.remember',
+    });
+    add('tool.completed', {
+      toolCallId: 'memory',
+      name: 'workspace.memory.remember',
+    });
+    add('assistant.text.completed', {
+      replyId: 'answer',
+      text: '这次记忆请求已处理。',
+    });
+    return events;
+  }
   if (stage !== 'initial')
     add('harness.native', { presentation: 'think', status: 'completed' });
   for (let i = 0; i < (appended ? 37 : 36); i++) {
@@ -114,10 +143,13 @@ declare global {
 window.readingWrites = [];
 window.fetch = async (input, init) => {
   const url = String(input);
+  if (memoryScenario && url.startsWith('/api/v1/memories?'))
+    return Response.json({ memories: [] });
   if (url.startsWith('/api/v1/runtime/cloud-operations'))
     return Response.json({
-      operations: Array.from({ length: appended ? 37 : 36 }, (_, i) =>
-        operation(i),
+      operations: Array.from(
+        { length: memoryScenario ? 0 : appended ? 37 : 36 },
+        (_, i) => operation(i),
       ),
     });
   if (url.startsWith('/api/v1/runtime/approvals/')) {
@@ -132,7 +164,11 @@ const column = createRef<HTMLDivElement>();
 const user: Message = {
   id: 'user',
   role: 'user',
-  content: { text: '帮我核对这些资料，发送之前先给我看。' },
+  content: {
+    text: memoryScenario
+      ? '我喜欢的球队是利物浦，记下来'
+      : '帮我核对这些资料，发送之前先给我看。',
+  },
   status: 'completed',
   runId: null,
   createdAt: at,
@@ -154,16 +190,23 @@ function Fixture() {
     <main
       data-stage={current}
       data-run={run}
-      style={{ maxWidth: 780, margin: '0 auto', padding: 16 }}
+      style={{
+        maxWidth: 780,
+        margin: '0 auto',
+        padding: 16,
+        fontFamily: 'var(--dsw-font-family)',
+      }}
     >
-      <label>
-        另外阅读的位置 <input aria-label="另外阅读的位置" />
-      </label>
+      {!memoryScenario && (
+        <label>
+          另外阅读的位置 <input aria-label="另外阅读的位置" />
+        </label>
+      )}
       {mounted && (
         <ChatTranscript
           atBottom
           streamingOutput
-          transcriptView="detailed"
+          transcriptView={memoryScenario ? 'standard' : 'detailed'}
           collapseTiming="completion"
           messages={[
             user,
@@ -172,7 +215,11 @@ function Fixture() {
               id: 'assistant',
               role: 'assistant',
               runId: run,
-              content: { text: '最后结论保留在这里。' },
+              content: {
+                text: memoryScenario
+                  ? '这次记忆请求已处理。'
+                  : '最后结论保留在这里。',
+              },
             },
           ]}
           runTraces={{ [run]: { status: 'loaded', events } }}

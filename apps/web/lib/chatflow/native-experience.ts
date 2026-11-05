@@ -81,6 +81,9 @@ export function projectNativeExperience(events: ChatFlowEventEnvelope[]) {
       }
     }
     if (event.type === 'harness.native') {
+      // DSH Chat excludes internal pruning from visible process nodes.
+      // Filter the view only: durable events remain available for replay/audit.
+      if (event.sourceEvent?.type === 'compaction/prune') continue;
       const kind = event.payload.presentation as NativeExperienceKind;
       if (
         ![

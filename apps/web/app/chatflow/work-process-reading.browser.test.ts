@@ -1,5 +1,6 @@
 /** Normal transcript updates in Chrome; synthetic HTTP, no DB/auth/model. */
 import { createRequire } from 'node:module';
+import { mkdir } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type {
@@ -123,6 +124,53 @@ suite('reading a receipt while late native trace changes its group', () => {
       .getByRole('button', { name: '技术详情', exact: true })
       .click();
     await output(page).waitFor();
+  }
+  for (const width of [1440, 390]) {
+    it(`shows one memory step without internal pruning at ${width}px, including reload`, async () => {
+      const page = await browser.newPage({ viewport: { width, height: 900 } });
+      try {
+        await page.goto(`${origin}/?memory`);
+        for (let replay = 0; replay < 2; replay++) {
+          await processOf(page)
+            .locator('[data-disclosure-row]')
+            .first()
+            .click();
+          const group = page.getByRole('region', {
+            name: '工作步骤',
+            exact: true,
+          });
+          await group
+            .getByRole('button', { name: '已调用工具', exact: true })
+            .click();
+          expect(await group.locator('li').count()).toBe(1);
+          expect(await group.innerText()).toContain('记忆');
+          expect(await group.innerText()).toContain('整理工作记忆');
+          expect(
+            await page.getByText('工具结果已精简', { exact: true }).count(),
+          ).toBe(0);
+          expect(
+            await page
+              .getByText('这次记忆请求已处理。', { exact: true })
+              .count(),
+          ).toBe(1);
+          expect(await page.locator('body').innerText()).not.toContain('6 项');
+          expect(
+            await page
+              .getByText('记忆读取失败，请重新读取。', { exact: true })
+              .count(),
+          ).toBe(0);
+          expect(await page.evaluate(() => window.readingWrites)).toEqual([]);
+          if (replay === 0) await page.reload();
+        }
+        await mkdir('.local/process-prune-screenshots', { recursive: true });
+        await page.screenshot({
+          path: `.local/process-prune-screenshots/memory-${width}.png`,
+          fullPage: true,
+        });
+      } finally {
+        await page.close();
+      }
+    });
   }
   for (const width of [1440, 390]) {
     it(`keeps the expanded field's semantic focus and sends one approval at ${width}px`, async () => {
@@ -450,7 +498,9 @@ suite('reading a receipt while late native trace changes its group', () => {
     const page = await open(390);
     try {
       const group = () =>
-        processOf(page).getByRole('button', { name: /项$/ }).first();
+        processOf(page)
+          .getByRole('button', { name: '已调用工具', exact: true })
+          .first();
       await group().focus();
       await page.keyboard.press('Enter');
       const later = card(page, 30);
@@ -483,7 +533,11 @@ suite('reading a receipt while late native trace changes its group', () => {
   it('keeps the native group title focused and keyboard-operable after prefix and merge', async () => {
     const page = await open(390);
     try {
-      const groups = () => processOf(page).getByRole('button', { name: /项$/ });
+      const groups = () =>
+        processOf(page).getByRole('button', {
+          name: '已调用工具',
+          exact: true,
+        });
       await groups().first().focus();
       await page.keyboard.press('Enter');
       await update(page, 'prefix');
@@ -554,7 +608,11 @@ suite('reading a receipt while late native trace changes its group', () => {
   it('inherits the open group choice when an appended member later splits into its own group', async () => {
     const page = await open(390);
     try {
-      const groups = () => processOf(page).getByRole('button', { name: /项$/ });
+      const groups = () =>
+        processOf(page).getByRole('button', {
+          name: '已调用工具',
+          exact: true,
+        });
       await groups().first().click();
       await update(page, 'append');
       expect(await groups().first().getAttribute('aria-expanded')).toBe('true');
@@ -633,7 +691,11 @@ suite('reading a receipt while late native trace changes its group', () => {
   it('keeps the original 360px group, inherits expansion after split and releases choices for a Run or unmount', async () => {
     const page = await open(390);
     try {
-      const group = () => processOf(page).getByRole('button', { name: /项$/ });
+      const group = () =>
+        processOf(page).getByRole('button', {
+          name: '已调用工具',
+          exact: true,
+        });
       await group().first().click();
       const list = processOf(page).locator('ul[aria-label="工作步骤"]').first();
       expect(
