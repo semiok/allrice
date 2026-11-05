@@ -3,14 +3,259 @@ import { randomUUID } from 'node:crypto';
 import { experiencePolicySchedule } from '@allrice/contracts';
 import type { P27CodexWorkerFixture } from '../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
 import { prepareEmployeeInstanceSnapshot } from './employees/employee-instances.ts';
-import { collectPendingExperienceEvidence } from './experience-evidence.ts';
-import {
-  reserveExperienceOccurrenceInTransaction,
-  readExperiencePolicy,
-  type ExperienceScheduleRule,
-} from './experience-consolidation.ts';
-import { nextScheduleAt } from './execution/automation.ts';
+import { seedHistoricalExperienceSource } from './experience-history.fixture.ts';
+import { readExperiencePolicy } from './experience-consolidation.ts';
+
 import { runtimePolicyDigest } from './runtime-policy.ts';
+import { createNativeRecurringSqlStore } from './native-schedule-recurring-sql.ts';
+import { lockNativeRecurringAdmissions } from './native-schedule-recurring-product.ts';
+import { lockExperienceCalendarAdmissions } from './experience-native.ts';
+import {
+  NativeCalendarControlSchema,
+  NativeCalendarRevisionSchema,
+  type NativeCalendarWrite,
+} from './native-schedule-calendar-state.ts';
+import {
+  calendarPlanFor,
+  insertCalendarPlanInTransaction,
+} from './native-schedule-calendar-business.ts';
+import {
+  nativeOnceDigest,
+  type NativeOnceReference,
+  type NativeOnceTask,
+} from './native-schedule-once-state.ts';
+
+/** Build an explicit pre-retirement native receipt in disposable SQL only.
+ * The synthetic historical gate ends before returning; all test actions use
+ * the real retired-consumer gate. No product switch, Host or model is used. */
+export async function seedHistoricalExperienceCalendar(
+  f: P27CodexWorkerFixture,
+  automationId: string,
+  reference: NativeOnceReference,
+) {
+  const ready = {
+    enabled: true,
+    storageReady: true,
+    legacyClockExcluded: true,
+    controlArtifactApproved: true,
+  };
+  const [rule] =
+    await f.db`select * from allrice_automations where id=${automationId}`;
+  if (!/^p25_[a-f0-9]{32}$/.test(f.schema) || !rule?.experience_binding)
+    throw Error('historical_calendar_requires_isolated_fixture');
+  const policy = await readExperiencePolicy(f.organizationId);
+  const now = new Date();
+  const c = NativeCalendarControlSchema.parse({
+    kind: 'calendar',
+    binding: 'rotating-at-v1',
+    partitionId: 'allrice-recurring-v1',
+    controlId: randomUUID(),
+    organizationId: f.organizationId,
+    workspaceId: f.workspaceId,
+    ownerId: f.ownerId,
+    automationId,
+    revision: Number(rule.revision),
+    controlSessionId: `calendar-${randomUUID()}`,
+    reference,
+    sessionState: 'reserved',
+    nativeTaskId: null,
+    dispatch: {
+      consumer: 'experience-consolidation-v1',
+      employeeAssignmentId: f.assignmentId,
+      employeeInstanceId: rule.experience_binding.instanceId,
+    },
+  });
+  const reservation = {
+    consumer: 'experience-consolidation-v1',
+    automationId,
+    revision: c.revision,
+    schedule: rule.schedule,
+    organizationId: f.organizationId,
+    workspaceId: f.workspaceId,
+    ownerId: f.ownerId,
+    employeeAssignmentId: f.assignmentId,
+    employeeInstanceId: rule.experience_binding.instanceId,
+    policyRevision: policy.revision,
+    policyDigest: runtimePolicyDigest(policy),
+  };
+  const v = NativeCalendarRevisionSchema.parse({
+    kind: 'calendar',
+    binding: 'rotating-at-v1',
+    consumer: 'experience-consolidation-v1',
+    revision: c.revision,
+    ruleRevision: c.revision,
+    schedule: rule.schedule,
+    policyRevision: policy.revision,
+    policyDigest: runtimePolicyDigest(policy),
+    reservationDigest: nativeOnceDigest(reservation),
+    acceptedAt: now.toISOString(),
+  });
+  await f.db`insert into allrice_native_once_partitions(partition_id,reference,activation)
+    values('allrice-recurring-v1',${f.db.json(reference)},${f.db.json(ready)})`;
+  let historical = true;
+  const store = createNativeRecurringSqlStore({
+    db: f.db,
+    partitionId: 'allrice-recurring-v1',
+    ownerId: randomUUID(),
+    reference,
+    ttlMs: 300000,
+    readiness: () => ready,
+    decodeTask: (value) => structuredClone(value) as NativeOnceTask,
+    lockAdmission: lockNativeRecurringAdmissions,
+    calendar: {
+      enabled: true,
+      lockAdmission: async (tx, controls, purpose) => {
+        if (!historical)
+          return lockExperienceCalendarAdmissions(tx, controls, purpose);
+        if (controls.some((control) => control.controlId !== c.controlId))
+          throw Error('historical_fixture_scope');
+        return new Map(
+          controls.map((control) => [
+            control.controlId,
+            {
+              allowed: true,
+              currentRevision: v.revision,
+              policyRevision: policy.revision,
+              policyDigest: runtimePolicyDigest(policy),
+              status: 'enabled' as const,
+              resumeAfter: null,
+            },
+          ]),
+        );
+      },
+    },
+    proveClosed: async () => null,
+  });
+  const writer = (await store.acquireWriter())!.writer,
+    calendar = store.calendar!;
+  const plan = calendarPlanFor(c, v, rule.next_run_at, now, {
+    kind: 'handoff',
+  });
+  let current = await f.db.begin(async (tx) => {
+    await calendar.initializeControlInTransaction(tx, {
+      control: c,
+      revision: v,
+    });
+    await tx`update allrice_automations set clock_owner='native_recurring',native_recurring_request_id=id,
+      native_recurring_request_digest=${v.reservationDigest},native_recurring_revision=${v.revision},
+      native_recurring_resume_after=${new Date(rule.next_run_at.getTime() - 1)} where id=${automationId}`;
+    await insertCalendarPlanInTransaction(tx, plan);
+    return calendar.prepareCalendarPeriodInTransaction(tx, writer, {
+      controlId: c.controlId,
+      expectedRevision: v.revision,
+      periodId: plan.periodId,
+      armId: plan.initialArmId,
+      businessScheduledFor: plan.businessScheduledFor,
+      nativeAt: plan.businessScheduledFor,
+      reason: 'business_target',
+      planId: plan.periodId,
+    });
+  });
+  const write = (
+    mutation: NativeCalendarWrite['mutation'],
+  ): NativeCalendarWrite => ({
+    writeId: randomUUID(),
+    digest: nativeOnceDigest(mutation),
+    mutation,
+  });
+  for (const [action, version] of [
+    ['session_initializing', 0],
+    ['session_ready', 1],
+  ] as const)
+    await store.commitMutation(
+      writer,
+      write({
+        kind: 'calendar',
+        action,
+        controlId: c.controlId,
+        expectedControlVersion: version,
+      }),
+    );
+  const absent = await calendar.confirmCalendarArmAbsent(writer, {
+    periodId: current.period.periodId,
+    armId: current.arm.armId,
+    requestDigest: current.arm.requestDigest,
+    expectedPeriodVersion: current.period.version,
+    expectedArmVersion: current.arm.snapshotVersion,
+    taskRecords: await store.loadTaskRecords(writer),
+  });
+  current = await calendar.prepareCalendarArm(writer, {
+    periodId: absent.period.periodId,
+    previousArmId: absent.arm.armId,
+    expectedPeriodVersion: absent.period.version,
+    expectedArmVersion: absent.arm.snapshotVersion,
+    armId: randomUUID(),
+    nativeAt: new Date(Date.now() + 60000).toISOString(),
+  });
+  current = await calendar.beginCalendarArmCreate(writer, {
+    periodId: current.period.periodId,
+    armId: current.arm.armId,
+    requestDigest: current.arm.requestDigest,
+    expectedPeriodVersion: current.period.version,
+    expectedArmVersion: current.arm.snapshotVersion,
+  });
+  let task: NativeOnceTask = {
+    sessionId: c.controlSessionId,
+    status: 'active',
+    record: {
+      id: randomUUID(),
+      kind: 'at',
+      scheduledAt: current.arm.nativeAt,
+      title: 'Synthetic historical calendar',
+      prompt: 'No model. Synthetic historical receipt only.',
+    },
+  };
+  async function put() {
+    const w = write({
+      kind: 'calendar',
+      action: 'put_task',
+      controlId: c.controlId,
+      periodId: current.period.periodId,
+      armId: current.arm.armId,
+      requestDigest: current.arm.requestDigest,
+      expectedPeriodVersion: current.period.version,
+      expectedArmVersion: current.arm.snapshotVersion,
+      task,
+    });
+    if ((await store.commitMutation(writer, w)) !== 'committed')
+      throw Error('historical_fixture_commit_failed');
+    const exact = await calendar.readExactCalendarArm(
+      current.arm.armId,
+      current.arm.requestDigest,
+    );
+    if (exact.state !== 'bound') throw Error('historical_fixture_not_bound');
+    current = { period: exact.period, arm: exact.arm };
+    return w;
+  }
+  await put();
+  const delivery = {
+    scheduledAt: current.arm.nativeAt,
+    deliveredAt: new Date(
+      Date.parse(current.arm.nativeAt) + 1000,
+    ).toISOString(),
+    messageId: randomUUID(),
+  };
+  task = {
+    ...task,
+    status: 'inactive',
+    lastDelivery: delivery,
+    deliveryHistory: {
+      records: [{ ...delivery, prompt: task.record.prompt }],
+      earlierRecordsUnavailable: false,
+    },
+  };
+  const receiptWrite = await put();
+  historical = false;
+  return {
+    store,
+    writer,
+    control: c,
+    revision: v,
+    period: current.period,
+    arm: current.arm,
+    receiptWrite,
+  };
+}
 
 export async function captureCalendarFixtureSource(
   f: P27CodexWorkerFixture,
@@ -43,7 +288,7 @@ export async function captureCalendarFixtureSource(
     session_id,user_message_id,assistant_message_id,status,completed_at,provider_snapshot,prompt_snapshot,execution_snapshot,experience_capture_state)
     values(${runId},${f.organizationId},${f.workspaceId},${f.ownerId},${f.assignmentId},${f.employeeVersionId},${session.id},${messageId},${assistantId},
       'succeeded',clock_timestamp(),'{}','{}',${f.db.json({ instance, personalSkills: { skills: [] } })},'pending')`;
-  await collectPendingExperienceEvidence({ database: f.db });
+  await seedHistoricalExperienceSource(f.db, runId);
   const [source] = await f.db<
     { memory_id: string }[]
   >`select memory_id from allrice_experience_reviews
@@ -60,7 +305,7 @@ export async function captureCalendarFixtureSource(
 
 export async function seedExperienceCalendarRule(
   f: P27CodexWorkerFixture,
-  mode: 'empty' | 'queued' | 'budget',
+  mode: 'empty' | 'queued',
 ) {
   const policy = await readExperiencePolicy(f.organizationId);
   if (policy.frequency === 'off') throw Error('calendar_fixture_policy_off');
@@ -70,7 +315,7 @@ export async function seedExperienceCalendarRule(
   >`select id from allrice_employee_instances
     where assignment_id=${f.assignmentId} and owner_id=${f.ownerId} and archived_at is null`;
   if (!instance) throw Error('calendar_fixture_instance_missing');
-  let source =
+  const source =
     mode === 'empty'
       ? null
       : await captureCalendarFixtureSource(f, instance.id);
@@ -81,31 +326,6 @@ export async function seedExperienceCalendarRule(
     values(${automationId},${f.organizationId},${f.workspaceId},${f.ownerId},'Isolated original experience calendar',
       'Only use already captured private evidence','schedule',${f.db.json(schedule)},'enabled','new_each_run',${f.assignmentId},${P},
       ${f.db.json({ schemaVersion: 1, instanceId: instance.id, policyDigest: runtimePolicyDigest(policy) })})`;
-  let legacyOccurrenceId: string | null = null;
-  if (mode === 'budget') {
-    // A real old legacy reservation consumes the ORIGINAL instance quota.
-    // Advance by the original calendar rule from its saved, still overdue P.
-    legacyOccurrenceId = await f.db.begin(async (tx) => {
-      await tx`select pg_advisory_xact_lock(hashtextextended(${`experience-policy:${f.organizationId}`},183))`;
-      const [rule] = await tx<
-        ExperienceScheduleRule[]
-      >`select * from allrice_automations where id=${automationId} for update`;
-      if (!rule) throw Error('calendar_fixture_legacy_rule_missing');
-      const reserved = await reserveExperienceOccurrenceInTransaction(
-        tx,
-        rule,
-        P,
-      );
-      if (reserved.outcome !== 'queued')
-        throw Error(`calendar_fixture_legacy_reservation_${reserved.outcome}`);
-      // Explicit historical metadata: the original reservation already advanced P.
-      await tx`update allrice_automations set next_run_at=${nextScheduleAt(schedule, P)},last_run_at=clock_timestamp(),updated_at=clock_timestamp() where id=${rule.id}`;
-      return reserved.automationRunId;
-    });
-    if (!legacyOccurrenceId)
-      throw Error('calendar_fixture_legacy_reservation_missing');
-    source = await captureCalendarFixtureSource(f, instance.id);
-  }
   const [saved] = await f.db<
     { next_run_at: Date }[]
   >`select next_run_at from allrice_automations where id=${automationId}`;
@@ -115,7 +335,7 @@ export async function seedExperienceCalendarRule(
     automationId,
     instanceId: instance.id,
     source,
-    legacyOccurrenceId,
+    legacyOccurrenceId: null,
     P: saved.next_run_at,
   };
 }

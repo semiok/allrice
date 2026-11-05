@@ -11,7 +11,7 @@ import type { TransactionSql as Tx } from 'postgres';
 import { AutomationScheduleSchema } from '@allrice/contracts';
 import { readContentPrincipal } from './content-maintenance.ts';
 import { scheduleIdentity } from './native-schedule-authority.ts';
-import { experienceReviewEnabled, ExperienceError } from './experience.ts';
+import { ExperienceError } from './experience.ts';
 import { DataAccessError } from './data.ts';
 import { EmployeeInstanceError } from './employees/employee-instances.ts';
 import { PersonalSkillError } from './employees/personal-skills.ts';
@@ -78,10 +78,10 @@ const instant = async (tx: Tx) => {
   requireCalendar(r, 'database_time_missing');
   return r.now;
 };
-export const experienceNativeCalendarEnabled = () =>
-  experienceReviewEnabled() &&
-  process.env.ALLRICE_NATIVE_RECURRING_ENABLED === '1' &&
-  process.env.ALLRICE_NATIVE_CALENDAR_ENABLED === '1';
+/** Permanently close only this retired consumer's existing admission switch.
+ * The shared dispatcher retains its receipts without claiming them. Do not
+ * manufacture authority_blocked decisions: SQL requires actual revocation. */
+export const experienceNativeCalendarEnabled = (): boolean => false;
 
 /** Same business order as policy updates: principal -> advisory183 -> original
  * automation -> current policy/instance. No native partition lock is held yet. */
@@ -134,7 +134,9 @@ async function lockBusiness(
     status: rule?.deleted_at ? 'deleted' : (rule?.status ?? 'deleted'),
     resumeAfter: rule?.native_recurring_resume_after?.toISOString() ?? null,
   };
-  return { rule, policy, admission };
+  // This consumer is retired. Keep the original business lock order and
+  // facts, but deny both initialization and retained native receipts.
+  return { rule, policy, admission: { ...admission, allowed: false } };
 }
 export async function lockExperienceCalendarAdmissions(
   tx: Tx,
@@ -524,6 +526,9 @@ export async function dispatchExperienceCalendarNative(
   workerId: string,
   tokenDigest: string,
 ) {
+  // Direct callers must not bypass the shared dispatcher's disabled-consumer
+  // check or attempt a cancellation without the original SQL proof.
+  if (!experienceNativeCalendarEnabled()) throw new ExperienceError('disabled');
   const gate = await lockBusiness(tx, c, 'native');
   requireCalendar(gate.rule, 'business_missing');
   await tx`select 1 from allrice_native_once_partitions where partition_id=${PARTITION} for update`;
