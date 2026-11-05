@@ -132,7 +132,7 @@ export async function authorizePersonalSkillUpdate(
 }
 /** Every binding is part of the version change, including disabled and other
  * workspaces. Fail the whole preview if any scope is no longer authorized. */
-async function impact(
+export async function personalSkillUpdateImpact(
   tx: ContentTx,
   scope: ContentIdentity,
   id: string,
@@ -205,7 +205,12 @@ export async function previewPersonalSkillUpdateTarget(
       row.current_version_id !== target.expectedVersionId
     )
       throw new PersonalSkillError('conflict');
-    const bindings = await impact(tx, context, row.id, false);
+    const bindings = await personalSkillUpdateImpact(
+      tx,
+      context,
+      row.id,
+      false,
+    );
     if (
       !bindings.some(
         (binding) => binding.instanceId === instanceId && binding.enabled,
@@ -261,7 +266,7 @@ async function stage(
     throw new PersonalSkillError('conflict');
   if (candidate.definition.name !== row.name)
     throw new PersonalSkillError('name_conflict');
-  const bindings = await impact(tx, scope, id);
+  const bindings = await personalSkillUpdateImpact(tx, scope, id);
   const source = PersonalSkillSourceSchema.parse(candidate.source);
   const definition = PersonalSkillDefinitionSchema.parse(candidate.definition);
   const digest = runtimePolicyDigest(definition);
@@ -606,8 +611,9 @@ export async function personalSkillVersionFromChat(input: EmployeeChatCall) {
         row.state !== 'installed' ||
         row.revision !== preview.expectedRevision ||
         row.version !== preview.fromVersion ||
-        runtimePolicyDigest(await impact(tx, scope, row.id)) !==
-          runtimePolicyDigest(preview.bindings)
+        runtimePolicyDigest(
+          await personalSkillUpdateImpact(tx, scope, row.id),
+        ) !== runtimePolicyDigest(preview.bindings)
       )
         throw new PersonalSkillError('conflict');
       const candidate = operation.candidate as Candidate;

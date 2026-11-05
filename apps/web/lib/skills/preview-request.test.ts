@@ -1,7 +1,36 @@
 import { describe, expect, it } from 'vitest';
-import { readSkillPreviewRequest } from './preview-request';
+import {
+  readSkillPreviewRequest,
+  readSkillConfirmationRequest,
+} from './preview-request';
 
 describe('bounded browser Skill source requests', () => {
+  it('reads bounded confirmation JSON and refuses oversized or malformed bodies', async () => {
+    const request = (body: BodyInit, length?: string) =>
+      new Request('http://localhost/confirm', {
+        method: 'POST',
+        body,
+        headers: {
+          'content-type': 'application/json',
+          ...(length ? { 'content-length': length } : {}),
+        },
+      });
+    expect(
+      await readSkillConfirmationRequest(request('{"requestId":"example"}')),
+    ).toEqual({ requestId: 'example' });
+    await expect(
+      readSkillConfirmationRequest(request('{}', '11000000')),
+    ).rejects.toThrow('source_invalid');
+    await expect(
+      readSkillConfirmationRequest(request('x'.repeat(11_000_000), '2')),
+    ).rejects.toThrow('source_invalid');
+    await expect(
+      readSkillConfirmationRequest(request(new Uint8Array([0xff]))),
+    ).rejects.toThrow('preview_invalid');
+    await expect(readSkillConfirmationRequest(request('{'))).rejects.toThrow(
+      'preview_invalid',
+    );
+  });
   it('reads JSON source metadata without inventing archive bytes', async () => {
     const input = {
       source: { kind: 'github', url: 'https://github.com/acme/skills' },
