@@ -9,7 +9,7 @@ import {
 import {
   authorizePersonalSkillBrowser,
   confirmPersonalSkillBrowser,
-  readPersonalSkillBrowserReceipt,
+  preparePersonalSkillBrowserConfirmation,
   abandonPersonalSkillBrowserArchive,
   createStorageMetadata,
   runtimePolicyDigest,
@@ -90,29 +90,38 @@ export async function confirmPersonalSkillSource(
     definition: candidate.parsed.definition,
     resourceManifest: { ...payload, checksum: runtimePolicyDigest(payload) },
   };
-  const prior = await readPersonalSkillBrowserReceipt(context, confirmation);
-  if (prior) return prior;
-  const pending = await createStorageMetadata(context, {
-    id: objectId,
-    workspaceId: input.workspaceId,
-    category: 'memory',
-    mediaType: 'application/zip',
-    sizeBytes: bytes.length,
-    checksum: input.digest,
-    visibility: 'private',
-    retentionUntil: null,
-    immutable: false,
-  });
+  const completed = await preparePersonalSkillBrowserConfirmation(
+    context,
+    confirmation,
+  );
+  if (completed) return completed;
   const storage = getStorageAdapter();
+  let pending: Awaited<ReturnType<typeof createStorageMetadata>> | undefined;
   try {
+    pending = await createStorageMetadata(context, {
+      id: objectId,
+      workspaceId: input.workspaceId,
+      category: 'memory',
+      mediaType: 'application/zip',
+      sizeBytes: bytes.length,
+      checksum: input.digest,
+      visibility: 'private',
+      retentionUntil: null,
+      immutable: false,
+    });
     await storage.put(pending.object, new Blob([bytes]).stream());
     bounded.throwIfAborted();
     return await confirmPersonalSkillBrowser(context, confirmation);
   } finally {
     // Completed immutable objects are never claimed here. Pending duplicates,
-    // unchanged updates and rolled-back confirmations use existing cleanup.
+    // rolled-back confirmations use existing cleanup. Metadata creation can
+    // commit before its audit/response fails; claim that pending row too, but
+    // no bytes could have been written without receiving its descriptor.
     // If the DB cannot establish the state, leave the bytes intact and fail.
-    if (await abandonPersonalSkillBrowserArchive(context, objectId))
+    if (
+      (await abandonPersonalSkillBrowserArchive(context, objectId)) &&
+      pending
+    )
       await storage.delete(pending.object);
   }
 }
