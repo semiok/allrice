@@ -16,9 +16,15 @@ export function validateSceneSkillPackage(
   body: string,
   references: readonly EmployeeContentReference[],
 ) {
+  if (payload.frontmatter) {
+    try {
+      parseWorkflowSkillSections(body);
+    } catch {
+      throw new EmployeeContentError('workflow_invalid');
+    }
+  }
   try {
     validateSkillBundle(payload.bundle, body);
-    if (payload.frontmatter) parseWorkflowSkillSections(body);
     const declared = new Set(references.map(referenceKey));
     if (
       payload.resourceSources.some((source) =>

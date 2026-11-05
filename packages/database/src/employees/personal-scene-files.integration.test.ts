@@ -355,6 +355,7 @@ suite(
       const bundle = artifact.procedure.skillPackage.bundle;
       bundle.contentChecksum = skillBytesChecksum(artifact.procedure.body);
       const { checksum: _checksum, ...bundlePayload } = bundle;
+      void _checksum;
       bundle.checksum = skillBundleChecksum(bundlePayload);
       const saved = await install(s, artifact);
       expect(saved.preview.file.procedure.skillPackage.frontmatter).toEqual(
@@ -409,16 +410,20 @@ suite(
         skillBytesChecksum(invalid.procedure.body);
       const { checksum: _invalidChecksum, ...invalidPayload } =
         invalid.procedure.skillPackage.bundle;
+      void _invalidChecksum;
       invalid.procedure.skillPackage.bundle.checksum =
         skillBundleChecksum(invalidPayload);
-      expect(
-        (
-          await http(s, 'preview', {
-            workspaceId: s.workspaceId,
-            file: invalid,
-          })
-        ).status,
-      ).toBe(422);
+      const invalidResponse = await http(s, 'preview', {
+        workspaceId: s.workspaceId,
+        file: invalid,
+      });
+      expect(invalidResponse.status).toBe(422);
+      expect(await invalidResponse.json()).toMatchObject({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: '该技能不符合 workflow 规范。',
+        },
+      });
       expect(
         await getPersonalSceneSkill(
           s.owner,
