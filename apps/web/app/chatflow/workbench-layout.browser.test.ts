@@ -6924,7 +6924,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         if (status === 403) await f.page.keyboard.press('Escape');
         else
           await editor
-            .getByRole('button', { name: '关闭', exact: true })
+            .getByRole('button', { name: '返回员工详情', exact: true })
             .click();
         const denied = f.page.getByRole('dialog', {
           name: 'AI 员工详情',

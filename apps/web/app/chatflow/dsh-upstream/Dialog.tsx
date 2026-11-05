@@ -15,6 +15,7 @@ interface DshDialogProps {
   onBack?: () => void;
   backLabel?: string;
   closeDisabled?: boolean;
+  showCloseButton?: boolean;
   className?: string;
   bodyClassName?: string;
   initialFocusSelector?: string;
@@ -29,6 +30,7 @@ export function DshDialog({
   onBack,
   backLabel = '返回',
   closeDisabled = false,
+  showCloseButton = true,
   className = '',
   bodyClassName = '',
   initialFocusSelector,
@@ -158,14 +160,16 @@ export function DshDialog({
             {eyebrow ? <p>{eyebrow}</p> : null}
             <h2>{title}</h2>
           </div>
-          <button
-            aria-label="关闭"
-            onClick={onClose}
-            type="button"
-            disabled={closeDisabled}
-          >
-            ×
-          </button>
+          {showCloseButton ? (
+            <button
+              aria-label="关闭"
+              onClick={onClose}
+              type="button"
+              disabled={closeDisabled}
+            >
+              ×
+            </button>
+          ) : null}
         </header>
         <div className={`${styles.body} ${bodyClassName}`.trim()}>
           {children}
