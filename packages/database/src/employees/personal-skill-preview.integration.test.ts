@@ -306,7 +306,11 @@ suite('browser Skill source preview and confirmation', () => {
       );
       expect(response.status).toBe(200);
       expect(response.headers.get('cache-control')).toBe('private, no-store');
-      const body = await response.json();
+      const body = EmployeeSkillCatalogSchema.parse(await response.json());
+      expect(
+        EmployeeSkillCatalogSchema.safeParse({ ...body, content: 'private' })
+          .success,
+      ).toBe(false);
       expect(body.instanceId).toBe(id);
       expect(body.canInstall).toBe(true);
       const hidden = [
