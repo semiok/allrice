@@ -25,7 +25,10 @@ import {
 } from '../tenant-employees.ts';
 import { getEmployeeWorkspace } from '../workspace/service.ts';
 import { createEmployeeInstance } from './employee-instances.ts';
-import { savePlatformEmployeeDraft } from './platform-employees.ts';
+import {
+  savePlatformEmployeeDraft,
+  assignPublishedPlatformEmployeeToWorkspace,
+} from './platform-employees.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
 
 const browser = vi.hoisted(() => ({ context: null as RequestContext | null }));
@@ -412,6 +415,32 @@ suite('authenticated browser Skill source preview without installation', () => {
       await tx`insert into allrice_personal_skill_versions(id,organization_id,owner_id,installation_id,version,source,original_text,definition,definition_checksum) values(${version},${s.owner.organizationId},${s.owner.user.id},${id},1,${tx.json(source)},${originalText},${tx.json(definition)},${runtimePolicyDigest(definition)})`;
       await tx`insert into allrice_personal_skill_bindings(organization_id,workspace_id,owner_id,instance_id,installation_id,enabled) values(${s.owner.organizationId},${s.owner.workspaceId},${s.owner.user.id},${s.assigned.id},${id},true)`;
     });
+    const second = await createEmployeeInstance(s.owner.context, {
+      workspaceId: s.owner.workspaceId,
+      assignmentId: s.assigned.id,
+      requestId: randomUUID(),
+      profile: { name: 'Second private employee' },
+    });
+    const otherWorkspace = randomUUID();
+    await f.db`insert into allrice_workspaces(id,organization_id,slug,name) values(${otherWorkspace},${s.owner.organizationId},'second','Other workspace')`;
+    await f.db`insert into allrice_memberships(organization_id,workspace_id,user_id,role) values(${s.owner.organizationId},${otherWorkspace},${s.owner.user.id},'member')`;
+    await assignPublishedPlatformEmployeeToWorkspace(
+      source.definition.key,
+      otherWorkspace,
+    );
+    const otherContext = (await authenticateSession(
+      (await createSession(s.owner.user.id)).token,
+      {
+        organizationId: s.owner.organizationId,
+        workspaceId: otherWorkspace,
+      },
+    ))!;
+    const otherInstance = (
+      await getEmployeeWorkspace(otherContext, otherWorkspace)
+    ).employees.find((item) => item.employeeKey === source.definition.key)!;
+    await f.db`insert into allrice_personal_skill_bindings(organization_id,workspace_id,owner_id,instance_id,installation_id,enabled)
+      values(${s.owner.organizationId},${s.owner.workspaceId},${s.owner.user.id},${second.id},${id},true),
+      (${s.owner.organizationId},${otherWorkspace},${s.owner.user.id},${otherInstance.id},${id},false)`;
     const target = {
       operation: 'update',
       installationId: id,
@@ -430,10 +459,60 @@ suite('authenticated browser Skill source preview without installation', () => {
     const before = await counts();
     const response = await request(bytes);
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({
+    const preview = await response.json();
+    expect(preview).toMatchObject({
       operation: 'update',
       target,
     });
+    expect(preview.affectedBindings).toHaveLength(3);
+    expect(preview.affectedBindings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ instanceId: s.assigned.id, enabled: true }),
+        expect.objectContaining({
+          instanceId: second.id,
+          enabled: true,
+          label: 'Second private employee',
+        }),
+        expect.objectContaining({
+          instanceId: otherInstance.id,
+          workspaceId: otherWorkspace,
+          workspaceLabel: 'Other workspace',
+          enabled: false,
+        }),
+      ]),
+    );
+    expect(preview.target.bindingsDigest).toBe(
+      runtimePolicyDigest(preview.affectedBindings),
+    );
+    const recovered = new SkillPreviewTokens(key).verify(preview.previewId, {
+      organizationId: s.owner.organizationId,
+      workspaceId: s.owner.workspaceId,
+      ownerId: s.owner.user.id,
+      instanceId: s.assigned.id,
+      digest: preview.digest,
+    });
+    expect(recovered.preview.target).toEqual({
+      ...target,
+      bindingsDigest: runtimePolicyDigest(preview.affectedBindings),
+    });
+    // A binding change is independently attested even if a caller bypasses the
+    // normal mutation's installation revision increment in this fixture.
+    await f.db`update allrice_personal_skill_bindings set enabled=false,epoch=epoch+1 where instance_id=${second.id} and installation_id=${id}`;
+    const changed = await (await request(bytes)).json();
+    expect(changed.target.expectedRevision).toBe(1);
+    expect(changed.target.bindingsDigest).not.toBe(
+      preview.target.bindingsDigest,
+    );
+    await f.db`delete from allrice_memberships where organization_id=${s.owner.organizationId} and workspace_id=${otherWorkspace} and user_id=${s.owner.user.id}`;
+    const inaccessible = await request(bytes);
+    expect(inaccessible.status).toBe(403);
+    const denied = await inaccessible.json();
+    expect(denied).toMatchObject({
+      error: { code: 'AUTHORIZATION_DENIED', retryable: false },
+    });
+    expect(denied).not.toHaveProperty('affectedBindings');
+    expect(denied).not.toHaveProperty('previewId');
+    await f.db`insert into allrice_memberships(organization_id,workspace_id,user_id,role) values(${s.owner.organizationId},${otherWorkspace},${s.owner.user.id},'member')`;
     expect(
       (await request(bytes, { ...target, expectedRevision: 2 })).status,
     ).toBe(409);
