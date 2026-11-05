@@ -1,3 +1,5 @@
+import { assembleEmployeeKernel } from '../../../../apps/worker/src/employee-kernel.js';
+import { resolveEmployeeExecution } from './employeehub.ts';
 import { sceneSkillFixture } from './employee-scene-skills.fixture.ts';
 import type { RequestContext } from '@allrice/contracts';
 import {
