@@ -779,7 +779,7 @@ C3 拒收回执修复：原生公开 `remoteErrorOf`/RemoteError 的七个明确
 
 C3 云执行并发锁序修复（2026-10-31 Dev 已复现）：共用事务准入按既有 703 → runtime root → Job 顺序取得锁，与云 ledger 的 runtime root → Run/policy/Job 及队列完成顺序一致；可选 task clock 不存在时也先进入同一 root 行锁。有效 ask 的审批创建/批准经同一策略前置入口先锁 root；不能在已持 root 的云事务后取得 703。保留原租户、策略、当前 Run/Job/租约检查与锁模式，不吞异常、不重试，不改 DSH interrupt、ACK 或父子生命周期。归属门卫/租约；真实 PostgreSQL 的 cloud create/dispatch/start/heartbeat、有效 ask 的审批创建/批准与 Stop/prompt/空 poll 双事务回归见 `conversation/native-subagent-control.integration.test.ts`，同时保留 publication 并发与撤权拒绝。MET-225 更新“网页子级控制”行。
 
-### allrice-employee-documents-v1 (MET-246 M3)
+### `allrice-employee-documents-v1` (MET-246 M3)
 
 用户已批准 M3 及原生继承边界（2026-11-04）。复用 rc.2 公开 `systemPrompt.context(PromptContext)`，required、interpolate:false；只在已准入真人 root 的 `agent.ctx` 注册。公开 `PERSONA_PREFIX_SECTION` 同名遮蔽只移出 root 的 USER/个人 memory，保留部署给 child 的自身 persona。DSH 执行快照相等比较、更新、清空及恢复；不建 once 标记、历史重写器或 fork 过滤器。fork 按原生继承 root 已完成文档历史，此差异已获批准；child 自身 system/context、工具、审批/权限保持原合同。
 

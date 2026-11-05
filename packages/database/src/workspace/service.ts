@@ -1878,10 +1878,16 @@ async function prepareChatRunBinding(
   const transaction =
     database.kind === 'transaction' ? database.sql : undefined;
   // Scheduling/automation keeps its existing binding and recall semantics.
-  const memories = employeeDocuments ? [] : await recallForReply(
-    context, workspaceId, result.currentAssignment.employee_id, message.text,
-    sql, session.employee_instance_id ?? session.employee_assignment_id,
-  );
+  const memories = employeeDocuments
+    ? []
+    : await recallForReply(
+        context,
+        workspaceId,
+        result.currentAssignment.employee_id,
+        message.text,
+        sql,
+        session.employee_instance_id ?? session.employee_assignment_id,
+      );
   const { prepareEmployeeRunBinding } =
     await import('../employees/employeehub.ts');
   const binding = await prepareEmployeeRunBinding(

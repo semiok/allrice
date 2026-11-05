@@ -1671,7 +1671,10 @@ suite(
                 expect(reference).toBeTruthy();
                 expect(item.pin).toEqual(reference.pin);
                 expect(item).toHaveProperty('rule', reference.draft.rule);
-                expect(item).toHaveProperty('applicability', reference.draft.applicability);
+                expect(item).toHaveProperty(
+                  'applicability',
+                  reference.draft.applicability,
+                );
                 expect(reference.sources).toHaveLength(1);
                 const original = reference.sources[0]!;
                 expect(item).toHaveProperty('source', {
