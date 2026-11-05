@@ -46,8 +46,8 @@ async function expectMobileRoot(dialog: Locator) {
       y: rect.y,
       width: rect.width,
       height: rect.height,
-      viewportWidth: innerWidth,
-      viewportHeight: innerHeight,
+      viewportWidth: document.documentElement.clientWidth,
+      viewportHeight: document.documentElement.clientHeight,
       radius: getComputedStyle(node).borderRadius,
       font: getComputedStyle(heading).fontSize,
       line: getComputedStyle(heading).lineHeight,
@@ -64,6 +64,38 @@ async function expectMobileRoot(dialog: Locator) {
     font: '20px',
     line: '28px',
   });
+  console.info('U1 archive mobile root geometry', JSON.stringify(geometry));
+}
+async function expectMobileConfirmation(dialog: Locator) {
+  const card = await dialog.evaluate((node) => {
+    const rect = node.getBoundingClientRect();
+    const layoutWidth = document.documentElement.clientWidth;
+    return {
+      left: rect.left,
+      right: layoutWidth - rect.right,
+      width: rect.width,
+      height: rect.height,
+      layoutWidth,
+      layoutHeight: document.documentElement.clientHeight,
+      windowWidth: innerWidth,
+      radius: getComputedStyle(node).borderRadius,
+      font: getComputedStyle(node.querySelector('h2')!).fontSize,
+      line: getComputedStyle(node.querySelector('h2')!).lineHeight,
+      buttons: [...node.querySelectorAll('footer button')].map(
+        (button) => button.getBoundingClientRect().height,
+      ),
+    };
+  });
+  expect(card.left).toBe(20);
+  expect(card.right).toBe(20);
+  expect(card.width).toBe(card.layoutWidth - 40);
+  expect(card.height).toBeLessThan(card.layoutHeight - 40);
+  expect(card.radius).toBe('20px');
+  expect(card.font).toBe('20px');
+  expect(card.line).toBe('28px');
+  expect(card.buttons).toHaveLength(2);
+  for (const height of card.buttons) expect(height).toBeGreaterThanOrEqual(44);
+  console.info('U1 archive mobile confirmation geometry', JSON.stringify(card));
 }
 function instance(n: number, archived = false) {
   return EmployeeInstanceSchema.parse({
@@ -196,6 +228,7 @@ suite('U1 employee archive lifecycle', () => {
       generalEmpty?: boolean;
       sessionArchived?: boolean;
       failArchivedSessions?: boolean;
+      selectedRice?: boolean;
     } = {},
   ) {
     const page = await browser.newPage({
@@ -559,7 +592,7 @@ suite('U1 employee archive lifecycle', () => {
       );
     });
     await page.goto(
-      `${origin}/?session=${id(1)}${options.shared ? '&shared=1' : ''}${options.dark ? '&theme=dark' : ''}`,
+      `${origin}/?session=${id(options.selectedRice ? 2 : 1)}${options.shared ? '&shared=1' : ''}${options.dark ? '&theme=dark' : ''}`,
     );
     const openDetails = async (name = flowName) => {
       // Wait for the real workspace and transcript, not an instantaneous
@@ -697,16 +730,7 @@ suite('U1 employee archive lifecycle', () => {
         }));
         expect(card.font).toBe('20px');
         expect(card.line).toBe('28px');
-        if (width === 390) {
-          expect(card).toMatchObject({
-            x: 20,
-            width: 350,
-            radius: '20px',
-            font: '20px',
-            line: '28px',
-          });
-          expect(card.height).toBeLessThan(910);
-        }
+        if (width === 390) await expectMobileConfirmation(confirm);
         await confirm.screenshot({
           path: resolve(evidence, `archive-confirm-${width}.png`),
         });
@@ -1038,6 +1062,7 @@ suite('U1 employee archive lifecycle', () => {
       const f = await fixture({
         sessionArchived: true,
         failArchivedSessions: !retained,
+        selectedRice: true,
       });
       try {
         await f.page
@@ -1093,7 +1118,9 @@ suite('U1 employee archive lifecycle', () => {
         exact: true,
       });
       await heading.waitFor();
-      const row = dialog.locator('article').filter({ has: heading });
+      const row = dialog.locator('article').filter({
+        has: f.page.getByRole('heading', { name: '项目助理', exact: true }),
+      });
       expect(await row.locator('span[aria-hidden="true"]').textContent()).toBe(
         '项',
       );
@@ -1129,12 +1156,11 @@ suite('U1 employee archive lifecycle', () => {
   });
 
   it('uses the approved full-screen archive root through the 641 to 700 px mobile breakpoint', async () => {
-    const f = await fixture({ width: 680, archived: true });
+    const f = await fixture({ width: 680 });
     try {
-      await f.page
-        .getByRole('button', { name: '查看归档', exact: true })
-        .last()
-        .click();
+      const confirm = await f.begin();
+      await expectMobileConfirmation(confirm);
+      await confirm.getByRole('button', { name: '归档', exact: true }).click();
       const dialog = f.page.getByRole('dialog', {
         name: '已归档',
         exact: true,
