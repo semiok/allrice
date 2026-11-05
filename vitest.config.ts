@@ -20,6 +20,27 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      '@allrice/skill-import/personal-skill-import': fileURLToPath(
+        new URL(
+          './packages/skill-import/src/personal-skill-import.ts',
+          import.meta.url,
+        ),
+      ),
+      '@allrice/skill-import/personal-skill-package': fileURLToPath(
+        new URL(
+          './packages/skill-import/src/personal-skill-package.ts',
+          import.meta.url,
+        ),
+      ),
+      '@allrice/skill-import/personal-skill-github': fileURLToPath(
+        new URL(
+          './packages/skill-import/src/personal-skill-github.ts',
+          import.meta.url,
+        ),
+      ),
+      '@allrice/skill-import': fileURLToPath(
+        new URL('./packages/skill-import/src/index.ts', import.meta.url),
+      ),
       '@allrice/file-archives': fileURLToPath(
         new URL('./packages/file-archives/src/index.ts', import.meta.url),
       ),

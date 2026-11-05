@@ -1,0 +1,37 @@
+{
+  "name": "@allrice/skill-import",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./personal-skill-import": {
+      "types": "./dist/personal-skill-import.d.ts",
+      "default": "./dist/personal-skill-import.js"
+    },
+    "./personal-skill-package": {
+      "types": "./dist/personal-skill-package.d.ts",
+      "default": "./dist/personal-skill-package.js"
+    },
+    "./personal-skill-github": {
+      "types": "./dist/personal-skill-github.d.ts",
+      "default": "./dist/personal-skill-github.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@allrice/contracts": "workspace:*",
+    "@allrice/database": "workspace:*",
+    "@allrice/file-archives": "workspace:*",
+    "@deepseek-ai/cordis": "4.0.5",
+    "@deepseek-ai/dsh-skill-filesystem": "0.2.1-rc.2",
+    "zod": "^4.4.3"
+  }
+}

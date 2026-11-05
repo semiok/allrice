@@ -31,7 +31,9 @@
       "@allrice/database/technical-contracts": [
         "packages/database/src/platform-technical-contracts.ts"
       ],
-      "@allrice/file-archives": ["packages/file-archives/src/index.ts"]
+      "@allrice/file-archives": ["packages/file-archives/src/index.ts"],
+      "@allrice/skill-import": ["packages/skill-import/src/index.ts"],
+      "@allrice/skill-import/*": ["packages/skill-import/src/*.ts"]
     },
     "resolveJsonModule": true,
     "rewriteRelativeImportExtensions": true,
