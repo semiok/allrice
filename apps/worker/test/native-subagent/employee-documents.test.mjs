@@ -115,13 +115,15 @@ it('uses native context supersession for nonempty to empty without rewriting his
   expect(updates.length).toBeGreaterThan(1);
 }, 30000);
 
-
 it('cold root recovery keeps native history unchanged and the latest cleared snapshot current, without replay', async () => {
   const runId = randomUUID();
   const h = await host({
     runId,
     rootSystemInstructions: 'ROOT_STABLE',
-    employeeDocuments: { user: '# USER.md\nOLD_ROLE', memory: '# MEMORY.md\nWITHDRAWN_MEMORY' },
+    employeeDocuments: {
+      user: '# USER.md\nOLD_ROLE',
+      memory: '# MEMORY.md\nWITHDRAWN_MEMORY',
+    },
     bridge: async (method) => {
       if (method === 'allrice/run-authorize') return { allowed: true };
       throw Error(`Unexpected tool replay: ${method}`);
@@ -132,10 +134,20 @@ it('cold root recovery keeps native history unchanged and the latest cleared sna
   await h.server.handleRequest('run/end', { runId });
   const nextRun = randomUUID();
   const empty = { user: '', memory: '' };
-  await h.server.handleRequest('run/begin', { sessionId: h.root.id, runId: nextRun, employeeDocuments: empty });
-  await h.server.handleRequest('session/prompt', { sessionId: h.root.id, runId: nextRun, contentBlocks: text('撤回后的新任务') });
+  await h.server.handleRequest('run/begin', {
+    sessionId: h.root.id,
+    runId: nextRun,
+    employeeDocuments: empty,
+  });
+  await h.server.handleRequest('session/prompt', {
+    sessionId: h.root.id,
+    runId: nextRun,
+    contentBlocks: text('撤回后的新任务'),
+  });
   await h.wait();
-  const before = h.root.session.snapshotEvents().filter((e) => e.type === 'user/message');
+  const before = h.root.session
+    .snapshotEvents()
+    .filter((e) => e.type === 'user/message');
   expect(JSON.stringify(before)).toContain('WITHDRAWN_MEMORY');
   await h.server.closeRoot(h.root.id);
   await h.server.handleRequest('run/end', { runId: nextRun });
@@ -143,16 +155,29 @@ it('cold root recovery keeps native history unchanged and the latest cleared sna
   const recovered = h.server.requireRoot(h.root.id).agent;
   expect(recovered).not.toBe(h.root);
   const count = h.calls.length;
-  await h.server.handleRequest('run/begin', { sessionId: h.root.id, runId: nextRun, employeeDocuments: empty });
+  await h.server.handleRequest('run/begin', {
+    sessionId: h.root.id,
+    runId: nextRun,
+    employeeDocuments: empty,
+  });
   expect(h.calls.length).toBe(count);
-  await h.server.handleRequest('session/prompt', { sessionId: h.root.id, runId: nextRun, contentBlocks: text('恢复后继续') });
+  await h.server.handleRequest('session/prompt', {
+    sessionId: h.root.id,
+    runId: nextRun,
+    contentBlocks: text('恢复后继续'),
+  });
   await h.wait();
   expect(h.calls.length).toBe(count + 1);
-  const after = recovered.session.snapshotEvents().filter((e) => e.type === 'user/message');
+  const after = recovered.session
+    .snapshotEvents()
+    .filter((e) => e.type === 'user/message');
   for (const event of before) expect(after).toContainEqual(event);
   const request = h.calls.at(-1);
   const contexts = request.messages.filter((message) =>
-    JSON.stringify(message.content).includes('Current runtime context. This snapshot supersedes earlier runtime-context snapshots.'));
+    JSON.stringify(message.content).includes(
+      'Current runtime context. This snapshot supersedes earlier runtime-context snapshots.',
+    ),
+  );
   expect(contexts.length).toBeGreaterThan(1);
   expect(JSON.stringify(contexts.at(-1))).not.toContain('WITHDRAWN_MEMORY');
   expect(JSON.stringify(contexts.at(-1))).not.toContain('OLD_ROLE');

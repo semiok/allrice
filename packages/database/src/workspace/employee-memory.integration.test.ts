@@ -1,5 +1,8 @@
 import { freezeEmployeeDocuments } from '../employees/employee-documents.ts';
-import { assertEmployeeChatHumanSource, readEmployeeChatSourceKind } from '../employees/employee-chat-authority.ts';
+import {
+  assertEmployeeChatHumanSource,
+  readEmployeeChatSourceKind,
+} from '../employees/employee-chat-authority.ts';
 import { admitEmployeeDocuments } from '../../../../apps/worker/src/jobs/employee-document-admission.ts';
 import {
   prepareRunMemoryContext,
@@ -233,48 +236,113 @@ suite(
       const f = await setup();
       const input = { context: f.execution, userMessageId: f.messageId };
       await expect(readEmployeeChatSourceKind(input)).resolves.toBe('human');
-      await expect(assertEmployeeChatHumanSource(input)).resolves.toBeUndefined();
-      await expect(admitEmployeeDocuments({ ...input, documents: true })).resolves.toBe('human');
-      await expect(admitEmployeeDocuments({ ...input, documents: false })).rejects.toMatchObject({ code: 'MEMORY_CONTEXT_UNAVAILABLE', retryable: false });
+      await expect(
+        assertEmployeeChatHumanSource(input),
+      ).resolves.toBeUndefined();
+      await expect(
+        admitEmployeeDocuments({ ...input, documents: true }),
+      ).resolves.toBe('human');
+      await expect(
+        admitEmployeeDocuments({ ...input, documents: false }),
+      ).rejects.toMatchObject({
+        code: 'MEMORY_CONTEXT_UNAVAILABLE',
+        retryable: false,
+      });
       const missing = { ...input, userMessageId: randomUUID() };
-      await expect(readEmployeeChatSourceKind(missing)).resolves.toBe('unavailable');
-      await expect(assertEmployeeChatHumanSource(missing)).rejects.toMatchObject({ code: 'authorization_denied' });
+      await expect(readEmployeeChatSourceKind(missing)).resolves.toBe(
+        'unavailable',
+      );
+      await expect(
+        assertEmployeeChatHumanSource(missing),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
       for (const documents of [true, false])
-        await expect(admitEmployeeDocuments({ ...missing, documents })).rejects.toMatchObject({ code: 'MEMORY_CONTEXT_UNAVAILABLE' });
+        await expect(
+          admitEmployeeDocuments({ ...missing, documents }),
+        ).rejects.toMatchObject({ code: 'MEMORY_CONTEXT_UNAVAILABLE' });
       // A real durable internal producer, not a forged role=user or caller flag.
       await fixture.db`insert into allrice_platform_quality_checks(id,request_id,organization_id,workspace_id,owner_id,run_id,job_id,session_id,input_digest,frozen)
-        values(${randomUUID()},${randomUUID()},${f.org},${f.workspace},${f.user},${f.rootRunId},${f.worker.jobId},${f.session},${runtimePolicyDigest({fixture:true})},'{}')`;
+        values(${randomUUID()},${randomUUID()},${f.org},${f.workspace},${f.user},${f.rootRunId},${f.worker.jobId},${f.session},${runtimePolicyDigest({ fixture: true })},'{}')`;
       await expect(readEmployeeChatSourceKind(input)).resolves.toBe('internal');
-      await expect(assertEmployeeChatHumanSource(input)).rejects.toMatchObject({ code: 'authorization_denied' });
-      await expect(admitEmployeeDocuments({ ...input, documents: false })).resolves.toBe('internal');
-      await expect(admitEmployeeDocuments({ ...input, documents: true })).rejects.toMatchObject({ code: 'MEMORY_CONTEXT_UNAVAILABLE' });
-      const legacy = await createRunAuthorityFixture(fixture.db, { snapshot: (value) => ({ ...value, schemaVersion: 1 }) });
-      const [message] = await fixture.db`select user_message_id from allrice_employee_runs where run_id=${legacy.rootRunId}`;
-      const legacyInput = { context: { ...f.execution, runId: legacy.rootRunId, organizationId: legacy.org, workspaceId: legacy.workspace, policySnapshot: { ...f.execution.policySnapshot, subjectId: legacy.user } }, userMessageId: message!.user_message_id as string };
-      await expect(readEmployeeChatSourceKind(legacyInput)).resolves.toBe('unavailable');
-      await expect(assertEmployeeChatHumanSource(legacyInput)).rejects.toMatchObject({ code: 'authorization_denied' });
-      await expect(admitEmployeeDocuments({ ...legacyInput, documents: false })).rejects.toMatchObject({ code: 'MEMORY_CONTEXT_UNAVAILABLE' });
+      await expect(assertEmployeeChatHumanSource(input)).rejects.toMatchObject({
+        code: 'authorization_denied',
+      });
+      await expect(
+        admitEmployeeDocuments({ ...input, documents: false }),
+      ).resolves.toBe('internal');
+      await expect(
+        admitEmployeeDocuments({ ...input, documents: true }),
+      ).rejects.toMatchObject({ code: 'MEMORY_CONTEXT_UNAVAILABLE' });
+      const legacy = await createRunAuthorityFixture(fixture.db, {
+        snapshot: (value) => ({ ...value, schemaVersion: 1 }),
+      });
+      const [message] =
+        await fixture.db`select user_message_id from allrice_employee_runs where run_id=${legacy.rootRunId}`;
+      const legacyInput = {
+        context: {
+          ...f.execution,
+          runId: legacy.rootRunId,
+          organizationId: legacy.org,
+          workspaceId: legacy.workspace,
+          policySnapshot: {
+            ...f.execution.policySnapshot,
+            subjectId: legacy.user,
+          },
+        },
+        userMessageId: message!.user_message_id as string,
+      };
+      await expect(readEmployeeChatSourceKind(legacyInput)).resolves.toBe(
+        'unavailable',
+      );
+      await expect(
+        assertEmployeeChatHumanSource(legacyInput),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+      await expect(
+        admitEmployeeDocuments({ ...legacyInput, documents: false }),
+      ).rejects.toMatchObject({ code: 'MEMORY_CONTEXT_UNAVAILABLE' });
     });
 
-    it.each(['expiry', 'membership', 'instance'] as const)('rechecks %s before reusing a frozen document pin', async (change) => {
-      const f = await setup();
-      await f.create('恢复前已确认入口');
-      const scope = { ...f.scope, sessionId: f.session };
-      const [job] = await fixture.db`select attempt from allrice_jobs where id=${f.worker.jobId}`;
-      const auth = { scope, worker: { ...f.worker, attempt: job!.attempt as number } };
-      const frozen = await freezeEmployeeDocuments(fixture.db, { ...f.scope, instanceId: f.assignment }, {}, true);
-      await fixture.db`update allrice_employee_runs set status='running',memory_context_state='{"schemaVersion":1,"pending":true}' where run_id=${f.rootRunId}`;
-      await prepareRunMemoryContext(auth, frozen.memories, frozen.employeeDocuments.memory);
-      await assertRunMemoryContextCurrent(scope);
-      if (change === 'expiry')
-        await fixture.db`update allrice_memories set expires_at=clock_timestamp()-interval '1 second' where id=${frozen.memories[0]!.id}`;
-      else if (change === 'membership')
-        await fixture.db`update allrice_memberships set active=false where organization_id=${f.org} and user_id=${f.user}`;
-      else
-        await changeEmployeeInstanceLifecycle(f.context, f.assignment, { workspaceId: f.workspace, expectedRevision: 1, operation: 'archive', requestId: randomUUID() });
-      await expect(assertRunMemoryContextCurrent(scope)).rejects.toThrow();
-      await expect(readRunExperienceSource(auth, frozen.memories[0]!.sourceHandle!)).rejects.toThrow();
-    });
+    it.each(['expiry', 'membership', 'instance'] as const)(
+      'rechecks %s before reusing a frozen document pin',
+      async (change) => {
+        const f = await setup();
+        await f.create('恢复前已确认入口');
+        const scope = { ...f.scope, sessionId: f.session };
+        const [job] =
+          await fixture.db`select attempt from allrice_jobs where id=${f.worker.jobId}`;
+        const auth = {
+          scope,
+          worker: { ...f.worker, attempt: job!.attempt as number },
+        };
+        const frozen = await freezeEmployeeDocuments(
+          fixture.db,
+          { ...f.scope, instanceId: f.assignment },
+          {},
+          true,
+        );
+        await fixture.db`update allrice_employee_runs set status='running',memory_context_state='{"schemaVersion":1,"pending":true}' where run_id=${f.rootRunId}`;
+        await prepareRunMemoryContext(
+          auth,
+          frozen.memories,
+          frozen.employeeDocuments.memory,
+        );
+        await assertRunMemoryContextCurrent(scope);
+        if (change === 'expiry')
+          await fixture.db`update allrice_memories set expires_at=clock_timestamp() where id=${frozen.memories[0]!.id}`;
+        else if (change === 'membership')
+          await fixture.db`update allrice_memberships set active=false where organization_id=${f.org} and user_id=${f.user}`;
+        else
+          await changeEmployeeInstanceLifecycle(f.context, f.assignment, {
+            workspaceId: f.workspace,
+            expectedRevision: 1,
+            operation: 'archive',
+            requestId: randomUUID(),
+          });
+        await expect(assertRunMemoryContextCurrent(scope)).rejects.toThrow();
+        await expect(
+          readRunExperienceSource(auth, frozen.memories[0]!.sourceHandle!),
+        ).rejects.toThrow();
+      },
+    );
 
     it('owner pin order uses the same bounded selection, exact revision and idempotency without cross-instance writes', async () => {
       const f = await setup();

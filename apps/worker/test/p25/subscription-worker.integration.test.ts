@@ -29,7 +29,8 @@ import { LocalStorageAdapter } from '@allrice/storage';
 
 const status = vi.hoisted(() => ({
   quota: undefined as unknown,
-  frozenDocument: undefined as Awaited<ReturnType<typeof freezeEmployeeDocuments>> | undefined,
+  frozenDocument: undefined as
+    Awaited<ReturnType<typeof freezeEmployeeDocuments>> | undefined,
 }));
 vi.mock('@allrice/database', async (original) => {
   const database = await original<typeof Database>();
@@ -229,15 +230,23 @@ integration(
                 expiresAt: null,
               },
             );
+            await fixture.db`update allrice_employee_runs set method_authoring=true where run_id=${task.runId}`;
             // Freeze through the real document selector at the resolver test
             // boundary; production snapshot columns remain immutable.
-            status.frozenDocument = await freezeEmployeeDocuments(fixture.db, {
-              organizationId: fixture.context.organizationId,
-              workspaceId: fixture.workspaceId,
-              ownerId: fixture.context.actor.id,
-              instanceId: draftMemory.instanceId!,
-            }, {}, true);
-            expect(status.frozenDocument.memories.map((m) => m.id)).toEqual([ordinaryMemory.id]);
+            status.frozenDocument = await freezeEmployeeDocuments(
+              fixture.db,
+              {
+                organizationId: fixture.context.organizationId,
+                workspaceId: fixture.workspaceId,
+                ownerId: fixture.context.actor.id,
+                instanceId: draftMemory.instanceId!,
+              },
+              {},
+              true,
+            );
+            expect(status.frozenDocument.memories.map((m) => m.id)).toEqual([
+              ordinaryMemory.id,
+            ]);
           }
           if (
             images ||
