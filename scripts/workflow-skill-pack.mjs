@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseArgs, TextDecoder } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { parseDocument } from 'yaml';
+import { assertWorkflowSkillFrontmatter } from '../packages/skill-import/src/workflow-skill-frontmatter.ts';
 import {
   EmployeeContentReferenceSchema,
   EmployeeContentTextSchema,
@@ -128,35 +128,6 @@ function json(bytes, file) {
   }
 }
 
-function checkRepresentableFrontmatter(bytes) {
-  // Format inspection only. Native parsing below owns invocation semantics.
-  // The public Provider below remains authoritative for names and body parsing.
-  const lines = utf8(bytes, 'SKILL.md').split('\n');
-  const delimiter = (line) => (line.endsWith('\r') ? line.slice(0, -1) : line);
-  const end = lines.findIndex(
-    (line, index) => index > 0 && delimiter(line) === '---',
-  );
-  if (delimiter(lines[0]) !== '---' || end < 0)
-    fail('SKILL.md', 'expected YAML frontmatter delimited by ---');
-  // Inspect YAML with normalized line endings, including its last CRLF line.
-  // The native parser still receives the original file bytes below.
-  const document = parseDocument(lines.slice(1, end).map(delimiter).join('\n'));
-  if (document.errors.length)
-    fail('SKILL.md', `invalid YAML: ${document.errors[0].message}`);
-  objectKeys(
-    document.toJS(),
-    [
-      'name',
-      'description',
-      'whenToUse',
-      'metadata',
-      'disable-model-invocation',
-      'user-invocable',
-    ],
-    'SKILL.md frontmatter',
-  );
-}
-
 async function parseNativeSkill(bytes) {
   const [{ Context }, { FileSystemSkillProvider }] = await Promise.all([
     import(pathToFileURL(workerRequire.resolve('@deepseek-ai/cordis')).href),
@@ -212,7 +183,7 @@ export async function packWorkflowSkill({ directory, sceneId, title }) {
     'SKILL.md',
     personalSkillLimits.sourceBytes,
   );
-  checkRepresentableFrontmatter(skillBytes);
+  assertWorkflowSkillFrontmatter(skillBytes);
   const skill = await parseNativeSkill(skillBytes);
   if (Buffer.byteLength(skill.content) > personalSkillLimits.bodyBytes)
     fail('SKILL.md', 'body exceeds 262144 UTF-8 bytes');
