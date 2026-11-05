@@ -168,6 +168,11 @@ function catalogFor(mode: string): EmployeeSkillCatalog {
       ...skill,
       version: null,
     }));
+  if (mode === 'prefixed-version' || mode === 'author-version')
+    catalog.personalSkills = catalog.personalSkills.map((skill) => ({
+      ...skill,
+      version: mode === 'prefixed-version' ? 'v0.3.0' : 'release-candidate',
+    }));
   if (mode === 'github')
     catalog.personalSkills = catalog.personalSkills.map((skill) => ({
       ...skill,
@@ -249,6 +254,8 @@ function App() {
             <option value="read-only">只读能力</option>
             <option value="two-base">2 个基础技能</option>
             <option value="missing-version">未提供版本</option>
+            <option value="prefixed-version">作者版本带 v</option>
+            <option value="author-version">作者版本原文</option>
             <option value="github">GitHub 来源</option>
           </select>
         </label>

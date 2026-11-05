@@ -18,6 +18,10 @@
   font: var(--ar-font-heading);
 }
 
+.add {
+  font-weight: var(--ar-font-weight-medium);
+}
+
 .kind {
   margin-left: var(--ar-space-2);
   color: var(--ar-text-secondary);
@@ -266,6 +270,11 @@
 .uninstallDetail {
   margin-right: auto;
   padding: 0;
+  font: var(--ar-font-body);
+}
+
+.detailFooter > button:not(.uninstallDetail) {
+  font: var(--ar-font-label);
 }
 
 .section :is(button, a):focus-visible,

@@ -17,7 +17,10 @@ export type EmployeeSkillsView =
   | { status: 'ready'; catalog: EmployeeSkillCatalog };
 
 export function employeeSkillVersion(version: string | null) {
-  return version ? `v${version}` : '未提供';
+  if (!version) return '未提供';
+  // The approved numeric examples use a decorative v. Other author strings
+  // remain exact; this formatting neither validates nor orders versions.
+  return /^[0-9]+\.[0-9]+\.[0-9]+$/.test(version) ? `v${version}` : version;
 }
 
 export function employeeSkillSource(skill: EmployeeSkill) {
