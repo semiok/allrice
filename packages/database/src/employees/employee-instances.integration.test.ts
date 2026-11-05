@@ -8168,6 +8168,77 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     await run.finish();
   });
 
+  it('U1 replays a Rice text restore receipt without undoing a later confirmed package update', async () => {
+    const f = await setup(true, true),
+      id = f.assignment.id;
+    const input = {
+      workspaceId: f.a.workspaceId,
+      requestId: randomUUID(),
+      expectedRevision: 0,
+      expectedContentRef: null,
+      scene: {
+        id: randomUUID(),
+        name: 'Stable package',
+        appliesWhen: 'Owner task',
+      },
+      procedure: {
+        kind: 'procedure',
+        title: 'Package',
+        ...sceneSkillFixture(),
+      },
+      references: [],
+      changeSummary: 'Package A',
+    };
+    await savePersonalSceneSkill(f.a.context, id, input);
+    const [set] =
+      await fixture.db`select id,active_revision_id from allrice_employee_content_sets where instance_id=${id}`;
+    const run = await methodRun(f, id, '保存本人文字方法。');
+    const text = await saveEmployeeMethodAndPublishFromChat({
+      ...run,
+      arguments: {
+        expectedRevision: 1,
+        section: 'common',
+        requirements: 'Retained owner text',
+        changeSummary: 'Text only',
+      },
+    });
+    const restoreCall = {
+      ...run,
+      callId: randomUUID(),
+      arguments: {
+        expectedRevision: text.revision,
+        sourceRevisionId: set!.active_revision_id,
+        changeSummary: 'Restore text only',
+      },
+    };
+    const restored = await restoreEmployeeMethodAndPublishFromChat(restoreCall);
+    const [skill] = (await listPersonalSceneSkills(f.a.context, id)).skills;
+    const updated = await savePersonalSceneSkill(f.a.context, id, {
+      ...input,
+      requestId: randomUUID(),
+      expectedRevision: restored.revision,
+      expectedContentRef: skill!.contentRef,
+      procedure: { ...input.procedure, ...sceneSkillFixture('2.0.0') },
+      changeSummary: 'Package B',
+    });
+    expect(await restoreEmployeeMethodAndPublishFromChat(restoreCall)).toEqual(
+      restored,
+    );
+    const after = (await getEmployeeContentSet(f.a.context, set!.id)).set;
+    expect(after.revision).toBe(updated.revision);
+    expect(
+      (await listPersonalSceneSkills(f.a.context, id)).skills[0]!.contentRef,
+    ).toBe(updated.contentRef);
+    expect(
+      (await inspectPersonalSceneSkill(f.a.context, id, updated.contentRef))
+        .bundleVersion,
+    ).toBe('2.0.0');
+    expect(
+      (await getEmployeeContentHistory(f.a.context, set!.id)).revisions,
+    ).toHaveLength(4);
+    await run.finish();
+  });
+
   it('U1 reads existing authorized Rice personal history without rewriting snapshots or revisions', async () => {
     const f = await setup(true, true),
       id = f.assignment.id;

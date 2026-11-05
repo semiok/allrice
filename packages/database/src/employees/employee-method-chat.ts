@@ -921,92 +921,92 @@ async function restoreEmployeeMethod(
       };
     },
   );
+  const mutation: Extract<
+    EmployeeContentMutation,
+    { operation: 'restore_draft' }
+  > = {
+    operation: 'restore_draft',
+    workspaceId: scope.workspaceId,
+    setId: selection.setId,
+    requestId,
+    ownership: selection.ownership,
+    target: selection.target,
+    expectedRevision: args.expectedRevision,
+    sourceRevisionId: args.sourceRevisionId,
+    changeSummary: args.changeSummary,
+  };
   const receipt = await employeeAccessTransaction(getDatabase(), (tx) =>
-    mutateEmployeeContentInTransaction(
-      scope,
-      {
-        operation: 'restore_draft',
-        workspaceId: scope.workspaceId,
-        setId: selection.setId,
-        requestId,
-        ownership: selection.ownership,
-        target: selection.target,
-        expectedRevision: args.expectedRevision,
-        sourceRevisionId: args.sourceRevisionId,
-        changeSummary: args.changeSummary,
-      },
-      tx,
-      {
-        publishOnSave,
-        inputDigest: runtimePolicyDigest({
-          ...(publishOnSave ? { publication: 'save_and_publish' } : {}),
-          instanceId: instance.id,
-          runId: input.context.runId,
-          userMessageId: input.userMessageId,
-          arguments: args,
-        }),
-        authorize: async () => {
-          await resolveEmployeeMethodTarget(
-            scope,
-            instance.id,
-            args.sharedTarget,
-            tx,
-          );
-          const current = await getEmployeeInstance(scope, instance.id, tx);
-          const original = await assertEmployeeChatRun(
-            tx,
-            input,
-            current,
-            tool,
-          );
-          const personalRice = await assertRicePersonalMethodCall(
-            input,
-            current,
-            tool,
-            tx,
-          );
-          if (!personalRice && publishOnSave)
-            assertImmediateSaveIntent(original);
-          const [source] = await tx<
-            { id: string; number: number; manifest: unknown }[]
-          >`select id,number,manifest from allrice_employee_content_revisions
+    mutateEmployeeContentInTransaction(scope, mutation, tx, {
+      publishOnSave,
+      inputDigest: runtimePolicyDigest({
+        ...(publishOnSave ? { publication: 'save_and_publish' } : {}),
+        instanceId: instance.id,
+        runId: input.context.runId,
+        userMessageId: input.userMessageId,
+        arguments: args,
+      }),
+      authorize: async () => {
+        await resolveEmployeeMethodTarget(
+          scope,
+          instance.id,
+          args.sharedTarget,
+          tx,
+        );
+        const current = await getEmployeeInstance(scope, instance.id, tx);
+        const original = await assertEmployeeChatRun(tx, input, current, tool);
+        const personalRice = await assertRicePersonalMethodCall(
+          input,
+          current,
+          tool,
+          tx,
+        );
+        if (!personalRice && publishOnSave) assertImmediateSaveIntent(original);
+        const [source] = await tx<
+          { id: string; number: number }[]
+        >`select id,number from allrice_employee_content_revisions
           where id=${args.sourceRevisionId} and set_id=${selection.setId}`;
-          if (!source) throw new DataAccessError('not_found');
-          if (personalRice) {
-            const [active] = await tx<{ manifest: unknown }[]>`
-              select r.manifest from allrice_employee_content_sets s
-              join allrice_employee_content_revisions r on r.id=s.active_revision_id
-              where s.id=${selection.setId}`;
-            await assertUnchangedRicePackages(
-              scope.organizationId,
-              EmployeeContentManifestSchema.parse(
-                active?.manifest ?? emptyManifest(),
-              ),
-              EmployeeContentManifestSchema.parse(source.manifest),
-              tx,
-            );
-          }
-          if (
-            !personalRice &&
-            !explicitEmployeeMethodRestoreIntent(
-              original,
-              source,
-              selection.ownership.scope,
-            )
-          )
-            throw new EmployeeMethodChatError(
-              'explicit_method_restore_required',
-            );
-          await assertEmployeeMethodDepartmentRequest(
-            scope,
-            instance.id,
-            args.sharedTarget,
+        if (!source) throw new DataAccessError('not_found');
+        if (
+          !personalRice &&
+          !explicitEmployeeMethodRestoreIntent(
             original,
+            source,
+            selection.ownership.scope,
+          )
+        )
+          throw new EmployeeMethodChatError('explicit_method_restore_required');
+        await assertEmployeeMethodDepartmentRequest(
+          scope,
+          instance.id,
+          args.sharedTarget,
+          original,
+          tx,
+        );
+      },
+      buildInput: async (row) => {
+        // Check package changes only for a new write, after the durable
+        // request receipt and CAS. A replay cannot undo a later file update.
+        if (personalRice) {
+          const [source] = await tx<{ manifest: unknown }[]>`
+              select manifest from allrice_employee_content_revisions
+              where id=${args.sourceRevisionId} and set_id=${selection.setId}`;
+          if (!source) throw new DataAccessError('not_found');
+          const [active] = row?.active_revision_id
+            ? await tx<{ manifest: unknown }[]>`
+                  select manifest from allrice_employee_content_revisions where id=${row.active_revision_id}`
+            : [];
+          await assertUnchangedRicePackages(
+            scope.organizationId,
+            EmployeeContentManifestSchema.parse(
+              active?.manifest ?? emptyManifest(),
+            ),
+            EmployeeContentManifestSchema.parse(source.manifest),
             tx,
           );
-        },
+        }
+        return mutation;
       },
-    ),
+    }),
   );
   return personalRice
     ? { ...receipt, personalTextOnly: true as const }
