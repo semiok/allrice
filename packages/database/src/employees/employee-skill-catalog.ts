@@ -1,4 +1,5 @@
 import {
+  EmployeeSkillCatalogSchema,
   PersonalSkillDefinitionSchema,
   UuidSchema,
   type RequestContext,
@@ -83,7 +84,7 @@ export async function getEmployeeSkillCatalog(
             : {}),
         });
       }
-      return {
+      return EmployeeSkillCatalogSchema.parse({
         instanceId,
         canInstall: principal.writable,
         platformSkills: base.nativeSkills
@@ -101,7 +102,7 @@ export async function getEmployeeSkillCatalog(
         personalSkills: personalSkills.sort((a, b) =>
           a.name.localeCompare(b.name),
         ),
-      };
+      });
     },
   );
 }

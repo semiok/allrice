@@ -1,68 +1,11 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { z } from 'zod';
 import {
-  PersonalSkillGitHubSourceSchema,
-  ChecksumSchema,
+  PersonalSkillPreviewAttestationSchema as previewSchema,
   personalSkillLimits,
-  TimestampSchema,
-  UuidSchema,
+  type PersonalSkillPreviewAttestation as SkillPreview,
 } from '@allrice/contracts';
-
-export const skillPreviewTargetSchema = z.discriminatedUnion('operation', [
-  z.object({ operation: z.literal('install') }).strict(),
-  z
-    .object({
-      operation: z.literal('update'),
-      installationId: UuidSchema,
-      expectedRevision: z.number().int().positive(),
-      expectedVersionId: UuidSchema,
-    })
-    .strict(),
-]);
-
-const previewSchema = z
-  .object({
-    schemaVersion: z.literal(1),
-    organizationId: UuidSchema,
-    workspaceId: UuidSchema,
-    ownerId: UuidSchema,
-    instanceId: UuidSchema,
-    source: z.union([
-      PersonalSkillGitHubSourceSchema,
-      z
-        .object({
-          kind: z.literal('zip'),
-          fileName: z.string().min(1).max(255),
-          originalChecksum: ChecksumSchema,
-          byteLength: z
-            .number()
-            .int()
-            .positive()
-            .max(personalSkillLimits.archiveBytes),
-        })
-        .strict(),
-    ]),
-    sourcePath: z.literal('SKILL.md'),
-    digest: ChecksumSchema,
-    target: z.discriminatedUnion('operation', [
-      skillPreviewTargetSchema.options[0].extend({
-        expectedInstallation: z
-          .object({
-            id: UuidSchema,
-            revision: z.number().int().positive(),
-            versionId: UuidSchema,
-          })
-          .strict()
-          .nullable(),
-      }),
-      skillPreviewTargetSchema.options[1].extend({
-        bindingsDigest: ChecksumSchema,
-      }),
-    ]),
-    expiresAt: TimestampSchema,
-  })
-  .strict();
-export type SkillPreview = z.infer<typeof previewSchema>;
+export { PersonalSkillPreviewTargetSchema as skillPreviewTargetSchema } from '@allrice/contracts';
+export type { PersonalSkillPreviewAttestation as SkillPreview } from '@allrice/contracts';
 
 export class SkillPreviewError extends Error {
   constructor(
