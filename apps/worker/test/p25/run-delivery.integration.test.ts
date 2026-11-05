@@ -3,7 +3,6 @@ import { readRetiredExecutionHistory } from './retired-execution-history.fixture
 // @ts-expect-error Native test host is JavaScript and runs the production DSH module unchanged.
 import { host, text } from '../native-subagent/fixture.mjs';
 import { createHash, randomUUID } from 'node:crypto';
-import type { TransactionSql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   ExecutionContextSchema,
@@ -402,14 +401,14 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
     const promise = new Promise<void>(r => { resolve = r; });
     return {promise, resolve};
   }
-  async function blockedBy(pid: number) {
+  async function blockedBy(pid: number, table = 'allrice_storage_objects') {
     await vi.waitFor(async () => {
-      const rows = await fixture.db`select pid from pg_stat_activity
+      const rows = await fixture.db`select pid,query from pg_stat_activity
         where datname=current_database() and ${pid}=any(pg_blocking_pids(pid))`;
-      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.some(row => row.query.includes(table))).toBe(true);
     }, {timeout: 5000, interval: 20});
   }
-  const classifyOrdinaryFile = (tx: TransactionSql, f: Subject, id: string) =>
+  const classifyOrdinaryFile = (tx: Parameters<Parameters<typeof registerJobCompletionGuard>[0]>[0], f: Subject, id: string) =>
     tx`insert into allrice_deliverable_versions(id,organization_id,workspace_id,owner_id,object_id,series_id,version,session_id,file_name,format)
       values(${randomUUID()},${f.org},${f.workspace},${f.user},${id},${randomUUID()},1,${f.session},'new-artifact.txt','text')`;
 
@@ -459,7 +458,7 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
         if (mode === 'revoke') await tx`update allrice_storage_objects set visibility='private' where id=${file.object.id}`;
         else await classifyOrdinaryFile(tx, f, file.object.id);
       });
-      try { await blockedBy(pid); } finally { release.resolve(); }
+      try { await blockedBy(pid, mode === 'classify' ? 'allrice_deliverable_versions' : 'allrice_storage_objects'); } finally { release.resolve(); }
       await Promise.all([completion, writer]);
       expect(await f.state()).toMatchObject({status: 'succeeded', text: answer, successes: 1});
       if (mode === 'revoke') await expect(getToolBrokerFile(f.readContext, file.object.id, fixture.db)).rejects.toMatchObject({code: 'authorization_denied'});
@@ -472,7 +471,8 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
     async mode => {
       const f = await citationSubject(), file = await upload(f);
       const answer = `[source](/api/v1/files/${file.object.id}/download)`;
-      const [{deadline}] = await fixture.db`select clock_timestamp()+interval '3 seconds' deadline`;
+      const deadlines = await fixture.db`select clock_timestamp()+interval '3 seconds' deadline`;
+      const deadline = deadlines[0]!.deadline as Date;
       if (mode === 'lease') await fixture.db`update allrice_jobs set lease_expires_at=${deadline} where id=${f.worker.jobId}`;
       else await fixture.db`update allrice_storage_objects set retention_until=${deadline} where id=${file.object.id}`;
       const {guard} = await f.validate(answer);
