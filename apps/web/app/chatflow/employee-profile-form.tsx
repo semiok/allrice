@@ -166,7 +166,7 @@ export function EmployeeProfileForm({
   };
   return (
     <form
-      className={css.form}
+      className={`${css.form} ${mode === 'edit' ? css.editForm : ''}`.trim()}
       aria-label={mode === 'create' ? '创建员工信息' : '编辑员工信息'}
       aria-busy={locked}
       onSubmit={async (event) => {
@@ -214,7 +214,9 @@ export function EmployeeProfileForm({
               {Array.from(name)[0] || '员'}
             </span>
             <div className={css.nameField}>
-              <label htmlFor={`${id}-name`}>员工名字</label>
+              <label htmlFor={`${id}-name`}>
+                {mode === 'edit' ? '名字' : '员工名字'}
+              </label>
               <input
                 id={`${id}-name`}
                 data-employee-name
@@ -222,7 +224,11 @@ export function EmployeeProfileForm({
                 maxLength={120}
                 required
                 autoComplete="off"
-                placeholder="例如： 文案专家、财务专员、商务分析师"
+                placeholder={
+                  mode === 'create'
+                    ? '例如： 文案专家、财务专员、商务分析师'
+                    : undefined
+                }
                 onChange={(event) => update('name', event.target.value)}
               />
             </div>

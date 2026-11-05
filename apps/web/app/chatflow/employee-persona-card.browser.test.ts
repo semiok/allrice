@@ -239,9 +239,7 @@ suite('U1 employee persona card', () => {
   const showEditor = async (page: Page) => {
     await page.getByRole('button', { name: '编辑员工', exact: true }).click();
     const editor = page.getByRole('dialog', { name: '编辑人设', exact: true });
-    await editor
-      .getByRole('textbox', { name: '员工名字', exact: true })
-      .waitFor();
+    await editor.getByRole('textbox', { name: '名字', exact: true }).waitFor();
     return editor;
   };
 
@@ -366,7 +364,7 @@ suite('U1 employee persona card', () => {
         ).toBe(true);
         await form.getByRole('radio', { name: '薄荷绿', exact: true }).check();
         await form
-          .getByRole('textbox', { name: '员工名字', exact: true })
+          .getByRole('textbox', { name: '名字', exact: true })
           .fill('周报伙伴');
         await form.screenshot({
           path: `${screenshotDir}/persona-editor-color-${width}.png`,
@@ -375,7 +373,7 @@ suite('U1 employee persona card', () => {
         await form.getByRole('alert').waitFor();
         expect(
           await form
-            .getByRole('textbox', { name: '员工名字', exact: true })
+            .getByRole('textbox', { name: '名字', exact: true })
             .inputValue(),
         ).toBe('周报伙伴');
         expect(
@@ -431,7 +429,7 @@ suite('U1 employee persona card', () => {
               .count(),
           ).toBe(0);
           const name = editor.getByRole('textbox', {
-            name: '员工名字',
+            name: '名字',
             exact: true,
           });
           expect(await name.inputValue()).toBe('流程哥');
@@ -530,7 +528,7 @@ suite('U1 employee persona card', () => {
       const card = await showDetails(page);
       const editor = await showEditor(page);
       const name = editor.getByRole('textbox', {
-        name: '员工名字',
+        name: '名字',
         exact: true,
       });
       await name.fill('保存失败仍保留的名字');

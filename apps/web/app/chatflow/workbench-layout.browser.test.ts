@@ -5998,7 +5998,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   ])(
     'creates a named colored employee with one idempotent request at width %s with %s assigned employees: %s',
     async (width, employeeCount, employeeName) => {
-      const f = await fixture({ width, touch: width < 600, employeeCount });
+      const f = await fixture({
+        width,
+        touch: width < 600,
+        employeeCount,
+        appearance: 'light',
+      });
       const created = EmployeeInstanceSchema.parse({
         id: id(8100),
         assignmentId: id(7),
@@ -6086,6 +6091,39 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         ).toBe(true);
         expect(await picker.getByRole('radio').count()).toBe(10);
         const nameInput = picker.getByRole('textbox', { name: '员工名字' });
+        const createLayout = await picker.evaluate((node) => {
+          const header = node.querySelector('h2')!,
+            name = node.querySelector('input[data-employee-name]')!,
+            identity = name.closest('section')!,
+            rect = node.getBoundingClientRect(),
+            root = node.parentElement!.getBoundingClientRect();
+          return {
+            width: rect.width,
+            x: rect.x,
+            rootX: root.x,
+            rootWidth: root.width,
+            titleSize: getComputedStyle(header).fontSize,
+            titleLineHeight: getComputedStyle(header).lineHeight,
+            titleWeight: getComputedStyle(header).fontWeight,
+            identityPadding: getComputedStyle(identity).padding,
+            identityBackground: getComputedStyle(identity).backgroundColor,
+          };
+        });
+        expect(createLayout.titleSize).toBe('15px');
+        expect(createLayout.titleLineHeight).toBe('23px');
+        expect(createLayout.titleWeight).toBe('500');
+        expect(createLayout.identityPadding).toBe(
+          width < 600 ? '12px' : '14px',
+        );
+        // Existing light --allrice-employee-bg; the edit-only flat variant
+        // must not remove or recolor the creation form's identity section.
+        expect(createLayout.identityBackground).toBe('rgb(240, 242, 245)');
+        expect(createLayout.width).toBe(
+          width < 600 ? createLayout.rootWidth - 24 : 640,
+        );
+        expect(createLayout.x - createLayout.rootX).toBe(
+          (createLayout.rootWidth - createLayout.width) / 2,
+        );
         for (const field of ['员工名字', '使命', '工作方式'])
           expect(
             await picker
@@ -6811,14 +6849,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         });
         const field = (name: string) =>
           editor.getByRole('textbox', { name, exact: true });
-        await expect.poll(() => field('员工名字').inputValue()).toBe('Rice');
+        await expect.poll(() => field('名字').inputValue()).toBe('Rice');
         expect(await field('使命').inputValue()).toBe('帮助完成研究');
         expect(await field('工作方式').inputValue()).toBe('按步骤交付');
         expect(
           await editor.getByRole('radio', { name: '鸢尾紫' }).isChecked(),
         ).toBe(true);
         expect(await editor.getByRole('radio').count()).toBe(10);
-        await field('员工名字').fill('财务伙伴');
+        await field('名字').fill('财务伙伴');
         await field('使命').fill('核对企业报表，交付可追溯结果。');
         await field('工作方式').fill('先核对凭据，再按月汇总。');
         await editor
@@ -6832,7 +6870,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           });
         await editor.getByRole('button', { name: '保存', exact: true }).click();
         await editor.getByRole('alert').waitFor();
-        expect(await field('员工名字').inputValue()).toBe('财务伙伴');
+        expect(await field('名字').inputValue()).toBe('财务伙伴');
         expect(await field('使命').inputValue()).toBe(
           '核对企业报表，交付可追溯结果。',
         );
@@ -6886,9 +6924,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await details
           .getByRole('button', { name: '编辑员工', exact: true })
           .click();
-        await expect
-          .poll(() => field('员工名字').inputValue())
-          .toBe('财务伙伴');
+        await expect.poll(() => field('名字').inputValue()).toBe('财务伙伴');
         expect(await field('使命').inputValue()).toBe(
           '核对企业报表，交付可追溯结果。',
         );
@@ -6898,7 +6934,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(
           await editor.getByRole('radio', { name: '活力橙' }).isChecked(),
         ).toBe(true);
-        await field('员工名字').fill('取消的临时名字');
+        await field('名字').fill('取消的临时名字');
         await editor.getByRole('button', { name: '取消', exact: true }).click();
         await details
           .getByRole('button', { name: '编辑员工', exact: true })
