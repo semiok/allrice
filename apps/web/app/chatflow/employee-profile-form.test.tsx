@@ -7,12 +7,35 @@ import {
 import { employeeDetailsFixture } from '../../test/employee-details-fixture';
 import {
   EmployeeProfileForm,
+  canEditEmployeePersona,
   defaultEmployeeProfileFormValues,
   employeeProfileFormFromRaw,
   mergeEmployeeProfileForm,
 } from './employee-profile-form';
 
 describe('shared employee profile form', () => {
+  it('requires the current complete field capability, independent of kind, name and saved overrides', () => {
+    const profile = employeeDetailsFixture().profile;
+    profile.editableFields = EmployeeInstanceProfileSchema.keyof().options;
+    profile.personalFields = [];
+    for (const kind of ['general', 'custom'] as const) {
+      profile.kind = kind;
+      expect(canEditEmployeePersona(profile)).toBe(true);
+    }
+    for (const editableFields of [
+      undefined,
+      [],
+      ['expressionStyle'] as const,
+      ['name', 'mission', 'workStyle', 'expressionStyle'] as const,
+    ]) {
+      profile.editableFields = editableFields ? [...editableFields] : undefined;
+      expect(canEditEmployeePersona(profile)).toBe(false);
+    }
+    profile.editableFields = EmployeeInstanceProfileSchema.keyof().options;
+    profile.canMaintainPersonal = false;
+    expect(canEditEmployeePersona(profile)).toBe(false);
+  });
+
   it('uses the same named fields and ten approved colors for creation and editing', () => {
     for (const mode of ['create', 'edit'] as const) {
       const html = renderToStaticMarkup(
@@ -122,6 +145,41 @@ describe('shared employee profile form', () => {
         appearance: { ...raw.appearance, accentColor: 'teal' },
       });
       expect(raw).toEqual(snapshot);
+    },
+  );
+
+  it.each(['emoji', 'image'] as const)(
+    'retains an inherited %s avatar without materializing resolved hidden identity fields',
+    (avatarType) => {
+      const resolved = employeeDetailsFixture().profile;
+      resolved.appearance = {
+        avatarType,
+        avatarValue: avatarType === 'emoji' ? '🦊' : '/inherited-avatar.png',
+        accentColor: 'coral',
+      };
+      const raw = { description: '私人简介', role: '私人角色' };
+      const snapshot = structuredClone(resolved);
+      const result = mergeEmployeeProfileForm(
+        raw,
+        { ...employeeProfileFormFromRaw(raw, resolved), accentColor: 'teal' },
+        resolved,
+      );
+      expect(result).toMatchObject({
+        description: raw.description,
+        role: raw.role,
+        appearance: { ...resolved.appearance, accentColor: 'teal' },
+      });
+      expect(result).not.toHaveProperty('identity');
+      expect(result).not.toHaveProperty('defaults');
+      expect(raw).not.toHaveProperty('appearance');
+      expect(resolved).toEqual(snapshot);
+      const withoutHidden = mergeEmployeeProfileForm(
+        {},
+        employeeProfileFormFromRaw({}, resolved),
+        resolved,
+      );
+      expect(withoutHidden).not.toHaveProperty('description');
+      expect(withoutHidden).not.toHaveProperty('role');
     },
   );
 
