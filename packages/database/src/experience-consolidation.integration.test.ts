@@ -1282,8 +1282,7 @@ suite(
         {},
         true,
       );
-      await db`update allrice_employee_runs set memory_context_state='{"schemaVersion":1,"pending":true}',
-        prompt_snapshot=prompt_snapshot||${db.json({ memories: document.memories, employeeDocuments: document.employeeDocuments })} where run_id=${scope.runId}`;
+      await db`update allrice_employee_runs set memory_context_state='{"schemaVersion":1,"pending":true}' where run_id=${scope.runId}`;
       const selected = await prepareRunMemoryContext(
         auth,
         document.memories,
@@ -2214,7 +2213,7 @@ suite(
     it('reads the exact confirmed revision without a vector cache, and rejects a withdrawn memory', async () => {
       const f = await boundedFixture();
       const current = await readRunExperienceSource(f.auth, f.handle);
-      expect(current.items[0]!.memory.id).toBe(f.confirmed.id);
+      expect(current.items[0]).toMatchObject({ memory: { id: f.confirmed.id } });
       await db`delete from allrice_rag_chunks where memory_id=${f.confirmed.id}`;
       expect((await readRunExperienceSource(f.auth, f.handle)).items).toEqual(
         current.items,
@@ -2251,8 +2250,8 @@ suite(
       // on the legacy adopted Skill merely because it exists in this account.
       await changeSkill(f, 'disable');
       expect(
-        (await readRunExperienceSource(f.auth, f.handle)).items[0]!.memory.id,
-      ).toBe(f.confirmed.id);
+        (await readRunExperienceSource(f.auth, f.handle)).items[0],
+      ).toMatchObject({ memory: { id: f.confirmed.id } });
     });
     async function changeSkill(
       f: Awaited<ReturnType<typeof validationFixture>>,

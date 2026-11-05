@@ -5,7 +5,12 @@ import { host, text } from './fixture.mjs';
 
 it('only the admitted root gets required literal documents; child current prompt/tools/approval stay unchanged and fork inherits completed history', async () => {
   const runId = randomUUID();
+  const observedAgents = new Map();
   const h = await host({
+    model: async (request) => {
+      observedAgents.set(request.sessionId, h.ctx.agents.get(request.sessionId));
+      return text('完成');
+    },
     runId,
     rootSystemInstructions: 'ROOT_STABLE_PERSONA',
     employeeDocuments: {
@@ -35,7 +40,7 @@ it('only the admitted root gets required literal documents; child current prompt
     'LEGACY_CHILD_PERSONA',
   );
   expect(JSON.stringify(childRequest.messages)).not.toContain('CONFIRMED_A');
-  const childAgent = h.ctx.agents.get(child.childId);
+  const childAgent = observedAgents.get(child.childId);
   const approval = childAgent.session
     .snapshotEvents()
     .filter((e) => e.type === 'approval/policy');
@@ -66,7 +71,7 @@ it('only the admitted root gets required literal documents; child current prompt
   );
   expect(JSON.stringify(last.messages)).not.toContain('CONFIRMED_B');
   expect(
-    childAgent.session
+    observedAgents.get(child.childId).session
       .snapshotEvents()
       .filter((e) => e.type === 'approval/policy'),
   ).toEqual(approval);

@@ -198,6 +198,7 @@ interface AttachmentRow {
 }
 
 interface MemoryRow {
+  metadata?: Record<string, unknown>;
   id: string;
   organization_id: string;
   workspace_id: string;
@@ -2785,6 +2786,7 @@ export async function correctWorkspaceMemory(
       tx,
       true,
     );
+    await tx`select pg_advisory_xact_lock(hashtextextended(${`memory-order:${scope.organizationId}:${scope.ownerId}:${scope.instanceId}`},0))`;
     return memoryOperation(
       tx,
       scope,
@@ -2806,6 +2808,8 @@ export async function correctWorkspaceMemory(
           expires_at=${correction.expiresAt},last_verified_at=now(),updated_at=now()
         where id=${memoryId} returning *`;
         if (!row) throw new Error('memory correction failed');
+        if (current.metadata?.memoryPinOrder !== undefined)
+          await assertPinnedMemoryCapacity(tx, scope);
         await insertMemoryRevision(tx, context, row, correction.reason);
         await tx`delete from allrice_rag_chunks where memory_id=${memoryId}
         and organization_id=${scope.organizationId} and workspace_id=${workspaceId}`;
@@ -2829,6 +2833,29 @@ export async function correctWorkspaceMemory(
 
 /** Owner-only ordering preference, using the existing revision/idempotency/audit
  * transaction. No model tool can call this browser management operation. */
+async function assertPinnedMemoryCapacity(
+  tx: TransactionSql,
+  scope: { organizationId: string; workspaceId: string; ownerId: string; instanceId: string },
+) {
+        const projected = await freezeEmployeeDocuments(tx, scope, {}, true);
+        const pins = await tx<
+          { id: string }[]
+        >`select m.id from allrice_memories m
+          where ${employeeMemoryReadPredicate(tx, scope)} and m.metadata ? 'memoryPinOrder'`;
+        if (
+          pins.some(
+            (pin) => !projected.memories.some((item) => item.id === pin.id),
+          )
+        )
+          throw new EmployeeMemoryCapacityError(
+            Math.max(
+              0,
+              6000 - Buffer.byteLength(projected.employeeDocuments.memory),
+            ),
+          );
+
+}
+
 export async function setPersonalEmployeeMemoryPin(
   context: RequestContext,
   workspaceInput: string,
@@ -2878,22 +2905,7 @@ export async function setPersonalEmployeeMemoryPin(
           where id=${memoryId} returning *`;
         // Pinned entries must all fit intact, including source handles. Reject
         // atomically; never save an ordering that silently drops a pinned item.
-        const projected = await freezeEmployeeDocuments(tx, scope, {}, true);
-        const pins = await tx<
-          { id: string }[]
-        >`select m.id from allrice_memories m
-          where ${employeeMemoryReadPredicate(tx, scope)} and m.metadata ? 'memoryPinOrder'`;
-        if (
-          pins.some(
-            (pin) => !projected.memories.some((item) => item.id === pin.id),
-          )
-        )
-          throw new EmployeeMemoryCapacityError(
-            Math.max(
-              0,
-              6000 - Buffer.byteLength(projected.employeeDocuments.memory),
-            ),
-          );
+        if (preference.pinned) await assertPinnedMemoryCapacity(tx, scope);
         await insertMemoryRevision(
           tx,
           context,

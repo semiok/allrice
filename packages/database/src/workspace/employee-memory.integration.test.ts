@@ -58,7 +58,7 @@ suite(
       await fixture?.close();
     });
     async function setup() {
-      const f = await createRunAuthorityFixture(fixture.db);
+      const f = await createRunAuthorityFixture(fixture.db, { toolNames: ['workspace.memory.search', 'workspace.experience.read'], allowedTools: ['workspace.memory.search', 'workspace.experience.read'] });
       const context = (await authenticateSession(
         (await createSession(f.user)).token,
         { organizationId: f.org, workspaceId: f.workspace },
@@ -152,10 +152,7 @@ suite(
       );
       expect(document.memories.map((m) => m.id)).toEqual([first.id]);
       expect(document.employeeDocuments.user).toContain('核对部');
-      await fixture.db`update allrice_employee_runs set status='running',memory_context_state='{"schemaVersion":1,"pending":true}',
-        execution_snapshot=jsonb_set(execution_snapshot,'{capabilitySnapshot,bindings,toolNames}','["workspace.memory.search","workspace.experience.read"]'),
-        prompt_snapshot=${fixture.db.json({ memories: document.memories, employeeDocuments: document.employeeDocuments })}
-        where run_id=${f.rootRunId}`;
+      await fixture.db`update allrice_employee_runs set status='running',memory_context_state='{"schemaVersion":1,"pending":true}' where run_id=${f.rootRunId}`;
       await prepareRunMemoryContext(
         auth,
         document.memories,
@@ -169,7 +166,7 @@ suite(
       await assertRunMemoryContextCurrent(scope);
       const handle = document.memories[0]!.sourceHandle!;
       const source = await readRunExperienceSource(auth, handle);
-      expect(source.items[0]!.memory.content).toBe(first.content);
+      expect(source.items[0]).toMatchObject({ memory: { content: first.content } });
       const edited = await correctWorkspaceMemory(
         f.context,
         f.workspace,
@@ -182,8 +179,8 @@ suite(
       );
       await assertRunMemoryContextCurrent(scope);
       expect(
-        (await readRunExperienceSource(auth, handle)).items[0]!.memory.content,
-      ).toBe(first.content);
+        (await readRunExperienceSource(auth, handle)).items[0],
+      ).toMatchObject({ memory: { content: first.content } });
       const search = await readToolBrokerMemoryContext(
         f.execution,
         '稳定资料入口',
@@ -254,6 +251,37 @@ suite(
           pinned: false,
         }),
       ).rejects.toThrow();
+    });
+
+    it('rejects oversized edits of pinned memories atomically and always allows unpin to repair capacity', async () => {
+      const f = await setup();
+      const saved = [];
+      for (let i = 0; i < 8; i++) {
+        const item = await f.create(`常用入口${i}`);
+        saved.push(await setPersonalEmployeeMemoryPin(f.context, f.workspace, item.id, { ...exact(item), pinned: true }));
+      }
+      let rejected = false;
+      for (const item of saved) {
+        try {
+          await correctWorkspaceMemory(f.context, f.workspace, item.id, {
+            ...exact(item), content: 'x'.repeat(1000), reason: '本人编辑',
+          });
+        } catch (error) {
+          expect(error).toMatchObject({ code: 'memory_capacity' });
+          const [unchanged] = await fixture.db`select content,revision from allrice_memories where id=${item.id}`;
+          expect(unchanged).toMatchObject({ content: item.content, revision: item.revision });
+          rejected = true;
+          break;
+        }
+      }
+      expect(rejected).toBe(true);
+      // Isolated historical over-capacity fixture; repairing it must be possible.
+      await fixture.db`update allrice_memories set content=repeat('y',2000) where id=any(${saved.map(m => m.id)}::uuid[])`;
+      const item = saved.at(-1)!;
+      const [current] = await fixture.db`select revision,content from allrice_memories where id=${item.id}`;
+      await expect(setPersonalEmployeeMemoryPin(f.context, f.workspace, item.id, {
+        ...exact(item), expectedRevision: current!.revision, contentDigest: memoryContentDigest(current!.content), pinned: false,
+      })).resolves.toMatchObject({ id: item.id });
     });
 
     it('binds proposals from the stored source; list, recall, raw RAG, revisions, broker and resumed input cannot cross instances', async () => {
