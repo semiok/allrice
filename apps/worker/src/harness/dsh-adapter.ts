@@ -2292,6 +2292,17 @@ export class DshHarnessAdapter implements HarnessAdapter {
       if (event.type === 'turn/end') {
         if (waitingForUser) return;
         const reason = record(data.reason);
+        const cancellation = record(reason?.reason);
+        if (
+          reason?.kind === 'aborted' &&
+          cancellation?.kind === 'hook' &&
+          cancellation.reason === 'ALLRICE_FILE_READ_ABORTED'
+        )
+          throw new HandlerError(
+            'DSH_FILE_READ_ABORTED',
+            'Native file read was interrupted; no model retry was started',
+            false,
+          );
         if (reason?.kind === 'error') {
           const failure = record(reason.error);
           throw new HandlerError(

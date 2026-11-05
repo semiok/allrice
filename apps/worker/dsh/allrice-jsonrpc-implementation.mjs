@@ -1660,16 +1660,31 @@ export async function createAllRiceRuntime(
                 ? this.preparedMethodQuestions.begin(agent)
                 : undefined;
             tool.validateArguments?.(args);
-            const response = await this.toolBrokerRequest(
-              {
-                nativeSessionId: exec.agent.id,
-                toolCallId: exec.callId,
-                name: tool.canonicalName,
-                arguments: args,
-              },
-              exec.signal,
-            );
-            exec.signal.throwIfAborted();
+            const fileRead = tool.canonicalName === 'workspace.file.read';
+            const abortFileRead = () => agent.cancel({
+              kind: 'hook', reason: 'ALLRICE_FILE_READ_ABORTED',
+            });
+            if (fileRead) {
+              exec.signal.addEventListener('abort', abortFileRead, { once: true });
+              if (exec.signal.aborted) abortFileRead();
+            }
+            let response;
+            try {
+              // Keep joining the actual Broker operation. Native timeout must
+              // cancel the owning root, not become a recoverable tool error.
+              response = await this.toolBrokerRequest(
+                {
+                  nativeSessionId: exec.agent.id,
+                  toolCallId: exec.callId,
+                  name: tool.canonicalName,
+                  arguments: args,
+                },
+                exec.signal,
+              );
+              if (fileRead) exec.signal.throwIfAborted();
+            } finally {
+              if (fileRead) exec.signal.removeEventListener('abort', abortFileRead);
+            }
             if (
               tool.canonicalName === 'workspace.file.read' &&
               response?.fileReadDenied

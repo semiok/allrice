@@ -165,6 +165,21 @@ it('an unknown native read terminates before any further model request and is no
   });
   expect(ports.file).toHaveBeenCalledOnce();
 }, 45000);
+it('an unavailable denial audit terminates the native Run before another model request', async () => {
+  const input = fixture();
+  ports.file.mockRejectedValue(new DataAccessError('authorization_denied'));
+  ports.audit.mockRejectedValue(Error('synthetic audit unavailable'));
+  await nativeBrokerRoundtrip({
+    fileReadRunId: input.context.runId,
+    canonicalName: input.call.name,
+    wireName: 'workspace_file_read',
+    args: input.call.arguments,
+    invalidArgs: {},
+    expectedTerminalError: 'synthetic audit unavailable',
+    onToolCall: (call) => executeRiceTool({ ...input, call }),
+  });
+  expect(ports.file).toHaveBeenCalledOnce();
+}, 45000);
 it('rejects a child/foreign native file invocation before entering the Broker', async () => {
   const input = fixture(),
     call = vi.fn();

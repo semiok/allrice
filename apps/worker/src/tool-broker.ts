@@ -2,7 +2,7 @@ import { CompanyAssetError, CompanyRunAssetError } from '@allrice/database';
 import { recordToolBrokerAudit } from '@allrice/database';
 
 import { executePlatformTechnicalDiagnostics } from './tool-broker/handlers/platform-technical.js';
-import { HandlerError } from './errors.js';
+import { HandlerError, isConfirmedToolFailure } from './errors.js';
 import { riceToolCapability, riceToolRisk } from './tool-broker/definitions.js';
 import { objectValue } from './tool-broker/input-values.js';
 import { requireRiceToolHandler } from './tool-broker/registry.js';
@@ -146,7 +146,22 @@ export async function executeRiceTool(
           ? { retryable: error.retryable }
           : {}),
       },
-    }).catch(() => undefined);
+    }).catch((auditFailure: unknown) => {
+      // Only this native continuation contract requires a confirmed denial
+      // audit. An audit outage is unknown/fatal, never the safe ACL result.
+      if (
+        input.call.name === 'workspace.file.read' &&
+        input.call.nativeSessionId &&
+        error instanceof HandlerError &&
+        error.code === 'TOOL_FILE_ACCESS_DENIED' &&
+        isConfirmedToolFailure(error, {
+          runId: input.context.runId,
+          callId: input.call.id,
+          toolName: input.call.name,
+        })
+      )
+        throw auditFailure;
+    });
     throw error;
   }
 }
