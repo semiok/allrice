@@ -15,7 +15,13 @@ import {
   UnifiedWorkbenchControls,
   announceWorkbenchRead,
 } from './unified-workbench-controls';
-import type { WorkbenchModule } from './workbench-modules';
+import { WorkbenchIcon, type WorkbenchModule } from './workbench-modules';
+import { EmployeeSceneDialog } from './employee-scene-dialog';
+import {
+  useEmployeeSceneCatalog,
+  type SceneSelection,
+} from './use-employee-scene-catalog';
+import moduleUi from './workbench-modules.module.css';
 
 import {
   employeeChoices,
@@ -132,7 +138,6 @@ import { bridgeChips, projectBridgeView } from './bridge-view';
 import { useRunStream } from './use-run-stream';
 import { useSession } from './use-session';
 import { createSessionActions } from './session-actions';
-import { useBrandContentWorkspace } from './use-brand-content-workspace';
 import {
   UserQuestionComposer,
   userQuestionAnswerText,
@@ -141,12 +146,6 @@ import {
 // DSH's whole-row disclosures are divs with button semantics, not <button>s.
 const transcriptDisclosureSelector =
   'button[aria-expanded], [data-disclosure-row][aria-expanded], summary';
-
-const BrandContentPanel = lazy(() =>
-  import('./brand-content-panel').then((module) => ({
-    default: module.BrandContentPanel,
-  })),
-);
 
 const WorkbenchFilesPanel = lazy(() =>
   import('./workbench-files-panel').then((module) => ({
@@ -460,9 +459,9 @@ export function ChatFlowClient({
     category?: 'all' | 'reference' | 'artifact';
     view?: 'personal-memory';
   } | null>(null);
-  const [workbenchCapabilities, setWorkbenchCapabilities] = useState<{
+  const [sceneRequest, setSceneRequest] = useState<{
     scope: string;
-    workflow: boolean;
+    instanceId: string;
   } | null>(null);
   const currentModuleRequest =
     moduleRequest?.scope === fileScope ? moduleRequest : undefined;
@@ -569,6 +568,10 @@ export function ChatFlowClient({
       view?: 'personal-memory';
     },
   ) => {
+    if (kind === 'workflow') {
+      openSceneDirectory();
+      return;
+    }
     setModuleRequest((previous) => ({
       scope: fileScope,
       kind,
@@ -1392,21 +1395,104 @@ export function ChatFlowClient({
       ? { [activeId]: 'error' as const }
       : {};
 
+  const activeSession = history?.session
+    ? {
+        ...workspace?.sessions.find((s) => s.id === activeId),
+        ...archive.sessions.find((s) => s.id === activeId),
+        ...history.session,
+      }
+    : workspace?.sessions.find((session) => session.id === activeId);
+  const activeEmployee =
+    workspace && activeSession
+      ? employeeForSession(workspace, activeSession)
+      : newSessionEmployee;
+  const sceneCatalog = useEmployeeSceneCatalog({
+    scopeId: settingsScope,
+    organizationId: workspace?.organizationId,
+    workspaceId: workspace?.workspaceId,
+    viewerId: workspace?.viewerId,
+    instanceId: activeEmployee?.instanceId,
+    headers: tenantHeaders,
+  });
+  const sceneGuard = useRef({ key: sceneCatalog.key, busy });
+  sceneGuard.current = { key: sceneCatalog.key, busy };
+  const sceneOpen =
+    sceneRequest?.scope === settingsScope &&
+    sceneRequest.instanceId === activeEmployee?.instanceId;
+  function openSceneDirectory() {
+    if (!workspace?.viewerId || !activeEmployee?.instanceId) return;
+    setSceneRequest({
+      scope: settingsScope,
+      instanceId: activeEmployee.instanceId,
+    });
+    layout.close();
+  }
+  async function prepareSceneWork(scene: SceneSelection) {
+    if (!workspace || !activeEmployee?.instanceId || busy || composing.current)
+      throw Error('请先完成当前输入或等待工作结束，再调整员工内容。');
+    const nativeName = scene.personal
+      ? scene.value.nativeName
+      : scene.value.skillPackage.frontmatter?.name;
+    const invocation = scene.personal
+      ? scene.value.invocation
+      : scene.value.skillPackage.frontmatter?.invocation;
+    if (!nativeName || invocation?.userInvocable === false)
+      throw Error('这位员工已不在当前工作区，请重新打开详情。');
+    const captured = captureSelection();
+    const target = activeEmployee.instanceId;
+    const instance = await sceneCatalog.currentInstance();
+    if (
+      !instance ||
+      instance.id !== target ||
+      !captured.current() ||
+      currentSettingsScope.current !== settingsScope ||
+      sceneGuard.current.key !== sceneCatalog.key ||
+      sceneGuard.current.busy ||
+      composing.current
+    )
+      throw Error('工作区已变化，请重新打开员工详情。');
+    const employee = employeeChoices(workspace).find(
+      (entry) => entry.instanceId === target,
+    );
+    if (!employee || employee.id !== instance.assignmentId)
+      throw Error('这位员工已不在当前工作区，请重新打开详情。');
+    // The existing carry path preserves unsent text, attachments and authorized
+    // references. A real Session/Run is created only after the user sends.
+    const wasSession = captured.sessionId !== null;
+    resetRunState();
+    selectSession(null);
+    setHistory(null);
+    setPendingEmployeeAssignmentId(employeeChoiceId(employee));
+    if (wasSession)
+      carriedEmployeeDraft.current = {
+        scope: settingsScope,
+        generation: captureSelection().generation,
+      };
+    prepareDraft(prepareComposerText(`/${nativeName}`), true);
+    setSceneRequest(null);
+    if (layout.compact) setSidebarCollapsed(true);
+  }
+  function showSceneDeliveries() {
+    if (!activeEmployee?.instanceId) return;
+    const target = activeEmployee.instanceId;
+    const scope = settingsScope;
+    setSceneRequest(null);
+    setSidebarCollapsed(false);
+    void nextPaint().then(() => {
+      if (currentSettingsScope.current !== scope) return;
+      const row = document.querySelector<HTMLElement>(
+        `[role="treeitem"][data-row-key="workspace:${target}"]`,
+      );
+      if (row?.getAttribute('aria-expanded') === 'false') row.click();
+      row?.focus();
+    });
+  }
+
   if (!workspace || !manifest) {
     return <WorkspaceStartup error={error} />;
   }
 
   const sessions = archive.sessions;
-  const activeSession = history?.session
-    ? {
-        ...workspace.sessions.find((s) => s.id === activeId),
-        ...archive.sessions.find((s) => s.id === activeId),
-        ...history.session,
-      }
-    : workspace.sessions.find((session) => session.id === activeId);
-  const activeEmployee = activeSession
-    ? employeeForSession(workspace, activeSession)
-    : newSessionEmployee;
   const activeEmployeeProfile = employeeChoiceProfile(
     workspace,
     activeEmployee ? employeeChoiceId(activeEmployee) : undefined,
@@ -2062,23 +2148,19 @@ export function ChatFlowClient({
                         workspaceId={workspace.workspaceId}
                         viewerId={workspace.viewerId}
                         instanceId={activeEmployee?.instanceId}
-                        kind={
-                          activeEmployee?.instances?.find(
-                            (instance) =>
-                              instance.id === activeEmployee.instanceId,
-                          )?.kind
-                        }
                         headers={tenantHeaders}
                         refreshKey={`${activeId}/${history?.messages.length}/${history?.messages.at(-1)?.status}`}
-                        open={workbenchOpen}
+                        open={workbenchOpen || sceneOpen}
                         selected={
-                          activeModule?.scope === fileScope
-                            ? activeModule.kind === 'schedule' &&
-                              currentAutomationRequest?.sourceSessionId !==
-                                activeId
-                              ? null
-                              : activeModule.kind
-                            : null
+                          sceneOpen
+                            ? 'workflow'
+                            : activeModule?.scope === fileScope
+                              ? activeModule.kind === 'schedule' &&
+                                currentAutomationRequest?.sourceSessionId !==
+                                  activeId
+                                ? null
+                                : activeModule.kind
+                              : null
                         }
                         schedule={
                           !sessionArchived && currentSessionTasks.length > 0
@@ -2092,7 +2174,6 @@ export function ChatFlowClient({
                           else layout.show();
                         }}
                         entryRef={workbenchEntry}
-                        onCapabilities={setWorkbenchCapabilities}
                       />
                     ) : (
                       <>
@@ -2107,22 +2188,18 @@ export function ChatFlowClient({
                         >
                           参考资料
                         </button>
-                        <BrandContentWorkspaceEntry
-                          key={`${settingsScope}/${workspace.viewerId}/${activeEmployee?.instanceId ?? 'none'}`}
-                          scopeId={settingsScope}
-                          workspaceId={workspace.workspaceId}
-                          viewerId={workspace.viewerId}
-                          instanceId={activeEmployee?.instanceId}
-                          kind={
-                            activeEmployee?.instances?.find(
-                              (instance) =>
-                                instance.id === activeEmployee.instanceId,
-                            )?.kind
-                          }
-                          employeeName={activeEmployeeName}
-                          headers={tenantHeaders}
-                          onOpenSession={openBrandContentSession}
-                        />
+                        {workspace.viewerId && activeEmployee?.instanceId && (
+                          <button
+                            type="button"
+                            className={`${moduleUi.iconButton} ${moduleUi.workflow}`}
+                            title="工作场景"
+                            aria-label="工作场景"
+                            aria-pressed={sceneOpen}
+                            onClick={openSceneDirectory}
+                          >
+                            <WorkbenchIcon kind="workflow" />
+                          </button>
+                        )}
                         {workbenchEnabled ? (
                           <button
                             type="button"
@@ -2396,11 +2473,7 @@ export function ChatFlowClient({
           experienceAvailable={
             !!activeEmployee?.instanceId || !!currentMemoryRequest
           }
-          workflowAvailable={
-            workbenchCapabilities?.scope ===
-              `${settingsScope}/${activeEmployee?.instanceId ?? 'none'}` &&
-            workbenchCapabilities.workflow
-          }
+          workflowAvailable={false}
           onModuleViewed={(kind, memoryInstanceId) => {
             // Reading one employee's memories is not reading the active
             // employee's old experience/unread stream.
@@ -2411,6 +2484,10 @@ export function ChatFlowClient({
             );
           }}
           onActiveModule={(kind, memoryInstanceId) => {
+            if (kind === 'workflow') {
+              openSceneDirectory();
+              return;
+            }
             setActiveModule((previous) =>
               previous?.scope === fileScope &&
               previous.kind === kind &&
@@ -2500,25 +2577,7 @@ export function ChatFlowClient({
                     requestAnimationFrame(() => composerInput.current?.focus());
                   }}
                 />
-              ) : activeEmployee?.instanceId &&
-                workbenchCapabilities?.scope ===
-                  `${settingsScope}/${activeEmployee.instanceId}` &&
-                workbenchCapabilities.workflow ? (
-                <BrandContentPanel
-                  key={`${settingsScope}/${activeEmployee.instanceId}`}
-                  embedded
-                  active={active}
-                  scopeId={settingsScope}
-                  workspaceId={workspace.workspaceId}
-                  instanceId={activeEmployee.instanceId}
-                  employeeName={activeEmployeeName}
-                  headers={tenantHeaders}
-                  onClose={() => dismissWorkbench()}
-                  onOpenSession={openBrandContentSession}
-                />
-              ) : (
-                <p role="status">这位员工当前没有可用的工作流。</p>
-              )}
+              ) : null}
             </Suspense>
           )}
           onOpenReference={openReference}
@@ -2619,6 +2678,15 @@ export function ChatFlowClient({
         />
       )}
 
+      <EmployeeSceneDialog
+        key={sceneCatalog.key}
+        controller={sceneCatalog}
+        open={sceneOpen}
+        employeeName={activeEmployeeName}
+        onClose={() => setSceneRequest(null)}
+        onStart={prepareSceneWork}
+        onDeliveries={showSceneDeliveries}
+      />
       <EmployeeDetailsDialog
         onClose={() => setEmployeeDetailsOpen(false)}
         open={employeeDetailsOpen}
@@ -2688,54 +2756,5 @@ export function ChatFlowClient({
         versions={deliverableVersions}
       />
     </main>
-  );
-}
-
-function BrandContentWorkspaceEntry({
-  employeeName,
-  onOpenSession,
-  ...scope
-}: {
-  scopeId: string;
-  workspaceId: string;
-  viewerId?: string | null;
-  instanceId?: string;
-  kind?: 'general' | 'custom';
-  employeeName: string;
-  headers: Record<string, string>;
-  onOpenSession: (sessionId: string) => void;
-}) {
-  const catalog = useBrandContentWorkspace(scope);
-  const [openedScope, setOpenedScope] = useState<string | null>(null);
-  if (!catalog.available || !scope.instanceId) return null;
-  const open = openedScope === catalog.scope;
-  return (
-    <>
-      <button
-        type="button"
-        className={workbenchUi.entry}
-        aria-expanded={open}
-        onClick={() => setOpenedScope(catalog.scope)}
-      >
-        内容工作台
-      </button>
-      {open && (
-        <Suspense fallback={<span role="status">正在打开内容工作台…</span>}>
-          <BrandContentPanel
-            key={catalog.scope}
-            scopeId={scope.scopeId}
-            workspaceId={scope.workspaceId}
-            instanceId={scope.instanceId}
-            employeeName={employeeName}
-            headers={scope.headers}
-            onClose={() => setOpenedScope(null)}
-            onOpenSession={(sessionId) => {
-              setOpenedScope(null);
-              onOpenSession(sessionId);
-            }}
-          />
-        </Suspense>
-      )}
-    </>
   );
 }
