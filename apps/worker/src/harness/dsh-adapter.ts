@@ -13,6 +13,7 @@ import type { SessionReferenceSnapshot } from '@allrice/contracts';
 import { randomUUID, createHash } from 'node:crypto';
 
 import {
+  NativeActionApprovalResultSchema,
   HarnessEventSchema,
   harnessContextKey,
   PersonalSkillPinSchema,
@@ -318,7 +319,38 @@ export class DshHarnessAdapter implements HarnessAdapter {
     // Installed synchronously by runOnce before prompting. Keep it through
     // child join/retry; a later runOnce replaces it with its own turn barrier.
     let awaitTurnOrigin: ((settled?: boolean) => Promise<void>) | undefined;
-    const ordinaryHandler = dshInboundToolHandler(input);
+    const ordinaryHandler = dshInboundToolHandler(input, (call) => {
+      const check = () => {
+        input.signal.throwIfAborted();
+        assertCurrentRun();
+        if (!runScope || call.nativeSessionId !== threadId)
+          throw Error('NATIVE_ACTION_ROOT_REQUIRED');
+      };
+      return {
+        request: async (request) => {
+          check();
+          const result = NativeActionApprovalResultSchema.parse(
+            await runtime.client.nativeActionApproval('request', {
+              sessionId: threadId,
+              callId: call.id,
+              request,
+            }),
+          );
+          check();
+          return result;
+        },
+        assertLive: async (requestId) => {
+          check();
+          const result = await runtime.client.nativeActionApproval('verify', {
+            sessionId: threadId,
+            callId: call.id,
+            requestId,
+          });
+          check();
+          if (result.live !== true) throw Error('NATIVE_ACTION_NOT_LIVE');
+        },
+      };
+    });
     // Project only the successful server-authored profile receipt onto its
     // native completion event; raw model/tool output is not a public receipt.
     const profileReceipts = new Map<string, string>();
@@ -1600,6 +1632,12 @@ export class DshHarnessAdapter implements HarnessAdapter {
 
   runtimeInventory() {
     return this.runtimePool.inventory();
+  }
+
+  nativeActionApproval(
+    ...args: Parameters<DshRuntimePool['nativeActionApproval']>
+  ) {
+    return this.runtimePool.nativeActionApproval(...args);
   }
 
   nativeSubagentSummary(

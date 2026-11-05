@@ -50,7 +50,6 @@ describe('Worker capability facts', () => {
     ).toEqual([
       'native-subagent-spawn',
       'native-subagent-fork',
-      'native-approval',
       'native-tool-subagent',
       'native-tool-subagent-fork',
       'native-subagent-control',

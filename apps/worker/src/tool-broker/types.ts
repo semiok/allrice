@@ -12,6 +12,7 @@ import type {
   FrozenMcpTool,
   LocalMcpSnapshot,
   PersonalSceneSkillResource,
+  NativeActionApprovalPort,
 } from '@allrice/contracts';
 
 import type { searchCodexHostedWeb } from '../codex-search-broker.js';
@@ -28,6 +29,8 @@ export interface RiceToolCall {
   name: string;
   arguments: Record<string, unknown>;
   nativeSessionId?: string;
+  /** Created by the owned native transport, never parsed from arguments. */
+  nativeActionApproval?: NativeActionApprovalPort;
 }
 
 export interface RiceToolResult {

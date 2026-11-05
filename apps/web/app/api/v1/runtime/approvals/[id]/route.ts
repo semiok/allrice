@@ -5,12 +5,17 @@ import {
   getRuntimeActionApproval,
   revokeRuntimeActionApproval,
   RuntimePolicyError,
+  getNativeMcpApprovalTarget,
 } from '@allrice/database';
 
 import { capabilityErrorResponse } from '../../../../../../lib/capabilities/responses';
 import { isRequestValidationError } from '../../../../../../lib/api-error-response';
 import { getRequestContext } from '../../../../../../lib/identity/session';
 import { sameOriginBrowserWrite } from '../../../../../../lib/identity/request-origin';
+import {
+  requestNativeActionApproval,
+  completedNativeActionResponse,
+} from '../../../../../../lib/execution/native-action-approval';
 
 export const runtime = 'nodejs';
 type Params = { params: Promise<{ id: string }> };
@@ -54,9 +59,14 @@ async function handle(
     const context = await getRequestContext(request);
     if (!context) throw new DataAccessError('authentication_required');
     const { id } = await params.params;
+    const native = await getNativeMcpApprovalTarget(context, id);
     if (action === 'read')
       return Response.json(
-        { approval: await getRuntimeActionApproval(context, id) },
+        {
+          approval: native
+            ? await requestNativeActionApproval(context, id, 'read')
+            : await getRuntimeActionApproval(context, id),
+        },
         { headers },
       );
     if (action === 'revoke')
@@ -68,13 +78,25 @@ async function handle(
         { code: 'REQUEST_TOO_LARGE' },
         { status: 413, headers },
       );
-    return Response.json(
-      {
-        approval: await decideRuntimeActionApproval(
+    const submitted = await readDecision(request);
+    if (native) {
+      let result;
+      try {
+        result = await requestNativeActionApproval(
           context,
           id,
-          await readDecision(request),
-        ),
+          'answer',
+          submitted,
+        );
+        if (!result) throw new RuntimePolicyError('native_action_unavailable');
+      } catch {
+        result = await completedNativeActionResponse(context, id, submitted);
+      }
+      return Response.json({ approval: result.response }, { headers });
+    }
+    return Response.json(
+      {
+        approval: await decideRuntimeActionApproval(context, id, submitted),
       },
       { headers },
     );

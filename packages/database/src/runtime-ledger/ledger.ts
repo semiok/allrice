@@ -360,6 +360,7 @@ async function cancelOperationRows(
   tx: Tx,
   rows: OperationRow[],
   acceptedId: string,
+  nativeRootMcp = false,
 ) {
   for (const row of rows) {
     if (
@@ -376,7 +377,7 @@ async function cancelOperationRows(
     if (
       row.snapshot.status === 'cancel_requested' &&
       row.lease_token_hash === null &&
-      ((row.snapshot.agentInstanceId !== null &&
+      (((row.snapshot.agentInstanceId !== null || nativeRootMcp) &&
         row.snapshot.binding.action === 'cloud.mcp.call' &&
         row.snapshot.binding.execution.targetKind === 'cloud_mcp') ||
         (row.bridge_payload !== null &&
@@ -412,7 +413,7 @@ async function cancelOperationRows(
       };
       await tx`insert into allrice_runtime_operation_receipts(receipt_id,operation_id,payload,disposition)
         values(${randomUUID()},${row.id},${json(tx, payload)},'applied')`;
-      if (row.snapshot.agentInstanceId !== null) {
+      if (row.snapshot.agentInstanceId !== null || nativeRootMcp) {
         // The scheduling lock and absence of any issued lease prove that this
         // mapped assistant operation consumed no execution budget. This is not
         // a rule for dispatched/uncertain work or for legacy operation meters.
@@ -479,6 +480,11 @@ function receiptContent(receipt: RuntimeLedgerReceipt) {
 export function createRuntimeOperationLedger(options: {
   database?: ReturnType<typeof getDatabase>;
   admission: RuntimeLedgerAdmission;
+  /** Optional server adapter proof for one operation that never dispatched. */
+  assertUndispatchedStop?: (input: {
+    transaction: Tx;
+    binding: RuntimeActionBinding;
+  }) => Promise<void>;
   /** Trusted, read-only replay authority check after root/operation lock waits.
    * Does not admit new work, consume approval or alter prior execution facts. */
   assertCreateReplayAuthority?: (input: {
@@ -2064,6 +2070,54 @@ export function createRuntimeOperationLedger(options: {
       // this cancellation commit together) instead of borrowing a second pool
       // connection.
       return transaction ? apply(transaction) : db.begin(apply);
+    },
+
+    /** Native MCP caller only: stop one never-dispatched operation without
+     * canceling unrelated work in its root. Existing root/child cancellation
+     * retains its original behavior. No issued lease or START can become none. */
+    async stopUndispatchedOperation(
+      scope: RuntimeScope,
+      operationId: string,
+      requestId: string,
+    ) {
+      UuidSchema.parse(requestId);
+      return db.begin(async (tx) => {
+        const { row } = await lockOperation(tx, scope, operationId);
+        if (
+          !options.assertUndispatchedStop ||
+          row.snapshot.agentInstanceId !== null ||
+          row.snapshot.binding.action !== 'cloud.mcp.call' ||
+          row.snapshot.binding.execution.targetKind !== 'cloud_mcp' ||
+          row.lease_token_hash !== null
+        )
+          throw new RuntimeLedgerError('invalid_state');
+        await options.assertUndispatchedStop({
+          transaction: tx,
+          binding: row.snapshot.binding,
+        });
+        if (
+          row.snapshot.status === 'canceled' &&
+          row.snapshot.result?.effects === 'none'
+        )
+          return row.snapshot;
+        if (
+          ![
+            'planned',
+            'ready',
+            'waiting_user',
+            'waiting_device',
+            'waiting_dependency',
+            'cancel_requested',
+          ].includes(row.snapshot.status)
+        )
+          throw new RuntimeLedgerError('invalid_state');
+        const [dispatched] =
+          await tx`select 1 from allrice_runtime_operation_events
+          where operation_id=${row.id} and payload->'signal'->>'type' in ('operation.dispatched','operation.started') limit 1`;
+        if (dispatched) throw new RuntimeLedgerError('invalid_state');
+        await cancelOperationRows(tx, [row], requestId, true);
+        return row.snapshot;
+      });
     },
 
     async settleUsage(input: {

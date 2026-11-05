@@ -22,6 +22,8 @@ import type postgres from 'postgres';
 import { getDatabase } from './core/client.ts';
 import { createMcpStore } from './mcp-connections.ts';
 import { createMcpOperationLedger } from './mcp-execution.ts';
+import { isOwnedRecordAppendBinding } from './mcp-owned-records.ts';
+import { ownedRecordsServiceIdentity } from './mcp-owned-records-service.ts';
 import { assertEmployeeMcpAuthorization } from './mcp-employee-bindings.ts';
 import {
   getRuntimeActionApproval,
@@ -233,6 +235,9 @@ export async function listCloudRuntimeOperations(
         payload.tool.connectionId,
         payload.arguments,
       );
+      // Native confirmation describes the original frozen endpoint. A later
+      // connector edit must not silently change what the old card identifies.
+      const native = isOwnedRecordAppendBinding(snapshot.binding, payload);
       views.push({
         nativeCallId: row.native_call_id,
         createdAt: row.created_at.toISOString(),
@@ -249,7 +254,9 @@ export async function listCloudRuntimeOperations(
           runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED'),
         proposal: {
           kind: 'mcp',
-          endpoint: row.endpoint ?? 'Endpoint unavailable',
+          endpoint: native
+            ? ownedRecordsServiceIdentity()!.endpoint
+            : (row.endpoint ?? 'Endpoint unavailable'),
           tool: payload.tool.name,
           arguments: args,
           risk: payload.tool.risk,

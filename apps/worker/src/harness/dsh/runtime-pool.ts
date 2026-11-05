@@ -374,6 +374,33 @@ export class DshRuntimePool {
     return read(runtime, assertOwner);
   }
 
+  async nativeActionApproval(
+    target: NativeSubagentQueryTarget,
+    query: Record<string, unknown>,
+    signal: AbortSignal,
+  ) {
+    return this.withNativeSubagentOwner(
+      target,
+      signal,
+      async (runtime, check) => {
+        check();
+        if (runtime.executionObservation?.runId !== query.runId)
+          throw Error('NATIVE_ACTION_NOT_LIVE');
+        const result = await runtime.client.nativeActionApproval(
+          String(query.action),
+          {
+            ...query,
+            sessionId: target.descriptor.nativeSessionId,
+          },
+        );
+        check();
+        if (runtime.executionObservation?.runId !== query.runId)
+          throw Error('NATIVE_ACTION_NOT_LIVE');
+        return result;
+      },
+    );
+  }
+
   private assertAcquisitionOpen(threadId: string) {
     if (this.closing)
       throw new HandlerError(

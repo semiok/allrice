@@ -1,4 +1,5 @@
 import { installNativeAccounting } from './allrice-native-accounting.mjs';
+import { installNativeActionApproval } from './allrice-native-action-approval.mjs';
 import { createRunFinalDelivery } from './allrice-final-delivery.mjs';
 import { readBootstrapCoverage } from './allrice-bootstrap-coverage.mjs';
 import {
@@ -1659,15 +1660,28 @@ export async function createAllRiceRuntime(
                   ? this.preparedMethodQuestions.begin(agent)
                   : undefined;
               tool.validateArguments?.(args);
-              const response = await this.toolBrokerRequest(
-                {
-                  nativeSessionId: exec.agent.id,
-                  toolCallId: exec.callId,
-                  name: tool.canonicalName,
-                  arguments: args,
-                },
-                exec.signal,
-              );
+              const invoke = () =>
+                this.toolBrokerRequest(
+                  {
+                    nativeSessionId: exec.agent.id,
+                    toolCallId: exec.callId,
+                    name: tool.canonicalName,
+                    arguments: args,
+                  },
+                  exec.signal,
+                );
+              const response =
+                tool.canonicalName === 'cloud.mcp.call' && !('action' in args)
+                  ? await this.nativeActions.withCall(
+                      {
+                        agent,
+                        callId: exec.callId,
+                        toolName: exec.name,
+                        signal: exec.signal,
+                      },
+                      invoke,
+                    )
+                  : await invoke();
               if (
                 !response ||
                 typeof response !== 'object' ||
@@ -2017,6 +2031,11 @@ export async function createAllRiceRuntime(
     async handleRequest(method, params) {
       // A detaching Host only waits to exit; it takes no further input.
       if (this.detaching !== undefined) throw Error('QUESTION_DETACHING');
+      if (method.startsWith('native-action/'))
+        return this.nativeActions.handle(
+          method.slice('native-action/'.length),
+          params,
+        );
       if (method.startsWith('allrice/final-delivery/')) {
         this.runFinalDelivery ??= createRunFinalDelivery(this);
         return this.runFinalDelivery.handle(
@@ -2153,6 +2172,7 @@ export async function createAllRiceRuntime(
     maxTokensAsSuccess: false,
   });
   ownServer(server);
+  server.nativeActions = installNativeActionApproval(server);
   installNativeContextProjection(ctx, (method, params) =>
     transport.notify(method, params),
   );

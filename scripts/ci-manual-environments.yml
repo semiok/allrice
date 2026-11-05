@@ -39,6 +39,7 @@ rules:
     - apps/worker/src/repository-repair/
 files:
   native:
+    - apps/worker/test/native-subagent/native-action-approval.test.mjs
     - apps/web/server/native-subagent-follow.test.mjs
     - apps/worker/dsh/allrice-native-accounting.test.mjs
     - apps/rice-bridge/src/credential-files.test.ts
@@ -85,6 +86,7 @@ files:
   publicHost:
     - apps/worker/src/native-schedule-once.test.ts
   db:
+    - packages/database/src/native-mcp-approval.integration.test.mjs
     - apps/web/lib/execution/model-failure-api.integration.test.ts
     - apps/web/lib/execution/native-subagent-authorized-query.integration.test.mjs
     - apps/web/lib/execution/native-subagent-control.integration.test.mjs

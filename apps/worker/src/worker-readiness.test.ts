@@ -10,6 +10,7 @@ import {
   CloudRunnerError,
 } from './cloud-runner/backend.js';
 import { createWorkerReadinessResponder } from './worker-readiness.js';
+import { createNativeActionApprovalHttpHandler } from './native-action-approval-http.js';
 
 const servers: Server[] = [];
 const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
@@ -70,6 +71,7 @@ async function host(options: { detail?: string; arrivals?: number } = {}) {
     createServer,
     process,
     makeHealthResponse,
+    nativeActionApprovalHttp: createNativeActionApprovalHttpHandler(),
     nativeRunDiagnosticsHttp: async () => false,
     stopping: false,
     readDevMaintenance: vi.fn(async () => ({ state: 'open' })),
@@ -108,7 +110,8 @@ async function host(options: { detail?: string; arrivals?: number } = {}) {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   return {
-    request: (path = '/health/ready') => fetch(url + path),
+    request: (path = '/health/ready', init?: RequestInit) =>
+      fetch(url + path, init),
     onReady,
     arrivals,
     context,
@@ -143,6 +146,20 @@ it('serves ready only after the actual configured platform images pass the shipp
   expect(vi.mocked(CloudRunnerBackend.prototype.preflight).mock.calls).toEqual(
     Object.values(cloudPlatform.images).map((image) => [image]),
   );
+  expect(h.onReady).toHaveBeenCalledOnce();
+});
+
+it('keeps native approval authentication on the shipping listener without intercepting readiness', async () => {
+  const h = await host();
+  const response = await h.request('/internal/native-action-approval', {
+    method: 'POST',
+  });
+  expect(response.status).toBe(401);
+  expect(await response.json()).toEqual({});
+  expect(CloudRunnerBackend.prototype.call).not.toHaveBeenCalled();
+  expect(CloudRunnerBackend.prototype.preflight).not.toHaveBeenCalled();
+  expect(h.onReady).not.toHaveBeenCalled();
+  expect((await h.request()).status).toBe(200);
   expect(h.onReady).toHaveBeenCalledOnce();
 });
 

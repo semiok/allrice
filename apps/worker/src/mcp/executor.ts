@@ -3,6 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import {
   type createMcpRuntimeOperation,
   createMcpOperationLedger,
+  listAbandonedNativeMcpOperations,
   getDatabase,
   mcpStableId,
   runtimePolicyDigest,
@@ -14,6 +15,7 @@ import {
   RuntimeOperationSnapshotSchema,
   type RuntimeOperationSignal,
   type RuntimeUsageObservation,
+  type RuntimeActionBinding,
 } from '@allrice/contracts';
 import { invokeFrozenMcpTool } from './lifecycle.js';
 import type { createMcpTransport } from './transport.js';
@@ -75,7 +77,30 @@ export async function runMcpRuntimeOperation(
     { lease_token: string; result: StoredResult | null }[]
   >`select lease_token,result from allrice_mcp_execution_attempts where operation_id=${operationId}`;
   let leaseToken = prior?.lease_token;
-  if (!leaseToken) {
+  if (created.nativeApproval && !prior?.result) {
+    try {
+      options.signal?.throwIfAborted();
+      await created.assertNativeDispatch();
+      if (!(await workerCurrent(created, db))) {
+        await created.stopNativeAction().catch(() => undefined);
+        return response('blocked', '', 'MCP_WORKER_LEASE_LOST');
+      }
+      if (!leaseToken)
+        leaseToken = (
+          await ledger.dispatch({
+            scope,
+            operationId,
+            leaseOwner: created.context.worker.id,
+            leaseMs: 15000,
+          })
+        ).leaseToken;
+    } catch {
+      // This succeeds only before any dispatch/START and cannot erase an
+      // issued lease or unknown effects after a lost dispatch ACK.
+      await created.stopNativeAction().catch(() => undefined);
+      return response('blocked', '', 'MCP_NATIVE_APPROVAL_UNAVAILABLE');
+    }
+  } else if (!leaseToken) {
     while (
       await taskDeadlineOpen(db, binding.task.rootRunId, created.deadlineAt)
     ) {
@@ -361,9 +386,45 @@ async function settleMcpToolUsage(
 /** Cold recovery is receipt-only: never obtains credentials, connects to MCP,
  * retries a call or claims that canceling HTTP stopped a third-party effect. */
 export async function recoverMcpRuntimeOperations(
-  options: { database?: Database } = {},
+  options: {
+    database?: Database;
+    cancelNative?: (binding: RuntimeActionBinding) => Promise<void>;
+  } = {},
 ) {
   const db = options.database ?? getDatabase();
+  let recovered = 0,
+    failed = 0;
+  for (const binding of await listAbandonedNativeMcpOperations(db)) {
+    try {
+      // Deliver to the original signal if that Host/Run is still owned here.
+      // A later Run or closed Host may reject this best-effort delivery; that
+      // cannot block durable cleanup of a proven cut-off, undispatched call.
+      try {
+        await options.cancelNative?.(binding);
+      } catch {
+        // This is not an acknowledgement that the native request has ended.
+      }
+      const ledger = createMcpOperationLedger(
+        {
+          actor: binding.requestedBy,
+          organizationId: binding.task.scope.organizationId,
+          workspaceId: binding.task.scope.workspaceId,
+          requestId: randomUUID(),
+        },
+        db,
+        undefined,
+        true,
+      );
+      await ledger.stopUndispatchedOperation(
+        binding.task.scope,
+        binding.attempt.operationId,
+        mcpStableId(`${binding.attempt.operationId}:cold-stop`),
+      );
+      recovered++;
+    } catch {
+      failed++;
+    }
+  }
   const rows = await db<
     {
       operation_id: string;
@@ -380,8 +441,6 @@ export async function recoverMcpRuntimeOperations(
       or not exists(select 1 from allrice_jobs j where j.id=i.job_id and j.run_id=i.run_id and j.worker_id=i.worker_id and j.lease_token::text=i.job_lease_token
         and j.status='running' and j.lease_expires_at>clock_timestamp() and j.timeout_at>clock_timestamp() and j.cancel_requested_at is null))
     order by a.created_at limit 20`;
-  let recovered = 0,
-    failed = 0;
   for (const row of rows) {
     try {
       const { binding } = RuntimeOperationSnapshotSchema.parse(row.snapshot);

@@ -1,4 +1,5 @@
 import { allRiceToolManifest } from '@allrice/contracts';
+import type { NativeActionApprovalPort } from '@allrice/contracts';
 
 import { HandlerError } from '../../errors.js';
 import type { HarnessExecutionInput, HarnessToolCall } from '../adapter.js';
@@ -164,6 +165,7 @@ export function parseDshToolCall(text: string): HarnessToolCall | null {
 
 export function dshInboundToolHandler(
   input: Pick<HarnessExecutionInput, 'tools' | 'onToolCall'>,
+  nativeAction?: (call: HarnessToolCall) => NativeActionApprovalPort,
 ) {
   return async (method: string, params: Record<string, unknown>) => {
     if (method !== 'allrice/tool-call') {
@@ -204,14 +206,17 @@ export function dshInboundToolHandler(
         false,
       );
     }
-    const result = await input.onToolCall({
+    const call: HarnessToolCall = {
       id,
       name,
       arguments: args,
       ...(typeof params.nativeSessionId === 'string'
         ? { nativeSessionId: params.nativeSessionId }
         : {}),
-    });
+    };
+    if (nativeAction && name === 'cloud.mcp.call')
+      call.nativeActionApproval = nativeAction(call);
+    const result = await input.onToolCall(call);
     return {
       modelContent: result.modelContent,
       summary: result.summary,

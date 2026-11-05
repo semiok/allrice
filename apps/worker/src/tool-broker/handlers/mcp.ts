@@ -5,6 +5,7 @@ import {
   managedMcpRunContext,
   requestManagedMcpLogin,
   RuntimePolicyError,
+  assertEmployeeChatHumanSource,
 } from '@allrice/database';
 import { McpError, McpManagedActionSchema } from '@allrice/contracts';
 import { setTimeout } from 'node:timers/promises';
@@ -141,6 +142,33 @@ export const executeMcpTool: RiceToolHandler = async ({
     }
     throw cause;
   });
+  if (created.nativeApproval) {
+    let outcome: string;
+    try {
+      await assertEmployeeChatHumanSource({
+        context: input.context,
+        userMessageId: input.userMessageId ?? '',
+      });
+      outcome = await created.confirmNativeAction(
+        input.call.nativeActionApproval,
+      );
+    } catch {
+      await created.stopNativeAction();
+      outcome = 'unavailable';
+    }
+    if (outcome !== 'allowed-once')
+      return {
+        modelContent: JSON.stringify({
+          operationId: created.snapshot.binding.attempt.operationId,
+          status: 'blocked',
+          code: `MCP_NATIVE_${outcome.toUpperCase()}`,
+          instruction:
+            '本次动作未执行，需要本人在当前有效原生审批中确认；不得把旧聊天、自动执行或旧批准当作许可。',
+        }),
+        summary: '应用操作未执行',
+        itemCount: 0,
+      };
+  }
   const result = await runMcpRuntimeOperation(created, {
     ...(input.signal ? { signal: input.signal } : {}),
   });

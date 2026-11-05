@@ -214,10 +214,15 @@ describe('AllRice restricted DSH profile', () => {
           'native-subagent-control',
           'native-list-agents',
         ]);
-        for (const plugin of delegation)
+        for (const plugin of delegation.filter(
+          (p) => p.id !== 'native-approval',
+        ))
           expect(plugin.disabled).toBe(
             'process.env.ALLRICE_NATIVE_SUBAGENTS === undefined',
           );
+        expect(
+          delegation.find((p) => p.id === 'native-approval')?.disabled,
+        ).toBeUndefined();
       }
     }
   });

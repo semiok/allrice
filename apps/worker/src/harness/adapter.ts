@@ -10,6 +10,7 @@ import type {
 } from '@allrice/database';
 import type { FinalDeliveryPort } from '../final-delivery/guard.js';
 import type {
+  NativeActionApprovalPort,
   EmployeeKernelRequest,
   InternalKernelRequest,
   DshNativeSkillSnapshot,
@@ -35,6 +36,7 @@ export interface HarnessToolCall {
   name: string;
   arguments: Record<string, unknown>;
   nativeSessionId?: string;
+  nativeActionApproval?: NativeActionApprovalPort;
 }
 
 export interface HarnessToolDefinition {
@@ -287,6 +289,11 @@ export interface HarnessRuntimeProcessSnapshot {
  * into the provider runtime.
  */
 export interface HarnessAdapter {
+  nativeActionApproval?(
+    target: NativeSubagentQueryTarget,
+    query: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<Record<string, unknown> | undefined>;
   readonly kind: 'codex' | 'dsh';
   readonly capabilities: HarnessCapabilities;
   /** Who mutates the live context window; ChatFlow still owns checkpoints. */
