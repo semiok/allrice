@@ -337,6 +337,106 @@ suite(
       };
     }
 
+    function authored(name: string, sceneId?: string, version = '1.0.0') {
+      const artifact = file(version, sceneId);
+      if (!('skillPackage' in artifact.procedure)) throw Error('fixture');
+      artifact.procedure.body =
+        '## 工作步骤\n1. 核对资料\n## 交付内容\n- 周报\n## 执行细节\n按精确来源读取。';
+      artifact.procedure.skillPackage.frontmatter = {
+        name,
+        description: '本人周报',
+        whenToUse: '整理周报时',
+        invocation: { modelInvocable: true, userInvocable: true },
+        metadata: { displayName: '周报', version },
+      };
+      artifact.scene.nativeName = name;
+      const bundle = artifact.procedure.skillPackage.bundle;
+      bundle.contentChecksum = skillBytesChecksum(artifact.procedure.body);
+      const { checksum: _checksum, ...payload } = bundle;
+      void _checksum;
+      bundle.checksum = skillBundleChecksum(payload);
+      return artifact;
+    }
+
+    it('native names: rejects renaming, duplicate scene and platform names while same-name updates remain usable', async () => {
+      const s = await setup(),
+        artifact = authored('weekly-brief');
+      const initial = await install(s, artifact);
+      for (const attempt of [
+        authored('changed-name', artifact.scene.id),
+        authored('weekly-brief'),
+        authored(`p18-${publication.skillId}`),
+      ]) {
+        const preview = await previewPersonalSceneFile(s.owner, s.instance.id, {
+          workspaceId: s.workspaceId,
+          file: attempt,
+        });
+        const before = await snapshot(s);
+        expect((await http(s, 'save', saveBody(s, preview))).status).toBe(409);
+        expect(await snapshot(s)).toEqual(before);
+      }
+      const next = await install(
+        s,
+        authored('weekly-brief', artifact.scene.id, '2.0.0'),
+      );
+      expect(next.receipt.revision).toBe(initial.receipt.revision + 1);
+      expect(
+        (await listPersonalSceneSkills(s.owner, s.instance.id)).skills,
+      ).toMatchObject([{ nativeName: 'weekly-brief' }]);
+      expect(
+        (await restorePreview(s, initial.receipt.contentRef)).file.scene
+          .nativeName,
+      ).toBe('weekly-brief');
+    });
+
+    it('native names: checks the generic personal draft writer and refuses restoring a legacy UUID over an established author name', async () => {
+      const s = await setup(),
+        legacy = file(),
+        first = await install(s, legacy);
+      const next = await install(
+        s,
+        authored('weekly-brief', legacy.scene.id, '2.0.0'),
+      );
+      const pin = parsePersonalSceneContentRef(next.receipt.contentRef);
+      const [row] =
+        await f.db`select manifest from allrice_employee_content_revisions where id=${pin.revisionId}`;
+      const manifest = structuredClone(row!.manifest);
+      manifest.scenes.push({ ...manifest.scenes[0], id: randomUUID() });
+      const before = await snapshot(s);
+      await expect(
+        mutateEmployeeContent(s.owner, {
+          workspaceId: s.workspaceId,
+          setId: pin.setId,
+          ownership: {
+            scope: 'personal',
+            organizationId: s.owner.organizationId,
+            ownerId: s.owner.actor.id,
+          },
+          target: { kind: 'instance', instanceId: s.instance.id },
+          requestId: randomUUID(),
+          expectedRevision: next.receipt.revision,
+          changeSummary: '本人增加同名场景',
+          operation: 'save_draft',
+          manifest,
+          textEdits: [],
+        }),
+      ).rejects.toMatchObject({ code: 'version_conflict' });
+      const restore = await restorePreview(s, first.receipt.contentRef);
+      expect((await http(s, 'restore', restoreBody(s, restore))).status).toBe(
+        409,
+      );
+      expect(await snapshot(s)).toEqual(before);
+      expect(
+        (
+          await inspectPersonalSceneSkill(
+            s.owner,
+            s.instance.id,
+            first.receipt.contentRef,
+          )
+        ).nativeName,
+      ).toBe(`allrice-scene-${legacy.scene.id}`);
+    });
+
     it('keeps author framework metadata through human preview, save and exact read without exposing execution details as display sections', async () => {
       const s = await setup();
       const artifact = file();
@@ -379,7 +479,7 @@ suite(
         stepsMarkdown: '1. 核实来源',
         deliverablesMarkdown: '- 周报草稿',
         contentRef: saved.receipt.contentRef,
-        nativeName: `allrice-scene-${artifact.scene.id}`,
+        nativeName: 'weekly-brief',
       });
       expect(current.content).toBe(artifact.procedure.body);
       expect(
@@ -419,11 +519,15 @@ suite(
       }));
       expect(runtime.catalog.skills[0]).toMatchObject({
         name: artifact.scene.name,
-        description: artifact.scene.appliesWhen,
+        description: frontmatter.description,
+        nativeName: frontmatter.name,
+        invocation: frontmatter.invocation,
       });
       expect(runtime.package.skill).toMatchObject({
         name: artifact.scene.name,
-        description: artifact.scene.appliesWhen,
+        description: frontmatter.description,
+        nativeName: frontmatter.name,
+        invocation: frontmatter.invocation,
       });
       const pin = parsePersonalSceneContentRef(current.contentRef);
       const [source] = await f.db<

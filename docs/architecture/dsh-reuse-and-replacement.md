@@ -788,3 +788,7 @@ C3 云执行并发锁序修复（2026-10-31 Dev 已复现）：共用事务准�
 AllRice 独有部分归门卫：组织/本人/实例/本人确认/有效资格及根身份。原 Run memory_context_state 继续记初始6000、单读8000、总24000字节/12次，来源定位符不授予新权限。USER/MEMORY是数据库的有界冻结投影，不写文件，不新增表。合法 experience 引用归同一确认来源；root 的旧共同/场景 memory 正文退出输入，企业 knowledge 保留。旧场景读取的暂存回执按原生 session 区分，防止 root 文档投影与 child 原渲染并发相互覆盖；未改子任务或定时实现。来源工具拒绝未确认自动采用 proof，现有采集/验证生产者退休留 M5。
 
 删除条件：DSH 原生能直接消费 SaaS 的当前租户资格与 Run 账本时移除业务门卫桥；普通文档投影仍属业务数据。验证要求为 root/child/fork/resume 真原生差分、同 Run 冻结/撤回拒绝、资格/来源/预算 DB 验证与获批8根Run；本段是实现合同，不冒称尚未完成的验收已通过。
+
+### MET-249 U1-3b：作者名字接原生 Skill
+
+个人场景 Provider 将精确包的 `name`、`whenToUse`、`metadata`、`invocation` 直接交给 rc.2 公开 Skill Provider；无作者字段的旧包仍用 UUID，历史 Run 和读取账本不改写。SaaS 沿现本人写事务及组织锁拒绝场景/基础/启用个人 Skill 重名，已发布作者名更新不能更名。普通安装/绑定/启用同样检查场景；没有第二套命令解析、阶段凭据或加载状态。`allrice-progressive-scene-provider-v1` 对应 MET-225 E02/L03/L04，精确资源、来源、撤销与使用证据门卫保留。

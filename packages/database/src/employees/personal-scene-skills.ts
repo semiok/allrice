@@ -182,13 +182,20 @@ function summary(scene: Scene, frontmatter?: WorkflowSkillFrontmatter) {
     sceneId: scene.id,
     name: scene.name,
     description: scene.appliesWhen,
-    nativeName: `allrice-scene-${scene.id}`,
-    ...(frontmatter ? { version: frontmatter.metadata.version } : {}),
+    nativeName: frontmatter?.name ?? `allrice-scene-${scene.id}`,
+    ...(frontmatter
+      ? {
+          version: frontmatter.metadata.version,
+          description: frontmatter.description,
+          whenToUse: frontmatter.whenToUse,
+          invocation: frontmatter.invocation,
+          metadata: frontmatter.metadata,
+        }
+      : {}),
   };
 }
 
-/** Human presentation only. Runtime directory semantics change in U1-3b,
- * never as a side effect of adding author metadata to this reader. */
+/** Human labels are separate from the native command identity. */
 export function personalSceneSkillAuthorView(skill: PersonalSceneSkill) {
   return skill.frontmatter
     ? {
@@ -278,6 +285,13 @@ export async function listPersonalSceneSkillsInTransaction(
           ...(skill.version ? { version: skill.version } : {}),
           contentRef: skill.contentRef,
           revision: skill.revision,
+          ...(skill.frontmatter
+            ? {
+                whenToUse: skill.frontmatter.whenToUse,
+                invocation: skill.frontmatter.invocation,
+                metadata: skill.frontmatter.metadata,
+              }
+            : {}),
         });
       } catch (error) {
         if (!(error instanceof DataAccessError && error.code === 'not_found'))
