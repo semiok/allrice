@@ -7661,6 +7661,38 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       'workspace.employee.method.restore_candidate',
     ]);
     expect(names).not.toContain('workspace.brand_content.read');
+    const resolved = await resolveEmployeeExecution({
+      organizationId: f.a.organizationId,
+      workspaceId: f.a.workspaceId,
+      ownerId: f.a.user.id,
+      runId: run.context.runId,
+    });
+    expect(resolved.promptSnapshot.employeeDocuments).toEqual({
+      user: expect.any(String),
+      memory: expect.any(String),
+    });
+    const kernel = assembleEmployeeKernel({
+      employeeAssignmentId: id,
+      employeeVersionId: run.frozen.employee.versionId,
+      sessionId: run.sessionId,
+      userMessageId: run.userMessageId,
+      assistantMessageId: randomUUID(),
+      resolved,
+    });
+    expect(kernel.employeeDocuments).toEqual(
+      resolved.promptSnapshot.employeeDocuments,
+    );
+    for (const instructions of [
+      kernel.systemInstructions,
+      kernel.rootSystemInstructions,
+    ]) {
+      expect(instructions).toContain(
+        'The three method tools inspect, save_candidate and restore_candidate',
+      );
+      expect(instructions).toContain(
+        'they cannot target shared company or department content',
+      );
+    }
     const empty = await inspectEmployeeMethodFromChat({
       ...run,
       arguments: { view: 'effective' },
