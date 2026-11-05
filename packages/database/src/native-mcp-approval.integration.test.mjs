@@ -321,11 +321,11 @@ suite('MET-248 native approval → exact owned append', () => {
       const webAnswer = (response) =>
         decideNativeApproval(
           new Request(
-            `http://allrice.test/api/v1/runtime/approvals/${operationId}`,
+            `http://localhost/api/v1/runtime/approvals/${operationId}`,
             {
               method: 'POST',
               headers: {
-                origin: 'http://allrice.test',
+                origin: 'http://localhost',
                 'content-type': 'application/json',
               },
               body: JSON.stringify(response),
@@ -385,11 +385,11 @@ suite('MET-248 native approval → exact owned append', () => {
           }
           const stopped = await stopCloudOperations(
             new Request(
-              `http://allrice.test/api/v1/runtime/cloud-operations?workspaceId=${f.workspace}`,
+              `http://localhost/api/v1/runtime/cloud-operations?workspaceId=${f.workspace}`,
               {
                 method: 'POST',
                 headers: {
-                  origin: 'http://allrice.test',
+                  origin: 'http://localhost',
                   'content-type': 'application/json',
                 },
                 body: JSON.stringify({ action: 'cancel', runId: f.run }),
