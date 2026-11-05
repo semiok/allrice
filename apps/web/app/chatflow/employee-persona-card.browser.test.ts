@@ -416,7 +416,12 @@ suite('U1 employee persona card', () => {
       const { page, state } = await open({ width });
       try {
         const card = await showDetails(page);
-        const exits = ['back', 'cancel', 'Escape', 'backdrop'] as const;
+        // The approved phone editor fills the viewport, so it has no exposed
+        // backdrop. Keep backdrop dismissal coverage on the desktop editor.
+        const exits =
+          width <= 700
+            ? (['back', 'cancel', 'Escape'] as const)
+            : (['back', 'cancel', 'Escape', 'backdrop'] as const);
         let measured;
         for (const exit of exits) {
           const editor = await showEditor(page);
@@ -447,6 +452,12 @@ suite('U1 employee persona card', () => {
                 .querySelector('h2')!
                 .getBoundingClientRect();
               return {
+                fillsViewport:
+                  node.getBoundingClientRect().left === 0 &&
+                  node.getBoundingClientRect().top === 0 &&
+                  node.getBoundingClientRect().right === innerWidth &&
+                  node.getBoundingClientRect().bottom === innerHeight,
+                cornerInside: node.contains(document.elementFromPoint(1, 1)),
                 fits: node.scrollWidth <= node.clientWidth,
                 buttonBeforeTitle: buttonRect.right <= heading.left,
                 centers: Math.abs(
@@ -464,6 +475,8 @@ suite('U1 employee persona card', () => {
                 }),
               };
             });
+            expect(measured.fillsViewport).toBe(width <= 700);
+            expect(measured.cornerInside).toBe(width <= 700);
             expect(measured.fits).toBe(true);
             expect(measured.buttonBeforeTitle).toBe(true);
             expect(measured.centers).toBeLessThan(1);
@@ -478,6 +491,11 @@ suite('U1 employee persona card', () => {
           } else if (exit === 'Escape') {
             await page.keyboard.press('Escape');
           } else if (exit === 'backdrop') {
+            expect(
+              await editor.evaluate((node) =>
+                node.contains(document.elementFromPoint(1, 1)),
+              ),
+            ).toBe(false);
             await page.mouse.click(1, 1);
           } else {
             await editor
