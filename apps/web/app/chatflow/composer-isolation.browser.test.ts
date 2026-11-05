@@ -244,6 +244,7 @@ suite(
         nativeOtherOwner?: boolean;
         nativeDelayFull?: boolean;
         nativeClock?: boolean;
+        nativeStartup?: boolean;
         workspaceFiles?: WorkspaceFile[];
         taskSuggestions?: TaskSuggestionDisplay[];
         taskSuggestionsEnabled?: boolean;
@@ -326,6 +327,8 @@ suite(
         ),
       });
       let nativeDenied = false;
+      let nativeBindingPending = options.nativeStartup ?? false;
+      let rejectStartupEvents = false;
       const nativeSource = {
         summary: (id: string) => nativeSummary(id),
         status: 0,
@@ -369,6 +372,20 @@ suite(
         [B]: [message('history-b', 'Existing B')],
         [C]: [],
       };
+      // Existing native parents have a settled turn; the startup fixture alone
+      // models a new session whose first native binding does not exist yet.
+      if (options.nativeParents)
+        for (const id of nativeIds) {
+          if (id === A && options.nativeStartup) continue;
+          (messages[id] ??= []).push(
+            message(
+              `${id}-settled`,
+              'Earlier completed turn',
+              'assistant',
+              '66666666-6666-4666-8666-666666666666',
+            ),
+          );
+        }
       if (options.longHistory)
         messages[A]!.unshift(
           ...Array.from({ length: 20 }, (_, i) =>
@@ -466,6 +483,18 @@ suite(
           /^\/api\/v1\/sessions\/([a-f0-9-]{36})\/subagents$/,
         )?.[1];
         if (subagentSession) {
+          if (subagentSession === A && nativeBindingPending) {
+            response.setHeader(
+              'x-allrice-native-query-error',
+              'NATIVE_QUERY_BINDING_UNAVAILABLE',
+            );
+            answer(
+              response,
+              { error: 'NATIVE_SUBAGENT_SUMMARY_UNAVAILABLE' },
+              503,
+            );
+            return;
+          }
           if (
             !nativeIds.includes(subagentSession) ||
             url.searchParams.get('workspaceId') !== nativeWorkspace.id ||
@@ -690,6 +719,10 @@ suite(
           return;
         }
         if (path.endsWith('/events')) {
+          if (rejectStartupEvents) {
+            answer(response, { error: 'synthetic_disconnect' }, 503);
+            return;
+          }
           if (url.searchParams.get('format') === 'json') {
             answer(response, { events: [] });
             return;
@@ -869,11 +902,17 @@ suite(
               if (c.sessionId === A) c.response.end();
           },
           allowReady() {
+            nativeBindingPending = false;
             nativeDenied = false;
             for (const response of streams)
               response.write(
                 `data: ${JSON.stringify({ ...event(), eventId: 'ready-2', sequence: 2, cursor: `${runId}:2`, sourceEvent: { id: 'ready', type: 'request/header', occurredAt: now, payload: {} } })}\n\n`,
               );
+          },
+          startupStreams: () => streams.size,
+          failStartupEvents() {
+            rejectStartupEvents = true;
+            for (const response of streams) response.destroy();
           },
           switchWorkspace() {
             nativeWorkspace.id = C;
@@ -1291,6 +1330,157 @@ suite(
         await f.close();
       }
     });
+
+    it('MET-214 waits for the first native binding before reading a new session directory', async () => {
+      const f = await fixture({
+        nativeParents: 3,
+        running: true,
+        nativeStartup: true,
+        nativeClock: true,
+      });
+      try {
+        const activeReads = () =>
+          f.reads.filter((url) =>
+            url.startsWith(`/api/v1/sessions/${A}/subagents?`),
+          );
+        await f.page
+          .getByRole('button', { name: '停止生成', exact: true })
+          .waitFor();
+        await f.page.clock.runFor(6_000);
+        await f.page
+          .getByRole('button', { name: '子智能体', exact: true })
+          .click();
+        await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+        expect(activeReads()).toEqual([]);
+        f.native.allowReady();
+        await f.page
+          .getByRole('button', {
+            name: '1 个子智能体 · 1 个运行中',
+            exact: true,
+          })
+          .waitFor();
+        await expect.poll(f.native.fullRequests).toBe(1);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    });
+
+    it.each(['ready', 'terminal', 'disconnect'] as const)(
+      'MET-214 first binding follows the background session until %s without polling',
+      async (outcome) => {
+        const f = await fixture({
+          nativeParents: 3,
+          running: true,
+          nativeStartup: true,
+          nativeClock: true,
+        });
+        try {
+          const reads = () =>
+            f.reads.filter((url) =>
+              url.startsWith(`/api/v1/sessions/${A}/subagents?`),
+            );
+          await f.page
+            .getByRole('button', { name: '停止生成', exact: true })
+            .waitFor();
+          await f.choose(B);
+          await expect.poll(f.native.startupStreams).toBe(1);
+          await f.page.clock.runFor(6_000);
+          expect(reads()).toEqual([]);
+          if (outcome === 'ready') f.native.allowReady();
+          else if (outcome === 'terminal') f.finishRun(A, 'canceled');
+          else {
+            f.native.failStartupEvents();
+            // Reuse the existing Run transport's bounded reconnect schedule.
+            for (let i = 0; i < 8; i++) {
+              await f.page.clock.runFor(3_100);
+              await f.page.waitForTimeout(25);
+            }
+          }
+          await expect.poll(() => reads().length).toBeGreaterThan(0);
+          await expect.poll(f.native.startupStreams).toBe(0);
+          if (outcome === 'ready') {
+            await expect
+              .poll(
+                () =>
+                  f.native.connections().filter((c) => c.sessionId === A)
+                    .length,
+              )
+              .toBe(1);
+            expect(reads().length).toBe(2); // Snapshot GET and one live follow.
+          }
+          expect(reads().every((url) => url.includes('liveOnly=true'))).toBe(
+            true,
+          );
+          const count = reads().length;
+          await f.page.clock.runFor(6_000);
+          expect(reads().length).toBe(count);
+          expect(new URL(f.page.url()).searchParams.get('session')).toBe(B);
+          expect(
+            await f.page.getByText('Existing A', { exact: true }).count(),
+          ).toBe(0);
+          expect(f.writes).toEqual([]);
+          expect(f.errors).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      },
+    );
+
+    it.each([false, true])(
+      'MET-214 observes a late first POST receipt after leaving an empty session (overlap %s)',
+      async (overlap) => {
+        const f = await fixture({
+          nativeParents: 3,
+          emptyA: true,
+          nativeStartup: true,
+          immediateReply: true,
+          nativeClock: true,
+        });
+        try {
+          const reads = () =>
+            f.reads.filter((url) =>
+              url.startsWith(`/api/v1/sessions/${A}/subagents?`),
+            );
+          await f.send('First message before binding');
+          await f.waitPending(1);
+          await f.choose(B);
+          if (overlap) {
+            await f.page.locator(`[data-row-key="session:${A}"]`).click();
+            await f.page
+              .getByRole('heading', { name: 'Session A', exact: true })
+              .waitFor();
+            expect(new URL(f.page.url()).searchParams.get('session')).toBe(A);
+            await f.send('A newer attempt');
+            await f.waitPending(2);
+            await f.choose(B);
+            await f.respond(0, false);
+          }
+          await f.page
+            .getByRole('textbox', { name: '给 Rice 的消息' })
+            .fill('B untouched');
+          await f.page.clock.runFor(6_000);
+          expect(reads()).toEqual([]);
+          expect(f.native.startupStreams()).toBe(0);
+          await f.respond(overlap ? 1 : 0);
+          await expect.poll(f.native.startupStreams).toBe(1);
+          expect(reads()).toEqual([]);
+          f.native.allowReady();
+          await expect.poll(() => reads().length).toBeGreaterThan(0);
+          await expect.poll(f.native.startupStreams).toBe(0);
+          expect(new URL(f.page.url()).searchParams.get('session')).toBe(B);
+          expect(
+            await f.page
+              .getByRole('textbox', { name: '给 Rice 的消息' })
+              .inputValue(),
+          ).toBe('B untouched');
+          expect(f.writes.filter((url) => url.endsWith('/cancel'))).toEqual([]);
+          expect(f.errors).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      },
+    );
 
     it('MET-214 keeps the subagent entry for new work before its first message', async () => {
       const f = await fixture();

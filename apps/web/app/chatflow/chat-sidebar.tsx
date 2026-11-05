@@ -33,6 +33,7 @@ interface ChatSidebarProps {
   archive?: ReturnType<typeof useSessionArchive>;
   activeId: string | null;
   nativeReadyKey?: string;
+  pendingNativeSessions?: ReadonlySet<string>;
   nativeReads?: Record<string, NativeSubagentRead>;
   collapsed: boolean;
   overlay?: boolean;
@@ -62,6 +63,7 @@ export function ChatSidebar({
   archive,
   activeId,
   nativeReadyKey,
+  pendingNativeSessions,
   nativeReads,
   collapsed,
   overlay = false,
@@ -297,6 +299,7 @@ export function ChatSidebar({
             sessions={sessions}
             activeId={activeId}
             nativeReadyKey={nativeReadyKey}
+            pendingNativeSessions={pendingNativeSessions}
             nativeReads={nativeReads}
             collapsed={collapsed}
             onSelectSession={onSelectSession}

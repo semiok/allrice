@@ -35,6 +35,7 @@ export function EmployeeSidebar({
   sessions,
   activeId,
   nativeReadyKey = '',
+  pendingNativeSessions,
   nativeReads,
   collapsed,
   onSelectSession,
@@ -49,6 +50,7 @@ export function EmployeeSidebar({
   sessions: Session[];
   activeId: string | null;
   nativeReadyKey?: string;
+  pendingNativeSessions?: ReadonlySet<string>;
   nativeReads?: Record<string, NativeSubagentRead>;
   collapsed: boolean;
   onSelectSession: (id: string) => void;
@@ -71,6 +73,7 @@ export function EmployeeSidebar({
           (session) =>
             visible.includes(session.id) &&
             session.id !== activeId &&
+            !pendingNativeSessions?.has(session.id) &&
             (!session.ownerId || session.ownerId === workspace.viewerId),
         )
         .map((session) => [
