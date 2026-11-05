@@ -42,6 +42,7 @@ import {
   readPersonalSceneSkillInTransaction,
 } from './personal-scene-skills.ts';
 import { mutateEmployeeContent } from './employee-content.ts';
+import { inspectPersonalSceneSkill } from './personal-scene-reads.ts';
 import { skillBundleChecksum, skillBytesChecksum } from '../skill-bundles.ts';
 import { runtimePolicyDigest } from '../runtime-policy-digest.ts';
 import { nativeBindingWaiter } from '../native-session-binding.fixture.ts';
@@ -381,6 +382,14 @@ suite(
         nativeName: `allrice-scene-${artifact.scene.id}`,
       });
       expect(current.content).toBe(artifact.procedure.body);
+      expect(
+        await inspectPersonalSceneSkill(
+          s.owner,
+          s.instance.id,
+          current.contentRef,
+          f.db,
+        ),
+      ).toEqual(current);
       expect(
         JSON.stringify([current.stepsMarkdown, current.deliverablesMarkdown]),
       ).not.toContain('model-only');
