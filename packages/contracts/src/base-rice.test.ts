@@ -10,7 +10,7 @@ const instance: Pick<EmployeeInstanceSnapshot, 'kind' | 'source'> = {
     templateId: 'rice',
     templateRevisionId: 'revision',
     templateRevision: 1,
-    templateChecksum: 'a'.repeat(64),
+    templateChecksum: 'sha256:' + 'a'.repeat(64),
   },
 };
 const employee = {

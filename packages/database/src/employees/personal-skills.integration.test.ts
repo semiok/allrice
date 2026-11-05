@@ -1,3 +1,4 @@
+import { personalSkillVersionFromChat } from './personal-skill-versions.ts';
 import type { RequestContext } from '@allrice/contracts';
 import { createHash, randomUUID } from 'node:crypto';
 import { access, unlink } from 'node:fs/promises';
@@ -270,14 +271,19 @@ suite(
           await parsePersonalSkill(Buffer.from(raw())),
         ),
       ).rejects.toMatchObject({ code: 'authorization_denied' });
+      const bind = {
+        operation: 'bind',
+        installationId: item.id,
+        versionId: item.versionId,
+        expectedRevision: item.revision,
+      };
       await expect(
-        broker(task, {
-          operation: 'bind',
-          installationId: item.id,
-          versionId: item.versionId,
-          expectedRevision: item.revision,
-        }),
+        personalSkillVersionFromChat({ ...task.input, arguments: bind }),
       ).rejects.toMatchObject({ code: 'authorization_denied' });
+      await expect(broker(task, bind)).rejects.toMatchObject({
+        code: 'PERSONAL_SKILL_REJECTED',
+        retryable: false,
+      });
       expect(
         (await listPersonalSkills(x.context))[0]!.bindings.map(
           (b) => b.instanceId,

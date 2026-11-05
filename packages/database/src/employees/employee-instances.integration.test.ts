@@ -7698,9 +7698,9 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       await fixture.db`select id from allrice_employee_content_sets where instance_id=${f.assignment.id}`,
     ).toHaveLength(0);
     expect((await save(custom.id)).status).toBe(200);
-    expect(await listPersonalSceneSkills(f.a.context, custom.id)).toHaveLength(
-      1,
-    );
+    expect(
+      (await listPersonalSceneSkills(f.a.context, custom.id)).skills,
+    ).toHaveLength(1);
   });
 
   it('upgrades Rice through its established tenant alias without allowing the alias to rename the platform identity', async () => {

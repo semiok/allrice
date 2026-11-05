@@ -424,7 +424,7 @@ it('E3 applies only a proven basic Rice name preference, leaving professional ge
     templateId: id,
     templateRevisionId: id,
     templateRevision: 1,
-    templateChecksum: 'a'.repeat(64),
+    templateChecksum: 'sha256:' + 'a'.repeat(64),
   };
   const instance = EmployeeInstanceSchema.parse({
     id,
