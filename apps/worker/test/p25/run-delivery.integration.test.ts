@@ -2,13 +2,18 @@ import { createRuntimeOperationLedger } from '../../../../packages/database/src/
 import { readRetiredExecutionHistory } from './retired-execution-history.fixture.ts';
 // @ts-expect-error Native test host is JavaScript and runs the production DSH module unchanged.
 import { host, text } from '../native-subagent/fixture.mjs';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   ExecutionContextSchema,
   runtimePolicyActionDecision,
 } from '@allrice/contracts';
 import * as client from '../../../../packages/database/src/core/client.ts';
+import {
+  createStorageMetadata,
+  markStorageReady,
+} from '../../../../packages/database/src/data.ts';
+import { getToolBrokerFile } from '../../../../packages/database/src/execution/tool-broker.ts';
 import { assertNativeRunAuthority } from '../../../../packages/database/src/run-delivery-authority.ts';
 import {
   createRuntimeFixtureDatabase,
@@ -57,7 +62,11 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
     await fixture?.close();
   });
 
-  async function subject() {
+  async function subject(
+    allowedTools = ['workspace.export.create', 'workspace.document.read'],
+    storageRead = true,
+    frozenToolNames = allowedTools,
+  ) {
     vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
     const db = fixture.db;
@@ -66,7 +75,21 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
       configure: false,
 
       memberRole: 'member',
-      allowedTools: ['workspace.export.create', 'workspace.document.read'],
+      allowedTools,
+      snapshot: (value) => ({
+        ...value,
+        capabilitySnapshot: {
+          ...value.capabilitySnapshot,
+          bindings: {
+            ...value.capabilitySnapshot.bindings,
+            toolNames: frozenToolNames,
+          },
+          grantedCapabilities:
+            value.capabilitySnapshot.grantedCapabilities.filter(
+              (c) => storageRead || c !== 'storage:read',
+            ),
+        },
+      }),
       controls: {
         version: 1,
         enabled: true,
@@ -137,7 +160,7 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
         db,
       );
     const validate = async (answer: string) => {
-      const snapshot = await port.readSnapshot();
+      const snapshot = await port.readSnapshot(answer);
       const decision = checkFinalDelivery({
         candidate: answer,
         expectedScope: snapshot.scope,
@@ -162,7 +185,7 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
         snapshot,
         decision,
         proof,
-        guard: port.createCommitGuard(proof, origin),
+        guard: port.createCommitGuard(proof, origin, answer),
       };
     };
     const complete = (
@@ -187,6 +210,7 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
       ...f,
       native,
       authority,
+      readContext: context,
       origin,
       port,
       publish,
@@ -196,6 +220,536 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
     };
   }
   type Subject = Awaited<ReturnType<typeof subject>>;
+  const citationSubject = (storageRead = true) =>
+    subject(
+      [
+        'workspace.export.create',
+        'workspace.document.read',
+        'workspace.project',
+      ],
+      storageRead,
+    );
+
+  async function upload(f: Subject, shared = false) {
+    const db = fixture.db;
+    let principal = {
+      ...f.context,
+      memberships: f.readContext.policySnapshot.memberships,
+    };
+    if (shared) {
+      const other = randomUUID(),
+        membership = randomUUID();
+      await db`insert into allrice_users(id,email,display_name,password_hash) values(${other},${other + '@example.test'},'Citation fixture','not-login')`;
+      await db`insert into allrice_memberships(id,organization_id,workspace_id,user_id,role) values(${membership},${f.org},${f.workspace},${other},'member')`;
+      principal = {
+        ...f.context,
+        actor: { type: 'user', id: other },
+        memberships: [
+          {
+            id: membership,
+            userId: other,
+            organizationId: f.org,
+            workspaceId: f.workspace,
+            role: 'member',
+            active: true,
+          },
+        ],
+      };
+    }
+    const content = '本周已确认收入 128000，成本 116000，结余 12000。';
+    const pending = await createStorageMetadata(
+      principal,
+      {
+        id: randomUUID(),
+        workspaceId: f.workspace,
+        category: 'uploads',
+        mediaType: 'text/plain',
+        sizeBytes: Buffer.byteLength(content),
+        checksum:
+          'sha256:' + createHash('sha256').update(content).digest('hex'),
+        visibility: shared ? 'workspace' : 'private',
+        immutable: false,
+        retentionUntil: null,
+      },
+      db,
+    );
+    await runtimeFixtureStorage(db).put(
+      pending.object,
+      new Blob([content]).stream(),
+    );
+    return markStorageReady(principal, pending.object.id, db);
+  }
+
+  it.each([null, 'workspace.file.read', 'workspace.document.read'] as const)(
+    'F1 frozen read-tool qualification is shared by inspect/check/commit: %s',
+    async (readTool) => {
+      // The employee default remains broader than this Run. No fallback may
+      // restore either read tool removed from the frozen bindings.
+      const f = await subject(
+        [
+          'workspace.project',
+          'workspace.file.list',
+          'workspace.file.read',
+          'workspace.document.read',
+        ],
+        true,
+        [
+          'workspace.project',
+          'workspace.file.list',
+          ...(readTool ? [readTool] : []),
+        ],
+      );
+      const file = await upload(f);
+      const answer = `[source](/api/v1/files/${file.object.id}/download?name=source.txt)`;
+      expect(
+        (await getToolBrokerFile(f.readContext, file.object.id, fixture.db))
+          .object.id,
+      ).toBe(file.object.id);
+      const inspection = await f.port.inspect({
+        nativeSessionId: f.native,
+        turn: 1,
+        publicMessageId: randomUUID(),
+        durableSeq: 1,
+        text: answer,
+        candidateDigest: finalDeliveryTextDigest(answer),
+        provider: 'fixture',
+        model: 'fixture',
+      });
+      expect(inspection.decision === 'pass').toBe(Boolean(readTool));
+      const candidate = {
+        nativeText: answer,
+        projectedText: answer,
+        nativeSessionId: f.native,
+        publicMessageId: randomUUID(),
+        durableSeq: 1,
+        nativeBindingId: randomUUID(),
+        rootRunId: f.rootRunId,
+        attempt: 1,
+        generation: 1,
+      };
+      const decision = await f.port.check(candidate);
+      expect(decision.status).toBe(readTool ? 'valid' : 'invalid_response');
+      if (readTool) {
+        const { guard } = await f.validate(answer);
+        await f.complete(guard, answer);
+        expect(await f.state()).toMatchObject({
+          status: 'succeeded',
+          successes: 1,
+        });
+      } else {
+        // Even an erroneous upstream proof cannot grant missing frozen tools:
+        // commit must rebuild the facts from the real Run, independently.
+        const snapshot = await f.port.readSnapshot(answer);
+        const forged = checkFinalDelivery({
+          candidate: answer,
+          snapshot: {
+            ...snapshot,
+            ordinaryFileCitations: [
+              { objectId: file.object.id, retentionUntil: null },
+            ],
+          },
+          expectedScope: snapshot.scope,
+          markup: createDeliveryMarkup(),
+          managedOrigins: [],
+        });
+        expect(forged.status).toBe('valid');
+        const guard = f.port.createCommitGuard(
+          {
+            nativeSessionId: f.native,
+            publicMessageId: candidate.publicMessageId,
+            durableSeq: 1,
+            nativeBindingId: candidate.nativeBindingId,
+            nativeCandidateDigest: finalDeliveryTextDigest(answer),
+            candidateDigest: forged.candidateDigest,
+            factSetDigest: forged.factSetDigest,
+            attempt: 1,
+            generation: 1,
+          },
+          f.origin,
+          answer,
+        );
+        await expect(f.complete(guard, answer)).rejects.toMatchObject({
+          code: 'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE',
+        });
+        expect(await f.state()).toMatchObject({
+          status: 'running',
+          successes: 0,
+        });
+      }
+    },
+  );
+
+  it.each(['?name=周报资料.txt', ''])(
+    'B2/B3 ordinary source citation accepts the same authorized object with query %s and no read receipt',
+    async (query) => {
+      const f = await citationSubject(),
+        file = await upload(f);
+      const answer = `[资料](/api/v1/files/${file.object.id}/download${query})`;
+      const checked = await f.validate(answer);
+      expect(checked.snapshot.artifacts).toEqual([]);
+      expect(checked.decision.linked).toEqual([]);
+      expect(checked.snapshot.ordinaryFileCitations).toEqual([
+        { objectId: file.object.id, retentionUntil: null },
+      ]);
+      await f.complete(checked.guard, answer);
+      expect(await f.state()).toMatchObject({
+        status: 'succeeded',
+        state: 'succeeded',
+        result: { answer },
+        text: answer,
+        successes: 1,
+      });
+    },
+  );
+
+  it.each(['workspace.file.read', 'workspace.document.read'])(
+    'F1 ordinary citation completes the public native candidate/inspect/check/finish chain with only %s',
+    async (readTool) => {
+      const f = await subject(['workspace.project', readTool]);
+      const file = await upload(f);
+      const answer = `[source](/api/v1/files/${file.object.id}/download)`;
+      const native = await host({
+        rootId: f.native,
+        model: async () => text(answer),
+        bridge: async (method: string) => {
+          expect(method).toBe('allrice/final-delivery-origin');
+          return { origin: await f.port.readOrigin() };
+        },
+      });
+      vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
+      await native.server.handleRequest('allrice/final-delivery/bind', {
+        sessionId: f.native,
+        rootRunId: f.rootRunId,
+      });
+      await native.prompt('请引用这份资料回答，不生成新成果。');
+      const candidate = await native.server.handleRequest(
+        'allrice/final-delivery/candidate',
+        { sessionId: f.native },
+      );
+      const inspection = await f.port.inspect({
+        nativeSessionId: f.native,
+        turn: 1,
+        publicMessageId: candidate.publicMessageId,
+        durableSeq: candidate.durableSeq,
+        text: candidate.answer,
+        candidateDigest: candidate.textDigest,
+        provider: 'fixture',
+        model: 'fixture',
+      });
+      expect(inspection).toMatchObject({ decision: 'pass', references: [] });
+      const decision = await f.port.check({
+        nativeText: candidate.answer,
+        projectedText: candidate.answer,
+        nativeSessionId: f.native,
+        publicMessageId: candidate.publicMessageId,
+        durableSeq: candidate.durableSeq,
+        nativeBindingId: candidate.rootBinding.bindingId,
+        rootRunId: f.rootRunId,
+        attempt: 1,
+        generation: 1,
+      });
+      expect(decision).toMatchObject({ status: 'valid', linked: [] });
+      const proof = {
+        nativeSessionId: f.native,
+        publicMessageId: candidate.publicMessageId,
+        durableSeq: candidate.durableSeq,
+        nativeBindingId: candidate.rootBinding.bindingId,
+        nativeCandidateDigest: candidate.textDigest,
+        candidateDigest: decision.candidateDigest,
+        factSetDigest: decision.factSetDigest,
+        attempt: 1,
+        generation: 1,
+      };
+      await native.server.handleRequest('allrice/final-delivery/finish', {
+        sessionId: f.native,
+        completionToken: candidate.completionToken,
+        candidateDigest: candidate.textDigest,
+        factSetDigest: decision.factSetDigest,
+      });
+      f.port.finish(proof);
+      const execution = {},
+        result = { answer };
+      beginCheckedFinalDeliveryExecution(execution);
+      requireCheckedFinalDelivery(execution);
+      attachCheckedFinalDelivery(result, proof);
+      transferCheckedFinalDeliveryForExecution(execution, result, result);
+      const coverage = readCheckedFinalDeliveryForExecution(execution, result);
+      if (coverage.coverage !== 'checked_native_v1')
+        throw Error('missing native proof');
+      await f.complete(coverage.checkedDelivery, answer);
+      expect(await f.state()).toMatchObject({
+        status: 'succeeded',
+        text: answer,
+        successes: 1,
+      });
+      expect(
+        await fixture.db`select id from allrice_deliverable_versions where object_id=${file.object.id}`,
+      ).toEqual([]);
+    },
+  );
+
+  function barrier() {
+    let resolve!: () => void;
+    const promise = new Promise<void>((r) => {
+      resolve = r;
+    });
+    return { promise, resolve };
+  }
+  async function blockedBy(pid: number, table = 'allrice_storage_objects') {
+    await vi.waitFor(
+      async () => {
+        const rows = await fixture.db`select pid,query from pg_stat_activity
+        where datname=current_database() and ${pid}=any(pg_blocking_pids(pid))`;
+        expect(rows.some((row) => row.query.includes(table))).toBe(true);
+      },
+      { timeout: 5000, interval: 20 },
+    );
+  }
+  const classifyOrdinaryFile = (
+    tx: Parameters<Parameters<typeof registerJobCompletionGuard>[0]>[0],
+    f: Subject,
+    id: string,
+  ) =>
+    tx`insert into allrice_deliverable_versions(id,organization_id,workspace_id,owner_id,object_id,series_id,version,session_id,file_name,format)
+      values(${randomUUID()},${f.org},${f.workspace},${f.user},${id},${randomUUID()},1,${f.session},'new-artifact.txt','text')`;
+
+  it.each(['revoke', 'classify'] as const)(
+    'F1 object lock rejects completion when %s commits first',
+    async (mode) => {
+      const f = await citationSubject(),
+        file = await upload(f, mode === 'revoke');
+      const answer = `[source](/api/v1/files/${file.object.id}/download)`;
+      const { guard } = await f.validate(answer);
+      const locked = barrier(),
+        release = barrier();
+      let pid = 0;
+      const writer = fixture.db.begin(async (tx) => {
+        await tx`set local statement_timeout='8s'`;
+        pid = (await tx`select pg_backend_pid() pid`)[0]!.pid;
+        await tx`select id from allrice_storage_objects where id=${file.object.id} for update`;
+        if (mode === 'revoke')
+          await tx`update allrice_storage_objects set visibility='private' where id=${file.object.id}`;
+        else await classifyOrdinaryFile(tx, f, file.object.id);
+        locked.resolve();
+        await release.promise;
+      });
+      await Promise.race([locked.promise, writer]);
+      const completion = f.complete(guard, answer).then(
+        () => ({ ok: true, error: null }),
+        (error) => ({ ok: false, error }),
+      );
+      try {
+        await blockedBy(pid);
+      } finally {
+        release.resolve();
+      }
+      await writer;
+      expect(await completion).toMatchObject({
+        ok: false,
+        error: { code: 'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE' },
+      });
+      expect(await f.state()).toMatchObject({
+        status: 'running',
+        successes: 0,
+      });
+    },
+  );
+
+  it.each(['revoke', 'classify'] as const)(
+    'F1 object lock defers %s until successful completion commits',
+    async (mode) => {
+      const f = await citationSubject(),
+        file = await upload(f, mode === 'revoke');
+      const answer = `[source](/api/v1/files/${file.object.id}/download)`;
+      const { guard } = await f.validate(answer);
+      const locked = barrier(),
+        release = barrier();
+      let pid = 0;
+      const heldGuard = registerJobCompletionGuard(async (tx, job, result) => {
+        const checked = await guard.assertCurrent(tx, job, result);
+        pid = (await tx`select pg_backend_pid() pid`)[0]!.pid;
+        locked.resolve();
+        await release.promise;
+        return checked;
+      });
+      const completion = f.complete(heldGuard, answer);
+      await Promise.race([locked.promise, completion]);
+      const writer = fixture.db.begin(async (tx) => {
+        await tx`set local statement_timeout='8s'`;
+        if (mode === 'revoke')
+          await tx`update allrice_storage_objects set visibility='private' where id=${file.object.id}`;
+        else await classifyOrdinaryFile(tx, f, file.object.id);
+      });
+      try {
+        await blockedBy(
+          pid,
+          mode === 'classify'
+            ? 'allrice_deliverable_versions'
+            : 'allrice_storage_objects',
+        );
+      } finally {
+        release.resolve();
+      }
+      await Promise.all([completion, writer]);
+      expect(await f.state()).toMatchObject({
+        status: 'succeeded',
+        text: answer,
+        successes: 1,
+      });
+      if (mode === 'revoke')
+        await expect(
+          getToolBrokerFile(f.readContext, file.object.id, fixture.db),
+        ).rejects.toMatchObject({ code: 'authorization_denied' });
+      else
+        expect(
+          (await getToolBrokerFile(f.readContext, file.object.id, fixture.db))
+            .artifactVersionId,
+        ).not.toBeNull();
+    },
+  );
+
+  it.each(['lease', 'retention'] as const)(
+    'F1 completion cannot outlive %s while waiting for the citation object lock',
+    async (mode) => {
+      const f = await citationSubject(),
+        file = await upload(f);
+      const answer = `[source](/api/v1/files/${file.object.id}/download)`;
+      const deadlines =
+        await fixture.db`select clock_timestamp()+interval '3 seconds' deadline`;
+      const deadline = deadlines[0]!.deadline as Date;
+      if (mode === 'lease')
+        await fixture.db`update allrice_jobs set lease_expires_at=${deadline} where id=${f.worker.jobId}`;
+      else
+        await fixture.db`update allrice_storage_objects set retention_until=${deadline} where id=${file.object.id}`;
+      const { guard } = await f.validate(answer);
+      const locked = barrier(),
+        release = barrier();
+      let pid = 0;
+      const holder = fixture.db.begin(async (tx) => {
+        pid = (await tx`select pg_backend_pid() pid`)[0]!.pid;
+        await tx`select id from allrice_storage_objects where id=${file.object.id} for update`;
+        locked.resolve();
+        await release.promise;
+      });
+      await Promise.race([locked.promise, holder]);
+      const completion = f.complete(guard, answer).then(
+        () => ({ ok: true }),
+        () => ({ ok: false }),
+      );
+      try {
+        await blockedBy(pid);
+        await vi.waitFor(
+          async () => {
+            expect(
+              (
+                await fixture.db`select clock_timestamp()>=${deadline} expired`
+              )[0]!.expired,
+            ).toBe(true);
+          },
+          { timeout: 5000, interval: 25 },
+        );
+      } finally {
+        release.resolve();
+      }
+      await holder;
+      expect(await completion).toEqual({ ok: false });
+      expect(await f.state()).toMatchObject({
+        status: 'running',
+        successes: 0,
+      });
+    },
+  );
+
+  it('ordinary citation cannot survive revocation between validation and the commit transaction', async () => {
+    const f = await citationSubject(),
+      file = await upload(f, true);
+    expect(
+      (await getToolBrokerFile(f.readContext, file.object.id, fixture.db))
+        .object.id,
+    ).toBe(file.object.id);
+    const answer = `[资料](/api/v1/files/${file.object.id}/download)`;
+    const checked = await f.validate(answer);
+    await fixture.db`update allrice_storage_objects set visibility='private' where id=${file.object.id}`;
+    await expect(
+      getToolBrokerFile(f.readContext, file.object.id, fixture.db),
+    ).rejects.toMatchObject({ code: 'authorization_denied' });
+    await expect(f.complete(checked.guard, answer)).rejects.toThrow();
+    expect(await f.state()).toMatchObject({
+      status: 'running',
+      state: 'running',
+      successes: 0,
+    });
+  });
+
+  it.each(['missing', 'foreign', 'revoked', 'forged'])(
+    'ordinary citation rejects %s without borrowing a broader principal',
+    async (mode) => {
+      const f = await citationSubject();
+      const foreign = mode === 'foreign' ? await citationSubject() : f;
+      const file = await upload(foreign, mode === 'revoked');
+      if (mode === 'revoked')
+        await fixture.db`update allrice_storage_objects set visibility='private' where id=${file.object.id}`;
+      const id = mode === 'missing' ? randomUUID() : file.object.id;
+      const answer = `[资料](${mode === 'forged' ? 'https://foreign.example.test' : ''}/api/v1/files/${id}/download)`;
+      const facts = await f.port.readSnapshot(answer);
+      expect(facts.ordinaryFileCitations).toEqual([]);
+      expect(
+        checkFinalDelivery({
+          candidate: answer,
+          snapshot: facts,
+          expectedScope: facts.scope,
+          markup: createDeliveryMarkup(),
+          managedOrigins: [],
+        }).status,
+      ).toBe('invalid_response');
+      if (mode !== 'forged')
+        await expect(
+          getToolBrokerFile(f.readContext, id, fixture.db),
+        ).rejects.toThrow();
+    },
+  );
+
+  it('ordinary citation is current ACL evidence, not a guarantee that content stayed unchanged', async () => {
+    const f = await citationSubject(),
+      file = await upload(f);
+    const answer = `[资料](/api/v1/files/${file.object.id}/download)`;
+    const checked = await f.validate(answer);
+    const content = '更新后的资料';
+    const checksum =
+      'sha256:' + createHash('sha256').update(content).digest('hex');
+    await fixture.db`update allrice_storage_objects set checksum=${checksum},size_bytes=${Buffer.byteLength(content)} where id=${file.object.id}`;
+    const changed = await getToolBrokerFile(
+      f.readContext,
+      file.object.id,
+      fixture.db,
+    );
+    await runtimeFixtureStorage(fixture.db).put(
+      changed.object,
+      new Blob([content]).stream(),
+    );
+    await f.complete(checked.guard, answer);
+    expect(await f.state()).toMatchObject({
+      status: 'succeeded',
+      successes: 1,
+    });
+  });
+
+  it('ordinary citation cannot manufacture the storage read capability', async () => {
+    const f = await citationSubject(false),
+      file = await upload(f);
+    const answer = `[资料](/api/v1/files/${file.object.id}/download)`;
+    const facts = await f.port.readSnapshot(answer);
+    expect(facts.ordinaryFileCitations).toEqual([]);
+    expect(
+      checkFinalDelivery({
+        candidate: answer,
+        snapshot: facts,
+        expectedScope: facts.scope,
+        markup: createDeliveryMarkup(),
+        managedOrigins: [],
+      }).status,
+    ).toBe('invalid_response');
+  });
 
   it.each(['current', 'tenant', 'generation', 'lease', 'revoked'] as const)(
     'PR3a 工具门卫只读复用 Run 权限：%s',

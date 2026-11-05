@@ -10,9 +10,10 @@ export interface FinalDeliveryFacts {
   checks: readonly unknown[];
   requirements: readonly unknown[];
   qualityReceipts?: readonly unknown[];
+  ordinaryFileCitations?: readonly unknown[];
 }
 
-export const FINAL_DELIVERY_FACTS_VERSION = 1 as const;
+export const FINAL_DELIVERY_FACTS_VERSION = 2 as const;
 
 /** Object keys are unordered; arrays inside individual facts retain their order. */
 function canonical(value: unknown): string {
@@ -64,6 +65,7 @@ export function serializeFinalDeliveryFacts(facts: FinalDeliveryFacts): string {
       '"checks":' + factSet(facts.checks),
       '"requirements":' + factSet(facts.requirements),
       '"qualityReceipts":' + factSet(facts.qualityReceipts ?? []),
+      '"ordinaryFileCitations":' + factSet(facts.ordinaryFileCitations ?? []),
     ].join(',') +
     '}'
   );

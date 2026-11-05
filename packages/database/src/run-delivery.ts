@@ -2,6 +2,7 @@ import type { TransactionSql } from 'postgres';
 import { getDatabase } from './core/client.ts';
 import { readWorkerFinalDeliveryEvidenceTransaction } from './artifact-review.ts';
 import { readFinalDeliveryReferences } from './final-delivery-references.ts';
+import { readFinalDeliveryFileCitations } from './final-delivery-file-citations.ts';
 import {
   assertRunDeliveryAuthority,
   type RunDeliveryAuthority,
@@ -28,26 +29,42 @@ export type { JobCompletionGuard } from './final-delivery-commit.ts';
 async function readSnapshot(
   tx: TransactionSql,
   authority: RunDeliveryAuthority,
+  ordinaryReferenceObjectIds: readonly string[] = [],
 ) {
-  return readWorkerFinalDeliveryEvidenceTransaction(tx, async () => {
-    const { task } = await assertRunDeliveryAuthority(tx, authority);
-    return {
-      task,
-      ownership: 'root_run' as const,
-      explicitReferences: await readFinalDeliveryReferences({
-        transaction: tx,
+  const facts = await readWorkerFinalDeliveryEvidenceTransaction(
+    tx,
+    async () => {
+      const { task } = await assertRunDeliveryAuthority(tx, authority);
+      return {
         task,
-        ownership: 'root_run',
-      }),
-    };
-  });
+        ownership: 'root_run' as const,
+        explicitReferences: await readFinalDeliveryReferences({
+          transaction: tx,
+          task,
+          ownership: 'root_run',
+        }),
+      };
+    },
+  );
+  return {
+    ...facts,
+    ordinaryFileCitations: await readFinalDeliveryFileCitations(
+      tx,
+      authority,
+      ordinaryReferenceObjectIds,
+    ),
+  };
 }
 
 /** Worker-only independent evidence port. No rollout or native wait is implied. */
-export async function readDeliverySnapshot(authority: RunDeliveryAuthority) {
+export async function readDeliverySnapshot(
+  authority: RunDeliveryAuthority,
+  ordinaryReferenceObjectIds: readonly string[] = [],
+) {
   const captured = structuredClone(authority);
+  const ids = [...ordinaryReferenceObjectIds];
   return getDatabase().begin('isolation level read committed', (tx) =>
-    readSnapshot(tx, captured),
+    readSnapshot(tx, captured, ids),
   );
 }
 
@@ -77,9 +94,11 @@ export function createDeliveryCommitGuard(input: {
   authority: RunDeliveryAuthority;
   proof: FinalDeliveryCommitProof;
   origin: FinalDeliveryReplyOrigin;
+  ordinaryReferenceObjectIds?: readonly string[];
 }): JobCompletionGuard {
   const authority = structuredClone(input.authority);
   const proof = captureFinalDeliveryProof(input.proof);
+  const ids = [...(input.ordinaryReferenceObjectIds ?? [])];
   if (
     !input.origin ||
     input.origin.schemaVersion !== 1 ||
@@ -113,7 +132,7 @@ export function createDeliveryCommitGuard(input: {
       JSON.stringify(await readOrigin(tx, authority)) !== origin
     )
       finalDeliveryUnavailable();
-    const facts = await readSnapshot(tx, authority);
+    const facts = await readSnapshot(tx, authority, ids);
     if (finalDeliveryFactsDigest(facts) !== proof.factSetDigest)
       finalDeliveryUnavailable();
     const services = await continuingProjectServiceIds(tx, rootRunId);
@@ -125,6 +144,9 @@ export function createDeliveryCommitGuard(input: {
       ...current.deadlines,
       ...facts.artifacts.flatMap((a) =>
         a.retentionUntil ? [new Date(a.retentionUntil)] : [],
+      ),
+      ...facts.ordinaryFileCitations.flatMap((c) =>
+        c.retentionUntil ? [new Date(c.retentionUntil)] : [],
       ),
     ];
     return {

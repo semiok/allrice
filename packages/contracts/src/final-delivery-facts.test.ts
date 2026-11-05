@@ -34,6 +34,7 @@ const facts = (): FinalDeliveryFacts => ({
       receipt: { status: 'checked', orderedSteps: ['render', 'inspect'] },
     },
   ],
+  ordinaryFileCitations: [{ objectId: 'citation', retentionUntil: null }],
 });
 
 describe('shared final delivery fact identity', () => {
@@ -70,6 +71,7 @@ describe('shared final delivery fact identity', () => {
     'checks',
     'requirements',
     'qualityReceipts',
+    'ordinaryFileCitations',
   ] as const)('binds changed %s facts', (key) => {
     const a = facts();
     const b = facts();
@@ -83,6 +85,7 @@ describe('shared final delivery fact identity', () => {
       checks: [],
       requirements: [],
       qualityReceipts: [],
+      ordinaryFileCitations: [],
     };
     Object.assign(b, { [key]: changed[key] });
     expect(serializeFinalDeliveryFacts(a)).not.toBe(

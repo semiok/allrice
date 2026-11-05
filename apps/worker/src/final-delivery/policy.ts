@@ -62,6 +62,11 @@ export interface DeliverySnapshot {
   requirements: readonly DeliveryRequirement[];
   /** Full bound audit receipts, including failures and null/unavailable evidence. */
   qualityReceipts?: readonly unknown[];
+  /** Current ordinary-file read ACL only; never delivery/quality evidence. */
+  ordinaryFileCitations?: readonly {
+    objectId: string;
+    retentionUntil: string | null;
+  }[];
 }
 
 export interface MarkdownNode {
@@ -286,6 +291,24 @@ function managedTarget(href: string, origins: ReadonlySet<string>): LinkTarget {
   return { type: 'managed', objectId: match[1]!.toLowerCase() };
 }
 
+/** Structured link identities to ask the private current-Run ACL reader about.
+ * Invalid/foreign targets remain invalid in checkFinalDelivery; no prose inference. */
+export function ordinaryFileCitationCandidates(
+  text: string,
+  markup: DeliveryMarkup,
+): string[] {
+  if (Buffer.byteLength(text, 'utf8') > MAX_TEXT_BYTES)
+    throw Error('candidate_byte_limit');
+  return [
+    ...new Set(
+      readLinks(text, markup).flatMap((link) => {
+        const target = managedTarget(link.href, new Set());
+        return target.type === 'managed' ? [target.objectId] : [];
+      }),
+    ),
+  ].sort();
+}
+
 /**
  * Certifies only deterministic delivery facts, never semantic/business correctness.
  * Pure: no model, network, tool, DB write, text rewrite or artifact publication.
@@ -433,6 +456,36 @@ export function checkFinalDelivery(input: {
   }
   if (evidenceUnavailable) return result();
 
+  const ordinary = new Set<string>();
+  if ((snapshot.ordinaryFileCitations?.length ?? 0) > MAX_LINKS) {
+    issue(
+      {
+        code: 'delivery_evidence_incomplete',
+        reason: 'ordinary_citation_limit',
+      },
+      true,
+    );
+    return result();
+  }
+  for (const citation of snapshot.ordinaryFileCitations ?? []) {
+    if (
+      !UUID.test(citation.objectId) ||
+      !validUntil(citation.retentionUntil, now) ||
+      byObject.has(citation.objectId.toLowerCase())
+    ) {
+      issue(
+        {
+          code: 'delivery_evidence_incomplete',
+          reason: 'ordinary_citation_identity_or_availability',
+        },
+        true,
+      );
+      continue;
+    }
+    ordinary.add(citation.objectId.toLowerCase());
+  }
+  if (evidenceUnavailable) return result();
+
   try {
     if (!input.candidate.trim())
       issue({ code: 'empty_response', reason: 'empty_candidate' });
@@ -458,6 +511,7 @@ export function checkFinalDelivery(input: {
       if (target.type === 'external') continue;
       const identityKey =
         target.type === 'managed' ? byObject.get(target.objectId) : undefined;
+      if (target.type === 'managed' && ordinary.has(target.objectId)) continue;
       if (target.type === 'invalid' || !identityKey) {
         issue({
           code: 'invalid_delivery_link',
