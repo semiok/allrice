@@ -413,13 +413,18 @@ suite('U1 employee persona card', () => {
       const { page, state } = await open({ width });
       try {
         const card = await showDetails(page);
-        const exits = ['back', 'cancel', 'close', 'Escape'] as const;
+        const exits = ['back', 'cancel', 'Escape', 'backdrop'] as const;
         let measured;
         for (const exit of exits) {
           const editor = await showEditor(page);
           await editor
             .getByRole('heading', { name: '编辑人设', exact: true })
             .waitFor();
+          expect(
+            await editor
+              .getByRole('button', { name: '关闭', exact: true })
+              .count(),
+          ).toBe(0);
           const name = editor.getByRole('textbox', {
             name: '员工名字',
             exact: true,
@@ -469,18 +474,22 @@ suite('U1 employee persona card', () => {
             await page.keyboard.press('Enter');
           } else if (exit === 'Escape') {
             await page.keyboard.press('Escape');
+          } else if (exit === 'backdrop') {
+            await page.mouse.click(1, 1);
           } else {
             await editor
-              .getByRole('button', {
-                name: exit === 'cancel' ? '取消' : '关闭',
-                exact: true,
-              })
+              .getByRole('button', { name: '取消', exact: true })
               .click();
           }
           await card
             .getByRole('heading', { name: '流程哥', exact: true })
             .waitFor();
           expect(await editor.count()).toBe(0);
+          expect(
+            await page
+              .getByRole('button', { name: '关闭', exact: true })
+              .isVisible(),
+          ).toBe(true);
           expect(
             await page.getByRole('button', { name: '返回员工详情' }).count(),
           ).toBe(0);
@@ -522,13 +531,17 @@ suite('U1 employee persona card', () => {
       await editor.getByRole('radio', { name: '薄荷绿' }).check();
       await editor.getByRole('button', { name: '保存', exact: true }).click();
       await expect.poll(() => state.writes.length).toBe(1);
-      for (const label of ['返回员工详情', '关闭', '取消'])
+      expect(
+        await editor.getByRole('button', { name: '关闭', exact: true }).count(),
+      ).toBe(0);
+      for (const label of ['返回员工详情', '取消'])
         expect(
           await editor
             .getByRole('button', { name: label, exact: true })
             .isDisabled(),
         ).toBe(true);
       await page.keyboard.press('Escape');
+      await page.mouse.click(1, 1);
       expect(await editor.isVisible()).toBe(true);
       expect(await name.inputValue()).toBe('保存失败仍保留的名字');
       await editor.screenshot({
@@ -589,6 +602,10 @@ suite('U1 employee persona card', () => {
         name: '编辑人设',
         exact: true,
       });
+      await editor.waitFor();
+      expect(
+        await editor.getByRole('button', { name: '关闭', exact: true }).count(),
+      ).toBe(0);
       await editor
         .getByRole('button', { name: '返回员工详情', exact: true })
         .focus();
@@ -638,6 +655,9 @@ suite('U1 employee persona card', () => {
         exact: true,
       });
       await editor.getByRole('alert').waitFor();
+      expect(
+        await editor.getByRole('button', { name: '关闭', exact: true }).count(),
+      ).toBe(0);
       expect(await editor.getByRole('textbox').count()).toBe(0);
       await editor
         .getByRole('button', { name: '返回员工详情', exact: true })

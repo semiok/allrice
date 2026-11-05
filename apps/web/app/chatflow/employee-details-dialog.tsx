@@ -345,6 +345,7 @@ function EmployeeDetailsReader(
       onBack={editor ? cancelEdit : undefined}
       backLabel="返回员工详情"
       closeDisabled={!!editor && saving}
+      showCloseButton={!editor}
       title={editor ? '编辑人设' : 'AI 员工详情'}
       initialFocusSelector={editor?.instance ? 'input' : undefined}
     >
