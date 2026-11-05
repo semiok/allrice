@@ -1331,7 +1331,10 @@ export async function createAllRiceRuntime(
         this.contentGuard = installContentGuard(
           this.ctx,
           async (params, signal) => {
-            await this.sceneProvider?.beforeDispatch(params.nativeSessionId);
+            await this.sceneProvider?.beforeDispatch(
+              params.nativeSessionId,
+              signal,
+            );
             return this.contentBridge(params, signal);
           },
         );

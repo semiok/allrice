@@ -63,6 +63,7 @@ async function scenario({
   sceneProbe = false,
   personalScene = false,
   personalSceneName = sceneName,
+  rejectPersonalDirectory = false,
   scenePromptParts,
   rejectPersonalUse = false,
   rejectSceneAdoption = false,
@@ -290,7 +291,9 @@ async function scenario({
           });
           return { receipt: sceneReceipt, content: 'SCENE_WEEKLY_ONLY_85' };
         }
-        if (method === 'allrice/content-scene-personal-list')
+        if (method === 'allrice/content-scene-personal-list') {
+          if (rejectPersonalDirectory)
+            throw Error('synthetic_scene_namespace_conflict');
           return {
             instanceId: privatePin.instanceId,
             revision: 2,
@@ -303,6 +306,7 @@ async function scenario({
               },
             ],
           };
+        }
         if (method === 'allrice/content-scene-personal-load')
           return {
             sceneId,
@@ -357,7 +361,8 @@ async function scenario({
           ? ['workspace.personal_skill.install']
           : ['local.fs.list'],
         nativeSkills:
-          (skillFirst || personalSkill) && !emptyCatalog
+          (skillFirst || personalSkill || rejectPersonalDirectory) &&
+          !emptyCatalog
             ? [
                 {
                   id: personalSkill
@@ -798,6 +803,30 @@ it('cold native recovery reconciles the saved successful scene result before the
 }, 45000);
 
 describe('personal Workflow native slash source and use evidence', () => {
+  it('rejects before model dispatch when native discovery swallows a personal directory denial and a base namesake is available', async () => {
+    const r = await scenario({
+      failures: [],
+      personalScene: true,
+      personalSceneName: 'synthetic-method',
+      rejectPersonalDirectory: true,
+      scenePromptParts: [
+        { kind: 'user', text: '/synthetic-method 按本人场景做' },
+      ],
+    });
+    expect(r.requests).toEqual([]);
+    expect(r.toolCalls).toBe(0);
+    expect(
+      r.bridgeCalls.some(
+        (call) => call.method === 'allrice/content-scene-personal-list',
+      ),
+    ).toBe(true);
+    expect(
+      r.bridgeCalls.some(
+        (call) => call.method === 'allrice/content-scene-personal-use',
+      ),
+    ).toBe(false);
+  }, 45000);
+
   it.each(['slash', 'tool'])(
     'loads an authored native name through the real %s entry and records its exact use',
     async (entry) => {
