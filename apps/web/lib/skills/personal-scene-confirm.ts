@@ -27,6 +27,7 @@ import {
   skillPreviewSigningSecret,
 } from './personal-skill-preview';
 import { readSkillPreviewSource } from './preview-source';
+import { SceneNameMismatchError } from './scene-name-mismatch';
 
 async function authorize(context: RequestContext, instanceId: string) {
   if (!context.sessionId || context.actor.type !== 'user')
@@ -67,10 +68,18 @@ export async function previewPersonalSceneSource(
   if (
     input.target.operation === 'update' &&
     (view.expectedRevision !== input.target.expectedRevision ||
-      view.expectedContentRef !== input.target.expectedContentRef ||
-      (view.current && view.current.nativeName !== inspected.frontmatter.name))
+      view.expectedContentRef !== input.target.expectedContentRef)
   )
     throw new EmployeeContentError('version_conflict');
+  if (
+    input.target.operation === 'update' &&
+    view.current &&
+    view.current.nativeName !== inspected.frontmatter.name
+  )
+    throw new SceneNameMismatchError(
+      inspected.frontmatter.name,
+      view.current.name,
+    );
   if (input.target.operation === 'install' && view.currentScene)
     throw new EmployeeContentError('version_conflict');
   await authorize(context, instanceId);
