@@ -1,6 +1,6 @@
 import { readDshToolResult } from '@allrice/contracts/native-runtime';
 import { createHash } from 'node:crypto';
-import { renderSkillContent } from '@deepseek-ai/dsh-skill';
+import { renderSkillContent, isSkillName } from '@deepseek-ai/dsh-skill';
 import {
   PersonalSceneSkillSchema,
   PersonalSceneUseSchema,
@@ -223,8 +223,12 @@ export function installPersonalSceneProvider(ctx, bridge) {
         );
         return catalog.skills.map((skill) => ({
           name: skill.nativeName,
-          description: `工作场景：${skill.name}。适用：${skill.description}`,
-          invocation: personalInvocation,
+          description: skill.metadata
+            ? skill.description
+            : `工作场景：${skill.name}。适用：${skill.description}`,
+          invocation: skill.invocation ?? personalInvocation,
+          ...(skill.whenToUse ? { whenToUse: skill.whenToUse } : {}),
+          ...(skill.metadata ? { metadata: skill.metadata } : {}),
           provider: providerName,
           source: 'allrice-managed',
           rank: 100,
@@ -232,7 +236,12 @@ export function installPersonalSceneProvider(ctx, bridge) {
         }));
       },
       get: async (candidate, options) => {
-        if (candidate.name !== `allrice-scene-${candidate.locator?.id}`)
+        if (
+          !isSkillName(candidate.name) ||
+          !PersonalSceneSkillCatalogSchema.shape.skills.element.shape.sceneId.safeParse(
+            candidate.locator?.id,
+          ).success
+        )
           return undefined;
         options?.signal?.throwIfAborted();
         const skill = PersonalSceneSkillSchema.parse(
@@ -250,8 +259,16 @@ export function installPersonalSceneProvider(ctx, bridge) {
           throw Error('employee_scene_receipt_invalid');
         const definition = {
           name: skill.nativeName,
-          description: `工作场景：${skill.name}。适用：${skill.description}`,
-          invocation: personalInvocation,
+          description:
+            skill.frontmatter?.description ??
+            `工作场景：${skill.name}。适用：${skill.description}`,
+          invocation: skill.frontmatter?.invocation ?? personalInvocation,
+          ...(skill.frontmatter
+            ? {
+                whenToUse: skill.frontmatter.whenToUse,
+                metadata: skill.frontmatter.metadata,
+              }
+            : {}),
           provider: providerName,
           source: 'allrice-managed',
           content: skill.content,

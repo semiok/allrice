@@ -13,7 +13,7 @@ U1 按功能分片实施：本文已标出的作者框架和元数据合同由 U
 | 规则                        | 现在可用                                                                    | U1 后才可用                                              |
 | --------------------------- | --------------------------------------------------------------------------- | -------------------------------------------------------- |
 | Workflow 的 `SKILL.md` 字段 | 五字段框架及原生调用策略已可打包、保存                                      | 完整运行接线和新页面展示                                 |
-| 发起 Workflow               | 实际命令是 `/allrice-scene-<UUID>`                                          | 以作者 `name` 调用，例如 `/weekly-brief`                 |
+| 发起 Workflow               | 作者 `name` 直接作命令；旧无作者字段包保留 UUID                             | 网页安装确认后的完整操作入口                             |
 | 正文上限                    | Workflow 为 8,000 字符                                                      | 256 KB，超限拒绝、不截断                                 |
 | 包内资源                    | 最多 32 个，每个 128 KB，合计 512 KB                                        | 两种 Skill 共用同一组安全上限                            |
 | Workflow 安装               | 本地 CLI 打包 JSON，再在本人员工详情导入、确认                              | 网页读取公开 GitHub 链接或 zip，预览并确认安装           |
@@ -59,7 +59,7 @@ weekly-brief/
 ## U1 的 SKILL.md 模板
 
 **现在可用（U1-3a 作者格式和精确存储）：** 以下模板可由 CLI 打包。
-`name` 直接作为命令、whenToUse 和调用策略影响原生加载由 U1-3b 接线；当前实际命令仍为 UUID。
+`name` 直接作为命令，`whenToUse`、metadata 和调用策略交给 DSH 原生加载；旧无作者字段包仍用 UUID。
 新详情页由界面线另行交付，字段保存不等于界面或运行变化已生效。
 
 ```markdown
@@ -85,7 +85,7 @@ metadata:
 写给模型的具体处理要求，以及何时读取 references/ 和 assets/。
 ```
 
-**字段可保存；新页面展示与原生名字接线仍属后续 U1：**
+**字段可保存并接原生 Skill；新页面展示仍属后续 U1：**
 
 | 字段或正文             | 写什么、怎么用                                                                                  |
 | ---------------------- | ----------------------------------------------------------------------------------------------- |
@@ -231,10 +231,10 @@ node --import tsx scripts/workflow-skill-pack.mjs \
 
 输出包含：
 
-- `scene`：目标 id、显示名、description 对应的 appliesWhen、`allrice-scene-<UUID>` 名称。
+- `scene`：目标 id、显示名、description 对应的 appliesWhen、作者 `name` 原生命令名。
 - `procedure`：现有 `EmployeeContentTextSchema` 的 packaged procedure，可作为后续 textEdit 的内容字段。
 - `references`：需要加入目标 scene/内容集合并由服务端重新授权的准确来源引用。
-- `report`：作者名、实际 `/allrice-scene-<UUID>`、源文件/正文/完整包 checksum、依赖与脚本清单；`published` 和 `scriptsExecuted` 均为 false。
+- `report`：作者名、实际 `/<name>`、源文件/正文/完整包 checksum、依赖与脚本清单；`published` 和 `scriptsExecuted` 均为 false。
 
 相同输入、参数和工具版本产生相同 JSON；没有时间戳、随机 ID、绝对路径或临时目录。
 正文 checksum 不等于源 SKILL.md checksum；bundle.version 是作者元数据，不是服务端 revision。
@@ -296,7 +296,7 @@ node --import tsx scripts/workflow-skill-pack.mjs \
 
 离线工具只证明“文件 → 原生解析 → C1 合同”链路，报告不是模型实际加载记录。
 当前 Provider、普通加载、原生命令和准确资源读取已有实现，实际调用名是
-`/allrice-scene-<UUID>`，不是源文件中的 `/brand-content`；下面的读取与注入审计也已有实现，
+源文件中的 `/brand-content`（旧无作者字段包仍用 `/allrice-scene-<UUID>`）；下面的读取与注入审计也已有实现，
 不再属于尚待 C2、A5 接通的功能。离线打包成功仍不能当作会话内或真实模型验收通过。
 
 ## 现在怎么导入、更新与恢复

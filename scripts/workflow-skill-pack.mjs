@@ -337,7 +337,7 @@ export async function packWorkflowSkill({ directory, sceneId, title }) {
       id: sceneId,
       name: frontmatter.metadata.displayName,
       appliesWhen: skill.description,
-      nativeName: `allrice-scene-${sceneId}`,
+      nativeName: frontmatter.name,
     },
     'scene mapping',
   );

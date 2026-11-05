@@ -1,3 +1,6 @@
+import { savePersonalSceneSkill } from './personal-scene-skills.ts';
+import { sceneSkillFixture } from './employee-scene-skills.fixture.ts';
+import { skillBytesChecksum, skillBundleChecksum } from '../skill-bundles.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { access } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -897,6 +900,78 @@ suite('browser Skill source preview and confirmation', () => {
         (b) => !b.enabled,
       ),
     ).toBe(true);
+  });
+  it('native names: ordinary install and enable cannot shadow an owned scene, and enabled ordinary Skills block a scene save', async () => {
+    const s = await setup(true),
+      id = s.assigned.id;
+    const installed = await installWeb(s);
+    const payload = sceneSkillFixture();
+    payload.body =
+      '## 工作步骤\n1. 核对资料\n## 交付内容\n- 周报\n## 执行细节\n只读资料。';
+    const bundle = payload.skillPackage.bundle;
+    bundle.contentChecksum = skillBytesChecksum(payload.body);
+    const { checksum: _checksum, ...bundlePayload } = bundle;
+    void _checksum;
+    bundle.checksum = skillBundleChecksum(bundlePayload);
+    const input = {
+      workspaceId: s.owner.workspaceId,
+      requestId: randomUUID(),
+      expectedRevision: 0,
+      expectedContentRef: null,
+      scene: { id: randomUUID(), name: '周报', appliesWhen: '整理周报' },
+      procedure: {
+        kind: 'procedure',
+        title: '周报',
+        ...payload,
+        skillPackage: {
+          ...payload.skillPackage,
+          frontmatter: {
+            name: 'weekly',
+            description: '整理周报',
+            whenToUse: '每周',
+            metadata: { displayName: '周报', version: '1' },
+            invocation: { modelInvocable: true, userInvocable: true },
+          },
+        },
+      },
+      references: [],
+      changeSummary: '安装本人场景',
+    };
+    await expect(
+      savePersonalSceneSkill(s.owner.context, id, input),
+    ).rejects.toMatchObject({ code: 'version_conflict' });
+    const disabled = await managePersonalSkill(s.owner.context, {
+      workspaceId: s.owner.workspaceId,
+      instanceId: id,
+      installationId: installed.result.skill.id,
+      expectedRevision: installed.result.skill.revision,
+      requestId: randomUUID(),
+      operation: 'disable',
+    });
+    await savePersonalSceneSkill(s.owner.context, id, input);
+    const before = await counts();
+    await expect(
+      managePersonalSkill(s.owner.context, {
+        workspaceId: s.owner.workspaceId,
+        instanceId: id,
+        installationId: installed.result.skill.id,
+        expectedRevision: disabled.revision,
+        requestId: randomUUID(),
+        operation: 'enable',
+      }),
+    ).rejects.toMatchObject({ code: 'name_conflict' });
+    const preview = await (
+      await send(s.owner.context, id, s.owner.workspaceId, await zip())
+    ).json();
+    expect(
+      (await confirm(s.owner.context, id, s.owner.workspaceId, preview)).status,
+    ).toBe(409);
+    expect(await counts()).toEqual(before);
+    expect(
+      (await listPersonalSkills(s.owner.context))[0]!.bindings.find(
+        (binding) => binding.instanceId === id,
+      )?.enabled,
+    ).toBe(false);
   });
   it('coalesces concurrent confirmation and refuses platform-name shadowing or revoked receipt replay', async () => {
     const s = await setup();

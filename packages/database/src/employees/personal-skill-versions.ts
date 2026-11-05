@@ -1,3 +1,4 @@
+import { assertOrdinarySkillSceneName } from './personal-scene-names.ts';
 import { randomUUID } from 'node:crypto';
 import {
   PersonalSkillVersionInputSchema,
@@ -511,6 +512,7 @@ export async function personalSkillVersionFromChat(input: EmployeeChatCall) {
           )?.some((s) => s.name === row.name && !s.personal)
         )
           throw new PersonalSkillError('name_conflict');
+        await assertOrdinarySkillSceneName(tx, scope, instance.id, row.name);
         const [stale] =
           await tx`select 1 from allrice_messages where id=${input.userMessageId}
           and created_at<=greatest(${row.revoked_at}::timestamptz,${binding?.revoked_at ?? null}::timestamptz)`;
@@ -616,6 +618,14 @@ export async function personalSkillVersionFromChat(input: EmployeeChatCall) {
         ) !== runtimePolicyDigest(preview.bindings)
       )
         throw new PersonalSkillError('conflict');
+      for (const binding of preview.bindings)
+        if (binding.enabled)
+          await assertOrdinarySkillSceneName(
+            tx,
+            { ...scope, workspaceId: binding.workspaceId },
+            binding.instanceId,
+            row.name,
+          );
       const candidate = operation.candidate as Candidate;
       if (candidate.resourceManifest) {
         const [stored] =

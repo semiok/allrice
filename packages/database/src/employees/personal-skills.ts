@@ -1,3 +1,4 @@
+import { assertOrdinarySkillSceneName } from './personal-scene-names.ts';
 import { randomUUID } from 'node:crypto';
 import {
   PersonalSkillDefinitionSchema,
@@ -715,6 +716,12 @@ export async function installPersonalSkillFromChat(
         )
       )
         throw new PersonalSkillError('name_conflict');
+      await assertOrdinarySkillSceneName(
+        tx,
+        scope,
+        instance.id,
+        definition.name,
+      );
       if (input.versionUpdate)
         return stagePersonalSkillUpdate(tx, input, {
           originalText: parsed.originalText,
@@ -829,8 +836,15 @@ export async function managePersonalSkill(
       const [binding] = await tx`select * from allrice_personal_skill_bindings
         where instance_id=${args.instanceId!} and installation_id=${args.installationId} for update`;
       if (!binding) return unavailable();
-      if (args.operation === 'enable')
+      if (args.operation === 'enable') {
+        await assertOrdinarySkillSceneName(
+          tx,
+          context,
+          args.instanceId!,
+          row.name,
+        );
         await assertBindingCapacity(tx, args.instanceId!, binding.enabled);
+      }
       if (binding.enabled !== (args.operation === 'enable'))
         await tx`update allrice_personal_skill_bindings set enabled=${args.operation === 'enable'},epoch=epoch+1,
           revoked_at=case when ${args.operation === 'disable'} then clock_timestamp() else revoked_at end,
