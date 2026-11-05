@@ -68,10 +68,14 @@ it.each(['success', 'denied'])(
     const dispatched = gate(), release = gate(), aborted = gate();
     const h = await host({
       nativeTools: ['workspace.file.read'],
-      model: async (_request, count) => count === 1 ? [{
+      model: async (_request, count) => {
+        if (count !== 1) return text('must not continue after cancellation');
+        h.root.ctx.tools.get('workspace_file_read').timeoutMs = 100;
+        return [{
         type: 'tool-call', id: 'timed-read', name: 'workspace_file_read',
         arguments: JSON.stringify({objectId: randomUUID()}),
-      }] : text('must not continue after cancellation'),
+        }];
+      },
       bridge: async (method, params) => {
         expect(method).toBe('allrice/tool-call');
         dispatched.resolve();
@@ -86,7 +90,6 @@ it.each(['success', 'denied'])(
     });
     // Only scale the public declaration's budget; production execution and
     // DSH timeout policy remain unchanged, and the in-flight read is joined.
-    h.root.ctx.tools.get('workspace_file_read').timeoutMs = 100;
     h.ctx.on('tools/execute', (exec, next) => {
       if (exec.name === 'workspace_file_read')
         exec.signal.addEventListener('abort', () => aborted.resolve(), {once: true});
