@@ -4,6 +4,8 @@ import { createHash } from 'node:crypto';
 import { Buffer } from 'node:buffer';
 import { URL } from 'node:url';
 import { readPublicGitHubSource } from './personal-skill-github.ts';
+import { inspectPersonalSkillPackage } from './personal-skill-package.ts';
+import { createFileArchive, readFileArchive } from '@allrice/file-archives';
 import { parsePersonalSkillGitHubUrl as parseSourceUrl } from '@allrice/contracts';
 const { Response, ReadableStream, AbortController } = globalThis;
 
@@ -237,10 +239,13 @@ test('SKILL.md template resources are preserved but never added to explicit cand
 });
 
 test('GitHub web and chat preserve SKILL.md plus all 32 resources', async () => {
+  const completeDefinition = Buffer.from(
+    '---\nname: weekly\ndescription: Synthetic weekly report.\n---\nRead assets/template31.txt.',
+  );
   for (const rootOnly of [true, false]) {
     const prefix = rootOnly ? '' : 'weekly/';
     const contents = [
-      [prefix + 'SKILL.md', definition],
+      [prefix + 'SKILL.md', completeDefinition],
       ...Array.from({ length: 32 }, (_, n) => [
         `${prefix}assets/template${n}.txt`,
         Buffer.from(`Template ${n}`),
@@ -261,6 +266,21 @@ test('GitHub web and chat preserve SKILL.md plus all 32 resources', async () => 
         request.address.includes('raw.githubusercontent.com'),
       ).length,
       33,
+    );
+    const archive = await createFileArchive(result.files, { maximumFiles: 33 });
+    const files = await readFileArchive(archive, { maximumFiles: 33 });
+    const [candidate] = await inspectPersonalSkillPackage(
+      files,
+      undefined,
+      result.candidatePaths,
+    );
+    assert.deepEqual(candidate.issues, []);
+    assert.equal(candidate.resources.length, 32);
+    assert.equal(candidate.parsed.originalText, completeDefinition.toString());
+    assert.deepEqual(
+      candidate.resources.find((file) => file.path === 'assets/template31.txt')
+        .bytes,
+      Buffer.from('Template 31'),
     );
   }
 });
