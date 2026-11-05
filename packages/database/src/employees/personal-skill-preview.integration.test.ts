@@ -360,11 +360,18 @@ suite('authenticated browser Skill source preview without installation', () => {
         }),
         { params: Promise.resolve({ id: s.assigned.id }) },
       );
-      expect(response.status).toBe(revoked ? 404 : 200);
+      // An existing owner's withdrawn assignment keeps the established 403
+      // contract; a foreign instance remains a non-enumerating 404 above.
+      expect(response.status).toBe(revoked ? 403 : 200);
       expect(await counts()).toEqual(before);
       const body = await response.json();
-      if (revoked) expect(JSON.stringify(body)).not.toContain('previewId');
-      else {
+      if (revoked) {
+        expect(body).toMatchObject({
+          error: { code: 'AUTHORIZATION_DENIED', retryable: false },
+        });
+        expect(JSON.stringify(body)).not.toContain('previewId');
+        expect(JSON.stringify(body)).not.toContain('Summarize.');
+      } else {
         const verified = new SkillPreviewTokens(key).verify(body.previewId, {
           organizationId: s.owner.organizationId,
           workspaceId: s.owner.workspaceId,
