@@ -110,6 +110,9 @@ createRoot(document.getElementById('root')!).render(
   ) : query.get('host') === 'lifecycle' ? (
     <LifecycleHost />
   ) : (
-    <ChatFlowClient workbenchEnabled={!query.has('disabled')} />
+    <ChatFlowClient
+      workbenchEnabled={!query.has('disabled')}
+      experienceEnabled={query.has('legacy')}
+    />
   ),
 );

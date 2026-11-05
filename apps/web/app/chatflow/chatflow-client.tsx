@@ -491,10 +491,10 @@ export function ChatFlowClient({
     layout.show();
   };
   const workbenchEntry = useRef<HTMLButtonElement>(null);
-  const memoryDetailsReturn = useRef<{
+  const [activeModule, setActiveModule] = useState<{
     scope: string;
-    instanceId: string;
-    active: boolean;
+    kind: WorkbenchModule | 'schedule' | null;
+    memoryInstanceId?: string;
   } | null>(null);
   const workbench = useArtifactWorkbench({
     enabled: workbenchEnabled,
@@ -511,22 +511,20 @@ export function ChatFlowClient({
     () => showWorkbench(undefined, true),
     [showWorkbench],
   );
-  const dismissWorkbench = useCallback(() => {
-    const destination = memoryDetailsReturn.current;
-    memoryDetailsReturn.current = null;
-    closeWorkbench();
-    if (
-      destination?.scope === fileScope &&
-      currentMemoryRequest?.id === destination.instanceId
-    ) {
-      setDetailsAssignmentId(destination.instanceId);
-      setEmployeeDetailsOpen(true);
-    } else workbenchEntry.current?.focus();
-  }, [closeWorkbench, fileScope, currentMemoryRequest]);
-  const [activeModule, setActiveModule] = useState<{
-    scope: string;
-    kind: WorkbenchModule | 'schedule' | null;
-  } | null>(null);
+  const activeMemoryId =
+    activeModule?.scope === fileScope
+      ? activeModule.memoryInstanceId
+      : undefined;
+  const dismissWorkbench = useCallback(
+    (memoryInstanceId?: string) => {
+      closeWorkbench();
+      if (memoryInstanceId) {
+        setDetailsAssignmentId(memoryInstanceId);
+        setEmployeeDetailsOpen(true);
+      } else workbenchEntry.current?.focus();
+    },
+    [closeWorkbench],
+  );
   const sessionAutomations = useSessionAutomations({
     enabled: workbenchEnabled && !!workspace,
     workspaceId: workspace?.workspaceId ?? '',
@@ -571,7 +569,6 @@ export function ChatFlowClient({
       view?: 'personal-memory';
     },
   ) => {
-    memoryDetailsReturn.current = null;
     setModuleRequest((previous) => ({
       scope: fileScope,
       kind,
@@ -2089,7 +2086,7 @@ export function ChatFlowClient({
                         onSchedule={openSessionTasks}
                         onOpen={(kind) => requestWorkbenchModule(kind)}
                         onToggle={() => {
-                          if (workbenchOpen) dismissWorkbench();
+                          if (workbenchOpen) dismissWorkbench(activeMemoryId);
                           else if (!hasWorkbenchContent)
                             requestWorkbenchModule('guide');
                           else layout.show();
@@ -2407,27 +2404,19 @@ export function ChatFlowClient({
           onModuleViewed={(kind, memoryInstanceId) => {
             // Reading one employee's memories is not reading the active
             // employee's old experience/unread stream.
-            if (
-              memoryInstanceId ||
-              (kind === 'experience' && currentMemoryRequest)
-            )
-              return;
+            if (memoryInstanceId) return;
             announceWorkbenchRead(
               `${settingsScope}/${activeEmployee?.instanceId ?? 'none'}`,
               kind,
             );
           }}
-          onActiveModule={(kind) => {
-            if (memoryDetailsReturn.current) {
-              if (kind === 'experience')
-                memoryDetailsReturn.current.active = true;
-              else if (kind && memoryDetailsReturn.current.active)
-                memoryDetailsReturn.current = null;
-            }
+          onActiveModule={(kind, memoryInstanceId) => {
             setActiveModule((previous) =>
-              previous?.scope === fileScope && previous.kind === kind
+              previous?.scope === fileScope &&
+              previous.kind === kind &&
+              previous.memoryInstanceId === memoryInstanceId
                 ? previous
-                : { scope: fileScope, kind },
+                : { scope: fileScope, kind, memoryInstanceId },
             );
           }}
           renderModule={(kind, active, onOpenFile, memoryInstanceId) => (
@@ -2524,7 +2513,7 @@ export function ChatFlowClient({
                   instanceId={activeEmployee.instanceId}
                   employeeName={activeEmployeeName}
                   headers={tenantHeaders}
-                  onClose={dismissWorkbench}
+                  onClose={() => dismissWorkbench()}
                   onOpenSession={openBrandContentSession}
                 />
               ) : (
@@ -2655,11 +2644,6 @@ export function ChatFlowClient({
             title: '记忆',
             view: 'personal-memory',
           });
-          memoryDetailsReturn.current = {
-            scope: fileScope,
-            instanceId,
-            active: false,
-          };
           setEmployeeDetailsOpen(false);
         }}
       />

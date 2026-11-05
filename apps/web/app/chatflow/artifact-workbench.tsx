@@ -134,7 +134,10 @@ type Props = {
     memoryInstanceId?: string,
   ) => ReactNode;
   onModuleViewed?: (kind: WorkbenchModule, memoryInstanceId?: string) => void;
-  onActiveModule?: (kind: WorkbenchModule | 'schedule' | null) => void;
+  onActiveModule?: (
+    kind: WorkbenchModule | 'schedule' | null,
+    memoryInstanceId?: string,
+  ) => void;
   open: boolean;
   width: number;
   dockScope: string;
@@ -160,7 +163,7 @@ type Props = {
   narrow: boolean;
   noticeId?: string | null;
   onSelect: (id: string) => void;
-  onClose: () => void;
+  onClose: (memoryInstanceId?: string) => void;
   onReload: (cursor?: ArtifactCursor) => Promise<void>;
   readOnly?: boolean;
   onContinued?: (runId: string) => void;
@@ -179,7 +182,11 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
       : undefined;
   const panel = useRef<HTMLElement>(null),
     previousFocus = useRef<HTMLElement | null>(null);
-  const close = props.onClose;
+  const lastModuleRequest = useRef(0);
+  // Do not activate a retained legacy experience tab for the frame before
+  // the native Dock consumes an explicit personal-memory request.
+  const enteringMemory =
+    !!memoryRequest && memoryRequest.revision !== lastModuleRequest.current;
   const [terminalTitles, setTerminalTitles] = useState<Record<string, string>>(
     {},
   );
@@ -198,9 +205,23 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
       terminalClose.current(id);
       return true;
     },
-    props.onClose,
+    () => close(),
     props.desktop ? '开始' : '交付成果',
   );
+  const activePane =
+    dock.surface.layout.nodes[dock.surface.layout.activePaneId];
+  const activeTab =
+    activePane?.kind === 'pane' && activePane.activeTabId
+      ? dock.surface.layout.tabs[activePane.activeTabId]
+      : undefined;
+  const activeMemoryId = activeTab
+    ? personalMemoryTarget(activeTab.kind, activeTab.contentId)
+    : undefined;
+  const visibleMemoryId = enteringMemory ? memoryRequest?.id : activeMemoryId;
+  const personalMemoryView = !!visibleMemoryId;
+  function close() {
+    props.onClose(visibleMemoryId);
+  }
   terminalClose.current = (id) => {
     const tab = dock.surface.layout.tabs[id];
     if (terminalIdentity && tab?.kind === 'terminal')
@@ -227,22 +248,17 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
   const activeModule = useRef(props.onActiveModule);
   activeModule.current = props.onActiveModule;
   useEffect(() => {
-    const layout = dock.surface.layout;
-    const pane = layout.nodes[layout.activePaneId];
-    const tab =
-      pane?.kind === 'pane' && pane.activeTabId
-        ? layout.tabs[pane.activeTabId]
-        : null;
     activeModule.current?.(
-      !props.open || !tab
+      !props.open || !activeTab
         ? null
-        : ['files', 'experience', 'workflow'].includes(tab.kind)
-          ? (tab.kind as WorkbenchModule)
-          : ['scheduleTask', 'sessionSchedules'].includes(tab.kind)
+        : ['files', 'experience', 'workflow'].includes(activeTab.kind)
+          ? (activeTab.kind as WorkbenchModule)
+          : ['scheduleTask', 'sessionSchedules'].includes(activeTab.kind)
             ? 'schedule'
             : null,
+      props.open ? visibleMemoryId : undefined,
     );
-  }, [props.open, dock.surface.layout]);
+  }, [props.open, dock.surface.layout, visibleMemoryId]);
   useEffect(() => {
     if (!props.open) return;
     const element = panel.current;
@@ -275,14 +291,27 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
         pane?.kind === 'pane' && pane.activeTabId
           ? dock.surface.layout.tabs[pane.activeTabId]
           : null;
-      if (tab && ['files', 'experience', 'workflow'].includes(tab.kind))
+      if (
+        tab &&
+        ['files', 'experience', 'workflow'].includes(tab.kind) &&
+        !(
+          personalMemoryView &&
+          tab.kind === 'experience' &&
+          !personalMemoryTarget(tab.kind, tab.contentId)
+        )
+      )
         props.onModuleViewed?.(
           tab.kind as WorkbenchModule,
           personalMemoryTarget(tab.kind, tab.contentId),
         );
     }
-  }, [props.open, props.desktop, dock.surface.layout, props.onModuleViewed]);
-  const lastModuleRequest = useRef(0);
+  }, [
+    props.open,
+    props.desktop,
+    dock.surface.layout,
+    props.onModuleViewed,
+    personalMemoryView,
+  ]);
   useEffect(() => {
     const request = props.moduleRequest;
     if (
@@ -376,7 +405,7 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
         aria-label={
           props.desktop
             ? '工作台'
-            : memoryRequest
+            : personalMemoryView
               ? '记忆'
               : props.taskRequest
                 ? '任务与交付成果'
@@ -582,15 +611,18 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                 }}
               />
             ) : (props.desktop ||
-                (memoryRequest &&
-                  personalMemoryTarget(tab.kind, tab.contentId) ===
-                    memoryRequest.id)) &&
+                !!personalMemoryTarget(tab.kind, tab.contentId)) &&
               ['files', 'experience', 'workflow'].includes(tab.kind) ? (
               props.renderModule?.(
                 tab.kind as WorkbenchModule,
                 props.open &&
                   findTabPane(dock.surface.layout, tab.id).activeTabId ===
-                    tab.id,
+                    tab.id &&
+                  !(
+                    personalMemoryView &&
+                    tab.kind === 'experience' &&
+                    !personalMemoryTarget(tab.kind, tab.contentId)
+                  ),
                 (id, title) =>
                   dock.open(
                     'managedFile',
@@ -718,10 +750,10 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
               <button
                 type="button"
                 className={moduleUi.iconButton}
-                aria-label={memoryRequest ? '返回员工详情' : '关闭工作台'}
+                aria-label={personalMemoryView ? '返回员工详情' : '关闭工作台'}
                 onClick={close}
               >
-                {props.desktop && !memoryRequest ? (
+                {props.desktop && !personalMemoryView ? (
                   <WorkbenchIcon kind="panel" />
                 ) : (
                   '×'
