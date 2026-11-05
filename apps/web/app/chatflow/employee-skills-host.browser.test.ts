@@ -433,6 +433,29 @@ suite('U1 scoped employee Skill HTTP host candidate', () => {
   async function ready(page: Page) {
     await page.getByText('我添加的 · 1', { exact: true }).waitFor();
   }
+  async function selectGitHubSource(page: Page) {
+    expect(
+      await dialog(page)
+        .getByRole('tab', { name: '压缩包', exact: true })
+        .getAttribute('aria-selected'),
+    ).toBe('true');
+    expect(
+      await dialog(page).getByLabel('仓库链接', { exact: true }).count(),
+    ).toBe(0);
+    await dialog(page)
+      .getByRole('tab', { name: 'GitHub 链接', exact: true })
+      .click();
+    expect(
+      await dialog(page)
+        .getByRole('tab', { name: 'GitHub 链接', exact: true })
+        .getAttribute('aria-selected'),
+    ).toBe('true');
+    await expect
+      .poll(() =>
+        dialog(page).evaluate((node) => node.contains(document.activeElement)),
+      )
+      .toBe(true);
+  }
   async function openUpdate(page: Page) {
     await ready(page);
     await page.getByRole('button', { name: '翻译校对', exact: true }).click();
@@ -442,6 +465,7 @@ suite('U1 scoped employee Skill HTTP host candidate', () => {
     await dialog(page)
       .getByRole('heading', { name: '更新“翻译校对”', exact: true })
       .waitFor();
+    await selectGitHubSource(page);
     await dialog(page)
       .getByLabel('仓库链接', { exact: true })
       .fill('https://github.com/example/translation-review');
@@ -1068,6 +1092,7 @@ suite('U1 scoped employee Skill HTTP host candidate', () => {
         .getByRole('heading', { name: '更新“翻译校对”', exact: true })
         .waitFor();
       await inside();
+      await selectGitHubSource(f.page);
       await dialog(f.page)
         .getByLabel('仓库链接', { exact: true })
         .fill('https://github.com/example/translation-review');
