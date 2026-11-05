@@ -222,7 +222,14 @@ describe('employee content input boundaries', () => {
         target: { kind: 'employee', employeeId: randomUUID() },
       }).success,
     ).toBe(false);
-    const { skillPackage: _package, ...plain } = edit;
+    const plain = {
+      kind: edit.kind,
+      title: edit.title,
+      body: edit.body,
+      contentId: edit.contentId,
+      revisionId: edit.revisionId,
+      expectedRevision: edit.expectedRevision,
+    };
     expect(
       EmployeeContentMutationSchema.safeParse({ ...value, textEdits: [plain] })
         .success,
