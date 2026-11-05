@@ -28,6 +28,27 @@ async function boundedBody(request: Request, limit: number) {
   }
 }
 
+/** Confirmation carries the previously bounded ZIP in a signed base64url
+ * payload. Reject oversized requests before JSON allocation. */
+export async function readSkillConfirmationRequest(request: Request) {
+  if (
+    request.headers.get('content-type')?.split(';', 1)[0]?.trim() !==
+    'application/json'
+  )
+    throw new SkillPreviewError('preview_invalid');
+  const bytes = await boundedBody(
+    request,
+    Math.ceil((personalSkillLimits.archiveBytes * 4) / 3) + 65_536,
+  );
+  try {
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+  } catch (error) {
+    if (error instanceof TypeError || error instanceof SyntaxError)
+      throw new SkillPreviewError('preview_invalid');
+    throw error;
+  }
+}
+
 /** Bound the body before JSON/formData allocation; neither Content-Length nor
  * the multipart filename is an authority or a filesystem path. */
 export async function readSkillPreviewRequest(request: Request) {
