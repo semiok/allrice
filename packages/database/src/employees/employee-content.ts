@@ -1482,6 +1482,7 @@ async function readDetailsProfile(
         : ['expressionStyle'],
     // Shared administration has no owner profile permissions or default-reset control.
     isDefaultRice: ownerView ? rice : undefined,
+    canArchive: ownerView && canMaintainPersonal && !rice,
     defaults,
   });
 }
