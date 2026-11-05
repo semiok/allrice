@@ -232,10 +232,10 @@ suite('chat polling while reading, working and switching tabs', () => {
   it('keeps genuine errors visible and retries after two seconds', async () => {
     const f = await fixture({ failure: true });
     try {
-      await f.page.getByRole('status').waitFor();
+      await f.page.locator('p[role="status"]').waitFor();
       await f.page.clock.runFor(4_000);
       await expect.poll(() => f.counts.interactions).toBeGreaterThan(1);
-      expect(await f.page.getByRole('status').textContent()).toContain(
+      expect(await f.page.locator('p[role="status"]').textContent()).toContain(
         '暂时读不到',
       );
     } finally {
