@@ -374,12 +374,19 @@ export async function updateEmployeeInstance(
       id,
       value,
       (current, before) =>
-        before.kind === 'general'
-          ? { ...current, ...value.profile }
-          : value.profile,
+        'operation' in value
+          ? {}
+          : before.kind === 'general'
+            ? { ...current, ...value.profile }
+            : value.profile,
       async (before) => {
-        const allowed = (await isBaseRiceInstance(before, tx))
-          ? ['name', 'expressionStyle']
+        const rice = await isBaseRiceInstance(before, tx);
+        if ('operation' in value) {
+          if (!rice) throw new DataAccessError('authorization_denied');
+          return;
+        }
+        const allowed: readonly string[] = rice
+          ? EmployeeInstanceProfileSchema.keyof().options
           : ['expressionStyle'];
         if (
           before.kind === 'general' &&
@@ -573,14 +580,14 @@ export async function changeEmployeeInstanceLifecycle(
         const rice = await isBaseRiceInstance(before, tx);
         const retained = { ...current };
         delete retained.expressionStyle;
-        if (rice) delete retained.name;
-        profile = {
-          ...retained,
-          ...(rice && sourceProfile.name ? { name: sourceProfile.name } : {}),
-          ...(sourceProfile.expressionStyle
-            ? { expressionStyle: sourceProfile.expressionStyle }
-            : {}),
-        };
+        profile = rice
+          ? sourceProfile
+          : {
+              ...retained,
+              ...(sourceProfile.expressionStyle
+                ? { expressionStyle: sourceProfile.expressionStyle }
+                : {}),
+            };
       } else profile = source.profile;
     } else if (row.archived_at)
       throw new EmployeeInstanceError('instance_conflict');

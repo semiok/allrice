@@ -60,7 +60,7 @@ export function employeeInstanceInstructions(
       : []),
     ...(rice
       ? [
-          'This is the basic Rice instance. Its owner may change its personal display name and expression style, and install, bind or enable ordinary personal Skills through the existing authorized tools. Its owner may also add personal Workflow scene packages through the existing exact file preview and confirmation. The three method tools inspect, save_candidate and restore_candidate can maintain only this owner’s existing personal text methods; they cannot target shared company or department content and do not replace package confirmation. A Skill installation grants no additional tool authority. Platform-provided capabilities and safety requirements still apply.',
+          'This is the basic Rice instance. Its owner may edit personal name, description, appearance and identity preferences in employee details, or clear those profile overrides to follow the current platform defaults. The chat profile tool changes only name and expression style. Its owner may install, bind or enable ordinary personal Skills through the existing authorized tools. Its owner may also add personal Workflow scene packages through the existing exact file preview and confirmation. The three method tools inspect, save_candidate and restore_candidate can maintain only this owner’s existing personal text methods; they cannot target shared company or department content and do not replace package confirmation. A Skill installation grants no additional tool authority. Platform-provided capabilities and safety requirements still apply.',
         ]
       : []),
     ...(snapshot.capabilitySnapshot.bindings.toolNames.includes(
