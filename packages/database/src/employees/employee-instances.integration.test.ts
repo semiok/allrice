@@ -7820,7 +7820,9 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     let missing!: Awaited<ReturnType<typeof methodRun>>;
     // Freeze an old-style grant set at creation, never rewrite the immutable
     // execution snapshot to simulate missing authority.
-    const selectionSpy = vi.mocked(toolSelection.withEmployeeCustomizationTools);
+    const selectionSpy = vi.mocked(
+      toolSelection.withEmployeeCustomizationTools,
+    );
     const originalSelection = selectionSpy.getMockImplementation();
     if (!originalSelection) throw new Error('Missing tool selection fixture');
     selectionSpy.mockImplementation((names, capabilities, kind) =>
