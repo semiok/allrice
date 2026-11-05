@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "version": "1.0.0",
+  "sourceRef": "https://github.com/semiok/allrice/blob/5b2256a3e183a0c8b8887a7f3294404c2fcd8182/packages/contracts/src/brand-content-templates.ts",
+  "license": "Apache-2.0",
+  "reviewedBy": "Sol max author check; separate Astra content-review receipt accompanies delivery",
+  "resources": [
+    {
+      "path": "references/brand-brief.md",
+      "mediaType": "text/markdown"
+    },
+    {
+      "path": "references/output-contract.md",
+      "mediaType": "text/markdown"
+    },
+    {
+      "path": "references/publish-checklist.md",
+      "mediaType": "text/markdown"
+    },
+    {
+      "path": "references/retrospective.md",
+      "mediaType": "text/markdown"
+    },
+    {
+      "path": "assets/synthetic-brand.md",
+      "mediaType": "text/markdown"
+    }
+  ],
+  "dependencies": [
+    {
+      "kind": "tool",
+      "name": "workspace.skill.read"
+    }
+  ]
+}
