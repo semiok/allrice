@@ -530,13 +530,17 @@ suite('browser exact Workflow source confirmation', () => {
     ).toEqual([]);
     const [asset] =
       await f.db`select a.id,a.revision,r.content from allrice_company_assets a join allrice_company_asset_revisions r on r.asset_id=a.id where r.id=${pin.sourceRevisionId}`;
+    const editManifest = structuredClone(old!.manifest);
+    editManifest.scenes[0].references = [
+      { sourceKind: 'draft_text', contentId: asset!.id },
+    ];
     await expect(
       mutateEmployeeContent(s.owner.context, {
         ...common,
         requestId: randomUUID(),
         expectedRevision: checked.revision,
         operation: 'save_draft',
-        manifest: old!.manifest,
+        manifest: editManifest,
         textEdits: [
           {
             ...asset!.content,
