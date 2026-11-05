@@ -253,7 +253,13 @@ suite('U1 employee persona card', () => {
               size: style.fontSize,
               line: style.lineHeight,
               weight: style.fontWeight,
+              color: style.color,
             };
+          };
+          const firstLineTop = (element: Element) => {
+            const range = document.createRange();
+            range.selectNodeContents(element);
+            return range.getClientRects()[0]!.top;
           };
           const avatarStyle = getComputedStyle(
             node.querySelector('span[aria-hidden="true"]')!,
@@ -263,6 +269,13 @@ suite('U1 employee persona card', () => {
             name: styleOf(node.querySelector('h3')!),
             label: styleOf(node.querySelector('dt')!),
             body: styleOf(node.querySelector('dd')!),
+            cardColor: getComputedStyle(node).color,
+            firstLineOffsets: Array.from(
+              node.querySelectorAll('dl > div'),
+              (row) =>
+                firstLineTop(row.querySelector('dd')!) -
+                firstLineTop(row.querySelector('dt')!),
+            ),
             avatar: {
               width: avatarStyle.width,
               height: avatarStyle.height,
@@ -293,7 +306,15 @@ suite('U1 employee persona card', () => {
           size: '12px',
           line: width < 700 ? '18px' : '22px',
         });
-        expect(measured.body).toMatchObject({ size: '14px', line: '22px' });
+        expect(measured.body).toMatchObject({
+          size: '12px',
+          line: width < 700 ? '18px' : '22px',
+        });
+        expect(measured.body.color).toBe(measured.cardColor);
+        if (width >= 700) {
+          for (const offset of measured.firstLineOffsets)
+            expect(Math.abs(offset)).toBeLessThan(1);
+        }
         expect(measured.avatar).toEqual(
           width < 700
             ? { width: '40px', height: '40px', size: '18px' }

@@ -64,6 +64,8 @@
 .field dd {
   min-width: 0;
   margin: 0;
+  font: var(--ar-font-caption);
+  line-height: 22px;
   white-space: pre-wrap;
 }
 
@@ -89,7 +91,8 @@
     gap: var(--ar-space-1);
   }
 
-  .field dt {
+  .field dt,
+  .field dd {
     line-height: 18px;
   }
 
