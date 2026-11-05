@@ -1,4 +1,8 @@
-import { modelFailureText, type ModelFailure } from '@allrice/contracts';
+import {
+  modelFailureText,
+  personalWorkflowHistoryFailureText,
+  type ModelFailure,
+} from '@allrice/contracts';
 import { readTerminalModelFailure } from './model-failures.ts';
 import {
   recordNativeQuestions,
@@ -2110,6 +2114,7 @@ async function transitionTerminal(
         ? modelFailureText(input.modelFailure.category, job.run_id)
         : null) ??
       modelGovernanceFailureText(input.code) ??
+      personalWorkflowHistoryFailureText(input.code, input.message) ??
       (input.code === 'SKILL_ARTIFACT_MISSING'
         ? 'Rice 暂时无法使用已引用的 Skill：Skill 文件在本地存储中缺失。请重新安装或刷新该 Skill 后重试。'
         : input.code === 'SKILL_ARTIFACT_MISMATCH' ||

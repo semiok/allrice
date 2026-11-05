@@ -37,6 +37,7 @@ import {
   SkillResourcePathSchema,
   PersonalSceneSkillResourceSchema,
   employeeContentLimits,
+  personalWorkflowHistoryUnavailableMessage,
 } from '@allrice/contracts';
 import { getDatabase } from '../core/client.ts';
 import { DataAccessError } from '../data.ts';
@@ -69,8 +70,10 @@ import { EmployeeContentError } from './employee-content-model.ts';
 
 export class EmployeeRuntimeContentError extends Error {
   readonly code = 'EMPLOYEE_CONTENT_UNAVAILABLE';
-  constructor() {
-    super('工作要求或其引用资料已失效，请确认当前版本后重新发起任务。');
+  constructor(
+    message = '工作要求或其引用资料已失效，请确认当前版本后重新发起任务。',
+  ) {
+    super(message);
   }
 }
 const unavailable = () => {
@@ -920,6 +923,23 @@ export async function prepareEmployeeContentContext(scope: RunScope) {
       undefined,
       true,
     );
+    // Only actual personal package reads retain this conversation's Workflow
+    // authority. A normal save leaves exact old revisions readable. Revocation
+    // must not become a fresh generation that silently discards those reads.
+    // Include invalidated contexts so a later unbound Run cannot rebuild one.
+    const personalHistory = current.snapshot.personalScenes
+      ? await tx<Pick<ContentContextRow, 'generation_id' | 'invalidated_at'>[]>`
+          select c.generation_id,c.invalidated_at from allrice_employee_content_contexts c
+          where c.session_id=${scope.sessionId} and c.organization_id=${scope.organizationId}
+            and c.workspace_id=${scope.workspaceId} and c.owner_id=${scope.ownerId} and c.retired_at is null
+            and exists(select 1 from allrice_employee_runs er
+              where er.content_generation_id=c.generation_id and er.organization_id=c.organization_id
+                and er.workspace_id=c.workspace_id and er.owner_id=c.owner_id and er.session_id=c.session_id
+                and er.error_code is distinct from 'STEER_CONSUMED'
+                and exists(select 1 from jsonb_array_elements(coalesce(er.content_scene_state->'reads','[]'::jsonb)) r where r ? 'personal'))`
+      : [];
+    if (personalHistory.some((history) => history.invalidated_at))
+      return { rejected: true as const, personalWorkflow: true as const };
     // A short per-session provenance gate serializes two starts without taking
     // content-writer locks in the opposite order. It is never held over a model call.
     const [boundRun] = await tx<
@@ -964,6 +984,12 @@ export async function prepareEmployeeContentContext(scope: RunScope) {
       ))
     ) {
       await tx`update allrice_employee_content_contexts set invalidated_at=clock_timestamp(),updated_at=clock_timestamp() where generation_id=${context.generation_id}`;
+      if (
+        personalHistory.some(
+          (history) => history.generation_id === context!.generation_id,
+        )
+      )
+        return { rejected: true as const, personalWorkflow: true as const };
       if (run.content_generation_id) return { rejected: true as const };
       context = undefined;
       discardHistory = true;
@@ -1029,7 +1055,13 @@ export async function prepareEmployeeContentContext(scope: RunScope) {
   });
   // Commit a failed generation before surfacing the error. Throwing within
   // the transaction would erase invalidation and permit an unsafe recovery.
-  if (result && 'rejected' in result) return unavailable();
+  if (result && 'rejected' in result) {
+    if ('personalWorkflow' in result)
+      throw new EmployeeRuntimeContentError(
+        personalWorkflowHistoryUnavailableMessage,
+      );
+    return unavailable();
+  }
   return result;
 }
 

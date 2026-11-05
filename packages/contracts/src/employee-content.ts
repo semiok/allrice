@@ -15,6 +15,22 @@ export const employeeContentLimits = {
   textBytes: 32_000,
 } as const;
 
+export const personalWorkflowHistoryUnavailableMessage =
+  '这段对话用到的 Workflow 已不可用，请开新对话继续。';
+
+/** Only this fixed server failure is safe to project into the chat reply.
+ * Other failures sharing the code retain their existing presentation. */
+export function personalWorkflowHistoryFailureText(
+  code: string | null | undefined,
+  message: string | null | undefined,
+) {
+  return code === 'EMPLOYEE_CONTENT_UNAVAILABLE' &&
+    // r1-exempt(own-text): 只匹配服务端固定错误文案，不解释用户原话或授权
+    message === personalWorkflowHistoryUnavailableMessage
+    ? personalWorkflowHistoryUnavailableMessage
+    : null;
+}
+
 /** A company employee is the existing tenant materialization of a template.
  * Personal configuration belongs to one stable instance, never a shared template. */
 export const EmployeeContentTargetSchema = z.discriminatedUnion('kind', [

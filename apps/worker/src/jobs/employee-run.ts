@@ -23,6 +23,7 @@ import {
   acquireConversationRuntime,
   admitModelExecution,
   assertProviderAvailable,
+  assertEmployeeChatHumanSource,
   appendJobEvent,
   createTaskProgressRuntime,
   completeRouteDecision,
@@ -1458,6 +1459,29 @@ export async function executeEmployeeRun({
           });
       },
     });
+    let personalScenePromptSource;
+    if (contentRuntime?.snapshot.personalScenes) {
+      let humanText: string | undefined;
+      try {
+        await assertEmployeeChatHumanSource({
+          context: execution.context,
+          userMessageId,
+        });
+        humanText = resolved.currentUserRequest;
+      } catch (error) {
+        // Internal producers persist role=user too. Keep their input as
+        // context, with all existing execution/read gates still in force.
+        if (
+          !(error instanceof DataAccessError) ||
+          error.code !== 'authorization_denied'
+        )
+          throw error;
+      }
+      personalScenePromptSource = {
+        kernelUserRequest: routedKernel.userRequest,
+        humanText,
+      };
+    }
     const result: HarnessExecutionResult = await adapter
       .execute({
         nativeQuestionMode,
@@ -1558,6 +1582,7 @@ export async function executeEmployeeRun({
           : {}),
         kernel: routedKernel,
         currentUserRequest: resolved.currentUserRequest,
+        personalScenePromptSource,
         nativeSkills:
           repairTask || repositoryReviewTask ? [] : resolved.nativeSkills,
         baseSkillCatalog:

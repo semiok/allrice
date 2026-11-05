@@ -4,6 +4,8 @@ import {
   publishPlatformEmployee,
 } from './platform-employees.ts';
 import { randomUUID } from 'node:crypto';
+import { failJob } from '../execution/queue.ts';
+import { personalWorkflowHistoryUnavailableMessage } from '@allrice/contracts';
 import { updateQueuedMessage } from '../conversation/queued-messages.ts';
 import {
   prepareReferenceUpload,
@@ -803,6 +805,13 @@ suite(
         expect(second.runtime.nativeContextKey).toBe(
           first.runtime.nativeContextKey,
         );
+        expect(second.runtime.generationId).toBe(first.runtime.generationId);
+        expect(second.runtime.allowedMessageIds).toBeNull();
+        await assertEmployeeContentContext(
+          second.scope,
+          second.runtime.generationId,
+          secondWorker,
+        );
         const latest = await loadPersonalRuntimeSceneSkill(
           second.scope,
           second.runtime.generationId,
@@ -840,6 +849,199 @@ suite(
         });
         await second.finish();
       });
+      it.each([
+        'source',
+        'publication',
+        'already-invalidated',
+        'restored-source',
+        'reference',
+      ])(
+        'rejects personal Workflow history after %s revocation without replacing its generation or history',
+        async (revocation) => {
+          const s = await setup(),
+            body = input(s);
+          const saved = await savePersonalSceneSkill(s.a, s.instance.id, body);
+          const ref =
+            revocation === 'reference' ? await readyReference(s) : undefined;
+          let sourceId: string | undefined;
+          const first = await runtimeRun(
+            s,
+            undefined,
+            true,
+            [],
+            ref ? [ref.revisionId] : [],
+            '加载我的周报 Workflow',
+            true,
+          );
+          const worker = await sceneLease(first);
+          await loadPersonalRuntimeSceneSkill(
+            first.scope,
+            first.runtime.generationId,
+            { sceneId: body.scene.id },
+            worker,
+          );
+          const originalRuns =
+            await f.db`select execution_snapshot,prompt_snapshot,content_scene_state,content_generation_id from allrice_employee_runs where run_id=${first.scope.runId}`;
+          const originalMessages =
+            await f.db`select id,content from allrice_messages where session_id=${first.scope.sessionId} order by id`;
+          if (revocation === 'publication') {
+            const pin = parsePersonalSceneContentRef(saved.contentRef);
+            await f.db`update allrice_employee_content_publications set invalidated_at=now() where set_id=${pin.setId} and revision_id=${pin.revisionId}`;
+          } else if (ref) {
+            // The package itself is valid, but this retained Workflow history
+            // also depends on the attached source. Do not discard it to proceed.
+            await archiveReference(s, ref.sourceId);
+            expect(
+              (await getPersonalSceneSkill(s.a, s.instance.id, body.scene.id))
+                .contentRef,
+            ).toBe(saved.contentRef);
+          } else {
+            const pkg = await getPersonalSceneSkill(
+              s.a,
+              s.instance.id,
+              body.scene.id,
+            );
+            const source = pkg.sources.find(
+              (source) => source.reference.sourceKind === 'procedure',
+            )!.reference;
+            sourceId = source.contentId;
+            await f.db`update allrice_company_assets set state='withdrawn' where id=${source.contentId}`;
+          }
+          if (revocation === 'already-invalidated') {
+            await expect(
+              assertEmployeeContentContext(
+                first.scope,
+                first.runtime.generationId,
+                worker,
+              ),
+            ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+          }
+          await releaseConversationRuntime({
+            ...first.scope,
+            workerId: worker.workerId,
+            outcome: 'idle',
+          });
+          await first.finish();
+          // Enter twice with distinct, initially unbound Runs. Neither the first
+          // rejection nor an already committed invalidation permits recovery.
+          for (let attempt = 0; attempt < 2; attempt++) {
+            if (attempt === 1 && revocation === 'restored-source') {
+              await f.db`update allrice_company_assets set state='published' where id=${sourceId!}`;
+              expect(
+                (await getPersonalSceneSkill(s.a, s.instance.id, body.scene.id))
+                  .contentRef,
+              ).toBe(saved.contentRef);
+            }
+            const sent = await sendChatMessage(
+              s.a,
+              s.company.workspaceId,
+              first.scope.sessionId,
+              {
+                text: '继续用这段对话里的 Workflow',
+                clientMessageId: randomUUID(),
+              },
+            );
+            const scope = { ...first.scope, runId: sent.run.id };
+            await expect(
+              prepareEmployeeContentContext(scope),
+            ).rejects.toMatchObject({
+              code: 'EMPLOYEE_CONTENT_UNAVAILABLE',
+              message: '这段对话用到的 Workflow 已不可用，请开新对话继续。',
+            });
+            const [unbound] =
+              await f.db`select content_generation_id from allrice_employee_runs where run_id=${scope.runId}`;
+            expect(unbound!.content_generation_id).toBeNull();
+            const contexts =
+              await f.db`select generation_id,history_from_message_id,invalidated_at,retired_at from allrice_employee_content_contexts where session_id=${scope.sessionId}`;
+            expect(contexts).toHaveLength(1);
+            expect(contexts[0]).toMatchObject({
+              generation_id: first.runtime.generationId,
+              history_from_message_id: first.runtime.historyFromMessageId,
+              invalidated_at: expect.any(Date),
+              retired_at: null,
+            });
+            await f.db`update allrice_jobs set status='canceled',completed_at=now() where run_id=${scope.runId}`;
+            await f.db`update allrice_runs set state='canceled',completed_at=now() where id=${scope.runId}`;
+            await f.db`update allrice_employee_runs set status='canceled',completed_at=now() where run_id=${scope.runId}`;
+          }
+          expect(
+            await f.db`select execution_snapshot,prompt_snapshot,content_scene_state,content_generation_id from allrice_employee_runs where run_id=${first.scope.runId}`,
+          ).toEqual(originalRuns);
+          expect(
+            await f.db`select id,content from allrice_messages where id in ${f.db(originalMessages.map((message) => message.id))} order by id`,
+          ).toEqual(originalMessages);
+          // New conversations use current authority; recovery never rewrites or
+          // reactivates the invalidated conversation, even after source restore.
+          const fresh = await runtimeRun(
+            s,
+            undefined,
+            true,
+            [],
+            [],
+            '开始新对话',
+            true,
+          );
+          const freshWorker = await sceneLease(fresh);
+          const freshCatalog = listPersonalRuntimeSceneSkills(
+            fresh.scope,
+            fresh.runtime.generationId,
+            freshWorker,
+          );
+          if (revocation === 'publication')
+            await expect(freshCatalog).rejects.toMatchObject({
+              code: 'not_found',
+            });
+          else if (ref || revocation === 'restored-source')
+            expect(
+              (await freshCatalog).skills.map((skill) => skill.sceneId),
+            ).toEqual([body.scene.id]);
+          else expect((await freshCatalog).skills).toEqual([]);
+          await releaseConversationRuntime({
+            ...fresh.scope,
+            workerId: freshWorker.workerId,
+            outcome: 'idle',
+          });
+          await fresh.finish();
+        },
+      );
+      it.each([true, false])(
+        'projects only the fixed personal Workflow history failure into the stored reply (personal=%s)',
+        async (personal) => {
+          const s = await setup();
+          const run = await runtimeRun(
+            s,
+            undefined,
+            true,
+            [],
+            [],
+            '继续我的工作',
+            personal,
+          );
+          const worker = await sceneLease(run);
+          const message = personal
+            ? personalWorkflowHistoryUnavailableMessage
+            : 'Synthetic private diagnostic that must not be exposed';
+          expect(
+            await failJob({
+              ...worker,
+              code: 'EMPLOYEE_CONTENT_UNAVAILABLE',
+              message,
+              retryable: false,
+            }),
+          ).toEqual({ retrying: false });
+          const [reply] =
+            await f.db`select content,status,error_code from allrice_messages where id=${run.sent.assistantMessage.id}`;
+          expect(reply).toMatchObject({
+            status: 'failed',
+            error_code: 'EMPLOYEE_CONTENT_UNAVAILABLE',
+            content: {
+              text: personal
+                ? personalWorkflowHistoryUnavailableMessage
+                : 'Rice 暂时无法完成这次请求，请稍后重试。',
+            },
+          });
+        },
+      );
       it('records exact package/resource reads before returning bytes and revokes retained history', async () => {
         const s = await setup(),
           body = input(s);
@@ -3357,6 +3559,7 @@ suite(
       }
       const v1 = await publish('VERSION_ONE');
       const first = await runtimeRun(s);
+      expect(first.runtime.snapshot.personalScenes).toBeUndefined();
       await f.db`insert into allrice_run_events(organization_id,workspace_id,run_id,sequence,event_type,payload)
         values(${s.company.organizationId},${s.company.workspaceId},${first.scope.runId},1000,'tool.completed',${f.db.json({ name: 'synthetic', summary: 'OLD_TOOL_DERIVED_CONTENT' })})`;
       await first.finish();

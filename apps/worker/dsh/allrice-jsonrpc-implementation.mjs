@@ -1,6 +1,10 @@
 import { installNativeAccounting } from './allrice-native-accounting.mjs';
 import { createRunFinalDelivery } from './allrice-final-delivery.mjs';
 import { readBootstrapCoverage } from './allrice-bootstrap-coverage.mjs';
+import {
+  enqueuePersonalScenePrompt,
+  installPersonalScenePromptAdmission,
+} from './allrice-personal-scene-prompt.mjs';
 import { BootstrapReceiptSchema } from '@allrice/contracts/native-runtime';
 import {
   PersonalSkillPinSchema,
@@ -1206,6 +1210,24 @@ export async function createAllRiceRuntime(
         : undefined;
       this.assertRoot(record, params.sessionId);
       confirmAdmission?.();
+      if (this.personalContentScenes) {
+        // A synthetic follow-up/repair has no verified human source. It may
+        // carry text but cannot accidentally become a native slash gesture.
+        const sourced = params.personalScenePrompt
+          ? params
+          : {
+              ...params,
+              personalScenePrompt: [
+                { kind: 'allrice-context', text: contentBlocks[0]?.text ?? '' },
+              ],
+            };
+        return enqueuePersonalScenePrompt(
+          agent,
+          sourced,
+          contentBlocks,
+          context,
+        );
+      }
       const message = createUserMessage({
         content: contentBlocks,
         source: {
@@ -1250,6 +1272,14 @@ export async function createAllRiceRuntime(
       const scenes = Array.isArray(params?.contentScenes)
         ? params.contentScenes
         : [];
+      this.personalContentScenes = params.personalContentScenes === true;
+      if (
+        this.personalContentScenes &&
+        !this.personalPromptAdmissionInstalled
+      ) {
+        installPersonalScenePromptAdmission(this.ctx);
+        this.personalPromptAdmissionInstalled = true;
+      }
       if (scenes.length || params.personalContentScenes === true) {
         if (!params.requireContentGuard || !this.sceneBridge)
           throw Error('employee_scene_guard_required');

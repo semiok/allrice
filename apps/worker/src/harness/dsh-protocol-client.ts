@@ -23,6 +23,7 @@ import type {
   EmployeeRuntimeScene,
 } from '@allrice/contracts';
 import type { HarnessImageInput } from './adapter.js';
+import type { PersonalScenePromptPart } from './personal-scene-prompt.js';
 
 import { HandlerError } from '../errors.js';
 
@@ -336,11 +337,13 @@ export class DshProtocolClient {
     images: readonly HarnessImageInput[] = [],
     sessionReferences: readonly SessionReferenceSnapshot[] = [],
     bootstrapReceipt?: BootstrapReceipt,
+    personalScenePrompt?: readonly PersonalScenePromptPart[],
   ) {
     const result = await this.request('session/prompt', {
       sessionId,
       contentBlocks: [{ type: 'text', text }],
       images,
+      ...(personalScenePrompt ? { personalScenePrompt } : {}),
       ...(bootstrapReceipt ? { bootstrapReceipt } : {}),
       ...(sessionReferences.length ? { sessionReferences } : {}),
     });

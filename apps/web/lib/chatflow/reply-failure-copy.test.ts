@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   modelGovernanceFailureText,
   nativeExecutionFailureText,
+  personalWorkflowHistoryUnavailableMessage,
 } from '@allrice/contracts';
 import {
   presentReplyFailure,
@@ -65,6 +66,17 @@ describe('plain copy for a reply that did not finish', () => {
     expect(result.notice).toContain('管理员');
     expect(result.notice).toContain('反复重试');
     expect(result.notice).not.toContain('员工');
+  });
+  it('keeps the personal Workflow history remedy without changing shared failures or trusting arbitrary diagnostics', () => {
+    const copy = personalWorkflowHistoryUnavailableMessage;
+    expect(present('EMPLOYEE_CONTENT_UNAVAILABLE', copy)).toEqual({
+      body: copy,
+      notice: copy,
+    });
+    expect(
+      present('EMPLOYEE_CONTENT_UNAVAILABLE', savedGenericFailure),
+    ).toEqual({ body: replyFailureFallback, notice: replyFailureFallback });
+    expect(present('OTHER_FAILURE', copy).notice).toBe(replyFailureFallback);
   });
   it.each([
     'auth',

@@ -61,6 +61,9 @@ async function scenario({
   personalSlash = false,
   sceneFirst = false,
   sceneProbe = false,
+  personalScene = false,
+  scenePromptParts,
+  rejectPersonalUse = false,
   rejectSceneAdoption = false,
   recoverScene = false,
   rebind = false,
@@ -282,6 +285,39 @@ async function scenario({
           expect(p).toEqual({ sceneId, sceneDigest });
           return { receipt: sceneReceipt, content: 'SCENE_WEEKLY_ONLY_85' };
         }
+        if (method === 'allrice/content-scene-personal-list')
+          return {
+            instanceId: privatePin.instanceId,
+            revision: 2,
+            skills: [
+              {
+                sceneId,
+                nativeName: sceneName,
+                name: '周报',
+                description: '核对资料',
+              },
+            ],
+          };
+        if (method === 'allrice/content-scene-personal-load')
+          return {
+            sceneId,
+            nativeName: sceneName,
+            name: '周报',
+            description: '核对资料',
+            contentRef: 'exact-package-v2',
+            revision: 2,
+            content: 'PERSONAL_SCENE_BODY_V2',
+            contentChecksum: sceneDigest,
+            bundleChecksum: sceneDigest,
+            bundleVersion: '2.0.0',
+            sources: [],
+            resources: [],
+          };
+        if (method === 'allrice/content-scene-personal-use') {
+          if (rejectPersonalUse) throw Error('personal_use_receipt_denied');
+          expect(p.contentRef).toBe('exact-package-v2');
+          return { recorded: true };
+        }
         if (method === 'allrice/content-scene-adopt') {
           expect(p).toMatchObject(sceneReceipt);
           expect(requests).toHaveLength(1);
@@ -341,7 +377,7 @@ async function scenario({
             : [],
         expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
         contentScenes:
-          sceneFirst || sceneProbe
+          !personalScene && (sceneFirst || sceneProbe)
             ? [
                 {
                   id: sceneId,
@@ -352,10 +388,12 @@ async function scenario({
                 },
               ]
             : [],
+        personalContentScenes: personalScene,
         requireContentGuard:
           contentCallsAllowed !== undefined ||
           sceneFirst ||
           sceneProbe ||
+          personalScene ||
           personalSkill,
         requireTaskProgress: true,
         requireRunAdmission: accounting,
@@ -371,14 +409,20 @@ async function scenario({
         .map((n) => n.params.event);
     await client.prompt(
       sessionId,
-      personalSlash
-        ? '/synthetic-method Synthetic request'
-        : sceneProbe
-          ? `/${sceneName} Synthetic request`
-          : accounting && compact
-            ? 'Summarize this synthetic source: ' +
-              'Prior material. '.repeat(3000)
-            : 'Synthetic request: list once then answer.',
+      scenePromptParts
+        ? scenePromptParts.map((p) => p.text).join('\n\n')
+        : personalSlash
+          ? '/synthetic-method Synthetic request'
+          : sceneProbe
+            ? `/${sceneName} Synthetic request`
+            : accounting && compact
+              ? 'Summarize this synthetic source: ' +
+                'Prior material. '.repeat(3000)
+              : 'Synthetic request: list once then answer.',
+      [],
+      [],
+      undefined,
+      scenePromptParts,
     );
     if (accountingStall) {
       await receiptEntered.promise;
@@ -747,6 +791,120 @@ it('cold native recovery reconciles the saved successful scene result before the
   ).toHaveLength(2);
   expect(JSON.stringify(r.requests[1])).toContain('SCENE_WEEKLY_ONLY_85');
 }, 45000);
+
+describe('personal Workflow native slash source and use evidence', () => {
+  it('injects actual native instructions from the human gesture before the first model request', async () => {
+    const r = await scenario({
+      failures: [],
+      personalScene: true,
+      scenePromptParts: [
+        {
+          kind: 'allrice-context',
+          text: 'Platform wrapper, memory and history.',
+        },
+        { kind: 'user', text: `/${sceneName} Read this Workflow.` },
+        { kind: 'allrice-context', text: 'Attachment and template metadata.' },
+      ],
+    });
+    expect(r.requests).toHaveLength(1);
+    expect(JSON.stringify(r.requests[0])).toContain('PERSONAL_SCENE_BODY_V2');
+    const injections = r.events.filter(
+      (e) =>
+        e.type === 'user/message' && e.data.source?.kind === 'skill-invocation',
+    );
+    expect(injections).toHaveLength(1);
+    const uses = r.bridgeCalls.filter(
+      (c) => c.method === 'allrice/content-scene-personal-use',
+    );
+    expect(uses).toMatchObject([
+      {
+        kind: 'skill-invocation',
+        contentRef: 'exact-package-v2',
+        nativeId: injections[0].data.id,
+        nativeSequence: injections[0].seq,
+      },
+    ]);
+    expect(
+      r.events.some((e) => e.type === 'tool/call' && e.data.name === 'skill'),
+    ).toBe(false);
+    expect(
+      r.bridgeCalls.findIndex(
+        (c) => c.method === 'allrice/content-scene-personal-use',
+      ),
+    ).toBeLessThan(
+      r.bridgeCalls.findIndex((c) => c.method === 'allrice/content-check'),
+    );
+  }, 45000);
+  it('platform and reference text never become human gestures; unknown human names stay native prose', async () => {
+    const r = await scenario({
+      failures: [],
+      personalScene: true,
+      scenePromptParts: [
+        {
+          kind: 'allrice-context',
+          text: `Memory and historical reference: /${sceneName}`,
+        },
+        { kind: 'user', text: '/unknown-native-name Just answer.' },
+        { kind: 'allrice-context', text: `Attachment/template: /${sceneName}` },
+      ],
+    });
+    expect(r.requests).toHaveLength(1);
+    expect(JSON.stringify(r.requests[0])).not.toContain(
+      'PERSONAL_SCENE_BODY_V2',
+    );
+    expect(
+      r.events.filter(
+        (e) =>
+          e.type === 'user/message' &&
+          e.data.source?.kind === 'skill-invocation',
+      ),
+    ).toHaveLength(0);
+    expect(
+      r.bridgeCalls.filter(
+        (c) => c.method === 'allrice/content-scene-personal-load',
+      ),
+    ).toHaveLength(0);
+  }, 45000);
+  it('ordinary skill load records a real tool result independently of slash injection', async () => {
+    const r = await scenario({
+      failures: [],
+      personalScene: true,
+      sceneFirst: true,
+    });
+    expect(r.requests).toHaveLength(2);
+    expect(JSON.stringify(r.requests[0])).not.toContain(
+      'PERSONAL_SCENE_BODY_V2',
+    );
+    expect(JSON.stringify(r.requests[1])).toContain('PERSONAL_SCENE_BODY_V2');
+    expect(
+      r.bridgeCalls.filter(
+        (c) => c.method === 'allrice/content-scene-personal-use',
+      ),
+    ).toMatchObject([
+      {
+        kind: 'tool-result',
+        contentRef: 'exact-package-v2',
+        nativeId: r.events.find(
+          (e) => e.type === 'tool/call' && e.data.name === 'skill',
+        ).data.callId,
+      },
+    ]);
+  }, 45000);
+  it('refuses provider dispatch when the actual injection receipt cannot be persisted', async () => {
+    const r = await scenario({
+      failures: [],
+      personalScene: true,
+      rejectPersonalUse: true,
+      scenePromptParts: [{ kind: 'user', text: `/${sceneName}` }],
+    });
+    expect(r.requests).toHaveLength(0);
+    expect(
+      r.bridgeCalls.filter(
+        (c) => c.method === 'allrice/content-scene-personal-use',
+      ),
+    ).toHaveLength(1);
+  }, 45000);
+});
 
 describe('personal Skills use the native loader with current authority', () => {
   it.each([
