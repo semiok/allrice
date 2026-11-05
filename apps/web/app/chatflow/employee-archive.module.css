@@ -243,9 +243,12 @@
     box-shadow: none;
   }
   .confirmation {
-    flex-shrink: 0;
-    width: calc(100vw - 40px);
-    max-height: calc(100dvh - 40px);
+    position: fixed;
+    inset-inline: 20px;
+    top: 50%;
+    width: auto;
+    max-height: calc(100% - 40px);
+    translate: 0 -50%;
     gap: 0;
     border-radius: 20px;
   }
