@@ -117,6 +117,7 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
       detail.evaluate((node) => {
         const rect = node.getBoundingClientRect();
         const style = getComputedStyle(node);
+        const heading = node.querySelector('h2');
         const ancestors = [];
         for (
           let element: Element | null = node;
@@ -143,7 +144,7 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
         return {
           box: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
           background: style.backgroundColor,
-          text: style.color,
+          text: heading ? getComputedStyle(heading).color : null,
           ancestors,
           activeAnimations,
           hitInside: target !== null && node.contains(target),
