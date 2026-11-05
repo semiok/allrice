@@ -5,14 +5,20 @@ import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  AutomationCatalogQuerySchema,
+  AutomationCatalogSchema,
+  BridgeDeviceSchema,
   EmployeeDetailsSchema,
   EmployeeInstanceProfileSchema,
   EmployeeInstanceSchema,
   EmployeeMemoryPageSchema,
   UpdateEmployeeInstanceInputSchema,
+  UserMonthlyQuotaSchema,
+  WorkspaceReadinessSchema,
   defaultUserPreferences,
   defaultWorkAutomation,
   employeeColorPalette,
+  workspaceCapabilityIds,
   type EmployeeInstance,
 } from '@allrice/contracts';
 import type {
@@ -394,6 +400,90 @@ suite('U1 Rice full persona from the real employee entry', () => {
         );
       if (path === '/api/v1/connections')
         return route.fulfill(json({ connections: [] }));
+      // The real workbench reads these projections even when no session exists.
+      // Keep their member/workspace scope and shared response contracts; other
+      // methods, targets and unknown APIs still reach the unexpected gate.
+      if (
+        request.method() === 'GET' &&
+        url.searchParams.get('workspaceId') === id(4)
+      ) {
+        if (path === '/api/v1/workspace/monthly-quota')
+          return route.fulfill(
+            json(
+              UserMonthlyQuotaSchema.parse({
+                organizationId: id(3),
+                workspaceId: id(4),
+                userId: id(5),
+                displayName: 'Synthetic member',
+                monthlyTokenLimit: 5000000,
+                usedTokens: 2824029,
+                remainingTokens: 2175971,
+                remainingPercent: 43.51942,
+                unknownUsageRuns: 0,
+                periodStart: now,
+                resetsAt: now,
+                observedAt: now,
+              }),
+            ),
+          );
+        if (path === '/api/v1/workspace/readiness')
+          return route.fulfill(
+            json(
+              WorkspaceReadinessSchema.parse({
+                schemaVersion: 1,
+                organizationId: id(3),
+                workspaceId: id(4),
+                viewerId: id(5),
+                sessionId: url.searchParams.get('sessionId'),
+                employeeVersionId: bases[0]!.profile.source.employeeVersionId,
+                observedAt: now,
+                basis: 'next_task',
+                canAdminister: false,
+                capabilities: workspaceCapabilityIds.map((capability) => ({
+                  id: capability,
+                  state:
+                    capability === 'report'
+                      ? 'ready'
+                      : capability === 'local_files'
+                        ? 'needs_configuration'
+                        : 'not_released',
+                  reason:
+                    capability === 'report'
+                      ? 'ready'
+                      : capability === 'local_files'
+                        ? 'bridge_missing'
+                        : 'release_disabled',
+                  action:
+                    capability === 'report'
+                      ? 'compose'
+                      : capability === 'local_files'
+                        ? 'bridge'
+                        : 'guide',
+                  target: capability === 'local_files' ? 'local' : 'cloud',
+                  responsibleRole: 'user',
+                  releaseEnabled: ['report', 'local_files'].includes(
+                    capability,
+                  ),
+                  authorization: 'normal_policy',
+                })),
+              }),
+            ),
+          );
+        if (path === '/api/v1/bridge/devices')
+          return route.fulfill(
+            json({ devices: BridgeDeviceSchema.array().parse([]) }),
+          );
+        if (path === '/api/v1/scheduled-tasks') {
+          AutomationCatalogQuerySchema.parse(
+            Object.fromEntries(url.searchParams),
+          );
+          return route.fulfill(
+            json(
+              AutomationCatalogSchema.parse({ tasks: [], nextCursor: null }),
+            ),
+          );
+        }
+      }
       if (path === '/api/v1/workbench/updates')
         return route.fulfill(json({ fileIds: [], experienceIds: [] }));
       if (path === '/api/v1/workbench/files')
@@ -455,13 +545,30 @@ suite('U1 Rice full persona from the real employee entry', () => {
       expect(state.unexpected).toEqual([]);
       expect(state.errors).toEqual([]);
     };
+    const run = async (body: () => Promise<void>) => {
+      try {
+        await body();
+      } catch (primaryError) {
+        try {
+          await close();
+        } catch (cleanupError) {
+          throw new AggregateError(
+            [primaryError, cleanupError],
+            'Rice persona test body failed; fixture cleanup also failed.',
+            { cause: primaryError },
+          );
+        }
+        throw primaryError;
+      }
+      await close();
+    };
     return {
       page,
       state,
       openDetails,
       openEditor,
       sidebar,
-      close,
+      run,
       holdRaw: () => {
         state.rawGate = rawGate.promise;
       },
@@ -522,7 +629,7 @@ suite('U1 Rice full persona from the real employee entry', () => {
     'saves the Rice persona through the real entry at $width px dark=$dark entry=$entry',
     async ({ width, dark, entry }) => {
       const f = await fixture({ width, dark, entry });
-      try {
+      await f.run(async () => {
         const composer = f.page.getByRole('textbox', {
           name: '给 Rice 的消息',
           exact: true,
@@ -680,9 +787,7 @@ suite('U1 Rice full persona from the real employee entry', () => {
           ),
           JSON.stringify({ editorPaint, cardPaint, entry, write }, null, 2),
         );
-      } finally {
-        await f.close();
-      }
+      });
     },
     40_000,
   );
@@ -690,7 +795,7 @@ suite('U1 Rice full persona from the real employee entry', () => {
   it('keeps missing and partial persona capability closed at the real detail entry', async () => {
     for (const fields of ['missing', 'style'] as const) {
       const f = await fixture({ fields });
-      try {
+      await f.run(async () => {
         const detail = await f.openDetails();
         expect(
           await detail
@@ -699,15 +804,13 @@ suite('U1 Rice full persona from the real employee entry', () => {
         ).toBe(0);
         expect(f.state.rawReads).toEqual([]);
         expect(f.state.writes).toEqual([]);
-      } finally {
-        await f.close();
-      }
+      });
     }
   }, 30_000);
 
   it('keeps the failed Rice draft and request identity while the existing save lock protects every exit', async () => {
     const f = await fixture({ width: 390 });
-    try {
+    await f.run(async () => {
       f.state.saveStatus = 503;
       await f.openDetails();
       const editor = await f.openEditor();
@@ -743,9 +846,7 @@ suite('U1 Rice full persona from the real employee entry', () => {
       await f.page
         .getByRole('dialog', { name: '青禾员工详情', exact: true })
         .waitFor();
-    } finally {
-      await f.close();
-    }
+    });
   }, 30_000);
 
   it('rejects changed raw identity or a forbidden outgoing raw field without a persona write', async () => {
@@ -757,32 +858,28 @@ suite('U1 Rice full persona from the real employee entry', () => {
     ];
     for (const rawOverride of cases) {
       const f = await fixture();
-      try {
+      await f.run(async () => {
         f.state.rawOverride = rawOverride;
         await f.openDetails();
         const editor = await f.openEditor();
         await editor.getByRole('alert').waitFor();
         expect(await editor.getByRole('textbox').count()).toBe(0);
         expect(f.state.writes).toEqual([]);
-      } finally {
-        await f.close();
-      }
+      });
     }
     const f = await fixture({ fields: 'visible-only' });
-    try {
+    await f.run(async () => {
       await f.openDetails();
       const editor = await f.openEditor();
       await editor.getByRole('button', { name: '保存', exact: true }).click();
       await editor.getByRole('alert').waitFor();
       expect(f.state.writes).toEqual([]);
-    } finally {
-      await f.close();
-    }
+    });
   }, 50_000);
 
   it('cancels a pending Rice read and opens the other real employee without reusing the late raw profile', async () => {
     const f = await fixture({ width: 390 });
-    try {
+    await f.run(async () => {
       f.holdRaw();
       await f.openDetails();
       const editor = await f.openEditor();
@@ -812,14 +909,12 @@ suite('U1 Rice full persona from the real employee entry', () => {
         .waitFor();
       expect(f.state.writes).toEqual([]);
       expect(f.state.rawReads).toEqual([id(7), id(17)]);
-    } finally {
-      await f.close();
-    }
+    });
   }, 30_000);
 
   it('keeps a mismatched Rice source receipt out of the local saved identity', async () => {
     const f = await fixture();
-    try {
+    await f.run(async () => {
       await f.openDetails();
       const editor = await f.openEditor();
       await editor
@@ -853,8 +948,6 @@ suite('U1 Rice full persona from the real employee entry', () => {
           .getByRole('heading', { name: '青禾', exact: true })
           .count(),
       ).toBe(0);
-    } finally {
-      await f.close();
-    }
+    });
   }, 30_000);
 });
