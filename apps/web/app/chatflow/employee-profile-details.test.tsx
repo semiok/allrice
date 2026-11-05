@@ -11,6 +11,53 @@ import {
 } from './employee-profile-details';
 
 describe('EmployeeProfileDetails', () => {
+  it.each(['general', 'custom'] as const)(
+    'mounts the actual scene slot beside persona and memory without legacy content for %s',
+    (kind) => {
+      const details = employeeDetailsFixture();
+      details.profile.kind = kind;
+      const props = {
+        details,
+        onPreview: () => {},
+        sceneContent: <p>AUTHORIZED_SCENE_SLOT</p>,
+        memoryEntry: <p>OWNER_MEMORY_SLOT</p>,
+        workflowContent: <p>OLD_FILE_READER</p>,
+        workflowReadContent: <p>OLD_READ_AUDIT</p>,
+        experienceContent: <p>OLD_EXPERIENCE</p>,
+      };
+      const html = renderToStaticMarkup(<EmployeeProfileDetails {...props} />);
+      for (const text of [
+        'Rice',
+        '帮助完成研究',
+        '按步骤交付',
+        '简洁，结论优先',
+        'AUTHORIZED_SCENE_SLOT',
+        'OWNER_MEMORY_SLOT',
+      ])
+        expect(html).toContain(text);
+      for (const text of [
+        'OLD_FILE_READER',
+        'OLD_READ_AUDIT',
+        'OLD_EXPERIENCE',
+        '执行要求',
+        '执行流程',
+        '经验积累',
+        'AI新增工作场景',
+        '公司核对标准正文',
+      ])
+        expect(html).not.toContain(text);
+      const shared = renderToStaticMarkup(
+        <EmployeeProfileDetails {...props} view="shared" />,
+      );
+      for (const text of [
+        'AUTHORIZED_SCENE_SLOT',
+        'OWNER_MEMORY_SLOT',
+        '表达偏好',
+        '简洁，结论优先',
+      ])
+        expect(shared).not.toContain(text);
+    },
+  );
   it('shows the current persona and personal style, without drafts, another scene or technical settings', () => {
     const html = renderToStaticMarkup(
       <EmployeeProfileDetails

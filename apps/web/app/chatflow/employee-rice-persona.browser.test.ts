@@ -12,6 +12,7 @@ import {
   EmployeeInstanceProfileSchema,
   EmployeeInstanceSchema,
   EmployeeMemoryPageSchema,
+  PersonalSceneSkillCatalogSchema,
   UpdateEmployeeInstanceInputSchema,
   UserMonthlyQuotaSchema,
   WorkspaceReadinessSchema,
@@ -199,6 +200,8 @@ suite('U1 Rice full persona from the real employee entry', () => {
         body: ReturnType<typeof UpdateEmployeeInstanceInputSchema.parse>;
       }>,
       rawReads: [] as string[],
+      instanceReads: [] as string[],
+      nextInstanceReadIsEditor: false,
       errors: [] as string[],
       unexpected: [] as string[],
     };
@@ -251,15 +254,23 @@ suite('U1 Rice full persona from the real employee entry', () => {
       ) {
         const index = instances.findIndex((item) => item.id === target);
         if (request.method() === 'GET') {
-          state.rawReads.push(target!);
-          const heldRaw = target === id(7) && state.rawGate;
+          state.instanceReads.push(target!);
+          const editorRead = state.nextInstanceReadIsEditor;
+          state.nextInstanceReadIsEditor = false;
+          if (editorRead) state.rawReads.push(target!);
+          const heldRaw = editorRead && target === id(7) && state.rawGate;
           if (heldRaw) await heldRaw;
-          if (state.rawStatus !== 200)
+          if (editorRead && state.rawStatus !== 200)
             return route.fulfill(
               json({ error: { message: 'No access' } }, state.rawStatus),
             );
           await route.fulfill(
-            json({ instance: { ...instances[index]!, ...state.rawOverride } }),
+            json({
+              instance: {
+                ...instances[index]!,
+                ...(editorRead ? state.rawOverride : undefined),
+              },
+            }),
           );
           if (heldRaw) rawSent.release();
           return;
@@ -294,7 +305,13 @@ suite('U1 Rice full persona from the real employee entry', () => {
       }
       if (request.method() === 'GET' && path.endsWith('/scene-skills'))
         return route.fulfill(
-          json({ instanceId: target, revision: 0, skills: [] }),
+          json(
+            PersonalSceneSkillCatalogSchema.parse({
+              instanceId: target,
+              revision: 0,
+              skills: [],
+            }),
+          ),
         );
       if (request.method() === 'GET' && path === '/api/v1/memories/manage')
         return route.fulfill(
@@ -531,6 +548,7 @@ suite('U1 Rice full persona from the real employee entry', () => {
       return dialog;
     };
     const openEditor = async () => {
+      state.nextInstanceReadIsEditor = true;
       await page.getByRole('button', { name: '编辑员工', exact: true }).click();
       const editor = page.getByRole('dialog', {
         name: '编辑人设',
@@ -1077,6 +1095,7 @@ suite('U1 Rice full persona from the real employee entry', () => {
             .count(),
         ).toBe(0);
         expect(f.state.rawReads).toEqual([]);
+        expect(f.state.instanceReads).toEqual([id(7)]);
         expect(f.state.writes).toEqual([]);
       });
     }

@@ -11,6 +11,7 @@ import {
   defaultUserPreferences,
   defaultWorkAutomation,
   EmployeeInstanceSchema,
+  EmployeeMemoryPageSchema,
   EmployeeSceneSkillCatalogSchema,
   EmployeePublishedSceneSkillSchema,
   PersonalSceneSkillSchema,
@@ -23,7 +24,6 @@ import {
   PersonalSceneRemoveResponseSchema,
   SkillPackageSourceSchema,
   skillSourceErrorHeader,
-  type PersonalSceneSkill,
   type PersonalScenePreviewResponse,
   type PersonalSceneConfirmReceipt,
   type PersonalSceneRemoveReceipt,
@@ -677,6 +677,33 @@ suite('U1 mounted employee Workflow host', () => {
           return route.fulfill(json({ receipt }));
         }
       }
+      if (path === '/api/v1/memories/manage' && method === 'GET') {
+        const target = url.searchParams.get('instanceId');
+        expect([id(7), id(17)]).toContain(target);
+        return route.fulfill(
+          json(
+            EmployeeMemoryPageSchema.parse({
+              organizationId: id(3),
+              workspaceId: id(4),
+              ownerId: id(5),
+              instanceId: target,
+              state: url.searchParams.get('state'),
+              total: 0,
+              memories: [],
+              nextCursor: null,
+              budget: {
+                mode: 'capacity_preview',
+                maxBytes: 6000,
+                maxItems: 20,
+                usedBytes: 0,
+                eligibleCount: 0,
+                omittedCount: 0,
+                selectedIds: [],
+              },
+            }),
+          ),
+        );
+      }
       if (path === '/api/v1/workspace')
         return route.fulfill(json({ workspace: workspace() }));
       if (path === '/api/v1/saas/capabilities')
@@ -851,6 +878,26 @@ suite('U1 mounted employee Workflow host', () => {
         .waitFor();
       return form;
     };
+    let sidebarOpened = false;
+    const openEmployeeDetails = async (name = 'Rice') => {
+      if (width < 760 && !sidebarOpened) {
+        await page
+          .getByRole('button', { name: '展开侧边栏', exact: true })
+          .click();
+        sidebarOpened = true;
+      }
+      await page
+        .getByRole('button', { name: `查看${name}详情`, exact: true })
+        .click();
+      const details = page.getByRole('dialog', {
+        name: `${name}员工详情`,
+        exact: true,
+      });
+      await details
+        .getByRole('heading', { name: '工作场景 Workflow', exact: true })
+        .waitFor();
+      return details;
+    };
     const check = () => {
       expect(state.errors).toEqual([]);
       expect(state.unexpected).toEqual([]);
@@ -872,6 +919,7 @@ suite('U1 mounted employee Workflow host', () => {
       openDirectory,
       openDetail,
       sourceForm,
+      openEmployeeDetails,
       check,
       close: () => page.close(),
     };
@@ -1013,6 +1061,61 @@ suite('U1 mounted employee Workflow host', () => {
             .getByRole('button', { name: '关闭工作场景', exact: true })
             .click();
           await root.waitFor({ state: 'detached' });
+          const employee = await f.openEmployeeDetails();
+          const employeeGeometry = await employee.evaluate((node) => {
+            const rect = node.getBoundingClientRect(),
+              style = getComputedStyle(node),
+              title = getComputedStyle(node.querySelector('h2')!);
+            return {
+              width: rect.width,
+              height: rect.height,
+              x: rect.x,
+              y: rect.y,
+              clientWidth: document.documentElement.clientWidth,
+              clientHeight: document.documentElement.clientHeight,
+              radius: style.borderRadius,
+              background: style.backgroundColor,
+              titleSize: title.fontSize,
+              titleLine: title.lineHeight,
+              fits:
+                node.scrollWidth <= node.clientWidth &&
+                document.documentElement.scrollWidth <=
+                  document.documentElement.clientWidth,
+            };
+          });
+          expect(employeeGeometry.titleSize).toBe('20px');
+          expect(employeeGeometry.titleLine).toBe('28px');
+          expect(employeeGeometry.fits).toBe(true);
+          if (width < 700) {
+            expect(employeeGeometry.x).toBe(0);
+            expect(employeeGeometry.y).toBe(0);
+            expect(employeeGeometry.width).toBe(employeeGeometry.clientWidth);
+            expect(employeeGeometry.height).toBe(employeeGeometry.clientHeight);
+            expect(employeeGeometry.radius).toBe('0px');
+          } else expect(employeeGeometry.width).toBe(848);
+          expect(employeeGeometry.background).toBe(geometry.background);
+          for (const name of ['执行要求', '执行流程', '经验积累', '参考资料'])
+            expect(
+              await employee.getByRole('tab', { name, exact: true }).count(),
+            ).toBe(0);
+          expect(
+            await employee
+              .getByRole('region', { name: '记忆', exact: true })
+              .count(),
+          ).toBe(1);
+          expect(await employee.locator('footer').count()).toBe(0);
+          if (!dark)
+            await f.page.screenshot({
+              path: resolve(evidence, `employee-root-${width}-light.png`),
+              fullPage: true,
+            });
+          await writeFile(
+            resolve(
+              evidence,
+              `employee-root-${width}-${dark ? 'dark' : 'light'}.json`,
+            ),
+            JSON.stringify(employeeGeometry, null, 2),
+          );
           expect(f.state.writes).toEqual([]);
         });
       });
@@ -1021,6 +1124,20 @@ suite('U1 mounted employee Workflow host', () => {
   it('directory failure retries into a genuine empty directory without showing a false empty state', async () => {
     await inFixture({ empty: true }, async (f) => {
       f.state.failDirectory = true;
+      const employee = await f.openEmployeeDetails();
+      await employee
+        .getByRole('region', { name: '基础与人设', exact: true })
+        .waitFor();
+      await employee
+        .getByRole('region', { name: '记忆', exact: true })
+        .waitFor();
+      await contains(employee.getByRole('alert'), '工作场景读取失败，请重试。');
+      expect(
+        await employee
+          .getByRole('heading', { name: '还没有工作场景', exact: true })
+          .count(),
+      ).toBe(0);
+      await employee.getByRole('button', { name: '关闭', exact: true }).click();
       const root = await f.openDirectory();
       await contains(root.getByRole('alert'), '工作场景读取失败，请重试。');
       expect(
@@ -1073,13 +1190,11 @@ suite('U1 mounted employee Workflow host', () => {
       });
       const draft = '[原文] {{保留}}\n\n已有草稿 🚀';
       await input.fill(draft);
-      await f.page
-        .locator('input[type=file][multiple]')
-        .setInputFiles({
-          name: 'research.txt',
-          mimeType: 'text/plain',
-          buffer: Buffer.from('Synthetic input'),
-        });
+      await f.page.locator('input[type=file][multiple]').setInputFiles({
+        name: 'research.txt',
+        mimeType: 'text/plain',
+        buffer: Buffer.from('Synthetic input'),
+      });
       await f.page.getByText('research.txt', { exact: true }).waitFor();
       const detail = await f.openDetail();
       await detail
@@ -1133,6 +1248,125 @@ suite('U1 mounted employee Workflow host', () => {
         ).toBe(0);
       expect(await detail.locator('code').count()).toBe(0);
       expect(f.state.writes).toEqual([]);
+    });
+  });
+
+  it('employee details and top directory share one catalog, return to the viewed employee, and prepare that exact employee draft', async () => {
+    await inFixture({ session: true }, async (f) => {
+      const input = f.page.getByRole('textbox', {
+        name: '给 Rice 的消息',
+        exact: true,
+      });
+      await input.fill('Rice对话中尚未发送的草稿');
+      await f.page.locator('input[type=file][multiple]').setInputFiles({
+        name: 'carry.txt',
+        mimeType: 'text/plain',
+        buffer: Buffer.from('Synthetic input'),
+      });
+      await f.page.getByText('carry.txt', { exact: true }).waitFor();
+      const employee = await f.openEmployeeDetails('流程哥');
+      const directoryPath = `/api/v1/employee-instances/${id(17)}/scene-skills`;
+      const before = f.state.reads.filter(
+        (path) => path === directoryPath,
+      ).length;
+      expect(before).toBe(1);
+      await employee.getByRole('button', { name: /写周报/ }).click();
+      const detail = f.page.getByRole('dialog', {
+        name: '写周报',
+        exact: true,
+      });
+      await detail
+        .getByRole('heading', { name: '什么时候用', exact: true })
+        .waitFor();
+      await contains(detail, '流程哥会自己判断');
+      expect(
+        await f.page
+          .getByRole('textbox', { name: '给 Rice 的消息', exact: true })
+          .inputValue(),
+      ).toBe('Rice对话中尚未发送的草稿');
+      await f.page.keyboard.press('Escape');
+      await employee.waitFor();
+      await expect
+        .poll(() =>
+          employee.evaluate((node) => node.contains(document.activeElement)),
+        )
+        .toBe(true);
+      expect(
+        f.state.reads.filter((path) => path === directoryPath),
+      ).toHaveLength(before);
+      await employee
+        .getByRole('button', { name: '新建场景', exact: true })
+        .click();
+      const source = f.page.getByRole('dialog', {
+        name: '新建工作场景',
+        exact: true,
+      });
+      await source.waitFor();
+      await source.getByRole('button', { name: '取消', exact: true }).click();
+      await employee.waitFor();
+      expect(
+        f.state.reads.filter((path) => path === directoryPath),
+      ).toHaveLength(before);
+      await employee.getByRole('button', { name: /写周报/ }).click();
+      await detail
+        .getByRole('heading', { name: '什么时候用', exact: true })
+        .waitFor();
+      await detail
+        .getByRole('button', { name: '开始工作', exact: true })
+        .click();
+      await detail.waitFor({ state: 'detached' });
+      const target = f.page.getByRole('textbox', {
+        name: '给 流程哥 的消息',
+        exact: true,
+      });
+      await expect
+        .poll(() => target.inputValue())
+        .toBe('/weekly-brief\n\nRice对话中尚未发送的草稿');
+      expect(
+        await f.page
+          .getByRole('group', { name: '待发送附件', exact: true })
+          .getByText('carry.txt', { exact: true })
+          .count(),
+      ).toBe(1);
+      expect(new URL(f.page.url()).searchParams.get('session')).toBeNull();
+      expect(f.state.writes).toEqual([]);
+      expect(
+        f.state.reads.filter(
+          (path) => path === `/api/v1/employee-instances/${id(17)}`,
+        ).length,
+      ).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  it('deleting from employee details returns to that same employee and refreshes only its shared catalog', async () => {
+    await inFixture({}, async (f) => {
+      const employee = await f.openEmployeeDetails('流程哥');
+      await employee.getByRole('button', { name: /写周报/ }).click();
+      const detail = f.page.getByRole('dialog', {
+        name: '写周报',
+        exact: true,
+      });
+      await detail
+        .getByRole('heading', { name: '什么时候用', exact: true })
+        .waitFor();
+      const remove = await deleteConfirmation(f, detail);
+      await contains(remove, '流程哥以后不会再用这个');
+      await remove.getByRole('button', { name: '删除', exact: true }).click();
+      await employee.waitFor();
+      await employee.getByRole('button', { name: /客户回访/ }).waitFor();
+      expect(
+        await employee.getByRole('button', { name: /写周报/ }).count(),
+      ).toBe(0);
+      expect(f.state.collections.get(id(7))!.skills).toHaveLength(2);
+      expect(
+        f.state.collections.get(id(17))!.skills.map((item) => item.sceneId),
+      ).toEqual([id(51)]);
+      expect([...f.state.removeReceipts.values()][0]!.instanceId).toBe(id(17));
+      await expect
+        .poll(() =>
+          employee.evaluate((node) => node.contains(document.activeElement)),
+        )
+        .toBe(true);
     });
   });
 
@@ -1635,4 +1869,144 @@ suite('U1 mounted employee Workflow host', () => {
       });
     });
   }
+
+  it('an unknown committed confirmation stays unknown after a later conflict and keeps the original signed request until a real receipt', async () => {
+    await inFixture({}, async (f) => {
+      await readGithub(await f.sourceForm());
+      const dialog = confirmation(f);
+      await dialog.waitFor();
+      f.state.loseConfirm = true;
+      await dialog
+        .getByRole('button', { name: '确认安装', exact: true })
+        .click();
+      const retry = dialog.getByRole('button', { name: '重试', exact: true });
+      await retry.waitFor();
+      await expect.poll(() => retry.isEnabled()).toBe(true);
+      const original = confirmWrites(f)[0]!.input;
+      f.state.failConfirm = true;
+      await retry.click();
+      await expect.poll(() => confirmWrites(f).length).toBe(2);
+      await expect.poll(() => retry.isEnabled()).toBe(true);
+      expect(await dialog.getByRole('alert').count()).toBe(0);
+      expect(confirmWrites(f)[1]!.input).toEqual(original);
+      await dialog.getByRole('button', { name: '取消', exact: true }).click();
+      const form = f.page.getByRole('dialog', {
+        name: '新建工作场景',
+        exact: true,
+      });
+      await form.waitFor();
+      await form.getByRole('button', { name: '读取', exact: true }).click();
+      expect(previewWrites(f)).toHaveLength(1);
+      await form.getByRole('button', { name: '取消', exact: true }).click();
+      await f
+        .directory()
+        .getByRole('button', { name: '关闭工作场景', exact: true })
+        .click();
+      await f.page
+        .getByRole('button', { name: '工作场景', exact: true })
+        .click();
+      await dialog.waitFor();
+      f.state.failConfirm = false;
+      await dialog.getByRole('button', { name: '重试', exact: true }).click();
+      await f.page
+        .getByRole('dialog', { name: '安装完成', exact: true })
+        .waitFor();
+      expect(confirmWrites(f)[2]!.input).toEqual(original);
+      expect(f.state.confirmReceipts.size).toBe(1);
+    });
+  });
+
+  it('an unknown committed confirmation remains locked when its preview expires instead of clearing uncertainty or creating another request', async () => {
+    await inFixture({}, async (f) => {
+      await readGithub(await f.sourceForm());
+      const dialog = confirmation(f);
+      await dialog.waitFor();
+      f.state.loseConfirm = true;
+      await dialog
+        .getByRole('button', { name: '确认安装', exact: true })
+        .click();
+      const retry = dialog.getByRole('button', { name: '重试', exact: true });
+      await retry.waitFor();
+      await expect.poll(() => retry.isEnabled()).toBe(true);
+      expect(f.state.confirmReceipts.size).toBe(1);
+      const original = PersonalSceneConfirmRequestSchema.parse(
+        confirmWrites(f)[0]!.input,
+      );
+      const preview = f.state.previews.get(original.previewId)!;
+      await f.page.clock.setSystemTime(
+        new Date(Date.parse(preview.expiresAt) + 1000),
+      );
+      await retry.click();
+      await expect.poll(() => retry.isEnabled()).toBe(true);
+      expect(confirmWrites(f)).toHaveLength(1);
+      expect(await dialog.getByRole('alert').count()).toBe(0);
+      expect(
+        await f.page
+          .getByRole('dialog', { name: '安装完成', exact: true })
+          .count(),
+      ).toBe(0);
+      await dialog.getByRole('button', { name: '取消', exact: true }).click();
+      const form = f.page.getByRole('dialog', {
+        name: '新建工作场景',
+        exact: true,
+      });
+      await form.waitFor();
+      await form.getByRole('button', { name: '读取', exact: true }).click();
+      expect(previewWrites(f)).toHaveLength(1);
+      await form.getByRole('button', { name: '取消', exact: true }).click();
+      expect(
+        await f
+          .directory()
+          .getByRole('button', { name: '新建场景', exact: true })
+          .isDisabled(),
+      ).toBe(true);
+      expect(
+        PersonalSceneConfirmRequestSchema.parse(confirmWrites(f)[0]!.input),
+      ).toEqual(original);
+    });
+  });
+
+  it('authorization loss clears unknown private preview bytes and reauthorization cannot manufacture a new submission or restore the discarded preview', async () => {
+    await inFixture({}, async (f) => {
+      await readGithub(await f.sourceForm());
+      const dialog = confirmation(f);
+      await dialog.waitFor();
+      f.state.loseConfirm = true;
+      await dialog
+        .getByRole('button', { name: '确认安装', exact: true })
+        .click();
+      const retry = dialog.getByRole('button', { name: '重试', exact: true });
+      await retry.waitFor();
+      await expect.poll(() => retry.isEnabled()).toBe(true);
+      const original = confirmWrites(f)[0]!.input;
+      f.state.deny = true;
+      await retry.click();
+      const root = f.directory();
+      await root.waitFor();
+      await contains(
+        root.getByRole('alert'),
+        '当前内容不可访问，可能已撤销或权限已变更。',
+      );
+      expect(await confirmation(f).count()).toBe(0);
+      expect(
+        await root.getByText('安装工作场景', { exact: true }).count(),
+      ).toBe(0);
+      expect(confirmWrites(f)).toHaveLength(1);
+      await root
+        .getByRole('button', { name: '关闭工作场景', exact: true })
+        .click();
+      f.state.deny = false;
+      const restored = await f.openDirectory();
+      expect(await confirmation(f).count()).toBe(0);
+      expect(
+        await restored
+          .getByRole('button', { name: '新建场景', exact: true })
+          .isDisabled(),
+      ).toBe(true);
+      expect(confirmWrites(f)).toHaveLength(1);
+      expect(confirmWrites(f)[0]!.input).toEqual(original);
+      expect(previewWrites(f)).toHaveLength(1);
+      expect(f.state.confirmReceipts.size).toBe(1);
+    });
+  });
 });

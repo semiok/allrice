@@ -44,6 +44,53 @@
 .body {
   padding: 16px;
 }
+.unifiedDialog.unifiedDialog[role='dialog'] {
+  width: min(848px, 100%);
+  height: auto;
+  max-height: calc(100dvh - 48px);
+  color: var(--ar-text);
+  background: var(--ar-surface);
+  border-color: var(--ar-border-subtle);
+  border-radius: var(--ar-radius-panel);
+}
+.unifiedDialog > header {
+  min-height: 76px;
+  padding: 22px 24px 18px;
+  border-color: var(--ar-border-subtle);
+}
+.unifiedDialog > header h2 {
+  margin: 0;
+  font-size: 20px;
+  line-height: 28px;
+  color: var(--ar-text);
+}
+.unifiedBody.unifiedBody {
+  padding: 20px 24px;
+  scrollbar-gutter: stable;
+}
+@media (max-width: 700px) {
+  .unifiedDialog.unifiedDialog[role='dialog'] {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100dvh;
+    max-height: 100dvh;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+  .unifiedDialog.unifiedDialog > header {
+    min-height: 64px;
+    padding: 16px 20px;
+  }
+  .unifiedBody.unifiedBody {
+    padding: 20px;
+    scrollbar-gutter: auto;
+  }
+  .unifiedBody .details {
+    gap: 20px;
+  }
+}
 .details {
   display: grid;
   gap: 16px;

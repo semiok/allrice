@@ -18,6 +18,7 @@ import {
   SkillSourceErrorReasonSchema,
   skillSourceErrorHeader,
   type EmployeeDetailsProfile,
+  type EmployeeDetails,
   type EmployeeInstance,
   type EmployeeSceneSkillCatalog,
   type EmployeePublishedSceneSkill,
@@ -39,6 +40,7 @@ export type SceneCatalog =
 export type SceneSelection =
   | { personal: true; value: PersonalSceneSkill }
   | { personal: false; value: EmployeePublishedSceneSkill };
+export type SceneCatalogEntry = SceneCatalog['value']['skills'][number];
 type Scope = {
   scopeId: string;
   organizationId?: string;
@@ -49,6 +51,7 @@ type Scope = {
 };
 type ReadView = {
   key: string;
+  details?: EmployeeDetails;
   profile?: EmployeeDetailsProfile;
   instance?: EmployeeInstance;
   catalog?: SceneCatalog;
@@ -58,7 +61,7 @@ type ReadView = {
 type Mutation = (
   | {
       kind: 'confirm';
-      input: PersonalSceneConfirmRequest;
+      input: Omit<PersonalSceneConfirmRequest, 'previewId'>;
       preview: PersonalScenePreviewResponse;
       receipt?: PersonalSceneConfirmReceipt;
     }
@@ -69,6 +72,19 @@ type Mutation = (
       receipt?: PersonalSceneRemoveReceipt;
     }
 ) & { busy: boolean; uncertain?: boolean; error?: string };
+// Authorization loss clears private source/preview bodies. Retain only the
+// exact unresolved request identity so reauthorization cannot become a new write.
+type UnresolvedWrite =
+  | {
+      kind: 'confirm';
+      input: PersonalSceneConfirmRequest;
+      target: PersonalScenePreviewResponse['target'];
+    }
+  | {
+      kind: 'remove';
+      input: PersonalSceneRemoveRequest;
+      sceneId: PersonalSceneSkill['sceneId'];
+    };
 
 export class SceneSourceHttpError extends PersonalSceneHttpError {
   constructor(
@@ -175,11 +191,13 @@ export function useEmployeeSceneCatalog(input: Scope) {
   const sourceRead = useRef<AbortController | null>(null);
   const write = useRef<AbortController | null>(null);
   const pending = useRef(new Map<string, Mutation>());
+  const unresolved = useRef(new Map<string, UnresolvedWrite>());
   const ownerScope = `${input.scopeId}/${input.workspaceId}/${input.viewerId}`;
   const lastOwner = useRef(ownerScope);
   if (lastOwner.current !== ownerScope) {
     lastOwner.current = ownerScope;
     pending.current.clear();
+    unresolved.current.clear();
   }
   const current = () =>
     mounted.current &&
@@ -239,6 +257,26 @@ export function useEmployeeSceneCatalog(input: Scope) {
       sourceRead.current?.abort();
       setSelection({ key, loading: false });
       setView({ key, loading: false, error: cause.message });
+      const operation = pending.current.get(key);
+      if (operation?.uncertain)
+        unresolved.current.set(
+          key,
+          operation.kind === 'confirm'
+            ? {
+                kind: 'confirm',
+                input: {
+                  workspaceId: operation.input.workspaceId,
+                  requestId: operation.input.requestId,
+                  digest: operation.input.digest,
+                },
+                target: operation.preview.target,
+              }
+            : {
+                kind: 'remove',
+                input: operation.input,
+                sceneId: operation.scene.sceneId,
+              },
+        );
       pending.current.delete(key);
       changed((value) => value + 1);
       return true;
@@ -256,29 +294,39 @@ export function useEmployeeSceneCatalog(input: Scope) {
     if (instance.archivedAt)
       throw new SceneSourceHttpError(409, 'EMPLOYEE_INSTANCE_ARCHIVED');
   }
-  async function load() {
+  async function load(fresh = false) {
     if (!available) return;
     directoryRead.current?.abort();
     const controller = new AbortController();
     directoryRead.current = controller;
     setView((previous) => ({
-      ...(previous.key === key ? previous : { key }),
+      ...(!fresh && previous.key === key ? previous : { key }),
       loading: true,
       error: undefined,
     }));
     try {
-      const [rawDetails, rawInstance, rawCatalog] = await Promise.all([
-        sceneJson(`${base}/content?${query}`, input.headers, {
-          signal: controller.signal,
-        }),
-        sceneJson(`${base}?${query}`, input.headers, {
-          signal: controller.signal,
-        }),
-        sceneJson(`${base}/scene-skills?${query}`, input.headers, {
-          signal: controller.signal,
-        }),
-      ]);
-      const details = EmployeeDetailsSchema.parse(rawDetails);
+      const read = async (url: string) => {
+        try {
+          return await sceneJson(url, input.headers, {
+            signal: controller.signal,
+          });
+        } catch (cause) {
+          if (current() && !controller.signal.aborted) revoked(cause);
+          throw cause;
+        }
+      };
+      const [detailsRead, instanceRead, catalogRead] = await Promise.allSettled(
+        [
+          read(`${base}/content?${query}`),
+          read(`${base}?${query}`),
+          read(`${base}/scene-skills?${query}`),
+        ],
+      );
+      if (!current() || controller.signal.aborted) return;
+      if (detailsRead.status === 'rejected') throw detailsRead.reason;
+      if (instanceRead.status === 'rejected') throw instanceRead.reason;
+      const details = EmployeeDetailsSchema.parse(detailsRead.value);
+      const rawInstance = instanceRead.value;
       const instance = EmployeeInstanceSchema.parse(
         rawInstance &&
           typeof rawInstance === 'object' &&
@@ -289,9 +337,23 @@ export function useEmployeeSceneCatalog(input: Scope) {
       validateInstance(instance);
       if (
         details.profile.instanceId !== instance.id ||
-        details.profile.revision !== instance.revision
+        details.profile.revision !== instance.revision ||
+        details.profile.kind !== instance.kind ||
+        JSON.stringify(details.profile.source) !==
+          JSON.stringify(instance.source)
       )
         throw Error('target_changed');
+      // A failed scene directory does not discard separately authorized persona
+      // and memory entry data. Any ACL/archive failure above cleared it already.
+      setView({
+        key,
+        loading: false,
+        instance,
+        details,
+        profile: details.profile,
+      });
+      if (catalogRead.status === 'rejected') throw catalogRead.reason;
+      const rawCatalog = catalogRead.value;
       const personal = PersonalSceneSkillCatalogSchema.safeParse(rawCatalog);
       const catalog: SceneCatalog = personal.success
         ? { personal: true, value: personal.data }
@@ -306,6 +368,7 @@ export function useEmployeeSceneCatalog(input: Scope) {
           key,
           loading: false,
           instance,
+          details,
           profile: details.profile,
           catalog,
         });
@@ -383,7 +446,13 @@ export function useEmployeeSceneCatalog(input: Scope) {
     source: PersonalScenePreviewRequest['source'],
     file?: File,
   ) {
-    if (!canMaintain || !current() || mutation?.busy || mutation?.uncertain)
+    if (
+      !canMaintain ||
+      !current() ||
+      mutation?.busy ||
+      mutation?.uncertain ||
+      unresolved.current.has(key)
+    )
       return;
     cancelPreview();
     const controller = new AbortController();
@@ -442,12 +511,19 @@ export function useEmployeeSceneCatalog(input: Scope) {
     }
   }
   async function confirm(preview: PersonalScenePreviewResponse) {
-    if (!canMaintain || !current() || write.current) return;
+    if (
+      !canMaintain ||
+      !current() ||
+      write.current ||
+      unresolved.current.has(key)
+    )
+      return;
     const previous = pending.current.get(key);
     if (
       previous?.uncertain &&
       (previous.kind !== 'confirm' ||
-        previous.preview.previewId !== preview.previewId)
+        previous.preview.previewId !== preview.previewId ||
+        previous.preview.digest !== preview.digest)
     )
       return;
     const request =
@@ -463,18 +539,28 @@ export function useEmployeeSceneCatalog(input: Scope) {
     const operation: Mutation = {
       kind: 'confirm',
       input: request,
-      preview,
+      preview:
+        previous?.kind === 'confirm' && previous.uncertain
+          ? previous.preview
+          : preview,
       busy: true,
+      uncertain: previous?.uncertain,
     };
     store(operation);
     if (Date.parse(preview.expiresAt) <= Date.now()) {
       store({
         ...operation,
         busy: false,
-        error: sceneSourceError(
-          new SceneSourceHttpError(422, 'VALIDATION_FAILED', 'preview_expired'),
-          preview.source.kind,
-        ),
+        error: previous?.uncertain
+          ? undefined
+          : sceneSourceError(
+              new SceneSourceHttpError(
+                422,
+                'VALIDATION_FAILED',
+                'preview_expired',
+              ),
+              preview.source.kind,
+            ),
       });
       return;
     }
@@ -499,7 +585,7 @@ export function useEmployeeSceneCatalog(input: Scope) {
       )
         throw Error('receipt_mismatch');
       if (current() && !controller.signal.aborted) {
-        store({ ...operation, busy: false, receipt });
+        store({ ...operation, busy: false, uncertain: false, receipt });
         void load();
         return receipt;
       }
@@ -511,10 +597,11 @@ export function useEmployeeSceneCatalog(input: Scope) {
           store({
             ...operation,
             busy: false,
-            uncertain: !known,
-            error: known
-              ? sceneSourceError(cause, preview.source.kind)
-              : undefined,
+            uncertain: previous?.uncertain || !known,
+            error:
+              known && !previous?.uncertain
+                ? sceneSourceError(cause, preview.source.kind)
+                : undefined,
           });
           // Read back current facts without manufacturing this request's receipt.
           if (!known) await load();
@@ -529,13 +616,16 @@ export function useEmployeeSceneCatalog(input: Scope) {
       !canMaintain ||
       !current() ||
       write.current ||
+      unresolved.current.has(key) ||
       !visible.catalog?.personal
     )
       return;
     const previous = pending.current.get(key);
     if (
       previous?.uncertain &&
-      (previous.kind !== 'remove' || previous.scene.sceneId !== scene.sceneId)
+      (previous.kind !== 'remove' ||
+        previous.scene.sceneId !== scene.sceneId ||
+        previous.scene.contentRef !== scene.contentRef)
     )
       return;
     const request =
@@ -553,6 +643,7 @@ export function useEmployeeSceneCatalog(input: Scope) {
       input: request,
       scene,
       busy: true,
+      uncertain: previous?.uncertain,
     };
     store(operation);
     const controller = new AbortController();
@@ -578,7 +669,7 @@ export function useEmployeeSceneCatalog(input: Scope) {
       )
         throw Error('receipt_mismatch');
       if (current() && !controller.signal.aborted) {
-        store({ ...operation, busy: false, receipt });
+        store({ ...operation, busy: false, uncertain: false, receipt });
         clearSelection();
         void load();
         return receipt;
@@ -591,8 +682,8 @@ export function useEmployeeSceneCatalog(input: Scope) {
           store({
             ...operation,
             busy: false,
-            uncertain: !known,
-            error: known ? cause.message : undefined,
+            uncertain: previous?.uncertain || !known,
+            error: known && !previous?.uncertain ? cause.message : undefined,
           });
           if (!known) await load();
         }
@@ -616,10 +707,23 @@ export function useEmployeeSceneCatalog(input: Scope) {
       throw cause;
     }
   }
+  function ensureLoaded() {
+    if (
+      visible.loading ||
+      (visible.catalog && visible.details && !visible.error)
+    )
+      return;
+    void load();
+  }
+  function denyAccess(status: number) {
+    if ([401, 403, 404].includes(status))
+      revoked(new SceneSourceHttpError(status, 'AUTHORIZATION_DENIED'));
+  }
   return {
     key,
     available,
     profile: visible.profile,
+    details: visible.details,
     instance: visible.instance,
     catalog: visible.catalog,
     loading: visible.loading,
@@ -628,8 +732,11 @@ export function useEmployeeSceneCatalog(input: Scope) {
     detail,
     canMaintain,
     mutation,
+    uncertain: mutation?.uncertain === true || unresolved.current.has(key),
     busy: mutation?.busy === true,
     load,
+    ensureLoaded,
+    denyAccess,
     inspect,
     clearSelection,
     preview,
@@ -639,3 +746,6 @@ export function useEmployeeSceneCatalog(input: Scope) {
     currentInstance,
   };
 }
+export type EmployeeSceneCatalogController = ReturnType<
+  typeof useEmployeeSceneCatalog
+>;

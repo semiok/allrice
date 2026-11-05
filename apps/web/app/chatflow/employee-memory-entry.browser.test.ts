@@ -8,6 +8,7 @@ import {
   defaultUserPreferences,
   defaultWorkAutomation,
   EmployeeInstanceSchema,
+  EmployeeSceneSkillCatalogSchema,
   type EmployeeMemoryPage,
 } from '@allrice/contracts';
 import type {
@@ -293,6 +294,44 @@ suite('U1 employee details personal-memory entry', () => {
             },
             201,
           ),
+        );
+      }
+      const instanceRead = path.match(
+        /^\/api\/v1\/employee-instances\/([^/]+)(?:\/(scene-skills))?$/,
+      );
+      if (instanceRead && request.method() === 'GET') {
+        const target = instanceRead[1]!;
+        expect([id(7), id(17)]).toContain(target);
+        expect(url.searchParams.get('workspaceId')).toBe(id(4));
+        const profile = detailsFor(target).profile;
+        if (instanceRead[2])
+          return route.fulfill(
+            json(
+              EmployeeSceneSkillCatalogSchema.parse({
+                instanceId: target,
+                employeeId: target === id(7) ? id(9) : id(19),
+                skills: [],
+              }),
+            ),
+          );
+        return route.fulfill(
+          json({
+            instance: EmployeeInstanceSchema.parse({
+              id: target,
+              assignmentId: target,
+              organizationId: id(3),
+              workspaceId: id(4),
+              ownerId: id(5),
+              kind: 'general',
+              revision: profile.revision,
+              profile: { name: profile.name },
+              creationSource: profile.source,
+              source: profile.source,
+              createdAt: now,
+              updatedAt: now,
+              archivedAt: null,
+            }),
+          }),
         );
       }
       if (path.endsWith('/content')) {
@@ -939,23 +978,21 @@ suite('U1 employee details personal-memory entry', () => {
     30_000,
   );
 
-  it('opens personal memory without reactivating a retained old experience/collector tab', async () => {
+  it('all host memory entries retire the experience collector while the explicit detail target stays independent', async () => {
     const f = await fixture({ legacy: true });
     try {
-      await f.page
-        .getByRole('button', { name: '经验管理', exact: true })
-        .click();
-      const old = f.page.getByRole('region', { name: '经验管理', exact: true });
+      await f.page.getByRole('button', { name: '记忆', exact: true }).click();
+      const old = f.page.getByRole('region', { name: '记忆', exact: true });
       await old
-        .getByRole('button', { name: '积累与采用记录', exact: true })
-        .click();
-      await expect
-        .poll(
-          () =>
-            f.state.reads.filter((read) => read.path === '/api/v1/experiences')
-              .length,
-        )
-        .toBeGreaterThan(0);
+        .getByRole('region', { name: '个人记忆', exact: true })
+        .waitFor();
+      for (const name of ['已生效经验', '积累与采用记录'])
+        expect(
+          await old.getByRole('button', { name, exact: true }).count(),
+        ).toBe(0);
+      expect(
+        f.state.reads.filter((read) => read.path === '/api/v1/experiences'),
+      ).toEqual([]);
       await f.page
         .getByRole('button', { name: '关闭工作台', exact: true })
         .click();
@@ -993,14 +1030,18 @@ suite('U1 employee details personal-memory entry', () => {
     const f = await fixture({ legacy: true });
     const writeGate = gate();
     try {
-      await f.page
-        .getByRole('button', { name: '经验管理', exact: true })
-        .click();
-      const old = f.page.getByRole('region', { name: '经验管理', exact: true });
-      await old
-        .getByRole('combobox', { name: '经验所属 AllRice 助手', exact: true })
-        .selectOption(id(7));
-      await old.getByRole('button', { name: '个人记忆', exact: true }).click();
+      await f.page.getByRole('button', { name: '记忆', exact: true }).click();
+      const oldPaneId = await f.page
+        .getByRole('region', { name: '记忆', exact: true })
+        .evaluate((node) =>
+          node
+            .closest('[data-dockkit-pane]')
+            ?.getAttribute('data-dockkit-pane'),
+        );
+      expect(oldPaneId).toBeTruthy();
+      const old = f.page
+        .locator(`[data-dockkit-pane=${JSON.stringify(oldPaneId)}]`)
+        .getByRole('region', { name: '记忆', exact: true });
       const oldManager = old.getByRole('region', {
         name: '个人记忆',
         exact: true,
@@ -1026,6 +1067,9 @@ suite('U1 employee details personal-memory entry', () => {
         .getByRole('button', { name: '查看', exact: true })
         .click();
       const personal = f.page
+        .locator(
+          `[data-dockkit-pane]:not([data-dockkit-pane=${JSON.stringify(oldPaneId)}])`,
+        )
         .getByRole('region', { name: '记忆', exact: true })
         .getByRole('region', { name: '个人记忆', exact: true });
       await contains(personal, '全部 · 共 0 条');

@@ -20,6 +20,7 @@ import { EmployeeSceneDialog } from './employee-scene-dialog';
 import {
   useEmployeeSceneCatalog,
   type SceneSelection,
+  type SceneCatalogEntry,
 } from './use-employee-scene-catalog';
 import moduleUi from './workbench-modules.module.css';
 
@@ -402,6 +403,7 @@ export function ChatFlowClient({
   const [detailsAssignmentId, setDetailsAssignmentId] = useState<string | null>(
     null,
   );
+  const reuseDetailsSceneSnapshot = useRef(false);
   const monthlyQuota = useMonthlyQuota({
     workspaceId: workspace?.workspaceId,
     organizationId: workspace?.organizationId,
@@ -462,6 +464,10 @@ export function ChatFlowClient({
   const [sceneRequest, setSceneRequest] = useState<{
     scope: string;
     instanceId: string;
+    origin: 'top' | 'employee';
+    revision: number;
+    entry?: SceneCatalogEntry;
+    create?: boolean;
   } | null>(null);
   const currentModuleRequest =
     moduleRequest?.scope === fileScope ? moduleRequest : undefined;
@@ -518,6 +524,7 @@ export function ChatFlowClient({
     (memoryInstanceId?: string) => {
       closeWorkbench();
       if (memoryInstanceId) {
+        reuseDetailsSceneSnapshot.current = false;
         setDetailsAssignmentId(memoryInstanceId);
         setEmployeeDetailsOpen(true);
       } else workbenchEntry.current?.focus();
@@ -1406,29 +1413,81 @@ export function ChatFlowClient({
     workspace && activeSession
       ? employeeForSession(workspace, activeSession)
       : newSessionEmployee;
+  const currentSceneRequest =
+    sceneRequest?.scope === settingsScope &&
+    (sceneRequest.origin === 'employee'
+      ? sceneRequest.instanceId === detailsAssignmentId
+      : sceneRequest.instanceId === activeEmployee?.instanceId)
+      ? sceneRequest
+      : null;
+  const sceneTarget =
+    currentSceneRequest?.instanceId ??
+    detailsAssignmentId ??
+    activeEmployee?.instanceId;
   const sceneCatalog = useEmployeeSceneCatalog({
     scopeId: settingsScope,
     organizationId: workspace?.organizationId,
     workspaceId: workspace?.workspaceId,
     viewerId: workspace?.viewerId,
-    instanceId: activeEmployee?.instanceId,
+    instanceId: sceneTarget ?? undefined,
     headers: tenantHeaders,
   });
-  const sceneGuard = useRef({ key: sceneCatalog.key, busy });
-  sceneGuard.current = { key: sceneCatalog.key, busy };
-  const sceneOpen =
-    sceneRequest?.scope === settingsScope &&
-    sceneRequest.instanceId === activeEmployee?.instanceId;
+  const sceneGuard = useRef({
+    key: sceneCatalog.key,
+    busy,
+    unavailable: sceneCatalog.accessUnavailable,
+  });
+  sceneGuard.current = {
+    key: sceneCatalog.key,
+    busy,
+    unavailable: sceneCatalog.accessUnavailable,
+  };
+  const sceneOpen = Boolean(currentSceneRequest);
   function openSceneDirectory() {
     if (!workspace?.viewerId || !activeEmployee?.instanceId) return;
-    setSceneRequest({
+    setSceneRequest((previous) => ({
       scope: settingsScope,
       instanceId: activeEmployee.instanceId,
-    });
+      origin: 'top',
+      revision: (previous?.revision ?? 0) + 1,
+    }));
     layout.close();
   }
+  function openEmployeeScene(entry?: SceneCatalogEntry) {
+    if (
+      !detailsAssignmentId ||
+      sceneCatalog.instance?.id !== detailsAssignmentId ||
+      sceneCatalog.accessUnavailable
+    )
+      return;
+    setSceneRequest((previous) => ({
+      scope: settingsScope,
+      instanceId: detailsAssignmentId,
+      origin: 'employee',
+      revision: (previous?.revision ?? 0) + 1,
+      ...(entry ? { entry } : { create: true }),
+    }));
+    setEmployeeDetailsOpen(false);
+  }
+  function returnToEmployee() {
+    const scope = settingsScope,
+      key = sceneCatalog.key;
+    setSceneRequest(null);
+    // Unmount native handlers before restoring the existing DshDialog; one
+    // Escape must not also close the page it is returning to.
+    void nextPaint().then(() => {
+      if (
+        currentSettingsScope.current === scope &&
+        sceneGuard.current.key === key &&
+        !sceneGuard.current.unavailable
+      ) {
+        reuseDetailsSceneSnapshot.current = true;
+        setEmployeeDetailsOpen(true);
+      }
+    });
+  }
   async function prepareSceneWork(scene: SceneSelection) {
-    if (!workspace || !activeEmployee?.instanceId || busy || composing.current)
+    if (!workspace || !sceneTarget || busy || composing.current)
       throw Error('请先完成当前输入或等待工作结束，再调整员工内容。');
     const nativeName = scene.personal
       ? scene.value.nativeName
@@ -1439,7 +1498,7 @@ export function ChatFlowClient({
     if (!nativeName || invocation?.userInvocable === false)
       throw Error('这位员工已不在当前工作区，请重新打开详情。');
     const captured = captureSelection();
-    const target = activeEmployee.instanceId;
+    const target = sceneTarget;
     const instance = await sceneCatalog.currentInstance();
     if (
       !instance ||
@@ -1473,8 +1532,8 @@ export function ChatFlowClient({
     if (layout.compact) setSidebarCollapsed(true);
   }
   function showSceneDeliveries() {
-    if (!activeEmployee?.instanceId) return;
-    const target = activeEmployee.instanceId;
+    if (!sceneTarget) return;
+    const target = sceneTarget;
     const scope = settingsScope;
     setSceneRequest(null);
     setSidebarCollapsed(false);
@@ -2023,6 +2082,7 @@ export function ChatFlowClient({
           else setError('当前没有可用员工，请先派驻员工。');
         }}
         onOpenEmployeeDetails={(assignmentId) => {
+          reuseDetailsSceneSnapshot.current = false;
           setDetailsAssignmentId(
             assignmentId ??
               (activeEmployee ? employeeChoiceId(activeEmployee) : null),
@@ -2526,19 +2586,17 @@ export function ChatFlowClient({
                   onTemplate={viewWorkbenchTemplate}
                   onUse={useWorkbenchReference}
                 />
-              ) : kind === 'experience' ? (
+              ) : kind === 'experience' &&
+                (memoryInstanceId ?? activeEmployee?.instanceId) ? (
                 <WorkbenchExperiencePanel
-                  memoryRequest={
-                    memoryInstanceId
-                      ? {
-                          instanceId: memoryInstanceId,
-                          revision:
-                            currentMemoryRequest?.id === memoryInstanceId
-                              ? currentMemoryRequest.revision
-                              : 0,
-                        }
-                      : undefined
-                  }
+                  memoryRequest={{
+                    instanceId: (memoryInstanceId ??
+                      activeEmployee?.instanceId)!,
+                    revision:
+                      currentMemoryRequest?.id === memoryInstanceId
+                        ? currentMemoryRequest.revision
+                        : 0,
+                  }}
                   scopeId={settingsScope}
                   workspaceId={workspace.workspaceId}
                   instanceId={activeEmployee?.instanceId}
@@ -2679,13 +2737,31 @@ export function ChatFlowClient({
       )}
 
       <EmployeeSceneDialog
-        key={sceneCatalog.key}
+        key={`${sceneCatalog.key}/${currentSceneRequest?.revision ?? 0}`}
         controller={sceneCatalog}
         open={sceneOpen}
-        employeeName={activeEmployeeName}
+        employeeName={
+          sceneCatalog.profile?.name ??
+          (sceneTarget
+            ? employeeChoiceProfile(workspace, sceneTarget)?.name
+            : undefined) ??
+          'AI 员工'
+        }
         onClose={() => setSceneRequest(null)}
         onStart={prepareSceneWork}
         onDeliveries={showSceneDeliveries}
+        initial={
+          currentSceneRequest?.entry
+            ? { page: 'detail', entry: currentSceneRequest.entry }
+            : currentSceneRequest?.create
+              ? { page: 'source' }
+              : undefined
+        }
+        onBackToEmployee={
+          currentSceneRequest?.origin === 'employee'
+            ? returnToEmployee
+            : undefined
+        }
       />
       <EmployeeDetailsDialog
         onClose={() => setEmployeeDetailsOpen(false)}
@@ -2703,6 +2779,10 @@ export function ChatFlowClient({
         }
         workspaceId={workspace.workspaceId}
         headers={tenantHeaders}
+        sceneCatalog={sceneCatalog}
+        reuseSceneSnapshot={reuseDetailsSceneSnapshot.current}
+        onOpenScene={openEmployeeScene}
+        onCreateScene={() => openEmployeeScene()}
         onPrepare={prepareEmployeeDraft}
         onProfileUpdated={registerEmployeeInstance}
         onOpenMemory={(instanceId) => {

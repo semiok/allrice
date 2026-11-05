@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import {
   Button,
   IconCloseOutlineRegular,
@@ -14,14 +14,13 @@ import { AssistantMarkdown } from './assistant-markdown';
 import {
   sceneSourceError,
   sceneSourceLabel,
-  type SceneCatalog,
+  type SceneCatalogEntry,
   type SceneSelection,
-  type useEmployeeSceneCatalog,
+  type EmployeeSceneCatalogController,
 } from './use-employee-scene-catalog';
 import css from './employee-scene-dialog.module.css';
 
-type CatalogController = ReturnType<typeof useEmployeeSceneCatalog>;
-type Entry = SceneCatalog['value']['skills'][number];
+type Entry = SceneCatalogEntry;
 type Page = 'list' | 'detail' | 'source' | 'confirm' | 'success';
 const version = (value?: string) => value || '未提供';
 
@@ -173,22 +172,122 @@ function SceneDetails({
   );
 }
 
+/** The top entry and employee details consume the same authorized catalog. */
+export function EmployeeSceneList(props: {
+  controller: EmployeeSceneCatalogController;
+  employeeName: string;
+  embedded?: boolean;
+  onChoose: (entry: Entry) => void;
+  onCreate: () => void;
+}) {
+  const { controller: catalog } = props;
+  const heading = useId();
+  const writable = catalog.canMaintain && !catalog.loading && !catalog.error;
+  const create = (
+    <Button
+      variant="outline"
+      disabled={catalog.busy || catalog.uncertain}
+      onClick={props.onCreate}
+    >
+      新建场景
+    </Button>
+  );
+  return (
+    <section aria-labelledby={props.embedded ? heading : undefined}>
+      {props.embedded && (
+        <>
+          <div className={css.sectionHead}>
+            <h3 id={heading}>
+              工作场景 <span className={css.kind}>Workflow</span>
+            </h3>
+            {writable && create}
+          </div>
+          <p className={css.sectionDescription}>
+            固定流程的工作，你发起，它按步骤做。
+          </p>
+        </>
+      )}
+      {catalog.loading ? (
+        <Reading />
+      ) : catalog.error ? (
+        <>
+          <p className={css.error} role="alert">
+            {catalog.error}
+          </p>
+          <div className={css.requestActions}>
+            <Button variant="primary" onClick={() => void catalog.load()}>
+              重试
+            </Button>
+          </div>
+        </>
+      ) : catalog.catalog?.value.skills.length ? (
+        <div className={css.list}>
+          {catalog.catalog.value.skills.map((item) => {
+            const personal = 'sceneId' in item;
+            return (
+              <button
+                type="button"
+                key={personal ? item.sceneId : JSON.stringify(item.pin)}
+                className={css.sceneRow}
+                disabled={catalog.busy}
+                onClick={() => props.onChoose(item)}
+              >
+                <span className={css.rowMain}>
+                  <strong>{personal ? item.name : item.scene.name}</strong>
+                  <span className={css.caption}>
+                    {personal ? item.description : item.scene.appliesWhen}
+                  </span>
+                </span>
+                <span className={css.caption}>
+                  {personal ? version(item.version) : '未提供'}
+                </span>
+                <SceneIcon kind="chevron" />
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <div className={css.empty}>
+          <SceneIcon kind="box" />
+          <h3>还没有工作场景</h3>
+          <p className={css.caption}>
+            安装一个 Workflow，{props.employeeName}就能按固定流程干活。
+          </p>
+          {!props.embedded && writable && create}
+        </div>
+      )}
+      {!props.embedded &&
+        writable &&
+        !!catalog.catalog?.value.skills.length && (
+          <div className={css.requestActions}>{create}</div>
+        )}
+    </section>
+  );
+}
+
 /** Real host entry. One native modal owns the pages; the native confirmation
  * layer owns its own focus. No legacy Dialog or private modal stack is added. */
 export function EmployeeSceneDialog(props: {
-  controller: CatalogController;
+  controller: EmployeeSceneCatalogController;
   open: boolean;
   employeeName: string;
   onClose: () => void;
   onStart: (scene: SceneSelection) => Promise<void>;
   onDeliveries: () => void;
+  initial?: { page: 'detail'; entry: Entry } | { page: 'source' };
+  onBackToEmployee?: () => void;
 }) {
   const { controller: catalog } = props;
+  const initial = useRef(props.initial).current;
   const pending = catalog.mutation;
   const [requestedPage, setPage] = useState<Page>(() =>
-    pending?.uncertain && pending.kind === 'confirm' ? 'confirm' : 'list',
+    pending?.uncertain && pending.kind === 'confirm'
+      ? 'confirm'
+      : (initial?.page ?? 'list'),
   );
-  const [entry, setEntry] = useState<Entry>();
+  const [entry, setEntry] = useState<Entry | undefined>(
+    initial?.page === 'detail' ? initial.entry : undefined,
+  );
   const [sourceTarget, setSourceTarget] = useState<PersonalSceneSkill>();
   const [tab, setTab] = useState<'github' | 'zip'>('github');
   const [url, setUrl] = useState('');
@@ -226,7 +325,11 @@ export function EmployeeSceneDialog(props: {
     ? selected.personal
       ? selected.value.name
       : selected.value.scene.name
-    : '工作场景';
+    : entry
+      ? 'sceneId' in entry
+        ? entry.name
+        : entry.scene.name
+      : '工作场景';
   const selectedVersion = selected
     ? selected.personal
       ? selected.value.version
@@ -243,7 +346,10 @@ export function EmployeeSceneDialog(props: {
       : selected.value.skillPackage.frontmatter?.invocation.userInvocable
     : false;
   const writable = catalog.canMaintain && !catalog.loading && !catalog.error;
-  const page = catalog.accessUnavailable ? 'list' : requestedPage;
+  const page =
+    catalog.accessUnavailable || (catalog.loading && !catalog.profile)
+      ? 'list'
+      : requestedPage;
   useEffect(() => setMounted(true), []);
   useEffect(() => {
     if (!catalog.accessUnavailable) return;
@@ -258,8 +364,13 @@ export function EmployeeSceneDialog(props: {
     setError('');
   }, [catalog.accessUnavailable]);
   useEffect(() => {
-    if (props.open) void currentCatalog.current.load();
-  }, [props.open, catalog.key]);
+    if (props.open) {
+      if (initial) currentCatalog.current.ensureLoaded();
+      else void currentCatalog.current.load(true);
+      if (initial?.page === 'detail')
+        void currentCatalog.current.inspect(initial.entry);
+    }
+  }, [props.open, catalog.key, initial]);
   useEffect(() => {
     if (props.open && mounted && !removing)
       title.current?.focus({ preventScroll: true });
@@ -286,10 +397,12 @@ export function EmployeeSceneDialog(props: {
       sourceGeneration.current += 1;
       catalog.cancelPreview();
       setReading(false);
-      setPage(sourceTarget ? 'detail' : 'list');
+      if (!sourceTarget && props.onBackToEmployee) props.onBackToEmployee();
+      else setPage(sourceTarget ? 'detail' : 'list');
     } else {
       catalog.clearSelection();
-      setPage('list');
+      if (props.onBackToEmployee) props.onBackToEmployee();
+      else setPage('list');
     }
   }
   function choose(entry: Entry) {
@@ -301,7 +414,7 @@ export function EmployeeSceneDialog(props: {
     void catalog.inspect(entry);
   }
   function source(target?: PersonalSceneSkill) {
-    if (!writable || busy || pending?.uncertain) return;
+    if (!writable || busy || catalog.uncertain) return;
     setSourceTarget(target);
     setTab(target?.source?.kind === 'zip' ? 'zip' : 'github');
     setUrl(target?.source?.kind === 'github' ? target.source.requestedUrl : '');
@@ -377,7 +490,8 @@ export function EmployeeSceneDialog(props: {
     if (await catalog.remove(removing)) {
       setToast(`已删除“${removing.name}”`);
       setRemoving(undefined);
-      setPage('list');
+      if (props.onBackToEmployee) props.onBackToEmployee();
+      else setPage('list');
     }
   }
   async function start() {
@@ -396,6 +510,10 @@ export function EmployeeSceneDialog(props: {
     }
   }
   function finish() {
+    if (preview?.operation === 'install' && props.onBackToEmployee) {
+      props.onBackToEmployee();
+      return;
+    }
     const entry =
       preview?.operation === 'update' &&
       catalog.catalog?.personal &&
@@ -411,7 +529,6 @@ export function EmployeeSceneDialog(props: {
       setError('');
     }
   }
-  const listError = catalog.error;
   const pageTitle =
     page === 'list'
       ? '工作场景'
@@ -459,7 +576,13 @@ export function EmployeeSceneDialog(props: {
             <button
               type="button"
               className={css.iconButton}
-              aria-label={page === 'detail' ? '返回工作场景列表' : '返回上一层'}
+              aria-label={
+                page === 'detail'
+                  ? props.onBackToEmployee
+                    ? '返回员工详情'
+                    : '返回工作场景列表'
+                  : '返回上一层'
+              }
               disabled={busy}
               onClick={page === 'success' ? finish : back}
             >
@@ -492,7 +615,7 @@ export function EmployeeSceneDialog(props: {
               {writable && personal && (
                 <Button
                   variant="outline"
-                  disabled={busy || pending?.uncertain}
+                  disabled={busy || catalog.uncertain}
                   onClick={() => source(personal)}
                 >
                   更新
@@ -519,72 +642,12 @@ export function EmployeeSceneDialog(props: {
                   {toast}
                 </p>
               )}
-              {catalog.loading ? (
-                <Reading />
-              ) : listError ? (
-                <>
-                  <p className={css.error} role="alert">
-                    {listError}
-                  </p>
-                  <div className={css.requestActions}>
-                    <Button
-                      variant="primary"
-                      onClick={() => void catalog.load()}
-                    >
-                      重试
-                    </Button>
-                  </div>
-                </>
-              ) : catalog.catalog?.value.skills.length ? (
-                <div className={css.list}>
-                  {catalog.catalog.value.skills.map((item) => {
-                    const personal = 'sceneId' in item;
-                    return (
-                      <button
-                        type="button"
-                        key={personal ? item.sceneId : JSON.stringify(item.pin)}
-                        className={css.sceneRow}
-                        onClick={() => choose(item)}
-                      >
-                        <span className={css.rowMain}>
-                          <strong>
-                            {personal ? item.name : item.scene.name}
-                          </strong>
-                          <span className={css.caption}>
-                            {personal
-                              ? item.description
-                              : item.scene.appliesWhen}
-                          </span>
-                        </span>
-                        <span className={css.caption}>
-                          {personal ? version(item.version) : '未提供'}
-                        </span>
-                        <SceneIcon kind="chevron" />
-                      </button>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className={css.empty}>
-                  <SceneIcon kind="box" />
-                  <h3>还没有工作场景</h3>
-                  <p className={css.caption}>
-                    安装一个 Workflow，{employeeName}就能按固定流程干活。
-                  </p>
-                  {writable && (
-                    <Button variant="outline" onClick={() => source()}>
-                      新建场景
-                    </Button>
-                  )}
-                </div>
-              )}
-              {writable && !!catalog.catalog?.value.skills.length && (
-                <div className={css.requestActions}>
-                  <Button variant="outline" onClick={() => source()}>
-                    新建场景
-                  </Button>
-                </div>
-              )}
+              <EmployeeSceneList
+                controller={catalog}
+                employeeName={employeeName}
+                onChoose={choose}
+                onCreate={() => source()}
+              />
             </>
           ) : page === 'detail' ? (
             <>
@@ -617,7 +680,7 @@ export function EmployeeSceneDialog(props: {
                         <button
                           type="button"
                           className={`${css.link} ${css.danger}`}
-                          disabled={busy || pending?.uncertain}
+                          disabled={busy || catalog.uncertain}
                           onClick={() => setRemoving(personal)}
                         >
                           删除场景
@@ -835,7 +898,12 @@ export function EmployeeSceneDialog(props: {
         {(page === 'source' || page === 'confirm' || page === 'success') && (
           <footer className={css.footer}>
             {page === 'success' ? (
-              <Button variant="primary" onClick={finish}>
+              <Button
+                variant="primary"
+                disabled={catalog.loading}
+                aria-busy={catalog.loading}
+                onClick={finish}
+              >
                 完成
               </Button>
             ) : (

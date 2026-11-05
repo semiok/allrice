@@ -130,6 +130,28 @@
   border: 1px solid var(--ar-border-subtle);
   border-radius: 12px;
 }
+.sectionHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+.sectionHead h3 {
+  margin: 0;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+}
+.sectionHead .kind {
+  margin-left: 2px;
+}
+.sectionDescription {
+  margin: 0 0 12px !important;
+  color: var(--ar-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
 .sceneRow {
   display: flex;
   align-items: center;
