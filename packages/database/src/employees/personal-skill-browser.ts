@@ -174,7 +174,6 @@ async function browserOperation(
         throw new PersonalSkillError('conflict');
       return result;
     }
-    if (receiptOnly) return null;
     const target = input.target;
     const [row] =
       target.operation === 'update'
@@ -267,6 +266,7 @@ async function browserOperation(
       row.source.originalChecksum === source.originalChecksum &&
       (source.kind !== 'github' ||
         runtimePolicyDigest(row.source) === runtimePolicyDigest(source));
+    if (receiptOnly) return null;
     if (!row || (target.operation === 'update' && !unchanged)) {
       const [count] =
         await tx`select count(*)::int n,coalesce(max(version),0)::int latest
