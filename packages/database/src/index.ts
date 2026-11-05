@@ -18,6 +18,7 @@ export * from './platform-employee-history.ts';
 export * from './content-maintenance.ts';
 export * from './employees/employee-content.ts';
 export * from './employees/employee-scene-skills.ts';
+export * from './employees/personal-scene-files.ts';
 export {
   listPersonalSceneSkills,
   getPersonalSceneSkill,

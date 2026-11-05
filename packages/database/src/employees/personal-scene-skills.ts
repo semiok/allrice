@@ -8,6 +8,7 @@ import {
   PersonalSceneSkillResourceSchema,
   PersonalSceneSkillSaveReceiptSchema,
   SavePersonalSceneSkillSchema,
+  RestorePersonalSceneFileSchema,
   SkillResourcePathSchema,
   UuidSchema,
   employeeContentLimits,
@@ -30,6 +31,7 @@ import { validateSceneSkillPackage } from './employee-scene-skill-package.ts';
 import {
   EmployeeContentError,
   type ContentSql,
+  type ContentTx,
 } from './employee-content-model.ts';
 
 type Context = Parameters<typeof readPersonalEmployeeSceneLayer>[0];
@@ -313,213 +315,275 @@ export async function savePersonalSceneSkill(
   db = getDatabase(),
 ) {
   const input = SavePersonalSceneSkillSchema.parse(raw);
+  return db.begin(async (tx) =>
+    savePersonalSceneSkillInTransaction(contextInput, instanceId, input, tx),
+  );
+}
+
+/** The existing personal writer, composed inside the caller's transaction.
+ * Restore selects an exact old package only after request/CAS admission. It
+ * reuses its source references rather than cloning bytes into a new asset. */
+export async function savePersonalSceneSkillInTransaction(
+  contextInput: RequestContext,
+  instanceId: string,
+  raw: unknown,
+  tx: ContentTx,
+) {
+  const input = SavePersonalSceneSkillSchema.or(
+    RestorePersonalSceneFileSchema,
+  ).parse(raw);
+  const save = 'scene' in input ? input : null;
+  const restore = 'restoreContentRef' in input ? input : null;
+  const restorePin = restore
+    ? parsePersonalSceneContentRef(restore.restoreContentRef)
+    : null;
+  const sceneId = restorePin?.sceneId ?? save!.scene.id;
+  if (restore && restore.sceneId !== sceneId)
+    throw new DataAccessError('not_found');
   const context = { ...contextInput, workspaceId: input.workspaceId };
   if (!context.sessionId || context.actor.type !== 'user')
     throw new DataAccessError('authorization_denied');
-  if (!('skillPackage' in input.procedure))
+  if (save && !('skillPackage' in save.procedure))
     throw new EmployeeContentError('validation_failed');
   if (
-    input.references.some((ref) =>
+    save?.references.some((ref) =>
       ['procedure', 'requirement', 'workflow'].includes(ref.sourceKind),
     )
   )
     throw new EmployeeContentError('validation_failed');
-  const procedure = input.procedure;
-  validateSceneSkillPackage(
-    procedure.skillPackage,
-    procedure.body,
-    input.references,
+  const procedure = save?.procedure;
+  const bundle =
+    procedure && 'skillPackage' in procedure
+      ? procedure.skillPackage.bundle
+      : null;
+  if (procedure && 'skillPackage' in procedure)
+    validateSceneSkillPackage(
+      procedure.skillPackage,
+      procedure.body,
+      save!.references,
+    );
+  const authorize = async () => {
+    const instance = await getEmployeeInstance(context, instanceId, tx);
+    if (instance.kind !== 'custom') throw new DataAccessError('not_found');
+  };
+  await authorize();
+  const target = await resolveEmployeeMethodTarget(
+    context,
+    instanceId,
+    undefined,
+    tx,
   );
-  return db.begin(async (tx) => {
-    const authorize = async () => {
-      const instance = await getEmployeeInstance(context, instanceId, tx);
-      if (instance.kind !== 'custom') throw new DataAccessError('not_found');
-    };
-    await authorize();
-    const target = await resolveEmployeeMethodTarget(
-      context,
-      instanceId,
-      undefined,
-      tx,
-    );
-    const contentId = employeeChatUuid(
-      'personal-scene-package',
-      instanceId,
-      input.requestId,
-    );
-    const sourceRevisionId = employeeChatUuid(
+  const contentId = employeeChatUuid(
+    'personal-scene-package',
+    instanceId,
+    input.requestId,
+  );
+  const sourceRevisionId =
+    restorePin?.sourceRevisionId ??
+    employeeChatUuid(
       'personal-scene-package-revision',
       instanceId,
       input.requestId,
     );
-    const mutation = {
-      setId: target.setId,
-      target: target.target,
-      ownership: target.ownership,
-      workspaceId: input.workspaceId,
-      requestId: input.requestId,
-      expectedRevision: input.expectedRevision,
-      changeSummary: input.changeSummary,
-      operation: 'save_draft' as const,
-      manifest: {
-        schemaVersion: 1 as const,
-        common: [],
-        scenes: [],
-        declaredConflicts: [],
-      },
-      textEdits: [],
-    };
-    const receipt = await mutateEmployeeContentInTransaction(
-      context,
-      mutation,
-      tx,
-      {
-        authorize,
-        publishOnSave: true,
-        inputDigest: runtimePolicyDigest({ instanceId, input }),
-        buildInput: async (row) => {
-          // As with existing immediate saves, start from active content. An
-          // unrelated unenabled draft remains immutable history.
-          const [saved] = row?.active_revision_id
-            ? await tx<{ manifest: unknown }[]>`
+  const mutation = {
+    setId: target.setId,
+    target: target.target,
+    ownership: target.ownership,
+    workspaceId: input.workspaceId,
+    requestId: input.requestId,
+    expectedRevision: input.expectedRevision,
+    changeSummary: input.changeSummary,
+    operation: 'save_draft' as const,
+    manifest: {
+      schemaVersion: 1 as const,
+      common: [],
+      scenes: [],
+      declaredConflicts: [],
+    },
+    textEdits: [],
+  };
+  const receipt = await mutateEmployeeContentInTransaction(
+    context,
+    mutation,
+    tx,
+    {
+      authorize,
+      publishOnSave: true,
+      inputDigest: runtimePolicyDigest({ instanceId, input }),
+      buildInput: async (row) => {
+        // As with existing immediate saves, start from active content. An
+        // unrelated unenabled draft remains immutable history.
+        const [saved] = row?.active_revision_id
+          ? await tx<{ manifest: unknown }[]>`
           select manifest from allrice_employee_content_revisions where id=${row.active_revision_id} and set_id=${row.id}`
-            : [];
-          const previous = saved
-            ? EmployeeContentManifestSchema.parse(saved.manifest)
-            : mutation.manifest;
-          const scene = previous.scenes.find(
-            (item) => item.id === input.scene.id,
-          );
-          // Compare only immutable package identity, not old source bytes or
-          // readability: an owner must be able to replace a revoked package.
-          // Plain procedures and other references are not packages. Missing or
-          // mismatched source identity is not evidence that the scene is empty.
-          const packages = [];
-          for (const ref of scene?.references ?? []) {
-            if (ref.sourceKind !== 'procedure') continue;
-            const [source] = await tx<
-              {
-                digest: string;
-                kind: string;
-                packaged: boolean;
-              }[]
-            >`select digest,content->>'kind' as kind,content ? 'skillPackage' as packaged
+          : [];
+        const previous = saved
+          ? EmployeeContentManifestSchema.parse(saved.manifest)
+          : mutation.manifest;
+        const scene = previous.scenes.find((item) => item.id === sceneId);
+        // Compare only immutable package identity, not old source bytes or
+        // readability: an owner must be able to replace a revoked package.
+        // Plain procedures and other references are not packages. Missing or
+        // mismatched source identity is not evidence that the scene is empty.
+        const packages = [];
+        for (const ref of scene?.references ?? []) {
+          if (ref.sourceKind !== 'procedure') continue;
+          const [source] = await tx<
+            {
+              digest: string;
+              kind: string;
+              packaged: boolean;
+            }[]
+          >`select digest,content->>'kind' as kind,content ? 'skillPackage' as packaged
               from allrice_company_asset_revisions
               where organization_id=${context.organizationId} and asset_id=${ref.contentId} and id=${ref.revisionId}`;
-            if (
-              !source ||
-              source.digest !== ref.digest ||
-              source.kind !== 'procedure'
-            )
-              throw new EmployeeContentError('source_changed');
-            if (source.packaged) packages.push(ref);
-          }
-          if (packages.length > 1)
-            throw new EmployeeContentError('version_conflict');
-          const previousPackage = packages[0];
-          const expectedContentRef = previousPackage
-            ? personalSceneContentRef({
-                setId: row!.id,
-                revisionId: row!.active_revision_id!,
-                sceneId: scene!.id,
-                sourceRevisionId: previousPackage.revisionId,
-              })
-            : null;
-          if (input.expectedContentRef !== expectedContentRef)
-            throw new EmployeeContentError('version_conflict');
-          const next = {
-            ...input.scene,
-            references: [
-              ...input.references,
-              { sourceKind: 'draft_text' as const, contentId },
-            ],
-          };
+          if (
+            !source ||
+            source.digest !== ref.digest ||
+            source.kind !== 'procedure'
+          )
+            throw new EmployeeContentError('source_changed');
+          if (source.packaged) packages.push(ref);
+        }
+        if (packages.length > 1)
+          throw new EmployeeContentError('version_conflict');
+        const previousPackage = packages[0];
+        const expectedContentRef = previousPackage
+          ? personalSceneContentRef({
+              setId: row!.id,
+              revisionId: row!.active_revision_id!,
+              sceneId: scene!.id,
+              sourceRevisionId: previousPackage.revisionId,
+            })
+          : null;
+        if (input.expectedContentRef !== expectedContentRef)
+          throw new EmployeeContentError('version_conflict');
+        if (restore) {
+          // Locks publication, current principal and every exact source until
+          // commit, after the shared writer has handled same-request replay.
+          const old = await readPersonalSceneSkillInTransaction(
+            context,
+            instanceId,
+            { contentRef: restore.restoreContentRef },
+            tx,
+            true,
+          );
+          if (
+            old.skill.contentChecksum !== restore.contentChecksum ||
+            old.skill.bundleChecksum !== restore.bundleChecksum
+          )
+            throw new EmployeeContentError('source_changed');
+          const source = await readPersonalEmployeeSceneLayer(
+            context,
+            instanceId,
+            tx,
+            old.pin,
+            true,
+          );
+          const restoredScene = source.layer?.revision.manifest.scenes.find(
+            (item) => item.id === sceneId,
+          );
+          if (!restoredScene) throw new DataAccessError('not_found');
           return {
             ...mutation,
             manifest: {
               ...previous,
               scenes: scene
                 ? previous.scenes.map((item) =>
-                    item.id === next.id ? next : item,
+                    item.id === sceneId ? restoredScene : item,
                   )
-                : [...previous.scenes, next],
+                : [...previous.scenes, restoredScene],
             },
-            textEdits: [
-              {
-                ...procedure,
-                contentId,
-                revisionId: sourceRevisionId,
-                expectedRevision: 0,
-              },
-            ],
+            textEdits: [],
           };
-        },
-        validateCandidate: async ({
-          row,
-          revision,
-          target: resolvedTarget,
-        }) => {
-          const scene = revision.manifest.scenes.find(
-            (item) => item.id === input.scene.id,
-          )!;
-          const pkg = await resolvePackage(
-            context,
-            instanceId,
-            resolvedTarget.employeeId,
+        }
+        const next = {
+          ...save!.scene,
+          references: [
+            ...save!.references,
+            { sourceKind: 'draft_text' as const, contentId },
+          ],
+        };
+        return {
+          ...mutation,
+          manifest: {
+            ...previous,
+            scenes: scene
+              ? previous.scenes.map((item) =>
+                  item.id === next.id ? next : item,
+                )
+              : [...previous.scenes, next],
+          },
+          textEdits: [
             {
-              setId: row.id,
-              ownership: target.ownership,
-              revision: {
-                ...revision,
-                changeSummary: revision.change_summary,
-                createdAt: revision.created_at.toISOString(),
-                restoredFromRevisionId: revision.restored_from_revision_id,
-              },
-              publishedAt: '',
+              ...procedure!,
+              contentId,
+              revisionId: sourceRevisionId,
+              expectedRevision: 0,
             },
-            scene,
-            tx,
-            true,
-            true,
-          );
-          if (
-            pkg.resolved.reduce(
-              (bytes, source) =>
-                bytes + Buffer.byteLength(source.dto.body ?? ''),
-              0,
-            ) > employeeContentLimits.textBytes
-          )
-            throw new EmployeeContentError('validation_failed');
-          return {
-            resolved: pkg.resolved,
-            validation: {
-              valid: true,
-              issues: [],
-              dependencyDigest: runtimePolicyDigest(
-                pkg.resolved.map((source) => source.dependency),
-              ),
-              semanticConsistency: 'not_proven' as const,
-            },
-          };
-        },
+          ],
+        };
       },
-    );
-    const contentRef = personalSceneContentRef({
-      setId: receipt.setId,
-      revisionId: receipt.active!.id,
-      sceneId: input.scene.id,
-      sourceRevisionId,
-    });
-    // The stored request digest binds these validated input checksums. Replays
-    // return the original success metadata even if its sources were revoked;
-    // they do not read bytes or grant permission to read them again.
-    return PersonalSceneSkillSaveReceiptSchema.parse({
-      instanceId,
-      sceneId: input.scene.id,
-      revision: receipt.revision,
-      contentRef,
-      contentChecksum: procedure.skillPackage.bundle.contentChecksum,
-      bundleChecksum: procedure.skillPackage.bundle.checksum,
-    });
+      validateCandidate: async ({ row, revision, target: resolvedTarget }) => {
+        const scene = revision.manifest.scenes.find(
+          (item) => item.id === sceneId,
+        )!;
+        const pkg = await resolvePackage(
+          context,
+          instanceId,
+          resolvedTarget.employeeId,
+          {
+            setId: row.id,
+            ownership: target.ownership,
+            revision: {
+              ...revision,
+              changeSummary: revision.change_summary,
+              createdAt: revision.created_at.toISOString(),
+              restoredFromRevisionId: revision.restored_from_revision_id,
+            },
+            publishedAt: '',
+          },
+          scene,
+          tx,
+          true,
+          true,
+        );
+        if (
+          pkg.resolved.reduce(
+            (bytes, source) => bytes + Buffer.byteLength(source.dto.body ?? ''),
+            0,
+          ) > employeeContentLimits.textBytes
+        )
+          throw new EmployeeContentError('validation_failed');
+        return {
+          resolved: pkg.resolved,
+          validation: {
+            valid: true,
+            issues: [],
+            dependencyDigest: runtimePolicyDigest(
+              pkg.resolved.map((source) => source.dependency),
+            ),
+            semanticConsistency: 'not_proven' as const,
+          },
+        };
+      },
+    },
+  );
+  const contentRef = personalSceneContentRef({
+    setId: receipt.setId,
+    revisionId: receipt.active!.id,
+    sceneId,
+    sourceRevisionId,
+  });
+  // The stored request digest binds these validated input checksums. Replays
+  // return the original success metadata even if its sources were revoked;
+  // they do not read bytes or grant permission to read them again.
+  return PersonalSceneSkillSaveReceiptSchema.parse({
+    instanceId,
+    sceneId,
+    revision: receipt.revision,
+    contentRef,
+    contentChecksum: restore?.contentChecksum ?? bundle!.contentChecksum,
+    bundleChecksum: restore?.bundleChecksum ?? bundle!.checksum,
   });
 }

@@ -30,6 +30,10 @@ import {
 import { NativeDocumentPreview } from './native-document-preview';
 import { DocumentToolbar } from './document-reader';
 import {
+  PersonalSceneFilePanel,
+  type PersonalSceneFileWriteStore,
+} from './personal-scene-files';
+import {
   workbenchJson,
   parseArtifactPreview,
   type ArtifactPreview,
@@ -50,6 +54,9 @@ interface EmployeeDetailsDialogProps {
 }
 
 export function EmployeeDetailsDialog(props: EmployeeDetailsDialogProps) {
+  // This dialog component stays mounted when closed. Private writes survive
+  // reader/edit/reference navigation; every entry is scoped by its real viewer.
+  const fileWrites = useRef<PersonalSceneFileWriteStore>(new Map());
   if (!props.open) return null;
   // A different viewer/workspace/instance must never render the previous read,
   // even for the frame before an effect or an aborted request settles.
@@ -57,11 +64,16 @@ export function EmployeeDetailsDialog(props: EmployeeDetailsDialogProps) {
     <EmployeeDetailsReader
       key={`${props.scopeId}/${props.instanceId ?? 'missing'}`}
       {...props}
+      fileWrites={fileWrites.current}
     />
   );
 }
 
-function EmployeeDetailsReader(props: EmployeeDetailsDialogProps) {
+function EmployeeDetailsReader(
+  props: EmployeeDetailsDialogProps & {
+    fileWrites: PersonalSceneFileWriteStore;
+  },
+) {
   const [attempt, setAttempt] = useState(0);
   const [result, setResult] = useState<{
     attempt: number;
@@ -362,6 +374,18 @@ function EmployeeDetailsReader(props: EmployeeDetailsDialogProps) {
               props.organizationView || !props.onPrepare ? undefined : prepare
             }
             view={props.organizationView ? 'shared' : 'personal'}
+            workflowContent={
+              !props.organizationView &&
+              props.instanceId && (
+                <PersonalSceneFilePanel
+                  scopeId={props.scopeId}
+                  instanceId={props.instanceId}
+                  workspaceId={props.workspaceId}
+                  headers={props.headers}
+                  writes={props.fileWrites}
+                />
+              )
+            }
             experienceContent={
               props.organizationView
                 ? result?.experienceSummary && (
