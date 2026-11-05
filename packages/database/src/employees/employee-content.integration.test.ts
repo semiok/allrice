@@ -1,3 +1,4 @@
+import { removePersonalSceneSkill } from './personal-scene-remove.ts';
 import { assembleEmployeeKernel } from '../../../../apps/worker/src/employee-kernel.ts';
 import {
   savePlatformEmployeeDraft,
@@ -855,6 +856,7 @@ suite(
         'source',
         'publication',
         'already-invalidated',
+        'scene-removal',
         'restored-source',
         'reference',
       ])(
@@ -886,7 +888,14 @@ suite(
             await f.db`select execution_snapshot,prompt_snapshot,content_scene_state,content_generation_id from allrice_employee_runs where run_id=${first.scope.runId}`;
           const originalMessages =
             await f.db`select id,content from allrice_messages where session_id=${first.scope.sessionId} order by id`;
-          if (revocation === 'publication') {
+          if (revocation === 'scene-removal') {
+            await removePersonalSceneSkill(s.a, s.instance.id, saved.sceneId, {
+              workspaceId: s.company.workspaceId,
+              requestId: randomUUID(),
+              expectedRevision: saved.revision,
+              expectedContentRef: saved.contentRef,
+            });
+          } else if (revocation === 'publication') {
             const pin = parsePersonalSceneContentRef(saved.contentRef);
             await f.db`update allrice_employee_content_publications set invalidated_at=now() where set_id=${pin.setId} and revision_id=${pin.revisionId}`;
           } else if (ref) {
