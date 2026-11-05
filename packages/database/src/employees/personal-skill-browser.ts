@@ -269,20 +269,46 @@ async function browserOperation(
       row.package_checksum === packageChecksum &&
       runtimePolicyDigest(personalSkillSourceIdentity(row.source)) ===
         runtimePolicyDigest(personalSkillSourceIdentity(source));
-    const needsArchive = !row || (target.operation === 'update' && !unchanged);
-    if (withoutArchive && needsArchive) return null;
-    if (needsArchive) {
+    const needsVersion = !row || (target.operation === 'update' && !unchanged);
+    if (needsVersion) {
       const [count] =
         await tx`select count(*)::int n,coalesce(max(version),0)::int latest
         from allrice_personal_skill_versions where installation_id=${id}`;
       if (count!.n >= personalSkillLimits.retainedVersions)
         throw new PersonalSkillError('limit');
-      const [archive] = await tx`select id from allrice_storage_objects
+      // Match the existing owner-library archive reuse semantics. Provenance
+      // changes create a version but do not duplicate identical retained bytes.
+      const [retained] = await tx`select o.id from allrice_storage_objects o
+        where o.organization_id=${context.organizationId} and o.owner_id=${owner(context)} and o.category='memory'
+          and o.visibility='private' and o.immutable and o.state='ready' and o.deleted_at is null
+          and o.checksum=${source.originalChecksum} and o.size_bytes=${source.byteLength}
+          and exists(select 1 from allrice_personal_skill_versions v where v.organization_id=o.organization_id
+            and v.owner_id=o.owner_id and v.resource_manifest->>'archiveObjectId'=o.id::text)
+        order by o.id limit 1 for share of o`;
+      if (withoutArchive && !retained) return null;
+      const [pending] = retained
+        ? []
+        : await tx`select id from allrice_storage_objects
         where id=${manifest.archiveObjectId} and organization_id=${context.organizationId}
           and workspace_id=${context.workspaceId} and owner_id=${owner(context)} and category='memory'
           and visibility='private' and state='pending' and deleted_at is null
           and checksum=${source.originalChecksum} and size_bytes=${source.byteLength} for update`;
+      const archive = retained ?? pending;
       if (!archive) throw new PersonalSkillError('source_invalid');
+      const versionSource =
+        source.kind === 'attachment'
+          ? { ...source, objectId: archive.id }
+          : source;
+      const payload = {
+        schemaVersion: manifest.schemaVersion,
+        archiveObjectId: archive.id as string,
+        sourcePath: manifest.sourcePath,
+        resources: manifest.resources,
+      };
+      const versionManifest = {
+        ...payload,
+        checksum: runtimePolicyDigest(payload),
+      };
       const versionId = randomUUID();
       if (!row)
         await tx`insert into allrice_personal_skill_installations
@@ -290,9 +316,10 @@ async function browserOperation(
         values(${id},${context.organizationId},${owner(context)},${definition.name},'installed',${versionId})`;
       await tx`insert into allrice_personal_skill_versions
         (id,organization_id,owner_id,installation_id,version,source,original_text,definition,definition_checksum,resource_manifest,package_checksum)
-        values(${versionId},${context.organizationId},${owner(context)},${id},${count!.latest + 1},${tx.json(source)},
-          ${input.originalText},${tx.json(definition)},${definitionChecksum},${tx.json(manifest)},${packageChecksum})`;
-      await tx`update allrice_storage_objects set state='ready',immutable=true,updated_at=clock_timestamp() where id=${archive.id}`;
+        values(${versionId},${context.organizationId},${owner(context)},${id},${count!.latest + 1},${tx.json(versionSource)},
+          ${input.originalText},${tx.json(definition)},${definitionChecksum},${tx.json(versionManifest)},${packageChecksum})`;
+      if (!retained)
+        await tx`update allrice_storage_objects set state='ready',immutable=true,updated_at=clock_timestamp() where id=${archive.id}`;
       if (row)
         await tx`update allrice_personal_skill_installations set current_version_id=${versionId},revision=revision+1,updated_at=clock_timestamp() where id=${id}`;
     }
