@@ -401,7 +401,7 @@ suite('authenticated browser Skill source preview without installation', () => {
     );
     const id = randomUUID(),
       version = randomUUID();
-    const source = {
+    const attachmentSource = {
       kind: 'attachment',
       objectId: randomUUID(),
       fileName: 'SKILL.md',
@@ -412,7 +412,7 @@ suite('authenticated browser Skill source preview without installation', () => {
     // Synthetic prior source metadata only; no model or tool invocation.
     await f.db.begin(async (tx) => {
       await tx`insert into allrice_personal_skill_installations(id,organization_id,owner_id,name,state,current_version_id) values(${id},${s.owner.organizationId},${s.owner.user.id},${definition.name},'installed',${version})`;
-      await tx`insert into allrice_personal_skill_versions(id,organization_id,owner_id,installation_id,version,source,original_text,definition,definition_checksum) values(${version},${s.owner.organizationId},${s.owner.user.id},${id},1,${tx.json(source)},${originalText},${tx.json(definition)},${runtimePolicyDigest(definition)})`;
+      await tx`insert into allrice_personal_skill_versions(id,organization_id,owner_id,installation_id,version,source,original_text,definition,definition_checksum) values(${version},${s.owner.organizationId},${s.owner.user.id},${id},1,${tx.json(attachmentSource)},${originalText},${tx.json(definition)},${runtimePolicyDigest(definition)})`;
       await tx`insert into allrice_personal_skill_bindings(organization_id,workspace_id,owner_id,instance_id,installation_id,enabled) values(${s.owner.organizationId},${s.owner.workspaceId},${s.owner.user.id},${s.assigned.id},${id},true)`;
     });
     const second = await createEmployeeInstance(s.owner.context, {
