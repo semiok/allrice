@@ -142,8 +142,12 @@ suite(
       const first = await f.create('稳定资料入口：先核对12笔，不得合并退款。');
       await f.create('未确认不得带入', { lifecycleState: 'candidate' });
       const scope = { ...f.scope, sessionId: f.session };
-      const [job] = await fixture.db`select attempt from allrice_jobs where id=${f.worker.jobId}`;
-      const auth = { scope, worker: { ...f.worker, attempt: job!.attempt as number } };
+      const [job] =
+        await fixture.db`select attempt from allrice_jobs where id=${f.worker.jobId}`;
+      const auth = {
+        scope,
+        worker: { ...f.worker, attempt: job!.attempt as number },
+      };
       const document = await freezeEmployeeDocuments(
         fixture.db,
         { ...scope, instanceId: f.assignment },

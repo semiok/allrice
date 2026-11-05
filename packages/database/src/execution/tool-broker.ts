@@ -826,11 +826,12 @@ export async function readToolBrokerMemoryContext(
         limit,
         tx,
         state.initial.documentDigest === undefined ? [] : state.confirmedPins,
-        state.initial.documentDigest !== undefined && hasMemorySourceTool(run?.execution_snapshot),
+        state.initial.documentDigest !== undefined &&
+          hasMemorySourceTool(run?.execution_snapshot),
         state.initial.documentDigest !== undefined,
       );
     },
-    (items, state) => state.initial.documentDigest === undefined ? [] : items,
+    (items, state) => (state.initial.documentDigest === undefined ? [] : items),
   );
 }
 

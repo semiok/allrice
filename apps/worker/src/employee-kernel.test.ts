@@ -127,24 +127,44 @@ it('assembles each frozen common rule once and rejects conflicting implicit vers
 
 it('replaces only root facts and memories while preserving knowledge and the child deployment persona', () => {
   const source = (sourceKind: string, body: string) => ({
-    reference: { sourceKind, contentId: randomUUID(), revisionId: randomUUID(), digest: `sha256:${'a'.repeat(64)}` },
-    available: true, title: sourceKind, body,
+    reference: {
+      sourceKind,
+      contentId: randomUUID(),
+      revisionId: randomUUID(),
+      digest: `sha256:${'a'.repeat(64)}`,
+    },
+    available: true,
+    title: sourceKind,
+    body,
   });
   const input = {
-    employeeAssignmentId: randomUUID(), employeeVersionId: randomUUID(),
-    sessionId: randomUUID(), userMessageId: randomUUID(), assistantMessageId: randomUUID(),
-    commonContent: [source('experience', 'OLD_COMMON_MEMORY'), source('knowledge', 'COMPANY_KNOWLEDGE')],
+    employeeAssignmentId: randomUUID(),
+    employeeVersionId: randomUUID(),
+    sessionId: randomUUID(),
+    userMessageId: randomUUID(),
+    assistantMessageId: randomUUID(),
+    commonContent: [
+      source('experience', 'OLD_COMMON_MEMORY'),
+      source('knowledge', 'COMPANY_KNOWLEDGE'),
+    ],
     resolved: {
       promptSnapshot: {
-        systemPrompt: 'PLATFORM_BOUNDARY', userRequest: '核对部门资料', conversation: [],
+        systemPrompt: 'PLATFORM_BOUNDARY',
+        userRequest: '核对部门资料',
+        conversation: [],
         organizationContext: { companyName: 'ORG_FACT' },
         memories: [{ id: randomUUID(), content: 'LEGACY_RECALLED_MEMORY' }],
       },
-      executionSnapshot: null, grantedCapabilities: ['model:invoke'], nativeSkills: [],
+      executionSnapshot: null,
+      grantedCapabilities: ['model:invoke'],
+      nativeSkills: [],
     },
   } as unknown as Parameters<typeof assembleEmployeeKernel>[0];
   const old = assembleEmployeeKernel(input);
-  input.resolved.promptSnapshot.employeeDocuments = { user: '# USER.md\nORG_FACT', memory: '# MEMORY.md\nCONFIRMED_MEMORY' };
+  input.resolved.promptSnapshot.employeeDocuments = {
+    user: '# USER.md\nORG_FACT',
+    memory: '# MEMORY.md\nCONFIRMED_MEMORY',
+  };
   const current = assembleEmployeeKernel(input);
   expect(current.systemInstructions).toBe(old.systemInstructions);
   expect(current.rootSystemInstructions).toContain('COMPANY_KNOWLEDGE');
@@ -152,7 +172,9 @@ it('replaces only root facts and memories while preserving knowledge and the chi
   expect(current.rootSystemInstructions).not.toContain('OLD_COMMON_MEMORY');
   expect(current.rootSystemInstructions).not.toContain('ORG_FACT');
   expect(current.authorizedMemoryContext).toBe('');
-  expect(current.employeeDocuments).toEqual(input.resolved.promptSnapshot.employeeDocuments);
+  expect(current.employeeDocuments).toEqual(
+    input.resolved.promptSnapshot.employeeDocuments,
+  );
 });
 
 it('bootstraps authorized messages and memories without consuming a retired automatic summary', () => {
