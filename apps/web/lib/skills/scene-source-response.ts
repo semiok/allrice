@@ -7,13 +7,21 @@ import {
 } from '@allrice/skill-import';
 import { employeeHubErrorResponse } from '../employeehub/responses';
 import { apiProblem } from '../api-problem';
+import { SceneNameMismatchError } from './scene-name-mismatch';
 
 export function sceneSourceErrorResponse(
   error: unknown,
   operation: 'preview' | 'confirm',
 ) {
   let response: Response;
-  if (error instanceof SkillPreviewError)
+  if (error instanceof SceneNameMismatchError)
+    response = apiProblem({
+      status: 409,
+      code: 'VERSION_CONFLICT',
+      retryable: false,
+      message: `这是另一个 Workflow（${error.incomingName}），不能更新到“${error.currentSceneName}”。要安装它，请新建场景。`,
+    });
+  else if (error instanceof SkillPreviewError)
     response = apiProblem({
       status: 422,
       code: 'VALIDATION_FAILED',
