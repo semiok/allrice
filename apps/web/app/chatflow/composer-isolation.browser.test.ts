@@ -244,6 +244,7 @@ suite(
         nativeOtherOwner?: boolean;
         nativeDelayFull?: boolean;
         nativeClock?: boolean;
+        nativeStartup?: boolean;
         workspaceFiles?: WorkspaceFile[];
         taskSuggestions?: TaskSuggestionDisplay[];
         taskSuggestionsEnabled?: boolean;
@@ -326,6 +327,7 @@ suite(
         ),
       });
       let nativeDenied = false;
+      let nativeBindingPending = options.nativeStartup ?? false;
       const nativeSource = {
         summary: (id: string) => nativeSummary(id),
         status: 0,
@@ -369,6 +371,20 @@ suite(
         [B]: [message('history-b', 'Existing B')],
         [C]: [],
       };
+      // Existing native parents have a settled turn; the startup fixture alone
+      // models a new session whose first native binding does not exist yet.
+      if (options.nativeParents)
+        for (const id of nativeIds) {
+          if (id === A && options.nativeStartup) continue;
+          (messages[id] ??= []).push(
+            message(
+              `${id}-settled`,
+              'Earlier completed turn',
+              'assistant',
+              '66666666-6666-4666-8666-666666666666',
+            ),
+          );
+        }
       if (options.longHistory)
         messages[A]!.unshift(
           ...Array.from({ length: 20 }, (_, i) =>
@@ -466,6 +482,18 @@ suite(
           /^\/api\/v1\/sessions\/([a-f0-9-]{36})\/subagents$/,
         )?.[1];
         if (subagentSession) {
+          if (subagentSession === A && nativeBindingPending) {
+            response.setHeader(
+              'x-allrice-native-query-error',
+              'NATIVE_QUERY_BINDING_UNAVAILABLE',
+            );
+            answer(
+              response,
+              { error: 'NATIVE_SUBAGENT_SUMMARY_UNAVAILABLE' },
+              503,
+            );
+            return;
+          }
           if (
             !nativeIds.includes(subagentSession) ||
             url.searchParams.get('workspaceId') !== nativeWorkspace.id ||
@@ -869,6 +897,7 @@ suite(
               if (c.sessionId === A) c.response.end();
           },
           allowReady() {
+            nativeBindingPending = false;
             nativeDenied = false;
             for (const response of streams)
               response.write(
@@ -1288,6 +1317,41 @@ suite(
             pageerror: f.errors,
           }),
         );
+        await f.close();
+      }
+    });
+
+    it('MET-214 waits for the first native binding before reading a new session directory', async () => {
+      const f = await fixture({
+        nativeParents: 3,
+        running: true,
+        nativeStartup: true,
+        nativeClock: true,
+      });
+      try {
+        const activeReads = () =>
+          f.reads.filter((url) =>
+            url.startsWith(`/api/v1/sessions/${A}/subagents?`),
+          );
+        await f.page
+          .getByRole('button', { name: '停止', exact: true })
+          .waitFor();
+        await f.page.clock.runFor(6_000);
+        await f.page
+          .getByRole('button', { name: '子智能体', exact: true })
+          .click();
+        await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+        expect(activeReads()).toEqual([]);
+        f.native.allowReady();
+        await f.page
+          .getByRole('button', {
+            name: '1 个子智能体 · 1 个运行中',
+            exact: true,
+          })
+          .waitFor();
+        await expect.poll(f.native.fullRequests).toBe(1);
+        expect(f.errors).toEqual([]);
+      } finally {
         await f.close();
       }
     });

@@ -1317,11 +1317,22 @@ export function ChatFlowClient({
     !!workspace &&
     !!activeId &&
     (!nativeSession?.ownerId || nativeSession.ownerId === workspace.viewerId);
+  // A new SaaS session exists before its first native binding. Wait for the
+  // existing native-ready event; settled history still reads on a cold page.
+  const nativeQueryReady =
+    history?.session.id === activeId &&
+    (nativeReadyKey ||
+      history.messages.some(
+        (message) =>
+          message.role === 'assistant' &&
+          message.runId &&
+          message.status !== 'pending',
+      ));
   // The active header includes durable children; background rows stay live-only.
   const nativeObservation = useNativeSubagents(
     workspace?.workspaceId ?? '',
     tenantHeaders,
-    nativeReadable
+    nativeReadable && nativeQueryReady
       ? {
           [activeId!]: `${settingsScope}/${nativeSession?.ownerId}/${nativeSession?.employeeAssignmentId}/${nativeSession?.employeeInstanceId}/${nativeSession?.employeeVersionId}/${nativeReadyKey}`,
         }
