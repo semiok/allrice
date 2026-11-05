@@ -1,6 +1,5 @@
 'use client';
 import { useEffect, useRef, type Ref } from 'react';
-import { useBrandContentWorkspace } from './use-brand-content-workspace';
 import {
   WorkbenchEntries,
   useWorkbenchDirectory,
@@ -19,7 +18,6 @@ export function UnifiedWorkbenchControls(props: {
   workspaceId: string;
   viewerId?: string | null;
   instanceId?: string;
-  kind?: 'general' | 'custom';
   headers: Record<string, string>;
   refreshKey: string;
   open: boolean;
@@ -29,7 +27,6 @@ export function UnifiedWorkbenchControls(props: {
   onOpen: (kind: WorkbenchModule) => void;
   onToggle: () => void;
   entryRef?: Ref<HTMLButtonElement>;
-  onCapabilities: (value: { scope: string; workflow: boolean }) => void;
 }) {
   const directory = useWorkbenchDirectory({
     enabled: true,
@@ -39,31 +36,21 @@ export function UnifiedWorkbenchControls(props: {
     headers: props.headers,
     refreshKey: props.refreshKey,
   });
-  const workflow = useBrandContentWorkspace(props);
   const files = useWorkbenchUnread(props.scopeId + '/files', directory.fileIds);
   const experience = useWorkbenchUnread(
     props.scope + '/experience',
     directory.experienceIds,
   );
-  const flows = useWorkbenchUnread(
-    props.scope + '/workflow',
-    workflow.available ? workflow.keys : null,
-  );
   const marks = useRef({
     files: files.markRead,
     experience: experience.markRead,
-    workflow: flows.markRead,
+    workflow: () => {},
   });
   marks.current = {
     files: files.markRead,
     experience: experience.markRead,
-    workflow: flows.markRead,
+    workflow: () => {},
   };
-  const changed = useRef(props.onCapabilities);
-  changed.current = props.onCapabilities;
-  useEffect(() => {
-    changed.current({ scope: props.scope, workflow: workflow.available });
-  }, [props.scope, workflow.available]);
   useEffect(() => {
     const read = (event: Event) => {
       const detail = (
@@ -79,10 +66,10 @@ export function UnifiedWorkbenchControls(props: {
       counts={{
         files: files.count,
         experience: experience.count,
-        workflow: flows.count,
+        workflow: 0,
       }}
       experience={!!props.instanceId}
-      workflow={workflow.available}
+      workflow={Boolean(props.viewerId && props.instanceId)}
       open={props.open}
       selected={props.selected}
       schedule={props.schedule}
