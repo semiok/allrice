@@ -91,7 +91,7 @@ export async function seedHistoricalExperienceCalendar(
     acceptedAt: now.toISOString(),
   });
   await f.db`insert into allrice_native_once_partitions(partition_id,reference,activation)
-    values('allrice-recurring-v1',${f.db.json(reference)},${f.db.json(ready)})`;
+    values('allrice-recurring-v1',${f.db.json({ ...reference })},${f.db.json(ready)})`;
   let historical = true;
   const store = createNativeRecurringSqlStore({
     db: f.db,

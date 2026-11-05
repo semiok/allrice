@@ -3,7 +3,7 @@ import {
   type ExperienceEvidence,
   type PersonalSkillPin,
 } from '@allrice/contracts';
-import { getDatabase } from './core/client.ts';
+import type { getDatabase } from './core/client.ts';
 
 const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === 'object' && !Array.isArray(value)
