@@ -278,7 +278,9 @@ suite(
         // User action: “卸载；这位员工将不再使用这个技能。”
         const x = await setup(false, kind === 'rice');
         await install(x, x.custom.id);
-        const { item } = await install(x, x.assignment.id);
+        const item = PersonalSkillItemSchema.parse(
+          (await install(x, x.assignment.id)).item,
+        );
         const instanceId = kind === 'custom' ? x.custom.id : x.assignment.id;
         const otherId = kind === 'custom' ? x.assignment.id : x.custom.id;
         const before = await listPersonalSkills(x.context);
