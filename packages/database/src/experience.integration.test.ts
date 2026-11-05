@@ -1203,8 +1203,9 @@ suite(
       });
       expect(kernel.authorizedMemoryContext).toBe('');
       expect(
-        JSON.parse(kernel.employeeDocuments!.memory.slice('# MEMORY.md\n'.length))
-          .items,
+        JSON.parse(
+          kernel.employeeDocuments!.memory.slice('# MEMORY.md\n'.length),
+        ).items,
       ).toEqual([
         expect.objectContaining({
           id: confirmed.id,
