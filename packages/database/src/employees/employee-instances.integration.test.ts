@@ -190,8 +190,6 @@ const e3HttpAuth = vi.hoisted(() => ({
 vi.mock('../../../../apps/web/lib/identity/session', () => ({
   getRequestContext: async () => e3HttpAuth.context,
 }));
-import { PATCH as patchInstance } from '../../../../apps/web/app/api/v1/employee-instances/[id]/route';
-import { POST as postInstanceContent } from '../../../../apps/web/app/api/v1/employee-content/route';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -7524,6 +7522,11 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     const f = await setup(true, true),
       id = f.assignment.id;
     e3HttpAuth.context = f.a.context;
+    // Load the real Web boundary at runtime, as the existing file API fixtures
+    // do; its Bundler module graph is checked by the Web project.
+    const routePath =
+      '../../../../apps/web/app/api/v1/employee-instances/[id]/route.ts';
+    const { PATCH: patchInstance } = await import(routePath);
     const patch = (
       profile: Record<string, string>,
       expectedRevision: number,
@@ -7606,6 +7609,9 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     const f = await setup(true, true),
       id = f.assignment.id;
     e3HttpAuth.context = f.a.context;
+    const routePath =
+      '../../../../apps/web/app/api/v1/employee-content/route.ts';
+    const { POST: postInstanceContent } = await import(routePath);
     const response = await postInstanceContent(
       new Request(
         `https://allrice.test/api/v1/employee-instances/${id}/content`,

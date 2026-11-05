@@ -61,7 +61,6 @@ const e3SkillHttpAuth = vi.hoisted(() => ({
 vi.mock('../../../../apps/web/lib/identity/session', () => ({
   getRequestContext: async () => e3SkillHttpAuth.context,
 }));
-import { POST as postPersonalSkill } from '../../../../apps/web/app/api/v1/personal-skills/route';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -289,6 +288,9 @@ suite(
       await f.db`insert into allrice_personal_skill_bindings (id, organization_id, workspace_id, owner_id, instance_id, installation_id, enabled, epoch)
         values (${bindingId},${x.source.organizationId},${x.source.workspaceId},${x.source.ownerId},${x.assignment.id},${item.id},true,1)`;
       e3SkillHttpAuth.context = x.context;
+      const routePath =
+        '../../../../apps/web/app/api/v1/personal-skills/route.ts';
+      const { POST: postPersonalSkill } = await import(routePath);
       const response = await postPersonalSkill(
         new Request('https://allrice.test/api/v1/personal-skills', {
           method: 'POST',
