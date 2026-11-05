@@ -3,6 +3,7 @@ import { ReferenceSelectionSchema } from './reference-library.ts';
 import { UuidSchema, TimestampSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
 import { SkillBundleSchema, SkillResourcePathSchema } from './skill-bundle.ts';
+import { WorkflowSkillFrontmatterSchema } from './workflow-skill.ts';
 import {
   ContentOwnershipSchema,
   ContentAccessDecisionSchema,
@@ -295,6 +296,8 @@ const draftManifestSchema = z
 export const EmployeeSceneSkillPayloadSchema = z
   .object({
     bundle: SkillBundleSchema,
+    // Optional only for existing packages; never synthesize metadata for them.
+    frontmatter: WorkflowSkillFrontmatterSchema.optional(),
     resourceSources: z
       .array(
         z

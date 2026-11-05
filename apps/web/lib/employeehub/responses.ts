@@ -1,4 +1,5 @@
 import { CodexSubscriptionError } from '@allrice/database';
+import { workflowSkillInvalidMessage } from '@allrice/contracts';
 import {
   DataAccessError,
   EmployeeAccessBusyError,
@@ -15,6 +16,16 @@ import {
 } from '../api-error-response';
 
 export function employeeHubErrorResponse(error: unknown) {
+  if (
+    error instanceof EmployeeContentError &&
+    error.code === 'workflow_invalid'
+  )
+    return apiProblem({
+      status: 422,
+      code: 'VALIDATION_FAILED',
+      message: workflowSkillInvalidMessage,
+      retryable: false,
+    });
   if (error instanceof EmployeeAccessBusyError)
     return apiProblem({
       status: 409,

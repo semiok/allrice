@@ -37,8 +37,12 @@ import {
   parsePersonalSceneContentRef,
   personalSceneContentRef,
   savePersonalSceneSkillInTransaction,
+  listPersonalSceneSkills,
+  listPersonalSceneSkillsInTransaction,
+  readPersonalSceneSkillInTransaction,
 } from './personal-scene-skills.ts';
 import { mutateEmployeeContent } from './employee-content.ts';
+import { inspectPersonalSceneSkill } from './personal-scene-reads.ts';
 import { skillBundleChecksum, skillBytesChecksum } from '../skill-bundles.ts';
 import { runtimePolicyDigest } from '../runtime-policy-digest.ts';
 import { nativeBindingWaiter } from '../native-session-binding.fixture.ts';
@@ -332,6 +336,135 @@ suite(
         bindingId,
       };
     }
+
+    it('keeps author framework metadata through human preview, save and exact read without exposing execution details as display sections', async () => {
+      const s = await setup();
+      const artifact = file();
+      if (!('skillPackage' in artifact.procedure)) throw Error('fixture');
+      artifact.procedure.body =
+        '## 工作步骤\n1. 核实来源\n## 交付内容\n- 周报草稿\n## 执行细节\nmodel-only instructions';
+      const frontmatter = {
+        name: 'weekly-brief',
+        description: '整理周报',
+        whenToUse: '每周五',
+        invocation: { modelInvocable: true, userInvocable: true },
+        metadata: {
+          displayName: '写周报',
+          version: 'v2-preview',
+          extra: { ownerNote: 'content, not authority' },
+        },
+      };
+      artifact.procedure.skillPackage.frontmatter = frontmatter;
+      const bundle = artifact.procedure.skillPackage.bundle;
+      bundle.contentChecksum = skillBytesChecksum(artifact.procedure.body);
+      const { checksum: _checksum, ...bundlePayload } = bundle;
+      void _checksum;
+      bundle.checksum = skillBundleChecksum(bundlePayload);
+      const saved = await install(s, artifact);
+      expect(saved.preview.file.procedure.skillPackage.frontmatter).toEqual(
+        frontmatter,
+      );
+      const current = await getPersonalSceneSkill(
+        s.owner,
+        s.instance.id,
+        artifact.scene.id,
+        f.db,
+      );
+      expect(current).toMatchObject({
+        frontmatter,
+        name: '写周报',
+        description: '整理周报',
+        version: 'v2-preview',
+        whenToUse: '每周五',
+        stepsMarkdown: '1. 核实来源',
+        deliverablesMarkdown: '- 周报草稿',
+        contentRef: saved.receipt.contentRef,
+        nativeName: `allrice-scene-${artifact.scene.id}`,
+      });
+      expect(current.content).toBe(artifact.procedure.body);
+      expect(
+        await inspectPersonalSceneSkill(
+          s.owner,
+          s.instance.id,
+          current.contentRef,
+          f.db,
+        ),
+      ).toEqual(current);
+      expect(
+        JSON.stringify([current.stepsMarkdown, current.deliverablesMarkdown]),
+      ).not.toContain('model-only');
+      const catalog = await listPersonalSceneSkills(
+        s.owner,
+        s.instance.id,
+        f.db,
+      );
+      expect(catalog.skills[0]).toMatchObject({
+        name: '写周报',
+        version: 'v2-preview',
+        contentRef: current.contentRef,
+        revision: current.revision,
+      });
+      const runtime = await f.db.begin(async (tx) => ({
+        catalog: await listPersonalSceneSkillsInTransaction(
+          s.owner,
+          s.instance.id,
+          tx,
+        ),
+        package: await readPersonalSceneSkillInTransaction(
+          s.owner,
+          s.instance.id,
+          { sceneId: artifact.scene.id },
+          tx,
+        ),
+      }));
+      expect(runtime.catalog.skills[0]).toMatchObject({
+        name: artifact.scene.name,
+        description: artifact.scene.appliesWhen,
+      });
+      expect(runtime.package.skill).toMatchObject({
+        name: artifact.scene.name,
+        description: artifact.scene.appliesWhen,
+      });
+      const pin = parsePersonalSceneContentRef(current.contentRef);
+      const [source] = await f.db<
+        { content: typeof artifact.procedure }[]
+      >`select content from allrice_company_asset_revisions where id=${pin.sourceRevisionId}`;
+      expect(source!.content).toEqual(artifact.procedure);
+      await expect(
+        getPersonalSceneSkill(s.peer, s.instance.id, artifact.scene.id, f.db),
+      ).rejects.toThrow();
+
+      const invalid = structuredClone(artifact);
+      invalid.procedure.body =
+        '```md\n## 工作步骤\n## 交付内容\n## 执行细节\n```';
+      if (!('skillPackage' in invalid.procedure)) throw Error('fixture');
+      invalid.procedure.skillPackage.bundle.contentChecksum =
+        skillBytesChecksum(invalid.procedure.body);
+      const { checksum: _invalidChecksum, ...invalidPayload } =
+        invalid.procedure.skillPackage.bundle;
+      void _invalidChecksum;
+      invalid.procedure.skillPackage.bundle.checksum =
+        skillBundleChecksum(invalidPayload);
+      const invalidResponse = await http(s, 'preview', {
+        workspaceId: s.workspaceId,
+        file: invalid,
+      });
+      expect(invalidResponse.status).toBe(422);
+      expect(await invalidResponse.json()).toMatchObject({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: '该技能不符合 workflow 规范。',
+        },
+      });
+      expect(
+        await getPersonalSceneSkill(
+          s.owner,
+          s.instance.id,
+          artifact.scene.id,
+          f.db,
+        ),
+      ).toEqual(current);
+    });
 
     it('restores v1 as a new current revision with exact old sources, immutable history and untouched other scenes', async () => {
       const s = await setup(),

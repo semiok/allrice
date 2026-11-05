@@ -21,6 +21,7 @@ import { EmployeeRuntimeContentError } from './employee-runtime-content.ts';
 import { runtimePolicyDigest } from '../runtime-policy-digest.ts';
 import {
   parsePersonalSceneContentRef,
+  personalSceneSkillAuthorView,
   readPersonalSceneSkillInTransaction,
 } from './personal-scene-skills.ts';
 
@@ -63,14 +64,13 @@ export async function inspectPersonalSceneSkill(
   return db.begin('isolation level repeatable read read only', async (tx) => {
     if ((await getEmployeeInstance(context, instanceId, tx)).kind !== 'custom')
       throw new DataAccessError('not_found');
-    return (
-      await readPersonalSceneSkillInTransaction(
-        context,
-        instanceId,
-        { contentRef },
-        tx,
-      )
-    ).skill;
+    const result = await readPersonalSceneSkillInTransaction(
+      context,
+      instanceId,
+      { contentRef },
+      tx,
+    );
+    return personalSceneSkillAuthorView(result.skill);
   });
 }
 

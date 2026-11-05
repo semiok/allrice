@@ -43,6 +43,7 @@ export class EmployeeContentError extends Error {
       | 'request_conflict'
       | 'source_changed'
       | 'validation_required'
+      | 'workflow_invalid'
       | 'validation_failed',
   ) {
     super(code);

@@ -15,6 +15,8 @@ import {
   type EmployeeContentReference,
   type EmployeeSceneSkillPin,
   type RequestContext,
+  type WorkflowSkillFrontmatter,
+  type PersonalSceneSkill,
 } from '@allrice/contracts';
 import { getDatabase } from '../core/client.ts';
 import { DataAccessError } from '../data.ts';
@@ -28,6 +30,7 @@ import {
 } from './employee-content.ts';
 import { resolveEmployeeContentSource } from './employee-content-sources.ts';
 import { validateSceneSkillPackage } from './employee-scene-skill-package.ts';
+import { parseWorkflowSkillSections } from './workflow-skill.ts';
 import {
   EmployeeContentError,
   type ContentSql,
@@ -142,8 +145,16 @@ async function resolvePackage(
     sourceRevisionId: ref.revisionId,
   };
   const bundle = text.skillPackage.bundle;
+  const frontmatter = text.skillPackage.frontmatter;
   const skill = PersonalSceneSkillSchema.parse({
-    ...summary(scene),
+    ...summary(scene, frontmatter),
+    ...(frontmatter
+      ? {
+          frontmatter,
+          whenToUse: frontmatter.whenToUse,
+          ...parseWorkflowSkillSections(text.body),
+        }
+      : {}),
     contentRef: personalSceneContentRef(pin),
     revision: layer.revision.number,
     content: text.body,
@@ -165,13 +176,26 @@ async function resolvePackage(
   });
   return { skill, pin, bundle, resolved };
 }
-function summary(scene: Scene) {
+function summary(scene: Scene, frontmatter?: WorkflowSkillFrontmatter) {
   return {
     sceneId: scene.id,
     name: scene.name,
     description: scene.appliesWhen,
     nativeName: `allrice-scene-${scene.id}`,
+    ...(frontmatter ? { version: frontmatter.metadata.version } : {}),
   };
+}
+
+/** Human presentation only. Runtime directory semantics change in U1-3b,
+ * never as a side effect of adding author metadata to this reader. */
+export function personalSceneSkillAuthorView(skill: PersonalSceneSkill) {
+  return skill.frontmatter
+    ? {
+        ...skill,
+        name: skill.frontmatter.metadata.displayName,
+        description: skill.frontmatter.description,
+      }
+    : skill;
 }
 
 /** Internal transaction reader. Runtime callers must use the leased, recorded
@@ -220,6 +244,7 @@ export async function listPersonalSceneSkillsInTransaction(
   instanceId: string,
   tx: ContentSql,
   lock = false,
+  forAuthor = false,
 ) {
   const view = await readPersonalEmployeeSceneLayer(
     context,
@@ -232,7 +257,7 @@ export async function listPersonalSceneSkillsInTransaction(
   if (view.layer)
     for (const scene of view.layer.revision.manifest.scenes) {
       try {
-        await resolvePackage(
+        const pkg = await resolvePackage(
           context,
           view.instanceId,
           view.employeeId,
@@ -241,7 +266,18 @@ export async function listPersonalSceneSkillsInTransaction(
           tx,
           lock,
         );
-        skills.push(summary(scene));
+        const skill = forAuthor
+          ? personalSceneSkillAuthorView(pkg.skill)
+          : pkg.skill;
+        skills.push({
+          sceneId: skill.sceneId,
+          name: skill.name,
+          description: skill.description,
+          nativeName: skill.nativeName,
+          ...(skill.version ? { version: skill.version } : {}),
+          contentRef: skill.contentRef,
+          revision: skill.revision,
+        });
       } catch (error) {
         if (!(error instanceof DataAccessError && error.code === 'not_found'))
           throw error;
@@ -259,7 +295,7 @@ export async function listPersonalSceneSkills(
   db = getDatabase(),
 ) {
   return db.begin('isolation level repeatable read read only', async (tx) =>
-    listPersonalSceneSkillsInTransaction(context, instanceId, tx),
+    listPersonalSceneSkillsInTransaction(context, instanceId, tx, false, true),
   );
 }
 export async function getPersonalSceneSkill(
@@ -268,9 +304,8 @@ export async function getPersonalSceneSkill(
   sceneId: string,
   db = getDatabase(),
 ) {
-  return db.begin(
-    'isolation level repeatable read read only',
-    async (tx) =>
+  return db.begin('isolation level repeatable read read only', async (tx) =>
+    personalSceneSkillAuthorView(
       (
         await readPersonalSceneSkillInTransaction(
           context,
@@ -279,6 +314,7 @@ export async function getPersonalSceneSkill(
           tx,
         )
       ).skill,
+    ),
   );
 }
 export async function getPersonalSceneSkillResource(

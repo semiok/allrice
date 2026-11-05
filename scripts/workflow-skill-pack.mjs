@@ -22,6 +22,10 @@ import {
   EmployeeSceneSkillPayloadSchema,
 } from '../packages/contracts/src/employee-content.ts';
 import { SkillBundleSchema } from '../packages/contracts/src/skill-bundle.ts';
+import {
+  WorkflowSkillFrontmatterSchema,
+  workflowSkillInvalidMessage,
+} from '../packages/contracts/src/workflow-skill.ts';
 import { allRiceToolManifest } from '../packages/contracts/src/tool-manifest.ts';
 import {
   skillBundleChecksum,
@@ -29,6 +33,7 @@ import {
   validateSkillBundle,
 } from '../packages/database/src/skill-bundles.ts';
 import { validateSceneSkillPackage } from '../packages/database/src/employees/employee-scene-skill-package.ts';
+import { parseWorkflowSkillSections } from '../packages/database/src/employees/workflow-skill.ts';
 
 // Resolve public exports from the workspace that already owns this DSH generation.
 const workerRequire = createRequire(
@@ -123,7 +128,7 @@ function json(bytes, file) {
 }
 
 function checkRepresentableFrontmatter(bytes) {
-  // Format inspection only: C1 cannot store the other native YAML fields yet.
+  // Format inspection only. Native parsing below owns invocation semantics.
   // The public Provider below remains authoritative for names and body parsing.
   const lines = utf8(bytes, 'SKILL.md').split('\n');
   const delimiter = (line) => (line.endsWith('\r') ? line.slice(0, -1) : line);
@@ -132,13 +137,22 @@ function checkRepresentableFrontmatter(bytes) {
   );
   if (delimiter(lines[0]) !== '---' || end < 0)
     fail('SKILL.md', 'expected YAML frontmatter delimited by ---');
-  const document = parseDocument(lines.slice(1, end).join('\n'));
+  // Inspect YAML with normalized line endings, including its last CRLF line.
+  // The native parser still receives the original file bytes below.
+  const document = parseDocument(lines.slice(1, end).map(delimiter).join('\n'));
   if (document.errors.length)
     fail('SKILL.md', `invalid YAML: ${document.errors[0].message}`);
   objectKeys(
     document.toJS(),
-    ['name', 'description'],
-    'SKILL.md frontmatter (C1 supports name/description only)',
+    [
+      'name',
+      'description',
+      'whenToUse',
+      'metadata',
+      'disable-model-invocation',
+      'user-invocable',
+    ],
+    'SKILL.md frontmatter',
   );
 }
 
@@ -190,16 +204,21 @@ async function parseNativeSkill(bytes) {
 }
 
 /** Offline C1 content only. No account, publication, runtime or script execution. */
-export async function packWorkflowSkill({
-  directory,
-  sceneId,
-  sceneName,
-  title,
-}) {
+export async function packWorkflowSkill({ directory, sceneId, title }) {
   const root = await realpath(directory);
   const skillBytes = await readLocalFile(root, 'SKILL.md');
   checkRepresentableFrontmatter(skillBytes);
   const skill = await parseNativeSkill(skillBytes);
+  const parsed = WorkflowSkillFrontmatterSchema.safeParse({
+    name: skill.name,
+    description: skill.description,
+    whenToUse: skill.whenToUse,
+    invocation: skill.invocation,
+    metadata: skill.metadata,
+  });
+  if (!parsed.success) fail('SKILL.md', workflowSkillInvalidMessage);
+  const frontmatter = parsed.data;
+  parseWorkflowSkillSections(skill.content);
   const bundleBytes = await readLocalFile(root, 'bundle.json');
   const input = json(bundleBytes, 'bundle.json');
   objectKeys(
@@ -294,7 +313,7 @@ export async function packWorkflowSkill({
   );
   const skillPackage = checked(
     EmployeeSceneSkillPayloadSchema,
-    { bundle, resourceSources: sources.resourceSources },
+    { bundle, frontmatter, resourceSources: sources.resourceSources },
     'sources.json resourceSources',
   );
   try {
@@ -316,7 +335,7 @@ export async function packWorkflowSkill({
     EmployeeRuntimeSceneSchema.omit({ digest: true }),
     {
       id: sceneId,
-      name: sceneName,
+      name: frontmatter.metadata.displayName,
       appliesWhen: skill.description,
       nativeName: `allrice-scene-${sceneId}`,
     },
@@ -354,7 +373,7 @@ export async function packWorkflowSkill({
 }
 
 const help = `Usage: node --import tsx scripts/workflow-skill-pack.mjs <skill-directory>
-  --scene-id <UUID> --scene-name <display name> --title <procedure title>
+  --scene-id <UUID> --title <procedure title>
 
 Reads SKILL.md, bundle.json and optional sources.json; writes deterministic C1
 content JSON to stdout. No publication, database, network or script execution.
@@ -370,24 +389,17 @@ if (
       allowPositionals: true,
       options: {
         'scene-id': { type: 'string' },
-        'scene-name': { type: 'string' },
         title: { type: 'string' },
         help: { type: 'boolean' },
       },
     });
     if (values.help) process.stdout.write(help);
     else {
-      if (
-        positionals.length !== 1 ||
-        !values['scene-id'] ||
-        !values['scene-name'] ||
-        !values.title
-      )
+      if (positionals.length !== 1 || !values['scene-id'] || !values.title)
         throw new Error(help);
       const result = await packWorkflowSkill({
         directory: positionals[0],
         sceneId: values['scene-id'],
-        sceneName: values['scene-name'],
         title: values.title,
       });
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

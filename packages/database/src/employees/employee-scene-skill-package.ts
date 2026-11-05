@@ -4,6 +4,7 @@ import type {
 } from '@allrice/contracts';
 import { validateSkillBundle } from '../skill-bundles.ts';
 import { EmployeeContentError } from './employee-content-model.ts';
+import { parseWorkflowSkillSections } from './workflow-skill.ts';
 
 const referenceKey = (ref: EmployeeContentReference) =>
   `${ref.sourceKind}:${ref.contentId}:${ref.revisionId}:${ref.digest}`;
@@ -15,6 +16,13 @@ export function validateSceneSkillPackage(
   body: string,
   references: readonly EmployeeContentReference[],
 ) {
+  if (payload.frontmatter) {
+    try {
+      parseWorkflowSkillSections(body);
+    } catch {
+      throw new EmployeeContentError('workflow_invalid');
+    }
+  }
   try {
     validateSkillBundle(payload.bundle, body);
     const declared = new Set(references.map(referenceKey));

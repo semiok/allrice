@@ -104,6 +104,7 @@ export * from './tool-manifest.ts';
 export * from './user-questions.ts';
 export * from './workspace.ts';
 export * from './workflows.ts';
+export * from './workflow-skill.ts';
 export * from './workspace-path.ts';
 export * from './codex-subscription-quota.ts';
 export * from './subscription-snapshot.ts';
