@@ -1,3 +1,4 @@
+import { canUsePersonalEmployeeScenes } from './employee-instance-policy.ts';
 import {
   EmployeeContentManifestSchema,
   EmployeeContentTextSchema,
@@ -400,7 +401,8 @@ export async function savePersonalSceneSkillInTransaction(
     );
   const authorize = async () => {
     const instance = await getEmployeeInstance(context, instanceId, tx);
-    if (instance.kind !== 'custom') throw new DataAccessError('not_found');
+    if (!(await canUsePersonalEmployeeScenes(instance, tx)))
+      throw new DataAccessError('not_found');
   };
   await authorize();
   const target = await resolveEmployeeMethodTarget(

@@ -62,7 +62,7 @@ import {
 } from './employee-content-model.ts';
 import { freezeEmployeeRuntimeContent } from './employee-content.ts';
 import { employeeRuntimeScenes } from './employee-runtime-scenes.ts';
-import { isBaseRiceInstance } from './employee-instance-policy.ts';
+import { canUsePersonalEmployeeScenes } from './employee-instance-policy.ts';
 import {
   readPersonalSceneSkillInTransaction,
   listPersonalSceneSkillsInTransaction,
@@ -100,7 +100,10 @@ export async function prepareEmployeeRuntimeContent(
       instanceId: input.instance.id,
       employeeId: input.employeeId,
       employeeVersionId: input.employeeVersionId,
-      ...(input.instance.kind === 'custom'
+      ...((await canUsePersonalEmployeeScenes(
+        input.instance,
+        sql ?? getDatabase(),
+      ))
         ? { personalScenes: true as const }
         : {}),
     },
@@ -146,13 +149,9 @@ export async function readEmployeeRuntimeContent(
       sql,
     );
     if (
-      snapshot.layers.some((layer) => layer.ownership.scope === 'personal') &&
-      (await isBaseRiceInstance(instance, sql))
-    )
-      return unavailable();
-    if (
       snapshot.personalScenes &&
-      (instance.kind !== 'custom' || snapshot.layers.length)
+      (!(await canUsePersonalEmployeeScenes(instance, sql)) ||
+        snapshot.layers.length)
     )
       return unavailable();
     const [version] = await sql<

@@ -1,4 +1,5 @@
 import { freezeEmployeeDocuments } from './employee-documents.ts';
+import { isBaseRiceInstance } from './employee-instance-policy.ts';
 import { readChatNativeRootOrigin } from '../conversation/native-session-binding.ts';
 import {
   freezePersonalSkills,
@@ -1537,6 +1538,7 @@ export async function prepareEmployeeRunBinding(
       capabilityBindings(manifest.data).toolNames,
       grantedCapabilities,
       instance?.kind,
+      instance ? await isBaseRiceInstance(instance, sql) : false,
     ),
     grantedCapabilities,
     modelSnapshot,

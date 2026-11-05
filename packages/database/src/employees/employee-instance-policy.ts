@@ -65,3 +65,15 @@ export function personalInstanceNameSql(sql: ContentSql) {
       and p.employee_key='rice' and r.definition->>'key'='rice' and r.status='published'
   )))`;
 }
+
+/** Existing owner/assignment admission remains the caller's responsibility.
+ * Personal scene packages are available to custom instances and the real Rice,
+ * never every general employee or a mutable display-name match. */
+export async function canUsePersonalEmployeeScenes(
+  instance: Parameters<typeof isBaseRiceInstance>[0],
+  sql: ContentSql,
+) {
+  return (
+    instance.kind === 'custom' || (await isBaseRiceInstance(instance, sql))
+  );
+}

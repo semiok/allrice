@@ -1,7 +1,13 @@
-import * as instancePolicy from './employee-instance-policy.ts';
 import { sceneSkillFixture } from './employee-scene-skills.fixture.ts';
 import type { RequestContext } from '@allrice/contracts';
-import { listPersonalSceneSkills } from './personal-scene-skills.ts';
+import {
+  listPersonalSceneSkills,
+  getPersonalSceneSkillResource,
+} from './personal-scene-skills.ts';
+import {
+  inspectPersonalSceneSkill,
+  listPersonalSceneReads,
+} from './personal-scene-reads.ts';
 import { heartbeatJob } from '../execution/queue.ts';
 import { createReadPathProbe } from '../read-path-probe.fixture.ts';
 import { sharedHistoryMethodAcceptancePhrases } from './employee-method-shared-history.fixture.ts';
@@ -94,6 +100,7 @@ import {
 import { resolveSubscriptionSnapshot } from '@allrice/contracts';
 import {
   readEmployeeRuntimeContent,
+  loadPersonalRuntimeSceneSkill,
   prepareEmployeeContentContext,
   assertEmployeeContentContext,
   assertEmployeeContentReferenceMessages,
@@ -215,8 +222,8 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     vi.spyOn(
       toolSelection,
       'withEmployeeCustomizationTools',
-    ).mockImplementation((names, capabilities, kind) => [
-      ...currentMethodTools(names, capabilities, kind),
+    ).mockImplementation((names, capabilities, kind, baseRice) => [
+      ...currentMethodTools(names, capabilities, kind, baseRice),
       ...(legacyMethodTools && kind === 'custom'
         ? toolSelection
             .employeeCustomizationToolsForInstance(kind)
@@ -7637,7 +7644,236 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     ).toEqual({});
   });
 
-  it('E3 blocks Rice personal Workflow writes at the legacy HTTP boundary before storing content', async () => {
+  it('U1 gives the real Rice owner exactly three personal methods with current CAS and no shared discovery', async () => {
+    const f = await setup(true, true),
+      id = f.assignment.id;
+    legacyMethodTools = false;
+    // This prose is not an authorization grammar; structured calls below are
+    // the deterministic model substitute, admitted by source/owner/grant/CAS.
+    const run = await methodRun(f, id, '以后按这份办法来做。');
+    const names = run.frozen.capabilitySnapshot.bindings.toolNames as string[];
+    expect(
+      names.filter((name) => name.startsWith('workspace.employee.method.')),
+    ).toEqual([
+      'workspace.employee.method.inspect',
+      'workspace.employee.method.save_candidate',
+      'workspace.employee.method.restore_candidate',
+    ]);
+    expect(names).not.toContain('workspace.brand_content.read');
+    const empty = await inspectEmployeeMethodFromChat({
+      ...run,
+      arguments: { view: 'effective' },
+    });
+    expect(empty).not.toHaveProperty('sharedTarget');
+    expect(empty).not.toHaveProperty('departments');
+    for (const scope of ['company', 'department']) {
+      await expect(
+        inspectEmployeeMethodFromChat({
+          ...run,
+          arguments: { view: 'candidate', scope },
+        }),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+    }
+    const sharedTarget = {
+      scope: 'company',
+      setId: randomUUID(),
+      employeeId: f.assignment.employeeId,
+    };
+    const args = {
+      expectedRevision: 0,
+      section: 'scene',
+      scene: { name: 'Owner method', appliesWhen: 'Owner asks' },
+      procedure: 'Use exact supplied facts.',
+      changeSummary: 'Owner method',
+    };
+    await expect(
+      saveEmployeeMethodAndPublishFromChat({
+        ...run,
+        arguments: { ...args, sharedTarget },
+      }),
+    ).rejects.toMatchObject({ code: 'authorization_denied' });
+    await expect(
+      restoreEmployeeMethodAndPublishFromChat({
+        ...run,
+        arguments: {
+          expectedRevision: 0,
+          sourceRevisionId: randomUUID(),
+          changeSummary: 'Forbidden shared target',
+          sharedTarget,
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'authorization_denied' });
+    expect(
+      (
+        await fixture.db`select method_authoring from allrice_employee_runs where run_id=${run.context.runId}`
+      )[0]!.method_authoring,
+    ).toBe(false);
+    const first = await saveEmployeeMethodAndPublishFromChat({
+      ...run,
+      arguments: args,
+    });
+    expect(first).toMatchObject({ revision: 1, validation: { valid: true } });
+    expect(first.active).toEqual(first.candidate);
+    const inspected = await inspectEmployeeMethodFromChat({
+      ...run,
+      callId: randomUUID(),
+      arguments: { view: 'candidate' },
+    });
+    expect(inspected).toMatchObject({ revision: 1 });
+    expect(inspected).not.toHaveProperty('sharedTarget');
+    const firstManifest = (
+      await getEmployeeContentSet(f.a.context, first.setId)
+    ).set.active!.manifest;
+    const sceneId = firstManifest.scenes[0]!.id;
+    const second = await saveEmployeeMethodAndPublishFromChat({
+      ...run,
+      callId: randomUUID(),
+      arguments: {
+        ...args,
+        expectedRevision: 1,
+        scene: { id: sceneId },
+        procedure: 'Check the supplied facts twice.',
+      },
+    });
+    await expect(
+      saveEmployeeMethodAndPublishFromChat({
+        ...run,
+        callId: randomUUID(),
+        arguments: { ...args, expectedRevision: 1 },
+      }),
+    ).rejects.toMatchObject({ code: 'version_conflict' });
+    const restored = await restoreEmployeeMethodAndPublishFromChat({
+      ...run,
+      callId: randomUUID(),
+      arguments: {
+        expectedRevision: 2,
+        sourceRevisionId: first.active!.id,
+        changeSummary: 'Restore exact owner method',
+      },
+    });
+    expect(restored.revision).toBe(3);
+    expect(
+      (await getEmployeeContentSet(f.a.context, first.setId)).set.active!
+        .manifest,
+    ).toEqual(firstManifest);
+    expect(second.active!.id).not.toBe(first.active!.id);
+    expect(
+      (await getEmployeeContentHistory(f.a.context, first.setId)).revisions,
+    ).toHaveLength(3);
+    const [frozen] =
+      await fixture.db`select execution_snapshot from allrice_employee_runs where run_id=${run.context.runId}`;
+    expect(frozen!.execution_snapshot).toEqual(run.frozen);
+    expect(
+      await fixture.db`select id from allrice_employee_content_sets where instance_id=${f.bAssignment.id}`,
+    ).toHaveLength(0);
+    await run.finish();
+  });
+
+  it('U1 rejects other owners, absent frozen grants, stale leases and internal sources for Rice methods', async () => {
+    const f = await setup(true, true),
+      id = f.assignment.id;
+    legacyMethodTools = false;
+    const run = await methodRun(f, id, '把这套办法留下。');
+    const foreign = await createChatSession(f.b.context, {
+      workspaceId: f.b.workspaceId,
+      employeeInstanceId: f.bAssignment.id,
+      title: 'Other owner',
+    });
+    const calls = [
+      {
+        invoke: inspectEmployeeMethodFromChat,
+        arguments: { view: 'candidate' },
+      },
+      {
+        invoke: saveEmployeeMethodAndPublishFromChat,
+        arguments: {
+          expectedRevision: 0,
+          section: 'scene',
+          scene: { name: 'Owner method', appliesWhen: 'Owner asks' },
+          procedure: 'Keep original facts.',
+          changeSummary: 'Owner edit',
+        },
+      },
+      {
+        invoke: restoreEmployeeMethodAndPublishFromChat,
+        arguments: {
+          expectedRevision: 0,
+          sourceRevisionId: randomUUID(),
+          changeSummary: 'Owner restore',
+        },
+      },
+    ];
+    for (const call of calls)
+      await expect(
+        call.invoke({
+          ...run,
+          sessionId: foreign.id,
+          arguments: call.arguments,
+        }),
+      ).rejects.toThrow();
+    const narrowed = structuredClone(run.frozen);
+    narrowed.capabilitySnapshot.bindings.toolNames =
+      narrowed.capabilitySnapshot.bindings.toolNames.filter(
+        (name: string) => !name.startsWith('workspace.employee.method.'),
+      );
+    await fixture.db`update allrice_employee_runs set execution_snapshot=${fixture.db.json(narrowed)} where run_id=${run.context.runId}`;
+    for (const call of calls)
+      await expect(
+        call.invoke({ ...run, arguments: call.arguments }),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+    await fixture.db`update allrice_employee_runs set execution_snapshot=${fixture.db.json(run.frozen)} where run_id=${run.context.runId}`;
+    await fixture.db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${run.context.jobId}`;
+    for (const call of calls)
+      await expect(
+        call.invoke({ ...run, arguments: call.arguments }),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+    await fixture.db`update allrice_jobs set lease_expires_at=clock_timestamp()+interval '5 minutes' where id=${run.context.jobId}`;
+    // Existing producer facts may precede their Run link; role=user is not
+    // sufficient. This fixture never starts the paused automation.
+    const [message] =
+      await fixture.db`select client_message_id from allrice_messages where id=${run.userMessageId}`;
+    const automationId = randomUUID();
+    await fixture.db`insert into allrice_automations (id,organization_id,workspace_id,owner_id,name,prompt,trigger_type,schedule,status,conversation_mode,employee_assignment_id,session_id,clock_owner)
+      values(${automationId},${f.a.organizationId},${f.a.workspaceId},${f.a.user.id},'Synthetic source only','Synthetic source only','schedule',${fixture.db.json({ frequency: 'daily', time: '08:30', timezone: 'Asia/Shanghai' })},'paused','reuse',${id},${run.sessionId},'legacy')`;
+    await fixture.db`insert into allrice_automation_runs (id,organization_id,workspace_id,automation_id,run_id,status,scheduled_for)
+      values(${message!.client_message_id},${f.a.organizationId},${f.a.workspaceId},${automationId},null,'queued',clock_timestamp())`;
+    for (const call of calls)
+      await expect(
+        call.invoke({ ...run, arguments: call.arguments }),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+    expect(
+      await fixture.db`select id from allrice_employee_content_sets where instance_id=${id}`,
+    ).toHaveLength(0);
+    expect(
+      (
+        await fixture.db`select method_authoring from allrice_employee_runs where run_id=${run.context.runId}`
+      )[0]!.method_authoring,
+    ).toBe(false);
+    await run.finish();
+  });
+
+  it('U1 does not give a professional general employee Rice methods by its display name', async () => {
+    const f = await setup(true);
+    await fixture.db`update allrice_employee_instances set profile=${fixture.db.json({ name: 'Rice' })} where id=${f.assignment.id}`;
+    const run = await methodRun(f, f.assignment.id, '保存本人的办法。');
+    expect(
+      run.frozen.capabilitySnapshot.bindings.toolNames.filter((name: string) =>
+        name.startsWith('workspace.employee.method.'),
+      ),
+    ).toEqual([]);
+    await expect(
+      inspectEmployeeMethodFromChat({
+        ...run,
+        arguments: { view: 'candidate' },
+      }),
+    ).rejects.toMatchObject({ code: 'authorization_denied' });
+    await expect(
+      listPersonalSceneSkills(f.a.context, f.assignment.id),
+    ).rejects.toMatchObject({ code: 'not_found' });
+    await run.finish();
+  });
+
+  it('U1 admits the real Rice owner at the existing personal content HTTP boundary', async () => {
     const f = await setup(true, true),
       id = f.assignment.id;
     e3HttpAuth.context = f.a.context;
@@ -7672,18 +7908,18 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
               declaredConflicts: [],
             },
             textEdits: [],
-            changeSummary: 'Synthetic blocked personal Workflow',
+            changeSummary: 'Synthetic authorized personal method',
           }),
         },
       ),
     );
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(200);
     expect(
       await fixture.db`select id from allrice_employee_content_sets where instance_id=${id}`,
-    ).toHaveLength(0);
+    ).toHaveLength(1);
   });
 
-  it('E3 rejects the personal package HTTP writer for Rice and accepts the same complete package on its owner custom', async () => {
+  it('U1 gives Rice and owner custom the same exact personal package HTTP, resource and runtime reads', async () => {
     const f = await setup(true, true),
       custom = await f.custom('My workflow employee');
     e3HttpAuth.context = f.a.context;
@@ -7723,24 +7959,98 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         ),
         { params: Promise.resolve({ id }) },
       );
-    expect((await save(f.assignment.id)).status).toBe(404);
+    expect((await save(f.assignment.id)).status).toBe(200);
+    const riceSkills = await listPersonalSceneSkills(
+      f.a.context,
+      f.assignment.id,
+    );
+    expect(riceSkills.skills).toHaveLength(1);
+    const ref = riceSkills.skills[0]!.contentRef;
+    const skill = await inspectPersonalSceneSkill(
+      f.a.context,
+      f.assignment.id,
+      ref,
+    );
+    expect(skill.contentRef).toBe(ref);
+    const resource = await getPersonalSceneSkillResource(
+      f.a.context,
+      f.assignment.id,
+      ref,
+      'assets/template.csv',
+    );
+    expect(Buffer.from(resource.contentBase64, 'base64').toString()).toContain(
+      'synthetic',
+    );
+    await expect(
+      inspectPersonalSceneSkill(f.b.context, f.assignment.id, ref),
+    ).rejects.toThrow();
+    const run = await methodRun(f, f.assignment.id, '使用本人工作场景。');
+    expect(run.frozen.content.personalScenes).toBe(true);
+    const worker = {
+      jobId: run.context.jobId,
+      workerId: run.context.worker.id,
+      attempt: run.worker.attempt,
+      leaseToken: run.worker.leaseToken,
+    };
+    await acquireConversationRuntime({
+      ...run.scope,
+      workerId: worker.workerId,
+      configChecksum: `sha256:${'c'.repeat(64)}`,
+      compactThresholdTokens: 40000,
+    });
+    await loadPersonalRuntimeSceneSkill(
+      run.scope,
+      run.runtime.generationId,
+      { sceneId: body.scene.id },
+      worker,
+    );
+    await loadPersonalRuntimeSceneSkill(
+      run.scope,
+      run.runtime.generationId,
+      { contentRef: ref, resourcePath: 'assets/template.csv' },
+      worker,
+    );
+    const [read] =
+      await fixture.db`select content_scene_state from allrice_employee_runs where run_id=${run.context.runId}`;
+    expect(read!.content_scene_state.reads[0].personal).toMatchObject({
+      contentRef: ref,
+      contentRead: true,
+      resources: [{ path: 'assets/template.csv' }],
+    });
     expect(
-      await fixture.db`select id from allrice_employee_content_sets where instance_id=${f.assignment.id}`,
-    ).toHaveLength(0);
+      await listPersonalSceneReads(f.a.context, f.assignment.id),
+    ).toBeDefined();
+    await run.finish();
     expect((await save(custom.id)).status).toBe(200);
     expect(
       (await listPersonalSceneSkills(f.a.context, custom.id)).skills,
     ).toHaveLength(1);
+    await fixture.db`update allrice_employee_content_publications set invalidated_at=clock_timestamp()
+      where set_id in (select id from allrice_employee_content_sets where instance_id=${f.assignment.id})`;
+    await expect(
+      inspectPersonalSceneSkill(f.a.context, f.assignment.id, ref),
+    ).rejects.toThrow();
+    await expect(
+      getPersonalSceneSkillResource(
+        f.a.context,
+        f.assignment.id,
+        ref,
+        'assets/template.csv',
+      ),
+    ).rejects.toThrow();
+    expect(
+      (await listPersonalSceneSkills(f.a.context, custom.id)).skills,
+    ).toHaveLength(1);
+    expect(
+      (
+        await fixture.db`select content_scene_state from allrice_employee_runs where run_id=${run.context.runId}`
+      )[0]!.content_scene_state,
+    ).toEqual(read!.content_scene_state);
   });
 
-  it('E3 rejects a valid pre-boundary Rice personal content snapshot without deleting its immutable history', async () => {
+  it('U1 reads existing authorized Rice personal history without rewriting snapshots or revisions', async () => {
     const f = await setup(true, true),
       id = f.assignment.id;
-    // Reproduce the old eligibility only while creating a legacy publication.
-    // Both the stored publication and snapshot are real; the E3 read is unmocked.
-    const legacyPolicy = vi
-      .spyOn(instancePolicy, 'isBaseRiceInstance')
-      .mockResolvedValue(false);
     const input = {
       instanceId: id,
       employeeId: f.assignment.employeeId,
@@ -7748,7 +8058,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     };
     const setId = randomUUID();
     let old;
-    try {
+    {
       await fixture.db.begin((tx) =>
         mutateEmployeeContentInTransaction(
           f.a.context,
@@ -7780,18 +8090,16 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       old = await freezeEmployeeRuntimeContent(f.a.context, input, fixture.db);
       expect(old.layers).toHaveLength(1);
       await readEmployeeRuntimeContent(f.a.context, old, fixture.db);
-    } finally {
-      legacyPolicy.mockRestore();
     }
-    await expect(
-      readEmployeeRuntimeContent(f.a.context, old, fixture.db),
-    ).rejects.toThrow();
+    const before = JSON.stringify(old);
+    await readEmployeeRuntimeContent(f.a.context, old, fixture.db);
+    expect(JSON.stringify(old)).toBe(before);
     const next = await freezeEmployeeRuntimeContent(
       f.a.context,
       input,
       fixture.db,
     );
-    expect(next.layers).toEqual([]);
+    expect(next.layers).toEqual(old.layers);
     await readEmployeeRuntimeContent(f.a.context, next, fixture.db);
     const [history] =
       await fixture.db`select manifest from allrice_employee_content_revisions where set_id=${setId}`;

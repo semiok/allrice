@@ -14,7 +14,10 @@ import {
 import { personalSkillNativeTools } from './allrice-personal-skill-native-tools.mjs';
 import { managedToolWaitTimeoutMs } from './allrice-tool-timeouts.mjs';
 import { methodTestNativeTools } from './allrice-method-test-native-tools.mjs';
-import { employeeMethodNativeTools } from './allrice-employee-method-native-tools.mjs';
+import {
+  employeeMethodNativeTools,
+  personalEmployeeMethodTool,
+} from './allrice-employee-method-native-tools.mjs';
 import { generateCodexImage } from './allrice-codex-images.mjs';
 import { RuntimeLocalCommandToolInputSchema } from '@allrice/contracts/native-runtime';
 import { preparedMethodQuestions } from './allrice-method-questions.mjs';
@@ -879,6 +882,7 @@ export async function createAllRiceRuntime(
     modelTimingNotify = () => undefined;
     codexModels = null;
     nativeTools = new Set();
+    personalMethodToolsOnly = false;
     nativeToolsRegistered = new Set();
     nativeSkillsRegistered = false;
     pendingUserQuestions = new Map();
@@ -1274,6 +1278,7 @@ export async function createAllRiceRuntime(
         ? params.nativeTools.filter((name) => typeof name === 'string')
         : [];
       this.nativeTools = new Set(requestedTools);
+      this.personalMethodToolsOnly = params.personalMethodToolsOnly === true;
       const skillRegistrationStarted = performance.now();
       const requestedSkills = Array.isArray(params?.nativeSkills)
         ? params.nativeSkills.map(nativeSkillSnapshot)
@@ -1533,11 +1538,17 @@ export async function createAllRiceRuntime(
         );
       }
 
-      const requestedBrokerTools = brokerNativeTools.filter(
-        (tool) =>
-          this.nativeTools.has(tool.canonicalName) &&
-          !this.nativeToolsRegistered.has(tool.canonicalName),
-      );
+      const requestedBrokerTools = brokerNativeTools
+        .filter(
+          (tool) =>
+            this.nativeTools.has(tool.canonicalName) &&
+            !this.nativeToolsRegistered.has(tool.canonicalName),
+        )
+        .map((tool) =>
+          this.personalMethodToolsOnly
+            ? personalEmployeeMethodTool(tool)
+            : tool,
+        );
       if (requestedBrokerTools.length === 0) return;
       if (
         requestedBrokerTools.some(

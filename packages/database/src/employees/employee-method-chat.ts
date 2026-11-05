@@ -1,4 +1,5 @@
 import { employeeMemoryReadPredicate } from '../workspace/employee-memory-read.ts';
+import { isBaseRiceInstance } from './employee-instance-policy.ts';
 import {
   EmployeeMethodInspectSchema,
   EmployeeMethodSaveSchema,
@@ -23,6 +24,7 @@ import {
 } from './employee-instances.ts';
 import {
   assertEmployeeChatRun,
+  assertEmployeeChatHumanSource,
   employeeChatIdentity,
   employeeChatUuid,
   type EmployeeChatCall,
@@ -608,6 +610,33 @@ const emptyManifest = () => ({
   declaredConflicts: [],
 });
 
+/** Only the newly admitted Rice tools take this personal path. Existing
+ * background/custom maintenance keeps its established target checks. Rice's
+ * scope and provenance are structured facts, never inferred from user prose. */
+async function assertRicePersonalMethodCall(
+  input: EmployeeChatCall,
+  instance: Awaited<ReturnType<typeof getEmployeeInstance>>,
+  tool: string,
+  tx: ContentTx,
+) {
+  if (!(await isBaseRiceInstance(instance, tx))) return false;
+  if (tool === 'workspace.employee.method.inspect') {
+    const args = EmployeeMethodInspectSchema.parse(input.arguments);
+    if (args.scope !== undefined && args.scope !== 'personal')
+      throw new DataAccessError('authorization_denied');
+  } else if (tool === 'workspace.employee.method.save_candidate') {
+    if (EmployeeMethodSaveSchema.parse(input.arguments).sharedTarget)
+      throw new DataAccessError('authorization_denied');
+  } else if (tool === 'workspace.employee.method.restore_candidate') {
+    if (EmployeeMethodRestoreSchema.parse(input.arguments).sharedTarget)
+      throw new DataAccessError('authorization_denied');
+  } else {
+    throw new DataAccessError('authorization_denied');
+  }
+  await assertEmployeeChatHumanSource(input, tx);
+  return true;
+}
+
 /** Commit the context boundary BEFORE revealing a candidate or attempting a
  * save. Failure, interruption and abandoned edits cannot roll it back. The
  * original Run stays bound and readable; only subsequent Runs start fresh. */
@@ -648,6 +677,7 @@ export async function enterMethodChat<T>(
       tx,
     );
     const text = await assertEmployeeChatRun(tx, input, instance, tool);
+    await assertRicePersonalMethodCall(input, instance, tool, tx);
     if (retire) {
       await tx`select run_id from allrice_employee_runs where run_id=${input.context.runId} for update nowait`;
       await tx`update allrice_employee_runs set method_authoring=true where run_id=${input.context.runId}`;
@@ -888,13 +918,21 @@ async function restoreEmployeeMethod(
             current,
             tool,
           );
-          if (publishOnSave) assertImmediateSaveIntent(original);
+          const personalRice = await assertRicePersonalMethodCall(
+            input,
+            current,
+            tool,
+            tx,
+          );
+          if (!personalRice && publishOnSave)
+            assertImmediateSaveIntent(original);
           const [source] = await tx<
             { id: string; number: number }[]
           >`select id,number from allrice_employee_content_revisions
           where id=${args.sourceRevisionId} and set_id=${selection.setId}`;
           if (!source) throw new DataAccessError('not_found');
           if (
+            !personalRice &&
             !explicitEmployeeMethodRestoreIntent(
               original,
               source,
@@ -939,7 +977,7 @@ async function saveEmployeeMethod(
     (args.references?.length || args.removeReferences?.length)
   )
     throw new DataAccessError('authorization_denied');
-  const { instance, selection, text } = await enterMethodChat(
+  const { instance, selection, text, personalRice } = await enterMethodChat(
     input,
     'workspace.employee.method.save_candidate',
     true,
@@ -947,6 +985,7 @@ async function saveEmployeeMethod(
       return {
         instance,
         text,
+        personalRice: await isBaseRiceInstance(instance, tx),
         selection: await resolveEmployeeMethodTarget(
           scope,
           instance.id,
@@ -956,8 +995,10 @@ async function saveEmployeeMethod(
       };
     },
   );
-  assertMethodEditIntent(text, args);
-  if (publishOnSave) assertImmediateSaveIntent(text);
+  if (!personalRice) {
+    assertMethodEditIntent(text, args);
+    if (publishOnSave) assertImmediateSaveIntent(text);
+  }
   const base: Extract<EmployeeContentMutation, { operation: 'save_draft' }> = {
     operation: 'save_draft',
     workspaceId: scope.workspaceId,
@@ -994,8 +1035,17 @@ async function saveEmployeeMethod(
           args.sharedTarget,
           tx,
         );
-        assertMethodEditIntent(original, args);
-        if (publishOnSave) assertImmediateSaveIntent(original);
+        if (
+          !(await assertRicePersonalMethodCall(
+            input,
+            current,
+            'workspace.employee.method.save_candidate',
+            tx,
+          ))
+        ) {
+          assertMethodEditIntent(original, args);
+          if (publishOnSave) assertImmediateSaveIntent(original);
+        }
         await assertEmployeeMethodDepartmentRequest(
           scope,
           instance.id,

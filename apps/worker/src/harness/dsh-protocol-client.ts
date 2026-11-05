@@ -221,6 +221,7 @@ export class DshProtocolClient {
     nativeSkills?: DshNativeSkillSnapshot[];
     contentScenes?: EmployeeRuntimeScene[];
     personalContentScenes?: boolean;
+    personalMethodToolsOnly?: true;
     maxTokens?: number;
     expectedVersion?: string;
     requireTaskProgress?: boolean;
