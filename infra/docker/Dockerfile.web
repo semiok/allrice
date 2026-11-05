@@ -12,6 +12,8 @@ COPY packages/browser-control/package.json packages/browser-control/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
 COPY packages/office-runtime/package.json packages/office-runtime/package.json
 COPY packages/database/package.json packages/database/package.json
+COPY packages/file-archives/package.json packages/file-archives/package.json
+COPY packages/skill-import/package.json packages/skill-import/package.json
 COPY packages/storage/package.json packages/storage/package.json
 COPY packages/ui/package.json packages/ui/package.json
 COPY patches patches

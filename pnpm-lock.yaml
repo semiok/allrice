@@ -119,9 +119,15 @@ importers:
       '@allrice/database':
         specifier: workspace:*
         version: link:../../packages/database
+      '@allrice/file-archives':
+        specifier: workspace:*
+        version: link:../../packages/file-archives
       '@allrice/office-runtime':
         specifier: workspace:*
         version: link:../../packages/office-runtime
+      '@allrice/skill-import':
+        specifier: workspace:*
+        version: link:../../packages/skill-import
       '@allrice/storage':
         specifier: workspace:*
         version: link:../../packages/storage

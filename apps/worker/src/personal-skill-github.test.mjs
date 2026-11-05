@@ -113,6 +113,53 @@ function setup({
 const fail = (code) => (error) => error.code === code;
 const root = 'https://github.com/acme/skills';
 
+test('web root-only selection ignores nested candidates and preserves root resource bytes', async () => {
+  const fixture = setup({
+    contents: [
+      ['SKILL.md', definition],
+      ['references/rules.md', rule],
+      ...Array.from({ length: 10 }, (_, i) => [
+        `nested-${i}/SKILL.md`,
+        definition,
+      ]),
+    ],
+  });
+  const result = await readPublicGitHubSource(root, {
+    ...fixture,
+    rootOnly: true,
+  });
+  assert.deepEqual(result.candidatePaths, ['SKILL.md']);
+  assert.deepEqual(
+    result.files.map((file) => file.path),
+    ['SKILL.md', 'references/rules.md'],
+  );
+  assert.equal(
+    fixture.requests.filter((request) =>
+      request.address.includes('raw.githubusercontent.com'),
+    ).length,
+    2,
+  );
+});
+
+test('web root-only selection rejects missing root and directory links without fetching source bytes', async () => {
+  for (const [url, code] of [
+    [root, 'source_skill_missing'],
+    [root + '/tree/main/weekly', 'source_url_invalid'],
+  ]) {
+    const fixture = setup();
+    await assert.rejects(
+      readPublicGitHubSource(url, { ...fixture, rootOnly: true }),
+      fail(code),
+    );
+    assert.equal(
+      fixture.requests.filter((request) =>
+        request.address.includes('raw.githubusercontent.com'),
+      ).length,
+      0,
+    );
+  }
+});
+
 test('repository, directory and literal SKILL.md links yield identical exact package bytes', async () => {
   const results = [];
   for (const url of [
