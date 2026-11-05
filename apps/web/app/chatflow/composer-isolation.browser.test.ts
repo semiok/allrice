@@ -4596,7 +4596,7 @@ suite(
       }
     }, 15_000);
     it('a normally-created session adopts the sending owner and submits its first attachment/message once', async () => {
-      const f = await fixture();
+      const f = await fixture({ nativeClock: true });
       try {
         await startNewWork(f.page);
         await f.send('First created task', 'first.txt');
@@ -4611,7 +4611,14 @@ suite(
             .getByRole('textbox', { name: '给 Rice 的消息' })
             .isEditable(),
         ).toBe(false);
+        const createdReads = () =>
+          f.reads.filter((url) =>
+            url.startsWith(`/api/v1/sessions/${C}/interactions?`),
+          ).length;
+        await expect.poll(createdReads).toBe(1);
+        // The first read sees idle while this new session's send is pending.
         await f.respond(1);
+        await expect.poll(createdReads).toBe(2);
         expect(
           await f.page
             .getByRole('textbox', { name: '给 Rice 的消息' })

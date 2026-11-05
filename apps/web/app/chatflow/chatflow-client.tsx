@@ -762,12 +762,20 @@ export function ChatFlowClient({
   } = bridge;
   const bridgeReleases = useBridgeReleases(bridgeOpen, tenantHeaders);
 
+  const activeRunMessages = (history?.messages ?? []).filter(
+    (message) =>
+      message.runId && isMessageRunActive(message, runViews[message.runId]),
+  );
+  const isRunning = activeRunMessages.length > 0;
   const interactions = useInteractionStatus(
     workbenchEnabled,
     activeId,
     workspace?.workspaceId,
     tenantHeaders,
+    busy || isRunning,
   );
+  const currentInteractions = useRef(interactions);
+  currentInteractions.current = interactions;
   const reloadInteractions = interactions.reload;
   const inputStatus = useMemo(
     () =>
@@ -1010,7 +1018,9 @@ export function ChatFlowClient({
       if (result.delivery === 'immediate')
         void streamRun(result.run.id, sessionId);
       void loadHistory(sessionId);
-      void interactions.reload();
+      // Creating a session can replace the hook while uploads/POST are pending.
+      // action.current() above already verifies this send still owns selection.
+      void currentInteractions.current.reload();
     } catch (cause) {
       if (!action.current()) return;
       setSubmission(null);
@@ -1299,11 +1309,6 @@ export function ChatFlowClient({
     requestAnimationFrame(() => composerInput.current?.focus());
   }
 
-  const activeRunMessages = (history?.messages ?? []).filter(
-    (message) =>
-      message.runId && isMessageRunActive(message, runViews[message.runId]),
-  );
-  const isRunning = activeRunMessages.length > 0;
   const nativeReadyKey =
     history?.session.id === activeId
       ? nativeSubagentReadyKey(

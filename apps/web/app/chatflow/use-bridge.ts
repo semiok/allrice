@@ -68,7 +68,8 @@ export function useBridge({
 
   const loadBridgeDevices = useCallback(
     async (open = false, quiet = false) => {
-      if (!workspaceId) return;
+      if (!workspaceId || (quiet && document.visibilityState === 'hidden'))
+        return;
       const request = refresh.current.start(scope, !quiet);
       if (!request) return;
       if (open) setBridgeOpen(true);
@@ -290,9 +291,15 @@ export function useBridge({
     const timer = window.setInterval(() => {
       void loadBridgeDevices(false, true);
     }, 15_000);
+    const visible = () => {
+      if (document.visibilityState === 'visible')
+        void loadBridgeDevices(false, true);
+    };
+    document.addEventListener('visibilitychange', visible);
     const coordinator = refresh.current;
     return () => {
       window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', visible);
       coordinator.reset(null);
     };
   }, [loadBridgeDevices, scope, workspaceId]);
