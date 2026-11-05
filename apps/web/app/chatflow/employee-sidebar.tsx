@@ -272,7 +272,7 @@ export function EmployeeSidebar({
                       {session.title}
                     </button>
                   ))}
-                  {profile && (
+                  {(profile || group.sessionCount > 0) && (
                     <button type="button" onClick={() => onDetails(group.key)}>
                       查看员工详情
                     </button>
@@ -329,7 +329,7 @@ export function EmployeeSidebar({
                   }
                   t={employeeTranslate}
                 />
-                {profile && (
+                {(profile || group.sessionCount > 0) && (
                   <button
                     type="button"
                     className={css.info}

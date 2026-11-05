@@ -55,6 +55,8 @@ import type {
   Session,
 } from './chatflow-types';
 import { employeeDetailsFixture } from '../../test/employee-details-fixture';
+import { employeeHubErrorResponse } from '../../lib/employeehub/responses';
+import { EmployeeInstanceError } from '../../../../packages/database/src/employees/employee-instances.ts';
 import { layoutPreferenceKey } from './use-workbench-layout';
 
 const settingsReviewDir = process.env.ALLRICE_SETTINGS_REVIEW_DIR;
@@ -1455,6 +1457,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           state.employeeDetailStatus,
         );
       }
+      if (
+        options.employeeDetails &&
+        path === `/api/v1/employee-instances/${id(7)}` &&
+        state.employeeDetailStatus !== 200
+      )
+        // The real dialog also checks the existing owner/history endpoint.
+        // This fixture models revoked membership, so both read gates deny it.
+        return answer(
+          { error: { message: 'No access' } },
+          state.employeeDetailStatus,
+        );
       if (path === '/api/v1/experiences') {
         state.experienceReads++;
         const body = {
@@ -2845,6 +2858,133 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         ).toBe(0);
         expect(f.errors).toEqual([]);
         expect(f.writes).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
+  it.each([403, 409])(
+    'opens personal Workflow audit from a historical sidebar instance when current details return %s',
+    async (currentStatus) => {
+      const f = await fixture({ employeeCount: 2, employeeHistory: true });
+      const historicalId = id(6799),
+        historicalSessionId = id(6750);
+      const source = employeeDetailsFixture().profile.source;
+      const archivedResponse = employeeHubErrorResponse(
+        new EmployeeInstanceError('instance_archived'),
+      );
+      const archivedError = await archivedResponse.json();
+      const historical = EmployeeInstanceSchema.parse({
+        id: historicalId,
+        assignmentId: id(99),
+        organizationId: org,
+        workspaceId: workspace,
+        ownerId: user,
+        kind: 'custom',
+        revision: 2,
+        profile: { name: '旧员工' },
+        creationSource: source,
+        source,
+        createdAt: now,
+        updatedAt: now,
+        archivedAt: currentStatus === 409 ? now : null,
+      });
+      const reads: string[] = [];
+      try {
+        f.state.sessionEdits.set(historicalSessionId, {
+          employeeInstanceId: historicalId,
+        });
+        await f.page.route(
+          `**/api/v1/employee-instances/${historicalId}/content?*`,
+          (route) =>
+            route.fulfill({
+              status: currentStatus,
+              json:
+                currentStatus === 409
+                  ? archivedError
+                  : { error: { message: 'Current details unavailable' } },
+            }),
+        );
+        await f.page.route(
+          `**/api/v1/employee-instances/${historicalId}?*`,
+          (route) => route.fulfill({ json: { instance: historical } }),
+        );
+        await f.page.route(
+          `**/api/v1/employee-instances/${historicalId}/scene-skills?*`,
+          (route) =>
+            route.fulfill({
+              status: currentStatus,
+              json:
+                currentStatus === 409
+                  ? archivedError
+                  : { error: { message: 'Current content unavailable' } },
+            }),
+        );
+        await f.page.route(
+          `**/api/v1/employee-instances/${historicalId}/scene-skills/reads?*`,
+          (route) => {
+            reads.push(route.request().url());
+            return route.fulfill({
+              json: {
+                instanceId: historicalId,
+                runs: [
+                  {
+                    runId: id(6798),
+                    sessionId: historicalSessionId,
+                    messageId: id(6797),
+                    createdAt: now,
+                    status: 'failed',
+                    error: {
+                      code: 'EMPLOYEE_CONTENT_UNAVAILABLE',
+                      message:
+                        '工作要求或其引用资料已失效，请确认当前版本后重新发起任务。',
+                    },
+                    reads: [],
+                  },
+                ],
+                nextCursor: null,
+              },
+            });
+          },
+        );
+        await f.page.reload();
+        const sidebar = f.page.locator('#chat-sidebar');
+        await sidebar.getByText('旧员工（已撤回）', { exact: true }).waitFor();
+        await sidebar
+          .getByRole('button', {
+            name: '查看旧员工（已撤回）详情',
+            exact: true,
+          })
+          .click();
+        const dialog = f.page.getByRole('dialog');
+        await dialog
+          .getByText('本人 Workflow · 目录与读取记录', { exact: true })
+          .click();
+        await dialog
+          .getByText('这次工作没有已提交的 Workflow 读取记录。', {
+            exact: true,
+          })
+          .waitFor();
+        expect(reads).toHaveLength(1);
+        expect(reads[0]).toContain(historicalId);
+        expect(
+          await dialog
+            .getByRole('link', { name: '回到原工作记录', exact: true })
+            .getAttribute('href'),
+        ).toBe(`/chatflow?session=${historicalSessionId}#message-${id(6797)}`);
+        expect(
+          await dialog
+            .getByText('本人 Workflow · 文件与修改记录', { exact: true })
+            .count(),
+        ).toBe(0);
+        expect(
+          await dialog
+            .getByRole('button', { name: '编辑员工', exact: true })
+            .count(),
+        ).toBe(0);
+        expect(f.writes).toEqual([]);
+        expect(f.errors).toEqual([]);
       } finally {
         await f.close();
       }

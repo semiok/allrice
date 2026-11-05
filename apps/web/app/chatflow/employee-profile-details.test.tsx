@@ -72,7 +72,11 @@ describe('EmployeeProfileDetails', () => {
           onEdit={() => {}}
           onPrepare={() => {}}
           workflowContent={<p>本人文件入口</p>}
+          workflowReadContent={<p>本人读取入口</p>}
         />,
+      );
+      expect(html.includes('本人读取入口')).toBe(
+        view === 'personal' && kind === 'custom',
       );
       if (editable) {
         expect(html).toContain('编辑');

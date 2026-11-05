@@ -50,7 +50,9 @@ export function employeeHubErrorResponse(error: unknown) {
     return apiProblem({
       status: 409,
       code:
-        error.code === 'instance_archived' ? 'CONFLICT' : 'VERSION_CONFLICT',
+        error.code === 'instance_archived'
+          ? 'EMPLOYEE_INSTANCE_ARCHIVED'
+          : 'VERSION_CONFLICT',
       message:
         error.code === 'instance_archived'
           ? 'AI 员工已归档，可以查看历史；恢复后才能继续工作。'
