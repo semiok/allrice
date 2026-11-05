@@ -2213,7 +2213,9 @@ suite(
     it('reads the exact confirmed revision without a vector cache, and rejects a withdrawn memory', async () => {
       const f = await boundedFixture();
       const current = await readRunExperienceSource(f.auth, f.handle);
-      expect(current.items[0]).toMatchObject({ memory: { id: f.confirmed.id } });
+      expect(current.items[0]).toMatchObject({
+        memory: { id: f.confirmed.id },
+      });
       await db`delete from allrice_rag_chunks where memory_id=${f.confirmed.id}`;
       expect((await readRunExperienceSource(f.auth, f.handle)).items).toEqual(
         current.items,

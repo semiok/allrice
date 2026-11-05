@@ -8,7 +8,10 @@ it('only the admitted root gets required literal documents; child current prompt
   const observedAgents = new Map();
   const h = await host({
     model: async (request) => {
-      observedAgents.set(request.sessionId, h.ctx.agents.get(request.sessionId));
+      observedAgents.set(
+        request.sessionId,
+        h.ctx.agents.get(request.sessionId),
+      );
       return text('完成');
     },
     runId,
@@ -71,8 +74,9 @@ it('only the admitted root gets required literal documents; child current prompt
   );
   expect(JSON.stringify(last.messages)).not.toContain('CONFIRMED_B');
   expect(
-    observedAgents.get(child.childId).session
-      .snapshotEvents()
+    observedAgents
+      .get(child.childId)
+      .session.snapshotEvents()
       .filter((e) => e.type === 'approval/policy'),
   ).toEqual(approval);
   await expect(

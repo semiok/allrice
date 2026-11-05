@@ -761,6 +761,7 @@ export async function searchToolBrokerMemories(
   transaction?: TransactionSql,
   pins: readonly ConfirmedMemoryReadPin[] = [],
   sourceTool = false,
+  documents = false,
 ) {
   if (!context.workspaceId) throw new DataAccessError('authorization_denied');
   const sql = transaction ?? getDatabase();
@@ -788,7 +789,7 @@ export async function searchToolBrokerMemories(
     return {
       id: row.id,
       content: row.content,
-      revision: row.revision,
+      ...(documents ? { revision: row.revision } : {}),
       ...(sourceTool ? { sourceHandle: confirmedMemoryHandle(row) } : {}),
       provenance: {
         trust: row.trust_level,
@@ -824,11 +825,12 @@ export async function readToolBrokerMemoryContext(
         query,
         limit,
         tx,
-        state.confirmedPins,
-        hasMemorySourceTool(run?.execution_snapshot),
+        state.initial.documentDigest === undefined ? [] : state.confirmedPins,
+        state.initial.documentDigest !== undefined && hasMemorySourceTool(run?.execution_snapshot),
+        state.initial.documentDigest !== undefined,
       );
     },
-    (items) => items,
+    (items, state) => state.initial.documentDigest === undefined ? [] : items,
   );
 }
 

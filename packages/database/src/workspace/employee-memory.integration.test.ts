@@ -58,7 +58,10 @@ suite(
       await fixture?.close();
     });
     async function setup() {
-      const f = await createRunAuthorityFixture(fixture.db, { toolNames: ['workspace.memory.search', 'workspace.experience.read'], allowedTools: ['workspace.memory.search', 'workspace.experience.read'] });
+      const f = await createRunAuthorityFixture(fixture.db, {
+        toolNames: ['workspace.memory.search', 'workspace.experience.read'],
+        allowedTools: ['workspace.memory.search', 'workspace.experience.read'],
+      });
       const context = (await authenticateSession(
         (await createSession(f.user)).token,
         { organizationId: f.org, workspaceId: f.workspace },
@@ -166,7 +169,9 @@ suite(
       await assertRunMemoryContextCurrent(scope);
       const handle = document.memories[0]!.sourceHandle!;
       const source = await readRunExperienceSource(auth, handle);
-      expect(source.items[0]).toMatchObject({ memory: { content: first.content } });
+      expect(source.items[0]).toMatchObject({
+        memory: { content: first.content },
+      });
       const edited = await correctWorkspaceMemory(
         f.context,
         f.workspace,
@@ -258,30 +263,47 @@ suite(
       const saved = [];
       for (let i = 0; i < 8; i++) {
         const item = await f.create(`常用入口${i}`);
-        saved.push(await setPersonalEmployeeMemoryPin(f.context, f.workspace, item.id, { ...exact(item), pinned: true }));
+        saved.push(
+          await setPersonalEmployeeMemoryPin(f.context, f.workspace, item.id, {
+            ...exact(item),
+            pinned: true,
+          }),
+        );
       }
       let rejected = false;
       for (const item of saved) {
         try {
           await correctWorkspaceMemory(f.context, f.workspace, item.id, {
-            ...exact(item), content: 'x'.repeat(1000), reason: '本人编辑',
+            ...exact(item),
+            content: 'x'.repeat(1000),
+            reason: '本人编辑',
           });
         } catch (error) {
           expect(error).toMatchObject({ message: 'employee_memory_capacity' });
-          const [unchanged] = await fixture.db`select content,revision from allrice_memories where id=${item.id}`;
-          expect(unchanged).toMatchObject({ content: item.content, revision: item.revision });
+          const [unchanged] =
+            await fixture.db`select content,revision from allrice_memories where id=${item.id}`;
+          expect(unchanged).toMatchObject({
+            content: item.content,
+            revision: item.revision,
+          });
           rejected = true;
           break;
         }
       }
       expect(rejected).toBe(true);
       // Isolated historical over-capacity fixture; repairing it must be possible.
-      await fixture.db`update allrice_memories set content=repeat('y',2000) where id=any(${saved.map(m => m.id)}::uuid[])`;
+      await fixture.db`update allrice_memories set content=repeat('y',2000) where id=any(${saved.map((m) => m.id)}::uuid[])`;
       const item = saved.at(-1)!;
-      const [current] = await fixture.db`select revision,content from allrice_memories where id=${item.id}`;
-      await expect(setPersonalEmployeeMemoryPin(f.context, f.workspace, item.id, {
-        ...exact(item), expectedRevision: current!.revision, contentDigest: memoryContentDigest(current!.content), pinned: false,
-      })).resolves.toMatchObject({ id: item.id });
+      const [current] =
+        await fixture.db`select revision,content from allrice_memories where id=${item.id}`;
+      await expect(
+        setPersonalEmployeeMemoryPin(f.context, f.workspace, item.id, {
+          ...exact(item),
+          expectedRevision: current!.revision,
+          contentDigest: memoryContentDigest(current!.content),
+          pinned: false,
+        }),
+      ).resolves.toMatchObject({ id: item.id });
     });
 
     it('binds proposals from the stored source; list, recall, raw RAG, revisions, broker and resumed input cannot cross instances', async () => {

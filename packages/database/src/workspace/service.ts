@@ -2835,25 +2835,22 @@ export async function correctWorkspaceMemory(
  * transaction. No model tool can call this browser management operation. */
 async function assertPinnedMemoryCapacity(
   tx: TransactionSql,
-  scope: { organizationId: string; workspaceId: string; ownerId: string; instanceId: string },
+  scope: {
+    organizationId: string;
+    workspaceId: string;
+    ownerId: string;
+    instanceId: string;
+  },
 ) {
-        const projected = await freezeEmployeeDocuments(tx, scope, {}, true);
-        const pins = await tx<
-          { id: string }[]
-        >`select m.id from allrice_memories m
+  const projected = await freezeEmployeeDocuments(tx, scope, {}, true);
+  const pins = await tx<{ id: string }[]>`select m.id from allrice_memories m
           where ${employeeMemoryReadPredicate(tx, scope)} and m.metadata ? 'memoryPinOrder'`;
-        if (
-          pins.some(
-            (pin) => !projected.memories.some((item) => item.id === pin.id),
-          )
-        )
-          throw new EmployeeMemoryCapacityError(
-            Math.max(
-              0,
-              6000 - Buffer.byteLength(projected.employeeDocuments.memory),
-            ),
-          );
-
+  if (
+    pins.some((pin) => !projected.memories.some((item) => item.id === pin.id))
+  )
+    throw new EmployeeMemoryCapacityError(
+      Math.max(0, 6000 - Buffer.byteLength(projected.employeeDocuments.memory)),
+    );
 }
 
 export async function setPersonalEmployeeMemoryPin(

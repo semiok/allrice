@@ -223,9 +223,10 @@ function Manager(props: Props) {
         );
       if (response.status === 422) {
         const result = await response.json();
-        if (result.error === 'memory_capacity') throw Error(
-          `置顶内容超出整条预算，未保存。当前剩余${Number(result.remainingBytes)}字节。请先取消其他置顶或缩短记忆。编辑内容已保留。`,
-        );
+        if (result.error === 'memory_capacity')
+          throw Error(
+            `置顶内容超出整条预算，未保存。当前剩余${Number(result.remainingBytes)}字节。请先取消其他置顶或缩短记忆。编辑内容已保留。`,
+          );
       }
       if (!response.ok)
         throw Error('暂时无法确认保存结果。请重新读取，编辑内容会保留。');

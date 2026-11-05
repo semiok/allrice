@@ -152,7 +152,7 @@ export async function readRunMemoryContext<T>(
   auth: RunMemoryAuthority,
   kind: 'memory_search' | 'experience_source',
   read: (tx: Tx, state: RunMemoryContextState) => Promise<T[]>,
-  pinItems?: (items: T[]) => MemoryContextItem[],
+  pinItems?: (items: T[], state: RunMemoryContextState) => MemoryContextItem[],
 ) {
   return withRun(auth, async (tx, raw) => {
     if (
@@ -191,13 +191,14 @@ export async function readRunMemoryContext<T>(
     const bytes = memoryContextBytes(result);
     if (bytes > maximum)
       throw new MemoryContextError('MEMORY_CONTEXT_BUDGET_EXHAUSTED');
+    const issuedItems = pinItems?.(items, state) ?? [];
     await save(tx, auth.scope.runId, {
       ...state,
-      ...(pinItems
+      ...(issuedItems.length
         ? {
             confirmedPins: mergeConfirmedMemoryPins(
               state.confirmedPins ?? [],
-              pinItems(items),
+              issuedItems,
             ),
           }
         : {}),
