@@ -47,7 +47,7 @@ import { POST as stopCloudOperations } from '../../../apps/web/app/api/v1/runtim
 import { POST as decideNativeApproval } from '../../../apps/web/app/api/v1/runtime/approvals/[id]/route.ts';
 import { requestNativeActionApproval } from '../../../apps/web/lib/execution/native-action-approval.ts';
 
-/* global process, URL, fetch, Request */
+/* global process, URL, fetch, Request, AbortController */
 
 // Real PostgreSQL, production DSH approval, Broker and owned MCP HTTP. Only
 // the model, login/session-pin issuer and fixed service identity are fixtures;
