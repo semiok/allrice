@@ -760,3 +760,13 @@ MET-230 controls C3（既定 N4 A）：普通员工既有 command pump 以真实
 C3 拒收回执修复：原生公开 `remoteErrorOf`/RemoteError 的七个明确准入拒收码经既有 `subagents/control` result 传递，client 以 C1 ResultSchema 校验后投影 rejected；SDK 的普通 error 帧会丢失类型，不能从错误文案推断。成功 ACK 不变，cancelled/internal、网络、超时及丢 ACK 仍 unknown，不重投。只对齐单向回执账本，不增加公司策略、执行状态或队列；实际 SDK 行协议与 OS stdio 的红绿对照随测试保留。MET-225 沿用既有网页子级控制行。
 
 C3 云执行并发锁序修复（2026-10-31 Dev 已复现）：共用事务准入按既有 703 → runtime root → Job 顺序取得锁，与云 ledger 的 runtime root → Run/policy/Job 及队列完成顺序一致；可选 task clock 不存在时也先进入同一 root 行锁。有效 ask 的审批创建/批准经同一策略前置入口先锁 root；不能在已持 root 的云事务后取得 703。保留原租户、策略、当前 Run/Job/租约检查与锁模式，不吞异常、不重试，不改 DSH interrupt、ACK 或父子生命周期。归属门卫/租约；真实 PostgreSQL 的 cloud create/dispatch/start/heartbeat、有效 ask 的审批创建/批准与 Stop/prompt/空 poll 双事务回归见 `conversation/native-subagent-control.integration.test.ts`，同时保留 publication 并发与撤权拒绝。MET-225 更新“网页子级控制”行。
+
+### MET-248 S-P1：原生高风险动作确认
+
+`allrice-native-action-approval-v1` 直接使用 `@deepseek-ai/dsh-user-approval` 的公开 `ApprovalService.request`、`setApprovalPolicy` 和 `approval/request` waterfall。只有当前普通员工根工具调用借用临时答复者；DSH 的 request、signal、asked/decided 与 allowed-once/rejected/cancelled/unavailable 决定唯一生命周期，调用结束即撤除答复者和 live 验证接缝。root 的 ask 不改变原生委派给 child 的 never，也不接定时入口。
+
+AllRice 的差异归门卫及原有单向账本：真实网页登录身份经固定 Worker 内部地址重核，当前 owned Host/root/generation/Run 和精确 request/version/digest/actor 绑定后才答；冻结 connection/tool/endpoint/参数和权限、原 Job lease、同次 live allowed-once 同时满足才派发。PG 不创建 pending 行，只投影原生已决定的响应，批准行单独不能派发。拒绝、取消或无答复者通过原 ledger 的 never-dispatched 接缝结束并释放预留；有 lease/START/unknown 时不能写成 effects:none 或重新批准重发。普通未纳入 MCP 入口保持现状。
+
+唯一效果适配是固定自有 `records.append(value<=100)`，基于服务端固定身份和 tool digest 及原冻结绑定识别，不信外部工具自报 readOnly 或相同名字。展示必须与准确原参数一致，原端点从冻结 binding 识别；脱敏后不能显示内容则拒绝。真实自有 HTTPS 地址、部署归属与工具身份尚未提供，身份函数明确返回 null，生产新分支尚未启用；测试仅替换固定身份并用自有 HTTP fixture，不代表真实用户验收。
+
+依据为原 SIMPLIFIED A3/A6/§6.1 及 MET-248 已批准首片/评论 `65ee4e89-87ba-4b0b-af25-eebc1134c4a0`。升级时核对同一 request 对象进入 waterfall、原生取消及 decided 语义、root/child policy 隔离、公开 Cordis handler 释放、managed MCP RPC 等待包络及原 attempt/START 一次消费。DSH 若提供等价认证 answer port，可替换本传输门卫；保留 SaaS 身份与精确业务绑定。无私有接口或新表/状态。

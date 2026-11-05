@@ -35,6 +35,7 @@ export interface HarnessToolCall {
   name: string;
   arguments: Record<string, unknown>;
   nativeSessionId?: string;
+  nativeActionApproval?: import('@allrice/contracts').NativeActionApprovalPort;
 }
 
 export interface HarnessToolDefinition {
@@ -287,6 +288,11 @@ export interface HarnessRuntimeProcessSnapshot {
  * into the provider runtime.
  */
 export interface HarnessAdapter {
+  nativeActionApproval?(
+    target: import('@allrice/database').NativeSubagentQueryTarget,
+    query: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<Record<string, unknown> | undefined>;
   readonly kind: 'codex' | 'dsh';
   readonly capabilities: HarnessCapabilities;
   /** Who mutates the live context window; ChatFlow still owns checkpoints. */

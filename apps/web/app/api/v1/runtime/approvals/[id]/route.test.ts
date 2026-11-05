@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { RuntimePolicyError } from '@allrice/database';
 import type * as DatabaseModule from '@allrice/database';
 import { GET, POST, DELETE } from './route';
 
@@ -7,6 +8,13 @@ const ports = vi.hoisted(() => ({
   decide: vi.fn(),
   revoke: vi.fn(),
   context: vi.fn(),
+  nativeTarget: vi.fn(),
+  nativeExchange: vi.fn(),
+  nativeCompleted: vi.fn(),
+}));
+vi.mock('../../../../../../lib/execution/native-action-approval', () => ({
+  requestNativeActionApproval: ports.nativeExchange,
+  completedNativeActionResponse: ports.nativeCompleted,
 }));
 vi.mock('../../../../../../lib/identity/session', () => ({
   getRequestContext: ports.context,
@@ -16,6 +24,7 @@ vi.mock('@allrice/database', async (original) => ({
   getRuntimeActionApproval: ports.get,
   decideRuntimeActionApproval: ports.decide,
   revokeRuntimeActionApproval: ports.revoke,
+  getNativeMcpApprovalTarget: ports.nativeTarget,
 }));
 const params = {
   params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }),
@@ -36,6 +45,10 @@ describe('runtime approval HTTP boundary', () => {
     vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
     vi.clearAllMocks();
     ports.context.mockResolvedValue(context);
+    ports.nativeTarget.mockResolvedValue(null);
+    ports.nativeCompleted.mockRejectedValue(
+      new RuntimePolicyError('native_action_unavailable'),
+    );
   });
   afterEach(() => vi.unstubAllEnvs());
   it('default-off route does not authenticate or touch approval state', async () => {
@@ -122,5 +135,48 @@ describe('runtime approval HTTP boundary', () => {
       revoked: true,
       executionStopped: false,
     });
+  });
+  it('native approval forwards the exact response to its live Host and never calls the PG decision writer', async () => {
+    ports.nativeTarget.mockResolvedValue({
+      approvalId: (await params.params).id,
+    });
+    const input = { decision: 'approved', requestDigest: 'frozen-digest' };
+    ports.nativeExchange.mockResolvedValue({ response: input });
+    const result = await POST(request(input), params);
+    expect(result.status).toBe(200);
+    expect(ports.nativeExchange).toHaveBeenCalledWith(
+      context,
+      (await params.params).id,
+      'answer',
+      input,
+    );
+    expect(ports.decide).not.toHaveBeenCalled();
+  });
+  it('missing live native approval cannot fall back to an old PG approved decision', async () => {
+    ports.nativeTarget.mockResolvedValue({
+      approvalId: (await params.params).id,
+    });
+    ports.nativeExchange.mockRejectedValue(
+      new RuntimePolicyError('native_action_unavailable'),
+    );
+    ports.get.mockResolvedValue({ response: { decision: 'approved' } });
+    expect((await POST(request({ decision: 'approved' }), params)).status).toBe(
+      403,
+    );
+    expect(ports.decide).not.toHaveBeenCalled();
+  });
+  it('an exact completed native response retry acknowledges its receipt without reviving approval', async () => {
+    ports.nativeTarget.mockResolvedValue({
+      approvalId: (await params.params).id,
+    });
+    ports.nativeExchange.mockRejectedValue(
+      new RuntimePolicyError('native_action_unavailable'),
+    );
+    ports.nativeCompleted.mockResolvedValueOnce({
+      response: { decision: 'approved' },
+    });
+    const result = await POST(request({ decision: 'approved' }), params);
+    expect(result.status).toBe(200);
+    expect(ports.decide).not.toHaveBeenCalled();
   });
 });

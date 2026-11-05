@@ -189,7 +189,6 @@
 
 - id: native-approval
   name: '@deepseek-ai/dsh-user-approval'
-  disabled: !!js process.env.ALLRICE_NATIVE_SUBAGENTS === undefined
   config: { policy: never }
 
 - id: native-tool-subagent

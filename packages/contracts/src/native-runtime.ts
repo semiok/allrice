@@ -1,5 +1,12 @@
 /** Native adapters use this explicit runtime boundary. Keep the existing
  * definitions and shared module instances; never re-export the root index. */
+export { NativeActionApprovalResultSchema } from './native-action-approval.ts';
+export {
+  RuntimeActionApprovalRequestSchema,
+  RuntimeActionApprovalResponseSchema,
+  matchesRuntimeInteractionResponse,
+} from './runtime-v2/interactions.ts';
+export { runtimeContractEqual } from './runtime-v2/identity.ts';
 export { ModelTransportFailureCodeSchema } from './model-diagnostics.ts';
 export { NativeSubagentSummarySchema } from './native-subagent-summary.ts';
 export {

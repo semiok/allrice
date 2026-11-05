@@ -12,6 +12,10 @@ import {
   runtimeContractEqual,
   type ExecutionContext,
   type RuntimeActionBinding,
+  type NativeActionApprovalPort,
+  type NativeActionApprovalResult,
+  NativeActionApprovalResultSchema,
+  type RequestContext,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
 import { createMcpStore } from './mcp-connections.ts';
@@ -25,6 +29,9 @@ import { ensureRuntimeOperationRoot } from './runtime-ledger/root-service.ts';
 import {
   createRuntimePolicyAdmission,
   requestRuntimeActionApproval,
+  prepareNativeRuntimeActionApproval,
+  recordNativeRuntimeActionDecision,
+  assertRuntimePolicyIdentity,
   RuntimePolicyError,
   runtimePolicyDigest as digest,
   type RuntimePolicyPrincipal,
@@ -37,6 +44,12 @@ import {
   mcpExecutionTargetId,
   mcpStableId,
 } from './mcp-authority.ts';
+import {
+  isOwnedRecordAppend,
+  isOwnedRecordAppendBinding,
+  assertNativeActionDisplay,
+} from './mcp-owned-records.ts';
+import { ownedRecordsServiceIdentity } from './mcp-owned-records-service.ts';
 
 type Database = ReturnType<typeof getDatabase>;
 const snapshotSchema = z.object({
@@ -48,10 +61,41 @@ const snapshotSchema = z.object({
 export function createMcpOperationLedger(
   context: RuntimePolicyPrincipal,
   database: Database = getDatabase(),
+  liveNative?: () =>
+    | { result: NativeActionApprovalResult; assertLive(): Promise<void> }
+    | undefined,
 ) {
   if (!context.workspaceId) throw new RuntimePolicyError('mcp_binding_denied');
   const policyOptions = {
     context,
+    nativeConfirmation: async ({
+      transaction,
+      binding,
+      phase,
+    }: {
+      transaction: Parameters<typeof checkMcpBindingAuthority>[0];
+      binding: RuntimeActionBinding;
+      phase: 'create' | 'dispatch' | 'heartbeat';
+    }) => {
+      if (!ownedRecordsServiceIdentity()) return false;
+      const { payload } = await checkMcpBindingAuthority(
+        transaction,
+        context,
+        binding,
+      );
+      const required = isOwnedRecordAppendBinding(binding, payload);
+      if (required && phase === 'dispatch') {
+        const grant = liveNative?.();
+        if (
+          !grant ||
+          grant.result.outcome !== 'allowed-once' ||
+          !runtimeContractEqual(grant.result.request.binding, binding)
+        )
+          throw new RuntimePolicyError('approval_required');
+        await grant.assertLive();
+      }
+      return required;
+    },
     resolveCurrentBinding: async ({
       transaction,
       binding,
@@ -67,6 +111,23 @@ export function createMcpOperationLedger(
     createRuntimeOperationLedger({
       database,
       admission: createRuntimePolicyAdmission(policyOptions),
+      assertUndispatchedStop: async ({ transaction, binding }) => {
+        const [stored] = await transaction<
+          { payload: unknown; binding: unknown }[]
+        >`
+          select payload,binding from allrice_mcp_execution_inputs where operation_id=${binding.attempt.operationId}
+            and organization_id=${context.organizationId} and workspace_id=${context.workspaceId}
+            and owner_id=${context.actor.id}`;
+        if (
+          !stored ||
+          !runtimeContractEqual(stored.binding, binding) ||
+          !isOwnedRecordAppendBinding(
+            binding,
+            McpExecutionPayloadSchema.parse(stored.payload),
+          )
+        )
+          throw new RuntimePolicyError('native_action_not_applicable');
+      },
       persistLease: async ({ transaction, lease }) => {
         if (lease.snapshot.binding.action !== 'cloud.mcp.call')
           throw new RuntimePolicyError('mcp_binding_denied');
@@ -228,6 +289,15 @@ export async function createMcpRuntimeOperation(
     tool,
     arguments: args.arguments,
   });
+  const native = isOwnedRecordAppend(endpoint, payload);
+  if (native) {
+    const displayed = await createMcpStore({ database }).redactForDisplay(
+      scope,
+      tool.connectionId,
+      payload.arguments,
+    );
+    assertNativeActionDisplay(payload.arguments, displayed);
+  }
   const key = `mcp-call:${ctx.runId}:${input.callId}`,
     operationId = mcpStableId(key),
     targetId = mcpExecutionTargetId(tool.connectionId);
@@ -301,7 +371,14 @@ export async function createMcpRuntimeOperation(
     workspaceId: ctx.workspaceId,
     requestId: randomUUID(),
   };
-  const ledger = createMcpOperationLedger(principal, database);
+  let liveNative:
+    | { result: NativeActionApprovalResult; assertLive(): Promise<void> }
+    | undefined;
+  const ledger = createMcpOperationLedger(
+    principal,
+    database,
+    () => liveNative,
+  );
   const budgets = await ensureRuntimeOperationRoot(
     ledger,
     binding.task,
@@ -338,7 +415,14 @@ export async function createMcpRuntimeOperation(
     binding.attempt.operationId,
     input.callId,
   );
-  if (snapshot.status === 'waiting_user')
+  const nativeApproval = native
+    ? await prepareNativeRuntimeActionApproval(
+        ledger.policyOptions,
+        binding,
+        database,
+      )
+    : null;
+  if (!native && snapshot.status === 'waiting_user')
     await requestRuntimeActionApproval(
       ledger.policyOptions,
       binding,
@@ -355,5 +439,87 @@ export async function createMcpRuntimeOperation(
     deadlineAt: run.timeout_at.toISOString(),
     context: ctx,
     jobLeaseToken: run.lease_token,
+    nativeApproval,
+    async assertNativeDispatch() {
+      if (!nativeApproval) return;
+      if (!liveNative) throw new RuntimePolicyError('approval_required');
+      await liveNative.assertLive();
+    },
+    async confirmNativeAction(port: NativeActionApprovalPort | undefined) {
+      if (!nativeApproval)
+        throw new RuntimePolicyError('native_action_not_applicable');
+      const result = NativeActionApprovalResultSchema.parse(
+        port
+          ? await port.request(nativeApproval.request)
+          : {
+              outcome: 'unavailable' as const,
+              request: nativeApproval.request,
+              response: null,
+            },
+      );
+      await recordNativeRuntimeActionDecision(
+        ledger.policyOptions,
+        nativeApproval,
+        result,
+        database,
+      );
+      if (result.outcome === 'allowed-once' && port)
+        liveNative = {
+          result,
+          assertLive: () => port.assertLive(result.request.requestId),
+        };
+      else
+        await ledger.stopUndispatchedOperation(
+          binding.task.scope,
+          operationId,
+          mcpStableId(`${result.request.requestId}:stop`),
+        );
+      return result.outcome;
+    },
+    async stopNativeAction() {
+      if (!nativeApproval)
+        throw new RuntimePolicyError('native_action_not_applicable');
+      return ledger.stopUndispatchedOperation(
+        binding.task.scope,
+        operationId,
+        mcpStableId(`${nativeApproval.request.requestId}:stop`),
+      );
+    },
   };
+}
+
+/** Authenticated locator only. A display/answer request cannot select another
+ * root using its submitted task. No cold Host or approval is created here. */
+export async function getNativeMcpApprovalTarget(
+  context: RequestContext,
+  operationId: string,
+  database: Database = getDatabase(),
+) {
+  if (!ownedRecordsServiceIdentity()) return null;
+  return database.begin(async (tx) => {
+    await assertRuntimePolicyIdentity(tx, context, false, false);
+    const [row] = await tx<{ binding: unknown; payload: unknown }[]>`
+      select i.binding,i.payload from allrice_mcp_execution_inputs i
+      where i.operation_id=${operationId} and i.organization_id=${context.organizationId}
+        and i.workspace_id=${context.workspaceId} and i.owner_id=${context.actor.id}`;
+    if (!row) return null;
+    const binding = RuntimeActionBindingSchema.parse(row.binding);
+    const payload = McpExecutionPayloadSchema.parse(row.payload);
+    if (!isOwnedRecordAppendBinding(binding, payload)) return null;
+    const displayed = await createMcpStore({ database }).redactForDisplay(
+      {
+        organizationId: context.organizationId,
+        workspaceId: context.workspaceId!,
+        actorId: context.actor.id,
+      },
+      payload.tool.connectionId,
+      payload.arguments,
+    );
+    return {
+      sessionId: binding.task.chatSessionId,
+      runId: binding.task.runId,
+      approvalId: binding.attempt.operationId,
+      displayable: digest(displayed) === digest(payload.arguments),
+    };
+  });
 }

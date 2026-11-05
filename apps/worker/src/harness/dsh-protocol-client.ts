@@ -457,6 +457,14 @@ export class DshProtocolClient {
     }>;
   }
 
+  nativeActionApproval(kind: string, params: Record<string, unknown>) {
+    return this.request(
+      `native-action/${kind}`,
+      params,
+      kind === 'request' ? 0 : 15_000,
+    );
+  }
+
   async questionReply(input: {
     sessionId: string;
     callId: string;

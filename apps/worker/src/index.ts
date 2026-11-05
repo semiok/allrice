@@ -18,6 +18,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createNativeRunDiagnosticsHttpHandler } from './native-run-diagnostics-http.js';
+import { createNativeActionApprovalHttpHandler } from './native-action-approval-http.js';
 import { createWorkerReadinessResponder } from './worker-readiness.js';
 
 import {
@@ -433,7 +434,12 @@ const nativeRunDiagnosticsHttp = createNativeRunDiagnosticsHttpHandler(
   httpAborter.signal,
 );
 const respondWorkerReadiness = createWorkerReadinessResponder();
+const nativeActionApprovalHttp = createNativeActionApprovalHttpHandler(
+  undefined,
+  httpAborter.signal,
+);
 const server = createServer(async (request, response) => {
+  if (await nativeActionApprovalHttp(request, response, stopping)) return;
   if (await nativeRunDiagnosticsHttp(request, response, stopping)) return;
   response.setHeader('content-type', 'application/json; charset=utf-8');
   if (/^[a-f0-9]{40}$/.test(process.env.ALLRICE_RELEASE_SHA ?? ''))

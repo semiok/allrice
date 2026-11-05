@@ -75,7 +75,30 @@ export async function runMcpRuntimeOperation(
     { lease_token: string; result: StoredResult | null }[]
   >`select lease_token,result from allrice_mcp_execution_attempts where operation_id=${operationId}`;
   let leaseToken = prior?.lease_token;
-  if (!leaseToken) {
+  if (created.nativeApproval && !prior?.result) {
+    try {
+      options.signal?.throwIfAborted();
+      await created.assertNativeDispatch();
+      if (!(await workerCurrent(created, db))) {
+        await created.stopNativeAction().catch(() => undefined);
+        return response('blocked', '', 'MCP_WORKER_LEASE_LOST');
+      }
+      if (!leaseToken)
+        leaseToken = (
+          await ledger.dispatch({
+            scope,
+            operationId,
+            leaseOwner: created.context.worker.id,
+            leaseMs: 15000,
+          })
+        ).leaseToken;
+    } catch {
+      // This succeeds only before any dispatch/START and cannot erase an
+      // issued lease or unknown effects after a lost dispatch ACK.
+      await created.stopNativeAction().catch(() => undefined);
+      return response('blocked', '', 'MCP_NATIVE_APPROVAL_UNAVAILABLE');
+    }
+  } else if (!leaseToken) {
     while (
       await taskDeadlineOpen(db, binding.task.rootRunId, created.deadlineAt)
     ) {

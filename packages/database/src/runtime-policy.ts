@@ -27,6 +27,7 @@ import {
   type RuntimeActionApprovalRequest,
   type RuntimeActionApprovalResponse,
   type RuntimeActionBinding,
+  type NativeActionApprovalResult,
 } from '@allrice/contracts';
 import type postgres from 'postgres';
 
@@ -557,6 +558,13 @@ export type RuntimePolicyOptions = {
     lock?: boolean;
   }) => Promise<RuntimeActionBinding>;
   platformDeniedActions?: readonly string[];
+  /** Host-only native adapter. True forces create to wait even for member
+   * Allow; dispatch must additionally hold this invocation's live grant. */
+  nativeConfirmation?: (input: {
+    transaction: Transaction;
+    binding: RuntimeActionBinding;
+    phase: 'create' | 'dispatch' | 'heartbeat';
+  }) => Promise<boolean>;
 };
 
 async function lockPolicyBindingOperations(
@@ -616,6 +624,7 @@ export function createRuntimePolicyAdmission(options: RuntimePolicyOptions) {
     );
     if (decision.effect === 'deny')
       throw new RuntimePolicyError(decision.reason);
+    const native = await options.nativeConfirmation?.(input);
     // First create admission precedes insertion; the second is in the same
     // transaction after insertion. Only that final admission stores this fact.
     if (input.phase === 'create' && memberAutomation?.available) {
@@ -651,10 +660,11 @@ export function createRuntimePolicyAdmission(options: RuntimePolicyOptions) {
     if (policyExpiresAt <= now)
       throw new RuntimePolicyError('frozen_policy_invalid');
     if (!row) {
-      if (decision.effect === 'allow') return;
+      if (decision.effect === 'allow' && !native) return;
       if (input.phase === 'create') return { status: 'waiting_user' };
       throw new RuntimePolicyError('approval_required');
     }
+    if (native && input.phase === 'create') return { status: 'waiting_user' };
     // An administrator's later Allow does not erase this operation's old
     // rejection/revocation/expiry. Replanning requires a new operation identity.
     const request = RuntimeActionApprovalRequestSchema.parse(
@@ -742,6 +752,172 @@ export async function operationWorkAutomation(
         settings: WorkAutomationSchema.parse(row.member_automation.settings),
       }
     : null;
+}
+
+export type NativeRuntimeActionPreparation = {
+  request: RuntimeActionApprovalRequest;
+  controlVersion: number;
+};
+
+/** Prepare display/correlation facts only. There is deliberately no PG
+ * pending approval: DSH owns the live request and its cancellation. */
+export async function prepareNativeRuntimeActionApproval(
+  options: RuntimePolicyOptions,
+  bindingInput: RuntimeActionBinding,
+  database: Database = getDatabase(),
+): Promise<NativeRuntimeActionPreparation> {
+  return database.begin(async (tx) => {
+    const [root] = await tx<{ deadline_at: Date }[]>`
+      select deadline_at from allrice_runtime_roots
+      where root_run_id=${bindingInput.task.rootRunId}
+        and organization_id=${options.context.organizationId}
+        and workspace_id=${options.context.workspaceId} for update`;
+    await tx`select id from allrice_runtime_operations where id=${bindingInput.attempt.operationId} for update`;
+    await options.lockCurrentBinding?.({
+      transaction: tx,
+      binding: bindingInput,
+    });
+    const controls = await controlsFor(tx, options.context);
+    await identity(tx, options.context);
+    const { binding, policyExpiresAt } = await checkBinding(
+      tx,
+      options.context,
+      bindingInput,
+      options.resolveCurrentBinding,
+    );
+    const decision = evaluateRuntimePolicy(
+      controls,
+      binding,
+      options.platformDeniedActions,
+      (await operationWorkAutomation(tx, binding.attempt.operationId))
+        ?.settings,
+    );
+    if (decision.effect === 'deny')
+      throw new RuntimePolicyError(decision.reason);
+    if (
+      !root ||
+      !(await options.nativeConfirmation?.({
+        transaction: tx,
+        binding,
+        phase: 'create',
+      }))
+    )
+      throw new RuntimePolicyError('native_action_not_applicable');
+    const [old] = await tx`select id from allrice_approval_requests
+      where resource_type='runtime_operation' and resource_id=${binding.attempt.operationId}`;
+    if (old)
+      throw new RuntimePolicyError('native_action_requires_fresh_operation');
+    const now = await clock(tx);
+    const expiresAt = new Date(
+      Math.min(
+        now.getTime() + 3_600_000,
+        policyExpiresAt.getTime(),
+        root.deadline_at.getTime(),
+      ),
+    );
+    if (expiresAt <= now)
+      throw new RuntimePolicyError('approval_invalid_or_stale');
+    const request = RuntimeActionApprovalRequestSchema.parse({
+      contractVersion: 1,
+      direction: 'request',
+      kind: 'action_approval',
+      requestId: randomUUID(),
+      version: 1,
+      requestDigest: runtimePolicyDigest(binding),
+      task: binding.task,
+      respondentId: options.context.actor.id,
+      createdAt: now.toISOString(),
+      expiresAt: expiresAt.toISOString(),
+      // Lets the authenticated route locate the owned operation without
+      // trusting a submitted task/root or inventing another waiting table.
+      approvalId: binding.attempt.operationId,
+      binding,
+    });
+    await options.assertFinalBinding?.({ transaction: tx, binding });
+    return { request, controlVersion: controls.version };
+  }) as Promise<NativeRuntimeActionPreparation>;
+}
+
+/** One-way native decision projection. An approved row is not sufficient for
+ * dispatch: the adapter must still possess this call's live native outcome. */
+export async function recordNativeRuntimeActionDecision(
+  options: RuntimePolicyOptions,
+  prepared: NativeRuntimeActionPreparation,
+  result: NativeActionApprovalResult,
+  database: Database = getDatabase(),
+) {
+  if (!runtimeContractEqual(result.request, prepared.request))
+    throw new RuntimePolicyError('approval_binding_mismatch');
+  return database.begin(async (tx) => {
+    const request = prepared.request,
+      binding = request.binding;
+    await tx`select root_run_id from allrice_runtime_roots where root_run_id=${binding.task.rootRunId}
+      and organization_id=${options.context.organizationId} and workspace_id=${options.context.workspaceId} for update`;
+    await tx`select id from allrice_runtime_operations where id=${binding.attempt.operationId} for update`;
+    await options.lockCurrentBinding?.({ transaction: tx, binding });
+    const controls = await controlsFor(tx, options.context);
+    await identity(tx, options.context);
+    const now = await clock(tx);
+    const allowed = result.outcome === 'allowed-once';
+    if (allowed) {
+      await checkBinding(
+        tx,
+        options.context,
+        binding,
+        options.resolveCurrentBinding,
+      );
+      if (
+        controls.version !== prepared.controlVersion ||
+        Date.parse(request.expiresAt) <= now.getTime() ||
+        evaluateRuntimePolicy(controls, binding, options.platformDeniedActions)
+          .effect === 'deny'
+      )
+        throw new RuntimePolicyError('approval_invalid_or_stale');
+    }
+    const response =
+      result.response && ['allowed-once', 'rejected'].includes(result.outcome)
+        ? RuntimeActionApprovalResponseSchema.parse({
+            ...result.response,
+            respondedAt: now.toISOString(),
+          })
+        : null;
+    if (
+      (allowed && response?.decision !== 'approved') ||
+      (response &&
+        result.outcome === 'rejected' &&
+        response.decision !== 'rejected') ||
+      (response &&
+        !matchesRuntimeInteractionResponse(request, response, {
+          trustedScope: binding.task.scope,
+          task: binding.task,
+          respondentId: options.context.actor.id,
+          activeTurn: null,
+          now: now.toISOString(),
+        }))
+    )
+      throw new RuntimePolicyError('approval_response_mismatch');
+    if (response) {
+      await tx`insert into allrice_approval_requests
+        (id,organization_id,workspace_id,run_id,actor_id,resource_type,resource_id,action,
+         input_digest,requested_at,status,decided_by,decided_at,runtime_request,runtime_response,
+         runtime_binding_digest,runtime_control_version,runtime_expires_at)
+        values (${request.approvalId},${options.context.organizationId},${options.context.workspaceId},
+          ${binding.task.runId},${options.context.actor.id},'runtime_operation',${binding.attempt.operationId},
+          ${binding.action},${binding.inputDigest},${request.createdAt},${response.decision},
+          ${options.context.actor.id},${now},${tx.json(request)},${tx.json(response)},
+          ${request.requestDigest},${prepared.controlVersion},${request.expiresAt})`;
+    }
+    await audit(
+      tx,
+      options.context,
+      binding.attempt.operationId,
+      'runtime.approval.native_decided',
+      result.outcome,
+      { approvalId: request.approvalId, digest: request.requestDigest },
+    );
+    await options.assertFinalBinding?.({ transaction: tx, binding });
+    return response;
+  });
 }
 
 export async function requestRuntimeActionApproval(

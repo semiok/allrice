@@ -1,5 +1,6 @@
 export * from './employee-memory-management.ts';
 export * from './base-rice.ts';
+export * from './native-action-approval.ts';
 export * from './image-generation.ts';
 export * from './native-run-diagnostics.ts';
 export * from './static-browser.ts';

@@ -7,6 +7,7 @@ import {
 import { UuidSchema } from '@allrice/contracts';
 import { requireRequestContext } from '../../../../../lib/identity/session';
 import { sameOriginBrowserWrite } from '../../../../../lib/identity/request-origin';
+import { projectNativeActionApprovals } from '../../../../../lib/execution/native-action-approval';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 const headers = { 'Cache-Control': 'private, no-store' };
@@ -67,7 +68,12 @@ async function handle(request: Request, cancel: boolean) {
     return Response.json(
       cancel
         ? await cancelCloudRuntimeRun(scoped, run.data)
-        : { operations: await listCloudRuntimeOperations(scoped, run.data) },
+        : {
+            operations: await projectNativeActionApprovals(
+              scoped,
+              await listCloudRuntimeOperations(scoped, run.data),
+            ),
+          },
       { headers },
     );
   } catch (error) {

@@ -6,8 +6,6 @@
     maxActiveSubagents: !!js Number(process.env.PR0_MAX_ACTIVE ?? 8)
 - name: '@deepseek-ai/dsh-subagent-spawn-in-process'
 - name: '@deepseek-ai/dsh-subagent-fork-in-process'
-- name: '@deepseek-ai/dsh-user-approval'
-  config: { policy: never }
 - id: native-session-query
   name: '@deepseek-ai/dsh-session-query-sqlite'
   config: { path: ':memory:', openAt: never }
