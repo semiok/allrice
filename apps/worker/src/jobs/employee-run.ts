@@ -3,6 +3,7 @@ import { admitsRootNativeFileRead } from '../native-file-read-admission.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { createJobNativeBinding } from '../harness/native-session-binding.js';
 import { documentDeliveryGuard } from './document-delivery.js';
+import { admitEmployeeDocuments } from './employee-document-admission.js';
 import { LocalStorageAdapter } from '@allrice/storage';
 
 import {
@@ -299,6 +300,21 @@ export async function executeEmployeeRun({
     sessionId: input.sessionId,
     runId: execution.context.runId,
   };
+  const changesetRun = await getChangesetRun(
+    {
+      actor: execution.context.delegatedBy,
+      organizationId: execution.context.organizationId,
+      workspaceId: execution.context.workspaceId,
+    },
+    input.sessionId,
+    execution.context.runId,
+  );
+  if (!repairTask && !repositoryReviewTask && !changesetRun)
+    await admitEmployeeDocuments({
+      context: execution.context,
+      userMessageId,
+      documents: !!resolved.promptSnapshot.employeeDocuments,
+    });
   let contentRuntime: Awaited<ReturnType<typeof prepareEmployeeContentContext>>;
   try {
     const experience = resolved.promptSnapshot.employeeDocuments
@@ -792,17 +808,7 @@ export async function executeEmployeeRun({
         false,
       );
     }
-    if (
-      await getChangesetRun(
-        {
-          actor: execution.context.delegatedBy,
-          organizationId: execution.context.organizationId,
-          workspaceId: execution.context.workspaceId,
-        },
-        input.sessionId,
-        execution.context.runId,
-      )
-    ) {
+    if (changesetRun) {
       const result = await executeChangesetRun({
         execution,
         isolation,
@@ -1588,8 +1594,14 @@ export async function executeEmployeeRun({
                     generation,
                   },
                 });
-                if (routedKernel.employeeDocuments)
+                if (routedKernel.employeeDocuments) {
+                  await admitEmployeeDocuments({
+                    context: execution.context,
+                    userMessageId,
+                    documents: true,
+                  });
                   await assertRunMemoryContextCurrent(contentScope);
+                }
                 return authority;
               },
             }

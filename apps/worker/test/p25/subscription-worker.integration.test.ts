@@ -1,3 +1,4 @@
+import { freezeEmployeeDocuments } from '../../../../packages/database/src/employees/employee-documents.ts';
 /** Actual ordinary Worker + isolated PG; native acquisition is forbidden and
  * the adapter supplies synthetic usage. No provider or credential is read. */
 import { createHash, randomUUID } from 'node:crypto';
@@ -28,7 +29,7 @@ import { LocalStorageAdapter } from '@allrice/storage';
 
 const status = vi.hoisted(() => ({
   quota: undefined as unknown,
-  frozenMemories: undefined as { id: string; content: string }[] | undefined,
+  frozenDocument: undefined as Awaited<ReturnType<typeof freezeEmployeeDocuments>> | undefined,
 }));
 vi.mock('@allrice/database', async (original) => {
   const database = await original<typeof Database>();
@@ -38,12 +39,13 @@ vi.mock('@allrice/database', async (original) => {
       ...args: Parameters<typeof Database.resolveEmployeeExecution>
     ) => {
       const resolved = await database.resolveEmployeeExecution(...args);
-      return status.frozenMemories
+      return status.frozenDocument
         ? {
             ...resolved,
             promptSnapshot: {
               ...resolved.promptSnapshot,
-              memories: status.frozenMemories,
+              memories: status.frozenDocument.memories,
+              employeeDocuments: status.frozenDocument.employeeDocuments,
             },
           }
         : resolved;
@@ -64,7 +66,7 @@ integration(
   () => {
     beforeEach(() => {
       status.quota = undefined;
-      status.frozenMemories = undefined;
+      status.frozenDocument = undefined;
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
       vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
       // Any accidental subscription cash estimation would throw, not silently 0.
@@ -227,15 +229,15 @@ integration(
                 expiresAt: null,
               },
             );
-            // The queue ordering is covered in the DB integration; this exercises
-            // the actual Worker sink with a frozen, now-ineligible memory.
-            // Supply the already-frozen array at the resolver test boundary;
-            // never rewrite production-protected immutable snapshot columns.
-            status.frozenMemories = [
-              { id: draftMemory.id, content: draftMemory.content },
-              { id: ordinaryMemory.id, content: ordinaryMemory.content },
-            ];
-            await fixture.db`update allrice_employee_runs set method_authoring=true where run_id=${task.runId}`;
+            // Freeze through the real document selector at the resolver test
+            // boundary; production snapshot columns remain immutable.
+            status.frozenDocument = await freezeEmployeeDocuments(fixture.db, {
+              organizationId: fixture.context.organizationId,
+              workspaceId: fixture.workspaceId,
+              ownerId: fixture.context.actor.id,
+              instanceId: draftMemory.instanceId!,
+            }, {}, true);
+            expect(status.frozenDocument.memories.map((m) => m.id)).toEqual([ordinaryMemory.id]);
           }
           if (
             images ||
@@ -298,10 +300,10 @@ integration(
               input,
             ) {
               if (mode === 'complete') {
-                expect(input.kernel.authorizedMemoryContext).not.toContain(
+                expect(input.kernel.employeeDocuments?.memory).not.toContain(
                   'QUEUED_DRAFT_MEMORY',
                 );
-                expect(input.kernel.authorizedMemoryContext).toContain(
+                expect(input.kernel.employeeDocuments?.memory).toContain(
                   'ORDINARY_MEMORY_RETAINED',
                 );
               }

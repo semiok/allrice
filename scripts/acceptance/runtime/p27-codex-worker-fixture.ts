@@ -385,6 +385,7 @@ export async function createP27CodexWorkerFixture(
               (${assistantMessageId},${organizationId},${workspaceId},${sessionId},${ownerId},'assistant','{"text":"","citations":[]}')`;
         });
         const binding = await employees.prepareEmployeeRunBinding({
+          employeeDocuments: true,
           context,
           workspaceId,
           assignmentId,

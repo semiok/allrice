@@ -26,7 +26,7 @@ export {
   getPersonalSceneSkillResource,
   savePersonalSceneSkill,
 } from './employees/personal-scene-skills.ts';
-export { assertEmployeeChatHumanSource } from './employees/employee-chat-authority.ts';
+export { assertEmployeeChatHumanSource, readEmployeeChatSourceKind } from './employees/employee-chat-authority.ts';
 export {
   prepareEmployeeMethodActivationFromChat,
   activateEmployeeMethodFromChat,
