@@ -1,3 +1,4 @@
+import { addSkillSourceErrorReason } from './source-error-reason';
 import { EmployeeContentError, PersonalSkillError } from '@allrice/database';
 import { FileArchiveError } from '@allrice/file-archives';
 import {
@@ -7,7 +8,10 @@ import {
 import { employeeHubErrorResponse } from '../employeehub/responses';
 import { apiProblem } from '../api-problem';
 
-export function sceneSourceErrorResponse(error: unknown) {
+export function sceneSourceErrorResponse(
+  error: unknown,
+  operation: 'preview' | 'confirm',
+) {
   let response: Response;
   if (error instanceof SkillPreviewError)
     response = apiProblem({
@@ -42,7 +46,7 @@ export function sceneSourceErrorResponse(error: unknown) {
   Object.entries(sceneSourceHeaders).forEach(([key, value]) =>
     response.headers.set(key, value),
   );
-  return response;
+  return addSkillSourceErrorReason(response, error, operation);
 }
 export const sceneSourceHeaders = {
   'Cache-Control': 'private, no-store',
