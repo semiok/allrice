@@ -511,6 +511,8 @@ suite(
         await listFolderTriggerHistory(f.context, f.workspace, f.rule.id)
       ).events[0]!;
       expect(before.runId).toBeTruthy();
+      const [binding] = await database.db`select prompt_snapshot->'employeeDocuments' documents from allrice_employee_runs where run_id=${before.runId}`;
+      expect(binding!.documents).toBeNull();
       await database.db`update allrice_automation_folder_events set state='import_pending',run_id=null where id=${f.event.eventId}`;
       await updateAutomation(f.context, f.workspace, f.rule.id, {
         expectedRevision: f.rule.revision,

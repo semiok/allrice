@@ -2260,7 +2260,7 @@ export async function sendChatMessage(
       runPreparation,
       runContext,
       database,
-      true,
+      !options.folderEventId,
     );
     const { enqueueRun, getRun } = await import('../execution/queue.ts');
     const { submission, enqueueOptions } = await prepareChatRunInput(
