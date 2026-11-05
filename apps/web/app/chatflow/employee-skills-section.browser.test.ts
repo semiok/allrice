@@ -357,6 +357,25 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
       const region = f.page.getByRole('region', { name: '技能 Skill' });
       expect(await region.getByText('v0.3.0', { exact: true }).count()).toBe(1);
       expect(await region.getByText('v9', { exact: true }).count()).toBe(0);
+      for (const { modeName, expected } of [
+        { modeName: 'prefixed-version', expected: 'v0.3.0' },
+        { modeName: 'author-version', expected: 'release-candidate' },
+      ]) {
+        await mode.selectOption(modeName);
+        await region.getByText(expected, { exact: true }).waitFor();
+        await region
+          .getByRole('button', { name: '翻译校对', exact: true })
+          .click();
+        const versionDetail = f.page.getByRole('dialog', {
+          name: '翻译校对',
+          exact: true,
+        });
+        await versionDetail.getByText(expected, { exact: true }).waitFor();
+        expect(await versionDetail.getByText(/^vv|^vrelease/).count()).toBe(0);
+        await versionDetail
+          .getByRole('button', { name: '返回员工详情', exact: true })
+          .click();
+      }
       await mode.selectOption('missing-version');
       await region.getByText('未提供', { exact: true }).waitFor();
       await region
