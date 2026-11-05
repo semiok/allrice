@@ -1399,6 +1399,14 @@ suite(
           }
           await expect.poll(() => reads().length).toBeGreaterThan(0);
           await expect.poll(f.native.startupStreams).toBe(0);
+          if (outcome === 'ready') {
+            await expect
+              .poll(() =>
+                f.native.connections().filter((c) => c.sessionId === A).length,
+              )
+              .toBe(1);
+            expect(reads().length).toBe(2); // Snapshot GET and one live follow.
+          }
           expect(reads().every((url) => url.includes('liveOnly=true'))).toBe(
             true,
           );
