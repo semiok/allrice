@@ -522,6 +522,24 @@ suite('U1 employee persona card', () => {
           ).toBe(true);
           expect(state.writes).toEqual([]);
         }
+        // The final exit has no next loop iteration to prove its draft was
+        // discarded. Reopen explicitly, including Escape on a full-screen phone.
+        const reopened = await showEditor(page);
+        expect(
+          await reopened
+            .getByRole('textbox', { name: '名字', exact: true })
+            .inputValue(),
+        ).toBe('流程哥');
+        expect(
+          await reopened.getByRole('radio', { name: '鸢尾紫' }).isChecked(),
+        ).toBe(true);
+        await reopened
+          .getByRole('button', { name: '取消', exact: true })
+          .click();
+        await card
+          .getByRole('heading', { name: '流程哥', exact: true })
+          .waitFor();
+        expect(state.writes).toEqual([]);
         await writeFile(
           `${screenshotDir}/persona-editor-back-${width}.json`,
           JSON.stringify({ measured, exits, writes: state.writes }, null, 2),
