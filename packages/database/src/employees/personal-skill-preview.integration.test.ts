@@ -10,7 +10,13 @@ import {
   it,
   vi,
 } from 'vitest';
-import type { RequestContext, StoragePort } from '@allrice/contracts';
+import {
+  EmployeeSkillCatalogSchema,
+  PersonalSkillPreviewResponseSchema,
+  PersonalSkillConfirmResponseSchema,
+  type RequestContext,
+  type StoragePort,
+} from '@allrice/contracts';
 import { createFileArchive, readFileArchive } from '@allrice/file-archives';
 import { SkillPreviewTokens, parsePersonalSkill } from '@allrice/skill-import';
 import * as client from '../core/client.ts';
@@ -235,7 +241,9 @@ suite('browser Skill source preview and confirmation', () => {
       bytes ?? (await zip()),
     );
     expect(response.status).toBe(200);
-    const preview = await response.json();
+    const preview = PersonalSkillPreviewResponseSchema.parse(
+      await response.json(),
+    );
     const requestId = randomUUID();
     const applied = await confirm(
       s.owner.context,
@@ -245,7 +253,11 @@ suite('browser Skill source preview and confirmation', () => {
       requestId,
     );
     expect(applied.status).toBe(200);
-    return { preview, requestId, result: await applied.json() };
+    return {
+      preview,
+      requestId,
+      result: PersonalSkillConfirmResponseSchema.parse(await applied.json()),
+    };
   }
   async function catalogGet(
     context: RequestContext | null,

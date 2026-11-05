@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { z } from 'zod';
 import {
-  ChecksumSchema,
+  PersonalSkillConfirmRequestSchema,
+  PersonalSkillConfirmResponseSchema,
   UuidSchema,
   localFileMediaType,
   type RequestContext,
@@ -23,22 +23,13 @@ import {
 import { getStorageAdapter } from '../storage/runtime';
 import { getSkillPreviewTokens } from './personal-skill-preview';
 
-const schema = z
-  .object({
-    workspaceId: UuidSchema,
-    requestId: UuidSchema,
-    previewId: z.string().min(1),
-    digest: ChecksumSchema,
-  })
-  .strict();
-
 export async function confirmPersonalSkillSource(
   originalContext: RequestContext,
   instanceIdInput: string,
   raw: unknown,
   signal?: AbortSignal,
 ) {
-  const input = schema.parse(raw),
+  const input = PersonalSkillConfirmRequestSchema.parse(raw),
     instanceId = UuidSchema.parse(instanceIdInput);
   const context = { ...originalContext, workspaceId: input.workspaceId };
   await authorizePersonalSkillBrowser(context, instanceId);
@@ -94,7 +85,7 @@ export async function confirmPersonalSkillSource(
     context,
     confirmation,
   );
-  if (completed) return completed;
+  if (completed) return PersonalSkillConfirmResponseSchema.parse(completed);
   const storage = getStorageAdapter();
   let pending: Awaited<ReturnType<typeof createStorageMetadata>> | undefined;
   try {
@@ -111,7 +102,9 @@ export async function confirmPersonalSkillSource(
     });
     await storage.put(pending.object, new Blob([bytes]).stream());
     bounded.throwIfAborted();
-    return await confirmPersonalSkillBrowser(context, confirmation);
+    return PersonalSkillConfirmResponseSchema.parse(
+      await confirmPersonalSkillBrowser(context, confirmation),
+    );
   } finally {
     // Completed immutable objects are never claimed here. Pending duplicates,
     // rolled-back confirmations use existing cleanup. Metadata creation can
