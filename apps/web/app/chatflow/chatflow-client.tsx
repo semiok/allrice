@@ -762,11 +762,17 @@ export function ChatFlowClient({
   } = bridge;
   const bridgeReleases = useBridgeReleases(bridgeOpen, tenantHeaders);
 
+  const activeRunMessages = (history?.messages ?? []).filter(
+    (message) =>
+      message.runId && isMessageRunActive(message, runViews[message.runId]),
+  );
+  const isRunning = activeRunMessages.length > 0;
   const interactions = useInteractionStatus(
     workbenchEnabled,
     activeId,
     workspace?.workspaceId,
     tenantHeaders,
+    busy || isRunning,
   );
   const currentInteractions = useRef(interactions);
   currentInteractions.current = interactions;
@@ -1303,11 +1309,6 @@ export function ChatFlowClient({
     requestAnimationFrame(() => composerInput.current?.focus());
   }
 
-  const activeRunMessages = (history?.messages ?? []).filter(
-    (message) =>
-      message.runId && isMessageRunActive(message, runViews[message.runId]),
-  );
-  const isRunning = activeRunMessages.length > 0;
   const nativeReadyKey =
     history?.session.id === activeId
       ? nativeSubagentReadyKey(

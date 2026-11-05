@@ -13,6 +13,7 @@ export function useInteractionStatus(
   sessionId: string | null,
   workspaceId: string | undefined,
   headers: Record<string, string>,
+  localActivity = false,
 ) {
   const [value, setValue] = useState<{
       scope: string;
@@ -20,8 +21,13 @@ export function useInteractionStatus(
     } | null>(null),
     [error, setError] = useState('');
   const scope = `${workspaceId}/${sessionId}`;
-  const latestQuery = useRef({ scope, headers, workbenchEnabled });
-  latestQuery.current = { scope, headers, workbenchEnabled };
+  const latestQuery = useRef({
+    scope,
+    headers,
+    workbenchEnabled,
+    localActivity,
+  });
+  latestQuery.current = { scope, headers, workbenchEnabled, localActivity };
   const generation = useRef(0);
   const request = useRef<AbortController | null>(null);
   const nextPollAt = useRef(0);
@@ -70,6 +76,7 @@ export function useInteractionStatus(
           requestGeneration === generation.current
         ) {
           const active =
+            latestQuery.current.localActivity ||
             data.runtime?.state === 'running' ||
             data.pendingActions.length > 0 ||
             data.inputs.some((input) =>
@@ -107,7 +114,8 @@ export function useInteractionStatus(
     nextPollAt.current = 0;
     void reload(abort.signal);
     const timer = setInterval(() => {
-      if (Date.now() >= nextPollAt.current) void reload(abort.signal);
+      if (latestQuery.current.localActivity || Date.now() >= nextPollAt.current)
+        void reload(abort.signal);
     }, 2000);
     const visible = () => {
       if (document.visibilityState === 'hidden') request.current?.abort();
