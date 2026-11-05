@@ -1,3 +1,4 @@
+import { freezeEmployeeDocuments } from './employees/employee-documents.ts';
 import { createReadPathProbe } from './read-path-probe.fixture.ts';
 import type * as NativeBudget from './run-memory-context.ts';
 import {
@@ -124,6 +125,7 @@ import { loadPlatformContentCatalog } from './platform-content/catalog.ts';
 import { synchronizePlatformContent } from './platform-content/sync.ts';
 import {
   deleteWorkspaceMemory,
+  createTraceableMemory,
   searchWorkspaceMemories,
 } from './workspace/service.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
@@ -1267,8 +1269,14 @@ suite(
         '请核对名单的到场和未到人数，分项列出。',
       );
       const auth = { scope, worker: scope.worker };
-      const prepared = await prepareRunExperiences(scope, scope.worker);
-      const selected = await prepareRunMemoryContext(auth, prepared.memories);
+      const confirmed = await createTraceableMemory(f.owner, {
+        workspaceId: f.workspace, instanceId: f.instance.id, idempotencyKey: randomUUID(),
+        sourceType: 'user', content: '到场和未到人数分项列出；不得合并退款。',
+      });
+      const document = await freezeEmployeeDocuments(db, { ...scope, instanceId: f.instance.id }, {}, true);
+      await db`update allrice_employee_runs set memory_context_state='{"schemaVersion":1,"pending":true}',
+        prompt_snapshot=prompt_snapshot||${db.json({ memories: document.memories, employeeDocuments: document.employeeDocuments })} where run_id=${scope.runId}`;
+      const selected = await prepareRunMemoryContext(auth, document.memories, document.employeeDocuments.memory);
       expect(selected).toHaveLength(1);
       const handle = selected[0]!.sourceHandle!;
       expect(handle).toMatch(/^experience:sha256:/);
@@ -1302,7 +1310,7 @@ suite(
         (
           await db`select memory_context_state from allrice_employee_runs where run_id=${scope.runId}`
         )[0]!.memory_context_state;
-      return { ...f, scope, auth, selected, handle, context, state };
+      return { ...f, scope, auth, selected, handle, context, state, confirmed, document };
     }
     it('measures bounded memory with real captured feedback and supported history growth', async () => {
       const evidenceDirectory = process.env.ALLRICE_MEMORY_GROWTH_EVIDENCE_DIR;
@@ -1985,11 +1993,11 @@ suite(
           'workspace_experience_read',
         );
         const source = JSON.parse(payload);
-        expect(source.items[0].source.id).toBe(f.candidate.id);
-        expect(source.items[0].source.excerpt).toBeTruthy();
-        expect(source.items[0].source.sourceDigest).toMatch(/^sha256:/);
+        expect(source.items[0].memory.id).toBe(f.confirmed.id);
+        expect(source.items[0].memory.content).toBe(f.confirmed.content);
+        expect(source.items[0]).not.toHaveProperty('source.excerpt');
         expect(JSON.stringify(model.requests[1])).toContain(
-          source.items[0].source.excerpt,
+          source.items[0].memory.content,
         );
         expect((await f.state()).spentBytes).toBe(
           before.spentBytes + Buffer.byteLength(payload),
@@ -2042,7 +2050,7 @@ suite(
     it('charges initial complete items once, repeated and concurrent reads each time, and preserves spend on recovery', async () => {
       const f = await boundedFixture();
       const initial = await f.state();
-      expect(initial.initial.bytes).toBe(initialMemoryContextBytes(f.selected));
+      expect(initial.initial.bytes).toBe(Buffer.byteLength(f.document.employeeDocuments.memory));
       const responses = await Promise.all([
         readRunExperienceSource(f.auth, f.handle),
         readRunExperienceSource(f.auth, f.handle),
@@ -2053,7 +2061,7 @@ suite(
       );
       expect((await f.state()).toolReads).toBe(2);
       const accounted = await f.state();
-      expect(await prepareRunMemoryContext(f.auth, f.selected)).toEqual(
+      expect(await prepareRunMemoryContext(f.auth, f.selected, f.document.employeeDocuments.memory)).toEqual(
         f.selected,
       );
       expect(await f.state()).toEqual(accounted);
@@ -2172,51 +2180,34 @@ suite(
         prepareRunMemoryContext(f.auth, f.selected),
       ).rejects.toMatchObject({ code: 'MEMORY_CONTEXT_UNAVAILABLE' });
     });
-    it('falls back only to the authorized complete original and rejects withdrawn source even with a valid cache', async () => {
+    it('reads the exact confirmed revision without a vector cache, and rejects a withdrawn memory', async () => {
       const f = await boundedFixture();
       const current = await readRunExperienceSource(f.auth, f.handle);
-      expect(current.items[0]!.representation).toBe('projection');
-      await db`update allrice_rag_chunks set experience_projection=null where memory_id=${f.memory.id}`;
-      const missing = await readRunExperienceSource(f.auth, f.handle);
-      expect(missing.items[0]!.representation).toBe('original');
-      expect(missing.items[0]!.source).toEqual(current.items[0]!.source);
+      expect(current.items[0]!.memory.id).toBe(f.confirmed.id);
+      await db`delete from allrice_rag_chunks where memory_id=${f.confirmed.id}`;
+      expect((await readRunExperienceSource(f.auth, f.handle)).items).toEqual(current.items);
       await db`alter table allrice_rag_chunks rename column experience_projection to qa_unavailable_projection`;
-      try {
-        const unavailable = await readRunExperienceSource(f.auth, f.handle);
-        expect(unavailable.items[0]!.indexState).toBe('unavailable');
-        expect(unavailable.items[0]!.source).toEqual(current.items[0]!.source);
-      } finally {
-        await db`alter table allrice_rag_chunks rename column qa_unavailable_projection to experience_projection`;
-      }
-      // A malformed derived index may not revoke a valid source or become authority.
-      await db`update allrice_rag_chunks set experience_projection='{"wrong":true}' where memory_id=${f.memory.id}`;
-      expect(
-        (await readRunExperienceSource(f.auth, f.handle)).items[0]!.indexState,
-      ).toBe('outdated');
-      await db.begin((tx) =>
-        readPrivateExperience(tx, f.owner, f.memory.id).then((v) =>
-          ensureExperienceProjection(tx, v),
-        ),
-      );
+      try { expect((await readRunExperienceSource(f.auth, f.handle)).items).toEqual(current.items); }
+      finally { await db`alter table allrice_rag_chunks rename column qa_unavailable_projection to experience_projection`; }
       const before = await f.state();
-      await deleteWorkspaceMemory(f.owner, f.workspace, f.candidate.id);
-      await expect(
-        readRunExperienceSource(f.auth, f.handle),
-      ).rejects.toBeTruthy();
+      await deleteWorkspaceMemory(f.owner, f.workspace, f.confirmed.id, {
+        instanceId: f.instance.id, expectedRevision: f.confirmed.revision,
+        contentDigest: f.confirmed.contentDigest, idempotencyKey: randomUUID(),
+      });
+      await expect(readRunExperienceSource(f.auth, f.handle)).rejects.toBeTruthy();
       expect(await f.state()).toEqual(before);
     });
-    it('rechecks the exact adopted Skill before every source read', async () => {
+    it('legacy adopted Skill proof cannot grant a confirmed memory source read', async () => {
       const f = await boundedFixture(true);
-      expect(
-        (await readRunExperienceSource(f.auth, f.handle)).items[0]!.source
-          .skills,
-      ).toEqual([f.pin]);
+      const legacy = await prepareRunExperiences(f.scope, f.scope.worker);
       const before = await f.state();
-      await changeSkill(f, 'disable');
-      await expect(
-        readRunExperienceSource(f.auth, f.handle),
-      ).rejects.toBeTruthy();
+      await expect(readRunExperienceSource(f.auth, legacy.memories[0]!.sourceHandle!))
+        .rejects.toMatchObject({ code: 'identity_denied' });
       expect(await f.state()).toEqual(before);
+      // The unrelated ordinary confirmed record does not acquire a dependency
+      // on the legacy adopted Skill merely because it exists in this account.
+      await changeSkill(f, 'disable');
+      expect((await readRunExperienceSource(f.auth, f.handle)).items[0]!.memory.id).toBe(f.confirmed.id);
     });
     async function changeSkill(
       f: Awaited<ReturnType<typeof validationFixture>>,

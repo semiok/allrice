@@ -47,11 +47,11 @@ export function installSceneProvider(ctx, rawScenes, bridge) {
         failure ??= e;
       });
   }
-  async function load(scene, signal) {
+  async function load(scene, signal, nativeSessionId = ctx.agents?.requireInitiator().id) {
     signal?.throwIfAborted();
     const loaded = await bridge(
       'load',
-      { sceneId: scene.id, sceneDigest: scene.digest },
+      { sceneId: scene.id, sceneDigest: scene.digest, ...(nativeSessionId ? { nativeSessionId } : {}) },
       signal,
     );
     signal?.throwIfAborted();
@@ -75,7 +75,7 @@ export function installSceneProvider(ctx, rawScenes, bridge) {
         description: `${resourcePrefix}${JSON.stringify(receipt)}`,
       },
     };
-    loadedSkills.set(scene.nativeName, {
+    loadedSkills.set(`${nativeSessionId ?? ''}:${scene.nativeName}`, {
       skill,
       receipt,
       rendered: renderSkillContent(skill),
@@ -143,8 +143,9 @@ export function installSceneProvider(ctx, rawScenes, bridge) {
           // Cold recovery has no in-memory get receipt. Reload the same frozen
           // scene through Worker, which must reauthorize and return the durable
           // receipt, then compare the canonical native rendering exactly.
-          if (!loadedSkills.has(name)) await load(scene);
-          const loaded = loadedSkills.get(name);
+          const readKey = `${session.id}:${name}`;
+          if (!loadedSkills.has(readKey)) await load(scene, undefined, session.id);
+          const loaded = loadedSkills.get(readKey);
           if (value !== loaded.rendered)
             throw Error('employee_scene_native_result_invalid');
           await bridge('adopt', {

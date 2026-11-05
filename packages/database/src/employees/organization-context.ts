@@ -26,7 +26,9 @@ export async function readEmployeeOrganizationContext(
     companyName: person.company_name,
     businessContext: person.business_context,
     displayName: person.display_name,
-    ...(person.department_name ? { departmentName: person.department_name } : {}),
+    ...(person.department_name
+      ? { departmentName: person.department_name }
+      : {}),
     jobTitle: person.job_title,
     responsibilities: person.responsibilities,
   };

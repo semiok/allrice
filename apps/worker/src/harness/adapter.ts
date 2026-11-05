@@ -158,7 +158,7 @@ export interface HarnessExecutionInput {
     loadScene?: (selection: {
       sceneId: string;
       sceneDigest: string;
-    }) => Promise<Record<string, unknown>>;
+    }, employeeDocuments?: boolean) => Promise<Record<string, unknown>>;
     adoptScene?: (evidence: {
       sceneId: string;
       sceneDigest: string;

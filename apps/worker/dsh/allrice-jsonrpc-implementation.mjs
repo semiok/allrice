@@ -1257,9 +1257,16 @@ export async function createAllRiceRuntime(
       if (params.requireRunAdmission && !this.runAdmission)
         this.runAdmission = installRunAdmission(this);
       if (params.rootSystemInstructions !== undefined) {
-        if (!params.requireRunAdmission || typeof params.rootSystemInstructions !== 'string' || !params.rootSystemInstructions)
+        if (
+          !params.requireRunAdmission ||
+          typeof params.rootSystemInstructions !== 'string' ||
+          !params.rootSystemInstructions
+        )
           throw Error('EMPLOYEE_DOCUMENT_ROOT_REQUIRED');
-        this.employeeDocuments = installEmployeeDocuments(this, params.rootSystemInstructions);
+        this.employeeDocuments = installEmployeeDocuments(
+          this,
+          params.rootSystemInstructions,
+        );
       }
       const forwardedParams = { ...params };
       delete forwardedParams.rootSystemInstructions;
@@ -2107,7 +2114,10 @@ export async function createAllRiceRuntime(
           const result = await this.runAdmission.begin(params);
           if (params.employeeDocuments && !this.employeeDocuments)
             throw Error('EMPLOYEE_DOCUMENT_PROVIDER_REQUIRED');
-          this.employeeDocuments?.bind(params.sessionId, params.employeeDocuments);
+          this.employeeDocuments?.bind(
+            params.sessionId,
+            params.employeeDocuments,
+          );
           this.nativeAccounting?.begin(params.sessionId);
           return result;
         }

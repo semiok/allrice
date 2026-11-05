@@ -236,10 +236,14 @@ export function assembleEmployeeKernel(input: {
     input.resolved.executionSnapshot?.schemaVersion === 2
       ? input.resolved.executionSnapshot.localMcp
       : undefined;
-  const commonContent = (documents: boolean) => documents
-    ? input.commonContent?.filter((source) => source.reference.sourceKind !== 'experience')
-    : input.commonContent;
-  const systemInstructions = (documents: boolean) => [
+  const commonContent = (documents: boolean) =>
+    documents
+      ? input.commonContent?.filter(
+          (source) => source.reference.sourceKind !== 'experience',
+        )
+      : input.commonContent;
+  const systemInstructions = (documents: boolean) =>
+    [
       input.resolved.promptSnapshot.systemPrompt,
       ...(input.resolved.promptSnapshot.personalIdentity
         ? [
@@ -306,7 +310,13 @@ export function assembleEmployeeKernel(input: {
       ...(!documents && input.resolved.promptSnapshot.organizationContext
         ? [
             'Current company and employee context. Tailor the work to these facts; resource authority continues to come from the granted capabilities.',
-            JSON.stringify(Object.fromEntries(Object.entries(input.resolved.promptSnapshot.organizationContext!).filter(([key]) => key !== 'departmentName'))),
+            JSON.stringify(
+              Object.fromEntries(
+                Object.entries(
+                  input.resolved.promptSnapshot.organizationContext!,
+                ).filter(([key]) => key !== 'departmentName'),
+              ),
+            ),
           ]
         : []),
       ...(localMcp?.connections.length
@@ -362,10 +372,12 @@ export function assembleEmployeeKernel(input: {
         }
       : {}),
     systemInstructions: systemInstructions(false),
-    ...(input.resolved.promptSnapshot.employeeDocuments ? {
-      rootSystemInstructions: systemInstructions(true),
-      employeeDocuments: input.resolved.promptSnapshot.employeeDocuments,
-    } : {}),
+    ...(input.resolved.promptSnapshot.employeeDocuments
+      ? {
+          rootSystemInstructions: systemInstructions(true),
+          employeeDocuments: input.resolved.promptSnapshot.employeeDocuments,
+        }
+      : {}),
     userRequest: [
       input.resolved.promptSnapshot.userRequest,
       ...(input.resolved.promptSnapshot.companyAssets?.templates.length
@@ -393,7 +405,9 @@ export function assembleEmployeeKernel(input: {
     ].join('\n\n'),
     bootstrapConversation,
     ...(bootstrapContext ? { bootstrapContext } : {}),
-    authorizedMemoryContext: input.resolved.promptSnapshot.employeeDocuments ? '' : memories,
+    authorizedMemoryContext: input.resolved.promptSnapshot.employeeDocuments
+      ? ''
+      : memories,
     grantedCapabilities: input.resolved.grantedCapabilities,
     skillVersionIds: input.resolved.nativeSkills.map((skill) => skill.id),
     runtimePackageChecksum:

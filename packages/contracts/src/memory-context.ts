@@ -108,12 +108,17 @@ export function selectWholeMemories<T extends MemoryContextItem>(
   return selected;
 }
 
-export const ConfirmedMemoryReadPinSchema = z.object({
-  id: UuidSchema, revision: z.number().int().positive(),
-  contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-  handle: ExperienceSourceHandleSchema,
-}).strict();
-export type ConfirmedMemoryReadPin = z.infer<typeof ConfirmedMemoryReadPinSchema>;
+export const ConfirmedMemoryReadPinSchema = z
+  .object({
+    id: UuidSchema,
+    revision: z.number().int().positive(),
+    contentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    handle: ExperienceSourceHandleSchema,
+  })
+  .strict();
+export type ConfirmedMemoryReadPin = z.infer<
+  typeof ConfirmedMemoryReadPinSchema
+>;
 
 export const RunMemoryContextStateSchema = z
   .object({
@@ -137,7 +142,10 @@ export const RunMemoryContextStateSchema = z
           .refine((ids) => new Set(ids).size === ids.length),
         digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
         bytes: z.number().int().min(0).max(6_000),
-        documentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
+        documentDigest: z
+          .string()
+          .regex(/^sha256:[a-f0-9]{64}$/)
+          .optional(),
       })
       .strict(),
     confirmedPins: z.array(ConfirmedMemoryReadPinSchema).max(260).optional(),

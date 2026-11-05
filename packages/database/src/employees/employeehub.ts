@@ -1533,16 +1533,29 @@ export async function prepareEmployeeRunBinding(
   )
     grantedCapabilities.push('secret:use');
   const boundToolNames = freezeMemorySourceToolNames(
-    withEmployeeCustomizationTools(capabilityBindings(manifest.data).toolNames,
-      grantedCapabilities, instance?.kind), grantedCapabilities, modelSnapshot,
+    withEmployeeCustomizationTools(
+      capabilityBindings(manifest.data).toolNames,
+      grantedCapabilities,
+      instance?.kind,
+    ),
+    grantedCapabilities,
+    modelSnapshot,
   );
-  const documentProjection = input.employeeDocuments && instance
-    ? await freezeEmployeeDocuments(sql, {
-        organizationId: input.context.organizationId, workspaceId: input.workspaceId,
-        ownerId: actorId, instanceId: instance.id,
-      }, organizationContext, grantedCapabilities.includes('storage:read') &&
-        boundToolNames.includes('workspace.experience.read'))
-    : undefined;
+  const documentProjection =
+    input.employeeDocuments && instance
+      ? await freezeEmployeeDocuments(
+          sql,
+          {
+            organizationId: input.context.organizationId,
+            workspaceId: input.workspaceId,
+            ownerId: actorId,
+            instanceId: instance.id,
+          },
+          organizationContext ?? {},
+          grantedCapabilities.includes('storage:read') &&
+            boundToolNames.includes('workspace.experience.read'),
+        )
+      : undefined;
   return {
     employeeAssignmentId: assignment.assignment_id,
     employeeVersionId: assignment.id,
@@ -1639,7 +1652,7 @@ export async function prepareEmployeeRunBinding(
             }
           : undefined,
       organizationContext,
-      ...documentProjection,
+      ...(documentProjection ? { memories: documentProjection.memories, employeeDocuments: documentProjection.employeeDocuments } : {}),
     }),
   };
 }

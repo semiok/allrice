@@ -897,9 +897,16 @@ export class DshRuntimePool {
       .filter(Boolean)
       .join('\n\n');
     const rootSystemInstructions = input.input.kernel.rootSystemInstructions
-      ? [input.input.kernel.rootSystemInstructions,
-          mcpCatalogInstructions(input.input.kernel.mcpToolCatalog, deferredMcpSchemas),
-          dshHostCapabilityInstructions(input.input.tools)].filter(Boolean).join('\n\n')
+      ? [
+          input.input.kernel.rootSystemInstructions,
+          mcpCatalogInstructions(
+            input.input.kernel.mcpToolCatalog,
+            deferredMcpSchemas,
+          ),
+          dshHostCapabilityInstructions(input.input.tools),
+        ]
+          .filter(Boolean)
+          .join('\n\n')
       : undefined;
     // Store only per-field hashes in memory so diagnostics can name changed
     // configuration without recording its values.

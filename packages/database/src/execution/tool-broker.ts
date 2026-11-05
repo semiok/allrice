@@ -1,5 +1,5 @@
 import { confirmedMemoryHandle } from '../employees/employee-documents.ts';
-import type { ConfirmedMemoryReadPin } from '@allrice/contracts';
+import { hasMemorySourceTool, type ConfirmedMemoryReadPin } from '@allrice/contracts';
 import {
   readRunMemoryContext,
   type RunMemoryAuthority,
@@ -757,6 +757,7 @@ export async function searchToolBrokerMemories(
   limit: number,
   transaction?: TransactionSql,
   pins: readonly ConfirmedMemoryReadPin[] = [],
+  sourceTool = false,
 ) {
   if (!context.workspaceId) throw new DataAccessError('authorization_denied');
   const sql = transaction ?? getDatabase();
@@ -785,7 +786,7 @@ export async function searchToolBrokerMemories(
       id: row.id,
       content: row.content,
       revision: row.revision,
-      sourceHandle: confirmedMemoryHandle(row),
+      ...(sourceTool ? { sourceHandle: confirmedMemoryHandle(row) } : {}),
       provenance: {
         trust: row.trust_level,
         confidence: Number(row.confidence),
@@ -809,8 +810,14 @@ export async function readToolBrokerMemoryContext(
     authority.scope.ownerId !== context.policySnapshot.subjectId
   )
     throw new DataAccessError('authorization_denied');
-  return readRunMemoryContext(authority, 'memory_search', (tx, state) =>
-    searchToolBrokerMemories(context, query, limit, tx, state.confirmedPins),
+  return readRunMemoryContext(
+    authority,
+    'memory_search',
+    async (tx, state) => {
+      const [run] = await tx`select execution_snapshot from allrice_employee_runs where run_id=${authority.scope.runId}`;
+      return searchToolBrokerMemories(context, query, limit, tx, state.confirmedPins,
+        hasMemorySourceTool(run?.execution_snapshot));
+    },
     (items) => items,
   );
 }
