@@ -34,10 +34,16 @@ export async function readSkillPreviewRequest(request: Request) {
   const contentType = request.headers.get('content-type') ?? '';
   if (contentType.split(';', 1)[0]?.trim() === 'application/json') {
     const bytes = await boundedBody(request, 16_384);
+    let text: string;
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    } catch (error) {
+      if (error instanceof TypeError)
+        throw new SkillPreviewError('source_invalid');
+      throw error;
+    }
     return {
-      input: JSON.parse(
-        new TextDecoder('utf-8', { fatal: true }).decode(bytes),
-      ),
+      input: JSON.parse(text),
     };
   }
   if (contentType.split(';', 1)[0]?.trim() !== 'multipart/form-data')
@@ -46,11 +52,20 @@ export async function readSkillPreviewRequest(request: Request) {
     request,
     personalSkillLimits.archiveBytes + 65_536,
   );
-  const form = await new Request('http://localhost/', {
-    method: 'POST',
-    headers: { 'content-type': contentType },
-    body: bytes,
-  }).formData();
+  let form: FormData;
+  try {
+    // The body is already bounded and buffered: TypeError here is malformed
+    // multipart syntax, not a failure while reading the client's stream.
+    form = await new Request('http://localhost/', {
+      method: 'POST',
+      headers: { 'content-type': contentType },
+      body: bytes,
+    }).formData();
+  } catch (error) {
+    if (error instanceof TypeError)
+      throw new SkillPreviewError('source_invalid');
+    throw error;
+  }
   if (
     form.getAll('input').length !== 1 ||
     form.getAll('file').length !== 1 ||

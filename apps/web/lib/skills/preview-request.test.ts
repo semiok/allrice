@@ -40,6 +40,20 @@ describe('bounded browser Skill source requests', () => {
       archive: bytes,
     });
   });
+  it('preserves genuine failures while reading the request stream', async () => {
+    const failure = new TypeError('synthetic stream failure');
+    const request = new Request('http://localhost/preview', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: new ReadableStream({
+        start(controller) {
+          controller.error(failure);
+        },
+      }),
+      duplex: 'half',
+    } as RequestInit);
+    await expect(readSkillPreviewRequest(request)).rejects.toBe(failure);
+  });
   it('rejects duplicate file parts and conflicting source metadata', async () => {
     for (const duplicate of [true, false]) {
       const form = new FormData();

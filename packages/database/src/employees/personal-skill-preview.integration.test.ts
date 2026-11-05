@@ -259,6 +259,40 @@ suite('authenticated browser Skill source preview without installation', () => {
       ).toBe(422);
     expect(await counts()).toEqual(before);
   });
+  it('returns non-retryable validation errors for malformed multipart and UTF-8 bodies', async () => {
+    const s = await setup(),
+      before = await counts();
+    browser.context = s.owner.context;
+    const { POST } =
+      await import('../../../../apps/web/app/api/v1/employee-instances/[id]/skills/preview/route.ts');
+    for (const [contentType, body] of [
+      ['multipart/form-data', Buffer.from('missing boundary')],
+      [
+        'multipart/form-data; boundary=preview',
+        Buffer.from(
+          '--preview\r\nContent-Disposition: form-data; name="input"\r\n\r\n{',
+        ),
+      ],
+      ['application/json', Buffer.from([0xff])],
+    ] as const) {
+      const response = await POST(
+        new Request('http://localhost:3000/preview', {
+          method: 'POST',
+          headers: {
+            origin: 'http://localhost:3000',
+            'content-type': contentType,
+          },
+          body,
+        }),
+        { params: Promise.resolve({ id: s.assigned.id }) },
+      );
+      expect(response.status).toBe(422);
+      expect(await response.json()).toMatchObject({
+        error: { code: 'VALIDATION_FAILED', retryable: false },
+      });
+    }
+    expect(await counts()).toEqual(before);
+  });
   it.each([false, true])(
     'freezes a public commit and rechecks revocation (revoked=%s)',
     async (revoked) => {

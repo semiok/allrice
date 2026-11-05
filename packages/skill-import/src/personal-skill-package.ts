@@ -6,7 +6,7 @@ import {
 import { PersonalSkillError, skillBytesChecksum } from '@allrice/database';
 import { readFileArchive } from '@allrice/file-archives';
 import { ZodError } from 'zod';
-import { parsePersonalSkill } from './personal-skill-import.js';
+import { parsePersonalSkill } from './personal-skill-import.ts';
 
 // Package resources retain the existing platform bundle's bounds. Their bytes
 // will be stored privately, not copied into every execution snapshot.

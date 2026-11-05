@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { SkillPreviewTokens, type SkillPreview } from './preview-token.js';
+import { SkillPreviewTokens, type SkillPreview } from './preview-token.ts';
 
 const secret = 'synthetic-preview-test-key-0000000000';
 const tokens = new SkillPreviewTokens(secret);
