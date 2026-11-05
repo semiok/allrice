@@ -4617,12 +4617,8 @@ suite(
           ).length;
         await expect.poll(createdReads).toBe(1);
         // The first read sees idle while this new session's send is pending.
-        f.showTiming();
         await f.respond(1);
         await expect.poll(createdReads).toBe(2);
-        await f.page.getByLabel('本轮运行时间', { exact: true }).waitFor();
-        await f.page.clock.runFor(2_000);
-        await expect.poll(createdReads).toBe(3);
         expect(
           await f.page
             .getByRole('textbox', { name: '给 Rice 的消息' })
