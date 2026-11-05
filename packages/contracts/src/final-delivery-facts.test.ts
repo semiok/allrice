@@ -34,7 +34,7 @@ const facts = (): FinalDeliveryFacts => ({
       receipt: { status: 'checked', orderedSteps: ['render', 'inspect'] },
     },
   ],
-  ordinaryFileCitations: [{objectId: 'citation', retentionUntil: null}],
+  ordinaryFileCitations: [{ objectId: 'citation', retentionUntil: null }],
 });
 
 describe('shared final delivery fact identity', () => {

@@ -31,26 +31,36 @@ async function readSnapshot(
   authority: RunDeliveryAuthority,
   ordinaryReferenceObjectIds: readonly string[] = [],
 ) {
-  const facts = await readWorkerFinalDeliveryEvidenceTransaction(tx, async () => {
-    const { task } = await assertRunDeliveryAuthority(tx, authority);
-    return {
-      task,
-      ownership: 'root_run' as const,
-      explicitReferences: await readFinalDeliveryReferences({
-        transaction: tx,
+  const facts = await readWorkerFinalDeliveryEvidenceTransaction(
+    tx,
+    async () => {
+      const { task } = await assertRunDeliveryAuthority(tx, authority);
+      return {
         task,
-        ownership: 'root_run',
-      }),
-    };
-  });
+        ownership: 'root_run' as const,
+        explicitReferences: await readFinalDeliveryReferences({
+          transaction: tx,
+          task,
+          ownership: 'root_run',
+        }),
+      };
+    },
+  );
   return {
     ...facts,
-    ordinaryFileCitations: await readFinalDeliveryFileCitations(tx, authority, ordinaryReferenceObjectIds),
+    ordinaryFileCitations: await readFinalDeliveryFileCitations(
+      tx,
+      authority,
+      ordinaryReferenceObjectIds,
+    ),
   };
 }
 
 /** Worker-only independent evidence port. No rollout or native wait is implied. */
-export async function readDeliverySnapshot(authority: RunDeliveryAuthority, ordinaryReferenceObjectIds: readonly string[] = []) {
+export async function readDeliverySnapshot(
+  authority: RunDeliveryAuthority,
+  ordinaryReferenceObjectIds: readonly string[] = [],
+) {
   const captured = structuredClone(authority);
   const ids = [...ordinaryReferenceObjectIds];
   return getDatabase().begin('isolation level read committed', (tx) =>
@@ -135,7 +145,9 @@ export function createDeliveryCommitGuard(input: {
       ...facts.artifacts.flatMap((a) =>
         a.retentionUntil ? [new Date(a.retentionUntil)] : [],
       ),
-      ...facts.ordinaryFileCitations.flatMap(c => c.retentionUntil ? [new Date(c.retentionUntil)] : []),
+      ...facts.ordinaryFileCitations.flatMap((c) =>
+        c.retentionUntil ? [new Date(c.retentionUntil)] : [],
+      ),
     ];
     return {
       assertCommitted: async () => {

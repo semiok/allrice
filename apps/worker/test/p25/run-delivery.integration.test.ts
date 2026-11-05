@@ -9,7 +9,10 @@ import {
   runtimePolicyActionDecision,
 } from '@allrice/contracts';
 import * as client from '../../../../packages/database/src/core/client.ts';
-import { createStorageMetadata, markStorageReady } from '../../../../packages/database/src/data.ts';
+import {
+  createStorageMetadata,
+  markStorageReady,
+} from '../../../../packages/database/src/data.ts';
 import { getToolBrokerFile } from '../../../../packages/database/src/execution/tool-broker.ts';
 import { assertNativeRunAuthority } from '../../../../packages/database/src/run-delivery-authority.ts';
 import {
@@ -59,7 +62,10 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
     await fixture?.close();
   });
 
-  async function subject(allowedTools = ['workspace.export.create', 'workspace.document.read']) {
+  async function subject(
+    allowedTools = ['workspace.export.create', 'workspace.document.read'],
+    storageRead = true,
+  ) {
     vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
     const db = fixture.db;
@@ -69,6 +75,9 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
 
       memberRole: 'member',
       allowedTools,
+      snapshot: value => ({...value, capabilitySnapshot: {...value.capabilitySnapshot,
+        grantedCapabilities: value.capabilitySnapshot.grantedCapabilities.filter(c => storageRead || c !== 'storage:read'),
+      }}),
       controls: {
         version: 1,
         enabled: true,
@@ -199,90 +208,172 @@ suite('Run-scoped independent Worker delivery, isolated PostgreSQL', () => {
     };
   }
   type Subject = Awaited<ReturnType<typeof subject>>;
+  const citationSubject = (storageRead = true) => subject(
+    ['workspace.export.create', 'workspace.document.read', 'workspace.project'], storageRead,
+  );
 
   async function upload(f: Subject, shared = false) {
     const db = fixture.db;
-    let principal = {...f.context, memberships: f.readContext.policySnapshot.memberships};
+    let principal = {
+      ...f.context,
+      memberships: f.readContext.policySnapshot.memberships,
+    };
     if (shared) {
-      const other = randomUUID(), membership = randomUUID();
-      await db`insert into allrice_users(id,email,display_name,password_hash) values(${other},${other+'@example.test'},'Citation fixture','not-login')`;
+      const other = randomUUID(),
+        membership = randomUUID();
+      await db`insert into allrice_users(id,email,display_name,password_hash) values(${other},${other + '@example.test'},'Citation fixture','not-login')`;
       await db`insert into allrice_memberships(id,organization_id,workspace_id,user_id,role) values(${membership},${f.org},${f.workspace},${other},'member')`;
-      principal = {...f.context, actor: {type: 'user', id: other}, memberships: [{
-        id: membership, userId: other, organizationId: f.org, workspaceId: f.workspace, role: 'member', active: true,
-      }]};
+      principal = {
+        ...f.context,
+        actor: { type: 'user', id: other },
+        memberships: [
+          {
+            id: membership,
+            userId: other,
+            organizationId: f.org,
+            workspaceId: f.workspace,
+            role: 'member',
+            active: true,
+          },
+        ],
+      };
     }
     const content = '本周已确认收入 128000，成本 116000，结余 12000。';
-    const pending = await createStorageMetadata(principal, {
-      id: randomUUID(), workspaceId: f.workspace, category: 'uploads',
-      mediaType: 'text/plain', sizeBytes: Buffer.byteLength(content),
-      checksum: 'sha256:'+createHash('sha256').update(content).digest('hex'),
-      visibility: shared ? 'workspace' : 'private', immutable: false, retentionUntil: null,
-    }, db);
-    await runtimeFixtureStorage(db).put(pending.object, new Blob([content]).stream());
+    const pending = await createStorageMetadata(
+      principal,
+      {
+        id: randomUUID(),
+        workspaceId: f.workspace,
+        category: 'uploads',
+        mediaType: 'text/plain',
+        sizeBytes: Buffer.byteLength(content),
+        checksum:
+          'sha256:' + createHash('sha256').update(content).digest('hex'),
+        visibility: shared ? 'workspace' : 'private',
+        immutable: false,
+        retentionUntil: null,
+      },
+      db,
+    );
+    await runtimeFixtureStorage(db).put(
+      pending.object,
+      new Blob([content]).stream(),
+    );
     return markStorageReady(principal, pending.object.id, db);
   }
 
   it.each(['?name=周报资料.txt', ''])(
     'B2/B3 ordinary source citation accepts the same authorized object with query %s and no read receipt',
-    async query => {
-      const f = await subject(), file = await upload(f);
+    async (query) => {
+      const f = await citationSubject(),
+        file = await upload(f);
       const answer = `[资料](/api/v1/files/${file.object.id}/download${query})`;
       const checked = await f.validate(answer);
       expect(checked.snapshot.artifacts).toEqual([]);
       expect(checked.decision.linked).toEqual([]);
-      expect(checked.snapshot.ordinaryFileCitations).toEqual([{objectId: file.object.id, retentionUntil: null}]);
+      expect(checked.snapshot.ordinaryFileCitations).toEqual([
+        { objectId: file.object.id, retentionUntil: null },
+      ]);
       await f.complete(checked.guard, answer);
-      expect(await f.state()).toMatchObject({status: 'succeeded', state: 'succeeded', result: {answer}, text: answer, successes: 1});
+      expect(await f.state()).toMatchObject({
+        status: 'succeeded',
+        state: 'succeeded',
+        result: { answer },
+        text: answer,
+        successes: 1,
+      });
     },
   );
 
   it('ordinary citation cannot survive revocation between validation and the commit transaction', async () => {
-    const f = await subject(), file = await upload(f, true);
-    expect((await getToolBrokerFile(f.readContext, file.object.id, fixture.db)).object.id).toBe(file.object.id);
+    const f = await citationSubject(),
+      file = await upload(f, true);
+    expect(
+      (await getToolBrokerFile(f.readContext, file.object.id, fixture.db))
+        .object.id,
+    ).toBe(file.object.id);
     const answer = `[资料](/api/v1/files/${file.object.id}/download)`;
     const checked = await f.validate(answer);
     await fixture.db`update allrice_storage_objects set visibility='private' where id=${file.object.id}`;
-    await expect(getToolBrokerFile(f.readContext, file.object.id, fixture.db)).rejects.toMatchObject({code: 'authorization_denied'});
+    await expect(
+      getToolBrokerFile(f.readContext, file.object.id, fixture.db),
+    ).rejects.toMatchObject({ code: 'authorization_denied' });
     await expect(f.complete(checked.guard, answer)).rejects.toThrow();
-    expect(await f.state()).toMatchObject({status: 'running', state: 'running', successes: 0});
+    expect(await f.state()).toMatchObject({
+      status: 'running',
+      state: 'running',
+      successes: 0,
+    });
   });
 
   it.each(['missing', 'foreign', 'revoked', 'forged'])(
     'ordinary citation rejects %s without borrowing a broader principal',
-    async mode => {
-      const f = await subject();
-      const foreign = mode === 'foreign' ? await subject() : f;
+    async (mode) => {
+      const f = await citationSubject();
+      const foreign = mode === 'foreign' ? await citationSubject() : f;
       const file = await upload(foreign, mode === 'revoked');
-      if (mode === 'revoked') await fixture.db`update allrice_storage_objects set visibility='private' where id=${file.object.id}`;
+      if (mode === 'revoked')
+        await fixture.db`update allrice_storage_objects set visibility='private' where id=${file.object.id}`;
       const id = mode === 'missing' ? randomUUID() : file.object.id;
       const answer = `[资料](${mode === 'forged' ? 'https://foreign.example.test' : ''}/api/v1/files/${id}/download)`;
       const facts = await f.port.readSnapshot(answer);
       expect(facts.ordinaryFileCitations).toEqual([]);
-      expect(checkFinalDelivery({candidate: answer, snapshot: facts, expectedScope: facts.scope, markup: createDeliveryMarkup(), managedOrigins: []}).status).toBe('invalid_response');
-      if (mode !== 'forged') await expect(getToolBrokerFile(f.readContext, id, fixture.db)).rejects.toThrow();
+      expect(
+        checkFinalDelivery({
+          candidate: answer,
+          snapshot: facts,
+          expectedScope: facts.scope,
+          markup: createDeliveryMarkup(),
+          managedOrigins: [],
+        }).status,
+      ).toBe('invalid_response');
+      if (mode !== 'forged')
+        await expect(
+          getToolBrokerFile(f.readContext, id, fixture.db),
+        ).rejects.toThrow();
     },
   );
 
   it('ordinary citation is current ACL evidence, not a guarantee that content stayed unchanged', async () => {
-    const f = await subject(), file = await upload(f);
+    const f = await citationSubject(),
+      file = await upload(f);
     const answer = `[资料](/api/v1/files/${file.object.id}/download)`;
     const checked = await f.validate(answer);
     const content = '更新后的资料';
-    const checksum = 'sha256:'+createHash('sha256').update(content).digest('hex');
+    const checksum =
+      'sha256:' + createHash('sha256').update(content).digest('hex');
     await fixture.db`update allrice_storage_objects set checksum=${checksum},size_bytes=${Buffer.byteLength(content)} where id=${file.object.id}`;
-    const changed = await getToolBrokerFile(f.readContext, file.object.id, fixture.db);
-    await runtimeFixtureStorage(fixture.db).put(changed.object, new Blob([content]).stream());
+    const changed = await getToolBrokerFile(
+      f.readContext,
+      file.object.id,
+      fixture.db,
+    );
+    await runtimeFixtureStorage(fixture.db).put(
+      changed.object,
+      new Blob([content]).stream(),
+    );
     await f.complete(checked.guard, answer);
-    expect(await f.state()).toMatchObject({status: 'succeeded', successes: 1});
+    expect(await f.state()).toMatchObject({
+      status: 'succeeded',
+      successes: 1,
+    });
   });
 
   it('ordinary citation cannot manufacture the storage read capability', async () => {
-    const f = await subject(['web.search']), file = await upload(f);
-    expect(f.snapshot.capabilitySnapshot.grantedCapabilities).not.toContain('storage:read');
+    const f = await citationSubject(false),
+      file = await upload(f);
     const answer = `[资料](/api/v1/files/${file.object.id}/download)`;
     const facts = await f.port.readSnapshot(answer);
     expect(facts.ordinaryFileCitations).toEqual([]);
-    expect(checkFinalDelivery({candidate: answer, snapshot: facts, expectedScope: facts.scope, markup: createDeliveryMarkup(), managedOrigins: []}).status).toBe('invalid_response');
+    expect(
+      checkFinalDelivery({
+        candidate: answer,
+        snapshot: facts,
+        expectedScope: facts.scope,
+        markup: createDeliveryMarkup(),
+        managedOrigins: [],
+      }).status,
+    ).toBe('invalid_response');
   });
 
   it.each(['current', 'tenant', 'generation', 'lease', 'revoked'] as const)(

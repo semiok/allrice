@@ -6,7 +6,10 @@ import {
   type RunDeliveryAuthority,
 } from '@allrice/database';
 import type { FinalDeliveryCandidate, FinalDeliveryProof } from './guard.js';
-import { checkFinalDelivery, ordinaryFileCitationCandidates } from './policy.js';
+import {
+  checkFinalDelivery,
+  ordinaryFileCitationCandidates,
+} from './policy.js';
 import { createDeliveryMarkup } from './markup.js';
 import { createDeliveryRepairInspection } from './repair.js';
 import { normalizeAllRiceManagedFileLinks } from '../harness/dsh/tool-bridge.js';
@@ -27,9 +30,16 @@ function finalDeliveryUnavailable(): never {
 export function createRunDeliveryPort(authority: RunDeliveryAuthority) {
   const captured = structuredClone(authority);
   let checked:
-    { proof: FinalDeliveryProof; origin: FinalDeliveryReplyOrigin; citationIds: string[] } | undefined;
-  const citationIds = (text = '') => ordinaryFileCitationCandidates(text, createDeliveryMarkup());
-  const readSnapshot = (text?: string) => readDeliverySnapshot(captured, citationIds(text));
+    | {
+        proof: FinalDeliveryProof;
+        origin: FinalDeliveryReplyOrigin;
+        citationIds: string[];
+      }
+    | undefined;
+  const citationIds = (text = '') =>
+    ordinaryFileCitationCandidates(text, createDeliveryMarkup());
+  const readSnapshot = (text?: string) =>
+    readDeliverySnapshot(captured, citationIds(text));
   const readOrigin = () => readRunDeliveryReplyOrigin(captured);
   return {
     rootRunId: captured.rootRunId,
@@ -39,7 +49,13 @@ export function createRunDeliveryPort(authority: RunDeliveryAuthority) {
       proof: FinalDeliveryProof,
       origin: FinalDeliveryReplyOrigin,
       candidate = '',
-    ) => createDeliveryCommitGuard({ authority: captured, proof, origin, ordinaryReferenceObjectIds: citationIds(candidate) }),
+    ) =>
+      createDeliveryCommitGuard({
+        authority: captured,
+        proof,
+        origin,
+        ordinaryReferenceObjectIds: citationIds(candidate),
+      }),
     async inspect(candidate: unknown) {
       const facts = await readSnapshot();
       const origin = await readOrigin();
