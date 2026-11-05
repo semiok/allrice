@@ -153,15 +153,19 @@ suite(
         ).toBe(false);
         expect(await state()).toEqual(before);
         expect(
-          await old.store.readExactCommit(old.writer, old.receiptWrite),
+          await old.store.readExactCommit(old.writer, old.receiptWrite!),
         ).toBe('committed');
         const facts = await f.db.begin((tx) =>
           lockExperienceCalendarAdmissions(tx, [old.control]),
         );
         expect(facts.get(old.control.controlId)).toMatchObject({
-          allowed: false,
+          allowed: true,
           status: 'enabled',
         });
+        const initializing = await f.db.begin((tx) =>
+          lockExperienceCalendarAdmissions(tx, [old.control], 'initialize'),
+        );
+        expect(initializing.get(old.control.controlId)?.allowed).toBe(false);
         const [receipt] = await f.db<
           ExperienceCalendarOccurrence[]
         >`select * from allrice_native_recurring_occurrences where calendar_period_id=${old.period.periodId}`;
@@ -257,7 +261,7 @@ suite(
         )[0],
       ).toEqual({ kind: 'policy', outcome: 'canceled' });
       expect(
-        await old.store.readExactCommit(old.writer, old.receiptWrite),
+        await old.store.readExactCommit(old.writer, old.receiptWrite!),
       ).toBe('committed');
       expect(
         await f.db`select * from allrice_native_calendar_plans where closed_decision_id is null`,

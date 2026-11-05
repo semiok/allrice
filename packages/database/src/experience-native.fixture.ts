@@ -9,7 +9,7 @@ import { readExperiencePolicy } from './experience-consolidation.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
 import { createNativeRecurringSqlStore } from './native-schedule-recurring-sql.ts';
 import { lockNativeRecurringAdmissions } from './native-schedule-recurring-product.ts';
-import { lockExperienceCalendarAdmissions } from './experience-native.ts';
+import { lockNativeCalendarAdmissions } from './native-schedule-calendar-consumers.ts';
 import {
   NativeCalendarControlSchema,
   NativeCalendarRevisionSchema,
@@ -32,6 +32,7 @@ export async function seedHistoricalExperienceCalendar(
   f: P27CodexWorkerFixture,
   automationId: string,
   reference: NativeOnceReference,
+  phase: 'delivered' | 'prepared' | 'absent' | 'creating' = 'delivered',
 ) {
   const ready = {
     enabled: true,
@@ -106,7 +107,7 @@ export async function seedHistoricalExperienceCalendar(
       enabled: true,
       lockAdmission: async (tx, controls, purpose) => {
         if (!historical)
-          return lockExperienceCalendarAdmissions(tx, controls, purpose);
+          return lockNativeCalendarAdmissions(tx, controls, purpose);
         if (controls.some((control) => control.controlId !== c.controlId))
           throw Error('historical_fixture_scope');
         return new Map(
@@ -124,7 +125,18 @@ export async function seedHistoricalExperienceCalendar(
         );
       },
     },
-    proveClosed: async () => null,
+    // Explicit synthetic closed-generation evidence; no public Host existed.
+    proveClosed: async (w) => ({
+      kind: 'verified_process_exit',
+      proofId: randomUUID(),
+      partitionId: w.partitionId,
+      ownerId: w.ownerId,
+      epoch: w.epoch,
+      tokenDigest: nativeOnceDigest(w.token),
+      evidence: {
+        fixture: 'isolated historical SQL; no public Host or process',
+      },
+    }),
   });
   const writer = (await store.acquireWriter())!.writer,
     calendar = store.calendar!;
@@ -171,6 +183,18 @@ export async function seedHistoricalExperienceCalendar(
         expectedControlVersion: version,
       }),
     );
+  function finish(receiptWrite: NativeCalendarWrite | null = null) {
+    historical = false;
+    return {
+      store,
+      writer,
+      control: c,
+      revision: v,
+      period: current.period,
+      arm: current.arm,
+      receiptWrite,
+    };
+  }
   const absent = await calendar.confirmCalendarArmAbsent(writer, {
     periodId: current.period.periodId,
     armId: current.arm.armId,
@@ -179,6 +203,10 @@ export async function seedHistoricalExperienceCalendar(
     expectedArmVersion: current.arm.snapshotVersion,
     taskRecords: await store.loadTaskRecords(writer),
   });
+  if (phase === 'absent') {
+    current = absent;
+    return finish();
+  }
   current = await calendar.prepareCalendarArm(writer, {
     periodId: absent.period.periodId,
     previousArmId: absent.arm.armId,
@@ -187,6 +215,7 @@ export async function seedHistoricalExperienceCalendar(
     armId: randomUUID(),
     nativeAt: new Date(Date.now() + 60000).toISOString(),
   });
+  if (phase === 'prepared') return finish();
   current = await calendar.beginCalendarArmCreate(writer, {
     periodId: current.period.periodId,
     armId: current.arm.armId,
@@ -194,6 +223,7 @@ export async function seedHistoricalExperienceCalendar(
     expectedPeriodVersion: current.period.version,
     expectedArmVersion: current.arm.snapshotVersion,
   });
+  if (phase === 'creating') return finish();
   let task: NativeOnceTask = {
     sessionId: c.controlSessionId,
     status: 'active',
@@ -244,17 +274,7 @@ export async function seedHistoricalExperienceCalendar(
       earlierRecordsUnavailable: false,
     },
   };
-  const receiptWrite = await put();
-  historical = false;
-  return {
-    store,
-    writer,
-    control: c,
-    revision: v,
-    period: current.period,
-    arm: current.arm,
-    receiptWrite,
-  };
+  return finish(await put());
 }
 
 export async function captureCalendarFixtureSource(
