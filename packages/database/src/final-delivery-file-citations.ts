@@ -38,7 +38,15 @@ export async function readFinalDeliveryFileCitations(
       and r.workspace_id=${authority.scope.workspaceId} and j.id=${authority.worker.jobId}`;
   if (!row) return finalDeliveryUnavailable();
   const frozen = EmployeeExecutionSnapshotSchema.parse(row.execution_snapshot);
-  if (!frozen.capabilitySnapshot.grantedCapabilities.includes('storage:read'))
+  // Match the Worker tool selection: capability AND this Run's frozen tool
+  // binding. Employee defaults must not restore a tool narrowed out of a Run.
+  if (
+    !frozen.capabilitySnapshot.grantedCapabilities.includes('storage:read') ||
+    !frozen.capabilitySnapshot.bindings.toolNames.some(
+      (name) =>
+        name === 'workspace.file.read' || name === 'workspace.document.read',
+    )
+  )
     return [];
   // Same persisted policy and delegated principal used by startClaimedJob.
   // executionId is unused by the read ACL; this path never executes or audits a tool.
