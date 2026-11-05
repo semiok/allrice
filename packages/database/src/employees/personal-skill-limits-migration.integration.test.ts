@@ -81,7 +81,14 @@ suite('L1 existing personal Skill CHECK migration', () => {
     await seed(rejected.db);
   }, 120000);
   afterAll(async () => {
-    await Promise.all([f?.close(), rejected?.close()]);
+    // Each full-schema DROP needs catalog locks. Do not overlap the two DROP
+    // transactions; CI's shared lock table cannot hold both at once. Still
+    // attempt the other fixture if the first cleanup fails, and propagate it.
+    try {
+      await f?.close();
+    } finally {
+      await rejected?.close();
+    }
   });
 
   it('changes only the two CHECKs and retains exact historical source and definition', async () => {
