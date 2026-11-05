@@ -687,15 +687,17 @@ suite('U1 employee archive lifecycle', () => {
           );
         }
         const confirm = await f.begin();
+        const card = await confirm.evaluate((node) => ({
+          x: node.getBoundingClientRect().x,
+          width: node.getBoundingClientRect().width,
+          height: node.getBoundingClientRect().height,
+          radius: getComputedStyle(node).borderRadius,
+          font: getComputedStyle(node.querySelector('h2')!).fontSize,
+          line: getComputedStyle(node.querySelector('h2')!).lineHeight,
+        }));
+        expect(card.font).toBe('20px');
+        expect(card.line).toBe('28px');
         if (width === 390) {
-          const card = await confirm.evaluate((node) => ({
-            x: node.getBoundingClientRect().x,
-            width: node.getBoundingClientRect().width,
-            height: node.getBoundingClientRect().height,
-            radius: getComputedStyle(node).borderRadius,
-            font: getComputedStyle(node.querySelector('h2')!).fontSize,
-            line: getComputedStyle(node.querySelector('h2')!).lineHeight,
-          }));
           expect(card).toMatchObject({
             x: 20,
             width: 350,
@@ -1168,11 +1170,15 @@ suite('U1 employee archive lifecycle', () => {
           color: getComputedStyle(node).color,
           width: node.getBoundingClientRect().width,
           viewport: innerWidth,
+          headingFont: getComputedStyle(node.querySelector('h2')!).fontSize,
+          headingLine: getComputedStyle(node.querySelector('h2')!).lineHeight,
         }));
         expect(paint.background).not.toBe('rgba(0, 0, 0, 0)');
         expect(paint.background).not.toBe('rgb(255, 255, 255)');
         expect(paint.color).not.toBe(paint.background);
         expect(paint.width).toBeLessThanOrEqual(paint.viewport);
+        expect(paint.headingFont).toBe('20px');
+        expect(paint.headingLine).toBe('28px');
         if (width === 390) await expectMobileRoot(dialog);
         await dialog.screenshot({
           path: resolve(evidence, `archive-employees-dark-${width}.png`),
