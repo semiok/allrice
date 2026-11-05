@@ -142,9 +142,14 @@ suite('U1 employee details personal-memory entry', () => {
       viewport: { width, height: width < 600 ? 844 : 1000 },
       isMobile: width < 600,
       hasTouch: width < 600,
+      colorScheme: options.dark ? 'dark' : 'light',
       reducedMotion: 'reduce',
     });
     page.setDefaultTimeout(8000);
+    const preferences = {
+      ...defaultUserPreferences,
+      appearance: options.dark ? ('dark' as const) : ('light' as const),
+    };
     const countGate = gate();
     const state = {
       reads: [] as Array<{
@@ -314,7 +319,7 @@ suite('U1 employee details personal-memory entry', () => {
               organizationId: id(3),
               workspaceId: id(4),
               viewerId: id(5),
-              preferences: defaultUserPreferences,
+              preferences,
               canAdminister: false,
               sessions: [],
               sessionModels: [],
@@ -389,8 +394,17 @@ suite('U1 employee details personal-memory entry', () => {
           }),
         );
       if (path === '/api/v1/me/preferences')
+        return route.fulfill(json({ viewerId: id(5), preferences }));
+      if (path === '/api/v1/sessions' && request.method() === 'GET')
         return route.fulfill(
-          json({ viewerId: id(5), preferences: defaultUserPreferences }),
+          json({
+            sessions: [],
+            nextCursor: null,
+            ...(!url.searchParams.has('employeeAssignmentId') &&
+            !url.searchParams.has('employeeInstanceId')
+              ? { employeeGroups: [] }
+              : {}),
+          }),
         );
       if (path === '/api/v1/me/work-automation')
         return route.fulfill(
@@ -488,6 +502,11 @@ suite('U1 employee details personal-memory entry', () => {
             background: css.backgroundColor,
             icon: getComputedStyle(svg).color,
             rowColor: css.color,
+            theme: document.documentElement.dataset.theme,
+            appearance:
+              document.documentElement.getAttribute('data-appearance'),
+            darkAttribute: document.body.hasAttribute('data-ds-dark-theme'),
+            colorScheme: getComputedStyle(document.documentElement).colorScheme,
             paths: svg.querySelectorAll('path').length,
             iconVisible:
               getComputedStyle(svg.parentElement!).display !== 'none',
@@ -500,7 +519,16 @@ suite('U1 employee details personal-memory entry', () => {
         expect(visual.icon).toBe(visual.rowColor);
         expect(visual.paths).toBe(2);
         expect(visual.iconVisible).toBe(width >= 600);
-        if (!dark) expect(visual.background).toBe('rgb(255, 255, 255)');
+        expect(visual.theme).toBe(dark ? 'dark' : 'light');
+        expect(visual.appearance).toBe(dark ? 'dark' : 'light');
+        expect(visual.darkAttribute).toBe(dark);
+        expect(visual.colorScheme).toBe(dark ? 'dark' : 'light');
+        // Current DSH neutral-bluish 950 / 50; attributes alone cannot prove
+        // that the actual row surface and text have switched palettes.
+        expect(visual.background).toBe(
+          dark ? 'rgb(21, 21, 23)' : 'rgb(255, 255, 255)',
+        );
+        if (dark) expect(visual.rowColor).toBe('rgb(249, 250, 251)');
         await f.page.screenshot({
           path: resolve(
             evidence,
@@ -515,6 +543,35 @@ suite('U1 employee details personal-memory entry', () => {
           exact: true,
         });
         await contains(manager, '全部 · 共 0 条');
+        const memoryVisual = await manager.evaluate((node) => {
+          const host = node.closest('#artifact-workbench')!;
+          const surface = getComputedStyle(host).backgroundColor;
+          const text = getComputedStyle(node).color;
+          return {
+            background: surface,
+            text,
+            backgroundChannels: surface
+              .match(/[\d.]+/g)!
+              .slice(0, 3)
+              .map(Number),
+            textChannels: text
+              .match(/[\d.]+/g)!
+              .slice(0, 3)
+              .map(Number),
+            theme: document.documentElement.dataset.theme,
+            darkAttribute: document.body.hasAttribute('data-ds-dark-theme'),
+          };
+        });
+        if (dark) {
+          expect(memoryVisual.theme).toBe('dark');
+          expect(memoryVisual.darkAttribute).toBe(true);
+          expect(
+            memoryVisual.backgroundChannels.every((value) => value < 128),
+          ).toBe(true);
+          expect(memoryVisual.textChannels.every((value) => value > 200)).toBe(
+            true,
+          );
+        }
         const close = f.page.getByRole('button', {
           name: '返回员工详情',
           exact: true,
@@ -571,6 +628,7 @@ suite('U1 employee details personal-memory entry', () => {
           JSON.stringify(
             {
               visual,
+              memoryVisual,
               reads: f.state.reads,
               writes: f.state.writes,
               errors: f.state.errors,
