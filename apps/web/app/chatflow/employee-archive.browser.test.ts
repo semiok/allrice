@@ -1075,8 +1075,21 @@ suite('U1 employee archive lifecycle', () => {
         });
         await dialog.getByRole('tab', { name: '对话', exact: true }).click();
         const title = dialog.getByText('保留的员工旧对话', { exact: true });
-        if (retained) {
+        const showFlowRow = async () => {
+          const group = dialog.locator(
+            `[role="treeitem"][data-row-key="workspace:${id(17)}"]`,
+          );
+          await group.waitFor();
+          const expanded = await group.getAttribute('aria-expanded');
+          expect(expanded).toMatch(/^(true|false)$/);
+          if (expanded === 'false') await group.click();
+          await expect
+            .poll(() => group.getAttribute('aria-expanded'))
+            .toBe('true');
           await title.waitFor();
+        };
+        if (retained) {
+          await showFlowRow();
           f.state.failArchivedSessions = true;
           await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
         }
@@ -1093,7 +1106,7 @@ suite('U1 employee archive lifecycle', () => {
         await dialog
           .getByRole('button', { name: '重新加载会话列表', exact: true })
           .click();
-        await title.waitFor();
+        await showFlowRow();
         await expect.poll(() => dialog.getByRole('alert').count()).toBe(0);
         expect(f.state.archivedSessionReads).toBeGreaterThan(before);
         expect(f.state.writes).toEqual([]);
