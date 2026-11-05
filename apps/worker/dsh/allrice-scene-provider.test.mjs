@@ -257,8 +257,16 @@ it.each([false, true])(
     await runtime.beforeDispatch('cold-resumed-root');
     runtime.invalidate();
     expect(invalidated).toBe(2);
-    expect(calls).toHaveLength(3);
+    expect(calls.map((call) => call.action)).toEqual([
+      'personal-list',
+      'personal-load',
+      'personal-load',
+      'personal-list',
+    ]);
     denied = true;
+    await expect(runtime.beforeDispatch('root')).rejects.toThrow(
+      'EMPLOYEE_CONTENT_UNAVAILABLE',
+    );
     await expect(provider.get(candidate)).rejects.toThrow(
       'EMPLOYEE_CONTENT_UNAVAILABLE',
     );
