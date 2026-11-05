@@ -149,12 +149,13 @@ it('cold root recovery keeps native history unchanged and the latest cleared sna
     .snapshotEvents()
     .filter((e) => e.type === 'user/message');
   expect(JSON.stringify(before)).toContain('WITHDRAWN_MEMORY');
+  const count = h.calls.length;
   await h.server.closeRoot(h.root.id);
   await h.server.handleRequest('run/end', { runId: nextRun });
   await h.server.handleRequest('session/recover', { sessionId: h.root.id });
+  expect(h.calls.length).toBe(count);
   const recovered = h.server.requireRoot(h.root.id).agent;
   expect(recovered).not.toBe(h.root);
-  const count = h.calls.length;
   await h.server.handleRequest('run/begin', {
     sessionId: h.root.id,
     runId: nextRun,
