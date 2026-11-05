@@ -768,6 +768,8 @@ export function ChatFlowClient({
     workspace?.workspaceId,
     tenantHeaders,
   );
+  const currentInteractions = useRef(interactions);
+  currentInteractions.current = interactions;
   const reloadInteractions = interactions.reload;
   const inputStatus = useMemo(
     () =>
@@ -1010,7 +1012,9 @@ export function ChatFlowClient({
       if (result.delivery === 'immediate')
         void streamRun(result.run.id, sessionId);
       void loadHistory(sessionId);
-      void interactions.reload();
+      // Creating a session can replace the hook while uploads/POST are pending.
+      // action.current() above already verifies this send still owns selection.
+      void currentInteractions.current.reload();
     } catch (cause) {
       if (!action.current()) return;
       setSubmission(null);

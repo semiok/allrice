@@ -20,12 +20,17 @@ export function useInteractionStatus(
     } | null>(null),
     [error, setError] = useState('');
   const scope = `${workspaceId}/${sessionId}`;
+  const latestQuery = useRef({ scope, headers, workbenchEnabled });
+  latestQuery.current = { scope, headers, workbenchEnabled };
   const generation = useRef(0);
   const request = useRef<AbortController | null>(null);
   const nextPollAt = useRef(0);
   const reload = useCallback(
     async (signal?: AbortSignal) => {
       if (
+        latestQuery.current.scope !== scope ||
+        latestQuery.current.headers !== headers ||
+        latestQuery.current.workbenchEnabled !== workbenchEnabled ||
         !sessionId ||
         !workspaceId ||
         signal?.aborted ||

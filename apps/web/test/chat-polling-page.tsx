@@ -1,5 +1,5 @@
 // Real hooks and UI with synthetic HTTP only; never a product route.
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   InteractionStatusPanel,
@@ -32,12 +32,14 @@ function Page() {
     workspace.workspaceId,
     headers,
   );
+  const originalReload = useRef(status.reload);
   const bridge = useBridge({ workspace, tenantHeaders: headers, setError });
   useMonthlyQuota({ ...workspace, headers, refreshKey: session });
   return (
     <>
       <button onClick={() => setSession('session-b')}>切换工作</button>
       <button onClick={() => void status.reload()}>刷新状态</button>
+      <button onClick={() => void originalReload.current()}>完成旧操作</button>
       <button onClick={() => bridge.noteBridgeDownload('macOS')}>
         已下载电脑助手
       </button>

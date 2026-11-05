@@ -66,6 +66,7 @@ suite('chat polling while reading, working and switching tabs', () => {
     options: {
       active?: boolean;
       hold?: boolean;
+      holdSecond?: boolean;
       timings?: boolean;
       pending?: boolean;
       failure?: boolean;
@@ -82,7 +83,8 @@ suite('chat polling while reading, working and switching tabs', () => {
       const path = new URL(route.request().url()).pathname;
       if (path.endsWith('/interactions') || path.endsWith('/timings')) {
         const n = ++counts.interactions;
-        if (options.hold && n === 1) await gate;
+        if ((options.hold && n === 1) || (options.holdSecond && n === 2))
+          await gate;
         if (options.failure) return route.fulfill({ status: 503, json: {} });
         return route.fulfill({
           json: options.timings
@@ -225,6 +227,22 @@ suite('chat polling while reading, working and switching tabs', () => {
       f.release();
       await f.page.clock.runFor(100);
       expect(await f.page.getByTestId('snapshot').textContent()).toBe('b:2');
+    } finally {
+      await f.close();
+    }
+  });
+  it('a late action from the old session cannot cancel the new session read', async () => {
+    const f = await fixture({ holdSecond: true });
+    try {
+      await f.page.getByRole('button', { name: '切换工作' }).click();
+      await expect.poll(() => f.counts.interactions).toBe(2);
+      await f.page.getByRole('button', { name: '完成旧操作' }).click();
+      await f.page.clock.runFor(2_000);
+      expect(f.counts.interactions).toBe(2);
+      f.release();
+      await expect
+        .poll(() => f.page.getByTestId('snapshot').textContent())
+        .toBe('b:2');
     } finally {
       await f.close();
     }
