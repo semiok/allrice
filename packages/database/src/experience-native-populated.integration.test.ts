@@ -364,13 +364,19 @@ suite(
         });
         const [saved] =
           await db`select status,experience_assertion from allrice_platform_employee_test_runs where id=${test.testId}`;
-        expect(saved!.status).toBe(status);
+        // Existing preview contract has no canceled test status; the Run, Job
+        // and route carry cancellation while the test retains failed.
+        expect(saved!.status).toBe(status === 'canceled' ? 'failed' : status);
+        const [execution] =
+          await db`select r.state,j.status from allrice_runs r join allrice_jobs j on j.run_id=r.id where r.id=${test.validationRun}`;
+        expect(execution).toMatchObject({ state: status, status });
         expect(saved!.experience_assertion).toMatchObject({
           passed: false,
           reason: 'authority_changed',
         });
         const [ledger] =
           await db`select * from allrice_model_usage_ledger where route_decision_id=${decision.id}`;
+        expect(ledger!.status).toBe(status);
         expect(Number(ledger!.input_tokens)).toBe(100);
         expect(Number(ledger!.output_tokens)).toBe(120);
         expect(ledger!.cost_cents).toBeNull();
