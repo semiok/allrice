@@ -19,6 +19,7 @@ import {
   EmployeeInstanceSchema,
   EmployeeMemoryPageSchema,
   EmployeeSceneSkillCatalogSchema,
+  EmployeeSceneSkillSummarySchema,
   EmployeePublishedSceneSkillSchema,
   PersonalSceneSkillSchema,
   PersonalSceneSkillCatalogSchema,
@@ -239,7 +240,12 @@ suite('U1 mounted employee Workflow host', () => {
     const removeReceipts = new Map<string, PersonalSceneRemoveReceipt>();
     const state = {
       reads: [] as string[],
-      requests: [] as Array<{ path: string; method: string; input: unknown }>,
+      requests: [] as Array<{
+        path: string;
+        url: string;
+        method: string;
+        input: unknown;
+      }>,
       scope: { workspaceId: id(4), viewerId: id(5), offset: 0 },
       workspaceGate: null as Promise<void> | null,
       workspaceReplies: [] as string[],
@@ -434,7 +440,12 @@ suite('U1 mounted employee Workflow host', () => {
       let attemptedInput: unknown = request.postData();
       if (request.headers()['content-type']?.includes('application/json'))
         attemptedInput = request.postDataJSON();
-      const attempt = { path, method, input: attemptedInput };
+      const attempt = {
+        path,
+        url: request.url(),
+        method,
+        input: attemptedInput,
+      };
       state.requests.push(attempt);
       if (
         method !== 'GET' &&
@@ -494,7 +505,9 @@ suite('U1 mounted employee Workflow host', () => {
               ? EmployeeSceneSkillCatalogSchema.parse({
                   instanceId: target,
                   employeeId: id(9),
-                  skills: options.empty ? [] : [frozen],
+                  skills: options.empty
+                    ? []
+                    : [EmployeeSceneSkillSummarySchema.strip().parse(frozen)],
                 })
               : PersonalSceneSkillCatalogSchema.parse({
                   instanceId: target,
@@ -1207,6 +1220,16 @@ suite('U1 mounted employee Workflow host', () => {
             });
           await expect.poll(async () => (await measure()).focused).toBe(true);
           const geometry = await measure();
+          const deliveryAppearance = await detail
+            .getByRole('button', { name: '查看交付结果 →', exact: true })
+            .evaluate((node) => {
+              const style = getComputedStyle(node);
+              return {
+                color: style.color,
+                linkToken: style.getPropertyValue('--ar-link').trim(),
+              };
+            });
+          expect(deliveryAppearance.linkToken).not.toBe('');
           expect(geometry.titleSize).toBe('20px');
           expect(geometry.titleLine).toBe('28px');
           expect(geometry.fits).toBe(true);
@@ -1233,7 +1256,7 @@ suite('U1 mounted employee Workflow host', () => {
               evidence,
               `workflow-${width}-${dark ? 'dark' : 'light'}.json`,
             ),
-            JSON.stringify(geometry, null, 2),
+            JSON.stringify({ ...geometry, deliveryAppearance }, null, 2),
           );
           await detail
             .getByRole('button', { name: '返回工作场景列表', exact: true })
@@ -1276,6 +1299,18 @@ suite('U1 mounted employee Workflow host', () => {
             expect(employeeGeometry.radius).toBe('0px');
           } else expect(employeeGeometry.width).toBe(848);
           expect(employeeGeometry.background).toBe(geometry.background);
+          const memoryAppearance = await employee
+            .getByRole('region', { name: '记忆', exact: true })
+            .getByRole('button', { name: '查看', exact: true })
+            .evaluate((node) => {
+              const style = getComputedStyle(node);
+              return {
+                color: style.color,
+                linkToken: style.getPropertyValue('--ar-link').trim(),
+              };
+            });
+          expect(deliveryAppearance.linkToken).toBe(memoryAppearance.linkToken);
+          expect(deliveryAppearance.color).toBe(memoryAppearance.color);
           for (const name of ['执行要求', '执行流程', '经验积累', '参考资料'])
             expect(
               await employee.getByRole('tab', { name, exact: true }).count(),
@@ -1296,7 +1331,7 @@ suite('U1 mounted employee Workflow host', () => {
               evidence,
               `employee-root-${width}-${dark ? 'dark' : 'light'}.json`,
             ),
-            JSON.stringify(employeeGeometry, null, 2),
+            JSON.stringify({ ...employeeGeometry, memoryAppearance }, null, 2),
           );
           expect(f.state.writes).toEqual([]);
         });
@@ -1448,9 +1483,21 @@ suite('U1 mounted employee Workflow host', () => {
       await f.page.getByText('carry.txt', { exact: true }).waitFor();
       const employee = await f.openEmployeeDetails('流程哥');
       const directoryPath = `/api/v1/employee-instances/${id(17)}/scene-skills`;
-      const before = f.state.reads.filter(
-        (path) => path === directoryPath,
-      ).length;
+      const catalogReads = () =>
+        f.state.requests.filter(
+          (request) =>
+            request.method === 'GET' &&
+            request.path === directoryPath &&
+            !new URL(request.url).searchParams.has('sceneId'),
+        );
+      const detailReads = () =>
+        f.state.requests.filter(
+          (request) =>
+            request.method === 'GET' &&
+            request.path === directoryPath &&
+            new URL(request.url).searchParams.get('sceneId') === id(50),
+        );
+      const before = catalogReads().length;
       expect(before).toBe(1);
       await employee.getByRole('button', { name: /写周报/ }).click();
       const detail = f.page.getByRole('dialog', {
@@ -1461,6 +1508,7 @@ suite('U1 mounted employee Workflow host', () => {
         .getByRole('heading', { name: '什么时候用', exact: true })
         .waitFor();
       await contains(detail, '流程哥会自己判断');
+      expect(detailReads()).toHaveLength(1);
       expect(
         await f.page
           .getByRole('textbox', { name: '给 Rice 的消息', exact: true })
@@ -1473,9 +1521,7 @@ suite('U1 mounted employee Workflow host', () => {
           employee.evaluate((node) => node.contains(document.activeElement)),
         )
         .toBe(true);
-      expect(
-        f.state.reads.filter((path) => path === directoryPath),
-      ).toHaveLength(before);
+      expect(catalogReads()).toHaveLength(before);
       await employee
         .getByRole('button', { name: '新建场景', exact: true })
         .click();
@@ -1486,9 +1532,7 @@ suite('U1 mounted employee Workflow host', () => {
       await source.waitFor();
       await source.getByRole('button', { name: '取消', exact: true }).click();
       await employee.waitFor();
-      expect(
-        f.state.reads.filter((path) => path === directoryPath),
-      ).toHaveLength(before);
+      expect(catalogReads()).toHaveLength(before);
       await employee.getByRole('button', { name: /写周报/ }).click();
       await detail
         .getByRole('heading', { name: '什么时候用', exact: true })
