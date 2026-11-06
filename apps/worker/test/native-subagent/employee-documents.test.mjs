@@ -66,7 +66,9 @@ it('only the admitted root gets required literal documents; child current prompt
   await h.wait();
   const forkRequest = h.calls.find((r) => r.sessionId === forked.childId);
   expect(JSON.stringify(forkRequest.messages)).toContain('CONFIRMED_A');
-  expect(JSON.stringify(forkRequest.messages)).toContain('PERSONA_A {{missing}}');
+  expect(JSON.stringify(forkRequest.messages)).toContain(
+    'PERSONA_A {{missing}}',
+  );
   expect(
     JSON.stringify(
       forkRequest.messages.filter((m) => m.role === 'system').at(-1),
@@ -140,11 +142,13 @@ it('uses native context supersession for nonempty to empty without rewriting his
   h.server.employeeDocuments.bind(h.root.id, { user: '', memory: '' });
   await h.prompt('清空人设后的任务');
   await h.wait();
-  const contexts = h.calls.at(-1).messages.filter((message) =>
-    JSON.stringify(message.content).includes(
-      'Current runtime context. This snapshot supersedes earlier runtime-context snapshots.',
-    ),
-  );
+  const contexts = h.calls
+    .at(-1)
+    .messages.filter((message) =>
+      JSON.stringify(message.content).includes(
+        'Current runtime context. This snapshot supersedes earlier runtime-context snapshots.',
+      ),
+    );
   expect(JSON.stringify(contexts.at(-1))).not.toContain('UPDATED_PERSONA');
 }, 30000);
 

@@ -48,7 +48,9 @@ describe('employee first-call input estimates', () => {
     expect(input.indexOf('# PERSONA.md')).toBeLessThan(
       input.indexOf('# USER.md'),
     );
-    expect(input.indexOf('# USER.md')).toBeLessThan(input.indexOf('# MEMORY.md'));
+    expect(input.indexOf('# USER.md')).toBeLessThan(
+      input.indexOf('# MEMORY.md'),
+    );
     const estimatedInputTokens = estimateConversationTokens(input);
     const legacyTokens = estimateConversationTokens(
       employeeRunModelInput(legacyKernel),
@@ -92,7 +94,9 @@ describe('employee first-call input estimates', () => {
     expect(routed).toContain('ROOT_POLICY\nROUTE\n' + persona);
     expect(routed).not.toContain('GENERIC_POLICY');
     expect(routed).toContain(mcpCatalogAdmissionInstructions(mcpToolCatalog));
-    expect(routed).toContain('AUTHORIZED_REFERENCES\nKNOWLEDGE\nCURRENT_REQUEST');
+    expect(routed).toContain(
+      'AUTHORIZED_REFERENCES\nKNOWLEDGE\nCURRENT_REQUEST',
+    );
     expect(estimateConversationTokens(routed)).toBeGreaterThan(
       estimateConversationTokens(employeeRunModelInput(legacyKernel)),
     );
