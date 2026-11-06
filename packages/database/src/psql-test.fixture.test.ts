@@ -1,5 +1,10 @@
 import { once } from 'node:events';
-import { createServer, type Socket } from 'node:net';
+import {
+  createConnection,
+  createServer,
+  type Server,
+  type Socket,
+} from 'node:net';
 import { createInterface } from 'node:readline';
 import { describe, expect, it } from 'vitest';
 import {
@@ -7,6 +12,33 @@ import {
   psqlTestUrl,
   runPsqlProcess,
 } from './psql-test.fixture.ts';
+
+// Keep this listener until the server closes, independently of a cancelled once().
+function registerServerSockets(server: Server) {
+  const sockets = new Set<Socket>();
+  let closing = false;
+  let closed: Promise<void> | undefined;
+  server.on('connection', (socket) => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+    if (closing) socket.destroy();
+  });
+  return () => {
+    if (closed) return closed;
+    closing = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    closed = new Promise<void>((resolve, reject) => {
+      timer = setTimeout(
+        () => reject(new Error('test_server_close_timeout')),
+        1_000,
+      );
+      server.close(() => resolve());
+    }).finally(() => clearTimeout(timer));
+    void closed.catch(() => {});
+    for (const socket of sockets) socket.destroy();
+    return closed;
+  };
+}
 
 describe('psql test process boundaries', () => {
   it('replaces URL options with one schema/statement deadline and explicit connect timeout', () => {
@@ -95,6 +127,7 @@ describe('psql test process boundaries', () => {
 
   it('finishes group termination when a ready descendant ignores SIGINT and has independent stdio', async () => {
     const server = createServer();
+    const closeServer = registerServerSockets(server);
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
     const address = server.address();
@@ -136,7 +169,9 @@ describe('psql test process boundaries', () => {
       await expect(work).rejects.toMatchObject({ reason: 'aborted' });
       await closed;
     } finally {
+      const closedServer = closeServer(); // Stop admission and destroy all owned sockets first.
       abort.abort();
+      reader?.close();
       await work.catch(() => {});
       if (descendant) {
         try {
@@ -145,11 +180,44 @@ describe('psql test process boundaries', () => {
           /* Already gone. */
         }
       }
-      reader?.close();
-      socket?.destroy();
-      await new Promise<void>((resolve) => {
-        server.close(() => resolve());
+      await closedServer;
+    }
+  });
+
+  it('cleans a real connection delivered after handshake cancellation and cleanup starts', async () => {
+    const server = createServer();
+    const closeServer = registerServerSockets(server);
+    const guard = AbortSignal.timeout(4_000);
+    let client: Socket | undefined;
+    try {
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening', { signal: guard });
+      const address = server.address();
+      if (!address || typeof address === 'string')
+        throw new Error('tcp_address_required');
+      const handshake = new AbortController();
+      const accepted = once(server, 'connection', { signal: handshake.signal });
+      handshake.abort();
+      await expect(accepted).rejects.toMatchObject({ name: 'AbortError' });
+      const delivered = once(server, 'connection', { signal: guard }).then(
+        ([socket]) => socket as Socket,
+      );
+      // The actual connection event starts cleanup before the permanent tracker
+      // receives this socket, deterministically exercising late delivery.
+      server.prependOnceListener('connection', () => {
+        void closeServer();
       });
+      client = createConnection({ host: '127.0.0.1', port: address.port });
+      client.on('error', () => {}); // A cleanup reset must not escape its owner.
+      const failed = new Promise<never>((_, reject) => {
+        client!.once('error', reject);
+      });
+      const late = await Promise.race([delivered, failed]);
+      expect(late.destroyed).toBe(true);
+      await closeServer();
+    } finally {
+      client?.destroy();
+      await closeServer();
     }
   });
 
