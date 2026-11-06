@@ -44,7 +44,12 @@ const previewSchema = z
     ]),
     sourcePath: z.literal('SKILL.md'),
     digest: ChecksumSchema,
-    target: skillPreviewTargetSchema,
+    target: z.discriminatedUnion('operation', [
+      skillPreviewTargetSchema.options[0],
+      skillPreviewTargetSchema.options[1].extend({
+        bindingsDigest: ChecksumSchema,
+      }),
+    ]),
     expiresAt: TimestampSchema,
   })
   .strict();
