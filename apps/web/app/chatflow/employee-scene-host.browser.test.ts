@@ -1387,6 +1387,22 @@ suite('U1 mounted employee Workflow host', () => {
 
   it('compact host without the side workbench opens the same actual directory from its green Workflow entry', async () => {
     await inFixture({ width: 390, disabled: true }, async (f) => {
+      const entry = f.page.getByRole('button', {
+        name: '工作场景',
+        exact: true,
+      });
+      expect(
+        await entry.evaluate((node) => getComputedStyle(node).color),
+      ).toBe('rgb(36, 149, 82)');
+      expect(
+        await entry.locator('svg').evaluate((node) => {
+          const style = getComputedStyle(node);
+          return { color: style.color, stroke: style.stroke };
+        }),
+      ).toEqual({
+        color: 'rgb(36, 149, 82)',
+        stroke: 'rgb(36, 149, 82)',
+      });
       const root = await f.openDirectory();
       await root.getByRole('button', { name: /写周报/ }).waitFor();
       await contains(root, 'Rice');
