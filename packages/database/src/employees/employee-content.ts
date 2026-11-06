@@ -1562,7 +1562,9 @@ async function readDetailsProfile(
       mission: custom.mission ?? defaults.mission,
       workStyle: custom.workStyle ?? defaults.workStyle,
     },
-    expressionStyle: personal.expressionStyle ?? defaultExpression,
+    expressionStyle: ownerView
+      ? (personal.expressionStyle ?? defaultExpression)
+      : undefined,
     personalFields: Object.keys(
       instance.kind === 'custom' || rice
         ? personal
