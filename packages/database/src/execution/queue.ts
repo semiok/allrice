@@ -1188,6 +1188,7 @@ async function enqueueRunInTransaction(
         instanceIdentity,
         options.employeeBinding.sessionId,
         snapshot,
+        options.employeeBinding.executionSnapshot.persona,
       );
     }
     if (admission.kind === 'maintenance_repair') {
@@ -1600,6 +1601,39 @@ async function enqueueRunInTransaction(
       },
       createdAt: new Date().toISOString(),
     });
+    const rawDocuments =
+      options.employeeBinding.promptSnapshot.employeeDocuments;
+    const hasPersonaDocument =
+      rawDocuments &&
+      typeof rawDocuments === 'object' &&
+      'persona' in rawDocuments &&
+      rawDocuments.persona !== undefined &&
+      rawDocuments.persona !== '';
+    if (
+      hasPersonaDocument ||
+      (executionSnapshot.schemaVersion === 2 && executionSnapshot.persona)
+    ) {
+      if (executionSnapshot.schemaVersion !== 2 || !executionSnapshot.persona)
+        throw Error('employee_persona_snapshot_invalid');
+      const { assertFrozenEmployeePersona } =
+        await import('../employees/employee-documents.ts');
+      const { EmployeePromptSnapshotSchema } =
+        await import('@allrice/contracts');
+      await assertFrozenEmployeePersona(
+        transaction,
+        executionSnapshot,
+        EmployeePromptSnapshotSchema.parse(
+          options.employeeBinding.promptSnapshot,
+        ),
+        {
+          organizationId: context.organizationId,
+          workspaceId,
+          ownerId,
+          assignmentId: options.employeeBinding.employeeAssignmentId,
+          employeeVersionId: options.employeeBinding.employeeVersionId,
+        },
+      );
+    }
     const nativeExecutionBinding = await freezeChatRunExecutionBinding(
       transaction,
       {

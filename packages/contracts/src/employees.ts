@@ -1,4 +1,7 @@
-import { EmployeeDocumentsSchema } from './employee-documents.ts';
+import {
+  EmployeeDocumentsSchema,
+  EmployeePersonaPinSchema,
+} from './employee-documents.ts';
 import { EmployeePersonaFoundationSchema } from './employee-persona-foundation.ts';
 import { SessionReferenceSnapshotsSchema } from './session-reference.ts';
 import { ReferenceSelectionsSchema } from './reference-library.ts';
@@ -750,6 +753,9 @@ export const EmployeeExecutionSnapshotV2Schema =
     schemaVersion: z.literal(2),
     // No default: old Run JSON remains unchanged.
     instance: EmployeeInstanceSnapshotSchema.optional(),
+    // No default or legacy backfill. The two independently verified sources
+    // and exact document/policy digests are frozen in the existing binding.
+    persona: EmployeePersonaPinSchema.optional(),
     workflowInvocation: BrandContentWorkflowInvocationSchema.optional(),
     baseSkillCatalog: EmployeeBaseSkillCatalogSchema.optional(),
     content: EmployeeRuntimeContentSchema.optional(),
