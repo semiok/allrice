@@ -276,7 +276,10 @@ describe('AllRice worker tool manifest contract', () => {
         name: nativeFetch!.name,
         arguments: { url: 'https://example.com/' },
         callId: 'manifest-fetch',
-        agent: { id: 'manifest-root' },
+        // This fixture exercises the tool pipeline's identity projection only.
+        agent: { id: 'manifest-root' } as NonNullable<
+          Parameters<typeof ctx.tools.execute>[0]['agent']
+        >,
         signal: new AbortController().signal,
       });
       expect(result.isError).toBe(false);
