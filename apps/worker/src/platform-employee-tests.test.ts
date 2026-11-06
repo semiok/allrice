@@ -1,10 +1,13 @@
 import { executeEmployeeMethodFileStep } from './employee-method-file-tests.js';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import {
   SessionModelSnapshotSchema,
   ExperienceModelSnapshotSchema,
   type RouteDecision,
+  PlatformEmployeeDefinitionSchema,
+  PlatformEmployeeRuntimeProfileSchema,
+  DshNativeSkillSnapshotSchema,
 } from '@allrice/contracts';
 import {
   claimNextPlatformEmployeeTestRun,
@@ -17,15 +20,23 @@ import {
 import { DshHarnessAdapter } from './harness/dsh-adapter.js';
 import { executeNextPlatformEmployeeTest } from './platform-employee-tests.js';
 import { attachExecutionFailureUsage } from './harness/dsh/execution-failure-usage.js';
+import { source as platformTestSource } from '../../../packages/database/src/conversation/platform-test-binding.fixture.ts';
 
-vi.mock('@allrice/database', () => ({
-  claimNextPlatformEmployeeTestRun: vi.fn(),
-  completePlatformEmployeeTestRun: vi.fn(),
-  employeeMethodTestStillCurrent: vi.fn(),
-  experienceValidationStillCurrent: vi.fn(),
-  methodFileExecutionUnverified: vi.fn(),
-  freezeRouteSubscriptionSnapshot: vi.fn(),
-}));
+vi.mock('@allrice/database', async () => {
+  const policy =
+    await import('../../../packages/database/src/platform-employees/runtime-package.ts');
+  return {
+    claimNextPlatformEmployeeTestRun: vi.fn(),
+    completePlatformEmployeeTestRun: vi.fn(),
+    employeeMethodTestStillCurrent: vi.fn(),
+    experienceValidationStillCurrent: vi.fn(),
+    methodFileExecutionUnverified: vi.fn(),
+    freezeRouteSubscriptionSnapshot: vi.fn(),
+    employeePersonaPlatformSystemPrompt:
+      policy.employeePersonaPlatformSystemPrompt,
+    runtimePackageChecksum: policy.runtimePackageChecksum,
+  };
+});
 vi.mock('./employee-method-file-tests.js', () => ({
   employeeMethodFileTools: [
     {
@@ -147,6 +158,92 @@ afterEach(() => {
   vi.clearAllMocks();
   vi.useRealTimers();
 });
+it.each([
+  ['concise', '简洁，结论优先'],
+  ['structured', '结构清晰，分步说明'],
+  ['exploratory', '比较方案与取舍'],
+] as const)(
+  'ordinary platform preview consumes its frozen %s PERSONA through the real kernel carrier',
+  async (expressionStyle, label) => {
+    const original = platformTestSource(undefined, 'empty');
+    const definition = PlatformEmployeeDefinitionSchema.parse(
+      original.definition,
+    );
+    definition.identity.expressionStyle = expressionStyle;
+    const value = {
+      ...claimed(),
+      employeeId: original.platformEmployeeId,
+      revisionId: original.platformRevisionId,
+      definition,
+      runtimeProfile: PlatformEmployeeRuntimeProfileSchema.parse(
+        original.runtimeProfile,
+      ),
+      nativeSkills: DshNativeSkillSnapshotSchema.array().parse(
+        original.nativeSkills,
+      ),
+      methodCandidate: null,
+      experienceCandidate: null,
+    };
+    vi.mocked(claimNextPlatformEmployeeTestRun).mockResolvedValue(value);
+    const execute = vi
+      .spyOn(DshHarnessAdapter.prototype, 'execute')
+      .mockResolvedValue({ ...receipt, model: value.runtimeProfile.model });
+    await run();
+    expect(execute).toHaveBeenCalledOnce();
+    const input = execute.mock.calls[0]![0];
+    const documents = input.kernel.employeeDocuments;
+    expect(documents).toMatchObject({ user: '', memory: '' });
+    expect(documents?.persona).toBeDefined();
+    const persona = JSON.parse(documents!.persona!.slice('# 人设\n'.length));
+    expect(persona.name.value).toBe(definition.name);
+    expect(persona.mission.value).toBe(definition.identity.mission);
+    expect(persona.workStyle.value).toBe(definition.identity.workStyle);
+    expect(persona.expressionStyle).toMatchObject({
+      value: expressionStyle,
+      label,
+      source: 'frozen_platform_definition',
+    });
+    expect(persona.source).toMatchObject({
+      kind: 'platform_preview',
+      testId: value.id,
+      platformEmployeeId: original.platformEmployeeId,
+      platformRevisionId: original.platformRevisionId,
+      packageChecksum: original.packageChecksum,
+      definitionChecksum: `sha256:${createHash('sha256').update(JSON.stringify(definition)).digest('hex')}`,
+    });
+    expect(persona).not.toHaveProperty('personalRevision');
+    expect(input.kernel.rootSystemInstructions).toBe(
+      input.kernel.systemInstructions,
+    );
+    expect(input.kernel.systemInstructions).toContain(definition.systemPrompt);
+    expect(input.kernel.systemInstructions).toContain(
+      definition.identity.safetyBoundaries[0],
+    );
+    expect(input.kernel.systemInstructions).not.toContain(definition.name);
+    expect(input.kernel.systemInstructions).not.toContain('# IDENTITY.md');
+    expect(input.kernel.systemInstructions).not.toContain(
+      '## 已发布 Skill 目录',
+    );
+    expect(input.kernel.runtimePackageChecksum).toBe(original.packageChecksum);
+    expect(input.nativeSkills).toEqual(value.nativeSkills);
+    expect(input.authorizedToolNames).toEqual(value.runtimeProfile.toolNames);
+    expect(input.kernel.bootstrapConversation).toBe('');
+    expect(input.kernel.authorizedMemoryContext).toBe('');
+    expect(employeeMethodTestStillCurrent).not.toHaveBeenCalled();
+    expect(freezeRouteSubscriptionSnapshot).not.toHaveBeenCalled();
+    expect(completePlatformEmployeeTestRun).toHaveBeenCalledWith(
+      value.id,
+      expect.objectContaining({ error: null }),
+    );
+  },
+);
+it('does not dispatch or synthesize PERSONA after the existing claim rejects an immutable source', async () => {
+  vi.mocked(claimNextPlatformEmployeeTestRun).mockResolvedValue(null);
+  const execute = vi.spyOn(DshHarnessAdapter.prototype, 'execute');
+  expect(await run()).toBe(false);
+  expect(execute).not.toHaveBeenCalled();
+  expect(completePlatformEmployeeTestRun).not.toHaveBeenCalled();
+});
 it('runs the frozen caller model in a fresh context without tools, files, skills or recalled history', async () => {
   const execute = vi
     .spyOn(DshHarnessAdapter.prototype, 'execute')
@@ -162,6 +259,8 @@ it('runs the frozen caller model in a fresh context without tools, files, skills
     skillVersionIds: [],
   });
   expect(input.kernel.systemInstructions).toContain('Private candidate rule');
+  expect(input.kernel.employeeDocuments).toBeUndefined();
+  expect(input.kernel.rootSystemInstructions).toBeUndefined();
   expect(input.tools).toEqual([]);
   expect(input.authorizedToolNames).toEqual([]);
   expect(input.storageObjects).toEqual([]);
@@ -397,6 +496,8 @@ it('uses the original experience draft with true non-chat identity, no unrelated
     bootstrapConversation: '',
   });
   expect(input.kernel.systemInstructions).not.toContain('Published base');
+  expect(input.kernel.employeeDocuments).toBeUndefined();
+  expect(input.kernel.rootSystemInstructions).toBeUndefined();
   expect(input.nativeSubagents).toBeUndefined();
   expect(input.nativeSkills).toEqual([]);
   expect(input.tools).toEqual([]);

@@ -7,6 +7,8 @@ import {
   employeeToolConfigurationErrors,
   runtimePolicyActionDecision,
   CloudExecutionProfileSchema,
+  renderEmployeePersonaDocument,
+  PlatformEmployeeDefinitionSchema,
 } from '@allrice/contracts';
 import * as client from './core/client.ts';
 import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
@@ -34,7 +36,16 @@ import {
   archivePlatformEmployee,
   createPlatformEmployeeDraft,
   getPlatformEmployee,
+  queuePlatformEmployeeTestRun,
+  claimNextPlatformEmployeeTestRun,
+  completePlatformEmployeeTestRun,
+  runtimePackageChecksum,
+  employeePersonaPlatformSystemPrompt,
 } from './employees/platform-employees.ts';
+import {
+  readCurrentPlatformTestExecutionRecord,
+  type PlatformTestExecutionRecord,
+} from './conversation/platform-test-execution-record.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -146,6 +157,144 @@ suite('MET-151 policy and exact employee publication administration', () => {
         .securityPolicy,
     ).toEqual(source.definition.securityPolicy);
   });
+  it('freezes the complete preview PERSONA source across a later mutable platform draft without adding owner data', async () => {
+    const f = await setup();
+    const queued = await queuePlatformEmployeeTestRun(
+      f.employeeId,
+      {
+        environment: 'company',
+        workspaceId: f.workspaceId,
+        ownerId: f.ownerId,
+        prompt: 'Synthetic PERSONA source check',
+      },
+      f.context.actor.id,
+    );
+    expect(queued.queued).toBe(true);
+    const testId = queued.testRun!.id;
+    const [original] = await fixture.db<
+      PlatformTestExecutionRecord[]
+    >`select * from allrice_platform_employee_test_runs where id=${testId}`;
+    const checked = readCurrentPlatformTestExecutionRecord(original!, {
+      organizationId: f.organizationId,
+      workspaceId: f.workspaceId,
+      ownerId: f.ownerId,
+    });
+    const frozenBytes = JSON.stringify({
+      definition: original!.frozen_definition,
+      profile: original!.frozen_runtime_profile,
+      binding: original!.native_execution_binding,
+    });
+    const latest = PlatformEmployeeDefinitionSchema.parse({
+      ...f.definition,
+      name: 'LATER_DRAFT_NAME',
+      identity: {
+        ...f.definition.identity,
+        mission: 'LATER_DRAFT_MISSION',
+        expressionStyle: 'concise',
+      },
+    });
+    await savePlatformEmployeeDraft(
+      f.employeeId,
+      { definition: latest },
+      f.context.actor.id,
+    );
+    const claim = await claimNextPlatformEmployeeTestRun(randomUUID());
+    expect(claim?.id).toBe(testId);
+    if (!claim) throw Error('expected real preview claim');
+    const persona = renderEmployeePersonaDocument(
+      {
+        name: claim.definition.name,
+        description: claim.definition.description,
+        appearance: claim.definition.appearance,
+        identity: claim.definition.identity,
+      },
+      {
+        kind: 'platform_preview',
+        testId: claim.id,
+        platformEmployeeId: claim.employeeId,
+        platformRevisionId: claim.revisionId,
+        definitionChecksum: runtimePackageChecksum(claim.definition),
+        packageChecksum: checked.executionBinding.source.packageChecksum,
+      },
+    );
+    const document = JSON.parse(persona.slice('# 人设\n'.length));
+    expect(document.name.value).toBe(f.definition.name);
+    expect(document.mission.value).toBe(f.definition.identity.mission);
+    expect(document.expressionStyle).toMatchObject({
+      value: 'structured',
+      label: '结构清晰，分步说明',
+      source: 'frozen_platform_definition',
+    });
+    expect(document.source).toEqual({
+      kind: 'platform_preview',
+      testId,
+      platformEmployeeId: f.employeeId,
+      platformRevisionId: queued.testRun!.revisionId,
+      definitionChecksum: checked.executionBinding.source.definitionChecksum,
+      packageChecksum: checked.executionBinding.source.packageChecksum,
+    });
+    expect(claim.runtimeProfile.runtimePackage?.checksum).toBe(
+      checked.executionBinding.source.packageChecksum,
+    );
+    expect(persona).not.toContain('LATER_DRAFT_');
+    expect(document).not.toHaveProperty('personalRevision');
+    expect(document).not.toHaveProperty('ownerId');
+    expect(employeePersonaPlatformSystemPrompt(claim.definition)).toContain(
+      f.definition.systemPrompt,
+    );
+    const [after] =
+      await fixture.db`select * from allrice_platform_employee_test_runs where id=${testId}`;
+    expect(
+      JSON.stringify({
+        definition: after!.frozen_definition,
+        profile: after!.frozen_runtime_profile,
+        binding: after!.native_execution_binding,
+      }),
+    ).toBe(frozenBytes);
+    await completePlatformEmployeeTestRun(testId, {
+      answer: 'Synthetic only',
+      provider: 'openai-codex',
+      model: claim.runtimeProfile.model,
+      threadId: null,
+      usage: null,
+      events: [],
+      error: null,
+    });
+  });
+  it.each(['definition', 'package_checksum'] as const)(
+    'does not let the PERSONA renderer replace a rejected frozen preview %s source',
+    async (field) => {
+      const f = await setup();
+      const queued = await queuePlatformEmployeeTestRun(
+        f.employeeId,
+        {
+          environment: 'company',
+          workspaceId: f.workspaceId,
+          ownerId: f.ownerId,
+          prompt: 'Reject corrupt frozen source',
+        },
+        f.context.actor.id,
+      );
+      expect(queued.queued).toBe(true);
+      const testId = queued.testRun!.id;
+      if (field === 'definition')
+        await fixture.db`update allrice_platform_employee_test_runs set frozen_definition=jsonb_set(frozen_definition,'{identity,expressionStyle}','"concise"'::jsonb) where id=${testId}`;
+      else
+        await fixture.db`update allrice_platform_employee_test_runs set frozen_package_checksum=${`sha256:${'0'.repeat(64)}`} where id=${testId}`;
+      expect(await claimNextPlatformEmployeeTestRun(randomUUID())).toBeNull();
+      const [failed] =
+        await fixture.db`select status,output from allrice_platform_employee_test_runs where id=${testId}`;
+      expect(failed!.status).toBe('failed');
+      expect(failed!.output.error.code).toBe(
+        field === 'definition'
+          ? 'TEST_EXECUTION_BINDING_INVALID'
+          : 'TEST_SNAPSHOT_INVALID',
+      );
+      expect(
+        await fixture.db`select id from allrice_runs where execution_spec->>'platformEmployeeTestRunId'=${testId}`,
+      ).toHaveLength(0);
+    },
+  );
   it('repairs inherited Rice identity only in newly created or saved drafts', async () => {
     const [source] = await fixture.db<{ id: string }[]>`
       select id from allrice_platform_employees where employee_key = 'rice'

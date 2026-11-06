@@ -150,7 +150,7 @@
       "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-employee-documents.mjs",
-      "reason": "Supply bounded confirmed owner/instance database documents only to an admitted human root through public systemPrompt.context and exact-Agent PERSONA_PREFIX_SECTION shadowing. Native snapshot update/clear/resume/fork owns history; no child implementation, permission widening, private interface or alternate lifecycle."
+      "reason": "Supply bounded frozen employee documents through public systemPrompt.context and exact-Agent PERSONA_PREFIX_SECTION shadowing on an admitted root. Ordinary platform_preview PERSONA derives only from its verified frozen platform definition/source; USER/MEMORY remain empty. Human USER/MEMORY retain existing owner/instance confirmation eligibility. Admitted descendants read only current PERSONA; native persona, snapshot update/clear/resume/fork and history stay native. No new qualification, permission, private interface or alternate lifecycle."
     }
   ]
 }
