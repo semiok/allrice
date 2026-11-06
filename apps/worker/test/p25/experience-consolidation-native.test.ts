@@ -4,7 +4,7 @@ import { it, expect } from 'vitest';
 import {
   InternalKernelRequestSchema,
   HarnessEventSchema,
-  validateExperienceDraftOutput,
+  validateMemoryDraftOutput,
   type HarnessEvent,
 } from '@allrice/contracts';
 import { loadPlatformContentCatalog } from '../../../../packages/database/src/platform-content/catalog.ts';
@@ -16,21 +16,17 @@ it('loads the exact consolidation Skill in a private non-chat runtime and carrie
   const sourceId = randomUUID(),
     occurrenceId = randomUUID();
   const output = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     drafts: [
       {
         sourceIds: [sourceId],
-        rule: '单列退款后汇总净回款。',
-        reason: '直接纠错反馈',
-        applicability: '含退款的对账',
-        confidence: 'tentative',
-        validation: {
-          kind: 'calculation',
-          check: '含退款的样本独立复算净回款。',
-        },
+        category: 'business_preference',
+        content: '含退款的对账先单列退款，再汇总净回款。',
+        reason: '真人原始材料',
       },
     ],
     discarded: [],
+    suggestions: [],
   };
   const model = await p24Fixture(async (_request, index) =>
     index === 1
@@ -135,10 +131,10 @@ it('loads the exact consolidation Skill in a private non-chat runtime and carrie
       },
     });
     expect(
-      validateExperienceDraftOutput(JSON.parse(result.answer), [sourceId]),
+      validateMemoryDraftOutput(JSON.parse(result.answer), [sourceId]),
     ).toEqual(output);
     expect(model.requests).toHaveLength(2);
-    expect(JSON.stringify(model.requests[1])).toContain('最多提出 8 条草稿');
+    expect(JSON.stringify(model.requests[1])).toContain('最多8条');
     const names = model.requests[0]!.tools!.map((t) => t.function.name);
     expect(names).toContain('skill');
     expect(

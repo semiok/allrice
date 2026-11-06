@@ -170,7 +170,7 @@ suite('M5-C current bounded consolidation, isolated SQL and no model', () => {
   it('oversized current rules fail the whole batch before a Run and retain the diagnostic', async () => {
     const f = await source();
     await db`insert into allrice_memories(organization_id,workspace_id,owner_id,employee_id,instance_id,content,visibility,source_type,lifecycle_state,memory_class,trust_level)
-  values(${f.org},${f.workspace},${f.user},${f.e.employee_id ?? null},${f.e.instance_id},${'合成已确认记忆'.repeat(2000)},'private','manual','durable','work_note','user_confirmed')`;
+  values(${f.org},${f.workspace},${f.user},${f.e.employee_id ?? null},${f.e.instance_id},${'合成已确认记忆'.repeat(2000)},'private','user','durable','work_note','user_confirmed')`;
     const r = await f.reserve();
     if (!('automationRunId' in r)) throw Error('expected occurrence');
     await expect(
