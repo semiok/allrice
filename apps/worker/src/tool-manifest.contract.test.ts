@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 
 import { allRiceToolManifest, employeeToolCatalog } from '@allrice/contracts';
 import { Context } from '@deepseek-ai/cordis';
+import { ToolCallId } from '@deepseek-ai/dsh-llm';
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt';
 import Tools from '@deepseek-ai/dsh-tools';
 import Web from '@deepseek-ai/dsh-web';
@@ -275,7 +276,7 @@ describe('AllRice worker tool manifest contract', () => {
       const result = await ctx.tools.execute({
         name: nativeFetch!.name,
         arguments: { url: 'https://example.com/' },
-        callId: 'manifest-fetch',
+        callId: ToolCallId('manifest-fetch'),
         // This fixture exercises the tool pipeline's identity projection only.
         agent: { id: 'manifest-root' } as NonNullable<
           Parameters<typeof ctx.tools.execute>[0]['agent']
