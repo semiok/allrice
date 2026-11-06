@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createP27CodexWorkerFixture } from '../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
 import { authorizeFixturePlatformAdministrator } from './platform-authority.fixture.ts';
@@ -226,6 +227,36 @@ suite(
         )[0]!.status,
       ).toBe('enabled');
     });
+    it.each(['prepared', 'absent'] as const)(
+      'requires real policy-off before the watermark and removes a retained %s arm from recovery',
+      async (phase) => {
+        const seeded = await seedExperienceCalendarRule(f, 'empty');
+        const old = await seedHistoricalExperienceCalendar(
+          f, seeded.automationId, reference, phase,
+        );
+        const migration = await readFile(new URL('../migrations/0234_memory_source_cutover.sql', import.meta.url), 'utf8');
+        const before = await readExperiencePolicy(f.organizationId);
+        await expect(f.db.unsafe(migration)).rejects.toMatchObject({
+          message: 'memory_source_cutover_requires_experience_policy_off',
+        });
+        expect(await readExperiencePolicy(f.organizationId)).toEqual(before);
+        const paused = await updateExperiencePolicy(f.context, f.organizationId, {
+          expectedRevision: before.revision, frequency: 'off',
+          timezone: before.timezone, time: before.time,
+          weekday: before.weekday, monthDay: before.monthDay,
+        });
+        expect(paused.frequency).toBe('off');
+        const [decision] = await f.db`select kind,outcome from allrice_native_calendar_decisions where period_id=${old.period.periodId}`;
+        expect(decision).toEqual({kind: 'policy', outcome: 'canceled'});
+        await f.db.unsafe(migration);
+        const [open] = await f.db`select count(*)::int total from allrice_native_calendar_plans where control_id=${old.control.controlId} and closed_decision_id is null`;
+        expect(open!.total).toBe(0);
+        const snapshot = await old.store.calendar!.loadCalendarState(old.writer);
+        expect(snapshot.bindings).toEqual([]);
+        expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(false);
+        expect(await f.db`select id from allrice_jobs`).toHaveLength(0);
+      },
+    );
     it('rejects re-enabling the retired consumer but retains an authorized policy-off cancellation', async () => {
       const seeded = await seedExperienceCalendarRule(f, 'empty');
       const old = await seedHistoricalExperienceCalendar(
