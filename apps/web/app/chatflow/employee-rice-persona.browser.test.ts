@@ -646,12 +646,18 @@ suite('U1 Rice full persona from the real employee entry', () => {
             exact: true,
           })
           .check();
-        await editor
-          .getByRole('textbox', { name: '使命', exact: true })
-          .fill('帮助完成研究');
-        await editor
-          .getByRole('textbox', { name: '工作方式', exact: true })
-          .fill('按步骤交付');
+        const mission = editor.getByRole('textbox', {
+          name: '使命',
+          exact: true,
+        });
+        expect(await mission.inputValue()).toBe('帮助完成研究');
+        await mission.fill('完成研究并核对结论');
+        const workStyle = editor.getByRole('textbox', {
+          name: '工作方式',
+          exact: true,
+        });
+        expect(await workStyle.inputValue()).toBe('按步骤交付');
+        await workStyle.fill('先核对资料，再按步骤交付');
         await editor
           .getByRole('combobox', { name: '表达偏好', exact: true })
           .selectOption('exploratory');
@@ -713,8 +719,8 @@ suite('U1 Rice full persona from the real employee entry', () => {
           expectedRevision: 2,
           profile: {
             name: '青禾',
-            mission: '帮助完成研究',
-            workStyle: '按步骤交付',
+            mission: '完成研究并核对结论',
+            workStyle: '先核对资料，再按步骤交付',
             expressionStyle: 'exploratory',
             appearance: {
               avatarType: 'image',
