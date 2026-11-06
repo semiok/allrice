@@ -15,6 +15,10 @@ import {
 } from '../platform-employees/runtime-package.ts';
 import { skillBundleChecksum, skillBytesChecksum } from '../skill-bundles.ts';
 import {
+  personaRuntimePackageChecksum,
+  type PersonaRuntimePackagePayload,
+} from '../platform-employees/runtime-package-signature.ts';
+import {
   nativeRootDigest,
   newNativeGeneration,
 } from './current-execution-binding.ts';
@@ -721,10 +725,10 @@ describe('PERSONA platform provenance readiness', () => {
       platformPolicy: definition.systemPrompt,
       skills: legacy.skills,
       runtimeManifest,
-    };
+    } satisfies PersonaRuntimePackagePayload;
     p.runtimePackage = EmployeeRuntimePackageSchema.parse({
       ...payload,
-      checksum: runtimePackageChecksum(payload),
+      checksum: personaRuntimePackageChecksum(payload),
     });
     s.packageChecksum = p.runtimePackage.checksum;
     expect(() => validatePlatformTestExecutionSource(s)).toThrow(

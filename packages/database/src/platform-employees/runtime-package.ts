@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import { validateFrozenSkill } from '../skill-bundles.ts';
+import { RuntimePolicyError } from '../runtime-policy-digest.ts';
+import { personaRuntimePackageChecksum } from './runtime-package-signature.ts';
 
 import {
   DshNativeSkillSnapshotSchema,
@@ -73,31 +75,28 @@ export function verifiedRuntimePackageChecksum(input: unknown): string | null {
   const parsed = EmployeeRuntimePackageSchema.safeParse(input);
   if (!parsed.success) return null;
   const p = parsed.data;
-  const checksum = runtimePackageChecksum(
-    p.schemaVersion === 3
-      ? {
-          schemaVersion: p.schemaVersion,
-          packageVersion: p.packageVersion,
-          capabilityFingerprint: p.capabilityFingerprint,
-          foundation: p.foundation,
-          platformPolicy: p.platformPolicy,
-          skills: p.skills,
-          runtimeManifest: p.runtimeManifest,
-        }
-      : {
-          schemaVersion: p.schemaVersion,
-          packageVersion: p.packageVersion,
-          capabilityFingerprint: p.capabilityFingerprint,
-          files: {
-            identityMd: p.files.identityMd,
-            soulMd: p.files.soulMd,
-            userMd: p.files.userMd,
-            agentsMd: p.files.agentsMd,
-          },
-          skills: p.skills,
-          runtimeManifest: p.runtimeManifest,
-        },
-  );
+  if (p.schemaVersion === 3) {
+    try {
+      const checksum = personaRuntimePackageChecksum(p);
+      return checksum === p.checksum ? checksum : null;
+    } catch (error) {
+      if (error instanceof RuntimePolicyError) return null;
+      throw error;
+    }
+  }
+  const checksum = runtimePackageChecksum({
+    schemaVersion: p.schemaVersion,
+    packageVersion: p.packageVersion,
+    capabilityFingerprint: p.capabilityFingerprint,
+    files: {
+      identityMd: p.files.identityMd,
+      soulMd: p.files.soulMd,
+      userMd: p.files.userMd,
+      agentsMd: p.files.agentsMd,
+    },
+    skills: p.skills,
+    runtimeManifest: p.runtimeManifest,
+  });
   return checksum === p.checksum ? checksum : null;
 }
 

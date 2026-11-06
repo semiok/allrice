@@ -20,6 +20,10 @@ import {
 } from '../platform-employees/runtime-package.ts';
 import { skillBundleChecksum, skillBytesChecksum } from '../skill-bundles.ts';
 import {
+  personaRuntimePackageChecksum,
+  type PersonaRuntimePackagePayload,
+} from '../platform-employees/runtime-package-signature.ts';
+import {
   assertCurrentEmployeeChatOrigin,
   assertEmployeeRunExecutionBinding,
   CurrentEmployeeChatOriginSchema,
@@ -892,10 +896,10 @@ describe('PERSONA package declaration readiness', () => {
       platformPolicy: manifest.systemPrompt,
       skills: legacy.skills,
       runtimeManifest,
-    };
+    } satisfies PersonaRuntimePackagePayload;
     const pkg = EmployeeRuntimePackageSchema.parse({
       ...payload,
-      checksum: runtimePackageChecksum(payload),
+      checksum: personaRuntimePackageChecksum(payload),
     });
     if (pkg.schemaVersion !== 3)
       throw Error('fixture_persona_package_required');
@@ -936,15 +940,7 @@ describe('PERSONA package declaration readiness', () => {
     );
     manifest.runtimePolicy.model = pkg.runtimeManifest.model;
     pkg.capabilityFingerprint = artifact;
-    pkg.checksum = runtimePackageChecksum({
-      schemaVersion: pkg.schemaVersion,
-      packageVersion: pkg.packageVersion,
-      capabilityFingerprint: pkg.capabilityFingerprint,
-      foundation: pkg.foundation,
-      platformPolicy: pkg.platformPolicy,
-      skills: pkg.skills,
-      runtimeManifest: pkg.runtimeManifest,
-    });
+    pkg.checksum = personaRuntimePackageChecksum(pkg);
     input.configChecksum = pkg.checksum;
     expect(() => validateEmployeeExecutionSource(input)).toThrow(
       'CURRENT_EXECUTION_SOURCE_CAPABILITY_FINGERPRINT_MISMATCH',
