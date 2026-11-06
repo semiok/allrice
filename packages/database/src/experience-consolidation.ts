@@ -227,8 +227,8 @@ export async function updateExperiencePolicy(
     if (
       policy.frequency !== 'off' &&
       (!experienceNativeCalendarEnabled() ||
-        policy.validationMode !== 'off' ||
-        policy.adoptionMode !== 'off')
+        ('validationMode' in policy && policy.validationMode !== 'off') ||
+        ('adoptionMode' in policy && policy.adoptionMode !== 'off'))
     )
       throw new ExperienceError('disabled');
     await tx`insert into allrice_settings(scope_type,scope_id,key,value)
