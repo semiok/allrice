@@ -92,9 +92,9 @@ export const UserPreferencesSchema = z.object({
     maxDepth: null,
     maxActive: null,
   }),
-  capabilities: AccountCapabilitySettingsSchema.default(
-    defaultAccountCapabilitySettings,
-  ),
+  // Missing means an unsupported/incomplete response, not an unsaved account.
+  // The authenticated storage reader returns explicit defaults for no row.
+  capabilities: AccountCapabilitySettingsSchema,
   updatedAt: z.string().datetime().nullable(),
 });
 export type UserPreferences = z.infer<typeof UserPreferencesSchema>;

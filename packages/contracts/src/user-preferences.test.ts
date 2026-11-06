@@ -11,12 +11,29 @@ import {
 describe('personal display preference compatibility', () => {
   it('reads a prior streaming-only snapshot with the native display defaults', () => {
     expect(
-      UserPreferencesSchema.parse({ streamingOutput: false, updatedAt: null }),
+      UserPreferencesSchema.parse({
+        streamingOutput: false,
+        updatedAt: null,
+        capabilities: defaultUserPreferences.capabilities,
+      }),
     ).toEqual({ ...defaultUserPreferences, streamingOutput: false });
   });
 });
 
 describe('account cloud project configuration', () => {
+  it('rejects an unsupported response instead of pretending the account disabled the capability', () => {
+    expect(
+      UserPreferencesSchema.safeParse({
+        streamingOutput: true,
+        updatedAt: null,
+      }).success,
+    ).toBe(false);
+    expect(
+      UserPreferencesSchema.parse(defaultUserPreferences).capabilities,
+    ).toEqual({
+      [cloudProjectCapabilityId]: { configVersion: 1, enabled: false },
+    });
+  });
   it.each([true, false])(
     'accepts enabled=%s without changing native preferences',
     (enabled) => {
@@ -27,11 +44,9 @@ describe('account cloud project configuration', () => {
         capabilities,
       });
       expect(
-        UserPreferencesSchema.parse({ streamingOutput: true, updatedAt: null })
+        UserPreferencesSchema.parse({ ...defaultUserPreferences, capabilities })
           .capabilities,
-      ).toEqual({
-        [cloudProjectCapabilityId]: { configVersion: 1, enabled: false },
-      });
+      ).toEqual(capabilities);
     },
   );
   it.each([
@@ -61,7 +76,11 @@ describe('account cloud project configuration', () => {
 describe('agent preferences follow DSH', () => {
   it('reads an older saved snapshot without pinning DSH defaults', () => {
     expect(
-      UserPreferencesSchema.parse({ streamingOutput: true, updatedAt: null }),
+      UserPreferencesSchema.parse({
+        streamingOutput: true,
+        updatedAt: null,
+        capabilities: defaultUserPreferences.capabilities,
+      }),
     ).toMatchObject({
       questionWait: { mode: 'default' },
       subagents: { maxDepth: null, maxActive: null },
