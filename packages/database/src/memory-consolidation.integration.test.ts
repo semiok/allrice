@@ -63,28 +63,34 @@ suite('M5-C current bounded consolidation, isolated SQL and no model', () => {
     vi.unstubAllEnvs();
     await fixture?.close();
   });
-  async function source(text = '合成品牌月报先列退款，再汇总净回款。') {
+  async function source(
+    text = '合成品牌月报先列退款，再汇总净回款。',
+    count = 1,
+  ) {
     const f = await createExperienceFixture(db, { authenticated: true });
     const session = await createChatSession(f.owner, {
       workspaceId: f.workspace,
       title: 'Synthetic M5-C source',
     });
-    const sent = await sendChatMessage(f.owner, f.workspace, session.id, {
-      clientMessageId: randomUUID(),
-      text,
-    });
-    const workerId = randomUUID(),
-      leaseToken = randomUUID();
-    const [job] =
-      await db`update allrice_jobs set status='claimed',worker_id=${workerId},lease_token=${leaseToken},claimed_at=clock_timestamp(),heartbeat_at=clock_timestamp(),lease_expires_at=clock_timestamp()+interval '5 minutes' where run_id=${sent.run.id} returning id`;
-    expect(await startClaimedJob(workerId, job!.id, leaseToken)).toBeTruthy();
-    await completeJob({
-      workerId,
-      jobId: job!.id,
-      leaseToken,
-      result: { text: 'Synthetic assistant output is not a source' },
-    });
-    await collectPendingMemorySources({ database: db, limit: 16 });
+    let sent!: Awaited<ReturnType<typeof sendChatMessage>>;
+    for (let i = 0; i < count; i++) {
+      sent = await sendChatMessage(f.owner, f.workspace, session.id, {
+        clientMessageId: randomUUID(),
+        text,
+      });
+      const workerId = randomUUID(),
+        leaseToken = randomUUID();
+      const [job] =
+        await db`update allrice_jobs set status='claimed',worker_id=${workerId},lease_token=${leaseToken},claimed_at=clock_timestamp(),heartbeat_at=clock_timestamp(),lease_expires_at=clock_timestamp()+interval '5 minutes' where run_id=${sent.run.id} returning id`;
+      expect(await startClaimedJob(workerId, job!.id, leaseToken)).toBeTruthy();
+      await completeJob({
+        workerId,
+        jobId: job!.id,
+        leaseToken,
+        result: { text: 'Synthetic assistant output is not a source' },
+      });
+    }
+    await collectPendingMemorySources({ database: db, limit: 32 });
     const [e] =
       await db`select * from allrice_experience_reviews where run_id=${sent.run.id}`;
     expect(e).toBeTruthy();
@@ -195,6 +201,65 @@ suite('M5-C current bounded consolidation, isolated SQL and no model', () => {
       experience_execution: null,
     });
   });
+  it.each([
+    { count: 17, text: '合成来源', selected: 16, bytes: 64 },
+    { count: 9, text: '米'.repeat(4000), selected: 8, bytes: 32000 },
+  ])(
+    'keeps oldest complete sources bounded: $count inputs',
+    async ({ count, text, selected, bytes }) => {
+      const f = await source(text, count);
+      const r = await f.reserve();
+      if (!('automationRunId' in r)) throw Error('expected occurrence');
+      const [row] =
+        await db`select experience_occurrence from allrice_automation_runs where id=${r.automationRunId}`;
+      const o = MemoryOccurrenceSchema.parse(row!.experience_occurrence);
+      expect(o.sources).toHaveLength(selected);
+      expect(o.sources.reduce((n, s) => n + s.excerpt.length, 0)).toBe(bytes);
+      expect(o.sources.every((s) => s.excerpt === text)).toBe(true);
+      const [pending] =
+        await db`select count(*)::int total from allrice_experience_reviews where owner_id=${f.user} and consolidation_occurrence_id is null`;
+      expect(pending!.total).toBe(count - selected);
+      const [rule] =
+        await db`select * from allrice_automations where id=${f.rule.id}`;
+      await expect(
+        db.begin((tx) =>
+          reserveExperienceOccurrenceInTransaction(
+            tx,
+            rule as never,
+            new Date(Date.now() + 86400000),
+          ),
+        ),
+      ).resolves.toMatchObject({
+        outcome: 'budget',
+        budget: { instanceCount: 1 },
+      });
+    },
+  );
+  it('fails closed without waiting behind a concurrent policy writer', async () => {
+    const f = await reserved();
+    let release!: () => void, locked!: () => void;
+    const ready = new Promise<void>((r) => {
+      locked = r;
+    });
+    const hold = new Promise<void>((r) => {
+      release = r;
+    });
+    const writer = db.begin(async (tx) => {
+      await tx`select pg_advisory_xact_lock(hashtextextended(${`experience-policy:${f.org}`},183))`;
+      locked();
+      await hold;
+    });
+    await ready;
+    try {
+      await expect(experienceOccurrencePrincipal(f.id)).rejects.toMatchObject({
+        code: 'source_changed',
+      });
+    } finally {
+      release();
+      await writer;
+    }
+    expect((await experienceOccurrencePrincipal(f.id)).actor.id).toBe(f.user);
+  });
   it.each(['success', 'invalid', 'withdraw', 'expired'] as const)(
     'settles a synthetic paid result atomically: %s',
     async (mode) => {
@@ -291,8 +356,15 @@ suite('M5-C current bounded consolidation, isolated SQL and no model', () => {
         completeJob({ workerId, jobId: job.id, leaseToken, result: output });
       if (mode === 'success') {
         await complete();
-        await complete();
-      } else await expect(complete()).rejects.toBeTruthy();
+        await expect(complete()).rejects.toMatchObject({ code: 'lease_lost' });
+      } else if (mode === 'invalid')
+        await expect(complete()).rejects.toThrow(
+          'MEMORY_DRAFT_SOURCE_MISMATCH',
+        );
+      else
+        await expect(complete()).rejects.toMatchObject({
+          code: mode === 'withdraw' ? 'source_changed' : 'lease_lost',
+        });
       const [after] =
         await db`select r.experience_receipt,j.status from allrice_automation_runs r join allrice_jobs j on j.run_id=r.run_id where r.id=${f.id}`;
       if (mode === 'success') {
