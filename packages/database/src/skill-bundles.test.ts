@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  personaRuntimePackageChecksum,
+  type PersonaRuntimePackagePayload,
+} from './platform-employees/runtime-package-signature.ts';
+import {
   localCommandToolchainImageV1,
   SkillBundleSchema,
 } from '@allrice/contracts';
@@ -104,8 +108,8 @@ function personaPackageFixture() {
         },
       ],
     },
-  };
-  return { ...payload, checksum: skillBytesChecksum(JSON.stringify(payload)) };
+  } satisfies PersonaRuntimePackagePayload;
+  return { ...payload, checksum: personaRuntimePackageChecksum(payload) };
 }
 
 describe('P18 immutable reviewed Skill bundles', () => {
@@ -129,8 +133,8 @@ describe('P18 immutable reviewed Skill bundles', () => {
     corrupt.skills[0]!.bundle.resources[0]!.contentBase64 =
       Buffer.from('changed').toString('base64');
     const { checksum, ...payload } = corrupt;
-    expect(checksum).not.toBe(skillBytesChecksum(JSON.stringify(payload)));
-    corrupt.checksum = skillBytesChecksum(JSON.stringify(payload));
+    expect(checksum).not.toBe(personaRuntimePackageChecksum(payload));
+    corrupt.checksum = personaRuntimePackageChecksum(payload);
     expect(() => frozenPackageSkills(corrupt)).toThrow(
       'skill_bundle_checksum_mismatch',
     );
@@ -139,8 +143,8 @@ describe('P18 immutable reviewed Skill bundles', () => {
     mismatched.runtimeManifest.skillGovernance[0]!.sourceRef =
       'https://example.test/substituted';
     const { checksum: original, ...changed } = mismatched;
-    expect(original).not.toBe(skillBytesChecksum(JSON.stringify(changed)));
-    mismatched.checksum = skillBytesChecksum(JSON.stringify(changed));
+    expect(original).not.toBe(personaRuntimePackageChecksum(changed));
+    mismatched.checksum = personaRuntimePackageChecksum(changed);
     expect(() => frozenPackageSkills(mismatched)).toThrow(
       'skill_bundle_governance_mismatch',
     );

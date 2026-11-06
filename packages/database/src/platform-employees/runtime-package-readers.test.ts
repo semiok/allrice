@@ -7,7 +7,14 @@ import {
 } from '@allrice/contracts';
 import { source } from '../conversation/platform-test-binding.fixture.ts';
 import { newNativeGeneration } from '../conversation/current-execution-binding.ts';
-import { frozenPackageSkills } from '../skill-bundles.ts';
+import {
+  frozenPackageSkills,
+  readFrozenSkillResource,
+} from '../skill-bundles.ts';
+import {
+  personaRuntimePackageChecksum,
+  type PersonaRuntimePackagePayload,
+} from './runtime-package-signature.ts';
 import {
   runtimePackageChecksum,
   runtimePackageSystemPrompt,
@@ -28,15 +35,13 @@ function reverseKeys(value: unknown): unknown {
   return value;
 }
 
-function personaPayload(pkg: PersonaPackage) {
+function skillMetadata() {
   return {
-    schemaVersion: pkg.schemaVersion,
-    packageVersion: pkg.packageVersion,
-    capabilityFingerprint: pkg.capabilityFingerprint,
-    foundation: pkg.foundation,
-    platformPolicy: pkg.platformPolicy,
-    skills: pkg.skills,
-    runtimeManifest: pkg.runtimeManifest,
+    z: 'first inserted key',
+    a: {
+      z: 7,
+      a: [{ z: false, a: null }, ['first', 'second', { z: 2, a: 1 }]],
+    },
   };
 }
 
@@ -64,16 +69,20 @@ function personaFixture(format: 'empty' | 'plain' | 'bundled' = 'bundled') {
       identity: definition.identity,
     },
     platformPolicy: definition.systemPrompt,
-    skills: legacy.skills,
+    skills: legacy.skills.map((skill) => ({
+      ...skill,
+      metadata: skillMetadata(),
+    })),
     runtimeManifest,
-  };
+  } satisfies PersonaRuntimePackagePayload;
   const pkg = EmployeeRuntimePackageSchema.parse({
     ...payload,
-    checksum: runtimePackageChecksum(payload),
+    checksum: personaRuntimePackageChecksum(payload),
   });
   if (pkg.schemaVersion !== 3) throw Error('fixture_persona_package_required');
   profile.runtimePackage = pkg;
   input.runtimeProfile = profile;
+  input.nativeSkills = pkg.skills;
   input.packageChecksum = pkg.checksum;
   return { input, pkg, legacy };
 }
@@ -174,12 +183,71 @@ describe('runtime package data-format readers', () => {
   it('verifies all schema-3 source bytes and frozen bundles after JSONB reordering without inventing old files', () => {
     const { pkg } = personaFixture();
     const reordered = reverseKeys(pkg);
+    const parsed = EmployeeRuntimePackageSchema.parse(reordered);
+    expect(JSON.stringify(parsed.skills[0]!.metadata)).not.toBe(
+      JSON.stringify(pkg.skills[0]!.metadata),
+    );
     const before = JSON.stringify(reordered);
     expect(verifiedRuntimePackageChecksum(reordered)).toBe(pkg.checksum);
     expect(frozenPackageSkills(reordered)).toEqual(pkg.skills);
     expect(JSON.stringify(reordered)).toBe(before);
     expect(pkg).not.toHaveProperty('files');
     expect(pkg.runtimeManifest).not.toHaveProperty('instructionPrecedence');
+    const skills = frozenPackageSkills(reordered);
+    expect(skills[0]!.metadata).toEqual(skillMetadata());
+    expect(
+      readFrozenSkillResource(
+        skills,
+        pkg.skills[0]!.name,
+        'references/input.txt',
+      ),
+    ).toMatchObject({
+      bundleChecksum: pkg.skills[0]!.bundle!.checksum,
+      contentBase64: pkg.skills[0]!.bundle!.resources[0]!.contentBase64,
+    });
+  });
+
+  it.each(['nested value', 'array order'] as const)(
+    'rejects metadata %s changes in both verifiers and the frozen resource path',
+    (change) => {
+      const { pkg } = personaFixture();
+      const metadata = skillMetadata();
+      if (change === 'nested value') metadata.a.z = 8;
+      else metadata.a.a.reverse();
+      pkg.skills[0]!.metadata = metadata;
+      expect(verifiedRuntimePackageChecksum(reverseKeys(pkg))).toBeNull();
+      expect(() => frozenPackageSkills(reverseKeys(pkg))).toThrow(
+        'runtime_package_checksum_mismatch',
+      );
+      expect(() =>
+        readFrozenSkillResource(
+          frozenPackageSkills(reverseKeys(pkg)),
+          pkg.skills[0]!.name,
+          'references/input.txt',
+        ),
+      ).toThrow('runtime_package_checksum_mismatch');
+    },
+  );
+
+  it('signs optional presence without defaults and rejects explicit undefined instead of silently serializing it away', () => {
+    const { pkg } = personaFixture('plain');
+    delete pkg.skills[0]!.metadata;
+    pkg.checksum = personaRuntimePackageChecksum(pkg);
+    expect(verifiedRuntimePackageChecksum(reverseKeys(pkg))).toBe(pkg.checksum);
+    expect(frozenPackageSkills(reverseKeys(pkg))[0]).not.toHaveProperty(
+      'metadata',
+    );
+    const absentChecksum = pkg.checksum;
+    pkg.skills[0]!.metadata = {};
+    pkg.checksum = personaRuntimePackageChecksum(pkg);
+    expect(pkg.checksum).not.toBe(absentChecksum);
+    expect(verifiedRuntimePackageChecksum(reverseKeys(pkg))).toBe(pkg.checksum);
+    pkg.skills[0]!.whenToUse = undefined;
+    expect(() => personaRuntimePackageChecksum(pkg)).toThrow(
+      'non_json_binding',
+    );
+    expect(verifiedRuntimePackageChecksum(pkg)).toBeNull();
+    expect(() => frozenPackageSkills(pkg)).toThrow('non_json_binding');
   });
 
   const sourceChanges: [string, (pkg: PersonaPackage) => void][] = [
@@ -268,7 +336,7 @@ describe('runtime package data-format readers', () => {
     (_field, change) => {
       const { input, pkg } = personaFixture();
       change(pkg);
-      pkg.checksum = runtimePackageChecksum(personaPayload(pkg));
+      pkg.checksum = personaRuntimePackageChecksum(pkg);
       input.packageChecksum = pkg.checksum;
       expect(verifiedRuntimePackageChecksum(pkg)).toBe(pkg.checksum);
       expect(() =>
