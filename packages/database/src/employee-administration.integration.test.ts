@@ -262,7 +262,7 @@ suite('MET-151 policy and exact employee publication administration', () => {
     });
   });
   it.each(['definition', 'package_checksum'] as const)(
-    'does not let the PERSONA renderer replace a rejected frozen preview %s source',
+    'keeps the frozen preview %s source immutable before PERSONA can be derived',
     async (field) => {
       const f = await setup();
       const queued = await queuePlatformEmployeeTestRun(
@@ -277,18 +277,36 @@ suite('MET-151 policy and exact employee publication administration', () => {
       );
       expect(queued.queued).toBe(true);
       const testId = queued.testRun!.id;
-      if (field === 'definition')
-        await fixture.db`update allrice_platform_employee_test_runs set frozen_definition=jsonb_set(frozen_definition,'{identity,expressionStyle}','"concise"'::jsonb) where id=${testId}`;
-      else
-        await fixture.db`update allrice_platform_employee_test_runs set frozen_package_checksum=${`sha256:${'0'.repeat(64)}`} where id=${testId}`;
-      expect(await claimNextPlatformEmployeeTestRun(randomUUID())).toBeNull();
-      const [failed] =
-        await fixture.db`select status,output from allrice_platform_employee_test_runs where id=${testId}`;
-      expect(failed!.status).toBe('failed');
-      expect(failed!.output.error.code).toBe(
+      const [before] = await fixture.db<
+        (PlatformTestExecutionRecord & { status: string })[]
+      >`select * from allrice_platform_employee_test_runs where id=${testId}`;
+      if (!before) throw Error('expected original frozen preview');
+      const scope = {
+        organizationId: f.organizationId,
+        workspaceId: f.workspaceId,
+        ownerId: f.ownerId,
+      };
+      const originalSource = readCurrentPlatformTestExecutionRecord(
+        before,
+        scope,
+      );
+      const mutation =
         field === 'definition'
-          ? 'TEST_EXECUTION_BINDING_INVALID'
-          : 'TEST_SNAPSHOT_INVALID',
+          ? fixture.db`update allrice_platform_employee_test_runs set frozen_definition=jsonb_set(frozen_definition,'{identity,expressionStyle}','"concise"'::jsonb) where id=${testId}`
+          : fixture.db`update allrice_platform_employee_test_runs set frozen_package_checksum=${`sha256:${'0'.repeat(64)}`} where id=${testId}`;
+      await expect(mutation).rejects.toThrow(
+        'current platform test execution source is immutable',
+      );
+      const [after] = await fixture.db<
+        (PlatformTestExecutionRecord & { status: string })[]
+      >`select * from allrice_platform_employee_test_runs where id=${testId}`;
+      if (!after) throw Error('expected unchanged frozen preview');
+      // Includes the complete definition/profile/skills/checksum, source
+      // binding/origin, status and output. No claim or renderer ran here.
+      expect(after).toEqual(before);
+      expect(after.status).toBe('queued');
+      expect(readCurrentPlatformTestExecutionRecord(after, scope)).toEqual(
+        originalSource,
       );
       expect(
         await fixture.db`select id from allrice_runs where execution_spec->>'platformEmployeeTestRunId'=${testId}`,

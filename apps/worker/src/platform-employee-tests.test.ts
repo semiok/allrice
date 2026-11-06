@@ -159,12 +159,20 @@ afterEach(() => {
   vi.useRealTimers();
 });
 it.each([
-  ['concise', '简洁，结论优先'],
-  ['structured', '结构清晰，分步说明'],
-  ['exploratory', '比较方案与取舍'],
+  [
+    'concise',
+    '简洁，结论优先',
+    '先给结论，保持表达简洁，同时保留必要证据和限制。',
+  ],
+  [
+    'structured',
+    '结构清晰，分步说明',
+    '按任务需要采用清晰结构和具体步骤说明。',
+  ],
+  ['exploratory', '比较方案与取舍', '探索相关备选方案并说明取舍，不编造事实。'],
 ] as const)(
   'ordinary platform preview consumes its frozen %s PERSONA through the real kernel carrier',
-  async (expressionStyle, label) => {
+  async (expressionStyle, label, meaning) => {
     const original = platformTestSource(undefined, 'empty');
     const definition = PlatformEmployeeDefinitionSchema.parse(
       original.definition,
@@ -201,6 +209,7 @@ it.each([
     expect(persona.expressionStyle).toMatchObject({
       value: expressionStyle,
       label,
+      meaning,
       source: 'frozen_platform_definition',
     });
     expect(persona.source).toMatchObject({

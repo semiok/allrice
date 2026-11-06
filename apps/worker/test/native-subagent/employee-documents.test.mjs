@@ -23,12 +23,20 @@ const runtimeContexts = (request) =>
 const currentContext = (request) => runtimeContexts(request).at(-1);
 
 it.each([
-  ['concise', '简洁，结论优先'],
-  ['structured', '结构清晰，分步说明'],
-  ['exploratory', '比较方案与取舍'],
+  [
+    'concise',
+    '简洁，结论优先',
+    '先给结论，保持表达简洁，同时保留必要证据和限制。',
+  ],
+  [
+    'structured',
+    '结构清晰，分步说明',
+    '按任务需要采用清晰结构和具体步骤说明。',
+  ],
+  ['exploratory', '比较方案与取舍', '探索相关备选方案并说明取舍，不编造事实。'],
 ])(
   'ordinary preview %s PERSONA reaches native required literal context with empty USER/MEMORY and platform-only system',
-  async (expressionStyle, label) => {
+  async (expressionStyle, label, meaning) => {
     const identity = {
       role: '试用身份',
       mission: 'PREVIEW_LITERAL {{missing}}\n# IDENTITY.md - free literal',
@@ -76,6 +84,7 @@ it.each([
     expect(current).toContain('PREVIEW_LITERAL {{missing}}');
     expect(current).toContain('# IDENTITY.md - free literal');
     expect(current).toContain(label);
+    expect(current).toContain(meaning);
     expect(current).toContain('platform_preview');
     expect(current).not.toContain('# USER.md');
     expect(current).not.toContain('# MEMORY.md');
@@ -92,6 +101,7 @@ it.each([
       'PREVIEW_NAME_ONLY',
       'PREVIEW_LITERAL',
       label,
+      meaning,
       '# IDENTITY.md',
       '# SOUL.md',
       '# AGENTS.md',
@@ -108,6 +118,7 @@ it.each([
       'PREVIEW_LITERAL {{missing}}',
     );
     expect(JSON.stringify(currentContext(childRequest))).toContain(label);
+    expect(JSON.stringify(currentContext(childRequest))).toContain(meaning);
   },
   30000,
 );

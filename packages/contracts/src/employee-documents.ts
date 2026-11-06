@@ -33,15 +33,15 @@ export const EmployeePersonaDocumentSourceSchema = z
 const personaExpressions = {
   concise: {
     label: '简洁，结论优先',
-    meaning: '先给结论，保持表达简洁。',
+    meaning: '先给结论，保持表达简洁，同时保留必要证据和限制。',
   },
   structured: {
     label: '结构清晰，分步说明',
-    meaning: '把说明组织清楚，按步骤展开。',
+    meaning: '按任务需要采用清晰结构和具体步骤说明。',
   },
   exploratory: {
     label: '比较方案与取舍',
-    meaning: '比较可选方案并解释取舍。',
+    meaning: '探索相关备选方案并说明取舍，不编造事实。',
   },
 };
 
