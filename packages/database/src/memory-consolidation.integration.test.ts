@@ -90,7 +90,8 @@ suite('M5-C current bounded consolidation, isolated SQL and no model', () => {
         result: { text: 'Synthetic assistant output is not a source' },
       });
     }
-    await collectPendingMemorySources({ database: db, limit: 32 });
+    for (let offset = 0; offset < count; offset += 16)
+      await collectPendingMemorySources({ database: db, limit: 16 });
     const [e] =
       await db`select * from allrice_experience_reviews where run_id=${sent.run.id}`;
     expect(e).toBeTruthy();
