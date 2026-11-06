@@ -446,6 +446,7 @@ suite('M5-C current bounded consolidation, isolated SQL and no model', () => {
           get(target, key, receiver) {
             if (key !== 'begin') return Reflect.get(target, key, receiver);
             return (...args: unknown[]) => {
+              vi.mocked(client.getDatabase).mockReturnValue(db);
               const callback = args.at(-1) as (
                 tx: TransactionSql,
               ) => Promise<unknown>;
@@ -462,7 +463,9 @@ suite('M5-C current bounded consolidation, isolated SQL and no model', () => {
             };
           },
         });
-        vi.mocked(client.getDatabase).mockReturnValueOnce(gated);
+        // Promotion performs ordinary reads before opening its transaction.
+        // Keep the wrapper until BEGIN, then release it for the competitor.
+        vi.mocked(client.getDatabase).mockReturnValue(gated);
         const first = mode === 'confirmation_after' ? complete() : promote();
         // Surface an early service failure instead of leaving the barrier pending.
         await Promise.race([
