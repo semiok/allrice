@@ -1,3 +1,5 @@
+/// <reference types="./dsh-web-cancellation-types.d.ts" />
+
 import { createWebCallScope } from '../../dsh/allrice-web-cancellation.mjs';
 import {
   personalScenePromptParts,

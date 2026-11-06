@@ -1,3 +1,5 @@
+/// <reference types="./dsh-web-cancellation-types.d.ts" />
+
 import { randomUUID } from 'node:crypto';
 import { requestCancellableWeb } from '../../dsh/allrice-web-cancellation.mjs';
 import type { EmployeeDocuments } from '@allrice/contracts';
