@@ -1,0 +1,218 @@
+.dialog.dialog {
+  box-sizing: border-box;
+  width: min(552px, 100%);
+  max-height: calc(100dvh - 48px);
+  border: 0;
+  border-radius: var(--ar-radius-panel);
+  color: var(--ar-text);
+  font: var(--ar-font-body);
+  box-shadow: var(--dsw-elevation-prominent);
+}
+.dialog > header {
+  align-items: center;
+  gap: 12px;
+  min-height: 76px;
+  padding: 22px 24px 18px;
+  border-color: var(--ar-border);
+}
+.dialog > header h2 {
+  margin: 0;
+  font: var(--ar-font-title);
+}
+.dialog > header button {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  min-height: 36px;
+  margin-left: -10px;
+  margin-right: -4px;
+  padding: 0;
+  border-radius: var(--ar-radius-sm);
+  color: var(--ar-text);
+}
+.dialog > header button:hover {
+  background: var(--ar-surface-hover);
+}
+.body.body {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+.content {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 20px 24px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.description {
+  margin: 0;
+  color: var(--ar-text-secondary);
+  font: var(--ar-font-reading);
+}
+.confirmation.confirmation {
+  width: min(408px, 100%);
+}
+.confirmation > header {
+  min-height: 0;
+  padding-bottom: 0;
+  border: 0;
+}
+.confirmation .content {
+  padding-top: 16px;
+  padding-bottom: 24px;
+}
+.actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 0;
+  padding: 16px 24px 20px;
+  border-top: 1px solid var(--ar-border);
+}
+.confirmation .actions {
+  padding-top: 0;
+  border: 0;
+}
+.actions > button {
+  box-sizing: border-box;
+  min-height: 36px;
+  padding: 7px 14px;
+  border-radius: var(--ar-radius-md);
+  font: var(--ar-font-label);
+  white-space: nowrap;
+}
+.dialog > header button:focus-visible,
+.actions > button:focus-visible {
+  outline: 2px solid var(--ar-focus-ring);
+  outline-offset: 2px;
+}
+.loading,
+.error {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 16px;
+  border-radius: var(--ar-radius-md);
+  background: var(--ar-surface-subtle);
+}
+.loading p,
+.error p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.error {
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px;
+  background: var(--ar-danger-soft);
+  color: var(--ar-danger);
+}
+.error > svg {
+  flex: none;
+  margin-top: 3px;
+}
+.spinner {
+  display: inline-block;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid var(--ar-border);
+  border-top-color: var(--ar-text);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.successContent {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 0 12px;
+  text-align: center;
+}
+.successContent h3 {
+  margin: 0;
+  font: var(--ar-font-title);
+}
+.successMark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 52px;
+  height: 52px;
+  border-radius: var(--ar-radius-pill);
+  background: var(--ar-success-soft);
+  color: var(--ar-success);
+}
+.successMark svg {
+  width: 24px;
+  height: 24px;
+}
+@media (max-width: 700px) {
+  .success.success {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    max-height: 100%;
+    border-radius: 0;
+    box-shadow: none;
+  }
+  .dialog > header {
+    gap: 8px;
+    min-height: 64px;
+    padding: 16px 20px;
+  }
+  .dialog > header button {
+    width: 40px;
+    height: 40px;
+    min-height: 40px;
+  }
+  .content {
+    padding: 20px;
+  }
+  .actions {
+    padding: 16px 20px max(16px, env(safe-area-inset-bottom));
+  }
+  .actions > button {
+    min-height: 44px;
+  }
+  .confirmation.confirmation {
+    position: fixed;
+    top: 50%;
+    right: 20px;
+    left: 20px;
+    width: auto;
+    max-height: calc(100dvh - 40px);
+    border-radius: var(--ar-radius-panel);
+    translate: 0 -50%;
+  }
+  .confirmation > header {
+    min-height: 0;
+    padding: 24px 20px 0;
+  }
+  .confirmation .content {
+    padding: 16px 20px 24px;
+  }
+  .confirmation .actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding: 0 20px 20px;
+  }
+  .confirmation .actions > button {
+    width: 100%;
+    min-width: 0;
+  }
+  .confirmation .actions > button:only-child {
+    grid-column: 1 / -1;
+  }
+}

@@ -8,6 +8,7 @@ import { employeeDetailsFixture } from '../../test/employee-details-fixture';
 import {
   EmployeeProfileForm,
   canEditEmployeePersona,
+  canResetEmployeePersona,
   defaultEmployeeProfileFormValues,
   employeeProfileFormFromRaw,
   mergeEmployeeProfileForm,
@@ -17,6 +18,68 @@ import {
 describe('shared employee profile form', () => {
   const editing = (...fields: Array<keyof EmployeeProfileFormValues>) =>
     new Set(fields);
+
+  it('requires an explicit owner Rice capability for the optional reset entry', () => {
+    const profile = employeeDetailsFixture().profile;
+    profile.isDefaultRice = true;
+    profile.editableFields = EmployeeInstanceProfileSchema.keyof().options;
+    expect(canResetEmployeePersona(profile)).toBe(true);
+    for (const isDefaultRice of [undefined, false]) {
+      profile.isDefaultRice = isDefaultRice;
+      expect(canResetEmployeePersona(profile)).toBe(false);
+    }
+    profile.isDefaultRice = true;
+    profile.canMaintainPersonal = false;
+    expect(canResetEmployeePersona(profile)).toBe(false);
+    profile.canMaintainPersonal = true;
+    profile.editableFields = ['expressionStyle'];
+    expect(canResetEmployeePersona(profile)).toBe(false);
+  });
+
+  it('leaves default callers unchanged and limits the reset slot to an unlocked Rice editor', () => {
+    const profile = employeeDetailsFixture().profile;
+    profile.isDefaultRice = true;
+    profile.editableFields = EmployeeInstanceProfileSchema.keyof().options;
+    for (const mode of ['create', 'edit'] as const) {
+      for (const offer of [false, true]) {
+        for (const busy of [false, true]) {
+          const html = renderToStaticMarkup(
+            <EmployeeProfileForm
+              mode={mode}
+              initialValue={defaultEmployeeProfileFormValues}
+              busy={busy}
+              reset={offer ? { profile, onRequest: () => {} } : undefined}
+              onSubmit={() => {}}
+              onCancel={() => {}}
+            />,
+          );
+          if (mode === 'edit' && offer) {
+            expect(html).toContain('恢复默认</button>');
+            expect(html).toMatch(
+              busy
+                ? /<button[^>]*disabled=""[^>]*>恢复默认<\/button>/
+                : /<button(?![^>]*disabled)[^>]*>恢复默认<\/button>/,
+            );
+          } else expect(html).not.toContain('恢复默认');
+        }
+      }
+    }
+    for (const canMaintainPersonal of [false, true]) {
+      profile.canMaintainPersonal = canMaintainPersonal;
+      profile.isDefaultRice = false;
+      expect(
+        renderToStaticMarkup(
+          <EmployeeProfileForm
+            mode="edit"
+            initialValue={defaultEmployeeProfileFormValues}
+            reset={{ profile, onRequest: () => {} }}
+            onSubmit={() => {}}
+            onCancel={() => {}}
+          />,
+        ),
+      ).not.toContain('恢复默认');
+    }
+  });
 
   it('requires the current complete field capability, independent of kind, name and saved overrides', () => {
     const profile = employeeDetailsFixture().profile;

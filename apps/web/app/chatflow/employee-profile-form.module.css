@@ -203,6 +203,15 @@
   opacity: 0.4;
   cursor: default;
 }
+.actions .reset {
+  margin-right: auto;
+}
+.editForm .actions .reset {
+  padding-left: 0;
+  padding-right: 0;
+  border-color: transparent;
+  color: var(--ar-link);
+}
 .fields:disabled .colorChoice,
 .fields:disabled .colorChoice input {
   cursor: default;
