@@ -13,6 +13,8 @@ const chunkBytes = 64 * 1024;
 
 type ArchiveFile = { path: string; bytes: Uint8Array };
 type ArchiveControls = {
+  /** Internal caller bound; general file tools retain the 32-file default. */
+  maximumFiles?: number;
   signal?: AbortSignal;
   authorize?: () => Promise<boolean>;
 };
@@ -34,6 +36,12 @@ export class FileArchiveError extends Error {
 const fail = (code: ArchiveErrorCode): never => {
   throw new FileArchiveError(code);
 };
+function fileLimit(controls: ArchiveControls) {
+  const value = controls.maximumFiles ?? fileArchiveMaximumFiles;
+  if (!Number.isInteger(value) || value < 1 || value > maximumEntries)
+    fail('FILE_ARCHIVE_LIMIT');
+  return value;
+}
 const canceled = () => new FileArchiveError('FILE_ARCHIVE_CANCELED');
 function checkSignal(signal?: AbortSignal) {
   if (signal?.aborted) throw canceled();
@@ -359,7 +367,7 @@ export async function readFileArchive(
             await current();
             if (entries.length >= maximumEntries) fail('FILE_ARCHIVE_LIMIT');
             const directory = ordinaryEntry(entry);
-            if (!directory && ++files > fileArchiveMaximumFiles)
+            if (!directory && ++files > fileLimit(controls))
               fail('FILE_ARCHIVE_LIMIT');
             const path = paths.add(entry.fileName, directory);
             declaredBytes += entry.uncompressedSize;
@@ -396,7 +404,7 @@ export async function createFileArchive(
 ): Promise<Uint8Array> {
   checkSignal(controls.signal);
   if (!Array.isArray(files)) fail('FILE_ARCHIVE_INVALID');
-  if (files.length > fileArchiveMaximumFiles) fail('FILE_ARCHIVE_LIMIT');
+  if (files.length > fileLimit(controls)) fail('FILE_ARCHIVE_LIMIT');
   const paths = new ArchivePaths();
   let total = 0;
   const inputs = files.map((file) => {

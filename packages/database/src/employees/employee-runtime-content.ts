@@ -1306,7 +1306,7 @@ export async function loadPersonalRuntimeSceneSkill(
         sourceRefs.add(employeeContentReferenceKey(source.dto.reference));
     }
     if (
-      bodyBytes > employeeContentLimits.textBytes ||
+      bodyBytes > employeeContentLimits.personalSceneBodyBytes ||
       sourceRefs.size > employeeContentLimits.references ||
       !(await validContentLease(scope, worker, tx))
     )

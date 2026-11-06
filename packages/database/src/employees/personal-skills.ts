@@ -673,7 +673,10 @@ export async function installPersonalSkillFromChat(
   },
 ) {
   const definition = PersonalSkillDefinitionSchema.parse(parsed.definition);
-  if (skillBytesChecksum(definition.content) !== definition.checksum)
+  if (
+    skillBytesChecksum(definition.content) !== definition.checksum ||
+    Buffer.byteLength(parsed.originalText) > personalSkillLimits.sourceBytes
+  )
     throw new PersonalSkillError('source_invalid');
   const { scope } = employeeChatIdentity(input);
   return enterMethodChat(

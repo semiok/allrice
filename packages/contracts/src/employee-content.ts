@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { personalSkillLimits } from './personal-skills.ts';
 import { ReferenceSelectionSchema } from './reference-library.ts';
 import { UuidSchema, TimestampSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
@@ -14,6 +15,7 @@ export const employeeContentLimits = {
   references: 128,
   textEdits: 16,
   textBytes: 32_000,
+  personalSceneBodyBytes: 16 * personalSkillLimits.bodyBytes,
 } as const;
 
 export const personalWorkflowHistoryUnavailableMessage =
@@ -346,7 +348,12 @@ const packagedTextSchema = z
     body: z
       .string()
       .min(1)
-      .max(8000)
+      .max(personalSkillLimits.bodyBytes)
+      .refine(
+        (body) =>
+          new TextEncoder().encode(body).byteLength <=
+          personalSkillLimits.bodyBytes,
+      )
       .refine((body) => body.trim().length > 0),
     skillPackage: EmployeeSceneSkillPayloadSchema,
   })
@@ -419,6 +426,14 @@ export const EmployeeContentMutationSchema = z
       });
     if (input.operation !== 'save_draft') return;
     if (
+      input.ownership.scope !== 'personal' &&
+      input.textEdits.some((text) => text.body.length > 8000)
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Shared text exceeds the content budget.',
+      });
+    if (
       new Set(input.manifest.scenes.map((s) => s.id)).size !==
       input.manifest.scenes.length
     )
@@ -461,7 +476,11 @@ export const EmployeeContentMutationSchema = z
       });
     if (
       input.textEdits.reduce(
-        (n, t) => n + new TextEncoder().encode(t.body).length,
+        (n, t) =>
+          n +
+          (input.ownership.scope === 'personal' && 'skillPackage' in t
+            ? 0
+            : new TextEncoder().encode(t.body).length),
         0,
       ) > employeeContentLimits.textBytes
     )
