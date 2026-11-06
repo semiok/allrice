@@ -14,7 +14,8 @@ const data: UserMonthlyQuota = {
   remainingPercent: 43.51942,
   unknownUsageRuns: 0,
   periodStart: '2026-09-01T00:00:00Z',
-  resetsAt: '2026-10-01T00:00:00Z',
+  // This view uses the viewer's local calendar date.
+  resetsAt: new Date(2026, 9, 1).toISOString(),
   observedAt: '2026-09-21T08:00:00Z',
 };
 describe('account monthly balance', () => {
