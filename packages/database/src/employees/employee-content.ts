@@ -1434,9 +1434,14 @@ async function readDetailsProfile(
 ) {
   const instanceId = instance.id;
   const [row] = await tx<
-    { manifest: unknown; name: string; description: string }[]
+    {
+      manifest: unknown;
+      name: string;
+      description: string;
+      workspace_id: string;
+    }[]
   >`
-      select manifest,name,description from allrice_employee_versions
+      select manifest,name,description,workspace_id from allrice_employee_versions
       where id=${target.versionId} and employee_id=${target.employeeId}
         and organization_id=${context.organizationId} and workspace_id=${context.workspaceId}`;
   if (!row) throw new DataAccessError('not_found');
@@ -1459,7 +1464,7 @@ async function readDetailsProfile(
     const publication = await readEmployeeVersionPublication(
       {
         organizationId: context.organizationId,
-        workspaceId: context.workspaceId,
+        workspaceId: row.workspace_id,
         employeeId: target.employeeId,
         versionId: target.versionId,
       },
