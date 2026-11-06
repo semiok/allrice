@@ -20,6 +20,10 @@ export interface EmployeeProfileFormValues {
   expressionStyle: NonNullable<EmployeeInstanceProfile['expressionStyle']>;
 }
 
+export type EmployeeProfileEditedFields = ReadonlySet<
+  keyof EmployeeProfileFormValues
+>;
+
 export const defaultEmployeeProfileFormValues: Readonly<EmployeeProfileFormValues> =
   {
     name: '',
@@ -69,36 +73,55 @@ export function employeeProfileFormFromRaw(
   };
 }
 
-/** Custom-instance PATCH replaces the profile, so retain fields this form does
- * not edit. An image/emoji avatar is never replaced by an initials preview. */
+/** Editing general instances sends a patch; custom instances replace the raw
+ * profile. Displayed inherited values are never added by an untouched field.
+ * Without edit metadata, retain the existing complete new-employee payload. */
 export function mergeEmployeeProfileForm(
   raw: EmployeeInstanceProfile,
   values: EmployeeProfileFormValues,
   resolved?: EmployeeDetailsProfile,
+  editedFields?: EmployeeProfileEditedFields,
 ): EmployeeInstanceProfile {
+  const changed = (field: keyof EmployeeProfileFormValues) =>
+    editedFields === undefined || editedFields.has(field);
   const name = values.name.trim();
-  const appearance = raw.appearance ??
-    resolved?.appearance ?? {
-      avatarType: 'initials' as const,
-      avatarValue: Array.from(name)[0] || '员',
-    };
-  return EmployeeInstanceProfileSchema.parse({
-    ...raw,
-    name,
-    mission: values.mission.trim(),
-    workStyle: values.workStyle.trim(),
-    expressionStyle: values.expressionStyle,
-    appearance: {
+  const profile: EmployeeInstanceProfile =
+    editedFields !== undefined && resolved?.kind === 'general'
+      ? {}
+      : { ...raw };
+  if (changed('name')) profile.name = name;
+  if (changed('mission')) profile.mission = values.mission.trim();
+  if (changed('workStyle')) profile.workStyle = values.workStyle.trim();
+  if (changed('expressionStyle'))
+    profile.expressionStyle = values.expressionStyle;
+  // Preserve the existing rename behavior only for an already personal initials
+  // avatar. Merely displaying an inherited avatar does not create an override.
+  const renameInitials =
+    changed('name') && raw.appearance?.avatarType === 'initials';
+  if (changed('accentColor') || renameInitials) {
+    const appearance = raw.appearance ??
+      resolved?.appearance ?? {
+        avatarType: 'initials' as const,
+        avatarValue: Array.from(name)[0] || '员',
+      };
+    profile.appearance = {
       ...appearance,
-      ...(appearance.avatarType === 'initials'
+      ...(appearance.avatarType === 'initials' && changed('name')
         ? { avatarValue: Array.from(name)[0] || '员' }
         : {}),
-      accentColor:
-        appearance.accentColor === 'indigo' && values.accentColor === 'blue'
-          ? 'indigo'
-          : values.accentColor,
-    },
-  });
+      ...(changed('accentColor')
+        ? {
+            accentColor:
+              editedFields === undefined &&
+              appearance.accentColor === 'indigo' &&
+              values.accentColor === 'blue'
+                ? 'indigo'
+                : values.accentColor,
+          }
+        : {}),
+    };
+  }
+  return EmployeeInstanceProfileSchema.parse(profile);
 }
 
 interface EmployeeProfileFormProps {
@@ -107,7 +130,10 @@ interface EmployeeProfileFormProps {
   busy?: boolean;
   disabled?: boolean;
   error?: string;
-  onSubmit: (values: EmployeeProfileFormValues) => void | Promise<void>;
+  onSubmit: (
+    values: EmployeeProfileFormValues,
+    editedFields: EmployeeProfileEditedFields,
+  ) => void | Promise<void>;
   onCancel: () => void;
 }
 
@@ -127,12 +153,14 @@ export function EmployeeProfileForm({
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
   const pending = useRef(false);
+  const editedFields = useRef(new Set<keyof EmployeeProfileFormValues>());
   const locked = busy || submitting;
   const name = values.name.trim();
   const update = <K extends keyof EmployeeProfileFormValues>(
     key: K,
     value: EmployeeProfileFormValues[K],
   ) => {
+    editedFields.current.add(key);
     setSubmitError('');
     setValues((before) => ({ ...before, [key]: value }));
   };
@@ -156,12 +184,15 @@ export function EmployeeProfileForm({
         setSubmitting(true);
         setSubmitError('');
         try {
-          await onSubmit({
-            ...values,
-            name,
-            mission: values.mission.trim(),
-            workStyle: values.workStyle.trim(),
-          });
+          await onSubmit(
+            {
+              ...values,
+              name,
+              mission: values.mission.trim(),
+              workStyle: values.workStyle.trim(),
+            },
+            new Set(editedFields.current),
+          );
         } catch (cause) {
           setSubmitError(
             cause instanceof Error ? cause.message : '保存未完成，请重试。',

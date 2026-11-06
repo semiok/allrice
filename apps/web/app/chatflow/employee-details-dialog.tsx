@@ -22,6 +22,7 @@ import {
   employeeProfileFormFromRaw,
   mergeEmployeeProfileForm,
   type EmployeeProfileFormValues,
+  type EmployeeProfileEditedFields,
 } from './employee-profile-form';
 import { readJson } from './chatflow-utils';
 import formCss from './employee-profile-form.module.css';
@@ -248,7 +249,10 @@ function EmployeeDetailsReader(
       }
     }
   }
-  async function saveProfile(values: EmployeeProfileFormValues) {
+  async function saveProfile(
+    values: EmployeeProfileFormValues,
+    editedFields: EmployeeProfileEditedFields,
+  ) {
     if (
       !instanceUrl ||
       !editor?.instance ||
@@ -258,11 +262,16 @@ function EmployeeDetailsReader(
       !canEditEmployeePersona(data.profile)
     )
       return;
+    if (!editedFields.size) {
+      cancelEdit();
+      return;
+    }
     const current = editor.instance;
     const profile = mergeEmployeeProfileForm(
       current.profile,
       values,
       data.profile,
+      editedFields,
     );
     if (
       Object.keys(profile).some(
