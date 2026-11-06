@@ -391,6 +391,60 @@ suite(
           runId: f.runId,
         });
     });
+    it('never turns a concurrently deleted attachment into missing provenance', async () => {
+      const f = await setup(),
+        objectId = randomUUID();
+      await db`insert into allrice_storage_objects(id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,state)
+        values(${objectId},${f.org},${f.workspace},${f.user},${'synthetic/' + objectId},'uploads','text/plain',4,${'sha256:' + 'b'.repeat(64)},'ready')`;
+      await db`insert into allrice_message_attachments(organization_id,workspace_id,message_id,object_id,attached_by,file_name)
+        values(${f.org},${f.workspace},${f.messageId},${objectId},${f.user},'synthetic.txt')`;
+      await f.finish();
+      let release!: () => void, held!: (pid: number) => void;
+      const hold = new Promise<void>((r) => {
+        release = r;
+      });
+      const ready = new Promise<number>((r) => {
+        held = r;
+      });
+      const deleting = db.begin(async (tx) => {
+        await tx`update allrice_storage_objects set state='deleted',deleted_at=now() where id=${objectId}`;
+        const [backend] = await tx<
+          { pid: number }[]
+        >`select pg_backend_pid() pid`;
+        held(backend!.pid);
+        await hold;
+      });
+      const pid = await ready;
+      let finished = false;
+      const capture = collect().finally(() => {
+        finished = true;
+      });
+      void capture.catch(() => {});
+      try {
+        // A legitimate 100ms lock timeout is also safe: it must preserve the
+        // marker for the next existing tick, never commit an empty dependency.
+        await expect
+          .poll(
+            async () =>
+              finished ||
+              (
+                await db`select 1 from pg_stat_activity where ${pid}=any(pg_blocking_pids(pid))`
+              ).length > 0,
+            { timeout: 2000, interval: 5 },
+          )
+          .toBe(true);
+      } finally {
+        release();
+        await deleting;
+      }
+      const result = await capture;
+      expect(result.captured).toBe(0);
+      if (result.busy) await collect();
+      expect(await rows(f.runId)).toEqual([]);
+      const [run] =
+        await db`select experience_capture_state s,experience_capture_reason r from allrice_employee_runs where run_id=${f.runId}`;
+      expect(run).toEqual({ s: 'ignored', r: 'dependency_unavailable' });
+    });
     it('serializes capture against the first organization policy override using the existing writer lock', async () => {
       const f = await setup();
       await f.finish();
