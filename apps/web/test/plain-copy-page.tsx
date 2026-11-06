@@ -226,6 +226,18 @@ const catalogs: Record<string, () => Response> = {
 const realFetch = window.fetch.bind(window);
 window.fetch = async (input, init) => {
   const url = new URL(String(input), location.href);
+  if (url.pathname === '/api/v1/me/preferences')
+    return Response.json({
+      viewerId: id(3),
+      preferences: {
+        capabilities: {
+          'allrice.cloud-project-development': {
+            configVersion: 1,
+            enabled: false,
+          },
+        },
+      },
+    });
   const catalog = catalogs[url.searchParams.get('workspaceId') ?? ''];
   // The password may have changed before the reply was lost.
   if (url.pathname === '/api/v1/auth/password')

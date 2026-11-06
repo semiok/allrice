@@ -95,7 +95,7 @@
   font-size: 11px;
   line-height: 1.6;
 }
-.body button,
+.body button:not([role='switch']),
 .body a {
   border: 1px solid var(--dsw-alias-border-primary);
   border-radius: 8px;
@@ -108,11 +108,11 @@
   line-height: 1.5;
   text-decoration: none;
 }
-.body button:hover,
+.body button:not([role='switch']):hover,
 .body a:hover {
   background: var(--allrice-sidebar-hover);
 }
-.body button:disabled {
+.body button:not([role='switch']):disabled {
   opacity: 0.5;
   cursor: default;
 }
@@ -124,6 +124,17 @@
   border: 0;
   min-width: 0;
   overflow-wrap: anywhere;
+}
+.cloudProjectRow {
+  position: relative;
+}
+.cloudSwitchSeat {
+  width: 36px;
+}
+.cloudProjectSwitch {
+  position: absolute;
+  right: 0;
+  top: 10px;
 }
 .cardTitle {
   display: flex;
