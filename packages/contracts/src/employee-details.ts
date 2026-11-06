@@ -23,6 +23,10 @@ export const EmployeeDetailsProfileSchema = z
     expressionStyle: EmployeeInstanceProfileSchema.shape.expressionStyle,
     personalFields: z.array(EmployeeInstanceProfileSchema.keyof()),
     canMaintainPersonal: z.boolean(),
+    // Current owner-view capabilities; never frozen as a Run's authority.
+    editableFields: z.array(EmployeeInstanceProfileSchema.keyof()).optional(),
+    isDefaultRice: z.boolean().optional(),
+    defaults: EmployeeInstanceProfileSchema.optional(),
   })
   .strict();
 export const EmployeeDetailsSchema = z
