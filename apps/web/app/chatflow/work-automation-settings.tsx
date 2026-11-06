@@ -136,10 +136,10 @@ export function WorkAutomationSettings({
           ))}
         </>
       ) : null}
-      {capabilities}
       <p className={styles.settingsFootnote}>
         仅影响当前工作区的后续任务。新增账号、文件夹或扩大操作范围时，员工会向你确认。进行中的工作可在任务中停止。
       </p>
+      {capabilities}
     </section>
   );
 }
