@@ -91,11 +91,11 @@
     },
     {
       "id": "allrice-bounded-native-search-v1",
-      "issue": "MET-150",
+      "issue": "MET-223",
       "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
-      "path": "apps/worker/dsh/allrice-jsonrpc-runtime.mjs",
-      "reason": "Route ordinary native web_search through the tenant Tool Broker for audited bounded results and durable full-result files; keep upstream DSH unchanged."
+      "path": "apps/worker/dsh/allrice-native-web.mjs",
+      "reason": "Use unmodified public dsh-tool-web definitions, rendering, timeout policy and ctx.web providers. AllRice retains frozen Run/tenant Tool Broker authority, hosted search, pinned public-network fetch and existing audit. Public tools/execute binds provider identity; call-local signal forwarding joins remote work without a second timeout/retry/lifecycle. User-approved fetchMaxOutputChars=12000; search keeps native source-count limits. Web-only preview/full-result export is retired; WeChat contracts remain unchanged."
     },
     {
       "id": "allrice-jsonrpc-lifecycle-v1",

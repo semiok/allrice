@@ -274,6 +274,7 @@ const allowedProfilePackages = new Set(
     'session-title',
     'system-prompt',
     'tools',
+    'web',
     'agent',
     'fs-local',
     'working-directory',

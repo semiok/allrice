@@ -1,8 +1,95 @@
-import { describe, it, expect } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
+const storage = vi.hoisted(() => ({
+  put: vi.fn(),
+  delete: vi.fn(),
+  register: vi.fn(),
+  create: vi.fn(() => ({ id: 'export-id' })),
+}));
+vi.mock('@allrice/database', () => ({
+  createToolBrokerExportObject: storage.create,
+  registerToolBrokerExport: storage.register,
+}));
+vi.mock('@allrice/storage', () => ({
+  LocalStorageAdapter: class {
+    put = storage.put;
+    delete = storage.delete;
+  },
+}));
 import { toolResultPreview, boundToolResult } from './result-budget.js';
 import type { RiceToolExecutionInput } from './types.js';
+beforeEach(() => vi.clearAllMocks());
 
 describe('bounded tool data previews', () => {
+  it.each(['web.search', 'web.fetch'])(
+    '%s never creates an old preview or full-result export',
+    async (name) => {
+      const result = {
+        modelContent: 'x'.repeat(2_000_001),
+        summary: 'web provider data',
+      };
+      expect(
+        await boundToolResult(
+          { call: { name } } as RiceToolExecutionInput,
+          result,
+        ),
+      ).toBe(result);
+      expect(storage.create).not.toHaveBeenCalled();
+      expect(storage.put).not.toHaveBeenCalled();
+      expect(storage.register).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['wechat.article.search', 'wechat.article.read'])(
+    '%s retains 12k preview, 2 MB storage and the original context/ACL',
+    async (name) => {
+      const context = {
+        organizationId: 'org',
+        runId: 'run',
+        policySnapshot: { subjectId: 'person' },
+      };
+      const input = {
+        call: { id: 'call', name },
+        context,
+        sessionId: 'session',
+        storageRoot: '/unused',
+        capabilities: ['storage:read'],
+      } as unknown as RiceToolExecutionInput;
+      const small = { modelContent: 'x'.repeat(12000), summary: 'wechat' };
+      expect(await boundToolResult(input, small)).toBe(small);
+      const stored = await boundToolResult(input, {
+        modelContent: 'x'.repeat(12001),
+        summary: 'wechat',
+      });
+      expect(JSON.parse(stored.modelContent)).toMatchObject({
+        type: 'bounded_tool_result',
+        fullResultStored: true,
+        fullResult: { objectId: 'export-id', readTool: 'workspace.file.read' },
+      });
+      expect(storage.create).toHaveBeenCalledWith(
+        expect.objectContaining({ context, sizeBytes: 12001 }),
+      );
+      expect(storage.register).toHaveBeenCalledWith(
+        expect.objectContaining({ context, sessionId: 'session' }),
+      );
+      expect(storage.put).toHaveBeenCalledOnce();
+      const over = await boundToolResult(input, {
+        modelContent: 'x'.repeat(2_000_001),
+        summary: 'wechat',
+      });
+      expect(JSON.parse(over.modelContent)).toMatchObject({
+        fullResultStored: false,
+        unavailableReason: 'result_storage_size_limit',
+      });
+      expect(storage.put).toHaveBeenCalledOnce();
+      const noRead = await boundToolResult(
+        { ...input, capabilities: [] },
+        { modelContent: 'x'.repeat(12001), summary: 'wechat' },
+      );
+      expect(JSON.parse(noRead.modelContent).fullResult).not.toHaveProperty(
+        'readTool',
+      );
+    },
+  );
   it('samples array ends, labels omissions and keeps serialized JSON valid', () => {
     const preview = toolResultPreview(
       JSON.stringify({
