@@ -643,6 +643,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       employeeDetailStatus: 200,
       employeeDetailDelay: null as Promise<void> | null,
       employeeDetailReads: 0,
+      employeeInstanceDelay: null as Promise<void> | null,
+      employeeInstanceStatus: 200,
+      employeeInstanceArchived: false,
       experienceReads: 0,
       experienceDelay: null as Promise<void> | null,
       experienceStatus: 200,
@@ -1603,6 +1606,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         (path === '/api/v1/employee-instances' ||
           /^\/api\/v1\/employee-instances\/[a-f0-9-]{36}$/.test(path))
       ) {
+        if (path !== '/api/v1/employee-instances') {
+          if (state.employeeInstanceDelay) await state.employeeInstanceDelay;
+          if (state.employeeInstanceStatus !== 200)
+            return answer(
+              { error: { message: 'No access' } },
+              state.employeeInstanceStatus,
+            );
+        }
         if (options.employeeDetails && state.employeeDetailStatus !== 200)
           return answer(
             { error: { message: 'No access' } },
@@ -1625,7 +1636,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             source: { kind: 'tenant_version', employeeVersionId: id(n + 1) },
             createdAt: now,
             updatedAt: now,
-            archivedAt: null,
+            archivedAt: n === 7 && state.employeeInstanceArchived ? now : null,
           }),
         );
         for (const created of state.createdEmployeeInstances) {
@@ -5381,6 +5392,109 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       }
     },
   );
+  it.each(['active', 'archived', 'denied'] as const)(
+    'keeps an open reference draft through a delayed lifecycle read and gates writes for %s',
+    async (outcome) => {
+      const f = await fixture({ artifacts: true });
+      let release = () => {};
+      try {
+        const saved: unknown[] = [];
+        await f.page.route('**/api/v1/references/artifacts*', async (route) => {
+          const method = route.request().method();
+          expect(['GET', 'POST']).toContain(method);
+          if (method === 'POST') saved.push(route.request().postDataJSON());
+          await route.fulfill({
+            contentType: 'application/json',
+            status: method === 'POST' ? 201 : 200,
+            body: JSON.stringify(
+              method === 'POST'
+                ? { sourceId: id(800), revisionId: id(801) }
+                : {
+                    workspaceId: workspace,
+                    platformMaintainer: false,
+                    maintenanceLevel: 'personal',
+                    writable: true,
+                    departmentId: null,
+                    departments: [],
+                  },
+            ),
+          });
+        });
+        await f.openWorkbench();
+        await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+        await f.panel
+          .getByRole('button', { name: '设为参考资料', exact: true })
+          .click();
+        const dialog = f.page.getByRole('dialog', {
+          name: '保存为参考资料',
+          exact: true,
+        });
+        const save = dialog.getByRole('button', { name: '保存', exact: true });
+        const purpose = dialog.getByLabel('参考资料用途', { exact: true });
+        await expect.poll(() => save.isEnabled()).toBe(true);
+        await purpose.fill('父刷新期间保留的参考用途');
+        f.state.employeeInstanceDelay = new Promise<void>((done) => {
+          release = done;
+        });
+        const selectedPath = `/api/v1/employee-instances/${id(7)}`;
+        const isSelected = (url: string) =>
+          new URL(url).pathname === selectedPath;
+        const began = f.page.waitForRequest(
+          (request) => request.method() === 'GET' && isSelected(request.url()),
+        );
+        await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+        await began;
+        expect(await dialog.count()).toBe(1);
+        expect(await purpose.inputValue()).toBe('父刷新期间保留的参考用途');
+        expect(await purpose.isDisabled()).toBe(true);
+        expect(await save.isDisabled()).toBe(true);
+        await save.dispatchEvent('click');
+        expect(saved).toEqual([]);
+
+        f.state.employeeInstanceArchived = outcome === 'archived';
+        f.state.employeeInstanceStatus = outcome === 'denied' ? 403 : 200;
+        const completed = f.page.waitForResponse(
+          (response) =>
+            response.request().method() === 'GET' && isSelected(response.url()),
+        );
+        release();
+        f.state.employeeInstanceDelay = null;
+        await completed;
+        if (outcome === 'active') {
+          await expect.poll(() => save.isEnabled()).toBe(true);
+          expect(await purpose.inputValue()).toBe('父刷新期间保留的参考用途');
+          await save.click();
+          await dialog.getByRole('status').waitFor();
+          expect(saved).toEqual([
+            expect.objectContaining({
+              artifactVersionId: f.state.items[0]!.id,
+              purpose: '父刷新期间保留的参考用途',
+            }),
+          ]);
+        } else {
+          await f.page
+            .getByText(
+              outcome === 'archived'
+                ? 'AI 员工已归档，可以查看历史；恢复后才能继续工作。'
+                : '没有权限，如需使用请联系管理员',
+              { exact: true },
+            )
+            .waitFor();
+          expect(await dialog.count()).toBe(1);
+          expect(await purpose.inputValue()).toBe('父刷新期间保留的参考用途');
+          expect(await save.isDisabled()).toBe(true);
+          await save.dispatchEvent('click');
+          expect(saved).toEqual([]);
+        }
+        expect(f.errors).toEqual([]);
+      } finally {
+        release();
+        f.state.employeeInstanceDelay = null;
+        await f.close();
+      }
+    },
+  );
+
   it.each([390, 1440])(
     'keeps one reference surface across parent refreshes and fully closes it at %ipx',
     async (width) => {
