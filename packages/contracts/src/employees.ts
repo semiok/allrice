@@ -105,7 +105,18 @@ export const EmployeeInstanceProfileSchema = z
   .object({
     name: z.string().trim().min(1).max(120).optional(),
     description: z.string().trim().min(1).max(1_000).optional(),
-    appearance: EmployeeAppearanceSchema.optional(),
+    appearance: z
+      .object({
+        avatarType: EmployeeAppearanceSchema.shape.avatarType
+          .removeDefault()
+          .optional(),
+        avatarValue: EmployeeAppearanceSchema.shape.avatarValue
+          .removeDefault()
+          .optional(),
+        accentColor: EmployeeAppearanceSchema.shape.accentColor,
+      })
+      .strict()
+      .optional(),
     role: z.string().trim().min(1).max(120).optional(),
     mission: z.string().trim().min(1).max(500).optional(),
     workStyle: z.string().trim().min(1).max(1_000).optional(),
