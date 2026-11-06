@@ -69,6 +69,21 @@ describe('developer packs a native skill into C1 content without publishing', ()
     expect(result.procedure.skillPackage.bundle.resources).toHaveLength(5);
     expect(result.report.scriptsExecuted).toBe(false);
   });
+  it('L1: packs an exact 256 KiB body without trimming and rejects an extra UTF-8 byte', async () => {
+    const path = join(directory, 'SKILL.md');
+    const previous = await readFile(path, 'utf8');
+    const end = previous.indexOf('\n---', 4) + 4;
+    const prefix = '## 工作步骤\n1. 核对\n## 交付内容\n- 结果\n## 执行细节\n';
+    const body = prefix + 'x'.repeat(262144 - Buffer.byteLength(prefix));
+    await writeFile(path, previous.slice(0, end) + '\n' + body);
+    const result = await pack();
+    expect(result.procedure.body).toBe(body);
+    expect(result.procedure.skillPackage.bundle.contentChecksum).toBe(
+      skillBytesChecksum(body),
+    );
+    await writeFile(path, previous.slice(0, end) + '\n' + body + 'x');
+    await expect(pack()).rejects.toThrow('262144');
+  });
   it('runs the documented CLI twice, returns identical C1 content and exact resource bytes', async () => {
     const args = [
       '--import',
@@ -334,12 +349,12 @@ describe('developer packs a native skill into C1 content without publishing', ()
     await expect(pack()).rejects.toThrow('skill_bundle_unknown_tool');
   });
 
-  it('enforces existing C1 body and resource limits', async () => {
+  it('enforces the approved body limit and existing C1 resource limit', async () => {
     await writeFile(
       join(directory, 'SKILL.md'),
-      `---\nname: review\ndescription: test\nwhenToUse: weekly\nmetadata: { displayName: Review, version: v1 }\n---\n## 工作步骤\n${'x'.repeat(8001)}\n## 交付内容\nresult\n## 执行细节\ndetails`,
+      `---\nname: review\ndescription: test\nwhenToUse: weekly\nmetadata: { displayName: Review, version: v1 }\n---\n## 工作步骤\n${'x'.repeat(262145)}\n## 交付内容\nresult\n## 执行细节\ndetails`,
     );
-    await expect(pack()).rejects.toThrow('C1 procedure');
+    await expect(pack()).rejects.toThrow('body exceeds 262144 UTF-8 bytes');
     await cp(join(example, 'SKILL.md'), join(directory, 'SKILL.md'));
     await writeFile(
       join(directory, 'assets/example-input.json'),

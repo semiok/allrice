@@ -167,6 +167,7 @@ suite(
       version = '1.0.0',
       previous?: Awaited<ReturnType<typeof savePersonalSceneSkill>>,
       authorName?: string,
+      exactBody?: string,
     ) {
       const payload = sceneSkillFixture(version),
         bytes = Buffer.from(`题目,版本\n周报,${version}\n`);
@@ -180,6 +181,10 @@ suite(
         payload.body =
           '## 工作步骤\n1. 核对资料\n## 交付内容\n- 周报\n## 执行细节\n读取原始版本。';
         bundle.contentChecksum = skillBytesChecksum(payload.body);
+      }
+      if (exactBody !== undefined) {
+        payload.body = exactBody;
+        bundle.contentChecksum = skillBytesChecksum(exactBody);
       }
       bundle.checksum = skillBundleChecksum({
         schemaVersion: bundle.schemaVersion,
@@ -388,6 +393,64 @@ suite(
       );
     }
 
+    it('L1: reads full large body and exact old resource after update without the old cumulative 32000-byte rejection', async () => {
+      const s = await setup();
+      const prefix = '## 工作步骤\n1. 核对\n## 交付内容\n- 结果\n## 执行细节\n';
+      const content = prefix + 'x'.repeat(262144 - Buffer.byteLength(prefix));
+      const installed = await save(
+        s,
+        '1.0.0',
+        undefined,
+        'large-scene',
+        content,
+      );
+      const run = await runtime(s);
+      expect((await body(run, installed.sceneId)).content).toBe(content);
+      const updated = await save(
+        s,
+        '2.0.0',
+        installed,
+        'large-scene',
+        content.slice(0, -1) + 'y',
+      );
+      expect((await body(run, installed.sceneId)).content).toBe(
+        content.slice(0, -1) + 'y',
+      );
+      const old = await loadPersonalRuntimeSceneSkill(
+        run.scope,
+        run.content.generationId,
+        {
+          contentRef: installed.contentRef,
+          resourcePath: 'assets/template.csv',
+        },
+        run.worker,
+      );
+      expect(old).toHaveProperty('resource');
+      if (!('resource' in old)) throw Error('Expected exact old resource');
+      expect(
+        Buffer.from(old.resource.contentBase64, 'base64').toString(),
+      ).toContain('1.0.0');
+      const before =
+        await f.db`select count(*)::int n from allrice_employee_content_revisions`;
+      await expect(
+        save(s, '3.0.0', updated, 'large-scene', content + 'x'),
+      ).rejects.toThrow();
+      expect(
+        await f.db`select count(*)::int n from allrice_employee_content_revisions`,
+      ).toEqual(before);
+      await f.db`update allrice_employee_instances set archived_at=clock_timestamp(),revision=revision+1 where id=${s.instance.id}`;
+      await expect(
+        loadPersonalRuntimeSceneSkill(
+          run.scope,
+          run.content.generationId,
+          {
+            contentRef: installed.contentRef,
+            resourcePath: 'assets/template.csv',
+          },
+          run.worker,
+        ),
+      ).rejects.toThrow();
+    });
     it('distinguishes an available directory and human preview from actual committed body/resource reads', async () => {
       const s = await setup(),
         installed = await save(s),

@@ -77,7 +77,10 @@ export async function previewPersonalSkillSource(
       rootOnly: true,
     });
     files = github.files;
-    bytes = await createFileArchive(files, { signal });
+    bytes = await createFileArchive(files, {
+      signal,
+      maximumFiles: personalSkillLimits.packageResources + 1,
+    });
   } else {
     if (!archive || archive.byteLength > personalSkillLimits.archiveBytes)
       throw new SkillPreviewError('source_invalid');
@@ -85,6 +88,7 @@ export async function previewPersonalSkillSource(
     // Same bounded ZIP read deadline as the existing personal Skill reader.
     const timeout = AbortSignal.timeout(15_000);
     files = await readFileArchive(bytes, {
+      maximumFiles: personalSkillLimits.packageResources + 1,
       signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
     });
   }

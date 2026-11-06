@@ -45,7 +45,10 @@ export async function readPersonalSkillArchive(
 ) {
   const timeout = AbortSignal.timeout(15_000);
   const bounded = signal ? AbortSignal.any([signal, timeout]) : timeout;
-  const files = await readFileArchive(bytes, { signal: bounded });
+  const files = await readFileArchive(bytes, {
+    maximumFiles: personalSkillLimits.packageResources + 1,
+    signal: bounded,
+  });
   return inspectPersonalSkillPackage(files, bounded);
 }
 
