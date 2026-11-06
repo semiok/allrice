@@ -11,6 +11,7 @@ import {
   capabilityStateLabels,
 } from './capability-catalog';
 import type { BridgeChips } from './bridge-view';
+import { CloudProjectDevelopmentSetting } from './cloud-project-development-setting';
 import styles from './capability-panel.module.css';
 const groups: Record<
   'work' | 'computer',
@@ -111,6 +112,7 @@ export function CapabilityContent({
                 : '状态待确认，不代表可执行。'}
             </small>
           </div>
+          {scope === 'work' && <CloudProjectDevelopmentSetting />}
           {group.ids.map((id) => {
             const label = capabilityLabels[id],
               capability = data?.capabilities.find((c) => c.id === id);
@@ -219,9 +221,11 @@ export function CapabilityContent({
               </details>
             );
           })}
-          <p className={styles.taskHint}>
-            “准备任务”会将指引加入输入框，发送后开始。执行时遵循你的授权与工作方式。
-          </p>
+          {scope === 'computer' && (
+            <p className={styles.taskHint}>
+              “准备任务”会将指引加入输入框，发送后开始。执行时遵循你的授权与工作方式。
+            </p>
+          )}
         </div>
       </details>
       {error && (

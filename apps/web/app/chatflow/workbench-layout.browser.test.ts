@@ -1145,7 +1145,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         }
         return answer({
           viewerId,
-          preferences: state.preferences[viewerId] ?? defaultUserPreferences,
+          preferences: {
+            ...(state.preferences[viewerId] ?? defaultUserPreferences),
+            capabilities: {
+              'allrice.cloud-project-development': {
+                configVersion: 1,
+                enabled: false,
+              },
+            },
+          },
         });
       }
       if (path.endsWith('/message-feedback')) {
