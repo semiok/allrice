@@ -6,7 +6,10 @@ import {
   enqueuePersonalScenePrompt,
   installPersonalScenePromptAdmission,
 } from './allrice-personal-scene-prompt.mjs';
-import { BootstrapReceiptSchema } from '@allrice/contracts/native-runtime';
+import {
+  BootstrapReceiptSchema,
+  EmployeeDocumentsSchema,
+} from '@allrice/contracts/native-runtime';
 import {
   PersonalSkillPinSchema,
   ExperienceSourceHandleSchema,
@@ -2136,13 +2139,17 @@ export async function createAllRiceRuntime(
           requiredSessionId(params);
           return replyNativeQuestion(this, params);
         case 'run/begin': {
-          const result = await this.runAdmission.begin(params);
           if (params.employeeDocuments && !this.employeeDocuments)
             throw Error('EMPLOYEE_DOCUMENT_PROVIDER_REQUIRED');
-          this.employeeDocuments?.bind(
-            params.sessionId,
-            params.employeeDocuments,
-          );
+          const employeeDocuments = this.employeeDocuments
+            ? EmployeeDocumentsSchema.parse(
+                params.employeeDocuments ?? { user: '', memory: '' },
+              )
+            : undefined;
+          const result = await this.runAdmission.begin({
+            ...params,
+            employeeDocuments,
+          });
           this.nativeAccounting?.begin(params.sessionId);
           return result;
         }
