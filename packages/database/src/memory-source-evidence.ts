@@ -57,6 +57,7 @@ async function evidenceFor(
   s: Source,
   kind: MemorySourceEvidence['kind'],
   policy: { revision: number; collectionStartedAt: string },
+  inputs: { message_id: string; object_id: string; checksum: string }[],
 ) {
   // Only the actual execution supplies resource identities. Previous assistant
   // answers, old summaries and MEMORY bodies are not new human sources.
@@ -92,15 +93,6 @@ async function evidenceFor(
       and a.owner_id=${s.owner_id} and v.owner_id=${s.owner_id} and o.owner_id=${s.owner_id}
       and o.state='ready' and o.deleted_at is null
     order by a.created_at,a.version_id limit 33 for share of o`;
-  const inputs = await tx<
-    { message_id: string; object_id: string; checksum: string }[]
-  >`
-    select a.message_id,o.id object_id,o.checksum from allrice_message_attachments a
-    join allrice_storage_objects o on o.id=a.object_id and o.organization_id=a.organization_id and o.workspace_id=a.workspace_id
-    where a.message_id in ${tx([...new Set([s.execution_user_message_id, ...runs.map((r) => r.user_message_id)])])}
-      and a.organization_id=${s.organization_id} and a.workspace_id=${s.workspace_id}
-      and a.attached_by=${s.owner_id} and o.owner_id=${s.owner_id} and o.state='ready' and o.deleted_at is null
-    order by a.created_at,a.object_id limit 33 for share of o`;
   const knowledge = runs.flatMap((r) => {
     const bindings = record(
       record(r.execution_snapshot).capabilitySnapshot,
@@ -154,6 +146,11 @@ async function capture(tx: Tx, s: Source) {
   // revocation. A collision remains pending and is retried by the existing tick.
   await tx`set local lock_timeout='100ms'`;
   await tx`set local statement_timeout='2000ms'`;
+  // Join the policy writer's existing per-organization lock before any row
+  // locks. A system-row SHARE lock alone cannot serialize the first override.
+  const [policyClaim] = await tx<{ locked: boolean }[]>`
+    select pg_try_advisory_xact_lock_shared(hashtextextended(${`experience-policy:${s.organization_id}`},183)) locked`;
+  if (!policyClaim?.locked) return 'busy' as const;
   const [claim] = await tx<{ locked: boolean }[]>`
     select pg_try_advisory_xact_lock(hashtextextended(${s.capture_run_id},183)) locked`;
   if (!claim?.locked) return 'busy' as const;
@@ -224,8 +221,8 @@ async function capture(tx: Tx, s: Source) {
           and c.owner_id=er.owner_id and c.client_user_message_id=m.client_message_id
           and c.state='consumed' and c.input_kind='steer_current'
           and c.native_proof->>'status'='adopted' and c.native_proof->>'inputId'=c.client_user_message_id::text
-          and c.native_proof->>'turnId'=c.expected_turn_id
-          and (c.native_proof->>'runId' is null or c.native_proof->>'runId'=actual.run_id::text)))
+          and ((c.native_proof->>'runId' is not null and c.native_proof->>'runId'=actual.run_id::text)
+            or (c.native_proof->>'runId' is null and c.native_proof->>'turnId'=c.expected_turn_id))))
       and cs.archived_at is null and cs.owner_id=${s.owner_id} and m.owner_id=${s.owner_id}
       and coalesce(cs.employee_instance_id,cs.employee_assignment_id)=${snapshot.data.id}
       and er.execution_snapshot->'instance'->>'id'=${snapshot.data.id}
@@ -272,14 +269,35 @@ async function capture(tx: Tx, s: Source) {
     where organization_id=${s.organization_id} and workspace_id=${s.workspace_id} and owner_id=${s.owner_id}
       and instance_id=${snapshot.data.id} and source_key=${sourceKey}`;
   if (existing) return finish('captured', 'source_already_recorded');
-  const [unavailableFile] = await tx`select 1 from allrice_message_attachments a
-    left join allrice_storage_objects o on o.id=a.object_id and o.organization_id=a.organization_id and o.workspace_id=a.workspace_id
+  // Lock the complete referenced set before checking availability. Filtering
+  // deleted objects first would silently turn a withdrawal into no dependency.
+  const inputs = await tx<
+    {
+      message_id: string;
+      object_id: string;
+      checksum: string;
+      owner_id: string;
+      attached_by: string;
+      state: string;
+      deleted_at: Date | null;
+    }[]
+  >`select a.message_id,o.id object_id,o.checksum,o.owner_id,a.attached_by,o.state,o.deleted_at
+    from allrice_message_attachments a
+    join allrice_storage_objects o on o.id=a.object_id and o.organization_id=a.organization_id and o.workspace_id=a.workspace_id
     where a.message_id in ${tx([...new Set([s.user_message_id, s.execution_user_message_id])])}
       and a.organization_id=${s.organization_id} and a.workspace_id=${s.workspace_id}
-      and (a.attached_by<>${s.owner_id} or o.id is null or o.owner_id<>${s.owner_id}
-        or o.state<>'ready' or o.deleted_at is not null) limit 1`;
-  if (unavailableFile) return finish('ignored', 'dependency_unavailable');
-  const evidence = await evidenceFor(tx, s, kind, policy.data);
+    order by a.message_id,a.object_id for share of a,o`;
+  if (
+    inputs.some(
+      (file) =>
+        file.attached_by !== s.owner_id ||
+        file.owner_id !== s.owner_id ||
+        file.state !== 'ready' ||
+        file.deleted_at !== null,
+    )
+  )
+    return finish('ignored', 'dependency_unavailable');
+  const evidence = await evidenceFor(tx, s, kind, policy.data, inputs);
   // A recorded historical version is useful evidence; a revoked installation or
   // binding is not a current authority to collect its reusable method. Unloaded
   // Skills are absent here, so their removal cannot discard independent facts.
