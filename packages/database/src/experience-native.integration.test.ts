@@ -277,6 +277,50 @@ suite(
         expect(await f.db`select id from allrice_jobs`).toHaveLength(0);
       },
     );
+    it('M5-C cutover watermark alone cannot authorize cancellation of a retained native plan', async () => {
+      const seeded = await seedExperienceCalendarRule(f, 'empty');
+      const old = await seedHistoricalExperienceCalendar(
+        f,
+        seeded.automationId,
+        reference,
+      );
+      // Exact B cutover effect: settings advance, original business/native revisions do not.
+      await f.db`update allrice_settings set value=jsonb_set(jsonb_set(value,
+        '{revision}',to_jsonb((value->>'revision')::int+1)),
+        '{collectionStartedAt}',to_jsonb(to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"')))
+        where key='employee_experience_policy' and
+          ((scope_type='organization' and scope_id=${f.organizationId}) or (scope_type='system' and scope_id is null))`;
+      const facts = await f.db.begin((tx) => lockExperienceCalendarAdmissions(tx, [old.control]));
+      expect(facts.get(old.control.controlId)).toMatchObject({allowed: false, status: 'enabled'});
+      await expect(
+        f.db.begin(async (tx) => {
+          await tx`update allrice_automations set status='paused',next_run_at=null where id=${seeded.automationId}`;
+          const d = {
+            decisionId: randomUUID(),
+            periodId: old.period.periodId,
+            kind: 'authority',
+            outcome: 'authority_blocked',
+            revision: old.period.revision,
+            decidedAt: new Date().toISOString(),
+            receiptOccurrenceId: null,
+            automationRunId: null,
+            successorPeriodId: null,
+            lease: null,
+            budget: null,
+          };
+          await tx`insert into allrice_native_calendar_decisions(decision_id,period_id,kind,outcome,revision,decision,decision_digest,decided_at)
+        values(${d.decisionId},${d.periodId},${d.kind},${d.outcome},${d.revision},${tx.json(d)},${nativeOnceDigest(d)},${d.decidedAt}::timestamptz)`;
+        }),
+      ).rejects.toMatchObject({ code: '23514', message: 'calendar authority cancellation lacks actual revocation' });
+      expect(
+        await f.db`select * from allrice_native_calendar_decisions`,
+      ).toHaveLength(0);
+      expect(
+        (
+          await f.db`select status from allrice_automations where id=${seeded.automationId}`
+        )[0]!.status,
+      ).toBe('enabled');
+    });
     it('rejects re-enabling the retired consumer but retains an authorized policy-off cancellation', async () => {
       const seeded = await seedExperienceCalendarRule(f, 'empty');
       const old = await seedHistoricalExperienceCalendar(
