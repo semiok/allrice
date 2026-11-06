@@ -177,7 +177,7 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
     });
   }
   async function send(
-    f: Pick<Subject, 'context' | 'workspaceId' | 'assignmentId'>,
+    f: { context: RequestContext; workspaceId: string; assignmentId: string },
     instanceId?: string,
     sessionId?: string,
   ) {
@@ -897,7 +897,7 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
       if (producer === 'unmanaged_rice') {
         const assignment = await ensureDefaultEmployee(context, p.workspaceId);
         if (!assignment) throw Error('expected real unmanaged Rice');
-        assignmentId = assignment.assignment_id;
+        assignmentId = assignment.id;
       } else {
         const created = await hub.createEmployee(context, {
           workspaceId: p.workspaceId,
