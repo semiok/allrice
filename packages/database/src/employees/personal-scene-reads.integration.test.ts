@@ -1,3 +1,5 @@
+import { loadPlatformContentCatalog } from '../platform-content/catalog.ts';
+import { synchronizePlatformContent } from '../platform-content/sync.ts';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
@@ -43,6 +45,7 @@ import {
 import { resolveEmployeeExecution } from './employeehub.ts';
 import {
   prepareEmployeeContentContext,
+  listPersonalRuntimeSceneSkills,
   loadPersonalRuntimeSceneSkill,
 } from './employee-runtime-content.ts';
 import {
@@ -163,6 +166,8 @@ suite(
       s: Setup,
       version = '1.0.0',
       previous?: Awaited<ReturnType<typeof savePersonalSceneSkill>>,
+      authorName?: string,
+      exactBody?: string,
     ) {
       const payload = sceneSkillFixture(version),
         bytes = Buffer.from(`题目,版本\n周报,${version}\n`);
@@ -172,6 +177,15 @@ suite(
         checksum: skillBytesChecksum(bytes),
         contentBase64: bytes.toString('base64'),
       });
+      if (authorName) {
+        payload.body =
+          '## 工作步骤\n1. 核对资料\n## 交付内容\n- 周报\n## 执行细节\n读取原始版本。';
+        bundle.contentChecksum = skillBytesChecksum(payload.body);
+      }
+      if (exactBody !== undefined) {
+        payload.body = exactBody;
+        bundle.contentChecksum = skillBytesChecksum(exactBody);
+      }
       bundle.checksum = skillBundleChecksum({
         schemaVersion: bundle.schemaVersion,
         version: bundle.version,
@@ -192,7 +206,25 @@ suite(
           name: '本人周报',
           appliesWhen: '核对资料来源后整理',
         },
-        procedure: { kind: 'procedure', title: '核对方法', ...payload },
+        procedure: {
+          kind: 'procedure',
+          title: '核对方法',
+          ...payload,
+          skillPackage: {
+            ...payload.skillPackage,
+            ...(authorName
+              ? {
+                  frontmatter: {
+                    name: authorName,
+                    description: '核对资料',
+                    whenToUse: '每周',
+                    invocation: { modelInvocable: true, userInvocable: true },
+                    metadata: { displayName: '周报', version },
+                  },
+                }
+              : {}),
+          },
+        },
         references: [],
         changeSummary: '本人保存文件',
       });
@@ -361,6 +393,64 @@ suite(
       );
     }
 
+    it('L1: reads full large body and exact old resource after update without the old cumulative 32000-byte rejection', async () => {
+      const s = await setup();
+      const prefix = '## 工作步骤\n1. 核对\n## 交付内容\n- 结果\n## 执行细节\n';
+      const content = prefix + 'x'.repeat(262144 - Buffer.byteLength(prefix));
+      const installed = await save(
+        s,
+        '1.0.0',
+        undefined,
+        'large-scene',
+        content,
+      );
+      const run = await runtime(s);
+      expect((await body(run, installed.sceneId)).content).toBe(content);
+      const updated = await save(
+        s,
+        '2.0.0',
+        installed,
+        'large-scene',
+        content.slice(0, -1) + 'y',
+      );
+      expect((await body(run, installed.sceneId)).content).toBe(
+        content.slice(0, -1) + 'y',
+      );
+      const old = await loadPersonalRuntimeSceneSkill(
+        run.scope,
+        run.content.generationId,
+        {
+          contentRef: installed.contentRef,
+          resourcePath: 'assets/template.csv',
+        },
+        run.worker,
+      );
+      expect(old).toHaveProperty('resource');
+      if (!('resource' in old)) throw Error('Expected exact old resource');
+      expect(
+        Buffer.from(old.resource.contentBase64, 'base64').toString(),
+      ).toContain('1.0.0');
+      const before =
+        await f.db`select count(*)::int n from allrice_employee_content_revisions`;
+      await expect(
+        save(s, '3.0.0', updated, 'large-scene', content + 'x'),
+      ).rejects.toThrow();
+      expect(
+        await f.db`select count(*)::int n from allrice_employee_content_revisions`,
+      ).toEqual(before);
+      await f.db`update allrice_employee_instances set archived_at=clock_timestamp(),revision=revision+1 where id=${s.instance.id}`;
+      await expect(
+        loadPersonalRuntimeSceneSkill(
+          run.scope,
+          run.content.generationId,
+          {
+            contentRef: installed.contentRef,
+            resourcePath: 'assets/template.csv',
+          },
+          run.worker,
+        ),
+      ).rejects.toThrow();
+    });
     it('distinguishes an available directory and human preview from actual committed body/resource reads', async () => {
       const s = await setup(),
         installed = await save(s),
@@ -446,6 +536,101 @@ suite(
           })
         ).runs,
       ).toEqual([]);
+    });
+
+    it('native names: audits the exact author name and original UUID without accepting another name for that package', async () => {
+      const s = await setup(),
+        saved = await save(s, '1.0.0', undefined, 'weekly-brief'),
+        run = await runtime(s);
+      const loaded = await body(run, saved.sceneId),
+        identity = await native(run);
+      expect(loaded.nativeName).toBe('weekly-brief');
+      await appendUse(run, useEvent(run, identity, loaded));
+      await appendUse(
+        run,
+        useEvent(
+          run,
+          identity,
+          { ...loaded, nativeName: `allrice-scene-${loaded.sceneId}` },
+          'tool-result',
+          101,
+        ),
+      );
+      const history = await listPersonalSceneReads(s.owner, s.instance.id);
+      expect(
+        history.runs[0]!.reads[0]!.uses.map((use) => use.nativeName),
+      ).toEqual(['weekly-brief', `allrice-scene-${loaded.sceneId}`]);
+      await appendUse(
+        run,
+        useEvent(
+          run,
+          identity,
+          { ...loaded, nativeName: 'different-package' },
+          'tool-result',
+          102,
+        ),
+      );
+      await expect(
+        listPersonalSceneReads(s.owner, s.instance.id),
+      ).rejects.toMatchObject({ code: 'source_changed' });
+    });
+
+    it('native names: refuses a collision with the Run frozen Skills after the current platform catalog removes that name', async () => {
+      const s = await setup(),
+        first = await save(s),
+        run = await runtime(s);
+      const platform = await loadPlatformContentCatalog();
+      const oldName = `p18-${publication.skillId}`;
+      const [frozen] =
+        await f.db`select native_skills from allrice_employee_runs where run_id=${run.scope.runId}`;
+      expect(
+        frozen!.native_skills.some(
+          (skill: { name: string }) => skill.name === oldName,
+        ),
+      ).toBe(true);
+      await synchronizePlatformContent({
+        ...platform,
+        catalogChecksum: 'sha256:' + '9'.repeat(64),
+        skills: platform.skills.map((skill, index) =>
+          index === 0
+            ? {
+                ...skill,
+                replaces: [...(skill.replaces ?? []), publication.skillId],
+              }
+            : skill,
+        ),
+      });
+      try {
+        const next = await save(s, '2.0.0', first, oldName);
+        expect(
+          (await listPersonalSceneSkills(s.owner, s.instance.id)).skills[0]!
+            .nativeName,
+        ).toBe(oldName);
+        await expect(
+          listPersonalRuntimeSceneSkills(
+            run.scope,
+            run.content.generationId,
+            run.worker,
+          ),
+        ).rejects.toMatchObject({ code: 'version_conflict' });
+        await expect(body(run, next.sceneId)).rejects.toMatchObject({
+          code: 'version_conflict',
+        });
+        const [state] =
+          await f.db`select content_scene_state from allrice_employee_runs where run_id=${run.scope.runId}`;
+        expect(state!.content_scene_state).toBeNull();
+        expect(
+          (
+            await inspectPersonalSceneSkill(
+              s.owner,
+              s.instance.id,
+              next.contentRef,
+            )
+          ).nativeName,
+        ).toBe(oldName);
+      } finally {
+        await synchronizePlatformContent(platform);
+      }
     });
 
     it('projects only canonical native use events, with exact v1/v2 revisions and original native identities', async () => {

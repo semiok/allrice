@@ -1138,6 +1138,22 @@ async function assertPersonalSceneReads(
   }
 }
 
+/** Match the actual native Provider frozen for this Run, which may differ
+ * from today's catalog. This is namespace validation, not a tool grant. */
+async function assertPersonalRuntimeSceneNames(
+  scope: RunScope,
+  tx: ContentTx,
+  names: string[],
+) {
+  if (!names.length) return;
+  const [collision] = await tx`select 1 from allrice_employee_runs er
+    cross join lateral jsonb_array_elements(er.native_skills) skill
+    where er.run_id=${scope.runId} and er.session_id=${scope.sessionId}
+      and er.organization_id=${scope.organizationId} and er.owner_id=${scope.ownerId}
+      and skill->>'name' in ${tx(names)} limit 1`;
+  if (collision) throw new EmployeeContentError('version_conflict');
+}
+
 /** Native directory metadata only. Current owner/instance and lease are checked
  * independently of the catalog cache; list is never recorded as a body read. */
 export async function listPersonalRuntimeSceneSkills(
@@ -1167,6 +1183,11 @@ export async function listPersonalRuntimeSceneSkills(
       run.personal_instance_id,
       tx,
       true,
+    );
+    await assertPersonalRuntimeSceneNames(
+      scope,
+      tx,
+      catalog.skills.map((skill) => skill.nativeName),
     );
     if (!(await validContentLease(scope, worker, tx))) return unavailable();
     return catalog;
@@ -1214,6 +1235,8 @@ export async function loadPersonalRuntimeSceneSkill(
       tx,
       true,
     );
+    if (!path)
+      await assertPersonalRuntimeSceneNames(scope, tx, [pkg.skill.nativeName]);
     const resource = path
       ? pkg.bundle.resources.find((item) => item.path === path)
       : undefined;
@@ -1283,7 +1306,7 @@ export async function loadPersonalRuntimeSceneSkill(
         sourceRefs.add(employeeContentReferenceKey(source.dto.reference));
     }
     if (
-      bodyBytes > employeeContentLimits.textBytes ||
+      bodyBytes > employeeContentLimits.personalSceneBodyBytes ||
       sourceRefs.size > employeeContentLimits.references ||
       !(await validContentLease(scope, worker, tx))
     )

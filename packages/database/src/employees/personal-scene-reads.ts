@@ -201,7 +201,6 @@ export async function listPersonalSceneReads(
           read.sceneId !== use.sceneId ||
           read.contentChecksum !== use.contentChecksum ||
           read.bundleChecksum !== use.bundleChecksum ||
-          use.nativeName !== `allrice-scene-${read.sceneId}` ||
           envelope.threadId !== use.nativeSessionId ||
           event.bound_session_id !== use.nativeSessionId ||
           envelope.conversationId !== row.session_id ||
@@ -222,10 +221,12 @@ export async function listPersonalSceneReads(
             source_content_id: string;
             content_checksum: string | null;
             bundle_checksum: string | null;
+            author_name: string | null;
           }[]
         >`select r.number,r.manifest,r.digest,a.digest as source_digest,a.asset_id as source_content_id,
           a.content#>>'{skillPackage,bundle,contentChecksum}' as content_checksum,
-          a.content#>>'{skillPackage,bundle,checksum}' as bundle_checksum
+          a.content#>>'{skillPackage,bundle,checksum}' as bundle_checksum,
+          a.content#>>'{skillPackage,frontmatter,name}' as author_name
           from allrice_employee_content_sets s
           join allrice_employee_content_revisions r on r.set_id=s.id and r.id=${pin.revisionId}
           join allrice_company_asset_revisions a on a.id=${pin.sourceRevisionId} and a.organization_id=s.organization_id
@@ -250,7 +251,9 @@ export async function listPersonalSceneReads(
           procedures[0]!.contentId !== identity.source_content_id ||
           procedures[0]!.digest !== identity.source_digest ||
           identity.content_checksum !== use.contentChecksum ||
-          identity.bundle_checksum !== use.bundleChecksum
+          identity.bundle_checksum !== use.bundleChecksum ||
+          (use.nativeName !== `allrice-scene-${read.sceneId}` &&
+            use.nativeName !== identity.author_name)
         )
           throw new EmployeeContentError('source_changed');
         const claim = runtimePolicyDigest({

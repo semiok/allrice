@@ -204,7 +204,7 @@ type PlatformSkillRow = {
  * Only the synchronization transaction requests row locks. */
 export async function readExistingPlatformSkills(
   sql: postgres.Sql | postgres.TransactionSql,
-  options: { forUpdate?: boolean } = {},
+  { forUpdate = false }: { forUpdate?: boolean } = {},
 ) {
   return sql<PlatformSkillRow[]>`
     select id, name, description, content, checksum,
@@ -216,7 +216,7 @@ export async function readExistingPlatformSkills(
       reviewed_by_label as "reviewedByLabel", bundle
     from allrice_platform_dsh_skills
     order by name, id
-    ${options.forUpdate ? sql`for update` : sql``}
+    ${forUpdate ? sql`for update` : sql``}
   `;
 }
 

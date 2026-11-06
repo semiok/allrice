@@ -1,3 +1,4 @@
+import { assertOrdinarySkillSceneName } from './personal-scene-names.ts';
 import { randomUUID } from 'node:crypto';
 import {
   PersonalSkillVersionInputSchema,
@@ -8,9 +9,11 @@ import {
   PersonalSkillSourceSchema,
   PersonalSkillInstallInputSchema,
   StorageObjectSchema,
+  UuidSchema,
   personalSkillLimits,
   type PersonalSkillDefinition,
   type PersonalSkillPackage,
+  type RequestContext,
 } from '@allrice/contracts';
 import { getDatabase } from '../core/client.ts';
 import { DataAccessError } from '../data.ts';
@@ -130,21 +133,27 @@ export async function authorizePersonalSkillUpdate(
 }
 /** Every binding is part of the version change, including disabled and other
  * workspaces. Fail the whole preview if any scope is no longer authorized. */
-async function impact(tx: ContentTx, scope: ContentIdentity, id: string) {
+export async function personalSkillUpdateImpact(
+  tx: ContentTx,
+  scope: ContentIdentity,
+  id: string,
+  lock = true,
+) {
   const rows =
     await tx`select b.*,w.name workspace_label,coalesce(e.profile->>'name',emp.name) label
     from allrice_personal_skill_bindings b join allrice_workspaces w on w.id=b.workspace_id
     join allrice_employee_instances e on e.id=b.instance_id
     join allrice_employee_assignments a on a.id=e.assignment_id join allrice_employees emp on emp.id=a.employee_id
     where b.installation_id=${id} and b.organization_id=${scope.organizationId} and b.owner_id=${owner(scope)} order by b.id
-    for share of b,e,a,w nowait`;
+    ${lock ? tx`for share of b,e,a,w nowait` : tx``}`;
   if (!rows.length || rows.length > 128) throw new PersonalSkillError('limit');
   for (const row of rows) {
     const context = { ...scope, workspaceId: row.workspace_id as string };
     // The outer admission already holds organization/user/session/person locks.
     // Additional workspace membership rows must stay valid through publication;
     // NOWAIT lets the existing whole-transaction retry preserve lock order.
-    await tx`select id from allrice_memberships where organization_id=${scope.organizationId} and user_id=${owner(scope)}
+    if (lock)
+      await tx`select id from allrice_memberships where organization_id=${scope.organizationId} and user_id=${owner(scope)}
       and active and (workspace_id is null or workspace_id=${context.workspaceId}) order by id for share nowait`;
     if (!(await readContentPrincipal(context, tx))?.writable)
       throw new DataAccessError('authorization_denied');
@@ -160,7 +169,63 @@ async function impact(tx: ContentTx, scope: ContentIdentity, id: string) {
     epoch: r.epoch as number,
   }));
 }
-function sourceIdentity(raw: unknown) {
+
+/** A browser preview must disclose the same complete set as the existing
+ * version writer. This read is not a grant: confirmation rechecks this set
+ * under the writer's locks, along with the exact current installation. */
+export async function previewPersonalSkillUpdateTarget(
+  context: RequestContext,
+  instanceId: string,
+  target: {
+    installationId: string;
+    expectedRevision: number;
+    expectedVersionId: string;
+  },
+  db = getDatabase(),
+) {
+  if (!context.sessionId || context.actor.type !== 'user')
+    throw new DataAccessError('authorization_denied');
+  UuidSchema.parse(instanceId);
+  UuidSchema.parse(target.installationId);
+  UuidSchema.parse(target.expectedVersionId);
+  return db.begin('isolation level repeatable read read only', async (tx) => {
+    if (!(await readContentPrincipal(context, tx))?.writable)
+      throw new DataAccessError('authorization_denied');
+    await getEmployeeInstance(context, instanceId, tx);
+    let row;
+    try {
+      row = await installation(tx, context, target.installationId);
+    } catch (error) {
+      if (error instanceof PersonalSkillError && error.code === 'unavailable')
+        throw new DataAccessError('not_found');
+      throw error;
+    }
+    if (row.state !== 'installed') throw new DataAccessError('not_found');
+    if (
+      row.revision !== target.expectedRevision ||
+      row.current_version_id !== target.expectedVersionId
+    )
+      throw new PersonalSkillError('conflict');
+    const bindings = await personalSkillUpdateImpact(
+      tx,
+      context,
+      row.id,
+      false,
+    );
+    if (
+      !bindings.some(
+        (binding) => binding.instanceId === instanceId && binding.enabled,
+      )
+    )
+      throw new DataAccessError('not_found');
+    return {
+      name: row.name as string,
+      bindings,
+      bindingsDigest: runtimePolicyDigest(bindings),
+    };
+  });
+}
+export function personalSkillSourceIdentity(raw: unknown) {
   const source = PersonalSkillSourceSchema.parse(raw);
   return source.kind === 'attachment'
     ? {
@@ -202,7 +267,7 @@ async function stage(
     throw new PersonalSkillError('conflict');
   if (candidate.definition.name !== row.name)
     throw new PersonalSkillError('name_conflict');
-  const bindings = await impact(tx, scope, id);
+  const bindings = await personalSkillUpdateImpact(tx, scope, id);
   const source = PersonalSkillSourceSchema.parse(candidate.source);
   const definition = PersonalSkillDefinitionSchema.parse(candidate.definition);
   const digest = runtimePolicyDigest(definition);
@@ -214,8 +279,8 @@ async function stage(
       ? candidate.targetVersionId === row.current_version_id
       : row.definition_checksum === digest &&
         row.package_checksum === packageDigest &&
-        runtimePolicyDigest(sourceIdentity(source)) ===
-          runtimePolicyDigest(sourceIdentity(row.source));
+        runtimePolicyDigest(personalSkillSourceIdentity(source)) ===
+          runtimePolicyDigest(personalSkillSourceIdentity(row.source));
   const [count] =
     await tx`select count(*)::int n,coalesce(max(version),0)::int latest from allrice_personal_skill_versions where installation_id=${id}`;
   if (
@@ -447,6 +512,7 @@ export async function personalSkillVersionFromChat(input: EmployeeChatCall) {
           )?.some((s) => s.name === row.name && !s.personal)
         )
           throw new PersonalSkillError('name_conflict');
+        await assertOrdinarySkillSceneName(tx, scope, instance.id, row.name);
         const [stale] =
           await tx`select 1 from allrice_messages where id=${input.userMessageId}
           and created_at<=greatest(${row.revoked_at}::timestamptz,${binding?.revoked_at ?? null}::timestamptz)`;
@@ -547,10 +613,19 @@ export async function personalSkillVersionFromChat(input: EmployeeChatCall) {
         row.state !== 'installed' ||
         row.revision !== preview.expectedRevision ||
         row.version !== preview.fromVersion ||
-        runtimePolicyDigest(await impact(tx, scope, row.id)) !==
-          runtimePolicyDigest(preview.bindings)
+        runtimePolicyDigest(
+          await personalSkillUpdateImpact(tx, scope, row.id),
+        ) !== runtimePolicyDigest(preview.bindings)
       )
         throw new PersonalSkillError('conflict');
+      for (const binding of preview.bindings)
+        if (binding.enabled)
+          await assertOrdinarySkillSceneName(
+            tx,
+            { ...scope, workspaceId: binding.workspaceId },
+            binding.instanceId,
+            row.name,
+          );
       const candidate = operation.candidate as Candidate;
       if (candidate.resourceManifest) {
         const [stored] =

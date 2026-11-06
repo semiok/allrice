@@ -22,6 +22,7 @@ import {
 import { getDatabase } from '../core/client.ts';
 import { DataAccessError } from '../data.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
+import { assertPersonalSceneNamespace } from './personal-scene-names.ts';
 import { getEmployeeInstance } from './employee-instances.ts';
 import { employeeChatUuid } from './employee-chat-authority.ts';
 import { resolveEmployeeMethodTarget } from './employee-method-target.ts';
@@ -149,6 +150,7 @@ async function resolvePackage(
   const frontmatter = text.skillPackage.frontmatter;
   const skill = PersonalSceneSkillSchema.parse({
     ...summary(scene, frontmatter),
+    ...(text.skillPackage.source ? { source: text.skillPackage.source } : {}),
     ...(frontmatter
       ? {
           frontmatter,
@@ -182,13 +184,20 @@ function summary(scene: Scene, frontmatter?: WorkflowSkillFrontmatter) {
     sceneId: scene.id,
     name: scene.name,
     description: scene.appliesWhen,
-    nativeName: `allrice-scene-${scene.id}`,
-    ...(frontmatter ? { version: frontmatter.metadata.version } : {}),
+    nativeName: frontmatter?.name ?? `allrice-scene-${scene.id}`,
+    ...(frontmatter
+      ? {
+          version: frontmatter.metadata.version,
+          description: frontmatter.description,
+          whenToUse: frontmatter.whenToUse,
+          invocation: frontmatter.invocation,
+          metadata: frontmatter.metadata,
+        }
+      : {}),
   };
 }
 
-/** Human presentation only. Runtime directory semantics change in U1-3b,
- * never as a side effect of adding author metadata to this reader. */
+/** Human labels are separate from the native command identity. */
 export function personalSceneSkillAuthorView(skill: PersonalSceneSkill) {
   return skill.frontmatter
     ? {
@@ -226,15 +235,20 @@ export async function readPersonalSceneSkillInTransaction(
     (item) => item.id === sceneId,
   );
   if (!view.layer || !scene) throw new DataAccessError('not_found');
-  const pkg = await resolvePackage(
-    context,
-    view.instanceId,
-    view.employeeId,
-    view.layer,
-    scene,
-    sql,
-    lock,
-  );
+  const pkg = pin
+    ? await resolvePackage(
+        context,
+        view.instanceId,
+        view.employeeId,
+        view.layer,
+        scene,
+        sql,
+        lock,
+      )
+    : (await currentPersonalPackages(context, view, sql, lock)).find(
+        (entry) => entry.skill.sceneId === sceneId,
+      );
+  if (!pkg) throw new DataAccessError('not_found');
   if (pin && pkg.pin.sourceRevisionId !== pin.sourceRevisionId)
     throw new DataAccessError('not_found');
   return pkg;
@@ -254,42 +268,74 @@ export async function listPersonalSceneSkillsInTransaction(
     undefined,
     lock,
   );
-  const skills = [];
-  if (view.layer)
-    for (const scene of view.layer.revision.manifest.scenes) {
-      try {
-        const pkg = await resolvePackage(
-          context,
-          view.instanceId,
-          view.employeeId,
-          view.layer,
-          scene,
-          tx,
-          lock,
-        );
-        const skill = forAuthor
-          ? personalSceneSkillAuthorView(pkg.skill)
-          : pkg.skill;
-        skills.push({
-          sceneId: skill.sceneId,
-          name: skill.name,
-          description: skill.description,
-          nativeName: skill.nativeName,
-          ...(skill.version ? { version: skill.version } : {}),
-          contentRef: skill.contentRef,
-          revision: skill.revision,
-        });
-      } catch (error) {
-        if (!(error instanceof DataAccessError && error.code === 'not_found'))
-          throw error;
-      }
-    }
+  const skills = (await currentPersonalPackages(context, view, tx, lock)).map(
+    (pkg) => {
+      const skill = forAuthor
+        ? personalSceneSkillAuthorView(pkg.skill)
+        : pkg.skill;
+      return {
+        sceneId: skill.sceneId,
+        name: skill.name,
+        description: skill.description,
+        nativeName: skill.nativeName,
+        ...(skill.version ? { version: skill.version } : {}),
+        contentRef: skill.contentRef,
+        revision: skill.revision,
+        ...(skill.frontmatter
+          ? {
+              whenToUse: skill.frontmatter.whenToUse,
+              invocation: skill.frontmatter.invocation,
+              metadata: skill.frontmatter.metadata,
+            }
+          : {}),
+      };
+    },
+  );
   return PersonalSceneSkillCatalogSchema.parse({
     instanceId: view.instanceId,
     revision: view.revision,
     skills,
   });
 }
+async function currentPersonalPackages(
+  context: Context,
+  view: Awaited<ReturnType<typeof readPersonalEmployeeSceneLayer>>,
+  sql: ContentSql,
+  lock: boolean,
+) {
+  const packages = [];
+  if (view.layer)
+    for (const scene of view.layer.revision.manifest.scenes) {
+      try {
+        packages.push(
+          await resolvePackage(
+            context,
+            view.instanceId,
+            view.employeeId,
+            view.layer,
+            scene,
+            sql,
+            lock,
+          ),
+        );
+      } catch (error) {
+        if (!(error instanceof DataAccessError && error.code === 'not_found'))
+          throw error;
+      }
+    }
+  if (packages.length)
+    await assertPersonalSceneNamespace(
+      sql,
+      context,
+      await getEmployeeInstance(context, view.instanceId, sql),
+      packages.map(({ skill }) => ({
+        sceneId: skill.sceneId,
+        name: skill.nativeName,
+      })),
+    );
+  return packages;
+}
+
 export async function listPersonalSceneSkills(
   context: Context,
   instanceId: string,
@@ -588,7 +634,10 @@ export async function savePersonalSceneSkillInTransaction(
         );
         if (
           pkg.resolved.reduce(
-            (bytes, source) => bytes + Buffer.byteLength(source.dto.body ?? ''),
+            (bytes, source) =>
+              bytes +
+              Buffer.byteLength(source.dto.body ?? '') -
+              (source.personalPackageBytes ?? 0),
             0,
           ) > employeeContentLimits.textBytes
         )

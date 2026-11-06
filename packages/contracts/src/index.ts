@@ -197,3 +197,8 @@ export * from './native-subagent-follow.ts';
 export * from './native-subagent-control.ts';
 
 export * from './employee-documents.ts';
+
+export * from './employee-skill-catalog.ts';
+export * from './personal-skill-browser.ts';
+export * from './skill-package-source.ts';
+export * from './personal-scene-browser.ts';

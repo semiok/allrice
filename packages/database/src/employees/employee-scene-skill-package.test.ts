@@ -75,11 +75,24 @@ describe('scene package content and controlled resources', () => {
       }).success,
     ).toBe(false);
   });
-  it('keeps existing text and resource size/path boundaries', () => {
+  it('keeps ordinary text and resource boundaries with the approved package body limit', () => {
     const input = { kind: 'procedure', title: 'Scene', ...sceneSkillFixture() };
     expect(
       EmployeeContentTextSchema.safeParse({ ...input, body: 'x'.repeat(8001) })
         .success,
+    ).toBe(true);
+    expect(
+      EmployeeContentTextSchema.safeParse({
+        ...input,
+        body: 'x'.repeat(262145),
+      }).success,
+    ).toBe(false);
+    expect(
+      EmployeeContentTextSchema.safeParse({
+        kind: 'procedure',
+        title: 'Ordinary text',
+        body: 'x'.repeat(8001),
+      }).success,
     ).toBe(false);
     for (const path of ['../secrets', 'assets/../secrets', '/etc/passwd']) {
       const invalid = structuredClone(input);

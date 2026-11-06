@@ -195,6 +195,7 @@ export const installPersonalSkill: RiceToolHandler = async ({
               fetched.candidatePaths,
             );
             const bytes = await createFileArchive(fetched.files, {
+              maximumFiles: personalSkillLimits.packageResources + 1,
               signal: input.signal,
             });
             const github = PersonalSkillGitHubSourceSchema.parse(
