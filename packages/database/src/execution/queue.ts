@@ -47,7 +47,7 @@ export type {
   NativeSessionDescriptor,
   NativeSessionPin,
 } from '../conversation/native-session-binding.ts';
-import { markExperienceCapturePending } from '../experience-capture.ts';
+import { markMemorySourcePending } from '../memory-source-capture.ts';
 import { experienceConsolidationJobType } from '../experience-consolidation-contracts.ts';
 import {
   experienceOccurrencePrincipal,
@@ -2070,7 +2070,7 @@ async function transitionTerminal(
     returning assistant_message_id, prompt_snapshot
   `;
   if (!input.skipExperienceCapture)
-    await markExperienceCapturePending(transaction, job.run_id);
+    await markMemorySourcePending(transaction, job.run_id);
   const employeeRun = employeeRuns[0];
   if (employeeRun) {
     const result =

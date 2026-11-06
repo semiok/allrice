@@ -1,9 +1,18 @@
 /** Actual shared calendar generation + SQL, synthetic Host ports, no model. */
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { experiencePolicySchedule } from '@allrice/contracts';
+import { authorizeFixturePlatformAdministrator } from './platform-authority.fixture.ts';
+import {
+  readExperiencePolicy,
+  updateExperiencePolicy,
+} from './experience-consolidation.ts';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { createP27CodexWorkerFixture } from '../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
-import { createNativeCalendarGeneration } from '../../../apps/worker/src/native-schedule-calendar.ts';
-import type { NativeScheduleControlHost } from '../../../apps/worker/src/native-schedule-once.ts';
+import {
+  createNativeScheduleOnceController,
+  type NativeScheduleControlHost,
+} from '../../../apps/worker/src/native-schedule-once.ts';
 import {
   seedExperienceCalendarRule,
   seedHistoricalExperienceCalendar,
@@ -106,9 +115,13 @@ suite('M5-A historical native arms preserve the shared generation', () => {
     });
   }
 
-  it.each(['prepared', 'absent', 'creating'] as const)(
-    'finishes a retained %s arm beside an ordinary monthly arm without reviving experience business',
-    async (phase) => {
+  it.each(
+    (['prepared', 'absent', 'creating'] as const).flatMap((phase) =>
+      [false, true].map((cutover) => ({ phase, cutover })),
+    ),
+  )(
+    'preserves the shared generation for $phase, policy-off cutover=$cutover',
+    async ({ phase, cutover }) => {
       const seeded = await seedExperienceCalendarRule(f, 'empty');
       const old = await seedHistoricalExperienceCalendar(
         f,
@@ -119,16 +132,49 @@ suite('M5-A historical native arms preserve the shared generation', () => {
       const { store } = old,
         ports = store.calendar!;
       let writer = old.writer;
-      if (phase === 'creating') {
-        // Synthetic old generation is closed; actual SQL enforces the new epoch.
-        await store.releaseClosedWriter(writer);
-        writer = (await store.acquireWriter())!.writer;
-        expect(writer.epoch).toBe(old.writer.epoch + 1);
-      }
+      // The ordinary task and its native plan predate the cutover.
       const ordinary = await monthly();
       expect(await materializeNativeCalendar(ports, writer, reference)).toBe(
         true,
       );
+      const ordinaryControl = (
+        await ports.loadCalendarState(writer)
+      ).controls.find(
+        (row) => row.control.automationId === ordinary.id,
+      )!.control;
+      const ordinaryState = async () => ({
+        automation:
+          await f.db`select to_jsonb(a) data from allrice_automations a where id=${ordinary.id}`,
+        plans:
+          await f.db`select to_jsonb(p) data from allrice_native_calendar_plans p where automation_id=${ordinary.id} order by period_id`,
+        periods:
+          await f.db`select to_jsonb(p) data from allrice_native_calendar_periods p where automation_id=${ordinary.id} order by period_id`,
+      });
+      const beforeCutover = await ordinaryState();
+      expect(beforeCutover.plans).toHaveLength(1);
+      expect(beforeCutover.periods).toHaveLength(1);
+      if (cutover) {
+        await authorizeFixturePlatformAdministrator(f.db, f.ownerId);
+        const policy = await readExperiencePolicy(f.organizationId);
+        await updateExperiencePolicy(f.context, f.organizationId, {
+          ...experiencePolicySchedule(policy),
+          frequency: 'off',
+          expectedRevision: policy.revision,
+        });
+        await f.db.unsafe(
+          await readFile(
+            new URL(
+              '../migrations/0234_memory_source_cutover.sql',
+              import.meta.url,
+            ),
+            'utf8',
+          ),
+        );
+      }
+      expect(await ordinaryState()).toEqual(beforeCutover);
+      // Close the synthetic historical generation; the real controller must
+      // acquire the next epoch and prepare/resume sessions itself.
+      await store.releaseClosedWriter(writer);
       const mutate = async (mutation: NativeCalendarMutation) => {
         expect(
           await store.commitMutation(writer, {
@@ -138,23 +184,22 @@ suite('M5-A historical native arms preserve the shared generation', () => {
           }),
         ).toBe('committed');
       };
-      for (const c of (await ports.loadCalendarState(writer)).controls) {
-        if (c.control.sessionState !== 'reserved') continue;
-        await mutate({
-          kind: 'calendar',
-          action: 'session_initializing',
-          controlId: c.control.controlId,
-          expectedControlVersion: c.version,
-        });
-        await mutate({
-          kind: 'calendar',
-          action: 'session_ready',
-          controlId: c.control.controlId,
-          expectedControlVersion: c.version + 1,
-        });
-      }
       const created: string[] = [];
+      const initialized: string[] = [],
+        resumed: string[] = [];
+      let closed = 0;
       const host = {
+        boot: async () => {},
+        initializeSession: async (id: string) => {
+          initialized.push(id);
+        },
+        resumeSession: async (id: string) => {
+          resumed.push(id);
+        },
+        mountSchedule: async () => {},
+        close: async () => {
+          closed++;
+        },
         decodeTask: (value: unknown) =>
           structuredClone(value) as NativeOnceTask,
         catalog: async () =>
@@ -203,26 +248,90 @@ suite('M5-A historical native arms preserve the shared generation', () => {
           return task.record;
         },
       } as unknown as NativeScheduleControlHost;
-      const generation = createNativeCalendarGeneration({
-        ports: {
-          ...ports,
-          materialize: (w, allow) =>
-            materializeNativeCalendar(ports, w, reference, allow),
-        },
-        writer,
-        host: () => host,
-        fence: async () => {
-          expect(await store.assertWriter(writer)).toBe(true);
-        },
-        mutate,
-        track: async (work) => work,
-        loadTaskRecords: () => store.loadTaskRecords(writer),
-        digest: nativeOnceDigest,
-      });
-      await expect(generation.tick()).resolves.toBeUndefined();
-      expect(created.sort()).toEqual([seeded.automationId, ordinary.id].sort());
-      await expect(generation.tick()).resolves.toBeUndefined();
-      expect(created).toHaveLength(2);
+      const controller = () =>
+        createNativeScheduleOnceController({
+          enabled: true,
+          store: {
+            ...store,
+            acquireWriter: async () => {
+              const grant = await store.acquireWriter();
+              if (grant) writer = grant.writer;
+              return grant;
+            },
+            // This fixture contains only calendar controls. Keep the real SQL
+            // write/ACK paths, and fail if the wider controller emits another
+            // mutation family instead of casting its store contract away.
+            commitMutation: async (w, write) => {
+              if (write.mutation.kind !== 'calendar')
+                throw Error('Expected a calendar mutation in this fixture');
+              return store.commitMutation(w, {
+                ...write,
+                mutation: write.mutation,
+              });
+            },
+            readExactCommit: async (w, write) => {
+              if (write.mutation.kind !== 'calendar')
+                throw Error('Expected a calendar ACK in this fixture');
+              return store.readExactCommit(w, {
+                ...write,
+                mutation: write.mutation,
+              });
+            },
+            calendar: {
+              ...ports,
+              materialize: (w, allow) =>
+                materializeNativeCalendar(ports, w, reference, allow),
+            },
+          },
+          source: {
+            reference,
+            loadModules: async () => {
+              throw Error('Synthetic Host only; no native modules or model');
+            },
+            loadHostFactory: async () => {
+              throw Error('Synthetic Host supplied directly');
+            },
+          },
+          hostFactory: async () => host,
+        });
+      const generation = controller();
+      let recovered: ReturnType<typeof controller> | undefined;
+      try {
+        await expect(generation.tick()).resolves.toBeUndefined();
+        expect(generation.status()).toMatchObject({
+          state: 'active',
+          fault: undefined,
+        });
+        expect(writer.epoch).toBe(old.writer.epoch + 1);
+        expect(created.sort()).toEqual(
+          (cutover ? [ordinary.id] : [seeded.automationId, ordinary.id]).sort(),
+        );
+        const records = await store.loadTaskRecords(writer);
+        const ordinarySession = Object.values(records).find(
+          (value) =>
+            (value as NativeOnceTask).sessionId ===
+            ordinaryControl.controlSessionId,
+        ) as NativeOnceTask;
+        expect(ordinarySession).toBeDefined();
+        expect(initialized).toContain(ordinaryControl.controlSessionId);
+        expect(closed).toBe(0);
+        await generation.stop();
+        expect(closed).toBe(1);
+        recovered = controller();
+        await expect(recovered.tick()).resolves.toBeUndefined();
+        await expect(recovered.tick()).resolves.toBeUndefined();
+        expect(recovered.status()).toMatchObject({
+          state: 'active',
+          fault: undefined,
+        });
+        expect(resumed).toContain(ordinarySession.sessionId);
+        expect(await store.loadTaskRecords(writer)).toEqual(records);
+        expect(created).toHaveLength(cutover ? 1 : 2);
+        expect(closed).toBe(1);
+      } finally {
+        await recovered?.stop();
+        await generation.stop();
+      }
       expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
         false,
       );

@@ -68,6 +68,7 @@ export {
 } from './workspace/employee-memory.ts';
 export * from './workspace-readiness.ts';
 export * from './experience.ts';
+export { collectPendingMemorySources } from './memory-source-evidence.ts';
 export { collectPendingExperienceEvidence } from './experience-evidence.ts';
 export * from './bridge.ts';
 export * from './workbench-terminal.ts';

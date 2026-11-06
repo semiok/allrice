@@ -9,6 +9,7 @@ import type { TransactionSql } from 'postgres';
 
 import { getDatabase } from '../core/client.ts';
 import { refreshTaskClock } from '../task-clock.ts';
+import { memorySourceProducer } from '../memory-source-capture.ts';
 
 const TurnIdSchema = z.string().trim().min(1).max(255);
 
@@ -280,6 +281,9 @@ export async function consumeConversationSteer(input: {
           experience_capture_state=case
             when ${captureAdoptedFeedback} and not method_authoring and experience_capture_state is null
             then 'pending' else experience_capture_state end,
+          experience_capture_reason=case
+            when ${captureAdoptedFeedback} and not method_authoring and experience_capture_state is null
+            then ${memorySourceProducer} else experience_capture_reason end,
           experience_execution_run_id=case
             when ${captureAdoptedFeedback} then ${live[0]!.active_run_id}::uuid
             else experience_execution_run_id end,
