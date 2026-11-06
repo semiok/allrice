@@ -25,6 +25,16 @@ import { loadPlatformContentCatalog } from './platform-content/catalog.ts';
 import { synchronizePlatformContent } from './platform-content/sync.ts';
 import { MemoryOccurrenceSchema } from './memory-consolidation-contracts.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
+import {
+  RouteDecisionSchema,
+  resolveSubscriptionSnapshot,
+} from '@allrice/contracts';
+import {
+  recordRouteDecision,
+  completeRouteDecision,
+} from './execution/route-decision.ts';
+import { freezeRouteSubscriptionSnapshot } from './execution/route-subscription.ts';
+import { providerSnapshotForModelTarget } from '../../../apps/worker/src/routing/provider-snapshot.ts';
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
@@ -185,4 +195,124 @@ suite('M5-C current bounded consolidation, isolated SQL and no model', () => {
       experience_execution: null,
     });
   });
+  it.each(['success', 'invalid', 'withdraw', 'expired'] as const)(
+    'settles a synthetic paid result atomically: %s',
+    async (mode) => {
+      const f = await reserved(),
+        execution = await prepareExperienceExecution(f.id);
+      await enqueueExperienceConsolidationRun(f.id);
+      await enqueueExperienceConsolidationRun(f.id);
+      const jobs =
+        await db`select j.* from allrice_jobs j join allrice_automation_runs r on r.run_id=j.run_id where r.id=${f.id}`;
+      expect(jobs).toHaveLength(1);
+      const job = jobs[0]!,
+        workerId = randomUUID(),
+        leaseToken = randomUUID();
+      await db`update allrice_jobs set status='claimed',worker_id=${workerId},lease_token=${leaseToken},claimed_at=clock_timestamp(),heartbeat_at=clock_timestamp(),lease_expires_at=clock_timestamp()+interval '5 minutes' where id=${job.id}`;
+      expect(await startClaimedJob(workerId, job.id, leaseToken)).toBeTruthy();
+      const model = execution.model;
+      const decision = await recordRouteDecision(
+        RouteDecisionSchema.parse({
+          schemaVersion: 1,
+          id: randomUUID(),
+          runId: job.run_id,
+          organizationId: f.org,
+          workspaceId: f.workspace,
+          actorId: f.user,
+          employeeId: f.occurrence.employeeId,
+          inputChecksum: runtimePolicyDigest(execution),
+          candidates: [],
+          selectedKind: 'direct',
+          selectedCandidateId: 'synthetic',
+          harness: model.harness,
+          provider: model.provider,
+          model: model.model,
+          modelConnectionId: model.connectionId,
+          modelCatalogEntryId: model.modelCatalogEntryId,
+          modelPolicyRevision: model.policyRevision,
+          generation: 0,
+          attempt: 1,
+          reasonCodes: ['minimum_necessary_capability'],
+          createdAt: new Date().toISOString(),
+        }),
+      );
+      const subscription = resolveSubscriptionSnapshot({
+        occurrenceId: f.id,
+        modelSnapshot: model,
+        decision,
+        providerSnapshot: providerSnapshotForModelTarget(model),
+      });
+      if (subscription)
+        await freezeRouteSubscriptionSnapshot({
+          organizationId: f.org,
+          workspaceId: f.workspace,
+          decisionId: decision.id,
+          snapshot: subscription,
+        });
+      await completeRouteDecision({
+        organizationId: f.org,
+        workspaceId: f.workspace,
+        outcome: {
+          decisionId: decision.id,
+          status: 'succeeded',
+          inputTokens: 30,
+          cachedInputTokens: 10,
+          outputTokens: 10,
+          costCents: null,
+          usageComplete: true,
+          cacheUsageKnown: true,
+          errorCode: null,
+          completedAt: new Date().toISOString(),
+        },
+      });
+      const skill = execution.nativeSkills[0]!,
+        pin = execution.catalog.skills[0]!;
+      await db`insert into allrice_run_events(organization_id,workspace_id,run_id,sequence,event_type,payload)
+      select ${f.org},${f.workspace},${job.run_id},coalesce(max(sequence),0)+1,'tool.completed',${db.json({ name: 'skill', nativePayload: { skillStatus: 'loaded', skillId: skill.id, skillChecksum: skill.checksum, skillVersion: pin.version, skillCatalogChecksum: execution.catalog.catalogChecksum }, internalTask: { occurrenceId: f.id } })} from allrice_run_events where run_id=${job.run_id}`;
+      const output = {
+        schemaVersion: 2,
+        drafts: [
+          {
+            sourceIds: [f.e.memory_id],
+            category: 'business_preference',
+            content: '合成月报先列退款再汇总。',
+            reason: '真人原文',
+          },
+        ],
+        discarded: [],
+        suggestions: [],
+      };
+      if (mode === 'invalid') output.drafts[0]!.sourceIds = [randomUUID()];
+      if (mode === 'withdraw')
+        await db`update allrice_memories set archived_at=clock_timestamp() where id=${f.e.memory_id}`;
+      if (mode === 'expired')
+        await db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${job.id}`;
+      const complete = () =>
+        completeJob({ workerId, jobId: job.id, leaseToken, result: output });
+      if (mode === 'success') {
+        await complete();
+        await complete();
+      } else await expect(complete()).rejects.toBeTruthy();
+      const [after] =
+        await db`select r.experience_receipt,j.status from allrice_automation_runs r join allrice_jobs j on j.run_id=r.run_id where r.id=${f.id}`;
+      if (mode === 'success') {
+        expect(after!.experience_receipt).toMatchObject({
+          schemaVersion: 2,
+          output,
+          outputDigest: runtimePolicyDigest(output),
+        });
+        expect(after!.status).toBe('succeeded');
+        expect(after!.experience_receipt).not.toHaveProperty('state');
+      } else expect(after!.experience_receipt).toBeNull();
+      const ledger =
+        await db`select input_tokens,output_tokens,cost_cents from allrice_model_usage_ledger where route_decision_id=${decision.id}`;
+      expect(ledger).toEqual([
+        { input_tokens: 30, output_tokens: 10, cost_cents: null },
+      ]);
+      expect(
+        await db`select id from allrice_memories where owner_id=${f.user} and trust_level='user_confirmed'`,
+      ).toHaveLength(0);
+      expect(await listExperienceDrafts(f.owner)).toEqual([]);
+    },
+  );
 });

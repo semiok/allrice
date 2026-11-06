@@ -457,6 +457,12 @@ async function assertCurrent(
 ) {
   if (!experienceReviewEnabled()) throw new ExperienceError('disabled');
   if (executing) {
+    // Completion already owns its Job lock. Reuse the policy writer's lock
+    // without waiting behind a writer that may itself be waiting for that Job.
+    const [claim] = await tx<
+      { locked: boolean }[]
+    >`select pg_try_advisory_xact_lock_shared(hashtextextended(${`experience-policy:${occurrence.organizationId}`},183)) locked`;
+    if (!claim?.locked) return deny();
     const policy = await readExperiencePolicy(occurrence.organizationId, tx);
     if (
       policy.frequency === 'off' ||
