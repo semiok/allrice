@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import AgentPresets from '@deepseek-ai/dsh-agent-preset-registry';
 import { expect, it, vi } from 'vitest';
-import { host, text } from './fixture.mjs';
+import { gate, hold, host, text } from './fixture.mjs';
 
 const runtimeContexts = (request) =>
   request.messages.filter(
@@ -23,12 +23,20 @@ const currentContext = (request) => runtimeContexts(request).at(-1);
 it('native first child and nested child receive literal PERSONA only; root documents and native persona/tools/approval/history keep their boundaries', async () => {
   const runId = randomUUID();
   const observedAgents = new Map();
+  const entered = gate(),
+    release = gate();
+  let holdFirstChild = true;
   const h = await host({
     model: async (request) => {
       observedAgents.set(
         request.sessionId,
         h.ctx.agents.get(request.sessionId),
       );
+      if (request.sessionId !== 'pr0-root' && holdFirstChild) {
+        holdFirstChild = false;
+        entered.resolve();
+        await hold(request.signal, release);
+      }
       return text('完成');
     },
     runId,
@@ -68,8 +76,7 @@ it('native first child and nested child receive literal PERSONA only; root docum
     JSON.stringify(rootRequest.messages.filter((m) => m.role === 'system')),
   ).not.toContain('PERSONA_A');
   const child = await h.spawn();
-  await child.result;
-  await h.wait();
+  await entered.promise;
   const childRequest = h.calls.find((r) => r.sessionId === child.childId);
   expect(JSON.stringify(childRequest.messages)).toContain(
     'LEGACY_CHILD_PERSONA',
@@ -91,7 +98,6 @@ it('native first child and nested child receive literal PERSONA only; root docum
   expect(approval.map((e) => e.data.policy)).toContain('never');
   const nested = await h.spawn(childAgent, '本人嵌套子任务');
   await nested.result;
-  await h.wait();
   const nestedRequest = h.calls.find((r) => r.sessionId === nested.childId);
   expect(JSON.stringify(currentContext(nestedRequest))).toContain(
     'PERSONA_A {{missing}}',
@@ -100,6 +106,9 @@ it('native first child and nested child receive literal PERSONA only; root docum
   expect(JSON.stringify(nestedRequest.messages)).not.toContain(
     'PERSON {{missing}}',
   );
+  release.resolve();
+  await child.result;
+  await h.wait();
   const forked = await h.spawn(h.root, '原生分叉', { provider: 'fork' });
   await forked.result;
   await h.wait();
@@ -113,7 +122,7 @@ it('native first child and nested child receive literal PERSONA only; root docum
       forkRequest.messages.filter((m) => m.role === 'system').at(-1),
     ),
   ).toContain('LEGACY_CHILD_PERSONA');
-  // The same child continues with its own unchanged current system/tools.
+  // Native cold continuation keeps this child Session's system/tools.
   h.server.employeeDocuments.bind(h.root.id, {
     user: '',
     memory: '# MEMORY.md\nCONFIRMED_B',
@@ -144,8 +153,22 @@ it('native first child and nested child receive literal PERSONA only; root docum
 
 it('real beginRun updates resident children and fork current PERSONA while native completed history stays intact, then missing/empty clears the reader', async () => {
   let runId = randomUUID();
+  let entered = gate(),
+    residentId,
+    held = true;
   const h = await host({
     runId,
+    model: async (request) => {
+      if (
+        request.sessionId !== 'pr0-root' &&
+        (residentId === undefined || request.sessionId === residentId)
+      ) {
+        residentId = request.sessionId;
+        entered.resolve();
+        if (held) await hold(request.signal, gate());
+      }
+      return text('完成');
+    },
     rootSystemInstructions: 'ROOT_STABLE',
     employeeDocuments: {
       persona: '# PERSONA.md\nRUN_A_PERSONA',
@@ -157,9 +180,31 @@ it('real beginRun updates resident children and fork current PERSONA while nativ
   await h.prompt('完成 A 根任务');
   await h.wait();
   const child = await h.spawn();
-  await child.result;
-  await h.wait();
+  await entered.promise;
   const resident = h.ctx.agents.get(child.childId);
+  let settled = false;
+  void child.result.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    },
+  );
+  const park = async () => {
+    h.inject(resident, '待续本人任务');
+    await h.ctx.subagents.interruptByParent(
+      resident.id,
+      h.root.id,
+      'continuable',
+    );
+    await resident.whenIdle();
+    await h.wait();
+    expect(h.ctx.agents.get(child.childId)).toBe(resident);
+    expect(resident.inbox.nextStep.length).toBeGreaterThan(0);
+    expect(settled).toBe(false);
+  };
+  await park();
   const rootHistory = h.root.session.snapshotEvents();
   const childHistory = resident.session.snapshotEvents();
   const first = h.calls.find((r) => r.sessionId === child.childId);
@@ -173,6 +218,7 @@ it('real beginRun updates resident children and fork current PERSONA while nativ
     });
   };
   const resume = async () => {
+    entered = gate();
     await h.ctx.subagents.sendMessage(
       h.root,
       child.childId,
@@ -181,9 +227,11 @@ it('real beginRun updates resident children and fork current PERSONA while nativ
         signal: new AbortController().signal,
       },
     );
-    await h.wait();
+    await entered.promise;
     expect(h.ctx.agents.get(child.childId)).toBe(resident);
-    return h.calls.filter((r) => r.sessionId === child.childId).at(-1);
+    const request = h.calls.filter((r) => r.sessionId === child.childId).at(-1);
+    await park();
+    return request;
   };
   await begin({
     persona: '# PERSONA.md\nRUN_B_PERSONA {{missing}}',
@@ -238,10 +286,18 @@ it('real beginRun updates resident children and fork current PERSONA while nativ
     expect(h.root.session.snapshotEvents()).toContainEqual(event);
   for (const event of childHistory)
     expect(resident.session.snapshotEvents()).toContainEqual(event);
+  held = false;
+  await h.ctx.subagents.sendMessage(h.root, child.childId, text('最后完成'), {
+    signal: new AbortController().signal,
+  });
+  await child.result;
+  await h.wait();
+  expect(h.ctx.agents.get(child.childId)).toBeUndefined();
 }, 30000);
 
 it('native cold child recreation reads the current Run PERSONA without replay or importing current USER/MEMORY', async () => {
   const runId = randomUUID();
+  const observedAgents = new Map();
   const h = await host({
     runId,
     rootSystemInstructions: 'ROOT_STABLE',
@@ -252,10 +308,14 @@ it('native cold child recreation reads the current Run PERSONA without replay or
     },
     bridge: async () => ({ allowed: true }),
   });
+  h.ctx.on('agent/created', ({ agent }) => {
+    observedAgents.set(agent.id, agent);
+  });
   const child = await h.spawn();
   await child.result;
   await h.wait();
-  const original = h.ctx.agents.get(child.childId);
+  expect(h.ctx.agents.get(child.childId)).toBeUndefined();
+  const original = observedAgents.get(child.childId);
   const history = original.session.snapshotEvents();
   const count = h.calls.length;
   await h.server.closeRoot(h.root.id);
@@ -284,7 +344,8 @@ it('native cold child recreation reads the current Run PERSONA without replay or
     },
   );
   await h.wait();
-  const recovered = h.ctx.agents.get(child.childId);
+  expect(h.ctx.agents.get(child.childId)).toBeUndefined();
+  const recovered = observedAgents.get(child.childId);
   expect(recovered).toBeDefined();
   expect(recovered).not.toBe(original);
   for (const event of history)
@@ -299,6 +360,7 @@ it('native cold child recreation reads the current Run PERSONA without replay or
 }, 30000);
 
 it('an independently selected native preset keeps its system persona ahead of employee PERSONA context', async () => {
+  const observedAgents = new Map();
   const h = await host({
     runId: randomUUID(),
     rootSystemInstructions: 'ROOT_STABLE',
@@ -308,6 +370,9 @@ it('an independently selected native preset keeps its system persona ahead of em
       memory: 'ROOT_ONLY_MEMORY',
     },
     bridge: async () => ({ allowed: true }),
+  });
+  h.ctx.on('agent/created', ({ agent }) => {
+    observedAgents.set(agent.id, agent);
   });
   const plugin = join(h.directory, 'specialist-persona.mjs');
   await writeFile(
@@ -352,8 +417,9 @@ export function apply(ctx) {
   );
   expect(JSON.stringify(request.messages)).not.toContain('ROOT_ONLY_USER');
   expect(JSON.stringify(request.messages)).not.toContain('ROOT_ONLY_MEMORY');
+  expect(h.ctx.agents.get(child.childId)).toBeUndefined();
   expect(
-    h.ctx.agents.get(child.childId).session.snapshotEvents(),
+    observedAgents.get(child.childId).session.snapshotEvents(),
   ).toContainEqual(
     expect.objectContaining({
       type: 'agent-preset/selected',
