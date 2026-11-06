@@ -1,3 +1,4 @@
-export * from './personal-skill-import.js';
-export * from './personal-skill-package.js';
-export * from './personal-skill-github.js';
+export * from './personal-skill-import.ts';
+export * from './personal-skill-package.ts';
+export * from './personal-skill-github.ts';
+export * from './preview-token.ts';

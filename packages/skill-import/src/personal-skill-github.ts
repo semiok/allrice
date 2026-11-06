@@ -84,10 +84,13 @@ export async function readPublicGitHubSource(
     fetch: fetcher = fetch,
     signal,
     timeoutMs = limits.timeoutMs,
+    rootOnly = false,
   }: {
     fetch?: typeof globalThis.fetch;
     signal?: AbortSignal;
     timeoutMs?: number;
+    /** Web package import selects the repository root, not chat candidates. */
+    rootOnly?: boolean;
   } = {},
 ) {
   let source;
@@ -276,11 +279,15 @@ export async function readPublicGitHubSource(
   if (possibilities.length !== 1) fail('source_ref_ambiguous');
   const selected = possibilities[0]!,
     prefix = selected.root ? selected.root + '/' : '';
+  if (rootOnly && (selected.root !== '' || source.kind === 'blob'))
+    fail('source_url_invalid');
   const discovered = selected.tree.filter((entry) =>
-    source.kind === 'blob'
-      ? entry.path === selected.root
-      : entry.path.startsWith(prefix) &&
-        entry.path.split('/').at(-1) === 'SKILL.md',
+    rootOnly
+      ? entry.path === 'SKILL.md'
+      : source.kind === 'blob'
+        ? entry.path === selected.root
+        : entry.path.startsWith(prefix) &&
+          entry.path.split('/').at(-1) === 'SKILL.md',
   );
   // SKILL.md templates inside a candidate's resources are bytes, not extra skills.
   const definitions = discovered.filter(

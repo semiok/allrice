@@ -14,7 +14,9 @@
   "dependencies": {
     "@allrice/contracts": "workspace:*",
     "@allrice/database": "workspace:*",
+    "@allrice/file-archives": "workspace:*",
     "@allrice/office-runtime": "workspace:*",
+    "@allrice/skill-import": "workspace:*",
     "@allrice/storage": "workspace:*",
     "@allrice/ui": "workspace:*",
     "@deepseek-ai/cordis": "4.0.5",
