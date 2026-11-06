@@ -221,7 +221,15 @@ export async function updateExperiencePolicy(
     });
     const { experienceNativeCalendarEnabled } =
       await import('./experience-native.ts');
-    if (policy.frequency !== 'off' && !experienceNativeCalendarEnabled())
+    // V2 may schedule consolidation, but cannot restore the retired validation
+    // or automatic-adoption opt-ins, including values inherited from history.
+    // Explicit off must remain available to close those historical plans.
+    if (
+      policy.frequency !== 'off' &&
+      (!experienceNativeCalendarEnabled() ||
+        policy.validationMode !== 'off' ||
+        policy.adoptionMode !== 'off')
+    )
       throw new ExperienceError('disabled');
     await tx`insert into allrice_settings(scope_type,scope_id,key,value)
       values('organization',${org},'employee_experience_policy',${tx.json(policy)})
