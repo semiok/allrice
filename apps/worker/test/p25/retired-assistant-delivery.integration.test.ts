@@ -105,6 +105,7 @@ suite(
         expect.arrayContaining([
           '0230_native_model_receipts.sql',
           '0231_native_child_commands.sql',
+          '0234_account_capability_settings.sql',
         ]),
       );
       expect(await childCommandColumns()).toEqual([
@@ -227,7 +228,23 @@ suite(
         const preferences =
           await db`select * from allrice_user_preferences where user_id=${cohort.context.actor.id}`;
         expect(preferences).toHaveLength(1);
-        expect(jsonValue(preferences)).toEqual(cohort.nativePreferencesBefore);
+        // Preserve every historical preference field, including updated_at.
+        // 0234 adds exactly the default-off account configuration to old rows.
+        expect(jsonValue(preferences)).toEqual(
+          cohort.nativePreferencesBefore.map((row) => ({
+            ...(row as Record<string, unknown>),
+            capability_settings: {
+              'allrice.cloud-project-development': {
+                configVersion: 1,
+                enabled: false,
+              },
+            },
+          })),
+        );
+        expect(
+          await db`select account_capability_snapshot from allrice_chat_sessions
+            where id=${cohort.sessionId}`,
+        ).toEqual([{ account_capability_snapshot: null }]);
         expect(preferences[0]).toMatchObject({
           question_wait_mode: 'timed',
           question_wait_seconds: 47,

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  cloudProjectCapabilityId,
   defaultUserPreferences,
   QuestionWaitSchema,
   SubagentPreferencesSchema,
@@ -10,16 +11,76 @@ import {
 describe('personal display preference compatibility', () => {
   it('reads a prior streaming-only snapshot with the native display defaults', () => {
     expect(
-      UserPreferencesSchema.parse({ streamingOutput: false, updatedAt: null }),
+      UserPreferencesSchema.parse({
+        streamingOutput: false,
+        updatedAt: null,
+        capabilities: defaultUserPreferences.capabilities,
+      }),
     ).toEqual({ ...defaultUserPreferences, streamingOutput: false });
   });
+});
+
+describe('account cloud project configuration', () => {
+  it('rejects an unsupported response instead of pretending the account disabled the capability', () => {
+    expect(
+      UserPreferencesSchema.safeParse({
+        streamingOutput: true,
+        updatedAt: null,
+      }).success,
+    ).toBe(false);
+    expect(
+      UserPreferencesSchema.parse(defaultUserPreferences).capabilities,
+    ).toEqual({
+      [cloudProjectCapabilityId]: { configVersion: 1, enabled: false },
+    });
+  });
+  it.each([true, false])(
+    'accepts enabled=%s without changing native preferences',
+    (enabled) => {
+      const capabilities = {
+        [cloudProjectCapabilityId]: { configVersion: 1, enabled },
+      };
+      expect(UserPreferencesInputSchema.parse({ capabilities })).toEqual({
+        capabilities,
+      });
+      expect(
+        UserPreferencesSchema.parse({ ...defaultUserPreferences, capabilities })
+          .capabilities,
+      ).toEqual(capabilities);
+    },
+  );
+  it.each([
+    {},
+    { [cloudProjectCapabilityId]: { configVersion: 2, enabled: true } },
+    { [cloudProjectCapabilityId]: { configVersion: 1, enabled: 'true' } },
+    { [cloudProjectCapabilityId]: { configVersion: 1 } },
+    {
+      [cloudProjectCapabilityId]: {
+        configVersion: 1,
+        enabled: true,
+        ownerId: 'other',
+      },
+    },
+    { 'project-development': { configVersion: 1, enabled: true } },
+  ])(
+    'rejects unknown, incomplete or foreign-scoped configuration %j',
+    (capabilities) => {
+      expect(
+        UserPreferencesInputSchema.safeParse({ capabilities }).success,
+      ).toBe(false);
+    },
+  );
 });
 
 // MET-210 (user 10-27): DSH's own ranges and defaults, no AllRice cap.
 describe('agent preferences follow DSH', () => {
   it('reads an older saved snapshot without pinning DSH defaults', () => {
     expect(
-      UserPreferencesSchema.parse({ streamingOutput: true, updatedAt: null }),
+      UserPreferencesSchema.parse({
+        streamingOutput: true,
+        updatedAt: null,
+        capabilities: defaultUserPreferences.capabilities,
+      }),
     ).toMatchObject({
       questionWait: { mode: 'default' },
       subagents: { maxDepth: null, maxActive: null },
