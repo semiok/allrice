@@ -315,8 +315,12 @@ suite(
       // Tenant assignment revocation remains authoritative, despite frozen on.
       await f.db`update allrice_employee_assignments set active=false where id=${x.assignment.id}`;
       await expect(x.send(session.id)).rejects.toMatchObject({
-        code: 'authorization_denied',
+        // Existing send admission hides inactive assignments as not found.
+        code: 'not_found',
       });
+      expect(
+        await f.db`select run_id from allrice_employee_runs where session_id=${session.id}`,
+      ).toHaveLength(0);
     });
 
     it('concurrent same-ID creation returns a single immutable configuration', async () => {
