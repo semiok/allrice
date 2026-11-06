@@ -54,7 +54,7 @@ export const EmployeeExecutionSourceSchema = z
       .strict(),
     sourceBase
       .extend({
-        packageSchema: z.union([z.literal(1), z.literal(2)]),
+        packageSchema: z.union([z.literal(1), z.literal(2), z.literal(3)]),
         packageChecksum: digest,
         declaredGeneration: z.literal(newNativeGeneration),
       })
@@ -77,6 +77,7 @@ const sourceVariant = z.enum([
   'definition_only',
   'current_published_package_v1',
   'current_published_package_v2',
+  'current_published_package_v3',
 ]);
 export type EmployeeExecutionSourceVariant = z.infer<typeof sourceVariant>;
 
@@ -84,9 +85,14 @@ function variantFor(
   source: EmployeeExecutionSource,
 ): EmployeeExecutionSourceVariant {
   if (source.packageSchema === null) return 'definition_only';
-  return source.packageSchema === 1
-    ? 'current_published_package_v1'
-    : 'current_published_package_v2';
+  switch (source.packageSchema) {
+    case 1:
+      return 'current_published_package_v1';
+    case 2:
+      return 'current_published_package_v2';
+    case 3:
+      return 'current_published_package_v3';
+  }
 }
 function sourcePolicyDigest(variant: EmployeeExecutionSourceVariant) {
   // Policy identity only; no Run, lease, mutable catalog or business checksum.
@@ -95,7 +101,13 @@ function sourcePolicyDigest(variant: EmployeeExecutionSourceVariant) {
     variant,
     manifestSchema: 2,
     packageSchema:
-      variant === 'definition_only' ? null : variant.endsWith('_v1') ? 1 : 2,
+      variant === 'definition_only'
+        ? null
+        : variant === 'current_published_package_v1'
+          ? 1
+          : variant === 'current_published_package_v2'
+            ? 2
+            : 3,
     declaredGeneration:
       variant === 'definition_only' ? null : newNativeGeneration,
     executionGeneration: newNativeGeneration,
@@ -164,7 +176,9 @@ export function validateCurrentDeclarativeRuntimePackage(input: {
 }): ReturnType<typeof frozenPackageSkills> {
   const pkg = input.runtimePackage;
   need(
-    pkg.schemaVersion === 1 || pkg.schemaVersion === 2,
+    pkg.schemaVersion === 1 ||
+      pkg.schemaVersion === 2 ||
+      pkg.schemaVersion === 3,
     'CURRENT_EXECUTION_SOURCE_PACKAGE_SCHEMA_UNSUPPORTED',
   );
   need(
@@ -262,6 +276,10 @@ export function validateEmployeeExecutionSource(
         deniedCapabilities: manifest.securityPolicy.deniedCapabilities,
       },
     });
+    need(
+      pkg.schemaVersion !== 3,
+      'CURRENT_EXECUTION_SOURCE_PERSONA_EXECUTION_UNSUPPORTED',
+    );
   } else {
     need(
       employeeManifestChecksum(manifest) === configChecksum,

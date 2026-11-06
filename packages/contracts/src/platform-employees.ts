@@ -4,7 +4,7 @@ import { TimestampSchema, UuidSchema } from './common.ts';
 import { EmployeeRuntimePackageSchema } from './employees.ts';
 import { HarnessEventSchema } from './harness.ts';
 import { employeeModelPolicyProblem } from './employee-model-settings.ts';
-import { EmployeeAccentColorSchema } from './employee-colors.ts';
+import { EmployeePersonaFoundationSchema } from './employee-persona-foundation.ts';
 import { TaskSuggestionsSchema } from './task-suggestions.ts';
 
 import { DSH_INSTALLED_DISTRIBUTION } from './dsh-distribution.generated.ts';
@@ -40,27 +40,11 @@ export const PlatformEmployeeDefinitionSchema = z
   .object({
     schemaVersion: z.literal(1),
     key: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
-    name: z.string().trim().min(1).max(120),
-    description: z.string().trim().min(1).max(1_000),
+    name: EmployeePersonaFoundationSchema.shape.name,
+    description: EmployeePersonaFoundationSchema.shape.description,
     taskSuggestions: TaskSuggestionsSchema.optional(),
-    appearance: z
-      .object({
-        avatarType: z.enum(['initials', 'emoji', 'image']),
-        avatarValue: z.string().trim().min(1).max(500),
-        accentColor: EmployeeAccentColorSchema.optional(),
-      })
-      .strict(),
-    identity: z
-      .object({
-        role: z.string().trim().min(1).max(120),
-        mission: z.string().trim().min(1).max(500),
-        workStyle: z.string().trim().min(1).max(1_000),
-        behaviorRules: z.array(z.string().trim().min(1).max(500)).max(32),
-        safetyBoundaries: z.array(z.string().trim().min(1).max(500)).max(32),
-        expressionStyle: z.enum(['concise', 'structured', 'exploratory']),
-        outputLanguage: z.enum(['zh-CN', 'en-US']),
-      })
-      .strict(),
+    appearance: EmployeePersonaFoundationSchema.shape.appearance,
+    identity: EmployeePersonaFoundationSchema.shape.identity,
     systemPrompt: z.string().trim().min(1).max(20_000),
     modelPolicy: z
       .object({
