@@ -1536,7 +1536,12 @@ export async function prepareEmployeeRunBinding(
   const baseRice = instance ? await isBaseRiceInstance(instance, sql) : false;
   const boundToolNames = freezeMemorySourceToolNames(
     withEmployeeCustomizationTools(
-      capabilityBindings(manifest.data).toolNames,
+      // Only new Runs of the verified platform Rice lose project development.
+      // Published employees and old Run snapshots remain immutable; custom
+      // instances keep their explicitly published tools.
+      capabilityBindings(manifest.data).toolNames.filter(
+        (name) => !baseRice || name !== 'workspace.project',
+      ),
       grantedCapabilities,
       instance?.kind,
       baseRice,
