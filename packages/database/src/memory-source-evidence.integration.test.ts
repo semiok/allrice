@@ -3,6 +3,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { MemorySourceEvidenceSchema } from '@allrice/contracts';
+import { parsePersonalSkill } from '@allrice/skill-import';
+import { runtimePolicyDigest } from './runtime-policy.ts';
 import * as client from './core/client.ts';
 import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createExperienceFixture } from './experience.fixture.ts';
@@ -14,6 +16,7 @@ import {
   memorySourceProducer,
 } from './memory-source-capture.ts';
 import { createExperienceStore } from './experience.ts';
+import { getExperienceOverview } from './experience-overview.ts';
 import {
   createChatSession,
   sendChatMessage,
@@ -57,6 +60,7 @@ suite(
     async function setup(
       text = '合成品牌月报入口在资料夹。',
       personal = false,
+      withSkill = false,
     ) {
       const f = await createExperienceFixture(db, { authenticated: true });
       const [assignment] =
@@ -74,6 +78,23 @@ suite(
         title: 'Synthetic provenance',
         ...(instance ? { employeeInstanceId: instance.id } : {}),
       });
+      if (withSkill) {
+        const { definition, originalText } = await parsePersonalSkill(
+          Buffer.from(
+            '---\nname: synthetic-source\ndescription: Synthetic provenance fixture.\n---\nKeep original identifiers.\n',
+          ),
+        );
+        const installation = randomUUID(),
+          version = randomUUID();
+        await db.begin(async (tx) => {
+          await tx`insert into allrice_personal_skill_installations(id,organization_id,owner_id,name,state,current_version_id)
+            values(${installation},${f.org},${f.user},${definition.name},'installed',${version})`;
+          await tx`insert into allrice_personal_skill_versions(id,organization_id,owner_id,installation_id,version,source,original_text,definition,definition_checksum)
+            values(${version},${f.org},${f.user},${installation},1,'{}',${originalText},${tx.json(definition)},${runtimePolicyDigest(definition)})`;
+          await tx`insert into allrice_personal_skill_bindings(organization_id,workspace_id,owner_id,instance_id,installation_id,enabled)
+            values(${f.org},${f.workspace},${f.user},${instance?.id ?? assignment!.id},${installation},true)`;
+        });
+      }
       const sent = await sendChatMessage(f.owner, f.workspace, session.id, {
         clientMessageId: randomUUID(),
         text,
@@ -93,6 +114,7 @@ suite(
         runId: sent.run.id,
         messageId: run!.user_message_id as string,
         instanceId: run!.execution_snapshot.instance.id as string,
+        skill: run!.execution_snapshot.personalSkills?.skills[0],
         workerId,
         leaseToken,
         jobId: job!.id as string,
@@ -144,6 +166,10 @@ suite(
         );
         expect(await createExperienceStore().list(f.owner)).toEqual([]);
         expect(
+          (await getExperienceOverview(f.owner, f.instanceId)).summary.counts
+            .pendingSources,
+        ).toBe(0);
+        expect(
           (
             await listWorkspaceMemories(f.owner, f.workspace, undefined, {
               instanceId: f.instanceId,
@@ -153,6 +179,49 @@ suite(
         expect(await createExperienceStore().list(f.neighbor)).toEqual([]);
         await collectPendingExperienceEvidence({ database: db });
         expect((await rows(f.runId))[0]!.lifecycle_state).toBe('candidate');
+      },
+    );
+    it.each(['ready', 'deleted', 'other_owner'] as const)(
+      'keeps file identities and rejects revoked file dependencies: %s',
+      async (mode) => {
+        const f = await setup(),
+          objectId = randomUUID();
+        await db`insert into allrice_storage_objects(id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,state,deleted_at)
+        values(${objectId},${f.org},${f.workspace},${mode === 'other_owner' ? f.neighbor.actor.id : f.user},${'synthetic/' + objectId},'uploads','text/plain',4,${'sha256:' + 'a'.repeat(64)},${mode === 'deleted' ? 'deleted' : 'ready'},${mode === 'deleted' ? new Date() : null})`;
+        await db`insert into allrice_message_attachments(organization_id,workspace_id,message_id,object_id,attached_by,file_name)
+        values(${f.org},${f.workspace},${f.messageId},${objectId},${f.user},'synthetic.txt')`;
+        await f.finish();
+        await collect();
+        const captured = await rows(f.runId);
+        expect(captured).toHaveLength(mode === 'ready' ? 1 : 0);
+        if (mode === 'ready')
+          expect(captured[0]!.evidence.inputs).toEqual([
+            {
+              messageId: f.messageId,
+              objectId,
+              checksum: 'sha256:' + 'a'.repeat(64),
+            },
+          ]);
+      },
+    );
+    it.each(['loaded', 'revoked_loaded', 'revoked_unloaded'] as const)(
+      'uses actual successful frozen Skill evidence: %s',
+      async (mode) => {
+        const f = await setup(undefined, false, true);
+        expect(f.skill).toBeDefined();
+        if (mode !== 'revoked_unloaded')
+          await db`insert into allrice_run_events(id,organization_id,workspace_id,run_id,sequence,event_type,payload)
+        values(${randomUUID()},${f.org},${f.workspace},${f.runId},100,'tool.completed',${db.json({ name: 'skill', nativePayload: { skillStatus: 'loaded', personalSkill: f.skill } })})`;
+        await f.finish();
+        if (mode !== 'loaded')
+          await db`update allrice_personal_skill_bindings set enabled=false,epoch=epoch+1 where id=${f.skill.bindingId}`;
+        await collect();
+        const captured = await rows(f.runId);
+        expect(captured).toHaveLength(mode === 'revoked_loaded' ? 0 : 1);
+        if (mode === 'loaded')
+          expect(captured[0]!.evidence.skills[0].pin).toEqual(f.skill);
+        if (mode === 'revoked_unloaded')
+          expect(captured[0]!.evidence.skills).toEqual([]);
       },
     );
     it.each(['failed', 'canceled'] as const)(
