@@ -1195,6 +1195,59 @@ suite('U1 employee archive lifecycle', () => {
     }
   });
 
+  it('keeps mobile archive overlays outside the page scrollbar gutter and restores the page layout on close', async () => {
+    const f = await fixture({ width: 390 });
+    const pagePolicy = () =>
+      f.page.evaluate(() => {
+        const style = getComputedStyle(document.documentElement);
+        return { gutter: style.scrollbarGutter, overflow: style.overflowY };
+      });
+    try {
+      const before = await pagePolicy();
+      expect(before).toEqual({ gutter: 'stable', overflow: 'scroll' });
+      const confirm = await f.begin();
+      await expectMobileConfirmation(confirm);
+      expect(await pagePolicy()).toEqual({
+        gutter: 'auto',
+        overflow: 'hidden',
+      });
+      await confirm.getByRole('button', { name: '取消', exact: true }).click();
+      const detail = f.page.getByRole('dialog', {
+        name: '流程哥员工详情',
+        exact: true,
+      });
+      await detail.waitFor();
+      expect(await pagePolicy()).toEqual(before);
+      await detail.getByRole('button', { name: '关闭', exact: true }).click();
+
+      await f.page
+        .getByRole('button', { name: '查看归档', exact: true })
+        .last()
+        .click();
+      const archived = f.page.getByRole('dialog', {
+        name: '已归档',
+        exact: true,
+      });
+      await archived.getByText('还没有已归档员工', { exact: true }).waitFor();
+      await expectMobileRoot(archived);
+      expect(await pagePolicy()).toEqual({
+        gutter: 'auto',
+        overflow: 'hidden',
+      });
+      await f.page.setViewportSize({ width: 1440, height: 950 });
+      expect(await pagePolicy()).toEqual(before);
+      await archived
+        .getByRole('button', { name: '关闭归档', exact: true })
+        .click();
+      expect(await pagePolicy()).toEqual(before);
+      expect(f.state.writes).toEqual([]);
+      expect(f.state.blockedWrites).toEqual([]);
+      expect(f.state.errors).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
+
   it('uses the approved full-screen archive root through the 641 to 700 px mobile breakpoint', async () => {
     const f = await fixture({ width: 680 });
     try {

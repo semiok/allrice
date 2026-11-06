@@ -231,6 +231,11 @@
   cursor: pointer;
 }
 @media (max-width: 700px) {
+  /* A mobile overlay owns the viewport, not the page's reserved scrollbar. */
+  :global(html):has(.panel) {
+    overflow: hidden;
+    scrollbar-gutter: auto;
+  }
   .rootPanel {
     position: fixed;
     inset: 0;
