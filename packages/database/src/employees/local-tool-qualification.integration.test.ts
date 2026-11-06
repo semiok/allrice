@@ -128,6 +128,7 @@ suite('local tools: new Run device qualification', () => {
       });
       return pairBridgeDevice({
         code: pairing.code,
+        name: 'Synthetic connected computer',
         platform: 'macos-arm64',
         protocolVersion: 2,
         capabilities: ['local.fs.list'],
