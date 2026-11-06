@@ -1,11 +1,15 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  cloudProjectCapabilityId as capabilityId,
+  UserPreferencesSchema,
+  type UserPreferencesInput,
+} from '@allrice/contracts';
 import { Button, Switch } from '@deepseek-ai/dsh-client-ui-primitives';
 import { z } from 'zod';
 import styles from './capability-panel.module.css';
 
-const capabilityId = 'allrice.cloud-project-development';
 const title = '云端项目开发';
 const description = '在云端保存项目、运行构建、打开预览并发布成果。';
 const scope = '适用于你的所有 AI 员工。更改仅对新对话生效，进行中的对话不变。';
@@ -16,82 +20,88 @@ const failure = '个人偏好暂时无法保存或读取，请重试';
 // Shared preference types and the authoritative default belong to the backend.
 const responseSchema = z.object({
   viewerId: z.string().min(1),
-  preferences: z.object({
-    capabilities: z.object({
-      [capabilityId]: z.object({
-        configVersion: z.literal(1),
-        enabled: z.boolean(),
-      }),
-    }),
-  }),
+  preferences: UserPreferencesSchema,
 });
 type View = { viewerId: string; enabled: boolean };
 
-export function CloudProjectDevelopmentSetting() {
+export function CloudProjectDevelopmentSetting({
+  viewerId,
+}: {
+  viewerId: string | null | undefined;
+}) {
   const [view, setView] = useState<View | null>(null);
   const [pending, setPending] = useState(true);
   const [error, setError] = useState('');
   const confirmed = useRef<View | null>(null);
   const request = useRef<AbortController | null>(null);
 
-  const execute = useCallback(async (enabled?: boolean) => {
-    if (request.current || (enabled !== undefined && !confirmed.current))
-      return;
-    const viewerId = confirmed.current?.viewerId;
-    const controller = new AbortController();
-    request.current = controller;
-    const current = () =>
-      request.current === controller && !controller.signal.aborted;
-    setPending(true);
-    setError('');
-    try {
-      const response = await fetch('/api/v1/me/preferences', {
-        cache: 'no-store',
-        signal: controller.signal,
-        ...(enabled === undefined
-          ? {}
-          : {
-              method: 'PATCH',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                capabilities: {
-                  [capabilityId]: { configVersion: 1, enabled },
-                },
-              }),
-            }),
-      });
-      const result = responseSchema.safeParse(await response.json());
+  const execute = useCallback(
+    async (enabled?: boolean) => {
       if (
-        !response.ok ||
-        !result.success ||
-        (viewerId !== undefined && result.data.viewerId !== viewerId)
+        request.current ||
+        (enabled !== undefined &&
+          (!confirmed.current || confirmed.current.viewerId !== viewerId))
       )
-        throw Error(failure);
-      if (current()) {
-        const value = {
-          viewerId: result.data.viewerId,
-          enabled: result.data.preferences.capabilities[capabilityId].enabled,
-        };
-        confirmed.current = value;
-        setView(value);
+        return;
+      const controller = new AbortController();
+      request.current = controller;
+      const current = () =>
+        request.current === controller && !controller.signal.aborted;
+      setPending(true);
+      setError('');
+      try {
+        const response = await fetch('/api/v1/me/preferences', {
+          cache: 'no-store',
+          signal: controller.signal,
+          ...(enabled === undefined
+            ? {}
+            : {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  capabilities: {
+                    [capabilityId]: { configVersion: 1, enabled },
+                  },
+                } satisfies UserPreferencesInput),
+              }),
+        });
+        const result = responseSchema.safeParse(await response.json());
+        if (
+          !response.ok ||
+          !result.success ||
+          result.data.viewerId !== viewerId
+        )
+          throw Error(failure);
+        if (current()) {
+          const value = {
+            viewerId: result.data.viewerId,
+            enabled: result.data.preferences.capabilities[capabilityId].enabled,
+          };
+          confirmed.current = value;
+          setView(value);
+        }
+      } catch {
+        if (current()) setError(failure);
+      } finally {
+        if (current()) {
+          request.current = null;
+          setPending(false);
+        }
       }
-    } catch {
-      if (current()) setError(failure);
-    } finally {
-      if (current()) {
-        request.current = null;
-        setPending(false);
-      }
-    }
-  }, []);
+    },
+    [viewerId],
+  );
 
   useEffect(() => {
+    confirmed.current = null;
+    setView(null);
     void execute();
     return () => {
       request.current?.abort();
       request.current = null;
     };
   }, [execute]);
+  const own = view?.viewerId === viewerId ? view : null;
 
   return (
     <div
@@ -114,8 +124,8 @@ export function CloudProjectDevelopmentSetting() {
         className={styles.cloudProjectSwitch}
         label={title}
         title={`${description} ${scope} ${local}`}
-        checked={view?.enabled ?? false}
-        disabled={!view || pending || !!error}
+        checked={own?.enabled ?? false}
+        disabled={!own || pending || !!error}
         onChange={(enabled) => void execute(enabled)}
       />
       {error && (

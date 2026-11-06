@@ -65,6 +65,7 @@ function stateLabel(
 
 export function CapabilityContent({
   scope,
+  viewerId,
   data,
   loading,
   error,
@@ -75,6 +76,7 @@ export function CapabilityContent({
   computerChips = null,
 }: {
   scope: 'work' | 'computer';
+  viewerId: string | null | undefined;
   data: WorkspaceReadiness | null;
   loading: boolean;
   error: string;
@@ -112,7 +114,9 @@ export function CapabilityContent({
                 : '状态待确认，不代表可执行。'}
             </small>
           </div>
-          {scope === 'work' && <CloudProjectDevelopmentSetting />}
+          {scope === 'work' && (
+            <CloudProjectDevelopmentSetting viewerId={viewerId} />
+          )}
           {group.ids.map((id) => {
             const label = capabilityLabels[id],
               capability = data?.capabilities.find((c) => c.id === id);

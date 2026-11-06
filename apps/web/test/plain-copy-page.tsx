@@ -6,7 +6,11 @@ import type {
   WorkspaceCapability,
   WorkspaceReadiness,
 } from '@allrice/contracts';
-import { workspaceCapabilityIds } from '@allrice/contracts';
+import {
+  cloudProjectCapabilityId,
+  defaultUserPreferences,
+  workspaceCapabilityIds,
+} from '@allrice/contracts';
 import { MonthlyQuota } from '../app/chatflow/monthly-quota';
 import { AccountPasswordSettings } from '../app/chatflow/account-password-settings';
 import { BridgeSettings } from '../app/chatflow/bridge-dialog';
@@ -230,8 +234,9 @@ window.fetch = async (input, init) => {
     return Response.json({
       viewerId: id(3),
       preferences: {
+        ...defaultUserPreferences,
         capabilities: {
-          'allrice.cloud-project-development': {
+          [cloudProjectCapabilityId]: {
             configVersion: 1,
             enabled: false,
           },
@@ -284,6 +289,7 @@ const cases: [string, ReactNode][] = [
         <CapabilityContent
           key={scope}
           scope={scope}
+          viewerId={id(3)}
           data={readiness}
           loading={false}
           error=""
