@@ -299,6 +299,7 @@
 }
 .link.deliveryLink {
   flex: none;
+  color: var(--ar-link);
   font-size: 12px;
   line-height: 18px;
   font-weight: 500;
