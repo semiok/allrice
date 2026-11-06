@@ -30,8 +30,10 @@ describe('bounded employee document views', () => {
     };
     expect(EmployeeDocumentsSchema.parse(documents)).toEqual(documents);
     expect(
-      EmployeeDocumentsSchema.safeParse({ ...documents, persona: persona + 'a' })
-        .success,
+      EmployeeDocumentsSchema.safeParse({
+        ...documents,
+        persona: persona + 'a',
+      }).success,
     ).toBe(false);
     expect(
       EmployeeDocumentsSchema.safeParse({
