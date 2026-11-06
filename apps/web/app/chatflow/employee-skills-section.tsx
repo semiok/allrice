@@ -49,7 +49,7 @@ export function EmployeeSkillsSection({
     <section className={css.section} aria-labelledby={headingId}>
       <div className={css.heading}>
         <h3 id={headingId}>
-          技能 <span className={css.kind}>Skill</span>
+          技能 <span className={css.kind}>Skills</span>
         </h3>
         {catalog?.canInstall && onAdd && (
           <Button

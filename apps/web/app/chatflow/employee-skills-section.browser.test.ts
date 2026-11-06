@@ -94,7 +94,7 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
     });
     await page.goto(`${origin}/chatflow?theme=${theme}`);
     await page
-      .getByRole('heading', { name: '技能 Skill', exact: true })
+      .getByRole('heading', { name: '技能 Skills', exact: true })
       .waitFor();
     return {
       page,
@@ -193,7 +193,7 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
       it(`renders the two groups and read-only detail at ${width}px ${theme}`, async () => {
         const f = await fixture(width, theme);
         try {
-          const region = f.page.getByRole('region', { name: '技能 Skill' });
+          const region = f.page.getByRole('region', { name: '技能 Skills' });
           await region.getByText('我添加的 · 1', { exact: true }).waitFor();
           expect(await region.getByText('基础技能 · 11').count()).toBe(1);
           const typography = await region
@@ -312,7 +312,7 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
     const f = await fixture(390);
     try {
       const phase = f.page.getByRole('combobox', { name: '夹具状态' });
-      const region = f.page.getByRole('region', { name: '技能 Skill' });
+      const region = f.page.getByRole('region', { name: '技能 Skills' });
       await phase.selectOption('loading');
       await region.getByRole('status').waitFor();
       expect(await region.getByText(/我添加的|基础技能 ·/).count()).toBe(0);
@@ -353,7 +353,7 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
     const f = await fixture();
     try {
       const mode = f.page.getByRole('combobox', { name: '夹具目录' });
-      const region = f.page.getByRole('region', { name: '技能 Skill' });
+      const region = f.page.getByRole('region', { name: '技能 Skills' });
       await mode.selectOption('read-only');
       expect(
         await region.getByRole('button', { name: '添加技能' }).count(),
@@ -394,7 +394,7 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
   it('passes the exact personal target to host callbacks without mutating the catalog or claiming success', async () => {
     const f = await fixture();
     try {
-      const region = f.page.getByRole('region', { name: '技能 Skill' });
+      const region = f.page.getByRole('region', { name: '技能 Skills' });
       await region
         .getByRole('button', { name: '添加技能', exact: true })
         .click();
@@ -448,7 +448,7 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
     const f = await fixture(390);
     try {
       const mode = f.page.getByRole('combobox', { name: '夹具目录' });
-      const region = f.page.getByRole('region', { name: '技能 Skill' });
+      const region = f.page.getByRole('region', { name: '技能 Skills' });
       expect(await region.getByText('v0.3.0', { exact: true }).count()).toBe(1);
       expect(await region.getByText('v9', { exact: true }).count()).toBe(0);
       for (const { modeName, expected } of [
