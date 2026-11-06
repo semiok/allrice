@@ -77,7 +77,9 @@ function methodHandler(
                 enabled: true,
                 status: 'saved',
                 nextStep:
-                  'Saved and effective. Visible in employee details; subsequent independent tasks use this version. This Run keeps its frozen snapshot. No background task was started; business behavior has not been tested.',
+                  'personalTextOnly' in result && result.personalTextOnly
+                    ? 'Saved in this employee’s personal text-method history. Inspect can read it; it does not replace or load a personal Workflow package. Packages require the existing exact-file preview and owner confirmation. No background task was started; business behavior has not been tested.'
+                    : 'Saved and effective. Visible in employee details; subsequent independent tasks use this version. This Run keeps its frozen snapshot. No background task was started; business behavior has not been tested.',
               }
             : result,
         ),

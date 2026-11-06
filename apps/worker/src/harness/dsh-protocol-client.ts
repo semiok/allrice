@@ -221,6 +221,7 @@ export class DshProtocolClient {
     nativeSkills?: DshNativeSkillSnapshot[];
     contentScenes?: EmployeeRuntimeScene[];
     personalContentScenes?: boolean;
+    personalMethodToolsOnly?: true;
     maxTokens?: number;
     expectedVersion?: string;
     requireTaskProgress?: boolean;
@@ -257,6 +258,15 @@ export class DshProtocolClient {
       throw new HandlerError(
         'DSH_ACCOUNTING_UNAVAILABLE',
         'DSH model receipts are unavailable',
+        false,
+      );
+    if (
+      input.personalMethodToolsOnly &&
+      record(result.capabilities)?.personalMethodToolsOnly !== 1
+    )
+      throw new HandlerError(
+        'DSH_PERSONAL_METHOD_SCOPE_UNAVAILABLE',
+        'DSH did not confirm personal-only method tools',
         false,
       );
     const serverInfo = record(result.serverInfo);

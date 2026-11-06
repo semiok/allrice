@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as client from '../core/client.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
 import { prepareEmployeeRuntimeContent } from './employee-runtime-content.ts';
+import * as instancePolicy from './employee-instance-policy.ts';
 
 function fixture() {
   const context = {
@@ -209,6 +210,10 @@ afterEach(() => {
 describe('employee runtime content preparation transaction forwarding', () => {
   it('shares the supplied transaction across freeze and read', async () => {
     const pool = forbidPool();
+    const personalSource = vi.spyOn(
+      instancePolicy,
+      'canUsePersonalEmployeeScenes',
+    );
     const f = fixture();
     const tx = reader(f);
     const content = await prepareEmployeeRuntimeContent(
@@ -217,6 +222,7 @@ describe('employee runtime content preparation transaction forwarding', () => {
       tx.sql,
     );
     expect(pool).not.toHaveBeenCalled();
+    expect(personalSource).toHaveBeenCalledWith(f.input.instance, tx.sql);
     expect(content.layers[0]?.common).toEqual([f.reference]);
     expect(
       tx.statements.some((text) =>
@@ -232,6 +238,10 @@ describe('employee runtime content preparation transaction forwarding', () => {
 
   it('preserves separate default reader acquisition', async () => {
     const f = fixture();
+    const personalSource = vi.spyOn(
+      instancePolicy,
+      'canUsePersonalEmployeeScenes',
+    );
     const freeze = reader(f);
     const read = reader(f);
     const pool = vi
@@ -244,6 +254,7 @@ describe('employee runtime content preparation transaction forwarding', () => {
       );
     const content = await prepareEmployeeRuntimeContent(f.context, f.input);
     expect(pool).toHaveBeenCalledTimes(2);
+    expect(personalSource).toHaveBeenCalledWith(f.input.instance, freeze.sql);
     expect(content.layers[0]?.common).toEqual([f.reference]);
     expect(
       freeze.statements.some((text) =>

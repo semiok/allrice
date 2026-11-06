@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isBaseRiceInstance } from './employee-instance-policy.ts';
 import type postgres from 'postgres';
 import {
   ExecutionContextSchema,
@@ -75,9 +76,10 @@ export async function assertEmployeeChatExecution(
   const operation =
     tool === 'automation.create'
       ? { capability: 'automation:write' as const }
-      : employeeCustomizationToolsForInstance(before.kind).find(
-          (entry) => entry.name === tool,
-        );
+      : employeeCustomizationToolsForInstance(
+          before.kind,
+          await isBaseRiceInstance(before, tx),
+        ).find((entry) => entry.name === tool);
   if (!operation || before.ownerId !== scope.actor.id) fail();
   await assertWorkbenchSession(tx, scope, input.sessionId, true, 'share');
   // Cancellation takes root/job locks before employee authority. NOWAIT

@@ -400,6 +400,8 @@ interface, physical patch, table or child/schedule controller. Coverage lives in
 `dsh-file-read-native.test.ts`, `native-file-read.integration.test.ts`, and the
 native `file-read-declarations.test.mjs` scope differential.
 
+MET-249 U1（用户 2026-11-05 窄批准）：只给由 definition/source/key 确认的基础 Rice 暴露现有本人 method.inspect/save_candidate/restore_candidate。直接沿公开原生工具注册投影三工具参数，隐藏 sharedTarget、scope、departmentId 和旧测试参数；不整组复制 custom 工具。既有 Host 指纹包含该服务端范围，initialize 回执必须确认支持，旧执行包不能静默退回共享 schema。数据库独立重验归属、真人来源、冻结 grant、租约、CAS，并禁止文字方法改动包引用；包仍走精确文件确认。属于已批 SaaS 门卫，无新表、持久状态、私有接口、子智能体或共享授权修改。守护为 Rice PG/HTTP 用例、原生方法 transport、协议能力负例和 runtime-pool 范围隔离。MET-225 更新既有 lifecycle/本人方法工具行。
+
 MET-222（用户 2026-10-30；root 核定单向运维账本）复用 `dsh-user-questions@0.2.1-rc.2` 公开 `user-questions/request` 的现有 provider：成功发布后只在原 pending 项冻结 Run/root/native/question 身份；原答案、超时、abort、clearRoot 删除即当前事实，不再新增 opened/ended 持久事件或专用写异常。只读 `session/projection` 用 roots.get 返回版本 1 的实际采样时间、完整性和必要 ID；无 root、归属缺失、未成功发布或旧 Host 是 unknown，完整空才代表采样时 0。无 ensure/resume/touch/park/续租，无题答正文，不改等待或用户 Run 结果。
 
 既有每 30 秒 WorkerOperations 经独立 diagnostics DB 写 runtime_metadata JSON；当前执行附 runtime/Worker boot/Job/attempt/generation，采样失效不借 Worker 心跳刷新。scope 明确为 default_harness_router；未采到的活跃 Job（包括独立 technical/experience adapters）必须逐 Run unknown，消费者核真实租约/绑定和关闭事实。没有新 PG 状态、全局注册器或恢复机制。守护为 `question-observation.integration.test.mjs`、`question-observation.test.mjs`；升级核 provider map 发布与清理语义，回退缺覆盖不可当健康 0。MET-225 关联 L14/L07/E08/L19 在线等答只读快照行。
