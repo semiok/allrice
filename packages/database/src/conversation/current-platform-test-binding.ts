@@ -48,7 +48,7 @@ export const PlatformTestExecutionSourceSchema = z
     runtimeProfileDigest: digest,
     nativeSkillsDigest: digest,
     capabilitySnapshotDigest: digest,
-    packageSchema: z.union([z.literal(1), z.literal(2)]),
+    packageSchema: z.union([z.literal(1), z.literal(2), z.literal(3)]),
     packageChecksum: digest,
     declaredGeneration: z.literal(newNativeGeneration),
   })
@@ -60,19 +60,30 @@ export type PlatformTestExecutionSource = z.infer<
 const variant = z.enum([
   'current_platform_package_v1',
   'current_platform_package_v2',
+  'current_platform_package_v3',
 ]);
 type Variant = z.infer<typeof variant>;
 function variantFor(source: PlatformTestExecutionSource): Variant {
-  return source.packageSchema === 1
-    ? 'current_platform_package_v1'
-    : 'current_platform_package_v2';
+  switch (source.packageSchema) {
+    case 1:
+      return 'current_platform_package_v1';
+    case 2:
+      return 'current_platform_package_v2';
+    case 3:
+      return 'current_platform_package_v3';
+  }
 }
 function policyDigest(value: Variant) {
   return nativeRootDigest({
     family: platformTestSourceFamily,
     variant: value,
     definitionSchema: 1,
-    packageSchema: value.endsWith('_v1') ? 1 : 2,
+    packageSchema:
+      value === 'current_platform_package_v1'
+        ? 1
+        : value === 'current_platform_package_v2'
+          ? 2
+          : 3,
     declaredGeneration: newNativeGeneration,
     executionGeneration: newNativeGeneration,
     profileId: 'restricted',

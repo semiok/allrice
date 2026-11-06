@@ -7,6 +7,7 @@ import {
   PLATFORM_EMPLOYEE_DSH_DISTRIBUTION,
   PlatformEmployeeDefinitionSchema,
   PlatformEmployeeRuntimeProfileSchema,
+  type EmployeeRuntimePackage,
   type PlatformEmployeeDefinition,
 } from '@allrice/contracts';
 
@@ -72,19 +73,31 @@ export function verifiedRuntimePackageChecksum(input: unknown): string | null {
   const parsed = EmployeeRuntimePackageSchema.safeParse(input);
   if (!parsed.success) return null;
   const p = parsed.data;
-  const checksum = runtimePackageChecksum({
-    schemaVersion: p.schemaVersion,
-    packageVersion: p.packageVersion,
-    capabilityFingerprint: p.capabilityFingerprint,
-    files: {
-      identityMd: p.files.identityMd,
-      soulMd: p.files.soulMd,
-      userMd: p.files.userMd,
-      agentsMd: p.files.agentsMd,
-    },
-    skills: p.skills,
-    runtimeManifest: p.runtimeManifest,
-  });
+  const checksum = runtimePackageChecksum(
+    p.schemaVersion === 3
+      ? {
+          schemaVersion: p.schemaVersion,
+          packageVersion: p.packageVersion,
+          capabilityFingerprint: p.capabilityFingerprint,
+          foundation: p.foundation,
+          platformPolicy: p.platformPolicy,
+          skills: p.skills,
+          runtimeManifest: p.runtimeManifest,
+        }
+      : {
+          schemaVersion: p.schemaVersion,
+          packageVersion: p.packageVersion,
+          capabilityFingerprint: p.capabilityFingerprint,
+          files: {
+            identityMd: p.files.identityMd,
+            soulMd: p.files.soulMd,
+            userMd: p.files.userMd,
+            agentsMd: p.files.agentsMd,
+          },
+          skills: p.skills,
+          runtimeManifest: p.runtimeManifest,
+        },
+  );
   return checksum === p.checksum ? checksum : null;
 }
 
@@ -173,12 +186,33 @@ export function validatePlatformEmployeeTestExecutionSnapshot(input: {
     runtimePackageChecksum(sorted(runtimeProfile.toolNames)) !==
       runtimePackageChecksum(sorted(definition.capabilities.toolNames)) ||
     runtimePackageChecksum(sorted(runtimePackage.runtimeManifest.toolNames)) !==
-      runtimePackageChecksum(sorted(runtimeProfile.toolNames)) ||
+      runtimePackageChecksum(sorted(runtimeProfile.toolNames))
+  ) {
+    throw new Error('platform_employee_test_runtime_snapshot_mismatch');
+  }
+  if (runtimePackage.schemaVersion === 3) {
+    if (
+      runtimePackageChecksum(runtimePackage.foundation) !==
+        runtimePackageChecksum({
+          name: definition.name,
+          description: definition.description,
+          appearance: definition.appearance,
+          identity: definition.identity,
+        }) ||
+      runtimePackage.platformPolicy !== definition.systemPrompt
+    ) {
+      throw new Error('platform_employee_test_persona_source_mismatch');
+    }
+    // Integrity-readable is not executable. The PERSONA context/policy
+    // compiler must be connected before a schema-3 preview may run.
+    throw new Error('platform_employee_test_persona_execution_unsupported');
+  }
+  if (
     runtimeProfile.systemPrompt !==
-      runtimePackageSystemPrompt({
-        platformPolicy: definition.systemPrompt,
-        runtimePackage,
-      })
+    runtimePackageSystemPrompt({
+      platformPolicy: definition.systemPrompt,
+      runtimePackage,
+    })
   ) {
     throw new Error('platform_employee_test_runtime_snapshot_mismatch');
   }
@@ -401,16 +435,22 @@ export function buildEmployeeRuntimePackage(input: {
       ] as const,
     },
   };
-  return EmployeeRuntimePackageSchema.parse({
+  const runtimePackage = EmployeeRuntimePackageSchema.parse({
     ...payload,
     checksum: runtimePackageChecksum(payload),
   });
+  // Keep the existing publisher's return type and output restricted to 1/2.
+  if (runtimePackage.schemaVersion === 3)
+    throw new Error('runtime_package_legacy_writer_schema_mismatch');
+  return runtimePackage;
 }
 
 export function runtimePackageSystemPrompt(input: {
   platformPolicy: string;
-  runtimePackage: ReturnType<typeof buildEmployeeRuntimePackage>;
+  runtimePackage: EmployeeRuntimePackage;
 }) {
+  if (input.runtimePackage.schemaVersion === 3)
+    throw new Error('runtime_package_persona_execution_unsupported');
   return [
     '# Platform hard policy',
     input.platformPolicy,
