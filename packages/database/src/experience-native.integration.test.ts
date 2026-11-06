@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { experiencePolicySchedule } from '@allrice/contracts';
 import { readFile } from 'node:fs/promises';
-import { experiencePolicySchedule } from '@allrice/contracts';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createP27CodexWorkerFixture } from '../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
 import { authorizeFixturePlatformAdministrator } from './platform-authority.fixture.ts';

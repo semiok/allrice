@@ -137,9 +137,8 @@ async function lockBusiness(
     status: rule?.deleted_at ? 'deleted' : (rule?.status ?? 'deleted'),
     resumeAfter: rule?.native_recurring_resume_after?.toISOString() ?? null,
   };
-  // Initialization is disabled above. Existing synthetic native arms retain
-  // their original authority so the shared Host can finish/recover them; the
-  // retired business dispatcher, reservation and Job admission remain closed.
+  // Native authority stays with the existing calendar policy/revision proof.
+  // Business execution separately accepts only the new v2 occurrence.
   return { rule, policy, admission };
 }
 export async function lockExperienceCalendarAdmissions(
