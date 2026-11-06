@@ -77,18 +77,18 @@ function platformTestSource(
     key: 'platform-binding-fixture',
     name: 'Binding fixture',
     description: oversized
-      ? '\u0000'.repeat(1000)
+      ? '\u0001'.repeat(1000)
       : 'Offline source identity fixture',
     appearance: {
       avatarType: 'initials',
-      avatarValue: oversized ? '\u0000'.repeat(500) : 'B',
+      avatarValue: oversized ? '\u0001'.repeat(500) : 'B',
     },
     identity: {
       role: 'Fixture',
       mission: oversized
-        ? '\u0000'.repeat(500)
+        ? '\u0001'.repeat(500)
         : 'Check original sources {{missing}}',
-      workStyle: oversized ? '\u0000'.repeat(1000) : 'Return exact evidence',
+      workStyle: oversized ? '\u0001'.repeat(1000) : 'Return exact evidence',
       behaviorRules: ['Use authorized data only'],
       safetyBoundaries: ['No additional grants'],
       expressionStyle,
