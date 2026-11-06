@@ -509,7 +509,8 @@ suite(
         canMaintainPersonal: false,
         editableFields: [],
       });
-      expect(shared.profile.expressionStyle).toBe('structured');
+      expect(shared.profile.expressionStyle).toBeUndefined();
+      expect(shared.profile.defaults?.expressionStyle).toBe('structured');
     });
 
     async function tenantFixture() {

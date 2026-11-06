@@ -334,7 +334,7 @@ suite(
         templateRevisionId: s.publication.revisionId,
         templateRevision: 1,
       });
-      expect(result.details.profile.expressionStyle).toBe(platformExpression);
+      expect(result.details.profile.expressionStyle).toBeUndefined();
       expect(result.details.profile.defaults?.expressionStyle).toBe(
         platformExpression,
       );
