@@ -170,9 +170,8 @@ suite(
         );
         expect(await createExperienceStore().list(f.owner)).toEqual([]);
         expect(
-          (await getExperienceOverview(f.owner, f.instanceId)).summary.counts
-            .pendingSources,
-        ).toBe(0);
+          (await getExperienceOverview(f.owner, f.instanceId)).summary.counts,
+        ).toMatchObject({ pendingSources: 0, awaitingValidation: 0 });
         expect(
           (
             await listWorkspaceMemories(f.owner, f.workspace, undefined, {
@@ -262,6 +261,8 @@ suite(
       'instance',
       'session',
       'message',
+      'message_owner',
+      'unknown_snapshot',
       'method',
       'quality',
       'child',
@@ -284,6 +285,10 @@ suite(
         await db`update allrice_chat_sessions set archived_at=now() where id=${f.session.id}`;
       if (mode === 'message')
         await db`update allrice_messages set role='assistant' where id=${f.messageId}`;
+      if (mode === 'message_owner')
+        await db`update allrice_messages set owner_id=${f.neighbor.actor.id} where id=${f.messageId}`;
+      if (mode === 'unknown_snapshot')
+        await db`update allrice_employee_runs set execution_snapshot=jsonb_set(execution_snapshot,'{schemaVersion}','0') where run_id=${f.runId}`;
       if (mode === 'method')
         await db`update allrice_employee_runs set method_authoring=true where run_id=${f.runId}`;
       if (mode === 'quality')
@@ -303,6 +308,22 @@ suite(
       const [run] =
         await db`select experience_capture_state s from allrice_employee_runs where run_id=${f.runId}`;
       expect(run!.s).toBe('ignored');
+    });
+    it('leaves pending provenance untouched while the existing capture feature is disabled', async () => {
+      const f = await setup();
+      await f.finish();
+      vi.stubEnv('ALLRICE_EXPERIENCE_REVIEW_ENABLED', '0');
+      try {
+        expect(await collect()).toEqual({ captured: 0, ignored: 0, busy: 0 });
+        expect(await rows(f.runId)).toEqual([]);
+        const [run] =
+          await db`select experience_capture_state s,experience_capture_reason r from allrice_employee_runs where run_id=${f.runId}`;
+        expect(run).toEqual({ s: 'pending', r: memorySourceProducer });
+      } finally {
+        vi.stubEnv('ALLRICE_EXPERIENCE_REVIEW_ENABLED', '1');
+      }
+      await collect();
+      expect(await rows(f.runId)).toHaveLength(1);
     });
     it('is idempotent under concurrent collection and keeps an archived source tombstone', async () => {
       const f = await setup();
