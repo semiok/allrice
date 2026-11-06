@@ -1704,7 +1704,7 @@ export async function executeEmployeeRun({
         tools,
         onToolCall:
           tools.length > 0
-            ? (call) =>
+            ? (call, options) =>
                 delivery.execute(call, () =>
                   taskTool
                     ? taskTool(call)
@@ -1763,7 +1763,9 @@ export async function executeEmployeeRun({
                           call.name === 'workspace.memory.remember'
                             ? resolved.currentUserRequest
                             : kernel.userRequest,
-                        signal,
+                        signal: options?.signal
+                          ? AbortSignal.any([signal, options.signal])
+                          : signal,
                         call,
                       }),
                 )

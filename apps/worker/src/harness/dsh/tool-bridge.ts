@@ -171,7 +171,11 @@ export function dshInboundToolHandler(
     };
   },
 ) {
-  return async (method: string, params: Record<string, unknown>) => {
+  return async (
+    method: string,
+    params: Record<string, unknown>,
+    signal?: AbortSignal,
+  ) => {
     if (method !== 'allrice/tool-call') {
       throw new HandlerError(
         'DSH_INBOUND_REQUEST_DENIED',
@@ -221,14 +225,17 @@ export function dshInboundToolHandler(
         false,
       );
     const result = await input
-      .onToolCall({
-        id,
-        name,
-        arguments: args,
-        ...(typeof params.nativeSessionId === 'string'
-          ? { nativeSessionId: params.nativeSessionId }
-          : {}),
-      })
+      .onToolCall(
+        {
+          id,
+          name,
+          arguments: args,
+          ...(typeof params.nativeSessionId === 'string'
+            ? { nativeSessionId: params.nativeSessionId }
+            : {}),
+        },
+        ...(signal ? ([{ signal }] as const) : []),
+      )
       .catch((error: unknown) => {
         if (name !== 'workspace.file.read' || !input.fileReadRoot) throw error;
         input.fileReadRoot.signal.throwIfAborted();

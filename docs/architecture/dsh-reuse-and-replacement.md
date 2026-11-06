@@ -375,11 +375,11 @@ Allrice 的公开事件不含原生推理正文，因此不伪造 ReasoningRow �
 
 ### allrice-bounded-native-search-v1
 
-- ID：`allrice-bounded-native-search-v1`；归属 MET-150；**保留**。
-- Allrice：[allrice-jsonrpc-runtime.mjs](../../apps/worker/dsh/allrice-jsonrpc-runtime.mjs) 的 Broker 搜索回调；负责限额、审计、结果裁剪和完整结果文件。
-- 上游：[tool-web][web]具备搜索/网络工具；具备相同工具名不代表满足租户来源策略和持久结果授权。
-- 退役条件：上游可挂接现有 Broker，完整结果仍为受控 artifact，重复调用与超大结果验证通过；不允许原生直连绕过审计。
-- 验收：`dsh-adapter.test.ts` 中 native search 单 turn/工具事件路径及现有搜索 Broker 测试。回退复用已有操作身份，结果未知不重试副作用。
+- ID：`allrice-bounded-native-search-v1`；归属 MET-223；**工具定义/输出已回归原生，SaaS provider 门卫保留**。
+- 直接使用同代公开 `@deepseek-ai/dsh-tool-web`、`ctx.web`、`tools/execute`；不复制定义、formatter 或超时状态机。AllRice 仅提供固定 Run/call 绑定、原 Broker 权限和审计、既有 Codex 搜索服务及公共网络/DNS 固定/每跳验证/750k 字节/20k 提取/MIME 门卫。
+- 用户 2026-11-05 决定“按 DSH 原生”：fetch 配 `fetchMaxOutputChars=12000` 并由原生标记截断；search 不设字符上限或自行裁剪，只用原生来源数量限制及既有服务边界。web 两项退出旧预览、全文导出和恢复；公众号 12k 预览、2 MB 保存、ACL 完全保留。
+- 取消只把原生 AbortSignal 传到已有 RPC 的本调用及 HTTP，并 join 原操作/既有子 client 清理；无新期限、重试、持久状态或私有接口。DNS 的不可取消查询等其结束再检查信号，不放弃等待。
+- 验收：原生 registry/renderer/schema/30 秒超时、多查询失败收敛、Run 身份、网络门卫及大结果/公众号回归。真实模型未跑；token 为定义毛量，不承诺耗时。回退本 PR 恢复旧 wrapper，未改数据表和已有文件。
 
 ### allrice-jsonrpc-lifecycle-v1
 

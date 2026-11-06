@@ -337,7 +337,7 @@ export async function executeNextPlatformEmployeeTest(input: {
                   process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
               })
           : tools.length > 0
-            ? (call) =>
+            ? (call, options) =>
                 executeRiceTool({
                   nativeSkills: test.nativeSkills,
                   context: executionContext,
@@ -349,7 +349,9 @@ export async function executeNextPlatformEmployeeTest(input: {
                   skillVersionIds: test.nativeSkills.map((skill) => skill.id),
                   platformTestRunId: test.id,
                   platformActorLabel: test.requestedByLabel,
-                  signal,
+                  signal: options?.signal
+                    ? AbortSignal.any([signal, options.signal])
+                    : signal,
                   call,
                 })
             : undefined,

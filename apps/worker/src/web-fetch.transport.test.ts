@@ -19,14 +19,19 @@ function respond(status: number, headers: Record<string, string>, body = '') {
       statusCode: status,
       headers,
     });
-    return Object.assign(new EventEmitter(), {
+    const request = Object.assign(new EventEmitter(), {
       setTimeout: vi.fn(),
-      destroy: vi.fn(),
+      destroy: vi.fn((error: Error) => {
+        request.emit('error', error);
+        queueMicrotask(() => request.emit('close'));
+      }),
       end: () => {
         callback(response);
+        response.on('end', () => queueMicrotask(() => request.emit('close')));
         response.end(body);
       },
     });
+    return request;
   };
 }
 
@@ -37,6 +42,99 @@ beforeEach(() => {
 });
 
 describe('web.fetch pinned DNS transport', () => {
+  it.each([
+    'text/html',
+    'text/plain',
+    'text/markdown',
+    'application/json',
+    'application/xml',
+    'text/xml',
+  ])(
+    'keeps %s allowed, the 20k extracted cap and the actual non-2xx status',
+    async (mime) => {
+      mocks.lookup.mockResolvedValue([{ address: '1.1.1.1', family: 4 }]);
+      mocks.https.mockImplementation(
+        respond(404, { 'content-type': mime }, 'x'.repeat(20001)),
+      );
+      const result = await fetchPublicWebPage('https://source.test');
+      expect(result.statusCode).toBe(404);
+      expect(result.body).toEqual({ kind: 'text', content: 'x'.repeat(20000) });
+      expect(result.truncated).toBe(true);
+      expect(result).not.toHaveProperty('externalContent');
+    },
+  );
+
+  it.each([
+    ['application/octet-stream', 'ok', 'WEB_CONTENT_TYPE_BLOCKED'],
+    ['text/plain', 'x'.repeat(750001), 'WEB_RESPONSE_TOO_LARGE'],
+  ])('retains the MIME/network-byte gate: %s', async (mime, body, code) => {
+    mocks.lookup.mockResolvedValue([{ address: '1.1.1.1', family: 4 }]);
+    mocks.https.mockImplementation(
+      respond(200, { 'content-type': mime }, body),
+    );
+    await expect(
+      fetchPublicWebPage('https://source.test'),
+    ).rejects.toMatchObject({ code });
+  });
+
+  it('checks each redirect and refuses the fourth redirect', async () => {
+    mocks.lookup.mockResolvedValue([{ address: '1.1.1.1', family: 4 }]);
+    mocks.https.mockImplementation(respond(302, { location: '/again' }));
+    await expect(
+      fetchPublicWebPage('https://source.test'),
+    ).rejects.toMatchObject({ code: 'WEB_REDIRECT_INVALID' });
+    expect(mocks.lookup).toHaveBeenCalledTimes(4);
+  });
+
+  it('joins DNS before honoring abort and never opens a late HTTP socket', async () => {
+    let release!: (value: unknown) => void;
+    mocks.lookup.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    const controller = new AbortController();
+    let settled = false;
+    const pending = fetchPublicWebPage(
+      'https://source.test',
+      controller.signal,
+    ).finally(() => {
+      settled = true;
+    });
+    controller.abort(new Error('cancel'));
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    release([{ address: '1.1.1.1', family: 4 }]);
+    await expect(pending).rejects.toThrow('cancel');
+    expect(mocks.https).not.toHaveBeenCalled();
+  });
+
+  it('passes abort to HTTP and does not settle at error before close', async () => {
+    mocks.lookup.mockResolvedValue([{ address: '1.1.1.1', family: 4 }]);
+    const request = Object.assign(new EventEmitter(), {
+      setTimeout: vi.fn(),
+      end: vi.fn(),
+      destroy: vi.fn(),
+    });
+    mocks.https.mockReturnValue(request);
+    const controller = new AbortController();
+    let settled = false;
+    const pending = fetchPublicWebPage(
+      'https://source.test',
+      controller.signal,
+    ).finally(() => {
+      settled = true;
+    });
+    await vi.waitFor(() => expect(mocks.https).toHaveBeenCalled());
+    expect(mocks.https.mock.calls[0]![1].signal).toBe(controller.signal);
+    controller.abort(new Error('user abort'));
+    request.emit('error', controller.signal.reason);
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    request.emit('close');
+    await expect(pending).rejects.toThrow('user abort');
+  });
   it.each([
     { protocol: 'http:', address: '1.1.1.1', family: 4 },
     { protocol: 'https:', address: '2606:4700:4700::1111', family: 6 },
@@ -96,7 +194,7 @@ describe('web.fetch pinned DNS transport', () => {
     const result = await fetchPublicWebPage(
       'https://docs.openclaw.ai/concepts/features',
     );
-    expect(result.content).toContain('public document');
+    expect(result.body.content).toContain('public document');
     const requests = mocks.https.mock.calls.filter(
       ([, , callback]) => typeof callback === 'function',
     );

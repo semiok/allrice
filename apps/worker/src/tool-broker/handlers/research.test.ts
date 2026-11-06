@@ -3,6 +3,69 @@ import { describe, expect, it, vi } from 'vitest';
 import { executeResearchTool, isResearchToolName } from './research.js';
 
 describe('Research Tool Broker handlers', () => {
+  it('maps only actual native source fields without inventing dates or truncating snippets', async () => {
+    const content = 'c'.repeat(14000),
+      snippet = 's'.repeat(14000);
+    const signal = new AbortController().signal;
+    const codexSearch = vi.fn(async () => ({
+      provider: 'codex-hosted-search' as const,
+      query: 'q',
+      output: content,
+      results: [
+        {
+          url: 'https://one.test',
+          title: 'One',
+          snippet,
+          publishedAt: '2026-11-05',
+          ignored: 'not a native field',
+        },
+        {
+          url: 'https://two.test',
+          retrievedAt: 'must not become publication time',
+        },
+      ],
+    }));
+    const result = await executeResearchTool({
+      name: 'web.search',
+      arguments: { query: 'q' },
+      signal,
+      overrides: { codexSearch },
+    });
+    expect(codexSearch).toHaveBeenCalledWith('q', 5, signal);
+    expect(JSON.parse(result.modelContent)).toEqual({
+      content,
+      truncated: false,
+      sources: [
+        {
+          url: 'https://one.test',
+          title: 'One',
+          snippet,
+          publishedAt: '2026-11-05',
+        },
+        { url: 'https://two.test' },
+      ],
+    });
+  });
+
+  it.each([null, {}, { url: 1 }, { url: 'https://one.test', snippet: {} }])(
+    'refuses malformed source data without inventing a citation: %j',
+    async (source) => {
+      await expect(
+        executeResearchTool({
+          name: 'web.search',
+          arguments: { query: 'q' },
+          overrides: {
+            codexSearch: async () => ({
+              provider: 'codex-hosted-search',
+              query: 'q',
+              output: 'data',
+              results: [source],
+            }),
+          },
+        }),
+      ).rejects.toMatchObject({ code: 'WEB_SEARCH_RESULT_INVALID' });
+    },
+  );
   it('owns only the read-only research tool family', () => {
     for (const name of [
       'web.search',
@@ -38,13 +101,11 @@ describe('Research Tool Broker handlers', () => {
       overrides: { codexSearch },
     });
 
-    expect(codexSearch).toHaveBeenCalledWith('AllRice', 10);
+    expect(codexSearch).toHaveBeenCalledWith('AllRice', 10, undefined);
     expect(JSON.parse(result.modelContent)).toMatchObject({
-      provider: 'codex-hosted-search',
-      query: 'AllRice',
-      output: 'AllRice search summary',
+      content: 'AllRice search summary',
+      truncated: false,
       sources: [{ url: 'https://example.com/allrice' }],
-      retrievedAt: expect.any(String),
     });
     expect(result.summary).toBe('已通过 Codex 检索“AllRice”');
   });

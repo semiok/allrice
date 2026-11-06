@@ -1300,6 +1300,9 @@ suite(
           },
         ]);
         await stream.reader.cancel();
+        // Child completion does not drain the root's native write-behind
+        // catalog. Finish those writes before measuring the read-only phase.
+        await f.h.ctx.sessions.flush(f.h.root.session);
         const stored = await files(f.descriptor.storageNamespace);
         const reopened = consume(
           await web(f, f.token, '&follow=true', abort.signal),
@@ -1307,6 +1310,9 @@ suite(
         expect(
           (await reopened.until((e) => e.type === 'directory')).summary,
         ).toEqual(final.summary);
+        // Also drain after the query so an accidental buffered write cannot
+        // escape the full path/mtime/content comparison below.
+        await f.h.ctx.sessions.flush(f.h.root.session);
         expect(await files(f.descriptor.storageNamespace)).toEqual(stored);
         expect(await writes(f)).toEqual(sql);
         expect(f.h.ctx.sessions.get(a.childId)).toBeUndefined();

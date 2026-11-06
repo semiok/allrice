@@ -215,3 +215,7 @@
   config:
     path: ':memory:'
     openAt: never
+
+# Abstract provider seam only; no unrestricted HTTP provider or tools.
+- id: web
+  name: '@deepseek-ai/dsh-web'
