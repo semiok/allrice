@@ -6,7 +6,8 @@ import { parsePersonalSkillGitHubUrl } from './personal-skill-github.ts';
 
 /** Private additions never participate in platform review or capability grants. */
 export const personalSkillLimits = {
-  sourceBytes: 256 * 1024,
+  sourceBytes: 8_000_000,
+  bodyBytes: 262_144,
   archiveBytes: 8_000_000,
   packageCandidates: 8,
   packageResources: 32,
@@ -25,7 +26,16 @@ export const PersonalSkillDefinitionSchema = z
       .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)
       .max(64),
     description: z.string().trim().min(1).max(500),
-    content: z.string().min(1).max(personalSkillLimits.sourceBytes),
+    content: z
+      .string()
+      .min(1)
+      .max(personalSkillLimits.bodyBytes)
+      .refine(
+        (value) =>
+          new TextEncoder().encode(value).byteLength <=
+          personalSkillLimits.bodyBytes,
+        'personal_skill_body_too_large',
+      ),
     checksum: ChecksumSchema,
     invocation: z
       .object({ modelInvocable: z.boolean(), userInvocable: z.boolean() })
@@ -211,7 +221,15 @@ export type PersonalSkillPackage = z.infer<typeof PersonalSkillPackageSchema>;
 export const PersonalSkillCandidateSchema = z
   .object({
     sourcePath: z.string().min(1).max(512),
-    originalText: z.string().max(personalSkillLimits.sourceBytes).optional(),
+    originalText: z
+      .string()
+      .max(personalSkillLimits.sourceBytes)
+      .refine(
+        (value) =>
+          new TextEncoder().encode(value).byteLength <=
+          personalSkillLimits.sourceBytes,
+      )
+      .optional(),
     definition: PersonalSkillDefinitionSchema.optional(),
     resources: z
       .array(PersonalSkillResourceSchema)

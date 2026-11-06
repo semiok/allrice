@@ -7910,7 +7910,12 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       mission: defaults.mission,
       workStyle: defaults.workStyle,
     });
-    expect(current.expressionStyle).toBeUndefined();
+    expect(defaults.expressionStyle).toBe(
+      f.source.definition.identity.expressionStyle,
+    );
+    expect(current.expressionStyle).toBe(defaults.expressionStyle);
+    expect(current.overrides).toEqual({});
+    expect((await getEmployeeInstance(f.a.context, id)).profile).toEqual({});
     expect((await reset({ ...args, requestId: randomUUID() })).status).toBe(
       409,
     );

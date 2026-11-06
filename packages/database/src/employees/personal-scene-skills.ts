@@ -633,7 +633,10 @@ export async function savePersonalSceneSkillInTransaction(
         );
         if (
           pkg.resolved.reduce(
-            (bytes, source) => bytes + Buffer.byteLength(source.dto.body ?? ''),
+            (bytes, source) =>
+              bytes +
+              Buffer.byteLength(source.dto.body ?? '') -
+              (source.personalPackageBytes ?? 0),
             0,
           ) > employeeContentLimits.textBytes
         )

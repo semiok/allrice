@@ -276,6 +276,52 @@ suite('browser Skill source preview and confirmation', () => {
       { params: Promise.resolve({ id }) },
     );
   }
+  it('L1: previews, confirms and freezes 256 KiB plus all 32 resource entries, rejecting oversized bodies before writes', async () => {
+    const s = await setup(true),
+      body = '字'.repeat(87381) + 'x';
+    const raw =
+      '---\nname: maximum-web\ndescription: Exact package\n---\n' + body;
+    const resources = Array.from({ length: 32 }, (_, i) => ({
+      path: `assets/${i}.txt`,
+      bytes: Buffer.from(String(i)),
+    }));
+    const bytes = await createFileArchive(
+      [{ path: 'SKILL.md', bytes: Buffer.from(raw) }, ...resources],
+      { maximumFiles: 33 },
+    );
+    const { preview, result } = await installWeb(s, s.assigned.id, bytes);
+    expect(preview.files).toHaveLength(33);
+    expect(result.skill.resourceCount).toBe(32);
+    const frozen = await freezePersonalSkills(
+      s.owner.context,
+      { id: s.assigned.id },
+      { nativeSkills: [] },
+    );
+    expect(
+      frozen.nativeSkills.find((skill) => skill.name === 'maximum-web')
+        ?.content,
+    ).toBe(body);
+    const [row] =
+      await f.db`select original_text,definition,resource_manifest from allrice_personal_skill_versions where id=${result.skill.versionId}`;
+    expect(row!.original_text).toBe(raw);
+    expect(row!.definition.content).toBe(body);
+    expect(row!.resource_manifest.resources).toHaveLength(32);
+    const before = await counts();
+    const bad = await createFileArchive([
+      { path: 'SKILL.md', bytes: Buffer.from(raw + 'x') },
+    ]);
+    const rejected = await send(
+      s.owner.context,
+      s.assigned.id,
+      s.owner.workspaceId,
+      bad,
+    );
+    expect(rejected.status).toBe(422);
+    expect(await rejected.json()).toMatchObject({
+      error: { code: 'VALIDATION_FAILED', retryable: false },
+    });
+    expect(await counts()).toEqual(before);
+  });
   it.each(['rice', 'custom', 'professional'] as const)(
     'catalog: projects actual base and enabled personal Skills for %s without writes',
     async (kind) => {

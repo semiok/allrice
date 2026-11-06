@@ -1575,6 +1575,60 @@ suite(
         source.fetch.mockRestore();
       }
     });
+    it('L1: installs the full native body and reads the 32nd private resource on the next synthetic task', async () => {
+      const x = await setup();
+      const body = '字'.repeat(87381) + 'x';
+      const resources = Array.from({ length: 32 }, (_, i) => ({
+        path: `assets/${i}.txt`,
+        bytes: Buffer.from(`exact-${i}`),
+      }));
+      const bytes = await createFileArchive(
+        [
+          {
+            path: 'SKILL.md',
+            bytes: Buffer.from(
+              '---\nname: weekly\ndescription: Exact package\n---\n' + body,
+            ),
+          },
+          ...resources,
+        ],
+        { maximumFiles: 33 },
+      );
+      const task = await x.run(
+        x.custom.id,
+        '请把我上传的“weekly.zip”安装到当前 AI 员工。以后使用这个技能。',
+        { fileName: 'weekly.zip', bytes },
+      );
+      const installed = await broker(task);
+      expect(installed.skill.resourceCount).toBe(32);
+      await task.finish();
+      const next = await x.run(x.custom.id, '请用 weekly 的参考和模板写报告。');
+      const resolved = await resolveEmployeeExecution(next.scope);
+      expect(
+        resolved.nativeSkills.find((skill) => skill.name === 'weekly')?.content,
+      ).toBe(body);
+      const args = { skill: 'weekly', path: 'assets/31.txt' };
+      const input = {
+        context: next.input.context,
+        sessionId: next.scope.sessionId,
+        storageRoot: f.storageRoot,
+        nativeSkills: resolved.nativeSkills,
+        capabilities: ['storage:read' as const],
+        call: {
+          id: randomUUID(),
+          name: 'workspace.skill.read',
+          arguments: args,
+        },
+      };
+      const result = JSON.parse(
+        (await readSkillResource({ input, arguments: args })).modelContent,
+      );
+      expect(result).toMatchObject({
+        text: 'exact-31',
+        versionId: installed.skill.versionId,
+      });
+      await next.finish();
+    });
     it('installs a ZIP through the real handler, retains private exact resources independently of the source, and revokes reads', async () => {
       const x = await setup();
       const task = await x.run(

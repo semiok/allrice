@@ -20,6 +20,7 @@ import {
   EmployeeContentTextSchema,
   EmployeeSceneSkillPayloadSchema,
 } from '../packages/contracts/src/employee-content.ts';
+import { personalSkillLimits } from '../packages/contracts/src/personal-skills.ts';
 import { PersonalSceneFileSchema } from '../packages/contracts/src/personal-scene-files.ts';
 import { SkillBundleSchema } from '../packages/contracts/src/skill-bundle.ts';
 import {
@@ -206,9 +207,15 @@ async function parseNativeSkill(bytes) {
 /** Offline C1 content only. No account, publication, runtime or script execution. */
 export async function packWorkflowSkill({ directory, sceneId, title }) {
   const root = await realpath(directory);
-  const skillBytes = await readLocalFile(root, 'SKILL.md');
+  const skillBytes = await readLocalFile(
+    root,
+    'SKILL.md',
+    personalSkillLimits.sourceBytes,
+  );
   checkRepresentableFrontmatter(skillBytes);
   const skill = await parseNativeSkill(skillBytes);
+  if (Buffer.byteLength(skill.content) > personalSkillLimits.bodyBytes)
+    fail('SKILL.md', 'body exceeds 262144 UTF-8 bytes');
   const parsed = WorkflowSkillFrontmatterSchema.safeParse({
     name: skill.name,
     description: skill.description,
