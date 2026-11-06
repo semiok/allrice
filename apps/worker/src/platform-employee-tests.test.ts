@@ -1,3 +1,7 @@
+import {
+  executeRiceTool,
+  riceReadOnlyToolDefinitionsForPreview,
+} from './tool-broker.js';
 import { executeEmployeeMethodFileStep } from './employee-method-file-tests.js';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -554,3 +558,49 @@ it('binds the personal Skill overlay to the actual test lease and fails closed w
   );
   await run();
 });
+
+it.each(['call', 'root'] as const)(
+  'preview propagates %s cancellation to the actual Broker callback',
+  async (cause) => {
+    const test = claimed();
+    test.methodCandidate = null;
+    test.runtimeProfile.toolNames = ['web.fetch'];
+    const root = new AbortController(),
+      call = new AbortController();
+    const reason = new Error('synthetic cancellation');
+    vi.mocked(claimNextPlatformEmployeeTestRun).mockResolvedValue(test);
+    vi.mocked(riceReadOnlyToolDefinitionsForPreview).mockReturnValue([
+      {
+        name: 'web.fetch',
+        description: 'native fetch',
+        inputSchema: { type: 'object' },
+      },
+    ]);
+    vi.mocked(executeRiceTool).mockImplementation(async (input) => {
+      expect(input.context.runId).toBe(test.previewExecution.runId);
+      expect(input.signal?.aborted).toBe(false);
+      (cause === 'call' ? call : root).abort(reason);
+      expect(input.signal?.reason).toBe(reason);
+      return { modelContent: '{}', summary: 'fixture' };
+    });
+    vi.spyOn(DshHarnessAdapter.prototype, 'execute').mockImplementation(
+      async (input) => {
+        await input.onToolCall!(
+          {
+            id: 'native-fetch',
+            name: 'web.fetch',
+            arguments: { url: 'https://example.com' },
+          },
+          { signal: call.signal },
+        );
+        return receipt;
+      },
+    );
+    await executeNextPlatformEmployeeTest({
+      workerId: randomUUID(),
+      executionRoot: '/tmp/allrice-preview-unit',
+      signal: root.signal,
+    });
+    expect(executeRiceTool).toHaveBeenCalledOnce();
+  },
+);

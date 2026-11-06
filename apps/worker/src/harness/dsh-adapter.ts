@@ -1322,12 +1322,14 @@ export class DshHarnessAdapter implements HarnessAdapter {
           break;
         }
         if (
-          toolCall.name === 'workspace.file.read' &&
-          runtime.nativeTools.includes(toolCall.name)
+          toolCall.name === 'web.search' ||
+          toolCall.name === 'web.fetch' ||
+          (toolCall.name === 'workspace.file.read' &&
+            runtime.nativeTools.includes(toolCall.name))
         )
           throw new HandlerError(
             'DSH_TOOL_ENVELOPE_INVALID',
-            'File reads must use the supplied native tool.',
+            'This tool must use the supplied native function.',
             false,
           );
         if (!input.tools.some((tool) => tool.name === toolCall.name)) {

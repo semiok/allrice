@@ -70,6 +70,20 @@ async function fixture(tool = python) {
     if (method === 'allrice/subagent-authorize')
       return { validUntil: Date.now() + 30_000 };
     if (method === 'test/barrier') return {};
+    if (method === 'allrice/web-cancel') {
+      const pending = dispatched.find(
+        ({ params: call }) =>
+          call.runId === params.runId &&
+          call.nativeSessionId === params.nativeSessionId &&
+          call.toolCallId === params.toolCallId &&
+          call.name === params.name,
+      );
+      expect(pending).toBeDefined();
+      // Controlled remote cleanup deliberately stays pending until released.
+      await pending.reply.promise;
+      return { settled: true };
+    }
+
     expect(method).toBe('allrice/tool-call');
     const reply = gate();
     dispatched.push({ params, reply });
@@ -78,7 +92,14 @@ async function fixture(tool = python) {
     if (outcome.error)
       throw new HandlerError('CLOUD_RESULT_UNKNOWN', outcome.error, false);
     return {
-      modelContent: outcome.content ?? '远端自然完成，已产生输出及用量',
+      modelContent:
+        params.name === 'web.search'
+          ? JSON.stringify({
+              content: outcome.content ?? '远端自然完成，已产生输出及用量',
+              sources: [],
+              truncated: false,
+            })
+          : (outcome.content ?? '远端自然完成，已产生输出及用量'),
     };
   });
   h.ctx.on('tools/result', (exec, result) => {

@@ -7,6 +7,7 @@ import * as Timeout from '@deepseek-ai/dsh-tool-call-timeout-policy';
 import * as NativeWeb from '@deepseek-ai/dsh-tool-web';
 import { afterEach, expect, it, vi } from 'vitest';
 import { installNativeWeb } from './allrice-native-web.mjs';
+import { executeResearchTool } from '../src/tool-broker/handlers/research.ts';
 import {
   createWebCallScope,
   requestCancellableWeb,
@@ -108,9 +109,31 @@ it('lets native fetch cap the complete output at 12k and report truncation/statu
   expect(result.isError).toBe(false);
   expect(text(result)).toBe(NativeWeb.formatFetchOutput(value, 12000));
   expect(text(result).length).toBeLessThanOrEqual(12000);
-  expect(NativeWeb.fetchMetaFromResult(result).truncated).toBe(true);
+  expect(NativeWeb.fetchMetaFromResult(result.meta).truncated).toBe(true);
   expect(text(result)).toContain('HTTP 404');
 });
+
+it.each([
+  'file:///private/data',
+  'http://127.0.0.1/admin',
+  'http://169.254.169.254/latest',
+  'https://user:password@example.com',
+  'https://example.com:8443',
+])(
+  'native fetch reaches the existing provider URL gate and rejects %s',
+  async (url) => {
+    const f = await fixture((params, signal) =>
+      executeResearchTool({
+        name: params.name,
+        arguments: params.arguments,
+        signal,
+      }),
+    );
+    const result = await f.call('web_fetch', { url });
+    expect(result.isError).toBe(true);
+    expect(result.value).toBeUndefined();
+  },
+);
 
 it('keeps concurrent root, child, fork and resumed call attribution separate', async () => {
   const calls = [];
