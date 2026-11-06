@@ -150,9 +150,21 @@ describe('frozen platform preview PERSONA', () => {
     packageChecksum: `sha256:${'1'.repeat(64)}`,
   };
   it.each([
-    ['concise', '简洁，结论优先', '先给结论，保持表达简洁。'],
-    ['structured', '结构清晰，分步说明', '把说明组织清楚，按步骤展开。'],
-    ['exploratory', '比较方案与取舍', '比较可选方案并解释取舍。'],
+    [
+      'concise',
+      '简洁，结论优先',
+      '先给结论，保持表达简洁，同时保留必要证据和限制。',
+    ],
+    [
+      'structured',
+      '结构清晰，分步说明',
+      '按任务需要采用清晰结构和具体步骤说明。',
+    ],
+    [
+      'exploratory',
+      '比较方案与取舍',
+      '探索相关备选方案并说明取舍，不编造事实。',
+    ],
   ] as const)(
     'renders the complete %s identity with its faithful Chinese meaning and real preview source',
     (expressionStyle, label, meaning) => {
