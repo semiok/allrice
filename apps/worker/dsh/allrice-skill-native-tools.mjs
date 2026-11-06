@@ -7,7 +7,7 @@ export const skillNativeTools = [
     canonicalName: 'workspace.skill.read',
     wireName: 'workspace_skill_read',
     description:
-      "Read one resource from this Run's exact frozen platform Skill bundle or private installed Skill package. Use exactly one of skill (frozen platform/private Skill name) or contentRef (personal Workflow package from its native load), and a relative scripts/, references/ or assets/ path. Returns resource bytes/text and version provenance; a personal package is not platform reviewed. Current private binding permission is checked. This never grants execution permission, reads a host path or runs a script.",
+      "Read one resource from this Run's exact frozen platform/private installed Skill package. Supply exactly one of skill (frozen name) or contentRef (personal Workflow's native load), plus a relative scripts/, references/ or assets/ path. Returns bytes/text and version provenance; personal packages are not platform-reviewed. Rechecks current private binding permission. Grants no execution permission; never reads host paths or runs scripts.",
     timeoutMs: 30000,
     isConcurrencySafe: true,
     validateArguments(args) {
