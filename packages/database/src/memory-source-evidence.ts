@@ -215,7 +215,6 @@ async function capture(tx: Tx, s: Source) {
     where er.run_id=${s.capture_run_id} and actual.run_id=${s.run_id}
       and er.experience_capture_state='pending' and er.experience_capture_reason=${memorySourceProducer}
       and not er.method_authoring and not actual.method_authoring
-      and exists(select 1 from allrice_runtime_run_links root where root.run_id=actual.run_id and root.root_run_id=actual.run_id)
       and not exists(select 1 from allrice_runtime_run_links l where l.run_id in (er.run_id,actual.run_id) and l.root_run_id<>l.run_id)
       and er.status in ('succeeded','failed','canceled') and er.completed_at is not null
       and actual.status in ('succeeded','failed','canceled') and actual.completed_at is not null
