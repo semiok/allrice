@@ -565,6 +565,9 @@ it.each(['call', 'root'] as const)(
     const test = claimed();
     test.methodCandidate = null;
     test.runtimeProfile.toolNames = ['web.fetch'];
+    test.runtimeProfile.reasoningEffort = 'high';
+    test.runtimeProfile.credentialReference = 'synthetic-preview';
+    test.runtimeProfile.baseUrl = 'http://127.0.0.1:1/v1';
     const root = new AbortController(),
       call = new AbortController();
     const reason = new Error('synthetic cancellation');
@@ -576,11 +579,17 @@ it.each(['call', 'root'] as const)(
         inputSchema: { type: 'object' },
       },
     ]);
+    let observed:
+      | { runId: string; before: boolean | undefined; reason: unknown }
+      | undefined;
     vi.mocked(executeRiceTool).mockImplementation(async (input) => {
-      expect(input.context.runId).toBe(test.previewExecution.runId);
-      expect(input.signal?.aborted).toBe(false);
+      const before = input.signal?.aborted;
       (cause === 'call' ? call : root).abort(reason);
-      expect(input.signal?.reason).toBe(reason);
+      observed = {
+        runId: input.context.runId,
+        before,
+        reason: input.signal?.reason,
+      };
       return { modelContent: '{}', summary: 'fixture' };
     });
     vi.spyOn(DshHarnessAdapter.prototype, 'execute').mockImplementation(
@@ -602,5 +611,10 @@ it.each(['call', 'root'] as const)(
       signal: root.signal,
     });
     expect(executeRiceTool).toHaveBeenCalledOnce();
+    expect(observed).toEqual({
+      runId: test.previewExecution.runId,
+      before: false,
+      reason,
+    });
   },
 );

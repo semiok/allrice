@@ -50,9 +50,9 @@ export async function requestCancellableWeb(
   signal?.addEventListener('abort', cancel, { once: true });
   if (signal?.aborted) cancel();
   try {
-    const result = await pending;
-    signal?.throwIfAborted();
-    return result;
+    // DSH owns the outcome of a successfully joined, canceled call. Preserve
+    // actual remote failures; do not replace success with a raw abort reason.
+    return await pending;
   } finally {
     signal?.removeEventListener('abort', cancel);
     await cancellation;
