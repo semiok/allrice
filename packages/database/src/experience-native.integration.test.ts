@@ -290,8 +290,13 @@ suite(
         '{collectionStartedAt}',to_jsonb(to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"')))
         where key='employee_experience_policy' and
           ((scope_type='organization' and scope_id=${f.organizationId}) or (scope_type='system' and scope_id is null))`;
-      const facts = await f.db.begin((tx) => lockExperienceCalendarAdmissions(tx, [old.control]));
-      expect(facts.get(old.control.controlId)).toMatchObject({allowed: false, status: 'enabled'});
+      const facts = await f.db.begin((tx) =>
+        lockExperienceCalendarAdmissions(tx, [old.control]),
+      );
+      expect(facts.get(old.control.controlId)).toMatchObject({
+        allowed: false,
+        status: 'enabled',
+      });
       await expect(
         f.db.begin(async (tx) => {
           await tx`update allrice_automations set status='paused',next_run_at=null where id=${seeded.automationId}`;
@@ -311,7 +316,10 @@ suite(
           await tx`insert into allrice_native_calendar_decisions(decision_id,period_id,kind,outcome,revision,decision,decision_digest,decided_at)
         values(${d.decisionId},${d.periodId},${d.kind},${d.outcome},${d.revision},${tx.json(d)},${nativeOnceDigest(d)},${d.decidedAt}::timestamptz)`;
         }),
-      ).rejects.toMatchObject({ code: '23514', message: 'calendar authority cancellation lacks actual revocation' });
+      ).rejects.toMatchObject({
+        code: 'P1921',
+        message: 'experience native clock lacks exact scoped plan/policy proof',
+      });
       expect(
         await f.db`select * from allrice_native_calendar_decisions`,
       ).toHaveLength(0);
@@ -320,6 +328,24 @@ suite(
           await f.db`select status from allrice_automations where id=${seeded.automationId}`
         )[0]!.status,
       ).toBe('enabled');
+      // A real policy transaction advances all three revisions atomically.
+      // This is an isolated cancellation check, not authorization to stop Dev.
+      const previous = await readExperiencePolicy(f.organizationId);
+      await updateExperiencePolicy(f.context, f.organizationId, {
+        frequency: 'off',
+        timezone: 'UTC',
+        time: '03:00',
+        weekday: 1,
+        monthDay: 1,
+        expectedRevision: previous.revision,
+      });
+      expect(
+        await f.db`select kind,outcome from allrice_native_calendar_decisions where period_id=${old.period.periodId}`,
+      ).toEqual([expect.objectContaining({ kind: 'policy', outcome: 'canceled' })]);
+      expect(
+        (await f.db`select allrice_experience_calendar_clock_proved(${seeded.automationId}::uuid) proved`)[0]!.proved,
+      ).toBe(true);
+      expect(await f.db`select id from allrice_jobs`).toHaveLength(0);
     });
     it('rejects re-enabling the retired consumer but retains an authorized policy-off cancellation', async () => {
       const seeded = await seedExperienceCalendarRule(f, 'empty');
