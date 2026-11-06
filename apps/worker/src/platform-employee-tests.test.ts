@@ -13,24 +13,27 @@ import {
   PlatformEmployeeDefinitionSchema,
   PlatformEmployeeRuntimeProfileSchema,
   DshNativeSkillSnapshotSchema,
+  type PlatformEmployeeDefinition,
 } from '@allrice/contracts';
+import type * as DatabaseModule from '@allrice/database';
 import {
+  buildEmployeeRuntimePackage,
   claimNextPlatformEmployeeTestRun,
   completePlatformEmployeeTestRun,
   employeeMethodTestStillCurrent,
   experienceValidationStillCurrent,
   methodFileExecutionUnverified,
   freezeRouteSubscriptionSnapshot,
+  runtimePackageSystemPrompt,
 } from '@allrice/database';
 import { DshHarnessAdapter } from './harness/dsh-adapter.js';
 import { executeNextPlatformEmployeeTest } from './platform-employee-tests.js';
 import { attachExecutionFailureUsage } from './harness/dsh/execution-failure-usage.js';
-import { source as platformTestSource } from '../../../packages/database/src/conversation/platform-test-binding.fixture.ts';
 
-vi.mock('@allrice/database', async () => {
-  const policy =
-    await import('../../../packages/database/src/platform-employees/runtime-package.ts');
+vi.mock('@allrice/database', async (importOriginal) => {
+  const policy = await importOriginal<typeof DatabaseModule>();
   return {
+    buildEmployeeRuntimePackage: policy.buildEmployeeRuntimePackage,
     claimNextPlatformEmployeeTestRun: vi.fn(),
     completePlatformEmployeeTestRun: vi.fn(),
     employeeMethodTestStillCurrent: vi.fn(),
@@ -40,6 +43,7 @@ vi.mock('@allrice/database', async () => {
     employeePersonaPlatformSystemPrompt:
       policy.employeePersonaPlatformSystemPrompt,
     runtimePackageChecksum: policy.runtimePackageChecksum,
+    runtimePackageSystemPrompt: policy.runtimePackageSystemPrompt,
   };
 });
 vi.mock('./employee-method-file-tests.js', () => ({
@@ -57,6 +61,90 @@ vi.mock('./tool-broker.js', () => ({
   riceReadOnlyToolDefinitionsForPreview: vi.fn(() => []),
   riceToolCapability: vi.fn(() => 'storage:read'),
 }));
+
+// This unit fixture represents an already-claimed preview. The real public
+// builder derives its package from this case's definition; queue/source guards
+// stay covered by the DB integration tests, not by this claim stub.
+function platformPreviewSource(
+  expressionStyle: PlatformEmployeeDefinition['identity']['expressionStyle'],
+) {
+  const definition = PlatformEmployeeDefinitionSchema.parse({
+    schemaVersion: 1,
+    key: 'platform-binding-fixture',
+    name: 'Binding fixture',
+    description: 'Offline source identity fixture',
+    appearance: { avatarType: 'initials', avatarValue: 'B' },
+    identity: {
+      role: 'Fixture',
+      mission: 'Check original sources',
+      workStyle: 'Return exact evidence',
+      behaviorRules: ['Use authorized data only'],
+      safetyBoundaries: ['No additional grants'],
+      expressionStyle,
+      outputLanguage: 'zh-CN',
+    },
+    systemPrompt: 'Preserve source identity and authorization.',
+    modelPolicy: {
+      provider: 'openai-codex',
+      model: 'synthetic-original',
+      reasoningEffort: 'high',
+      timeoutMs: 300000,
+      fallbackModels: [],
+      credentialReference: 'deployment:synthetic',
+      baseUrl: null,
+    },
+    capabilities: {
+      nativeSkillIds: [],
+      workflowRevisionIds: [],
+      knowledgeRevisionIds: [],
+      toolNames: ['workspace.skill.read'],
+      connectorRefs: [],
+    },
+    securityPolicy: {
+      dataScopes: ['workspace'],
+      approvalPolicy: 'confirm_side_effects',
+      bridgeAccess: 'none',
+      connectorIdentityModes: [],
+      deniedCapabilities: ['secret:use'],
+    },
+  });
+  const runtimePackage = buildEmployeeRuntimePackage({
+    revision: 7,
+    definition,
+    skills: [],
+  });
+  const runtimeProfile = PlatformEmployeeRuntimeProfileSchema.parse({
+    schemaVersion: 1,
+    harness: 'dsh',
+    distributionGeneration:
+      runtimePackage.runtimeManifest.distributionGeneration,
+    employeeKey: definition.key,
+    provider: definition.modelPolicy.provider,
+    model: definition.modelPolicy.model,
+    reasoningEffort: definition.modelPolicy.reasoningEffort,
+    timeoutMs: definition.modelPolicy.timeoutMs,
+    credentialReference: definition.modelPolicy.credentialReference,
+    baseUrl: definition.modelPolicy.baseUrl,
+    systemPrompt: runtimePackageSystemPrompt({
+      platformPolicy: definition.systemPrompt,
+      runtimePackage,
+    }),
+    nativeSkillIds: runtimePackage.skills.map((skill) => skill.id),
+    nativeSkillChecksums: runtimePackage.skills.map((skill) => skill.checksum),
+    toolNames: definition.capabilities.toolNames,
+    connectorRefs: definition.capabilities.connectorRefs,
+    securityPolicy: definition.securityPolicy,
+    runtimePackage,
+  });
+  return {
+    platformEmployeeId: randomUUID(),
+    platformRevisionId: randomUUID(),
+    definition,
+    runtimeProfile,
+    nativeSkills: runtimePackage.skills,
+    packageChecksum: runtimePackage.checksum,
+  };
+}
 
 function claimed() {
   const organizationId = randomUUID(),
@@ -178,11 +266,8 @@ it.each([
 ] as const)(
   'ordinary platform preview consumes its frozen %s PERSONA through the real kernel carrier',
   async (expressionStyle, label, meaning) => {
-    const original = platformTestSource(undefined, 'empty');
-    const definition = PlatformEmployeeDefinitionSchema.parse(
-      original.definition,
-    );
-    definition.identity.expressionStyle = expressionStyle;
+    const original = platformPreviewSource(expressionStyle);
+    const { definition } = original;
     const value = {
       ...claimed(),
       employeeId: original.platformEmployeeId,
