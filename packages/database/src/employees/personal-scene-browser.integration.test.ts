@@ -11,6 +11,7 @@ import {
 import {
   PersonalScenePreviewResponseSchema,
   PersonalSceneConfirmResponseSchema,
+  PersonalSceneRemoveResponseSchema,
   type PersonalScenePreviewResponse,
   type RequestContext,
 } from '@allrice/contracts';
@@ -35,6 +36,15 @@ import {
   getPersonalSceneSkillResource,
   listPersonalSceneSkills,
 } from './personal-scene-skills.ts';
+
+import { removePersonalSceneSkill } from './personal-scene-remove.ts';
+import { inspectPersonalSceneSkill } from './personal-scene-reads.ts';
+import {
+  previewPersonalSceneRestore,
+  listPersonalSceneFileHistory,
+} from './personal-scene-files.ts';
+import { parsePersonalSceneContentRef } from './personal-scene-skills.ts';
+import { mutateEmployeeContent } from './employee-content.ts';
 
 const browser = vi.hoisted(() => ({ context: null as RequestContext | null }));
 vi.mock('../../../../apps/web/lib/identity/session', () => ({
@@ -234,6 +244,366 @@ suite('browser exact Workflow source confirmation', () => {
     expect(result.status).toBe(200);
     return PersonalScenePreviewResponseSchema.parse(await result.json());
   }
+  async function removeScene(
+    s: Awaited<ReturnType<typeof setup>>,
+    sceneId: string,
+    input: unknown,
+    requestOrigin = origin,
+  ) {
+    const path =
+      '../../../../apps/web/app/api/v1/employee-instances/[id]/scene-skills/[sceneId]/route.ts';
+    const { DELETE } = await import(path);
+    return DELETE(
+      new Request(origin + '/remove', {
+        method: 'DELETE',
+        headers: { origin: requestOrigin, 'content-type': 'application/json' },
+        body: JSON.stringify(input),
+      }),
+      { params: Promise.resolve({ id: s.instance.id, sceneId }) },
+    );
+  }
+  async function installSource(
+    s: Awaited<ReturnType<typeof setup>>,
+    version: string,
+    name: string,
+    prior?: { sceneId: string; revision: number; contentRef: string },
+  ) {
+    const p = await readPreview(
+      s,
+      await createFileArchive(contentFiles(version, name)),
+      prior
+        ? {
+            operation: 'update',
+            sceneId: prior.sceneId,
+            expectedRevision: prior.revision,
+            expectedContentRef: prior.contentRef,
+          }
+        : undefined,
+    );
+    const response = await confirm(
+      s.owner.context,
+      s.instance.id,
+      s.owner.workspaceId,
+      p,
+    );
+    expect(response.status).toBe(200);
+    return PersonalSceneConfirmResponseSchema.parse(await response.json())
+      .receipt;
+  }
+  it.each(['rice', 'custom'] as const)(
+    'scene removal: %s revokes all package versions, preserves other scenes and exact audit, and never revives on replay',
+    async (kind) => {
+      const s = await setup(kind);
+      const other = await installSource(s, 'other', 'other-method');
+      const first = await installSource(s, 'v1', 'weekly-review');
+      const second = await installSource(s, 'v2', 'weekly-review', first);
+      const before = await counts();
+      const oldRevisions =
+        await f.db`select id,manifest,digest from allrice_employee_content_revisions where created_by=${s.owner.context.actor.id} order by id`;
+      const assetRevisions =
+        await f.db`select id,content,digest from allrice_company_asset_revisions where created_by=${s.owner.context.actor.id} order by id`;
+      const input = {
+        workspaceId: s.owner.workspaceId,
+        requestId: randomUUID(),
+        expectedRevision: second.revision,
+        expectedContentRef: second.contentRef,
+      };
+      browser.context = s.owner.context;
+      const response = await removeScene(s, second.sceneId, input);
+      expect(response.status).toBe(200);
+      const result = PersonalSceneRemoveResponseSchema.parse(
+        await response.json(),
+      );
+      expect(result.receipt).toMatchObject({
+        operation: 'remove',
+        scope: 'scene_all_history',
+        sceneId: second.sceneId,
+        instanceId: s.instance.id,
+        requestId: input.requestId,
+        revision: second.revision + 1,
+        removed: true,
+      });
+      expect(
+        (
+          await listPersonalSceneSkills(s.owner.context, s.instance.id)
+        ).skills.map((item) => item.sceneId),
+      ).toEqual([other.sceneId]);
+      for (const old of [first, second]) {
+        await expect(
+          inspectPersonalSceneSkill(
+            s.owner.context,
+            s.instance.id,
+            old.contentRef,
+          ),
+        ).rejects.toMatchObject({ code: 'not_found' });
+        await expect(
+          getPersonalSceneSkillResource(
+            s.owner.context,
+            s.instance.id,
+            old.contentRef,
+            'assets/result.txt',
+          ),
+        ).rejects.toMatchObject({ code: 'not_found' });
+        await expect(
+          previewPersonalSceneRestore(s.owner.context, s.instance.id, {
+            workspaceId: s.owner.workspaceId,
+            restoreContentRef: old.contentRef,
+          }),
+        ).rejects.toMatchObject({ code: 'not_found' });
+      }
+      expect(
+        (
+          await inspectPersonalSceneSkill(
+            s.owner.context,
+            s.instance.id,
+            other.contentRef,
+          )
+        ).content,
+      ).toBe(body('other'));
+      expect(
+        await f.db`select id,content,digest from allrice_company_asset_revisions where created_by=${s.owner.context.actor.id} order by id`,
+      ).toEqual(assetRevisions);
+      expect(
+        await f.db`select id,manifest,digest from allrice_employee_content_revisions where id in ${f.db(oldRevisions.map((item) => item.id))} order by id`,
+      ).toEqual(oldRevisions);
+      const history = await listPersonalSceneFileHistory(
+        s.owner.context,
+        s.instance.id,
+      );
+      expect(
+        history.entries.filter((item) => item.sceneId === first.sceneId).length,
+      ).toBeGreaterThan(0);
+      expect(
+        history.entries
+          .filter((item) => item.sceneId === first.sceneId)
+          .every((item) => !item.available),
+      ).toBe(true);
+      expect((await counts())!.runs).toBe(before!.runs);
+      expect((await counts())!.objects).toBe(before!.objects);
+      expect(
+        await (await removeScene(s, second.sceneId, input)).json(),
+      ).toEqual(result);
+      const replacement = await installSource(s, 'new', 'weekly-review');
+      const afterNew = await counts();
+      browser.context = s.owner.context;
+      expect(
+        await (await removeScene(s, second.sceneId, input)).json(),
+      ).toEqual(result);
+      expect(await counts()).toEqual(afterNew);
+      expect(
+        (
+          await getPersonalSceneSkill(
+            s.owner.context,
+            s.instance.id,
+            replacement.sceneId,
+          )
+        ).content,
+      ).toBe(body('new'));
+    },
+  );
+  it('scene removal: rejects foreign principals, CSRF, CAS, changed requests and professional scope without collateral writes', async () => {
+    const s = await setup(),
+      first = await installSource(s, 'v1', 'weekly-review');
+    const input = {
+      workspaceId: s.owner.workspaceId,
+      requestId: randomUUID(),
+      expectedRevision: first.revision,
+      expectedContentRef: first.contentRef,
+    };
+    const before = await counts();
+    for (const context of [null, s.peer.context, (await principal()).context]) {
+      browser.context = context;
+      expect([401, 403, 404]).toContain(
+        (await removeScene(s, first.sceneId, input)).status,
+      );
+      expect(await counts()).toEqual(before);
+    }
+    browser.context = s.owner.context;
+    expect(
+      (await removeScene(s, first.sceneId, input, 'https://other.test')).status,
+    ).toBe(403);
+    expect(
+      (await removeScene(s, first.sceneId, { ...input, expectedRevision: 99 }))
+        .status,
+    ).toBe(409);
+    expect(
+      (
+        await removeScene(s, first.sceneId, {
+          ...input,
+          operation: 'shared_remove',
+        })
+      ).status,
+    ).toBe(400);
+    expect(await counts()).toEqual(before);
+    const professional = await setup('professional');
+    browser.context = professional.owner.context;
+    expect(
+      (
+        await removeScene(professional, first.sceneId, {
+          ...input,
+          workspaceId: professional.owner.workspaceId,
+        })
+      ).status,
+    ).toBe(404);
+    browser.context = s.owner.context;
+    const success = await removeScene(s, first.sceneId, input);
+    expect(success.status).toBe(200);
+    const removed = await counts();
+    expect(
+      (await removeScene(s, first.sceneId, { ...input, expectedRevision: 99 }))
+        .status,
+    ).toBe(409);
+    expect(await counts()).toEqual(removed);
+    await f.db`update allrice_employee_assignments set active=false where id=${s.assigned.id}`;
+    expect([403, 404, 409]).toContain(
+      (await removeScene(s, first.sceneId, input)).status,
+    );
+    expect(await counts()).toEqual(removed);
+  });
+  it('scene removal: concurrent delete has one commit and old raw references cannot publish or edit archived bytes', async () => {
+    const s = await setup(),
+      installed = await installSource(s, 'v1', 'weekly-review');
+    const pin = parsePersonalSceneContentRef(installed.contentRef);
+    const [old] =
+      await f.db`select manifest from allrice_employee_content_revisions where id=${pin.revisionId}`;
+    const input = {
+      workspaceId: s.owner.workspaceId,
+      expectedRevision: installed.revision,
+      expectedContentRef: installed.contentRef,
+    };
+    const results = await Promise.allSettled(
+      [randomUUID(), randomUUID()].map((requestId) =>
+        removePersonalSceneSkill(
+          s.owner.context,
+          s.instance.id,
+          installed.sceneId,
+          { ...input, requestId },
+        ),
+      ),
+    );
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(
+      results.filter((r) => r.status === 'rejected').map((r) => r.reason.code),
+    ).toEqual(['version_conflict']);
+    const common = {
+      changeSummary: 'Synthetic archived source admission',
+      workspaceId: s.owner.workspaceId,
+      setId: pin.setId,
+      target: { kind: 'instance', instanceId: s.instance.id },
+      ownership: {
+        scope: 'personal',
+        organizationId: s.owner.organizationId,
+        ownerId: s.owner.context.actor.id,
+      },
+    };
+    const draft = await mutateEmployeeContent(s.owner.context, {
+      ...common,
+      requestId: randomUUID(),
+      expectedRevision: installed.revision + 1,
+      operation: 'save_draft',
+      manifest: old!.manifest,
+      textEdits: [],
+      changeSummary: 'Attempt old raw reference',
+    });
+    const checked = await mutateEmployeeContent(s.owner.context, {
+      ...common,
+      requestId: randomUUID(),
+      expectedRevision: draft.revision,
+      operation: 'validate',
+      candidateRevisionId: draft.candidate.id,
+      candidateDigest: draft.candidate.digest,
+    });
+    expect(checked.validation!.valid).toBe(false);
+    await expect(
+      mutateEmployeeContent(s.owner.context, {
+        ...common,
+        requestId: randomUUID(),
+        expectedRevision: checked.revision,
+        operation: 'activate',
+        candidateRevisionId: checked.candidate.id,
+        candidateDigest: checked.candidate.digest,
+        invalidatePrevious: false,
+      }),
+    ).rejects.toMatchObject({ code: 'validation_required' });
+    expect(
+      (await listPersonalSceneSkills(s.owner.context, s.instance.id)).skills,
+    ).toEqual([]);
+    const [asset] =
+      await f.db`select a.id,a.revision,r.content from allrice_company_assets a join allrice_company_asset_revisions r on r.asset_id=a.id where r.id=${pin.sourceRevisionId}`;
+    const editManifest = structuredClone(old!.manifest);
+    editManifest.scenes[0].references = [
+      { sourceKind: 'draft_text', contentId: asset!.id },
+    ];
+    await expect(
+      mutateEmployeeContent(s.owner.context, {
+        ...common,
+        requestId: randomUUID(),
+        expectedRevision: checked.revision,
+        operation: 'save_draft',
+        manifest: editManifest,
+        textEdits: [
+          {
+            ...asset!.content,
+            contentId: asset!.id,
+            revisionId: randomUUID(),
+            expectedRevision: asset!.revision,
+          },
+        ],
+        changeSummary: 'Attempt archived source edit',
+      }),
+    ).rejects.toMatchObject({ code: 'version_conflict' });
+  });
+  it('scene removal: a legacy shared package reference blocks the transaction without revoking another scene', async () => {
+    const s = await setup(),
+      installed = await installSource(s, 'v1', 'weekly-review');
+    const pin = parsePersonalSceneContentRef(installed.contentRef);
+    const [row] =
+      await f.db`select manifest from allrice_employee_content_revisions where id=${pin.revisionId}`;
+    // A common reference is reachable through the existing raw custom writer.
+    const manifest = structuredClone(row!.manifest);
+    manifest.common.push(manifest.scenes[0].references[0]);
+    const draft = await mutateEmployeeContent(s.owner.context, {
+      workspaceId: s.owner.workspaceId,
+      requestId: randomUUID(),
+      setId: pin.setId,
+      target: { kind: 'instance', instanceId: s.instance.id },
+      ownership: {
+        scope: 'personal',
+        organizationId: s.owner.organizationId,
+        ownerId: s.owner.context.actor.id,
+      },
+      expectedRevision: installed.revision,
+      operation: 'save_draft',
+      manifest,
+      textEdits: [],
+      changeSummary: 'Synthetic legacy shared package',
+    });
+    const before = await counts();
+    await expect(
+      removePersonalSceneSkill(
+        s.owner.context,
+        s.instance.id,
+        installed.sceneId,
+        {
+          workspaceId: s.owner.workspaceId,
+          requestId: randomUUID(),
+          expectedRevision: draft.revision,
+          expectedContentRef: installed.contentRef,
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'source_changed' });
+    expect(await counts()).toEqual(before);
+    expect(
+      (
+        await inspectPersonalSceneSkill(
+          s.owner.context,
+          s.instance.id,
+          installed.contentRef,
+        )
+      ).content,
+    ).toBe(body('v1'));
+  });
+
   it.each(['rice', 'custom'] as const)(
     'owner %s previews without writes and confirms exact bytes, provenance and idempotent receipt',
     async (kind) => {

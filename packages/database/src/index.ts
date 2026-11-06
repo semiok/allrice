@@ -423,3 +423,5 @@ export {
   getNativeQuestionMode,
   updateNativeQuestionMode,
 } from './native-questions.ts';
+
+export { removePersonalSceneSkill } from './employees/personal-scene-remove.ts';

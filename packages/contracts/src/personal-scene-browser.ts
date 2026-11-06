@@ -100,3 +100,37 @@ export type PersonalSceneConfirmReceipt = z.infer<
 export type PersonalSceneConfirmResponse = z.infer<
   typeof PersonalSceneConfirmResponseSchema
 >;
+
+export const PersonalSceneRemoveRequestSchema = z
+  .object({
+    workspaceId: UuidSchema,
+    requestId: UuidSchema,
+    expectedRevision: z.number().int().positive(),
+    expectedContentRef: PersonalSceneContentRefSchema,
+  })
+  .strict();
+export const PersonalSceneRemoveReceiptSchema = z
+  .object({
+    operation: z.literal('remove'),
+    scope: z.literal('scene_all_history'),
+    instanceId: UuidSchema,
+    sceneId: UuidSchema,
+    requestId: UuidSchema,
+    revision: z.number().int().positive(),
+    removed: z.literal(true),
+  })
+  .strict();
+export const PersonalSceneRemoveResponseSchema = z
+  .object({
+    receipt: PersonalSceneRemoveReceiptSchema,
+  })
+  .strict();
+export type PersonalSceneRemoveRequest = z.infer<
+  typeof PersonalSceneRemoveRequestSchema
+>;
+export type PersonalSceneRemoveReceipt = z.infer<
+  typeof PersonalSceneRemoveReceiptSchema
+>;
+export type PersonalSceneRemoveResponse = z.infer<
+  typeof PersonalSceneRemoveResponseSchema
+>;
