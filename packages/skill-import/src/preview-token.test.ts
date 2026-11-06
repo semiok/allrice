@@ -24,7 +24,7 @@ function fixture() {
       byteLength: bytes.length,
     },
     sourcePath: 'SKILL.md',
-    target: { operation: 'install' },
+    target: { operation: 'install', expectedInstallation: null },
     expiresAt: new Date(Date.now() + 300_000).toISOString(),
   };
   return { bytes, scope, preview, token: tokens.issue(preview, bytes) };

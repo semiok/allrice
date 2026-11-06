@@ -9,6 +9,7 @@ import {
   DataAccessError,
   getEmployeeInstance,
   previewPersonalSkillUpdateTarget,
+  previewPersonalSkillInstallTarget,
   PersonalSkillError,
   skillBytesChecksum,
 } from '@allrice/database';
@@ -146,7 +147,14 @@ export async function previewPersonalSkillSource(
   const attestedTarget =
     target.operation === 'update'
       ? { ...target, bindingsDigest: current!.bindingsDigest }
-      : target;
+      : {
+          ...target,
+          expectedInstallation: await previewPersonalSkillInstallTarget(
+            context,
+            instanceId,
+            definition.name,
+          ),
+        };
   const previewId = tokens.issue(
     {
       schemaVersion: 1,
