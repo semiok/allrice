@@ -6,9 +6,14 @@ import { resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   ApiErrorSchema,
+  AutomationCatalogQuerySchema,
+  AutomationCatalogSchema,
   UuidSchema,
   InteractionStatusSchema,
   TaskNextStepsSchema,
+  WorkbenchArtifactSchema,
+  WorkspaceReadinessSchema,
+  workspaceCapabilityIds,
   defaultUserPreferences,
   defaultWorkAutomation,
   EmployeeInstanceSchema,
@@ -82,7 +87,7 @@ function github(url = 'https://github.com/example/weekly-brief') {
     resolvedRef: 'main',
     commitSha: 'a'.repeat(40),
     treeSha: 'b'.repeat(40),
-    sourcePath: 'SKILL.md',
+    sourcePath: '',
     fileName: 'weekly-brief.zip',
     originalChecksum: sha(),
     byteLength: 512,
@@ -773,6 +778,71 @@ suite('U1 mounted employee Workflow host', () => {
         );
         return route.fulfill(json({ workspace: current }));
       }
+      if (path === '/api/v1/workspace/readiness' && method === 'GET') {
+        const sessionId = url.searchParams.get('sessionId');
+        if (
+          url.searchParams.get('workspaceId') !== state.scope.workspaceId ||
+          request.headers()['x-allrice-workspace-id'] !==
+            state.scope.workspaceId ||
+          (sessionId !== null &&
+            (sessionId !== existing.id || state.scope.workspaceId !== id(4)))
+        )
+          return route.fulfill(problem(403, 'AUTHORIZATION_DENIED'));
+        return route.fulfill(
+          json(
+            WorkspaceReadinessSchema.parse({
+              schemaVersion: 1,
+              organizationId: id(3),
+              workspaceId: state.scope.workspaceId,
+              viewerId: state.scope.viewerId,
+              sessionId,
+              employeeVersionId: id(8 + state.scope.offset),
+              observedAt: now,
+              basis: 'next_task',
+              canAdminister: false,
+              capabilities: workspaceCapabilityIds.map((capability) => ({
+                id: capability,
+                state:
+                  capability === 'report'
+                    ? 'ready'
+                    : capability === 'local_files'
+                      ? 'needs_configuration'
+                      : 'not_released',
+                reason:
+                  capability === 'report'
+                    ? 'ready'
+                    : capability === 'local_files'
+                      ? 'bridge_missing'
+                      : 'release_disabled',
+                action:
+                  capability === 'report'
+                    ? 'compose'
+                    : capability === 'local_files'
+                      ? 'bridge'
+                      : 'guide',
+                target: capability === 'local_files' ? 'local' : 'cloud',
+                responsibleRole: 'user',
+                releaseEnabled: ['report', 'local_files'].includes(capability),
+                authorization: 'normal_policy',
+              })),
+            }),
+          ),
+        );
+      }
+      if (path === '/api/v1/scheduled-tasks' && method === 'GET') {
+        const query = AutomationCatalogQuerySchema.parse(
+          Object.fromEntries(url.searchParams),
+        );
+        if (
+          query.workspaceId !== state.scope.workspaceId ||
+          request.headers()['x-allrice-workspace-id'] !==
+            state.scope.workspaceId
+        )
+          return route.fulfill(problem(403, 'AUTHORIZATION_DENIED'));
+        return route.fulfill(
+          json(AutomationCatalogSchema.parse({ tasks: [], nextCursor: null })),
+        );
+      }
       if (path === '/api/v1/saas/capabilities' && method === 'GET')
         return route.fulfill(
           json({
@@ -843,6 +913,23 @@ suite('U1 mounted employee Workflow host', () => {
             },
           }),
         );
+      if (
+        path === `/api/v1/sessions/${existing.id}/artifacts` &&
+        method === 'GET'
+      ) {
+        if (
+          url.searchParams.get('workspaceId') !== id(4) ||
+          request.headers()['x-allrice-workspace-id'] !== id(4) ||
+          state.scope.workspaceId !== id(4)
+        )
+          return route.fulfill(problem(403, 'AUTHORIZATION_DENIED'));
+        return route.fulfill(
+          json({
+            artifacts: WorkbenchArtifactSchema.array().parse([]),
+            nextCursor: null,
+          }),
+        );
+      }
       if (
         path === `/api/v1/sessions/${existing.id}/interactions` &&
         method === 'GET'
