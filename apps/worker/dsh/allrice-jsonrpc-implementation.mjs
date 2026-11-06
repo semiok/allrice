@@ -31,12 +31,11 @@ import {
   nativeContextProjection,
   installNativeContextProjection,
 } from './allrice-context-projection.mjs';
-/* global AbortSignal, Buffer, fetch, process */
+/* global Buffer, process */
 
 import { existsSync, readFileSync } from 'node:fs';
 import { setTimeout, clearTimeout } from 'node:timers';
 import { performance } from 'node:perf_hooks';
-import { URL } from 'node:url';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import {
   prepareSessionReferenceContext,
