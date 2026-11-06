@@ -358,7 +358,6 @@ function EmployeeSkillsReader({
   useEffect(() => {
     retryCatalog();
     // The keyed reader fixes every scope/header used by its requests.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const returnFromSource = (source: SourcePage) => {

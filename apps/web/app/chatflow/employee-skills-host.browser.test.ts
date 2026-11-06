@@ -413,20 +413,20 @@ suite('U1 scoped employee Skill HTTP host candidate', () => {
   ) {
     const f = await fixture(options);
     let primary: unknown;
+    let primaryFailed = false;
     try {
       await run(f);
     } catch (error) {
       primary = error;
-      throw error;
-    } finally {
-      try {
-        await f.close();
-      } catch (cleanup) {
-        if (primary)
-          console.error('Skill fixture cleanup after primary error:', cleanup);
-        else throw cleanup;
-      }
+      primaryFailed = true;
     }
+    try {
+      await f.close();
+    } catch (cleanup) {
+      if (!primaryFailed) throw cleanup;
+      console.error('Skill fixture cleanup after primary error:', cleanup);
+    }
+    if (primaryFailed) throw primary;
   }
 
   const dialog = (page: Page) => page.getByRole('dialog');
