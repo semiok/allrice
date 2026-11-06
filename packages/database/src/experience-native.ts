@@ -11,7 +11,7 @@ import type { TransactionSql as Tx } from 'postgres';
 import { AutomationScheduleSchema } from '@allrice/contracts';
 import { readContentPrincipal } from './content-maintenance.ts';
 import { scheduleIdentity } from './native-schedule-authority.ts';
-import { ExperienceError } from './experience.ts';
+import { ExperienceError, experienceReviewEnabled } from './experience.ts';
 import { DataAccessError } from './data.ts';
 import { EmployeeInstanceError } from './employees/employee-instances.ts';
 import { PersonalSkillError } from './employees/personal-skills.ts';

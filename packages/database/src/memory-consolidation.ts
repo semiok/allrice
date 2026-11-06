@@ -742,6 +742,13 @@ export async function recoverExperienceOccurrences(limit = 4) {
   return rows.map((r) => r.id);
 }
 export async function dispatchExperienceOccurrence(id: string) {
+  const db = getDatabase();
+  const [selected] =
+    await db`select experience_occurrence from allrice_automation_runs where id=${UuidSchema.parse(id)}`;
+  if (
+    !MemoryOccurrenceSchema.safeParse(selected?.experience_occurrence).success
+  )
+    return;
   const { enqueueExperienceConsolidationRun } =
     await import('./execution/queue.ts');
   try {
@@ -749,10 +756,16 @@ export async function dispatchExperienceOccurrence(id: string) {
     await enqueueExperienceConsolidationRun(id);
   } catch (error) {
     // Unknown enqueue result is read back. A bound/paid Run is never replayed.
-    const db = getDatabase(),
-      { row } = await loadOccurrence(db, id);
+    const { row } = await loadOccurrence(db, id);
     if (row.run_id) return;
-    await db`update allrice_automation_runs set status='failed',completed_at=clock_timestamp(),error_code='EXPERIENCE_PREPARATION_FAILED',
+    const code =
+      error instanceof Error &&
+      ['MEMORY_SOURCE_INPUT_LIMIT', 'MEMORY_CURRENT_RULES_LIMIT'].includes(
+        error.message,
+      )
+        ? error.message
+        : 'EXPERIENCE_PREPARATION_FAILED';
+    await db`update allrice_automation_runs set status='failed',completed_at=clock_timestamp(),error_code=${code},
       error_message='整理未启动；来源已保留，请核查配置或权限。' where id=${id} and run_id is null and status='queued'`;
     throw error;
   }
