@@ -209,13 +209,16 @@ export async function executeNextPlatformEmployeeTest(input: {
     }
     await checkCandidate();
     signal.throwIfAborted();
-    // Only the ordinary preview uses the frozen platform persona. Dedicated
-    // method/experience instructions and qualifications keep their old path.
-    const previewPersona = !candidate
+    // Both EmployeeKernel consumers use the verified frozen definition. Method
+    // instructions keep their system priority; experience keeps its own path.
+    const platformPersona = !experience
       ? {
-          systemInstructions: employeePersonaPlatformSystemPrompt(
-            test.definition,
-          ),
+          systemInstructions: [
+            employeePersonaPlatformSystemPrompt(test.definition),
+            method?.instructions,
+          ]
+            .filter(Boolean)
+            .join('\n\n'),
           employeeDocuments: {
             persona: renderEmployeePersonaDocument(
               {
@@ -225,7 +228,7 @@ export async function executeNextPlatformEmployeeTest(input: {
                 identity: test.definition.identity,
               },
               EmployeePersonaDocumentSourceSchema.parse({
-                kind: 'platform_preview',
+                kind: method ? 'method_candidate' : 'platform_preview',
                 testId: test.id,
                 platformEmployeeId: test.employeeId,
                 platformRevisionId: test.revisionId,
@@ -286,17 +289,9 @@ export async function executeNextPlatformEmployeeTest(input: {
             sessionId: ids.sessionId,
             userMessageId: ids.userMessageId,
             assistantMessageId: ids.assistantMessageId,
-            systemInstructions: previewPersona
-              ? previewPersona.systemInstructions
-              : [test.runtimeProfile.systemPrompt, method?.instructions]
-                  .filter(Boolean)
-                  .join('\n\n'),
-            ...(previewPersona
-              ? {
-                  rootSystemInstructions: previewPersona.systemInstructions,
-                  employeeDocuments: previewPersona.employeeDocuments,
-                }
-              : {}),
+            systemInstructions: platformPersona?.systemInstructions,
+            rootSystemInstructions: platformPersona?.systemInstructions,
+            employeeDocuments: platformPersona?.employeeDocuments,
             userRequest: test.input.prompt,
             bootstrapConversation: '',
             authorizedMemoryContext: '',

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import AgentPresets from '@deepseek-ai/dsh-agent-preset-registry';
 import { renderEmployeePersonaDocument } from '@allrice/contracts';
-import { employeePersonaPlatformSystemPrompt } from '../../../../packages/database/src/platform-employees/runtime-package.ts';
+import { employeePersonaPlatformSystemPrompt } from '@allrice/database';
 import { expect, it, vi } from 'vitest';
 import { gate, hold, host, text } from './fixture.mjs';
 
@@ -22,21 +22,34 @@ const runtimeContexts = (request) =>
   );
 const currentContext = (request) => runtimeContexts(request).at(-1);
 
-it.each([
+it.each(
   [
-    'concise',
-    '简洁，结论优先',
-    '先给结论，保持表达简洁，同时保留必要证据和限制。',
-  ],
-  [
-    'structured',
-    '结构清晰，分步说明',
-    '按任务需要采用清晰结构和具体步骤说明。',
-  ],
-  ['exploratory', '比较方案与取舍', '探索相关备选方案并说明取舍，不编造事实。'],
-])(
-  'ordinary preview %s PERSONA reaches native required literal context with empty USER/MEMORY and platform-only system',
-  async (expressionStyle, label, meaning) => {
+    [
+      'concise',
+      '简洁，结论优先',
+      '先给结论，保持表达简洁，同时保留必要证据和限制。',
+    ],
+    [
+      'structured',
+      '结构清晰，分步说明',
+      '按任务需要采用清晰结构和具体步骤说明。',
+    ],
+    [
+      'exploratory',
+      '比较方案与取舍',
+      '探索相关备选方案并说明取舍，不编造事实。',
+    ],
+  ].flatMap(([expressionStyle, label, meaning]) =>
+    ['platform_preview', 'method_candidate'].map((kind) => [
+      kind,
+      expressionStyle,
+      label,
+      meaning,
+    ]),
+  ),
+)(
+  '%s %s PERSONA reaches native required literal context with empty USER/MEMORY and separate system instructions',
+  async (kind, expressionStyle, label, meaning) => {
     const identity = {
       role: '试用身份',
       mission: 'PREVIEW_LITERAL {{missing}}\n# IDENTITY.md - free literal',
@@ -54,7 +67,7 @@ it.each([
         identity,
       },
       {
-        kind: 'platform_preview',
+        kind,
         testId: randomUUID(),
         platformEmployeeId: randomUUID(),
         platformRevisionId: randomUUID(),
@@ -62,10 +75,13 @@ it.each([
         packageChecksum: `sha256:${'2'.repeat(64)}`,
       },
     );
-    const system = employeePersonaPlatformSystemPrompt({
+    const platformSystem = employeePersonaPlatformSystemPrompt({
       systemPrompt: 'PLATFORM_HARD_POLICY_ONLY',
       identity,
     });
+    const instructions =
+      kind === 'method_candidate' ? 'METHOD_INSTRUCTIONS_ONLY' : '';
+    const system = [platformSystem, instructions].filter(Boolean).join('\n\n');
     const h = await host({
       runId: randomUUID(),
       rootSystemInstructions: system,
@@ -85,12 +101,14 @@ it.each([
     expect(current).toContain('# IDENTITY.md - free literal');
     expect(current).toContain(label);
     expect(current).toContain(meaning);
-    expect(current).toContain('platform_preview');
+    expect(current).toContain(kind);
+    expect(current).not.toContain('METHOD_INSTRUCTIONS_ONLY');
     expect(current).not.toContain('# USER.md');
     expect(current).not.toContain('# MEMORY.md');
     const systems = JSON.stringify(
       rootRequest.messages.filter((message) => message.role === 'system'),
     );
+    if (instructions) expect(systems).toContain(instructions);
     for (const required of [
       'PLATFORM_HARD_POLICY_ONLY',
       'PLATFORM_BEHAVIOR_ONLY',

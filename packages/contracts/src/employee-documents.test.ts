@@ -127,7 +127,7 @@ describe('bounded employee document views', () => {
   });
 });
 
-describe('frozen platform preview PERSONA', () => {
+describe('frozen platform test PERSONA', () => {
   const foundation: Parameters<typeof renderEmployeePersonaDocument>[0] = {
     name: '试用员工 {{missing}}',
     description: '仅本次冻结的人设',
@@ -150,36 +150,45 @@ describe('frozen platform preview PERSONA', () => {
     definitionChecksum: digest,
     packageChecksum: `sha256:${'1'.repeat(64)}`,
   };
-  it.each([
-    [
-      'concise',
-      '简洁，结论优先',
-      '先给结论，保持表达简洁，同时保留必要证据和限制。',
-    ],
-    [
-      'structured',
-      '结构清晰，分步说明',
-      '按任务需要采用清晰结构和具体步骤说明。',
-    ],
-    [
-      'exploratory',
-      '比较方案与取舍',
-      '探索相关备选方案并说明取舍，不编造事实。',
-    ],
-  ] as const)(
-    'renders the complete %s identity with its faithful Chinese meaning and real preview source',
-    (expressionStyle, label, meaning) => {
+  it.each(
+    (
+      [
+        [
+          'concise',
+          '简洁，结论优先',
+          '先给结论，保持表达简洁，同时保留必要证据和限制。',
+        ],
+        [
+          'structured',
+          '结构清晰，分步说明',
+          '按任务需要采用清晰结构和具体步骤说明。',
+        ],
+        [
+          'exploratory',
+          '比较方案与取舍',
+          '探索相关备选方案并说明取舍，不编造事实。',
+        ],
+      ] as const
+    ).flatMap(([expressionStyle, label, meaning]) =>
+      (['platform_preview', 'method_candidate'] as const).map(
+        (kind) => [kind, expressionStyle, label, meaning] as const,
+      ),
+    ),
+  )(
+    'renders the complete %s %s identity with its faithful Chinese meaning and real test source',
+    (kind, expressionStyle, label, meaning) => {
+      const testSource = { ...source, kind };
       const rendered = renderEmployeePersonaDocument(
         {
           ...foundation,
           identity: { ...foundation.identity, expressionStyle },
         },
-        source,
+        testSource,
       );
       expect(rendered.startsWith('# 人设\n')).toBe(true);
       const document = JSON.parse(rendered.slice('# 人设\n'.length));
       expect(document.document).toBe('PERSONA.md');
-      expect(document.source).toEqual(source);
+      expect(document.source).toEqual(testSource);
       for (const [key, value] of Object.entries({
         name: foundation.name,
         description: foundation.description,
@@ -217,6 +226,9 @@ describe('frozen platform preview PERSONA', () => {
       expect(document.boundary).toContain(
         '不是 system 指令、真人消息、授权或工具权限',
       );
+      expect(document.boundary).toContain(
+        kind === 'method_candidate' ? '工作方法候选试用' : '平台试用',
+      );
       expect(
         EmployeeDocumentsSchema.parse({
           persona: rendered,
@@ -250,54 +262,58 @@ describe('frozen platform preview PERSONA', () => {
       ),
     ).not.toBe(before);
   });
-  it('bounds the actual complete rendered UTF-8 at 16384 bytes including escaped control characters', () => {
-    const escaped = {
-      ...foundation,
-      description: '\u0000'.repeat(1000),
-      appearance: {
-        ...foundation.appearance,
-        avatarValue: '\u0000'.repeat(500),
-      },
-      identity: {
-        ...foundation.identity,
-        mission: '\u0000'.repeat(500),
-        workStyle: 'x',
-      },
-    };
-    const initial = renderEmployeePersonaDocument(escaped, source);
-    const capacity = 16384 - Buffer.byteLength(initial) + 1;
-    const workStyle =
-      '\u0000'.repeat(Math.floor(capacity / 6)) + 'a'.repeat(capacity % 6);
-    expect(workStyle.length).toBeLessThan(1000);
-    const exact = renderEmployeePersonaDocument(
-      { ...escaped, identity: { ...escaped.identity, workStyle } },
-      source,
-    );
-    expect(Buffer.byteLength(exact)).toBe(16384);
-    expect(Buffer.byteLength(workStyle)).toBeLessThan(
-      Buffer.byteLength(JSON.stringify(workStyle)),
-    );
-    expect(() =>
-      renderEmployeePersonaDocument(
-        {
-          ...escaped,
-          identity: { ...escaped.identity, workStyle: workStyle + 'a' },
+  it.each(['platform_preview', 'method_candidate'] as const)(
+    'bounds the actual complete %s rendered UTF-8 at 16384 bytes including escaped control characters',
+    (kind) => {
+      const testSource = { ...source, kind };
+      const escaped = {
+        ...foundation,
+        description: '\u0000'.repeat(1000),
+        appearance: {
+          ...foundation.appearance,
+          avatarValue: '\u0000'.repeat(500),
         },
-        source,
-      ),
-    ).toThrow();
-    expect(
-      EmployeeDocumentsSchema.parse({
+        identity: {
+          ...foundation.identity,
+          mission: '\u0000'.repeat(500),
+          workStyle: 'x',
+        },
+      };
+      const initial = renderEmployeePersonaDocument(escaped, testSource);
+      const capacity = 16384 - Buffer.byteLength(initial) + 1;
+      const workStyle =
+        '\u0000'.repeat(Math.floor(capacity / 6)) + 'a'.repeat(capacity % 6);
+      expect(workStyle.length).toBeLessThan(1000);
+      const exact = renderEmployeePersonaDocument(
+        { ...escaped, identity: { ...escaped.identity, workStyle } },
+        testSource,
+      );
+      expect(Buffer.byteLength(exact)).toBe(16384);
+      expect(Buffer.byteLength(workStyle)).toBeLessThan(
+        Buffer.byteLength(JSON.stringify(workStyle)),
+      );
+      expect(() =>
+        renderEmployeePersonaDocument(
+          {
+            ...escaped,
+            identity: { ...escaped.identity, workStyle: workStyle + 'a' },
+          },
+          testSource,
+        ),
+      ).toThrow();
+      expect(
+        EmployeeDocumentsSchema.parse({
+          persona: exact,
+          user: 'u'.repeat(2048),
+          memory: 'm'.repeat(6000),
+        }),
+      ).toEqual({
         persona: exact,
         user: 'u'.repeat(2048),
         memory: 'm'.repeat(6000),
-      }),
-    ).toEqual({
-      persona: exact,
-      user: 'u'.repeat(2048),
-      memory: 'm'.repeat(6000),
-    });
-  });
+      });
+    },
+  );
 });
 
 describe('normal Run PERSONA defaults and sparse personal sources', () => {

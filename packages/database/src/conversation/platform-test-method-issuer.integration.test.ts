@@ -597,6 +597,17 @@ suite(
       });
       const claim = await claimAndBind(test.id, x.f);
       expect(await counts(test.id)).toEqual({ runs: 1, jobs: 1 });
+      expect(claim.employeeId).toBe(row.employee_id);
+      expect(claim.revisionId).toBe(row.revision_id);
+      expect(claim.definition).toEqual(row.frozen_definition);
+      expect(claim.runtimeProfile).toEqual(row.frozen_runtime_profile);
+      expect(claim.nativeSkills).toEqual(row.frozen_native_skills);
+      expect(claim.runtimeProfile.runtimePackage!.checksum).toBe(
+        row.frozen_package_checksum,
+      );
+      expect(claim.definition.name).not.toBe(
+        'Later draft must not replace queued source',
+      );
       expect(claim.methodCandidate!.modelSnapshot).toEqual(
         binding.model_snapshot,
       );
@@ -728,6 +739,13 @@ suite(
       expect(await methodRow(parent.id)).toEqual(parentMethod);
       await retrying.finish();
       const claimed = await claimAndBind(child.id, x.f);
+      expect(claimed.employeeId).toBe(parentTest.employee_id);
+      expect(claimed.revisionId).toBe(parentTest.revision_id);
+      expect(claimed.definition).toEqual(parentTest.frozen_definition);
+      expect(claimed.runtimeProfile).toEqual(parentTest.frozen_runtime_profile);
+      expect(claimed.runtimeProfile.runtimePackage!.checksum).toBe(
+        parentTest.frozen_package_checksum,
+      );
       expect(claimed.methodCandidate!.modelSnapshot).toEqual(
         parentMethod.model_snapshot,
       );
