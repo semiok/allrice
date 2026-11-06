@@ -44,6 +44,9 @@ export function psqlTestUrl(
   );
   url.searchParams.set('application_name', applicationName);
   url.searchParams.set('connect_timeout', '1');
+  // libpq URI decoding does not translate form-encoded '+' into a space.
+  // Limit normalization to the query so literal '+' in credentials survives.
+  url.search = url.search.replaceAll('+', '%20');
   return url.toString();
 }
 
@@ -81,7 +84,6 @@ export function runPsqlProcess(options: {
         stderr = '';
       let failure: Error | undefined;
       let stopping: Promise<void> | undefined;
-      let killTimer: ReturnType<typeof setTimeout> | undefined;
       const stop = (reason: StopReason) => {
         if (stopping) return;
         const error = new PsqlTestDeadlineError(reason);
@@ -102,7 +104,12 @@ export function runPsqlProcess(options: {
           }
           if (child.pid) {
             kill('SIGINT'); // psql forwards cancellation to its backend.
-            killTimer = setTimeout(() => kill('SIGKILL'), 100);
+            await new Promise<void>((resolve) => {
+              setTimeout(() => {
+                kill('SIGKILL');
+                resolve();
+              }, 100);
+            });
           }
         })();
       };
@@ -131,7 +138,6 @@ export function runPsqlProcess(options: {
         clearTimeout(timer);
         options.signal.removeEventListener('abort', onAbort);
         await stopping;
-        clearTimeout(killTimer);
         options.event?.('close', child.pid, status);
         if (failure) reject(failure);
         else if (
@@ -303,14 +309,16 @@ export function createPsqlTestFixture(
         cleanupConfirmed = false;
       });
       try {
-        const stopped = await inspect(
-          (control) => control<{ stopped: boolean }[]>`
-          select pg_terminate_backend(pid, 100) stopped from pg_stat_activity
-          where datname=current_database() and application_name=any(${applications}::text[])
-            and pid<>pg_backend_pid()`,
-        );
-        cleanupConfirmed =
-          cleanupConfirmed !== false && stopped.every((row) => row.stopped);
+        const absent = await inspect(async (control) => {
+          await control`select pg_terminate_backend(pid, 100) from pg_stat_activity
+            where datname=current_database() and application_name=any(${applications}::text[])
+              and pid<>pg_backend_pid()`;
+          const [row] = await control<{ absent: boolean }[]>`
+            select not exists(select 1 from pg_stat_activity where datname=current_database()
+              and application_name=any(${applications}::text[])) absent`;
+          return row!.absent;
+        });
+        cleanupConfirmed = cleanupConfirmed !== false && absent;
       } catch {
         cleanupConfirmed = false;
       }
@@ -340,7 +348,7 @@ export function createPsqlTestFixture(
     slowSnapshot = undefined;
     mark(`${stage}.start`);
     const slow = setTimeout(() => {
-      void sample(activeStage, true);
+      void sample(stage, true);
     }, SLOW_STEP_MS);
     try {
       const result = await work();

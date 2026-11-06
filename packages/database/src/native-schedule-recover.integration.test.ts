@@ -403,6 +403,7 @@ run('schedule-recover.sql on an orphaned schedule partition', () => {
       const outcome = waiting
         .step('ordinary.transaction', () =>
           waiting.db.begin(async (tx) => {
+            await tx`set local statement_timeout = 0`;
             await tx`update allrice_native_once_partitions set expires_at=clock_timestamp()+interval '1 hour' where partition_id=${o.partitionId}`;
             await tx`select pg_sleep(10)`;
           }),
@@ -414,6 +415,7 @@ run('schedule-recover.sql on an orphaned schedule partition', () => {
       await observeWait(waiting.applications[0]!, 'PgSleep');
       abort.abort();
       expect((await outcome).error).toBeInstanceOf(PsqlTestDeadlineError);
+      expect((await outcome).error).toMatchObject({ reason: 'aborted' });
       expect(waiting.cleanupConfirmed).toBe(true);
     } finally {
       abort.abort();
