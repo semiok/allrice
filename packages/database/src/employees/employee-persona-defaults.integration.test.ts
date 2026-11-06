@@ -1,6 +1,7 @@
 /** Real HTTP/service, authentication and SQL transactions in an isolated DB.
  * Publication preview completion is synthetic; no provider or real Run. */
 import { randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   EmployeeDetailsSchema,
@@ -32,15 +33,7 @@ import { OrganizationSharedReader } from '../organization-shared-reader.ts';
 
 // Only the Next request cookie transport is supplied by the fixture. The real
 // getRequestContext/authenticateSession and SQL authorization remain in use.
-const requestCookies = vi.hoisted(() => ({ token: '' }));
-vi.mock('next/headers', () => ({
-  cookies: async () => ({
-    get: (name: string) =>
-      name === 'allrice_session' && requestCookies.token
-        ? { value: requestCookies.token }
-        : undefined,
-  }),
-}));
+const requestCookies = { token: '' };
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -50,12 +43,27 @@ suite(
   'PERSONA current defaults and sparse profile (isolated PostgreSQL, no model)',
   () => {
     let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
+    let nextHeadersModule: string | undefined;
     beforeAll(async () => {
+      // Resolve the public entry from its actual Web consumer. This database
+      // package does not own the Web package's Next dependency.
+      nextHeadersModule = createRequire(
+        new URL('../../../../apps/web/package.json', import.meta.url),
+      ).resolve('next/headers');
+      vi.doMock(nextHeadersModule, () => ({
+        cookies: async () => ({
+          get: (name: string) =>
+            name === 'allrice_session' && requestCookies.token
+              ? { value: requestCookies.token }
+              : undefined,
+        }),
+      }));
       fixture = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
     }, 120000);
     afterAll(async () => {
       requestCookies.token = '';
+      if (nextHeadersModule !== undefined) vi.doUnmock(nextHeadersModule);
       vi.restoreAllMocks();
       vi.unstubAllEnvs();
       await fixture?.close();
