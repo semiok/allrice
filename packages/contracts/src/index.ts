@@ -200,3 +200,4 @@ export * from './employee-documents.ts';
 
 export * from './employee-skill-catalog.ts';
 export * from './personal-skill-browser.ts';
+export * from './memory-consolidation.ts';

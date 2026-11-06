@@ -11,7 +11,7 @@ import type { TransactionSql as Tx } from 'postgres';
 import { AutomationScheduleSchema } from '@allrice/contracts';
 import { readContentPrincipal } from './content-maintenance.ts';
 import { scheduleIdentity } from './native-schedule-authority.ts';
-import { ExperienceError } from './experience.ts';
+import { ExperienceError, experienceReviewEnabled } from './experience.ts';
 import { DataAccessError } from './data.ts';
 import { EmployeeInstanceError } from './employees/employee-instances.ts';
 import { PersonalSkillError } from './employees/personal-skills.ts';
@@ -78,10 +78,12 @@ const instant = async (tx: Tx) => {
   requireCalendar(r, 'database_time_missing');
   return r.now;
 };
-/** Permanently close only this retired consumer's existing admission switch.
- * The shared dispatcher retains its receipts without claiming them. Do not
- * manufacture authority_blocked decisions: SQL requires actual revocation. */
-export const experienceNativeCalendarEnabled = (): boolean => false;
+/** Reuse the existing switch for v2 business admission. Old v1 execution is
+ * rejected by the consumer; native authority still needs real policy proof. */
+export const experienceNativeCalendarEnabled = () =>
+  experienceReviewEnabled() &&
+  process.env.ALLRICE_NATIVE_RECURRING_ENABLED === '1' &&
+  process.env.ALLRICE_NATIVE_CALENDAR_ENABLED === '1';
 
 /** Same business order as policy updates: principal -> advisory183 -> original
  * automation -> current policy/instance. No native partition lock is held yet. */
@@ -134,9 +136,8 @@ async function lockBusiness(
     status: rule?.deleted_at ? 'deleted' : (rule?.status ?? 'deleted'),
     resumeAfter: rule?.native_recurring_resume_after?.toISOString() ?? null,
   };
-  // Initialization is disabled above. Existing synthetic native arms retain
-  // their original authority so the shared Host can finish/recover them; the
-  // retired business dispatcher, reservation and Job admission remain closed.
+  // Native authority stays with the existing calendar policy/revision proof.
+  // Business execution separately accepts only the new v2 occurrence.
   return { rule, policy, admission };
 }
 export async function lockExperienceCalendarAdmissions(

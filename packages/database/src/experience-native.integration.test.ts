@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
 import { experiencePolicySchedule } from '@allrice/contracts';
+import { readFile } from 'node:fs/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createP27CodexWorkerFixture } from '../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
 import { authorizeFixturePlatformAdministrator } from './platform-authority.fixture.ts';
@@ -12,7 +12,6 @@ import {
   experienceNativeCalendarEnabled,
   lockExperienceCalendarAdmissions,
   materializeExperienceNativeCalendar,
-  dispatchExperienceCalendarNative,
 } from './experience-native.ts';
 import {
   readExperiencePolicy,
@@ -26,7 +25,6 @@ import {
   nativeOnceDigest,
   type NativeOnceTask,
 } from './native-schedule-once-state.ts';
-import type { ExperienceCalendarOccurrence } from './experience-native.ts';
 import * as client from './core/client.ts';
 
 const suite =
@@ -66,22 +64,31 @@ suite(
         vi.unstubAllEnvs();
       }
     }, 30000);
-    it('never creates new schedules/reservations even when all old flags and policy are on', async () => {
+    it('policy-off prevents reservations with all runtime flags on', async () => {
       const seeded = await seedExperienceCalendarRule(f, 'queued');
+      const policy = await readExperiencePolicy(f.organizationId);
+      await updateExperiencePolicy(f.context, f.organizationId, {
+        ...experiencePolicySchedule(policy),
+        frequency: 'off',
+        expectedRevision: policy.revision,
+      });
       const [rule] =
         await f.db`select * from allrice_automations where id=${seeded.automationId}`;
       const before =
         await f.db`select to_jsonb(a) data from allrice_automations a`;
-      expect((await readExperiencePolicy(f.organizationId)).frequency).not.toBe(
+      expect((await readExperiencePolicy(f.organizationId)).frequency).toBe(
         'off',
       );
-      expect(experienceNativeCalendarEnabled()).toBe(false);
+      expect(experienceNativeCalendarEnabled()).toBe(true);
       expect(await syncExperienceConsolidationSchedules()).toBe(0);
       await expect(
         f.db.begin((tx) =>
           reserveExperienceOccurrenceInTransaction(tx, rule as never, seeded.P),
         ),
-      ).resolves.toEqual({ outcome: 'policy_blocked', reason: 'disabled' });
+      ).resolves.toEqual({
+        outcome: 'policy_blocked',
+        reason: 'policy_changed',
+      });
       expect(
         await f.db`select to_jsonb(a) data from allrice_automations a`,
       ).toEqual(before);
@@ -134,6 +141,12 @@ suite(
           seeded.automationId,
           reference,
         );
+        const policy = await readExperiencePolicy(f.organizationId);
+        await updateExperiencePolicy(f.context, f.organizationId, {
+          ...experiencePolicySchedule(policy),
+          frequency: 'off',
+          expectedRevision: policy.revision,
+        });
         const state = async () => ({
           receipts:
             await f.db`select to_jsonb(o) data from allrice_native_recurring_occurrences o`,
@@ -161,31 +174,17 @@ suite(
           lockExperienceCalendarAdmissions(tx, [old.control]),
         );
         expect(facts.get(old.control.controlId)).toMatchObject({
-          allowed: true,
-          status: 'enabled',
+          allowed: false,
+          status: 'paused',
         });
         const initializing = await f.db.begin((tx) =>
           lockExperienceCalendarAdmissions(tx, [old.control], 'initialize'),
         );
         expect(initializing.get(old.control.controlId)?.allowed).toBe(false);
-        const [receipt] = await f.db<
-          ExperienceCalendarOccurrence[]
-        >`select * from allrice_native_recurring_occurrences where calendar_period_id=${old.period.periodId}`;
-        await expect(
-          f.db.begin((tx) =>
-            dispatchExperienceCalendarNative(
-              tx,
-              old.control,
-              receipt!,
-              randomUUID(),
-              nativeOnceDigest('synthetic'),
-            ),
-          ),
-        ).rejects.toMatchObject({ code: 'disabled' });
         expect(await state()).toEqual(before);
         expect(
           await f.db`select * from allrice_native_calendar_decisions`,
-        ).toHaveLength(0);
+        ).toHaveLength(1);
         expect(await f.db`select id from allrice_automation_runs`).toHaveLength(
           0,
         );
@@ -277,7 +276,81 @@ suite(
         expect(await f.db`select id from allrice_jobs`).toHaveLength(0);
       },
     );
-    it('rejects re-enabling the retired consumer but retains an authorized policy-off cancellation', async () => {
+    it('M5-C cutover watermark alone cannot authorize cancellation of a retained native plan', async () => {
+      const seeded = await seedExperienceCalendarRule(f, 'empty');
+      const old = await seedHistoricalExperienceCalendar(
+        f,
+        seeded.automationId,
+        reference,
+      );
+      // Exact B cutover effect: settings advance, original business/native revisions do not.
+      await f.db`update allrice_settings set value=jsonb_set(jsonb_set(value,
+        '{revision}',to_jsonb((value->>'revision')::int+1)),
+        '{collectionStartedAt}',to_jsonb(to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"')))
+        where key='employee_experience_policy' and
+          ((scope_type='organization' and scope_id=${f.organizationId}) or (scope_type='system' and scope_id is null))`;
+      const facts = await f.db.begin((tx) =>
+        lockExperienceCalendarAdmissions(tx, [old.control]),
+      );
+      expect(facts.get(old.control.controlId)).toMatchObject({
+        allowed: false,
+        status: 'enabled',
+      });
+      await expect(
+        f.db.begin(async (tx) => {
+          await tx`update allrice_automations set status='paused',next_run_at=null where id=${seeded.automationId}`;
+          const d = {
+            decisionId: randomUUID(),
+            periodId: old.period.periodId,
+            kind: 'authority',
+            outcome: 'authority_blocked',
+            revision: old.period.revision,
+            decidedAt: new Date().toISOString(),
+            receiptOccurrenceId: null,
+            automationRunId: null,
+            successorPeriodId: null,
+            lease: null,
+            budget: null,
+          };
+          await tx`insert into allrice_native_calendar_decisions(decision_id,period_id,kind,outcome,revision,decision,decision_digest,decided_at)
+        values(${d.decisionId},${d.periodId},${d.kind},${d.outcome},${d.revision},${tx.json(d)},${nativeOnceDigest(d)},${d.decidedAt}::timestamptz)`;
+        }),
+      ).rejects.toMatchObject({
+        code: 'P1921',
+        message: 'experience native clock lacks exact scoped plan/policy proof',
+      });
+      expect(
+        await f.db`select * from allrice_native_calendar_decisions`,
+      ).toHaveLength(0);
+      expect(
+        (
+          await f.db`select status from allrice_automations where id=${seeded.automationId}`
+        )[0]!.status,
+      ).toBe('enabled');
+      // A real policy transaction advances all three revisions atomically.
+      // This is an isolated cancellation check, not authorization to stop Dev.
+      const previous = await readExperiencePolicy(f.organizationId);
+      await updateExperiencePolicy(f.context, f.organizationId, {
+        frequency: 'off',
+        timezone: 'UTC',
+        time: '03:00',
+        weekday: 1,
+        monthDay: 1,
+        expectedRevision: previous.revision,
+      });
+      expect(
+        await f.db`select kind,outcome from allrice_native_calendar_decisions where period_id=${old.period.periodId}`,
+      ).toEqual([
+        expect.objectContaining({ kind: 'policy', outcome: 'canceled' }),
+      ]);
+      expect(
+        (
+          await f.db`select allrice_experience_calendar_clock_proved(${seeded.automationId}::uuid) proved`
+        )[0]!.proved,
+      ).toBe(true);
+      expect(await f.db`select id from allrice_jobs`).toHaveLength(0);
+    });
+    it('policy edits prepare a new revision while preserving old receipt identity', async () => {
       const seeded = await seedExperienceCalendarRule(f, 'empty');
       const old = await seedHistoricalExperienceCalendar(
         f,
@@ -293,12 +366,15 @@ suite(
         monthDay: 1,
         expectedRevision: previous.revision,
       };
-      await expect(
-        updateExperiencePolicy(f.context, f.organizationId, settings),
-      ).rejects.toMatchObject({ code: 'disabled' });
-      expect(await readExperiencePolicy(f.organizationId)).toEqual(previous);
+      const enabled = await updateExperiencePolicy(
+        f.context,
+        f.organizationId,
+        settings,
+      );
+      expect(enabled.frequency).toBe('daily');
       await updateExperiencePolicy(f.context, f.organizationId, {
         ...settings,
+        expectedRevision: enabled.revision,
         frequency: 'off',
       });
       expect(

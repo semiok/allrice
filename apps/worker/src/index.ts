@@ -36,6 +36,9 @@ import {
   probeReadyJobs,
   recoverPlatformQualityOccurrences,
   collectPendingMemorySources,
+  syncExperienceConsolidationSchedules,
+  recoverExperienceOccurrences,
+  dispatchExperienceOccurrence,
   pingDatabase,
   queueSummary,
   recoverCodexAuthorizationFlows,
@@ -652,6 +655,11 @@ async function runAutomationTick() {
       const limit = Math.max(1, concurrency);
 
       await collectPendingMemorySources({ limit });
+      await syncExperienceConsolidationSchedules();
+      for (const id of await recoverExperienceOccurrences(limit)) {
+        if (stopping) break;
+        await dispatchExperienceOccurrence(id);
+      }
       const recovered = await recoverPlatformQualityOccurrences(limit);
       if (recovered > 0) {
         console.info('[M6] recovered quality occurrences', {

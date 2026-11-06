@@ -31,7 +31,6 @@ import {
 } from './employees/personal-skills.ts';
 
 import { nextScheduleAt } from './execution/automation.ts';
-import type { ResourcePrincipal } from './resource-principal.ts';
 import {
   ExperienceAutomationBindingSchema,
   ExperienceOccurrenceSchema,
@@ -222,7 +221,15 @@ export async function updateExperiencePolicy(
     });
     const { experienceNativeCalendarEnabled } =
       await import('./experience-native.ts');
-    if (policy.frequency !== 'off' && !experienceNativeCalendarEnabled())
+    // V2 may schedule consolidation, but cannot restore the retired validation
+    // or automatic-adoption opt-ins, including values inherited from history.
+    // Explicit off must remain available to close those historical plans.
+    if (
+      policy.frequency !== 'off' &&
+      (!experienceNativeCalendarEnabled() ||
+        ('validationMode' in policy && policy.validationMode !== 'off') ||
+        ('adoptionMode' in policy && policy.adoptionMode !== 'off'))
+    )
       throw new ExperienceError('disabled');
     await tx`insert into allrice_settings(scope_type,scope_id,key,value)
       values('organization',${org},'employee_experience_policy',${tx.json(policy)})
@@ -251,12 +258,6 @@ export async function updateExperiencePolicy(
   });
 }
 
-/** Materialize only instances with NEW captured evidence. No historical chat scan. */
-/** No new schedules for the retired experience-consolidation-v1 consumer. */
-export async function syncExperienceConsolidationSchedules() {
-  return 0;
-}
-
 export type ExperienceOccurrenceReservation =
   | { outcome: 'queued' | 'empty' | 'already_claimed'; automationRunId: string }
   | {
@@ -268,20 +269,6 @@ export type ExperienceOccurrenceReservation =
       };
     }
   | { outcome: 'policy_blocked'; reason: 'disabled' | 'policy_changed' };
-
-/** Retained native receipts cannot reserve or replay old business work. */
-export async function reserveExperienceOccurrenceInTransaction(
-  tx: Tx,
-  rule: Rule,
-  scheduledFor: Date,
-  nativeRecurringOccurrenceId: string | null = null,
-): Promise<ExperienceOccurrenceReservation> {
-  void tx;
-  void rule;
-  void scheduledFor;
-  void nativeRecurringOccurrenceId;
-  return { outcome: 'policy_blocked', reason: 'disabled' };
-}
 
 async function loadOccurrence(
   tx: Tx | ReturnType<typeof getDatabase>,
@@ -436,99 +423,19 @@ export async function readExperienceValidationSource(
   return { occurrence, receipt, execution };
 }
 
-export async function experienceOccurrencePrincipal(
-  id: string,
-): Promise<ResourcePrincipal> {
-  void id;
-  throw new ExperienceError('disabled');
-}
-
-export async function prepareExperienceExecution(
-  id: string,
-): Promise<z.infer<typeof ExperienceExecutionSchema>> {
-  void id;
-  throw new ExperienceError('disabled');
-}
-
-export async function bindExperienceRun(
-  tx: Tx,
-  id: string,
-  runId: string,
-  ownerId: string,
-) {
-  void tx;
-  void id;
-  void runId;
-  void ownerId;
-  throw new ExperienceError('disabled');
-}
-
-export async function getExperienceExecution(runId: string) {
-  return getDatabase().begin((tx) =>
-    getExperienceExecutionInTransaction(tx, runId),
-  );
-}
-
-/** Existing queue/native gates translate the disabled business authority
- * through their existing failure contracts, before any new model execution. */
-export async function getExperienceExecutionInTransaction(
-  tx: Tx,
-  runId: string,
-): Promise<{
-  occurrence: ExperienceOccurrence;
-  execution: z.infer<typeof ExperienceExecutionSchema>;
-}> {
-  void tx;
-  void runId;
-  throw new ExperienceError('disabled');
-}
-
-/** Refuse late business output. The Worker already settles model usage in
- * its route transaction; the ordinary Job failure path retains that ledger. */
-export async function completeExperienceConsolidation(
-  tx: Tx,
-  job: {
-    run_id: string;
-    id: string;
-    owner_id: string;
-    timeout_at: Date;
-    lease_expires_at: Date | null;
-  },
-  raw: unknown,
-): Promise<{
-  occurrenceId: string;
-  state: 'pending_validation';
-  draftCount: number;
-}> {
-  void tx;
-  void job;
-  void raw;
-  throw new ExperienceError('disabled');
-}
-
-export async function recoverExperienceOccurrences(
-  limit = 4,
-): Promise<string[]> {
-  void limit;
-  return [];
-}
-
-export async function dispatchExperienceOccurrence(id: string) {
-  const { enqueueExperienceConsolidationRun } =
-    await import('./execution/queue.ts');
-  try {
-    await prepareExperienceExecution(id);
-    await enqueueExperienceConsolidationRun(id);
-  } catch (error) {
-    // Unknown enqueue result is read back. A bound/paid Run is never replayed.
-    const db = getDatabase(),
-      { row } = await loadOccurrence(db, id);
-    if (row.run_id) return;
-    await db`update allrice_automation_runs set status='failed',completed_at=clock_timestamp(),error_code='EXPERIENCE_PREPARATION_FAILED',
-      error_message='整理未启动；来源已保留，请核查配置或权限。' where id=${id} and run_id is null and status='queued'`;
-    throw error;
-  }
-}
+// Only the v2 business implementation is executable. V1 provenance stays below.
+export {
+  syncExperienceConsolidationSchedules,
+  reserveExperienceOccurrenceInTransaction,
+  experienceOccurrencePrincipal,
+  prepareExperienceExecution,
+  bindExperienceRun,
+  getExperienceExecution,
+  getExperienceExecutionInTransaction,
+  completeExperienceConsolidation,
+  recoverExperienceOccurrences,
+  dispatchExperienceOccurrence,
+} from './memory-consolidation.ts';
 
 export async function listExperienceDrafts(
   context: RequestContext,
@@ -546,7 +453,7 @@ export async function listExperienceDrafts(
       await tx`select r.id,r.run_id,r.status,r.created_at,r.error_code,r.experience_occurrence,r.experience_receipt,r.experience_validation_plan
       from allrice_automation_runs r join allrice_automations a on a.id=r.automation_id
       where r.organization_id=${context.organizationId} and r.workspace_id=${context.workspaceId!} and a.owner_id=${context.actor.id}
-        and r.experience_occurrence is not null and (${instanceId ?? null}::uuid is null or r.experience_occurrence->>'instanceId'=${instanceId ?? null})
+        and r.experience_occurrence->>'schemaVersion'='1' and (${instanceId ?? null}::uuid is null or r.experience_occurrence->>'instanceId'=${instanceId ?? null})
       order by r.created_at desc,r.id desc limit 50`;
     const result = [];
     for (const row of rows) {
@@ -630,3 +537,9 @@ export async function listExperienceDrafts(
     return result;
   });
 }
+
+// Shared read-only rule material; the v1 execution path remains retired.
+export {
+  currentRules as readExperienceCurrentRules,
+  stableInstance as experienceInstanceDigest,
+};

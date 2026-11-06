@@ -368,6 +368,62 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
       expect((await (await context.request.get(url)).json()).policy).toEqual(
         historical,
       );
+      const save = (settings: Record<string, unknown>, expectedRevision = 2) =>
+        context.request.put(url, {
+          headers: { Origin: origin },
+          data: {
+            expectedRevision,
+            frequency: 'weekly',
+            timezone: 'Asia/Shanghai',
+            weekday: 1,
+            monthDay: 30,
+            time: '05:30',
+            ...settings,
+          },
+        });
+      // Neither legacy opt-in may be retained by omitting it from the update.
+      for (const settings of [
+        { validationMode: 'off' },
+        { adoptionMode: 'off' },
+        {},
+      ]) {
+        const rejected = await save(settings);
+        expect(rejected.status()).toBe(503);
+        expect(await rejected.json()).toMatchObject({
+          code: 'EXPERIENCE_SCHEDULING_UNAVAILABLE',
+        });
+        expect(await state()).toEqual(before);
+      }
+      // Scheme one closes the historical plan first. Keeping historical
+      // opt-ins in a disabled policy must not prevent this legal shutdown.
+      const closed = await save({ frequency: 'off' });
+      expect(closed.status()).toBe(200);
+      expect((await closed.json()).policy).toMatchObject({
+        frequency: 'off',
+        revision: 3,
+        validationMode: 'supported_cases',
+        adoptionMode: 'supported_private',
+      });
+      const afterClose = await state();
+      expect((await save({}, 3)).status()).toBe(503);
+      expect(await state()).toEqual(afterClose);
+      // V2 can be enabled explicitly with both retired writer modes off.
+      const enabled = await save(
+        { validationMode: 'off', adoptionMode: 'off' },
+        3,
+      );
+      expect(enabled.status()).toBe(200);
+      const newPolicy = (await enabled.json()).policy;
+      expect(newPolicy).toMatchObject({
+        frequency: 'weekly',
+        revision: 4,
+        validationMode: 'off',
+        adoptionMode: 'off',
+      });
+      expect((await (await context.request.get(url)).json()).policy).toEqual(
+        newPolicy,
+      );
+      expect((await state()).policyAudit).toHaveLength(2);
       const anonymous = await browser.newContext();
       try {
         expect(

@@ -51,7 +51,7 @@ it.each([false, true])(
         {
           id: sourceId,
           excerpt: '之前漏算退款。',
-          evidence: { kind: 'correction' },
+          evidence: { kind: 'human_message' },
         },
       ],
     };
@@ -75,9 +75,16 @@ it.each([false, true])(
       },
     };
     const output = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       drafts: [],
-      discarded: [{ sourceIds: [sourceId], reason: '现行规则已覆盖' }],
+      suggestions: [],
+      discarded: [
+        {
+          sourceIds: [sourceId],
+          category: 'not_reusable',
+          reason: '现行规则已覆盖',
+        },
+      ],
     };
     ports.frozen.mockResolvedValue({
       occurrence,
