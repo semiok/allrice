@@ -215,8 +215,13 @@ suite(
         await db`insert into allrice_platform_quality_checks(id,request_id,organization_id,workspace_id,owner_id,run_id,job_id,session_id,input_digest,frozen)
         values(${randomUUID()},${randomUUID()},${f.org},${f.workspace},${f.user},${f.runId},${f.jobId},${f.session.id},${'sha256:' + 'a'.repeat(64)},'{}')`;
       if (mode === 'child') {
-        const root = await setup();
-        await db`update allrice_runtime_run_links set root_run_id=${root.runId},parent_run_id=${root.runId} where run_id=${f.runId}`;
+        // Ordinary no-tool roots have no operation ledger. A recorded child
+        // relationship must still reject the source, within the same tenant.
+        await db`insert into allrice_runtime_roots(root_run_id,organization_id,workspace_id,task,deadline_at)
+          values(${f.run},${f.org},${f.workspace},'{}',now()+interval '1 hour')`;
+        await db`insert into allrice_runtime_run_links(run_id,root_run_id,parent_run_id,organization_id,workspace_id,task)
+          values(${f.run},${f.run},null,${f.org},${f.workspace},'{}'),
+            (${f.runId},${f.run},${f.run},${f.org},${f.workspace},'{}')`;
       }
       await collect();
       expect(await rows(f.runId)).toEqual([]);
