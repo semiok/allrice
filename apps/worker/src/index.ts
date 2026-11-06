@@ -34,13 +34,7 @@ import {
   maintainQueue,
   listenForReadyJobs,
   probeReadyJobs,
-  collectPendingExperienceEvidence,
-  recoverExperienceOccurrences,
-  dispatchExperienceOccurrence,
   recoverPlatformQualityOccurrences,
-  syncExperienceConsolidationSchedules,
-  syncExperienceValidations,
-  syncExperienceAdoptions,
   pingDatabase,
   queueSummary,
   recoverCodexAuthorizationFlows,
@@ -655,26 +649,12 @@ async function runAutomationTick() {
       await syncAutomationRuns();
       await processFolderTriggerEvents(Math.max(1, concurrency));
       const limit = Math.max(1, concurrency);
-      for (const id of await recoverExperienceOccurrences(limit)) {
-        try {
-          await dispatchExperienceOccurrence(id);
-        } catch {
-          /* Durable failure retained by dispatcher. */
-        }
-      }
+
       const recovered = await recoverPlatformQualityOccurrences(limit);
       if (recovered > 0) {
         console.info('[M6] recovered quality occurrences', {
           count: recovered,
         });
-      }
-      // Reuse this background producer, keeping collection off the foreground
-      // claim/completion path. It persists evidence without any model calls.
-      if (!stopping) {
-        await collectPendingExperienceEvidence();
-        await syncExperienceConsolidationSchedules();
-        await syncExperienceValidations();
-        await syncExperienceAdoptions();
       }
     });
     if (!admitted)
