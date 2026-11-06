@@ -64,6 +64,10 @@ suite('local tools: new Run device qualification', () => {
       definition: {
         ...source.definition,
         capabilities: { ...source.definition.capabilities, toolNames: tools },
+        securityPolicy: {
+          ...source.definition.securityPolicy,
+          bridgeAccess: 'read_write',
+        },
       },
     });
     await source.preview();
@@ -182,7 +186,7 @@ suite('local tools: new Run device qualification', () => {
         expect.arrayContaining(localTools),
       );
       const [stored] =
-        await f.db`select execution_snapshot from allrice_employee_runs where id=${current.sent.run.id}`;
+        await f.db`select execution_snapshot from allrice_employee_runs where run_id=${current.sent.run.id}`;
       expect(
         stored!.execution_snapshot.capabilitySnapshot.bindings.toolNames,
       ).toEqual(snapshot.capabilitySnapshot.bindings.toolNames);
