@@ -392,7 +392,7 @@ suite(
       await db.unsafe(
         await readFile(
           new URL(
-            '../migrations/0233_memory_source_cutover.sql',
+            '../migrations/0234_memory_source_cutover.sql',
             import.meta.url,
           ),
           'utf8',
