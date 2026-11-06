@@ -150,6 +150,7 @@ async function resolvePackage(
   const frontmatter = text.skillPackage.frontmatter;
   const skill = PersonalSceneSkillSchema.parse({
     ...summary(scene, frontmatter),
+    ...(text.skillPackage.source ? { source: text.skillPackage.source } : {}),
     ...(frontmatter
       ? {
           frontmatter,
