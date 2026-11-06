@@ -397,8 +397,7 @@ suite(
         const taken = claims.filter((c) => ids.has(c.id));
         expect(new Set(taken.map((c) => c.id)).size).toBe(48);
         expect(new Set(taken.map((c) => c.worker)).size).toBe(2);
-        const rows =
-          await f.db`select attempt,status
+        const rows = await f.db`select attempt,status
           from allrice_jobs where id in ${f.db([...ids])}`;
         expect(rows).toHaveLength(48);
         expect(
