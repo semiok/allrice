@@ -3,7 +3,6 @@ import {
   localCommandToolchainImageV1,
   PlatformEmployeeDefinitionSchema,
   PlatformEmployeeRuntimeProfileSchema,
-  type EmployeeRuntimePackage,
   type PlatformEmployeeDefinition,
 } from '@allrice/contracts';
 import {
@@ -70,7 +69,7 @@ function definition(): PlatformEmployeeDefinition {
 }
 // Fixture-only publisher resealing permits deliberate, signed-but-incompatible
 // inputs. Production validation still uses the real shared publisher helpers.
-function reseal(pkg: EmployeeRuntimePackage) {
+function reseal(pkg: ReturnType<typeof buildEmployeeRuntimePackage>) {
   const p = pkg.runtimeManifest;
   pkg.capabilityFingerprint = runtimePackageChecksum({
     distributionGeneration: p.distributionGeneration,

@@ -73,6 +73,32 @@ describe('platform employee production contract', () => {
     );
   });
 
+  it('preserves the platform definition bytes and required identity fields after sharing the PERSONA source schema', () => {
+    expect(
+      JSON.stringify(PlatformEmployeeDefinitionSchema.parse(riceDefinition)),
+    ).toBe(JSON.stringify(riceDefinition));
+    const { expressionStyle, ...identity } = riceDefinition.identity;
+    expect(expressionStyle).toBe('structured');
+    expect(
+      PlatformEmployeeDefinitionSchema.safeParse({
+        ...riceDefinition,
+        identity,
+      }).success,
+    ).toBe(false);
+    expect(
+      PlatformEmployeeDefinitionSchema.safeParse({
+        ...riceDefinition,
+        identity: { ...riceDefinition.identity, expressionStyle: 'free text' },
+      }).success,
+    ).toBe(false);
+    expect(
+      PlatformEmployeeDefinitionSchema.safeParse({
+        ...riceDefinition,
+        appearance: { ...riceDefinition.appearance, personalOverride: true },
+      }).success,
+    ).toBe(false);
+  });
+
   it('requires DSH as the compiled Harness', () => {
     const profile = PlatformEmployeeRuntimeProfileSchema.parse({
       schemaVersion: 1,

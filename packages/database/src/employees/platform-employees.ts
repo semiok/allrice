@@ -58,6 +58,7 @@ import {
   UuidSchema,
   employeeModelPolicyProblem,
   employeeToolConfigurationErrors,
+  type EmployeeRuntimePackage,
   type PlatformEmployeeDefinition,
   type PlatformEmployeeTestRunOutput,
   type RequestContext,
@@ -1626,7 +1627,7 @@ function materializedEmployeeKey(platformKey: string) {
 
 function tenantManifest(
   definition: PlatformEmployeeDefinition,
-  runtimePackage: ReturnType<typeof buildEmployeeRuntimePackage>,
+  runtimePackage: EmployeeRuntimePackage,
 ) {
   return employeeManifest({
     key: materializedEmployeeKey(definition.key),
