@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { experiencePolicySchedule } from '@allrice/contracts';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createP27CodexWorkerFixture } from '../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
 import { authorizeFixturePlatformAdministrator } from './platform-authority.fixture.ts';
@@ -253,12 +254,9 @@ suite(
           f.context,
           f.organizationId,
           {
+            ...experiencePolicySchedule(before),
             expectedRevision: before.revision,
             frequency: 'off',
-            timezone: before.timezone,
-            time: before.time,
-            weekday: before.weekday,
-            monthDay: before.monthDay,
           },
         );
         expect(paused.frequency).toBe('off');
