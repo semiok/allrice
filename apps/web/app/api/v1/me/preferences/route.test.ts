@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as Database from '@allrice/database';
+import { cloudProjectCapabilityId } from '@allrice/contracts';
 const mocks = vi.hoisted(() => ({
   context: vi.fn(),
   get: vi.fn(),
@@ -108,6 +109,49 @@ describe('authenticated personal preferences', () => {
     const response = await PATCH(request({ streamingOutput: true }));
     expect(response.status).toBe(503);
     expect(JSON.stringify(await response.json())).not.toContain('private-sql');
+  });
+  it('saves capability configuration only for the authenticated account', async () => {
+    const capabilities = {
+      [cloudProjectCapabilityId]: { configVersion: 1, enabled: true },
+    };
+    mocks.update.mockResolvedValue({ capabilities, updatedAt: null });
+    const response = await PATCH(request({ capabilities }));
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('private, no-store');
+    expect(mocks.update).toHaveBeenCalledExactlyOnceWith(context, {
+      capabilities,
+    });
+    expect(await response.json()).toEqual({
+      viewerId: 'current-user',
+      preferences: { capabilities, updatedAt: null },
+    });
+    mocks.get.mockResolvedValue({ capabilities, updatedAt: null });
+    const read = await GET(new Request('https://allrice.test/api'));
+    expect(read.status).toBe(200);
+    expect(read.headers.get('cache-control')).toBe('private, no-store');
+    expect((await read.json()).preferences.capabilities).toEqual(capabilities);
+  });
+  it.each([
+    { capabilities: {} },
+    {
+      capabilities: {
+        [cloudProjectCapabilityId]: { configVersion: 2, enabled: true },
+      },
+    },
+    {
+      capabilities: {
+        [cloudProjectCapabilityId]: { configVersion: 1, enabled: 'true' },
+      },
+    },
+    {
+      capabilities: {
+        [cloudProjectCapabilityId]: { configVersion: 1, enabled: true },
+      },
+      userId: 'other',
+    },
+  ])('rejects invalid capability writes %j', async (body) => {
+    expect((await PATCH(request(body))).status).toBe(400);
+    expect(mocks.update).not.toHaveBeenCalled();
   });
   it.each([
     { questionWait: { mode: 'default' } },

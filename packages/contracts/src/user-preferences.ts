@@ -16,6 +16,23 @@ export const CollapseTimingSchema = z.enum(['completion', 'next-input']);
 export const AppearanceSchema = z.enum(['light', 'dark', 'system']);
 export type Appearance = z.infer<typeof AppearanceSchema>;
 
+// Account configuration, not a permission grant. Read only when creating a
+// conversation; this is deliberately separate from NativePreferencesSnapshot.
+export const cloudProjectCapabilityId = 'allrice.cloud-project-development';
+export const AccountCapabilitySettingsSchema = z
+  .object({
+    [cloudProjectCapabilityId]: z
+      .object({ configVersion: z.literal(1), enabled: z.boolean() })
+      .strict(),
+  })
+  .strict();
+export type AccountCapabilitySettings = z.infer<
+  typeof AccountCapabilitySettingsSchema
+>;
+export const defaultAccountCapabilitySettings: AccountCapabilitySettings = {
+  [cloudProjectCapabilityId]: { configVersion: 1, enabled: false },
+};
+
 // MET-210 PR2 (263c5b0f): reuse these contracts when adding preference writers.
 export const QuestionWaitSchema = z.discriminatedUnion('mode', [
   z.object({ mode: z.literal('default') }).strict(),
@@ -53,6 +70,7 @@ export const UserPreferencesInputSchema = z
     appearance: AppearanceSchema.optional(),
     questionWait: QuestionWaitSchema.optional(),
     subagents: SubagentPreferencesSchema.optional(),
+    capabilities: AccountCapabilitySettingsSchema.optional(),
   })
   .strict()
   .refine(
@@ -74,6 +92,9 @@ export const UserPreferencesSchema = z.object({
     maxDepth: null,
     maxActive: null,
   }),
+  capabilities: AccountCapabilitySettingsSchema.default(
+    defaultAccountCapabilitySettings,
+  ),
   updatedAt: z.string().datetime().nullable(),
 });
 export type UserPreferences = z.infer<typeof UserPreferencesSchema>;
@@ -86,5 +107,6 @@ export const defaultUserPreferences: UserPreferences = {
   appearance: 'light',
   questionWait: { mode: 'default' },
   subagents: { maxDepth: null, maxActive: null },
+  capabilities: defaultAccountCapabilitySettings,
   updatedAt: null,
 };

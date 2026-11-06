@@ -1,6 +1,9 @@
 import { readFile } from 'node:fs/promises';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { defaultUserPreferences } from '@allrice/contracts';
+import {
+  cloudProjectCapabilityId,
+  defaultUserPreferences,
+} from '@allrice/contracts';
 import * as client from './core/client.ts';
 import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createExperienceFixture } from './experience.fixture.ts';
@@ -22,6 +25,46 @@ suite('account output preferences', () => {
   afterAll(async () => {
     vi.restoreAllMocks();
     if (fixture) await fixture.close();
+  });
+  it('saves account capability configuration in isolation and preserves concurrent display changes', async () => {
+    const f = await createExperienceFixture(fixture.db);
+    const capabilities = {
+      [cloudProjectCapabilityId]: { configVersion: 1, enabled: true },
+    };
+    expect((await getUserPreferences(f.owner)).capabilities).toEqual(
+      defaultUserPreferences.capabilities,
+    );
+    await Promise.all([
+      updateUserPreferences(f.owner, { capabilities }),
+      updateUserPreferences(f.owner, { appearance: 'dark' }),
+      updateUserPreferences(f.owner, { questionWait: { mode: 'forever' } }),
+    ]);
+    const saved = await getUserPreferences(f.owner);
+    expect(saved).toMatchObject({
+      capabilities,
+      appearance: 'dark',
+      questionWait: { mode: 'forever' },
+    });
+    expect(await getUserPreferences({ ...f.owner, workspaceId: null })).toEqual(
+      saved,
+    );
+    expect((await getUserPreferences(f.neighbor)).capabilities).toEqual(
+      defaultUserPreferences.capabilities,
+    );
+    await expect(
+      updateUserPreferences(f.owner, {
+        capabilities,
+        userId: f.neighbor.actor.id,
+      }),
+    ).rejects.toThrow();
+    await updateUserPreferences(f.owner, {
+      capabilities: defaultUserPreferences.capabilities,
+    });
+    expect(await getUserPreferences(f.owner)).toMatchObject({
+      capabilities: defaultUserPreferences.capabilities,
+      appearance: 'dark',
+      questionWait: { mode: 'forever' },
+    });
   });
   it('defaults on, persists for a normal member across workspaces, and isolates other users', async () => {
     const f = await createExperienceFixture(fixture.db);
@@ -287,6 +330,7 @@ suite('account output preferences', () => {
       questionWait: { mode: 'default' },
       subagents: { maxDepth: null, maxActive: null },
       updatedAt: before!.updated_at.toISOString(),
+      capabilities: defaultUserPreferences.capabilities,
     });
     // The runner records each file once; a manual second run fails unchanged.
     await expect(migrate()).rejects.toThrow(/already exists/);
