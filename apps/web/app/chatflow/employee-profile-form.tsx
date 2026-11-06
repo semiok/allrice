@@ -103,27 +103,34 @@ export function mergeEmployeeProfileForm(
   const renameInitials =
     changed('name') && raw.appearance?.avatarType === 'initials';
   if (changed('accentColor') || renameInitials) {
-    const appearance = raw.appearance ??
-      resolved?.appearance ?? {
-        avatarType: 'initials' as const,
-        avatarValue: Array.from(name)[0] || '员',
+    if (editedFields !== undefined) {
+      profile.appearance = {
+        ...(resolved?.kind === 'general' ? {} : raw.appearance),
+        ...(renameInitials ? { avatarValue: Array.from(name)[0] || '员' } : {}),
+        ...(changed('accentColor') ? { accentColor: values.accentColor } : {}),
       };
-    profile.appearance = {
-      ...appearance,
-      ...(appearance.avatarType === 'initials' && changed('name')
-        ? { avatarValue: Array.from(name)[0] || '员' }
-        : {}),
-      ...(changed('accentColor')
-        ? {
-            accentColor:
-              editedFields === undefined &&
-              appearance.accentColor === 'indigo' &&
-              values.accentColor === 'blue'
-                ? 'indigo'
-                : values.accentColor,
-          }
-        : {}),
-    };
+    } else {
+      const appearance = raw.appearance ??
+        resolved?.appearance ?? {
+          avatarType: 'initials' as const,
+          avatarValue: Array.from(name)[0] || '员',
+        };
+      profile.appearance = {
+        ...appearance,
+        ...(appearance.avatarType === 'initials' && changed('name')
+          ? { avatarValue: Array.from(name)[0] || '员' }
+          : {}),
+        ...(changed('accentColor')
+          ? {
+              accentColor:
+                appearance.accentColor === 'indigo' &&
+                values.accentColor === 'blue'
+                  ? 'indigo'
+                  : values.accentColor,
+            }
+          : {}),
+      };
+    }
   }
   return EmployeeInstanceProfileSchema.parse(profile);
 }
