@@ -400,6 +400,8 @@ interface, physical patch, table or child/schedule controller. Coverage lives in
 `dsh-file-read-native.test.ts`, `native-file-read.integration.test.ts`, and the
 native `file-read-declarations.test.mjs` scope differential.
 
+MET-249 U1（用户 2026-11-05 窄批准）：只给由 definition/source/key 确认的基础 Rice 暴露现有本人 method.inspect/save_candidate/restore_candidate。直接沿公开原生工具注册投影三工具参数，隐藏 sharedTarget、scope、departmentId 和旧测试参数；不整组复制 custom 工具。既有 Host 指纹包含该服务端范围，initialize 回执必须确认支持，旧执行包不能静默退回共享 schema。数据库独立重验归属、真人来源、冻结 grant、租约、CAS，并禁止文字方法改动包引用；包仍走精确文件确认。属于已批 SaaS 门卫，无新表、持久状态、私有接口、子智能体或共享授权修改。守护为 Rice PG/HTTP 用例、原生方法 transport、协议能力负例和 runtime-pool 范围隔离。MET-225 更新既有 lifecycle/本人方法工具行。
+
 MET-222（用户 2026-10-30；root 核定单向运维账本）复用 `dsh-user-questions@0.2.1-rc.2` 公开 `user-questions/request` 的现有 provider：成功发布后只在原 pending 项冻结 Run/root/native/question 身份；原答案、超时、abort、clearRoot 删除即当前事实，不再新增 opened/ended 持久事件或专用写异常。只读 `session/projection` 用 roots.get 返回版本 1 的实际采样时间、完整性和必要 ID；无 root、归属缺失、未成功发布或旧 Host 是 unknown，完整空才代表采样时 0。无 ensure/resume/touch/park/续租，无题答正文，不改等待或用户 Run 结果。
 
 既有每 30 秒 WorkerOperations 经独立 diagnostics DB 写 runtime_metadata JSON；当前执行附 runtime/Worker boot/Job/attempt/generation，采样失效不借 Worker 心跳刷新。scope 明确为 default_harness_router；未采到的活跃 Job（包括独立 technical/experience adapters）必须逐 Run unknown，消费者核真实租约/绑定和关闭事实。没有新 PG 状态、全局注册器或恢复机制。守护为 `question-observation.integration.test.mjs`、`question-observation.test.mjs`；升级核 provider map 发布与清理语义，回退缺覆盖不可当健康 0。MET-225 关联 L14/L07/E08/L19 在线等答只读快照行。
@@ -786,3 +788,7 @@ C3 云执行并发锁序修复（2026-10-31 Dev 已复现）：共用事务准�
 AllRice 独有部分归门卫：组织/本人/实例/本人确认/有效资格及根身份。原 Run memory_context_state 继续记初始6000、单读8000、总24000字节/12次，来源定位符不授予新权限。USER/MEMORY是数据库的有界冻结投影，不写文件，不新增表。合法 experience 引用归同一确认来源；root 的旧共同/场景 memory 正文退出输入，企业 knowledge 保留。旧场景读取的暂存回执按原生 session 区分，防止 root 文档投影与 child 原渲染并发相互覆盖；未改子任务或定时实现。来源工具拒绝未确认自动采用 proof，现有采集/验证生产者退休留 M5。
 
 删除条件：DSH 原生能直接消费 SaaS 的当前租户资格与 Run 账本时移除业务门卫桥；普通文档投影仍属业务数据。验证要求为 root/child/fork/resume 真原生差分、同 Run 冻结/撤回拒绝、资格/来源/预算 DB 验证与获批8根Run；本段是实现合同，不冒称尚未完成的验收已通过。
+
+### MET-249 U1-3b：作者名字接原生 Skill
+
+个人场景 Provider 将精确包的 `name`、`whenToUse`、`metadata`、`invocation` 直接交给 rc.2 公开 Skill Provider；无作者字段的旧包仍用 UUID，历史 Run 和读取账本不改写。SaaS 沿现本人写事务及组织锁拒绝场景/基础/启用个人 Skill 重名，已发布作者名更新不能更名。普通安装/绑定/启用同样检查场景；没有第二套命令解析、阶段凭据或加载状态。`allrice-progressive-scene-provider-v1` 对应 MET-225 E02/L03/L04，精确资源、来源、撤销与使用证据门卫保留。

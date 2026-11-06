@@ -30,6 +30,7 @@ export type ResolvedContentSource = {
   dependency: unknown;
   issue?: EmployeeContentIssue;
   publish?: { contentId: string; revisionId: string };
+  personalPackageBytes?: number;
 };
 function unavailable(
   ref: EmployeeContentReference,
@@ -149,7 +150,14 @@ export async function resolveEmployeeContentSource(
     const text = row.content as { title?: string; body?: string };
     if (typeof text.title !== 'string' || typeof text.body !== 'string')
       return unavailable(ref);
+    const packaged =
+      sourceOwnership.scope === 'personal' && ref.sourceKind === 'procedure'
+        ? EmployeeContentTextSchema.safeParse(row.content)
+        : null;
     return {
+      ...(packaged?.success && 'skillPackage' in packaged.data
+        ? { personalPackageBytes: Buffer.byteLength(packaged.data.body) }
+        : {}),
       dto: {
         reference: ref,
         available: true,

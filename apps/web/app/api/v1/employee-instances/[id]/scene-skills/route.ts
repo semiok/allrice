@@ -8,6 +8,7 @@ import {
   getEmployeeSceneSkill,
   getEmployeeSceneSkillResource,
   getEmployeeInstance,
+  canUsePersonalEmployeeScenes,
   listPersonalSceneSkills,
   getPersonalSceneSkill,
   getPersonalSceneSkillResource,
@@ -32,7 +33,7 @@ export async function GET(
     };
     const instanceId = (await params).id;
     const instance = await getEmployeeInstance(scope, instanceId);
-    if (instance.kind === 'custom') {
+    if (await canUsePersonalEmployeeScenes(instance)) {
       const selection = PersonalSceneSkillQuerySchema.parse(
         Object.fromEntries(query),
       );

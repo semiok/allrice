@@ -50,7 +50,7 @@ export function employeeInstanceInstructions(
     ...(instance.profile.expressionStyle
       ? [styles[instance.profile.expressionStyle]]
       : []),
-    ...(instance.kind === 'custom' &&
+    ...((instance.kind === 'custom' || rice) &&
     snapshot.capabilitySnapshot.bindings.toolNames.includes(
       'workspace.employee.method.inspect',
     )
@@ -60,7 +60,7 @@ export function employeeInstanceInstructions(
       : []),
     ...(rice
       ? [
-          'This is the basic Rice instance. Its owner may change its personal display name and expression style, and install, bind or enable ordinary personal Skills through the existing authorized tools. Personal Workflows and work scenes are unavailable here; use the existing create-your-own AI employee entry for an owner-only custom employee. A Skill installation grants no Workflow, scene or additional tool authority. Platform-provided capabilities and safety requirements still apply.',
+          'This is the basic Rice instance. Its owner may change its personal display name and expression style, and install, bind or enable ordinary personal Skills through the existing authorized tools. Its owner may also add personal Workflow scene packages through the existing exact file preview and confirmation. The three method tools inspect, save_candidate and restore_candidate can maintain only this owner’s existing personal text methods; they cannot target shared company or department content and do not replace package confirmation. A Skill installation grants no additional tool authority. Platform-provided capabilities and safety requirements still apply.',
         ]
       : []),
     ...(snapshot.capabilitySnapshot.bindings.toolNames.includes(
@@ -258,7 +258,7 @@ export function assembleEmployeeKernel(input: {
         : []),
       ...(input.personalScenes
         ? [
-            'Your personal Workflows appear in the native Skill directory under allrice-scene- names. Load relevant Skills with the native skill tool; each load reads the currently authorized package. Earlier loaded text stays in native conversation history and may be summarized. To read a package resource use workspace_skill_read with the exact contentRef from that load and the resource path. Never substitute a newer package for that reference. Loading and reading do not grant tools, execute scripts, or prove task completion.',
+            'Your personal Workflows appear in the native Skill directory under their exact Skill names. Load relevant Skills with the native skill tool; each load reads the currently authorized package. Earlier loaded text stays in native conversation history and may be summarized. To read a package resource use workspace_skill_read with the exact contentRef from that load and the resource path. Never substitute a newer package for that reference. Loading and reading do not grant tools, execute scripts, or prove task completion.',
           ]
         : []),
       ...(input.hasContentScenes

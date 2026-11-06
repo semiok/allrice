@@ -1,14 +1,13 @@
 import { z } from 'zod';
 import { TimestampSchema, UuidSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
+import { SkillPackageSourceSchema } from './skill-package-source.ts';
 import {
   PersonalSkillDefinitionSchema,
-  PersonalSkillGitHubSourceSchema,
   PersonalSkillGitHubUrlSchema,
   PersonalSkillItemSchema,
   PersonalSkillSourceSchema,
   PersonalSkillVersionPreviewSchema,
-  personalSkillLimits,
 } from './personal-skills.ts';
 
 export const PersonalSkillPreviewTargetSchema = z.discriminatedUnion(
@@ -33,21 +32,7 @@ export const PersonalSkillPreviewAttestationSchema = z
     workspaceId: UuidSchema,
     ownerId: UuidSchema,
     instanceId: UuidSchema,
-    source: z.union([
-      PersonalSkillGitHubSourceSchema,
-      z
-        .object({
-          kind: z.literal('zip'),
-          fileName: z.string().min(1).max(255),
-          originalChecksum: ChecksumSchema,
-          byteLength: z
-            .number()
-            .int()
-            .positive()
-            .max(personalSkillLimits.archiveBytes),
-        })
-        .strict(),
-    ]),
+    source: SkillPackageSourceSchema,
     sourcePath: z.literal('SKILL.md'),
     digest: ChecksumSchema,
     target: z.discriminatedUnion('operation', [
