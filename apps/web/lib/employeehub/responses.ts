@@ -57,6 +57,16 @@ export function employeeHubErrorResponse(error: unknown) {
               : '内容版本或请求标识已变化，请读取最新版本后重试。',
       retryable: false,
     });
+  if (
+    error instanceof EmployeeInstanceError &&
+    error.code === 'default_protected'
+  )
+    return apiProblem({
+      status: 409,
+      code: 'DEFAULT_EMPLOYEE_PROTECTED',
+      message: 'Rice is the protected default employee',
+      retryable: false,
+    });
   if (error instanceof EmployeeInstanceError)
     return apiProblem({
       status: 409,

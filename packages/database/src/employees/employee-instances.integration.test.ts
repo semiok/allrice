@@ -7956,6 +7956,144 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     );
   });
 
+  it('U1 default Rice archive protection uses real identity before receipts or Run cancellation', async () => {
+    const f = await setup(true, true),
+      id = f.assignment.id;
+    await updateEmployeeInstance(f.a.context, id, {
+      workspaceId: f.a.workspaceId,
+      expectedRevision: 1,
+      requestId: randomUUID(),
+      profile: { name: 'Not called Rice' },
+    });
+    const run = await profileRun(f, id, 'Synthetic active task');
+    const state = async () => ({
+      instance:
+        await fixture.db`select * from allrice_employee_instances where id=${id}`,
+      revisions:
+        await fixture.db`select * from allrice_employee_instance_revisions where instance_id=${id} order by revision`,
+      jobs: await fixture.db`select * from allrice_jobs where run_id=${run.context.runId}`,
+      run: await fixture.db`select * from allrice_runs where id=${run.context.runId}`,
+    });
+    const before = await state();
+    expect((await getEmployeeDetails(f.a.context, id)).profile).toMatchObject({
+      isDefaultRice: true,
+      canArchive: false,
+    });
+    const args = {
+      workspaceId: f.a.workspaceId,
+      expectedRevision: 2,
+      requestId: randomUUID(),
+      operation: 'archive',
+    };
+    await expect(
+      changeEmployeeInstanceLifecycle(f.a.context, id, args),
+    ).rejects.toMatchObject({ code: 'default_protected' });
+    e3HttpAuth.context = f.a.context;
+    const routePath =
+      '../../../../apps/web/app/api/v1/employee-instances/[id]/lifecycle/route.ts';
+    const { POST } = await import(routePath);
+    const archive = () =>
+      POST(
+        new Request(
+          `https://allrice.test/api/v1/employee-instances/${id}/lifecycle`,
+          {
+            method: 'POST',
+            headers: {
+              origin: 'https://allrice.test',
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify(args),
+          },
+        ),
+        { params: Promise.resolve({ id }) },
+      );
+    const response = await archive();
+    expect(response.status).toBe(409);
+    expect((await response.json()).error.code).toBe(
+      'DEFAULT_EMPLOYEE_PROTECTED',
+    );
+    expect(await state()).toEqual(before);
+    e3HttpAuth.context = f.b.context;
+    expect([403, 404]).toContain((await archive()).status);
+    expect(await state()).toEqual(before);
+    expect(
+      (await getEmployeeInstanceHistory(f.a.context, id)).revisions,
+    ).toHaveLength(2);
+  });
+
+  it.each(['general', 'custom'] as const)(
+    'U1 allows non-default %s named Rice to archive and restore its current profile',
+    async (kind) => {
+      const f = await setup(true),
+        id = kind === 'general' ? f.assignment.id : (await f.custom('Rice')).id;
+      // Legacy label cannot confer the protected platform identity on a professional.
+      if (kind === 'general')
+        await fixture.db`update allrice_employee_instances set profile=${fixture.db.json({ name: 'Rice' })} where id=${id}`;
+      const updated = await updateEmployeeInstance(f.a.context, id, {
+        workspaceId: f.a.workspaceId,
+        expectedRevision: 1,
+        requestId: randomUUID(),
+        profile: {
+          ...(kind === 'custom'
+            ? { name: 'Rice', mission: 'Preserved personal mission' }
+            : {}),
+          expressionStyle: 'structured',
+        },
+      });
+      expect((await getEmployeeDetails(f.a.context, id)).profile).toMatchObject(
+        { isDefaultRice: false, canArchive: true },
+      );
+      const archive = {
+        workspaceId: f.a.workspaceId,
+        expectedRevision: updated.revision,
+        requestId: randomUUID(),
+        operation: 'archive',
+      };
+      const archived = await changeEmployeeInstanceLifecycle(
+        f.a.context,
+        id,
+        archive,
+      );
+      expect(archived.archivedAt).not.toBeNull();
+      expect(archived.profile).toEqual(updated.profile);
+      expect(
+        await changeEmployeeInstanceLifecycle(f.a.context, id, archive),
+      ).toEqual(archived);
+      const historical = await getEmployeeInstanceForHistory(f.a.context, id);
+      expect(historical.profile).toEqual(updated.profile);
+      const restore = {
+        workspaceId: f.a.workspaceId,
+        expectedRevision: historical.revision,
+        sourceRevision: historical.revision,
+        requestId: randomUUID(),
+        operation: 'restore',
+      };
+      const restored = await changeEmployeeInstanceLifecycle(
+        f.a.context,
+        id,
+        restore,
+      );
+      expect(restored.archivedAt).toBeNull();
+      expect(restored.profile).toEqual(updated.profile);
+      expect(restored.revision).toBe(archived.revision + 1);
+      expect(
+        await changeEmployeeInstanceLifecycle(f.a.context, id, restore),
+      ).toEqual(restored);
+      expect(
+        (await listEmployeeInstances(f.a.context, f.a.workspaceId)).map(
+          (i) => i.id,
+        ),
+      ).toContain(id);
+      await expect(
+        changeEmployeeInstanceLifecycle(f.b.context, id, {
+          ...archive,
+          expectedRevision: restored.revision,
+          requestId: randomUUID(),
+        }),
+      ).rejects.toBeDefined();
+    },
+  );
+
   it('U1 gives the real Rice owner exactly three personal methods with current CAS and no shared discovery', async () => {
     const f = await setup(true, true),
       id = f.assignment.id;

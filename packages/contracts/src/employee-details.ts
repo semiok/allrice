@@ -26,6 +26,7 @@ export const EmployeeDetailsProfileSchema = z
     // Current owner-view capabilities; never frozen as a Run's authority.
     editableFields: z.array(EmployeeInstanceProfileSchema.keyof()).optional(),
     isDefaultRice: z.boolean().optional(),
+    canArchive: z.boolean().optional(),
     defaults: EmployeeInstanceProfileSchema.optional(),
   })
   .strict();
