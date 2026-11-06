@@ -6,8 +6,160 @@ import {
   EmployeeDefinitionSchema,
   EmployeeExecutionSnapshotSchema,
   EmployeeManifestSchema,
+  EmployeeRuntimePackageSchema,
   PublishEmployeeVersionInputSchema,
 } from './employees.js';
+
+describe('runtime package PERSONA source format', () => {
+  const foundation = {
+    name: 'Rice',
+    description: 'Synthetic platform source',
+    appearance: { avatarType: 'initials', avatarValue: 'R' },
+    identity: {
+      role: 'Research partner',
+      mission: 'Check the original evidence',
+      workStyle: 'Explain the result',
+      behaviorRules: ['Do not invent results'],
+      safetyBoundaries: ['Use authorized data only'],
+      expressionStyle: 'structured',
+      outputLanguage: 'zh-CN',
+    },
+  };
+  const package3 = {
+    schemaVersion: 3,
+    packageVersion: 'rice:r1',
+    checksum: `sha256:${'a'.repeat(64)}`,
+    capabilityFingerprint: `sha256:${'b'.repeat(64)}`,
+    foundation,
+    platformPolicy: 'Platform-owned policy remains separate.',
+    skills: [],
+    runtimeManifest: {
+      source: 'allrice-published-runtime',
+      harness: 'dsh',
+      distributionGeneration: 'synthetic-generation',
+      provider: 'openai-codex',
+      model: 'synthetic',
+      toolNames: [],
+      deniedCapabilities: [],
+      skillGovernance: [],
+    },
+  };
+
+  it('reads complete platform identity and hard-policy sources without legacy files or personal data', () => {
+    const before = JSON.stringify(package3);
+    expect(EmployeeRuntimePackageSchema.parse(package3)).toEqual(package3);
+    expect(JSON.stringify(package3)).toBe(before);
+    for (const extra of [
+      { files: { agentsMd: '', identityMd: '', soulMd: '', userMd: '' } },
+      { persona: '# PERSONA.md' },
+      { profile: {} },
+      { user: '# USER.md' },
+      { memory: '# MEMORY.md' },
+      {
+        runtimeManifest: {
+          ...package3.runtimeManifest,
+          instructionPrecedence: [],
+        },
+      },
+    ]) {
+      expect(
+        EmployeeRuntimePackageSchema.safeParse({ ...package3, ...extra })
+          .success,
+      ).toBe(false);
+    }
+  });
+
+  it('requires every platform identity source and keeps the exact three expression modes', () => {
+    for (const expressionStyle of ['concise', 'structured', 'exploratory']) {
+      expect(
+        EmployeeRuntimePackageSchema.parse({
+          ...package3,
+          foundation: {
+            ...foundation,
+            identity: { ...foundation.identity, expressionStyle },
+          },
+        }),
+      ).toMatchObject({ foundation: { identity: { expressionStyle } } });
+    }
+    for (const field of ['name', 'description', 'appearance', 'identity']) {
+      const missing = { ...foundation } as Record<string, unknown>;
+      delete missing[field];
+      expect(
+        EmployeeRuntimePackageSchema.safeParse({
+          ...package3,
+          foundation: missing,
+        }).success,
+      ).toBe(false);
+    }
+    for (const field of Object.keys(foundation.identity)) {
+      const identity = { ...foundation.identity } as Record<string, unknown>;
+      delete identity[field];
+      expect(
+        EmployeeRuntimePackageSchema.safeParse({
+          ...package3,
+          foundation: { ...foundation, identity },
+        }).success,
+      ).toBe(false);
+    }
+    expect(
+      EmployeeRuntimePackageSchema.safeParse({
+        ...package3,
+        foundation: {
+          ...foundation,
+          identity: {
+            ...foundation.identity,
+            expressionStyle: 'arbitrary free text',
+          },
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it.each([1, 2])(
+    'keeps schema %s legacy-only and never fills new fields',
+    (schemaVersion) => {
+      const legacy = {
+        schemaVersion,
+        packageVersion: package3.packageVersion,
+        checksum: package3.checksum,
+        capabilityFingerprint: package3.capabilityFingerprint,
+        files: {
+          agentsMd: 'agents',
+          identityMd: 'identity',
+          soulMd: 'soul',
+          userMd: 'user',
+        },
+        skills: [],
+        runtimeManifest: {
+          ...package3.runtimeManifest,
+          instructionPrecedence: [
+            'platform-hard-policy',
+            'identity',
+            'behavior',
+            'work-rules',
+            'tenant-user-context',
+            'runtime-authorization',
+            'user-request',
+            'skill-details',
+          ],
+        },
+      };
+      expect(JSON.stringify(EmployeeRuntimePackageSchema.parse(legacy))).toBe(
+        JSON.stringify(legacy),
+      );
+      expect(
+        EmployeeRuntimePackageSchema.safeParse({ ...legacy, foundation })
+          .success,
+      ).toBe(false);
+      expect(
+        EmployeeRuntimePackageSchema.safeParse({
+          ...legacy,
+          platformPolicy: package3.platformPolicy,
+        }).success,
+      ).toBe(false);
+    },
+  );
+});
 
 describe('EmployeeHub contracts', () => {
   it('accepts a Codex-backed Rice manifest with exact SkillVersion IDs', () => {

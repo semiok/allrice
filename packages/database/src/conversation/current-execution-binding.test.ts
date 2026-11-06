@@ -3,12 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   EmployeeDefinitionSchema,
   EmployeeExecutionSnapshotSchema,
+  EmployeeRuntimePackageSchema,
   localCommandToolchainImageV1,
   PlatformEmployeeDefinitionSchema,
   SessionModelSnapshotSchema,
   withEmployeeCustomizationTools,
   type EmployeeDefinition,
-  type EmployeeRuntimePackage,
 } from '@allrice/contracts';
 import {
   employeeManifest,
@@ -20,15 +20,23 @@ import {
 } from '../platform-employees/runtime-package.ts';
 import { skillBundleChecksum, skillBytesChecksum } from '../skill-bundles.ts';
 import {
+  personaRuntimePackageChecksum,
+  type PersonaRuntimePackagePayload,
+} from '../platform-employees/runtime-package-signature.ts';
+import {
   assertCurrentEmployeeChatOrigin,
   assertEmployeeRunExecutionBinding,
   CurrentEmployeeChatOriginSchema,
+  EmployeeExecutionSourceSchema,
+  EmployeeExecutionSourcePolicySchema,
+  employeeExecutionSourceFamily,
   EmployeeRunExecutionBindingSchema,
   freezeEmployeeRunExecutionBinding,
   nativeRootDigest,
   newCurrentEmployeeChatOrigin,
   newNativeGeneration,
   validateEmployeeExecutionSource,
+  validateCurrentDeclarativeRuntimePackage,
   type EmployeeExecutionSourceInput,
   type EmployeeRunExecutionBindingInput,
 } from './current-execution-binding.ts';
@@ -68,7 +76,7 @@ function definitionOnly(): EmployeeExecutionSourceInput {
     manifest,
   };
 }
-function reseal(pkg: EmployeeRuntimePackage) {
+function reseal(pkg: ReturnType<typeof buildEmployeeRuntimePackage>) {
   // Match the immutable publisher's original field order, including files.
   // A parsed/JSONB object's enumeration order is not its signed payload.
   pkg.checksum = runtimePackageChecksum({
@@ -86,7 +94,7 @@ function reseal(pkg: EmployeeRuntimePackage) {
   });
   return pkg;
 }
-function fingerprint(pkg: EmployeeRuntimePackage) {
+function fingerprint(pkg: ReturnType<typeof buildEmployeeRuntimePackage>) {
   const p = pkg.runtimeManifest;
   pkg.capabilityFingerprint = runtimePackageChecksum({
     distributionGeneration: p.distributionGeneration,
@@ -203,10 +211,10 @@ function packaged(
 function manifestOf(source: EmployeeExecutionSourceInput): EmployeeDefinition {
   return source.manifest as EmployeeDefinition;
 }
-function packageOf(
-  source: EmployeeExecutionSourceInput,
-): EmployeeRuntimePackage {
-  return manifestOf(source).runtimePackage!;
+function packageOf(source: EmployeeExecutionSourceInput) {
+  const pkg = manifestOf(source).runtimePackage!;
+  if (pkg.schemaVersion === 3) throw Error('fixture_legacy_package_required');
+  return pkg;
 }
 function jsonbOrder(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(jsonbOrder);
@@ -862,3 +870,146 @@ describe('current employee v2 birth and per-Run binding', () => {
 
 // These are synthetic binding-contract checks, not artifact approval or actual
 // native history compatibility. No registry installation or native process.
+
+describe('PERSONA package declaration readiness', () => {
+  function personaSource() {
+    const input = packaged(newNativeGeneration, 'bundled');
+    const manifest = manifestOf(input);
+    const legacy = packageOf(input);
+    const { instructionPrecedence, ...runtimeManifest } =
+      legacy.runtimeManifest;
+    void instructionPrecedence;
+    const payload = {
+      schemaVersion: 3,
+      packageVersion: legacy.packageVersion,
+      capabilityFingerprint: legacy.capabilityFingerprint,
+      foundation: {
+        name: manifest.name,
+        description: manifest.description,
+        appearance: manifest.appearance,
+        identity: {
+          ...manifest.identity,
+          expressionStyle: 'structured',
+          outputLanguage: 'zh-CN',
+        },
+      },
+      platformPolicy: manifest.systemPrompt,
+      skills: legacy.skills,
+      runtimeManifest,
+    } satisfies PersonaRuntimePackagePayload;
+    const pkg = EmployeeRuntimePackageSchema.parse({
+      ...payload,
+      checksum: personaRuntimePackageChecksum(payload),
+    });
+    if (pkg.schemaVersion !== 3)
+      throw Error('fixture_persona_package_required');
+    manifest.runtimePackage = pkg;
+    input.configChecksum = pkg.checksum;
+    return { input, manifest, pkg };
+  }
+
+  it('verifies schema-3 declarations and frozen resources but cannot issue a current chat execution source', () => {
+    const { input, manifest, pkg } = personaSource();
+    const before = structuredClone(input);
+    expect(
+      validateCurrentDeclarativeRuntimePackage({
+        runtimePackage: pkg,
+        expectedChecksum: pkg.checksum,
+        declaration: {
+          provider: manifest.runtimePolicy.provider,
+          model: manifest.runtimePolicy.model,
+          toolNames: manifest.capabilityBindings.toolNames,
+          deniedCapabilities: manifest.securityPolicy.deniedCapabilities,
+        },
+      }),
+    ).toEqual(pkg.skills);
+    expect(() => validateEmployeeExecutionSource(input)).toThrow(
+      'CURRENT_EXECUTION_SOURCE_PERSONA_EXECUTION_UNSUPPORTED',
+    );
+    expect(() => chat(input)).toThrow(
+      'CURRENT_EXECUTION_SOURCE_PERSONA_EXECUTION_UNSUPPORTED',
+    );
+    expect(input).toEqual(before);
+  });
+
+  it('retains declaration and fingerprint checks before schema-3 execution refusal', () => {
+    const { input, manifest, pkg } = personaSource();
+    manifest.runtimePolicy.model = 'substituted';
+    expect(() => validateEmployeeExecutionSource(input)).toThrow(
+      'CURRENT_EXECUTION_SOURCE_DECLARATION_MISMATCH',
+    );
+    manifest.runtimePolicy.model = pkg.runtimeManifest.model;
+    pkg.capabilityFingerprint = artifact;
+    pkg.checksum = personaRuntimePackageChecksum(pkg);
+    input.configChecksum = pkg.checksum;
+    expect(() => validateEmployeeExecutionSource(input)).toThrow(
+      'CURRENT_EXECUTION_SOURCE_CAPABILITY_FINGERPRINT_MISMATCH',
+    );
+  });
+
+  it.each(['plain', 'bundled'] as const)(
+    'keeps the exact prior %s source-policy digest contract',
+    (format) => {
+      const { source, sourcePolicy } = validateEmployeeExecutionSource(
+        packaged(newNativeGeneration, format),
+      );
+      const version = format === 'plain' ? 1 : 2;
+      expect(source.packageSchema).toBe(version);
+      expect(sourcePolicy.digest).toBe(
+        nativeRootDigest({
+          family: 'allrice_declarative_employee_v1',
+          variant:
+            version === 1
+              ? 'current_published_package_v1'
+              : 'current_published_package_v2',
+          manifestSchema: 2,
+          packageSchema: version,
+          declaredGeneration: newNativeGeneration,
+          executionGeneration: newNativeGeneration,
+          profileId: 'restricted',
+          validation:
+            'original-checksums-known-tools-reviewed-frozen-bundles-v1',
+        }),
+      );
+    },
+  );
+
+  it('recognizes schema-3 provenance without relabeling it as schema 2 or granting execution', () => {
+    const old = validateEmployeeExecutionSource(
+      packaged(newNativeGeneration, 'bundled'),
+    );
+    const source = EmployeeExecutionSourceSchema.parse({
+      ...old.source,
+      packageSchema: 3,
+    });
+    const policy = EmployeeExecutionSourcePolicySchema.parse({
+      family: employeeExecutionSourceFamily,
+      variant: 'current_published_package_v3',
+      digest: nativeRootDigest({
+        family: employeeExecutionSourceFamily,
+        variant: 'current_published_package_v3',
+        manifestSchema: 2,
+        packageSchema: 3,
+        declaredGeneration: newNativeGeneration,
+        executionGeneration: newNativeGeneration,
+        profileId: 'restricted',
+        validation: 'original-checksums-known-tools-reviewed-frozen-bundles-v1',
+      }),
+    });
+    expect(source.packageSchema).toBe(3);
+    expect(policy.variant).toBe('current_published_package_v3');
+    expect(
+      EmployeeExecutionSourcePolicySchema.safeParse({
+        ...policy,
+        digest: old.sourcePolicy.digest,
+      }).success,
+    ).toBe(false);
+    expect(
+      CurrentEmployeeChatOriginSchema.safeParse({
+        ...chat().origin,
+        birthSource: source,
+        sourcePolicy: old.sourcePolicy,
+      }).success,
+    ).toBe(false);
+  });
+});

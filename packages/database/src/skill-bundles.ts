@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { personaRuntimePackageChecksum } from './platform-employees/runtime-package-signature.ts';
 import {
   SkillBundleSchema,
   DshNativeSkillSnapshotSchema,
@@ -83,21 +84,25 @@ export function validateFrozenSkill(input: unknown): DshNativeSkillSnapshot {
 /** Verify the revision itself before trusting its assets. No mutable catalog lookup. */
 export function frozenPackageSkills(input: unknown): DshNativeSkillSnapshot[] {
   const pkg = EmployeeRuntimePackageSchema.parse(input);
-  const { files } = pkg;
-  const signed = {
-    schemaVersion: pkg.schemaVersion,
-    packageVersion: pkg.packageVersion,
-    capabilityFingerprint: pkg.capabilityFingerprint,
-    files: {
-      identityMd: files.identityMd,
-      soulMd: files.soulMd,
-      userMd: files.userMd,
-      agentsMd: files.agentsMd,
-    },
-    skills: pkg.skills,
-    runtimeManifest: pkg.runtimeManifest,
-  };
-  if (skillBytesChecksum(JSON.stringify(signed)) !== pkg.checksum)
+  const checksum =
+    pkg.schemaVersion === 3
+      ? personaRuntimePackageChecksum(pkg)
+      : skillBytesChecksum(
+          JSON.stringify({
+            schemaVersion: pkg.schemaVersion,
+            packageVersion: pkg.packageVersion,
+            capabilityFingerprint: pkg.capabilityFingerprint,
+            files: {
+              identityMd: pkg.files.identityMd,
+              soulMd: pkg.files.soulMd,
+              userMd: pkg.files.userMd,
+              agentsMd: pkg.files.agentsMd,
+            },
+            skills: pkg.skills,
+            runtimeManifest: pkg.runtimeManifest,
+          }),
+        );
+  if (checksum !== pkg.checksum)
     throw Error('runtime_package_checksum_mismatch');
   if (pkg.schemaVersion === 1 && pkg.skills.some((s) => s.bundle))
     throw Error('legacy_package_contains_bundle');

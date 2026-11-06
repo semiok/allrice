@@ -13,7 +13,7 @@ export const fileReadNativeTools = [
     canonicalName: 'workspace.file.read',
     wireName: 'workspace_file_read',
     description:
-      '按文件 ID 分页读取当前工作区内有权访问的文本文件（含工具结果）。offset 是字符偏移，按 nextOffset 继续；不要反复加载整个文件。',
+      '按文件 ID 分页读取本工作区获权文本文件（含工具结果）；offset 为字符偏移，按 nextOffset 续读，勿重复加载全文。',
     parameters: {
       objectId: {
         type: 'string',

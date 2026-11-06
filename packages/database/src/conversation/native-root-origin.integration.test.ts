@@ -93,12 +93,15 @@ suite(
       expect(queued.queued).toBe(true);
       const [row] =
         await fixture.db`select frozen_runtime_profile from allrice_platform_employee_test_runs where id=${queued.testRun!.id}`;
+      const runtimePackage = PlatformEmployeeRuntimeProfileSchema.parse(
+        row!.frozen_runtime_profile,
+      ).runtimePackage!;
+      if (runtimePackage.schemaVersion === 3)
+        throw Error('fixture_legacy_package_required');
       return {
         employee: e,
         test: queued.testRun!,
-        runtimePackage: PlatformEmployeeRuntimeProfileSchema.parse(
-          row!.frozen_runtime_profile,
-        ).runtimePackage!,
+        runtimePackage,
       };
     }
     it('concurrent first chat creation commits one origin with its published package, repeated creation never reissues', async () => {
@@ -185,7 +188,7 @@ suite(
         fixture.db`update allrice_platform_employee_test_runs set native_root_origin=null where id=${p.test.id}`,
       ).rejects.toThrow('native root origin is immutable');
     });
-    function resign(p: EmployeeRuntimePackage) {
+    function resign(p: Exclude<EmployeeRuntimePackage, { schemaVersion: 3 }>) {
       const m = p.runtimeManifest;
       p.capabilityFingerprint = runtimePackageChecksum({
         distributionGeneration: m.distributionGeneration,
