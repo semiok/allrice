@@ -19,7 +19,7 @@
   margin: 0;
   font: var(--ar-font-title);
 }
-.dialog > header button {
+.dialog.dialog > header button {
   flex: none;
   width: 36px;
   height: 36px;
@@ -131,6 +131,12 @@
     transform: rotate(360deg);
   }
 }
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+    border-style: dotted;
+  }
+}
 .successContent {
   display: flex;
   flex-direction: column;
@@ -157,6 +163,13 @@
   width: 24px;
   height: 24px;
 }
+@media (max-width: 700px), (pointer: coarse) {
+  .dialog.dialog > header button {
+    width: 40px;
+    height: 40px;
+    min-height: 40px;
+  }
+}
 @media (max-width: 700px) {
   .success.success {
     position: fixed;
@@ -171,11 +184,6 @@
     gap: 8px;
     min-height: 64px;
     padding: 16px 20px;
-  }
-  .dialog > header button {
-    width: 40px;
-    height: 40px;
-    min-height: 40px;
   }
   .content {
     padding: 20px;
@@ -193,7 +201,7 @@
     left: 20px;
     width: auto;
     max-height: calc(100dvh - 40px);
-    border-radius: var(--ar-radius-panel);
+    border-radius: var(--ar-radius-xl);
     translate: 0 -50%;
   }
   .confirmation > header {

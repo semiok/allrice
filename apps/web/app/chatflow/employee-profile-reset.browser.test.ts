@@ -201,6 +201,7 @@ suite('U1 Rice reset controlled presentation', () => {
             color: paint.color,
             token,
             background: paint.backgroundColor,
+            radius: paint.borderRadius,
           };
         });
         expect(geometry.title).toEqual(['20px', '28px', '600']);
@@ -213,6 +214,7 @@ suite('U1 Rice reset controlled presentation', () => {
         if (width === 390) {
           expect(geometry.left).toBe(20);
           expect(geometry.right).toBe(20);
+          expect(geometry.radius).toBe('20px');
           const actions = await dialog.locator('footer button').all();
           const first = await actions[0]!.boundingBox();
           const second = await actions[1]!.boundingBox();
@@ -245,6 +247,10 @@ suite('U1 Rice reset controlled presentation', () => {
           await success.getByRole('button', { name: '关闭' }).count(),
         ).toBe(0);
         expect(await success.locator('header button').count()).toBe(1);
+        const back = await success.locator('header button').boundingBox();
+        expect(back).not.toBeNull();
+        expect(back!.width).toBe(width === 390 ? 40 : 36);
+        expect(back!.height).toBe(width === 390 ? 40 : 36);
         const box = await success.boundingBox();
         expect(box).not.toBeNull();
         expect(box!.width).toBe(width === 390 ? geometry.viewport : 552);
@@ -310,6 +316,7 @@ suite('U1 Rice reset controlled presentation', () => {
   it('locks every exit while the controlled reset is pending without a second confirmation', async () => {
     const f = await fixture(390, false, 'pending');
     await f.run(async () => {
+      await f.page.emulateMedia({ reducedMotion: 'no-preference' });
       const dialog = await f.open();
       await dialog
         .getByRole('button', { name: '恢复默认', exact: true })
@@ -322,6 +329,32 @@ suite('U1 Rice reset controlled presentation', () => {
       expect(
         await dialog.getByRole('button', { name: '恢复中' }).isDisabled(),
       ).toBe(true);
+      const spinner = dialog
+        .getByRole('status')
+        .locator('[aria-hidden="true"]');
+      expect(
+        await spinner.evaluate((node) => getComputedStyle(node).animationName),
+      ).not.toBe('none');
+      await f.page.emulateMedia({ reducedMotion: 'reduce' });
+      await expect
+        .poll(() =>
+          spinner.evaluate((node) => {
+            const style = getComputedStyle(node);
+            return {
+              animation: style.animationName,
+              borders: [
+                style.borderTopStyle,
+                style.borderRightStyle,
+                style.borderBottomStyle,
+                style.borderLeftStyle,
+              ],
+            };
+          }),
+        )
+        .toEqual({
+          animation: 'none',
+          borders: ['dotted', 'dotted', 'dotted', 'dotted'],
+        });
       await f.page.keyboard.press('Escape');
       await f.page.mouse.click(1, 1);
       await f.page.keyboard.press('Tab');
