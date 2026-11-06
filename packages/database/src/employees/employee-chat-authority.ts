@@ -176,7 +176,7 @@ export async function readEmployeeRunSourceKind(
   input: {
     runId: string;
     organizationId: string;
-    workspaceId: string;
+    workspaceId: string | null;
     ownerId: string;
     userMessageId: string;
   },
