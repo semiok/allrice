@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 
 import type { ContextCheckpoint } from '@allrice/contracts';
+import { EmployeePersonaPinSchema } from '@allrice/contracts';
 
 import {
   assembleEmployeeKernel,
@@ -65,6 +66,47 @@ it('projects only the frozen name and bounded expression preference, without exe
   expect(text).toContain('expectedRevision=3');
   expect(text).not.toContain('DO_NOT_INJECT');
   expect(employeeInstanceInstructions(null)).toEqual([]);
+  if (snapshot?.schemaVersion !== 2)
+    throw Error('expected v2 formatting fixture');
+  const digest = `sha256:${'a'.repeat(64)}`;
+  const version = {
+    employeeVersionId: randomUUID(),
+    configChecksum: digest,
+    manifestDigest: digest,
+    templateId: randomUUID(),
+    templateRevisionId: randomUUID(),
+    templateRevision: 1,
+    templateChecksum: digest,
+    packageChecksum: digest,
+  };
+  // Formatting-only fixture; the actual source/queue/kernel chain is covered
+  // by employee-persona-freeze.integration.test.ts with real SQL admission.
+  snapshot.persona = EmployeePersonaPinSchema.parse({
+    schemaVersion: 1,
+    source: {
+      kind: 'employee_run',
+      organizationId: randomUUID(),
+      workspaceId: randomUUID(),
+      employeeId: randomUUID(),
+      assignmentId: randomUUID(),
+      instanceId: randomUUID(),
+      ownerId: randomUUID(),
+      profileRevision: 3,
+      profileEligibility: 'full_identity',
+      basis: version,
+      engine: version,
+    },
+    personaDigest: digest,
+    systemDigest: digest,
+  });
+  const nativePersona = employeeInstanceInstructions(snapshot).join('\n');
+  expect(nativePersona).not.toContain('"小禾"');
+  expect(nativePersona).not.toContain('Keep answers concise');
+  expect(nativePersona).not.toContain('DO_NOT_INJECT');
+  expect(nativePersona).toContain('expectedRevision=3');
+  expect(nativePersona).toContain(
+    'Confirm persistence only from a successful tool receipt',
+  );
 });
 
 it('assembles each frozen common rule once and rejects conflicting implicit versions before a model call', () => {

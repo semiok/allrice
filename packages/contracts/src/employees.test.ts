@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { describe, expect, it } from 'vitest';
+import { EmployeePersonaPinSchema } from './employee-documents.ts';
 
 import {
   EmployeeDefinitionSchema,
@@ -545,6 +546,16 @@ describe('EmployeeHub contracts', () => {
       expect(snapshot.capabilitySnapshot.knowledge).toEqual([]);
     }
     expect(snapshot).not.toHaveProperty('nativePreferences');
+    expect(snapshot).not.toHaveProperty('persona');
+    const originalBytes = JSON.stringify(snapshot);
+    expect(
+      JSON.stringify(EmployeeExecutionSnapshotSchema.parse(snapshot)),
+    ).toBe(originalBytes);
+    for (const persona of [null, {}, { schemaVersion: 1, source: null }])
+      expect(
+        EmployeeExecutionSnapshotSchema.safeParse({ ...snapshot, persona })
+          .success,
+      ).toBe(false);
     expect(snapshot).not.toHaveProperty('subagentMode');
     const nativePreferences = {
       version: 1,
@@ -623,6 +634,73 @@ describe('EmployeeHub contracts', () => {
       expect(() => parse(fields)).toThrow();
     }
   });
+});
+
+describe('normal Run PERSONA pin contract', () => {
+  const digest = `sha256:${'a'.repeat(64)}`;
+  const version = () => ({
+    employeeVersionId: randomUUID(),
+    configChecksum: digest,
+    manifestDigest: digest,
+    templateId: randomUUID(),
+    templateRevisionId: randomUUID(),
+    templateRevision: 1,
+    templateChecksum: digest,
+    packageChecksum: digest,
+  });
+  const pin = () => ({
+    schemaVersion: 1,
+    source: {
+      kind: 'employee_run',
+      organizationId: randomUUID(),
+      workspaceId: randomUUID(),
+      employeeId: randomUUID(),
+      assignmentId: randomUUID(),
+      instanceId: randomUUID(),
+      ownerId: randomUUID(),
+      profileRevision: 3,
+      profileEligibility: 'full_identity',
+      basis: version(),
+      engine: version(),
+    },
+    personaDigest: digest,
+    systemDigest: digest,
+  });
+  it('keeps independently frozen default and engine versions distinct', () => {
+    const value = pin();
+    expect(value.source.basis.employeeVersionId).not.toBe(
+      value.source.engine.employeeVersionId,
+    );
+    expect(EmployeePersonaPinSchema.parse(value)).toEqual(value);
+    expect(
+      EmployeePersonaPinSchema.optional().parse(undefined),
+    ).toBeUndefined();
+  });
+  it('does not invent a package for the default basis or remove the actual engine package proof', () => {
+    const value = pin();
+    const { packageChecksum: basisPackage, ...basis } = value.source.basis;
+    expect(basisPackage).toBe(digest);
+    const source = { ...value.source, basis };
+    expect(
+      EmployeePersonaPinSchema.parse({ ...value, source }).source.basis,
+    ).not.toHaveProperty('packageChecksum');
+    const { packageChecksum: enginePackage, ...engine } = value.source.engine;
+    expect(enginePackage).toBe(digest);
+    expect(
+      EmployeePersonaPinSchema.safeParse({
+        ...value,
+        source: { ...source, engine },
+      }).success,
+    ).toBe(false);
+  });
+  it.each(['source', 'personaDigest', 'systemDigest'] as const)(
+    'rejects invalid-present %s instead of treating the pin as legacy absence',
+    (key) => {
+      expect(
+        EmployeePersonaPinSchema.safeParse({ ...pin(), [key]: null }).success,
+      ).toBe(false);
+    },
+  );
 });
 
 describe('sparse personal appearance', () => {
