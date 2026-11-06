@@ -213,7 +213,7 @@
 @media (pointer: coarse) {
   .groupTitle,
   .cardTitle,
-  .body button,
+  .body button:not([role='switch']),
   .body a {
     min-height: 44px;
   }

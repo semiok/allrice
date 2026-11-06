@@ -4,13 +4,16 @@ import { createServer, type Server } from 'node:http';
 import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import {
+  cloudProjectCapabilityId as capabilityId,
+  defaultUserPreferences,
+} from '@allrice/contracts';
 import type { Browser } from '../../../worker/node_modules/playwright-core/index.js';
 
 const suite =
   process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1'
     ? describe.sequential
     : describe.skip;
-const capabilityId = 'allrice.cloud-project-development';
 const title = '云端项目开发';
 const description = '在云端保存项目、运行构建、打开预览并发布成果。';
 const scope = '适用于你的所有 AI 员工。更改仅对新对话生效，进行中的对话不变。';
@@ -21,6 +24,7 @@ const hint =
 const payload = (enabled: boolean, viewerId = 'viewer-a') => ({
   viewerId,
   preferences: {
+    ...defaultUserPreferences,
     appearance: 'dark',
     streamingOutput: false,
     capabilities: { [capabilityId]: { configVersion: 1, enabled } },
@@ -47,8 +51,8 @@ import '@allrice/ui/tokens.css';
 import './app/styles/base.css';
 import '@allrice/ui/styles.css';
 const data={observedAt:'2026-11-06T00:00:00Z',capabilities:['report','cloud_command','cloud_browser','boost','teamwork','local_files','changeset','local_command','local_browser'].map(id=>({id,state:['boost','teamwork'].includes(id)?'not_released':'ready',reason:['boost','teamwork'].includes(id)?'release_disabled':'ready',action:'guide'}))};
-const capabilities=scope=><CapabilityContent scope={scope} data={data} loading={false} error="" busy={false} onRefresh={()=>{}} onBridge={()=>{}} onCompose={()=>{}}/>;
-function App(){const [generation,setGeneration]=useState(0);return <main style={{maxWidth:640,margin:'0 auto',padding:16}}><button type="button" onClick={()=>setGeneration(value=>value+1)}>更换设置宿主</button><div className={styles.section}><h2>工作方式</h2><WorkAutomationSettings key={generation} workspaceId={'00000000-0000-4000-8000-'+String(generation+1).padStart(12,'0')} capabilities={capabilities('work')}/><CapabilityContent scope="computer" data={data} loading={false} error="" busy={false} onRefresh={()=>{}} onBridge={()=>{}} onCompose={()=>{}}/></div></main>}
+const capabilities=(scope,viewerId)=><CapabilityContent scope={scope} viewerId={viewerId} data={data} loading={false} error="" busy={false} onRefresh={()=>{}} onBridge={()=>{}} onCompose={()=>{}}/>;
+function App(){const [generation,setGeneration]=useState(0);const viewerId=generation?'viewer-b':'viewer-a';return <main style={{maxWidth:640,margin:'0 auto',padding:16}}><button type="button" onClick={()=>setGeneration(value=>value+1)}>更换设置宿主</button><div className={styles.section}><h2>工作方式</h2><WorkAutomationSettings key={generation} workspaceId={'00000000-0000-4000-8000-'+String(generation+1).padStart(12,'0')} capabilities={capabilities('work',viewerId)}/><CapabilityContent scope="computer" viewerId={viewerId} data={data} loading={false} error="" busy={false} onRefresh={()=>{}} onBridge={()=>{}} onCompose={()=>{}}/></div></main>}
 if(new URLSearchParams(location.search).get('theme')==='dark')document.body.setAttribute('data-ds-dark-theme','');
 createRoot(document.getElementById('root')).render(<App/>);`,
         resolveDir: resolve('apps/web'),
@@ -111,7 +115,11 @@ createRoot(document.getElementById('root')).render(<App/>);`,
     theme = 'light',
     read: Reply = { status: 200, body: payload(false) },
   ) {
-    const page = await browser.newPage({ viewport: { width, height: 900 } });
+    const page = await browser.newPage({
+      viewport: { width, height: 900 },
+      hasTouch: width < 600,
+      isMobile: width < 600,
+    });
     page.setDefaultTimeout(5000);
     const errors: string[] = [];
     page.on('pageerror', (error) => errors.push(error.message));
@@ -254,6 +262,20 @@ createRoot(document.getElementById('root')).render(<App/>);`,
           ).toEqual(await typography('[data-capability="report"] h3'));
           const box = (await f.toggle.boundingBox())!;
           expect([box.width, box.height]).toEqual([36, 20]);
+          expect(
+            await f.page.evaluate(
+              () => matchMedia('(pointer: coarse)').matches,
+            ),
+          ).toBe(width < 600);
+          const titleBox = (await heading.boundingBox())!;
+          expect(box.x).toBeGreaterThanOrEqual(titleBox.x);
+          expect(box.y).toBeGreaterThanOrEqual(titleBox.y);
+          expect(box.x + box.width).toBeLessThanOrEqual(
+            titleBox.x + titleBox.width,
+          );
+          expect(box.y + box.height).toBeLessThanOrEqual(
+            titleBox.y + titleBox.height,
+          );
           await f.page.screenshot({
             path: resolve(screenshots, `${width}-${theme}-collapsed.png`),
           });
@@ -309,7 +331,13 @@ createRoot(document.getElementById('root')).render(<App/>);`,
     ],
     [
       'missing capability',
-      { status: 200, body: { viewerId: 'viewer-a', preferences: {} } },
+      {
+        status: 200,
+        body: {
+          viewerId: 'viewer-a',
+          preferences: { ...defaultUserPreferences, capabilities: undefined },
+        },
+      },
     ],
     [
       'missing enabled',
@@ -318,6 +346,7 @@ createRoot(document.getElementById('root')).render(<App/>);`,
         body: {
           viewerId: 'viewer-a',
           preferences: {
+            ...defaultUserPreferences,
             capabilities: { [capabilityId]: { configVersion: 1 } },
           },
         },
@@ -330,6 +359,7 @@ createRoot(document.getElementById('root')).render(<App/>);`,
         body: {
           viewerId: 'viewer-a',
           preferences: {
+            ...defaultUserPreferences,
             capabilities: {
               [capabilityId]: { configVersion: 2, enabled: false },
             },
@@ -344,6 +374,7 @@ createRoot(document.getElementById('root')).render(<App/>);`,
         body: {
           viewerId: 'viewer-a',
           preferences: {
+            ...defaultUserPreferences,
             capabilities: {
               [capabilityId]: { configVersion: 1, enabled: 'false' },
             },
@@ -389,9 +420,43 @@ createRoot(document.getElementById('root')).render(<App/>);`,
     },
   );
 
+  it('keeps host A disabled when the initial GET and explicit reread belong to B, without PATCH', async () => {
+    const f = await fixture(390, 'light', {
+      status: 200,
+      body: payload(true, 'viewer-b'),
+    });
+    try {
+      await f.row.getByRole('alert').waitFor();
+      expect(await f.toggle.isDisabled()).toBe(true);
+      expect(await f.toggle.getAttribute('aria-checked')).toBe('false');
+      expect(f.state.writes).toEqual([]);
+      await f.row.locator(':scope > details > summary').focus();
+      await f.page.keyboard.press('Tab');
+      expect(
+        await f.row
+          .getByRole('button', { name: '重新读取' })
+          .evaluate((node) => node === document.activeElement),
+      ).toBe(true);
+      await f.page.keyboard.press('Enter');
+      await expect.poll(() => f.state.reads).toBe(2);
+      await f.row.getByRole('alert').waitFor();
+      expect(await f.toggle.isDisabled()).toBe(true);
+      expect(f.state.writes).toEqual([]);
+      expect(f.errors).toEqual([]);
+    } finally {
+      await f.page.close();
+    }
+  });
+
   it.each([
     { status: 503, body: {} },
-    { status: 200, body: { viewerId: 'viewer-a', preferences: {} } },
+    {
+      status: 200,
+      body: {
+        viewerId: 'viewer-a',
+        preferences: { ...defaultUserPreferences, capabilities: undefined },
+      },
+    },
     { status: 200, body: payload(false, 'another-account') },
     { status: 200, body: undefined },
   ])(
