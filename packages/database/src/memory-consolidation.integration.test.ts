@@ -5,7 +5,14 @@ import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createExperienceFixture } from './experience.fixture.ts';
 import { approveSyntheticCurrentEmployeeExecution } from './current-execution.fixture.ts';
 import * as client from './core/client.ts';
-import { createChatSession, sendChatMessage } from './workspace/service.ts';
+import {
+  createChatSession,
+  sendChatMessage,
+  createTraceableMemory,
+  promoteWorkspaceMemory,
+} from './workspace/service.ts';
+import { memoryContentDigest } from './workspace/employee-memory.ts';
+import type { TransactionSql } from 'postgres';
 import {
   startClaimedJob,
   completeJob,
@@ -66,6 +73,7 @@ suite('M5-C current bounded consolidation, isolated SQL and no model', () => {
   async function source(
     text = '合成品牌月报先列退款，再汇总净回款。',
     count = 1,
+    withArtifact = false,
   ) {
     const f = await createExperienceFixture(db, { authenticated: true });
     const session = await createChatSession(f.owner, {
@@ -89,6 +97,17 @@ suite('M5-C current bounded consolidation, isolated SQL and no model', () => {
         leaseToken,
         result: { text: 'Synthetic assistant output is not a source' },
       });
+    }
+    const objectId = withArtifact ? randomUUID() : null;
+    if (objectId) {
+      const versionId = randomUUID(),
+        checksum = 'sha256:' + 'a'.repeat(64);
+      await db`insert into allrice_storage_objects(id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,state)
+        values(${objectId},${f.org},${f.workspace},${f.user},${'synthetic/' + objectId},'exports','text/plain',4,${checksum},'ready')`;
+      await db`insert into allrice_deliverable_versions(id,organization_id,workspace_id,owner_id,object_id,series_id,version,session_id,file_name,format)
+        values(${versionId},${f.org},${f.workspace},${f.user},${objectId},${randomUUID()},1,${session.id},'synthetic.txt','text')`;
+      await db`insert into allrice_workbench_artifacts(version_id,organization_id,workspace_id,owner_id,run_id,kind,provenance,request_id,request_digest)
+        values(${versionId},${f.org},${f.workspace},${f.user},${sent.run.id},'document',${db.json({ kind: 'tool_result', runId: sent.run.id, operationId: null, stepId: null })},${randomUUID()},${checksum})`;
     }
     for (let offset = 0; offset < count; offset += 16)
       await collectPendingMemorySources({ database: db, limit: 16 });
@@ -114,10 +133,11 @@ suite('M5-C current bounded consolidation, isolated SQL and no model', () => {
       reserve,
       session,
       sourceRun: sent.run.id,
+      objectId,
     };
   }
-  async function reserved() {
-    const f = await source();
+  async function reserved(withArtifact = false) {
+    const f = await source(undefined, 1, withArtifact);
     const r = await f.reserve();
     expect(r.outcome).toBe('queued');
     if (!('automationRunId' in r)) throw Error('expected occurrence');
@@ -261,10 +281,44 @@ suite('M5-C current bounded consolidation, isolated SQL and no model', () => {
     }
     expect((await experienceOccurrencePrincipal(f.id)).actor.id).toBe(f.user);
   });
-  it.each(['success', 'invalid', 'withdraw', 'expired'] as const)(
+  it.each(['deleted', 'expired', 'wrong_checksum', 'wrong_owner'] as const)(
+    'rechecks artifact provenance before execution: %s',
+    async (mode) => {
+      const f = await reserved(true);
+      expect(f.occurrence.sources[0]!.evidence.artifacts).toHaveLength(1);
+      await prepareExperienceExecution(f.id);
+      if (mode === 'deleted')
+        await db`update allrice_storage_objects set state='deleted',deleted_at=clock_timestamp() where id=${f.objectId}`;
+      if (mode === 'expired')
+        await db`update allrice_storage_objects set created_at=clock_timestamp()-interval '2 days',retention_until=clock_timestamp()-interval '1 day' where id=${f.objectId}`;
+      if (mode === 'wrong_checksum')
+        await db`update allrice_storage_objects set checksum=${'sha256:' + 'b'.repeat(64)} where id=${f.objectId}`;
+      if (mode === 'wrong_owner')
+        await db`update allrice_storage_objects set owner_id=${f.neighbor.actor.id} where id=${f.objectId}`;
+      await expect(prepareExperienceExecution(f.id)).rejects.toMatchObject({
+        code: 'source_changed',
+      });
+      expect(
+        (
+          await db`select run_id,experience_receipt from allrice_automation_runs where id=${f.id}`
+        )[0],
+      ).toMatchObject({ run_id: null, experience_receipt: null });
+    },
+  );
+  it.each([
+    'success',
+    'invalid',
+    'withdraw',
+    'expired',
+    'artifact_deleted',
+    'artifact_expired',
+    'confirmation_first',
+    'confirmation_inflight',
+    'confirmation_after',
+  ] as const)(
     'settles a synthetic paid result atomically: %s',
     async (mode) => {
-      const f = await reserved(),
+      const f = await reserved(mode.startsWith('artifact_')),
         execution = await prepareExperienceExecution(f.id);
       await enqueueExperienceConsolidationRun(f.id);
       await enqueueExperienceConsolidationRun(f.id);
@@ -335,6 +389,23 @@ suite('M5-C current bounded consolidation, isolated SQL and no model', () => {
         pin = execution.catalog.skills[0]!;
       await db`insert into allrice_run_events(organization_id,workspace_id,run_id,sequence,event_type,payload)
       select ${f.org},${f.workspace},${job.run_id},coalesce(max(sequence),0)+1,'tool.completed',${db.json({ name: 'skill', nativePayload: { skillStatus: 'loaded', skillId: skill.id, skillChecksum: skill.checksum, skillVersion: pin.version, skillCatalogChecksum: execution.catalog.catalogChecksum }, internalTask: { occurrenceId: f.id } })} from allrice_run_events where run_id=${job.run_id}`;
+      const candidate = mode.startsWith('confirmation_')
+        ? await createTraceableMemory(f.owner, {
+            workspaceId: f.workspace,
+            instanceId: f.occurrence.instanceId,
+            idempotencyKey: randomUUID(),
+            content: '合成确认的另一条业务偏好',
+            sourceType: 'user',
+            lifecycleState: 'candidate',
+          })
+        : null;
+      const promote = () =>
+        promoteWorkspaceMemory(f.owner, f.workspace, candidate!.id, {
+          instanceId: f.occurrence.instanceId,
+          idempotencyKey: randomUUID(),
+          expectedRevision: candidate!.revision,
+          contentDigest: memoryContentDigest(candidate!.content),
+        });
       const output = {
         schemaVersion: 2,
         drafts: [
@@ -353,9 +424,81 @@ suite('M5-C current bounded consolidation, isolated SQL and no model', () => {
         await db`update allrice_memories set archived_at=clock_timestamp() where id=${f.e.memory_id}`;
       if (mode === 'expired')
         await db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${job.id}`;
+      if (mode === 'artifact_deleted')
+        await db`update allrice_storage_objects set state='deleted',deleted_at=clock_timestamp() where id=${f.objectId}`;
+      if (mode === 'artifact_expired')
+        await db`update allrice_storage_objects set created_at=clock_timestamp()-interval '2 days',retention_until=clock_timestamp()-interval '1 day' where id=${f.objectId}`;
+      if (mode === 'confirmation_first') await promote();
       const complete = () =>
         completeJob({ workerId, jobId: job.id, leaseToken, result: output });
-      if (mode === 'success') {
+      if (mode === 'confirmation_after' || mode === 'confirmation_inflight') {
+        let reached!: () => void, release!: () => void;
+        const ready = new Promise<void>((r) => {
+            reached = r;
+          }),
+          hold = new Promise<void>((r) => {
+            release = r;
+          });
+        let pid = 0;
+        // Hold the real service transaction after its callback, before COMMIT.
+        // No query/result is replaced; the competing service uses a separate connection.
+        const gated = new Proxy(db, {
+          get(target, key, receiver) {
+            if (key !== 'begin') return Reflect.get(target, key, receiver);
+            return (...args: unknown[]) => {
+              const callback = args.at(-1) as (
+                tx: TransactionSql,
+              ) => Promise<unknown>;
+              return Reflect.apply(target.begin, target, [
+                ...args.slice(0, -1),
+                async (tx: TransactionSql) => {
+                  pid = Number((await tx`select pg_backend_pid() pid`)[0]!.pid);
+                  const result = await callback(tx);
+                  reached();
+                  await hold;
+                  return result;
+                },
+              ]);
+            };
+          },
+        });
+        vi.mocked(client.getDatabase).mockReturnValueOnce(gated);
+        const first = mode === 'confirmation_after' ? complete() : promote();
+        // Surface an early service failure instead of leaving the barrier pending.
+        await Promise.race([
+          ready,
+          first.then(() => {
+            throw Error('barrier not reached');
+          }),
+        ]);
+        let second: ReturnType<typeof promote> | undefined;
+        try {
+          if (mode === 'confirmation_after') {
+            second = promote();
+            await vi.waitFor(
+              async () => {
+                const [blocked] =
+                  await db`select count(*)::int n from pg_stat_activity
+                where ${pid}=any(pg_blocking_pids(pid)) and query like '%allrice_employee_instances%'`;
+                expect(blocked!.n).toBeGreaterThan(0);
+              },
+              { timeout: 3000, interval: 20 },
+            );
+            expect(
+              (
+                await db`select experience_receipt from allrice_automation_runs where id=${f.id}`
+              )[0]!.experience_receipt,
+            ).toBeNull();
+          } else
+            await expect(complete()).rejects.toMatchObject({
+              code: 'source_changed',
+            });
+        } finally {
+          release();
+          await first;
+          await second;
+        }
+      } else if (mode === 'success') {
         await complete();
         await expect(complete()).rejects.toMatchObject({ code: 'lease_lost' });
       } else if (mode === 'invalid')
@@ -364,11 +507,11 @@ suite('M5-C current bounded consolidation, isolated SQL and no model', () => {
         );
       else
         await expect(complete()).rejects.toMatchObject({
-          code: mode === 'withdraw' ? 'source_changed' : 'lease_lost',
+          code: mode === 'expired' ? 'lease_lost' : 'source_changed',
         });
       const [after] =
         await db`select r.experience_receipt,j.status from allrice_automation_runs r join allrice_jobs j on j.run_id=r.run_id where r.id=${f.id}`;
-      if (mode === 'success') {
+      if (mode === 'success' || mode === 'confirmation_after') {
         expect(after!.experience_receipt).toMatchObject({
           schemaVersion: 2,
           output,
@@ -384,7 +527,7 @@ suite('M5-C current bounded consolidation, isolated SQL and no model', () => {
       ]);
       expect(
         await db`select id from allrice_memories where owner_id=${f.user} and trust_level='user_confirmed'`,
-      ).toHaveLength(0);
+      ).toHaveLength(candidate ? 1 : 0);
       expect(await listExperienceDrafts(f.owner)).toEqual([]);
     },
   );

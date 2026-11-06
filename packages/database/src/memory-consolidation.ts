@@ -171,8 +171,22 @@ async function assertSourceDependencies(
     ) !== runtimePolicyDigest(e.inputs)
   )
     return deny();
-  // Artifacts and availableKnowledge are provenance identities, not new facts:
-  // their bodies are never sent to the model or converted to sourceIds.
+  for (const pin of e.artifacts) {
+    const [artifact] = await tx`select o.id from allrice_workbench_artifacts a
+      join allrice_deliverable_versions v on v.id=a.version_id
+        and v.organization_id=a.organization_id and v.workspace_id=a.workspace_id
+      join allrice_storage_objects o on o.id=v.object_id
+        and o.organization_id=v.organization_id and o.workspace_id=v.workspace_id
+      where a.version_id=${pin.versionId} and a.run_id=${source.runId} and a.run_id=${pin.runId}
+        and a.organization_id=${o.organizationId} and a.workspace_id=${o.workspaceId}
+        and a.owner_id=${o.ownerId} and v.owner_id=${o.ownerId} and o.owner_id=${o.ownerId}
+        and o.id=${pin.objectId} and o.checksum=${pin.checksum} and o.state='ready'
+        and o.deleted_at is null and (o.retention_until is null or o.retention_until>clock_timestamp())
+      for share of a,v,o`;
+    if (!artifact) return deny();
+  }
+  // These bodies are never sent to the model or converted to sourceIds.
+  // Artifact identities nevertheless remain live dependencies of the receipt.
 }
 async function currentRules(
   tx: Tx,
@@ -451,7 +465,11 @@ async function assertCurrent(
   tx: Tx,
   occurrence: MemoryOccurrence,
   executing = true,
-  options: { sourceIds?: string[]; checkSkills?: boolean } = {},
+  options: {
+    sourceIds?: string[];
+    checkSkills?: boolean;
+    committing?: boolean;
+  } = {},
   /** `false` on read paths: same checks as plain snapshot reads. */
   lock = true,
 ) {
@@ -476,6 +494,19 @@ async function assertCurrent(
   if (!(await readContentPrincipal(who, tx, lock))) return deny();
   if (lock)
     await tx`select pg_advisory_xact_lock_shared(hashtextextended(${`employee-content:${occurrence.organizationId}`},0))`;
+  if (options.committing) {
+    // Existing owner memory writes already hold SHARE on this instance row.
+    // Serialize only this short receipt transaction with those writes, including
+    // newly confirmed rows absent from currentRules. Never wait holding a Job.
+    try {
+      await tx`select id from allrice_employee_instances where id=${occurrence.instanceId}
+        and organization_id=${occurrence.organizationId} and workspace_id=${occurrence.workspaceId}
+        and owner_id=${occurrence.ownerId} for no key update nowait`;
+    } catch (error) {
+      if ((error as { code?: string }).code === '55P03') return deny();
+      throw error;
+    }
+  }
   const current = await resolveEmployeeSessionInstance(
     who,
     occurrence.assignmentId,
@@ -643,8 +674,7 @@ export async function getExperienceExecution(runId: string) {
   );
 }
 
-/** Preserves the full source/policy/Skill authority check in the caller's
- * existing Job transaction, without acquiring a second connection or lock183. */
+/** Preserves the source/policy/Skill gate in the caller's Job transaction. */
 export async function getExperienceExecutionInTransaction(
   tx: Tx,
   runId: string,
@@ -690,7 +720,7 @@ export async function completeExperienceConsolidation(
   )
     return deny();
   assertMemoryBatchBounds(occurrence);
-  await assertCurrent(tx, occurrence);
+  await assertCurrent(tx, occurrence, true, { committing: true });
   const execution = MemoryExecutionSchema.parse(row.experience_execution);
   const output = validateMemoryDraftOutput(
     raw,

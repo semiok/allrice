@@ -78,9 +78,8 @@ const instant = async (tx: Tx) => {
   requireCalendar(r, 'database_time_missing');
   return r.now;
 };
-/** Permanently close only this retired consumer's existing admission switch.
- * The shared dispatcher retains its receipts without claiming them. Do not
- * manufacture authority_blocked decisions: SQL requires actual revocation. */
+/** Reuse the existing switch for v2 business admission. Old v1 execution is
+ * rejected by the consumer; native authority still needs real policy proof. */
 export const experienceNativeCalendarEnabled = () =>
   experienceReviewEnabled() &&
   process.env.ALLRICE_NATIVE_RECURRING_ENABLED === '1' &&
