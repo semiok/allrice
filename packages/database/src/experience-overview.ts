@@ -61,6 +61,7 @@ export async function readExperienceSummary(sql: Sql, target: Target) {
         join allrice_chat_sessions s on s.id=e.session_id and s.owner_id=e.owner_id
         where e.organization_id=${org} and e.workspace_id=${workspace} and e.owner_id=${owner}
           and e.instance_id=${instance} and e.origin_kind='incremental' and e.status='pending'
+          and e.evidence->>'schemaVersion'='1'
           and e.consolidation_occurrence_id is null and m.archived_at is null
           and m.lifecycle_state='candidate' and s.archived_at is null) pending_sources,
       (select count(*)::int from allrice_automation_runs r
@@ -76,6 +77,7 @@ export async function readExperienceSummary(sql: Sql, target: Target) {
               join allrice_chat_sessions s on s.id=e.session_id and s.owner_id=e.owner_id
               where e.memory_id::text=source.id and e.organization_id=${org} and e.workspace_id=${workspace}
                 and e.owner_id=${owner} and e.instance_id=${instance} and e.origin_kind='incremental'
+                and e.evidence->>'schemaVersion'='1'
                 and e.status='pending' and e.consolidation_occurrence_id=r.id
                 and m.archived_at is null and m.lifecycle_state='candidate' and s.archived_at is null
                 and not exists (
