@@ -8,6 +8,7 @@ import {
   EmployeeEffectiveContentSchema,
   EmployeeDetailsSchema,
   EmployeeDetailsProfileSchema,
+  EmployeeInstanceProfileSchema,
   EmployeeManifestSchema,
   DefaultPartnerProfile,
   EmployeeRuntimeContentSchema,
@@ -1427,6 +1428,7 @@ async function readDetailsProfile(
   >,
   tx: ContentTx,
   canMaintainPersonal: boolean,
+  ownerView = true,
 ) {
   const instanceId = instance.id;
   const [row] = await tx<
@@ -1453,24 +1455,28 @@ async function readDetailsProfile(
           safetyBoundaries: [],
         };
   const personal = instance.profile;
-  const custom = instance.kind === 'custom' ? personal : {};
   const rice =
+    ownerView &&
     instance.kind === 'general' &&
-    personal.name !== undefined &&
     (await isBaseRiceInstance(
       await getEmployeeInstance(context, instance.id, tx),
       tx,
     ));
+  const custom = instance.kind === 'custom' || rice ? personal : {};
+  const defaults = {
+    name: manifest?.name ?? row.name,
+    description: manifest?.description ?? row.description,
+    appearance: manifest?.schemaVersion === 2 ? manifest.appearance : undefined,
+    role: baseIdentity.role,
+    mission: baseIdentity.mission,
+    workStyle: baseIdentity.workStyle,
+  };
   return EmployeeDetailsProfileSchema.parse({
     instanceId,
     kind: instance.kind,
     revision: instance.revision,
     source: instance.source,
-    name:
-      custom.name ??
-      (rice ? personal.name : undefined) ??
-      manifest?.name ??
-      row.name,
+    name: custom.name ?? defaults.name,
     description: custom.description ?? manifest?.description ?? row.description,
     appearance:
       custom.appearance ??
@@ -1483,16 +1489,24 @@ async function readDetailsProfile(
     },
     expressionStyle: personal.expressionStyle,
     personalFields: Object.keys(
-      instance.kind === 'custom'
+      instance.kind === 'custom' || rice
         ? personal
         : {
-            ...(rice && personal.name ? { name: personal.name } : {}),
             ...(personal.expressionStyle
               ? { expressionStyle: personal.expressionStyle }
               : {}),
           },
     ),
-    canMaintainPersonal: canMaintainPersonal,
+    canMaintainPersonal,
+    editableFields: !canMaintainPersonal
+      ? []
+      : instance.kind === 'custom' || rice
+        ? EmployeeInstanceProfileSchema.keyof().options
+        : ['expressionStyle'],
+    // Shared administration has no owner profile permissions or default-reset control.
+    isDefaultRice: ownerView ? rice : undefined,
+    canArchive: ownerView && canMaintainPersonal && !rice,
+    defaults,
   });
 }
 
@@ -1515,6 +1529,7 @@ export async function getOrganizationSharedEmployeeDetails(
       target,
       { ...instance, profile: {} },
       tx,
+      false,
       false,
     ),
     content: await readEffectiveContent(

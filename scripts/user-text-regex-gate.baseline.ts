@@ -422,19 +422,6 @@ export const baseline: readonly BaselineEntry[] = [
     sites: [String.raw`=== "到场和未到人数分项列出"`],
   },
   {
-    file: 'packages/database/src/experience-validation.ts',
-    owner: 'supportsRosterValidation',
-    kind: 'reject',
-    use: '经验草稿和来源原话里有“到场/名单/未到/人数”才配点名统计的验证样例，否则一直待验证、不能采纳',
-    sites: [
-      String.raw`/(?:到场|签到)/u`,
-      String.raw`/(?:名单|名册)/u`,
-      String.raw`/(?:未到|未签到|缺席)/u`,
-      String.raw`/(?:人数|计数|统计)/u`,
-      String.raw`/(?:到场|签到)/u`,
-    ],
-  },
-  {
     file: 'apps/worker/src/harness/dsh-adapter.ts',
     owner: 'nativeToolFailureSummary',
     kind: 'decide',
@@ -698,27 +685,6 @@ export const baseline: readonly BaselineEntry[] = [
     kind: 'own-text',
     use: '读用户在服务端确认卡上是否选了系统给出的“先不创建”选项',
     sites: [String.raw`=== "先不创建"`],
-  },
-  {
-    file: 'packages/database/src/experience-adoption.ts',
-    owner: 'consumeExperienceAdoptions',
-    kind: 'own-text',
-    use: '比较系统自己写下的“未采用”原因文案',
-    sites: [String.raw`=== "尚无覆盖完整规则及依赖的验证，未采用。"`],
-  },
-  {
-    file: 'packages/database/src/experience-validation.ts',
-    owner: 'syncExperienceValidations',
-    kind: 'own-text',
-    use: '比较系统自己写下的“仍待验证/未采用”原因文案',
-    sites: [String.raw`=== "尚无完整规则及技能联合覆盖，仍待验证。"`],
-  },
-  {
-    file: 'packages/database/src/experience-validation.ts',
-    owner: 'syncExperienceValidations.savePlan',
-    kind: 'own-text',
-    use: '比较系统自己写下的“仍待验证/未采用”原因文案',
-    sites: [String.raw`=== "尚无覆盖完整规则及依赖的验证，未采用。"`],
   },
   {
     file: 'packages/database/src/native-schedule-calendar-state.ts',

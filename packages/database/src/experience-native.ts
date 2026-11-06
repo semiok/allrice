@@ -11,7 +11,7 @@ import type { TransactionSql as Tx } from 'postgres';
 import { AutomationScheduleSchema } from '@allrice/contracts';
 import { readContentPrincipal } from './content-maintenance.ts';
 import { scheduleIdentity } from './native-schedule-authority.ts';
-import { experienceReviewEnabled, ExperienceError } from './experience.ts';
+import { ExperienceError } from './experience.ts';
 import { DataAccessError } from './data.ts';
 import { EmployeeInstanceError } from './employees/employee-instances.ts';
 import { PersonalSkillError } from './employees/personal-skills.ts';
@@ -78,10 +78,10 @@ const instant = async (tx: Tx) => {
   requireCalendar(r, 'database_time_missing');
   return r.now;
 };
-export const experienceNativeCalendarEnabled = () =>
-  experienceReviewEnabled() &&
-  process.env.ALLRICE_NATIVE_RECURRING_ENABLED === '1' &&
-  process.env.ALLRICE_NATIVE_CALENDAR_ENABLED === '1';
+/** Permanently close only this retired consumer's existing admission switch.
+ * The shared dispatcher retains its receipts without claiming them. Do not
+ * manufacture authority_blocked decisions: SQL requires actual revocation. */
+export const experienceNativeCalendarEnabled = (): boolean => false;
 
 /** Same business order as policy updates: principal -> advisory183 -> original
  * automation -> current policy/instance. No native partition lock is held yet. */
@@ -134,6 +134,9 @@ async function lockBusiness(
     status: rule?.deleted_at ? 'deleted' : (rule?.status ?? 'deleted'),
     resumeAfter: rule?.native_recurring_resume_after?.toISOString() ?? null,
   };
+  // Initialization is disabled above. Existing synthetic native arms retain
+  // their original authority so the shared Host can finish/recover them; the
+  // retired business dispatcher, reservation and Job admission remain closed.
   return { rule, policy, admission };
 }
 export async function lockExperienceCalendarAdmissions(
@@ -322,7 +325,7 @@ export async function materializeExperienceNativeCalendar(
   return calendar.withTransaction(async (tx) => {
     // Retirement is valid after policy off too; a flag is never a clock fallback.
     if (await prepareRetirements(tx)) return true;
-    if (!experienceNativeCalendarEnabled()) return false;
+    const enabled = experienceNativeCalendarEnabled();
     const [pending] = await tx<
       {
         control_id: string;
@@ -336,7 +339,7 @@ export async function materializeExperienceNativeCalendar(
       join allrice_native_recurring_controls c on c.control_id=p.control_id and c.partition_id=p.partition_id
       join allrice_automations business on business.id=p.automation_id
       where p.closed_decision_id is null and (
-        not exists(select 1 from allrice_native_calendar_periods np where np.period_id=p.period_id)
+        (${enabled} and not exists(select 1 from allrice_native_calendar_periods np where np.period_id=p.period_id))
         or not exists(select 1 from allrice_users u
           join allrice_organizations org on org.id=business.organization_id and org.archived_at is null
           join allrice_workspaces w on w.id=business.workspace_id and w.organization_id=org.id and w.archived_at is null
@@ -388,7 +391,9 @@ export async function materializeExperienceNativeCalendar(
         await prepareRetirements(tx, c.controlId);
         return true;
       }
-      if (fresh.hasNativePeriod) return false;
+      // Disabled consumers still settle genuine authority loss through the
+      // existing contract, but never materialize a new period or handoff.
+      if (!enabled || fresh.hasNativePeriod) return false;
       if (c.revision < plan.revision) {
         if (c.sessionState !== 'ready') return false;
         const mutation = {
@@ -423,7 +428,7 @@ export async function materializeExperienceNativeCalendar(
       });
       return true;
     }
-    if (!allowHandoff) return false;
+    if (!enabled || !allowHandoff) return false;
     const [candidate] = await tx<Rule[]>`select a.* from allrice_automations a
       join allrice_users u on u.id=a.owner_id and u.status='active'
       join allrice_organizations o on o.id=a.organization_id and o.archived_at is null
@@ -524,6 +529,9 @@ export async function dispatchExperienceCalendarNative(
   workerId: string,
   tokenDigest: string,
 ) {
+  // Direct callers must not bypass the shared dispatcher's disabled-consumer
+  // check or attempt a cancellation without the original SQL proof.
+  if (!experienceNativeCalendarEnabled()) throw new ExperienceError('disabled');
   const gate = await lockBusiness(tx, c, 'native');
   requireCalendar(gate.rule, 'business_missing');
   await tx`select 1 from allrice_native_once_partitions where partition_id=${PARTITION} for update`;

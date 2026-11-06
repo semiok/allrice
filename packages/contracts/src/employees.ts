@@ -190,14 +190,26 @@ export const CreateEmployeeInstanceInputSchema = z
   })
   .strict();
 
-export const UpdateEmployeeInstanceInputSchema = z
-  .object({
-    workspaceId: UuidSchema,
-    expectedRevision: z.number().int().positive(),
-    requestId: UuidSchema,
-    profile: EmployeeInstanceProfileSchema,
-  })
-  .strict();
+const instanceProfileWriteFields = {
+  workspaceId: UuidSchema,
+  expectedRevision: z.number().int().positive(),
+  requestId: UuidSchema,
+};
+export const UpdateEmployeeInstanceInputSchema = z.union([
+  z
+    .object({
+      ...instanceProfileWriteFields,
+      profile: EmployeeInstanceProfileSchema,
+    })
+    .strict(),
+  // An empty patch is never a reset. Clear only this owner's profile overrides.
+  z
+    .object({
+      ...instanceProfileWriteFields,
+      operation: z.literal('reset_profile'),
+    })
+    .strict(),
+]);
 
 const instanceLifecycleFields = {
   workspaceId: UuidSchema,
