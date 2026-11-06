@@ -1391,9 +1391,9 @@ suite('U1 mounted employee Workflow host', () => {
         name: '工作场景',
         exact: true,
       });
-      expect(
-        await entry.evaluate((node) => getComputedStyle(node).color),
-      ).toBe('rgb(36, 149, 82)');
+      expect(await entry.evaluate((node) => getComputedStyle(node).color)).toBe(
+        'rgb(36, 149, 82)',
+      );
       expect(
         await entry.locator('svg').evaluate((node) => {
           const style = getComputedStyle(node);
