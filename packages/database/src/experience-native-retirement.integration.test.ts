@@ -258,6 +258,25 @@ suite('M5-A historical native arms preserve the shared generation', () => {
               if (grant) writer = grant.writer;
               return grant;
             },
+            // This fixture contains only calendar controls. Keep the real SQL
+            // write/ACK paths, and fail if the wider controller emits another
+            // mutation family instead of casting its store contract away.
+            commitMutation: async (w, write) => {
+              if (write.mutation.kind !== 'calendar')
+                throw Error('Expected a calendar mutation in this fixture');
+              return store.commitMutation(w, {
+                ...write,
+                mutation: write.mutation,
+              });
+            },
+            readExactCommit: async (w, write) => {
+              if (write.mutation.kind !== 'calendar')
+                throw Error('Expected a calendar ACK in this fixture');
+              return store.readExactCommit(w, {
+                ...write,
+                mutation: write.mutation,
+              });
+            },
             calendar: {
               ...ports,
               materialize: (w, allow) =>
