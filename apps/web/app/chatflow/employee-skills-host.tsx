@@ -48,6 +48,7 @@ export interface EmployeeSkillHostCopy {
   nameMismatch: string;
   previewInvalid: string;
   submissionUnknown: string;
+  submissionUnresolved: string;
   removalFailed: string;
   unchanged: { title: string; message: string };
   disabledBindingLabel: string;
@@ -617,6 +618,22 @@ function EmployeeSkillsReader({
         revoke();
         return;
       }
+      if (
+        current.unknown &&
+        error instanceof EmployeeSkillApiError &&
+        error.kind === 'rejected' &&
+        (error.reason === 'preview_invalid' ||
+          error.reason === 'preview_expired')
+      ) {
+        // A server-rejected signature cannot recover an earlier write receipt.
+        // Keep its blocking identity without reviving an unusable replay.
+        clearEmployeeSkillWriteContents(
+          writes,
+          (write) => write.requestId === current.write.requestId,
+        );
+        show({ kind: 'unresolved', operation: current.write.operation });
+        return;
+      }
       const reread =
         !unknown &&
         error instanceof EmployeeSkillApiError &&
@@ -905,7 +922,7 @@ function EmployeeSkillsReader({
           }
         >
           <EmployeeSkillFeedback>
-            {copy.submissionUnknown}
+            {copy.submissionUnresolved}
           </EmployeeSkillFeedback>
         </EmployeeSkillPage>
       );

@@ -30,6 +30,7 @@ export const skillFixtureCopy: EmployeeSkillHostCopy = {
   nameMismatch: '新包的 name 与当前技能不同，不能用于更新。',
   previewInvalid: '技能预览已失效或内容不完整，请重新读取后确认。',
   submissionUnknown: '暂时无法确认操作结果，操作可能已完成。请重试。',
+  submissionUnresolved: '暂时无法确认操作结果，操作可能已完成。',
   removalFailed: '技能状态或权限已变化，请刷新后重试。',
   unchanged: { title: '确认更新', message: '和当前内容完全一样，不用更新。' },
   disabledBindingLabel: '已停用',

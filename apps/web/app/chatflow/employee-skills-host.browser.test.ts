@@ -34,6 +34,7 @@ const suite =
     ? describe
     : describe.skip;
 const unknownCopy = '暂时无法确认操作结果，操作可能已完成。请重试。';
+const unresolvedCopy = '暂时无法确认操作结果，操作可能已完成。';
 const accessCopy = '暂时无法访问这个员工的技能，请返回后重新打开。';
 const apiBase = `/api/v1/employee-instances/${skillTestId(7)}/skills`;
 function deferred() {
@@ -322,8 +323,8 @@ suite('U1 scoped employee Skill HTTP host candidate', () => {
           if (scenario === 'unknown-conflict' && confirms >= 2) {
             await json(
               route,
-              skillTestProblem('VERSION_CONFLICT'),
-              409,
+              skillTestProblem('VALIDATION_FAILED'),
+              422,
               'preview_expired',
             );
             return;
@@ -805,7 +806,7 @@ suite('U1 scoped employee Skill HTTP host candidate', () => {
     });
   });
 
-  it('keeps an unknown original request through conflict expiry cancel and same-scope reopen', async () => {
+  it('blocks an unknown original request after server-confirmed preview expiry across same-scope reopen', async () => {
     await withFixture({ scenario: 'unknown-conflict' }, async (f) => {
       await readUpdate(f.page);
       await dialog(f.page)
@@ -820,7 +821,14 @@ suite('U1 scoped employee Skill HTTP host candidate', () => {
         .getByRole('button', { name: '重试', exact: true })
         .click();
       await expect.poll(() => writes(f.requests).length).toBe(2);
-      await dialog(f.page).getByText(unknownCopy, { exact: true }).waitFor();
+      await dialog(f.page)
+        .getByText(unresolvedCopy, { exact: true })
+        .waitFor();
+      expect(
+        await dialog(f.page)
+          .getByRole('button', { name: '重试', exact: true })
+          .count(),
+      ).toBe(0);
       expect(
         await dialog(f.page)
           .getByRole('button', { name: '重新读取', exact: true })
@@ -829,44 +837,52 @@ suite('U1 scoped employee Skill HTTP host candidate', () => {
       await dialog(f.page)
         .getByRole('button', { name: '取消', exact: true })
         .click();
+      await ready(f.page);
+      await f.page
+        .getByRole('button', { name: '翻译校对', exact: true })
+        .click();
+      await dialog(f.page)
+        .getByRole('button', { name: '更新', exact: true })
+        .click();
+      await dialog(f.page)
+        .getByText(unresolvedCopy, { exact: true })
+        .waitFor();
+      expect(writes(f.requests)).toHaveLength(2);
       expect(
-        await dialog(f.page)
-          .getByLabel('仓库链接', { exact: true })
-          .inputValue(),
-      ).toBe('https://github.com/example/translation-review');
-      await dialog(f.page)
-        .getByRole('button', { name: '读取', exact: true })
-        .click();
-      await dialog(f.page).getByText(unknownCopy, { exact: true }).waitFor();
-      const previewCount = f.requests.filter((request) =>
-        request.path.endsWith('/preview'),
-      ).length;
+        f.requests.filter((request) => request.path.endsWith('/preview')),
+      ).toHaveLength(1);
       await dialog(f.page)
         .getByRole('button', { name: '取消', exact: true })
         .click();
-      await dialog(f.page)
-        .getByRole('button', { name: '取消', exact: true })
-        .click();
-      await dialog(f.page)
-        .getByRole('button', { name: '返回员工详情', exact: true })
-        .click();
+      await ready(f.page);
       await f.page
         .getByRole('button', { name: '关闭夹具详情', exact: true })
         .click();
       await f.page
         .getByRole('button', { name: '重新打开夹具详情', exact: true })
         .click();
-      await dialog(f.page).getByText(unknownCopy, { exact: true }).waitFor();
       await dialog(f.page)
-        .getByRole('button', { name: '重试', exact: true })
-        .click();
-      await expect.poll(() => writes(f.requests).length).toBe(3);
+        .getByText(unresolvedCopy, { exact: true })
+        .waitFor();
+      expect(
+        await dialog(f.page)
+          .getByRole('button', { name: '重试', exact: true })
+          .count(),
+      ).toBe(0);
+      expect(
+        await dialog(f.page)
+          .getByRole('button', { name: '重新读取', exact: true })
+          .count(),
+      ).toBe(0);
+      expect(
+        await dialog(f.page).getByLabel('仓库链接', { exact: true }).count(),
+      ).toBe(0);
+      expect(writes(f.requests)).toHaveLength(2);
       const payloads = writes(f.requests).map((request) => request.body);
       expect(payloads[1]).toEqual(payloads[0]);
-      expect(payloads[2]).toEqual(payloads[0]);
       expect(
         f.requests.filter((request) => request.path.endsWith('/preview')),
-      ).toHaveLength(previewCount);
+      ).toHaveLength(1);
       expect(
         await dialog(f.page)
           .getByText('已更新“翻译校对”', { exact: true })
@@ -986,7 +1002,9 @@ suite('U1 scoped employee Skill HTTP host candidate', () => {
         await f.page
           .getByRole('button', { name: '重新打开夹具详情', exact: true })
           .click();
-        await dialog(f.page).getByText(unknownCopy, { exact: true }).waitFor();
+        await dialog(f.page)
+          .getByText(unresolvedCopy, { exact: true })
+          .waitFor();
         expect(
           await dialog(f.page)
             .getByText('private-name.zip', { exact: true })
