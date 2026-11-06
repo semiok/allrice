@@ -1420,6 +1420,14 @@ export function ChatFlowClient({
       : sceneRequest.instanceId === activeEmployee?.instanceId)
       ? sceneRequest
       : null;
+  useEffect(() => {
+    // Discard invalid visible navigation. The catalog owns unresolved write
+    // identities separately; returning to an employee must not reopen this UI.
+    if (sceneRequest && !currentSceneRequest)
+      setSceneRequest((previous) =>
+        previous === sceneRequest ? null : previous,
+      );
+  }, [sceneRequest, currentSceneRequest]);
   const sceneTarget =
     currentSceneRequest?.instanceId ??
     detailsAssignmentId ??

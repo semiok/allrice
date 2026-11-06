@@ -2829,6 +2829,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         release = done;
       });
       await f.page.getByRole('treeitem', { name: /^研究任务 A/ }).click();
+      await expect.poll(() => entry.getAttribute('aria-pressed')).toBe('false');
+      expect(await dialog.count()).toBe(0);
       await entry.click();
       await expect
         .poll(() => f.state.sceneCatalogReads.length)
