@@ -436,6 +436,7 @@ export function createExperienceStore(options: { database?: Db } = {}) {
           join allrice_memories m on m.id=e.memory_id and m.organization_id=e.organization_id and m.workspace_id=e.workspace_id
           where e.organization_id=${p.organization} and e.workspace_id=${p.workspace}
             and e.origin_kind<>'derived'
+            and (e.origin_kind<>'incremental' or e.evidence->>'schemaVersion'='1')
             and (e.owner_id=${p.user} or (${p.admin} and e.requested_scope='workspace' and e.share_acknowledged))
             and (${instanceId ?? null}::uuid is null or e.instance_id=${instanceId ?? null}
               or exists(select 1 from allrice_brand_content_experiences brand where brand.memory_id=e.memory_id
