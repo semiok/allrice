@@ -85,7 +85,14 @@ export async function createCodexProviderClient(
   }
 }
 
-export async function searchCodexHostedWeb(query: string, maxResults = 5) {
+export async function searchCodexHostedWeb(
+  query: string,
+  maxResults = 5,
+  signal?: AbortSignal,
+) {
+  signal?.throwIfAborted();
   const client = await createCodexProviderClient();
-  return withDshClient(client, () => client.searchCodexWeb(query, maxResults));
+  return withDshClient(client, () =>
+    client.searchCodexWeb(query, maxResults, signal),
+  );
 }

@@ -227,11 +227,15 @@ async function queryCloudflareDnsOverHttps(
 }
 
 async function lookupPublicDnsOverHttps(hostname: string) {
-  const answers = await Promise.all([
+  const answers = await Promise.allSettled([
     queryCloudflareDnsOverHttps(hostname, 'A'),
     queryCloudflareDnsOverHttps(hostname, 'AAAA'),
   ]);
-  return answers.flat();
+  const failure = answers.find((answer) => answer.status === 'rejected');
+  if (failure?.status === 'rejected') throw failure.reason;
+  return answers.flatMap((answer) =>
+    answer.status === 'fulfilled' ? answer.value : [],
+  );
 }
 
 export async function resolvePublicWebHostname(

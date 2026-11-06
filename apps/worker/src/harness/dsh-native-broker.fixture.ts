@@ -30,6 +30,7 @@ export async function nativeBrokerRoundtrip(input: {
   invalidArgs: Record<string, unknown>;
   invalidResultIncludes?: string;
   expectedToolError?: string;
+  modelResultIncludes?: string;
   /** Loopback-only transient provider failures after the first tool result. */
   retryAfterTool?: number;
   /** Fixed real backends may take longer than a transport-only stub. */
@@ -200,7 +201,7 @@ export async function nativeBrokerRoundtrip(input: {
       const result = input.onToolCall
         ? await input.onToolCall(call)
         : { modelContent: sentinel, summary: 'synthetic only' };
-      expectedModelContent = result.modelContent;
+      expectedModelContent = input.modelResultIncludes ?? result.modelContent;
       return result;
     },
   });

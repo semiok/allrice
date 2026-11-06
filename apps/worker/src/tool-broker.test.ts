@@ -1854,11 +1854,10 @@ describe('Codex hosted search Tool Broker integration', () => {
       codexSearch,
     });
 
-    expect(codexSearch).toHaveBeenCalledWith('AllRice', 3);
+    expect(codexSearch).toHaveBeenCalledWith('AllRice', 3, undefined);
     expect(JSON.parse(result.modelContent)).toMatchObject({
-      provider: 'codex-hosted-search',
-      retrievedAt: expect.any(String),
-      output: 'AllRice search summary',
+      content: 'AllRice search summary',
+      truncated: false,
       sources: [{ url: 'https://example.com/allrice' }],
     });
     expect(recordToolBrokerAudit).toHaveBeenCalledWith(

@@ -38,13 +38,11 @@ describe('Research Tool Broker handlers', () => {
       overrides: { codexSearch },
     });
 
-    expect(codexSearch).toHaveBeenCalledWith('AllRice', 10);
+    expect(codexSearch).toHaveBeenCalledWith('AllRice', 10, undefined);
     expect(JSON.parse(result.modelContent)).toMatchObject({
-      provider: 'codex-hosted-search',
-      query: 'AllRice',
-      output: 'AllRice search summary',
+      content: 'AllRice search summary',
+      truncated: false,
       sources: [{ url: 'https://example.com/allrice' }],
-      retrievedAt: expect.any(String),
     });
     expect(result.summary).toBe('已通过 Codex 检索“AllRice”');
   });

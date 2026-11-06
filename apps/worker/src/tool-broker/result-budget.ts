@@ -13,8 +13,6 @@ export const maximumStoredToolResultBytes = 2_000_000;
 // Do not truncate approvals, changesets, model instructions, or execution
 // status contracts. These read-only data tools share one context budget.
 const boundedTools = new Set([
-  'web.search',
-  'web.fetch',
   'wechat.article.search',
   'wechat.article.read',
   'market.quote',

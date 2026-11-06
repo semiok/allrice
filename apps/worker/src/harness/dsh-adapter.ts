@@ -1,3 +1,4 @@
+import { createWebCallScope } from '../../dsh/allrice-web-cancellation.mjs';
 import {
   personalScenePromptParts,
   type PersonalScenePromptPart,
@@ -319,6 +320,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
     // child join/retry; a later runOnce replaces it with its own turn barrier.
     let awaitTurnOrigin: ((settled?: boolean) => Promise<void>) | undefined;
     const runId = input.executionEnvironment.ALLRICE_RUN_ID;
+    const webCalls = createWebCallScope();
     const ordinaryHandler = dshInboundToolHandler({
       ...input,
       ...(input.nativeFileRead &&
@@ -423,6 +425,37 @@ export class DshHarnessAdapter implements HarnessAdapter {
         return { origin };
       }
       if (runScope) params = runScope.check(params);
+      if (
+        method === 'allrice/web-cancel' ||
+        (method === 'allrice/tool-call' &&
+          (params.name === 'web.search' || params.name === 'web.fetch'))
+      ) {
+        if (
+          (!runScope && params.nativeSessionId !== threadId) ||
+          typeof params.nativeSessionId !== 'string' ||
+          typeof params.toolCallId !== 'string' ||
+          !params.toolCallId ||
+          params.toolCallId.length > 240 ||
+          (params.name !== 'web.search' && params.name !== 'web.fetch')
+        )
+          throw Error('WEB_CALL_SCOPE_INVALID');
+        const key = JSON.stringify([
+          params.nativeSessionId,
+          params.name,
+          params.toolCallId,
+        ]);
+        if (method === 'allrice/web-cancel') return webCalls.cancel(key);
+        // Register before the first await so cancellation during content
+        // authorization reaches this exact call. Run admission was checked above.
+        return webCalls.run(key, async (callSignal) => {
+          const signal = AbortSignal.any([input.signal, callSignal]);
+          signal.throwIfAborted();
+          await checkContent('toolDispatch');
+          signal.throwIfAborted();
+          return ordinaryHandler(method, params, signal);
+        });
+      }
+
       if (method === 'allrice/subagent-authorize') {
         // A malformed/stale command must not revoke the current root Run.
         const controlScope = NativeSubagentControlScopeSchema.parse(
