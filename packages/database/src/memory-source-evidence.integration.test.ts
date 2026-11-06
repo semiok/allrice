@@ -312,18 +312,20 @@ suite(
       const runId = randomUUID(),
         messageId = randomUUID(),
         assistantId = randomUUID();
+      const [history] =
+        await db`select session_id from allrice_employee_runs where run_id=${f.run}`;
       // Old records can have an unrecognized snapshot. Insert that historical
       // shape directly; never disable the immutable-snapshot trigger or mutate
       // a Run admitted through the current API.
       await db`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content,status)
-        values(${messageId},${f.org},${f.workspace},${f.session.id},${f.user},'user','{"text":"Synthetic legacy source"}','completed'),
-          (${assistantId},${f.org},${f.workspace},${f.session.id},${f.user},'assistant','{"text":"Synthetic legacy result"}','completed')`;
+        values(${messageId},${f.org},${f.workspace},${history!.session_id},${f.user},'user','{"text":"Synthetic legacy source"}','completed'),
+          (${assistantId},${f.org},${f.workspace},${history!.session_id},${f.user},'assistant','{"text":"Synthetic legacy result"}','completed')`;
       await db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input)
         values(${runId},${f.org},${f.workspace},${f.user},'succeeded','{}','{}')`;
       await db`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,employee_assignment_id,
           employee_version_id,session_id,user_message_id,assistant_message_id,status,completed_at,provider_snapshot,
           prompt_snapshot,execution_snapshot,experience_capture_state,experience_capture_reason)
-        select ${runId},organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,session_id,
+        select ${runId},organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,${history!.session_id},
           ${messageId},${assistantId},'succeeded',clock_timestamp(),'{}','{}',
           jsonb_set(execution_snapshot,'{schemaVersion}','0'),'pending',${memorySourceProducer}
         from allrice_employee_runs where run_id=${f.runId}`;
