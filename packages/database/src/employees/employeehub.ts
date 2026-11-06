@@ -83,6 +83,7 @@ import { freezeSessionModelSnapshot } from '../providers/model-pool.ts';
 import { freezeTaskRuntimePolicy } from '../task-runtime-policy.ts';
 import { freezeSandboxExecutionPolicy } from '../sandbox-execution-policy.ts';
 import { freezeNativePreferences } from '../user-preferences.ts';
+import { qualifyConversationProjectTools } from '../workspace/conversation-capabilities.ts';
 import {
   ensureDefaultEmployee,
   resolveWorkspaceId,
@@ -1535,15 +1536,21 @@ export async function prepareEmployeeRunBinding(
   )
     grantedCapabilities.push('secret:use');
   const baseRice = instance ? await isBaseRiceInstance(instance, sql) : false;
+  const conversationToolNames = await qualifyConversationProjectTools(
+    sql,
+    {
+      organizationId: input.context.organizationId,
+      workspaceId: input.workspaceId,
+      ownerId: actorId,
+      sessionId: input.sessionId,
+    },
+    capabilityBindings(manifest.data).toolNames,
+    baseRice,
+  );
   const boundToolNames = await freezeConnectedLocalToolNames(
     freezeMemorySourceToolNames(
       withEmployeeCustomizationTools(
-        // Only new Runs of the verified platform Rice lose project development.
-        // Published employees and old Run snapshots remain immutable; custom
-        // instances keep their explicitly published tools.
-        capabilityBindings(manifest.data).toolNames.filter(
-          (name) => !baseRice || name !== 'workspace.project',
-        ),
+        conversationToolNames,
         grantedCapabilities,
         instance?.kind,
         baseRice,

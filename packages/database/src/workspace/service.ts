@@ -1,4 +1,5 @@
 import { personalInstanceNameSql } from '../employees/employee-instance-policy.ts';
+import { freezeConversationCapabilities } from './conversation-capabilities.ts';
 import { EmployeeMemoryPinInputSchema } from '@allrice/contracts';
 import { freezeEmployeeDocuments } from '../employees/employee-documents.ts';
 import { isModelFailureCode, modelFailure } from '@allrice/contracts';
@@ -535,7 +536,7 @@ async function sessionRow(
 export async function createChatSession(
   context: RequestContext,
   input: unknown,
-  options: { sessionId?: string } = {},
+  options: { sessionId?: string; freezeAccountCapabilities?: true } = {},
 ) {
   const parsed = CreateChatSessionInputSchema.parse(input);
   if (parsed.employeeInstanceId) {
@@ -571,7 +572,7 @@ export async function createChatSession(
 export async function createAssignedChatSession(
   context: ResourcePrincipal,
   input: unknown,
-  options: { sessionId?: string } = {},
+  options: { sessionId?: string; freezeAccountCapabilities?: true } = {},
   transaction?: TransactionSql,
 ): Promise<z.infer<typeof ChatSessionSchema>> {
   if (!transaction)
@@ -655,13 +656,26 @@ export async function createAssignedChatSession(
         },
       })
     : null;
+  // Both entrypoints also serve scheduled/platform work; only the ordinary
+  // authenticated session route opts in. Idempotent retries do not reread config.
+  const accountCapabilities =
+    !existing && options.freezeAccountCapabilities
+      ? await freezeConversationCapabilities(sql, {
+          organizationId: context.organizationId,
+          workspaceId,
+          ownerId: requireUser(context),
+          sessionId: fixedSessionId,
+        })
+      : null;
   const rows = await sql<SessionRow[]>`
     insert into allrice_chat_sessions (
       id, organization_id, workspace_id, owner_id, employee_assignment_id,
-      employee_instance_id, employee_version_id, title, visibility, native_root_origin
+      employee_instance_id, employee_version_id, title, visibility, native_root_origin,
+      account_capability_snapshot
     ) values (
       ${fixedSessionId}, ${context.organizationId}, ${workspaceId}, ${requireUser(context)},
-      ${assignment.id}, ${instance.id}, ${employeeVersionId}, ${parsed.title}, 'private', ${origin ? sql.json(origin) : null}
+      ${assignment.id}, ${instance.id}, ${employeeVersionId}, ${parsed.title}, 'private', ${origin ? sql.json(origin) : null},
+      ${accountCapabilities ? sql.json(accountCapabilities) : null}
     )
     -- The table also has a composite unique identity used by foreign keys.
     -- Concurrent same-ID creation must handle either constraint; the exact
