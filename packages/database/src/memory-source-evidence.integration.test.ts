@@ -262,7 +262,6 @@ suite(
       'session',
       'message',
       'message_owner',
-      'unknown_snapshot',
       'method',
       'quality',
       'child',
@@ -287,8 +286,6 @@ suite(
         await db`update allrice_messages set role='assistant' where id=${f.messageId}`;
       if (mode === 'message_owner')
         await db`update allrice_messages set owner_id=${f.neighbor.actor.id} where id=${f.messageId}`;
-      if (mode === 'unknown_snapshot')
-        await db`update allrice_employee_runs set execution_snapshot=jsonb_set(execution_snapshot,'{schemaVersion}','0') where run_id=${f.runId}`;
       if (mode === 'method')
         await db`update allrice_employee_runs set method_authoring=true where run_id=${f.runId}`;
       if (mode === 'quality')
@@ -308,6 +305,33 @@ suite(
       const [run] =
         await db`select experience_capture_state s from allrice_employee_runs where run_id=${f.runId}`;
       expect(run!.s).toBe('ignored');
+    });
+    it('rejects a historical source with an unknown execution snapshot', async () => {
+      const f = await setup();
+      await f.finish();
+      const runId = randomUUID(),
+        messageId = randomUUID(),
+        assistantId = randomUUID();
+      // Old records can have an unrecognized snapshot. Insert that historical
+      // shape directly; never disable the immutable-snapshot trigger or mutate
+      // a Run admitted through the current API.
+      await db`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content,status)
+        values(${messageId},${f.org},${f.workspace},${f.session.id},${f.user},'user','{"text":"Synthetic legacy source"}','completed'),
+          (${assistantId},${f.org},${f.workspace},${f.session.id},${f.user},'assistant','{"text":"Synthetic legacy result"}','completed')`;
+      await db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input)
+        values(${runId},${f.org},${f.workspace},${f.user},'succeeded','{}','{}')`;
+      await db`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,employee_assignment_id,
+          employee_version_id,session_id,user_message_id,assistant_message_id,status,completed_at,provider_snapshot,
+          prompt_snapshot,execution_snapshot,experience_capture_state,experience_capture_reason)
+        select ${runId},organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,session_id,
+          ${messageId},${assistantId},'succeeded',clock_timestamp(),'{}','{}',
+          jsonb_set(execution_snapshot,'{schemaVersion}','0'),'pending',${memorySourceProducer}
+        from allrice_employee_runs where run_id=${f.runId}`;
+      await collect();
+      expect(await rows(runId)).toEqual([]);
+      const [run] =
+        await db`select experience_capture_state s,experience_capture_reason r from allrice_employee_runs where run_id=${runId}`;
+      expect(run).toEqual({ s: 'ignored', r: 'source_unproven' });
     });
     it('leaves pending provenance untouched while the existing capture feature is disabled', async () => {
       const f = await setup();
