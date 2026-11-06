@@ -1323,7 +1323,6 @@ function ArtifactReview({
                   onUse={onUseFileReference}
                   onTemplate={onTemplateFile}
                   referenceAction={
-                    !readOnly &&
                     !toolResult &&
                     ['document', 'plan', 'file'].includes(artifact.kind) ? (
                       <SaveArtifactReference
@@ -1333,6 +1332,7 @@ function ArtifactReview({
                         versionId={artifact.version.id}
                         fileName={artifact.version.fileName}
                         version={artifact.version.version}
+                        readOnly={readOnly}
                         icon
                       />
                     ) : (
@@ -1392,7 +1392,6 @@ function ArtifactReview({
             }}
           >
             {!onUseFileReference &&
-              !readOnly &&
               !toolResult &&
               ['document', 'plan', 'file'].includes(artifact.kind) && (
                 <SaveArtifactReference
@@ -1402,6 +1401,7 @@ function ArtifactReview({
                   versionId={artifact.version.id}
                   fileName={artifact.version.fileName}
                   version={artifact.version.version}
+                  readOnly={readOnly}
                 />
               )}
           </DocumentToolbar>

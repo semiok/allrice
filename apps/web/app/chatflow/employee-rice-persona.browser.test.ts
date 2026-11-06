@@ -1103,6 +1103,9 @@ suite('U1 Rice full persona from the real employee entry', () => {
     for (const fields of ['missing', 'style'] as const) {
       const f = await fixture({ fields });
       await f.run(async () => {
+        await expect.poll(() => f.state.instanceReads).toEqual([id(7)]);
+        expect(f.state.rawReads).toEqual([]);
+        expect(f.state.writes).toEqual([]);
         const detail = await f.openDetails();
         expect(
           await detail
@@ -1110,7 +1113,7 @@ suite('U1 Rice full persona from the real employee entry', () => {
             .count(),
         ).toBe(0);
         expect(f.state.rawReads).toEqual([]);
-        expect(f.state.instanceReads).toEqual([id(7)]);
+        expect(f.state.instanceReads).toEqual([id(7), id(7)]);
         expect(f.state.writes).toEqual([]);
       });
     }
