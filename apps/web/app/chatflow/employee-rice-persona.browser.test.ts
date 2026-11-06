@@ -713,8 +713,6 @@ suite('U1 Rice full persona from the real employee entry', () => {
           expectedRevision: 2,
           profile: {
             name: '青禾',
-            description: '保留未由表单修改的个人简介',
-            role: '保留未由表单修改的个人角色',
             mission: '帮助完成研究',
             workStyle: '按步骤交付',
             expressionStyle: 'exploratory',
@@ -724,6 +722,13 @@ suite('U1 Rice full persona from the real employee entry', () => {
               accentColor: 'teal',
             },
           },
+        });
+        if (!('profile' in write.body)) throw Error('Expected profile patch');
+        expect(write.body.profile).not.toHaveProperty('description');
+        expect(write.body.profile).not.toHaveProperty('role');
+        expect(f.state.instances[0]!.profile).toMatchObject({
+          description: '保留未由表单修改的个人简介',
+          role: '保留未由表单修改的个人角色',
         });
         expect(write.body).not.toHaveProperty('operation');
         expect(write.body.requestId).toMatch(/^[0-9a-f-]{36}$/);
@@ -791,6 +796,102 @@ suite('U1 Rice full persona from the real employee entry', () => {
     },
     40_000,
   );
+
+  it.each([
+    { kind: 'general' as const, name: 'Rice', index: 0 },
+    { kind: 'custom' as const, name: '流程哥', index: 1 },
+  ])(
+    'keeps untouched defaults inherited in a $kind name-only save through the real entry',
+    async ({ kind, name, index }) => {
+      const f = await fixture();
+      await f.run(async () => {
+        const before = structuredClone(f.state.instances[index]!);
+        await f.openDetails(name);
+        const editor = await f.openEditor();
+        const renamed = kind === 'general' ? '青禾' : '青禾自定义';
+        await editor
+          .getByRole('textbox', { name: '员工名字', exact: true })
+          .fill(renamed);
+        await editor.getByRole('button', { name: '保存', exact: true }).click();
+        await f.page
+          .getByRole('dialog', { name: `${renamed}员工详情`, exact: true })
+          .waitFor();
+        expect(f.state.writes).toHaveLength(1);
+        const write = f.state.writes[0]!;
+        if (!('profile' in write.body)) throw Error('Expected profile write');
+        expect(write.instanceId).toBe(before.id);
+        expect(write.body.profile).not.toHaveProperty('mission');
+        expect(write.body.profile).not.toHaveProperty('workStyle');
+        expect(write.body.profile).not.toHaveProperty('appearance');
+        expect(write.body.profile).toEqual(
+          kind === 'general'
+            ? { name: renamed }
+            : { ...before.profile, name: renamed },
+        );
+        expect(f.state.instances[index]!.profile).toEqual({
+          ...before.profile,
+          name: renamed,
+        });
+        expect(f.state.instances[index]!.revision).toBe(before.revision + 1);
+      });
+    },
+  );
+
+  it('returns without a write when the empty Rice or saved custom persona was not edited', async () => {
+    for (const [name, index] of [
+      ['Rice', 0],
+      ['流程哥', 1],
+    ] as const) {
+      const f = await fixture();
+      await f.run(async () => {
+        if (index === 0) f.state.instances[index]!.profile = {};
+        const before = structuredClone(f.state.instances[index]!);
+        await f.openDetails(name);
+        const editor = await f.openEditor();
+        await editor.getByRole('button', { name: '保存', exact: true }).click();
+        await f.page
+          .getByRole('dialog', { name: `${name}员工详情`, exact: true })
+          .waitFor();
+        expect(f.state.writes).toEqual([]);
+        expect(f.state.instances[index]).toEqual(before);
+      });
+    }
+  });
+
+  it('persists explicitly edited default-valued text and expression without copying the other displayed defaults', async () => {
+    const f = await fixture();
+    await f.run(async () => {
+      f.state.instances[0]!.profile = {};
+      await f.openDetails();
+      const editor = await f.openEditor();
+      const mission = editor.getByRole('textbox', {
+        name: '使命',
+        exact: true,
+      });
+      const originalMission = await mission.inputValue();
+      const expression = editor.getByRole('combobox', {
+        name: '表达偏好',
+        exact: true,
+      });
+      expect(await expression.inputValue()).toBe('structured');
+      await mission.fill('临时编辑的使命');
+      await mission.fill(originalMission);
+      await expression.selectOption('concise');
+      await expression.selectOption('structured');
+      await editor.getByRole('button', { name: '保存', exact: true }).click();
+      await f.page
+        .getByRole('dialog', { name: 'Rice员工详情', exact: true })
+        .waitFor();
+      expect(f.state.writes).toHaveLength(1);
+      const write = f.state.writes[0]!;
+      if (!('profile' in write.body)) throw Error('Expected profile patch');
+      expect(write.body.profile).toEqual({
+        mission: originalMission,
+        expressionStyle: 'structured',
+      });
+      expect(f.state.instances[0]!.profile).toEqual(write.body.profile);
+    });
+  });
 
   it('keeps missing and partial persona capability closed at the real detail entry', async () => {
     for (const fields of ['missing', 'style'] as const) {
@@ -869,8 +970,11 @@ suite('U1 Rice full persona from the real employee entry', () => {
     }
     const f = await fixture({ fields: 'visible-only' });
     await f.run(async () => {
-      await f.openDetails();
+      await f.openDetails('流程哥');
       const editor = await f.openEditor();
+      await editor
+        .getByRole('textbox', { name: '员工名字', exact: true })
+        .fill('改名流程哥');
       await editor.getByRole('button', { name: '保存', exact: true }).click();
       await editor.getByRole('alert').waitFor();
       expect(f.state.writes).toEqual([]);
