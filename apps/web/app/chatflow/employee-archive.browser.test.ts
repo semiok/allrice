@@ -10,6 +10,7 @@ import {
   EmployeeDetailsSchema,
   EmployeeInstanceLifecycleInputSchema,
   EmployeeInstanceSchema,
+  PersonalSceneSkillCatalogSchema,
   employeeColorPalette,
 } from '@allrice/contracts';
 import type {
@@ -297,7 +298,7 @@ suite('U1 employee archive lifecycle', () => {
         url = new URL(request.url()),
         path = url.pathname;
       const single =
-        /^\/api\/v1\/employee-instances\/([a-f0-9-]{36})(?:\/(lifecycle|content))?$/.exec(
+        /^\/api\/v1\/employee-instances\/([a-f0-9-]{36})(?:\/(lifecycle|content|scene-skills))?$/.exec(
           path,
         );
       if (single) {
@@ -309,6 +310,32 @@ suite('U1 employee archive lifecycle', () => {
               404,
             ),
           );
+        if (single[2] === 'scene-skills') {
+          expect(request.method()).toBe('GET');
+          expect([...url.searchParams.keys()]).toEqual(['workspaceId']);
+          expect(url.searchParams.get('workspaceId')).toBe(id(4));
+          expect(request.headers()['x-allrice-workspace-id']).toBe(id(4));
+          return route.fulfill(
+            current.archivedAt
+              ? json(
+                  {
+                    error: {
+                      code: 'EMPLOYEE_INSTANCE_ARCHIVED',
+                      message:
+                        'AI 员工已归档，可以查看历史；恢复后才能继续工作。',
+                    },
+                  },
+                  409,
+                )
+              : json(
+                  PersonalSceneSkillCatalogSchema.parse({
+                    instanceId: current.id,
+                    revision: 0,
+                    skills: [],
+                  }),
+                ),
+          );
+        }
         if (single[2] === 'lifecycle') {
           const body = EmployeeInstanceLifecycleInputSchema.parse(
             request.postDataJSON(),

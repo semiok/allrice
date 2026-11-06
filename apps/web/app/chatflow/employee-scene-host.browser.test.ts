@@ -452,6 +452,30 @@ suite('U1 mounted employee Workflow host', () => {
         !(method === 'POST' && path.endsWith('/scene-skills/preview'))
       )
         state.writes.push(attempt);
+      if (method === 'GET' && path === '/api/v1/employee-instances') {
+        expect([...url.searchParams.keys()].sort()).toEqual([
+          'view',
+          'workspaceId',
+        ]);
+        expect(url.searchParams.get('view')).toBe('history');
+        expect(url.searchParams.get('workspaceId')).toBe(
+          state.scope.workspaceId,
+        );
+        expect(request.headers()['x-allrice-workspace-id']).toBe(
+          state.scope.workspaceId,
+        );
+        if (state.deny)
+          return route.fulfill(problem(403, 'AUTHORIZATION_DENIED'));
+        return route.fulfill(
+          json({
+            instances: EmployeeInstanceSchema.array().parse([
+              instance(id(7 + state.scope.offset)),
+              instance(id(17 + state.scope.offset)),
+            ]),
+            nextBeforeId: null,
+          }),
+        );
+      }
       const match = path.match(
         /^\/api\/v1\/employee-instances\/([^/]+)(?:\/(.*))?$/,
       );

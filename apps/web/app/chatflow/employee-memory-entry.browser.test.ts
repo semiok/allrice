@@ -296,6 +296,41 @@ suite('U1 employee details personal-memory entry', () => {
           ),
         );
       }
+      if (request.method() === 'GET' && path === '/api/v1/employee-instances') {
+        expect([...url.searchParams.keys()].sort()).toEqual([
+          'view',
+          'workspaceId',
+        ]);
+        expect(url.searchParams.get('view')).toBe('history');
+        expect(url.searchParams.get('workspaceId')).toBe(id(4));
+        expect(request.headers()['x-allrice-workspace-id']).toBe(id(4));
+        return route.fulfill(
+          json({
+            instances: EmployeeInstanceSchema.array().parse(
+              [7, 17].map((n) => {
+                const target = id(n);
+                const profile = detailsFor(target).profile;
+                return {
+                  id: target,
+                  assignmentId: target,
+                  organizationId: id(3),
+                  workspaceId: id(4),
+                  ownerId: id(5),
+                  kind: 'general',
+                  revision: profile.revision,
+                  profile: { name: profile.name },
+                  creationSource: profile.source,
+                  source: profile.source,
+                  createdAt: now,
+                  updatedAt: now,
+                  archivedAt: null,
+                };
+              }),
+            ),
+            nextBeforeId: null,
+          }),
+        );
+      }
       const instanceRead = path.match(
         /^\/api\/v1\/employee-instances\/([^/]+)(?:\/(scene-skills))?$/,
       );
