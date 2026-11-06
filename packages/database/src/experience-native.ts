@@ -81,7 +81,10 @@ const instant = async (tx: Tx) => {
 /** Permanently close only this retired consumer's existing admission switch.
  * The shared dispatcher retains its receipts without claiming them. Do not
  * manufacture authority_blocked decisions: SQL requires actual revocation. */
-export const experienceNativeCalendarEnabled = (): boolean => false;
+export const experienceNativeCalendarEnabled = () =>
+  experienceReviewEnabled() &&
+  process.env.ALLRICE_NATIVE_RECURRING_ENABLED === '1' &&
+  process.env.ALLRICE_NATIVE_CALENDAR_ENABLED === '1';
 
 /** Same business order as policy updates: principal -> advisory183 -> original
  * automation -> current policy/instance. No native partition lock is held yet. */
