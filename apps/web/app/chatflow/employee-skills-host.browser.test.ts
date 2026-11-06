@@ -821,9 +821,7 @@ suite('U1 scoped employee Skill HTTP host candidate', () => {
         .getByRole('button', { name: '重试', exact: true })
         .click();
       await expect.poll(() => writes(f.requests).length).toBe(2);
-      await dialog(f.page)
-        .getByText(unresolvedCopy, { exact: true })
-        .waitFor();
+      await dialog(f.page).getByText(unresolvedCopy, { exact: true }).waitFor();
       expect(
         await dialog(f.page)
           .getByRole('button', { name: '重试', exact: true })
@@ -844,9 +842,7 @@ suite('U1 scoped employee Skill HTTP host candidate', () => {
       await dialog(f.page)
         .getByRole('button', { name: '更新', exact: true })
         .click();
-      await dialog(f.page)
-        .getByText(unresolvedCopy, { exact: true })
-        .waitFor();
+      await dialog(f.page).getByText(unresolvedCopy, { exact: true }).waitFor();
       expect(writes(f.requests)).toHaveLength(2);
       expect(
         f.requests.filter((request) => request.path.endsWith('/preview')),
@@ -861,9 +857,7 @@ suite('U1 scoped employee Skill HTTP host candidate', () => {
       await f.page
         .getByRole('button', { name: '重新打开夹具详情', exact: true })
         .click();
-      await dialog(f.page)
-        .getByText(unresolvedCopy, { exact: true })
-        .waitFor();
+      await dialog(f.page).getByText(unresolvedCopy, { exact: true }).waitFor();
       expect(
         await dialog(f.page)
           .getByRole('button', { name: '重试', exact: true })
