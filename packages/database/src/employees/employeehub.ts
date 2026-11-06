@@ -1,5 +1,6 @@
 import { freezeEmployeeDocuments } from './employee-documents.ts';
 import { isBaseRiceInstance } from './employee-instance-policy.ts';
+import { freezeConnectedLocalToolNames } from './local-tool-qualification.ts';
 import { readChatNativeRootOrigin } from '../conversation/native-session-binding.ts';
 import {
   freezePersonalSkills,
@@ -1534,15 +1535,23 @@ export async function prepareEmployeeRunBinding(
   )
     grantedCapabilities.push('secret:use');
   const baseRice = instance ? await isBaseRiceInstance(instance, sql) : false;
-  const boundToolNames = freezeMemorySourceToolNames(
-    withEmployeeCustomizationTools(
-      capabilityBindings(manifest.data).toolNames,
+  const boundToolNames = await freezeConnectedLocalToolNames(
+    freezeMemorySourceToolNames(
+      withEmployeeCustomizationTools(
+        capabilityBindings(manifest.data).toolNames,
+        grantedCapabilities,
+        instance?.kind,
+        baseRice,
+      ),
       grantedCapabilities,
-      instance?.kind,
-      baseRice,
+      modelSnapshot,
     ),
-    grantedCapabilities,
-    modelSnapshot,
+    {
+      organizationId: input.context.organizationId,
+      workspaceId: input.workspaceId,
+      ownerId: actorId,
+    },
+    sql,
   );
   const documentProjection =
     input.employeeDocuments && instance
