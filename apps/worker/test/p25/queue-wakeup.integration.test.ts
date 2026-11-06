@@ -371,10 +371,17 @@ suite(
         wake: () => loop.request(),
         log: { info() {}, warn() {} },
       });
+      async function drainTicks() {
+        for (;;) {
+          const running = [ticks.current(), loop.current()];
+          if (running.every((task) => task === null)) return;
+          // A tick's finally may start its coalesced successor before it settles.
+          await Promise.all(running);
+        }
+      }
       try {
         await vi.waitFor(() => expect(other.status().state).toBe('listening'));
-        await loop.current();
-        await ticks.current();
+        await drainTicks();
         const before = tickCount + otherTicks;
         const claimsBefore = claimCount + otherClaims;
         const jobs = await Promise.all(
@@ -392,8 +399,7 @@ suite(
           () => expect(claims.filter((c) => ids.has(c.id))).toHaveLength(48),
           { timeout: 10_000, interval: 10 },
         );
-        await ticks.current();
-        await loop.current();
+        await drainTicks();
         const taken = claims.filter((c) => ids.has(c.id));
         expect(new Set(taken.map((c) => c.id)).size).toBe(48);
         expect(new Set(taken.map((c) => c.worker)).size).toBe(2);
