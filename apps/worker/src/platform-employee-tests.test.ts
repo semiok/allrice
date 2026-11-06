@@ -1,3 +1,4 @@
+import { riceToolDefinitions } from './tool-broker/definitions.js';
 import {
   executeRiceTool,
   riceReadOnlyToolDefinitionsForPreview,
@@ -572,13 +573,9 @@ it.each(['call', 'root'] as const)(
       call = new AbortController();
     const reason = new Error('synthetic cancellation');
     vi.mocked(claimNextPlatformEmployeeTestRun).mockResolvedValue(test);
-    vi.mocked(riceReadOnlyToolDefinitionsForPreview).mockReturnValue([
-      {
-        name: 'web.fetch',
-        description: 'native fetch',
-        inputSchema: { type: 'object' },
-      },
-    ]);
+    vi.mocked(riceReadOnlyToolDefinitionsForPreview).mockReturnValue(
+      riceToolDefinitions.filter((tool) => tool.name === 'web.fetch'),
+    );
     let observed:
       | { runId: string; before: boolean | undefined; reason: unknown }
       | undefined;
