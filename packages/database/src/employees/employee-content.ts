@@ -26,9 +26,11 @@ import {
   type EmployeeContentValidation,
   type EmployeeContentReceipt,
   type EmployeeInstance,
+  type PlatformEmployeeDefinition,
 } from '@allrice/contracts';
 import type { OrganizationSharedReader } from '../organization-shared-reader.ts';
 import { getDatabase } from '../core/client.ts';
+import { runtimePackageChecksum } from '../platform-employees/runtime-package.ts';
 import { DataAccessError } from '../data.ts';
 import {
   getContentAccess,
@@ -1432,14 +1434,79 @@ async function readDetailsProfile(
 ) {
   const instanceId = instance.id;
   const [row] = await tx<
-    { manifest: unknown; name: string; description: string }[]
+    {
+      manifest: unknown;
+      name: string;
+      description: string;
+      workspace_id: string;
+    }[]
   >`
-      select manifest,name,description from allrice_employee_versions
+      select manifest,name,description,workspace_id from allrice_employee_versions
       where id=${target.versionId} and employee_id=${target.employeeId}
         and organization_id=${context.organizationId} and workspace_id=${context.workspaceId}`;
   if (!row) throw new DataAccessError('not_found');
   const parsed = EmployeeManifestSchema.safeParse(row.manifest);
   const manifest = parsed.success ? parsed.data : null;
+  // Current detail authority was checked above. A missing/unverified platform
+  // default must not revoke an otherwise readable tenant detail or relabel its
+  // existing source. Only this projection checks the new platform evidence;
+  // the shared publication reader's Run/Session consumers keep their contract.
+  let platformDefinition: PlatformEmployeeDefinition | undefined;
+  let defaultSource: EmployeeInstance['source'] | undefined =
+    instance.source.kind === 'tenant_version' &&
+    instance.source.employeeVersionId === target.versionId
+      ? instance.source
+      : undefined;
+  if (
+    instance.source.kind === 'platform' &&
+    instance.source.employeeVersionId === target.versionId
+  ) {
+    const publication = await readEmployeeVersionPublication(
+      {
+        organizationId: context.organizationId,
+        workspaceId: row.workspace_id,
+        employeeId: target.employeeId,
+        versionId: target.versionId,
+      },
+      tx,
+    );
+    const definition = PlatformEmployeeDefinitionSchema.safeParse(
+      publication?.definition,
+    );
+    if (
+      publication &&
+      definition.success &&
+      publication.platform_employee_id === instance.source.templateId &&
+      publication.revision_id === instance.source.templateRevisionId &&
+      publication.revision === instance.source.templateRevision &&
+      publication.checksum === instance.source.templateChecksum &&
+      runtimePackageChecksum(definition.data) === publication.checksum
+    ) {
+      platformDefinition = definition.data;
+      defaultSource = instance.source;
+    }
+  }
+  // The legacy parser can supply PartnerProfile defaults. Only an explicit
+  // original declaration may contribute a tenant expression baseline here.
+  const rawPartner =
+    row.manifest !== null &&
+    typeof row.manifest === 'object' &&
+    'partnerProfile' in row.manifest
+      ? row.manifest.partnerProfile
+      : undefined;
+  const rawExpression =
+    rawPartner !== null &&
+    typeof rawPartner === 'object' &&
+    'communicationStyle' in rawPartner
+      ? rawPartner.communicationStyle
+      : undefined;
+  const tenantExpression =
+    EmployeeInstanceProfileSchema.shape.expressionStyle.safeParse(
+      rawExpression,
+    );
+  const defaultExpression =
+    platformDefinition?.identity.expressionStyle ??
+    (manifest && tenantExpression.success ? tenantExpression.data : undefined);
   const baseIdentity =
     manifest?.schemaVersion === 2
       ? manifest.identity
@@ -1464,12 +1531,20 @@ async function readDetailsProfile(
     ));
   const custom = instance.kind === 'custom' || rice ? personal : {};
   const defaults = {
-    name: manifest?.name ?? row.name,
-    description: manifest?.description ?? row.description,
-    appearance: manifest?.schemaVersion === 2 ? manifest.appearance : undefined,
-    role: baseIdentity.role,
-    mission: baseIdentity.mission,
-    workStyle: baseIdentity.workStyle,
+    name: platformDefinition?.name ?? manifest?.name ?? row.name,
+    description:
+      platformDefinition?.description ??
+      manifest?.description ??
+      row.description,
+    appearance:
+      platformDefinition?.appearance ??
+      (manifest?.schemaVersion === 2 ? manifest.appearance : undefined),
+    role: platformDefinition?.identity.role ?? baseIdentity.role,
+    mission: platformDefinition?.identity.mission ?? baseIdentity.mission,
+    workStyle: platformDefinition?.identity.workStyle ?? baseIdentity.workStyle,
+    ...(defaultExpression !== undefined
+      ? { expressionStyle: defaultExpression }
+      : {}),
   };
   return EmployeeDetailsProfileSchema.parse({
     instanceId,
@@ -1477,17 +1552,17 @@ async function readDetailsProfile(
     revision: instance.revision,
     source: instance.source,
     name: custom.name ?? defaults.name,
-    description: custom.description ?? manifest?.description ?? row.description,
-    appearance:
-      custom.appearance ??
-      (manifest?.schemaVersion === 2 ? manifest.appearance : undefined),
+    description: custom.description ?? defaults.description,
+    appearance: custom.appearance
+      ? { ...defaults.appearance, ...custom.appearance }
+      : defaults.appearance,
     identity: {
       ...baseIdentity,
-      role: custom.role ?? baseIdentity.role,
-      mission: custom.mission ?? baseIdentity.mission,
-      workStyle: custom.workStyle ?? baseIdentity.workStyle,
+      role: custom.role ?? defaults.role,
+      mission: custom.mission ?? defaults.mission,
+      workStyle: custom.workStyle ?? defaults.workStyle,
     },
-    expressionStyle: personal.expressionStyle,
+    expressionStyle: personal.expressionStyle ?? defaultExpression,
     personalFields: Object.keys(
       instance.kind === 'custom' || rice
         ? personal
@@ -1507,6 +1582,8 @@ async function readDetailsProfile(
     isDefaultRice: ownerView ? rice : undefined,
     canArchive: ownerView && canMaintainPersonal && !rice,
     defaults,
+    overrides: personal,
+    ...(defaultSource !== undefined ? { defaultSource } : {}),
   });
 }
 

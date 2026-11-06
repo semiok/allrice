@@ -15,7 +15,6 @@ import {
 import {
   EmployeeDefinitionSchema,
   EmployeeExecutionSnapshotSchema,
-  type EmployeeRuntimePackage,
 } from '@allrice/contracts';
 import * as client from '../core/client.ts';
 import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
@@ -84,9 +83,9 @@ integration(
   () => {
     let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let schema: string;
-    let currentPackage: EmployeeRuntimePackage;
-    let plainPackage: EmployeeRuntimePackage;
-    let emptyPackage: EmployeeRuntimePackage;
+    let currentPackage: ReturnType<typeof buildEmployeeRuntimePackage>;
+    let plainPackage: ReturnType<typeof buildEmployeeRuntimePackage>;
+    let emptyPackage: ReturnType<typeof buildEmployeeRuntimePackage>;
     let platformSource: Pick<
       Awaited<ReturnType<typeof createEmployeeAdministrationFixture>>,
       'employeeId' | 'revisionId'

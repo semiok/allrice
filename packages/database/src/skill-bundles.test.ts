@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  personaRuntimePackageChecksum,
+  type PersonaRuntimePackagePayload,
+} from './platform-employees/runtime-package-signature.ts';
+import {
   localCommandToolchainImageV1,
   SkillBundleSchema,
 } from '@allrice/contracts';
@@ -8,6 +12,7 @@ import {
   skillBytesChecksum,
   validateSkillBundle,
   readFrozenSkillResource,
+  frozenPackageSkills,
 } from './skill-bundles.ts';
 
 export function bundleFixture(
@@ -48,7 +53,103 @@ export function bundleFixture(
   };
 }
 
+function personaPackageFixture() {
+  const { content, bundle } = bundleFixture();
+  const skill = {
+    id: '10000000-0000-4000-8000-000000000001',
+    name: 'reconcile',
+    description: 'Synthetic reviewed resource',
+    content,
+    checksum: skillBytesChecksum(content),
+    invocation: { modelInvocable: true, userInvocable: true },
+    requiredToolRefs: ['workspace.skill.read'],
+    bundle,
+  };
+  const payload = {
+    schemaVersion: 3,
+    packageVersion: 'synthetic:r1',
+    capabilityFingerprint: `sha256:${'a'.repeat(64)}`,
+    foundation: {
+      name: 'Synthetic employee',
+      description: 'Frozen package reader fixture',
+      appearance: { avatarType: 'initials', avatarValue: 'S' },
+      identity: {
+        role: 'Research partner',
+        mission: 'Use the original source',
+        workStyle: 'Return evidence',
+        behaviorRules: [],
+        safetyBoundaries: ['No additional grants'],
+        expressionStyle: 'structured',
+        outputLanguage: 'zh-CN',
+      },
+    },
+    platformPolicy: 'Preserve platform authority.',
+    skills: [skill],
+    runtimeManifest: {
+      source: 'allrice-published-runtime',
+      harness: 'dsh',
+      distributionGeneration: 'synthetic-generation',
+      provider: 'openai-codex',
+      model: 'synthetic',
+      toolNames: ['workspace.skill.read'],
+      deniedCapabilities: [],
+      skillGovernance: [
+        {
+          id: skill.id,
+          name: skill.name,
+          source: 'allrice',
+          sourceRef: bundle.sourceRef,
+          version: bundle.version,
+          license: bundle.license,
+          reviewStatus: 'reviewed',
+          reviewedByLabel: bundle.reviewedBy,
+          reviewedAt: '2026-10-01T00:00:00.000Z',
+          checksum: skill.checksum,
+        },
+      ],
+    },
+  } satisfies PersonaRuntimePackagePayload;
+  return { ...payload, checksum: personaRuntimePackageChecksum(payload) };
+}
+
 describe('P18 immutable reviewed Skill bundles', () => {
+  it('reads exact reviewed bundle resources from a signed PERSONA package without a second instruction-file catalog', () => {
+    const pkg = personaPackageFixture();
+    const before = structuredClone(pkg);
+    const skills = frozenPackageSkills(pkg);
+    expect(
+      readFrozenSkillResource(skills, 'reconcile', 'references/rules.txt'),
+    ).toMatchObject({
+      version: pkg.skills[0]!.bundle.version,
+      bundleChecksum: pkg.skills[0]!.bundle.checksum,
+      contentBase64: pkg.skills[0]!.bundle.resources[0]!.contentBase64,
+    });
+    expect(pkg).toEqual(before);
+    expect(pkg).not.toHaveProperty('files');
+  });
+
+  it('keeps inner resource and governance validation even when a schema-3 outer package is re-signed', () => {
+    const corrupt = personaPackageFixture();
+    corrupt.skills[0]!.bundle.resources[0]!.contentBase64 =
+      Buffer.from('changed').toString('base64');
+    const { checksum, ...payload } = corrupt;
+    expect(checksum).not.toBe(personaRuntimePackageChecksum(payload));
+    corrupt.checksum = personaRuntimePackageChecksum(payload);
+    expect(() => frozenPackageSkills(corrupt)).toThrow(
+      'skill_bundle_checksum_mismatch',
+    );
+
+    const mismatched = personaPackageFixture();
+    mismatched.runtimeManifest.skillGovernance[0]!.sourceRef =
+      'https://example.test/substituted';
+    const { checksum: original, ...changed } = mismatched;
+    expect(original).not.toBe(personaRuntimePackageChecksum(changed));
+    mismatched.checksum = personaRuntimePackageChecksum(changed);
+    expect(() => frozenPackageSkills(mismatched)).toThrow(
+      'skill_bundle_governance_mismatch',
+    );
+  });
+
   it('verifies body/resources/governance and leaves scripts inert', () => {
     const { content, bundle } = bundleFixture();
     expect(validateSkillBundle(bundle, content)).toEqual(bundle);

@@ -65,9 +65,16 @@ export async function readEmployeeVersionPublication(
   sql: Sql = getDatabase(),
 ) {
   const [publication] = await sql<
-    { revision_id: string; checksum: string; definition: unknown }[]
+    {
+      platform_employee_id: string;
+      revision_id: string;
+      revision: number;
+      checksum: string;
+      definition: unknown;
+    }[]
   >`
-    select r.id as revision_id, r.checksum, r.definition
+    select r.employee_id as platform_employee_id, r.id as revision_id,
+      r.revision, r.checksum, r.definition
     from allrice_employee_version_sources p
     join allrice_platform_employee_revisions r
       on r.id = p.platform_revision_id and r.employee_id = p.platform_employee_id
@@ -380,7 +387,18 @@ export async function updateEmployeeInstance(
         'operation' in value
           ? {}
           : before.kind === 'general'
-            ? { ...current, ...value.profile }
+            ? {
+                ...current,
+                ...value.profile,
+                ...(value.profile.appearance !== undefined
+                  ? {
+                      appearance: {
+                        ...current.appearance,
+                        ...value.profile.appearance,
+                      },
+                    }
+                  : {}),
+              }
             : value.profile,
       async (before) => {
         const rice = await isBaseRiceInstance(before, tx);

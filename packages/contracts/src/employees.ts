@@ -1,4 +1,5 @@
 import { EmployeeDocumentsSchema } from './employee-documents.ts';
+import { EmployeePersonaFoundationSchema } from './employee-persona-foundation.ts';
 import { SessionReferenceSnapshotsSchema } from './session-reference.ts';
 import { ReferenceSelectionsSchema } from './reference-library.ts';
 import { CompanyRunSnapshotSchema } from './company-assets.ts';
@@ -104,7 +105,18 @@ export const EmployeeInstanceProfileSchema = z
   .object({
     name: z.string().trim().min(1).max(120).optional(),
     description: z.string().trim().min(1).max(1_000).optional(),
-    appearance: EmployeeAppearanceSchema.optional(),
+    appearance: z
+      .object({
+        avatarType: EmployeeAppearanceSchema.shape.avatarType
+          .removeDefault()
+          .optional(),
+        avatarValue: EmployeeAppearanceSchema.shape.avatarValue
+          .removeDefault()
+          .optional(),
+        accentColor: EmployeeAppearanceSchema.shape.accentColor,
+      })
+      .strict()
+      .optional(),
     role: z.string().trim().min(1).max(120).optional(),
     mission: z.string().trim().min(1).max(500).optional(),
     workStyle: z.string().trim().min(1).max(1_000).optional(),
@@ -377,7 +389,39 @@ export type EmployeeUserProfilePolicy = z.infer<
   typeof EmployeeUserProfilePolicySchema
 >;
 
-export const EmployeeRuntimePackageSchema = z
+const runtimeManifestSourceSchema = z
+  .object({
+    source: z.literal('allrice-published-runtime'),
+    harness: z.literal('dsh'),
+    distributionGeneration: z.string().trim().min(1).max(240),
+    provider: z.string().trim().min(1).max(120),
+    model: z.string().trim().min(1).max(200),
+    toolNames: z.array(z.string().trim().min(1).max(160)).max(64),
+    deniedCapabilities: z.array(SkillCapabilitySchema).max(16),
+    skillGovernance: z
+      .array(
+        z
+          .object({
+            id: UuidSchema,
+            name: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+            source: z.enum(['allrice', 'dsh-migrated']),
+            sourceRef: z.string().trim().min(1).max(1_000),
+            version: z.string().trim().min(1).max(120),
+            license: z.string().trim().min(1).max(120),
+            reviewStatus: z.literal('reviewed'),
+            reviewedByLabel: z.string().trim().min(1).max(240),
+            reviewedAt: z.string().datetime(),
+            checksum: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+          })
+          .strict(),
+      )
+      .max(64),
+  })
+  .strict();
+
+// Preserve the legacy parser's field order: it restores the publisher's
+// signed payload after JSONB storage, including nested governance fields.
+const legacyRuntimePackageSchema = z
   .object({
     schemaVersion: z.union([z.literal(1), z.literal(2)]),
     packageVersion: z.string().trim().min(1).max(240),
@@ -392,33 +436,8 @@ export const EmployeeRuntimePackageSchema = z
       })
       .strict(),
     skills: z.array(DshNativeSkillSnapshotSchema).max(64),
-    runtimeManifest: z
-      .object({
-        source: z.literal('allrice-published-runtime'),
-        harness: z.literal('dsh'),
-        distributionGeneration: z.string().trim().min(1).max(240),
-        provider: z.string().trim().min(1).max(120),
-        model: z.string().trim().min(1).max(200),
-        toolNames: z.array(z.string().trim().min(1).max(160)).max(64),
-        deniedCapabilities: z.array(SkillCapabilitySchema).max(16),
-        skillGovernance: z
-          .array(
-            z
-              .object({
-                id: UuidSchema,
-                name: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
-                source: z.enum(['allrice', 'dsh-migrated']),
-                sourceRef: z.string().trim().min(1).max(1_000),
-                version: z.string().trim().min(1).max(120),
-                license: z.string().trim().min(1).max(120),
-                reviewStatus: z.literal('reviewed'),
-                reviewedByLabel: z.string().trim().min(1).max(240),
-                reviewedAt: z.string().datetime(),
-                checksum: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-              })
-              .strict(),
-          )
-          .max(64),
+    runtimeManifest: runtimeManifestSourceSchema
+      .extend({
         instructionPrecedence: z.tuple([
           z.literal('platform-hard-policy'),
           z.literal('identity'),
@@ -433,6 +452,26 @@ export const EmployeeRuntimePackageSchema = z
       .strict(),
   })
   .strict();
+
+const personaRuntimePackageSchema = z
+  .object({
+    schemaVersion: z.literal(3),
+    packageVersion: z.string().trim().min(1).max(240),
+    checksum: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    capabilityFingerprint: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    foundation: EmployeePersonaFoundationSchema,
+    platformPolicy: z.string().trim().min(1).max(20_000),
+    skills: z.array(DshNativeSkillSnapshotSchema).max(64),
+    runtimeManifest: runtimeManifestSourceSchema,
+  })
+  .strict();
+
+// Data-format compatibility only: schema 3 does not enable a writer or an
+// execution compiler. In particular it has no legacy instruction files.
+export const EmployeeRuntimePackageSchema = z.union([
+  legacyRuntimePackageSchema,
+  personaRuntimePackageSchema,
+]);
 export type EmployeeRuntimePackage = z.infer<
   typeof EmployeeRuntimePackageSchema
 >;

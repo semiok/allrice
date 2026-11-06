@@ -252,6 +252,167 @@ suite(
       });
       return JSON.parse(result.modelContent);
     }
+    async function removeFromEmployee(
+      context: RequestContext | null,
+      instanceId: string,
+      installationId: string,
+      input: Record<string, unknown>,
+      origin = 'https://allrice.test',
+    ) {
+      e3SkillHttpAuth.context = context;
+      const path =
+        '../../../../apps/web/app/api/v1/employee-instances/[id]/skills/[installationId]/route.ts';
+      const { DELETE } = await import(path);
+      return DELETE(
+        new Request('https://allrice.test/api/v1/employee-instances/skills', {
+          method: 'DELETE',
+          headers: { origin, 'content-type': 'application/json' },
+          body: JSON.stringify(input),
+        }),
+        { params: Promise.resolve({ id: instanceId, installationId }) },
+      );
+    }
+    it.each(['rice', 'custom', 'professional'] as const)(
+      'browser uninstall removes only the current %s employee binding and preserves the owner library',
+      async (kind) => {
+        // User action: “卸载；这位员工将不再使用这个技能。”
+        const x = await setup(false, kind === 'rice');
+        await install(x, x.custom.id);
+        const item = PersonalSkillItemSchema.parse(
+          (await install(x, x.assignment.id)).item,
+        );
+        const instanceId = kind === 'custom' ? x.custom.id : x.assignment.id;
+        const otherId = kind === 'custom' ? x.assignment.id : x.custom.id;
+        const before = await listPersonalSkills(x.context);
+        const oldBinding = item.bindings.find(
+          (b) => b.instanceId === instanceId,
+        )!;
+        const otherBinding = item.bindings.find(
+          (b) => b.instanceId === otherId,
+        )!;
+        const input = {
+          workspaceId: x.source.workspaceId,
+          expectedRevision: item.revision,
+          requestId: randomUUID(),
+        };
+        const send = (body = input) =>
+          removeFromEmployee(x.context, instanceId, item.id, body);
+        const response = await send();
+        expect(response.status).toBe(200);
+        expect(response.headers.get('cache-control')).toBe('private, no-store');
+        const result = await response.json();
+        expect(result.receipt).toEqual({
+          operation: 'disable',
+          scope: 'instance',
+          requestId: input.requestId,
+          workspaceId: input.workspaceId,
+          instanceId,
+          installationId: item.id,
+          revision: item.revision + 1,
+          versionId: item.versionId,
+          binding: {
+            ...oldBinding,
+            enabled: false,
+            epoch: oldBinding.epoch + 1,
+          },
+        });
+        const current = (await listPersonalSkills(x.context))[0]!;
+        expect(current.state).toBe('installed');
+        expect(current.versionId).toBe(before[0]!.versionId);
+        expect(current.bindings.find((b) => b.instanceId === otherId)).toEqual(
+          otherBinding,
+        );
+        expect(
+          (
+            await freezePersonalSkills(
+              x.context,
+              { id: instanceId },
+              { nativeSkills: [] },
+            )
+          ).personalSkills,
+        ).toBeUndefined();
+        expect(
+          (
+            await freezePersonalSkills(
+              x.context,
+              { id: otherId },
+              { nativeSkills: [] },
+            )
+          ).personalSkills!.skills,
+        ).toHaveLength(1);
+        expect(await (await send()).json()).toEqual(result);
+        expect(await listPersonalSkills(x.context)).toEqual([current]);
+        expect((await send({ ...input, requestId: randomUUID() })).status).toBe(
+          409,
+        );
+        // Revocation is checked before receipt replay; a signed-in owner cannot
+        // use an old successful request to bypass today's assignment gate.
+        await f.db`update allrice_employee_assignments set active=false where id=${x.assignment.id}`;
+        const revoked = await send();
+        expect(revoked.status).toBe(403);
+        expect(await revoked.json()).toMatchObject({
+          error: { code: 'AUTHORIZATION_DENIED' },
+        });
+      },
+    );
+    it('browser instance removal rejects foreign owners, tenant, CSRF and global-operation substitution without writes', async () => {
+      const x = await setup(),
+        { item } = await install(x, x.custom.id);
+      const peer = await ensureBootstrapPortalPrincipal(
+        {
+          organizationSlug: `p18-${x.source.employeeId}`,
+          organizationName: 'Synthetic publication',
+          workspaceSlug: 'default',
+          workspaceName: 'Synthetic',
+          email: `${randomUUID()}@example.test`,
+          displayName: 'Peer',
+          role: 'member',
+        },
+        f.db,
+      );
+      const peerContext = (await authenticateSession(
+        (await createSession(peer.user.id)).token,
+        {
+          organizationId: peer.organizationId,
+          workspaceId: peer.workspaceId,
+        },
+      ))!;
+      const other = await setup();
+      const input = {
+        workspaceId: x.source.workspaceId,
+        expectedRevision: item.revision,
+        requestId: randomUUID(),
+      };
+      const before = await listPersonalSkills(x.context);
+      for (const context of [peerContext, other.context])
+        expect([403, 404]).toContain(
+          (await removeFromEmployee(context, x.custom.id, item.id, input))
+            .status,
+        );
+      expect(
+        (await removeFromEmployee(null, x.custom.id, item.id, input)).status,
+      ).toBe(401);
+      expect(
+        (
+          await removeFromEmployee(
+            x.context,
+            x.custom.id,
+            item.id,
+            input,
+            'https://evil.test',
+          )
+        ).status,
+      ).toBe(403);
+      for (const body of [
+        { ...input, operation: 'uninstall' },
+        { ...input, instanceId: x.assignment.id },
+      ])
+        expect(
+          (await removeFromEmployee(x.context, x.custom.id, item.id, body))
+            .status,
+        ).toBe(400);
+      expect(await listPersonalSkills(x.context)).toEqual(before);
+    });
     it('E3 allows real Rice binding and HTTP enable with ordinary frozen reads and unchanged revocation', async () => {
       const x = await setup(false, true);
       const { item } = await install(x, x.custom.id);

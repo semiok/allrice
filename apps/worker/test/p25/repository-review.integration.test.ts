@@ -1459,6 +1459,8 @@ suite(
         try {
           // This actual waiting SQL occurs after the original lease check.
           // Its blocker PID proves the interleaving, without a mocked result.
+          // The retired experience-capture UPDATE no longer intervenes; the
+          // worker now waits at the message row explicitly locked above.
           let waiting: { query: string; now: Date } | undefined;
           await expect
             .poll(
@@ -1475,7 +1477,7 @@ suite(
               query: expect.stringContaining(
                 ending === 'progress finish'
                   ? 'from allrice_task_calls'
-                  : 'update allrice_employee_runs',
+                  : 'update allrice_messages',
               ),
             });
           // Read DB time independently while the late statement is blocked.

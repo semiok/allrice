@@ -8,6 +8,7 @@ const boundedText = (maximum: number) =>
 /** Generated database views, never editable files or permission assertions. */
 export const EmployeeDocumentsSchema = z
   .object({
+    persona: boundedText(16384).optional(),
     user: boundedText(2048),
     memory: boundedText(6000),
   })
