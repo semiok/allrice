@@ -4,6 +4,8 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import AgentPresets from '@deepseek-ai/dsh-agent-preset-registry';
+import { renderEmployeePersonaDocument } from '@allrice/contracts';
+import { employeePersonaPlatformSystemPrompt } from '../../../../packages/database/src/platform-employees/runtime-package.ts';
 import { expect, it, vi } from 'vitest';
 import { gate, hold, host, text } from './fixture.mjs';
 
@@ -19,6 +21,107 @@ const runtimeContexts = (request) =>
         )),
   );
 const currentContext = (request) => runtimeContexts(request).at(-1);
+
+it.each([
+  [
+    'concise',
+    '简洁，结论优先',
+    '先给结论，保持表达简洁，同时保留必要证据和限制。',
+  ],
+  [
+    'structured',
+    '结构清晰，分步说明',
+    '按任务需要采用清晰结构和具体步骤说明。',
+  ],
+  ['exploratory', '比较方案与取舍', '探索相关备选方案并说明取舍，不编造事实。'],
+])(
+  'ordinary preview %s PERSONA reaches native required literal context with empty USER/MEMORY and platform-only system',
+  async (expressionStyle, label, meaning) => {
+    const identity = {
+      role: '试用身份',
+      mission: 'PREVIEW_LITERAL {{missing}}\n# IDENTITY.md - free literal',
+      workStyle: '按冻结人设逐字核对。',
+      expressionStyle,
+      outputLanguage: 'zh-CN',
+      behaviorRules: ['PLATFORM_BEHAVIOR_ONLY'],
+      safetyBoundaries: ['PLATFORM_SAFETY_ONLY'],
+    };
+    const persona = renderEmployeePersonaDocument(
+      {
+        name: 'PREVIEW_NAME_ONLY',
+        description: '平台试用人设',
+        appearance: { avatarType: 'initials', avatarValue: '预' },
+        identity,
+      },
+      {
+        kind: 'platform_preview',
+        testId: randomUUID(),
+        platformEmployeeId: randomUUID(),
+        platformRevisionId: randomUUID(),
+        definitionChecksum: `sha256:${'1'.repeat(64)}`,
+        packageChecksum: `sha256:${'2'.repeat(64)}`,
+      },
+    );
+    const system = employeePersonaPlatformSystemPrompt({
+      systemPrompt: 'PLATFORM_HARD_POLICY_ONLY',
+      identity,
+    });
+    const h = await host({
+      runId: randomUUID(),
+      rootSystemInstructions: system,
+      employeeDocuments: { persona, user: '', memory: '' },
+      bridge: async (method) => {
+        if (method === 'allrice/run-authorize') return { allowed: true };
+        throw Error(`unexpected ${method}`);
+      },
+    });
+    await h.prompt('验证本次平台试用');
+    await h.wait();
+    const rootRequest = h.calls.find(
+      (request) => request.sessionId === h.root.id,
+    );
+    const current = JSON.stringify(currentContext(rootRequest));
+    expect(current).toContain('PREVIEW_LITERAL {{missing}}');
+    expect(current).toContain('# IDENTITY.md - free literal');
+    expect(current).toContain(label);
+    expect(current).toContain(meaning);
+    expect(current).toContain('platform_preview');
+    expect(current).not.toContain('# USER.md');
+    expect(current).not.toContain('# MEMORY.md');
+    const systems = JSON.stringify(
+      rootRequest.messages.filter((message) => message.role === 'system'),
+    );
+    for (const required of [
+      'PLATFORM_HARD_POLICY_ONLY',
+      'PLATFORM_BEHAVIOR_ONLY',
+      'PLATFORM_SAFETY_ONLY',
+    ])
+      expect(systems).toContain(required);
+    for (const absent of [
+      'PREVIEW_NAME_ONLY',
+      'PREVIEW_LITERAL',
+      label,
+      meaning,
+      '# IDENTITY.md',
+      '# SOUL.md',
+      '# AGENTS.md',
+      '# USER.md',
+    ])
+      expect(systems).not.toContain(absent);
+    const child = await h.spawn();
+    await child.result;
+    await h.wait();
+    const childRequest = h.calls.find(
+      (request) => request.sessionId === child.childId,
+    );
+    expect(JSON.stringify(currentContext(childRequest))).toContain(
+      'PREVIEW_LITERAL {{missing}}',
+    );
+    expect(JSON.stringify(currentContext(childRequest))).toContain(label);
+    expect(JSON.stringify(currentContext(childRequest))).toContain(meaning);
+  },
+  30000,
+);
 
 it('native first child and nested child receive literal PERSONA only; root documents and native persona/tools/approval/history keep their boundaries', async () => {
   const runId = randomUUID();

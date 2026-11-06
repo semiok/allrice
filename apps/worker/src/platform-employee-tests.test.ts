@@ -1,31 +1,46 @@
 import { executeEmployeeMethodFileStep } from './employee-method-file-tests.js';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import {
   SessionModelSnapshotSchema,
   ExperienceModelSnapshotSchema,
   type RouteDecision,
+  PlatformEmployeeDefinitionSchema,
+  PlatformEmployeeRuntimeProfileSchema,
+  DshNativeSkillSnapshotSchema,
+  type PlatformEmployeeDefinition,
 } from '@allrice/contracts';
+import type * as DatabaseModule from '@allrice/database';
 import {
+  buildEmployeeRuntimePackage,
   claimNextPlatformEmployeeTestRun,
   completePlatformEmployeeTestRun,
   employeeMethodTestStillCurrent,
   experienceValidationStillCurrent,
   methodFileExecutionUnverified,
   freezeRouteSubscriptionSnapshot,
+  runtimePackageSystemPrompt,
 } from '@allrice/database';
 import { DshHarnessAdapter } from './harness/dsh-adapter.js';
 import { executeNextPlatformEmployeeTest } from './platform-employee-tests.js';
 import { attachExecutionFailureUsage } from './harness/dsh/execution-failure-usage.js';
 
-vi.mock('@allrice/database', () => ({
-  claimNextPlatformEmployeeTestRun: vi.fn(),
-  completePlatformEmployeeTestRun: vi.fn(),
-  employeeMethodTestStillCurrent: vi.fn(),
-  experienceValidationStillCurrent: vi.fn(),
-  methodFileExecutionUnverified: vi.fn(),
-  freezeRouteSubscriptionSnapshot: vi.fn(),
-}));
+vi.mock('@allrice/database', async (importOriginal) => {
+  const policy = await importOriginal<typeof DatabaseModule>();
+  return {
+    buildEmployeeRuntimePackage: policy.buildEmployeeRuntimePackage,
+    claimNextPlatformEmployeeTestRun: vi.fn(),
+    completePlatformEmployeeTestRun: vi.fn(),
+    employeeMethodTestStillCurrent: vi.fn(),
+    experienceValidationStillCurrent: vi.fn(),
+    methodFileExecutionUnverified: vi.fn(),
+    freezeRouteSubscriptionSnapshot: vi.fn(),
+    employeePersonaPlatformSystemPrompt:
+      policy.employeePersonaPlatformSystemPrompt,
+    runtimePackageChecksum: policy.runtimePackageChecksum,
+    runtimePackageSystemPrompt: policy.runtimePackageSystemPrompt,
+  };
+});
 vi.mock('./employee-method-file-tests.js', () => ({
   employeeMethodFileTools: [
     {
@@ -41,6 +56,90 @@ vi.mock('./tool-broker.js', () => ({
   riceReadOnlyToolDefinitionsForPreview: vi.fn(() => []),
   riceToolCapability: vi.fn(() => 'storage:read'),
 }));
+
+// This unit fixture represents an already-claimed preview. The real public
+// builder derives its package from this case's definition; queue/source guards
+// stay covered by the DB integration tests, not by this claim stub.
+function platformPreviewSource(
+  expressionStyle: PlatformEmployeeDefinition['identity']['expressionStyle'],
+) {
+  const definition = PlatformEmployeeDefinitionSchema.parse({
+    schemaVersion: 1,
+    key: 'platform-binding-fixture',
+    name: 'Binding fixture',
+    description: 'Offline source identity fixture',
+    appearance: { avatarType: 'initials', avatarValue: 'B' },
+    identity: {
+      role: 'Fixture',
+      mission: 'Check original sources',
+      workStyle: 'Return exact evidence',
+      behaviorRules: ['Use authorized data only'],
+      safetyBoundaries: ['No additional grants'],
+      expressionStyle,
+      outputLanguage: 'zh-CN',
+    },
+    systemPrompt: 'Preserve source identity and authorization.',
+    modelPolicy: {
+      provider: 'openai-codex',
+      model: 'synthetic-original',
+      reasoningEffort: 'high',
+      timeoutMs: 300000,
+      fallbackModels: [],
+      credentialReference: 'deployment:synthetic',
+      baseUrl: null,
+    },
+    capabilities: {
+      nativeSkillIds: [],
+      workflowRevisionIds: [],
+      knowledgeRevisionIds: [],
+      toolNames: ['workspace.skill.read'],
+      connectorRefs: [],
+    },
+    securityPolicy: {
+      dataScopes: ['workspace'],
+      approvalPolicy: 'confirm_side_effects',
+      bridgeAccess: 'none',
+      connectorIdentityModes: [],
+      deniedCapabilities: ['secret:use'],
+    },
+  });
+  const runtimePackage = buildEmployeeRuntimePackage({
+    revision: 7,
+    definition,
+    skills: [],
+  });
+  const runtimeProfile = PlatformEmployeeRuntimeProfileSchema.parse({
+    schemaVersion: 1,
+    harness: 'dsh',
+    distributionGeneration:
+      runtimePackage.runtimeManifest.distributionGeneration,
+    employeeKey: definition.key,
+    provider: definition.modelPolicy.provider,
+    model: definition.modelPolicy.model,
+    reasoningEffort: definition.modelPolicy.reasoningEffort,
+    timeoutMs: definition.modelPolicy.timeoutMs,
+    credentialReference: definition.modelPolicy.credentialReference,
+    baseUrl: definition.modelPolicy.baseUrl,
+    systemPrompt: runtimePackageSystemPrompt({
+      platformPolicy: definition.systemPrompt,
+      runtimePackage,
+    }),
+    nativeSkillIds: runtimePackage.skills.map((skill) => skill.id),
+    nativeSkillChecksums: runtimePackage.skills.map((skill) => skill.checksum),
+    toolNames: definition.capabilities.toolNames,
+    connectorRefs: definition.capabilities.connectorRefs,
+    securityPolicy: definition.securityPolicy,
+    runtimePackage,
+  });
+  return {
+    platformEmployeeId: randomUUID(),
+    platformRevisionId: randomUUID(),
+    definition,
+    runtimeProfile,
+    nativeSkills: runtimePackage.skills,
+    packageChecksum: runtimePackage.checksum,
+  };
+}
 
 function claimed() {
   const organizationId = randomUUID(),
@@ -147,6 +246,98 @@ afterEach(() => {
   vi.clearAllMocks();
   vi.useRealTimers();
 });
+it.each([
+  [
+    'concise',
+    '简洁，结论优先',
+    '先给结论，保持表达简洁，同时保留必要证据和限制。',
+  ],
+  [
+    'structured',
+    '结构清晰，分步说明',
+    '按任务需要采用清晰结构和具体步骤说明。',
+  ],
+  ['exploratory', '比较方案与取舍', '探索相关备选方案并说明取舍，不编造事实。'],
+] as const)(
+  'ordinary platform preview consumes its frozen %s PERSONA through the real kernel carrier',
+  async (expressionStyle, label, meaning) => {
+    const original = platformPreviewSource(expressionStyle);
+    const { definition } = original;
+    const value = {
+      ...claimed(),
+      employeeId: original.platformEmployeeId,
+      revisionId: original.platformRevisionId,
+      definition,
+      runtimeProfile: PlatformEmployeeRuntimeProfileSchema.parse(
+        original.runtimeProfile,
+      ),
+      nativeSkills: DshNativeSkillSnapshotSchema.array().parse(
+        original.nativeSkills,
+      ),
+      methodCandidate: null,
+      experienceCandidate: null,
+    };
+    vi.mocked(claimNextPlatformEmployeeTestRun).mockResolvedValue(value);
+    const execute = vi
+      .spyOn(DshHarnessAdapter.prototype, 'execute')
+      .mockResolvedValue({ ...receipt, model: value.runtimeProfile.model });
+    await run();
+    expect(execute).toHaveBeenCalledOnce();
+    const input = execute.mock.calls[0]![0];
+    const documents = input.kernel.employeeDocuments;
+    expect(documents).toMatchObject({ user: '', memory: '' });
+    expect(documents?.persona).toBeDefined();
+    const persona = JSON.parse(documents!.persona!.slice('# 人设\n'.length));
+    expect(persona.name.value).toBe(definition.name);
+    expect(persona.mission.value).toBe(definition.identity.mission);
+    expect(persona.workStyle.value).toBe(definition.identity.workStyle);
+    expect(persona.expressionStyle).toMatchObject({
+      value: expressionStyle,
+      label,
+      meaning,
+      source: 'frozen_platform_definition',
+    });
+    expect(persona.source).toMatchObject({
+      kind: 'platform_preview',
+      testId: value.id,
+      platformEmployeeId: original.platformEmployeeId,
+      platformRevisionId: original.platformRevisionId,
+      packageChecksum: original.packageChecksum,
+      definitionChecksum: `sha256:${createHash('sha256').update(JSON.stringify(definition)).digest('hex')}`,
+    });
+    expect(persona).not.toHaveProperty('personalRevision');
+    expect(input.kernel.rootSystemInstructions).toBe(
+      input.kernel.systemInstructions,
+    );
+    expect(input.kernel.systemInstructions).toContain(definition.systemPrompt);
+    expect(input.kernel.systemInstructions).toContain(
+      definition.identity.safetyBoundaries[0],
+    );
+    expect(input.kernel.systemInstructions).not.toContain(definition.name);
+    expect(input.kernel.systemInstructions).not.toContain('# IDENTITY.md');
+    expect(input.kernel.systemInstructions).not.toContain(
+      '## 已发布 Skill 目录',
+    );
+    expect(input.kernel.runtimePackageChecksum).toBe(original.packageChecksum);
+    expect(input.nativeSkills).toEqual(value.nativeSkills);
+    expect(input.authorizedToolNames).toEqual(value.runtimeProfile.toolNames);
+    expect(input.kernel.bootstrapConversation).toBe('');
+    expect(input.kernel.authorizedMemoryContext).toBe('');
+    expect(employeeMethodTestStillCurrent).not.toHaveBeenCalled();
+    expect(freezeRouteSubscriptionSnapshot).not.toHaveBeenCalled();
+    expect(completePlatformEmployeeTestRun).toHaveBeenCalledWith(
+      value.id,
+      expect.objectContaining({ error: null }),
+    );
+  },
+);
+it('does not dispatch or synthesize PERSONA after the existing claim rejects an immutable source', async () => {
+  vi.mocked(claimNextPlatformEmployeeTestRun).mockResolvedValue(null);
+  const execute = vi.spyOn(DshHarnessAdapter.prototype, 'execute');
+  expect(await run()).toBe(false);
+  expect(execute).not.toHaveBeenCalled();
+  expect(completePlatformEmployeeTestRun).not.toHaveBeenCalled();
+});
 it('runs the frozen caller model in a fresh context without tools, files, skills or recalled history', async () => {
   const execute = vi
     .spyOn(DshHarnessAdapter.prototype, 'execute')
@@ -162,6 +353,8 @@ it('runs the frozen caller model in a fresh context without tools, files, skills
     skillVersionIds: [],
   });
   expect(input.kernel.systemInstructions).toContain('Private candidate rule');
+  expect(input.kernel.employeeDocuments).toBeUndefined();
+  expect(input.kernel.rootSystemInstructions).toBeUndefined();
   expect(input.tools).toEqual([]);
   expect(input.authorizedToolNames).toEqual([]);
   expect(input.storageObjects).toEqual([]);
@@ -397,6 +590,8 @@ it('uses the original experience draft with true non-chat identity, no unrelated
     bootstrapConversation: '',
   });
   expect(input.kernel.systemInstructions).not.toContain('Published base');
+  expect(input.kernel.employeeDocuments).toBeUndefined();
+  expect(input.kernel.rootSystemInstructions).toBeUndefined();
   expect(input.nativeSubagents).toBeUndefined();
   expect(input.nativeSkills).toEqual([]);
   expect(input.tools).toEqual([]);
