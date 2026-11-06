@@ -602,11 +602,12 @@ suite(
           await db`select status,experience_capture_state from allrice_employee_runs where run_id=${r.sent.run.id}`;
         expect(terminal).toMatchObject({
           status: 'succeeded',
-          experience_capture_state: null,
+          experience_capture_state:
+            mode === 'late_method_authoring' ? null : 'pending',
         });
       },
     );
-    it('completes real chat jobs for two owners without new capture markers or feedback', async () => {
+    it('new terminal markers do not restart the retired experience collector for either owner', async () => {
       const f = await fixture();
       await ensureDefaultEmployee(f.neighbor, f.workspace);
       async function complete(context: RequestContext, text: string) {
@@ -638,7 +639,7 @@ suite(
         const [terminal] =
           await db`select experience_capture_state,status from allrice_employee_runs where run_id=${sent.run.id}`;
         expect(terminal).toMatchObject({
-          experience_capture_state: null,
+          experience_capture_state: 'pending',
           status: 'succeeded',
         });
         return {
