@@ -7659,7 +7659,8 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     const oldRows =
       await fixture.db`select execution_snapshot,prompt_snapshot from allrice_employee_runs where run_id=${before.context.runId}`;
     expect(
-      personaDocument(oldRows[0]!.prompt_snapshot.employeeDocuments.persona).name,
+      personaDocument(oldRows[0]!.prompt_snapshot.employeeDocuments.persona)
+        .name,
     ).toEqual({ value: 'Platform assistant', source: 'platform_default' });
     const profile = {
       name: '本人 Rice',
@@ -7735,7 +7736,10 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     );
     for (const [field, value] of Object.entries(profile)) {
       if (field === 'appearance') continue;
-      expect(persona[field]).toMatchObject({ value, source: 'personal_override' });
+      expect(persona[field]).toMatchObject({
+        value,
+        source: 'personal_override',
+      });
     }
     for (const [field, value] of Object.entries(profile.appearance)) {
       expect(persona.appearance[field]).toEqual({

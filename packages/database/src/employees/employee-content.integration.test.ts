@@ -763,7 +763,10 @@ suite(
         const kernel = identityKernel(s, run);
         const persona = personaDocument(kernel.employeeDocuments?.persona);
         for (const [field, value] of Object.entries(profile)) {
-          expect(persona[field]).toEqual({ value, source: 'personal_override' });
+          expect(persona[field]).toEqual({
+            value,
+            source: 'personal_override',
+          });
           expect(kernel.systemInstructions).not.toContain(value);
           expect(kernel.rootSystemInstructions).not.toContain(value);
         }
