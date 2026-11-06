@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { EmployeeExecutionSnapshotSchema } from '@allrice/contracts';
+import * as toolSelection from '@allrice/contracts';
 import * as client from '../core/client.ts';
 import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
 import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
@@ -138,7 +138,7 @@ suite('default Rice project tool admission', () => {
         project.requiredToolRefs.every((tool) => names.includes(tool)),
       ).toBe(kind === 'custom');
       const [persisted] =
-        await f.db`select execution_snapshot from allrice_employee_runs where id=${sent.run.id}`;
+        await f.db`select execution_snapshot from allrice_employee_runs where run_id=${sent.run.id}`;
       expect(
         persisted!.execution_snapshot.capabilitySnapshot.bindings.toolNames,
       ).toEqual(names);
@@ -158,16 +158,22 @@ suite('default Rice project tool admission', () => {
 
   it('replays and resolves an old Rice Run with its original project qualification', async () => {
     const x = await setup(true);
-    const original = await x.send('general');
-    const resolved = await x.resolve(original.sent.run.id);
-    const historical = EmployeeExecutionSnapshotSchema.parse(
-      resolved.executionSnapshot,
-    );
-    historical.capabilitySnapshot.bindings.toolNames.push('workspace.project');
-    // Synthetic pre-change immutable snapshot; never changes a live database.
-    await f.db`update allrice_employee_runs set execution_snapshot=${f.db.json(historical)} where id=${original.sent.run.id}`;
+    // Simulate the old tool selection at first INSERT, never rewrite a stored
+    // snapshot or disable its immutability trigger. All admission checks stay real.
+    const selectMemoryTools = toolSelection.freezeMemorySourceToolNames;
+    const oldSelection = vi
+      .spyOn(toolSelection, 'freezeMemorySourceToolNames')
+      .mockImplementation((...args) => [
+        ...selectMemoryTools(...args),
+        'workspace.project',
+      ]);
+    const original = await x
+      .send('general')
+      .finally(() => oldSelection.mockRestore());
     const before = (await x.resolve(original.sent.run.id)).executionSnapshot;
-    expect(before).toEqual(historical);
+    expect(before?.capabilitySnapshot.bindings.toolNames).toContain(
+      'workspace.project',
+    );
     const replay = await sendChatMessage(
       x.context,
       x.source.workspaceId,
