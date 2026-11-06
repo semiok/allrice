@@ -14,6 +14,7 @@ import {
   RouteDecisionSchema,
   type HarnessEvent,
   type HarnessExecutionSnapshot,
+  type EmployeeKernelRequest,
   type RouteDecision,
 } from '@allrice/contracts';
 
@@ -150,6 +151,35 @@ import {
 
 function providerName(snapshot: HarnessExecutionSnapshot) {
   return snapshot.provider === 'codex' ? 'openai-codex' : snapshot.route;
+}
+
+/** Shared first-call estimate input before and after routing; no usage allowance. */
+export function employeeRunModelInput(
+  kernel: Pick<
+    EmployeeKernelRequest,
+    | 'systemInstructions'
+    | 'rootSystemInstructions'
+    | 'employeeDocuments'
+    | 'mcpToolCatalog'
+    | 'bootstrapConversation'
+    | 'authorizedMemoryContext'
+    | 'userRequest'
+  >,
+) {
+  return [
+    kernel.rootSystemInstructions ?? kernel.systemInstructions,
+    ...(kernel.employeeDocuments?.persona
+      ? [kernel.employeeDocuments.persona]
+      : []),
+    kernel.employeeDocuments?.user ?? '',
+    kernel.employeeDocuments?.memory ?? '',
+    ...(kernel.mcpToolCatalog?.length
+      ? [mcpCatalogAdmissionInstructions(kernel.mcpToolCatalog)]
+      : []),
+    kernel.bootstrapConversation,
+    kernel.authorizedMemoryContext,
+    kernel.userRequest,
+  ].join('\n');
 }
 
 function objectInput(input: unknown): Record<string, unknown> {
@@ -1154,17 +1184,7 @@ export async function executeEmployeeRun({
             ...modelBudgetScope,
             limits: frozenModelSnapshot.runLimits,
             estimatedInputTokens: estimateConversationTokens(
-              [
-                kernel.rootSystemInstructions ?? kernel.systemInstructions,
-                kernel.employeeDocuments?.user ?? '',
-                kernel.employeeDocuments?.memory ?? '',
-                ...(kernel.mcpToolCatalog?.length
-                  ? [mcpCatalogAdmissionInstructions(kernel.mcpToolCatalog)]
-                  : []),
-                kernel.bootstrapConversation,
-                kernel.authorizedMemoryContext,
-                kernel.userRequest,
-              ].join('\n'),
+              employeeRunModelInput(kernel),
             ),
           }),
           requestedRuntimeMs: executionSnapshot.runtimePolicy.timeoutMs,
@@ -1331,18 +1351,7 @@ export async function executeEmployeeRun({
       );
     if (runLimits) {
       const estimatedInputTokens = estimateConversationTokens(
-        [
-          routedKernel.rootSystemInstructions ??
-            routedKernel.systemInstructions,
-          routedKernel.employeeDocuments?.user ?? '',
-          routedKernel.employeeDocuments?.memory ?? '',
-          ...(routedKernel.mcpToolCatalog?.length
-            ? [mcpCatalogAdmissionInstructions(routedKernel.mcpToolCatalog)]
-            : []),
-          routedKernel.bootstrapConversation,
-          routedKernel.authorizedMemoryContext,
-          routedKernel.userRequest,
-        ].join('\n'),
+        employeeRunModelInput(routedKernel),
       );
       assertInitialModelInputBudget({
         ...modelBudgetScope,

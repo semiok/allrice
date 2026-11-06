@@ -10,6 +10,69 @@ import {
 } from './employee-documents.ts';
 
 describe('bounded employee document views', () => {
+  it('keeps the legacy USER/MEMORY shape without synthesizing a persona field', () => {
+    const legacy = { user: '# USER.md\nUser', memory: '# MEMORY.md\nMemory' };
+    const parsed = EmployeeDocumentsSchema.parse(legacy);
+    expect(parsed).toEqual(legacy);
+    expect(Object.hasOwn(parsed, 'persona')).toBe(false);
+    expect(JSON.stringify(parsed)).toBe(JSON.stringify(legacy));
+  });
+  it('bounds the complete rendered PERSONA independently without truncating any document', () => {
+    const envelope = (name: string) =>
+      '# PERSONA.md\n' + JSON.stringify({ identity: { name } });
+    const fixedBytes = Buffer.byteLength(envelope(''));
+    const persona = envelope('a'.repeat(16384 - fixedBytes));
+    expect(Buffer.byteLength(persona)).toBe(16384);
+    const documents = {
+      persona,
+      user: 'u'.repeat(2048),
+      memory: 'm'.repeat(6000),
+    };
+    expect(EmployeeDocumentsSchema.parse(documents)).toEqual(documents);
+    expect(
+      EmployeeDocumentsSchema.safeParse({ ...documents, persona: persona + 'a' })
+        .success,
+    ).toBe(false);
+    expect(
+      EmployeeDocumentsSchema.safeParse({
+        ...documents,
+        user: documents.user + 'u',
+      }).success,
+    ).toBe(false);
+    expect(
+      EmployeeDocumentsSchema.safeParse({
+        ...documents,
+        memory: documents.memory + 'm',
+      }).success,
+    ).toBe(false);
+  });
+  it('counts UTF-8 and JSON escapes in the rendered PERSONA, including its heading and envelope', () => {
+    const render = (name: string) =>
+      '# PERSONA.md\n' + JSON.stringify({ identity: { name } });
+    const name = '人'.repeat(5400);
+    const persona = render(name);
+    expect(Buffer.byteLength(persona)).toBeLessThan(16384);
+    expect(
+      EmployeeDocumentsSchema.parse({ persona, user: '', memory: '' }).persona,
+    ).toBe(persona);
+    const escaped = render('\u0000'.repeat(2731));
+    expect(Buffer.byteLength('\u0000'.repeat(2731))).toBeLessThan(16384);
+    expect(Buffer.byteLength(escaped)).toBeGreaterThan(16384);
+    expect(
+      EmployeeDocumentsSchema.safeParse({
+        persona: escaped,
+        user: '',
+        memory: '',
+      }).success,
+    ).toBe(false);
+    expect(
+      EmployeeDocumentsSchema.safeParse({
+        persona: render('人'.repeat(5500)),
+        user: '',
+        memory: '',
+      }).success,
+    ).toBe(false);
+  });
   it('keeps complete conditions, includes envelopes and handles in UTF-8 limits and counts omissions', () => {
     const items = Array.from({ length: 25 }, (_, i) => ({
       id: randomUUID(),
