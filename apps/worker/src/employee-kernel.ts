@@ -258,7 +258,7 @@ export function assembleEmployeeKernel(input: {
         : []),
       ...(input.personalScenes
         ? [
-            'Your personal Workflows appear in the native Skill directory under allrice-scene- names. Load relevant Skills with the native skill tool; each load reads the currently authorized package. Earlier loaded text stays in native conversation history and may be summarized. To read a package resource use workspace_skill_read with the exact contentRef from that load and the resource path. Never substitute a newer package for that reference. Loading and reading do not grant tools, execute scripts, or prove task completion.',
+            'Your personal Workflows appear in the native Skill directory under their exact Skill names. Load relevant Skills with the native skill tool; each load reads the currently authorized package. Earlier loaded text stays in native conversation history and may be summarized. To read a package resource use workspace_skill_read with the exact contentRef from that load and the resource path. Never substitute a newer package for that reference. Loading and reading do not grant tools, execute scripts, or prove task completion.',
           ]
         : []),
       ...(input.hasContentScenes

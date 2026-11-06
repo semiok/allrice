@@ -19,6 +19,7 @@ import { skillBytesChecksum } from '../skill-bundles.ts';
 import { employeeAccessTransaction } from './employee-access-cancellation.ts';
 import { getEmployeeInstance } from './employee-instances.ts';
 import { readCurrentEmployeeBaseSkills } from './employee-current-skills.ts';
+import { assertOrdinarySkillSceneName } from './personal-scene-names.ts';
 import {
   personalSkillUpdateImpact,
   personalSkillSourceIdentity,
@@ -237,6 +238,13 @@ async function browserOperation(
               tx,
             );
       const base = await readCurrentEmployeeBaseSkills(tx, bound);
+      if (!('enabled' in binding) || binding.enabled)
+        await assertOrdinarySkillSceneName(
+          tx,
+          { ...context, workspaceId: binding.workspaceId },
+          binding.instanceId,
+          definition.name,
+        );
       if (base.nativeSkills.some((s) => s.name === definition.name))
         throw new PersonalSkillError('name_conflict');
     }
