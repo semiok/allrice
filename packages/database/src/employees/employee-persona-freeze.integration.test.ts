@@ -15,6 +15,7 @@ import {
   EmployeeExecutionSnapshotSchema,
   EmployeeManifestSchema,
   EmployeePersonaPinSchema,
+  EmployeePromptSnapshotSchema,
   PlatformEmployeeRuntimeProfileSchema,
   type EmployeeInstanceProfile,
   type PlatformEmployeeDefinition,
@@ -26,6 +27,8 @@ import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
 import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
 import { createRunAuthorityFixture } from '../run-authority.fixture.ts';
 import { approveSyntheticCurrentEmployeeExecution } from '../current-execution.fixture.ts';
+import { isPlatformAdmin } from '../platform-authority.ts';
+import { isBaseRiceInstance } from './employee-instance-policy.ts';
 import {
   authenticateSession,
   createSession,
@@ -413,11 +416,16 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
   );
 
   it('retains the frozen Run after later defaults/edit/reset and lets the new Run follow current defaults', async () => {
-    const f = await setup(),
-      instance = await custom(f, {
-        name: f.definition.name,
-        expressionStyle: 'structured',
-        appearance: { accentColor: 'blue' },
+    const f = await setup(true),
+      instance = await updateEmployeeInstance(f.context, f.assignmentId, {
+        workspaceId: f.workspaceId,
+        expectedRevision: 1,
+        requestId: randomUUID(),
+        profile: {
+          name: f.definition.name,
+          expressionStyle: 'structured',
+          appearance: { accentColor: 'blue' },
+        },
       });
     const first = await send(f, instance.id),
       original = JSON.stringify(first.resolved.promptSnapshot);
@@ -435,6 +443,11 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
       systemPrompt: 'PLATFORM_POLICY_B',
     };
     await f.publish(next);
+    const current = await getEmployeeInstance(f.context, instance.id);
+    expect(current.kind).toBe('general');
+    expect(current.source.kind).toBe('platform');
+    expect(current.source.employeeVersionId).not.toBe(f.versionId);
+    expect(await isBaseRiceInstance(current, fixture.db)).toBe(true);
     const edited = await updateEmployeeInstance(f.context, instance.id, {
       workspaceId: f.workspaceId,
       expectedRevision: instance.revision,
@@ -721,20 +734,27 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
         configure: false,
         snapshot: (snapshot) =>
           badPin === 'missing' ? snapshot : { ...snapshot, persona: badPin },
-        preparePrompt: async () => ({
-          systemPrompt: 'Historical first-INSERT policy',
-          conversation: [],
-          userRequest: 'Literal malformed snapshot fixture',
-          ...(badPin === 'missing'
-            ? {
-                employeeDocuments: {
-                  persona: '# 人设\nUnverified first-INSERT document',
-                  user: '',
-                  memory: '',
-                },
-              }
-            : {}),
-        }),
+        preparePrompt: async (_transaction, original) => {
+          const prompt = EmployeePromptSnapshotSchema.parse({
+            systemPrompt:
+              original.executionSnapshot.employee.definition.systemPrompt,
+            conversation: [],
+            memories: [],
+            userRequest: 'synthetic',
+          });
+          return {
+            ...prompt,
+            ...(badPin === 'missing'
+              ? {
+                  employeeDocuments: {
+                    persona: '# 人设\nUnverified first-INSERT document',
+                    user: '',
+                    memory: '',
+                  },
+                }
+              : {}),
+          };
+        },
       });
       await expect(
         hub.resolveEmployeeExecution({
@@ -787,20 +807,13 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
       run = await send(f, instance.id);
     const documents = run.resolved.promptSnapshot.employeeDocuments;
     if (!documents?.persona) throw Error('expected actual PERSONA');
-    const persona = documents.persona;
+    const originalPrompt = EmployeePromptSnapshotSchema.parse(
+      run.resolved.promptSnapshot,
+    );
     const authority = await createRunAuthorityFixture(fixture.db, {
       configure: false,
       snapshot: () => run.resolved.executionSnapshot,
-      preparePrompt: async () => ({
-        systemPrompt: run.resolved.promptSnapshot.systemPrompt,
-        conversation: [],
-        userRequest: 'Foreign first-INSERT snapshot fixture',
-        employeeDocuments: {
-          persona,
-          user: documents.user,
-          memory: documents.memory,
-        },
-      }),
+      preparePrompt: async () => originalPrompt,
     });
     await expect(
       hub.resolveEmployeeExecution({
@@ -840,11 +853,11 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
       const old = await createRunAuthorityFixture(fixture.db, {
         configure: false,
         runtimePackage: pkg,
-        allowedTools: ['workspace.skill.read'],
+        allowedTools: [...pkg.runtimeManifest.toolNames],
         runtimePolicy: {
           harness: 'dsh',
-          provider: template.definition.modelPolicy.provider,
-          model: template.definition.modelPolicy.model,
+          provider: pkg.runtimeManifest.provider,
+          model: pkg.runtimeManifest.model,
           reasoningEffort: 'xhigh',
           timeoutMs: 300000,
           fallbackModels: [],
@@ -852,6 +865,18 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
           baseUrl: null,
         },
       });
+      if (old.manifest.schemaVersion !== 2)
+        throw Error('expected original tenant declaration');
+      expect(old.manifest.runtimePolicy.provider).toBe(
+        pkg.runtimeManifest.provider,
+      );
+      expect(old.manifest.runtimePolicy.model).toBe(pkg.runtimeManifest.model);
+      expect([...old.manifest.capabilityBindings.toolNames].sort()).toEqual(
+        [...pkg.runtimeManifest.toolNames].sort(),
+      );
+      expect(
+        [...old.manifest.securityPolicy.deniedCapabilities].sort(),
+      ).toEqual([...pkg.runtimeManifest.deniedCapabilities].sort());
       const context = await login(old.user, old.org, old.workspace);
       const [before] =
         await fixture.db`select manifest,config_checksum from allrice_employee_versions where id=${old.version}`;
@@ -892,6 +917,8 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
         },
         fixture.db,
       );
+      if (producer === 'admin_publication')
+        vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', p.user.email);
       const context = await login(p.user.id, p.organizationId, p.workspaceId);
       let assignmentId: string;
       if (producer === 'unmanaged_rice') {
@@ -899,6 +926,7 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
         if (!assignment) throw Error('expected real unmanaged Rice');
         assignmentId = assignment.id;
       } else {
+        expect(await isPlatformAdmin(context)).toBe(true);
         const created = await hub.createEmployee(context, {
           workspaceId: p.workspaceId,
           name: '普通管理员员工',
