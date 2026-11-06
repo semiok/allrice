@@ -285,6 +285,16 @@ export const ExperienceEvidenceSchema = z
   })
   .strict();
 export type ExperienceEvidence = z.infer<typeof ExperienceEvidenceSchema>;
+
+/** Raw human provenance for Dreaming, never a confirmed instruction. Legacy
+ * evidence remains v1 and is not silently promoted into this source format. */
+export const MemorySourceEvidenceSchema = ExperienceEvidenceSchema.extend({
+  schemaVersion: z.literal(2),
+  kind: z.enum(['human_message', 'adopted_steering']),
+  captureRunId: UuidSchema,
+}).strict();
+export type MemorySourceEvidence = z.infer<typeof MemorySourceEvidenceSchema>;
+
 export const CreateExperienceInputSchema = z
   .object({
     clientRequestId: UuidSchema,

@@ -158,23 +158,47 @@ export async function readEmployeeChatSourceKind(
   input: Pick<EmployeeChatCall, 'context' | 'userMessageId'>,
   tx: postgres.TransactionSql | ReturnType<typeof getDatabase> = getDatabase(),
 ) {
+  return readEmployeeRunSourceKind(
+    {
+      runId: input.context.runId,
+      organizationId: input.context.organizationId,
+      workspaceId: input.context.workspaceId,
+      ownerId: input.context.policySnapshot.subjectId,
+      userMessageId: input.userMessageId,
+    },
+    tx,
+  );
+}
+
+/** The same structural predicate for terminal source capture. No synthetic
+ * execution context, running Job, or fabricated authority is required. */
+export async function readEmployeeRunSourceKind(
+  input: {
+    runId: string;
+    organizationId: string;
+    workspaceId: string;
+    ownerId: string;
+    userMessageId: string;
+  },
+  tx: postgres.TransactionSql | ReturnType<typeof getDatabase> = getDatabase(),
+) {
   const [source] = await tx<
     { internal: boolean; execution_snapshot: unknown }[]
   >`
     select er.execution_snapshot,exists(select 1 from allrice_automation_runs a
-        where a.run_id=${input.context.runId} or a.id=m.client_message_id)
+        where a.run_id=${input.runId} or a.id=m.client_message_id)
       or exists(select 1 from allrice_automation_folder_events e
-        where e.run_id=${input.context.runId} or e.id=m.client_message_id)
-      or exists(select 1 from allrice_workflow_runs w where w.run_id=${input.context.runId})
-      or exists(select 1 from allrice_platform_quality_checks q where q.run_id=${input.context.runId})
-      or exists(select 1 from allrice_platform_repair_tasks r where r.run_id=${input.context.runId})
-      or exists(select 1 from allrice_platform_repository_review_subjects s where s.run_id=${input.context.runId})
+        where e.run_id=${input.runId} or e.id=m.client_message_id)
+      or exists(select 1 from allrice_workflow_runs w where w.run_id=${input.runId})
+      or exists(select 1 from allrice_platform_quality_checks q where q.run_id=${input.runId})
+      or exists(select 1 from allrice_platform_repair_tasks r where r.run_id=${input.runId})
+      or exists(select 1 from allrice_platform_repository_review_subjects s where s.run_id=${input.runId})
       as internal from allrice_employee_runs er
       join allrice_messages m on m.id=er.user_message_id and m.session_id=er.session_id
         and m.organization_id=er.organization_id and m.workspace_id=er.workspace_id and m.owner_id=er.owner_id and m.role='user'
-      where er.run_id=${input.context.runId} and er.user_message_id=${input.userMessageId}
-        and er.organization_id=${input.context.organizationId} and er.workspace_id=${input.context.workspaceId}
-        and er.owner_id=${input.context.policySnapshot.subjectId}`;
+      where er.run_id=${input.runId} and er.user_message_id=${input.userMessageId}
+        and er.organization_id=${input.organizationId} and er.workspace_id=${input.workspaceId}
+        and er.owner_id=${input.ownerId}`;
   if (!source) return 'unavailable' as const;
   if (source.internal) return 'internal' as const;
   const snapshot = EmployeeExecutionSnapshotSchema.safeParse(
