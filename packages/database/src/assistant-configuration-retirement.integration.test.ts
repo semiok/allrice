@@ -24,7 +24,6 @@ import {
   previewNativeTestChatRetirement,
 } from './conversation/native-context-retirement.ts';
 import { getWorkAutomation } from './work-automation.ts';
-import { updateUserPreferences } from './user-preferences.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -110,10 +109,16 @@ async function oldConfiguration(f: Awaited<ReturnType<typeof historical>>) {
   };
   await db`update allrice_runs set input=${db.json(input)} where id=${f.rootRunId}`;
   await db`update allrice_jobs set payload=jsonb_set(payload,'{input}',${db.json(input)}::jsonb) where id=${f.worker.jobId}`;
-  await updateUserPreferences(f.context, {
-    questionWait: { mode: 'timed', seconds: 47 },
-    subagents: { maxDepth: 2, maxActive: 5 },
-  });
+  // This synthetic fixture deliberately stops at 0228. Seed its historical
+  // columns directly: the current preference writer requires later migrations.
+  expect(
+    await db`select column_name from information_schema.columns
+      where table_schema=current_schema() and table_name='allrice_user_preferences'
+        and column_name='capability_settings'`,
+  ).toEqual([]);
+  await db`insert into allrice_user_preferences
+    (user_id,question_wait_mode,question_wait_seconds,subagent_max_depth,subagent_max_active)
+    values(${f.user},'timed',47,2,5)`;
   const builtin = 'd78b3556-821a-5550-bf13-d9dd84b9bbe0',
     custom = randomUUID();
   for (const [id, name] of [
