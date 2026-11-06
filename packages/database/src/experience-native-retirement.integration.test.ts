@@ -1,5 +1,12 @@
 /** Actual shared calendar generation + SQL, synthetic Host ports, no model. */
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { experiencePolicySchedule } from '@allrice/contracts';
+import { authorizeFixturePlatformAdministrator } from './platform-authority.fixture.ts';
+import {
+  readExperiencePolicy,
+  updateExperiencePolicy,
+} from './experience-consolidation.ts';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { createP27CodexWorkerFixture } from '../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
 import { createNativeCalendarGeneration } from '../../../apps/worker/src/native-schedule-calendar.ts';
@@ -106,9 +113,13 @@ suite('M5-A historical native arms preserve the shared generation', () => {
     });
   }
 
-  it.each(['prepared', 'absent', 'creating'] as const)(
-    'finishes a retained %s arm beside an ordinary monthly arm without reviving experience business',
-    async (phase) => {
+  it.each(
+    (['prepared', 'absent', 'creating'] as const).flatMap((phase) =>
+      [false, true].map((cutover) => ({ phase, cutover })),
+    ),
+  )(
+    'preserves the shared generation for $phase, policy-off cutover=$cutover',
+    async ({ phase, cutover }) => {
       const seeded = await seedExperienceCalendarRule(f, 'empty');
       const old = await seedHistoricalExperienceCalendar(
         f,
@@ -116,6 +127,24 @@ suite('M5-A historical native arms preserve the shared generation', () => {
         reference,
         phase,
       );
+      if (cutover) {
+        await authorizeFixturePlatformAdministrator(f.db, f.ownerId);
+        const policy = await readExperiencePolicy(f.organizationId);
+        await updateExperiencePolicy(f.context, f.organizationId, {
+          ...experiencePolicySchedule(policy),
+          frequency: 'off',
+          expectedRevision: policy.revision,
+        });
+        await f.db.unsafe(
+          await readFile(
+            new URL(
+              '../migrations/0234_memory_source_cutover.sql',
+              import.meta.url,
+            ),
+            'utf8',
+          ),
+        );
+      }
       const { store } = old,
         ports = store.calendar!;
       let writer = old.writer;
@@ -220,9 +249,11 @@ suite('M5-A historical native arms preserve the shared generation', () => {
         digest: nativeOnceDigest,
       });
       await expect(generation.tick()).resolves.toBeUndefined();
-      expect(created.sort()).toEqual([seeded.automationId, ordinary.id].sort());
+      expect(created.sort()).toEqual(
+        (cutover ? [ordinary.id] : [seeded.automationId, ordinary.id]).sort(),
+      );
       await expect(generation.tick()).resolves.toBeUndefined();
-      expect(created).toHaveLength(2);
+      expect(created).toHaveLength(cutover ? 1 : 2);
       expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
         false,
       );
