@@ -18,6 +18,10 @@ import {
 import { createExperienceStore } from './experience.ts';
 import { getExperienceOverview } from './experience-overview.ts';
 import {
+  readExperiencePolicy,
+  updateExperiencePolicy,
+} from './experience-consolidation.ts';
+import {
   createChatSession,
   sendChatMessage,
   listWorkspaceMemories,
@@ -313,74 +317,134 @@ suite(
       expect(captured).toHaveLength(1);
       expect(captured[0]!.archived_at).not.toBeNull();
     });
-    it.each(['adopted', 'wrong_run', 'wrong_input', 'method'] as const)(
-      'uses exact native steering adoption: %s',
-      async (mode) => {
-        const f = await setup();
-        const runtime = {
-          organizationId: f.org,
-          workspaceId: f.workspace,
-          sessionId: f.session.id,
-          ownerId: f.user,
-          runId: f.runId,
-          workerId: f.workerId,
-        };
-        await acquireConversationRuntime({
-          ...runtime,
-          configChecksum: 'sha256:' + 'a'.repeat(64),
-          compactThresholdTokens: 10000,
-        });
-        const threadId = 'native-' + randomUUID(),
-          turnId = 'turn-' + randomUUID();
-        await bindConversationThread({ ...runtime, threadId });
-        const binding = await recordConversationTurn({
-          ...runtime,
-          threadId,
-          turnId,
-        });
-        await sendChatMessage(f.owner, f.workspace, f.session.id, {
-          clientMessageId: randomUUID(),
-          text: '合成的补充资料。',
-          deliveryMode: 'steer',
-          expectedTurnId: turnId,
-          expectedGeneration: binding.generation,
-        });
-        const command = await claimConversationSteer({
-          ...runtime,
-          generation: binding.generation,
-          turnId,
-        });
-        expect(command).not.toBeNull();
-        await consumeConversationSteer({
-          commandId: command!.id,
-          workerId: f.workerId,
-          proof: {
-            status: 'adopted',
-            inputId: command!.clientUserMessageId,
-            messageId: randomUUID(),
-            turnId,
-            sequence: 5,
-            checkpoint: 'step_user_message',
-          },
-        });
-        await collect();
-        expect(await rows(command!.followupRunId)).toEqual([]);
-        if (mode === 'wrong_run' || mode === 'wrong_input')
-          await db`update allrice_conversation_commands set native_proof=jsonb_set(native_proof,
+    it.each([
+      'adopted',
+      'adopted_new_turn',
+      'wrong_run',
+      'wrong_input',
+      'method',
+    ] as const)('uses exact native steering adoption: %s', async (mode) => {
+      const f = await setup();
+      const runtime = {
+        organizationId: f.org,
+        workspaceId: f.workspace,
+        sessionId: f.session.id,
+        ownerId: f.user,
+        runId: f.runId,
+        workerId: f.workerId,
+      };
+      await acquireConversationRuntime({
+        ...runtime,
+        configChecksum: 'sha256:' + 'a'.repeat(64),
+        compactThresholdTokens: 10000,
+      });
+      const threadId = 'native-' + randomUUID(),
+        turnId = 'turn-' + randomUUID();
+      await bindConversationThread({ ...runtime, threadId });
+      const binding = await recordConversationTurn({
+        ...runtime,
+        threadId,
+        turnId,
+      });
+      await sendChatMessage(f.owner, f.workspace, f.session.id, {
+        clientMessageId: randomUUID(),
+        text: '合成的补充资料。',
+        deliveryMode: 'steer',
+        expectedTurnId: turnId,
+        expectedGeneration: binding.generation,
+      });
+      const command = await claimConversationSteer({
+        ...runtime,
+        generation: binding.generation,
+        turnId,
+      });
+      expect(command).not.toBeNull();
+      await consumeConversationSteer({
+        commandId: command!.id,
+        workerId: f.workerId,
+        proof: {
+          status: 'adopted',
+          inputId: command!.clientUserMessageId,
+          messageId: randomUUID(),
+          turnId: mode === 'adopted_new_turn' ? 'adopted-' + turnId : turnId,
+          ...(mode === 'adopted_new_turn' ? { runId: f.runId } : {}),
+          sequence: 5,
+          checkpoint: 'step_user_message',
+        },
+      });
+      await collect();
+      expect(await rows(command!.followupRunId)).toEqual([]);
+      if (mode === 'wrong_run' || mode === 'wrong_input')
+        await db`update allrice_conversation_commands set native_proof=jsonb_set(native_proof,
         ${mode === 'wrong_run' ? '{runId}' : '{inputId}'}::text[],${db.json(randomUUID())}) where id=${command!.id}`;
-        if (mode === 'method')
-          await db`update allrice_employee_runs set method_authoring=true where run_id=${f.runId}`;
-        await f.finish();
-        await collect();
-        const captured = await rows(command!.followupRunId);
-        expect(captured).toHaveLength(mode === 'adopted' ? 1 : 0);
-        if (mode === 'adopted')
-          expect(captured[0]!.evidence).toMatchObject({
-            kind: 'adopted_steering',
-            runId: f.runId,
-          });
-      },
-    );
+      if (mode === 'method')
+        await db`update allrice_employee_runs set method_authoring=true where run_id=${f.runId}`;
+      await f.finish();
+      await collect();
+      const captured = await rows(command!.followupRunId);
+      expect(captured).toHaveLength(
+        mode === 'adopted' || mode === 'adopted_new_turn' ? 1 : 0,
+      );
+      if (mode === 'adopted' || mode === 'adopted_new_turn')
+        expect(captured[0]!.evidence).toMatchObject({
+          kind: 'adopted_steering',
+          runId: f.runId,
+        });
+    });
+    it('serializes capture against the first organization policy override using the existing writer lock', async () => {
+      const f = await setup();
+      await f.finish();
+      const policy = await readExperiencePolicy(f.org, db, false);
+      let release!: () => void, held!: (pid: number) => void;
+      const hold = new Promise<void>((r) => {
+        release = r;
+      });
+      const ready = new Promise<number>((r) => {
+        held = r;
+      });
+      const blocker = db.begin(async (tx) => {
+        await tx`select id from allrice_organizations where id=${f.org} for update`;
+        const [backend] = await tx<
+          { pid: number }[]
+        >`select pg_backend_pid() pid`;
+        held(backend!.pid);
+        await hold;
+      });
+      const pid = await ready;
+      const closing = updateExperiencePolicy(f.reviewer, f.org, {
+        expectedRevision: policy.revision,
+        frequency: 'off',
+        timezone: 'Asia/Shanghai',
+        time: '03:00',
+        weekday: 1,
+        monthDay: 1,
+      });
+      // Preserve rejection while the real writer is blocked; do not fake a
+      // policy read or write the override through a test-only production seam.
+      void closing.catch(() => {});
+      try {
+        await expect
+          .poll(
+            async () =>
+              (
+                await db`select 1 from pg_stat_activity where ${pid}=any(pg_blocking_pids(pid))`
+              ).length,
+            { timeout: 2000, interval: 10 },
+          )
+          .toBeGreaterThan(0);
+        expect(await collect()).toMatchObject({ captured: 0, busy: 1 });
+        expect(await rows(f.runId)).toEqual([]);
+      } finally {
+        release();
+        await blocker;
+      }
+      await closing;
+      await collect();
+      expect(await rows(f.runId)).toEqual([]);
+      const [run] =
+        await db`select experience_capture_state s,experience_capture_reason r from allrice_employee_runs where run_id=${f.runId}`;
+      expect(run).toEqual({ s: 'ignored', r: 'policy_disabled' });
+    });
     it('cutover advances only the existing watermark/revision and preserves policy choices and old markers', async () => {
       const f = await setup();
       await db`update allrice_employee_runs set experience_capture_state='ignored',experience_capture_reason='policy_disabled' where run_id=${f.runId}`;
