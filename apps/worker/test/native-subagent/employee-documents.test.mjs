@@ -17,6 +17,7 @@ it('only the admitted root gets required literal documents; child current prompt
     runId,
     rootSystemInstructions: 'ROOT_STABLE_PERSONA',
     employeeDocuments: {
+      persona: '# PERSONA.md\nPERSONA_A {{missing}}',
       user: '# USER.md\nPERSON {{missing}}',
       memory: '# MEMORY.md\nCONFIRMED_A',
     },
@@ -35,6 +36,17 @@ it('only the admitted root gets required literal documents; child current prompt
     'LEGACY_CHILD_PERSONA',
   );
   expect(JSON.stringify(rootRequest.messages)).toContain('PERSON {{missing}}');
+  const requiredContext = rootRequest.messages.find(
+    (message) =>
+      message.role === 'user' &&
+      JSON.stringify(message.content).includes(
+        'Current runtime context. This snapshot supersedes earlier runtime-context snapshots.',
+      ),
+  );
+  expect(JSON.stringify(requiredContext)).toContain('PERSONA_A {{missing}}');
+  expect(
+    JSON.stringify(rootRequest.messages.filter((m) => m.role === 'system')),
+  ).not.toContain('PERSONA_A');
   const child = await h.spawn();
   await child.result;
   await h.wait();
@@ -43,6 +55,7 @@ it('only the admitted root gets required literal documents; child current prompt
     'LEGACY_CHILD_PERSONA',
   );
   expect(JSON.stringify(childRequest.messages)).not.toContain('CONFIRMED_A');
+  expect(JSON.stringify(childRequest.messages)).not.toContain('PERSONA_A');
   const childAgent = observedAgents.get(child.childId);
   const approval = childAgent.session
     .snapshotEvents()
@@ -53,6 +66,7 @@ it('only the admitted root gets required literal documents; child current prompt
   await h.wait();
   const forkRequest = h.calls.find((r) => r.sessionId === forked.childId);
   expect(JSON.stringify(forkRequest.messages)).toContain('CONFIRMED_A');
+  expect(JSON.stringify(forkRequest.messages)).toContain('PERSONA_A {{missing}}');
   expect(
     JSON.stringify(
       forkRequest.messages.filter((m) => m.role === 'system').at(-1),
@@ -91,7 +105,11 @@ it('uses native context supersession for nonempty to empty without rewriting his
   const h = await host({
     runId,
     rootSystemInstructions: 'ROOT_STABLE',
-    employeeDocuments: { user: '', memory: '# MEMORY.md\nOLD_SNAPSHOT' },
+    employeeDocuments: {
+      persona: '# PERSONA.md\nINITIAL_PERSONA',
+      user: '',
+      memory: '# MEMORY.md\nOLD_SNAPSHOT',
+    },
     bridge: async () => ({ allowed: true }),
   });
   await h.prompt('第一轮');
@@ -99,7 +117,11 @@ it('uses native context supersession for nonempty to empty without rewriting his
   const old = h.root.session
     .snapshotEvents()
     .filter((e) => e.type === 'user/message');
-  h.server.employeeDocuments.bind(h.root.id, { user: '', memory: '' });
+  h.server.employeeDocuments.bind(h.root.id, {
+    persona: '# PERSONA.md\nUPDATED_PERSONA',
+    user: '',
+    memory: '',
+  });
   await h.prompt('第二轮');
   await h.wait();
   const events = h.root.session
@@ -110,9 +132,20 @@ it('uses native context supersession for nonempty to empty without rewriting his
     (e) => !old.some((prior) => prior.seq === e.seq),
   );
   expect(JSON.stringify(updates)).not.toContain('OLD_SNAPSHOT');
+  expect(JSON.stringify(updates)).toContain('UPDATED_PERSONA');
+  expect(JSON.stringify(updates)).not.toContain('INITIAL_PERSONA');
   // Other native runtime contexts may keep the full snapshot nonempty; the
   // updated snapshot, rather than a fabricated deletion, removes this section.
   expect(updates.length).toBeGreaterThan(1);
+  h.server.employeeDocuments.bind(h.root.id, { user: '', memory: '' });
+  await h.prompt('清空人设后的任务');
+  await h.wait();
+  const contexts = h.calls.at(-1).messages.filter((message) =>
+    JSON.stringify(message.content).includes(
+      'Current runtime context. This snapshot supersedes earlier runtime-context snapshots.',
+    ),
+  );
+  expect(JSON.stringify(contexts.at(-1))).not.toContain('UPDATED_PERSONA');
 }, 30000);
 
 it('cold root recovery keeps native history unchanged and the latest cleared snapshot current, without replay', async () => {
@@ -121,6 +154,7 @@ it('cold root recovery keeps native history unchanged and the latest cleared sna
     runId,
     rootSystemInstructions: 'ROOT_STABLE',
     employeeDocuments: {
+      persona: '# PERSONA.md\nOLD_PERSONA',
       user: '# USER.md\nOLD_ROLE',
       memory: '# MEMORY.md\nWITHDRAWN_MEMORY',
     },
@@ -149,6 +183,7 @@ it('cold root recovery keeps native history unchanged and the latest cleared sna
     .snapshotEvents()
     .filter((e) => e.type === 'user/message');
   expect(JSON.stringify(before)).toContain('WITHDRAWN_MEMORY');
+  expect(JSON.stringify(before)).toContain('OLD_PERSONA');
   const count = h.calls.length;
   await h.server.closeRoot(h.root.id);
   await h.server.handleRequest('run/end', { runId: nextRun });
@@ -182,5 +217,7 @@ it('cold root recovery keeps native history unchanged and the latest cleared sna
   expect(contexts.length).toBeGreaterThan(1);
   expect(JSON.stringify(contexts.at(-1))).not.toContain('WITHDRAWN_MEMORY');
   expect(JSON.stringify(contexts.at(-1))).not.toContain('OLD_ROLE');
+  expect(JSON.stringify(contexts.at(-1))).not.toContain('OLD_PERSONA');
   expect(JSON.stringify(request.messages)).toContain('WITHDRAWN_MEMORY');
+  expect(JSON.stringify(request.messages)).toContain('OLD_PERSONA');
 }, 30000);

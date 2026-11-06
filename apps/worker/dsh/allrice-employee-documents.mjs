@@ -41,7 +41,11 @@ export function installEmployeeDocuments(host, rootPersona) {
           interpolate: false,
           text: () => {
             assertRoot();
-            return [current.documents.user, current.documents.memory]
+            return [
+              current.documents.persona,
+              current.documents.user,
+              current.documents.memory,
+            ]
               .filter(Boolean)
               .join('\n\n');
           },
