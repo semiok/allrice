@@ -185,13 +185,15 @@ suite(
         expect((await rows(f.runId))[0]!.lifecycle_state).toBe('candidate');
       },
     );
-    it.each(['ready', 'deleted', 'other_owner'] as const)(
+    it.each(['ready', 'deleted', 'other_owner', 'expired'] as const)(
       'keeps file identities and rejects revoked file dependencies: %s',
       async (mode) => {
         const f = await setup(),
           objectId = randomUUID();
         await db`insert into allrice_storage_objects(id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,state,deleted_at)
         values(${objectId},${f.org},${f.workspace},${mode === 'other_owner' ? f.neighbor.actor.id : f.user},${'synthetic/' + objectId},'uploads','text/plain',4,${'sha256:' + 'a'.repeat(64)},${mode === 'deleted' ? 'deleted' : 'ready'},${mode === 'deleted' ? new Date() : null})`;
+        if (mode === 'expired')
+          await db`update allrice_storage_objects set created_at=now()-interval '2 days',retention_until=now()-interval '1 day' where id=${objectId}`;
         await db`insert into allrice_message_attachments(organization_id,workspace_id,message_id,object_id,attached_by,file_name)
         values(${f.org},${f.workspace},${f.messageId},${objectId},${f.user},'synthetic.txt')`;
         await f.finish();

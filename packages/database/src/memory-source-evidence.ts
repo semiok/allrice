@@ -280,20 +280,28 @@ async function capture(tx: Tx, s: Source) {
       attached_by: string;
       state: string;
       deleted_at: Date | null;
+      retention_until: Date | null;
     }[]
-  >`select a.message_id,o.id object_id,o.checksum,o.owner_id,a.attached_by,o.state,o.deleted_at
+  >`select a.message_id,o.id object_id,o.checksum,o.owner_id,a.attached_by,o.state,o.deleted_at,o.retention_until
     from allrice_message_attachments a
     join allrice_storage_objects o on o.id=a.object_id and o.organization_id=a.organization_id and o.workspace_id=a.workspace_id
     where a.message_id in ${tx([...new Set([s.user_message_id, s.execution_user_message_id])])}
       and a.organization_id=${s.organization_id} and a.workspace_id=${s.workspace_id}
     order by a.message_id,a.object_id for share of a,o`;
+  // Check DB time after acquiring the complete set; expiry can pass while a
+  // concurrent delete/update holds the object lock.
+  const [clock] = inputs.length
+    ? await tx<{ checked_at: Date }[]>`select clock_timestamp() checked_at`
+    : [];
   if (
     inputs.some(
       (file) =>
         file.attached_by !== s.owner_id ||
         file.owner_id !== s.owner_id ||
         file.state !== 'ready' ||
-        file.deleted_at !== null,
+        file.deleted_at !== null ||
+        (file.retention_until !== null &&
+          file.retention_until <= clock!.checked_at),
     )
   )
     return finish('ignored', 'dependency_unavailable');
