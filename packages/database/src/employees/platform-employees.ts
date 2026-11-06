@@ -91,6 +91,7 @@ import {
 
 export {
   buildEmployeeRuntimePackage,
+  employeePersonaPlatformSystemPrompt,
   platformEmployeeTestCanFinalize,
   platformEmployeeTestExecutionTerminalState,
   platformEmployeeTestTimeoutAt,

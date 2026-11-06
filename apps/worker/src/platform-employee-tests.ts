@@ -11,6 +11,8 @@ import {
   EmployeeKernelRequestSchema,
   InternalKernelRequestSchema,
   ExecutionContextSchema,
+  EmployeePersonaDocumentSourceSchema,
+  renderEmployeePersonaDocument,
   type HarnessEvent,
   type SkillCapability,
   type PlatformEmployeeTestRunOutput,
@@ -22,6 +24,8 @@ import {
   experienceValidationStillCurrent,
   methodFileExecutionUnverified,
   freezeRouteSubscriptionSnapshot,
+  employeePersonaPlatformSystemPrompt,
+  runtimePackageChecksum,
 } from '@allrice/database';
 
 import { HandlerError } from './errors.js';
@@ -205,6 +209,35 @@ export async function executeNextPlatformEmployeeTest(input: {
     }
     await checkCandidate();
     signal.throwIfAborted();
+    // Only the ordinary preview uses the frozen platform persona. Dedicated
+    // method/experience instructions and qualifications keep their old path.
+    const previewPersona = !candidate
+      ? {
+          systemInstructions: employeePersonaPlatformSystemPrompt(
+            test.definition,
+          ),
+          employeeDocuments: {
+            persona: renderEmployeePersonaDocument(
+              {
+                name: test.definition.name,
+                description: test.definition.description,
+                appearance: test.definition.appearance,
+                identity: test.definition.identity,
+              },
+              EmployeePersonaDocumentSourceSchema.parse({
+                kind: 'platform_preview',
+                testId: test.id,
+                platformEmployeeId: test.employeeId,
+                platformRevisionId: test.revisionId,
+                definitionChecksum: runtimePackageChecksum(test.definition),
+                packageChecksum: test.runtimeProfile.runtimePackage?.checksum,
+              }),
+            ),
+            user: '',
+            memory: '',
+          },
+        }
+      : undefined;
     meter.dispatched = true;
     const result = await adapter.execute({
       nativeBinding: createJobNativeBinding({
@@ -253,12 +286,17 @@ export async function executeNextPlatformEmployeeTest(input: {
             sessionId: ids.sessionId,
             userMessageId: ids.userMessageId,
             assistantMessageId: ids.assistantMessageId,
-            systemInstructions: [
-              test.runtimeProfile.systemPrompt,
-              method?.instructions,
-            ]
-              .filter(Boolean)
-              .join('\n\n'),
+            systemInstructions: previewPersona
+              ? previewPersona.systemInstructions
+              : [test.runtimeProfile.systemPrompt, method?.instructions]
+                  .filter(Boolean)
+                  .join('\n\n'),
+            ...(previewPersona
+              ? {
+                  rootSystemInstructions: previewPersona.systemInstructions,
+                  employeeDocuments: previewPersona.employeeDocuments,
+                }
+              : {}),
             userRequest: test.input.prompt,
             bootstrapConversation: '',
             authorizedMemoryContext: '',
