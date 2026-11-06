@@ -550,6 +550,11 @@ suite(
           resolved: run.resolved,
         });
       }
+      function personaDocument(text: string | undefined) {
+        expect(text?.startsWith('# 人设\n')).toBe(true);
+        expect(Buffer.byteLength(text!, 'utf8')).toBeLessThanOrEqual(16384);
+        return JSON.parse(text!.slice('# 人设\n'.length));
+      }
       it('personal identity in an ordinary Run agrees with owner details and stays frozen after a later edit', async () => {
         const s = await setup();
         const defaults = await runtimeRun(
@@ -561,8 +566,26 @@ suite(
           '按基础身份处理资料',
           true,
         );
-        expect(defaults.resolved.promptSnapshot.systemPrompt).toBe(
-          defaults.resolved.executionSnapshot!.employee.definition.systemPrompt,
+        const defaultDetails = (await getEmployeeDetails(s.a, s.instance.id))
+          .profile;
+        const defaultPersona = personaDocument(
+          defaults.resolved.promptSnapshot.employeeDocuments?.persona,
+        );
+        for (const field of ['role', 'mission', 'workStyle'] as const) {
+          expect(defaultPersona[field]).toEqual({
+            value: defaultDetails.identity[field],
+            source: 'platform_default',
+          });
+        }
+        expect(defaultPersona.name).toEqual({
+          value: defaultDetails.name,
+          source: 'personal_override',
+        });
+        expect(defaults.resolved.promptSnapshot.systemPrompt).toContain(
+          publication.definition.systemPrompt,
+        );
+        expect(defaults.resolved.promptSnapshot.systemPrompt).not.toContain(
+          defaultDetails.identity.role,
         );
         expect(
           defaults.resolved.executionSnapshot?.schemaVersion === 2 &&
@@ -590,17 +613,29 @@ suite(
           true,
         );
         const worker = await sceneLease(run);
-        const instructions = identityKernel(s, run).systemInstructions;
-        expect(instructions).toContain(details.profile.identity.role);
-        expect(instructions).toContain(details.profile.identity.mission);
-        expect(instructions).toContain(details.profile.identity.workStyle);
+        const kernel = identityKernel(s, run),
+          instructions = kernel.systemInstructions;
+        const persona = personaDocument(kernel.employeeDocuments?.persona);
+        for (const field of ['role', 'mission', 'workStyle'] as const) {
+          expect(persona[field]).toEqual({
+            value: details.profile.identity[field],
+            source: 'personal_override',
+          });
+          expect(instructions).not.toContain(changed.profile[field]);
+          expect(kernel.rootSystemInstructions).not.toContain(
+            changed.profile[field],
+          );
+        }
         const [stored] =
           await f.db`select prompt_snapshot from allrice_employee_runs where run_id=${run.scope.runId}`;
-        expect(stored!.prompt_snapshot.personalIdentity).toEqual(
-          changed.profile,
+        expect(stored!.prompt_snapshot.employeeDocuments).toEqual(
+          kernel.employeeDocuments,
         );
-        expect(run.resolved.promptSnapshot.personalIdentity).toEqual(
-          changed.profile,
+        expect(run.resolved.promptSnapshot.employeeDocuments).toEqual(
+          kernel.employeeDocuments,
+        );
+        expect(run.resolved.promptSnapshot).not.toHaveProperty(
+          'personalIdentity',
         );
         await updateEmployeeInstance(s.a, s.instance.id, {
           workspaceId: s.company.workspaceId,
@@ -629,15 +664,19 @@ suite(
           true,
         );
         const nextWorker = await sceneLease(next);
-        expect(identityKernel(s, next).systemInstructions).toContain(
-          '新的资料分析员',
-        );
-        expect(identityKernel(s, next).systemInstructions).not.toContain(
-          '先列缺失资料',
-        );
-        expect(identityKernel(s, next).systemInstructions).not.toContain(
-          '根据本人提供的来源组织周报',
-        );
+        expect(
+          personaDocument(identityKernel(s, next).employeeDocuments?.persona),
+        ).toMatchObject({
+          role: { value: '新的资料分析员', source: 'personal_override' },
+          mission: {
+            value: publication.definition.identity.mission,
+            source: 'platform_default',
+          },
+          workStyle: {
+            value: publication.definition.identity.workStyle,
+            source: 'platform_default',
+          },
+        });
         expect(
           next.resolved.executionSnapshot?.capabilitySnapshot
             .grantedCapabilities,
@@ -682,10 +721,11 @@ suite(
           before.resolved.promptSnapshot.systemPrompt.length -
           source.definition.systemPrompt.length;
         await before.finish();
+        const basePolicy = 'B'.repeat(9000 - overhead);
         const draft = await savePlatformEmployeeDraft(source.employeeId, {
           definition: {
             ...source.definition,
-            systemPrompt: 'B'.repeat(9000 - overhead),
+            systemPrompt: basePolicy,
           },
           expectedRevisionId: source.revisionId,
         });
@@ -719,13 +759,27 @@ suite(
           true,
         );
         expect(run.resolved.promptSnapshot.systemPrompt).toHaveLength(9000);
-        expect(run.resolved.promptSnapshot.personalIdentity).toEqual(profile);
-        expect(identityKernel(s, run).systemInstructions).toContain(
-          JSON.stringify(profile),
-        );
+        expect(run.resolved.promptSnapshot.systemPrompt).toContain(basePolicy);
+        const kernel = identityKernel(s, run);
+        const persona = personaDocument(kernel.employeeDocuments?.persona);
+        for (const [field, value] of Object.entries(profile)) {
+          expect(persona[field]).toEqual({
+            value,
+            source: 'personal_override',
+          });
+          expect(kernel.systemInstructions).not.toContain(value);
+          expect(kernel.rootSystemInstructions).not.toContain(value);
+        }
+        expect(kernel.systemInstructions).toContain(basePolicy);
+        expect(kernel.rootSystemInstructions).toContain(basePolicy);
         const [stored] =
           await f.db`select prompt_snapshot from allrice_employee_runs where run_id=${run.scope.runId}`;
-        expect(stored!.prompt_snapshot.personalIdentity).toEqual(profile);
+        expect(stored!.prompt_snapshot.employeeDocuments).toEqual(
+          run.resolved.promptSnapshot.employeeDocuments,
+        );
+        expect(kernel.employeeDocuments).toEqual(
+          run.resolved.promptSnapshot.employeeDocuments,
+        );
         expect(
           run.resolved.executionSnapshot?.schemaVersion === 2 &&
             run.resolved.executionSnapshot.instance?.id,

@@ -1,4 +1,7 @@
-import { freezeEmployeeDocuments } from './employee-documents.ts';
+import {
+  freezeEmployeeDocuments,
+  assertFrozenEmployeePersona,
+} from './employee-documents.ts';
 import { isBaseRiceInstance } from './employee-instance-policy.ts';
 import { readChatNativeRootOrigin } from '../conversation/native-session-binding.ts';
 import {
@@ -1557,6 +1560,9 @@ export async function prepareEmployeeRunBinding(
           organizationContext ?? {},
           grantedCapabilities.includes('storage:read') &&
             boundToolNames.includes('workspace.experience.read'),
+          manifest.data.schemaVersion === 2
+            ? { instance, employeeId: assignment.employee_id }
+            : undefined,
         )
       : undefined;
   return {
@@ -1572,6 +1578,9 @@ export async function prepareEmployeeRunBinding(
     executionSnapshot: {
       schemaVersion: 2,
       instance,
+      ...(documentProjection?.persona
+        ? { persona: documentProjection.persona }
+        : {}),
       content,
       ...(baseSkillCatalog ? { baseSkillCatalog } : {}),
       ...(personalSkills ? { personalSkills } : {}),
@@ -1638,10 +1647,12 @@ export async function prepareEmployeeRunBinding(
     },
     promptSnapshot: EmployeePromptSnapshotSchema.parse({
       ...input.promptSnapshot,
-      systemPrompt: manifest.data.systemPrompt,
+      systemPrompt:
+        documentProjection?.systemPrompt ?? manifest.data.systemPrompt,
       // Only new Runs freeze this explicit projection. Do not synthesize it
       // while resolving an older Run whose profile happened to have fields.
       personalIdentity:
+        !documentProjection?.persona &&
         instance &&
         (instance.kind === 'custom' || baseRice) &&
         [
@@ -1684,6 +1695,7 @@ export async function resolveEmployeeExecution(input: {
       legacy_workflow_execution: boolean;
       native_root_origin: { schemaVersion?: number } | null;
       session_id: string;
+      employee_assignment_id: string;
       project_id: string | null;
       employee_version_id: string;
       config_checksum: string;
@@ -1697,7 +1709,7 @@ export async function resolveEmployeeExecution(input: {
   >`
     select er.provider_snapshot, er.skill_bindings, er.native_skills,
       er.prompt_snapshot,
-      er.execution_snapshot,er.native_execution_binding,er.session_id,er.employee_version_id,
+      er.execution_snapshot,er.native_execution_binding,er.session_id,er.employee_assignment_id,er.employee_version_id,
       c.project_id,c.native_root_origin,v.config_checksum,bv.id birth_version_id,bv.manifest birth_manifest,bv.config_checksum birth_config_checksum,
       m.content->>'text' current_user_request,
       v.system_prompt, v.manifest,
@@ -1756,6 +1768,31 @@ export async function resolveEmployeeExecution(input: {
   const executionSnapshot = EmployeeExecutionSnapshotSchema.safeParse(
     row.execution_snapshot,
   );
+  if (
+    (row.execution_snapshot &&
+      typeof row.execution_snapshot === 'object' &&
+      'persona' in row.execution_snapshot) ||
+    promptSnapshot.employeeDocuments?.persona
+  ) {
+    if (
+      !executionSnapshot.success ||
+      executionSnapshot.data.schemaVersion !== 2 ||
+      !executionSnapshot.data.persona
+    )
+      throw Error('employee_persona_snapshot_invalid');
+    await assertFrozenEmployeePersona(
+      sql,
+      executionSnapshot.data,
+      promptSnapshot,
+      {
+        organizationId: input.organizationId,
+        workspaceId: input.workspaceId,
+        ownerId: input.ownerId,
+        assignmentId: row.employee_assignment_id,
+        employeeVersionId: row.employee_version_id,
+      },
+    );
+  }
   if (
     row.execution_snapshot &&
     typeof row.execution_snapshot === 'object' &&
