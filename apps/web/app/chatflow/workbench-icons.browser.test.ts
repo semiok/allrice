@@ -162,8 +162,8 @@ suite('workbench icon scale and workflow identity', () => {
           const buttons = [
             agents,
             entries.getByRole('button', { name: '工作区文件，33 项新增' }),
-            entries.getByRole('button', { name: '经验管理，1 项新增' }),
-            entries.getByRole('button', { name: '工作流', exact: true }),
+            entries.getByRole('button', { name: '记忆，1 项新增' }),
+            entries.getByRole('button', { name: '工作场景', exact: true }),
           ];
           const measured = [];
           for (const button of buttons) {
@@ -194,7 +194,7 @@ suite('workbench icon scale and workflow identity', () => {
               .evaluate((node) => getComputedStyle(node).color),
           ).toBe(green);
           const guide = page.getByLabel('图标工作台');
-          const workflowCard = guide.getByRole('button', { name: /工作流/ });
+          const workflowCard = guide.getByRole('button', { name: /工作场景/ });
           expect(
             (await workflowCard.locator('svg').first().boundingBox())!.width,
           ).toBe(27);
@@ -215,7 +215,7 @@ suite('workbench icon scale and workflow identity', () => {
           await page.keyboard.press('Escape');
           await buttons[3]!.click();
           expect(await page.getByLabel('当前工作台模块').innerText()).toBe(
-            '工作流',
+            '工作场景',
           );
           expect(await buttons[3]!.getAttribute('aria-pressed')).toBe('true');
           await buttons[1]!.click();
@@ -224,7 +224,7 @@ suite('workbench icon scale and workflow identity', () => {
           );
           await workflowCard.click();
           expect(await page.getByLabel('当前工作台模块').innerText()).toBe(
-            '工作流',
+            '工作场景',
           );
           const directory = join(tmpdir(), 'allrice-met214-icons');
           mkdirSync(directory, { recursive: true });
@@ -241,7 +241,7 @@ suite('workbench icon scale and workflow identity', () => {
           await page.goto(`${origin}/?icons&no-workflow&theme=${theme}`);
           await page.getByLabel('图标工作台').waitFor();
           expect(
-            await page.getByRole('button', { name: /工作流/ }).count(),
+            await page.getByRole('button', { name: /工作场景/ }).count(),
           ).toBe(0);
         } finally {
           await page.close();

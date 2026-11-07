@@ -152,6 +152,7 @@ export function EmployeeProfileDetails({
   workflowContent,
   workflowReadContent,
   memoryEntry,
+  sceneContent,
   onEdit,
   onPrepare,
 }: {
@@ -162,6 +163,7 @@ export function EmployeeProfileDetails({
   workflowContent?: ReactNode;
   workflowReadContent?: ReactNode;
   memoryEntry?: ReactNode;
+  sceneContent?: ReactNode;
   onEdit?: () => void;
   onPrepare?: (text: string) => void;
 }) {
@@ -214,6 +216,18 @@ export function EmployeeProfileDetails({
             }),
           )
       : undefined;
+  if (view === 'personal' && sceneContent !== undefined)
+    return (
+      <div className={css.details}>
+        <EmployeePersonaCard
+          profile={profile}
+          view={view}
+          onEdit={canEditEmployeePersona(profile) ? onEdit : undefined}
+        />
+        {memoryEntry}
+        {sceneContent}
+      </div>
+    );
   return (
     <div className={css.details}>
       {view === 'shared' && (
