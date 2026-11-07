@@ -31,6 +31,14 @@ import {
   employeeChoiceProfile,
 } from './employee-instances';
 import { useSessionArchive } from './use-session-archive';
+import { useEmployeeArchive } from './use-employee-archive';
+import {
+  EmployeeArchiveConfirmation,
+  EmployeeArchiveDialog,
+  EmployeeArchiveReadOnly,
+} from './employee-archive';
+import { IconArchiveOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives';
+import employeeArchiveCss from './employee-archive.module.css';
 import archiveCss from './session-archive.module.css';
 
 import {
@@ -51,6 +59,7 @@ import type {
   TaskNextSteps,
   UserQuestionAnswerSubmission,
   EmployeeInstance,
+  EmployeeDetailsProfile,
   ReferenceRevision,
 } from '@allrice/contracts';
 import { isMessageRunActive } from './run-view';
@@ -216,6 +225,11 @@ export function ChatFlowClient({
   const [questionBusy, setQuestionBusy] = useState(false);
   const [error, setError] = useState('');
   const [employeeDetailsOpen, setEmployeeDetailsOpen] = useState(false);
+  const [employeeArchiveOpen, setEmployeeArchiveOpen] = useState(false);
+  const [archiveConfirmation, setArchiveConfirmation] = useState<{
+    scope: string;
+    profile: EmployeeDetailsProfile;
+  } | null>(null);
   const [settings, setSettings] = useState<{
     scope: string;
     section: string;
@@ -273,6 +287,7 @@ export function ChatFlowClient({
     workspace,
     headers: tenantHeaders,
     onUpdated: updateSession,
+    onShowArchived: openEmployeeArchive,
     selectedSession:
       history?.session ?? workspace?.sessions.find((s) => s.id === activeId),
   });
@@ -281,6 +296,39 @@ export function ChatFlowClient({
     workspace?.sessions.find((s) => s.id === activeId)?.archivedAt,
   );
   const settingsScope = `${workspace?.organizationId}/${workspace?.workspaceId}/${workspace?.viewerId}`;
+  const selectedInstanceId =
+    history?.session.employeeInstanceId ??
+    history?.session.employeeAssignmentId ??
+    (newSessionEmployee ? employeeChoiceId(newSessionEmployee) : undefined);
+  const employeeArchive = useEmployeeArchive({
+    workspace,
+    headers: tenantHeaders,
+    selectedInstanceId,
+    onChanged: (instance) => {
+      if (!instance.archivedAt) registerEmployeeInstance(instance);
+      void loadWorkspace().catch((cause: unknown) =>
+        setError(cause instanceof Error ? cause.message : '员工详情更新失败'),
+      );
+    },
+  });
+  const employeeArchived =
+    Boolean(employeeArchive.selectedInstance?.archivedAt) ||
+    Boolean(
+      selectedInstanceId && employeeArchive.archivedIds.has(selectedInstanceId),
+    );
+  const conversationReadOnly =
+    sessionArchived ||
+    employeeArchived ||
+    employeeArchive.selectedPending ||
+    Boolean(employeeArchive.selectedError);
+  function openEmployeeArchive() {
+    setEmployeeArchiveOpen(true);
+    employeeArchive.reload();
+  }
+  const closeEmployeeArchive = () => {
+    setEmployeeArchiveOpen(false);
+  };
+
   useEffect(() => {
     if (!workspace?.viewerId) return;
     const owner = {
@@ -776,7 +824,7 @@ export function ChatFlowClient({
     organizationId: workspace?.organizationId,
     workspaceId: workspace?.workspaceId,
     viewerId: workspace?.viewerId,
-    sessionId: sessionArchived ? null : activeId,
+    sessionId: conversationReadOnly ? null : activeId,
     employeeAssignmentId: nextStepEmployee?.id,
     employeeVersionId: nextStepEmployee?.currentVersion.id,
     runRevision: nextStepRunRevision,
@@ -868,7 +916,7 @@ export function ChatFlowClient({
 
   async function sendMessage() {
     const text = draftStore.getSnapshot().trim();
-    if (!workspace || !text || busy || sessionArchived) return;
+    if (!workspace || !text || busy || conversationReadOnly) return;
     const action = sessionActions.begin('composer');
     if (!action) return;
     const draftAttachments = [...pendingAttachments];
@@ -1079,7 +1127,7 @@ export function ChatFlowClient({
     item: QueuedMessage,
     kind: 'edit' | 'remove' | 'steer',
   ) {
-    if (!workspace || !activeId) return;
+    if (!workspace || !activeId || conversationReadOnly) return;
     if (
       kind === 'edit' &&
       (draftStore.getSnapshot().trim() ||
@@ -1212,7 +1260,7 @@ export function ChatFlowClient({
       !activeId ||
       !pendingUserQuestion ||
       questionBusy ||
-      sessionArchived
+      conversationReadOnly
     )
       return;
     const action = sessionActions.begin('question');
@@ -1321,6 +1369,7 @@ export function ChatFlowClient({
   ) {
     if (
       !workspace ||
+      employeeArchive.archivedIds.has(assignmentId) ||
       !(created
         ? created.id === assignmentId &&
           created.ownerId === workspace.viewerId &&
@@ -1602,7 +1651,7 @@ export function ChatFlowClient({
   const historyLoading =
     activeId !== null && history === null && !visibleSubmission;
   const isEmptyConversation =
-    !sessionArchived &&
+    !conversationReadOnly &&
     !historyLoading &&
     !transcriptMessages.length &&
     !hasQueuedMessages &&
@@ -1653,6 +1702,8 @@ export function ChatFlowClient({
   }
 
   function prepareEmployeeDraft(text: string, instanceId: string) {
+    if (employeeArchive.archivedIds.has(instanceId))
+      throw Error('AI 员工已归档，可以查看历史；恢复后才能继续工作。');
     if (!workspace) throw Error('工作区已变化，请重新打开员工详情。');
     if (busy || composing.current)
       throw Error('请先完成当前输入或等待工作结束，再调整员工内容。');
@@ -1661,7 +1712,7 @@ export function ChatFlowClient({
     );
     if (!employee || employeeChoiceId(employee) !== detailsAssignmentId)
       throw Error('这位员工已不在当前工作区，请重新打开详情。');
-    if (activeEmployee?.instanceId !== instanceId || sessionArchived) {
+    if (activeEmployee?.instanceId !== instanceId || conversationReadOnly) {
       // Open a draft for the exact employee without discarding the caller's
       // unsent text, attachments or authorized reference selections.
       const wasSession = captureSelection().sessionId !== null;
@@ -1712,7 +1763,7 @@ export function ChatFlowClient({
   }
 
   async function prepareCompanyTemplate(reference: CompanyDraftReference) {
-    if (!workspace || busy || composing.current || sessionArchived)
+    if (!workspace || busy || composing.current || conversationReadOnly)
       throw Error('请先完成当前输入，再选用范本。');
     const selection = captureSelection();
     const templateScope = taskScope;
@@ -1967,7 +2018,20 @@ export function ChatFlowClient({
       {employeePickerOpen && (
         <EmployeePickerDialog
           key={settingsScope}
-          workspace={workspace}
+          workspace={{
+            ...workspace,
+            employees: workspace.employees.map((employee) => ({
+              ...employee,
+              ...(employee.instances
+                ? {
+                    instances: employee.instances.filter(
+                      (instance) =>
+                        !employeeArchive.archivedIds.has(instance.id),
+                    ),
+                  }
+                : {}),
+            })),
+          }}
           onClose={() => setEmployeePickerOpen(false)}
           onSelect={startEmployeeSession}
           onCreated={(instance) => startEmployeeSession(instance.id, instance)}
@@ -2022,6 +2086,9 @@ export function ChatFlowClient({
           if (layout.compact) setSidebarCollapsed(true);
         }}
         archive={archive}
+        onOpenArchive={openEmployeeArchive}
+        employeeArchiveOpen={employeeArchiveOpen}
+        archivedEmployeeInstanceIds={employeeArchive.archivedIds}
         capabilities={(section) => (
           <CapabilityContent
             key={`capabilities/${section}/${workspace.viewerId}/${workspace.workspaceId}/${activeId}`}
@@ -2179,6 +2246,16 @@ export function ChatFlowClient({
                   <div
                     className={`${conversationUi.headerActions} ${styles.conversationActions}`}
                   >
+                    {layout.compact && sidebarCollapsed && (
+                      <button
+                        type="button"
+                        className={employeeArchiveCss.mobileEntry}
+                        aria-label="查看归档"
+                        onClick={openEmployeeArchive}
+                      >
+                        <IconArchiveOutlineRegular size={18} />
+                      </button>
+                    )}
                     {activeId ? (
                       <NativeSubagentDirectory
                         key={`${settingsScope}/${activeId}`}
@@ -2193,7 +2270,7 @@ export function ChatFlowClient({
                         canControl={
                           !!workspace.viewerId &&
                           activeSession?.ownerId === workspace.viewerId &&
-                          !activeSession?.archivedAt
+                          !conversationReadOnly
                         }
                         controlRoot={
                           history?.session.id === activeId
@@ -2232,7 +2309,8 @@ export function ChatFlowClient({
                               : null
                         }
                         schedule={
-                          !sessionArchived && currentSessionTasks.length > 0
+                          !conversationReadOnly &&
+                          currentSessionTasks.length > 0
                         }
                         onSchedule={openSessionTasks}
                         onOpen={(kind) => requestWorkbenchModule(kind)}
@@ -2435,7 +2513,7 @@ export function ChatFlowClient({
                     <p role="status">{interactions.error}</p>
                   ) : null}
                   <MessageFeedbackProvider
-                    readOnly={sessionArchived}
+                    readOnly={conversationReadOnly}
                     key={`feedback/${workspace.organizationId}/${workspace.workspaceId}/${workspace.viewerId}/${activeId}`}
                     sessionId={activeId!}
                     workspaceId={workspace.workspaceId}
@@ -2488,7 +2566,7 @@ export function ChatFlowClient({
                   />
                   <QueuedMessagesDock
                     key={`${workspace.organizationId}/${activeId}`}
-                    items={sessionArchived ? [] : queuedMessages}
+                    items={conversationReadOnly ? [] : queuedMessages}
                     busy={busy}
                     canEdit={
                       !hasDraft &&
@@ -2502,7 +2580,12 @@ export function ChatFlowClient({
                     )}
                     updateQueue={updateQueue}
                   />
-                  {sessionArchived ? (
+                  {employeeArchived && employeeArchive.selectedInstance ? (
+                    <EmployeeArchiveReadOnly
+                      archive={employeeArchive}
+                      instance={employeeArchive.selectedInstance}
+                    />
+                  ) : sessionArchived ? (
                     <div className={archiveCss.readOnly} role="status">
                       <span>已归档 · 可以查看记录和交付成果</span>
                       {(!activeSession?.ownerId ||
@@ -2512,6 +2595,21 @@ export function ChatFlowClient({
                           onClick={() => activeId && archive.restore(activeId)}
                         >
                           恢复并继续
+                        </button>
+                      )}
+                    </div>
+                  ) : employeeArchive.selectedPending ||
+                    employeeArchive.selectedError ? (
+                    <div
+                      className={archiveCss.readOnly}
+                      role={employeeArchive.selectedError ? 'alert' : 'status'}
+                    >
+                      <span>
+                        {employeeArchive.selectedError ?? '正在读取…'}
+                      </span>
+                      {employeeArchive.selectedError && (
+                        <button type="button" onClick={employeeArchive.reload}>
+                          重试
                         </button>
                       )}
                     </div>
@@ -2578,7 +2676,7 @@ export function ChatFlowClient({
                       ? currentModuleRequest.category
                       : undefined
                   }
-                  readOnly={sessionArchived}
+                  readOnly={conversationReadOnly}
                   onRead={() =>
                     announceWorkbenchRead(
                       `${settingsScope}/${activeEmployee?.instanceId ?? 'none'}`,
@@ -2629,7 +2727,7 @@ export function ChatFlowClient({
                   automatic={experienceEnabled}
                   onCorrect={(instanceId, text) => {
                     if (
-                      sessionArchived ||
+                      conversationReadOnly ||
                       activeEmployee?.instanceId !== instanceId
                     ) {
                       if (!confirmSessionNavigation()) return;
@@ -2675,7 +2773,7 @@ export function ChatFlowClient({
               onOpenSession={openBrandContentSession}
             />
           )}
-          readOnly={sessionArchived}
+          readOnly={conversationReadOnly}
           open={workbenchOpen}
           width={resize.width}
           selectionRequest={workbench.selectionRequest}
@@ -2773,7 +2871,64 @@ export function ChatFlowClient({
             : undefined
         }
       />
+      {archiveConfirmation?.scope === settingsScope && (
+        <EmployeeArchiveConfirmation
+          archive={employeeArchive}
+          target={archiveConfirmation.profile}
+          onCancel={() => {
+            const target = archiveConfirmation;
+            const selection = captureSelection();
+            setArchiveConfirmation(null);
+            if (employeeArchive.mutation?.denied) return;
+            // Native Escape is handled at document; the legacy detail listens
+            // on window. Enter only after that same event and layer cleanup.
+            void nextPaint().then(() => {
+              if (
+                target.scope !== currentSettingsScope.current ||
+                !selection.current()
+              )
+                return;
+              setDetailsAssignmentId(target.profile.instanceId);
+              setEmployeeDetailsOpen(true);
+            });
+          }}
+          onArchived={() => {
+            setArchiveConfirmation(null);
+            openEmployeeArchive();
+          }}
+        />
+      )}
+      {employeeArchiveOpen && (
+        <EmployeeArchiveDialog
+          key={settingsScope}
+          archive={employeeArchive}
+          headers={tenantHeaders}
+          onSessionUpdated={updateSession}
+          workspace={workspace}
+          activeId={activeId}
+          onClose={closeEmployeeArchive}
+          onPrepareSession={prefetchHistory}
+          onSelectSession={(sessionId) => {
+            if (sessionId !== activeId && !confirmSessionNavigation()) return;
+            if (layout.compact) setSidebarCollapsed(true);
+            if (sessionId !== activeId) {
+              clearPendingAttachments();
+              setSessionReferences([]);
+              setReferenceSelections([]);
+              setCompanyReferences([]);
+              setReferencePickerOpen(false);
+              setDraft('');
+            }
+            selectSession(sessionId);
+            closeEmployeeArchive();
+          }}
+        />
+      )}
       <EmployeeDetailsDialog
+        onArchive={(profile) => {
+          setArchiveConfirmation({ scope: settingsScope, profile });
+          setEmployeeDetailsOpen(false);
+        }}
         onClose={() => setEmployeeDetailsOpen(false)}
         open={employeeDetailsOpen}
         scopeId={settingsScope}

@@ -244,6 +244,21 @@ suite('U1 Rice full persona from the real employee entry', () => {
         url = new URL(request.url()),
         path = url.pathname;
       const target = path.split('/')[4];
+      if (request.method() === 'GET' && path === '/api/v1/employee-instances') {
+        expect([...url.searchParams.keys()].sort()).toEqual([
+          'view',
+          'workspaceId',
+        ]);
+        expect(url.searchParams.get('view')).toBe('history');
+        expect(url.searchParams.get('workspaceId')).toBe(id(4));
+        expect(request.headers()['x-allrice-workspace-id']).toBe(id(4));
+        return route.fulfill(
+          json({
+            instances: EmployeeInstanceSchema.array().parse(instances),
+            nextBeforeId: null,
+          }),
+        );
+      }
       if (request.method() === 'GET' && path.endsWith('/content'))
         return route.fulfill(json(resolved(target!)));
       if (
@@ -1088,6 +1103,9 @@ suite('U1 Rice full persona from the real employee entry', () => {
     for (const fields of ['missing', 'style'] as const) {
       const f = await fixture({ fields });
       await f.run(async () => {
+        await expect.poll(() => f.state.instanceReads).toEqual([id(7)]);
+        expect(f.state.rawReads).toEqual([]);
+        expect(f.state.writes).toEqual([]);
         const detail = await f.openDetails();
         expect(
           await detail
@@ -1095,7 +1113,7 @@ suite('U1 Rice full persona from the real employee entry', () => {
             .count(),
         ).toBe(0);
         expect(f.state.rawReads).toEqual([]);
-        expect(f.state.instanceReads).toEqual([id(7)]);
+        expect(f.state.instanceReads).toEqual([id(7), id(7)]);
         expect(f.state.writes).toEqual([]);
       });
     }
