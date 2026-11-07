@@ -18,9 +18,11 @@ import {
 } from './employee-profile-details';
 import {
   EmployeeProfileForm,
+  canEditEmployeePersona,
   employeeProfileFormFromRaw,
   mergeEmployeeProfileForm,
   type EmployeeProfileFormValues,
+  type EmployeeProfileEditedFields,
 } from './employee-profile-form';
 import { readJson } from './chatflow-utils';
 import formCss from './employee-profile-form.module.css';
@@ -65,7 +67,7 @@ export function EmployeeDetailsDialog(props: EmployeeDetailsDialogProps) {
   // even for the frame before an effect or an aborted request settles.
   return (
     <EmployeeDetailsReader
-      key={`${props.scopeId}/${props.instanceId ?? 'missing'}`}
+      key={`${props.scopeId}/${props.workspaceId}/${props.instanceId ?? 'missing'}`}
       {...props}
       fileWrites={fileWrites.current}
     />
@@ -203,8 +205,7 @@ function EmployeeDetailsReader(
       !instanceUrl ||
       !data ||
       props.organizationView ||
-      data.profile.kind !== 'custom' ||
-      !data.profile.canMaintainPersonal
+      !canEditEmployeePersona(data.profile)
     )
       return;
     editRead.current?.abort();
@@ -228,7 +229,7 @@ function EmployeeDetailsReader(
       if (
         instance.id !== props.instanceId ||
         instance.workspaceId !== props.workspaceId ||
-        instance.kind !== 'custom' ||
+        instance.kind !== data.profile.kind ||
         instance.archivedAt ||
         instance.revision !== data.profile.revision ||
         JSON.stringify(instance.source) !== JSON.stringify(data.profile.source)
@@ -248,13 +249,41 @@ function EmployeeDetailsReader(
       }
     }
   }
-  async function saveProfile(values: EmployeeProfileFormValues) {
-    if (!instanceUrl || !editor?.instance || editWrite.current) return;
+  async function saveProfile(
+    values: EmployeeProfileFormValues,
+    editedFields: EmployeeProfileEditedFields,
+  ) {
+    if (
+      !instanceUrl ||
+      !editor?.instance ||
+      editWrite.current ||
+      !data ||
+      props.organizationView ||
+      !canEditEmployeePersona(data.profile)
+    )
+      return;
+    if (!editedFields.size) {
+      cancelEdit();
+      return;
+    }
     const current = editor.instance;
+    const profile = mergeEmployeeProfileForm(
+      current.profile,
+      values,
+      data.profile,
+      editedFields,
+    );
+    if (
+      Object.keys(profile).some(
+        (field) =>
+          !data.profile.editableFields?.some((allowed) => allowed === field),
+      )
+    )
+      throw Error('员工设置已变化，请重新读取详情后再编辑。');
     const body = {
       workspaceId: props.workspaceId,
       expectedRevision: current.revision,
-      profile: mergeEmployeeProfileForm(current.profile, values),
+      profile,
     };
     const payload = JSON.stringify(body);
     if (writeRequest.current?.payload !== payload)
@@ -280,7 +309,8 @@ function EmployeeDetailsReader(
         instance.organizationId !== current.organizationId ||
         instance.ownerId !== current.ownerId ||
         instance.assignmentId !== current.assignmentId ||
-        instance.kind !== 'custom' ||
+        instance.kind !== current.kind ||
+        JSON.stringify(instance.source) !== JSON.stringify(current.source) ||
         instance.archivedAt ||
         instance.revision !== current.revision + 1
       )

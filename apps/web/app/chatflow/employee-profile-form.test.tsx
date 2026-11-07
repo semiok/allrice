@@ -7,12 +7,39 @@ import {
 import { employeeDetailsFixture } from '../../test/employee-details-fixture';
 import {
   EmployeeProfileForm,
+  canEditEmployeePersona,
   defaultEmployeeProfileFormValues,
   employeeProfileFormFromRaw,
   mergeEmployeeProfileForm,
+  type EmployeeProfileFormValues,
 } from './employee-profile-form';
 
 describe('shared employee profile form', () => {
+  const editing = (...fields: Array<keyof EmployeeProfileFormValues>) =>
+    new Set(fields);
+
+  it('requires the current complete field capability, independent of kind, name and saved overrides', () => {
+    const profile = employeeDetailsFixture().profile;
+    profile.editableFields = EmployeeInstanceProfileSchema.keyof().options;
+    profile.personalFields = [];
+    for (const kind of ['general', 'custom'] as const) {
+      profile.kind = kind;
+      expect(canEditEmployeePersona(profile)).toBe(true);
+    }
+    for (const editableFields of [
+      undefined,
+      [],
+      ['expressionStyle'] as const,
+      ['name', 'mission', 'workStyle', 'expressionStyle'] as const,
+    ]) {
+      profile.editableFields = editableFields ? [...editableFields] : undefined;
+      expect(canEditEmployeePersona(profile)).toBe(false);
+    }
+    profile.editableFields = EmployeeInstanceProfileSchema.keyof().options;
+    profile.canMaintainPersonal = false;
+    expect(canEditEmployeePersona(profile)).toBe(false);
+  });
+
   it('uses the same named fields and ten approved colors for creation and editing', () => {
     for (const mode of ['create', 'edit'] as const) {
       const html = renderToStaticMarkup(
@@ -91,6 +118,134 @@ describe('shared employee profile form', () => {
     });
   });
 
+  it('keeps untouched inherited text out of a general rename patch', () => {
+    const resolved = employeeDetailsFixture().profile;
+    const raw = EmployeeInstanceProfileSchema.parse({
+      description: '本人已有简介',
+      role: '本人已有角色',
+      expressionStyle: 'concise',
+    });
+    const before = structuredClone(raw);
+    const result = mergeEmployeeProfileForm(
+      raw,
+      { ...employeeProfileFormFromRaw(raw, resolved), name: '青禾' },
+      resolved,
+      editing('name'),
+    );
+    expect(result).not.toHaveProperty('mission');
+    expect(result).not.toHaveProperty('workStyle');
+    expect(result).not.toHaveProperty('appearance');
+    expect(result).toEqual({ name: '青禾' });
+    expect({ ...raw, ...result }).toEqual({ ...before, name: '青禾' });
+    expect(raw).toEqual(before);
+  });
+
+  it('retains existing raw custom overrides in a name-only replacement', () => {
+    const resolved = employeeDetailsFixture().profile;
+    resolved.kind = 'custom';
+    const raw = EmployeeInstanceProfileSchema.parse({
+      description: '本人已有简介',
+      role: '本人已有角色',
+      mission: '本人已有使命',
+      expressionStyle: 'concise',
+      appearance: { avatarType: 'image', avatarValue: '/personal.png' },
+    });
+    const before = structuredClone(raw);
+    const result = mergeEmployeeProfileForm(
+      raw,
+      { ...employeeProfileFormFromRaw(raw, resolved), name: '青禾' },
+      resolved,
+      editing('name'),
+    );
+    expect(result).toEqual({ ...before, name: '青禾' });
+    expect(result).not.toHaveProperty('workStyle');
+    expect(raw).toEqual(before);
+  });
+
+  it('retains explicitly edited text even when its value equals the displayed default', () => {
+    const resolved = employeeDetailsFixture().profile;
+    const values = employeeProfileFormFromRaw({}, resolved);
+    for (const field of ['mission', 'workStyle', 'expressionStyle'] as const) {
+      expect(
+        mergeEmployeeProfileForm({}, values, resolved, editing(field)),
+      ).toEqual({ [field]: values[field] });
+    }
+  });
+
+  it('leaves existing overrides alone when no field was edited', () => {
+    const resolved = employeeDetailsFixture().profile;
+    const raw = EmployeeInstanceProfileSchema.parse({
+      name: '本人名字',
+      mission: '本人使命',
+    });
+    const values = employeeProfileFormFromRaw(raw, resolved);
+    expect(mergeEmployeeProfileForm(raw, values, resolved, editing())).toEqual(
+      {},
+    );
+    resolved.kind = 'custom';
+    expect(mergeEmployeeProfileForm(raw, values, resolved, editing())).toEqual(
+      raw,
+    );
+  });
+
+  it('does not create an inherited avatar override and only derives an already personal initials rename', () => {
+    const resolved = employeeDetailsFixture().profile;
+    resolved.appearance = {
+      avatarType: 'image',
+      avatarValue: '/inherited.png',
+      accentColor: 'coral',
+    };
+    for (const kind of ['general', 'custom'] as const) {
+      resolved.kind = kind;
+      expect(
+        mergeEmployeeProfileForm(
+          {},
+          { ...employeeProfileFormFromRaw({}, resolved), name: '青禾' },
+          resolved,
+          editing('name'),
+        ),
+      ).toEqual({ name: '青禾' });
+    }
+    resolved.kind = 'general';
+    const raw = EmployeeInstanceProfileSchema.parse({
+      appearance: {
+        avatarType: 'initials',
+        avatarValue: '原',
+        accentColor: 'indigo',
+      },
+    });
+    expect(
+      mergeEmployeeProfileForm(
+        raw,
+        { ...employeeProfileFormFromRaw(raw, resolved), name: '𠮷野助手' },
+        resolved,
+        editing('name'),
+      ),
+    ).toEqual({
+      name: '𠮷野助手',
+      appearance: { ...raw.appearance, avatarValue: '𠮷' },
+    });
+  });
+
+  it('keeps the existing complete avatar contract only when its color is actually edited', () => {
+    const resolved = employeeDetailsFixture().profile;
+    resolved.appearance = {
+      avatarType: 'image',
+      avatarValue: '/inherited.png',
+      accentColor: 'coral',
+    };
+    expect(
+      mergeEmployeeProfileForm(
+        {},
+        { ...employeeProfileFormFromRaw({}, resolved), accentColor: 'teal' },
+        resolved,
+        editing('accentColor'),
+      ),
+    ).toEqual({
+      appearance: { ...resolved.appearance, accentColor: 'teal' },
+    });
+  });
+
   it.each(['emoji', 'image'] as const)(
     'retains hidden profile fields and the saved %s avatar when merging an edit',
     (avatarType) => {
@@ -122,6 +277,41 @@ describe('shared employee profile form', () => {
         appearance: { ...raw.appearance, accentColor: 'teal' },
       });
       expect(raw).toEqual(snapshot);
+    },
+  );
+
+  it.each(['emoji', 'image'] as const)(
+    'retains an inherited %s avatar without materializing resolved hidden identity fields',
+    (avatarType) => {
+      const resolved = employeeDetailsFixture().profile;
+      resolved.appearance = {
+        avatarType,
+        avatarValue: avatarType === 'emoji' ? '🦊' : '/inherited-avatar.png',
+        accentColor: 'coral',
+      };
+      const raw = { description: '私人简介', role: '私人角色' };
+      const snapshot = structuredClone(resolved);
+      const result = mergeEmployeeProfileForm(
+        raw,
+        { ...employeeProfileFormFromRaw(raw, resolved), accentColor: 'teal' },
+        resolved,
+      );
+      expect(result).toMatchObject({
+        description: raw.description,
+        role: raw.role,
+        appearance: { ...resolved.appearance, accentColor: 'teal' },
+      });
+      expect(result).not.toHaveProperty('identity');
+      expect(result).not.toHaveProperty('defaults');
+      expect(raw).not.toHaveProperty('appearance');
+      expect(resolved).toEqual(snapshot);
+      const withoutHidden = mergeEmployeeProfileForm(
+        {},
+        employeeProfileFormFromRaw({}, resolved),
+        resolved,
+      );
+      expect(withoutHidden).not.toHaveProperty('description');
+      expect(withoutHidden).not.toHaveProperty('role');
     },
   );
 

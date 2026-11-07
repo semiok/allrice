@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   EmployeeInstanceSchema,
+  EmployeeInstanceProfileSchema,
   type EmployeeInstance,
 } from '@allrice/contracts';
 import type {
@@ -109,9 +110,13 @@ suite('U1 employee persona card', () => {
       '先确认目标和资料，再分步执行；信息不足时及时说明，交付时列出待确认事项。\n' +
       '交付时说明已完成内容、需要补充的资料和下一步。'.repeat(8);
     details.profile.personalFields = ['expressionStyle'];
+    details.profile.editableFields = options.general
+      ? ['expressionStyle']
+      : EmployeeInstanceProfileSchema.keyof().options;
     if (options.shared) {
       details.profile.canMaintainPersonal = false;
       details.profile.personalFields = [];
+      details.profile.editableFields = [];
     }
     const instance = EmployeeInstanceSchema.parse({
       id: id(7),

@@ -503,16 +503,25 @@ export function useSession({ setError }: UseSessionOptions) {
     typeof window === 'undefined'
       ? null
       : new URLSearchParams(window.location.search).get('employee');
+  const newSessionAssignment = requestedEmployee
+    ? workspace?.employees.find((item) => item.employeeId === requestedEmployee)
+    : (workspace?.employees.find((item) => item.isDefault) ??
+      workspace?.employees[0]);
+  const generalInstance = newSessionAssignment?.instances?.find(
+    (instance) => instance.kind === 'general',
+  );
   const newSessionEmployee = pendingEmployeeAssignmentId
     ? workspace
       ? employeeChoice(workspace, pendingEmployeeAssignmentId)
       : undefined
-    : requestedEmployee
-      ? workspace?.employees.find(
-          (item) => item.employeeId === requestedEmployee,
+    : workspace && newSessionAssignment
+      ? employeeChoice(
+          workspace,
+          generalInstance?.id ??
+            newSessionAssignment.instanceId ??
+            newSessionAssignment.id,
         )
-      : (workspace?.employees.find((item) => item.isDefault) ??
-        workspace?.employees[0]);
+      : undefined;
   return {
     registerEmployeeInstance: (instance: EmployeeInstance) => {
       setWorkspace((current) => {
