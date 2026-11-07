@@ -18,6 +18,9 @@ describe('EmployeeProfileDetails', () => {
     for (const text of [
       'Rice',
       '帮助完成研究',
+      '使命',
+      '工作方式',
+      '表达偏好',
       '简洁，结论优先',
       '公司核对标准正文',
       '个人输出偏好正文',
@@ -78,6 +81,11 @@ describe('EmployeeProfileDetails', () => {
       expect(html.includes('本人读取入口')).toBe(
         view === 'personal' && kind === 'custom',
       );
+      if (view === 'shared') {
+        expect(html).not.toContain('表达偏好');
+        expect(html).not.toContain('简洁，结论优先');
+        expect(html).not.toContain('未设置');
+      }
       if (editable) {
         expect(html).toContain('编辑');
         expect(html).toContain('AI 新增');
