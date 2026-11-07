@@ -1,3 +1,4 @@
+import { skillSourceErrorHeader } from '@allrice/contracts';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   beforeAll,
@@ -891,14 +892,17 @@ suite('browser exact Workflow source confirmation', () => {
     expect(await foreign.json()).toMatchObject({
       error: { code: 'AUTHORIZATION_DENIED' },
     });
-    expect(
-      (
-        await confirm(s.owner.context, s.instance.id, s.owner.workspaceId, {
-          ...p,
-          digest: 'sha256:' + '0'.repeat(64),
-        })
-      ).status,
-    ).toBe(422);
+    const tamperedResponse = await confirm(
+      s.owner.context,
+      s.instance.id,
+      s.owner.workspaceId,
+      { ...p, digest: 'sha256:' + '0'.repeat(64) },
+    );
+    expect(tamperedResponse.status).toBe(422);
+    expect(tamperedResponse.headers.get('X-AllRice-Skill-Error')).toBe(
+      'preview_invalid',
+    );
+    expect(foreign.headers.has('X-AllRice-Skill-Error')).toBe(false);
     await f.db`update allrice_employee_assignments set active=false where id=${s.assigned.id}`;
     expect(
       (await confirm(s.owner.context, s.instance.id, s.owner.workspaceId, p))
@@ -924,6 +928,9 @@ suite('browser exact Workflow source confirmation', () => {
       bytes,
     );
     expect(response.status).toBe(422);
+    expect(response.headers.get(skillSourceErrorHeader)).toBe(
+      'workflow_invalid',
+    );
     expect(await response.json()).toMatchObject({
       error: {
         code: 'VALIDATION_FAILED',

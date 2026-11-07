@@ -29,6 +29,6 @@ export async function POST(
       { headers: sceneSourceHeaders },
     );
   } catch (error) {
-    return sceneSourceErrorResponse(error);
+    return sceneSourceErrorResponse(error, 'confirm');
   }
 }
