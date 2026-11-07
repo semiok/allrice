@@ -45,6 +45,10 @@ export function canEditEmployeePersona(profile: EmployeeDetailsProfile) {
   );
 }
 
+export function canResetEmployeePersona(profile: EmployeeDetailsProfile) {
+  return profile.isDefaultRice === true && canEditEmployeePersona(profile);
+}
+
 /** Resolve only the visible fields. Keep the raw profile for the write merge;
  * the effective details projection intentionally omits private source fields. */
 export function employeeProfileFormFromRaw(
@@ -130,6 +134,10 @@ interface EmployeeProfileFormProps {
   busy?: boolean;
   disabled?: boolean;
   error?: string;
+  reset?: {
+    profile: EmployeeDetailsProfile;
+    onRequest: () => void;
+  };
   onSubmit: (
     values: EmployeeProfileFormValues,
     editedFields: EmployeeProfileEditedFields,
@@ -145,6 +153,7 @@ export function EmployeeProfileForm({
   busy = false,
   disabled = false,
   error,
+  reset,
   onSubmit,
   onCancel,
 }: EmployeeProfileFormProps) {
@@ -307,6 +316,16 @@ export function EmployeeProfileForm({
       </fieldset>
       {error || submitError ? <p role="alert">{error || submitError}</p> : null}
       <footer className={css.actions}>
+        {mode === 'edit' && reset && canResetEmployeePersona(reset.profile) && (
+          <button
+            type="button"
+            className={css.reset}
+            disabled={locked || disabled}
+            onClick={reset.onRequest}
+          >
+            恢复默认
+          </button>
+        )}
         <button type="button" disabled={locked} onClick={onCancel}>
           取消
         </button>
