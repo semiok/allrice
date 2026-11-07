@@ -27,6 +27,7 @@ import {
   ReferenceRevisionSchema,
   type ReferenceRevision,
   EmployeeInstanceSchema,
+  EmployeeMemoryPageSchema,
   type PersonalSkillItem,
   type EmployeeInstance,
   TaskNextStepsSchema,
@@ -1442,6 +1443,44 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             eligible.length > 30 ? String(visible.at(-1)!.index + 1) : null,
           employeeGroups: employeeId ? undefined : [...groups.values()],
         });
+      }
+      if (
+        options.employeeDetails &&
+        path === '/api/v1/memories/manage' &&
+        route.request().method() === 'GET'
+      ) {
+        expect([...url.searchParams.keys()].sort()).toEqual([
+          'instanceId',
+          'state',
+          'workspaceId',
+        ]);
+        expect(url.searchParams.get('workspaceId')).toBe(state.workspace);
+        expect(url.searchParams.get('instanceId')).toBe(
+          state.employeeDetails.profile.instanceId,
+        );
+        const memoryState = url.searchParams.get('state');
+        expect(['confirmed', 'pending']).toContain(memoryState);
+        return answer(
+          EmployeeMemoryPageSchema.parse({
+            organizationId: org,
+            workspaceId: state.workspace,
+            ownerId: state.viewer,
+            instanceId: state.employeeDetails.profile.instanceId,
+            state: memoryState,
+            total: 0,
+            memories: [],
+            nextCursor: null,
+            budget: {
+              mode: 'capacity_preview',
+              maxBytes: 6000,
+              maxItems: 20,
+              usedBytes: 0,
+              eligibleCount: 0,
+              omittedCount: 0,
+              selectedIds: [],
+            },
+          }),
+        );
       }
       if (
         options.employeeDetails &&

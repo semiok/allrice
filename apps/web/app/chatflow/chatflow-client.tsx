@@ -447,8 +447,36 @@ export function ChatFlowClient({
     setSidebarCollapsed,
     narrow: workbenchNarrow,
   } = layout;
+  const [filesRequest, setFilesRequest] = useState({ scope: '', revision: 0 });
+  const fileScope = `${workspace?.viewerId}/${workspace?.workspaceId}/${activeId ?? 'draft'}`;
+  const currentFilesRequest =
+    filesRequest.scope === fileScope ? filesRequest.revision : 0;
+  const [moduleRequest, setModuleRequest] = useState<{
+    scope: string;
+    kind: WorkbenchModule | 'guide' | 'reference';
+    revision: number;
+    id?: string;
+    title?: string;
+    category?: 'all' | 'reference' | 'artifact';
+    view?: 'personal-memory';
+  } | null>(null);
+  const [workbenchCapabilities, setWorkbenchCapabilities] = useState<{
+    scope: string;
+    workflow: boolean;
+  } | null>(null);
+  const currentModuleRequest =
+    moduleRequest?.scope === fileScope ? moduleRequest : undefined;
+  const currentMemoryRequest =
+    currentModuleRequest?.kind === 'experience' &&
+    currentModuleRequest.view === 'personal-memory' &&
+    currentModuleRequest.id
+      ? currentModuleRequest
+      : undefined;
   const workbenchRequested =
-    (workbenchEnabled || !!currentAutomationRequest) && layout.open;
+    (workbenchEnabled ||
+      !!currentAutomationRequest ||
+      !!currentMemoryRequest) &&
+    layout.open;
   const openAutomationTask = (
     task: { id: string; name?: string },
     sourceSessionId?: string,
@@ -463,6 +491,11 @@ export function ChatFlowClient({
     layout.show();
   };
   const workbenchEntry = useRef<HTMLButtonElement>(null);
+  const [activeModule, setActiveModule] = useState<{
+    scope: string;
+    kind: WorkbenchModule | 'schedule' | null;
+    memoryInstanceId?: string;
+  } | null>(null);
   const workbench = useArtifactWorkbench({
     enabled: workbenchEnabled,
     sessionId: activeId,
@@ -478,32 +511,20 @@ export function ChatFlowClient({
     () => showWorkbench(undefined, true),
     [showWorkbench],
   );
-  const dismissWorkbench = useCallback(() => {
-    closeWorkbench();
-    workbenchEntry.current?.focus();
-  }, [closeWorkbench]);
-  const [filesRequest, setFilesRequest] = useState({ scope: '', revision: 0 });
-  const fileScope = `${workspace?.viewerId}/${workspace?.workspaceId}/${activeId ?? 'draft'}`;
-  const currentFilesRequest =
-    filesRequest.scope === fileScope ? filesRequest.revision : 0;
-  const [moduleRequest, setModuleRequest] = useState<{
-    scope: string;
-    kind: WorkbenchModule | 'guide' | 'reference';
-    revision: number;
-    id?: string;
-    title?: string;
-    category?: 'all' | 'reference' | 'artifact';
-  } | null>(null);
-  const [workbenchCapabilities, setWorkbenchCapabilities] = useState<{
-    scope: string;
-    workflow: boolean;
-  } | null>(null);
-  const currentModuleRequest =
-    moduleRequest?.scope === fileScope ? moduleRequest : undefined;
-  const [activeModule, setActiveModule] = useState<{
-    scope: string;
-    kind: WorkbenchModule | 'schedule' | null;
-  } | null>(null);
+  const activeMemoryId =
+    activeModule?.scope === fileScope
+      ? activeModule.memoryInstanceId
+      : undefined;
+  const dismissWorkbench = useCallback(
+    (memoryInstanceId?: string) => {
+      closeWorkbench();
+      if (memoryInstanceId) {
+        setDetailsAssignmentId(memoryInstanceId);
+        setEmployeeDetailsOpen(true);
+      } else workbenchEntry.current?.focus();
+    },
+    [closeWorkbench],
+  );
   const sessionAutomations = useSessionAutomations({
     enabled: workbenchEnabled && !!workspace,
     workspaceId: workspace?.workspaceId ?? '',
@@ -545,6 +566,7 @@ export function ChatFlowClient({
       id?: string;
       title?: string;
       category?: 'all' | 'reference' | 'artifact';
+      view?: 'personal-memory';
     },
   ) => {
     setModuleRequest((previous) => ({
@@ -575,6 +597,7 @@ export function ChatFlowClient({
     [layout.compact, workbenchEnabled, fileScope, showWorkbench],
   );
   const hasWorkbenchContent =
+    !!currentMemoryRequest ||
     (!layout.compact && !!currentModuleRequest) ||
     !!currentAutomationRequest ||
     currentFilesRequest > 0 ||
@@ -2063,7 +2086,7 @@ export function ChatFlowClient({
                         onSchedule={openSessionTasks}
                         onOpen={(kind) => requestWorkbenchModule(kind)}
                         onToggle={() => {
-                          if (workbenchOpen) dismissWorkbench();
+                          if (workbenchOpen) dismissWorkbench(activeMemoryId);
                           else if (!hasWorkbenchContent)
                             requestWorkbenchModule('guide');
                           else layout.show();
@@ -2365,30 +2388,38 @@ export function ChatFlowClient({
         )}
       </section>
 
-      {(workbenchEnabled || currentAutomationRequest) && hasWorkbenchContent ? (
+      {(workbenchEnabled || currentAutomationRequest || currentMemoryRequest) &&
+      hasWorkbenchContent ? (
         <ArtifactWorkbench
           desktop={!layout.compact}
           moduleRequest={currentModuleRequest}
-          experienceAvailable={!!activeEmployee?.instanceId}
+          experienceAvailable={
+            !!activeEmployee?.instanceId || !!currentMemoryRequest
+          }
           workflowAvailable={
             workbenchCapabilities?.scope ===
               `${settingsScope}/${activeEmployee?.instanceId ?? 'none'}` &&
             workbenchCapabilities.workflow
           }
-          onModuleViewed={(kind) =>
+          onModuleViewed={(kind, memoryInstanceId) => {
+            // Reading one employee's memories is not reading the active
+            // employee's old experience/unread stream.
+            if (memoryInstanceId) return;
             announceWorkbenchRead(
               `${settingsScope}/${activeEmployee?.instanceId ?? 'none'}`,
               kind,
-            )
-          }
-          onActiveModule={(kind) =>
+            );
+          }}
+          onActiveModule={(kind, memoryInstanceId) => {
             setActiveModule((previous) =>
-              previous?.scope === fileScope && previous.kind === kind
+              previous?.scope === fileScope &&
+              previous.kind === kind &&
+              previous.memoryInstanceId === memoryInstanceId
                 ? previous
-                : { scope: fileScope, kind },
-            )
-          }
-          renderModule={(kind, active, onOpenFile) => (
+                : { scope: fileScope, kind, memoryInstanceId },
+            );
+          }}
+          renderModule={(kind, active, onOpenFile, memoryInstanceId) => (
             <Suspense fallback={<p role="status">正在打开工作台…</p>}>
               {kind === 'files' ? (
                 <WorkbenchFilesPanel
@@ -2420,6 +2451,17 @@ export function ChatFlowClient({
                 />
               ) : kind === 'experience' ? (
                 <WorkbenchExperiencePanel
+                  memoryRequest={
+                    memoryInstanceId
+                      ? {
+                          instanceId: memoryInstanceId,
+                          revision:
+                            currentMemoryRequest?.id === memoryInstanceId
+                              ? currentMemoryRequest.revision
+                              : 0,
+                        }
+                      : undefined
+                  }
                   scopeId={settingsScope}
                   workspaceId={workspace.workspaceId}
                   instanceId={activeEmployee?.instanceId}
@@ -2471,7 +2513,7 @@ export function ChatFlowClient({
                   instanceId={activeEmployee.instanceId}
                   employeeName={activeEmployeeName}
                   headers={tenantHeaders}
-                  onClose={dismissWorkbench}
+                  onClose={() => dismissWorkbench()}
                   onOpenSession={openBrandContentSession}
                 />
               ) : (
@@ -2595,6 +2637,15 @@ export function ChatFlowClient({
         headers={tenantHeaders}
         onPrepare={prepareEmployeeDraft}
         onProfileUpdated={registerEmployeeInstance}
+        onOpenMemory={(instanceId) => {
+          if (instanceId !== detailsAssignmentId) return;
+          requestWorkbenchModule('experience', {
+            id: instanceId,
+            title: '记忆',
+            view: 'personal-memory',
+          });
+          setEmployeeDetailsOpen(false);
+        }}
       />
 
       {referencePickerOpen && (
