@@ -210,12 +210,28 @@ suite('U1 Rice full persona from the real employee entry', () => {
       if (index < 0) throw Error('Unknown synthetic employee target');
       const detail = structuredClone(bases[index]!);
       const instance = instances[index]!;
+      const inheritedAppearance = detail.profile.appearance;
+      if (inheritedAppearance === undefined)
+        throw Error(
+          'Synthetic employee defaults require a complete appearance',
+        );
+      const accentColor =
+        instance.profile.appearance?.accentColor ??
+        inheritedAppearance.accentColor;
       detail.profile = {
         ...detail.profile,
         revision: instance.revision,
         name: instance.profile.name ?? detail.profile.name,
         description: instance.profile.description ?? detail.profile.description,
-        appearance: instance.profile.appearance ?? detail.profile.appearance,
+        appearance: {
+          avatarType:
+            instance.profile.appearance?.avatarType ??
+            inheritedAppearance.avatarType,
+          avatarValue:
+            instance.profile.appearance?.avatarValue ??
+            inheritedAppearance.avatarValue,
+          ...(accentColor === undefined ? {} : { accentColor }),
+        },
         expressionStyle: instance.profile.expressionStyle,
         personalFields: EmployeeInstanceProfileSchema.keyof().options.filter(
           (field) => field in instance.profile,
@@ -308,7 +324,18 @@ suite('U1 Rice full persona from the real employee entry', () => {
             revision: before.revision + 1,
             profile:
               before.kind === 'general'
-                ? { ...before.profile, ...body.profile }
+                ? {
+                    ...before.profile,
+                    ...body.profile,
+                    ...(body.profile.appearance === undefined
+                      ? {}
+                      : {
+                          appearance: {
+                            ...before.profile.appearance,
+                            ...body.profile.appearance,
+                          },
+                        }),
+                  }
                 : body.profile,
           });
           return route.fulfill(
@@ -919,13 +946,12 @@ suite('U1 Rice full persona from the real employee entry', () => {
             workStyle: '先核对资料，再按步骤交付',
             expressionStyle: 'exploratory',
             appearance: {
-              avatarType: 'image',
-              avatarValue: '/synthetic-avatar.png',
               accentColor: 'teal',
             },
           },
         });
         if (!('profile' in write.body)) throw Error('Expected profile patch');
+        expect(write.body.profile.appearance).toEqual({ accentColor: 'teal' });
         expect(write.body.profile).not.toHaveProperty('description');
         expect(write.body.profile).not.toHaveProperty('role');
         expect(f.state.instances[0]!.profile).toMatchObject({
@@ -1098,6 +1124,111 @@ suite('U1 Rice full persona from the real employee entry', () => {
       expect(f.state.instances[0]!.profile).toEqual(write.body.profile);
     });
   });
+
+  it.each(['general', 'custom'] as const)(
+    'saves only edited avatar color leaves for %s through the real entry',
+    async (kind) => {
+      const index = kind === 'general' ? 0 : 1;
+      const name = kind === 'general' ? 'Rice' : '流程哥';
+      for (const personalAvatarValue of [false, true]) {
+        const f = await fixture();
+        await f.run(async () => {
+          if (personalAvatarValue)
+            f.state.instances[index]!.profile.appearance = {
+              avatarValue: '/personal-avatar.png',
+            };
+          const before = structuredClone(f.state.instances[index]!);
+          const detail = () =>
+            f.page.getByRole('dialog', {
+              name: `${name}员工详情`,
+              exact: true,
+            });
+          await f.openDetails(name);
+          let editor = await f.openEditor();
+          expect(
+            await editor
+              .getByRole('radio', {
+                name: employeeColorPalette.violet.label,
+                exact: true,
+              })
+              .isChecked(),
+          ).toBe(true);
+          await editor
+            .getByRole('button', { name: '保存', exact: true })
+            .click();
+          await detail().waitFor();
+          expect(f.state.writes).toEqual([]);
+          expect(f.state.instances[index]).toEqual(before);
+
+          // The existing dirty-field behavior retains a deliberate edit even
+          // after the user returns to the original displayed default color.
+          editor = await f.openEditor();
+          await editor
+            .getByRole('radio', {
+              name: employeeColorPalette.teal.label,
+              exact: true,
+            })
+            .check();
+          await editor
+            .getByRole('radio', {
+              name: employeeColorPalette.violet.label,
+              exact: true,
+            })
+            .check();
+          await editor
+            .getByRole('button', { name: '保存', exact: true })
+            .click();
+          await detail().waitFor();
+          expect(f.state.writes).toHaveLength(1);
+          expect(f.state.instances[index]!.profile.appearance).toEqual({
+            ...before.profile.appearance,
+            accentColor: 'violet',
+          });
+
+          editor = await f.openEditor();
+          await editor
+            .getByRole('radio', {
+              name: employeeColorPalette.teal.label,
+              exact: true,
+            })
+            .check();
+          await editor
+            .getByRole('button', { name: '保存', exact: true })
+            .click();
+          await detail().waitFor();
+          expect(f.state.writes).toHaveLength(2);
+          for (const [writeIndex, color] of ['violet', 'teal'].entries()) {
+            const write = f.state.writes[writeIndex]!;
+            if (!('profile' in write.body))
+              throw Error('Expected profile write');
+            expect(write.instanceId).toBe(before.id);
+            expect(write.body.expectedRevision).toBe(
+              before.revision + writeIndex,
+            );
+            expect(write.body.profile).toEqual(
+              kind === 'general'
+                ? { appearance: { accentColor: color } }
+                : {
+                    ...before.profile,
+                    appearance: {
+                      ...before.profile.appearance,
+                      accentColor: color,
+                    },
+                  },
+            );
+          }
+          expect(f.state.instances[index]!.profile).toEqual({
+            ...before.profile,
+            appearance: { ...before.profile.appearance, accentColor: 'teal' },
+          });
+          expect(
+            f.state.instances[index]!.profile.appearance,
+          ).not.toHaveProperty('avatarType');
+          expect(f.state.instances[index]!.revision).toBe(before.revision + 2);
+        });
+      }
+    },
+  );
 
   it('keeps missing and partial persona capability closed at the real detail entry', async () => {
     for (const fields of ['missing', 'style'] as const) {

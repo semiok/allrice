@@ -202,11 +202,27 @@ suite('U1 employee persona card', () => {
           revision: state.instance.revision + 1,
           profile: body.profile,
         });
+        const appearance = state.instance.profile.appearance;
+        if (
+          appearance === undefined ||
+          appearance.avatarType === undefined ||
+          appearance.avatarValue === undefined
+        ) {
+          throw new Error(
+            'This persona-edit fixture requires a complete saved appearance',
+          );
+        }
         state.details.profile = {
           ...state.details.profile,
           revision: state.instance.revision,
           name: state.instance.profile.name!,
-          appearance: state.instance.profile.appearance,
+          appearance: {
+            avatarType: appearance.avatarType,
+            avatarValue: appearance.avatarValue,
+            ...(appearance.accentColor === undefined
+              ? {}
+              : { accentColor: appearance.accentColor }),
+          },
           expressionStyle: state.instance.profile.expressionStyle,
           identity: {
             ...state.details.profile.identity,

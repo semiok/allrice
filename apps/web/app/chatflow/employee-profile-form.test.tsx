@@ -291,27 +291,102 @@ describe('shared employee profile form', () => {
       ),
     ).toEqual({
       name: '𠮷野助手',
+      appearance: { avatarValue: '𠮷' },
+    });
+    resolved.kind = 'custom';
+    expect(
+      mergeEmployeeProfileForm(
+        raw,
+        { ...employeeProfileFormFromRaw(raw, resolved), name: '𠮷野助手' },
+        resolved,
+        editing('name'),
+      ),
+    ).toEqual({
+      ...raw,
+      name: '𠮷野助手',
       appearance: { ...raw.appearance, avatarValue: '𠮷' },
     });
   });
 
-  it('keeps the existing complete avatar contract only when its color is actually edited', () => {
+  it.each(['general', 'custom'] as const)(
+    'keeps inherited avatar leaves absent when only the %s color is edited',
+    (kind) => {
+      const resolved = employeeDetailsFixture().profile;
+      resolved.kind = kind;
+      resolved.appearance = {
+        avatarType: 'image',
+        avatarValue: '/inherited.png',
+        accentColor: 'coral',
+      };
+      const result = mergeEmployeeProfileForm(
+        {},
+        { ...employeeProfileFormFromRaw({}, resolved), accentColor: 'teal' },
+        resolved,
+        editing('accentColor'),
+      );
+      expect(result).toEqual({ appearance: { accentColor: 'teal' } });
+      expect(resolved.appearance).toEqual({
+        avatarType: 'image',
+        avatarValue: '/inherited.png',
+        accentColor: 'coral',
+      });
+    },
+  );
+
+  it.each(['general', 'custom'] as const)(
+    'preserves existing raw avatar ownership in a %s color edit',
+    (kind) => {
+      const resolved = employeeDetailsFixture().profile;
+      resolved.kind = kind;
+      const raw = EmployeeInstanceProfileSchema.parse({
+        description: '保留本人简介',
+        role: '保留本人角色',
+        appearance: {
+          avatarType: 'image',
+          avatarValue: '/personal.png',
+          accentColor: 'indigo',
+        },
+      });
+      const snapshot = structuredClone(raw);
+      const result = mergeEmployeeProfileForm(
+        raw,
+        { ...employeeProfileFormFromRaw(raw, resolved), accentColor: 'teal' },
+        resolved,
+        editing('accentColor'),
+      );
+      expect(result).toEqual(
+        kind === 'general'
+          ? { appearance: { accentColor: 'teal' } }
+          : {
+              ...raw,
+              appearance: { ...raw.appearance, accentColor: 'teal' },
+            },
+      );
+      expect(raw).toEqual(snapshot);
+      if (kind === 'general') {
+        expect(result.appearance).not.toHaveProperty('avatarType');
+        expect(result.appearance).not.toHaveProperty('avatarValue');
+      }
+    },
+  );
+
+  it('owns an explicitly edited default-valued color while leaving untouched defaults inherited', () => {
     const resolved = employeeDetailsFixture().profile;
     resolved.appearance = {
       avatarType: 'image',
       avatarValue: '/inherited.png',
       accentColor: 'coral',
     };
-    expect(
-      mergeEmployeeProfileForm(
+    for (const kind of ['general', 'custom'] as const) {
+      resolved.kind = kind;
+      const values = employeeProfileFormFromRaw({}, resolved);
+      expect(mergeEmployeeProfileForm({}, values, resolved, editing())).toEqual(
         {},
-        { ...employeeProfileFormFromRaw({}, resolved), accentColor: 'teal' },
-        resolved,
-        editing('accentColor'),
-      ),
-    ).toEqual({
-      appearance: { ...resolved.appearance, accentColor: 'teal' },
-    });
+      );
+      expect(
+        mergeEmployeeProfileForm({}, values, resolved, editing('accentColor')),
+      ).toEqual({ appearance: { accentColor: 'coral' } });
+    }
   });
 
   it.each(['emoji', 'image'] as const)(

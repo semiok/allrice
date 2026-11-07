@@ -131,7 +131,21 @@ function details(n: number, canArchive = n !== 7) {
   data.profile.name = n === 7 ? 'Rice' : '流程哥';
   data.profile.revision = 2;
   data.profile.source = instance(n).source;
-  data.profile.appearance = instance(n).profile.appearance;
+  const appearance = instance(n).profile.appearance;
+  if (
+    appearance === undefined ||
+    appearance.avatarType === undefined ||
+    appearance.avatarValue === undefined
+  ) {
+    throw new Error('This archive fixture requires a complete appearance');
+  }
+  data.profile.appearance = {
+    avatarType: appearance.avatarType,
+    avatarValue: appearance.avatarValue,
+    ...(appearance.accentColor === undefined
+      ? {}
+      : { accentColor: appearance.accentColor }),
+  };
   data.profile.canArchive = canArchive;
   data.profile.isDefaultRice = n === 7;
   data.content.instanceId = id(n);
