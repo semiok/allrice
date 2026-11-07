@@ -491,6 +491,7 @@ browserSuite(
         write: false,
         outdir: '/unused-brand-content-component-test',
         jsx: 'automatic',
+        loader: { '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl' },
         define: { 'process.env.NODE_ENV': '"production"' },
       });
       const js = built.outputFiles.find((item: { path: string }) =>

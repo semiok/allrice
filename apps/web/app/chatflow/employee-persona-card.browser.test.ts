@@ -139,6 +139,7 @@ suite('U1 employee persona card', () => {
       details,
       instance,
       failSave: true,
+      saveGate: null as Promise<void> | null,
       writes: [] as Array<{
         expectedRevision: number;
         requestId: string;
@@ -186,6 +187,7 @@ suite('U1 employee persona card', () => {
           return route.fulfill(json({ instance: state.instance }));
         const body = request.postDataJSON();
         state.writes.push(body);
+        if (state.saveGate) await state.saveGate;
         if (state.failSave)
           return route.fulfill(
             json({ error: { message: '保存暂时失败。' } }, 503),
@@ -227,6 +229,15 @@ suite('U1 employee persona card', () => {
     const card = page.getByRole('region', { name: '基础与人设', exact: true });
     await card.waitFor();
     return card;
+  };
+
+  const showEditor = async (page: Page) => {
+    await page.getByRole('button', { name: '编辑员工', exact: true }).click();
+    const editor = page.getByRole('dialog', { name: '编辑人设', exact: true });
+    await editor
+      .getByRole('textbox', { name: '员工名字', exact: true })
+      .waitFor();
+    return editor;
   };
 
   it.each([1440, 390])(
@@ -395,6 +406,281 @@ suite('U1 employee persona card', () => {
     },
     30_000,
   );
+
+  it.each([1440, 390])(
+    'returns from the persona editor to its employee without saving at %ipx',
+    async (width) => {
+      const { page, state } = await open({ width });
+      try {
+        const card = await showDetails(page);
+        const exits = ['back', 'cancel', 'Escape', 'backdrop'] as const;
+        let measured;
+        for (const exit of exits) {
+          const editor = await showEditor(page);
+          await editor
+            .getByRole('heading', { name: '编辑人设', exact: true })
+            .waitFor();
+          expect(
+            await editor
+              .getByRole('button', { name: '关闭', exact: true })
+              .count(),
+          ).toBe(0);
+          const name = editor.getByRole('textbox', {
+            name: '员工名字',
+            exact: true,
+          });
+          expect(await name.inputValue()).toBe('流程哥');
+          expect(
+            await editor.getByRole('radio', { name: '鸢尾紫' }).isChecked(),
+          ).toBe(true);
+          await name.fill(`未保存的${exit}名字`);
+          await editor.getByRole('radio', { name: '薄荷绿' }).check();
+          if (exit === 'back') {
+            measured = await editor.evaluate((node) => {
+              const header = node.querySelector(':scope > header')!;
+              const button = header.querySelector('button')!;
+              const buttonRect = button.getBoundingClientRect();
+              const heading = header
+                .querySelector('h2')!
+                .getBoundingClientRect();
+              return {
+                fits: node.scrollWidth <= node.clientWidth,
+                buttonBeforeTitle: buttonRect.right <= heading.left,
+                centers: Math.abs(
+                  buttonRect.top +
+                    buttonRect.height / 2 -
+                    (heading.top + heading.height / 2),
+                ),
+                visibleControls: Array.from(
+                  header.querySelectorAll('button'),
+                ).every((control) => {
+                  const rect = control.getBoundingClientRect();
+                  return (
+                    rect.width > 0 && rect.left >= 0 && rect.right <= innerWidth
+                  );
+                }),
+              };
+            });
+            expect(measured.fits).toBe(true);
+            expect(measured.buttonBeforeTitle).toBe(true);
+            expect(measured.centers).toBeLessThan(1);
+            expect(measured.visibleControls).toBe(true);
+            await editor.screenshot({
+              path: `${screenshotDir}/persona-editor-back-${width}.png`,
+            });
+            await editor
+              .getByRole('button', { name: '返回员工详情', exact: true })
+              .focus();
+            await page.keyboard.press('Enter');
+          } else if (exit === 'Escape') {
+            await page.keyboard.press('Escape');
+          } else if (exit === 'backdrop') {
+            await page.mouse.click(1, 1);
+          } else {
+            await editor
+              .getByRole('button', { name: '取消', exact: true })
+              .click();
+          }
+          await card
+            .getByRole('heading', { name: '流程哥', exact: true })
+            .waitFor();
+          expect(await editor.count()).toBe(0);
+          expect(
+            await page
+              .getByRole('button', { name: '关闭', exact: true })
+              .isVisible(),
+          ).toBe(true);
+          expect(
+            await page.getByRole('button', { name: '返回员工详情' }).count(),
+          ).toBe(0);
+          expect(
+            await page
+              .getByRole('dialog')
+              .evaluate((node) => node.contains(document.activeElement)),
+            `width=${width} exit=${exit}`,
+          ).toBe(true);
+          expect(state.writes).toEqual([]);
+        }
+        await writeFile(
+          `${screenshotDir}/persona-editor-back-${width}.json`,
+          JSON.stringify({ measured, exits, writes: state.writes }, null, 2),
+        );
+        await page.getByRole('button', { name: '关闭', exact: true }).click();
+        expect(await page.getByRole('dialog').count()).toBe(0);
+        expect(state.errors).toEqual([]);
+      } finally {
+        await page.close();
+      }
+    },
+    30_000,
+  );
+
+  it('keeps the persona editor open while saving and preserves a failed draft before returning', async () => {
+    const { page, state } = await open({ width: 390 });
+    let finishSave = () => {};
+    state.saveGate = new Promise<void>((done) => {
+      finishSave = done;
+    });
+    try {
+      const card = await showDetails(page);
+      const editor = await showEditor(page);
+      const name = editor.getByRole('textbox', {
+        name: '员工名字',
+        exact: true,
+      });
+      await name.fill('保存失败仍保留的名字');
+      await editor.getByRole('radio', { name: '薄荷绿' }).check();
+      await editor.getByRole('button', { name: '保存', exact: true }).click();
+      await expect.poll(() => state.writes.length).toBe(1);
+      expect(
+        await editor.getByRole('button', { name: '关闭', exact: true }).count(),
+      ).toBe(0);
+      for (const label of ['返回员工详情', '取消'])
+        expect(
+          await editor
+            .getByRole('button', { name: label, exact: true })
+            .isDisabled(),
+        ).toBe(true);
+      await page.keyboard.press('Escape');
+      await page.mouse.click(1, 1);
+      expect(await editor.isVisible()).toBe(true);
+      expect(await name.inputValue()).toBe('保存失败仍保留的名字');
+      await editor.screenshot({
+        path: `${screenshotDir}/persona-editor-saving-390.png`,
+      });
+      finishSave();
+      await editor.getByRole('alert').waitFor();
+      expect(await name.inputValue()).toBe('保存失败仍保留的名字');
+      expect(
+        await editor.getByRole('radio', { name: '薄荷绿' }).isChecked(),
+      ).toBe(true);
+      const back = editor.getByRole('button', {
+        name: '返回员工详情',
+        exact: true,
+      });
+      expect(await back.isEnabled()).toBe(true);
+      await back.click();
+      await card
+        .getByRole('heading', { name: '流程哥', exact: true })
+        .waitFor();
+      expect(state.writes).toHaveLength(1);
+      expect(state.instance.profile.name).toBe('流程哥');
+      expect(state.errors).toEqual([]);
+    } finally {
+      finishSave();
+      await page.close();
+    }
+  }, 30_000);
+
+  it('ignores a late editor read after returning and selecting another employee', async () => {
+    const { page, state } = await open({ width: 390 });
+    let finishRead = () => {},
+      startedRead = () => {},
+      sentRead = () => {};
+    const gate = new Promise<void>((done) => {
+      finishRead = done;
+    });
+    const started = new Promise<void>((done) => {
+      startedRead = done;
+    });
+    const sent = new Promise<void>((done) => {
+      sentRead = done;
+    });
+    await page.route(
+      `**/api/v1/employee-instances/${id(7)}?*`,
+      async (route) => {
+        startedRead();
+        await gate;
+        await route.fulfill(json({ instance: state.instance }));
+        sentRead();
+      },
+    );
+    try {
+      await showDetails(page);
+      await page.getByRole('button', { name: '编辑员工', exact: true }).click();
+      await started;
+      const editor = page.getByRole('dialog', {
+        name: '编辑人设',
+        exact: true,
+      });
+      await editor.waitFor();
+      expect(
+        await editor.getByRole('button', { name: '关闭', exact: true }).count(),
+      ).toBe(0);
+      await editor
+        .getByRole('button', { name: '返回员工详情', exact: true })
+        .focus();
+      await page.keyboard.press('Enter');
+      const details = page.getByRole('dialog', {
+        name: '流程哥员工详情',
+        exact: true,
+      });
+      await details.getByRole('region', { name: '基础与人设' }).waitFor();
+      await expect
+        .poll(() =>
+          details.evaluate((node) => node.contains(document.activeElement)),
+        )
+        .toBe(true);
+      await page.getByRole('button', { name: '关闭', exact: true }).click();
+      await page
+        .getByRole('button', { name: '切换另一员工', exact: true })
+        .click();
+      const other = await showDetails(page);
+      await other
+        .getByRole('heading', { name: '另一位员工', exact: true })
+        .waitFor();
+      finishRead();
+      await sent;
+      expect(await editor.count()).toBe(0);
+      expect(await other.locator('dd').first().innerText()).toBe(
+        '另一位员工的使命',
+      );
+      expect(state.writes).toEqual([]);
+      expect(state.errors).toEqual([]);
+    } finally {
+      finishRead();
+      await page.close();
+    }
+  }, 30_000);
+
+  it('keeps keyboard focus in employee details after a failed persona read', async () => {
+    const { page, state } = await open({ width: 390 });
+    await page.route(`**/api/v1/employee-instances/${id(7)}?*`, (route) =>
+      route.fulfill(json({ error: { message: '读取人设暂时失败。' } }, 503)),
+    );
+    try {
+      const card = await showDetails(page);
+      await card.getByRole('button', { name: '编辑员工', exact: true }).click();
+      const editor = page.getByRole('dialog', {
+        name: '编辑人设',
+        exact: true,
+      });
+      await editor.getByRole('alert').waitFor();
+      expect(
+        await editor.getByRole('button', { name: '关闭', exact: true }).count(),
+      ).toBe(0);
+      expect(await editor.getByRole('textbox').count()).toBe(0);
+      await editor
+        .getByRole('button', { name: '返回员工详情', exact: true })
+        .focus();
+      await page.keyboard.press('Enter');
+      const details = page.getByRole('dialog', {
+        name: '流程哥员工详情',
+        exact: true,
+      });
+      await card.waitFor();
+      await expect
+        .poll(() =>
+          details.evaluate((node) => node.contains(document.activeElement)),
+        )
+        .toBe(true);
+      expect(await editor.count()).toBe(0);
+      expect(state.writes).toEqual([]);
+      expect(state.errors).toEqual([]);
+    } finally {
+      await page.close();
+    }
+  });
 
   it('shows an unset expression preference only in the owner general persona', async () => {
     const { page, state } = await open({ width: 1440, general: true });

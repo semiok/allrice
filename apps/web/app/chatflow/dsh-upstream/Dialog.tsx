@@ -2,6 +2,7 @@
 
 import { createPortal } from 'react-dom';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
+import { Button } from '@deepseek-ai/dsh-client-ui-primitives';
 
 import styles from './Dialog.module.css';
 
@@ -11,6 +12,10 @@ interface DshDialogProps {
   title: string;
   children: ReactNode;
   onClose: () => void;
+  onBack?: () => void;
+  backLabel?: string;
+  closeDisabled?: boolean;
+  showCloseButton?: boolean;
   className?: string;
   bodyClassName?: string;
   initialFocusSelector?: string;
@@ -22,6 +27,10 @@ export function DshDialog({
   title,
   children,
   onClose,
+  onBack,
+  backLabel = '返回',
+  closeDisabled = false,
+  showCloseButton = true,
   className = '',
   bodyClassName = '',
   initialFocusSelector,
@@ -30,6 +39,7 @@ export function DshDialog({
   const dialog = useRef<HTMLElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  const hasBack = !!onBack;
 
   useEffect(() => {
     setMounted(true);
@@ -95,7 +105,7 @@ export function DshDialog({
       document.removeEventListener('keydown', trap);
       if (previous?.isConnected) previous.focus();
     };
-  }, [mounted, initialFocusSelector]);
+  }, [mounted, initialFocusSelector, hasBack]);
 
   if (!mounted) return null;
 
@@ -103,7 +113,10 @@ export function DshDialog({
     <div
       className={styles.backdrop}
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
+        if (event.target === event.currentTarget) {
+          if (onBack && !showCloseButton) event.preventDefault();
+          onClose();
+        }
       }}
       role="presentation"
     >
@@ -115,14 +128,51 @@ export function DshDialog({
         className={`${styles.dialog} ${className}`.trim()}
         role="dialog"
       >
-        <header className={styles.header}>
-          <div>
+        <header
+          className={
+            onBack ? `${styles.header} ${styles.headerWithBack}` : styles.header
+          }
+        >
+          {onBack ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className={styles.back}
+              aria-label={backLabel}
+              onClick={onBack}
+              disabled={closeDisabled}
+              icon={
+                <svg
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.75"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="m10 5-7 7 7 7M3 12h18" />
+                </svg>
+              }
+            />
+          ) : null}
+          <div className={onBack ? styles.headerTitle : undefined}>
             {eyebrow ? <p>{eyebrow}</p> : null}
             <h2>{title}</h2>
           </div>
-          <button aria-label="关闭" onClick={onClose} type="button">
-            ×
-          </button>
+          {showCloseButton ? (
+            <button
+              aria-label="关闭"
+              onClick={onClose}
+              type="button"
+              disabled={closeDisabled}
+            >
+              ×
+            </button>
+          ) : null}
         </header>
         <div className={`${styles.body} ${bodyClassName}`.trim()}>
           {children}
