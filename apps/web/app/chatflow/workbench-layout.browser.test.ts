@@ -6862,7 +6862,23 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             const profile = f.state.employeeDetails.profile;
             profile.name = instance.profile.name!;
             profile.revision = instance.revision;
-            profile.appearance = instance.profile.appearance;
+            const appearance = instance.profile.appearance;
+            if (
+              appearance === undefined ||
+              appearance.avatarType === undefined ||
+              appearance.avatarValue === undefined
+            ) {
+              throw Error(
+                'This editing fixture requires a complete saved appearance',
+              );
+            }
+            profile.appearance = {
+              avatarType: appearance.avatarType,
+              avatarValue: appearance.avatarValue,
+              ...(appearance.accentColor === undefined
+                ? {}
+                : { accentColor: appearance.accentColor }),
+            };
             profile.identity.mission = instance.profile.mission!;
             profile.identity.workStyle = instance.profile.workStyle!;
             profile.expressionStyle = instance.profile.expressionStyle;
