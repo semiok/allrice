@@ -239,9 +239,7 @@ suite('U1 employee persona card', () => {
   const showEditor = async (page: Page) => {
     await page.getByRole('button', { name: '编辑员工', exact: true }).click();
     const editor = page.getByRole('dialog', { name: '编辑人设', exact: true });
-    await editor
-      .getByRole('textbox', { name: '员工名字', exact: true })
-      .waitFor();
+    await editor.getByRole('textbox', { name: '名字', exact: true }).waitFor();
     return editor;
   };
 
@@ -366,7 +364,7 @@ suite('U1 employee persona card', () => {
         ).toBe(true);
         await form.getByRole('radio', { name: '薄荷绿', exact: true }).check();
         await form
-          .getByRole('textbox', { name: '员工名字', exact: true })
+          .getByRole('textbox', { name: '名字', exact: true })
           .fill('周报伙伴');
         await form.screenshot({
           path: `${screenshotDir}/persona-editor-color-${width}.png`,
@@ -375,7 +373,7 @@ suite('U1 employee persona card', () => {
         await form.getByRole('alert').waitFor();
         expect(
           await form
-            .getByRole('textbox', { name: '员工名字', exact: true })
+            .getByRole('textbox', { name: '名字', exact: true })
             .inputValue(),
         ).toBe('周报伙伴');
         expect(
@@ -418,7 +416,12 @@ suite('U1 employee persona card', () => {
       const { page, state } = await open({ width });
       try {
         const card = await showDetails(page);
-        const exits = ['back', 'cancel', 'Escape', 'backdrop'] as const;
+        // The approved phone editor fills the viewport, so it has no exposed
+        // backdrop. Keep backdrop dismissal coverage on the desktop editor.
+        const exits =
+          width <= 700
+            ? (['back', 'cancel', 'Escape'] as const)
+            : (['back', 'cancel', 'Escape', 'backdrop'] as const);
         let measured;
         for (const exit of exits) {
           const editor = await showEditor(page);
@@ -431,7 +434,7 @@ suite('U1 employee persona card', () => {
               .count(),
           ).toBe(0);
           const name = editor.getByRole('textbox', {
-            name: '员工名字',
+            name: '名字',
             exact: true,
           });
           expect(await name.inputValue()).toBe('流程哥');
@@ -449,6 +452,12 @@ suite('U1 employee persona card', () => {
                 .querySelector('h2')!
                 .getBoundingClientRect();
               return {
+                fillsViewport:
+                  node.getBoundingClientRect().left === 0 &&
+                  node.getBoundingClientRect().top === 0 &&
+                  node.getBoundingClientRect().right === innerWidth &&
+                  node.getBoundingClientRect().bottom === innerHeight,
+                cornerInside: node.contains(document.elementFromPoint(1, 1)),
                 fits: node.scrollWidth <= node.clientWidth,
                 buttonBeforeTitle: buttonRect.right <= heading.left,
                 centers: Math.abs(
@@ -466,6 +475,8 @@ suite('U1 employee persona card', () => {
                 }),
               };
             });
+            expect(measured.fillsViewport).toBe(width <= 700);
+            expect(measured.cornerInside).toBe(width <= 700);
             expect(measured.fits).toBe(true);
             expect(measured.buttonBeforeTitle).toBe(true);
             expect(measured.centers).toBeLessThan(1);
@@ -480,6 +491,11 @@ suite('U1 employee persona card', () => {
           } else if (exit === 'Escape') {
             await page.keyboard.press('Escape');
           } else if (exit === 'backdrop') {
+            expect(
+              await editor.evaluate((node) =>
+                node.contains(document.elementFromPoint(1, 1)),
+              ),
+            ).toBe(false);
             await page.mouse.click(1, 1);
           } else {
             await editor
@@ -506,6 +522,24 @@ suite('U1 employee persona card', () => {
           ).toBe(true);
           expect(state.writes).toEqual([]);
         }
+        // The final exit has no next loop iteration to prove its draft was
+        // discarded. Reopen explicitly, including Escape on a full-screen phone.
+        const reopened = await showEditor(page);
+        expect(
+          await reopened
+            .getByRole('textbox', { name: '名字', exact: true })
+            .inputValue(),
+        ).toBe('流程哥');
+        expect(
+          await reopened.getByRole('radio', { name: '鸢尾紫' }).isChecked(),
+        ).toBe(true);
+        await reopened
+          .getByRole('button', { name: '取消', exact: true })
+          .click();
+        await card
+          .getByRole('heading', { name: '流程哥', exact: true })
+          .waitFor();
+        expect(state.writes).toEqual([]);
         await writeFile(
           `${screenshotDir}/persona-editor-back-${width}.json`,
           JSON.stringify({ measured, exits, writes: state.writes }, null, 2),
@@ -530,7 +564,7 @@ suite('U1 employee persona card', () => {
       const card = await showDetails(page);
       const editor = await showEditor(page);
       const name = editor.getByRole('textbox', {
-        name: '员工名字',
+        name: '名字',
         exact: true,
       });
       await name.fill('保存失败仍保留的名字');

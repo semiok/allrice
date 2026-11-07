@@ -638,7 +638,7 @@ suite('U1 Rice full persona from the real employee entry', () => {
         await f.openDetails();
         const editor = await f.openEditor();
         await editor
-          .getByRole('textbox', { name: '员工名字', exact: true })
+          .getByRole('textbox', { name: '名字', exact: true })
           .fill('青禾');
         await editor
           .getByRole('radio', {
@@ -668,6 +668,131 @@ suite('U1 Rice full persona from the real employee entry', () => {
             .count(),
         ).toBe(0);
         await paint(editor);
+        const layout = await editor.evaluate((node) => {
+          const bounds = (element: Element) => {
+            const rect = element.getBoundingClientRect();
+            return {
+              x: rect.x,
+              y: rect.y,
+              width: rect.width,
+              height: rect.height,
+              right: rect.right,
+              bottom: rect.bottom,
+            };
+          };
+          const typography = (element: Element) => {
+            const css = getComputedStyle(element);
+            return {
+              size: css.fontSize,
+              lineHeight: css.lineHeight,
+              weight: css.fontWeight,
+            };
+          };
+          const form = node.querySelector('form')!,
+            header = node.querySelector('header')!,
+            title = header.querySelector('h2')!,
+            back = header.querySelector('button')!,
+            name = form.querySelector('input[data-employee-name]')!,
+            label = form.querySelector('label')!,
+            identity = name.closest('section')!,
+            fields = form.querySelector('fieldset')!,
+            palette = form.querySelector('fieldset fieldset > div')!,
+            colorLabel = palette.querySelector('label')!,
+            textarea = form.querySelector('textarea')!,
+            footer = form.querySelector('footer')!,
+            save = footer.querySelector('button[type="submit"]')!,
+            style = getComputedStyle(node);
+          return {
+            dialog: bounds(node),
+            root: bounds(node.parentElement!),
+            radius: style.borderTopLeftRadius,
+            title: typography(title),
+            titleBounds: bounds(title),
+            backBounds: bounds(back),
+            label: typography(label),
+            value: typography(name),
+            textarea: typography(textarea),
+            textareaMinHeight: getComputedStyle(textarea).minHeight,
+            colorLabel: typography(colorLabel),
+            colorColumns:
+              getComputedStyle(palette).gridTemplateColumns.split(' ').length,
+            identity: {
+              border: getComputedStyle(identity).borderTopWidth,
+              padding: getComputedStyle(identity).padding,
+              background: getComputedStyle(identity).backgroundColor,
+            },
+            headerPadding: getComputedStyle(header).padding,
+            fieldsPadding: getComputedStyle(fields).padding,
+            footer: bounds(footer),
+            footerPadding: getComputedStyle(footer).padding,
+            button: {
+              ...typography(save),
+              height: bounds(save).height,
+              radius: getComputedStyle(save).borderTopLeftRadius,
+            },
+          };
+        });
+        expect(layout.title).toEqual({
+          size: '20px',
+          lineHeight: '28px',
+          weight: '600',
+        });
+        expect(layout.backBounds.width).toBe(width < 700 ? 40 : 36);
+        expect(layout.backBounds.height).toBe(width < 700 ? 40 : 36);
+        expect(layout.titleBounds.x - layout.dialog.x).toBe(
+          width < 700 ? 54 : 58,
+        );
+        expect(layout.titleBounds.y + layout.titleBounds.height / 2).toBe(
+          layout.backBounds.y + layout.backBounds.height / 2,
+        );
+        expect(layout.label).toEqual({
+          size: '14px',
+          lineHeight: '20px',
+          weight: '500',
+        });
+        expect(layout.value).toEqual({
+          size: width < 700 ? '16px' : '14px',
+          lineHeight: width < 700 ? '24px' : '22px',
+          weight: '400',
+        });
+        expect(layout.textarea).toEqual(layout.value);
+        expect(layout.textareaMinHeight).toBe('88px');
+        expect(layout.colorLabel).toEqual({
+          size: '12px',
+          lineHeight: '18px',
+          weight: '400',
+        });
+        expect(layout.colorColumns).toBe(width < 680 ? 5 : 10);
+        expect(layout.identity).toEqual({
+          border: '0px',
+          padding: '0px',
+          background: 'rgba(0, 0, 0, 0)',
+        });
+        expect(layout.headerPadding).toBe(
+          width < 700 ? '16px 20px' : '22px 24px 18px',
+        );
+        expect(layout.fieldsPadding).toBe(width < 700 ? '20px' : '20px 24px');
+        expect(layout.footerPadding).toBe(
+          width < 700 ? '16px 20px' : '16px 24px 20px',
+        );
+        expect(layout.button).toEqual({
+          size: '14px',
+          lineHeight: '20px',
+          weight: '500',
+          height: width < 700 ? 44 : 36,
+          radius: '12px',
+        });
+        expect(layout.footer.bottom).toBe(layout.dialog.bottom);
+        if (width < 700) {
+          expect(layout.dialog).toEqual(layout.root);
+          expect(layout.radius).toBe('0px');
+        } else {
+          expect(layout.dialog.width).toBe(552);
+          expect(layout.dialog.x - layout.root.x).toBe(
+            (layout.root.width - 552) / 2,
+          );
+          expect(layout.radius).toBe('28px');
+        }
         const editorPaint = await editor.evaluate((node, darkMode) => {
           const css = getComputedStyle(node),
             input = node.querySelector('input')!;
@@ -699,6 +824,44 @@ suite('U1 Rice full persona from the real employee entry', () => {
             `rice-editor-${width}-${dark ? 'dark' : 'light'}.png`,
           ),
         });
+        // The native dialog keeps its focus trap and footer while only the
+        // edit fieldset scrolls in a short viewport. No product CSS is replaced.
+        await f.page.setViewportSize({ width, height: 480 });
+        await paint(editor);
+        const fields = editor.locator('form > fieldset'),
+          footer = editor.locator('footer'),
+          saveButton = editor.getByRole('button', {
+            name: '保存',
+            exact: true,
+          }),
+          backButton = editor.getByRole('button', {
+            name: '返回员工详情',
+            exact: true,
+          });
+        expect(
+          await fields.evaluate(
+            (node) => node.scrollHeight > node.clientHeight,
+          ),
+        ).toBe(true);
+        const footerBefore = await footer.boundingBox();
+        await fields.evaluate((node) => {
+          node.scrollTop = node.scrollHeight;
+        });
+        expect(await footer.boundingBox()).toEqual(footerBefore);
+        await saveButton.focus();
+        await f.page.keyboard.press('Tab');
+        expect(
+          await backButton.evaluate((node) => document.activeElement === node),
+        ).toBe(true);
+        await f.page.keyboard.press('Shift+Tab');
+        expect(
+          await saveButton.evaluate((node) => document.activeElement === node),
+        ).toBe(true);
+        await f.page.setViewportSize({
+          width,
+          height: width < 600 ? 844 : 1000,
+        });
+        await paint(editor);
         await editor.getByRole('button', { name: '保存', exact: true }).click();
         const saved = f.page.getByRole('dialog', {
           name: '青禾员工详情',
@@ -796,7 +959,11 @@ suite('U1 Rice full persona from the real employee entry', () => {
             evidence,
             `rice-paint-${width}-${dark ? 'dark' : 'light'}.json`,
           ),
-          JSON.stringify({ editorPaint, cardPaint, entry, write }, null, 2),
+          JSON.stringify(
+            { editorPaint, layout, cardPaint, entry, write },
+            null,
+            2,
+          ),
         );
       });
     },
@@ -816,7 +983,7 @@ suite('U1 Rice full persona from the real employee entry', () => {
         const editor = await f.openEditor();
         const renamed = kind === 'general' ? '青禾' : '青禾自定义';
         await editor
-          .getByRole('textbox', { name: '员工名字', exact: true })
+          .getByRole('textbox', { name: '名字', exact: true })
           .fill(renamed);
         await editor.getByRole('button', { name: '保存', exact: true }).click();
         await f.page
@@ -922,13 +1089,13 @@ suite('U1 Rice full persona from the real employee entry', () => {
       await f.openDetails();
       const editor = await f.openEditor();
       await editor
-        .getByRole('textbox', { name: '员工名字', exact: true })
+        .getByRole('textbox', { name: '名字', exact: true })
         .fill('青禾');
       await editor.getByRole('button', { name: '保存', exact: true }).click();
       await editor.getByRole('alert').waitFor();
       expect(
         await editor
-          .getByRole('textbox', { name: '员工名字', exact: true })
+          .getByRole('textbox', { name: '名字', exact: true })
           .inputValue(),
       ).toBe('青禾');
       expect(f.state.instances[0]!.revision).toBe(2);
@@ -979,7 +1146,7 @@ suite('U1 Rice full persona from the real employee entry', () => {
       await f.openDetails('流程哥');
       const editor = await f.openEditor();
       await editor
-        .getByRole('textbox', { name: '员工名字', exact: true })
+        .getByRole('textbox', { name: '名字', exact: true })
         .fill('改名流程哥');
       await editor.getByRole('button', { name: '保存', exact: true }).click();
       await editor.getByRole('alert').waitFor();
@@ -1003,14 +1170,12 @@ suite('U1 Rice full persona from the real employee entry', () => {
         .click();
       await f.openDetails('流程哥');
       const other = await f.openEditor();
-      await other
-        .getByRole('textbox', { name: '员工名字', exact: true })
-        .waitFor();
+      await other.getByRole('textbox', { name: '名字', exact: true }).waitFor();
       f.releaseRaw();
       await f.rawSent;
       expect(
         await other
-          .getByRole('textbox', { name: '员工名字', exact: true })
+          .getByRole('textbox', { name: '名字', exact: true })
           .inputValue(),
       ).toBe('流程哥');
       await other.getByRole('button', { name: '取消', exact: true }).click();
@@ -1028,7 +1193,7 @@ suite('U1 Rice full persona from the real employee entry', () => {
       await f.openDetails();
       const editor = await f.openEditor();
       await editor
-        .getByRole('textbox', { name: '员工名字', exact: true })
+        .getByRole('textbox', { name: '名字', exact: true })
         .fill('青禾');
       f.state.receiptOverride = {
         source: {
@@ -1042,7 +1207,7 @@ suite('U1 Rice full persona from the real employee entry', () => {
       expect(await editor.isVisible()).toBe(true);
       expect(
         await editor
-          .getByRole('textbox', { name: '员工名字', exact: true })
+          .getByRole('textbox', { name: '名字', exact: true })
           .inputValue(),
       ).toBe('青禾');
       await editor.getByRole('button', { name: '取消', exact: true }).click();

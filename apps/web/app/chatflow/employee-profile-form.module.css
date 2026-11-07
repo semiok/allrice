@@ -261,3 +261,240 @@
     min-height: 65px;
   }
 }
+
+/* Approved a46c editing layout. Creation keeps the existing form/dialog rules. */
+.editDialog.editDialog {
+  width: min(552px, 100%);
+  max-height: calc(100dvh - 48px);
+  border: 0;
+  border-radius: var(--ar-radius-panel);
+  color: var(--ar-text);
+  box-shadow: var(--dsw-elevation-prominent);
+}
+.editDialog > header {
+  align-items: center;
+  gap: 12px;
+  min-height: 76px;
+  padding: 22px 24px 18px;
+  border-bottom: 1px solid var(--ar-border);
+}
+.editDialog > header h2 {
+  margin: 0;
+  font: var(--ar-font-title);
+}
+.editDialog.editDialog > header button {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  min-height: 36px;
+  margin-left: -10px;
+  margin-right: -4px;
+  padding: 0;
+  border-radius: var(--ar-radius-sm);
+  color: var(--ar-text);
+}
+.editDialog > header button:hover {
+  background: var(--ar-surface-hover);
+}
+.editBody.editBody {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+.editBody:not(:has(.editForm)) {
+  padding: 20px 24px;
+}
+.editBody > button {
+  flex: none;
+  align-self: flex-start;
+  margin: 0 24px 16px;
+}
+.editForm {
+  flex: 1 1 auto;
+  min-height: 0;
+  font: var(--ar-font-body);
+}
+.editForm > .fields {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 20px 24px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.editForm .identity {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.editForm .nameRow {
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.editForm .avatar {
+  width: 44px;
+  height: 44px;
+  margin-top: 24px;
+  border-radius: var(--ar-radius-md);
+  font-size: 20px;
+  font-weight: 600;
+}
+.editForm .nameField label,
+.editForm .field label,
+.editForm .colors legend {
+  margin: 0 0 8px;
+  font: var(--ar-font-label);
+}
+.editForm .colors {
+  margin: 0 0 20px;
+}
+.editForm .palette {
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+  gap: 6px;
+}
+.editForm .colorChoice {
+  min-height: 56px;
+  border-radius: var(--ar-radius-sm);
+  color: var(--ar-text-secondary);
+  font: var(--ar-font-caption);
+}
+.editForm .colorChoice:hover {
+  background: var(--ar-surface-hover);
+}
+.editForm .settings {
+  gap: 16px;
+  margin: 0 0 16px;
+}
+.editForm .field {
+  min-width: 0;
+}
+.editForm .nameField input,
+.editForm .field textarea,
+.editForm .field select {
+  min-height: 44px;
+  padding: 10px 12px;
+  border-color: var(--ar-border);
+  border-radius: var(--ar-radius-sm);
+  background: var(--ar-surface-subtle);
+  color: var(--ar-text);
+  font: var(--ar-font-body);
+}
+.editForm .field textarea {
+  min-height: 88px;
+}
+.editForm .field select {
+  height: auto;
+}
+.editForm .nameField input:hover,
+.editForm .field textarea:hover,
+.editForm .field select:hover {
+  border-color: var(--ar-border-strong);
+}
+.editForm .nameField input:focus,
+.editForm .field textarea:focus,
+.editForm .field select:focus {
+  border-color: var(--ar-focus-ring);
+  outline: 2px solid var(--ar-focus-ring);
+  outline-offset: 2px;
+  background: var(--dsw-specific-input-major);
+}
+.editForm > [role='alert'] {
+  flex: none;
+  margin: 0;
+  padding: 0 24px 16px;
+}
+.editForm .actions {
+  flex: none;
+  align-items: center;
+  margin: 0;
+  padding: 16px 24px 20px;
+  border-color: var(--ar-border);
+}
+.editForm .actions button {
+  min-height: 36px;
+  padding: 7px 14px;
+  border: 0.5px solid var(--ar-border);
+  border-radius: var(--ar-radius-md);
+  background: transparent;
+  color: var(--ar-text);
+  font: var(--ar-font-label);
+  white-space: nowrap;
+}
+.editForm .actions button:hover:not(:disabled) {
+  background: var(--ar-surface-hover);
+}
+.editForm .actions button[type='submit'] {
+  border-color: transparent;
+  background: var(--ar-action-primary);
+  color: var(--ar-text-on-primary);
+}
+.editForm .actions button[type='submit']:hover:not(:disabled) {
+  background: var(--ar-action-primary-hover);
+}
+.editDialog > header button:focus-visible,
+.editForm .actions button:focus-visible {
+  outline: 2px solid var(--ar-focus-ring);
+  outline-offset: 2px;
+}
+.editForm .colorChoice input:focus-visible + .swatch {
+  outline: 2px solid var(--ar-focus-ring);
+  outline-offset: 3px;
+}
+@media (max-width: 680px) {
+  .editForm .palette {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+  .editForm .colorChoice {
+    min-height: 65px;
+  }
+}
+@media (max-width: 700px), (pointer: coarse) {
+  .editDialog.editDialog > header button {
+    width: 40px;
+    height: 40px;
+    min-height: 40px;
+  }
+}
+@media (max-width: 700px) {
+  .editDialog.editDialog {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    max-height: 100%;
+    border-radius: 0;
+    box-shadow: none;
+  }
+  .editDialog > header {
+    gap: 8px;
+    min-height: 64px;
+    padding: 16px 20px;
+  }
+  .editBody:not(:has(.editForm)) {
+    padding: 20px;
+  }
+  .editForm > .fields {
+    padding: 20px;
+    scrollbar-gutter: auto;
+  }
+  .editForm .avatar {
+    width: 40px;
+    height: 40px;
+    font-size: 18px;
+  }
+  .editForm .nameField input,
+  .editForm .field textarea,
+  .editForm .field select {
+    font-size: 16px;
+    line-height: 24px;
+  }
+  .editForm .actions {
+    padding: 16px 20px max(16px, env(safe-area-inset-bottom));
+  }
+  .editForm .actions button {
+    min-height: 44px;
+  }
+}

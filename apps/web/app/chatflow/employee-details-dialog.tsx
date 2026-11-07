@@ -367,10 +367,10 @@ function EmployeeDetailsReader(
               ? `${historicalCustom.name}员工详情`
               : 'AI 员工详情'
       }
-      bodyClassName={editor ? formCss.body : css.body}
+      bodyClassName={editor ? formCss.editBody : css.body}
       className={
         editor
-          ? formCss.dialog
+          ? formCss.editDialog
           : `${css.dialog} ${!reference ? css.profileDialog : ''}`
       }
       onClose={editor ? cancelEdit : props.onClose}
