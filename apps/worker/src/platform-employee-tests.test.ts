@@ -25,7 +25,6 @@ import {
   methodFileExecutionUnverified,
   freezeRouteSubscriptionSnapshot,
   employeePersonaPlatformSystemPrompt,
-  runtimePackageSystemPrompt,
 } from '@allrice/database';
 import { DshHarnessAdapter } from './harness/dsh-adapter.js';
 import { executeNextPlatformEmployeeTest } from './platform-employee-tests.js';
@@ -44,7 +43,6 @@ vi.mock('@allrice/database', async (importOriginal) => {
     employeePersonaPlatformSystemPrompt:
       policy.employeePersonaPlatformSystemPrompt,
     runtimePackageChecksum: policy.runtimePackageChecksum,
-    runtimePackageSystemPrompt: policy.runtimePackageSystemPrompt,
   };
 });
 vi.mock('./employee-method-file-tests.js', () => ({
@@ -154,10 +152,7 @@ function platformTestSource(
     timeoutMs: definition.modelPolicy.timeoutMs,
     credentialReference: definition.modelPolicy.credentialReference,
     baseUrl: definition.modelPolicy.baseUrl,
-    systemPrompt: runtimePackageSystemPrompt({
-      platformPolicy: definition.systemPrompt,
-      runtimePackage,
-    }),
+    systemPrompt: employeePersonaPlatformSystemPrompt(definition),
     nativeSkillIds: runtimePackage.skills.map((skill) => skill.id),
     nativeSkillChecksums: runtimePackage.skills.map((skill) => skill.checksum),
     toolNames: definition.capabilities.toolNames,
