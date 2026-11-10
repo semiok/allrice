@@ -561,7 +561,7 @@ suite('U1 employee details personal-memory entry', () => {
           exact: true,
         });
         await manager
-          .getByRole('heading', { name: 'Rice · 记忆', exact: true })
+          .getByRole('heading', { name: '流程哥 · 记忆', exact: true })
           .waitFor();
         const geometry = await manager
           .locator('header')
@@ -669,7 +669,7 @@ suite('U1 employee details personal-memory entry', () => {
         });
         await contains(manager, '全部 · 共 0 条');
         await manager
-          .getByRole('heading', { name: 'Rice · 记忆', exact: true })
+          .getByRole('heading', { name: '流程哥 · 记忆', exact: true })
           .waitFor();
         expect(
           await manager.getByText('（确认后生效）', { exact: true }).count(),
