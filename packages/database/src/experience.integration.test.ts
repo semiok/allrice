@@ -28,8 +28,11 @@ import {
   BrandExperiencePinSchema,
   brandRetrospectiveSource,
   makeObjectKey,
+  type EmployeeDocuments,
+  type RunMemoryContextV2State,
   type BrandContentWorkflowInvocation,
 } from '@allrice/contracts';
+import { memoryPairDigest } from './workspace/employee-memory.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
 import { resolveEmployeeContentSource } from './employees/employee-content-sources.ts';
 import { freezeEmployeeRuntimeContent } from './employees/employee-content.ts';
@@ -1133,6 +1136,8 @@ suite(
           text: 'Reconciliation rule: preserve original files and use decimal amounts.',
         },
       );
+      const [beforeSnapshot] =
+        await db`select prompt_snapshot,memory_context_state from allrice_employee_runs where run_id=${before.run.id}`;
       const c = await store.create(f.owner, f.input);
       await store.review(f.owner, c.id, decision(c));
       const candidate = await createTraceableMemory(f.owner, {
@@ -1168,7 +1173,9 @@ suite(
           run_id: string;
           prompt_snapshot: {
             memories: { id: string; revision?: number; content: string }[];
+            employeeDocuments: EmployeeDocuments;
           };
+          memory_context_state: RunMemoryContextV2State;
           employee_assignment_id: string;
           employee_version_id: string;
           user_message_id: string;
@@ -1179,14 +1186,33 @@ suite(
       expect(after).toBeTruthy();
       expect(rows).toHaveLength(2);
       expect(rows[0]!.prompt_snapshot.memories).toEqual([]);
-      expect(rows[1]!.prompt_snapshot.memories).toEqual([
-        expect.objectContaining({
+      const next = rows[1]!;
+      const [pair] = await db<
+        { summary: string; details: string | null }[]
+      >`select summary,details from allrice_memories where id=${confirmed.id}`;
+      expect(next.prompt_snapshot.memories).toEqual([]);
+      expect(next.prompt_snapshot.employeeDocuments).toMatchObject({
+        schemaVersion: 2,
+      });
+      expect(next.prompt_snapshot.employeeDocuments.memory).toContain(
+        `[1] ${pair!.summary}${pair!.details === null ? '' : '（有说明）'}`,
+      );
+      expect(next.memory_context_state.pins).toEqual([
+        {
+          number: 1,
           id: confirmed.id,
           revision: 2,
-          content: f.input.content,
-        }),
+          pairDigest: memoryPairDigest(pair!),
+          hasDetails: pair!.details !== null,
+        },
       ]);
-      const next = rows[1]!;
+      expect(next.memory_context_state.pins).not.toContainEqual(
+        expect.objectContaining({ id: c.id }),
+      );
+      if (pair!.details !== null)
+        expect(next.prompt_snapshot.employeeDocuments.memory).not.toContain(
+          pair!.details,
+        );
       const resolved = await resolveEmployeeExecution({
         organizationId: f.org,
         workspaceId: f.workspace,
@@ -1202,20 +1228,12 @@ suite(
         assistantMessageId: next.assistant_message_id,
       });
       expect(kernel.authorizedMemoryContext).toBe('');
-      expect(
-        JSON.parse(
-          kernel.employeeDocuments!.memory.slice('# MEMORY.md\n'.length),
-        ).items,
-      ).toEqual([
-        expect.objectContaining({
-          id: confirmed.id,
-          revision: 2,
-          content: f.input.content,
-        }),
-      ]);
+      expect(kernel.employeeDocuments).toEqual(
+        next.prompt_snapshot.employeeDocuments,
+      );
       const [old] =
-        await db`select prompt_snapshot from allrice_employee_runs where run_id=${rows[0]!.run_id}`;
-      expect(old?.prompt_snapshot.memories).toEqual([]);
+        await db`select prompt_snapshot,memory_context_state from allrice_employee_runs where run_id=${rows[0]!.run_id}`;
+      expect(old).toEqual(beforeSnapshot);
     });
   },
 );

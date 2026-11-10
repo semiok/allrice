@@ -1,7 +1,9 @@
 # 普通个人记忆候选 v2
 
 PR3 独立阶段提供 pair 候选写入，未单独激活生产新 Run，仍由 freezeEmployeeDocuments 生成 v1。
-与 PR2 叠合后，以实际普通 admission 同事务冻结的 docs2、全部摘要、pins、既有读取账本与 allowlist 为准；旧冻结 Run 继续沿其原版本。
+与 PR2 叠合后，普通发送先持久化消息，再准备 binding；一次同源 memory SELECT 投影出 docs2索引、pins及初始字节账本。
+随后独立 queue 事务在首个 employee_runs INSERT 中原子持久化该 binding 的 docs、state及冻结 allowlist；读取投影与完整发送流程不共用此事务。
+queue 失败不撤销先前消息/输入回执或准备阶段的合法缓存，assistant沿既有失败回执处理；旧冻结 Run 继续沿其原版本。
 
 ## 内容与权限
 
