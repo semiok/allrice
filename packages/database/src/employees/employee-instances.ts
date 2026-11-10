@@ -114,6 +114,7 @@ export async function readEmployeeTenantPersonaVersion(
     employeeId: string;
     versionId: string;
     expectedSource?: EmployeeInstanceSnapshot['source'];
+    forRunInput?: boolean;
   },
   sql: Sql,
 ): Promise<
@@ -145,7 +146,22 @@ export async function readEmployeeTenantPersonaVersion(
     typeof rawPackage === 'object' &&
     'schemaVersion' in rawPackage &&
     rawPackage.schemaVersion === 3;
-  if (!('personaSource' in raw) && !hasPackageMaterial) return undefined;
+  if (!('personaSource' in raw) && !hasPackageMaterial) {
+    // The 11-10 retirement decision covers this exact old-package shape only.
+    // Read-only callers and genuine package-less tenant versions keep their
+    // original absence semantics; no policy is recovered from composite text.
+    if (
+      scope.forRunInput &&
+      rawPackage !== null &&
+      typeof rawPackage === 'object' &&
+      'schemaVersion' in rawPackage &&
+      (rawPackage.schemaVersion === 1 || rawPackage.schemaVersion === 2)
+    )
+      throw Error('employee_persona_source_unavailable', {
+        cause: 'legacy_runtime_package_platform_policy_missing',
+      });
+    return undefined;
+  }
   const manifest = EmployeeDefinitionSchema.parse(raw);
   const pkg = manifest.runtimePackage;
   if (
@@ -187,6 +203,7 @@ export async function readEmployeePersonaVersion(
     versionId: string;
     role: 'basis' | 'engine';
     expectedSource?: EmployeeInstanceSnapshot['source'];
+    forRunInput?: boolean;
   },
   sql: Sql,
 ) {

@@ -115,12 +115,38 @@ describe('explicit definition-only PERSONA materials', () => {
     );
     expect(
       await readEmployeeTenantPersonaVersion(
-        scope(),
+        { ...scope(), forRunInput: true },
         reader(legacy, employeeManifestChecksum(legacy)),
       ),
     ).toBeUndefined();
     expect(legacy).toEqual(original);
   });
+
+  it.each([1, 2])(
+    'reports exact old-package %s policy absence only when preparing new input',
+    async (schemaVersion) => {
+      const { personaSource, ...legacy } = source();
+      void personaSource;
+      // Presence classification only; real signed old packages and publication
+      // relationships are covered through the SQL producer integration test.
+      const manifest = { ...legacy, runtimePackage: { schemaVersion } };
+      const original = structuredClone(manifest);
+      const sql = reader(manifest, 'unchanged-original-checksum');
+      expect(
+        await readEmployeeTenantPersonaVersion(scope(), sql),
+      ).toBeUndefined();
+      await expect(
+        readEmployeeTenantPersonaVersion(
+          { ...scope(), forRunInput: true },
+          sql,
+        ),
+      ).rejects.toMatchObject({
+        message: 'employee_persona_source_unavailable',
+        cause: 'legacy_runtime_package_platform_policy_missing',
+      });
+      expect(manifest).toEqual(original);
+    },
+  );
 
   it('rejects nonempty broken materials and checksum drift rather than treating them as absence', async () => {
     const manifest = source();

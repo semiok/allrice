@@ -96,6 +96,7 @@ async function freezeRunPersona(
     organizationId: instance.organizationId,
     workspaceId: instance.workspaceId,
     employeeId,
+    forRunInput: true,
   };
   const current = task
     ? undefined
