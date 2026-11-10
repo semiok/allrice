@@ -113,6 +113,7 @@ export async function readEmployeeTenantPersonaVersion(
     workspaceId: string;
     employeeId: string;
     versionId: string;
+    role?: 'basis' | 'engine';
     expectedSource?: EmployeeInstanceSnapshot['source'];
     forRunInput?: boolean;
   },
@@ -147,9 +148,8 @@ export async function readEmployeeTenantPersonaVersion(
     'schemaVersion' in rawPackage &&
     rawPackage.schemaVersion === 3;
   if (!('personaSource' in raw) && !hasPackageMaterial) {
-    // The 11-10 retirement decision covers this exact old-package shape only.
-    // Read-only callers and genuine package-less tenant versions keep their
-    // original absence semantics; no policy is recovered from composite text.
+    // Read-only absence never recovers policy from composite text. New input
+    // retires only the approved raw old-package/null/v1-basis shapes.
     if (
       scope.forRunInput &&
       rawPackage !== null &&
@@ -159,6 +159,19 @@ export async function readEmployeeTenantPersonaVersion(
     )
       throw Error('employee_persona_source_unavailable', {
         cause: 'legacy_runtime_package_platform_policy_missing',
+      });
+    if (
+      scope.forRunInput &&
+      row.mapping_id === null &&
+      'schemaVersion' in raw &&
+      ((raw.schemaVersion === 2 && rawPackage === null) ||
+        (raw.schemaVersion === 1 && scope.role === 'basis'))
+    )
+      throw Error('employee_persona_source_unavailable', {
+        cause:
+          raw.schemaVersion === 1
+            ? 'legacy_v1_basis_persona_source_missing'
+            : 'legacy_null_package_persona_source_missing',
       });
     return undefined;
   }

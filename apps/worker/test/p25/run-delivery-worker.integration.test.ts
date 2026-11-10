@@ -27,7 +27,14 @@ import { createRunAuthorityFixture } from '../../../../packages/database/src/run
 import { createEmployeeAdministrationFixture } from '../../../../packages/database/src/employee-administration.fixture.ts';
 import { savePlatformEmployeeDraft } from '../../../../packages/database/src/employees/platform-employees.ts';
 import { updateEmployeeInstance } from '../../../../packages/database/src/employees/employee-instances.ts';
-import { resolveEmployeeExecution } from '../../../../packages/database/src/employees/employeehub.ts';
+import {
+  assignEmployeeVersion,
+  resolveEmployeeExecution,
+} from '../../../../packages/database/src/employees/employeehub.ts';
+import {
+  employeeManifest,
+  employeeManifestChecksum,
+} from '../../../../packages/database/src/employees/employee-config.ts';
 import { assertFrozenEmployeePersona } from '../../../../packages/database/src/employees/employee-documents.ts';
 import {
   readEmployeeChatSourceKind,
@@ -57,6 +64,7 @@ import {
   renderMemoryContext,
   initialMemoryContextBytes,
   EmployeeExecutionSnapshotSchema,
+  EmployeeManifestSchema,
   type PlatformEmployeeDefinition,
 } from '@allrice/contracts';
 import { authorizeFixturePlatformAdministrator } from '../../../../packages/database/src/platform-authority.fixture.ts';
@@ -581,6 +589,208 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     };
   }
   type PublishedTarget = Awaited<ReturnType<typeof publishedTarget>>;
+  async function historicalSourceGap(
+    f: PublishedTarget,
+    kind: 'v1_basis' | 'null_engine',
+  ) {
+    const current = employeeManifest({
+      key: f.definition.key,
+      name: 'OLD_NULL_TENANT',
+      description: 'Historical createEmployee/ensureDefaultEmployee shape',
+    });
+    if (current.schemaVersion !== 2) throw Error('expected v2 factory shape');
+    const { personaSource, ...oldNull } = current;
+    void personaSource;
+    // The pre-PERSONA factory's default composite prompt, first INSERT only.
+    // This is historical input, never a source recovered from composite text.
+    oldNull.systemPrompt = [
+      `You are ${current.name}, an AI employee in AllRice.`,
+      `Your partner role is ${current.partnerProfile.role}. Your mission is ${current.partnerProfile.mission} Use clear headings, lists, and an explicit conclusion. Respond in Simplified Chinese by default. Suggest useful next steps and reminders, but do not create them without a clear user request. Before any action that changes data, sends communication, publishes, books, deletes, or otherwise causes an external side effect, explain what will happen and ask for explicit confirmation. Read-only analysis may proceed.`,
+      `Your work style is: ${current.identity.workStyle}`,
+      `Follow these behavior rules: ${current.identity.behaviorRules.join(' ')}`,
+      `Respect these safety boundaries: ${current.identity.safetyBoundaries.join(' ')}`,
+      'Answer the user directly and use only the tenant-scoped conversation, memory, file, and DSH-native Skill context supplied to you.',
+      'Treat DSH-native Skill instructions as capabilities, never as authorization to escape the current workspace or reveal credentials.',
+      'Be explicit when information is missing or an action could not be completed.',
+      'Act as a work partner: first understand the desired outcome and constraints, then make a concise plan when the task has multiple steps, execute only within the authorized capabilities, and finish with completed work, assumptions, open questions, and recommended next steps.',
+      'Prefer delivering an editable or reusable result over a vague explanation. For consequential actions, ambiguous data, or external communication, pause and ask for confirmation instead of guessing.',
+      'When the user explicitly asks for a reminder or a future scheduled action, use the automation.create tool instead of merely promising to remember it. After the tool succeeds, state the scheduled time clearly.',
+    ].join(' ');
+    const manifest = EmployeeManifestSchema.parse(
+      kind === 'null_engine'
+        ? oldNull
+        : {
+            schemaVersion: 1,
+            key: current.key,
+            name: current.name,
+            description: current.description,
+            systemPrompt: oldNull.systemPrompt,
+            provider: current.provider,
+            capabilities: current.capabilities,
+            skillVersionIds: current.skillVersionIds,
+            partnerProfile: current.partnerProfile,
+          },
+    );
+    const versionId = randomUUID(),
+      checksum = employeeManifestChecksum(manifest);
+    const [latest] = await f.db<
+      { version: number }[]
+    >`select max(version)::integer version from allrice_employee_versions where employee_id=${f.identity.employee}`;
+    await f.db`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,description,model,system_prompt,capabilities,manifest,provider_snapshot,skill_version_ids,config_checksum)
+      values(${versionId},${f.identity.org},${f.identity.workspace},${f.identity.employee},${latest!.version + 1},${manifest.name},${manifest.description},${manifest.provider.model},${manifest.systemPrompt},${f.db.json(manifest.capabilities)},${f.db.json(manifest)},${f.db.json(manifest.provider)},${f.db.json(manifest.skillVersionIds)},${checksum})`;
+    await assignEmployeeVersion(f.context, f.identity.assignment, {
+      workspaceId: f.identity.workspace,
+      employeeVersionId: versionId,
+    });
+    return { manifest, versionId, checksum };
+  }
+
+  it.each(['v1_basis', 'null_engine'] as const)(
+    'PERSONA: exact historical %s source gap fails before a Run and recovers only through the original publication/session path',
+    async (kind) => {
+      const answer = 'Synthetic source recovery completed.';
+      const f = await publishedTarget(() => ({ text: answer }));
+      const legacy = await historicalSourceGap(f, kind);
+      let sessionId = f.chat.id;
+      if (kind === 'null_engine') {
+        sessionId = randomUUID();
+        // The real old producer predates immutable origin v2. Preserve its
+        // first-INSERT NULL; current issuance must never rebind this Session.
+        await f.db`insert into allrice_chat_sessions(id,organization_id,workspace_id,owner_id,employee_assignment_id,employee_instance_id,employee_version_id,title)
+          values(${sessionId},${f.identity.org},${f.identity.workspace},${f.identity.user},${f.identity.assignment},${f.identity.assignment},${legacy.versionId},'Original null-package Session')`;
+      }
+      const readSession = async () =>
+        (
+          await f.db`select native_root_origin,employee_version_id from allrice_chat_sessions where id=${sessionId}`
+        )[0]!;
+      const original = await readSession();
+      expect(original.employee_version_id).toBe(
+        kind === 'v1_basis' ? f.identity.version : legacy.versionId,
+      );
+      if (kind === 'v1_basis')
+        expect(original.native_root_origin.schemaVersion).toBe(2);
+      else expect(original.native_root_origin).toBeNull();
+      expect(legacy.manifest).not.toHaveProperty('personaSource');
+      if (legacy.manifest.schemaVersion === 2)
+        expect(legacy.manifest.runtimePackage).toBeNull();
+      const counts = async () =>
+        (
+          await f.db`select
+          (select count(*)::integer from allrice_runs where organization_id=${f.identity.org} and owner_id=${f.identity.user}) runs,
+          (select count(*)::integer from allrice_jobs where organization_id=${f.identity.org} and owner_id=${f.identity.user}) jobs`
+        )[0]!;
+      const send = (id: string) =>
+        sendChatMessage(f.context, f.identity.workspace, id, {
+          text: '请继续核对月报并保留依据。',
+          clientMessageId: randomUUID(),
+        });
+      const expected = {
+        message: 'employee_persona_source_unavailable',
+        cause:
+          kind === 'v1_basis'
+            ? 'legacy_v1_basis_persona_source_missing'
+            : 'legacy_null_package_persona_source_missing',
+      };
+      const before = await counts();
+      await expect(send(sessionId)).rejects.toMatchObject(expected);
+      expect(await counts()).toEqual(before);
+      expect(model!.requests).toHaveLength(0);
+      expect(await readSession()).toEqual(original);
+
+      // Administrator action through the existing draft/preview/publication
+      // and tenant assignment APIs supplies a real new independently sourced default.
+      await f.publish({
+        ...f.definition,
+        name: 'RECOVERED_DEFAULT',
+        systemPrompt: 'RECOVERED_PLATFORM_POLICY',
+      });
+      const [current] =
+        await f.db`select employee_version_id from allrice_employee_assignments where id=${f.identity.assignment}`;
+      expect(current!.employee_version_id).not.toBe(legacy.versionId);
+      let targetSessionId = sessionId;
+      if (kind === 'null_engine') {
+        const afterPublication = await counts();
+        await expect(send(sessionId)).rejects.toMatchObject(expected);
+        expect(await counts()).toEqual(afterPublication);
+        expect(model!.requests).toHaveLength(0);
+        expect(await readSession()).toEqual(original);
+        targetSessionId = (
+          await createAssignedChatSession(f.context, {
+            workspaceId: f.identity.workspace,
+            employeeAssignmentId: f.identity.assignment,
+            title: 'New sourced Session',
+          })
+        ).id;
+      }
+      const sent = await send(targetSessionId);
+      const resolved = await resolveEmployeeExecution({
+        organizationId: f.identity.org,
+        workspaceId: f.identity.workspace,
+        ownerId: f.identity.user,
+        runId: sent.run.id,
+      });
+      const snapshot = EmployeeExecutionSnapshotSchema.parse(
+        resolved.executionSnapshot,
+      );
+      if (snapshot.schemaVersion !== 2 || !snapshot.persona)
+        throw Error('expected real admission PERSONA');
+      expect(snapshot.persona.source.basis.employeeVersionId).toBe(
+        current!.employee_version_id,
+      );
+      expect(snapshot.persona.source.engine.employeeVersionId).toBe(
+        current!.employee_version_id,
+      );
+      expect(targetSessionId === sessionId).toBe(kind === 'v1_basis');
+      const persona = resolved.promptSnapshot.employeeDocuments!.persona!;
+      const task = await claim(f, sent.run.id);
+      try {
+        const result = await task.run();
+        const coverage = readCheckedFinalDeliveryForExecution(
+          task.workflowLease,
+          result,
+        );
+        if (coverage.coverage !== 'checked_native_v1')
+          throw Error('missing original native delivery proof');
+        await completeJob({
+          ...task.workflowLease,
+          result,
+          checkedDelivery: coverage.checkedDelivery,
+        });
+        expect(await state(f, sent.run.id)).toMatchObject({
+          status: 'succeeded',
+          state: 'succeeded',
+          text: answer,
+          successes: 1,
+        });
+        expect(model!.requests.length).toBeGreaterThan(0);
+        const messages = model!.requests.flatMap((request) => request.messages);
+        expect(
+          JSON.stringify(messages.filter((m) => m.role === 'user')),
+        ).toContain(JSON.stringify(persona).slice(1, -1));
+        const system = JSON.stringify(
+          messages.filter((m) => m.role === 'system'),
+        );
+        expect(system).toContain('RECOVERED_PLATFORM_POLICY');
+        expect(system).not.toContain('OLD_NULL_TENANT');
+      } finally {
+        await task.isolation.cleanup();
+      }
+      expect((await readSession()).native_root_origin).toEqual(
+        original.native_root_origin,
+      );
+      const [unchanged] =
+        await f.db`select manifest,config_checksum from allrice_employee_versions where id=${legacy.versionId}`;
+      expect(unchanged).toEqual({
+        manifest: legacy.manifest,
+        config_checksum: legacy.checksum,
+      });
+      expect(
+        await f.db`select employee_version_id from allrice_employee_version_sources where employee_version_id=${legacy.versionId}`,
+      ).toHaveLength(0);
+    },
+    90000,
+  );
+
   async function oncePlan(f: PublishedTarget) {
     vi.stubEnv('ALLRICE_NATIVE_ONCE_ENABLED', '1');
     const reference = {

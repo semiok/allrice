@@ -84,7 +84,7 @@ describe('explicit definition-only PERSONA materials', () => {
     const checksum = employeeManifestChecksum(manifest);
     const before = structuredClone(manifest);
     const actual = await readEmployeeTenantPersonaVersion(
-      identity,
+      { ...identity, forRunInput: true },
       reader(manifest, checksum),
     );
     expect(actual?.source).toMatchObject({
@@ -104,7 +104,7 @@ describe('explicit definition-only PERSONA materials', () => {
     expect(manifest).toEqual(before);
   });
 
-  it('keeps historical raw absence unchanged and never parses its composite prompt', async () => {
+  it('keeps historical null-source reads unchanged but refuses new input without parsing its composite prompt', async () => {
     const { personaSource, ...legacy } = source();
     void personaSource;
     legacy.systemPrompt =
@@ -115,12 +115,65 @@ describe('explicit definition-only PERSONA materials', () => {
     );
     expect(
       await readEmployeeTenantPersonaVersion(
-        { ...scope(), forRunInput: true },
+        scope(),
         reader(legacy, employeeManifestChecksum(legacy)),
       ),
     ).toBeUndefined();
+    await expect(
+      readEmployeeTenantPersonaVersion(
+        { ...scope(), forRunInput: true },
+        reader(legacy, employeeManifestChecksum(legacy)),
+      ),
+    ).rejects.toMatchObject({
+      message: 'employee_persona_source_unavailable',
+      cause: 'legacy_null_package_persona_source_missing',
+    });
     expect(legacy).toEqual(original);
   });
+
+  it('rejects raw v1 absence only for a new default basis, preserving read-only and non-basis absence', async () => {
+    const current = source();
+    const legacy = {
+      schemaVersion: 1,
+      key: current.key,
+      name: current.name,
+      description: current.description,
+      systemPrompt: 'Original composite text is not independent policy',
+      provider: current.provider,
+      capabilities: current.capabilities,
+      skillVersionIds: current.skillVersionIds,
+      partnerProfile: current.partnerProfile,
+    };
+    const sql = reader(legacy, 'original-v1-checksum');
+    for (const input of [
+      { ...scope(), role: 'basis' as const },
+      { ...scope(), role: 'engine' as const, forRunInput: true },
+    ])
+      expect(
+        await readEmployeeTenantPersonaVersion(input, sql),
+      ).toBeUndefined();
+    await expect(
+      readEmployeeTenantPersonaVersion(
+        { ...scope(), role: 'basis', forRunInput: true },
+        sql,
+      ),
+    ).rejects.toMatchObject({
+      message: 'employee_persona_source_unavailable',
+      cause: 'legacy_v1_basis_persona_source_missing',
+    });
+  });
+
+  it.each([null, {}, { schemaVersion: 2 }])(
+    'does not turn unrelated raw absence %j into an approved legacy source gap',
+    async (raw) => {
+      expect(
+        await readEmployeeTenantPersonaVersion(
+          { ...scope(), role: 'basis', forRunInput: true },
+          reader(raw, 'original-checksum'),
+        ),
+      ).toBeUndefined();
+    },
+  );
 
   it.each([1, 2])(
     'reports exact old-package %s policy absence only when preparing new input',

@@ -823,15 +823,18 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
   );
 
   it.each(['valid', 'absent'] as const)(
-    'keeps the original v2 Session with a v1 default whose independent publication is %s',
+    'keeps the original v2 Session and requires the v1 default publication to be %s',
     async (proof) => {
       const f = await setup(),
         basis = await v1Default(f, proof);
-      const run = await send(f, basis.instance.id, basis.sessionId);
-      expect(run.resolved.executionSnapshot?.employee.versionId).toBe(
-        f.versionId,
-      );
-      if (proof === 'valid') {
+      const run =
+        proof === 'valid'
+          ? await send(f, basis.instance.id, basis.sessionId)
+          : undefined;
+      if (run) {
+        expect(run.resolved.executionSnapshot?.employee.versionId).toBe(
+          f.versionId,
+        );
         const d = document(run);
         expect(d.name).toEqual({
           value: basis.defaults.name,
@@ -849,15 +852,14 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
         expect(run.kernel.systemInstructions).not.toContain('DEFAULT_B_POLICY');
         expect(run.kernel.systemInstructions).not.toContain('TENANT_V1_PROMPT');
       } else {
-        expect(run.resolved.executionSnapshot).not.toHaveProperty('persona');
-        expect(
-          run.resolved.promptSnapshot.employeeDocuments,
-        ).not.toHaveProperty('persona');
-        const [old] =
-          await fixture.db`select manifest from allrice_employee_versions where id=${f.versionId}`;
-        expect(run.resolved.promptSnapshot.systemPrompt).toBe(
-          EmployeeManifestSchema.parse(old!.manifest).systemPrompt,
-        );
+        const before = await runCount(f);
+        await expect(
+          send(f, basis.instance.id, basis.sessionId),
+        ).rejects.toMatchObject({
+          message: 'employee_persona_source_unavailable',
+          cause: 'legacy_v1_basis_persona_source_missing',
+        });
+        expect(await runCount(f)).toBe(before);
       }
       const [session] =
         await fixture.db`select native_root_origin,employee_version_id from allrice_chat_sessions where id=${basis.sessionId}`;
@@ -869,7 +871,7 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
         config_checksum: basis.checksum,
       });
       // Reading v1 defaults is not permission to execute a new v1 engine.
-      await cancelRun(f.context, f.workspaceId, run.runId, {});
+      if (run) await cancelRun(f.context, f.workspaceId, run.runId, {});
       const before = await runCount(f);
       await expect(send(f, basis.instance.id)).rejects.toMatchObject({
         name: 'ZodError',

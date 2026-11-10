@@ -129,8 +129,8 @@ async function freezeRunPersona(
     },
     sql,
   );
-  // Only exact historical material absence retains the unmigrated path.
-  // New definition-only versions prove their own immutable tenant source.
+  // Readers reject only approved exact legacy source gaps for new input.
+  // Other absence semantics and independently sourced null versions stay intact.
   if (!engine || (!task && !basis)) return undefined;
   return renderRunPersona(
     instance,
