@@ -3024,8 +3024,9 @@ async function correctEmployeeMemoryRecord<
         set content=${'content' in correction ? correction.content : pair.summary},summary=${pair.summary},details=${pair.details},revision=revision+1,trust_level='user_confirmed',
           confidence=${'confidence' in correction ? correction.confidence : 1},lifecycle_state='durable',source_label='用户更正',
           expires_at=null,last_verified_at=now(),updated_at=now()
-        where id=${memoryId} returning *`;
-        if (!row) throw new Error('memory correction failed');
+        -- Check the stored expiry at the write, even if a legacy caller sends NULL.
+        where id=${memoryId} and (expires_at is null or expires_at>clock_timestamp()) returning *`;
+        if (!row) throw new EmployeeMemoryContractChanged();
         if (current.metadata?.memoryPinOrder !== undefined)
           await assertPinnedMemoryCapacity(tx, scope);
         await insertMemoryRevision(tx, context, row, correction.reason);
