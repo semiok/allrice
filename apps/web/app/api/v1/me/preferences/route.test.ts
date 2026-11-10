@@ -19,10 +19,15 @@ const context = {
   actor: { type: 'user', id: 'current-user' },
   memberships: [],
 };
-const request = (body: unknown) =>
+const request = (body: unknown, expectedViewerId?: string) =>
   new Request('https://allrice.test/api/v1/me/preferences?userId=other', {
     method: 'PATCH',
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      ...(expectedViewerId === undefined
+        ? {}
+        : { 'X-AllRice-Expected-Viewer-Id': expectedViewerId }),
+    },
     body: JSON.stringify(body),
   });
 describe('authenticated personal preferences', () => {
@@ -41,6 +46,10 @@ describe('authenticated personal preferences', () => {
       401,
     );
     expect((await PATCH(request({ streamingOutput: true }))).status).toBe(401);
+    expect(
+      (await PATCH(request({ streamingOutput: true }, 'current-user'))).status,
+    ).toBe(401);
+    expect(mocks.get).not.toHaveBeenCalled();
     expect(mocks.update).not.toHaveBeenCalled();
   });
   it('writes only the current account, without admin privileges or shared caching', async () => {
@@ -52,9 +61,43 @@ describe('authenticated personal preferences', () => {
     });
     expect((await response.json()).viewerId).toBe('current-user');
   });
+  it.each(['other', '', 'CURRENT-USER'])(
+    'rejects a different expected viewer %j before any preferences access',
+    async (expectedViewerId) => {
+      const response = await PATCH(
+        request({ streamingOutput: true }, expectedViewerId),
+      );
+      expect(response.status).toBe(409);
+      expect(response.headers.get('cache-control')).toBe('private, no-store');
+      expect(await response.json()).toEqual({
+        error: { message: '个人偏好暂时无法保存或读取，请重试' },
+      });
+      expect(mocks.get).not.toHaveBeenCalled();
+      expect(mocks.update).not.toHaveBeenCalled();
+    },
+  );
+  it('checks the expected viewer without passing it as a writable owner or preference', async () => {
+    const capabilities = {
+      [cloudProjectCapabilityId]: { configVersion: 1, enabled: true },
+    };
+    const response = await PATCH(request({ capabilities }, 'current-user'));
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('private, no-store');
+    expect(mocks.update).toHaveBeenCalledExactlyOnceWith(context, {
+      capabilities,
+    });
+    expect((await response.json()).viewerId).toBe('current-user');
+    mocks.update.mockClear();
+    const invalid = await PATCH(
+      request({ capabilities, userId: 'other' }, 'current-user'),
+    );
+    expect(invalid.status).toBe(400);
+    expect(mocks.update).not.toHaveBeenCalled();
+  });
   it.each([
     { streamingOutput: 'true' },
     { streamingOutput: true, userId: 'other' },
+    { streamingOutput: true, expectedViewerId: 'current-user' },
     {},
     { fontSize: 9 },
     { fontSize: 23 },

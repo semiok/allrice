@@ -6,7 +6,11 @@ import type {
   WorkspaceCapability,
   WorkspaceReadiness,
 } from '@allrice/contracts';
-import { workspaceCapabilityIds } from '@allrice/contracts';
+import {
+  cloudProjectCapabilityId,
+  defaultUserPreferences,
+  workspaceCapabilityIds,
+} from '@allrice/contracts';
 import { MonthlyQuota } from '../app/chatflow/monthly-quota';
 import { AccountPasswordSettings } from '../app/chatflow/account-password-settings';
 import { BridgeSettings } from '../app/chatflow/bridge-dialog';
@@ -226,6 +230,19 @@ const catalogs: Record<string, () => Response> = {
 const realFetch = window.fetch.bind(window);
 window.fetch = async (input, init) => {
   const url = new URL(String(input), location.href);
+  if (url.pathname === '/api/v1/me/preferences')
+    return Response.json({
+      viewerId: id(3),
+      preferences: {
+        ...defaultUserPreferences,
+        capabilities: {
+          [cloudProjectCapabilityId]: {
+            configVersion: 1,
+            enabled: false,
+          },
+        },
+      },
+    });
   const catalog = catalogs[url.searchParams.get('workspaceId') ?? ''];
   // The password may have changed before the reply was lost.
   if (url.pathname === '/api/v1/auth/password')
@@ -272,6 +289,7 @@ const cases: [string, ReactNode][] = [
         <CapabilityContent
           key={scope}
           scope={scope}
+          viewerId={id(3)}
           data={readiness}
           loading={false}
           error=""

@@ -2093,6 +2093,7 @@ export function ChatFlowClient({
           <CapabilityContent
             key={`capabilities/${section}/${workspace.viewerId}/${workspace.workspaceId}/${activeId}`}
             scope={section}
+            viewerId={workspace.viewerId}
             computerChips={bridgeChips(bridgeDevices)}
             data={readiness.data}
             loading={readiness.loading}
