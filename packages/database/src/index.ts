@@ -279,6 +279,7 @@ export {
 export { prepareRunExperiences } from './experience-runtime.ts';
 export {
   prepareRunMemoryContext,
+  readRunMemoryOrdinal,
   assertRunMemoryContextCurrent,
   MemoryContextError,
   type RunMemoryAuthority,

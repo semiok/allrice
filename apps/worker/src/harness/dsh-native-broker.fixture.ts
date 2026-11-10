@@ -61,6 +61,7 @@ export async function nativeBrokerRoundtrip(input: {
     parameters?: Record<string, unknown>;
   }) => void;
   onToolCall?: HarnessExecutionInput['onToolCall'];
+  inspectRequests?: (requests: readonly Record<string, unknown>[]) => void;
 }) {
   const root = await mkdtemp(join(tmpdir(), 'allrice-native-broker-'));
   const requests: Record<string, unknown>[] = [];
@@ -402,6 +403,7 @@ export async function nativeBrokerRoundtrip(input: {
     expect(received).toHaveLength(input.expectedBrokerCalls ?? 1);
     expect(nativeRetries).toBe(input.retryAfterTool ?? 0);
     expect(errors).toEqual([]);
+    input.inspectRequests?.(requests);
   } finally {
     try {
       runScope?.unsubscribe();

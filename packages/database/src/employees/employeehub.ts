@@ -1,5 +1,5 @@
 import {
-  freezeEmployeeDocuments,
+  freezeEmployeeMemoryIndexV2,
   freezeEmployeePersonaDocuments,
   assertFrozenEmployeePersona,
 } from './employee-documents.ts';
@@ -34,6 +34,7 @@ import {
   allRiceToolManifest,
   withEmployeeCustomizationTools,
   freezeMemorySourceToolNames,
+  freezeMemoryIndexToolNames,
   CreateEmployeeInputSchema,
   DshNativeSkillSnapshotSchema,
   EmployeeAdminDirectoryEntrySchema,
@@ -60,6 +61,7 @@ import {
   type RequestContext,
   type SkillCapability,
   type StorageObjectSchema,
+  type RunMemoryContextV2State,
 } from '@allrice/contracts';
 
 import { DataAccessError } from '../data.ts';
@@ -216,6 +218,7 @@ export function resolveEmployeeCapabilities(
 }
 
 export interface EmployeeRunBinding {
+  memoryContextStateV2?: RunMemoryContextV2State;
   employeeAssignmentId: string;
   employeeVersionId: string;
   sessionId: string;
@@ -231,6 +234,9 @@ export interface EmployeeRunBinding {
     'tenantContext' | 'createdAt'
   >;
   promptSnapshot: {
+    employeeDocuments?: ReturnType<
+      typeof EmployeePromptSnapshotSchema.parse
+    >['employeeDocuments'];
     referenceSelections?: ReturnType<
       typeof EmployeePromptSnapshotSchema.parse
     >['referenceSelections'];
@@ -1556,8 +1562,9 @@ export async function prepareEmployeeRunBinding(
     capabilityBindings(manifest.data).toolNames,
     baseRice,
   );
+  const memoryIndex = input.employeeDocuments === true && !!instance;
   const boundToolNames = await freezeConnectedLocalToolNames(
-    freezeMemorySourceToolNames(
+    (memoryIndex ? freezeMemoryIndexToolNames : freezeMemorySourceToolNames)(
       withEmployeeCustomizationTools(
         conversationToolNames,
         grantedCapabilities,
@@ -1576,7 +1583,7 @@ export async function prepareEmployeeRunBinding(
   );
   const documentProjection =
     input.employeeDocuments === true && instance
-      ? await freezeEmployeeDocuments(
+      ? await freezeEmployeeMemoryIndexV2(
           sql,
           {
             organizationId: input.context.organizationId,
@@ -1585,8 +1592,6 @@ export async function prepareEmployeeRunBinding(
             instanceId: instance.id,
           },
           organizationContext ?? {},
-          grantedCapabilities.includes('storage:read') &&
-            boundToolNames.includes('workspace.experience.read'),
           manifest.data.schemaVersion === 2
             ? { instance, employeeId: assignment.employee_id }
             : undefined,
@@ -1603,6 +1608,9 @@ export async function prepareEmployeeRunBinding(
           )
         : undefined;
   return {
+    ...(documentProjection && 'memoryContextStateV2' in documentProjection
+      ? { memoryContextStateV2: documentProjection.memoryContextStateV2 }
+      : {}),
     employeeAssignmentId: assignment.assignment_id,
     employeeVersionId: assignment.id,
     sessionId: UuidSchema.parse(input.sessionId),

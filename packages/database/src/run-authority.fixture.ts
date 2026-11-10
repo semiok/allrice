@@ -12,6 +12,7 @@ import {
   type PlatformEmployeeDefinition,
   type RuntimePolicyControls,
   type RuntimeTaskRef,
+  type RunMemoryContextV2State,
 } from '@allrice/contracts';
 import {
   runFixture,
@@ -157,6 +158,8 @@ export async function createRunAuthorityFixture(
         jobId: string;
       },
     ) => Promise<Parameters<RuntimeLedgerTransaction['json']>[0]>;
+    /** Synthetic v2 issuance at the same first INSERT as preparePrompt. */
+    memoryContextStateV2?: () => RunMemoryContextV2State;
     controls?: RuntimePolicyControls | null;
     toolNames?: string[];
     allowedTools?: string[];
@@ -401,8 +404,8 @@ export async function createRunAuthorityFixture(
           jobId: base.worker.jobId,
         })
       : {};
-    await tx`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,session_id,user_message_id,assistant_message_id,provider_snapshot,prompt_snapshot,native_skills,execution_snapshot)
-    values(${rootRunId},${org},${workspace},${user},${assignment},${version},${session},${um},${am},${tx.json(manifest.provider)},${tx.json(prompt)},'[]',${tx.json(JSON.parse(JSON.stringify(options.snapshot ? options.snapshot(snapshot, { sessionId: session }) : snapshot)))})`;
+    await tx`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,session_id,user_message_id,assistant_message_id,provider_snapshot,prompt_snapshot,native_skills,execution_snapshot,memory_context_state)
+    values(${rootRunId},${org},${workspace},${user},${assignment},${version},${session},${um},${am},${tx.json(manifest.provider)},${tx.json(prompt)},'[]',${tx.json(JSON.parse(JSON.stringify(options.snapshot ? options.snapshot(snapshot, { sessionId: session }) : snapshot)))},${tx.json(options.memoryContextStateV2?.() ?? { schemaVersion: 1, pending: true })})`;
     const controls =
       options.controls === undefined ? defaultControls() : options.controls;
     if (controls)

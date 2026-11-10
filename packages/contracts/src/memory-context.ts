@@ -22,6 +22,35 @@ export function freezeMemorySourceToolNames(
     : [...toolNames];
 }
 
+/** New ordinary Runs replace the two legacy read surfaces, using only an
+ * existing memory read grant. Never apply this to a persisted old allowlist. */
+export function freezeMemoryIndexToolNames(
+  toolNames: readonly string[],
+  capabilities: readonly SkillCapability[],
+  model: Parameters<typeof withPlatformImageTools>[2],
+) {
+  const readable =
+    capabilities.includes('storage:read') &&
+    toolNames.some((name) =>
+      ['workspace.memory.search', 'workspace.memory.read'].includes(name),
+    );
+  const names = toolNames.filter(
+    (name) =>
+      ![
+        'workspace.memory.search',
+        'workspace.experience.read',
+        'workspace.memory.read',
+      ].includes(name),
+  );
+  const selected = [
+    ...new Set([...names, ...(readable ? ['workspace.memory.read'] : [])]),
+  ];
+  EmployeeCapabilityBindingsSchema.shape.toolNames.parse(
+    withPlatformImageTools(selected, capabilities, model),
+  );
+  return EmployeeCapabilityBindingsSchema.shape.toolNames.parse(selected);
+}
+
 /** Content transport limits, not a tokenizer or a claim about model billing. */
 export const memoryContextPolicy = {
   version: 1,

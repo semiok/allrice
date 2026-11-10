@@ -9,12 +9,14 @@ import {
   listToolBrokerFiles,
   readToolBrokerMemoryContext,
   readRunExperienceSource,
+  readRunMemoryOrdinal,
   MemoryContextError,
   ExperienceError,
   searchToolBrokerSessions,
   markCompanyMaterialRead,
 } from '@allrice/database';
 import {
+  MemoryOrdinalInputSchema,
   WorkspaceDocumentReadArgsSchema,
   RememberPersonalMemoryInputSchema,
   isMemoryIndexDocuments,
@@ -483,6 +485,37 @@ export const readExperienceSource: RiceToolHandler = async ({
   return memoryResult(() =>
     readRunExperienceSource(auth, stringValue(args.handle, 'handle')),
   );
+};
+
+export const readMemoryOrdinal: RiceToolHandler = async ({
+  input,
+  arguments: args,
+}) => {
+  const auth = memoryAuthority(input);
+  const parsed = MemoryOrdinalInputSchema.safeParse(args);
+  if (!parsed.success)
+    throw new HandlerError(
+      'TOOL_INPUT_INVALID',
+      'number 必须为当前索引中的整数编号，不能附带其他参数。',
+      false,
+    );
+  try {
+    return {
+      modelContent: await readRunMemoryOrdinal(auth, parsed.data),
+      summary: '读取 1 条完整记忆说明',
+      itemCount: 1,
+    };
+  } catch (error) {
+    if (error instanceof MemoryContextError || error instanceof ExperienceError)
+      throw new HandlerError(
+        error instanceof MemoryContextError
+          ? error.code
+          : 'MEMORY_CONTEXT_UNAVAILABLE',
+        '记忆不可用或无法在本次剩余预算中完整读取；请说明资料不足，不要循环重试。',
+        false,
+      );
+    throw error;
+  }
 };
 
 export const rememberWorkspaceMemory: RiceToolHandler = async ({

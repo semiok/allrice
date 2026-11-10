@@ -315,6 +315,13 @@ export const allRiceToolManifest = [
     dshWireName: 'workspace_experience_read',
   },
   {
+    canonicalName: 'workspace.memory.read',
+    capability: 'storage:read',
+    risk: 'read_only',
+    transport: 'dsh_broker_native',
+    dshWireName: 'workspace_memory_read',
+  },
+  {
     canonicalName: 'workspace.memory.remember',
     capability: 'storage:write',
     risk: 'managed_write',

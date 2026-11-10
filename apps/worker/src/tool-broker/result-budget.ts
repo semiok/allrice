@@ -1,4 +1,4 @@
-import { memoryContextPolicy } from '@allrice/contracts';
+import { memoryContextPolicy, memoryIndexPolicy } from '@allrice/contracts';
 import { HandlerError } from '../errors.js';
 import { createHash } from 'node:crypto';
 import {
@@ -80,13 +80,17 @@ export async function boundToolResult(
   // object would outlive the source authorization. Unexpected overflow is a
   // bounded failure, not excerpts and not a second file-reading route.
   if (
-    ['workspace.memory.search', 'workspace.experience.read'].includes(
-      input.call.name,
-    )
+    [
+      'workspace.memory.search',
+      'workspace.experience.read',
+      'workspace.memory.read',
+    ].includes(input.call.name)
   ) {
     if (
       Buffer.byteLength(result.modelContent, 'utf8') >
-      memoryContextPolicy.maximumResponseBytes
+      (input.call.name === 'workspace.memory.read'
+        ? memoryIndexPolicy.maximumResponseBytes
+        : memoryContextPolicy.maximumResponseBytes)
     )
       throw new HandlerError(
         'MEMORY_CONTEXT_BUDGET_EXHAUSTED',
