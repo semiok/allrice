@@ -151,6 +151,7 @@ export function summarizeWorkProcess(items: NativeExperienceItem[]) {
         category,
         label,
         status: item.status,
+        // r1-exempt(own-text): 仅识别本文件工具标签函数产生的固定兜底以展示真实工具名，不读取用户或模型措辞、不判断意图或授权，未命中保留原展示
         title:
           item.toolName === 'ask_user_question'
             ? '提问'
