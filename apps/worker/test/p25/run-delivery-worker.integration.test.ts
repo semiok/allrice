@@ -1118,6 +1118,11 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     'PERSONA: real %s producer reaches the original queue, Worker and native Host provider with the same memory budget',
     async (kind) => {
       const requests: ModelRequest[] = [];
+      const providerErrors: {
+        name: string;
+        message: string;
+        code?: string;
+      }[] = [];
       let checkedLocks = false;
       const f: PublishedTarget = await publishedTarget(async (request) => {
         requests.push(request);
@@ -1125,12 +1130,22 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           checkedLocks = true;
           // Model transport is outside the short original admission and ledger
           // transactions. This connection cannot acquire locks they still hold.
-          await f.db.begin(async (tx) => {
-            await tx`set local lock_timeout='1s'`;
-            await tx`select id from allrice_users where id=${f.identity.user} for no key update nowait`;
-            await tx`select id from allrice_employee_assignments where id=${f.identity.assignment} for update nowait`;
-            await tx`select id from allrice_employee_instances where id=${f.identity.assignment} for update nowait`;
-          });
+          try {
+            await f.db.begin(async (tx) => {
+              await tx`set local lock_timeout='1s'`;
+              await tx`select id from allrice_users where id=${f.identity.user} for no key update nowait`;
+              await tx`select id from allrice_employee_assignments where id=${f.identity.assignment} for update nowait`;
+              await tx`select id from allrice_employee_instances where id=${f.identity.assignment} for update nowait`;
+            });
+          } catch (error) {
+            const failure = error as Error & { code?: string };
+            providerErrors.push({
+              name: failure.name,
+              message: failure.message,
+              code: failure.code,
+            });
+            throw error;
+          }
           return {
             nativeTool: {
               name: 'workspace_memory_remember',
@@ -1315,6 +1330,10 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           }),
         ).rejects.toMatchObject({ code: 'authorization_denied' });
         await task.run();
+        expect(
+          providerErrors,
+          'Provider callback failures must not be hidden by HTTP retries',
+        ).toEqual([]);
         await assertManualFrozen?.();
         const expectedMemories = resolved.promptSnapshot.memories.filter(
           (m) => kind !== 'automation_manual' || m.id !== f.memories[1]!.id,
@@ -1376,11 +1395,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
             ),
             requests: requests.map((request) => ({
               toolNames: request.tools?.map((tool) => tool.function.name),
-              messages: request.messages.filter(
-                (message) =>
-                  message.role === 'tool' ||
-                  (message.role === 'assistant' && message.tool_calls),
-              ),
+              messages: request.messages,
             })),
           }),
         ).toBeGreaterThanOrEqual(0);
