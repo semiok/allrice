@@ -199,7 +199,7 @@ export function EmployeePluginSection({
   onAdd?: () => void;
 }) {
   return (
-    <section aria-labelledby={headingId}>
+    <section className={css.typography} aria-labelledby={headingId}>
       <EmployeeCapabilityHeading
         id={headingId}
         title="插件"

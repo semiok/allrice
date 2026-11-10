@@ -1,3 +1,8 @@
+.typography,
+.detailContainer {
+  font-family: var(--ar-font-family-ui);
+}
+
 .list {
   overflow: hidden;
   border: 1px solid var(--ar-border);

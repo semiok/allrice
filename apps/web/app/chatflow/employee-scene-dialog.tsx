@@ -244,7 +244,10 @@ export function EmployeeSceneList(props: {
     </Button>
   );
   return (
-    <section aria-labelledby={props.embedded ? heading : undefined}>
+    <section
+      className={capabilityCss.typography}
+      aria-labelledby={props.embedded ? heading : undefined}
+    >
       {props.notice && (
         <p className={css.caption} role="status">
           {props.notice}

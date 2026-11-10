@@ -1230,6 +1230,38 @@ suite('U1 mounted employee Workflow host', () => {
     });
   }
 
+  async function typography(root: Locator, selectors: Record<string, string>) {
+    return root.evaluate(
+      (node, selectors) =>
+        Object.fromEntries(
+          Object.entries(selectors).map(([name, selector]) => {
+            const element = node.querySelector(selector);
+            if (!element) throw new Error(`Missing typography target: ${name}`);
+            const css = getComputedStyle(element);
+            return [name, { font: css.font, family: css.fontFamily }];
+          }),
+        ),
+      selectors,
+    );
+  }
+
+  const listFontTargets = {
+    heading: 'h3',
+    description: ':scope > p',
+    rowTitle: 'button[aria-label="写周报"] strong',
+    rowDescription: 'button[aria-label="写周报"] strong + span',
+    version: 'button[aria-label="写周报"] > span:last-of-type',
+  };
+  const detailFontTargets = {
+    title: 'header h2',
+    version: 'header h2 + span',
+    body: 'header + div',
+    description: 'header + div > div:first-child > p:first-child',
+    sectionTitle: 'h3',
+    reading: 'h3 + p',
+    code: 'code',
+  };
+
   type Fixture = Awaited<ReturnType<typeof fixture>>;
   async function inFixture(
     options: Parameters<typeof fixture>[0],
@@ -1530,6 +1562,13 @@ suite('U1 mounted employee Workflow host', () => {
       it(`mounted Workflow list/detail uses approved layout at ${width} ${dark ? 'dark' : 'light'}`, async () => {
         await inFixture({ width, dark }, async (f) => {
           const root = await f.openDirectory();
+          const listFonts = await typography(
+            root.getByRole('region', {
+              name: '工作场景 Workflow',
+              exact: true,
+            }),
+            listFontTargets,
+          );
           expect(
             await root
               .getByRole('button', { name: '关闭工作台', exact: true })
@@ -1605,6 +1644,7 @@ suite('U1 mounted employee Workflow host', () => {
               actionAppearance(detail, name),
             ),
           );
+          const detailFonts = await typography(detail, detailFontTargets);
           if (width < 700) {
             expect(
               actions.slice(0, 2).map((action) => action.minHeight),
@@ -1694,7 +1734,11 @@ suite('U1 mounted employee Workflow host', () => {
               evidence,
               `workflow-${width}-${dark ? 'dark' : 'light'}.json`,
             ),
-            JSON.stringify({ ...geometry, deliveryAppearance }, null, 2),
+            JSON.stringify(
+              { ...geometry, deliveryAppearance, detailFonts, actions },
+              null,
+              2,
+            ),
           );
           await detail
             .getByRole('button', { name: '返回能力列表', exact: true })
@@ -1762,6 +1806,14 @@ suite('U1 mounted employee Workflow host', () => {
           await employee
             .getByRole('button', { name: '写周报', exact: true })
             .scrollIntoViewIfNeeded();
+          const employeeListFonts = await typography(
+            employee.getByRole('region', {
+              name: '工作场景 Workflow',
+              exact: true,
+            }),
+            listFontTargets,
+          );
+          expect(employeeListFonts).toEqual(listFonts);
           await f.page.screenshot({
             path: resolve(
               evidence,
@@ -1774,7 +1826,15 @@ suite('U1 mounted employee Workflow host', () => {
               evidence,
               `employee-root-${width}-${dark ? 'dark' : 'light'}.json`,
             ),
-            JSON.stringify({ ...employeeGeometry, memoryAppearance }, null, 2),
+            JSON.stringify(
+              {
+                ...employeeGeometry,
+                memoryAppearance,
+                listFonts: employeeListFonts,
+              },
+              null,
+              2,
+            ),
           );
           await employee
             .getByRole('button', { name: '写周报', exact: true })
@@ -1787,6 +1847,11 @@ suite('U1 mounted employee Workflow host', () => {
             .getByRole('heading', { name: '什么时候用', exact: true })
             .waitFor();
           await f.page.mouse.move(1, 1);
+          const employeeDetailFonts = await typography(
+            employeeDetail,
+            detailFontTargets,
+          );
+          expect(employeeDetailFonts).toEqual(detailFonts);
           expect(
             await Promise.all(
               ['更新', '开始工作', '删除场景'].map((name) =>
@@ -1801,6 +1866,13 @@ suite('U1 mounted employee Workflow host', () => {
             ),
             fullPage: true,
           });
+          await writeFile(
+            resolve(
+              evidence,
+              `employee-workflow-${width}-${dark ? 'dark' : 'light'}.json`,
+            ),
+            JSON.stringify({ typography: employeeDetailFonts }, null, 2),
+          );
           await employeeDetail
             .getByRole('button', { name: '返回员工详情', exact: true })
             .click();
