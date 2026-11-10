@@ -2028,7 +2028,20 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       expect(JSON.stringify(request.messages)).toContain('重新检查后继续');
       return { text: '已按答复继续原任务。' };
     });
+    const memory = await createTraceableMemory(f.context, {
+      workspaceId: f.identity.workspace,
+      instanceId: f.identity.assignment,
+      sourceType: 'user',
+      content: 'R6 冻结偏好：中文摘要并保留依据。',
+      memoryClass: 'user_preference',
+      lifecycleState: 'durable',
+    });
     const task = await prepare(f, '检查目录；重复失败时等我确认。', true);
+    const readFrozen = async () =>
+      (
+        await f.db`select execution_snapshot,prompt_snapshot,memory_context_state
+          from allrice_employee_runs where run_id=${task.runId}`
+      )[0]!;
     const started = Date.now();
     try {
       await expect(task.run()).rejects.toMatchObject({
@@ -2048,12 +2061,64 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       expect(checkpoint.questions).toEqual([
         expect.objectContaining({ id: 'runtime-progress' }),
       ]);
+      const parked = await readFrozen();
+      const snapshot = EmployeeExecutionSnapshotSchema.parse(
+        parked.execution_snapshot,
+      );
+      if (
+        snapshot.schemaVersion !== 2 ||
+        !snapshot.persona ||
+        !snapshot.instance
+      )
+        throw Error('Expected the actual chat producer to freeze PERSONA');
+      expect(snapshot.persona.source).toMatchObject({
+        kind: 'employee_run',
+        profileEligibility: 'expression_only',
+        basis: {
+          kind: 'tenant_version',
+          employeeVersionId: f.identity.version,
+        },
+        engine: {
+          kind: 'tenant_version',
+          employeeVersionId: f.identity.version,
+        },
+      });
+      const documents = parked.prompt_snapshot.employeeDocuments;
+      expect(documents.persona).toContain(
+        '"expressionStyle":{"value":"structured"',
+      );
+      expect(parked.memory_context_state.initial.ids).toEqual([memory.id]);
+      expect(parked.memory_context_state.spentBytes).toBeGreaterThan(0);
+      const system = model!.requests[0]!.messages.filter(
+        (message) => message.role === 'system',
+      );
+      const parkedJournal = await journal(checkpoint.sessionId);
+      const completedCalls = parkedJournal.filter(
+        (event) =>
+          event.type === 'tool/call' && event.data.name === 'local_fs_list',
+      );
+      expect(completedCalls).toHaveLength(3);
+      // This general employee retains its original expression-only eligibility.
+      const edited = await updateEmployeeInstance(
+        f.context,
+        snapshot.instance.id,
+        {
+          workspaceId: f.identity.workspace,
+          expectedRevision: snapshot.instance.revision,
+          requestId: randomUUID(),
+          profile: { expressionStyle: 'exploratory' },
+        },
+      );
+      expect(edited.revision).toBe(snapshot.instance.revision + 1);
+      expect(edited.profile.expressionStyle).toBe('exploratory');
+      expect(await readFrozen()).toEqual(parked);
       const inputId = randomUUID();
       await sendChatMessage(f.context, f.identity.workspace, f.chat.id, {
-        text: `allrice:user-question:v1:${JSON.stringify({
+        text: '重新检查后继续',
+        userQuestionAnswer: {
           questionId: checkpoint.questionId,
           answers: [{ id: 'runtime-progress', selected: ['重新检查后继续'] }],
-        })}`,
+        },
         clientMessageId: inputId,
         deliveryMode: 'steer',
         expectedTurnId: checkpoint.turnId,
@@ -2110,6 +2175,52 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           successes: 1,
         });
         expect(model!.requests).toHaveLength(4);
+        expect(await readFrozen()).toEqual(parked);
+        for (const request of model!.requests) {
+          expect(
+            request.messages.filter((message) => message.role === 'system'),
+          ).toEqual(system);
+          const current = JSON.stringify(
+            request.messages
+              .filter(
+                (message) =>
+                  message.role === 'user' &&
+                  JSON.stringify(message.content).includes(
+                    'Current runtime context.',
+                  ),
+              )
+              .at(-1),
+          );
+          for (const document of Object.values(documents))
+            expect(current).toContain(JSON.stringify(document).slice(1, -1));
+          expect(current).not.toContain('exploratory');
+        }
+        const continuedJournal = await journal(checkpoint.sessionId);
+        expect(
+          continuedJournal.filter(
+            (event) =>
+              event.type === 'tool/call' && event.data.name === 'local_fs_list',
+          ),
+        ).toEqual(completedCalls);
+        for (const { data } of completedCalls) {
+          const results = continuedJournal.filter(
+            (event) =>
+              event.type === 'tool/result' &&
+              event.surfaceOp !== 'replace' &&
+              event.surfaceOp?.op !== 'replace' &&
+              event.data.message.toolCallId === data.callId,
+          );
+          expect(results).toHaveLength(1);
+          expect(results).toEqual(
+            parkedJournal.filter(
+              (event) =>
+                event.type === 'tool/result' &&
+                event.surfaceOp !== 'replace' &&
+                event.surfaceOp?.op !== 'replace' &&
+                event.data.message.toolCallId === data.callId,
+            ),
+          );
+        }
       } finally {
         await resumed.isolation.cleanup();
       }
