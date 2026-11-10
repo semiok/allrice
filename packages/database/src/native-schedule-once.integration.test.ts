@@ -14,7 +14,11 @@ import {
 import type { TransactionSql } from 'postgres';
 import * as client from './core/client.ts';
 import { getDatabase } from './core/client.ts';
-import type { RuntimeActionBinding } from '@allrice/contracts';
+import {
+  EmployeeDocumentsSchema,
+  EmployeePersonaPinSchema,
+  type RuntimeActionBinding,
+} from '@allrice/contracts';
 import { authorizeFixturePlatformAdministrator } from './platform-authority.fixture.ts';
 import {
   createRuntimePolicyAdmission,
@@ -322,9 +326,52 @@ suite(
           where ar.automation_id=${t.task.id}`;
         return row;
       };
+      const [frozen] = await f.db`
+        select ar.native_once_occurrence_id occurrence_id, er.session_id,
+          er.user_message_id, er.execution_snapshot->'persona' persona
+        from allrice_automation_runs ar
+        join allrice_employee_runs er on er.run_id=ar.run_id
+        where ar.automation_id=${t.task.id}`;
+      expect(frozen).toBeDefined();
+      expect(frozen!.session_id).toBe(t.sessionId);
+      const pin = EmployeePersonaPinSchema.parse(frozen!.persona);
+      expect(pin.source).toMatchObject({
+        kind: 'employee_run',
+        organizationId: f.organizationId,
+        workspaceId: f.workspaceId,
+        employeeId: f.employeeId,
+        assignmentId: f.assignmentId,
+        ownerId: f.context.actor.id,
+        profileEligibility: 'expression_only',
+        engine: { employeeVersionId: f.employeeVersionId },
+        task: {
+          kind: 'native_once',
+          id: frozen!.occurrence_id,
+          sessionId: t.sessionId,
+          userMessageId: frozen!.user_message_id,
+        },
+      });
+      expect(pin.source.basis).toEqual(pin.source.engine);
+      const documents = EmployeeDocumentsSchema.parse(
+        (await snapshot())!.documents,
+      );
+      expect(documents.persona?.startsWith('# 人设\n')).toBe(true);
+      const persona = JSON.parse(documents.persona!.slice('# 人设\n'.length));
+      expect(persona.source).toEqual(pin.source);
+      expect(persona.name.source).toBe('frozen_task_engine');
+      expect(pin.personaDigest).toBe(runtimePolicyDigest(documents.persona));
+      // Task documents reuse existing organizational facts; recall stays separate.
+      expect(documents.user.startsWith('# USER.md\n')).toBe(true);
+      expect(
+        JSON.parse(documents.user.slice('# USER.md\n'.length)).facts,
+      ).toEqual({
+        companyName: 'P27 isolated',
+        displayName: 'P27 isolated',
+      });
+      expect(documents.memory).toBe('');
       const expected = {
         owner_id: f.context.actor.id,
-        documents: null,
+        documents,
         preferences: {
           version: 1,
           questionWait: { mode: 'timed', seconds: 300 },
