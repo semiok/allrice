@@ -1,5 +1,6 @@
 import {
   freezeEmployeeDocuments,
+  freezeEmployeePersonaDocuments,
   assertFrozenEmployeePersona,
 } from './employee-documents.ts';
 import { isBaseRiceInstance } from './employee-instance-policy.ts';
@@ -1184,7 +1185,8 @@ export async function prepareEmployeeRunBinding(
     userMessageId: string;
     assistantMessageId: string;
     promptSnapshot: EmployeeRunBinding['promptSnapshot'];
-    employeeDocuments?: boolean;
+    // The literal requests identity only; it is never a human-data grant.
+    employeeDocuments?: boolean | 'persona_only';
   },
   transaction?: TransactionSql,
 ): Promise<EmployeeRunBinding> {
@@ -1569,7 +1571,7 @@ export async function prepareEmployeeRunBinding(
     sql,
   );
   const documentProjection =
-    input.employeeDocuments && instance
+    input.employeeDocuments === true && instance
       ? await freezeEmployeeDocuments(
           sql,
           {
@@ -1585,7 +1587,15 @@ export async function prepareEmployeeRunBinding(
             ? { instance, employeeId: assignment.employee_id }
             : undefined,
         )
-      : undefined;
+      : input.employeeDocuments === 'persona_only' &&
+          instance &&
+          manifest.data.schemaVersion === 2
+        ? await freezeEmployeePersonaDocuments(
+            sql,
+            instance,
+            assignment.employee_id,
+          )
+        : undefined;
   return {
     employeeAssignmentId: assignment.assignment_id,
     employeeVersionId: assignment.id,

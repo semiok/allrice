@@ -40,6 +40,9 @@ import { runClaimedJob } from '../../src/job-runner.js';
 import { p24Fixture } from '../p24/fixture.js';
 import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 import {
+  EmployeeExecutionSnapshotSchema,
+  EmployeeKernelRequestSchema,
+  EmployeePromptSnapshotSchema,
   PlatformEmployeeDefinitionSchema,
   type RequestContext,
 } from '@allrice/contracts';
@@ -77,6 +80,16 @@ import {
   repositoryReviewRequestGate,
   recordRepositoryReviewRemote,
 } from '../../../../packages/database/src/platform-repository-reviews.ts';
+import { platformRepositoryReviewInstructions } from '../../../../packages/database/src/platform-repository-reviews.ts';
+import { resolveEmployeeExecution } from '../../../../packages/database/src/employees/employeehub.ts';
+import {
+  getEmployeeInstance,
+  updateEmployeeInstance,
+} from '../../../../packages/database/src/employees/employee-instances.ts';
+import {
+  readEmployeeRunSourceKind,
+  assertEmployeeChatHumanSource,
+} from '../../../../packages/database/src/employees/employee-chat-authority.ts';
 import { type RepositoryReviewMaterial } from '../../../../packages/database/src/platform-repository-review-contracts.ts';
 import {
   enqueueRun,
@@ -394,7 +407,7 @@ suite(
           expectedSubjectDigest: panel.subjectDigest,
           credentialRevision: 1,
         });
-      return { admin, internal, data, create, panel, archives };
+      return { admin, internal, employee, data, create, panel, archives };
     }
     function repositoryTransport(s: Awaited<ReturnType<typeof setup>>) {
       const p = s.data.publication;
@@ -549,7 +562,38 @@ suite(
         const unsubscribe: (() => void)[] = [];
         const legacyHistory = await readRetiredExecutionHistory(f.db);
         const s = await setup();
+        const instance = await getEmployeeInstance(
+          s.internal,
+          s.employee.assignmentId,
+        );
+        await updateEmployeeInstance(s.internal, instance.id, {
+          workspaceId: s.internal.workspaceId!,
+          expectedRevision: instance.revision,
+          requestId: randomUUID(),
+          profile: {
+            name: 'REVIEW_PERSONA_NAME',
+            mission: 'REVIEW_PERSONA_LITERAL {{missing}}',
+            workStyle: '# IDENTITY.md - free literal',
+            expressionStyle: 'structured',
+          },
+        });
+        await f.db`insert into allrice_memories(organization_id,workspace_id,employee_id,owner_id,instance_id,content,visibility,source_type,trust_level,lifecycle_state,memory_class)
+          values(${s.internal.organizationId},${s.internal.workspaceId!},(select employee_id from allrice_employee_assignments where id=${s.employee.assignmentId}),${s.admin.actor.id},${instance.id},'REVIEW_PRIVATE_CONFIRMED_MEMORY','private','user','user_confirmed','durable','user_preference')`;
         let review!: Awaited<ReturnType<typeof s.create>>;
+        let frozenPrompt!: ReturnType<
+          typeof EmployeePromptSnapshotSchema.parse
+        >;
+        let reviewUserMessageId: string;
+        const contentText = (content: unknown): string =>
+          typeof content === 'string'
+            ? content
+            : Array.isArray(content)
+              ? content
+                  .map((part) =>
+                    typeof part?.text === 'string' ? part.text : '',
+                  )
+                  .join('\n')
+              : '';
         const command = (args: Record<string, unknown>) => ({
           nativeTool: { name: 'platform_repository_review', arguments: args },
         });
@@ -561,6 +605,40 @@ suite(
             'platform_repository_review',
           ]);
           if (index === 1) {
+            const system = request.messages
+              .filter((m) => m.role === 'system')
+              .map((m) => contentText(m.content))
+              .join('\n');
+            const context = request.messages
+              .filter((m) => m.role === 'user')
+              .map((m) => contentText(m.content))
+              .join('\n');
+            expect(context).toContain(frozenPrompt.employeeDocuments!.persona!);
+            expect(context).toContain('REVIEW_PERSONA_LITERAL {{missing}}');
+            expect(context).toContain('结构清晰，分步说明');
+            expect(context).toContain('# IDENTITY.md - free literal');
+            expect(system).toContain(frozenPrompt.systemPrompt);
+            expect(system).toContain(platformRepositoryReviewInstructions);
+            for (const marker of [
+              'REVIEW_PERSONA_NAME',
+              'REVIEW_PERSONA_LITERAL',
+              '# IDENTITY.md - free literal',
+              '## 已发布 Skill 目录',
+            ])
+              expect(system).not.toContain(marker);
+            expect(JSON.stringify(request)).not.toContain(
+              'REVIEW_PRIVATE_CONFIRMED_MEMORY',
+            );
+            expect(
+              request.messages.some(
+                (m) => m.role === 'assistant' || m.role === 'tool',
+              ),
+            ).toBe(false);
+            expect(
+              request.messages
+                .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
+                .every((part) => part.type === 'text'),
+            ).toBe(true);
             // The real 1s heartbeat has committed before this response. Its
             // result stays in flight until the chosen settlement/close gate,
             // so model admission never races the next heartbeat by elapsed time.
@@ -635,6 +713,21 @@ suite(
           },
           requestTimeoutMs: 15000,
         });
+        const actualExecute = adapter.execute.bind(adapter);
+        const inputObserver = vi
+          .spyOn(adapter, 'execute')
+          .mockImplementation(async (input) => {
+            const kernel = EmployeeKernelRequestSchema.parse(input.kernel);
+            expect(kernel.employeeDocuments).toEqual(
+              frozenPrompt.employeeDocuments,
+            );
+            expect(kernel.rootSystemInstructions).toBe(
+              kernel.systemInstructions,
+            );
+            expect(input.nativeSubagents).toBeUndefined();
+            expect(input.nativeRunAuthority).toBeUndefined();
+            return actualExecute(input);
+          });
         const router = vi
           .spyOn(harnessRouter, 'getHarnessRouter')
           .mockReturnValue(new harnessRouter.HarnessRouter([adapter]));
@@ -843,6 +936,53 @@ suite(
         let bodyError: unknown;
         try {
           review = await s.create();
+          const [frozen] =
+            await f.db`select prompt_snapshot,execution_snapshot,user_message_id from allrice_employee_runs where run_id=${review.runId}`;
+          frozenPrompt = EmployeePromptSnapshotSchema.parse(
+            frozen!.prompt_snapshot,
+          );
+          reviewUserMessageId = frozen!.user_message_id as string;
+          const snapshot = EmployeeExecutionSnapshotSchema.parse(
+            frozen!.execution_snapshot,
+          );
+          if (snapshot.schemaVersion !== 2 || !snapshot.persona)
+            throw Error('review PERSONA pin missing');
+          const persona = JSON.parse(
+            frozenPrompt.employeeDocuments!.persona!.slice('# 人设\n'.length),
+          );
+          expect(persona.source).toEqual(snapshot.persona.source);
+          expect(persona.source.kind).toBe('employee_run');
+          expect(persona.source.basis.employeeVersionId).toBe(
+            s.employee.versionId,
+          );
+          expect(persona.source.engine.employeeVersionId).toBe(
+            s.employee.versionId,
+          );
+          expect(persona.name).toEqual({
+            value: 'REVIEW_PERSONA_NAME',
+            source: 'personal_override',
+          });
+          expect(frozenPrompt.employeeDocuments).toMatchObject({
+            user: '',
+            memory: '',
+          });
+          expect(frozenPrompt.memories).toEqual([]);
+          expect(frozenPrompt).not.toHaveProperty('personalIdentity');
+          const scope = {
+            runId: review.runId,
+            organizationId: s.internal.organizationId,
+            workspaceId: s.internal.workspaceId!,
+            ownerId: s.admin.actor.id,
+          };
+          expect(
+            await readEmployeeRunSourceKind({
+              ...scope,
+              userMessageId: reviewUserMessageId,
+            }),
+          ).toBe('internal');
+          expect(
+            (await resolveEmployeeExecution(scope)).promptSnapshot,
+          ).toEqual(frozenPrompt);
           const [stored] =
             await f.db`select payload from allrice_jobs where id=${review.jobId}`;
           expect(stored!.payload.input).not.toHaveProperty(
@@ -863,6 +1003,12 @@ suite(
               onAbortReady: () => {},
             },
             async (input) => {
+              await expect(
+                assertEmployeeChatHumanSource({
+                  context: input.execution.context,
+                  userMessageId: reviewUserMessageId,
+                }),
+              ).rejects.toThrow('authorization_denied');
               input.signal.addEventListener(
                 'abort',
                 () => {
@@ -885,6 +1031,7 @@ suite(
                 : 'failed',
           );
           expect(model.requests.length).toBeGreaterThan(0);
+          expect(inputObserver).toHaveBeenCalled();
           expect(JSON.stringify(model.requests)).not.toContain(
             '<allrice_tool_call>',
           );
@@ -1153,6 +1300,7 @@ suite(
             await model.close();
             remote.mockRestore();
             freeze.mockRestore();
+            inputObserver.mockRestore();
             router.mockRestore();
             vi.stubEnv('ALLRICE_DSH_PLATFORM_HOME', oldHome);
           }

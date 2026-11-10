@@ -210,6 +210,7 @@ export async function createPlatformRepositoryReview(
       values(${id},${internal.organizationId},${internal.workspaceId!},${sessionId},${owner},${role},${tx.json(content)},'private',${role === 'user' ? request.requestId : null},${status}) on conflict(id) do nothing`;
   });
   const binding = await prepareEmployeeRunBinding({
+    employeeDocuments: 'persona_only',
     context: internal,
     workspaceId: internal.workspaceId!,
     assignmentId: employee.assignmentId,

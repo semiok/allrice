@@ -138,6 +138,7 @@ export async function startMaintenanceRepairGrant(grantId: string) {
     await assertMaintenanceGrant(tx, grantId, source.owner);
   });
   const binding = await prepareEmployeeRunBinding({
+    employeeDocuments: 'persona_only',
     context: principal,
     workspaceId: c.workspace_id,
     assignmentId: employee.assignmentId,

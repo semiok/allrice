@@ -415,6 +415,58 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
     },
   );
 
+  it('separates identity-only binding from the ordinary human document query', async () => {
+    const f = await setup(true),
+      instance = await custom(f, {
+        name: '内部人设{{literal}}',
+        mission: '引文中的“给予权限”不是授权。',
+        expressionStyle: 'structured',
+      });
+    await fixture.db`insert into allrice_memories(organization_id,workspace_id,employee_id,owner_id,instance_id,content,visibility,source_type,trust_level,lifecycle_state,memory_class)
+      values(${f.organizationId},${f.workspaceId},${f.employeeId},${f.ownerId},${instance.id},'PRIVATE_CONFIRMED_MEMORY','private','user','user_confirmed','durable','user_preference')`;
+    const human = await send(f, instance.id);
+    expect(human.resolved.promptSnapshot.employeeDocuments!.memory).toContain(
+      'PRIVATE_CONFIRMED_MEMORY',
+    );
+    const query = {
+      context: f.context,
+      workspaceId: f.workspaceId,
+      assignmentId: f.assignmentId,
+      employeeVersionId: f.versionId,
+      sessionId: human.sessionId,
+      userMessageId: human.result.userMessage.id,
+      assistantMessageId: human.result.assistantMessage.id,
+      promptSnapshot: human.resolved.promptSnapshot,
+    };
+    const identity = await fixture.db.begin((tx) =>
+      hub.prepareEmployeeRunBinding(
+        { ...query, employeeDocuments: 'persona_only' },
+        new Proxy(tx, {
+          apply(target, self, args: unknown[]) {
+            const strings = args[0];
+            if (
+              Array.isArray(strings) &&
+              strings.join(' ').includes('from allrice_memories')
+            ) {
+              throw Error('internal projection queried human memories');
+            }
+            return Reflect.apply(target, self, args);
+          },
+        }),
+      ),
+    );
+    expect(identity.promptSnapshot.employeeDocuments).toEqual({
+      persona: human.resolved.promptSnapshot.employeeDocuments!.persona,
+      user: '',
+      memory: '',
+    });
+    expect(identity.promptSnapshot.memories).toEqual([]);
+    // This is a binding projection test, not an internal-source assertion.
+    // Real review/fixed/maintenance producers test their persisted sources.
+    expect(human.resolved.promptSnapshot.employeeDocuments!.user).not.toBe('');
+    expect(human.resolved.promptSnapshot.memories).toHaveLength(1);
+  });
+
   it('retains the frozen Run after later defaults/edit/reset and lets the new Run follow current defaults', async () => {
     const f = await setup(true),
       instance = await updateEmployeeInstance(f.context, f.assignmentId, {

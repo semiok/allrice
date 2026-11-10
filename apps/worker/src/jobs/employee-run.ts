@@ -671,23 +671,35 @@ export async function executeEmployeeRun({
     workAutomation: workAutomation.settings,
   };
   const assembledKernel = assembleEmployeeKernel(kernelInput);
+  const internalInstructions = repositoryReviewTask
+    ? platformRepositoryReviewInstructions
+    : repairTask?.frozen.version === 2
+      ? platformMaintenanceRepairInstructions
+      : platformRepairInstructions;
+  const internalSystemInstructions =
+    assembledKernel.systemInstructions + '\n\n' + internalInstructions;
+  const internalPersona =
+    resolved.executionSnapshot?.schemaVersion === 2 &&
+    resolved.executionSnapshot.persona
+      ? assembledKernel.employeeDocuments?.persona
+      : undefined;
   const kernel =
     repairTask || repositoryReviewTask
       ? EmployeeKernelRequestSchema.parse({
           ...assembledKernel,
-          systemInstructions:
-            assembledKernel.systemInstructions +
-            '\n\n' +
-            (repositoryReviewTask
-              ? platformRepositoryReviewInstructions
-              : repairTask?.frozen.version === 2
-                ? platformMaintenanceRepairInstructions
-                : platformRepairInstructions),
+          systemInstructions: internalSystemInstructions,
           bootstrapConversation: '',
           bootstrapContext: undefined,
           authorizedMemoryContext: '',
-          employeeDocuments: undefined,
-          rootSystemInstructions: undefined,
+          // Both scopes keep the original non-identity instructions/facts.
+          // Only an already-verified pin migrates; historical absence remains
+          // on the original cleared path and never becomes human eligibility.
+          employeeDocuments: internalPersona
+            ? { persona: internalPersona, user: '', memory: '' }
+            : undefined,
+          rootSystemInstructions: internalPersona
+            ? internalSystemInstructions
+            : undefined,
           skillVersionIds: [],
           imageAttachments: [],
         })

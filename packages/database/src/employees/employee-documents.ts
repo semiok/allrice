@@ -84,7 +84,7 @@ function renderRunPersona(
   };
 }
 
-/** The caller's ordinary-human flag and original admission grant eligibility.
+/** Shared identity projection; it grants no human facts or memory eligibility.
  * A legitimate absent source is unmigrated; validation errors never fall back. */
 async function freezeRunPersona(
   sql: Sql,
@@ -127,6 +127,23 @@ async function freezeRunPersona(
   // existing whole path. Do not half-migrate or catch a failed proof here.
   if (!basis || !engine) return undefined;
   return renderRunPersona(instance, employeeId, basis, engine);
+}
+
+/** Internal tasks reuse the verified identity without querying owner memories
+ * or projecting organizational facts into USER.md. */
+export async function freezeEmployeePersonaDocuments(
+  sql: Sql,
+  instance: EmployeeInstanceSnapshot,
+  employeeId: string,
+) {
+  const projection = await freezeRunPersona(sql, instance, employeeId);
+  if (!projection) return undefined;
+  return {
+    persona: projection.pin,
+    systemPrompt: projection.systemPrompt,
+    memories: [],
+    employeeDocuments: { persona: projection.persona, user: '', memory: '' },
+  };
 }
 
 /** Resolve only immutable frozen versions and the already-frozen profile.
