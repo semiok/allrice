@@ -31,7 +31,10 @@ import {
   type NativeCalendarGeneration,
   type NativeCalendarWorkerPorts,
 } from './native-schedule-calendar.ts';
-import type { NativeCalendarMutation } from '@allrice/database';
+import type {
+  NativeCalendarMutation,
+  NativeRecurringControl,
+} from '@allrice/database';
 import type { StorageBackend, KvUnit } from '@deepseek-ai/dsh-storage';
 import type {
   ScheduleTask,
@@ -104,6 +107,7 @@ export interface NativeScheduleRecurringControl extends Omit<
   'kind' | 'at' | 'command'
 > {
   kind: 'recurring';
+  dispatch: NativeRecurringControl['dispatch'];
   rule: NativeScheduleRecurringRule;
   appliedRevision: number | null;
   appliedRule: NativeScheduleRecurringRule | null;
@@ -473,7 +477,13 @@ function controlsMap(rows: readonly NativeScheduleAnyControl[]) {
         (!c.nativeTaskId || tasks.has(c.nativeTaskId))) ||
       (c.kind !== undefined && c.kind !== 'once' && c.kind !== 'recurring') ||
       (c.kind === 'recurring'
-        ? !recurringRuleValid(c.rule) ||
+        ? !c.dispatch ||
+          ('consumer' in c.dispatch
+            ? c.dispatch.consumer !== 'platform-quality-v1'
+            : !c.dispatch.employeeAssignmentId ||
+              !c.dispatch.employeeInstanceId ||
+              !c.dispatch.businessSessionId) ||
+          !recurringRuleValid(c.rule) ||
           !['create', 'update', 'delete'].includes(c.command.kind) ||
           (c.appliedRevision === null) !== (c.appliedRule === null) ||
           (c.appliedRevision !== null &&
@@ -511,6 +521,7 @@ function controlIdentity(c: NativeScheduleAnyControl) {
   if (c.kind === 'recurring')
     return {
       kind: c.kind,
+      dispatch: c.dispatch,
       controlId: c.controlId,
       organizationId: c.organizationId,
       workspaceId: c.workspaceId,
@@ -1473,8 +1484,26 @@ export function createNativeScheduleOnceController(
       if (
         previous.nativeTaskId !== null &&
         previous.nativeTaskId !== c.nativeTaskId
-      )
+      ) {
+        if (
+          previous.kind === 'recurring' &&
+          c.kind === 'recurring' &&
+          !('consumer' in c.dispatch) &&
+          previous.taskDeleted &&
+          c.nativeTaskId === null &&
+          !c.taskDeleted &&
+          c.command.kind === 'create' &&
+          c.command.status === 'pending'
+        ) {
+          // Drop the old SDK cache before restoring the proven current binding.
+          // SQL permits this transition only after durable public deletion and
+          // an exact resume operation. Never rewrite a mounted native Task.
+          await closeGeneration(g);
+          current = undefined;
+          return false;
+        }
         failure('binding_invalid');
+      }
     }
     g.controls = fresh;
     await g.calendar?.reload();

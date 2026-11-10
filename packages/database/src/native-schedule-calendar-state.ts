@@ -560,37 +560,49 @@ export function prepareNativeCalendarTaskPut(input: {
     task.lastDelivery && !before?.lastDelivery
       ? ((task.deliveryHistory?.records[0] ?? task.lastDelivery) as Receipt)
       : null;
-  const occurrences = receipt
-    ? (() => {
-        // Recovery A and messageId never become the business identity P.
-        const identity = calendarOccurrenceIdentity(
-          c.automationId,
-          p.periodId,
-          p.businessScheduledFor,
-        );
-        const payload = {
-          control: calendarControlIdentity(c),
-          revision: structuredClone(v),
-          calendar: {
-            period: calendarPeriodIdentity(p),
-            arm: calendarArmIdentity(a),
-          },
-          businessScheduledFor: p.businessScheduledFor,
-          nativeTaskId: task.record.id,
-          receipt: structuredClone(receipt),
-        };
-        const reason = calendarAdmissionReason(p, v, input.admission);
-        return [
-          {
-            ...identity,
-            payload,
-            payloadDigest: nativeOnceDigest(payload),
-            state: reason ? ('blocked' as const) : ('pending' as const),
-            reason,
-          },
-        ];
-      })()
-    : [];
+  const aNow = input.admission;
+  const nativeReceipt = task.deliveryHistory?.records[0] ?? task.lastDelivery;
+  const unprojectedReason =
+    c.dispatch.consumer === 'ordinary-monthly-v1' && aNow
+      ? aNow.status !== 'enabled'
+        ? ('paused_or_deleted' as const)
+        : aNow.resumeAfter &&
+            Date.parse(p.businessScheduledFor) <= Date.parse(aNow.resumeAfter)
+          ? ('before_resume_watermark' as const)
+          : null
+      : null;
+  const occurrences =
+    receipt && !unprojectedReason
+      ? (() => {
+          // Recovery A and messageId never become the business identity P.
+          const identity = calendarOccurrenceIdentity(
+            c.automationId,
+            p.periodId,
+            p.businessScheduledFor,
+          );
+          const payload = {
+            control: calendarControlIdentity(c),
+            revision: structuredClone(v),
+            calendar: {
+              period: calendarPeriodIdentity(p),
+              arm: calendarArmIdentity(a),
+            },
+            businessScheduledFor: p.businessScheduledFor,
+            nativeTaskId: task.record.id,
+            receipt: structuredClone(receipt),
+          };
+          const reason = calendarAdmissionReason(p, v, input.admission);
+          return [
+            {
+              ...identity,
+              payload,
+              payloadDigest: nativeOnceDigest(payload),
+              state: reason ? ('blocked' as const) : ('pending' as const),
+              reason,
+            },
+          ];
+        })()
+      : [];
   const after: NativeCalendarSnapshot = {
     control: structuredClone(c),
     task: null,
@@ -616,6 +628,14 @@ export function prepareNativeCalendarTaskPut(input: {
       key: o.key,
       payloadDigest: o.payloadDigest,
     })),
+    ...(unprojectedReason && nativeReceipt
+      ? {
+          unprojectedReceipt: {
+            receipt: structuredClone(nativeReceipt),
+            reason: unprojectedReason,
+          },
+        }
+      : {}),
   };
   nativeOnceDigest(journal);
   return { after, period: afterPeriod, arm: afterArm, occurrences, journal };

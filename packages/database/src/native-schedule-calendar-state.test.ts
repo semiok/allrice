@@ -283,6 +283,20 @@ describe('independent calendar identity and rotating at binding', () => {
     });
     expect(received.occurrences).toHaveLength(1);
     expect(received.occurrences[0]!.payload.revision).toEqual(version);
+    for (const status of ['paused', 'deleted'] as const) {
+      const stopped = withTask(delivered(), {
+        control: monthly,
+        revision: version,
+        arm: bound.arm,
+        period: bound.period,
+        admission: { ...admission, status },
+      });
+      expect(stopped.occurrences).toEqual([]);
+      expect(stopped.journal.unprojectedReceipt).toMatchObject({
+        reason: 'paused_or_deleted',
+      });
+      expect(stopped.arm.taskSnapshot).toEqual(delivered());
+    }
     expect(Buffer.byteLength(JSON.stringify(received.journal))).toBeLessThan(
       65536,
     );

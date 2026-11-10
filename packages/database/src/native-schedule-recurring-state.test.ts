@@ -454,11 +454,7 @@ describe('recurring pause, resume and current admission', () => {
   it.each([
     [undefined, 'current_authority_changed'],
     [admission({ allowed: false }), 'current_authority_changed'],
-    [admission({ status: 'paused' }), 'paused_or_deleted'],
-    [admission({ status: 'deleted' }), 'paused_or_deleted'],
     [admission({ currentRevision: 2 }), 'configuration_changed'],
-    [admission({ resumeAfter: instant(60) }), 'before_resume_watermark'],
-    [admission({ resumeAfter: instant(61) }), 'before_resume_watermark'],
   ] as const)(
     'retains the native fact without dispatching disallowed work %j',
     (current, reason) => {
@@ -468,6 +464,24 @@ describe('recurring pause, resume and current admission', () => {
         reason,
         payload: { receipt: receipt(60) },
       });
+      expect(result.after.task).toEqual(task(120, [receipt(60)]));
+    },
+  );
+
+  it.each([
+    [admission({ status: 'paused' }), 'paused_or_deleted'],
+    [admission({ status: 'deleted' }), 'paused_or_deleted'],
+    [admission({ status: 'paused', allowed: false }), 'paused_or_deleted'],
+    [admission({ resumeAfter: instant(60) }), 'before_resume_watermark'],
+    [admission({ resumeAfter: instant(61) }), 'before_resume_watermark'],
+  ] as const)(
+    'keeps late stopped receipts in native audit only %j',
+    (current, reason) => {
+      const result = prepare(undefined, { admission: current });
+      expect(result.occurrences).toEqual([]);
+      expect(result.journal.unprojectedReceipts).toEqual([
+        { receipt: receipt(60), reason },
+      ]);
       expect(result.after.task).toEqual(task(120, [receipt(60)]));
     },
   );

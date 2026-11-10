@@ -4,7 +4,7 @@ import {
   authenticateSession,
   revokeSession,
 } from './identity.ts';
-import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { mkdtemp, realpath, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -13,6 +13,7 @@ import {
   createChatSession,
   sendChatMessage,
   getChatSessionHistory,
+  updateChatSession,
 } from './workspace/service.ts';
 import {
   createRecurringTask,
@@ -235,8 +236,10 @@ suite(
     ) {
       const c = (await snapshot(id)).control,
         rule = c.rule;
-      await mutate({ kind: 'session_initializing', controlId: c.controlId });
-      await mutate({ kind: 'session_ready', controlId: c.controlId });
+      if (c.sessionState !== 'ready') {
+        await mutate({ kind: 'session_initializing', controlId: c.controlId });
+        await mutate({ kind: 'session_ready', controlId: c.controlId });
+      }
       // Explicit synthetic component receipt. Actual timer behavior is separately
       // checked through the public Host and ordinary Dev page.
       const native: NativeRecurringTask = {
@@ -289,6 +292,22 @@ suite(
         kind: 'put_task',
         controlId: s.control.controlId,
         task: native,
+      });
+    }
+    async function confirmNativeDelete(id: string) {
+      const c = (await snapshot(id)).control;
+      expect(c.command).toMatchObject({ kind: 'delete', status: 'pending' });
+      if (c.nativeTaskId !== null && !c.taskDeleted)
+        await mutate({
+          kind: 'delete_task',
+          controlId: c.controlId,
+          nativeTaskId: c.nativeTaskId,
+        });
+      await mutate({
+        kind: 'confirm_command',
+        controlId: c.controlId,
+        commandId: c.command.id,
+        nativeTaskId: c.nativeTaskId,
       });
     }
     async function cloud(enabled: boolean) {
@@ -712,18 +731,106 @@ suite(
       );
     });
 
-    it('conversation leaves the original fixed pause/resume native gap legal before another full update', async () => {
+    it.each([true, false])(
+      'stop-and-archive retires an ordinary clock, including before create (%s)',
+      async (prepared) => {
+        const t = await task(
+          '归档时停止泡茶提醒',
+          { kind: 'every', seconds: 60 },
+          { prepareNative: prepared },
+        );
+        const before = await snapshot(t.id);
+        await updateChatSession(f.context, f.workspaceId, t.sessionId, {
+          archived: true,
+          stopActivity: true,
+        });
+        expect((await snapshot(t.id)).control.command).toMatchObject({
+          kind: 'delete',
+          status: 'pending',
+        });
+        await confirmNativeDelete(t.id);
+        expect((await snapshot(t.id)).task).toBeNull();
+        await updateChatSession(f.context, f.workspaceId, t.sessionId, {
+          archived: false,
+        });
+        expect(
+          await changeRecurringTask(f.context, t.sessionId, t.id, {
+            operationId: randomUUID(),
+            expectedRevision: 1,
+            action: 'resume',
+          }),
+        ).toMatchObject({ status: 'pending' });
+        await prepareNativeTask(
+          t.id,
+          new Date(Date.now() + 60_000).toISOString(),
+        );
+        const after = await snapshot(t.id);
+        expect(after.control.nativeTaskId).not.toBe(
+          before.control.nativeTaskId,
+        );
+        expect(after.control.controlSessionId).toBe(
+          before.control.controlSessionId,
+        );
+      },
+    );
+    it('upgrades legacy logical pauses by queuing deletion without changing native documents or historical receipts', async () => {
+      const bound = await task(),
+        reserved = await task(
+          '待建提醒',
+          { kind: 'every', seconds: 60 },
+          { prepareNative: false },
+        );
+      await receipt(bound.id);
+      expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
+        true,
+      );
+      const oldTask = (await snapshot(bound.id)).task;
+      const oldHistory = Array.from(
+        await f.db`select * from allrice_native_recurring_occurrences where automation_id=${bound.id}`,
+      );
+      // Reproduce the pre-MET-250 pause/archiving persistence, not a native edit.
+      await f.db`update allrice_automations set status='paused' where id in (${bound.id},${reserved.id})`;
+      const migration = await readFile(
+        new URL(
+          '../migrations/0234_native_recurring_pause.sql',
+          import.meta.url,
+        ),
+        'utf8',
+      );
+      await f.db.begin((tx) => tx.unsafe(migration));
+      expect((await snapshot(bound.id)).task).toEqual(oldTask);
+      expect(
+        Array.from(
+          await f.db`select * from allrice_native_recurring_occurrences where automation_id=${bound.id}`,
+        ),
+      ).toEqual(oldHistory);
+      for (const t of [bound, reserved]) {
+        expect((await snapshot(t.id)).control.command).toMatchObject({
+          kind: 'delete',
+          status: 'pending',
+        });
+        await confirmNativeDelete(t.id);
+        expect((await snapshot(t.id)).task).toBeNull();
+      }
+    });
+
+    it('conversation preserves the business/native revision gap after public pause/resume', async () => {
       const t = await task();
       await changeRecurringTask(f.context, t.sessionId, t.id, {
         operationId: randomUUID(),
         expectedRevision: 1,
         action: 'pause',
       });
+      await confirmNativeDelete(t.id);
       await changeRecurringTask(f.context, t.sessionId, t.id, {
         operationId: randomUUID(),
         expectedRevision: 2,
         action: 'resume',
       });
+      await prepareNativeTask(
+        t.id,
+        new Date(Date.now() + 60_000).toISOString(),
+      );
       const before = await snapshot(t.id);
       await changeRecurringTask(f.context, t.sessionId, t.id, {
         operationId: randomUUID(),
@@ -860,9 +967,10 @@ suite(
         occurrences: [expect.objectContaining({ status: 'queued' })],
       });
     });
-    it('pause/resume serializes with receipts; late pre-resume periods stay unexecuted', async () => {
+    it('pause/delete receipts stay audit-only; resume creates a fresh future binding and retains history', async () => {
       const t = await task();
       await receipt(t.id);
+      const old = await snapshot(t.id);
       const pause = {
         operationId: randomUUID(),
         expectedRevision: 1,
@@ -871,13 +979,24 @@ suite(
       expect(
         await changeRecurringTask(f.context, t.sessionId, t.id, pause),
       ).toMatchObject({
-        status: 'applied',
+        status: 'pending',
         task: { status: 'paused', revision: 2 },
       });
       expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
         false,
       );
       await receipt(t.id);
+      await receipt(t.id);
+      await receipt(t.id);
+      // A cold reader must accept genuine unprojected native receipts; it must
+      // neither fail closed nor manufacture missing business occurrences.
+      expect(await store.loadTaskRecords(writer)).toHaveProperty(
+        old.control.nativeTaskId!,
+      );
+      expect(
+        await f.db`select occurrence_id from allrice_native_recurring_occurrences where automation_id=${t.id}`,
+      ).toHaveLength(1);
+      await confirmNativeDelete(t.id);
       expect(
         await changeRecurringTask(f.context, t.sessionId, t.id, {
           operationId: randomUUID(),
@@ -885,25 +1004,99 @@ suite(
           action: 'resume',
         }),
       ).toMatchObject({
-        status: 'applied',
-        task: { status: 'enabled', revision: 3 },
+        status: 'pending',
+        task: { status: 'preparing', revision: 3 },
       });
+      const future = new Date(Date.now() + 60_000).toISOString();
+      await prepareNativeTask(t.id, future);
+      const fresh = await snapshot(t.id);
+      expect(fresh.control.nativeTaskId).not.toBe(old.control.nativeTaskId);
+      expect(fresh.control.controlSessionId).toBe(old.control.controlSessionId);
       await receipt(t.id);
       expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
-        false,
+        true,
       );
       const rows =
         await f.db`select outbox_state,outbox_reason from allrice_native_recurring_occurrences where automation_id=${t.id}`;
-      expect(rows).toHaveLength(3);
-      expect(rows.every((r) => r.outbox_state === 'blocked')).toBe(true);
+      expect(rows).toHaveLength(2);
+      expect(rows.filter((r) => r.outbox_state === 'blocked')).toHaveLength(1);
+      expect(rows.filter((r) => r.outbox_state === 'enqueued')).toHaveLength(1);
+      const [job] =
+        await f.db`select j.id from allrice_jobs j join allrice_automation_runs ar on ar.run_id=j.run_id where ar.automation_id=${t.id}`;
+      await changeRecurringTask(f.context, t.sessionId, t.id, {
+        operationId: randomUUID(),
+        expectedRevision: 3,
+        action: 'pause',
+      });
+      await confirmNativeDelete(t.id);
+      await changeRecurringTask(f.context, t.sessionId, t.id, {
+        operationId: randomUUID(),
+        expectedRevision: 4,
+        action: 'resume',
+      });
+      await prepareNativeTask(
+        t.id,
+        new Date(Date.now() + 60_000).toISOString(),
+      );
       expect(
-        rows.some((r) => r.outbox_reason === 'before_resume_watermark'),
-      ).toBe(true);
+        await f.db.begin((tx) => lockNativeOnceJobAdmission(tx, job!.id)),
+      ).toMatchObject({ allowed: true });
       expect(
         await getRecurringTask(f.context, t.sessionId, t.id, {
           operationId: pause.operationId,
         }),
       ).toMatchObject({ operation: { request: pause, status: 'applied' } });
+    });
+    it('refuses rebinding without a committed delete and never recycles a retired native ID', async () => {
+      const t = await task();
+      const old = await snapshot(t.id);
+      const reset = {
+        ...old,
+        task: null,
+        control: {
+          ...old.control,
+          nativeTaskId: null,
+          taskDeleted: false,
+          appliedRevision: null,
+          appliedRule: null,
+          command: { id: randomUUID(), kind: 'create', status: 'pending' },
+        },
+      };
+      await expect(
+        f.db`update allrice_native_recurring_controls set native_task_id=null,snapshot=${f.db.json(reset)},snapshot_version=snapshot_version+1 where automation_id=${t.id}`,
+      ).rejects.toMatchObject({ code: '23514' });
+      await changeRecurringTask(f.context, t.sessionId, t.id, {
+        operationId: randomUUID(),
+        expectedRevision: 1,
+        action: 'pause',
+      });
+      expect(
+        await changeRecurringTask(f.context, t.sessionId, t.id, {
+          operationId: randomUUID(),
+          expectedRevision: 2,
+          action: 'resume',
+        }),
+      ).toMatchObject({ status: 'rejected' });
+      await confirmNativeDelete(t.id);
+      await changeRecurringTask(f.context, t.sessionId, t.id, {
+        operationId: randomUUID(),
+        expectedRevision: 2,
+        action: 'resume',
+      });
+      const resumed = await snapshot(t.id);
+      const alias = {
+        ...resumed,
+        task: null,
+        control: { ...resumed.control, nativeTaskId: old.control.nativeTaskId },
+      };
+      await expect(
+        f.db`update allrice_native_recurring_controls set native_task_id=${old.control.nativeTaskId},snapshot=${f.db.json(alias)},snapshot_version=snapshot_version+1 where automation_id=${t.id}`,
+      ).rejects.toMatchObject({ code: '23514' });
+      expect(await snapshot(t.id)).toEqual(resumed);
+      await prepareNativeTask(
+        t.id,
+        new Date(Date.now() + 60_000).toISOString(),
+      );
     });
     it('same-rule content update keeps native identity and binds only the new version', async () => {
       const t = await task('第一版输入');
@@ -1399,9 +1592,10 @@ suite(
           action: 'pause',
         }),
       ).toMatchObject({
-        status: 'applied',
+        status: 'pending',
         task: { revision: 2, status: 'paused' },
       });
+      await confirmNativeDelete(t.id);
       const before = await manualBoundary(t.id),
         input = { requestId: randomUUID(), expectedRevision: 2 },
         first = await runManualAutomation(
@@ -1422,7 +1616,7 @@ suite(
       expect(
         await changeRecurringTask(f.context, t.sessionId, t.id, update),
       ).toMatchObject({
-        status: 'pending',
+        status: 'applied',
         task: { revision: 3, status: 'paused' },
       });
       expect(
@@ -1441,31 +1635,13 @@ suite(
           expectedRevision: 2,
         }),
       ).rejects.toMatchObject({ code: 'revision_conflict' });
-      // A rejected operation is not a persisted delete intent. The previous
-      // same-rule update must be confirmed before a new delete is accepted.
-      expect(
-        await changeRecurringTask(f.context, t.sessionId, t.id, {
-          operationId: randomUUID(),
-          expectedRevision: 3,
-          action: 'delete',
-        }),
-      ).toMatchObject({
-        status: 'rejected',
-        errorMessage: '上一项操作仍在确认，请稍后查看结果。',
-        task: { revision: 3, status: 'paused' },
-      });
+      // Editing paused content is applied without rearming the native clock.
       expect(
         (
           await f.db`select deleted_at,revision from allrice_automations where id=${t.id}`
         )[0],
       ).toMatchObject({ deleted_at: null, revision: 3 });
-      const pendingUpdate = await snapshot(t.id);
-      await mutate({
-        kind: 'confirm_command',
-        controlId: pendingUpdate.control.controlId,
-        commandId: update.operationId,
-        nativeTaskId: pendingUpdate.control.nativeTaskId,
-      });
+      expect((await snapshot(t.id)).task).toBeNull();
       expect(
         await changeRecurringTask(f.context, t.sessionId, t.id, {
           operationId: randomUUID(),
@@ -1474,7 +1650,7 @@ suite(
         }),
       ).toMatchObject({
         status: 'pending',
-        task: { revision: 4, status: 'deleting' },
+        task: { revision: 4, status: 'deleted' },
       });
       const deleteIntent = (
         await f.db`select deleted_at,revision from allrice_automations where id=${t.id}`
@@ -1483,9 +1659,9 @@ suite(
       expect(deleteIntent.revision).toBe(4);
       expect((await snapshot(t.id)).control).toMatchObject({
         command: { kind: 'delete', status: 'pending' },
-        taskDeleted: false,
+        taskDeleted: true,
       });
-      expect((await snapshot(t.id)).task).not.toBeNull();
+      expect((await snapshot(t.id)).task).toBeNull();
       const deleted = await manualBoundary(t.id);
       const countBefore = (
         await f.db`select count(*)::int n from allrice_automation_runs where automation_id=${t.id}`
@@ -1829,8 +2005,9 @@ suite(
             input,
           ),
         ).toMatchObject({
-          operation: { status: 'applied', task: { status: 'paused' } },
+          operation: { status: 'pending', task: { status: 'paused' } },
         });
+        await confirmNativeDelete(t.id);
         expect(
           await getAutomationCatalogOperation(
             f.context,
@@ -1862,7 +2039,7 @@ suite(
         expect(
           (await getAutomationCatalogTask(f.context, f.workspaceId, t.id)).task
             .definition,
-        ).toMatchObject({ kind: 'recurring', task: { status: 'deleting' } });
+        ).toMatchObject({ kind: 'recurring', task: { status: 'deleted' } });
       } finally {
         await cloud(true);
       }

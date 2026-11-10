@@ -28,7 +28,7 @@ const Instant = z
     (s) => Number.isFinite(Date.parse(s)) && new Date(s).toISOString() === s,
   );
 
-/** The original control Session and task survive business revisions. */
+/** The original control Session survives revisions and native Task recreation. */
 export const NativeRecurringControlSchema = z
   .object({
     kind: z.literal('recurring'),
@@ -319,7 +319,11 @@ export function prepareNativeRecurringMutation(input: {
     'revision_missing',
   );
   const after = structuredClone(input.before),
-    occurrences: NativeRecurringOccurrence[] = [];
+    occurrences: NativeRecurringOccurrence[] = [],
+    unprojectedReceipts: {
+      receipt: Receipt;
+      reason: 'paused_or_deleted' | 'before_resume_watermark';
+    }[] = [];
   const m = write.mutation;
   switch (m.kind) {
     case 'session_initializing':
@@ -415,6 +419,25 @@ export function prepareNativeRecurringMutation(input: {
             receipt: structuredClone(receipt),
           };
           const a = input.admission;
+          // A public delete cannot recall an in-flight delivery (including one
+          // driven during cold mount). Preserve that native fact in the journal,
+          // without creating a business history row for a stopped ordinary task.
+          // Other consumers retain their existing receipt/admission contract.
+          if (!('consumer' in c.dispatch) && a) {
+            const stopped = a.status !== 'enabled';
+            const beforeResume =
+              a.resumeAfter !== null &&
+              Date.parse(receipt.scheduledAt) <= Date.parse(a.resumeAfter);
+            if (stopped || beforeResume) {
+              unprojectedReceipts.push({
+                receipt: structuredClone(receipt),
+                reason: stopped
+                  ? 'paused_or_deleted'
+                  : 'before_resume_watermark',
+              });
+              continue;
+            }
+          }
           const reason = !a?.allowed
             ? 'current_authority_changed'
             : a.status !== 'enabled'
@@ -512,6 +535,7 @@ export function prepareNativeRecurringMutation(input: {
       key: o.key,
       payloadDigest: o.payloadDigest,
     })),
+    ...(unprojectedReceipts.length ? { unprojectedReceipts } : {}),
   };
   return { after, occurrences, journal };
 }

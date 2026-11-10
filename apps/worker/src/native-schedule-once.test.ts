@@ -1140,6 +1140,11 @@ function recurringRow(
   return {
     ...base,
     kind: 'recurring',
+    dispatch: {
+      employeeAssignmentId: randomUUID(),
+      employeeInstanceId: randomUUID(),
+      businessSessionId: randomUUID(),
+    },
     rule,
     appliedRevision: null,
     appliedRule: null,
@@ -1194,6 +1199,45 @@ describe('recurring control union over the same fenced Host and KV lifecycle', (
       }
     },
   );
+
+  it('public delete and fresh create survive lost ACKs without duplicate clocks or a new Session', async () => {
+    const f = fixture([recurringRow()]),
+      c = f.create();
+    try {
+      await c.tick();
+      const saved = f.rows[0]!;
+      if (saved.kind !== 'recurring') throw Error('expected recurring');
+      const oldId = saved.nativeTaskId!,
+        sessionId = saved.controlSessionId;
+      saved.command = { id: randomUUID(), kind: 'delete', status: 'pending' };
+      f.loseAck('delete_task');
+      await c.tick();
+      expect(saved.taskDeleted).toBe(true);
+      expect(saved.command.status).toBe('confirmed');
+      expect(f.records.has(oldId)).toBe(false);
+      // The production SQL transition requires exact delete + resume evidence.
+      // This component fixture supplies that already-proven current binding.
+      saved.nativeTaskId = null;
+      saved.taskDeleted = false;
+      saved.appliedRevision = null;
+      saved.appliedRule = null;
+      saved.command = { id: randomUUID(), kind: 'create', status: 'pending' };
+      await c.tick();
+      f.loseAck('put_task');
+      await c.tick();
+      await c.tick();
+      expect(saved.nativeTaskId).not.toBe(oldId);
+      expect(saved.controlSessionId).toBe(sessionId);
+      expect(saved.command.status).toBe('confirmed');
+      expect(f.creations()).toBe(2);
+      expect(f.records.size).toBe(1);
+      expect(f.trace.filter((s) => s === 'exact-readback')).toHaveLength(2);
+      expect(f.trace.filter((s) => s === `init:${sessionId}`)).toHaveLength(1);
+      expect(f.trace).toContain(`resume:${sessionId}`);
+    } finally {
+      await c.stop();
+    }
+  });
 
   it('keeps weekly Task and Session identities across an update and cold restore', async () => {
     const f = fixture([
