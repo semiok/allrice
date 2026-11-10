@@ -457,7 +457,10 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       .map((line) => JSON.parse(line));
   }
 
-  async function publishedTarget(reply: Parameters<typeof p24Fixture>[0]) {
+  async function publishedTarget(
+    reply: Parameters<typeof p24Fixture>[0],
+    options: { checkedDelivery?: boolean } = {},
+  ) {
     const base = await setup(reply);
     vi.stubEnv('ALLRICE_STORAGE_ROOT', fixture!.storageRoot!);
     const source = await createEmployeeAdministrationFixture(base.db);
@@ -496,6 +499,9 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         ...source.definition.capabilities,
         nativeSkillIds: [],
         toolNames: [
+          ...(options.checkedDelivery
+            ? ['workspace.export.create', 'workspace.document.read']
+            : []),
           'workspace.memory.remember',
           'workspace.memory.search',
           'local.file.import',
@@ -658,7 +664,9 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     'PERSONA: exact historical %s source gap fails before a Run and recovers only through the original publication/session path',
     async (kind) => {
       const answer = 'Synthetic source recovery completed.';
-      const f = await publishedTarget(async () => ({ text: answer }));
+      const f = await publishedTarget(async () => ({ text: answer }), {
+        checkedDelivery: true,
+      });
       const legacy = await historicalSourceGap(f, kind);
       let sessionId = f.chat.id;
       if (kind === 'null_engine') {
@@ -743,6 +751,10 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       );
       if (snapshot.schemaVersion !== 2 || !snapshot.persona)
         throw Error('expected real admission PERSONA');
+      expect(snapshot.finalDeliveryPolicy).toMatchObject({
+        version: 1,
+        mode: 'checked_native_v1',
+      });
       expect(snapshot.persona.source.basis.employeeVersionId).toBe(
         current!.employee_version_id,
       );
@@ -1354,7 +1366,24 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         const index = broker.mock.calls.findIndex(
           ([input]) => input.call.name === 'workspace.memory.remember',
         );
-        expect(index).toBeGreaterThanOrEqual(0);
+        expect(
+          index,
+          JSON.stringify({
+            frozenToolNames: snapshot.capabilitySnapshot.bindings.toolNames,
+            grantedCapabilities: resolved.grantedCapabilities,
+            brokerCallNames: broker.mock.calls.map(
+              ([input]) => input.call.name,
+            ),
+            requests: requests.map((request) => ({
+              toolNames: request.tools?.map((tool) => tool.function.name),
+              messages: request.messages.filter(
+                (message) =>
+                  message.role === 'tool' ||
+                  (message.role === 'assistant' && message.tool_calls),
+              ),
+            })),
+          }),
+        ).toBeGreaterThanOrEqual(0);
         expect(
           await broker.mock.results[index]!.value.catch(
             (error: unknown) => error,
