@@ -236,9 +236,11 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
       values(${id},${f.organizationId},${f.workspaceId},${f.ownerId},${f.assignmentId},${instanceId},${f.versionId},'Historical first INSERT')`;
     return id;
   }
-  async function runCount(
-    f: Pick<Subject, 'organizationId' | 'workspaceId' | 'ownerId'>,
-  ) {
+  async function runCount(f: {
+    organizationId: string;
+    workspaceId: string;
+    ownerId: string;
+  }) {
     const [row] = await fixture.db<
       { count: number }[]
     >`select count(*)::integer count from allrice_runs where organization_id=${f.organizationId} and workspace_id=${f.workspaceId} and owner_id=${f.ownerId}`;
@@ -409,9 +411,10 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
     expect(pin.source.basis).toEqual(pin.source.engine);
     expect(pin.source.engine.employeeVersionId).toBe(f.versionId);
     expect(pin.source.basis.employeeVersionId).not.toBe(basis.versionId);
-    expect(taskBinding.promptSnapshot.employeeDocuments?.persona).toContain(
-      'frozen_task_engine',
-    );
+    expect(
+      EmployeePromptSnapshotSchema.parse(taskBinding.promptSnapshot)
+        .employeeDocuments?.persona,
+    ).toContain('frozen_task_engine');
     expect(taskBinding.promptSnapshot.systemPrompt).toContain(
       'PLATFORM_POLICY_A',
     );
@@ -555,7 +558,10 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
         }),
       ),
     );
-    expect(identity.promptSnapshot.employeeDocuments).toEqual({
+    expect(
+      EmployeePromptSnapshotSchema.parse(identity.promptSnapshot)
+        .employeeDocuments,
+    ).toEqual({
       persona: human.resolved.promptSnapshot.employeeDocuments!.persona,
       user: '',
       memory: '',

@@ -87,7 +87,7 @@ import {
   updateEmployeeInstance,
 } from '../../../../packages/database/src/employees/employee-instances.ts';
 import {
-  readEmployeeRunSourceKind,
+  readEmployeeChatSourceKind,
   assertEmployeeChatHumanSource,
 } from '../../../../packages/database/src/employees/employee-chat-authority.ts';
 import { type RepositoryReviewMaterial } from '../../../../packages/database/src/platform-repository-review-contracts.ts';
@@ -975,12 +975,6 @@ suite(
             ownerId: s.admin.actor.id,
           };
           expect(
-            await readEmployeeRunSourceKind({
-              ...scope,
-              userMessageId: reviewUserMessageId,
-            }),
-          ).toBe('internal');
-          expect(
             (await resolveEmployeeExecution(scope)).promptSnapshot,
           ).toEqual(frozenPrompt);
           const [stored] =
@@ -1003,6 +997,12 @@ suite(
               onAbortReady: () => {},
             },
             async (input) => {
+              expect(
+                await readEmployeeChatSourceKind({
+                  context: input.execution.context,
+                  userMessageId: reviewUserMessageId,
+                }),
+              ).toBe('internal');
               await expect(
                 assertEmployeeChatHumanSource({
                   context: input.execution.context,

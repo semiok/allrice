@@ -39,7 +39,7 @@ import {
   platformRepairInstructions,
 } from './platform-repair.ts';
 import { resolveEmployeeExecution } from './employees/employeehub.ts';
-import { readEmployeeRunSourceKind } from './employees/employee-chat-authority.ts';
+import { readEmployeeChatSourceKind } from './employees/employee-chat-authority.ts';
 import * as modelPool from './providers/model-pool.ts';
 import * as harnessRouter from '../../../apps/worker/src/harness/router.js';
 import { DshHarnessAdapter } from '../../../apps/worker/src/harness/dsh-adapter.js';
@@ -432,12 +432,6 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
       memory: '',
     });
     expect(prompt.memories).toEqual([]);
-    expect(
-      await readEmployeeRunSourceKind({
-        ...scope,
-        userMessageId: stored!.user_message_id as string,
-      }),
-    ).toBe('internal');
     const workerId = randomUUID(),
       job = await claimNextJob(workerId, 60000);
     expect(job?.id).toBe(task.jobId);
@@ -452,6 +446,12 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
       job!.id,
       lease.leaseToken,
     );
+    expect(
+      await readEmployeeChatSourceKind({
+        context: execution!.context,
+        userMessageId: stored!.user_message_id as string,
+      }),
+    ).toBe('internal');
     const isolation = await prepareExecutionIsolation({
       root: fixture.storageRoot,
       ...scope,

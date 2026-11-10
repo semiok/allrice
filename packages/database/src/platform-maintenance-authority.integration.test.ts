@@ -100,7 +100,7 @@ import {
 } from '@allrice/contracts';
 import { resolveEmployeeExecution } from './employees/employeehub.ts';
 import {
-  readEmployeeRunSourceKind,
+  readEmployeeChatSourceKind,
   assertEmployeeChatHumanSource,
 } from './employees/employee-chat-authority.ts';
 import { platformMaintenanceRepairInstructions } from './platform-repair.ts';
@@ -623,8 +623,8 @@ suite('immutable report-bound maintenance authority', () => {
     });
     expect(prompt.memories).toEqual([]);
     expect(
-      await readEmployeeRunSourceKind({
-        ...scope,
+      await readEmployeeChatSourceKind({
+        context: claimed!.context,
         userMessageId: execution.frozen.userMessageId,
       }),
     ).toBe('internal');
