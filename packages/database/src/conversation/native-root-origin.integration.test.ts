@@ -1,6 +1,9 @@
 import { syntheticLegacyRuntimePackage } from '../platform-employees/legacy-runtime-package.fixture.ts';
 import { personaRuntimePackageChecksum } from '../platform-employees/runtime-package-signature.ts';
-import { employeePersonaSourceSystemPrompt } from '../platform-employees/runtime-package.ts';
+import {
+  buildEmployeeRuntimePackage,
+  employeePersonaSourceSystemPrompt,
+} from '../platform-employees/runtime-package.ts';
 const oldGeneration = 'dsh-0.1.5-rc.3-a4c74a9' as const;
 import {
   claimNextJob,
@@ -10,12 +13,18 @@ import {
 } from '../execution/queue.ts';
 import { acquireConversationRuntime } from './conversation-runtime.ts';
 import { nativeBindingDescriptor } from '../native-session-binding.fixture.ts';
-import type { EmployeeRuntimePackage } from '@allrice/contracts';
+import {
+  EmployeeExecutionSnapshotSchema,
+  type EmployeeRuntimePackage,
+} from '@allrice/contracts';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as client from '../core/client.ts';
 import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
-import { createRunAuthorityFixture } from '../run-authority.fixture.ts';
+import {
+  createRunAuthorityFixture,
+  type LegacyPublicationFixtureSource,
+} from '../run-authority.fixture.ts';
 import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
 import { queuePlatformEmployeeTestRun } from '../employees/platform-employees.ts';
 import {
@@ -61,10 +70,14 @@ suite(
       vi.unstubAllEnvs();
       await fixture?.close();
     }, 30000);
-    async function authority(runtimePackage: EmployeeRuntimePackage) {
+    async function authority(
+      runtimePackage: EmployeeRuntimePackage,
+      source?: LegacyPublicationFixtureSource,
+    ) {
       const f = await createRunAuthorityFixture(fixture.db, {
         configure: false,
         runtimePackage,
+        legacyPublication: source,
         allowedTools: runtimePackage.runtimeManifest.toolNames,
         runtimePolicy: {
           harness: 'dsh',
@@ -363,13 +376,42 @@ suite(
     it.each(['next-turn', 'explicit-assignment', 'bulk-assignment'] as const)(
       'legacy Session keeps its old package through %s, while a new Session adopts the candidate',
       async (mode) => {
-        const { runtimePackage } = await packaged(),
-          oldPackage = syntheticLegacyRuntimePackage(runtimePackage);
+        const { employee } = await packaged();
+        const skills = await fixture.db<
+          Parameters<typeof buildEmployeeRuntimePackage>[0]['skills']
+        >`select * from allrice_platform_dsh_skills where id=${employee.skillId}`;
+        const input = { definition: employee.definition, skills };
+        // Draft r1 remains intact; both packages get distinct package revision
+        // identities at first construction, before either is issued to a tenant.
+        const oldPackage = syntheticLegacyRuntimePackage(
+          buildEmployeeRuntimePackage({ ...input, revision: 2 }),
+        );
+        const runtimePackage = buildEmployeeRuntimePackage({
+          ...input,
+          revision: 3,
+        });
         oldPackage.runtimeManifest.distributionGeneration = oldGeneration;
         resign(oldPackage);
-        const f = await authority(oldPackage),
+        const f = await authority(oldPackage, {
+            platformEmployeeId: employee.employeeId,
+            definition: employee.definition,
+            revision: 2,
+            historicalGeneration: oldGeneration,
+          }),
           // A real pre-upgrade first INSERT from the fixture, not a new v2 birth.
           s = { id: f.session };
+        const [publication] =
+          await fixture.db`select r.revision,r.runtime_profile
+          from allrice_employee_version_sources p join allrice_platform_employee_revisions r on r.id=p.platform_revision_id
+          where p.employee_version_id=${f.version} and p.organization_id=${f.org} and p.workspace_id=${f.workspace} and p.employee_id=${f.employee}`;
+        expect(publication!.revision).toBe(2);
+        expect(publication!.runtime_profile.distributionGeneration).toBe(
+          oldGeneration,
+        );
+        expect(publication!.runtime_profile.runtimePackage).toEqual(oldPackage);
+        expect(runtimePackage.packageVersion).toBe(
+          `${employee.definition.key}:r3`,
+        );
         const candidate = await publishVersion(f, runtimePackage);
         const [user] =
           await fixture.db`select email from allrice_users where id=${f.user}`;
@@ -389,8 +431,24 @@ suite(
           await fixture.db`update allrice_employee_assignments set employee_version_id=${candidate} where id=${f.assignment}`;
         const sent = await send(f, s.id);
         const [run] =
-          await fixture.db`select employee_version_id from allrice_employee_runs where run_id=${sent.run!.id}`;
+          await fixture.db`select employee_version_id,execution_snapshot from allrice_employee_runs where run_id=${sent.run!.id}`;
         expect(run!.employee_version_id).toBe(f.version);
+        const snapshot = EmployeeExecutionSnapshotSchema.parse(
+          run!.execution_snapshot,
+        );
+        if (snapshot.schemaVersion !== 2 || !snapshot.persona)
+          throw Error('expected source-pinned historical engine');
+        expect(snapshot.persona.source.engine).toMatchObject({
+          employeeVersionId: f.version,
+          templateRevision: 2,
+          packageChecksum: oldPackage.checksum,
+        });
+        expect(snapshot.persona.source.basis).toMatchObject({
+          kind: 'tenant_version',
+          employeeVersionId: candidate,
+          configChecksum: runtimePackage.checksum,
+        });
+        expect(snapshot.employee.definition).toEqual(f.manifest);
         const [session] =
           await fixture.db`select employee_version_id,native_root_origin from allrice_chat_sessions where id=${s.id}`;
         expect(session!.employee_version_id).toBe(f.version);

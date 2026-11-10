@@ -3,9 +3,13 @@ import type { RuntimeLedgerTransaction } from './runtime-ledger/types.ts';
 import { randomUUID } from 'node:crypto';
 import {
   EmployeeExecutionSnapshotSchema,
+  PLATFORM_EMPLOYEE_DSH_DISTRIBUTION,
+  PlatformEmployeeDefinitionSchema,
+  PlatformEmployeeRuntimeProfileSchema,
   type EmployeeExecutionSnapshot,
   type EmployeeRuntimePolicy,
   type EmployeeRuntimePackage,
+  type PlatformEmployeeDefinition,
   type RuntimePolicyControls,
   type RuntimeTaskRef,
 } from '@allrice/contracts';
@@ -21,7 +25,112 @@ import { createRuntimeOperationLedger } from './runtime-ledger/ledger.ts';
 import { ensureRuntimeOperationRoot } from './runtime-ledger/root-service.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
 import { newEmployeeNativeRootOrigin } from './conversation/native-root-origin.ts';
-import { employeePersonaSourceSystemPrompt } from './platform-employees/runtime-package.ts';
+import { frozenPackageSkills } from './skill-bundles.ts';
+import {
+  employeePersonaSourceSystemPrompt,
+  runtimePackageChecksum,
+  runtimePackageSystemPrompt,
+  validatePlatformEmployeeTestExecutionSnapshot,
+} from './platform-employees/runtime-package.ts';
+type FixtureDatabase = Awaited<
+  ReturnType<typeof createRuntimeFixtureDatabase>
+>['db'];
+export type LegacyPublicationFixtureSource = {
+  platformEmployeeId: string;
+  definition: PlatformEmployeeDefinition;
+  revision: number;
+  historicalGeneration?: 'dsh-0.1.5-rc.3-a4c74a9';
+};
+
+/** Explicit historical first-INSERT evidence in an isolated fixture schema.
+ * The caller supplies the original independent definition, never a prompt
+ * recovered from a tenant manifest or today's default/catalog. */
+export async function insertLegacyEmployeePublicationFixture(
+  sql: FixtureDatabase | RuntimeLedgerTransaction,
+  input: LegacyPublicationFixtureSource & {
+    organizationId: string;
+    workspaceId: string;
+    employeeId: string;
+    employeeVersionId: string;
+    runtimePackage: EmployeeRuntimePackage;
+  },
+) {
+  const definition = PlatformEmployeeDefinitionSchema.parse(input.definition);
+  const { runtimePackage } = input;
+  const generation =
+    input.historicalGeneration ?? PLATFORM_EMPLOYEE_DSH_DISTRIBUTION;
+  if (
+    runtimePackage.schemaVersion === 3 ||
+    runtimePackage.packageVersion !== `${definition.key}:r${input.revision}` ||
+    runtimePackage.runtimeManifest.distributionGeneration !== generation ||
+    (generation !== PLATFORM_EMPLOYEE_DSH_DISTRIBUTION &&
+      generation !== 'dsh-0.1.5-rc.3-a4c74a9')
+  )
+    throw Error('fixture_original_legacy_publication_required');
+  const fields = PlatformEmployeeRuntimeProfileSchema.omit({
+    distributionGeneration: true,
+  }).parse({
+    schemaVersion: 1,
+    harness: 'dsh',
+    employeeKey: definition.key,
+    provider: definition.modelPolicy.provider,
+    model: definition.modelPolicy.model,
+    reasoningEffort: definition.modelPolicy.reasoningEffort,
+    timeoutMs: definition.modelPolicy.timeoutMs,
+    credentialReference: definition.modelPolicy.credentialReference,
+    baseUrl: definition.modelPolicy.baseUrl,
+    systemPrompt: runtimePackageSystemPrompt({
+      platformPolicy: definition.systemPrompt,
+      runtimePackage,
+    }),
+    nativeSkillIds: runtimePackage.skills.map((skill) => skill.id),
+    nativeSkillChecksums: runtimePackage.skills.map((skill) => skill.checksum),
+    toolNames: definition.capabilities.toolNames,
+    connectorRefs: definition.capabilities.connectorRefs,
+    securityPolicy: definition.securityPolicy,
+    runtimePackage,
+  });
+  const runtimeProfile = { ...fields, distributionGeneration: generation };
+  frozenPackageSkills(runtimePackage);
+  if (generation === PLATFORM_EMPLOYEE_DSH_DISTRIBUTION)
+    validatePlatformEmployeeTestExecutionSnapshot({
+      definition,
+      nativeSkills: runtimePackage.skills,
+      packageChecksum: runtimePackage.checksum,
+      runtimeProfile,
+    });
+  // An explicit rc3 first-INSERT retains both historical generation fields.
+  // Today's preview envelope only admits the installed generation; historical
+  // source readers still verify the original package/signature/skills/mapping.
+  const checksum = runtimePackageChecksum(definition);
+  const [existing] =
+    await sql`select id,status,definition,checksum,runtime_profile
+    from allrice_platform_employee_revisions where employee_id=${input.platformEmployeeId} and revision=${input.revision}`;
+  if (
+    existing &&
+    (existing.status !== 'published' ||
+      existing.checksum !== checksum ||
+      runtimePolicyDigest(existing.definition) !==
+        runtimePolicyDigest(definition) ||
+      runtimePolicyDigest(existing.runtime_profile) !==
+        runtimePolicyDigest(runtimeProfile))
+  )
+    throw Error('fixture_published_revision_must_remain_identical');
+  const revisionId = existing?.id ?? randomUUID();
+  if (!existing) {
+    const [revision] = await sql`insert into allrice_platform_employee_revisions
+    (id,employee_id,revision,status,definition,checksum,runtime_profile,validation_report,published_by_label,published_at)
+    select ${revisionId},id,${input.revision},
+      'published',${sql.json(definition)},${checksum},${sql.json(runtimeProfile)},
+      '{"valid":true,"errors":[],"warnings":[]}'::jsonb,'isolated-historical-fixture',clock_timestamp()
+    from allrice_platform_employees where id=${input.platformEmployeeId} and employee_key=${definition.key}
+    returning id`;
+    if (!revision) throw Error('fixture_original_platform_employee_required');
+  }
+  await sql`insert into allrice_employee_version_sources
+    (employee_version_id,organization_id,workspace_id,employee_id,platform_employee_id,platform_revision_id)
+    values(${input.employeeVersionId},${input.organizationId},${input.workspaceId},${input.employeeId},${input.platformEmployeeId},${revisionId})`;
+}
 const defaultControls = (): RuntimePolicyControls => ({
   version: 1,
   enabled: true,
@@ -29,7 +138,7 @@ const defaultControls = (): RuntimePolicyControls => ({
   rules: [],
 });
 export async function createRunAuthorityFixture(
-  db: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>['db'],
+  db: FixtureDatabase,
   options: {
     preparePrompt?: (
       transaction: RuntimeLedgerTransaction,
@@ -63,6 +172,8 @@ export async function createRunAuthorityFixture(
     /** Frozen at fixture creation; never rewrite an immutable published version. */
     runtimePolicy?: EmployeeRuntimePolicy;
     runtimePackage?: EmployeeRuntimePackage;
+    /** Opt-in original platform material for an already signed schema-1/2 package. */
+    legacyPublication?: LegacyPublicationFixtureSource;
     /** Test-only first-INSERT issuance; historical fixtures remain NULL. */
     businessCreationOrigin?: boolean;
   } = {},
@@ -90,10 +201,16 @@ export async function createRunAuthorityFixture(
     options.runtimePackage?.schemaVersion === 3
       ? options.runtimePackage
       : undefined;
-  const foundation = personaPackage?.foundation;
+  const legacyDefinition = options.legacyPublication?.definition;
+  if (
+    legacyDefinition &&
+    (!options.runtimePackage || options.runtimePackage.schemaVersion === 3)
+  )
+    throw Error('fixture_legacy_package_required');
+  const foundation = personaPackage?.foundation ?? legacyDefinition;
   const manifest = employeeManifest({
     runtimePackage: options.runtimePackage,
-    key: 'p25-authority',
+    key: legacyDefinition?.key ?? 'p25-authority',
     name: foundation?.name ?? 'P25 authority',
     description: foundation?.description ?? 'Synthetic authority fixture',
     ...(foundation
@@ -114,9 +231,13 @@ export async function createRunAuthorityFixture(
             proactivePolicy: 'suggest' as const,
             approvalPolicy: 'confirm_side_effects' as const,
           },
-          systemPromptOverride: employeePersonaSourceSystemPrompt(
-            personaPackage!,
-          ),
+          systemPromptOverride:
+            legacyDefinition && options.runtimePackage
+              ? runtimePackageSystemPrompt({
+                  platformPolicy: legacyDefinition.systemPrompt,
+                  runtimePackage: options.runtimePackage,
+                })
+              : employeePersonaSourceSystemPrompt(personaPackage!),
         }
       : {}),
     toolNames: options.toolNames ?? selectedTools,
@@ -235,9 +356,18 @@ export async function createRunAuthorityFixture(
     values(${policy},${org},${user},1,${tx.json(frozenPolicy)},clock_timestamp()+interval '1 hour')`;
     await tx`update allrice_runs set policy_snapshot_id=${policy},execution_spec=${tx.json(executionSpec)},input='{}' where id=${rootRunId}`;
     await tx`insert into allrice_employees(id,organization_id,workspace_id,employee_key,name)
-    values(${employee},${org},${workspace},'p25-authority',${manifest.name})`;
+    values(${employee},${org},${workspace},${manifest.key},${manifest.name})`;
     await tx`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest,provider_snapshot)
     values(${version},${org},${workspace},${employee},1,${manifest.name},${manifest.provider.model},${manifest.systemPrompt},${tx.json(manifest.capabilities)},${checksum},${tx.json(manifest)},${tx.json(manifest.provider)})`;
+    if (options.legacyPublication && options.runtimePackage)
+      await insertLegacyEmployeePublicationFixture(tx, {
+        ...options.legacyPublication,
+        organizationId: org,
+        workspaceId: workspace,
+        employeeId: employee,
+        employeeVersionId: version,
+        runtimePackage: options.runtimePackage,
+      });
     await tx`insert into allrice_employee_assignments(id,organization_id,workspace_id,employee_id,employee_version_id,user_id,is_default)
         values(${assignment},${org},${workspace},${employee},${version},${user},false)`;
     const origin = options.businessCreationOrigin

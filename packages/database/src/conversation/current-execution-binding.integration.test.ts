@@ -16,10 +16,14 @@ import {
 import {
   EmployeeDefinitionSchema,
   EmployeeExecutionSnapshotSchema,
+  type PlatformEmployeeDefinition,
 } from '@allrice/contracts';
 import * as client from '../core/client.ts';
 import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
-import { createRunAuthorityFixture } from '../run-authority.fixture.ts';
+import {
+  createRunAuthorityFixture,
+  insertLegacyEmployeePublicationFixture,
+} from '../run-authority.fixture.ts';
 import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
 import { createSession, authenticateSession } from '../identity.ts';
 import {
@@ -28,9 +32,13 @@ import {
   sendChatMessage,
 } from '../workspace/service.ts';
 import { resolveEmployeeExecution } from '../employees/employeehub.ts';
-import { employeeManifestChecksum } from '../employees/employee-config.ts';
+import {
+  employeeManifest,
+  employeeManifestChecksum,
+} from '../employees/employee-config.ts';
 import {
   runtimePackageChecksum,
+  runtimePackageSystemPrompt,
   verifiedRuntimePackageChecksum,
 } from '../platform-employees/runtime-package.ts';
 import {
@@ -77,15 +85,28 @@ type SourceKind =
   | 'current-package1-plain'
   | 'legacy-package1-empty'
   | 'current-package1-empty';
+// The administration fixture already owns draft r1. Each different signed
+// historical publication gets its own revision before its first construction.
+const packageRevisions = {
+  'current-package2': 2,
+  'current-package1-plain': 3,
+  'current-package1-empty': 4,
+  'legacy-package2': 5,
+  'legacy-package1-plain': 6,
+  'legacy-package1-empty': 7,
+} as const;
 
 integration(
   'MET195 current execution binding: complete isolated SQL chain',
   () => {
     let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let schema: string;
-    let currentPackage: ReturnType<typeof buildEmployeeRuntimePackage>;
-    let plainPackage: ReturnType<typeof buildEmployeeRuntimePackage>;
-    let emptyPackage: ReturnType<typeof buildEmployeeRuntimePackage>;
+    let packages: Record<
+      keyof typeof packageRevisions,
+      ReturnType<typeof buildEmployeeRuntimePackage>
+    >;
+    let definition: PlatformEmployeeDefinition;
+    let emptyDefinition: PlatformEmployeeDefinition;
     let platformSource: Pick<
       Awaited<ReturnType<typeof createEmployeeAdministrationFixture>>,
       'employeeId' | 'revisionId'
@@ -131,41 +152,49 @@ integration(
       const skills = await fixture.db<
         Parameters<typeof buildEmployeeRuntimePackage>[0]['skills']
       >`select * from allrice_platform_dsh_skills where id=${template.skillId}`;
-      const definition = {
+      definition = {
         ...template.definition,
         capabilities: {
           ...template.definition.capabilities,
           toolNames: tools,
         },
       };
-      currentPackage = buildEmployeeRuntimePackage({
-        revision: 1,
-        definition,
-        skills,
+      emptyDefinition = {
+        ...definition,
+        capabilities: { ...definition.capabilities, nativeSkillIds: [] },
+      };
+      const plainSkills = skills.map(({ bundle: unused, ...skill }) => {
+        void unused;
+        return skill;
       });
+      const initialPackage = (kind: keyof typeof packageRevisions) =>
+        buildEmployeeRuntimePackage({
+          revision: packageRevisions[kind],
+          definition: kind.endsWith('-empty') ? emptyDefinition : definition,
+          skills: kind.endsWith('-empty')
+            ? []
+            : kind.endsWith('-plain')
+              ? plainSkills
+              : skills,
+        });
+      packages = {
+        'current-package2': initialPackage('current-package2'),
+        'current-package1-plain': initialPackage('current-package1-plain'),
+        'current-package1-empty': initialPackage('current-package1-empty'),
+        'legacy-package2': initialPackage('legacy-package2'),
+        'legacy-package1-plain': initialPackage('legacy-package1-plain'),
+        'legacy-package1-empty': initialPackage('legacy-package1-empty'),
+      };
+      const currentPackage = packages['current-package2'],
+        plainPackage = packages['current-package1-plain'],
+        emptyPackage = packages['current-package1-empty'];
       expect(currentPackage.schemaVersion).toBe(2);
-      plainPackage = buildEmployeeRuntimePackage({
-        revision: 1,
-        definition,
-        skills: skills.map(({ bundle: unused, ...skill }) => {
-          void unused;
-          return skill;
-        }),
-      });
-      emptyPackage = buildEmployeeRuntimePackage({
-        revision: 1,
-        definition: {
-          ...definition,
-          capabilities: { ...definition.capabilities, nativeSkillIds: [] },
-        },
-        skills: [],
-      });
       expect(plainPackage.schemaVersion).toBe(1);
       expect(plainPackage.skills).toHaveLength(1);
       expect(plainPackage.skills[0]!.bundle).toBeUndefined();
       expect(emptyPackage.schemaVersion).toBe(1);
       expect(emptyPackage.skills).toEqual([]);
-      for (const pkg of [currentPackage, plainPackage, emptyPackage])
+      for (const pkg of Object.values(packages))
         expect(verifiedRuntimePackageChecksum(pkg)).toBe(pkg.checksum);
     }, 120_000);
 
@@ -276,13 +305,7 @@ integration(
     });
 
     function packageFor(kind: Exclude<SourceKind, 'default-rice'>) {
-      const pkg = structuredClone(
-        kind.endsWith('-plain')
-          ? plainPackage
-          : kind.endsWith('-empty')
-            ? emptyPackage
-            : currentPackage,
-      );
+      const pkg = structuredClone(packages[kind]);
       pkg.runtimeManifest.distributionGeneration = kind.startsWith('legacy-')
         ? oldGeneration
         : newNativeGeneration;
@@ -323,6 +346,19 @@ integration(
         configure: false,
         memberRole: 'member',
         runtimePackage: pkg,
+        legacyPublication:
+          kind === 'default-rice'
+            ? undefined
+            : {
+                platformEmployeeId: platformSource.employeeId,
+                revision: packageRevisions[kind],
+                historicalGeneration: kind.startsWith('legacy-')
+                  ? oldGeneration
+                  : undefined,
+                definition: kind.endsWith('-empty')
+                  ? emptyDefinition
+                  : definition,
+              },
         allowedTools: tools,
         runtimePolicy: {
           harness: 'dsh',
@@ -336,6 +372,17 @@ integration(
         },
         businessCreationOrigin: legacyBirth && kind === 'current-package2',
       });
+      if (pkg && kind !== 'default-rice') {
+        const [publication] =
+          await fixture.db`select r.revision,r.runtime_profile
+          from allrice_employee_version_sources p join allrice_platform_employee_revisions r on r.id=p.platform_revision_id
+          where p.employee_version_id=${f.version} and p.organization_id=${f.org} and p.workspace_id=${f.workspace} and p.employee_id=${f.employee}`;
+        expect(publication!.revision).toBe(packageRevisions[kind]);
+        expect(publication!.runtime_profile.distributionGeneration).toBe(
+          pkg.runtimeManifest.distributionGeneration,
+        );
+        expect(publication!.runtime_profile.runtimePackage).toEqual(pkg);
+      }
       const login = await createSession(f.user);
       const context = await authenticateSession(login.token, {
         organizationId: f.org,
@@ -389,6 +436,18 @@ integration(
       };
     }
     type Subject = Awaited<ReturnType<typeof subject>>;
+    function sourcefulNullManifest(f: Subject) {
+      // A new immutable tenant version uses the normal producer's independent
+      // policy. The old composite systemPrompt is never an override/source.
+      return EmployeeDefinitionSchema.parse(
+        employeeManifest({
+          ...f.manifest,
+          runtimePackage: null,
+          toolNames: f.manifest.capabilityBindings.toolNames,
+          connectorRefs: f.manifest.capabilityBindings.connectorRefs,
+        }),
+      );
+    }
     const scope = (f: Subject) => ({
       organizationId: f.org,
       workspaceId: f.workspace,
@@ -512,6 +571,16 @@ integration(
           );
         const id = await send(f),
           before = await stored(id);
+        const snapshot = EmployeeExecutionSnapshotSchema.parse(
+          before.execution_snapshot,
+        );
+        if (snapshot.schemaVersion !== 2 || !snapshot.persona)
+          throw Error('expected source-pinned compatibility fixture');
+        expect(snapshot.persona.source.engine.employeeVersionId).toBe(
+          f.version,
+        );
+        expect(snapshot.persona.source.basis.employeeVersionId).toBe(f.version);
+        expect(snapshot.employee.definition).toEqual(f.manifest);
         const binding = EmployeeRunExecutionBindingSchema.parse(
           before.native_execution_binding,
         );
@@ -558,20 +627,52 @@ integration(
           first = await send(f),
           before = await stored(first);
         const input = await lease(f, first);
-        const nextManifest = EmployeeDefinitionSchema.parse({
-          ...f.manifest,
-          runtimePackage: target === null ? null : packageFor(target),
-        });
+        const nextPackage = target === null ? null : packageFor(target);
+        const nextManifest = nextPackage
+          ? EmployeeDefinitionSchema.parse({
+              ...f.manifest,
+              runtimePackage: nextPackage,
+              systemPrompt: runtimePackageSystemPrompt({
+                platformPolicy: definition.systemPrompt,
+                runtimePackage: nextPackage,
+              }),
+            })
+          : sourcefulNullManifest(f);
         const nextVersion = randomUUID();
         await fixture.db`insert into allrice_employee_versions
       (id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest,provider_snapshot)
       values(${nextVersion},${f.org},${f.workspace},${f.employee},2,${nextManifest.name},${nextManifest.provider.model},
       ${nextManifest.systemPrompt},${fixture.db.json(nextManifest.capabilities)},${nextManifest.runtimePackage?.checksum ?? employeeManifestChecksum(nextManifest)},
       ${fixture.db.json(nextManifest)},${fixture.db.json(nextManifest.provider)})`;
+        if (nextPackage)
+          await fixture.db.begin((tx) =>
+            insertLegacyEmployeePublicationFixture(tx, {
+              platformEmployeeId: platformSource.employeeId,
+              revision: packageRevisions['current-package1-plain'],
+              definition,
+              organizationId: f.org,
+              workspaceId: f.workspace,
+              employeeId: f.employee,
+              employeeVersionId: nextVersion,
+              runtimePackage: nextPackage,
+            }),
+          );
         await fixture.db`update allrice_employee_assignments set employee_version_id=${nextVersion} where id=${f.assignment}`;
         const next = await send(f),
           after = await stored(next);
         expect(after.employee_version_id).toBe(nextVersion);
+        const snapshot = EmployeeExecutionSnapshotSchema.parse(
+          after.execution_snapshot,
+        );
+        if (snapshot.schemaVersion !== 2 || !snapshot.persona)
+          throw Error('expected source-pinned next version');
+        expect(snapshot.persona.source.engine.employeeVersionId).toBe(
+          nextVersion,
+        );
+        expect(snapshot.persona.source.basis.employeeVersionId).toBe(
+          nextVersion,
+        );
+        expect(snapshot.employee.definition).toEqual(nextManifest);
         expect(
           EmployeeRunExecutionBindingSchema.parse(
             after.native_execution_binding,
@@ -618,10 +719,7 @@ integration(
           currentRun = await stored(currentRunId);
         // Changed declarations are incompatible with the historical birth,
         // but both reviewed declarations are allowed within the v2 family.
-        const target = EmployeeDefinitionSchema.parse({
-          ...f.manifest,
-          runtimePackage: null,
-        });
+        const target = sourcefulNullManifest(f);
         const version = randomUUID();
         await fixture.db`insert into allrice_employee_versions
           (id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest,provider_snapshot)
