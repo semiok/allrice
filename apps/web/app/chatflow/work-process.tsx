@@ -3,6 +3,7 @@
 import {
   Children,
   useEffect,
+  useId,
   useLayoutEffect,
   useState,
   useRef,
@@ -140,12 +141,13 @@ export function WorkProcess({
   presentation?: WorkProcessPresentation;
 }) {
   const root = useRef<HTMLDivElement>(null);
+  const processId = useId();
   const [disclosure, setDisclosure] = useState<WorkProcessDisclosure>();
   const [settledOnMount] = useState(!running);
   const policy = presentationPolicyFor(transcriptView, collapseTiming);
   const currentPresentation =
     presentation ?? workProcessPresentation([], parts, undefined, false);
-  const withReadingState = (content: ReactNode, result?: ReactNode) => (
+  const withReadingState = (content: ReactNode) => (
     <WorkProcessReadingState key={currentPresentation.runId} root={root}>
       <div
         ref={root}
@@ -153,7 +155,6 @@ export function WorkProcess({
         data-process-region={currentPresentation.runId}
       >
         {content}
-        {result}
       </div>
     </WorkProcessReadingState>
   );
@@ -296,21 +297,35 @@ export function WorkProcess({
     const showHistory = display.open;
     const visibleParts = parts.filter(
       (part) =>
-        part.id !== final?.id &&
-        (part.kind === 'reply' ||
-          !onlyLiveThinking(
-            summarizeWorkProcess(part.items).steps,
-            running && !part.closed,
-          ) ||
-          part.items.some((item) => item.operationId && renderOperation)),
+        part.kind === 'reply' ||
+        !onlyLiveThinking(
+          summarizeWorkProcess(part.items).steps,
+          running && !part.closed,
+        ) ||
+        part.items.some((item) => item.operationId && renderOperation),
     );
-    const renderPart = (part: WorkProgressPart) =>
+    const partId = (index: number) => `${processId}-part-${index}`;
+    const historyIds = visibleParts.flatMap((part, index) =>
+      part.id === final?.id ? [] : [partId(index)],
+    );
+    const retryId = traceStatus === 'failed' ? `${processId}-retry` : undefined;
+    const childrenId = Children.toArray(children).length
+      ? `${processId}-children`
+      : undefined;
+    const ownedIds = [...historyIds, retryId, childrenId]
+      .filter(Boolean)
+      .join(' ');
+    const hasVisibleHistory =
+      (showHistory && Boolean(historyIds.length || childrenId)) || !!retryId;
+    const renderPart = (part: WorkProgressPart, index: number) =>
       part.kind === 'reply' ? (
         <div
           key={
             settledOnMount && part.id === final?.id ? 'final-reply' : part.id
           }
-          className={styles.processReply}
+          id={partId(index)}
+          className={`${styles.processPart} ${styles.processReply}`}
+          data-process-member={part.id !== final?.id || undefined}
           data-work-reply={part.id}
           data-process-content={`reply:${part.id}`}
           data-process-append
@@ -325,7 +340,13 @@ export function WorkProcess({
           />
         </div>
       ) : (
-        <div key={part.id} hidden={!showHistory}>
+        <div
+          key={part.id}
+          id={partId(index)}
+          className={styles.processPart}
+          data-process-member
+          hidden={!showHistory}
+        >
           <WorkProcessGroup
             items={part.items}
             questions={questions}
@@ -338,10 +359,14 @@ export function WorkProcess({
           />
         </div>
       );
-    return withReadingState(
+    // Keep every part in one keyed parent, including a reply that later becomes
+    // history or the final answer. ARIA ownership follows only real history.
+    return withReadingState([
       <section
-        className={styles.workProcess}
+        key="process-header"
+        className={`${styles.workProcess} ${hasVisibleHistory ? styles.processExpanded : ''}`}
         aria-label={label}
+        aria-owns={ownedIds || undefined}
         data-transcript-view={policy.mode}
         data-process-open={display.open}
       >
@@ -382,28 +407,39 @@ export function WorkProcess({
             </>
           }
         />
-        {visibleParts.length ||
-        traceStatus === 'failed' ||
-        Children.toArray(children).length ? (
-          <div className={styles.processFlow}>
-            {visibleParts.map(renderPart)}
-            {traceStatus === 'failed' ? (
-              <button
-                className={styles.nativeTraceRetry}
-                type="button"
-                onClick={onRetry}
-              >
-                过程加载失败，点击重试
-              </button>
-            ) : null}
-            {Children.toArray(children).length ? (
-              <div hidden={!showHistory}>{children}</div>
-            ) : null}
-          </div>
-        ) : null}
       </section>,
-      final ? renderPart(final) : null,
-    );
+      ...visibleParts.flatMap((part, index) =>
+        part.id === final?.id ? [] : [renderPart(part, index)],
+      ),
+      retryId ? (
+        <div
+          key="trace-retry"
+          id={retryId}
+          className={styles.processPart}
+          data-process-member
+        >
+          <button
+            className={styles.nativeTraceRetry}
+            type="button"
+            onClick={onRetry}
+          >
+            过程加载失败，点击重试
+          </button>
+        </div>
+      ) : null,
+      childrenId ? (
+        <div
+          key="process-children"
+          id={childrenId}
+          className={styles.processPart}
+          data-process-member
+          hidden={!showHistory}
+        >
+          {children}
+        </div>
+      ) : null,
+      final ? renderPart(final, visibleParts.indexOf(final)) : null,
+    ]);
   }
   return withReadingState(
     <section

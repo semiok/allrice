@@ -112,14 +112,43 @@ describe('native process display surface', () => {
   });
 
   it('retains the accepted final answer outside completed process folding', () => {
-    const html = render();
+    const html = render({
+      traceStatus: 'failed',
+      children: <p>继续读取的历史说明</p>,
+    });
     expect(html).toContain('data-process-open="false"');
     expect(html).toMatch(/data-work-reply="progress"[^>]* hidden=""/);
     expect(html).toMatch(/data-work-reply="final-reply"[^>]*>/);
     expect(html).not.toMatch(/data-work-reply="final-reply"[^>]* hidden/);
     expect(html).toContain('最终交付');
+    expect(html.match(/data-work-reply="final-reply"/g)).toHaveLength(1);
     expect(html.lastIndexOf('</section>')).toBeLessThan(
       html.indexOf('data-work-reply="final-reply"'),
+    );
+    const region = html.match(/<section[^>]*aria-label="工作过程"[^>]*>/)![0];
+    const owned = region.match(/aria-owns="([^"]+)"/)![1]!.split(' ');
+    const members = [
+      ...html.matchAll(/<div[^>]*data-process-member="true"[^>]*>/g),
+    ];
+    const memberIds = members.map(([tag]) => tag.match(/ id="([^"]+)"/)![1]!);
+    expect(owned).toEqual(memberIds);
+    expect(new Set(owned).size).toBe(4);
+    expect(members[0]![0]).toContain('data-work-reply="progress"');
+    expect(html).toContain('过程加载失败，点击重试');
+    expect(html).toContain('继续读取的历史说明');
+    const finalTag = html.match(
+      /<div[^>]*data-work-reply="final-reply"[^>]*>/,
+    )![0];
+    expect(finalTag).not.toContain('data-process-member');
+    expect(owned).not.toContain(finalTag.match(/ id="([^"]+)"/)![1]);
+    for (const id of owned) {
+      expect(html.split(`id="${id}"`)).toHaveLength(2);
+      expect(html.indexOf(`id="${id}"`)).toBeLessThan(
+        html.indexOf('data-work-reply="final-reply"'),
+      );
+    }
+    expect(html.indexOf(`id="${owned[1]}"`)).toBeLessThan(
+      html.indexOf('data-step-id="tool:read"'),
     );
   });
   it.each([

@@ -77,6 +77,35 @@ suite('reading a receipt while late native trace changes its group', () => {
   }, 60_000);
   const processOf = (page: Page) =>
     page.getByRole('region', { name: '工作过程', exact: true });
+  const processBodyOf = (page: Page) => processOf(page).locator('..');
+  const processOwns = async (region: Locator, target: Locator) => {
+    const state = await target.evaluate(
+      (node, region) => {
+        const ids = (region!.getAttribute('aria-owns') ?? '')
+          .split(' ')
+          .filter(Boolean);
+        const elements = [...document.querySelectorAll('[id]')];
+        const members = ids.map((id) =>
+          elements.filter((element) => element.id === id),
+        );
+        return {
+          exact:
+            new Set(ids).size === ids.length &&
+            members.every(
+              (matches) =>
+                matches.length === 1 &&
+                matches[0]!.parentElement === region!.parentElement,
+            ),
+          owned: members.some(
+            (matches) => matches.length === 1 && matches[0]!.contains(node),
+          ),
+        };
+      },
+      await region.elementHandle(),
+    );
+    expect(state.exact).toBe(true);
+    return state.owned;
+  };
   const card = (page: Page, i: number) =>
     page.locator(`#operation-reading-${i}`);
   const fullButton = (page: Page) =>
@@ -538,7 +567,7 @@ suite('reading a receipt while late native trace changes its group', () => {
     const page = await open(390);
     try {
       const group = () =>
-        processOf(page)
+        processBodyOf(page)
           .getByRole('button', { name: '已调用工具', exact: true })
           .first();
       await group().focus();
@@ -574,7 +603,7 @@ suite('reading a receipt while late native trace changes its group', () => {
     const page = await open(390);
     try {
       const groups = () =>
-        processOf(page).getByRole('button', {
+        processBodyOf(page).getByRole('button', {
           name: '已调用工具',
           exact: true,
         });
@@ -591,14 +620,14 @@ suite('reading a receipt while late native trace changes its group', () => {
         'false',
       );
       expect(
-        await processOf(page)
+        await processBodyOf(page)
           .locator('[data-step-id="tool:call-0"] [class*="processStepLabel"]')
           .isVisible(),
       ).toBe(false);
       await page.keyboard.press('Enter');
       expect(await groups().first().getAttribute('aria-expanded')).toBe('true');
       expect(
-        await processOf(page)
+        await processBodyOf(page)
           .locator('[data-step-id="tool:call-0"] [class*="processStepLabel"]')
           .isVisible(),
       ).toBe(true);
@@ -608,13 +637,13 @@ suite('reading a receipt while late native trace changes its group', () => {
       await page.keyboard.press('Space');
       expect(await groups().last().getAttribute('aria-expanded')).toBe('false');
       expect(
-        await processOf(page)
+        await processBodyOf(page)
           .locator('[data-step-id="tool:call-4"] [class*="processStepLabel"]')
           .isVisible(),
       ).toBe(false);
       await page.keyboard.press('Enter');
       expect(
-        await processOf(page)
+        await processBodyOf(page)
           .locator('[data-step-id="tool:call-4"] [class*="processStepLabel"]')
           .isVisible(),
       ).toBe(true);
@@ -630,14 +659,14 @@ suite('reading a receipt while late native trace changes its group', () => {
         'false',
       );
       expect(
-        await processOf(page)
+        await processBodyOf(page)
           .locator('[data-step-id="tool:call-0"] [class*="processStepLabel"]')
           .isVisible(),
       ).toBe(false);
       await page.keyboard.press('Enter');
       expect(await groups().first().getAttribute('aria-expanded')).toBe('true');
       expect(
-        await processOf(page)
+        await processBodyOf(page)
           .locator('[data-step-id="tool:call-0"] [class*="processStepLabel"]')
           .isVisible(),
       ).toBe(true);
@@ -649,7 +678,7 @@ suite('reading a receipt while late native trace changes its group', () => {
     const page = await open(390);
     try {
       const groups = () =>
-        processOf(page).getByRole('button', {
+        processBodyOf(page).getByRole('button', {
           name: '已调用工具',
           exact: true,
         });
@@ -657,7 +686,7 @@ suite('reading a receipt while late native trace changes its group', () => {
       await update(page, 'append');
       expect(await groups().first().getAttribute('aria-expanded')).toBe('true');
       expect(
-        await processOf(page)
+        await processBodyOf(page)
           .locator('[data-step-id="tool:call-36"] [class*="processStepLabel"]')
           .isVisible(),
       ).toBe(true);
@@ -665,7 +694,7 @@ suite('reading a receipt while late native trace changes its group', () => {
       expect(await groups().count()).toBe(2);
       expect(await groups().last().getAttribute('aria-expanded')).toBe('true');
       expect(
-        await processOf(page)
+        await processBodyOf(page)
           .locator('[data-step-id="tool:call-36"] [class*="processStepLabel"]')
           .isVisible(),
       ).toBe(true);
@@ -674,7 +703,7 @@ suite('reading a receipt while late native trace changes its group', () => {
       await update(page, 'split');
       expect(await groups().last().getAttribute('aria-expanded')).toBe('false');
       expect(
-        await processOf(page)
+        await processBodyOf(page)
           .locator('[data-step-id="tool:call-36"] [class*="processStepLabel"]')
           .isVisible(),
       ).toBe(false);
@@ -732,12 +761,14 @@ suite('reading a receipt while late native trace changes its group', () => {
     const page = await open(390);
     try {
       const group = () =>
-        processOf(page).getByRole('button', {
+        processBodyOf(page).getByRole('button', {
           name: '已调用工具',
           exact: true,
         });
       await group().first().click();
-      const list = processOf(page).locator('ul[aria-label="工作步骤"]').first();
+      const list = processBodyOf(page)
+        .locator('ul[aria-label="工作步骤"]')
+        .first();
       expect(
         await list.evaluate((node) => ({
           height: getComputedStyle(node.parentElement!).maxHeight,
@@ -803,6 +834,10 @@ suite('reading a receipt while late native trace changes its group', () => {
   });
   it('keeps exact native question ownership, answer authority and final deliverables outside the folded process', async () => {
     const { page, errors, primary } = await openProcess();
+    const process = primary.getByRole('region', {
+      name: '工作过程',
+      exact: true,
+    });
     try {
       expect(
         await page.getByRole('article', { name: '用户确认结果' }).count(),
@@ -853,11 +888,7 @@ suite('reading a receipt while late native trace changes its group', () => {
         ['invalid', '身份不符范围'],
       ]) {
         const receipt = answerReceipt(page, call!);
-        expect(
-          await receipt.evaluate(
-            (node) => node.closest('section[aria-label="工作过程"]') === null,
-          ),
-        ).toBe(true);
+        expect(await processOwns(process, receipt)).toBe(false);
         await receipt.locator('[data-disclosure-row]').first().click();
         expect(
           await receipt.getByText(text!, { exact: true }).isVisible(),
@@ -884,10 +915,13 @@ suite('reading a receipt while late native trace changes its group', () => {
         exact: true,
       });
       expect(
-        await pending.evaluate(
-          (node) => node.closest('section[aria-label="工作过程"]') === null,
+        await processOwns(
+          page
+            .locator(`#message-${ids.runningRun}`)
+            .getByRole('region', { name: '工作过程', exact: true }),
+          pending,
         ),
-      ).toBe(true);
+      ).toBe(false);
       const option = pending.getByRole('radio', {
         name: '待答范围',
         exact: true,
@@ -916,14 +950,55 @@ suite('reading a receipt while late native trace changes its group', () => {
       expect(
         await table.evaluate((node) => {
           const reply = node.closest('[data-work-reply]')!;
+          const region = reply.parentElement!.querySelector(
+            ':scope > section[aria-label="工作过程"]',
+          );
           return (
-            !node.closest('section[aria-label="工作过程"]') &&
-            reply.previousElementSibling?.matches(
-              'section[aria-label="工作过程"]',
-            )
+            !region?.contains(node) &&
+            reply.parentElement === region?.parentElement
           );
         }),
       ).toBe(true);
+      expect(await processOwns(process, table)).toBe(false);
+      expect(
+        await process
+          .locator('..')
+          .locator('[data-work-reply]:not([data-process-member])')
+          .count(),
+      ).toBe(1);
+      const accessibility = await page.context().newCDPSession(page);
+      const { root } = await accessibility.send('DOM.getDocument');
+      const { nodes } = await accessibility.send('Accessibility.getFullAXTree');
+      const axNode = async (selector: string) => {
+        const { nodeId } = await accessibility.send('DOM.querySelector', {
+          nodeId: root.nodeId,
+          selector,
+        });
+        const { node } = await accessibility.send('DOM.describeNode', {
+          nodeId,
+        });
+        const ax = nodes.find(
+          (item) => item.backendDOMNodeId === node.backendNodeId,
+        );
+        expect(ax?.ignored).toBe(false);
+        return ax!;
+      };
+      const regionAX = await axNode(
+        `#message-${ids.run} section[aria-label="工作过程"]`,
+      );
+      const historyAX = await axNode(
+        `#message-${ids.run} [data-step-id="tool:search"] [data-disclosure-row]`,
+      );
+      const finalAX = await axNode(`#message-${ids.run} table`);
+      const byId = new Map(nodes.map((node) => [node.nodeId, node]));
+      const underRegion = (node?: typeof regionAX): boolean =>
+        !!node &&
+        (node.nodeId === regionAX.nodeId ||
+          underRegion(byId.get(node.parentId ?? '')));
+      expect(underRegion(historyAX)).toBe(true);
+      expect(underRegion(finalAX)).toBe(false);
+      expect(finalAX.role?.value).toBe('table');
+      await accessibility.detach();
       await primary
         .getByRole('region', { name: '工作过程', exact: true })
         .locator('[data-disclosure-row]')
@@ -978,10 +1053,11 @@ suite('reading a receipt while late native trace changes its group', () => {
         exact: true,
       });
       expect(
-        await receipt.evaluate(
-          (node) => !node.closest('section[aria-label="工作过程"]'),
+        await processOwns(
+          primary.getByRole('region', { name: '工作过程', exact: true }),
+          receipt,
         ),
-      ).toBe(true);
+      ).toBe(false);
       await toggle.click();
       const selected = await receipt
         .locator('dd')
@@ -997,6 +1073,12 @@ suite('reading a receipt while late native trace changes its group', () => {
       expect(selected).toBe('只读检查');
       await page.evaluate(() => window.processTrace());
       await expect.poll(() => primary.locator(receipt).count()).toBe(1);
+      expect(
+        await processOwns(
+          primary.getByRole('region', { name: '工作过程', exact: true }),
+          receipt,
+        ),
+      ).toBe(true);
       expect(await receipt.isVisible()).toBe(true);
       expect(await page.locator('#message-answer-0').count()).toBe(0);
       expect(await toggle.getAttribute('aria-expanded')).toBe('true');
@@ -1080,8 +1162,9 @@ suite('reading a receipt while late native trace changes its group', () => {
       const table = primary.getByRole('table');
       await table.waitFor();
       expect(
-        await table.evaluate(
-          (node) => !!node.closest('section[aria-label="工作过程"]'),
+        await processOwns(
+          primary.getByRole('region', { name: '工作过程', exact: true }),
+          table,
         ),
       ).toBe(true);
       const before = await table
@@ -1143,11 +1226,12 @@ suite('reading a receipt while late native trace changes its group', () => {
       await page.evaluate(() => window.processFinish());
       await expect
         .poll(() =>
-          table.evaluate(
-            (node) => !node.closest('section[aria-label="工作过程"]'),
+          processOwns(
+            primary.getByRole('region', { name: '工作过程', exact: true }),
+            table,
           ),
         )
-        .toBe(true);
+        .toBe(false);
       const after = await table.evaluate((node) => {
         const selection = document.getSelection()!;
         return {
