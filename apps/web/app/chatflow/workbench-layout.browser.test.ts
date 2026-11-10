@@ -5393,7 +5393,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     },
   );
   it.each(['active', 'archived', 'denied'] as const)(
-    'keeps an open reference draft through a delayed lifecycle read and gates writes for %s',
+    'keeps an open reference draft editable during lifecycle refresh until archive or access denial is confirmed: %s',
     async (outcome) => {
       const f = await fixture({ artifacts: true });
       let release = () => {};
@@ -5432,7 +5432,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const save = dialog.getByRole('button', { name: '保存', exact: true });
         const purpose = dialog.getByLabel('参考资料用途', { exact: true });
         await expect.poll(() => save.isEnabled()).toBe(true);
-        await purpose.fill('父刷新期间保留的参考用途');
+        const draft = '父刷新期间保留的参考用途';
+        await purpose.fill(draft);
         f.state.employeeInstanceDelay = new Promise<void>((done) => {
           release = done;
         });
@@ -5445,10 +5446,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
         await began;
         expect(await dialog.count()).toBe(1);
-        expect(await purpose.inputValue()).toBe('父刷新期间保留的参考用途');
-        expect(await purpose.isDisabled()).toBe(true);
-        expect(await save.isDisabled()).toBe(true);
-        await save.dispatchEvent('click');
+        expect(await purpose.inputValue()).toBe(draft);
+        expect(await purpose.isEditable()).toBe(true);
+        expect(await save.isEnabled()).toBe(true);
+        const editedDraft = `${draft}，继续编辑`;
+        await purpose.fill(editedDraft);
+        expect(await purpose.inputValue()).toBe(editedDraft);
         expect(saved).toEqual([]);
 
         f.state.employeeInstanceArchived = outcome === 'archived';
@@ -5462,13 +5465,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await completed;
         if (outcome === 'active') {
           await expect.poll(() => save.isEnabled()).toBe(true);
-          expect(await purpose.inputValue()).toBe('父刷新期间保留的参考用途');
+          expect(await purpose.inputValue()).toBe(editedDraft);
           await save.click();
           await dialog.getByRole('status').waitFor();
           expect(saved).toEqual([
             expect.objectContaining({
               artifactVersionId: f.state.items[0]!.id,
-              purpose: '父刷新期间保留的参考用途',
+              purpose: editedDraft,
             }),
           ]);
         } else {
@@ -5481,7 +5484,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             )
             .waitFor();
           expect(await dialog.count()).toBe(1);
-          expect(await purpose.inputValue()).toBe('父刷新期间保留的参考用途');
+          expect(await purpose.inputValue()).toBe(editedDraft);
+          expect(await purpose.isDisabled()).toBe(true);
           expect(await save.isDisabled()).toBe(true);
           await save.dispatchEvent('click');
           expect(saved).toEqual([]);
