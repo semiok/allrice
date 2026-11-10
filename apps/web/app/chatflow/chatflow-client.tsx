@@ -530,6 +530,7 @@ export function ChatFlowClient({
     revision: number;
     entry?: SceneCatalogEntry;
     create?: boolean;
+    returning?: boolean;
   } | null>(null);
   const skillWrites = useRef<EmployeeSkillWriteStore>(new Map());
   const skillNavigation = useRef<{ navigateHome: () => void } | null>(null);
@@ -596,6 +597,9 @@ export function ChatFlowClient({
     (memoryInstanceId?: string) => {
       closeWorkbench();
       if (memoryInstanceId) {
+        setSceneRequest(null);
+        skillNavigation.current?.navigateHome();
+        setSkillHostOrigin('employee');
         reuseDetailsSceneSnapshot.current = false;
         setDetailsAssignmentId(memoryInstanceId);
         setEmployeeDetailsOpen(true);
@@ -1492,7 +1496,8 @@ export function ChatFlowClient({
     sceneRequest?.scope === settingsScope &&
     (sceneRequest.origin === 'employee'
       ? sceneRequest.instanceId === detailsAssignmentId
-      : sceneRequest.instanceId === activeEmployee?.instanceId)
+      : !employeeDetailsOpen &&
+        sceneRequest.instanceId === activeEmployee?.instanceId)
       ? sceneRequest
       : null;
   useEffect(() => {
@@ -1519,13 +1524,17 @@ export function ChatFlowClient({
     key: sceneCatalog.key,
     busy,
     unavailable: sceneCatalog.accessUnavailable,
+    request: currentSceneRequest,
   });
   sceneGuard.current = {
     key: sceneCatalog.key,
     busy,
     unavailable: sceneCatalog.accessUnavailable,
+    request: currentSceneRequest,
   };
-  const sceneOpen = Boolean(currentSceneRequest);
+  const sceneOpen = Boolean(
+    currentSceneRequest && !currentSceneRequest.returning,
+  );
   const restoredCapabilityOpen = useRef('');
   useEffect(() => {
     if (!workbenchOpen) {
@@ -1601,19 +1610,27 @@ export function ChatFlowClient({
     setEmployeeDetailsOpen(false);
   }
   function returnToEmployee() {
+    const request = currentSceneRequest;
+    if (!request || request.origin !== 'employee') return;
     const scope = settingsScope,
       key = sceneCatalog.key;
-    setSceneRequest(null);
+    const returning = { ...request, returning: true };
+    setSceneRequest(returning);
     // Unmount native handlers before restoring the existing DshDialog; one
-    // Escape must not also close the page it is returning to.
+    // Escape must not also close the page it is returning to. Keep this same
+    // employee target through that UI handoff; it is still the single catalog.
     void nextPaint().then(() => {
       if (
         currentSettingsScope.current === scope &&
         sceneGuard.current.key === key &&
+        sceneGuard.current.request === returning &&
         !sceneGuard.current.unavailable
       ) {
         reuseDetailsSceneSnapshot.current = true;
         setEmployeeDetailsOpen(true);
+        setSceneRequest(null);
+      } else if (sceneGuard.current.request === returning) {
+        setSceneRequest(null);
       }
     });
   }
@@ -2330,6 +2347,7 @@ export function ChatFlowClient({
           else setError('当前没有可用员工，请先派驻员工。');
         }}
         onOpenEmployeeDetails={(assignmentId) => {
+          setSceneRequest(null);
           skillNavigation.current?.navigateHome();
           setSkillHostOrigin('employee');
           reuseDetailsSceneSnapshot.current = false;
@@ -3064,6 +3082,9 @@ export function ChatFlowClient({
                 !selection.current()
               )
                 return;
+              setSceneRequest(null);
+              skillNavigation.current?.navigateHome();
+              setSkillHostOrigin('employee');
               setDetailsAssignmentId(target.profile.instanceId);
               setEmployeeDetailsOpen(true);
             });

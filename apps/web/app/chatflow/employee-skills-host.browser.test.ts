@@ -955,6 +955,9 @@ suite('U1 scoped employee Skill HTTP host candidate', () => {
       await dialog(f.page)
         .getByRole('button', { name: '取消', exact: true })
         .click();
+      await dialog(f.page)
+        .getByRole('button', { name: '返回员工详情', exact: true })
+        .click();
       await ready(f.page);
       expect(
         await f.page

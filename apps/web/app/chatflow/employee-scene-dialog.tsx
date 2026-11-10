@@ -26,6 +26,7 @@ import {
   EmployeeCapabilityRow,
 } from './employee-capability-presentation';
 import capabilityCss from './employee-capability-presentation.module.css';
+import { useCapabilityEscape } from './use-capability-escape';
 
 function SceneLayer(props: {
   inline?: boolean;
@@ -35,18 +36,19 @@ function SceneLayer(props: {
   className: string;
   children: ReactNode;
 }) {
+  const inline = useRef<HTMLElement>(null);
+  useCapabilityEscape(
+    inline,
+    Boolean(props.inline && props.open),
+    props.onClose,
+  );
   return props.inline ? (
     props.open ? (
       <section
+        ref={inline}
         role="region"
         className={`${props.className} ${css.inlinePanel}`}
         aria-label={props.title}
-        onKeyDown={(event) => {
-          if (event.key === 'Escape' && !event.defaultPrevented) {
-            event.stopPropagation();
-            props.onClose();
-          }
-        }}
       >
         {props.children}
       </section>

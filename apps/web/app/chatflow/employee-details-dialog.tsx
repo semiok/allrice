@@ -136,7 +136,8 @@ function EmployeeDetailsReader(
     props.reuseSceneSnapshot ||
     (result?.attempt === attempt && result.sceneReadDone);
   const data = sceneCatalog
-    ? sceneReady
+    ? sceneReady &&
+      sceneCatalog.details?.profile.instanceId === props.instanceId
       ? sceneCatalog.details
       : undefined
     : result?.attempt === attempt

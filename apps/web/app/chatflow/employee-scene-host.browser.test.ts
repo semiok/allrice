@@ -1224,6 +1224,29 @@ suite('U1 mounted employee Workflow host', () => {
     try {
       await body(f);
       f.check();
+    } catch (error) {
+      const failure = `first-failure-${Date.now()}-${process.pid}`;
+      await f.page
+        .screenshot({
+          path: resolve(evidence, `${failure}.png`),
+          fullPage: true,
+        })
+        .catch(() => {});
+      await writeFile(
+        resolve(evidence, `${failure}.json`),
+        JSON.stringify(
+          {
+            error: String(error),
+            stack: error instanceof Error ? error.stack : undefined,
+            requests: f.state.requests,
+            errors: f.state.errors,
+            unexpected: f.state.unexpected,
+          },
+          null,
+          2,
+        ),
+      );
+      throw error;
     } finally {
       await f.close();
     }
@@ -1270,6 +1293,221 @@ suite('U1 mounted employee Workflow host', () => {
     });
     await dialog.waitFor();
     return dialog;
+  }
+
+  it('MET-251 keeps unapproved Skill host copy and missing plugin contracts unactivated in both real hosts', async () => {
+    await inFixture({}, async (f) => {
+      const root = await f.openDirectory();
+      expect(
+        await root
+          .getByRole('heading', { name: '技能 Skills', exact: true })
+          .count(),
+      ).toBe(0);
+      expect(
+        await root
+          .getByRole('heading', { name: '插件 Plugins', exact: true })
+          .count(),
+      ).toBe(0);
+      await root.getByRole('button', { name: '写周报', exact: true }).waitFor();
+      await root
+        .getByRole('button', { name: '关闭工作台', exact: true })
+        .click();
+      const employee = await f.openEmployeeDetails();
+      expect(
+        await employee
+          .getByRole('heading', { name: '技能 Skills', exact: true })
+          .count(),
+      ).toBe(0);
+      expect(
+        await employee
+          .getByRole('heading', { name: '插件 Plugins', exact: true })
+          .count(),
+      ).toBe(0);
+      await employee
+        .getByRole('button', { name: '写周报', exact: true })
+        .waitFor();
+      expect(
+        f.state.requests.filter((request) =>
+          /\/skills(?:\/|$)/.test(request.path),
+        ),
+      ).toEqual([]);
+      expect(f.state.writes).toEqual([]);
+    });
+  });
+
+  for (const oldPage of ['detail', 'source'] as const) {
+    it(`MET-251 opening employee B from inline employee A ${oldPage} gives every capability read the B target`, async () => {
+      await inFixture({}, async (f) => {
+        const root = await f.openDirectory();
+        await root.getByRole('button', { name: '写周报', exact: true }).click();
+        const oldDetail = employeePage(f.page, { name: '写周报', exact: true });
+        await oldDetail
+          .getByRole('heading', { name: '什么时候用', exact: true })
+          .waitFor();
+        if (oldPage === 'source') {
+          await oldDetail
+            .getByRole('button', { name: '更新', exact: true })
+            .click();
+          await employeePage(f.page, { name: '更新“写周报”', exact: true })
+            .getByRole('textbox', { name: '仓库链接', exact: true })
+            .fill('https://github.com/example/unsent-a-source');
+        }
+        const boundary = f.state.reads.length;
+        const employee = await f.openEmployeeDetails('流程哥');
+        await contains(employee, '流程哥');
+        await employee
+          .getByRole('region', { name: '基础与人设', exact: true })
+          .waitFor();
+        await employee
+          .getByRole('region', { name: '记忆', exact: true })
+          .waitFor();
+        expect(f.state.reads.slice(boundary)).toContain(
+          `/api/v1/employee-instances/${id(17)}/content`,
+        );
+        expect(f.state.reads.slice(boundary)).toContain(
+          `/api/v1/employee-instances/${id(17)}/scene-skills`,
+        );
+        await employee
+          .getByRole('button', { name: '写周报', exact: true })
+          .click();
+        const detail = employeePage(f.page, { name: '写周报', exact: true });
+        await detail
+          .getByRole('heading', { name: '什么时候用', exact: true })
+          .waitFor();
+        await detail.getByRole('button', { name: '更新', exact: true }).click();
+        const form = employeePage(f.page, {
+          name: '更新“写周报”',
+          exact: true,
+        });
+        expect(
+          await form
+            .getByRole('textbox', { name: '仓库链接', exact: true })
+            .inputValue(),
+        ).toBe('https://github.com/example/weekly-brief');
+        await readGithub(form);
+        const confirm = confirmation(f, true);
+        await confirm.waitFor();
+        const previewRequest = previewWrites(f).at(-1)!;
+        const request = PersonalScenePreviewRequestSchema.parse(
+          previewRequest.input,
+        );
+        expect(previewRequest.path).toBe(
+          `/api/v1/employee-instances/${id(17)}/scene-skills/preview`,
+        );
+        expect(request.workspaceId).toBe(id(4));
+        await confirm
+          .getByRole('button', { name: '取消', exact: true })
+          .click();
+        await form.waitFor();
+        await f.page.keyboard.press('Escape');
+        await detail
+          .getByRole('heading', { name: '什么时候用', exact: true })
+          .waitFor();
+        await f.page.keyboard.press('Escape');
+        await contains(employee, '流程哥');
+        expect(
+          await employee
+            .getByRole('region', { name: '记忆', exact: true })
+            .count(),
+        ).toBe(1);
+        expect(f.state.writes).toEqual([]);
+      });
+    });
+  }
+
+  for (const origin of ['top', 'employee'] as const) {
+    it(`MET-251 ${origin} source Escape preserves IME closing keys, modifiers, repeats and native modal ownership`, async () => {
+      await inFixture({}, async (f) => {
+        const parent =
+          origin === 'top'
+            ? await f.openDirectory()
+            : await f.openEmployeeDetails('流程哥');
+        await parent
+          .getByRole('button', { name: '新建场景', exact: true })
+          .click();
+        const form = employeePage(f.page, {
+          name: '新建工作场景',
+          exact: true,
+        });
+        const input = form.getByRole('textbox', {
+          name: '仓库链接',
+          exact: true,
+        });
+        await input.fill('https://github.com/example/weekly-brief');
+        await input.evaluate((node) =>
+          node.dispatchEvent(
+            new CompositionEvent('compositionstart', { bubbles: true }),
+          ),
+        );
+        await input.press('Escape');
+        expect(await form.isVisible()).toBe(true);
+        await input.evaluate((node) =>
+          node.dispatchEvent(
+            new CompositionEvent('compositionend', { bubbles: true }),
+          ),
+        );
+        await input.evaluate((node) =>
+          node.dispatchEvent(
+            new KeyboardEvent('keydown', {
+              key: 'Escape',
+              bubbles: true,
+              cancelable: true,
+            }),
+          ),
+        );
+        expect(await form.isVisible()).toBe(true);
+        await input.evaluate((node) =>
+          node.dispatchEvent(
+            new KeyboardEvent('keyup', { key: 'Escape', bubbles: true }),
+          ),
+        );
+        for (const ignored of [
+          { ctrlKey: true },
+          { altKey: true },
+          { metaKey: true },
+          { shiftKey: true },
+          { repeat: true },
+          { keyCode: 229 },
+        ]) {
+          await input.evaluate(
+            (node, flags) =>
+              node.dispatchEvent(
+                new KeyboardEvent('keydown', {
+                  key: 'Escape',
+                  bubbles: true,
+                  cancelable: true,
+                  ...flags,
+                }),
+              ),
+            ignored,
+          );
+          expect(await form.isVisible()).toBe(true);
+          expect(await input.inputValue()).toBe(
+            'https://github.com/example/weekly-brief',
+          );
+        }
+        if (origin === 'top') {
+          // An unregistered foreground dialog also owns Escape, as in the native selector contract.
+          await f.page.evaluate(() => {
+            const modal = document.createElement('div');
+            modal.role = 'dialog';
+            modal.ariaModal = 'true';
+            modal.id = 'test-foreground-modal';
+            document.body.append(modal);
+          });
+          await input.press('Escape');
+          expect(await form.isVisible()).toBe(true);
+          await f.page
+            .locator('#test-foreground-modal')
+            .evaluate((node) => node.remove());
+        }
+        await input.press('Escape');
+        await parent.waitFor();
+        expect(await form.count()).toBe(0);
+        if (origin === 'employee') await contains(parent, '流程哥');
+        expect(f.state.writes).toEqual([]);
+      });
+    });
   }
 
   for (const width of [1440, 390])
@@ -1352,7 +1590,9 @@ suite('U1 mounted employee Workflow host', () => {
           expect(geometry.titleSize).toBe('18px');
           expect(geometry.titleLine).toBe('26px');
           expect(geometry.fits).toBe(true);
-          const panelBox = await root.boundingBox();
+          const panelBox = await root
+            .getByRole('region', { name: / · 能力$/ })
+            .boundingBox();
           expect(panelBox).not.toBeNull();
           expect(geometry.x).toBe(panelBox!.x);
           expect(geometry.y).toBeGreaterThan(panelBox!.y);

@@ -3,6 +3,7 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import { useEmployeeSkillsHostView } from './employee-skills-host';
 import css from './employee-capabilities-panel.module.css';
+import { useCapabilityEscape } from './use-capability-escape';
 
 export function EmployeeCapabilitiesSections({
   children,
@@ -48,6 +49,9 @@ export function EmployeeCapabilitiesPanel({
     showSkills && !skills?.layer?.small ? skills?.layer : undefined;
   const layerKey = skillLayer?.navigationKey;
   const hasLayer = Boolean(layer || skillLayer);
+  useCapabilityEscape(content, Boolean(active && skillLayer), () => {
+    if (skillLayer && !skillLayer.blocked) skillLayer.onBack();
+  });
   read.current = onRead;
   useEffect(() => {
     if (active) read.current();
@@ -62,14 +66,20 @@ export function EmployeeCapabilitiesPanel({
       if (previous?.isConnected && content.current?.contains(previous))
         previous.focus({ preventScroll: true });
       else
-        content.current
-          ?.querySelector<HTMLElement>('button:not([disabled])')
-          ?.focus({ preventScroll: true });
+        (
+          content.current?.querySelector<HTMLElement>(
+            'button:not([disabled])',
+          ) ?? content.current
+        )?.focus({ preventScroll: true });
     }
     hadLayer.current = hasLayer;
   }, [active, layerKey, hasLayer]);
   return (
-    <section className={css.panel} aria-label={`${employeeName} · 能力`}>
+    <section
+      className={css.panel}
+      aria-label={`${employeeName} · 能力`}
+      data-employee-capabilities
+    >
       <header className={css.identity}>
         <div className={css.avatar} aria-hidden="true">
           {employeeName.slice(0, 1)}
@@ -81,16 +91,11 @@ export function EmployeeCapabilitiesPanel({
       </header>
       <div
         ref={content}
+        tabIndex={-1}
         className={css.content}
         onFocusCapture={(event) => {
           if (!hasLayer && event.target instanceof HTMLElement)
             listFocus.current = event.target;
-        }}
-        onKeyDown={(event) => {
-          if (event.key === 'Escape' && !event.defaultPrevented && skillLayer) {
-            event.stopPropagation();
-            if (!skillLayer.blocked) skillLayer.onBack();
-          }
         }}
       >
         {layer || skillLayer ? (
