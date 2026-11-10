@@ -341,6 +341,20 @@ export async function executeEmployeeRun({
     input.sessionId,
     execution.context.runId,
   );
+  // Resolution keeps historical records readable and verifies every present pin.
+  // Only model execution requires a frozen PERSONA; deterministic paths retain
+  // their original dispatch above/below and never synthesize one for an old Run.
+  if (
+    !changesetRun &&
+    (resolved.executionSnapshot?.schemaVersion !== 2 ||
+      !resolved.executionSnapshot.persona ||
+      !resolved.promptSnapshot.employeeDocuments?.persona)
+  )
+    throw new HandlerError(
+      'EMPLOYEE_PERSONA_REQUIRED',
+      '旧任务没有有效冻结的人设，不能恢复模型执行。请在原对话发送新消息开启新任务。',
+      false,
+    );
   const personaTask =
     resolved.executionSnapshot?.schemaVersion === 2
       ? resolved.executionSnapshot.persona?.source.task
