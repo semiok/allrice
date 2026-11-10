@@ -546,6 +546,57 @@ suite('U1 employee details personal-memory entry', () => {
     await expect.poll(() => locator.textContent()).toContain(text);
   }
 
+  it.each([320, 390])(
+    'keeps the real memory manager header in one row at %s px',
+    async (width) => {
+      const f = await fixture({ width });
+      try {
+        const details = await f.openDetails();
+        await details
+          .getByRole('region', { name: '记忆', exact: true })
+          .getByRole('button', { name: '查看', exact: true })
+          .click();
+        const manager = f.page.getByRole('region', {
+          name: '个人记忆',
+          exact: true,
+        });
+        await manager
+          .getByRole('heading', { name: 'Rice · 记忆', exact: true })
+          .waitFor();
+        const geometry = await manager
+          .locator('header')
+          .first()
+          .evaluate((header) => {
+            const children = Array.from(header.children).map((child) =>
+              child.getBoundingClientRect(),
+            );
+            const rect = header.getBoundingClientRect();
+            return {
+              direction: getComputedStyle(header).flexDirection,
+              centres: children.map((child) => child.top + child.height / 2),
+              left: rect.left,
+              right: rect.right,
+              childLeft: Math.min(...children.map((child) => child.left)),
+              childRight: Math.max(...children.map((child) => child.right)),
+              scrollWidth: header.scrollWidth,
+              clientWidth: header.clientWidth,
+              viewport: innerWidth,
+            };
+          });
+        expect(geometry.direction).toBe('row');
+        expect(
+          Math.max(...geometry.centres) - Math.min(...geometry.centres),
+        ).toBeLessThan(1);
+        expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.clientWidth);
+        expect(geometry.childLeft).toBeGreaterThanOrEqual(geometry.left);
+        expect(geometry.childRight).toBeLessThanOrEqual(geometry.right + 1);
+        expect(geometry.right).toBeLessThanOrEqual(geometry.viewport);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
   it.each([
     { width: 1440, dark: false },
     { width: 390, dark: false },

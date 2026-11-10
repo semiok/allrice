@@ -178,6 +178,27 @@ suite('MET251 v8 memory sidebar presentation (not activated)', () => {
           .getByRole('dialog')
           .getByText('没有详细说明', { exact: true })
           .waitFor();
+        await f.page
+          .getByRole('dialog')
+          .getByRole('button', { name: '修改', exact: true })
+          .click();
+        await f.page
+          .getByRole('dialog')
+          .getByLabel(/一句话/)
+          .waitFor();
+        await f.page.keyboard.press('Tab');
+        expect(
+          await f.page
+            .getByRole('dialog')
+            .evaluate((node) => node.contains(document.activeElement)),
+        ).toBe(true);
+        await f.page.keyboard.press('Escape');
+        await f.page.getByRole('dialog').waitFor({ state: 'detached' });
+        expect(
+          await f.page
+            .locator('[data-memory-id="a2"] button')
+            .evaluate((node) => node === document.activeElement),
+        ).toBe(true);
       } finally {
         await f.close();
       }

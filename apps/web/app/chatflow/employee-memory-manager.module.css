@@ -39,6 +39,7 @@
   margin: 0;
   font-size: 14px;
   font-weight: 600;
+  overflow-wrap: anywhere;
 }
 .header p,
 .note,
@@ -112,8 +113,12 @@
   max-width: 100%;
   white-space: normal;
 }
+.header > button {
+  flex: none;
+  white-space: nowrap;
+}
 @media (max-width: 520px) {
   .header {
-    flex-direction: column;
+    gap: 8px;
   }
 }
