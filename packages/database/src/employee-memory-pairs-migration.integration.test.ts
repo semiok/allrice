@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { TransactionSql } from 'postgres';
+import postgres, { type TransactionSql } from 'postgres';
 import * as client from './core/client.ts';
 import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
+import { assertRuntimeFixtureDatabase } from './runtime-fixture-database.ts';
 import { createRunAuthorityFixture } from './run-authority.fixture.ts';
 import { authenticateSession, createSession } from './identity.ts';
 import { ensureGeneralEmployeeInstance } from './employees/employee-instances.ts';
@@ -38,6 +39,7 @@ suite(
   '0235: isolated old data, atomic refusal and forward-compatible recovery',
   () => {
     let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
+    let runtimeDb: ReturnType<typeof postgres> | undefined;
     let f: Awaited<ReturnType<typeof createRunAuthorityFixture>>;
     let context: NonNullable<Awaited<ReturnType<typeof authenticateSession>>>;
     let auth: RunMemoryAuthority;
@@ -121,7 +123,11 @@ suite(
     }, 120000);
     afterAll(async () => {
       vi.restoreAllMocks();
-      await fixture?.close();
+      try {
+        await runtimeDb?.end({ timeout: 5 });
+      } finally {
+        await fixture?.close();
+      }
     });
     it.each([
       ['over2000', 'long'],
@@ -242,6 +248,40 @@ suite(
       // Source reads spend the existing budget. Migration itself left its frozen state untouched.
     });
     it('keeps post-migration create/edit/delete/candidate writes and old revisions during forward recovery; stale compensation cannot overwrite an edit', async () => {
+      // Only this fully migrated runtime phase needs public's pgvector types.
+      // Preflight, migration and historical assertions retain the own-only pool.
+      const [owned] =
+        await fixture.db`select current_schema() schema,current_schemas(false) path,
+        array_agg(c.relname::text order by c.relname) names,array_agg(c.oid order by c.relname) oids
+        from pg_class c where c.relnamespace=current_schema()::regnamespace and c.relkind in ('r','p','v','m','f')`;
+      expect(owned!.schema).toMatch(/^p25_[a-f0-9]{32}$/);
+      expect(owned!.path).toEqual([owned!.schema]);
+      expect(owned!.names).toContain('allrice_memories');
+      expect(owned!.names).toContain('allrice_rag_chunks');
+      const url = new URL(process.env.ALLRICE_TEST_DATABASE_URL!);
+      assertRuntimeFixtureDatabase(url);
+      url.searchParams.set('options', `-csearch_path=${owned!.schema},public`);
+      runtimeDb = postgres(url.toString(), {
+        max: 1,
+        connect_timeout: 5,
+        onnotice: () => {},
+        connection: {
+          application_name: `memory-pair-recovery-${owned!.schema}`,
+        },
+      });
+      const [visible] =
+        await runtimeDb`select current_schema() schema,current_schemas(false) path,
+        array(select to_regclass(r.name)::oid from unnest(${owned!.names}::text[]) with ordinality r(name,ord) order by ord) oids,
+        to_regtype('vector')::oid vector_type,
+        (select atttypid from pg_attribute where attrelid='allrice_rag_chunks'::regclass and attname='embedding') embedding_type`;
+      expect(visible).toMatchObject({
+        schema: owned!.schema,
+        path: [owned!.schema, 'public'],
+        oids: owned!.oids,
+        vector_type: expect.any(Number),
+      });
+      expect(visible!.vector_type).toBe(visible!.embedding_type);
+      vi.spyOn(client, 'getDatabase').mockReturnValue(runtimeDb);
       const created = await createPersonalEmployeeMemory(context, {
         workspaceId: f.workspace,
         instanceId: f.assignment,
@@ -288,6 +328,7 @@ suite(
         contentDigest: memoryContentDigest(edited.summary),
         idempotencyKey: randomUUID(),
       });
+      vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
       const [saved] =
         await fixture.db`select summary,details,revision,archived_at from allrice_memories where id=${created.id}`;
       expect(saved).toMatchObject({
