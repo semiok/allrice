@@ -423,5 +423,106 @@ suite(
       for (const value of runtimes)
         expect(value.status().controller?.stats.adapterCalls).toBe(0);
     });
+    it('pauses across two real periods and cold restart, resumes from now, then deletes without new history', async () => {
+      const chat = await createChatSession(fixture.context, {
+        workspaceId: fixture.workspaceId,
+        employeeAssignmentId: fixture.assignmentId,
+        title: '每分钟提醒泡茶；暂停后不要留下未执行记录',
+      });
+      const created = await createRecurringTask(fixture.context, chat.id, {
+        clientRequestId: randomUUID(),
+        name: '泡茶提醒',
+        prompt: '提醒我泡茶',
+        rule: { kind: 'every', seconds: 60 },
+      });
+      const first = runtime();
+      await tick(first);
+      const original = await snapshot(created.id);
+      const change = (
+        action: 'pause' | 'resume' | 'delete',
+        expectedRevision: number,
+      ) =>
+        changeRecurringTask(fixture.context, chat.id, created.id, {
+          operationId: randomUUID(),
+          expectedRevision,
+          action,
+        });
+      expect(await change('pause', 1)).toMatchObject({ status: 'pending' });
+      await tick(first);
+      const paused = await snapshot(created.id);
+      expect(paused).toMatchObject({
+        task: null,
+        control: {
+          taskDeleted: true,
+          command: { kind: 'delete', status: 'confirmed' },
+        },
+      });
+      await first.stop();
+      const cold = runtime();
+      await tick(cold);
+      const history = () =>
+        fixture.db`select occurrence_id,payload from allrice_native_recurring_occurrences where automation_id=${created.id} order by occurrence_id`;
+      const before = Array.from(await history());
+      const nativeWrites = () =>
+        fixture.db`select write_id from allrice_native_recurring_journal where control_id=${original.control.controlId} and mutation->>'kind'='put_task' order by write_id`;
+      const writesBefore = Array.from(await nativeWrites());
+      // Native every rules have a 60s minimum. Observe actual wall time across
+      // two former targets; no fake receipt, SQL target edit or model invocation.
+      async function unchangedFor(ms: number) {
+        const end = Date.now() + ms;
+        while (Date.now() < end) {
+          await tick(cold);
+          expect(Array.from(await history())).toEqual(before);
+          await new Promise((resolve) =>
+            setTimeout(resolve, Math.min(2_000, Math.max(1, end - Date.now()))),
+          );
+        }
+      }
+      await unchangedFor(122_000);
+      expect(Array.from(await nativeWrites())).toEqual(writesBefore);
+      const resumedAt = Date.now();
+      expect(await change('resume', 2)).toMatchObject({ status: 'pending' });
+      await tick(cold); // releases the old mounted generation
+      await tick(cold); // restores and calls public create
+      const resumed = await snapshot(created.id);
+      expect(resumed.control.nativeTaskId).not.toBe(
+        original.control.nativeTaskId,
+      );
+      expect(resumed.control.controlSessionId).toBe(
+        original.control.controlSessionId,
+      );
+      expect(resumed.control.command.status).toBe('confirmed');
+      const task = resumed.task as NativeRecurringTask;
+      expect(Date.parse(task.record.scheduledAt)).toBeGreaterThanOrEqual(
+        resumedAt + 60_000,
+      );
+      expect(task.lastDelivery).toBeUndefined();
+      expect(Array.from(await history())).toEqual(before);
+      const delivered = await waitForReceipts(
+        cold,
+        created.id,
+        1,
+        task.record.scheduledAt,
+      );
+      expect(
+        (delivered.task as NativeRecurringTask).lastDelivery?.scheduledAt,
+      ).toBe(task.record.scheduledAt);
+      const runs = await assertQueuedRuns(created.id, chat.id, 1);
+      expect(await change('delete', 3)).toMatchObject({ status: 'pending' });
+      await tick(cold);
+      expect((await snapshot(created.id)).task).toBeNull();
+      const deletedWrites = Array.from(await nativeWrites());
+      const end = Date.now() + 62_000;
+      while (Date.now() < end) {
+        await tick(cold);
+        expect(await assertQueuedRuns(created.id, chat.id, 1)).toEqual(runs);
+        expect(await history()).toHaveLength(1);
+        await new Promise((resolve) =>
+          setTimeout(resolve, Math.min(2_000, Math.max(1, end - Date.now()))),
+        );
+      }
+      expect(Array.from(await nativeWrites())).toEqual(deletedWrites);
+      await cold.stop();
+    }, 300_000);
   },
 );

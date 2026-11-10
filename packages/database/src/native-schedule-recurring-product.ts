@@ -1013,25 +1013,46 @@ export async function changeRecurringTask(
       control.rule = fixedRule;
       control.command = {
         id: input.operationId,
-        kind: 'update',
-        status: 'pending',
+        kind: p.status === 'paused' ? 'delete' : 'update',
+        status: p.status === 'paused' ? 'confirmed' : 'pending',
       };
-    } else if (input.action === 'delete') {
-      await tx`update allrice_automations set deleted_at=clock_timestamp(),status='paused',next_run_at=null,revision=${nextRevision},updated_at=clock_timestamp() where id=${p.id}`;
+      if (p.status === 'paused') {
+        if (control.nativeTaskId !== null && !control.taskDeleted)
+          throw new NativeRecurringProductError('binding_conflict');
+        await tx`update allrice_native_recurring_operations set status='applied',updated_at=clock_timestamp()
+          where organization_id=${scope.organizationId} and owner_id=${scope.ownerId} and operation_id=${input.operationId}`;
+      }
+    } else if (input.action === 'delete' || input.action === 'pause') {
+      await tx`update allrice_automations set deleted_at=${input.action === 'delete' ? clock!.now : p.deleted_at},status='paused',next_run_at=null,revision=${nextRevision},updated_at=clock_timestamp() where id=${p.id}`;
       control.command = {
         id: input.operationId,
         kind: 'delete',
         status: 'pending',
       };
     } else {
-      await tx`update allrice_automations set status=${input.action === 'pause' ? 'paused' : 'enabled'},revision=${nextRevision},
-        native_recurring_resume_after=${input.action === 'resume' ? clock!.now : p.native_recurring_resume_after},updated_at=clock_timestamp() where id=${p.id}`;
-      await tx`update allrice_native_recurring_operations set status='applied',updated_at=clock_timestamp()
-        where organization_id=${scope.organizationId} and owner_id=${scope.ownerId} and operation_id=${input.operationId}`;
+      // Resume only after the public delete was durably acknowledged. DSH's
+      // create computes the next future target; an unchanged update would keep
+      // the old target. The SQL guard proves this exact operation and deletion.
+      if (
+        control.command.kind !== 'delete' ||
+        (control.nativeTaskId !== null && !control.taskDeleted) ||
+        c.snapshot.task !== null
+      )
+        throw new NativeRecurringProductError('binding_conflict');
+      await tx`update allrice_automations set status='enabled',revision=${nextRevision},next_run_at=null,
+        native_recurring_resume_after=${clock!.now},updated_at=clock_timestamp() where id=${p.id}`;
+      control.nativeTaskId = null;
+      control.taskDeleted = false;
+      control.appliedRevision = null;
+      control.appliedRule = null;
+      control.command = {
+        id: input.operationId,
+        kind: 'create',
+        status: 'pending',
+      };
     }
-    if (input.action === 'update' || input.action === 'delete')
-      await tx`update allrice_native_recurring_controls set snapshot=${json(tx, { ...c.snapshot, control })},snapshot_version=snapshot_version+1
-        where partition_id=${c.partition_id} and control_id=${c.control_id}`;
+    await tx`update allrice_native_recurring_controls set snapshot=${json(tx, { ...c.snapshot, control })},native_task_id=${control.nativeTaskId},snapshot_version=snapshot_version+1
+      where partition_id=${c.partition_id} and control_id=${c.control_id}`;
     // Plan lock linearizes with dispatch. Work already enqueued remains valid.
     await tx`update allrice_native_recurring_occurrences set outbox_state='blocked',outbox_reason=${input.action === 'update' ? 'configuration_changed' : 'paused_or_deleted'}
       where automation_id=${p.id} and outbox_state='pending'`;

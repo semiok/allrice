@@ -357,8 +357,9 @@ export function createNativeRecurringSqlStore(
               row.snapshot.task,
               options.decodeTask,
             );
-            // Retained receipts must already have their exact SQL evidence. A
-            // load never reconstructs or dispatches missing deliveries.
+            // Retained receipts must already have exact SQL evidence. An
+            // in-flight delivery after pause is native audit only; it must not
+            // be reconstructed as a business occurrence during cold loading.
             const history =
               task.deliveryHistory?.records ??
               (task.lastDelivery ? [task.lastDelivery] : []);
@@ -368,10 +369,54 @@ export function createNativeRecurringSqlStore(
               >`select payload,payload_digest from allrice_native_recurring_occurrences
               where partition_id=${partitionId} and control_id=${row.control_id} and payload->>'nativeTaskId'=${task.record.id}
                 and payload->'receipt'->>'scheduledAt'=${receipt.scheduledAt} and payload->'receipt'->>'messageId'=${receipt.messageId}`;
+              if (o) {
+                if (
+                  !isDeepStrictEqual(o.payload.receipt, receipt) ||
+                  nativeOnceDigest(o.payload) !== o.payload_digest
+                )
+                  deny('receipt_missing');
+                continue;
+              }
+              const [audit] = await tx<
+                {
+                  write_digest: string;
+                  mutation: NativeRecurringWrite['mutation'];
+                  journal: ReturnType<
+                    typeof prepareNativeRecurringMutation
+                  >['journal'];
+                  after_snapshot: NativeRecurringSnapshot;
+                  after_digest: string;
+                }[]
+              >`select write_digest,mutation,journal,after_snapshot,after_digest
+                from allrice_native_recurring_journal where partition_id=${partitionId} and control_id=${row.control_id}
+                  and mutation->>'kind'='put_task' and mutation->'task'->'record'->>'id'=${task.record.id}
+                  and journal->'unprojectedReceipts' @> ${json(tx, [{ receipt }])}::jsonb
+                limit 1`;
               if (
-                !o ||
-                !isDeepStrictEqual(o.payload.receipt, receipt) ||
-                nativeOnceDigest(o.payload) !== o.payload_digest
+                'consumer' in row.snapshot.control.dispatch ||
+                !audit ||
+                audit.mutation.kind !== 'put_task' ||
+                audit.write_digest !== nativeOnceDigest(audit.mutation) ||
+                !isDeepStrictEqual(
+                  audit.journal.write.mutation,
+                  audit.mutation,
+                ) ||
+                !isDeepStrictEqual(
+                  audit.after_snapshot.task,
+                  audit.mutation.task,
+                ) ||
+                !isDeepStrictEqual(
+                  audit.journal.identity,
+                  row.immutable_identity,
+                ) ||
+                nativeOnceDigest(audit.after_snapshot) !== audit.after_digest ||
+                audit.journal.afterDigest !== audit.after_digest ||
+                !audit.journal.unprojectedReceipts?.some(
+                  (fact) =>
+                    ['paused_or_deleted', 'before_resume_watermark'].includes(
+                      fact.reason,
+                    ) && isDeepStrictEqual(fact.receipt, receipt),
+                )
               )
                 deny('receipt_missing');
             }

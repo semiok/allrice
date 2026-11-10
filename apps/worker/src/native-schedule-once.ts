@@ -1473,8 +1473,26 @@ export function createNativeScheduleOnceController(
       if (
         previous.nativeTaskId !== null &&
         previous.nativeTaskId !== c.nativeTaskId
-      )
+      ) {
+        if (
+          previous.kind === 'recurring' &&
+          c.kind === 'recurring' &&
+          !('consumer' in c.dispatch) &&
+          previous.taskDeleted &&
+          c.nativeTaskId === null &&
+          !c.taskDeleted &&
+          c.command.kind === 'create' &&
+          c.command.status === 'pending'
+        ) {
+          // Drop the old SDK cache before restoring the proven current binding.
+          // SQL permits this transition only after durable public deletion and
+          // an exact resume operation. Never rewrite a mounted native Task.
+          await closeGeneration(g);
+          current = undefined;
+          return false;
+        }
         failure('binding_invalid');
+      }
     }
     g.controls = fresh;
     await g.calendar?.reload();
