@@ -101,6 +101,7 @@ describe('personal pair storage contracts', () => {
     // The shared original-source DTO is deliberately not replaced by pair limits.
     expect(
       CreateWorkspaceMemoryInputSchema.parse({
+        workspaceId: id,
         content: '原文'.repeat(2000),
         sourceType: 'tool',
       }).content,
