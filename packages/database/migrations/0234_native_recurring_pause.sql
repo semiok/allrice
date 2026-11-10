@@ -77,6 +77,76 @@ begin
   return new;
 end $$;
 
+-- A stopped ordinary monthly Task may commit its in-flight native receipt
+-- without projecting user history. Keep the exact arm, journal and live writer
+-- fences; other calendar consumers still require the atomic occurrence.
+create or replace function allrice_native_calendar_arm_commit_fence() returns trigger language plpgsql as $$
+declare p allrice_native_calendar_periods; a allrice_native_calendar_arms;
+begin
+  select * into p from allrice_native_calendar_periods where period_id=new.period_id;
+  select * into a from allrice_native_calendar_arms where arm_id=new.arm_id;
+  if not exists(select 1 from allrice_native_once_partitions w
+    where w.partition_id=p.partition_id and w.reference=new.reference and not w.closed
+      and w.owner_id=new.transition_writer->>'ownerId' and w.epoch=(new.transition_writer->>'epoch')::bigint
+      and w.token_digest=new.transition_writer->>'tokenDigest' and w.expires_at>clock_timestamp()
+      and w.activation @> '{"enabled":true,"storageReady":true,"legacyClockExcluded":true,"controlArtifactApproved":true}'::jsonb) then
+    raise exception 'calendar COMMIT writer fence lost' using errcode='P1920';
+  end if;
+  if a.status='creating' and a.create_writer<>a.transition_writer then
+    raise exception 'calendar create writer mismatch' using errcode='23514';
+  end if;
+  if a.status='absent' and a.absence_proof->>'kind'='fenced_generation' and not exists(
+    select 1 from allrice_native_once_close_proofs cp where cp.partition_id=p.partition_id
+      and cp.epoch=(a.create_writer->>'epoch')::bigint
+      and (a.transition_writer->>'epoch')::bigint>cp.epoch
+      and cp.proof->>'kind' in ('public_host_backend_drained','verified_process_exit')
+      and (cp.proof->>'epoch')::bigint=cp.epoch
+      and cp.proof->>'partitionId'=p.partition_id and cp.proof->>'ownerId'=a.create_writer->>'ownerId'
+      and cp.proof->>'tokenDigest'=a.create_writer->>'tokenDigest') then
+    raise exception 'calendar absence lacks closed generation' using errcode='23514';
+  end if;
+  if a.native_task_id is not null and not exists(select 1 from allrice_native_recurring_journal j
+    where j.partition_id=p.partition_id and j.control_id=p.control_id and j.write_id=a.last_write_id
+      and j.mutation->>'kind'='calendar' and j.mutation->>'action'='put_task'
+      and j.journal->'calendarLinks'->0->'arm'=allrice_native_calendar_arm_json(a)
+      and j.journal->'calendarLinks'->0->'period'=allrice_native_calendar_period_json(p)
+      and j.journal->'calendarLinks'->0->'arm'->>'armId'=a.arm_id::text
+      and j.journal->'calendarLinks'->0->'arm'->>'periodId'=p.period_id::text
+      and (j.journal->'calendarLinks'->0->'arm'->>'snapshotVersion')::bigint=a.snapshot_version
+      and j.journal->'calendarLinks'->0->'arm'->'taskSnapshot'=a.task_snapshot
+      and j.journal->'calendarLinks'->0->'arm'->>'nativeTaskId'=a.native_task_id
+      and j.journal->'calendarLinks'->0->'arm'->>'requestDigest'=a.request_digest
+      and j.journal->'calendarLinks'->0->'arm'->>'bindWriteId'=a.bind_write_id
+      and (j.journal->'calendarLinks'->0->'period'->>'version')::bigint=p.version
+      and j.journal->'calendarLinks'->0->'period'->>'currentArmId'=a.arm_id::text
+      and exists(select 1 from allrice_native_recurring_journal b where b.partition_id=p.partition_id and b.write_id=a.bind_write_id
+        and b.mutation->>'kind'='calendar' and b.mutation->>'action'='put_task'
+        and b.journal->'writer'=a.create_writer
+        and b.journal->'calendarLinks'->0->'arm'->>'armId'=a.arm_id::text
+        and b.journal->'calendarLinks'->0->'arm'->>'nativeTaskId'=a.native_task_id
+        and b.journal->'calendarLinks'->0->'arm'->>'bindWriteId'=b.write_id
+        and b.journal->'calendarLinks'->0->'arm'->'taskSnapshot'->>'status'='active'
+        and b.journal->'calendarLinks'->0->'arm'->'taskSnapshot'->'record'=a.task_snapshot->'record')) then
+    raise exception 'calendar Task/arm/journal COMMIT proof lost' using errcode='23514';
+  end if;
+  if a.status='received' and not exists(select 1 from allrice_native_recurring_occurrences o
+    where o.calendar_period_id=p.period_id and o.calendar_arm_id=a.arm_id
+      and o.payload->>'nativeTaskId'=a.native_task_id and o.scheduled_at=a.native_at
+      and o.payload->'receipt'=coalesce(a.task_snapshot->'deliveryHistory'->'records'->0,a.task_snapshot->'lastDelivery'))
+    and not exists(select 1 from allrice_native_recurring_journal j
+      join allrice_native_recurring_controls c on c.control_id=j.control_id and c.partition_id=j.partition_id
+      where j.partition_id=p.partition_id and j.control_id=p.control_id and j.write_id=a.last_write_id
+        and c.snapshot->'control'->'dispatch'->>'consumer'='ordinary-monthly-v1'
+        and j.after_snapshot->'control'->'dispatch'->>'consumer'='ordinary-monthly-v1'
+        and j.journal->'receiptLinks'='[]'::jsonb
+        and j.journal->'unprojectedReceipt'->>'reason' in ('paused_or_deleted','before_resume_watermark')
+        and j.journal->'unprojectedReceipt'->'receipt'=
+          coalesce(a.task_snapshot->'deliveryHistory'->'records'->0,a.task_snapshot->'lastDelivery')) then
+    raise exception 'calendar received Task lacks atomic receipt proof' using errcode='23514';
+  end if;
+  return new;
+end $$;
+
 -- Repair the old logical-pause contract for every ordinary fixed control. Only
 -- queue a command: the live writer must perform and journal the public deletion.
 -- Do not edit native snapshots, receipts, old operations or user history here.

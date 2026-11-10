@@ -781,6 +781,9 @@ suite(
           { prepareNative: false },
         );
       await receipt(bound.id);
+      expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
+        true,
+      );
       const oldTask = (await snapshot(bound.id)).task;
       const oldHistory = Array.from(
         await f.db`select * from allrice_native_recurring_occurrences where automation_id=${bound.id}`,

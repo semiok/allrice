@@ -942,8 +942,12 @@ export async function changeRecurringTask(
       ? null
       : NativeRecurringControlSchema.parse(c.snapshot.control);
     const [pending] = monthly
-      ? await tx`select operation_id from allrice_native_recurring_operations
-      where automation_id=${p.id} and status='pending' limit 1`
+      ? await tx`select true pending where
+        exists(select 1 from allrice_native_recurring_operations where automation_id=${p.id} and status='pending')
+        or (${input.action === 'resume'} and exists(select 1 from allrice_native_calendar_periods np
+          join allrice_native_calendar_arms arm on arm.period_id=np.period_id
+          where np.automation_id=${p.id} and (arm.status='creating' or (arm.native_task_id is not null
+            and not exists(select 1 from allrice_native_calendar_retirements r where r.arm_id=arm.arm_id)))))`
       : [];
     const reason =
       Number(p.revision) !== input.expectedRevision

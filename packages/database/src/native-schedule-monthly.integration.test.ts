@@ -5,7 +5,11 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MonthlyScheduleRule } from '@allrice/contracts';
 import { createP27CodexWorkerFixture } from '../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
-import { createChatSession, sendChatMessage } from './workspace/service.ts';
+import {
+  createChatSession,
+  sendChatMessage,
+  updateChatSession,
+} from './workspace/service.ts';
 import {
   employeeManifest,
   employeeManifestChecksum,
@@ -232,7 +236,10 @@ suite(
     }
     /** Component-only backend put/receipt. Actual public create/delivery/delete
      * and normal Host drain are a separately executed parent-owned acceptance. */
-    async function sqlBinding(id: string) {
+    async function sqlBinding(
+      id: string,
+      beforeFirstPut?: () => Promise<void>,
+    ) {
       expect(await store.renewWriter(writer)).not.toBeNull();
       await readyParent(id);
       let state = await calendar().loadCalendarState(writer);
@@ -318,6 +325,7 @@ suite(
         b = { ...b, period: exact.period, arm: exact.arm };
         return w;
       }
+      await beforeFirstPut?.();
       await put();
       return {
         periodId: b.period.periodId,
@@ -567,10 +575,16 @@ suite(
         await sqlBinding(t.id);
         let expectedRevision = 1;
         if (status === 'paused') {
+          const pauseId = randomUUID();
           await changeRecurringTask(f.context, t.sessionId, t.id, {
             action: 'pause',
-            operationId: randomUUID(),
+            operationId: pauseId,
             expectedRevision,
+          });
+          await retireSqlTasks(t.id);
+          await materializeNativeCalendar(calendar(), writer, reference);
+          expect(await operation(t, pauseId)).toMatchObject({
+            status: 'applied',
           });
           expectedRevision++;
         }
@@ -1216,6 +1230,70 @@ suite(
         retryable: false,
       });
     });
+
+    it.each(['archived', 'bound', 'uncreated', 'creating'] as const)(
+      'archive closes monthly plans atomically across restore and create boundaries (%s)',
+      async (phase) => {
+        const t = await publicTask();
+        const archive = async () => {
+          await updateChatSession(f.context, f.workspaceId, t.sessionId, {
+            archived: true,
+            stopActivity: true,
+          });
+          expect(await stateCounts(t.id)).toMatchObject({ open_plans: 0 });
+          expect(
+            await f.db`select status,next_run_at from allrice_automations where id=${t.id}`,
+          ).toEqual([
+            expect.objectContaining({ status: 'paused', next_run_at: null }),
+          ]);
+          if (phase !== 'archived')
+            await updateChatSession(f.context, f.workspaceId, t.sessionId, {
+              archived: false,
+            });
+        };
+        const bound =
+          phase === 'creating'
+            ? await sqlBinding(t.id, archive)
+            : phase === 'bound' || phase === 'archived'
+              ? await sqlBinding(t.id)
+              : null;
+        if (phase !== 'creating') await archive();
+        if (bound) {
+          if (phase !== 'archived')
+            expect(
+              await changeRecurringTask(f.context, t.sessionId, t.id, {
+                operationId: randomUUID(),
+                expectedRevision: 1,
+                action: 'resume',
+              }),
+            ).toMatchObject({ status: 'rejected' });
+          await bound.receipt();
+          await materializeNativeCalendar(calendar(), writer, reference);
+          await retireSqlTasks(t.id);
+        }
+        expect(
+          await f.db`select occurrence_id from allrice_native_recurring_occurrences where automation_id=${t.id}`,
+        ).toHaveLength(0);
+        expect(Object.keys(await store.loadTaskRecords(writer))).toHaveLength(
+          0,
+        );
+        if (phase === 'archived')
+          await updateChatSession(f.context, f.workspaceId, t.sessionId, {
+            archived: false,
+          });
+        const resumedAt = Date.now();
+        expect(
+          await changeRecurringTask(f.context, t.sessionId, t.id, {
+            operationId: randomUUID(),
+            expectedRevision: 1,
+            action: 'resume',
+          }),
+        ).toMatchObject({ status: 'pending' });
+        const [next] =
+          await f.db`select next_run_at from allrice_automations where id=${t.id}`;
+        expect(next!.next_run_at.getTime()).toBeGreaterThan(resumedAt);
+      },
+    );
 
     it('applies paused edits without a P/Task, then resumes and proves delete despite a later rejected stale operation', async () => {
       const t = await publicTask();

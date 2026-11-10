@@ -482,7 +482,9 @@ suite(
       expect(Array.from(await nativeWrites())).toEqual(writesBefore);
       const resumedAt = Date.now();
       expect(await change('resume', 2)).toMatchObject({ status: 'pending' });
-      await tick(cold); // releases the old mounted generation
+      await cold.tick(); // releases the old mounted generation
+      expect(cold.status().state).toBe('cold');
+      expect(cold.status().controller?.stats.adapterCalls).toBe(0);
       await tick(cold); // restores and calls public create
       const resumed = await snapshot(created.id);
       expect(resumed.control.nativeTaskId).not.toBe(
