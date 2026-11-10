@@ -18,6 +18,19 @@ async function handle(request: Request, update: boolean) {
         { error: { message: '请先登录' } },
         { status: 401, headers },
       );
+    // A caller's expected viewer is a consistency precondition, never an owner.
+    const expectedViewerId = request.headers.get(
+      'x-allrice-expected-viewer-id',
+    );
+    if (
+      update &&
+      expectedViewerId !== null &&
+      expectedViewerId !== context.actor.id
+    )
+      return Response.json(
+        { error: { message: '个人偏好暂时无法保存或读取，请重试' } },
+        { status: 409, headers },
+      );
     const input = update
       ? UserPreferencesInputSchema.safeParse(
           await request.json().catch(() => null),

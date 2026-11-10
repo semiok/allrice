@@ -1,14 +1,31 @@
-/** Real settings components and Chrome; synthetic HTTP, no DB/model/Run. */
+/** Real settings components and Chrome; real preferences route for account switching, no DB/model/Run. */
 import { createRequire } from 'node:module';
 import { createServer, type Server } from 'node:http';
 import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import type * as Database from '@allrice/database';
 import {
   cloudProjectCapabilityId as capabilityId,
   defaultUserPreferences,
+  type UserPreferencesInput,
 } from '@allrice/contracts';
 import type { Browser } from '../../../worker/node_modules/playwright-core/index.js';
+
+const routeMocks = vi.hoisted(() => ({
+  context: vi.fn(),
+  get: vi.fn(),
+  update: vi.fn(),
+}));
+vi.mock('../../lib/identity/session', () => ({
+  getRequestContext: routeMocks.context,
+}));
+vi.mock('@allrice/database', async (original) => ({
+  ...(await original<typeof Database>()),
+  getUserPreferences: routeMocks.get,
+  updateUserPreferences: routeMocks.update,
+}));
+import { GET, PATCH } from '../api/v1/me/preferences/route';
 
 const suite =
   process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1'
@@ -52,7 +69,7 @@ import './app/styles/base.css';
 import '@allrice/ui/styles.css';
 const data={observedAt:'2026-11-06T00:00:00Z',capabilities:['report','cloud_command','cloud_browser','boost','teamwork','local_files','changeset','local_command','local_browser'].map(id=>({id,state:['boost','teamwork'].includes(id)?'not_released':'ready',reason:['boost','teamwork'].includes(id)?'release_disabled':'ready',action:'guide'}))};
 const capabilities=(scope,viewerId)=><CapabilityContent scope={scope} viewerId={viewerId} data={data} loading={false} error="" busy={false} onRefresh={()=>{}} onBridge={()=>{}} onCompose={()=>{}}/>;
-function App(){const [generation,setGeneration]=useState(0);const viewerId=generation?'viewer-b':'viewer-a';return <main style={{maxWidth:640,margin:'0 auto',padding:16}}><button type="button" onClick={()=>setGeneration(value=>value+1)}>更换设置宿主</button><div className={styles.section}><h2>工作方式</h2><WorkAutomationSettings key={generation} workspaceId={'00000000-0000-4000-8000-'+String(generation+1).padStart(12,'0')} capabilities={capabilities('work',viewerId)}/><CapabilityContent scope="computer" viewerId={viewerId} data={data} loading={false} error="" busy={false} onRefresh={()=>{}} onBridge={()=>{}} onCompose={()=>{}}/></div></main>}
+function App(){const [generation,setGeneration]=useState(new URLSearchParams(location.search).get('viewer')==='viewer-b'?1:0);const viewerId=generation?'viewer-b':'viewer-a';return <main style={{maxWidth:640,margin:'0 auto',padding:16}}><button type="button" onClick={()=>setGeneration(value=>value+1)}>更换设置宿主</button><div className={styles.section}><h2>工作方式</h2><WorkAutomationSettings key={generation} workspaceId={'00000000-0000-4000-8000-'+String(generation+1).padStart(12,'0')} capabilities={capabilities('work',viewerId)}/><CapabilityContent scope="computer" viewerId={viewerId} data={data} loading={false} error="" busy={false} onRefresh={()=>{}} onBridge={()=>{}} onCompose={()=>{}}/></div></main>}
 if(new URLSearchParams(location.search).get('theme')==='dark')document.body.setAttribute('data-ds-dark-theme','');
 createRoot(document.getElementById('root')).render(<App/>);`,
         resolveDir: resolve('apps/web'),
@@ -73,8 +90,33 @@ createRoot(document.getElementById('root')).render(<App/>);`,
         file.contents,
       ]),
     );
-    server = createServer((req, res) => {
-      const path = new URL(req.url!, origin).pathname;
+    server = createServer(async (req, res) => {
+      const url = new URL(req.url!, origin);
+      const path = url.pathname;
+      // Only the fixture's session cookie replaces authentication. Preferences
+      // validation, account precondition and write dispatch use the real route.
+      if (path === '/fixture/session') {
+        res.setHeader(
+          'Set-Cookie',
+          `test-viewer=${url.searchParams.get('viewer') ?? ''}; Path=/; HttpOnly; SameSite=Lax`,
+        );
+        res.end();
+        return;
+      }
+      if (path === '/api/v1/me/preferences') {
+        let body = '';
+        for await (const chunk of req) body += chunk;
+        const request = new Request(url, {
+          method: req.method,
+          headers: req.headers as Record<string, string>,
+          body: req.method === 'PATCH' ? body : undefined,
+        });
+        const response = await (req.method === 'PATCH' ? PATCH : GET)(request);
+        res.statusCode = response.status;
+        response.headers.forEach((value, name) => res.setHeader(name, value));
+        res.end(await response.text());
+        return;
+      }
       const asset = assets.get(path);
       res.setHeader(
         'Content-Type',
@@ -114,12 +156,25 @@ createRoot(document.getElementById('root')).render(<App/>);`,
     width = 390,
     theme = 'light',
     read: Reply = { status: 200, body: payload(false) },
+    throughRoute = false,
   ) {
-    const page = await browser.newPage({
+    const options = {
       viewport: { width, height: 900 },
       hasTouch: width < 600,
       isMobile: width < 600,
-    });
+    };
+    const page = throughRoute
+      ? await (await browser.newContext(options)).newPage()
+      : await browser.newPage(options);
+    if (throughRoute)
+      await page.context().addCookies([
+        {
+          name: 'test-viewer',
+          value: 'viewer-a',
+          url: origin,
+          httpOnly: true,
+        },
+      ]);
     page.setDefaultTimeout(5000);
     const errors: string[] = [];
     page.on('pageerror', (error) => errors.push(error.message));
@@ -130,7 +185,7 @@ createRoot(document.getElementById('root')).render(<App/>);`,
       completedReads: 0,
       writes: [] as unknown[],
     };
-    await page.route('**/api/v1/me/work-automation?*', (route) =>
+    await page.context().route('**/api/v1/me/work-automation?*', (route) =>
       route.fulfill({
         json: {
           workspaceId: new URL(route.request().url()).searchParams.get(
@@ -143,6 +198,7 @@ createRoot(document.getElementById('root')).render(<App/>);`,
       }),
     );
     await page.route('**/api/v1/me/preferences', async (route) => {
+      if (throughRoute) return route.fallback();
       const saving = route.request().method() === 'PATCH';
       if (saving) state.writes.push(route.request().postDataJSON());
       else state.reads++;
@@ -445,6 +501,95 @@ createRoot(document.getElementById('root')).render(<App/>);`,
       expect(f.errors).toEqual([]);
     } finally {
       await f.page.close();
+    }
+  });
+
+  it('rejects stale A after another tab signs in B before any write, then saves B normally through the real route', async () => {
+    const saved = new Map(
+      ['viewer-a', 'viewer-b'].map(
+        (id) => [id, structuredClone(defaultUserPreferences)] as const,
+      ),
+    );
+    const before = structuredClone(saved);
+    routeMocks.context.mockImplementation(async (request: Request) => {
+      const viewerId = request.headers
+        .get('cookie')
+        ?.split('; ')
+        .find((cookie) => cookie.startsWith('test-viewer='))
+        ?.slice('test-viewer='.length);
+      return viewerId
+        ? { actor: { type: 'user', id: viewerId }, memberships: [] }
+        : null;
+    });
+    type Actor = { actor: { id: string } };
+    routeMocks.get.mockImplementation(async (context: Actor) =>
+      saved.get(context.actor.id),
+    );
+    routeMocks.update.mockImplementation(
+      async (context: Actor, update: UserPreferencesInput) => {
+        const preferences = { ...saved.get(context.actor.id)!, ...update };
+        saved.set(context.actor.id, preferences);
+        return preferences;
+      },
+    );
+    const f = await fixture(390, 'light', undefined, true);
+    const other = await f.page.context().newPage();
+    const otherErrors: string[] = [];
+    other.on('pageerror', (error) => otherErrors.push(error.message));
+    try {
+      await expect.poll(() => f.toggle.isEnabled()).toBe(true);
+      expect(await f.toggle.getAttribute('aria-checked')).toBe('false');
+      await other.goto(`${origin}/fixture/session`); // Log out A in tab two.
+      await other.goto(`${origin}/fixture/session?viewer=viewer-b`);
+      const rejected = f.page.waitForResponse(
+        (response) => response.request().method() === 'PATCH',
+      );
+      await f.toggle.click();
+      const response = await rejected;
+      expect(response.status()).toBe(409);
+      expect(response.headers()['cache-control']).toBe('private, no-store');
+      expect(
+        await response.request().headerValue('x-allrice-expected-viewer-id'),
+      ).toBe('viewer-a');
+      await f.row.getByRole('alert').waitFor();
+      expect(await f.row.getByRole('alert').innerText()).toContain(failure);
+      expect(await f.toggle.getAttribute('aria-checked')).toBe('false');
+      expect(await f.toggle.isDisabled()).toBe(true);
+      expect(routeMocks.update).not.toHaveBeenCalled();
+      expect(saved).toEqual(before);
+
+      await other.goto(`${origin}/?viewer=viewer-b`);
+      const work = other.locator('[data-capability-scope="work"]');
+      await work.locator(':scope > details > summary').click();
+      const toggle = work.getByRole('switch', { name: title, exact: true });
+      await expect.poll(() => toggle.isEnabled()).toBe(true);
+      const accepted = other.waitForResponse(
+        (response) => response.request().method() === 'PATCH',
+      );
+      await toggle.click();
+      const success = await accepted;
+      expect(success.status()).toBe(200);
+      expect(
+        await success.request().headerValue('x-allrice-expected-viewer-id'),
+      ).toBe('viewer-b');
+      await expect.poll(() => toggle.getAttribute('aria-checked')).toBe('true');
+      const capabilities = {
+        [capabilityId]: { configVersion: 1, enabled: true },
+      };
+      expect(routeMocks.update).toHaveBeenCalledExactlyOnceWith(
+        { actor: { type: 'user', id: 'viewer-b' }, memberships: [] },
+        { capabilities },
+      );
+      expect(saved.get('viewer-a')).toEqual(before.get('viewer-a'));
+      expect(saved.get('viewer-b')).toEqual({
+        ...before.get('viewer-b'),
+        capabilities,
+      });
+      expect(f.errors).toEqual([]);
+      expect(otherErrors).toEqual([]);
+    } finally {
+      await f.page.context().close();
+      vi.clearAllMocks();
     }
   });
 
