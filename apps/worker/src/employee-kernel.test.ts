@@ -2,7 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 
 import type { ContextCheckpoint } from '@allrice/contracts';
-import { EmployeePersonaPinSchema } from '@allrice/contracts';
+import {
+  EmployeeExecutionSnapshotV2Schema,
+  EmployeePersonaPinSchema,
+} from '@allrice/contracts';
+import {
+  employeeManifest,
+  employeeManifestChecksum,
+  runtimePolicyDigest,
+} from '@allrice/database';
 
 import {
   assembleEmployeeKernel,
@@ -220,30 +228,72 @@ it('replaces only root facts and memories while preserving knowledge and the chi
   // Task provenance was independently checked at enqueue/resolve. It changes
   // the carrier in both kernel scopes, not the original authority or tool set.
   const digest = `sha256:${'a'.repeat(64)}`;
+  const definition = employeeManifest({
+    key: 'task-kernel-fixture',
+    name: 'Synthetic task engine',
+    description: 'Frozen task kernel fixture',
+    toolNames: [],
+  });
+  if (definition.schemaVersion !== 2) throw Error('expected v2 task engine');
+  const checksum = employeeManifestChecksum(definition),
+    employeeId = randomUUID(),
+    organizationId = randomUUID(),
+    workspaceId = randomUUID(),
+    ownerId = randomUUID(),
+    at = '2026-10-01T00:00:00.000Z';
   const version = {
     employeeVersionId: input.employeeVersionId,
-    configChecksum: digest,
-    manifestDigest: digest,
-    templateId: randomUUID(),
-    templateRevisionId: randomUUID(),
-    templateRevision: 1,
-    templateChecksum: digest,
-    packageChecksum: digest,
+    kind: 'tenant_version',
+    configChecksum: checksum,
+    manifestDigest: runtimePolicyDigest(definition),
   };
-  input.resolved.executionSnapshot = {
+  input.resolved.executionSnapshot = EmployeeExecutionSnapshotV2Schema.parse({
     schemaVersion: 2,
+    employee: {
+      id: employeeId,
+      key: definition.key,
+      versionId: input.employeeVersionId,
+      revision: 1,
+      definitionChecksum: checksum,
+      definition,
+    },
+    assignment: {
+      id: input.employeeAssignmentId,
+      userId: ownerId,
+      assignedBy: null,
+      assignedAt: at,
+    },
+    runtimePolicy: definition.runtimePolicy,
+    capabilitySnapshot: {
+      declaredCapabilities: definition.capabilities,
+      grantedCapabilities: input.resolved.grantedCapabilities,
+      bindings: definition.capabilityBindings,
+      skillBindings: [],
+      agentSkills: [],
+      workflows: [],
+      knowledge: [],
+      resolvedForActorId: ownerId,
+    },
+    tenantContext: {
+      organizationId,
+      workspaceId,
+      actorId: ownerId,
+      policySnapshotId: randomUUID(),
+    },
+    userProfile: { schemaVersion: 1, displayName: null, preferences: {} },
+    createdAt: at,
     persona: EmployeePersonaPinSchema.parse({
       schemaVersion: 1,
       personaDigest: digest,
       systemDigest: digest,
       source: {
         kind: 'employee_run',
-        organizationId: randomUUID(),
-        workspaceId: randomUUID(),
-        employeeId: randomUUID(),
+        organizationId,
+        workspaceId,
+        employeeId,
         assignmentId: input.employeeAssignmentId,
         instanceId: randomUUID(),
-        ownerId: randomUUID(),
+        ownerId,
         profileRevision: 1,
         profileEligibility: 'expression_only',
         basis: version,
@@ -256,7 +306,7 @@ it('replaces only root facts and memories while preserving knowledge and the chi
         },
       },
     }),
-  } as NonNullable<typeof input.resolved.executionSnapshot>;
+  });
   input.resolved.promptSnapshot.employeeDocuments.persona =
     'TASK_LITERAL {{missing}}';
   input.commonContent![0]!.reference.contentId =

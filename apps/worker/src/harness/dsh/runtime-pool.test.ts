@@ -457,6 +457,8 @@ function currentExecutionRequest(
   if (manifest.schemaVersion !== 2)
     throw Error('Expected current fixture definition');
   if (variant !== 'definition') {
+    const material = manifest.personaSource;
+    if (!material) throw Error('Expected independent fixture policy');
     const { harness: ignored, ...modelPolicy } = manifest.runtimePolicy;
     void ignored;
     const definition = PlatformEmployeeDefinitionSchema.parse({
@@ -470,7 +472,7 @@ function currentExecutionRequest(
         expressionStyle: 'structured',
         outputLanguage: 'zh-CN',
       },
-      systemPrompt: manifest.systemPrompt,
+      systemPrompt: material.platformPolicy,
       modelPolicy,
       capabilities: {
         nativeSkillIds: [],
