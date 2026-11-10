@@ -646,6 +646,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       employeeInstanceDelay: null as Promise<void> | null,
       employeeInstanceStatus: 200,
       employeeInstanceArchived: false,
+      employeeHistoryDelay: null as Promise<void> | null,
+      employeeHistoryStatus: 200,
       experienceReads: 0,
       experienceDelay: null as Promise<void> | null,
       experienceStatus: 200,
@@ -1606,7 +1608,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         (path === '/api/v1/employee-instances' ||
           /^\/api\/v1\/employee-instances\/[a-f0-9-]{36}$/.test(path))
       ) {
-        if (path !== '/api/v1/employee-instances') {
+        if (path === '/api/v1/employee-instances') {
+          if (state.employeeHistoryDelay) await state.employeeHistoryDelay;
+          if (state.employeeHistoryStatus !== 200)
+            return answer(
+              { error: { message: 'No access' } },
+              state.employeeHistoryStatus,
+            );
+        } else {
           if (state.employeeInstanceDelay) await state.employeeInstanceDelay;
           if (state.employeeInstanceStatus !== 200)
             return answer(
@@ -5392,7 +5401,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       }
     },
   );
-  it.each(['active', 'archived', 'denied'] as const)(
+  it.each([
+    'active',
+    'archived',
+    'denied',
+    'history-denied',
+    'history-unavailable',
+  ] as const)(
     'keeps an open reference draft editable during lifecycle refresh until archive or access denial is confirmed: %s',
     async (outcome) => {
       const f = await fixture({ artifacts: true });
@@ -5437,6 +5452,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         f.state.employeeInstanceDelay = new Promise<void>((done) => {
           release = done;
         });
+        const historyOutcome =
+          outcome === 'history-denied' || outcome === 'history-unavailable';
+        if (historyOutcome)
+          f.state.employeeHistoryDelay = f.state.employeeInstanceDelay;
         const selectedPath = `/api/v1/employee-instances/${id(7)}`;
         const isSelected = (url: string) =>
           new URL(url).pathname === selectedPath;
@@ -5455,7 +5474,21 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(saved).toEqual([]);
 
         f.state.employeeInstanceArchived = outcome === 'archived';
-        f.state.employeeInstanceStatus = outcome === 'denied' ? 403 : 200;
+        f.state.employeeInstanceStatus =
+          outcome === 'denied' ? 403 : outcome === 'history-denied' ? 503 : 200;
+        f.state.employeeHistoryStatus =
+          outcome === 'history-denied'
+            ? 403
+            : outcome === 'history-unavailable'
+              ? 503
+              : 200;
+        const listCompleted = historyOutcome
+          ? f.page.waitForResponse(
+              (response) =>
+                new URL(response.url()).pathname ===
+                '/api/v1/employee-instances',
+            )
+          : undefined;
         const completed = f.page.waitForResponse(
           (response) =>
             response.request().method() === 'GET' && isSelected(response.url()),
@@ -5463,7 +5496,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         release();
         f.state.employeeInstanceDelay = null;
         await completed;
-        if (outcome === 'active') {
+        if (listCompleted) await listCompleted;
+        f.state.employeeHistoryDelay = null;
+        if (outcome === 'active' || outcome === 'history-unavailable') {
           await expect.poll(() => save.isEnabled()).toBe(true);
           expect(await purpose.inputValue()).toBe(editedDraft);
           await save.click();
@@ -5479,7 +5514,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .getByText(
               outcome === 'archived'
                 ? 'AI 员工已归档，可以查看历史；恢复后才能继续工作。'
-                : '没有权限，如需使用请联系管理员',
+                : outcome === 'denied'
+                  ? '没有权限，如需使用请联系管理员'
+                  : '归档列表读取失败，请重试。',
               { exact: true },
             )
             .waitFor();
@@ -5489,15 +5526,108 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           expect(await save.isDisabled()).toBe(true);
           await save.dispatchEvent('click');
           expect(saved).toEqual([]);
+          if (outcome === 'history-denied') {
+            f.state.employeeInstanceStatus = 200;
+            f.state.employeeHistoryStatus = 200;
+            await f.page.evaluate(() =>
+              window.dispatchEvent(new Event('focus')),
+            );
+            await expect.poll(() => save.isEnabled()).toBe(true);
+            expect(await purpose.isEditable()).toBe(true);
+            expect(await purpose.inputValue()).toBe(editedDraft);
+            await save.click();
+            await dialog.getByRole('status').waitFor();
+            expect(saved).toEqual([
+              expect.objectContaining({
+                artifactVersionId: f.state.items[0]!.id,
+                purpose: editedDraft,
+              }),
+            ]);
+          }
         }
         expect(f.errors).toEqual([]);
       } finally {
         release();
         f.state.employeeInstanceDelay = null;
+        f.state.employeeHistoryDelay = null;
         await f.close();
       }
     },
   );
+
+  it('isolates an employee scope denial and aborts its pending reads when workspace identity changes', async () => {
+    const f = await fixture({ running: true });
+    let release = () => {};
+    try {
+      await expect.poll(() => f.state.streamRequests).toBeGreaterThan(0);
+      const input = f.page.getByRole('textbox', { name: /^给 .+ 的消息$/ });
+      await input.waitFor();
+      f.state.employeeHistoryStatus = 403;
+      f.state.employeeInstanceStatus = 503;
+      await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      const denied = f.page.getByText('归档列表读取失败，请重试。', {
+        exact: true,
+      });
+      await denied.waitFor();
+      expect(await input.count()).toBe(0);
+      const oldWorkspace = f.state.workspace;
+      const isOldRead = (url: string, path: string) => {
+        const parsed = new URL(url);
+        return (
+          parsed.pathname === path &&
+          parsed.searchParams.get('workspaceId') === oldWorkspace
+        );
+      };
+      const selectedPath = `/api/v1/employee-instances/${id(7)}`;
+      f.state.employeeHistoryDelay = f.state.employeeInstanceDelay =
+        new Promise<void>((done) => {
+          release = done;
+        });
+      const pending = Promise.all([
+        f.page.waitForRequest((request) =>
+          isOldRead(request.url(), '/api/v1/employee-instances'),
+        ),
+        f.page.waitForRequest((request) =>
+          isOldRead(request.url(), selectedPath),
+        ),
+      ]);
+      await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await pending;
+      const aborted = Promise.all([
+        f.page.waitForEvent('requestfailed', {
+          predicate: (request) =>
+            isOldRead(request.url(), '/api/v1/employee-instances'),
+        }),
+        f.page.waitForEvent('requestfailed', {
+          predicate: (request) => isOldRead(request.url(), selectedPath),
+        }),
+      ]);
+      f.state.employeeHistoryDelay = f.state.employeeInstanceDelay = null;
+      f.state.employeeHistoryStatus = f.state.employeeInstanceStatus = 200;
+      f.state.viewer = id(50);
+      f.state.workspace = id(51);
+      f.finishRun();
+      await aborted;
+      await input.waitFor();
+      expect(await input.isEditable()).toBe(true);
+      f.state.employeeHistoryStatus = f.state.employeeInstanceStatus = 403;
+      release();
+      await f.page.evaluate(
+        () =>
+          new Promise<void>((done) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => done())),
+          ),
+      );
+      expect(await input.isEditable()).toBe(true);
+      expect(await denied.count()).toBe(0);
+      expect(f.state.messageInputs).toEqual([]);
+      expect(f.errors).toEqual([]);
+    } finally {
+      release();
+      f.state.employeeHistoryDelay = f.state.employeeInstanceDelay = null;
+      await f.close();
+    }
+  });
 
   it.each([390, 1440])(
     'keeps one reference surface across parent refreshes and fully closes it at %ipx',

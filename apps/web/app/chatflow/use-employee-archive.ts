@@ -71,6 +71,7 @@ export function useEmployeeArchive({
     instances: EmployeeInstance[];
     loading: boolean;
     error?: string;
+    denied?: boolean;
   }>();
   const [selected, setSelected] = useState<{
     key: string;
@@ -126,6 +127,7 @@ export function useEmployeeArchive({
           : old,
       );
       setPage((previous) => {
+        if (previous?.scope === scope && previous.denied) return previous;
         const instances = previous?.scope === scope ? previous.instances : [];
         const old = instances.find((row) => row.id === instance.id);
         return {
@@ -163,6 +165,9 @@ export function useEmployeeArchive({
       scope,
       instances: old?.scope === scope ? old.instances : [],
       loading: true,
+      ...(old?.scope === scope && old.denied
+        ? { denied: true, error: old.error }
+        : {}),
     }));
     void (async () => {
       const instances = new Map<string, EmployeeInstance>();
@@ -218,6 +223,10 @@ export function useEmployeeArchive({
               : [],
           loading: false,
           error: '归档列表读取失败，请重试。',
+          denied:
+            (cause instanceof InstanceReadError &&
+              [401, 403, 404].includes(cause.status)) ||
+            (old?.scope === scope && old.denied),
         }));
     });
     return () => controller.abort();
@@ -377,15 +386,16 @@ export function useEmployeeArchive({
         return false;
       if (current) remember(current);
       if (readDenied) {
-        setPage({
+        setPage((old) => ({
           scope,
           instances: [],
           loading: false,
+          denied: old?.scope === scope && old.denied,
           error:
             cause instanceof Error
               ? cause.message
               : '归档列表读取失败，请重试。',
-        });
+        }));
         setSelected({
           key: selectedKey,
           error:
@@ -470,14 +480,17 @@ export function useEmployeeArchive({
     [instances],
   );
   const selectedRead = selected?.key === selectedKey ? selected : undefined;
+  // A history-list rejection revokes the shared scope authority, even if a
+  // concurrent detail read fails or returns an older successful snapshot.
+  const scopeDenied = page?.scope === scope && page.denied;
   return {
     scope,
     instances,
     archivedIds,
     loading: !page || page.scope !== scope || page.loading,
     error: page?.scope === scope ? page.error : undefined,
-    selectedInstance: selectedRead?.instance,
-    selectedError: selectedRead?.error,
+    selectedInstance: scopeDenied ? undefined : selectedRead?.instance,
+    selectedError: scopeDenied ? page?.error : selectedRead?.error,
     selectedPending: Boolean(selectedInstanceId && !selectedRead),
     mutation: mutation?.scope === scope ? mutation : undefined,
     reload,

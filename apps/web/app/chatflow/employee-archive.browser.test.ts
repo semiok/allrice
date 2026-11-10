@@ -267,6 +267,8 @@ suite('U1 employee archive lifecycle', () => {
       blockedWrites: [] as string[],
       errors: [] as string[],
       historyReads: [] as string[],
+      historyStatus: 200,
+      heldHistory: null as Promise<void> | null,
       failWrite: false,
       deny: false,
       dropReceipt: false,
@@ -460,6 +462,11 @@ suite('U1 employee archive lifecycle', () => {
       }
       if (path === '/api/v1/employee-instances' && request.method() === 'GET') {
         state.historyReads.push(url.searchParams.get('beforeId') ?? 'first');
+        if (state.heldHistory) await state.heldHistory;
+        if (state.historyStatus !== 200)
+          return route.fulfill(
+            json({ error: { message: '没有访问权限。' } }, state.historyStatus),
+          );
         const first = options.paginate && !url.searchParams.has('beforeId');
         return route.fulfill(
           json({
@@ -942,7 +949,7 @@ suite('U1 employee archive lifecycle', () => {
     }
   });
 
-  it.each([200, 503, 'network'] as const)(
+  it.each([200, 503, 'network', 'history-503'] as const)(
     'keeps the same editable composer, draft and focus while a return to the tab revalidates the employee: %s',
     async (result) => {
       const f = await fixture();
@@ -959,6 +966,7 @@ suite('U1 employee archive lifecycle', () => {
         f.state.heldSelected = refresh.promise;
         f.state.failReadback = result === 503;
         f.state.dropReadback = result === 'network';
+        f.state.historyStatus = result === 'history-503' ? 503 : 200;
         const response =
           result === 'network'
             ? f.page.waitForEvent('requestfailed', {
@@ -966,11 +974,18 @@ suite('U1 employee archive lifecycle', () => {
                   new URL(request.url()).pathname ===
                   `/api/v1/employee-instances/${id(17)}`,
               })
-            : f.page.waitForResponse(
-                (reply) =>
-                  new URL(reply.url()).pathname ===
-                  `/api/v1/employee-instances/${id(17)}`,
-              );
+            : result === 'history-503'
+              ? f.page.waitForResponse(
+                  (reply) =>
+                    reply.status() === 503 &&
+                    new URL(reply.url()).pathname ===
+                      '/api/v1/employee-instances',
+                )
+              : f.page.waitForResponse(
+                  (reply) =>
+                    new URL(reply.url()).pathname ===
+                    `/api/v1/employee-instances/${id(17)}`,
+                );
         await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
         await expect.poll(() => f.state.selectedReads).toBeGreaterThan(reads);
         await f.page.keyboard.type('，继续输入');
@@ -1142,30 +1157,150 @@ suite('U1 employee archive lifecycle', () => {
     }
   });
 
-  it('redirects an expired login when a refreshed employee read returns HTTP 401', async () => {
-    const f = await fixture();
-    try {
-      await f.page
-        .getByRole('textbox', { name: '给 流程哥 的消息', exact: true })
-        .fill('保留的草稿');
-      await f.page.route(`${origin}/login?next=/chatflow`, (route) =>
-        route.fulfill({
-          contentType: 'text/html',
-          body: '<!doctype html><title>Login destination</title>',
-        }),
-      );
-      f.state.readbackStatus = 401;
-      await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
-      await f.page.waitForURL(`${origin}/login?next=/chatflow`);
-      expect(
-        await f.page.getByRole('textbox', { name: /给.*的消息/ }).count(),
-      ).toBe(0);
-      expect(f.state.writes).toEqual([]);
-      expect(f.state.errors).toEqual([]);
-    } finally {
-      await f.close();
-    }
-  });
+  it.each(['selected', 'history'] as const)(
+    'redirects an expired login when a refreshed %s read returns HTTP 401',
+    async (source) => {
+      const f = await fixture();
+      try {
+        await f.page
+          .getByRole('textbox', { name: '给 流程哥 的消息', exact: true })
+          .fill('保留的草稿');
+        await f.page.route(`${origin}/login?next=/chatflow`, (route) =>
+          route.fulfill({
+            contentType: 'text/html',
+            body: '<!doctype html><title>Login destination</title>',
+          }),
+        );
+        if (source === 'selected') f.state.readbackStatus = 401;
+        else f.state.historyStatus = 401;
+        await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+        await f.page.waitForURL(`${origin}/login?next=/chatflow`);
+        expect(
+          await f.page.getByRole('textbox', { name: /给.*的消息/ }).count(),
+        ).toBe(0);
+        expect(f.state.writes).toEqual([]);
+        expect(f.state.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
+  it.each(
+    [403, 404].flatMap((status) =>
+      (['list-first', 'selected-first'] as const).flatMap((order) =>
+        ([503, 'network'] as const).map((failure) => ({
+          status,
+          order,
+          failure,
+        })),
+      ),
+    ),
+  )(
+    'keeps scope HTTP $status denial authoritative with $failure detail failure ($order), then recovers',
+    async ({ status, order, failure }) => {
+      const f = await fixture();
+      const history = gate(),
+        selected = gate(),
+        retry = gate();
+      try {
+        const input = f.page.getByRole('textbox', {
+          name: '给 流程哥 的消息',
+          exact: true,
+        });
+        await input.fill('权限恢复前保留的草稿');
+        const reads = f.state.selectedReads,
+          lists = f.state.historyReads.length;
+        f.state.historyStatus = status;
+        f.state.heldHistory = history.promise;
+        f.state.heldSelected = selected.promise;
+        f.state.failReadback = failure === 503;
+        f.state.dropReadback = failure === 'network';
+        const detailDone =
+          failure === 'network'
+            ? f.page.waitForEvent('requestfailed', {
+                predicate: (request) =>
+                  new URL(request.url()).pathname ===
+                  `/api/v1/employee-instances/${id(17)}`,
+              })
+            : f.page.waitForResponse(
+                (response) =>
+                  response.status() === 503 &&
+                  new URL(response.url()).pathname ===
+                    `/api/v1/employee-instances/${id(17)}`,
+              );
+        await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+        await expect.poll(() => f.state.selectedReads).toBeGreaterThan(reads);
+        await expect
+          .poll(() => f.state.historyReads.length)
+          .toBeGreaterThan(lists);
+        const denied = f.page
+          .getByRole('alert')
+          .getByText('归档列表读取失败，请重试。', { exact: true });
+        if (order === 'selected-first') {
+          selected.release();
+          await detailDone;
+          expect(await input.isEditable()).toBe(true);
+          expect(await input.inputValue()).toBe('权限恢复前保留的草稿');
+        }
+        history.release();
+        await denied.waitFor();
+        expect(await input.count()).toBe(0);
+        if (order === 'list-first') {
+          selected.release();
+          await detailDone;
+        }
+        f.state.heldHistory = retry.promise;
+        f.state.heldSelected = null;
+        f.state.historyStatus = 503;
+        f.state.failReadback = false;
+        f.state.dropReadback = false;
+        const retriedLists = f.state.historyReads.length;
+        const success = f.page.waitForResponse(
+          (response) =>
+            response.status() === 200 &&
+            new URL(response.url()).pathname ===
+              `/api/v1/employee-instances/${id(17)}`,
+        );
+        await f.page.getByRole('button', { name: '重试', exact: true }).click();
+        await success;
+        await expect
+          .poll(() => f.state.historyReads.length)
+          .toBeGreaterThan(retriedLists);
+        expect(await denied.isVisible()).toBe(true);
+        expect(await input.count()).toBe(0);
+        const unavailable = f.page.waitForResponse(
+          (response) =>
+            response.status() === 503 &&
+            new URL(response.url()).pathname === '/api/v1/employee-instances',
+        );
+        retry.release();
+        await unavailable;
+        await f.page.evaluate(
+          () =>
+            new Promise<void>((done) =>
+              requestAnimationFrame(() => requestAnimationFrame(() => done())),
+            ),
+        );
+        expect(await denied.isVisible()).toBe(true);
+        expect(await input.count()).toBe(0);
+        f.state.heldHistory = null;
+        f.state.historyStatus = 200;
+        await f.page.getByRole('button', { name: '重试', exact: true }).click();
+        await input.waitFor();
+        expect(await input.isEditable()).toBe(true);
+        expect(await input.inputValue()).toBe('权限恢复前保留的草稿');
+        expect(f.state.writes).toEqual([]);
+        expect(f.state.blockedWrites).toEqual([]);
+        expect(f.state.errors).toEqual([]);
+      } finally {
+        history.release();
+        selected.release();
+        retry.release();
+        await f.close();
+      }
+    },
+  );
 
   it.each([403, 404])(
     'fails closed when a refreshed employee read returns HTTP %s and permits a successful retry',
@@ -1198,9 +1333,13 @@ suite('U1 employee archive lifecycle', () => {
     },
   );
 
-  it.each([403, 404])(
-    'keeps editing blocked when an older restore readback arrives after HTTP %s rejection',
-    async (status) => {
+  it.each(
+    [403, 404].flatMap((status) =>
+      (['selected', 'history'] as const).map((source) => ({ status, source })),
+    ),
+  )(
+    'keeps editing blocked when an older restore readback arrives after $source HTTP $status rejection',
+    async ({ status, source }) => {
       const f = await fixture({ archived: true });
       const readback = gate(),
         refresh = gate();
@@ -1220,11 +1359,17 @@ suite('U1 employee archive lifecycle', () => {
           .poll(() => f.state.selectedReads)
           .toBeGreaterThan(reads + 1);
         f.state.heldSelected = null;
-        f.state.readbackStatus = status;
+        if (source === 'selected') f.state.readbackStatus = status;
+        else f.state.historyStatus = status;
         await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
         const denied = f.page
           .getByRole('alert')
-          .getByText('没有访问权限。', { exact: true });
+          .getByText(
+            source === 'selected'
+              ? '没有访问权限。'
+              : '归档列表读取失败，请重试。',
+            { exact: true },
+          );
         await denied.waitFor();
         const input = f.page.getByRole('textbox', {
           name: '给 流程哥 的消息',
@@ -1236,6 +1381,8 @@ suite('U1 employee archive lifecycle', () => {
         f.state.readbackStatus = 200;
         f.state.failAfterActiveRead = true;
         f.state.heldSelected = refresh.promise;
+        f.state.heldHistory = refresh.promise;
+        if (source === 'history') f.state.historyStatus = 503;
         const lateRead = f.page.waitForResponse(
           (response) =>
             response.status() === 200 &&
@@ -1266,10 +1413,17 @@ suite('U1 employee archive lifecycle', () => {
         await failure;
         await f.page
           .getByRole('alert')
-          .getByText('读取暂不可用。', { exact: true })
+          .getByText(
+            source === 'selected'
+              ? '读取暂不可用。'
+              : '归档列表读取失败，请重试。',
+            { exact: true },
+          )
           .waitFor();
         expect(await input.count()).toBe(0);
         f.state.heldSelected = null;
+        f.state.heldHistory = null;
+        f.state.historyStatus = 200;
         f.state.failReadback = false;
         f.state.failAfterActiveRead = false;
         await f.page.getByRole('button', { name: '重试', exact: true }).click();
