@@ -1,5 +1,8 @@
 import { ApiErrorSchema } from '@allrice/contracts';
-import type { ApiErrorCodeSchema } from '@allrice/contracts';
+import type {
+  ApiErrorCodeSchema,
+  MemoryConflictDetails,
+} from '@allrice/contracts';
 
 export type ApiProblemCode = (typeof ApiErrorCodeSchema.options)[number];
 
@@ -9,6 +12,7 @@ export type ApiProblemOptions = {
   message: string;
   retryable?: boolean;
   requestId?: string;
+  details?: MemoryConflictDetails;
 };
 
 /** Edge-safe canonical JSON error envelope shared by routes and proxy gates. */
@@ -18,9 +22,18 @@ export function apiProblem({
   message,
   retryable = status >= 500,
   requestId = crypto.randomUUID(),
+  details,
 }: ApiProblemOptions) {
+  if (details && status !== 409)
+    throw new Error('Memory conflicts require HTTP 409');
   const body = ApiErrorSchema.parse({
-    error: { code, message, requestId, retryable },
+    error: {
+      code,
+      message,
+      requestId,
+      retryable,
+      ...(details ? { details } : {}),
+    },
   });
   return Response.json(body, { status });
 }

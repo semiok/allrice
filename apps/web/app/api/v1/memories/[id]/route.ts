@@ -1,16 +1,52 @@
 import {
   DataAccessError,
-  EmployeeMemoryCapacityError,
   correctWorkspaceMemory,
-  deleteWorkspaceMemory,
+  correctManagedEmployeeMemory,
+  deleteManagedEmployeeMemory,
+  getPersonalEmployeeMemory,
 } from '@allrice/database';
-import { EmployeeMemoryTextSchema } from '@allrice/contracts';
+import {
+  EmployeeMemoryTextSchema,
+  EmployeeMemoryListQuerySchema,
+  EmployeeMemoryDetailResponseSchema,
+  EmployeeMemoryWriteResponseSchema,
+} from '@allrice/contracts';
 
 import { getRequestContext } from '../../../../../lib/identity/session';
 import { sameOriginBrowserWrite } from '../../../../../lib/identity/request-origin';
 import { storageErrorResponse } from '../../../../../lib/storage/responses';
 
 export const runtime = 'nodejs';
+
+export async function GET(
+  request: Request,
+  route: { params: Promise<{ id: string }> },
+) {
+  try {
+    const context = await getRequestContext(request);
+    if (!context) throw new DataAccessError('authentication_required');
+    const query = EmployeeMemoryListQuerySchema.parse(
+      Object.fromEntries(new URL(request.url).searchParams),
+    );
+    return Response.json(
+      EmployeeMemoryDetailResponseSchema.parse(
+        await getPersonalEmployeeMemory(
+          context,
+          query.workspaceId,
+          query.instanceId,
+          (await route.params).id,
+        ),
+      ),
+      {
+        headers: { 'cache-control': 'private, no-store' },
+      },
+    );
+  } catch (error) {
+    const response = storageErrorResponse(error);
+    response.headers.set('cache-control', 'private, no-store');
+    return response;
+  }
+}
 
 export async function PATCH(
   request: Request,
@@ -25,31 +61,37 @@ export async function PATCH(
     if (!workspaceId) throw new DataAccessError('not_found');
     const { id } = await route.params;
     const input = await request.json();
-    EmployeeMemoryTextSchema.parse(input.content);
-    const memory = await correctWorkspaceMemory(
+    if (input && typeof input === 'object' && 'content' in input) {
+      EmployeeMemoryTextSchema.parse(input.content);
+      const memory = await correctWorkspaceMemory(
+        context,
+        workspaceId,
+        id,
+        input,
+      );
+      return Response.json(
+        { memory: { ...memory, ownedByMe: true } },
+        { headers: { 'cache-control': 'private, no-store' } },
+      );
+    }
+    const { counts, ...memory } = await correctManagedEmployeeMemory(
       context,
       workspaceId,
       id,
       input,
     );
     return Response.json(
-      {
-        memory: {
-          ...memory,
-          ownedByMe:
-            context.actor.type === 'user' &&
-            memory.ownerId === context.actor.id,
-        },
-      },
+      EmployeeMemoryWriteResponseSchema.parse({
+        schemaVersion: 2,
+        memory,
+        counts,
+      }),
       { headers: { 'cache-control': 'private, no-store' } },
     );
   } catch (error) {
-    if (error instanceof EmployeeMemoryCapacityError)
-      return Response.json(
-        { error: 'memory_capacity', remainingBytes: error.remainingBytes },
-        { status: 422, headers: { 'cache-control': 'private, no-store' } },
-      );
-    return storageErrorResponse(error);
+    const response = storageErrorResponse(error);
+    response.headers.set('cache-control', 'private, no-store');
+    return response;
   }
 }
 
@@ -66,7 +108,7 @@ export async function DELETE(
     if (!workspaceId) throw new DataAccessError('not_found');
     const { id } = await route.params;
     const body = await request.text();
-    await deleteWorkspaceMemory(
+    await deleteManagedEmployeeMemory(
       context,
       workspaceId,
       id,
@@ -77,6 +119,8 @@ export async function DELETE(
       headers: { 'cache-control': 'private, no-store' },
     });
   } catch (error) {
-    return storageErrorResponse(error);
+    const response = storageErrorResponse(error);
+    response.headers.set('cache-control', 'private, no-store');
+    return response;
   }
 }

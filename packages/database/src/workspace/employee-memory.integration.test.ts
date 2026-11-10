@@ -659,30 +659,17 @@ suite(
       },
     );
 
-    it('owner pin order uses the same bounded selection, exact revision and idempotency without cross-instance writes', async () => {
+    it('retires owner pin/unpin without changing current records, history, receipts or the historic v1 projection', async () => {
       const f = await setup();
-      const older = await f.create('较早的常用入口');
-      // Cross the byte limit, so omitting locator cost would select extra IDs.
+      const older = await legacyMemory(f, '历史v1常用入口');
+      // A genuine pre-retirement preference fixture, not a live pin API write.
+      await fixture.db`update allrice_memories set metadata=jsonb_build_object('memoryPinOrder',1) where id=${older.id}`;
       for (let i = 0; i < 9; i++)
         await f.create(`新入口${i}${'x'.repeat(700)}`);
-      const preference = { ...exact(older), pinned: true };
-      const saved = await setPersonalEmployeeMemoryPin(
-        f.context,
-        f.workspace,
-        older.id,
-        preference,
-      );
-      expect(
-        await setPersonalEmployeeMemoryPin(
-          f.context,
-          f.workspace,
-          older.id,
-          preference,
-        ),
-      ).toEqual(saved);
+      const scope = { ...f.scope, instanceId: f.assignment };
       const projected = await freezeEmployeeDocuments(
         fixture.db,
-        { ...f.scope, instanceId: f.assignment },
+        scope,
         {},
         true,
       );
@@ -690,7 +677,7 @@ suite(
       expect(projected.memories.length).toBeLessThan(projected.eligibleCount);
       const withoutSourceTool = await freezeEmployeeDocuments(
         fixture.db,
-        { ...f.scope, instanceId: f.assignment },
+        scope,
         {},
         false,
       );
@@ -700,62 +687,31 @@ suite(
       expect(withoutSourceTool.employeeDocuments.memory).not.toContain(
         'sourceHandle',
       );
-      expect(saved.content).toBe(older.content);
+      const capture = () => fixture.db`select to_jsonb(m) memory,
+        (select jsonb_agg(to_jsonb(r) order by revision) from allrice_memory_revisions r where memory_id=m.id) revisions,
+        (select jsonb_agg(to_jsonb(o) order by operation_key) from allrice_employee_memory_operations o where memory_id=m.id) receipts,
+        (select jsonb_agg(to_jsonb(a) order by id) from allrice_audit_events a where resource_id=m.id) audit
+        from allrice_memories m where id=${older.id}`;
+      const before = await capture();
+      for (const pinned of [true, false])
+        await expect(
+          setPersonalEmployeeMemoryPin(f.context, f.workspace, older.id, {
+            ...exact(older),
+            pinned,
+          }),
+        ).rejects.toThrow('employee_memory_contract_changed');
+      expect(await capture()).toEqual(before);
+      expect(
+        await freezeEmployeeDocuments(fixture.db, scope, {}, true),
+      ).toEqual(projected);
       await expect(
         setPersonalEmployeeMemoryPin(f.context, f.workspace, older.id, {
-          ...exact(saved),
+          ...exact(older),
           instanceId: f.other.id,
           pinned: false,
         }),
       ).rejects.toThrow();
-    });
-
-    it('retains historical v1 pinned-edit capacity rejection and always allows unpin to repair capacity', async () => {
-      const f = await setup();
-      const saved = [];
-      for (let i = 0; i < 8; i++) {
-        const item = await legacyMemory(f, `常用入口${i}`);
-        saved.push(
-          await setPersonalEmployeeMemoryPin(f.context, f.workspace, item.id, {
-            ...exact(item),
-            pinned: true,
-          }),
-        );
-      }
-      let rejected = false;
-      for (const item of saved) {
-        try {
-          await correctWorkspaceMemory(f.context, f.workspace, item.id, {
-            ...exact(item),
-            content: 'x'.repeat(1000),
-            reason: '本人编辑',
-          });
-        } catch (error) {
-          expect(error).toMatchObject({ message: 'employee_memory_capacity' });
-          const [unchanged] =
-            await fixture.db`select content,revision from allrice_memories where id=${item.id}`;
-          expect(unchanged).toMatchObject({
-            content: item.content,
-            revision: item.revision,
-          });
-          rejected = true;
-          break;
-        }
-      }
-      expect(rejected).toBe(true);
-      // Isolated historical over-capacity fixture; repairing it must be possible.
-      await fixture.db`update allrice_memories set content=repeat('y',2000) where id=any(${saved.map((m) => m.id)}::uuid[])`;
-      const item = saved.at(-1)!;
-      const [current] =
-        await fixture.db`select revision,content from allrice_memories where id=${item.id}`;
-      await expect(
-        setPersonalEmployeeMemoryPin(f.context, f.workspace, item.id, {
-          ...exact(item),
-          expectedRevision: current!.revision,
-          contentDigest: memoryContentDigest(current!.content),
-          pinned: false,
-        }),
-      ).resolves.toMatchObject({ id: item.id });
+      expect(await capture()).toEqual(before);
     });
 
     it('binds proposals from the stored source; list, recall, raw RAG, revisions, broker and resumed input cannot cross instances', async () => {

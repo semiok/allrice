@@ -30,6 +30,47 @@ describe('apiProblem', () => {
     });
   });
 
+  it('accepts constrained memory details only for HTTP 409 without changing other envelopes', async () => {
+    const details = {
+      domain: 'employee_memory' as const,
+      reason: 'cas_conflict' as const,
+    };
+    const response = apiProblem({
+      status: 409,
+      code: 'CONFLICT',
+      message: 'Changed',
+      details,
+    });
+    expect(ApiErrorSchema.parse(await response.json()).error.details).toEqual(
+      details,
+    );
+    expect(() =>
+      apiProblem({
+        status: 400,
+        code: 'CONFLICT',
+        message: 'Changed',
+        details,
+      }),
+    ).toThrow('Memory conflicts require HTTP 409');
+    expect(() =>
+      apiProblem({
+        status: 409,
+        code: 'VALIDATION_FAILED',
+        message: 'Changed',
+        details,
+      }),
+    ).toThrow();
+    expect(() =>
+      apiProblem({
+        status: 409,
+        code: 'CONFLICT',
+        message: 'Changed',
+        retryable: true,
+        details,
+      }),
+    ).toThrow();
+  });
+
   it('defaults server failures to retryable', async () => {
     const response = apiProblem({
       status: 503,

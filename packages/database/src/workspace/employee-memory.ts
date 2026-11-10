@@ -6,6 +6,7 @@ import {
   PersonalMemoryPairSchema,
   type PersonalMemoryPair,
   type RequestContext,
+  type MemoryConflictDetails,
 } from '@allrice/contracts';
 import type { z } from 'zod';
 import { DataAccessError } from '../data.ts';
@@ -27,7 +28,12 @@ export type EmployeeMemoryScope = {
 };
 
 export class EmployeeMemoryConflict extends Error {
-  constructor() {
+  constructor(
+    readonly details: MemoryConflictDetails = {
+      domain: 'employee_memory',
+      reason: 'cas_conflict',
+    },
+  ) {
     super('employee_memory_conflict');
   }
 }
@@ -35,8 +41,22 @@ export class EmployeeMemoryConflict extends Error {
 export class EmployeeMemoryContractChanged extends EmployeeMemoryConflict {
   readonly code = 'employee_memory_contract_changed';
   constructor() {
-    super();
+    super({
+      domain: 'employee_memory',
+      reason: 'contract_changed',
+      requiredSchemaVersion: 2,
+    });
     this.message = this.code;
+  }
+}
+
+export class EmployeeMemoryLimitReached extends EmployeeMemoryConflict {
+  constructor() {
+    super({
+      domain: 'employee_memory',
+      reason: 'memory_limit_reached',
+      counts: { active: 100, maxActive: 100 },
+    });
   }
 }
 
@@ -218,13 +238,22 @@ export async function memoryOperation<
       and op.owner_id=${scope.ownerId} and op.instance_id=${scope.instanceId} and op.operation_key=${key}
     for share of m`;
   if (prior) {
-    if (prior.request_digest !== digest) throw new EmployeeMemoryConflict();
-    const response = responseSchema.parse(prior.response);
+    if (prior.request_digest !== digest)
+      throw new EmployeeMemoryConflict({
+        domain: 'employee_memory',
+        reason: 'idempotency_conflict',
+      });
+    const parsed = responseSchema.safeParse(prior.response);
+    if (!parsed.success) throw new EmployeeMemoryContractChanged();
+    const response = parsed.data;
     if (
       prior.revision !== response.revision ||
       Boolean(prior.archived_at) !== (operation === 'archive')
     )
-      throw new EmployeeMemoryConflict();
+      throw new EmployeeMemoryConflict({
+        domain: 'employee_memory',
+        reason: 'idempotency_conflict',
+      });
     return response;
   }
   const response = await mutate();
