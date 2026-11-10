@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type postgres from 'postgres';
 import type { TransactionSql } from 'postgres';
+import { ZodError } from 'zod';
 import {
   EmployeeInstanceSnapshotSchema,
   ExperienceCollectionPolicySchema,
@@ -19,6 +20,12 @@ import { loadedExperienceSkillEvidence } from './experience-evidence.ts';
 import { memorySourceProducer } from './memory-source-capture.ts';
 import { readEmployeeRunSourceKind } from './employees/employee-chat-authority.ts';
 import { recordTransactionRetry } from './core/transaction-retries.ts';
+import { EmployeeContentError } from './employees/employee-content-model.ts';
+import {
+  assertMemorySourceScenesAvailable,
+  readMemorySourceScenes,
+  type MemorySourceSceneRun,
+} from './memory-source-scenes.ts';
 
 const hash = (text: string) =>
   `sha256:${createHash('sha256').update(text).digest('hex')}`;
@@ -27,7 +34,7 @@ const record = (value: unknown): Record<string, unknown> =>
     ? (value as Record<string, unknown>)
     : {};
 type Tx = TransactionSql;
-type Source = {
+type Source = MemorySourceSceneRun & {
   capture_run_id: string;
   run_id: string;
   organization_id: string;
@@ -58,6 +65,7 @@ async function evidenceFor(
   kind: MemorySourceEvidence['kind'],
   policy: { revision: number; collectionStartedAt: string },
   inputs: { message_id: string; object_id: string; checksum: string }[],
+  instanceId: string,
 ) {
   // Only the actual execution supplies resource identities. Previous assistant
   // answers, old summaries and MEMORY bodies are not new human sources.
@@ -76,6 +84,11 @@ async function evidenceFor(
       r,
       events.filter((e) => e.run_id === r.run_id),
     ),
+  );
+  const { scenes, truncated: scenesTruncated } = await readMemorySourceScenes(
+    tx,
+    s,
+    instanceId,
   );
   const artifacts = await tx<
     {
@@ -120,6 +133,7 @@ async function evidenceFor(
     runId: s.run_id,
     relatedRunId: null,
     skills: skills.slice(0, 16),
+    scenes,
     artifacts: artifacts.slice(0, 32).map((r) => ({
       runId: r.run_id,
       versionId: r.version_id,
@@ -133,6 +147,7 @@ async function evidenceFor(
     })),
     availableKnowledge: knowledge.slice(0, 64),
     truncated:
+      scenesTruncated ||
       events.length > 64 ||
       skills.length > 16 ||
       artifacts.length > 32 ||
@@ -305,7 +320,32 @@ async function capture(tx: Tx, s: Source) {
     )
   )
     return finish('ignored', 'dependency_unavailable');
-  const evidence = await evidenceFor(tx, s, kind, policy.data, inputs);
+  let evidence: MemorySourceEvidence;
+  try {
+    evidence = await evidenceFor(
+      tx,
+      s,
+      kind,
+      policy.data,
+      inputs,
+      snapshot.data.id,
+    );
+    await assertMemorySourceScenesAvailable(
+      tx,
+      context,
+      snapshot.data.id,
+      evidence.scenes ?? [],
+    );
+  } catch (error) {
+    if (
+      error instanceof DataAccessError ||
+      error instanceof EmployeeContentError ||
+      error instanceof EmployeeInstanceError ||
+      error instanceof ZodError
+    )
+      return finish('ignored', 'dependency_unavailable');
+    throw error;
+  }
   // A recorded historical version is useful evidence; a revoked installation or
   // binding is not a current authority to collect its reusable method. Unloaded
   // Skills are absent here, so their removal cannot discard independent facts.
@@ -331,20 +371,41 @@ async function capture(tx: Tx, s: Source) {
   const id = randomUUID(),
     content = origin.text.trim(),
     contentDigest = hash(content);
-  await tx`insert into allrice_memories(id,organization_id,workspace_id,owner_id,employee_id,instance_id,
+  try {
+    await tx.savepoint(async (writeTx) => {
+      await writeTx`insert into allrice_memories(id,organization_id,workspace_id,owner_id,employee_id,instance_id,
     content,visibility,source_type,source_id,lifecycle_state,memory_class,revision,trust_level,confidence,source_label)
     values(${id},${s.organization_id},${s.workspace_id},${s.owner_id},${origin.employee_id},${snapshot.data.id},
       ${content},'private','message',${s.user_message_id},'candidate','work_note',1,'derived',0.5,'整理来源')`;
-  await tx`insert into allrice_memory_revisions(organization_id,workspace_id,memory_id,revision,content,trust_level,lifecycle_state,memory_class,confidence,reason,changed_by)
+      await writeTx`insert into allrice_memory_revisions(organization_id,workspace_id,memory_id,revision,content,trust_level,lifecycle_state,memory_class,confidence,reason,changed_by)
     values(${s.organization_id},${s.workspace_id},${id},1,${content},'derived','candidate','work_note',0.5,'真人消息来源，未整理、未确认',${s.owner_id})`;
-  await tx`insert into allrice_experience_reviews(memory_id,organization_id,workspace_id,owner_id,client_request_id,request_digest,
+      await writeTx`insert into allrice_experience_reviews(memory_id,organization_id,workspace_id,owner_id,client_request_id,request_digest,
     run_id,session_id,message_id,source_excerpt,source_digest,proposed_digest,requested_scope,share_acknowledged,
     origin_kind,instance_id,source_key,evidence)
     values(${id},${s.organization_id},${s.workspace_id},${s.owner_id},${randomUUID()},${sourceKey},
       ${s.run_id},${s.session_id},${s.user_message_id},${origin.text},${hash(origin.text)},${contentDigest},'private',false,
       'incremental',${snapshot.data.id},${sourceKey},${tx.json(evidence as unknown as postgres.JSONValue)})`;
-  await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,request_id)
+      await writeTx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,request_id)
     values(${s.organization_id},${s.workspace_id},${s.owner_id},'memory.source.capture','memory',${id},'allowed','structured_human_source',${context.requestId})`;
+      // Optimistic commit check: a revocation can proceed during collection.
+      // Roll back every ledger write if its exact source is no longer readable.
+      await assertMemorySourceScenesAvailable(
+        writeTx,
+        context,
+        snapshot.data.id,
+        evidence.scenes ?? [],
+      );
+    });
+  } catch (error) {
+    if (
+      error instanceof DataAccessError ||
+      error instanceof EmployeeContentError ||
+      error instanceof EmployeeInstanceError ||
+      error instanceof ZodError
+    )
+      return finish('ignored', 'dependency_unavailable');
+    throw error;
+  }
   return finish('captured', 'structured_human_source');
 }
 
@@ -365,7 +426,8 @@ export async function collectPendingMemorySources(
     Source[]
   >`select source.run_id capture_run_id,actual.run_id,actual.organization_id,actual.workspace_id,
     actual.owner_id,actual.session_id,actual.employee_assignment_id,actual.employee_version_id,
-    source.user_message_id,actual.user_message_id execution_user_message_id,actual.execution_snapshot,actual.completed_at
+    source.user_message_id,actual.user_message_id execution_user_message_id,actual.execution_snapshot,actual.completed_at,
+    actual.assistant_message_id,actual.content_generation_id,actual.content_scene_state
     from allrice_employee_runs source
     join allrice_employee_runs actual on actual.run_id=coalesce(source.experience_execution_run_id,source.run_id)
     where source.experience_capture_state='pending' and source.experience_capture_reason=${memorySourceProducer}

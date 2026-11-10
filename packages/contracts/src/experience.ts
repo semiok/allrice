@@ -4,6 +4,11 @@ import { MemoryClassSchema } from './operations.ts';
 import { PersonalSkillPinSchema } from './personal-skills.ts';
 import { ExperienceAdoptionViewSchema } from './experience-adoption.ts';
 import { ExperienceValidationViewSchema } from './experience-validation.ts';
+import {
+  EmployeeSceneReadSchema,
+  employeeContentLimits,
+} from './employee-content.ts';
+import { PersonalSceneUseSchema } from './employee-scene-skills.ts';
 
 /** Platform Skills keep their separate source/license/test/publication gate. */
 export const ExperienceScopeSchema = z.enum([
@@ -292,6 +297,28 @@ export const MemorySourceEvidenceSchema = ExperienceEvidenceSchema.extend({
   schemaVersion: z.literal(2),
   kind: z.enum(['human_message', 'adopted_steering']),
   captureRunId: UuidSchema,
+  // Optional only for already captured v2 JSON. New sources include every
+  // actual personal read; native uses remain distinct from reading bytes.
+  scenes: z
+    .array(
+      z
+        .object({
+          runId: UuidSchema,
+          receipt: EmployeeSceneReadSchema.extend({
+            personal: EmployeeSceneReadSchema.shape.personal.unwrap(),
+          }),
+          uses: z
+            .array(
+              z
+                .object({ eventId: UuidSchema, use: PersonalSceneUseSchema })
+                .strict(),
+            )
+            .max(64),
+        })
+        .strict(),
+    )
+    .max(employeeContentLimits.scenes)
+    .optional(),
 }).strict();
 export type MemorySourceEvidence = z.infer<typeof MemorySourceEvidenceSchema>;
 

@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   HarnessEventSchema,
+  MemorySourceEvidenceSchema,
   type PersonalSceneSkill,
   type RequestContext,
 } from '@allrice/contracts';
@@ -33,6 +34,7 @@ import {
 import { acquireConversationRuntime } from '../conversation/conversation-runtime.ts';
 import {
   failJob,
+  completeJob,
   bindJobNativeSession,
   appendJobEvent,
   startClaimedJob,
@@ -58,6 +60,9 @@ import {
   inspectPersonalSceneSkill,
   listPersonalSceneReads,
 } from './personal-scene-reads.ts';
+import { removePersonalSceneSkill } from './personal-scene-remove.ts';
+import { collectPendingMemorySources } from '../memory-source-evidence.ts';
+import * as sourceScenes from '../memory-source-scenes.ts';
 
 const browser = vi.hoisted(() => ({ context: null as RequestContext | null }));
 vi.mock('../../../../apps/web/lib/identity/session', () => ({
@@ -78,6 +83,7 @@ suite(
     >;
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', `sha256:${'c'.repeat(64)}`);
+      vi.stubEnv('ALLRICE_EXPERIENCE_REVIEW_ENABLED', '1');
       f = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
       const principal = await ensureBootstrapPortalPrincipal({
@@ -392,6 +398,240 @@ suite(
         { params: Promise.resolve({ id: instanceId }) },
       );
     }
+
+    const collectSources = () =>
+      collectPendingMemorySources({ database: f.db, limit: 16 });
+    const sources = (
+      run: Runtime,
+    ) => f.db`select e.evidence,m.content,m.lifecycle_state,m.trust_level
+      from allrice_experience_reviews e join allrice_memories m on m.id=e.memory_id
+      where e.evidence->>'captureRunId'=${run.scope.runId}`;
+    const terminal = (run: Runtime) =>
+      completeJob({ ...run.worker, result: { text: '合成周报已交付。' } });
+    function removeScene(s: Setup, saved: Awaited<ReturnType<typeof save>>) {
+      return removePersonalSceneSkill(s.owner, s.instance.id, saved.sceneId, {
+        workspaceId: s.workspaceId,
+        requestId: randomUUID(),
+        expectedRevision: saved.revision,
+        expectedContentRef: saved.contentRef,
+      });
+    }
+    it.each(['skill-invocation', 'tool-result'] as const)(
+      'B records the exact personal Workflow version after ordinary update: %s',
+      async (kind) => {
+        const s = await setup(),
+          saved = await save(s),
+          run = await runtime(s);
+        const skill = await body(run, saved.sceneId);
+        const event = await appendUse(
+          run,
+          useEvent(run, await native(run), skill, kind),
+        );
+        await terminal(run);
+        const updated = await save(s, '2.0.0', saved);
+        expect(updated.contentRef).not.toBe(saved.contentRef);
+        await collectSources();
+        const [source] = await sources(run);
+        expect(source).toMatchObject({
+          lifecycle_state: 'candidate',
+          trust_level: 'derived',
+        });
+        const evidence = MemorySourceEvidenceSchema.parse(source!.evidence);
+        expect(evidence.skills).toEqual([]);
+        expect(evidence.scenes).toEqual([
+          {
+            runId: run.scope.runId,
+            receipt: expect.objectContaining({
+              sceneId: saved.sceneId,
+              personal: expect.objectContaining({
+                contentRef: saved.contentRef,
+                contentChecksum: saved.contentChecksum,
+                bundleChecksum: saved.bundleChecksum,
+              }),
+            }),
+            uses: [
+              {
+                eventId: event.id,
+                use: expect.objectContaining({
+                  kind,
+                  contentRef: saved.contentRef,
+                  revision: saved.revision,
+                }),
+              },
+            ],
+          },
+        ]);
+      },
+    );
+    it.each(['read_only', 'resource_only'] as const)(
+      'B retains exact read receipts without inventing native use: %s',
+      async (mode) => {
+        const s = await setup(),
+          saved = await save(s),
+          run = await runtime(s);
+        if (mode === 'read_only') await body(run, saved.sceneId);
+        else
+          await loadPersonalRuntimeSceneSkill(
+            run.scope,
+            run.content.generationId,
+            {
+              contentRef: saved.contentRef,
+              resourcePath: 'assets/template.csv',
+            },
+            run.worker,
+          );
+        await terminal(run);
+        await collectSources();
+        const [source] = await sources(run);
+        const [scene] = MemorySourceEvidenceSchema.parse(
+          source!.evidence,
+        ).scenes!;
+        expect(scene!.receipt.personal.contentRef).toBe(saved.contentRef);
+        expect(scene!.uses).toEqual([]);
+        expect(scene!.receipt.personal.contentRead).toBe(
+          mode === 'read_only' ? true : undefined,
+        );
+        expect(scene!.receipt.personal.resources).toHaveLength(
+          mode === 'resource_only' ? 1 : 0,
+        );
+      },
+    );
+    it.each([
+      'skill-invocation',
+      'tool-result',
+      'read_only',
+      'resource_only',
+      'catalog_only',
+    ] as const)(
+      'personal Workflow -> terminal Run -> remove scene -> B capture: %s',
+      async (mode) => {
+        const s = await setup(),
+          saved = await save(s),
+          run = await runtime(s);
+        if (mode === 'catalog_only')
+          await listPersonalRuntimeSceneSkills(
+            run.scope,
+            run.content.generationId,
+            run.worker,
+          );
+        else if (mode === 'resource_only')
+          await loadPersonalRuntimeSceneSkill(
+            run.scope,
+            run.content.generationId,
+            {
+              contentRef: saved.contentRef,
+              resourcePath: 'assets/template.csv',
+            },
+            run.worker,
+          );
+        else {
+          const skill = await body(run, saved.sceneId);
+          if (mode !== 'read_only')
+            await appendUse(run, useEvent(run, await native(run), skill, mode));
+        }
+        await terminal(run);
+        const [pending] =
+          await f.db`select status,experience_capture_state from allrice_employee_runs where run_id=${run.scope.runId}`;
+        expect(pending).toEqual({
+          status: 'succeeded',
+          experience_capture_state: 'pending',
+        });
+        await removeScene(s, saved);
+        await collectSources();
+        expect(await sources(run)).toHaveLength(
+          mode === 'catalog_only' ? 1 : 0,
+        );
+        const [result] =
+          await f.db`select experience_capture_state state,experience_capture_reason reason from allrice_employee_runs where run_id=${run.scope.runId}`;
+        expect(result).toEqual(
+          mode === 'catalog_only'
+            ? { state: 'captured', reason: 'structured_human_source' }
+            : { state: 'ignored', reason: 'dependency_unavailable' },
+        );
+        if (mode === 'catalog_only')
+          expect((await sources(run))[0]!.evidence.scenes).toEqual([]);
+      },
+    );
+    it.each([
+      'revision',
+      'session',
+      'message',
+      'checksum',
+      'read_run',
+      'read_shape',
+      'read_without_personal',
+    ] as const)(
+      'B rejects inconsistent personal Workflow native provenance: %s',
+      async (mode) => {
+        const s = await setup(),
+          saved = await save(s),
+          run = await runtime(s);
+        const event = await appendUse(
+          run,
+          useEvent(run, await native(run), await body(run, saved.sceneId)),
+        );
+        await terminal(run);
+        const path =
+          mode === 'revision'
+            ? '{nativePayload,revision}'
+            : mode === 'session'
+              ? '{nativePayload,nativeSessionId}'
+              : mode === 'message'
+                ? '{messageId}'
+                : '{nativePayload,contentChecksum}';
+        if (mode === 'read_run')
+          await f.db`update allrice_employee_runs set content_scene_state=jsonb_set(content_scene_state,'{reads,0,personal,runId}',${f.db.json(randomUUID())}) where run_id=${run.scope.runId}`;
+        else if (mode === 'read_shape')
+          await f.db`update allrice_employee_runs set content_scene_state='{"reads":[{}]}' where run_id=${run.scope.runId}`;
+        else if (mode === 'read_without_personal')
+          await f.db`update allrice_employee_runs set content_scene_state=content_scene_state#-'{reads,0,personal}' where run_id=${run.scope.runId}`;
+        else
+          await f.db`update allrice_run_events set payload=jsonb_set(payload,${path}::text[],${f.db.json(mode === 'revision' ? saved.revision + 1 : mode === 'checksum' ? 'sha256:' + 'f'.repeat(64) : randomUUID())}) where id=${event.id}`;
+        await collectSources();
+        expect(await sources(run)).toEqual([]);
+        const [result] =
+          await f.db`select experience_capture_reason reason from allrice_employee_runs where run_id=${run.scope.runId}`;
+        expect(result!.reason).toBe('dependency_unavailable');
+      },
+    );
+    it('B allows scene removal while capture is open and rejects the stale optimistic commit', async () => {
+      const s = await setup(),
+        saved = await save(s),
+        run = await runtime(s);
+      await appendUse(
+        run,
+        useEvent(run, await native(run), await body(run, saved.sceneId)),
+      );
+      await terminal(run);
+      const original = sourceScenes.assertMemorySourceScenesAvailable;
+      const check = vi
+        .spyOn(sourceScenes, 'assertMemorySourceScenesAvailable')
+        .mockImplementationOnce(async (...args) => {
+          await original(...args);
+          // Real removal must finish inside the open capture, before its final
+          // check. No scene/identity SHARE lock may be added by the new reader.
+          await removeScene(s, saved);
+        });
+      try {
+        await collectSources();
+        expect(check).toHaveBeenCalledTimes(2);
+        expect(await sources(run)).toEqual([]);
+        expect(
+          await f.db`select id from allrice_memories where source_id=(select user_message_id from allrice_employee_runs where run_id=${run.scope.runId})`,
+        ).toEqual([]);
+        expect(
+          await f.db`select id from allrice_audit_events where action='memory.source.capture' and organization_id=${s.owner.organizationId}`,
+        ).toEqual([]);
+        const [result] =
+          await f.db`select experience_capture_state state,experience_capture_reason reason from allrice_employee_runs where run_id=${run.scope.runId}`;
+        expect(result).toEqual({
+          state: 'ignored',
+          reason: 'dependency_unavailable',
+        });
+      } finally {
+        check.mockRestore();
+      }
+    }, 10000);
 
     it('L1: reads full large body and exact old resource after update without the old cumulative 32000-byte rejection', async () => {
       const s = await setup();
