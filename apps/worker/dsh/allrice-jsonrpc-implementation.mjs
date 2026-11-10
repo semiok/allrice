@@ -1532,9 +1532,10 @@ export async function createAllRiceRuntime(
         });
       }
       if (
-        !indexedMemory &&
         requestedBrokerTools.some((tool) =>
-          tool.canonicalName.startsWith('workspace.memory.'),
+          this.employeeDocumentsSchemaVersion === 2
+            ? tool.canonicalName === 'workspace.memory.remember'
+            : tool.canonicalName.startsWith('workspace.memory.'),
         )
       ) {
         this.ctx.systemPrompt.section({

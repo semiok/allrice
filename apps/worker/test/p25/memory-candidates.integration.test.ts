@@ -1,5 +1,5 @@
 /** Real native declaration/JSON-RPC -> Worker Broker -> isolated PostgreSQL.
- * The provider is deterministic; production admission still creates V1 Runs. */
+ * The provider is deterministic; this fixture selects its frozen version explicitly. */
 import { randomUUID } from 'node:crypto';
 import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 import type { ExecutionContext } from '@allrice/contracts';
@@ -157,7 +157,7 @@ suite('ordinary pair candidates through native/Worker storage', () => {
       source_type: 'message',
       source_id: f.messageId,
     });
-    // The real production freeze factory has deliberately not switched versions.
+    // The explicit legacy factory remains v1 and must still exclude candidates.
     const projection = await freezeEmployeeDocuments(
       fixture.db,
       {

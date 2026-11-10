@@ -749,6 +749,9 @@ it.each([1, 2])(
     });
     await h.prompt('完成根任务');
     await h.wait();
+    expect(h.initialization.capabilities.employeeDocumentsSchemaVersion).toBe(
+      version,
+    );
     const rootRequest = h.calls.find((r) => r.sessionId === h.root.id);
     expect(JSON.stringify(rootRequest.messages)).toContain(
       'ROOT_STABLE_PERSONA',

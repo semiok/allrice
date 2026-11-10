@@ -1,6 +1,7 @@
 import { confirmedMemoryHandle } from './employees/employee-documents.ts';
 import {
   memoryInstanceForRun,
+  memoryScopeForRun,
   memoryPairDigest,
 } from './workspace/employee-memory.ts';
 import {
@@ -254,15 +255,15 @@ async function assertMemoryIndexCurrent(
   scope: ExperienceRunScope,
   state: RunMemoryContextV2State,
 ) {
-  const instanceId = await memoryInstanceForRun(sql, scope);
-  if (!instanceId) return unavailable();
-  if (!state.pins.length) return instanceId;
+  const current = await memoryScopeForRun(sql, scope);
+  if (!current) return unavailable();
+  if (!state.pins.length) return current;
   const rows = await sql<{ id: string }[]>`select m.id from allrice_memories m
     where m.id=any(${state.pins.map((pin) => pin.id)}::uuid[])
-      and ${personalMemoryIndexReadPredicate(sql, { ...scope, instanceId })}`;
+      and ${personalMemoryIndexReadPredicate(sql, current)}`;
   if (new Set(rows.map((row) => row.id)).size !== state.pins.length)
     return unavailable();
-  return instanceId;
+  return current;
 }
 
 /** A single complete decoded text result, admitted atomically on the existing
@@ -289,14 +290,14 @@ export async function readRunMemoryOrdinal(
       return unavailable();
     const pin = state.pins.find((entry) => entry.number === number);
     if (!pin) return unavailable();
-    const instanceId = await assertMemoryIndexCurrent(tx, auth.scope, state);
+    const current = await assertMemoryIndexCurrent(tx, auth.scope, state);
     const [row] = await tx<
       { summary: string | null; details: string | null }[]
     >`
       select r.summary,r.details from allrice_memories m
       join allrice_memory_revisions r on r.memory_id=m.id and r.organization_id=m.organization_id
         and r.workspace_id=m.workspace_id and r.revision=${pin.revision}
-      where m.id=${pin.id} and ${personalMemoryIndexReadPredicate(tx, { ...auth.scope, instanceId })}`;
+      where m.id=${pin.id} and ${personalMemoryIndexReadPredicate(tx, current)}`;
     const pair = PersonalMemoryPairSchema.safeParse(
       row && { summary: row.summary, details: row.details },
     );
