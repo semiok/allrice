@@ -3,7 +3,10 @@ import type { Visibility, WorkspaceMemorySchema } from '@allrice/contracts';
 import type { z } from 'zod';
 import type { getDatabase } from '../core/client.ts';
 import { memorySearchPatterns } from '../memory/search-patterns.ts';
-import type { EmployeeMemoryScope } from './employee-memory.ts';
+import {
+  ordinaryMemoryPredicate,
+  type EmployeeMemoryScope,
+} from './employee-memory.ts';
 
 type WorkspaceMemory = z.infer<typeof WorkspaceMemorySchema>;
 type Sql = ReturnType<typeof getDatabase> | TransactionSql;
@@ -33,10 +36,14 @@ export function employeeMemoryReadPredicate(sql: Sql, scope: ReadScope) {
   `;
 }
 
-/** v2 personal memory never adopts the shared table's raw review sources. */
-export function personalMemoryIndexReadPredicate(sql: Sql, scope: ReadScope) {
-  return sql`${employeeMemoryReadPredicate(sql, scope)}
-    and not exists(select 1 from allrice_experience_reviews review where review.memory_id=m.id)`;
+/** Same ordinary collection as management/quota, narrowed to active records. */
+export function personalMemoryIndexReadPredicate(
+  sql: Sql,
+  scope: EmployeeMemoryScope,
+) {
+  return sql`${ordinaryMemoryPredicate(sql, scope)}
+    and m.archived_at is null and m.lifecycle_state='durable' and m.trust_level='user_confirmed'
+    and (m.expires_at is null or m.expires_at>clock_timestamp())`;
 }
 
 type SearchRow = {

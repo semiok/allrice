@@ -16,6 +16,10 @@ import { ensureGeneralEmployeeInstance } from './employees/employee-instances.ts
 import { freezeEmployeeMemoryIndexV2 } from './employees/employee-documents.ts';
 import { memoryPairDigest } from './workspace/employee-memory.ts';
 import {
+  employeeMemoryCounts,
+  listPersonalEmployeeMemories,
+} from './employee-memory-management.ts';
+import {
   assertRunMemoryContextCurrent,
   prepareRunMemoryContext,
   readRunMemoryContext,
@@ -25,6 +29,7 @@ import { readRunExperienceSource } from './run-experience-source.ts';
 import { executeRiceTool } from '../../../apps/worker/src/tool-broker.ts';
 import { createEmployeeAdministrationFixture } from './employee-administration.fixture.ts';
 import { savePlatformEmployeeDraft } from './employees/platform-employees.ts';
+import { contextCheckpointChecksum } from './conversation/conversation-checkpoint.ts';
 import { authenticateSession, createSession } from './identity.ts';
 import {
   createChatSession,
@@ -85,6 +90,7 @@ suite(
               workspaceId: who.workspaceId,
               ownerId: who.userId,
               instanceId: who.employeeAssignmentId,
+              employeeId: assignment!.employee_id as string,
             },
             {},
           );
@@ -237,9 +243,44 @@ suite(
       );
       expect(replay.run.id).toBe(sent.run.id);
       expect(await state(sent.run.id)).toEqual(saved!.memory_context_state);
+      const failedSession = await createChatSession(context, {
+        workspaceId: source.workspaceId,
+        employeeInstanceId: assignment.id,
+        title: 'Synthetic queue rollback',
+      });
+      const databaseState = async () =>
+        (
+          await fixture.db`select
+        (select count(*) from allrice_messages where workspace_id=${source.workspaceId}) messages,
+        (select count(*) from allrice_runs where workspace_id=${source.workspaceId}) runs,
+        (select count(*) from allrice_jobs where workspace_id=${source.workspaceId}) jobs,
+        (select count(*) from allrice_employee_runs where workspace_id=${source.workspaceId}) employee_runs,
+        (select to_jsonb(s) from allrice_chat_sessions s where s.id=${failedSession.id}) session,
+        (select coalesce(jsonb_agg(to_jsonb(r)),'[]') from allrice_conversation_runtimes r where r.session_id=${failedSession.id}) runtime`
+        )[0];
+      const beforeFailure = await databaseState();
+      await fixture.db`create function fail_memory_queue_insert() returns trigger language plpgsql as $$ begin
+        if new.prompt_snapshot#>>'{employeeDocuments,schemaVersion}' is distinct from '2'
+          or new.memory_context_state->>'schemaVersion' is distinct from '2' then
+          raise exception 'fixture_v2_projection_missing'; end if;
+        raise exception 'synthetic_memory_queue_failure'; end $$`;
+      await fixture.db`create trigger fail_memory_queue_insert before insert on allrice_employee_runs
+        for each row execute function fail_memory_queue_insert()`;
+      try {
+        await expect(
+          sendChatMessage(context, source.workspaceId, failedSession.id, {
+            ...input,
+            clientMessageId: randomUUID(),
+          }),
+        ).rejects.toThrow('synthetic_memory_queue_failure');
+        expect(await databaseState()).toEqual(beforeFailure);
+      } finally {
+        await fixture.db`drop trigger fail_memory_queue_insert on allrice_employee_runs`;
+        await fixture.db`drop function fail_memory_queue_insert()`;
+      }
     }, 120000);
 
-    it('shares a full100-summary initial charge and refuses a whole over-budget detail', async () => {
+    it('uses exactly the management/quota ordinary set at100 and refuses a whole over-budget detail', async () => {
       const pair = { summary: '🧑'.repeat(40), details: '🧑'.repeat(2000) };
       const f = await setup(Array.from({ length: 100 }, () => pair));
       expect(f.projection.memoryContextStateV2.pins).toHaveLength(100);
@@ -248,6 +289,99 @@ suite(
         `[100] ${pair.summary}（有说明）`,
       );
       expect(JSON.stringify(f.projection)).not.toContain(pair.details);
+      const scope = {
+        ...f.auth.scope,
+        instanceId: f.assignment,
+        employeeId: f.employee,
+      };
+      // Synthetic first-INSERT fixtures for every excluded category; no
+      // classification trigger or source/permission gate is disabled.
+      await fixture.db`insert into allrice_memories(organization_id,workspace_id,owner_id,instance_id,employee_id,
+        content,summary,visibility,source_type,lifecycle_state,trust_level)
+        select ${f.org},${f.workspace},${f.user},${f.assignment},${f.employee},'待确认','待确认','private','user','candidate','derived'
+        from generate_series(1,73)`;
+      const excluded = Array.from({ length: 9 }, () => randomUUID());
+      await fixture.db`insert into allrice_memories(id,organization_id,workspace_id,owner_id,instance_id,employee_id,
+        content,summary,visibility,source_type,lifecycle_state,trust_level,captured_at)
+        select id,${f.org},${f.workspace},${f.user},${f.assignment},${f.employee},'隔离规则','隔离规则','private','user','durable','user_confirmed',clock_timestamp()-interval '2 days'
+        from unnest(${excluded}::uuid[]) id`;
+      await fixture.db`update allrice_memories set archived_at=now() where id=${excluded[0]!}`;
+      await fixture.db`update allrice_memories set expires_at=clock_timestamp()-interval '1 day' where id=${excluded[1]!}`;
+      await fixture.db`update allrice_memories set visibility='workspace' where id=${excluded[2]!}`;
+      await fixture.db`update allrice_memories set employee_id=null where id=${excluded[3]!}`;
+      const [source] =
+        await fixture.db`select * from allrice_employee_runs where run_id=${f.rootRunId}`;
+      for (const [i, status] of ['pending', 'approved'].entries()) {
+        await fixture.db`insert into allrice_experience_reviews(memory_id,organization_id,workspace_id,owner_id,client_request_id,
+          request_digest,run_id,session_id,message_id,source_excerpt,source_digest,proposed_digest,requested_scope,share_acknowledged,
+          status,reviewed_by,reviewed_at,review_reason)
+          values(${excluded[4 + i]!},${f.org},${f.workspace},${f.user},${randomUUID()},${'sha256:' + 'a'.repeat(64)},${f.rootRunId},${f.session},
+            ${source!.user_message_id},'Synthetic review',${'sha256:' + 'b'.repeat(64)},${'sha256:' + 'c'.repeat(64)},'private',false,
+            ${status},${status === 'approved' ? f.user : null},${status === 'approved' ? new Date() : null},${status === 'approved' ? 'Synthetic approval' : null})`;
+      }
+      const brand = randomUUID(),
+        context = randomUUID(),
+        retrospective = randomUUID();
+      await fixture.db.begin(async (tx) => {
+        await tx`insert into allrice_brand_content_brands(id,organization_id,workspace_id,owner_id,instance_id,name,revision,current_context_id)
+          values(${brand},${f.org},${f.workspace},${f.user},${f.assignment},'Synthetic brand',1,${context})`;
+        await tx`insert into allrice_brand_content_contexts(id,organization_id,workspace_id,owner_id,instance_id,brand_id,number,brand_name,content,digest)
+          values(${context},${f.org},${f.workspace},${f.user},${f.assignment},${brand},1,'Synthetic brand','{}',${'sha256:' + 'd'.repeat(64)})`;
+        await tx`insert into allrice_brand_content_retrospectives(id,organization_id,workspace_id,owner_id,instance_id,brand_id,context_id,platform,
+          feedback_ids,output,source_text,run_id,session_id,workflow)
+          values(${retrospective},${f.org},${f.workspace},${f.user},${f.assignment},${brand},${context},'synthetic',${[randomUUID()]}::uuid[],
+            '{}','Synthetic source',${f.rootRunId},${f.session},'{}')`;
+        await tx`insert into allrice_brand_content_experiences(memory_id,organization_id,workspace_id,owner_id,instance_id,brand_id,retrospective_id,context_id,platform)
+          values(${excluded[6]!},${f.org},${f.workspace},${f.user},${f.assignment},${brand},${retrospective},${context},'synthetic')`;
+      });
+      const methodRun = randomUUID(),
+        userMessage = randomUUID(),
+        assistantMessage = randomUUID();
+      await fixture.db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input)
+        values(${methodRun},${f.org},${f.workspace},${f.user},'running','{}','{}')`;
+      await fixture.db`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content)
+        values(${userMessage},${f.org},${f.workspace},${f.session},${f.user},'user','{"text":"Synthetic authoring","citations":[]}'),
+          (${assistantMessage},${f.org},${f.workspace},${f.session},${f.user},'assistant','{"text":"Synthetic authoring","citations":[]}')`;
+      await fixture.db`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,
+        session_id,user_message_id,assistant_message_id,provider_snapshot,prompt_snapshot,execution_snapshot,method_authoring)
+        values(${methodRun},${f.org},${f.workspace},${f.user},${f.assignment},${f.version},${f.session},${userMessage},${assistantMessage},
+          ${fixture.db.json(source!.provider_snapshot)},'{}',${fixture.db.json(source!.execution_snapshot)},true)`;
+      await fixture.db`update allrice_memories set source_type='message',source_id=${userMessage} where id=${excluded[7]!}`;
+      const checkpointId = randomUUID();
+      const checkpoint = {
+        sessionId: f.session,
+        harness: 'dsh' as const,
+        threadId: null,
+        generation: 0,
+        coveredThroughMessageId: userMessage,
+        summaryVersion: 'extractive-v1' as const,
+        summary: 'Synthetic method checkpoint',
+        configChecksum: f.snapshot.employee.definitionChecksum,
+        estimatedTokens: 10,
+        messageCount: 1,
+      };
+      await fixture.db`insert into allrice_context_checkpoints(id,organization_id,workspace_id,session_id,owner_id,harness,thread_id,
+        thread_generation,covered_through_message_id,summary_version,summary,checksum,config_checksum,estimated_tokens,message_count)
+        values(${checkpointId},${f.org},${f.workspace},${f.session},${f.user},'dsh',null,0,${userMessage},'extractive-v1',
+          ${checkpoint.summary},${contextCheckpointChecksum(checkpoint)},${checkpoint.configChecksum},10,1)`;
+      await fixture.db`update allrice_memories set source_type='checkpoint',source_id=${checkpointId} where id=${excluded[8]!}`;
+      const page = await listPersonalEmployeeMemories(
+        f.context,
+        f.workspace,
+        f.assignment,
+      );
+      const quota = await fixture.db.begin((tx) =>
+        employeeMemoryCounts(tx, scope),
+      );
+      const next = await freezeEmployeeMemoryIndexV2(fixture.db, scope, {});
+      expect(page.counts).toEqual({ active: 100, pending: 73, maxActive: 100 });
+      expect(quota).toEqual(page.counts);
+      expect(page.active.map((row) => row.id)).toEqual(
+        next.memoryContextStateV2.pins.map((pin) => pin.id),
+      );
+      expect(next.memoryContextStateV2).toEqual(
+        f.projection.memoryContextStateV2,
+      );
       await expect(
         prepareRunMemoryContext(
           f.auth,
@@ -262,6 +396,44 @@ suite(
       ).rejects.toMatchObject({ code: 'MEMORY_CONTEXT_BUDGET_EXHAUSTED' });
       expect(await state(f.rootRunId)).toEqual(before);
     }, 120000);
+
+    it('freezes empty0, refuses101 and damaged pairs without truncation or repair', async () => {
+      const empty = await setup([]);
+      expect(empty.projection.employeeDocuments).toMatchObject({
+        schemaVersion: 2,
+        memory: '',
+      });
+      expect(await state(empty.rootRunId)).toMatchObject({
+        pins: [],
+        spentBytes: 0,
+        toolReads: 0,
+      });
+      await expect(
+        readRunMemoryOrdinal(empty.auth, { number: 1 }),
+      ).rejects.toMatchObject({ code: 'MEMORY_CONTEXT_UNAVAILABLE' });
+      await expect(
+        setup(Array.from({ length: 101 }, () => defaultPair)),
+      ).rejects.toThrow();
+      const damaged = await setup();
+      const pin = damaged.projection.memoryContextStateV2.pins[0]!;
+      await fixture.db`update allrice_memories set summary=null where id=${pin.id}`;
+      await expect(
+        freezeEmployeeMemoryIndexV2(
+          fixture.db,
+          {
+            ...damaged.auth.scope,
+            instanceId: damaged.assignment,
+            employeeId: damaged.employee,
+          },
+          {},
+        ),
+      ).rejects.toThrow();
+      expect(
+        (
+          await fixture.db`select summary from allrice_memories where id=${pin.id}`
+        )[0]!.summary,
+      ).toBeNull();
+    });
 
     it('reads one historical complete pair and does not reset on prepare/resume', async () => {
       const f = await setup();
@@ -291,7 +463,7 @@ suite(
       expect(await state(f.rootRunId)).toEqual(spent);
       const next = await freezeEmployeeMemoryIndexV2(
         fixture.db,
-        { ...f.auth.scope, instanceId: f.assignment },
+        { ...f.auth.scope, instanceId: f.assignment, employeeId: f.employee },
         {},
       );
       expect(next.memoryContextStateV2.pins[0]!.revision).toBe(2);
@@ -398,6 +570,21 @@ suite(
         readRunMemoryOrdinal(f.auth, { number: 1 }),
       ).rejects.toThrow();
       await fixture.db`update allrice_memories set trust_level='user_confirmed' where id=${before.pins[0]!.id}`;
+      await fixture.db`update allrice_memories set employee_id=null where id=${before.pins[0]!.id}`;
+      await expect(
+        readRunMemoryOrdinal(f.auth, { number: 1 }),
+      ).rejects.toThrow();
+      await expect(
+        assertRunMemoryContextCurrent(f.auth.scope),
+      ).rejects.toThrow();
+      await fixture.db`update allrice_memories set employee_id=${f.employee},visibility='workspace' where id=${before.pins[0]!.id}`;
+      await expect(
+        readRunMemoryOrdinal(f.auth, { number: 1 }),
+      ).rejects.toThrow();
+      await expect(
+        assertRunMemoryContextCurrent(f.auth.scope),
+      ).rejects.toThrow();
+      await fixture.db`update allrice_memories set visibility='private' where id=${before.pins[0]!.id}`;
       await fixture.db`update allrice_employee_instances set archived_at=now() where id=${f.assignment}`;
       await expect(
         readRunMemoryOrdinal(f.auth, { number: 1 }),
@@ -429,7 +616,7 @@ suite(
       ).rejects.toThrow();
       const next = await freezeEmployeeMemoryIndexV2(
         fixture.db,
-        { ...f.auth.scope, instanceId: f.assignment },
+        { ...f.auth.scope, instanceId: f.assignment, employeeId: f.employee },
         {},
       );
       expect(next.memoryContextStateV2.pins.map((pin) => pin.id)).toEqual([
@@ -485,6 +672,7 @@ suite(
           if (method !== 'allrice/tool-call') throw Error(method);
           const result = await executeRiceTool({
             context: f.execution,
+            employeeDocuments: f.projection.employeeDocuments,
             capabilities: ['storage:read'],
             storageRoot: '/must-not-export',
             sessionId: f.session,
@@ -502,6 +690,9 @@ suite(
       });
       await h.prompt('请按已确认的财务日报规则整理记录。');
       await h.wait();
+      expect(h.initialization.capabilities.employeeDocumentsSchemaVersion).toBe(
+        2,
+      );
       expect(calls).toEqual([output]);
       const first = h.calls[0];
       expect(JSON.stringify(first.messages)).toContain('MEMORY_INDEX_V2');

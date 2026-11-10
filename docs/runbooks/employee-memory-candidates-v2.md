@@ -1,7 +1,7 @@
 # 普通个人记忆候选 v2
 
-本片提供 pair 候选写入，不单独激活生产新 Run。
-生产 admission 仍由现有 freezeEmployeeDocuments 生成 v1；后续 PR2 必须同事务冻结 docs2、全部摘要、pins、既有读取账本与 allowlist，才启用新的 Run。
+PR3 独立阶段提供 pair 候选写入，未单独激活生产新 Run，仍由 freezeEmployeeDocuments 生成 v1。
+与 PR2 叠合后，以实际普通 admission 同事务冻结的 docs2、全部摘要、pins、既有读取账本与 allowlist 为准；旧冻结 Run 继续沿其原版本。
 
 ## 内容与权限
 

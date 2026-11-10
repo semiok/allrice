@@ -177,7 +177,9 @@ it('assembles each frozen common rule once and rejects conflicting implicit vers
   );
 });
 
-it('replaces only root facts and memories while preserving knowledge and the child deployment persona', () => {
+it.each([1, 2])(
+  'v%s: replaces only root facts and memories while preserving knowledge and the child deployment persona',
+  (version) => {
   const source = (sourceKind: string, body: string) => ({
     reference: {
       sourceKind,
@@ -214,6 +216,7 @@ it('replaces only root facts and memories while preserving knowledge and the chi
   } as unknown as Parameters<typeof assembleEmployeeKernel>[0];
   const old = assembleEmployeeKernel(input);
   input.resolved.promptSnapshot.employeeDocuments = {
+    ...(version === 2 ? { schemaVersion: 2 as const } : {}),
     user: '# USER.md\nORG_FACT',
     memory: '# MEMORY.md\nCONFIRMED_MEMORY',
   };
@@ -223,6 +226,7 @@ it('replaces only root facts and memories while preserving knowledge and the chi
   expect(current.rootSystemInstructions).toContain('PLATFORM_BOUNDARY');
   expect(current.rootSystemInstructions).not.toContain('OLD_COMMON_MEMORY');
   expect(current.rootSystemInstructions).not.toContain('ORG_FACT');
+  expect(current.rootSystemInstructions).not.toContain('LEGACY_RECALLED_MEMORY');
   expect(current.authorizedMemoryContext).toBe('');
   expect(current.employeeDocuments).toEqual(
     input.resolved.promptSnapshot.employeeDocuments,
@@ -341,7 +345,8 @@ it('replaces only root facts and memories while preserving knowledge and the chi
   expect(task.employeeDocuments?.persona).toBe('TASK_LITERAL {{missing}}');
   expect(task.authorizedMemoryContext).toBe('');
   expect(task.grantedCapabilities).toEqual(current.grantedCapabilities);
-});
+  },
+);
 
 it('bootstraps authorized messages and memories without consuming a retired automatic summary', () => {
   const messageId = randomUUID();

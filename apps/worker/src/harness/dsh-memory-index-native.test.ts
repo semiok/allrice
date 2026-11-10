@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest';
-import { renderMemoryDetailV2 } from '@allrice/contracts';
+import { renderMemoryDetailV2, renderMemoryIndexV2 } from '@allrice/contracts';
+import { randomUUID } from 'node:crypto';
 import { nativeBrokerRoundtrip } from './dsh-native-broker.fixture.js';
 import { boundToolResult } from '../tool-broker/result-budget.js';
 import type { RiceToolExecutionInput } from '../tool-broker/types.js';
@@ -14,11 +15,26 @@ it('keeps a complete escaped memory text through real JSON-RPC, native render an
     details: '\u0001'.repeat(1995) + '不得外发。',
   });
   await nativeBrokerRoundtrip({
+    run: {
+      id: randomUUID(),
+      documents: {
+        schemaVersion: 2,
+        user: '',
+        memory: renderMemoryIndexV2([
+          { summary: '月结报告', hasDetails: true },
+        ]),
+      },
+    },
     canonicalName: 'workspace.memory.read',
     wireName: 'workspace_memory_read',
     args: { number: 100 },
     invalidArgs: { number: 100, ownerId: 'must-not-be-authority' },
     expectedToolNames: ['workspace_memory_read'],
+    forbiddenToolNames: [
+      'workspace_memory_search',
+      'workspace_experience_read',
+      'workspace_memory_remember',
+    ],
     inspectSchema(schema) {
       expect(Object.keys(schema.properties as object)).toEqual(['number']);
       expect(schema.required).toEqual(['number']);
@@ -30,6 +46,12 @@ it('keeps a complete escaped memory text through real JSON-RPC, native render an
         { modelContent: content, summary: 'one complete entry', itemCount: 1 },
       ),
     inspectRequests(requests) {
+      expect(JSON.stringify(requests[0]!.messages)).toContain(
+        'MEMORY_INDEX_V2',
+      );
+      expect(JSON.stringify(requests[0]!.messages)).not.toContain(
+        JSON.stringify('\u0001'.repeat(1995)).slice(1, -1),
+      );
       const messages = requests[1]!.messages as {
         role: string;
         content: unknown;

@@ -1590,6 +1590,7 @@ export async function prepareEmployeeRunBinding(
             workspaceId: input.workspaceId,
             ownerId: actorId,
             instanceId: instance.id,
+            employeeId: assignment.employee_id,
           },
           organizationContext ?? {},
           manifest.data.schemaVersion === 2

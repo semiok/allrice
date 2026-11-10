@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, vi } from 'vitest';
 import { LlmAdapter, createUserMessage } from '@deepseek-ai/dsh-llm';
+import { isMemoryIndexDocuments } from '@allrice/contracts';
 import { createAllRiceRuntime } from '../../dsh/allrice-jsonrpc-implementation.mjs';
 import { DSH_DISTRIBUTION_CURRENT_VERSION } from '../../src/harness/dsh-distribution.ts';
 
@@ -185,7 +186,7 @@ export async function host({
     }
   }
   ctx.llm.registerAdapter([provider], new Synthetic());
-  await server.handleRequest('initialize', {
+  const initialization = await server.handleRequest('initialize', {
     cwd: directory,
     provider,
     model: modelName,
@@ -198,6 +199,9 @@ export async function host({
     requireRunAdmission: !!runId,
     rootSystemInstructions,
     documentMemory,
+    employeeDocumentsSchemaVersion: isMemoryIndexDocuments(employeeDocuments)
+      ? 2
+      : 1,
   });
   const root = (await server.ensureRoot(rootId)).agent;
   if (runId)
@@ -216,6 +220,7 @@ export async function host({
       ...options,
     });
   return {
+    initialization,
     ctx,
     server,
     root,

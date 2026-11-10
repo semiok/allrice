@@ -2,13 +2,16 @@
 
 This implements the approved 2026-11-10 memory read design, not its acceptance result.
 PR1 supplies the summary/details pair and historical revisions.
-Before review/release, reconcile the exact PR4 ordinary-memory predicate and PR3 candidate contract.
+This source overlays PR4's ordinary-memory predicate and PR3's frozen document version/candidate contract.
 No UI, quota/list implementation or C/#788 consolidation is included here.
 
 The existing `allrice-employee-documents-v1` public DSH adapter remains the only document provider.
 `systemPrompt.context` owns literal required context, supersession, clearing and recovery.
 Native child composition, fork history, tool registration and approvals remain DSH-owned.
 AllRice adds only scoped storage projection, authorization, existing Run accounting and lease checks.
+The same frozen document version selects Host initialization, its compatibility fingerprint,
+the explicit v2 capability receipt, run/begin validation and candidate writer shape.
+The read grant controls only ordinal disclosure; it never selects a writer version.
 
 New ordinary Run admission freezes one row set into `employeeDocuments.schemaVersion=2` and pins.
 The queue's first INSERT stores this already charged state in its existing `memory_context_state` JSON.
