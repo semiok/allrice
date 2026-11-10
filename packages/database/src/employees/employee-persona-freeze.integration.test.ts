@@ -236,7 +236,9 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
       values(${id},${f.organizationId},${f.workspaceId},${f.ownerId},${f.assignmentId},${instanceId},${f.versionId},'Historical first INSERT')`;
     return id;
   }
-  async function runCount(f: Subject) {
+  async function runCount(
+    f: Pick<Subject, 'organizationId' | 'workspaceId' | 'ownerId'>,
+  ) {
     const [row] = await fixture.db<
       { count: number }[]
     >`select count(*)::integer count from allrice_runs where organization_id=${f.organizationId} and workspace_id=${f.workspaceId} and owner_id=${f.ownerId}`;
@@ -668,6 +670,158 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
     expect(stored!.native_execution_binding).toBeNull();
   });
 
+  it.each(['absent_documents', 'user_memory_only'] as const)(
+    'keeps a terminal %s Run readable and freezes current PERSONA for a new message in its old native Session',
+    async (shape) => {
+      const f = await setup(true),
+        instance = await custom(f, { expressionStyle: 'concise' });
+      await fixture.db`insert into allrice_memories(organization_id,workspace_id,employee_id,owner_id,instance_id,content,visibility,source_type,trust_level,lifecycle_state,memory_class)
+        values(${f.organizationId},${f.workspaceId},${f.employeeId},${f.ownerId},${instance.id},'HISTORICAL_CONFIRMED_LITERAL','private','user','user_confirmed','durable','user_preference')`;
+      const actual = hub.prepareEmployeeRunBinding;
+      // Explicit historical first-INSERT fixture after the real source freezer.
+      // Both old shapes predate PERSONA, including deployed USER/MEMORY-only Runs.
+      // Never update an issued snapshot, disable a trigger or fabricate a mapping.
+      const spy = vi
+        .spyOn(hub, 'prepareEmployeeRunBinding')
+        .mockImplementationOnce(async (input, transaction) => {
+          const binding = await actual(input, transaction);
+          if (!binding.executionSnapshot.persona)
+            throw Error('expected real source-complete producer');
+          const executionSnapshot = { ...binding.executionSnapshot };
+          delete executionSnapshot.persona;
+          const promptSnapshot = EmployeePromptSnapshotSchema.parse(
+            binding.promptSnapshot,
+          );
+          const documents = promptSnapshot.employeeDocuments;
+          if (!documents?.persona) throw Error('expected real documents');
+          delete promptSnapshot.employeeDocuments;
+          if (shape === 'user_memory_only')
+            promptSnapshot.employeeDocuments = {
+              user: documents.user,
+              memory: documents.memory,
+            };
+          promptSnapshot.systemPrompt +=
+            '\n\n# IDENTITY.md\nHISTORICAL_UNMIGRATED_SYSTEM {{literal}}';
+          return { ...binding, executionSnapshot, promptSnapshot };
+        });
+      let first: Sent;
+      try {
+        first = await send(f, instance.id);
+      } finally {
+        spy.mockRestore();
+      }
+      expect(first.resolved.executionSnapshot).not.toHaveProperty('persona');
+      if (shape === 'user_memory_only') {
+        expect(first.resolved.promptSnapshot.employeeDocuments).toEqual({
+          user: expect.any(String),
+          memory: expect.stringContaining('HISTORICAL_CONFIRMED_LITERAL'),
+        });
+        expect(first.resolved.promptSnapshot.employeeDocuments!.user).not.toBe(
+          '',
+        );
+      } else
+        expect(first.resolved.promptSnapshot).not.toHaveProperty(
+          'employeeDocuments',
+        );
+      const [sessionBefore] =
+        await fixture.db`select native_root_origin from allrice_chat_sessions where id=${first.sessionId}`;
+      expect(sessionBefore!.native_root_origin.schemaVersion).toBe(2);
+      // Original cancellation produces a terminal historical fixture without
+      // pretending this unexecuted test has completed an old model response.
+      await cancelRun(f.context, f.workspaceId, first.runId, {});
+      const [before] =
+        await fixture.db`select prompt_snapshot,execution_snapshot,native_execution_binding,status from allrice_employee_runs where run_id=${first.runId}`;
+      expect(before!.status).toBe('canceled');
+      const readOld = () =>
+        hub.resolveEmployeeExecution({
+          organizationId: f.organizationId,
+          workspaceId: f.workspaceId,
+          ownerId: f.ownerId,
+          runId: first.runId,
+        });
+      const historical = await readOld();
+      expect(historical.promptSnapshot).toEqual(
+        EmployeePromptSnapshotSchema.parse(before!.prompt_snapshot),
+      );
+      expect(historical.executionSnapshot).toEqual(
+        EmployeeExecutionSnapshotSchema.parse(before!.execution_snapshot),
+      );
+      const next: PlatformEmployeeDefinition = {
+        ...f.definition,
+        name: '旧会话本次平台默认',
+        identity: {
+          ...f.definition.identity,
+          mission: '本次平台职责',
+          workStyle: '本次平台方式',
+        },
+        systemPrompt: 'CURRENT_CONTINUATION_POLICY',
+      };
+      await f.publish(next);
+      const current = await getEmployeeInstance(f.context, instance.id);
+      expect(current.source.employeeVersionId).not.toBe(f.versionId);
+      const edited = await updateEmployeeInstance(f.context, instance.id, {
+        workspaceId: f.workspaceId,
+        expectedRevision: current.revision,
+        requestId: randomUUID(),
+        profile: {
+          mission: '本人本次职责{{literal}}',
+          expressionStyle: 'structured',
+        },
+      });
+      const count = await runCount(f),
+        second = await send(f, instance.id, first.sessionId),
+        persona = document(second);
+      expect(second.runId).not.toBe(first.runId);
+      expect(second.sessionId).toBe(first.sessionId);
+      expect(second.result.userMessage.id).not.toBe(
+        first.result.userMessage.id,
+      );
+      expect(await runCount(f)).toBe(count + 1);
+      expect(persona.name).toEqual({
+        value: next.name,
+        source: 'platform_default',
+      });
+      expect(persona.mission).toEqual({
+        value: edited.profile.mission,
+        source: 'personal_override',
+      });
+      expect(persona.workStyle).toEqual({
+        value: next.identity.workStyle,
+        source: 'platform_default',
+      });
+      expect(persona.expressionStyle.value).toBe('structured');
+      expect(persona.source.profileRevision).toBe(edited.revision);
+      expect(persona.source.basis.employeeVersionId).toBe(
+        current.source.employeeVersionId,
+      );
+      expect(persona.source.engine.employeeVersionId).toBe(
+        current.source.employeeVersionId,
+      );
+      expect(second.kernel.systemInstructions).toContain(
+        'CURRENT_CONTINUATION_POLICY',
+      );
+      expect(second.kernel.systemInstructions).not.toContain(
+        'HISTORICAL_UNMIGRATED_SYSTEM',
+      );
+      const [sessionAfter] =
+        await fixture.db`select native_root_origin from allrice_chat_sessions where id=${first.sessionId}`;
+      expect(sessionAfter).toEqual(sessionBefore);
+      const [newBinding] =
+        await fixture.db`select execution_snapshot,native_execution_binding from allrice_employee_runs where run_id=${second.runId}`;
+      expect(
+        EmployeeRunExecutionBindingSchema.parse(
+          newBinding!.native_execution_binding,
+        ).executionSnapshotDigest,
+      ).toBe(nativeRootDigest(newBinding!.execution_snapshot));
+      const restored = await readOld();
+      expect(restored.promptSnapshot).toEqual(historical.promptSnapshot);
+      expect(restored.executionSnapshot).toEqual(historical.executionSnapshot);
+      const [after] =
+        await fixture.db`select prompt_snapshot,execution_snapshot,native_execution_binding,status from allrice_employee_runs where run_id=${first.runId}`;
+      expect(after).toEqual(before);
+    },
+  );
+
   it.each(['valid', 'absent'] as const)(
     'keeps the original v2 Session with a v1 default whose independent publication is %s',
     async (proof) => {
@@ -1037,12 +1191,13 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
       expect(
         await fixture.db`select employee_version_id from allrice_employee_version_sources where employee_version_id=${old.version}`,
       ).toHaveLength(0);
-      const run = await send({
+      const target = {
         context,
         workspaceId: old.workspace,
         assignmentId: old.assignment,
-      });
+      };
       if (format === 3) {
+        const run = await send(target);
         const persona = document(run);
         expect(persona.source.engine).toMatchObject({
           kind: 'tenant_version',
@@ -1057,19 +1212,28 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
         expect(run.resolved.promptSnapshot.systemPrompt).not.toContain(
           old.manifest.name,
         );
+        expect(run.resolved.promptSnapshot.systemPrompt).toBe(
+          EmployeeManifestSchema.parse(before!.manifest).systemPrompt,
+        );
       } else {
-        expect(run.resolved.executionSnapshot).not.toHaveProperty('persona');
-        expect(
-          run.resolved.promptSnapshot.employeeDocuments,
-        ).not.toHaveProperty('persona');
+        const scope = {
+          organizationId: old.org,
+          workspaceId: old.workspace,
+          ownerId: old.user,
+        };
+        const count = await runCount(scope);
+        await expect(send(target)).rejects.toThrow(
+          'employee_persona_source_unavailable',
+        );
+        expect(await runCount(scope)).toBe(count);
       }
-      expect(run.resolved.promptSnapshot.systemPrompt).toBe(
-        EmployeeManifestSchema.parse(before!.manifest).systemPrompt,
-      );
       const [after] =
         await fixture.db`select manifest,config_checksum from allrice_employee_versions where id=${old.version}`;
       expect(after).toEqual(before);
       expect(after!.config_checksum).toBe(pkg.checksum);
+      expect(
+        await fixture.db`select employee_version_id from allrice_employee_version_sources where employee_version_id=${old.version}`,
+      ).toHaveLength(0);
     },
   );
 
