@@ -62,7 +62,8 @@ export const EmployeePersonaTaskSchema = z
   })
   .strict();
 export type EmployeePersonaTask = z.infer<typeof EmployeePersonaTaskSchema>;
-/** Definition-only provenance has no platform publication or package identity. */
+/** Tenant provenance uses the actual version/config identity, never a fabricated
+ * publication. A packaged version's configChecksum is its verified package hash. */
 export const EmployeeTenantPersonaVersionSourceSchema = z
   .object({
     kind: z.literal('tenant_version'),

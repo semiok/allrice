@@ -975,8 +975,8 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
     ).rejects.toThrow('employee_persona_snapshot_invalid');
   });
 
-  it.each([1, 2] as const)(
-    'keeps an accurate unmapped legacy package %s on its original path without changing source checksums',
+  it.each([1, 2, 3] as const)(
+    'retains unmapped package %s provenance and uses only independently verifiable persona material',
     async (format) => {
       const template = await createEmployeeAdministrationFixture(fixture.db);
       await template.preview();
@@ -985,21 +985,23 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
         (await template.revision()).runtime_profile,
       );
       const pkg =
-        format === 1
-          ? legacyRuntimePackageFixture({
-              revision: 1,
-              definition: {
-                ...template.definition,
-                capabilities: {
-                  ...template.definition.capabilities,
-                  nativeSkillIds: [],
+        format === 3
+          ? profile.runtimePackage
+          : format === 1
+            ? legacyRuntimePackageFixture({
+                revision: 1,
+                definition: {
+                  ...template.definition,
+                  capabilities: {
+                    ...template.definition.capabilities,
+                    nativeSkillIds: [],
+                  },
                 },
-              },
-              skills: [],
-            })
-          : profile.runtimePackage
-            ? syntheticLegacyRuntimePackage(profile.runtimePackage)
-            : null;
+                skills: [],
+              })
+            : profile.runtimePackage
+              ? syntheticLegacyRuntimePackage(profile.runtimePackage)
+              : null;
       if (!pkg || pkg.schemaVersion !== format)
         throw Error('expected original signed format');
       const old = await createRunAuthorityFixture(fixture.db, {
@@ -1040,10 +1042,27 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
         workspaceId: old.workspace,
         assignmentId: old.assignment,
       });
-      expect(run.resolved.executionSnapshot).not.toHaveProperty('persona');
-      expect(run.resolved.promptSnapshot.employeeDocuments).not.toHaveProperty(
-        'persona',
-      );
+      if (format === 3) {
+        const persona = document(run);
+        expect(persona.source.engine).toMatchObject({
+          kind: 'tenant_version',
+          employeeVersionId: old.version,
+          configChecksum: pkg.checksum,
+        });
+        expect(persona.source.engine).not.toHaveProperty('templateId');
+        expect(persona.name).toEqual({
+          value: old.manifest.name,
+          source: 'tenant_default',
+        });
+        expect(run.resolved.promptSnapshot.systemPrompt).not.toContain(
+          old.manifest.name,
+        );
+      } else {
+        expect(run.resolved.executionSnapshot).not.toHaveProperty('persona');
+        expect(
+          run.resolved.promptSnapshot.employeeDocuments,
+        ).not.toHaveProperty('persona');
+      }
       expect(run.resolved.promptSnapshot.systemPrompt).toBe(
         EmployeeManifestSchema.parse(before!.manifest).systemPrompt,
       );

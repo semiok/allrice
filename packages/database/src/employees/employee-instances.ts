@@ -105,9 +105,8 @@ export async function readEmployeeVersionPublication(
   return publication;
 }
 
-/** Future definition-only sources have their own real version/checksum, not
- * a fabricated platform publication. Shared pin consumers wire this interface
- * after accepting the tenant source variant; old raw absence stays absent. */
+/** A tenant version can attest explicit null-package materials or a signed
+ * schema-3 package. Neither invents a platform publication. */
 export async function readEmployeeTenantPersonaVersion(
   scope: {
     organizationId: string;
@@ -139,18 +138,29 @@ export async function readEmployeeTenantPersonaVersion(
       and v.workspace_id=${scope.workspaceId} and v.employee_id=${scope.employeeId}`;
   if (!row) throw Error('employee_persona_source_unavailable');
   const raw = row.manifest;
-  if (raw === null || typeof raw !== 'object' || !('personaSource' in raw))
-    return undefined;
+  if (raw === null || typeof raw !== 'object') return undefined;
+  const rawPackage = 'runtimePackage' in raw ? raw.runtimePackage : undefined;
+  const hasPackageMaterial =
+    rawPackage !== null &&
+    typeof rawPackage === 'object' &&
+    'schemaVersion' in rawPackage &&
+    rawPackage.schemaVersion === 3;
+  if (!('personaSource' in raw) && !hasPackageMaterial) return undefined;
   const manifest = EmployeeDefinitionSchema.parse(raw);
+  const pkg = manifest.runtimePackage;
   if (
     row.mapping_id !== null ||
-    manifest.runtimePackage !== null ||
+    (pkg !== null && pkg.schemaVersion !== 3) ||
     (scope.expectedSource &&
       (scope.expectedSource.kind !== 'tenant_version' ||
         scope.expectedSource.employeeVersionId !== scope.versionId))
   )
     throw Error('employee_persona_source_mapping_invalid');
-  if (employeeManifestChecksum(manifest) !== row.config_checksum)
+  if (pkg) frozenPackageSkills(pkg);
+  if (
+    (pkg?.checksum ?? employeeManifestChecksum(manifest)) !==
+    row.config_checksum
+  )
     throw Error('CURRENT_EXECUTION_SOURCE_CHECKSUM_MISMATCH');
   const material = employeePersonaManifestMaterial(manifest);
   if (!material) throw Error('employee_persona_source_unavailable');
