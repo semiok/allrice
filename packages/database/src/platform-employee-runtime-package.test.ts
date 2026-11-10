@@ -133,9 +133,9 @@ it('keeps task display metadata out of runtime package/checksum and system promp
   expect(
     buildEmployeeRuntimePackage({ revision: 7, definition: edited, skills }),
   ).toEqual(original);
-  expect(
-    employeePersonaPlatformSystemPrompt(edited),
-  ).not.toContain('unique-display-marker');
+  expect(employeePersonaPlatformSystemPrompt(edited)).not.toContain(
+    'unique-display-marker',
+  );
   expect(PlatformEmployeeDefinitionSchema.parse(definition)).toEqual(
     definition,
   );
@@ -810,16 +810,28 @@ describe('platform employee runtime package', () => {
     });
     if (first.schemaVersion !== 3) throw Error('expected_persona_package');
     expect(first.foundation).toEqual({
-      name: definition.name, description: definition.description,
-      appearance: definition.appearance, identity: definition.identity,
+      name: definition.name,
+      description: definition.description,
+      appearance: definition.appearance,
+      identity: definition.identity,
     });
     expect(first.platformPolicy).toBe(definition.systemPrompt);
     expect(first).not.toHaveProperty('files');
     expect(first.runtimeManifest).not.toHaveProperty('instructionPrecedence');
     const clean = employeePersonaPlatformSystemPrompt(definition);
-    for (const legacy of ['# IDENTITY.md', '# SOUL.md', '# USER.md', '# AGENTS.md',
-      '自主路由规则', '已发布 Skill 目录', '单个明确操作', '缺少的是发布',
-      'references/', '已有连接器可完成时优先连接器', '当前用户明确要求记住'])
+    for (const legacy of [
+      '# IDENTITY.md',
+      '# SOUL.md',
+      '# USER.md',
+      '# AGENTS.md',
+      '自主路由规则',
+      '已发布 Skill 目录',
+      '单个明确操作',
+      '缺少的是发布',
+      'references/',
+      '已有连接器可完成时优先连接器',
+      '当前用户明确要求记住',
+    ])
       expect(clean).not.toContain(legacy);
     expect(clean).toContain(definition.identity.behaviorRules[0]);
     expect(clean).toContain('本次运行注入的成员设置为准');

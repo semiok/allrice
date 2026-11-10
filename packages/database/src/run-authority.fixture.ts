@@ -114,7 +114,9 @@ export async function createRunAuthorityFixture(
             proactivePolicy: 'suggest' as const,
             approvalPolicy: 'confirm_side_effects' as const,
           },
-          systemPromptOverride: employeePersonaSourceSystemPrompt(personaPackage!),
+          systemPromptOverride: employeePersonaSourceSystemPrompt(
+            personaPackage!,
+          ),
         }
       : {}),
     toolNames: options.toolNames ?? selectedTools,

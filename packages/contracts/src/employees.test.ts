@@ -53,9 +53,13 @@ describe('runtime package PERSONA source format', () => {
       foundation,
       platformPolicy: package3.platformPolicy,
     };
-    expect(EmployeePersonaSourceMaterialSchema.parse(material)).toEqual(material);
+    expect(EmployeePersonaSourceMaterialSchema.parse(material)).toEqual(
+      material,
+    );
     for (const invalid of [null, {}, { ...material, profile: {} }])
-      expect(EmployeePersonaSourceMaterialSchema.safeParse(invalid).success).toBe(false);
+      expect(
+        EmployeePersonaSourceMaterialSchema.safeParse(invalid).success,
+      ).toBe(false);
   });
 
   it('reads complete platform identity and hard-policy sources without legacy files or personal data', () => {
@@ -690,6 +694,8 @@ describe('normal Run PERSONA pin contract', () => {
   });
   it('does not invent a package for the default basis or remove the actual engine package proof', () => {
     const value = pin();
+    if ('kind' in value.source.basis || 'kind' in value.source.engine)
+      throw Error('expected published source fixture');
     const { packageChecksum: basisPackage, ...basis } = value.source.basis;
     expect(basisPackage).toBe(digest);
     const source = { ...value.source, basis };

@@ -228,19 +228,43 @@ integration(
         [origin, manifest(3, oldGeneration), true],
         [origin, manifest(3, 'synthetic-next-generation'), false],
         [origin, manifest(4), false],
-        [{ ...origin, contextKind: 'platform_employee_test' }, manifest(3), false],
+        [
+          { ...origin, contextKind: 'platform_employee_test' },
+          manifest(3),
+          false,
+        ],
         [{ ...origin, sourcePolicy: { family: 'other' } }, manifest(3), false],
-        [{ ...origin, distributionGeneration: 'synthetic-next-generation' }, manifest(3), false],
+        [
+          { ...origin, distributionGeneration: 'synthetic-next-generation' },
+          manifest(3),
+          false,
+        ],
         [origin, { ...manifest(3), schemaVersion: 1 }, false],
-        [origin, { ...manifest(3), runtimePolicy: { harness: 'other' } }, false],
+        [
+          origin,
+          { ...manifest(3), runtimePolicy: { harness: 'other' } },
+          false,
+        ],
         ...[1, 2, null].map((version) => [origin, manifest(version), true]),
         [null, manifest(1, oldGeneration), true],
         [null, manifest(3, oldGeneration), true],
         [null, manifest(null), true],
         [null, manifest(3), false],
-        [{ schemaVersion: 1, distributionGeneration: oldGeneration }, manifest(2, oldGeneration), true],
-        [{ schemaVersion: 1, distributionGeneration: oldGeneration }, manifest(3, oldGeneration), true],
-        [{ schemaVersion: 1, distributionGeneration: oldGeneration }, manifest(3), false],
+        [
+          { schemaVersion: 1, distributionGeneration: oldGeneration },
+          manifest(2, oldGeneration),
+          true,
+        ],
+        [
+          { schemaVersion: 1, distributionGeneration: oldGeneration },
+          manifest(3, oldGeneration),
+          true,
+        ],
+        [
+          { schemaVersion: 1, distributionGeneration: oldGeneration },
+          manifest(3),
+          false,
+        ],
       ] as const;
       for (const [birth, declaration, expected] of cases) {
         const [row] = await fixture.db<{ compatible: boolean }[]>`

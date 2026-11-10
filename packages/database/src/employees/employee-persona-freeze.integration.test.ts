@@ -494,6 +494,8 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
       expect(binding.executionSnapshotDigest).toBe(
         nativeRootDigest(stored!.execution_snapshot),
       );
+      if ('kind' in snapshot.persona.source.engine)
+        throw Error('expected real published engine');
       expect(snapshot.persona.source.engine.packageChecksum).toBe(
         snapshot.employee.definition.schemaVersion === 2
           ? snapshot.employee.definition.runtimePackage?.checksum
@@ -1053,7 +1055,7 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
   );
 
   it.each(['unmanaged_rice', 'admin_publication'] as const)(
-    'preserves the actual %s null-package producer, admission and frozen prompt instead of fabricating PERSONA',
+    'freezes the actual %s null-package producer with real tenant evidence and unchanged authority',
     async (producer) => {
       const p = await ensureBootstrapPortalPrincipal(
         {
@@ -1101,6 +1103,7 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
       if (manifest.schemaVersion !== 2)
         throw Error('expected actual null producer v2');
       expect(manifest.runtimePackage).toBeNull();
+      expect(manifest.personaSource).toBeDefined();
       expect(before!.config_checksum).toBe(employeeManifestChecksum(manifest));
       expect(
         await fixture.db`select employee_version_id from allrice_employee_version_sources where employee_version_id=${before!.id}`,
@@ -1110,12 +1113,67 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
         workspaceId: p.workspaceId,
         assignmentId,
       });
-      expect(run.resolved.executionSnapshot).not.toHaveProperty('persona');
-      expect(run.resolved.promptSnapshot.employeeDocuments).not.toHaveProperty(
-        'persona',
+      const pin = EmployeePersonaPinSchema.parse(
+        run.resolved.executionSnapshot?.schemaVersion === 2
+          ? run.resolved.executionSnapshot.persona
+          : undefined,
+      );
+      expect(pin.source.basis).toEqual(pin.source.engine);
+      expect(pin.source.engine).toEqual({
+        kind: 'tenant_version',
+        employeeVersionId: before!.id,
+        configChecksum: before!.config_checksum,
+        manifestDigest: pin.source.engine.manifestDigest,
+      });
+      expect(pin.source.profileEligibility).toBe('expression_only');
+      expect(document(run).name).toEqual({
+        value: manifest.name,
+        source: 'tenant_default',
+      });
+      expect(run.resolved.promptSnapshot).not.toHaveProperty(
+        'personalIdentity',
       );
       expect(run.resolved.promptSnapshot.systemPrompt).toBe(
         manifest.systemPrompt,
+      );
+      expect(run.resolved.promptSnapshot.systemPrompt).not.toContain(
+        manifest.name,
+      );
+      const instance = await createEmployeeInstance(context, {
+        workspaceId: p.workspaceId,
+        assignmentId,
+        requestId: randomUUID(),
+        profile: { name: 'Tenant custom name', mission: 'Literal {{missing}}' },
+      });
+      const personal = await send(
+        { context, workspaceId: p.workspaceId, assignmentId },
+        instance.id,
+      );
+      expect(document(personal).source.profileEligibility).toBe(
+        'full_identity',
+      );
+      expect(document(personal).name).toEqual({
+        value: 'Tenant custom name',
+        source: 'personal_override',
+      });
+      expect(document(personal).mission.value).toBe('Literal {{missing}}');
+      await updateEmployeeInstance(context, instance.id, {
+        workspaceId: p.workspaceId,
+        expectedRevision: instance.revision,
+        requestId: randomUUID(),
+        profile: { name: 'Later tenant name' },
+      });
+      const personalAgain = await hub.resolveEmployeeExecution({
+        organizationId: personal.organizationId,
+        workspaceId: personal.workspaceId,
+        ownerId: personal.ownerId,
+        runId: personal.runId,
+      });
+      expect(personalAgain.promptSnapshot).toEqual(
+        personal.resolved.promptSnapshot,
+      );
+      expect(personalAgain.executionSnapshot).toEqual(
+        personal.resolved.executionSnapshot,
       );
       const again = await hub.resolveEmployeeExecution({
         organizationId: run.organizationId,

@@ -214,7 +214,7 @@ export async function readEmployeePersonaVersion(
   if (row.mapping_id === null) {
     if (scope.expectedSource?.kind === 'platform')
       throw Error('employee_persona_source_unavailable');
-    return undefined;
+    return readEmployeeTenantPersonaVersion(scope, sql);
   }
   if (
     row.mapping_organization_id !== scope.organizationId ||
@@ -321,7 +321,8 @@ export async function readEmployeePersonaVersion(
       definition.identity.expressionStyle ||
     manifest.partnerProfile.outputLanguage !==
       definition.identity.outputLanguage ||
-    (manifest.systemPrompt !== employeePersonaPlatformSystemPrompt(definition) &&
+    (manifest.systemPrompt !==
+      employeePersonaPlatformSystemPrompt(definition) &&
       (pkg.schemaVersion === 3 ||
         manifest.systemPrompt !==
           runtimePackageSystemPrompt({

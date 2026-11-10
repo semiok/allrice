@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { EmployeeDefinitionSchema } from '@allrice/contracts';
-import { employeeManifest, employeeManifestChecksum } from './employee-config.ts';
+import {
+  employeeManifest,
+  employeeManifestChecksum,
+} from './employee-config.ts';
 import { readEmployeeTenantPersonaVersion } from './employee-instances.ts';
 import { employeePersonaManifestMaterial } from '../platform-employees/runtime-package.ts';
 
@@ -33,9 +36,11 @@ function reader(
   checksum: string,
   mapping: string | null = null,
 ) {
-  return vi.fn().mockResolvedValue([
-    { manifest, config_checksum: checksum, mapping_id: mapping },
-  ]) as unknown as Parameters<typeof readEmployeeTenantPersonaVersion>[1];
+  return vi
+    .fn()
+    .mockResolvedValue([
+      { manifest, config_checksum: checksum, mapping_id: mapping },
+    ]) as unknown as Parameters<typeof readEmployeeTenantPersonaVersion>[1];
 }
 
 describe('explicit definition-only PERSONA materials', () => {
@@ -64,9 +69,13 @@ describe('explicit definition-only PERSONA materials', () => {
       expect(manifest.systemPrompt).not.toContain(identity);
     }
     expect(manifest.securityPolicy.approvalPolicy).toBe('confirm_external');
-    expect(manifest.capabilityBindings.toolNames).toContain('workspace.file.read');
+    expect(manifest.capabilityBindings.toolNames).toContain(
+      'workspace.file.read',
+    );
     expect(manifest.systemPrompt).toContain(material.platformPolicy);
-    expect(manifest.systemPrompt).toContain(manifest.identity.safetyBoundaries[0]);
+    expect(manifest.systemPrompt).toContain(
+      manifest.identity.safetyBoundaries[0],
+    );
   });
 
   it('reads the actual immutable tenant identity without inventing template/package evidence', async () => {

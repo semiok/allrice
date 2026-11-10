@@ -293,7 +293,8 @@ suite(
         compactThresholdTokens: 10000,
       });
       const nextPackage = structuredClone(runtimePackage);
-      if (nextPackage.schemaVersion !== 3) throw Error('expected_persona_package');
+      if (nextPackage.schemaVersion !== 3)
+        throw Error('expected_persona_package');
       nextPackage.platformPolicy += '\nUpdated synthetic policy';
       resign(nextPackage);
       const next = await publishVersion(f, nextPackage);

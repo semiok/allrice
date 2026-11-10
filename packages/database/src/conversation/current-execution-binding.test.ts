@@ -15,9 +15,7 @@ import {
   employeeManifest,
   employeeManifestChecksum,
 } from '../employees/employee-config.ts';
-import {
-  runtimePackageChecksum,
-} from '../platform-employees/runtime-package.ts';
+import { runtimePackageChecksum } from '../platform-employees/runtime-package.ts';
 import { skillBundleChecksum, skillBytesChecksum } from '../skill-bundles.ts';
 import {
   personaRuntimePackageChecksum,
@@ -920,7 +918,9 @@ describe('PERSONA package declaration readiness', () => {
     expect(() => validateEmployeeExecutionSource(input)).toThrow(
       'employee_persona_source_projection_mismatch',
     );
-    manifest.systemPrompt = (before.manifest as EmployeeDefinition).systemPrompt;
+    manifest.systemPrompt = (
+      before.manifest as EmployeeDefinition
+    ).systemPrompt;
     expect(input).toEqual(before);
   });
 

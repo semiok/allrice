@@ -24,7 +24,9 @@ describe('employee draft identity policy', () => {
   it.each([legacy, previousPlatform])(
     'handles the standalone shipped introduction: %s',
     (introduction) => {
-      expect(normalizeDraftPlatformPolicy(introduction)).toContain('PERSONA.md');
+      expect(normalizeDraftPlatformPolicy(introduction)).toContain(
+        'PERSONA.md',
+      );
     },
   );
 

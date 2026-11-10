@@ -10,9 +10,7 @@ import {
   frozenPackageSkills,
   readFrozenSkillResource,
 } from '../skill-bundles.ts';
-import {
-  personaRuntimePackageChecksum,
-} from './runtime-package-signature.ts';
+import { personaRuntimePackageChecksum } from './runtime-package-signature.ts';
 import {
   runtimePackageChecksum,
   runtimePackageSystemPrompt,
@@ -46,8 +44,15 @@ function skillMetadata() {
 
 // Exercise the actual new writer; mutations remain fixture-only.
 function personaFixture(format: 'empty' | 'plain' | 'bundled' = 'bundled') {
-  const input = source(newNativeGeneration, format, 'platform_preview', 'persona');
-  const profile = PlatformEmployeeRuntimeProfileSchema.parse(input.runtimeProfile);
+  const input = source(
+    newNativeGeneration,
+    format,
+    'platform_preview',
+    'persona',
+  );
+  const profile = PlatformEmployeeRuntimeProfileSchema.parse(
+    input.runtimeProfile,
+  );
   const pkg = profile.runtimePackage!;
   if (pkg.schemaVersion !== 3) throw Error('fixture_persona_package_required');
   for (const skill of pkg.skills) skill.metadata = skillMetadata();
@@ -177,7 +182,12 @@ describe('runtime package data-format readers', () => {
   it.each(['empty', 'plain', 'bundled'] as const)(
     'writes independent PERSONA sources for the current %s format',
     (format) => {
-      const input = source(newNativeGeneration, format, 'platform_preview', 'persona');
+      const input = source(
+        newNativeGeneration,
+        format,
+        'platform_preview',
+        'persona',
+      );
       const profile = PlatformEmployeeRuntimeProfileSchema.parse(
         input.runtimeProfile,
       );
@@ -364,7 +374,10 @@ describe('runtime package data-format readers', () => {
 
   it('executes schema-3 previews only with the same verified clean source projection', () => {
     const { input, pkg } = personaFixture();
-    expect(validatePlatformEmployeeTestExecutionSnapshot(input).runtimeProfile.runtimePackage).toEqual(pkg);
+    expect(
+      validatePlatformEmployeeTestExecutionSnapshot(input).runtimeProfile
+        .runtimePackage,
+    ).toEqual(pkg);
     expect(() =>
       runtimePackageSystemPrompt({
         platformPolicy: pkg.platformPolicy,

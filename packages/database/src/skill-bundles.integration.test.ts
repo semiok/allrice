@@ -277,24 +277,42 @@ suite(
       'materializes clean current input from %s published assets without rewriting their original source',
       async (format) => {
         const f = await fixture(format);
-        const [original] = await db`select definition,runtime_profile,checksum from allrice_platform_employee_revisions where id=${f.ids.revision1}`;
+        const [original] =
+          await db`select definition,runtime_profile,checksum from allrice_platform_employee_revisions where id=${f.ids.revision1}`;
         await assignPublishedPlatformEmployeeToWorkspace(
-          f.employeeKey, f.ids.workspaceId, 'P18 source projection',
+          f.employeeKey,
+          f.ids.workspaceId,
+          'P18 source projection',
         );
-        const [version] = await db`select v.id,v.employee_id,v.manifest,v.config_checksum
+        const [version] =
+          await db`select v.id,v.employee_id,v.manifest,v.config_checksum
           from allrice_employee_versions v join allrice_employee_version_sources s on s.employee_version_id=v.id
           where s.platform_revision_id=${f.ids.revision1} and v.workspace_id=${f.ids.workspaceId}`;
         const manifest = EmployeeDefinitionSchema.parse(version!.manifest);
-        expect(manifest.systemPrompt).toBe(employeePersonaPlatformSystemPrompt(f.definition));
+        expect(manifest.systemPrompt).toBe(
+          employeePersonaPlatformSystemPrompt(f.definition),
+        );
         expect(manifest.runtimePackage).toEqual(f.v1.runtimePackage);
         expect(version!.config_checksum).toBe(f.v1.runtimePackage.checksum);
-        expect((await readEmployeePersonaVersion({
-          organizationId: f.ids.organizationId, workspaceId: f.ids.workspaceId,
-          employeeId: version!.employee_id, versionId: version!.id, role: 'engine',
-        }, db))?.material).toEqual({
+        expect(
+          (
+            await readEmployeePersonaVersion(
+              {
+                organizationId: f.ids.organizationId,
+                workspaceId: f.ids.workspaceId,
+                employeeId: version!.employee_id,
+                versionId: version!.id,
+                role: 'engine',
+              },
+              db,
+            )
+          )?.material,
+        ).toEqual({
           foundation: {
-            name: f.definition.name, description: f.definition.description,
-            appearance: f.definition.appearance, identity: f.definition.identity,
+            name: f.definition.name,
+            description: f.definition.description,
+            appearance: f.definition.appearance,
+            identity: f.definition.identity,
           },
           platformPolicy: f.definition.systemPrompt,
         });
@@ -302,18 +320,32 @@ suite(
           // First INSERT of a distinct historical fixture. Neither the newly
           // materialized version nor the published revision is rewritten.
           const historicalId = randomUUID();
-          const historical = { ...manifest, systemPrompt: f.v1.profile.systemPrompt };
+          const historical = {
+            ...manifest,
+            systemPrompt: f.v1.profile.systemPrompt,
+          };
           await db`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,description,model,system_prompt,capabilities,manifest,provider_snapshot,skill_version_ids,config_checksum)
             select ${historicalId},organization_id,workspace_id,employee_id,version+1,name,description,model,${historical.systemPrompt},capabilities,${db.json(historical)},provider_snapshot,skill_version_ids,config_checksum
             from allrice_employee_versions where id=${version!.id}`;
           await db`insert into allrice_employee_version_sources(employee_version_id,organization_id,workspace_id,employee_id,platform_employee_id,platform_revision_id)
             values(${historicalId},${f.ids.organizationId},${f.ids.workspaceId},${version!.employee_id},${f.ids.platformEmployeeId},${f.ids.revision1})`;
-          expect((await readEmployeePersonaVersion({
-            organizationId: f.ids.organizationId, workspaceId: f.ids.workspaceId,
-            employeeId: version!.employee_id, versionId: historicalId, role: 'engine',
-          }, db))?.manifest.systemPrompt).toBe(f.v1.profile.systemPrompt);
+          expect(
+            (
+              await readEmployeePersonaVersion(
+                {
+                  organizationId: f.ids.organizationId,
+                  workspaceId: f.ids.workspaceId,
+                  employeeId: version!.employee_id,
+                  versionId: historicalId,
+                  role: 'engine',
+                },
+                db,
+              )
+            )?.manifest.systemPrompt,
+          ).toBe(f.v1.profile.systemPrompt);
         }
-        const [after] = await db`select definition,runtime_profile,checksum from allrice_platform_employee_revisions where id=${f.ids.revision1}`;
+        const [after] =
+          await db`select definition,runtime_profile,checksum from allrice_platform_employee_revisions where id=${f.ids.revision1}`;
         expect(after).toEqual(original);
       },
     );

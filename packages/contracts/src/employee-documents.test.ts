@@ -362,6 +362,54 @@ describe('normal Run PERSONA defaults and sparse personal sources', () => {
       engine: version(),
     });
   const read = (text: string) => JSON.parse(text.slice('# 人设\n'.length));
+  it('keeps real tenant evidence distinct from publication and preserves sparse overrides', () => {
+    const tenant = {
+      kind: 'tenant_version' as const,
+      employeeVersionId: randomUUID(),
+      configChecksum: digest,
+      manifestDigest: digest,
+    };
+    const frozen = EmployeeRunPersonaSourceSchema.parse({
+      ...source(),
+      basis: tenant,
+      engine: tenant,
+    });
+    const document = read(
+      renderEmployeePersonaDocument(foundation, frozen, {
+        mission: 'Tenant literal {{missing}}',
+      }),
+    );
+    expect(document.source.basis).toEqual(tenant);
+    expect(document.source.engine).toEqual(tenant);
+    expect(document.name.source).toBe('tenant_default');
+    expect(document.mission).toEqual({
+      value: 'Tenant literal {{missing}}',
+      source: 'personal_override',
+    });
+    expect(document.boundary).toContain('当前租户员工默认');
+    for (const field of [
+      'packageChecksum',
+      'templateId',
+      'templateRevisionId',
+    ]) {
+      expect(
+        EmployeeRunPersonaSourceSchema.safeParse({
+          ...frozen,
+          engine: {
+            ...tenant,
+            [field]: field === 'packageChecksum' ? digest : randomUUID(),
+          },
+        }).success,
+      ).toBe(false);
+    }
+    const { kind: _kind, ...missingKind } = tenant;
+    expect(
+      EmployeeRunPersonaSourceSchema.safeParse({
+        ...frozen,
+        basis: missingKind,
+      }).success,
+    ).toBe(false);
+  });
   it.each([
     'native_once',
     'native_recurring',

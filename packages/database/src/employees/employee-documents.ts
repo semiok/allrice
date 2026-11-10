@@ -23,7 +23,7 @@ import {
   getEmployeeInstance,
   readEmployeePersonaVersion,
 } from './employee-instances.ts';
-import { employeePersonaPlatformSystemPrompt } from '../platform-employees/runtime-package.ts';
+import { employeePersonaSourceSystemPrompt } from '../platform-employees/runtime-package.ts';
 
 type Sql = ReturnType<typeof getDatabase> | TransactionSql;
 type PersonaVersion = NonNullable<
@@ -34,7 +34,8 @@ function personaEligibility(
   engine: PersonaVersion,
 ) {
   return instance.kind === 'custom' ||
-    (engine.platformKey === 'rice' &&
+    ('platformKey' in engine &&
+      engine.platformKey === 'rice' &&
       engine.definition.key === 'rice' &&
       isBaseRiceInstanceDefinition(instance, {
         key: engine.manifest.key,
@@ -66,16 +67,11 @@ function renderRunPersona(
     ...(task ? { task } : {}),
   });
   const persona = renderEmployeePersonaDocument(
-    {
-      name: basis.definition.name,
-      description: basis.definition.description,
-      appearance: basis.definition.appearance,
-      identity: basis.definition.identity,
-    },
+    basis.material.foundation,
     source,
     instance.profile,
   );
-  const systemPrompt = employeePersonaPlatformSystemPrompt(engine.definition);
+  const systemPrompt = employeePersonaSourceSystemPrompt(engine.material);
   return {
     persona,
     systemPrompt,
@@ -132,8 +128,8 @@ async function freezeRunPersona(
     },
     sql,
   );
-  // Exact missing mappings (including the verified null producer) retain the
-  // existing whole path. Do not half-migrate or catch a failed proof here.
+  // Only exact historical material absence retains the unmigrated path.
+  // New definition-only versions prove their own immutable tenant source.
   if (!engine || (!task && !basis)) return undefined;
   return renderRunPersona(
     instance,
