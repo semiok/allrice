@@ -1,5 +1,7 @@
 .panel {
   display: flex;
+  container-type: inline-size;
+  container-name: employee-capabilities;
   flex-direction: column;
   gap: 0;
   max-width: none;
@@ -10,6 +12,14 @@
   background: var(--ar-surface);
   border: 1px solid var(--ar-border-subtle);
   border-radius: var(--ar-radius-panel);
+}
+.inlinePanel.inlinePanel {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
 }
 .formPanel {
   width: min(552px, calc(100vw - 48px));

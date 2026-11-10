@@ -1,0 +1,76 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  color: var(--ar-text);
+  background: var(--ar-surface);
+  font: var(--ar-font-body);
+}
+.identity {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+  min-height: 76px;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--ar-border-subtle);
+}
+.avatar {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--ar-surface-subtle);
+  color: var(--ar-text-secondary);
+  font-size: 16px;
+}
+.identity h2 {
+  margin: 0;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.identity p {
+  margin: 0;
+  color: var(--ar-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+.content,
+.layer {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 20px 24px;
+}
+.sections {
+  display: grid;
+  gap: 28px;
+  min-width: 0;
+}
+@media (max-width: 700px) {
+  .identity {
+    min-height: 72px;
+    padding: 14px 20px;
+  }
+  .body {
+    padding: 20px;
+  }
+  .sections {
+    gap: 24px;
+  }
+}

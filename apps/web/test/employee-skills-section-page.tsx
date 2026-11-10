@@ -292,9 +292,6 @@ function App() {
             view={view}
             onOpen={setSelected}
             onAdd={callbacks ? () => record('add') : undefined}
-            onUninstall={
-              callbacks ? (skill) => record('uninstall', skill) : undefined
-            }
           />
         </div>
       </article>

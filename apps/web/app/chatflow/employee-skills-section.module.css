@@ -169,12 +169,19 @@
 
 .detail {
   display: flex;
+  container-type: inline-size;
+  container-name: employee-capabilities;
   flex: 1;
   flex-direction: column;
   min-height: 0;
   max-height: 100%;
   overflow: hidden;
   background: var(--ar-surface);
+}
+
+.error {
+  margin-top: 20px;
+  color: var(--ar-danger-text);
 }
 
 .detailHeader {

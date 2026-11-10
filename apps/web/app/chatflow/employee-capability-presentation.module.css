@@ -1,0 +1,344 @@
+.list {
+  overflow: hidden;
+  border: 1px solid var(--ar-border);
+  border-radius: 12px;
+}
+
+.heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+.heading h3 {
+  margin: 0;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+}
+.heading h3 > span {
+  margin-left: 4px;
+  color: var(--ar-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 400;
+}
+.heading > button {
+  min-height: 32px;
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 18px;
+  border-radius: 8px;
+}
+.description {
+  margin: 0 0 12px !important;
+  color: var(--ar-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 64px;
+  padding: 10px 14px;
+  border: 0;
+  border-bottom: 1px solid var(--ar-border);
+  border-radius: 0;
+  color: var(--ar-text);
+  background: var(--ar-surface);
+  font: var(--ar-font-body);
+  font-size: 14px;
+  line-height: 22px;
+  text-align: left;
+  cursor: pointer;
+}
+.row:last-child {
+  border-bottom: 0;
+}
+.rowMain {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 1px;
+}
+.rowMain > strong {
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.caption {
+  margin: 0;
+  color: var(--ar-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+.version {
+  flex: none;
+  color: var(--ar-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+  max-width: 30%;
+}
+.row > svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--ar-text-secondary);
+}
+.row:hover:not(:disabled),
+.pluginRow:hover {
+  background: var(--ar-surface-hover);
+}
+.row:active:not(:disabled) {
+  background: var(--ar-surface-active);
+}
+.row:focus-visible {
+  outline: 2px solid var(--ar-focus-ring);
+  outline-offset: -3px;
+}
+.row:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  outline: none;
+}
+
+.detailHeader {
+  display: grid;
+  flex: none;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 72px;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--ar-border);
+}
+.back.back {
+  grid-column: 1;
+  grid-row: 1;
+  width: 32px;
+  min-width: 32px;
+  min-height: 36px;
+  height: 36px;
+  margin: 0;
+  padding: 0;
+  color: var(--ar-text);
+}
+.title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  grid-column: 2;
+  grid-row: 1;
+}
+.title h2 {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-size: 18px;
+  line-height: 26px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.title h2:focus {
+  outline: none;
+}
+.pill {
+  padding: 3px 7px;
+  border-radius: var(--ar-radius-xs);
+  background: var(--ar-surface-subtle);
+  color: var(--ar-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+.actions {
+  display: flex;
+  grid-column: 3;
+  grid-row: 1;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.actions > button {
+  flex: none;
+  min-height: 36px;
+  padding: 7px 14px;
+  border-radius: 12px;
+  font-size: 14px;
+  line-height: 20px;
+}
+.actions > button:disabled,
+.back:disabled,
+.dangerAction:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  outline: none;
+}
+.actions > button:focus-visible,
+.back:focus-visible,
+.dangerAction:focus-visible,
+.pluginActions :is(a, button):focus-visible {
+  outline: 2px solid var(--ar-focus-ring);
+  outline-offset: 2px;
+}
+.dangerZone {
+  border-top: 1px solid var(--ar-border);
+  padding-top: 20px;
+  margin-top: 24px;
+}
+.dangerAction {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 7px 0;
+  border: 0;
+  border-radius: 4px;
+  color: var(--ar-danger-text);
+  background: transparent;
+  font: var(--ar-font-body);
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+.dangerAction:hover:not(:disabled),
+.dangerAction:active:not(:disabled) {
+  background: var(--ar-danger-soft);
+}
+.dangerAction:hover:not(:disabled) {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.pluginRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 64px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--ar-border);
+}
+.pluginRow:last-child {
+  border-bottom: 0;
+}
+.pluginInfo {
+  min-width: 0;
+  align-self: start;
+}
+.pluginHeading {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-height: 22px;
+}
+.pluginHeading > strong {
+  min-width: 0;
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.pluginIcon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--ar-border);
+  border-radius: 8px;
+  background: var(--ar-surface-subtle);
+}
+.pluginIcon svg {
+  width: 18px;
+  height: 18px;
+}
+.pluginInfo > p {
+  padding-left: 40px;
+  margin-top: 1px;
+}
+.pluginActions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  white-space: nowrap;
+}
+.pluginActions :is(a, button) {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 5px 10px;
+  border: 1px solid var(--ar-border);
+  border-radius: 8px;
+  color: var(--ar-text);
+  background: transparent;
+  text-decoration: none;
+  font: var(--ar-font-caption);
+  cursor: pointer;
+}
+.pluginActions button {
+  padding-inline: 0;
+  border: 0;
+  color: var(--ar-text-secondary);
+}
+.pluginActions :is(a, button):hover {
+  background: var(--ar-surface-subtle);
+}
+
+@container employee-capabilities (max-width: 440px) {
+  .detailHeader {
+    grid-template-columns: 32px minmax(0, 1fr);
+    padding: 14px 20px;
+    gap: 6px 8px;
+  }
+  .actions {
+    grid-column: 2;
+    grid-row: 2;
+    width: 100%;
+    margin-top: 4px;
+  }
+  .actions > button {
+    min-height: 40px;
+    padding: 9px 14px;
+  }
+  .actions > button:last-child {
+    flex: 1;
+    min-width: 0;
+  }
+}
+@media (max-width: 700px) {
+  .heading > button {
+    min-height: 36px;
+    padding: 8px 10px;
+  }
+  .dangerAction {
+    min-height: 40px;
+    padding: 10px 0;
+  }
+  .pluginRow {
+    gap: 8px;
+  }
+  .pluginHeading {
+    gap: 14px;
+  }
+  .pluginInfo > p {
+    padding-left: 36px;
+  }
+  .pluginActions {
+    gap: 8px;
+  }
+  .pluginActions :is(a, button) {
+    min-height: 36px;
+  }
+  .pluginActions a {
+    padding-inline: 6px;
+  }
+}

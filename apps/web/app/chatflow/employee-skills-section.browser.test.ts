@@ -198,6 +198,7 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
           expect(await region.getByText('基础技能 · 11').count()).toBe(1);
           const typography = await region
             .getByRole('button', { name: '翻译校对', exact: true })
+            .locator('strong')
             .evaluate((node) => {
               const style = getComputedStyle(node);
               return {
@@ -398,7 +399,9 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
       await region
         .getByRole('button', { name: '添加技能', exact: true })
         .click();
-      await region.getByRole('button', { name: '卸载', exact: true }).click();
+      expect(
+        await region.getByRole('button', { name: '卸载', exact: true }).count(),
+      ).toBe(0);
       await region
         .getByRole('button', { name: '翻译校对', exact: true })
         .click();
@@ -413,7 +416,6 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
       const result = await events(f.page);
       expect(result.map((event) => event.action)).toEqual([
         'add',
-        'uninstall',
         'update',
         'uninstall',
       ]);

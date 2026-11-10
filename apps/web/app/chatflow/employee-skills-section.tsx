@@ -3,6 +3,13 @@
 import { useId } from 'react';
 import type { EmployeeSkillCatalog } from '@allrice/contracts';
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives';
+import {
+  EmployeeCapabilityDanger,
+  EmployeeCapabilityDetailsHeader,
+  EmployeeCapabilityHeading,
+  EmployeeCapabilityRow,
+} from './employee-capability-presentation';
+import capabilityCss from './employee-capability-presentation.module.css';
 import css from './employee-skills-section.module.css';
 
 export type EmployeeBaseSkill = EmployeeSkillCatalog['platformSkills'][number];
@@ -36,48 +43,52 @@ export function EmployeeSkillsSection({
   view,
   onOpen,
   onAdd,
-  onUninstall,
+  disabled = false,
 }: {
   view: EmployeeSkillsView;
   onOpen: (skill: EmployeeSkill) => void;
   onAdd?: () => void;
-  onUninstall?: (skill: EmployeePersonalSkill) => void;
+  disabled?: boolean;
 }) {
   const headingId = useId();
   const catalog = view.status === 'ready' ? view.catalog : null;
   return (
     <section className={css.section} aria-labelledby={headingId}>
-      <div className={css.heading}>
-        <h3 id={headingId}>
-          技能 <span className={css.kind}>Skills</span>
-        </h3>
-        {catalog?.canInstall && onAdd && (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className={css.add}
-            icon={
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.75"
-                strokeLinecap="round"
-                aria-hidden="true"
-              >
-                <path d="M12 5v14M5 12h14" />
-              </svg>
-            }
-            onClick={onAdd}
-          >
-            添加技能
-          </Button>
-        )}
-      </div>
-      <p className={css.description}>它会的本事，干活时自己判断要不要用。</p>
+      <EmployeeCapabilityHeading
+        id={headingId}
+        title="技能"
+        kind="Skills"
+        description="它会的本事，干活时自己判断要不要用。"
+        action={
+          catalog?.canInstall &&
+          onAdd && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className={css.add}
+              disabled={disabled}
+              icon={
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.75"
+                  strokeLinecap="round"
+                  aria-hidden="true"
+                >
+                  <path d="M12 5v14M5 12h14" />
+                </svg>
+              }
+              onClick={onAdd}
+            >
+              添加技能
+            </Button>
+          )
+        }
+      />
       {view.status === 'loading' && (
         <p className={css.feedback} role="status" aria-busy="true">
           {view.label}
@@ -108,32 +119,16 @@ export function EmployeeSkillsSection({
             我添加的 · {catalog.personalSkills.length}
           </div>
           {catalog.personalSkills.length > 0 && (
-            <div className={css.list}>
+            <div className={capabilityCss.list}>
               {catalog.personalSkills.map((skill) => (
-                <div className={css.row} key={skill.installationId}>
-                  <div className={css.rowMain}>
-                    <button
-                      type="button"
-                      className={css.name}
-                      onClick={() => onOpen(skill)}
-                    >
-                      {skill.displayName}
-                    </button>
-                    <p className={css.caption}>{skill.description}</p>
-                  </div>
-                  <span className={css.version}>
-                    {employeeSkillVersion(skill.version)}
-                  </span>
-                  {skill.canUninstall && onUninstall && (
-                    <button
-                      type="button"
-                      className={css.uninstall}
-                      onClick={() => onUninstall(skill)}
-                    >
-                      卸载
-                    </button>
-                  )}
-                </div>
+                <EmployeeCapabilityRow
+                  key={skill.installationId}
+                  name={skill.displayName}
+                  description={skill.description}
+                  version={employeeSkillVersion(skill.version)}
+                  disabled={disabled}
+                  onOpen={() => onOpen(skill)}
+                />
               ))}
             </div>
           )}
@@ -148,6 +143,7 @@ export function EmployeeSkillsSection({
                 variant="outline"
                 size="sm"
                 className={css.chip}
+                disabled={disabled}
                 onClick={() => onOpen(skill)}
               >
                 {skill.displayName}
@@ -168,12 +164,22 @@ export function EmployeeSkillDetails({
   onBack,
   onUpdate,
   onUninstall,
+  onStart,
+  starting,
+  error,
+  disabled,
+  backLabel = '返回员工详情',
 }: {
   skill: EmployeeSkill;
   canInstall: EmployeeSkillCatalog['canInstall'];
   onBack: () => void;
   onUpdate?: (skill: EmployeePersonalSkill) => void;
   onUninstall?: (skill: EmployeePersonalSkill) => void;
+  onStart?: () => void;
+  starting?: boolean;
+  error?: string;
+  disabled?: boolean;
+  backLabel?: string;
 }) {
   const personal = skill.kind === 'personal';
   const update =
@@ -186,39 +192,19 @@ export function EmployeeSkillDetails({
       : undefined;
   return (
     <div className={css.detail}>
-      <header className={css.detailHeader}>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className={css.back}
-          aria-label="返回员工详情"
-          onClick={onBack}
-          data-modal-autofocus
-          icon={
-            <svg
-              width="20"
-              height="20"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.75"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <path d="m10 5-7 7 7 7M3 12h18" />
-            </svg>
-          }
-        />
-        <h2>{skill.displayName}</h2>
-      </header>
+      <EmployeeCapabilityDetailsHeader
+        title={skill.displayName}
+        version={employeeSkillVersion(skill.version)}
+        backLabel={backLabel}
+        onBack={onBack}
+        onUpdate={update}
+        onStart={onStart}
+        starting={starting}
+        disabled={disabled || starting}
+      />
       <div className={css.detailBody}>
         <div className={css.detailLabel}>
           <span className={css.pill}>{personal ? '我添加的' : '基础技能'}</span>
-          <span className={css.caption}>
-            {employeeSkillVersion(skill.version)}
-          </span>
         </div>
         <p className={css.detailDescription}>{skill.description}</p>
         <dl className={css.metadata}>
@@ -227,25 +213,20 @@ export function EmployeeSkillDetails({
             <dd>{employeeSkillSource(skill)}</dd>
           </div>
         </dl>
+        {error && (
+          <p className={css.error} role="alert">
+            {error}
+          </p>
+        )}
+        {uninstall && (
+          <EmployeeCapabilityDanger
+            disabled={disabled || starting}
+            onRemove={uninstall}
+          >
+            卸载这个技能
+          </EmployeeCapabilityDanger>
+        )}
       </div>
-      {(update || uninstall) && (
-        <footer className={css.detailFooter}>
-          {uninstall && (
-            <button
-              type="button"
-              className={css.uninstallDetail}
-              onClick={uninstall}
-            >
-              卸载这个技能
-            </button>
-          )}
-          {update && (
-            <Button type="button" variant="primary" onClick={update}>
-              更新
-            </Button>
-          )}
-        </footer>
-      )}
     </div>
   );
 }

@@ -1,6 +1,15 @@
 'use client';
 
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type ReactNode,
+  type Ref,
+} from 'react';
 import type {
   EmployeeSkillCatalog,
   PersonalSkillConfirmResponse,
@@ -146,6 +155,7 @@ export interface EmployeeSkillLayer {
   navigationKey: string;
   content: ReactNode;
   small: boolean;
+  detail?: boolean;
   blocked: boolean;
   onBack: () => void;
 }
@@ -164,7 +174,7 @@ export function EmployeeSkillLayerDialog({
       open
       headless
       title={layer.title}
-      className={`${css.dialog} ${layer.small ? css.small : ''}`}
+      className={`${css.dialog} ${layer.small ? css.small : ''} ${layer.detail ? css.detailDialog : ''}`}
       onClose={() => {
         if (!layer.blocked) layer.onBack();
       }}
@@ -180,11 +190,45 @@ export interface EmployeeSkillsHostProps {
   employeeName: string;
   writes: EmployeeSkillWriteStore;
   copy: EmployeeSkillHostCopy;
+  active?: boolean;
+  backLabel?: string;
+  onStart?: (skill: EmployeeSkill) => Promise<void>;
+  navigationRef?: Ref<{ navigateHome: () => void }>;
   onNotice?: (message: string) => void;
-  children: (view: {
-    section: ReactNode;
-    layer: EmployeeSkillLayer | null;
-  }) => ReactNode;
+  children: ReactNode | ((view: EmployeeSkillsHostView) => ReactNode);
+}
+
+interface EmployeeSkillsHostView {
+  section: ReactNode;
+  layer: EmployeeSkillLayer | null;
+  renderSection: (onNavigate?: () => void) => ReactNode;
+  navigateHome: () => void;
+}
+const EmployeeSkillsContext = createContext<EmployeeSkillsHostView | null>(
+  null,
+);
+export const useEmployeeSkillsHostView = () =>
+  useContext(EmployeeSkillsContext);
+function renderHostChildren(
+  children: EmployeeSkillsHostProps['children'],
+  view: EmployeeSkillsHostView,
+) {
+  return (
+    <EmployeeSkillsContext.Provider value={view}>
+      {typeof children === 'function' ? children(view) : children}
+    </EmployeeSkillsContext.Provider>
+  );
+}
+
+export function EmployeeSkillConfirmationLayer({
+  active,
+}: {
+  active: boolean;
+}) {
+  const view = useEmployeeSkillsHostView();
+  return active && view?.layer?.small ? (
+    <EmployeeSkillLayerDialog layer={view.layer} />
+  ) : null;
 }
 
 export function EmployeeSkillsHost(props: EmployeeSkillsHostProps) {
@@ -195,7 +239,13 @@ export function EmployeeSkillsHost(props: EmployeeSkillsHostProps) {
       write.scopeId !== props.scope.scopeId ||
       (!props.ownerView && sameScope(write, props.scope)),
   );
-  if (!props.ownerView) return props.children({ section: null, layer: null });
+  if (!props.ownerView)
+    return renderHostChildren(props.children, {
+      section: null,
+      layer: null,
+      renderSection: () => null,
+      navigateHome: () => {},
+    });
   const key = JSON.stringify([
     props.scope.scopeId,
     props.scope.workspaceId,
@@ -272,6 +322,10 @@ function EmployeeSkillsReader({
   employeeName,
   writes,
   copy,
+  active,
+  backLabel,
+  onStart,
+  navigationRef,
   onNotice,
   children,
 }: EmployeeSkillsHostProps) {
@@ -281,6 +335,8 @@ function EmployeeSkillsReader({
   });
   const catalog = useRef<EmployeeSkillCatalog | null>(null);
   const [page, setPage] = useState<Page>(null);
+  const [starting, setStarting] = useState(false);
+  const [startError, setStartError] = useState('');
   const resumeAfterRead = useRef(true);
   const currentPage = useRef(page);
   const mounted = useRef(true);
@@ -357,9 +413,9 @@ function EmployeeSkillsReader({
   };
 
   useEffect(() => {
-    retryCatalog();
+    if (active !== false && !read.current) retryCatalog();
     // The keyed reader fixes every scope/header used by its requests.
-  }, []);
+  }, [active]);
 
   const returnFromSource = (source: SourcePage) => {
     read.current?.abort();
@@ -768,7 +824,8 @@ function EmployeeSkillsReader({
 
   const back = () => {
     const current = currentPage.current;
-    if (pending.current || !current) return;
+    if (pending.current || starting || !current) return;
+    setStartError('');
     if (current.kind === 'source') {
       returnFromSource(current);
       return;
@@ -799,6 +856,34 @@ function EmployeeSkillsReader({
     show(null);
   };
 
+  const start = async (skill: EmployeeSkill) => {
+    if (!onStart || pending.current || starting || !catalog.current) return;
+    setStarting(true);
+    setStartError('');
+    try {
+      await onStart(skill);
+      if (mounted.current) show(null);
+    } catch (cause) {
+      if (mounted.current)
+        setStartError(
+          cause instanceof Error ? cause.message : copy.catalogError,
+        );
+    } finally {
+      if (mounted.current) setStarting(false);
+    }
+  };
+
+  const navigateHome = () => {
+    if (pending.current || starting) return;
+    if (currentPage.current?.kind === 'source') {
+      read.current?.abort();
+      readSequence.current += 1;
+    }
+    setStartError('');
+    show(null);
+  };
+  useImperativeHandle(navigationRef, () => ({ navigateHome }));
+
   let layer: EmployeeSkillLayer | null = null;
   if (page) {
     let title: string;
@@ -812,6 +897,10 @@ function EmployeeSkillsReader({
           onBack={back}
           onUpdate={openSource}
           onUninstall={(skill) => openRemoval(skill, true)}
+          onStart={onStart ? () => void start(page.skill) : undefined}
+          starting={starting}
+          error={startError}
+          backLabel={backLabel}
         />
       );
     } else if (page.kind === 'detail-read') {
@@ -829,9 +918,17 @@ function EmployeeSkillsReader({
           onBack={back}
           onUpdate={openSource}
           onUninstall={(item) => openRemoval(item, true)}
+          onStart={onStart ? () => void start(skill) : undefined}
+          starting={starting}
+          error={startError}
+          backLabel={backLabel}
         />
       ) : (
-        <EmployeeSkillPage title={title} backLabel="返回员工详情" onBack={back}>
+        <EmployeeSkillPage
+          title={title}
+          backLabel={backLabel ?? '返回员工详情'}
+          onBack={back}
+        >
           <EmployeeSkillFeedback busy={view.status === 'loading'}>
             {view.status === 'loading'
               ? copy.loading
@@ -860,6 +957,7 @@ function EmployeeSkillsReader({
           }}
           onRead={() => void readSource()}
           onBack={back}
+          parentBackLabel={backLabel}
         />
       );
     } else if (page.kind === 'confirm') {
@@ -889,6 +987,7 @@ function EmployeeSkillsReader({
           result={page.result}
           unchanged={copy.unchanged}
           onDone={back}
+          parentBackLabel={backLabel}
         />
       );
     } else if (page.kind === 'remove') {
@@ -913,7 +1012,7 @@ function EmployeeSkillsReader({
       content = (
         <EmployeeSkillPage
           title={title}
-          backLabel="返回员工详情"
+          backLabel={backLabel ?? '返回员工详情'}
           onBack={back}
           footer={
             <Button type="button" variant="outline" onClick={back}>
@@ -944,17 +1043,30 @@ function EmployeeSkillsReader({
       navigationKey,
       content,
       small: page.kind === 'remove',
-      blocked: pending.current,
+      detail: page.kind === 'detail' || page.kind === 'detail-read',
+      blocked: pending.current || starting,
       onBack: back,
     };
   }
-  const section = (
+  const renderSection = (onNavigate?: () => void) => (
     <EmployeeSkillsSection
       view={view}
-      onOpen={(skill) => show({ kind: 'detail', skill })}
-      onAdd={() => openSource()}
-      onUninstall={(skill) => openRemoval(skill, false)}
+      disabled={pending.current || starting}
+      onOpen={(skill) => {
+        onNavigate?.();
+        setStartError('');
+        show({ kind: 'detail', skill });
+      }}
+      onAdd={() => {
+        onNavigate?.();
+        openSource();
+      }}
     />
   );
-  return children({ section, layer });
+  return renderHostChildren(children, {
+    section: renderSection(),
+    layer,
+    renderSection,
+    navigateHome,
+  });
 }

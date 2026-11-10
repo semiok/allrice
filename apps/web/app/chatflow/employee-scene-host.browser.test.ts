@@ -31,6 +31,9 @@ import {
   PersonalSceneRemoveResponseSchema,
   SkillPackageSourceSchema,
   skillSourceErrorHeader,
+  PersonalSkillPreviewRequestSchema,
+  PersonalSkillConfirmRequestSchema,
+  PersonalSkillRemoveRequestSchema,
   type PersonalScenePreviewResponse,
   type PersonalSceneConfirmReceipt,
   type PersonalSceneRemoveReceipt,
@@ -39,9 +42,17 @@ import {
 import type {
   Browser,
   Locator,
+  Page,
 } from '../../../worker/node_modules/playwright-core/index.js';
 import type { Session, Workspace } from './chatflow-types';
 import { employeeDetailsFixture } from '../../test/employee-details-fixture';
+import {
+  skillTestCatalog,
+  skillTestCatalogAfter,
+  skillTestConfirmed,
+  skillTestPreview,
+  skillTestRemoved,
+} from '../../test/employee-skills-host-data';
 
 const suite =
   process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1'
@@ -139,6 +150,15 @@ function scene(instanceId: string, n = 50, revision = 1, next = false) {
   });
 }
 
+function employeePage(
+  page: Page,
+  options: { name?: string | RegExp; exact?: boolean },
+) {
+  return page
+    .getByRole('dialog', options)
+    .or(page.getByRole('region', options));
+}
+
 suite('U1 mounted employee Workflow host', () => {
   let browser: Browser, server: Server, origin: string;
   const evidence = resolve('.local/met249-u1-scene-host');
@@ -211,6 +231,7 @@ suite('U1 mounted employee Workflow host', () => {
       session?: boolean;
       disabled?: boolean;
       coarse?: boolean;
+      emptySkills?: boolean;
     } = {},
   ) {
     const width = options.width ?? 1440;
@@ -236,6 +257,18 @@ suite('U1 mounted employee Workflow host', () => {
       ]),
     );
     const previews = new Map<string, PersonalScenePreviewResponse>();
+    const skillCatalogs = new Map(
+      [7, 17, 107, 117].map((n) => {
+        const catalog = skillTestCatalog(id(n), id(n > 100 ? 104 : 4));
+        if (options.emptySkills || options.frozen) catalog.personalSkills = [];
+        if (options.frozen) catalog.canInstall = false;
+        return [id(n), catalog] as const;
+      }),
+    );
+    const skillPreviews = new Map<
+      string,
+      ReturnType<typeof skillTestPreview>
+    >();
     const confirmReceipts = new Map<string, PersonalSceneConfirmReceipt>();
     const removeReceipts = new Map<string, PersonalSceneRemoveReceipt>();
     const state = {
@@ -262,6 +295,7 @@ suite('U1 mounted employee Workflow host', () => {
       previewGate: null as Promise<void> | null,
       directoryGate: null as Promise<void> | null,
       writeGate: null as Promise<void> | null,
+      instanceGate: null as Promise<void> | null,
       loseConfirm: false,
       loseRemove: false,
       failConfirm: false,
@@ -269,6 +303,7 @@ suite('U1 mounted employee Workflow host', () => {
       previews,
       confirmReceipts,
       removeReceipts,
+      skillCatalogs,
     };
     function employeeScope(instanceId: string) {
       return [id(7), id(17)].includes(instanceId)
@@ -449,7 +484,11 @@ suite('U1 mounted employee Workflow host', () => {
       state.requests.push(attempt);
       if (
         method !== 'GET' &&
-        !(method === 'POST' && path.endsWith('/scene-skills/preview'))
+        !(
+          method === 'POST' &&
+          (path.endsWith('/scene-skills/preview') ||
+            path.endsWith('/skills/preview'))
+        )
       )
         state.writes.push(attempt);
       if (method === 'GET' && path === '/api/v1/employee-instances') {
@@ -485,15 +524,21 @@ suite('U1 mounted employee Workflow host', () => {
         expect([id(7), id(17), id(107), id(117)]).toContain(target);
         const supported =
           (method === 'GET' &&
-            ['', 'content', 'scene-skills'].includes(resource)) ||
+            ['', 'content', 'scene-skills', 'skills'].includes(resource)) ||
           (method === 'POST' &&
-            ['scene-skills/preview', 'scene-skills/confirm'].includes(
-              resource,
-            )) ||
+            [
+              'scene-skills/preview',
+              'scene-skills/confirm',
+              'skills/preview',
+              'skills/confirm',
+            ].includes(resource)) ||
           (method === 'DELETE' &&
-            resource.startsWith('scene-skills/') &&
-            UuidSchema.safeParse(resource.slice('scene-skills/'.length))
-              .success);
+            ((resource.startsWith('scene-skills/') &&
+              UuidSchema.safeParse(resource.slice('scene-skills/'.length))
+                .success) ||
+              (resource.startsWith('skills/') &&
+                UuidSchema.safeParse(resource.slice('skills/'.length))
+                  .success)));
         if (!supported) {
           state.unexpected.push(`${method} ${path}`);
           return route.fulfill(problem(405, 'VALIDATION_FAILED'));
@@ -513,8 +558,58 @@ suite('U1 mounted employee Workflow host', () => {
           );
         if (resource === 'content' && method === 'GET')
           return route.fulfill(json(details(target)));
-        if (!resource && method === 'GET')
-          return route.fulfill(json({ instance: instance(target) }));
+        if (!resource && method === 'GET') {
+          const snapshot = instance(target);
+          if (state.instanceGate) await state.instanceGate;
+          return route.fulfill(json({ instance: snapshot }));
+        }
+        if (resource === 'skills' && method === 'GET')
+          return route.fulfill(json(skillCatalogs.get(target)));
+        if (resource === 'skills/preview' && method === 'POST') {
+          const input = PersonalSkillPreviewRequestSchema.parse(
+            request.postDataJSON(),
+          );
+          expect(input.workspaceId).toBe(targetScope.workspaceId);
+          if (input.source.kind !== 'github')
+            throw Error('This case reads the explicit GitHub source');
+          const result = skillTestPreview({
+            instanceId: target,
+            workspaceId: targetScope.workspaceId,
+            target: input.target,
+            source: input.source,
+          });
+          skillPreviews.set(target, result);
+          return route.fulfill(json(result));
+        }
+        if (resource === 'skills/confirm' && method === 'POST') {
+          const input = PersonalSkillConfirmRequestSchema.parse(
+            request.postDataJSON(),
+          );
+          const preview = skillPreviews.get(target);
+          if (!preview)
+            throw Error('Skill confirmation requires the real preview');
+          expect(input.workspaceId).toBe(targetScope.workspaceId);
+          expect(input.previewId).toBe(preview.previewId);
+          expect(input.digest).toBe(preview.digest);
+          const result = skillTestConfirmed(preview, input.requestId);
+          skillCatalogs.set(target, skillTestCatalogAfter(result));
+          return route.fulfill(json(result));
+        }
+        if (resource.startsWith('skills/') && method === 'DELETE') {
+          const input = PersonalSkillRemoveRequestSchema.parse(
+            request.postDataJSON(),
+          );
+          const current = skillCatalogs.get(target)?.personalSkills[0];
+          if (!current) throw Error('Skill removal requires a current binding');
+          expect(resource.slice('skills/'.length)).toBe(current.installationId);
+          expect(input.workspaceId).toBe(targetScope.workspaceId);
+          const result = skillTestRemoved(input.requestId, target);
+          skillCatalogs.set(target, {
+            ...skillCatalogs.get(target)!,
+            personalSkills: [],
+          });
+          return route.fulfill(json(result));
+        }
         const collection = collections.get(target)!;
         if (resource === 'scene-skills' && method === 'GET') {
           const selected = url.searchParams.get('sceneId');
@@ -1027,9 +1122,9 @@ suite('U1 mounted employee Workflow host', () => {
         .poll(() => state.reads.includes(`/api/v1/sessions/${existing.id}`))
         .toBe(true);
     const directory = () =>
-      page.getByRole('dialog', { name: '工作场景 Workflow', exact: true });
+      page.locator('#artifact-workbench[data-sidebar-right-open]');
     const openDirectory = async () => {
-      await page.getByRole('button', { name: '工作场景', exact: true }).click();
+      await page.getByRole('button', { name: '能力', exact: true }).click();
       await directory().waitFor();
       await expect
         .poll(() =>
@@ -1041,7 +1136,7 @@ suite('U1 mounted employee Workflow host', () => {
     const openDetail = async () => {
       const root = await openDirectory();
       await root.getByRole('button', { name: /写周报/ }).click();
-      const detail = page.getByRole('dialog', { name: '写周报', exact: true });
+      const detail = employeePage(page, { name: '写周报', exact: true });
       await detail
         .getByRole('heading', { name: '什么时候用', exact: true })
         .waitFor();
@@ -1060,7 +1155,7 @@ suite('U1 mounted employee Workflow host', () => {
         )
           .getByRole('button', { name: '新建场景', exact: true })
           .click();
-      const form = page.getByRole('dialog', {
+      const form = employeePage(page, {
         name: update ? '更新“写周报”' : '新建工作场景',
         exact: true,
       });
@@ -1080,7 +1175,7 @@ suite('U1 mounted employee Workflow host', () => {
       await page
         .getByRole('button', { name: `查看${name}详情`, exact: true })
         .click();
-      const details = page.getByRole('dialog', {
+      const details = employeePage(page, {
         name: `${name}员工详情`,
         exact: true,
       });
@@ -1156,7 +1251,7 @@ suite('U1 mounted employee Workflow host', () => {
     });
   }
   function confirmation(f: Fixture, update = false) {
-    return f.page.getByRole('dialog', {
+    return employeePage(f.page, {
       name: update ? '确认更新' : '确认安装',
       exact: true,
     });
@@ -1169,7 +1264,7 @@ suite('U1 mounted employee Workflow host', () => {
     f.state.writes.filter((item) => item.path.endsWith('/confirm'));
   async function deleteConfirmation(f: Fixture, detail: Locator) {
     await detail.getByRole('button', { name: '删除场景', exact: true }).click();
-    const dialog = f.page.getByRole('dialog', {
+    const dialog = employeePage(f.page, {
       name: '删除“写周报”？',
       exact: true,
     });
@@ -1184,22 +1279,22 @@ suite('U1 mounted employee Workflow host', () => {
           const root = await f.openDirectory();
           expect(
             await root
-              .getByRole('button', { name: '关闭工作场景', exact: true })
+              .getByRole('button', { name: '关闭工作台', exact: true })
               .count(),
           ).toBe(1);
           expect(
             await root
-              .getByRole('button', { name: '返回工作场景列表', exact: true })
+              .getByRole('button', { name: '返回能力列表', exact: true })
               .count(),
           ).toBe(0);
           expect(await root.locator('footer').count()).toBe(0);
           const closeBox = await root
-            .getByRole('button', { name: '关闭工作场景', exact: true })
+            .getByRole('button', { name: '关闭工作台', exact: true })
             .boundingBox();
-          expect(closeBox?.width).toBe(width < 700 ? 40 : 36);
-          expect(closeBox?.height).toBe(width < 700 ? 40 : 36);
+          expect(closeBox?.width).toBe(32);
+          expect(closeBox?.height).toBe(32);
           await root.getByRole('button', { name: /写周报/ }).click();
-          const detail = f.page.getByRole('dialog', {
+          const detail = employeePage(f.page, {
             name: '写周报',
             exact: true,
           });
@@ -1209,15 +1304,15 @@ suite('U1 mounted employee Workflow host', () => {
           await contains(detail, '/weekly-brief');
           expect(
             await detail
-              .getByRole('button', { name: '关闭工作场景', exact: true })
+              .getByRole('button', { name: '关闭工作台', exact: true })
               .count(),
           ).toBe(0);
           expect(await detail.locator('footer').count()).toBe(0);
           const backBox = await detail
-            .getByRole('button', { name: '返回工作场景列表', exact: true })
+            .getByRole('button', { name: '返回能力列表', exact: true })
             .boundingBox();
-          expect(backBox?.width).toBe(width < 700 ? 40 : 36);
-          expect(backBox?.height).toBe(width < 700 ? 40 : 36);
+          expect(backBox?.width).toBe(32);
+          expect(backBox?.height).toBe(36);
           const measure = async () =>
             detail.evaluate((node) => {
               const rect = node.getBoundingClientRect(),
@@ -1254,16 +1349,20 @@ suite('U1 mounted employee Workflow host', () => {
               };
             });
           expect(deliveryAppearance.linkToken).not.toBe('');
-          expect(geometry.titleSize).toBe('20px');
-          expect(geometry.titleLine).toBe('28px');
+          expect(geometry.titleSize).toBe('18px');
+          expect(geometry.titleLine).toBe('26px');
           expect(geometry.fits).toBe(true);
-          if (width < 700) {
-            expect(geometry.x).toBe(0);
-            expect(geometry.y).toBe(0);
-            expect(geometry.width).toBe(geometry.clientWidth);
-            expect(geometry.height).toBe(geometry.clientHeight);
-            expect(geometry.radius).toBe('0px');
-          } else expect(geometry.width).toBe(848);
+          const panelBox = await root.boundingBox();
+          expect(panelBox).not.toBeNull();
+          expect(geometry.x).toBe(panelBox!.x);
+          expect(geometry.y).toBeGreaterThan(panelBox!.y);
+          expect(geometry.width).toBe(panelBox!.width);
+          expect(geometry.y + geometry.height).toBeLessThanOrEqual(
+            geometry.clientHeight,
+          );
+          expect(geometry.radius).toBe('0px');
+          if (width < 700) expect(panelBox!.width).toBe(geometry.clientWidth);
+          else expect(panelBox!.x).toBeGreaterThan(0);
           const channels = geometry.background.match(/\d+/g)?.map(Number);
           expect(channels?.length).toBe(3);
           if (dark) expect(Math.max(...channels!)).toBeLessThan(90);
@@ -1283,11 +1382,11 @@ suite('U1 mounted employee Workflow host', () => {
             JSON.stringify({ ...geometry, deliveryAppearance }, null, 2),
           );
           await detail
-            .getByRole('button', { name: '返回工作场景列表', exact: true })
+            .getByRole('button', { name: '返回能力列表', exact: true })
             .click();
           await root.waitFor();
           await root
-            .getByRole('button', { name: '关闭工作场景', exact: true })
+            .getByRole('button', { name: '关闭工作台', exact: true })
             .click();
           await root.waitFor({ state: 'detached' });
           const employee = await f.openEmployeeDetails();
@@ -1412,7 +1511,7 @@ suite('U1 mounted employee Workflow host', () => {
   it('compact host without the side workbench opens the same actual directory from its green Workflow entry', async () => {
     await inFixture({ width: 390, disabled: true }, async (f) => {
       const entry = f.page.getByRole('button', {
-        name: '工作场景',
+        name: '能力',
         exact: true,
       });
       expect(await entry.evaluate((node) => getComputedStyle(node).color)).toBe(
@@ -1492,7 +1591,7 @@ suite('U1 mounted employee Workflow host', () => {
           .count(),
       ).toBe(0);
       await root.getByRole('button', { name: /写周报/ }).click();
-      const detail = f.page.getByRole('dialog', {
+      const detail = employeePage(f.page, {
         name: '写周报',
         exact: true,
       });
@@ -1540,7 +1639,7 @@ suite('U1 mounted employee Workflow host', () => {
       const before = catalogReads().length;
       expect(before).toBe(1);
       await employee.getByRole('button', { name: /写周报/ }).click();
-      const detail = f.page.getByRole('dialog', {
+      const detail = employeePage(f.page, {
         name: '写周报',
         exact: true,
       });
@@ -1565,7 +1664,7 @@ suite('U1 mounted employee Workflow host', () => {
       await employee
         .getByRole('button', { name: '新建场景', exact: true })
         .click();
-      const source = f.page.getByRole('dialog', {
+      const source = employeePage(f.page, {
         name: '新建工作场景',
         exact: true,
       });
@@ -1608,7 +1707,7 @@ suite('U1 mounted employee Workflow host', () => {
     await inFixture({}, async (f) => {
       const employee = await f.openEmployeeDetails('流程哥');
       await employee.getByRole('button', { name: /写周报/ }).click();
-      const detail = f.page.getByRole('dialog', {
+      const detail = employeePage(f.page, {
         name: '写周报',
         exact: true,
       });
@@ -1662,7 +1761,7 @@ suite('U1 mounted employee Workflow host', () => {
       await confirm
         .getByRole('button', { name: '确认安装', exact: true })
         .click();
-      const success = f.page.getByRole('dialog', {
+      const success = employeePage(f.page, {
         name: '安装完成',
         exact: true,
       });
@@ -1718,9 +1817,7 @@ suite('U1 mounted employee Workflow host', () => {
       await confirm
         .getByRole('button', { name: '确认安装', exact: true })
         .click();
-      await f.page
-        .getByRole('dialog', { name: '安装完成', exact: true })
-        .waitFor();
+      await employeePage(f.page, { name: '安装完成', exact: true }).waitFor();
       expect(confirmWrites(f)).toHaveLength(1);
       expect([...f.state.confirmReceipts.values()][0]!.source.kind).toBe('zip');
     });
@@ -1751,14 +1848,14 @@ suite('U1 mounted employee Workflow host', () => {
       await confirm
         .getByRole('button', { name: '确认更新', exact: true })
         .click();
-      const success = f.page.getByRole('dialog', {
+      const success = employeePage(f.page, {
         name: '更新完成',
         exact: true,
       });
       await success.waitFor();
       await expect.poll(() => f.state.collections.get(id(7))!.revision).toBe(2);
       await success.getByRole('button', { name: '完成', exact: true }).click();
-      const detail = f.page.getByRole('dialog', {
+      const detail = employeePage(f.page, {
         name: '写周报',
         exact: true,
       });
@@ -1938,12 +2035,12 @@ suite('U1 mounted employee Workflow host', () => {
         .click();
       await f
         .directory()
-        .getByRole('button', { name: '关闭工作场景', exact: true })
+        .getByRole('button', { name: '关闭工作台', exact: true })
         .click();
       await f.page
         .getByRole('button', { name: '开始新的工作', exact: true })
         .click();
-      const picker = f.page.getByRole('dialog', {
+      const picker = employeePage(f.page, {
         name: '选择 AI 员工',
         exact: true,
       });
@@ -1964,7 +2061,7 @@ suite('U1 mounted employee Workflow host', () => {
         ),
       ).toBe(true);
       await root.getByRole('button', { name: /写周报/ }).click();
-      const detail = f.page.getByRole('dialog', {
+      const detail = employeePage(f.page, {
         name: '写周报',
         exact: true,
       });
@@ -2048,9 +2145,7 @@ suite('U1 mounted employee Workflow host', () => {
       f.state.failConfirm = false;
       f.state.writeGate = null;
       await confirm.getByRole('button', { name: '重试', exact: true }).click();
-      await f.page
-        .getByRole('dialog', { name: '安装完成', exact: true })
-        .waitFor();
+      await employeePage(f.page, { name: '安装完成', exact: true }).waitFor();
       expect(confirmWrites(f)).toHaveLength(2);
       expect(confirmWrites(f)[1]!.input).toEqual(confirmWrites(f)[0]!.input);
     });
@@ -2079,9 +2174,7 @@ suite('U1 mounted employee Workflow host', () => {
         await retry.waitFor();
         await expect.poll(() => retry.isEnabled()).toBe(true);
         expect(
-          await f.page
-            .getByRole('dialog', { name: '安装完成', exact: true })
-            .count(),
+          await employeePage(f.page, { name: '安装完成', exact: true }).count(),
         ).toBe(0);
         expect(await dialog.getByRole('alert').count()).toBe(0);
         const first = f.state.writes.find((item) =>
@@ -2091,9 +2184,10 @@ suite('U1 mounted employee Workflow host', () => {
         )!;
         await retry.click();
         if (operation === 'confirm')
-          await f.page
-            .getByRole('dialog', { name: '安装完成', exact: true })
-            .waitFor();
+          await employeePage(f.page, {
+            name: '安装完成',
+            exact: true,
+          }).waitFor();
         else
           await contains(
             f
@@ -2138,7 +2232,7 @@ suite('U1 mounted employee Workflow host', () => {
       expect(await dialog.getByRole('alert').count()).toBe(0);
       expect(confirmWrites(f)[1]!.input).toEqual(original);
       await dialog.getByRole('button', { name: '取消', exact: true }).click();
-      const form = f.page.getByRole('dialog', {
+      const form = employeePage(f.page, {
         name: '新建工作场景',
         exact: true,
       });
@@ -2152,17 +2246,13 @@ suite('U1 mounted employee Workflow host', () => {
       await form.getByRole('button', { name: '取消', exact: true }).click();
       await f
         .directory()
-        .getByRole('button', { name: '关闭工作场景', exact: true })
+        .getByRole('button', { name: '关闭工作台', exact: true })
         .click();
-      await f.page
-        .getByRole('button', { name: '工作场景', exact: true })
-        .click();
+      await f.page.getByRole('button', { name: '能力', exact: true }).click();
       await dialog.waitFor();
       f.state.failConfirm = false;
       await dialog.getByRole('button', { name: '重试', exact: true }).click();
-      await f.page
-        .getByRole('dialog', { name: '安装完成', exact: true })
-        .waitFor();
+      await employeePage(f.page, { name: '安装完成', exact: true }).waitFor();
       expect(confirmWrites(f)[2]!.input).toEqual(original);
       expect(f.state.confirmReceipts.size).toBe(1);
     });
@@ -2176,7 +2266,7 @@ suite('U1 mounted employee Workflow host', () => {
         if (origin === 'employee') {
           const employee = await f.openEmployeeDetails('流程哥');
           await employee.getByRole('button', { name: /写周报/ }).click();
-          const detail = f.page.getByRole('dialog', {
+          const detail = employeePage(f.page, {
             name: '写周报',
             exact: true,
           });
@@ -2186,7 +2276,7 @@ suite('U1 mounted employee Workflow host', () => {
           await detail
             .getByRole('button', { name: '更新', exact: true })
             .click();
-          form = f.page.getByRole('dialog', {
+          form = employeePage(f.page, {
             name: '更新“写周报”',
             exact: true,
           });
@@ -2218,9 +2308,7 @@ suite('U1 mounted employee Workflow host', () => {
         expect(frozen.current?.contentRef).toBe(scene(target).contentRef);
         expect(f.state.confirmReceipts.size).toBe(1);
         expect(
-          await f.page
-            .getByRole('dialog', { name: '更新完成', exact: true })
-            .count(),
+          await employeePage(f.page, { name: '更新完成', exact: true }).count(),
         ).toBe(0);
         expect(await confirm.getByRole('alert').count()).toBe(0);
 
@@ -2229,19 +2317,19 @@ suite('U1 mounted employee Workflow host', () => {
           .click();
         await form.waitFor();
         await form.getByRole('button', { name: '取消', exact: true }).click();
-        const detail = f.page.getByRole('dialog', {
+        const detail = employeePage(f.page, {
           name: '写周报',
           exact: true,
         });
         await detail.waitFor();
         const parentName =
-          origin === 'employee' ? '返回员工详情' : '返回工作场景列表';
+          origin === 'employee' ? '返回员工详情' : '返回能力列表';
         await detail
           .getByRole('button', { name: parentName, exact: true })
           .click();
         const parent =
           origin === 'employee'
-            ? f.page.getByRole('dialog', {
+            ? employeePage(f.page, {
                 name: '流程哥员工详情',
                 exact: true,
               })
@@ -2249,7 +2337,7 @@ suite('U1 mounted employee Workflow host', () => {
         await parent.waitFor();
         await parent
           .getByRole('button', {
-            name: origin === 'employee' ? '关闭' : '关闭工作场景',
+            name: origin === 'employee' ? '关闭' : '关闭工作台',
             exact: true,
           })
           .click();
@@ -2259,7 +2347,7 @@ suite('U1 mounted employee Workflow host', () => {
           await employee.getByRole('button', { name: /写周报/ }).click();
         } else
           await f.page
-            .getByRole('button', { name: '工作场景', exact: true })
+            .getByRole('button', { name: '能力', exact: true })
             .click();
         await confirm.waitFor();
         const retry = confirm.getByRole('button', {
@@ -2274,7 +2362,7 @@ suite('U1 mounted employee Workflow host', () => {
           if (origin === 'top') f.state.directoryGate = refresh.promise;
           else f.state.failDirectory = true;
           await retry.click();
-          const success = f.page.getByRole('dialog', {
+          const success = employeePage(f.page, {
             name: '更新完成',
             exact: true,
           });
@@ -2373,12 +2461,10 @@ suite('U1 mounted employee Workflow host', () => {
       expect(confirmWrites(f)).toHaveLength(1);
       expect(await dialog.getByRole('alert').count()).toBe(0);
       expect(
-        await f.page
-          .getByRole('dialog', { name: '安装完成', exact: true })
-          .count(),
+        await employeePage(f.page, { name: '安装完成', exact: true }).count(),
       ).toBe(0);
       await dialog.getByRole('button', { name: '取消', exact: true }).click();
-      const form = f.page.getByRole('dialog', {
+      const form = employeePage(f.page, {
         name: '新建工作场景',
         exact: true,
       });
@@ -2429,7 +2515,7 @@ suite('U1 mounted employee Workflow host', () => {
       ).toBe(0);
       expect(confirmWrites(f)).toHaveLength(2);
       await root
-        .getByRole('button', { name: '关闭工作场景', exact: true })
+        .getByRole('button', { name: '关闭工作台', exact: true })
         .click();
       f.state.deny = false;
       const restored = await f.openDirectory();
@@ -2490,15 +2576,19 @@ suite('U1 mounted employee Workflow host', () => {
 
   for (const origin of ['top', 'employee'] as const)
     for (const operation of ['install', 'update'] as const)
-      for (const exit of ['arrow', 'Escape', 'backdrop'] as const)
-        it(`success ${origin} ${operation} ${exit} returns to the exact parent during ${exit === 'backdrop' ? 'failed' : 'pending'} catalog refresh`, async () => {
+      for (const exit of [
+        'arrow',
+        'Escape',
+        origin === 'top' ? 'done' : 'backdrop',
+      ] as const)
+        it(`success ${origin} ${operation} ${exit} returns to the exact parent during ${exit === 'backdrop' || exit === 'done' ? 'failed' : 'pending'} catalog refresh`, async () => {
           await inFixture({}, async (f) => {
             let form: Locator;
             if (origin === 'employee') {
               const employee = await f.openEmployeeDetails('流程哥');
               if (operation === 'update') {
                 await employee.getByRole('button', { name: /写周报/ }).click();
-                const detail = f.page.getByRole('dialog', {
+                const detail = employeePage(f.page, {
                   name: '写周报',
                   exact: true,
                 });
@@ -2512,7 +2602,7 @@ suite('U1 mounted employee Workflow host', () => {
                 await employee
                   .getByRole('button', { name: '新建场景', exact: true })
                   .click();
-              form = f.page.getByRole('dialog', {
+              form = employeePage(f.page, {
                 name: operation === 'update' ? '更新“写周报”' : '新建工作场景',
                 exact: true,
               });
@@ -2525,7 +2615,8 @@ suite('U1 mounted employee Workflow host', () => {
             await confirm.waitFor();
             const refresh = gate();
             try {
-              if (exit === 'backdrop') f.state.failDirectory = true;
+              if (exit === 'backdrop' || exit === 'done')
+                f.state.failDirectory = true;
               else f.state.directoryGate = refresh.promise;
               await confirm
                 .getByRole('button', {
@@ -2533,7 +2624,7 @@ suite('U1 mounted employee Workflow host', () => {
                   exact: true,
                 })
                 .click();
-              const success = f.page.getByRole('dialog', {
+              const success = employeePage(f.page, {
                 name: operation === 'update' ? '更新完成' : '安装完成',
                 exact: true,
               });
@@ -2543,6 +2634,10 @@ suite('U1 mounted employee Workflow host', () => {
                   .getByRole('button', { name: '返回上一层', exact: true })
                   .click();
               else if (exit === 'Escape') await f.page.keyboard.press('Escape');
+              else if (exit === 'done')
+                await success
+                  .getByRole('button', { name: '完成', exact: true })
+                  .click();
               else {
                 expect(
                   await f.page.evaluate(() =>
@@ -2557,9 +2652,9 @@ suite('U1 mounted employee Workflow host', () => {
               }
               const parent =
                 operation === 'update'
-                  ? f.page.getByRole('dialog', { name: '写周报', exact: true })
+                  ? employeePage(f.page, { name: '写周报', exact: true })
                   : origin === 'employee'
-                    ? f.page.getByRole('dialog', {
+                    ? employeePage(f.page, {
                         name: '流程哥员工详情',
                         exact: true,
                       })
@@ -2681,14 +2776,14 @@ suite('U1 mounted employee Workflow host', () => {
         ).toBe(true);
         const root = await f.openDirectory();
         const close = await root
-          .getByRole('button', { name: '关闭工作场景', exact: true })
+          .getByRole('button', { name: '关闭工作台', exact: true })
           .boundingBox();
-        expect(close?.width).toBe(40);
-        expect(close?.height).toBe(40);
+        expect(close?.width).toBe(32);
+        expect(close?.height).toBe(32);
         await root
           .getByRole('button', { name: '新建场景', exact: true })
           .click();
-        const form = f.page.getByRole('dialog', {
+        const form = employeePage(f.page, {
           name: '新建工作场景',
           exact: true,
         });
@@ -2726,7 +2821,7 @@ suite('U1 mounted employee Workflow host', () => {
               await employee
                 .getByRole('button', { name: '新建场景', exact: true })
                 .click();
-              const form = f.page.getByRole('dialog', {
+              const form = employeePage(f.page, {
                 name: '新建工作场景',
                 exact: true,
               });
@@ -2736,7 +2831,7 @@ suite('U1 mounted employee Workflow host', () => {
               f.state.loseConfirm = phase === 'lost';
             } else {
               await employee.getByRole('button', { name: /写周报/ }).click();
-              const detail = f.page.getByRole('dialog', {
+              const detail = employeePage(f.page, {
                 name: '写周报',
                 exact: true,
               });
@@ -2797,7 +2892,7 @@ suite('U1 mounted employee Workflow host', () => {
               )
               .toBe(1);
             await other
-              .getByRole('button', { name: '关闭工作场景', exact: true })
+              .getByRole('button', { name: '关闭工作台', exact: true })
               .click();
             f.state.scope = { workspaceId: id(4), viewerId: id(5), offset: 0 };
             await f.page
@@ -2806,7 +2901,7 @@ suite('U1 mounted employee Workflow host', () => {
             await expect
               .poll(() => f.state.workspaceReplies.at(-1))
               .toBe(`${id(4)}/${id(5)}`);
-            const parent = f.page.getByRole('dialog', { name: /员工详情/ });
+            const parent = employeePage(f.page, { name: /员工详情/ });
             await parent.waitFor();
             await parent
               .getByRole('button', { name: '关闭', exact: true })

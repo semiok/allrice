@@ -16,7 +16,21 @@ import {
   announceWorkbenchRead,
 } from './unified-workbench-controls';
 import { WorkbenchIcon, type WorkbenchModule } from './workbench-modules';
-import { EmployeeSceneDialog } from './employee-scene-dialog';
+import {
+  EmployeeSceneDialog,
+  EmployeeSceneList,
+} from './employee-scene-dialog';
+import {
+  EmployeeSkillsHost,
+  EmployeeSkillConfirmationLayer,
+  type EmployeeSkillWriteStore,
+} from './employee-skills-host';
+import type { EmployeeSkill } from './employee-skills-section';
+import { employeeSkillHostCopy } from './employee-skill-host-copy';
+import {
+  EmployeeCapabilitiesPanel,
+  EmployeeCapabilitiesSections,
+} from './employee-capabilities-panel';
 import {
   useEmployeeSceneCatalog,
   type SceneSelection,
@@ -517,6 +531,11 @@ export function ChatFlowClient({
     entry?: SceneCatalogEntry;
     create?: boolean;
   } | null>(null);
+  const skillWrites = useRef<EmployeeSkillWriteStore>(new Map());
+  const skillNavigation = useRef<{ navigateHome: () => void } | null>(null);
+  const [skillHostOrigin, setSkillHostOrigin] = useState<'top' | 'employee'>(
+    'top',
+  );
   const currentModuleRequest =
     moduleRequest?.scope === fileScope ? moduleRequest : undefined;
   const currentMemoryRequest =
@@ -525,10 +544,15 @@ export function ChatFlowClient({
     currentModuleRequest.id
       ? currentModuleRequest
       : undefined;
+  const currentCapabilityRequest =
+    currentModuleRequest?.kind === 'workflow'
+      ? currentModuleRequest
+      : undefined;
   const workbenchRequested =
     (workbenchEnabled ||
       !!currentAutomationRequest ||
-      !!currentMemoryRequest) &&
+      !!currentMemoryRequest ||
+      !!currentCapabilityRequest) &&
     layout.open;
   const openAutomationTask = (
     task: { id: string; name?: string },
@@ -624,8 +648,9 @@ export function ChatFlowClient({
     },
   ) => {
     if (kind === 'workflow') {
-      openSceneDirectory();
-      return;
+      if (!workspace?.viewerId || !activeEmployee?.instanceId) return;
+      setSceneRequest(null);
+      setSkillHostOrigin('top');
     }
     setModuleRequest((previous) => ({
       scope: fileScope,
@@ -656,6 +681,7 @@ export function ChatFlowClient({
   );
   const hasWorkbenchContent =
     !!currentMemoryRequest ||
+    !!currentCapabilityRequest ||
     (!layout.compact && !!currentModuleRequest) ||
     !!currentAutomationRequest ||
     currentFilesRequest > 0 ||
@@ -1479,7 +1505,7 @@ export function ChatFlowClient({
   }, [sceneRequest, currentSceneRequest]);
   const sceneTarget =
     currentSceneRequest?.instanceId ??
-    detailsAssignmentId ??
+    (employeeDetailsOpen ? detailsAssignmentId : undefined) ??
     activeEmployee?.instanceId;
   const sceneCatalog = useEmployeeSceneCatalog({
     scopeId: settingsScope,
@@ -1500,16 +1526,63 @@ export function ChatFlowClient({
     unavailable: sceneCatalog.accessUnavailable,
   };
   const sceneOpen = Boolean(currentSceneRequest);
+  const restoredCapabilityOpen = useRef('');
+  useEffect(() => {
+    if (!workbenchOpen) {
+      restoredCapabilityOpen.current = '';
+      return;
+    }
+    if (
+      employeeDetailsOpen ||
+      activeModule?.scope !== fileScope ||
+      activeModule.kind !== 'workflow' ||
+      !activeEmployee?.instanceId ||
+      sceneTarget !== activeEmployee.instanceId
+    )
+      return;
+    const openKey = `${fileScope}/${currentCapabilityRequest?.revision ?? 0}/${sceneCatalog.key}`;
+    if (restoredCapabilityOpen.current === openKey) return;
+    restoredCapabilityOpen.current = openKey;
+    // Reopening the host restores the U1 unresolved request, rather than
+    // presenting a new install form or manufacturing another request identity.
+    if (sceneCatalog.mutation?.uncertain)
+      setSceneRequest((previous) => ({
+        scope: settingsScope,
+        instanceId: activeEmployee.instanceId!,
+        origin: 'top',
+        revision: (previous?.revision ?? 0) + 1,
+      }));
+  }, [
+    workbenchOpen,
+    employeeDetailsOpen,
+    activeModule,
+    fileScope,
+    activeEmployee?.instanceId,
+    sceneTarget,
+    currentCapabilityRequest?.revision,
+    sceneCatalog.key,
+    sceneCatalog.mutation?.uncertain,
+    settingsScope,
+  ]);
   function openSceneDirectory() {
     const instanceId = activeEmployee?.instanceId;
     if (!workspace?.viewerId || !instanceId) return;
+    setEmployeeDetailsOpen(false);
+    requestWorkbenchModule('workflow');
+  }
+  function openCapabilityScene(entry?: SceneCatalogEntry) {
+    if (
+      !activeEmployee?.instanceId ||
+      sceneTarget !== activeEmployee.instanceId
+    )
+      return;
     setSceneRequest((previous) => ({
       scope: settingsScope,
-      instanceId,
+      instanceId: activeEmployee.instanceId!,
       origin: 'top',
       revision: (previous?.revision ?? 0) + 1,
+      ...(entry ? { entry } : { create: true }),
     }));
-    layout.close();
   }
   function openEmployeeScene(entry?: SceneCatalogEntry) {
     if (
@@ -1587,6 +1660,51 @@ export function ChatFlowClient({
       };
     prepareDraft(prepareComposerText(`/${nativeName}`), true);
     setSceneRequest(null);
+    layout.close();
+    if (layout.compact) setSidebarCollapsed(true);
+  }
+  async function prepareSkillWork(skill: EmployeeSkill) {
+    if (!workspace || !sceneTarget || busy || composing.current)
+      throw Error('请先完成当前输入或等待工作结束，再调整员工内容。');
+    const captured = captureSelection();
+    const target = sceneTarget;
+    const instance = await sceneCatalog.currentInstance();
+    if (
+      !instance ||
+      instance.id !== target ||
+      !captured.current() ||
+      currentSettingsScope.current !== settingsScope ||
+      sceneGuard.current.key !== sceneCatalog.key ||
+      sceneGuard.current.busy ||
+      composing.current
+    )
+      throw Error('工作区已变化，请重新打开员工详情。');
+    const employee = employeeChoices(workspace).find(
+      (entry) => entry.instanceId === target,
+    );
+    if (!employee || employee.id !== instance.assignmentId)
+      throw Error('这位员工已不在当前工作区，请重新打开详情。');
+    if (activeEmployee?.instanceId !== target || conversationReadOnly) {
+      const wasSession = captured.sessionId !== null;
+      resetRunState();
+      selectSession(null);
+      setHistory(null);
+      setPendingEmployeeAssignmentId(employeeChoiceId(employee));
+      if (wasSession)
+        carriedEmployeeDraft.current = {
+          scope: settingsScope,
+          generation: captureSelection().generation,
+        };
+    }
+    // A natural-language request is an editable draft, not a native command or
+    // an authorization grant. Existing model/runtime Skill policy still applies.
+    prepareDraft(
+      prepareComposerText(`请使用「${skill.displayName}」帮我……`),
+      true,
+    );
+    setEmployeeDetailsOpen(false);
+    setSceneRequest(null);
+    layout.close();
     if (layout.compact) setSidebarCollapsed(true);
   }
   function showSceneDeliveries() {
@@ -1594,6 +1712,7 @@ export function ChatFlowClient({
     const target = sceneTarget;
     const scope = settingsScope;
     setSceneRequest(null);
+    layout.close();
     setSidebarCollapsed(false);
     void nextPaint().then(() => {
       if (currentSettingsScope.current !== scope) return;
@@ -1970,7 +2089,59 @@ export function ChatFlowClient({
     />
   );
 
-  return (
+  const capabilityEmployeeName =
+    sceneCatalog.profile?.name ??
+    (sceneTarget
+      ? employeeChoiceProfile(workspace, sceneTarget)?.name
+      : undefined) ??
+    activeEmployeeName;
+  const capabilitySections = (origin: 'top' | 'employee') => (
+    <EmployeeCapabilitiesSections
+      onSkillNavigate={() => setSkillHostOrigin(origin)}
+    >
+      <EmployeeSceneList
+        controller={sceneCatalog}
+        employeeName={capabilityEmployeeName}
+        embedded
+        onChoose={
+          origin === 'employee' ? openEmployeeScene : openCapabilityScene
+        }
+        onCreate={() =>
+          origin === 'employee' ? openEmployeeScene() : openCapabilityScene()
+        }
+      />
+    </EmployeeCapabilitiesSections>
+  );
+  const sceneDialog = (inline = false) => (
+    <EmployeeSceneDialog
+      key={`${sceneCatalog.key}/${currentSceneRequest?.revision ?? 0}`}
+      controller={sceneCatalog}
+      open={sceneOpen}
+      inline={inline}
+      employeeName={capabilityEmployeeName}
+      onClose={() => setSceneRequest(null)}
+      onStart={prepareSceneWork}
+      onDeliveries={showSceneDeliveries}
+      initial={
+        currentSceneRequest?.entry
+          ? { page: 'detail', entry: currentSceneRequest.entry }
+          : currentSceneRequest?.create
+            ? { page: 'source' }
+            : undefined
+      }
+      onBackToEmployee={
+        currentSceneRequest?.origin === 'employee'
+          ? returnToEmployee
+          : undefined
+      }
+      onBackToList={
+        currentSceneRequest?.origin === 'top'
+          ? () => setSceneRequest(null)
+          : undefined
+      }
+    />
+  );
+  const content = (
     <main
       ref={resize.frameRef}
       data-dragging={resize.dragging || undefined}
@@ -2159,6 +2330,8 @@ export function ChatFlowClient({
           else setError('当前没有可用员工，请先派驻员工。');
         }}
         onOpenEmployeeDetails={(assignmentId) => {
+          skillNavigation.current?.navigateHome();
+          setSkillHostOrigin('employee');
           reuseDetailsSceneSnapshot.current = false;
           setDetailsAssignmentId(
             assignmentId ??
@@ -2314,7 +2487,11 @@ export function ChatFlowClient({
                           currentSessionTasks.length > 0
                         }
                         onSchedule={openSessionTasks}
-                        onOpen={(kind) => requestWorkbenchModule(kind)}
+                        onOpen={(kind) => {
+                          if (kind === 'workflow')
+                            skillNavigation.current?.navigateHome();
+                          requestWorkbenchModule(kind);
+                        }}
                         onToggle={() => {
                           if (workbenchOpen) dismissWorkbench(activeMemoryId);
                           else if (!hasWorkbenchContent)
@@ -2340,10 +2517,15 @@ export function ChatFlowClient({
                           <button
                             type="button"
                             className={`${moduleUi.iconButton} ${moduleUi.workflow}`}
-                            title="工作场景"
-                            aria-label="工作场景"
-                            aria-pressed={sceneOpen}
-                            onClick={openSceneDirectory}
+                            title="能力"
+                            aria-label="能力"
+                            aria-pressed={
+                              workbenchOpen && activeModule?.kind === 'workflow'
+                            }
+                            onClick={() => {
+                              skillNavigation.current?.navigateHome();
+                              openSceneDirectory();
+                            }}
                           >
                             <WorkbenchIcon kind="workflow" />
                           </button>
@@ -2633,7 +2815,10 @@ export function ChatFlowClient({
         )}
       </section>
 
-      {(workbenchEnabled || currentAutomationRequest || currentMemoryRequest) &&
+      {(workbenchEnabled ||
+        currentAutomationRequest ||
+        currentMemoryRequest ||
+        currentCapabilityRequest) &&
       hasWorkbenchContent ? (
         <ArtifactWorkbench
           desktop={!layout.compact}
@@ -2641,7 +2826,9 @@ export function ChatFlowClient({
           experienceAvailable={
             !!activeEmployee?.instanceId || !!currentMemoryRequest
           }
-          workflowAvailable={false}
+          workflowAvailable={
+            !!workspace.viewerId && !!activeEmployee?.instanceId
+          }
           onModuleViewed={(kind, memoryInstanceId) => {
             // Reading one employee's memories is not reading the active
             // employee's old experience/unread stream.
@@ -2652,10 +2839,6 @@ export function ChatFlowClient({
             );
           }}
           onActiveModule={(kind, memoryInstanceId) => {
-            if (kind === 'workflow') {
-              openSceneDirectory();
-              return;
-            }
             setActiveModule((previous) =>
               previous?.scope === fileScope &&
               previous.kind === kind &&
@@ -2744,6 +2927,21 @@ export function ChatFlowClient({
                     requestAnimationFrame(() => composerInput.current?.focus());
                   }}
                 />
+              ) : kind === 'workflow' && activeEmployee?.instanceId ? (
+                <EmployeeCapabilitiesPanel
+                  employeeName={capabilityEmployeeName}
+                  scopeKey={sceneCatalog.key}
+                  active={active}
+                  onRead={sceneCatalog.ensureLoaded}
+                  layer={
+                    currentSceneRequest?.origin === 'top'
+                      ? sceneDialog(true)
+                      : undefined
+                  }
+                  showSkills={skillHostOrigin === 'top'}
+                >
+                  {capabilitySections('top')}
+                </EmployeeCapabilitiesPanel>
               ) : null}
             </Suspense>
           )}
@@ -2845,32 +3043,9 @@ export function ChatFlowClient({
         />
       )}
 
-      <EmployeeSceneDialog
-        key={`${sceneCatalog.key}/${currentSceneRequest?.revision ?? 0}`}
-        controller={sceneCatalog}
-        open={sceneOpen}
-        employeeName={
-          sceneCatalog.profile?.name ??
-          (sceneTarget
-            ? employeeChoiceProfile(workspace, sceneTarget)?.name
-            : undefined) ??
-          'AI 员工'
-        }
-        onClose={() => setSceneRequest(null)}
-        onStart={prepareSceneWork}
-        onDeliveries={showSceneDeliveries}
-        initial={
-          currentSceneRequest?.entry
-            ? { page: 'detail', entry: currentSceneRequest.entry }
-            : currentSceneRequest?.create
-              ? { page: 'source' }
-              : undefined
-        }
-        onBackToEmployee={
-          currentSceneRequest?.origin === 'employee'
-            ? returnToEmployee
-            : undefined
-        }
+      {currentSceneRequest?.origin === 'employee' && sceneDialog()}
+      <EmployeeSkillConfirmationLayer
+        active={skillHostOrigin === 'top' && workbenchOpen}
       />
       {archiveConfirmation?.scope === settingsScope && (
         <EmployeeArchiveConfirmation
@@ -2946,6 +3121,8 @@ export function ChatFlowClient({
         workspaceId={workspace.workspaceId}
         headers={tenantHeaders}
         sceneCatalog={sceneCatalog}
+        capabilitiesContent={capabilitySections('employee')}
+        capabilitiesOwner={skillHostOrigin === 'employee'}
         reuseSceneSnapshot={reuseDetailsSceneSnapshot.current}
         onOpenScene={openEmployeeScene}
         onCreateScene={() => openEmployeeScene()}
@@ -3002,5 +3179,34 @@ export function ChatFlowClient({
         versions={deliverableVersions}
       />
     </main>
+  );
+  if (!employeeSkillHostCopy) return content;
+  return (
+    <EmployeeSkillsHost
+      scope={{
+        scopeId: settingsScope,
+        workspaceId: workspace.workspaceId,
+        instanceId: sceneTarget ?? '',
+        headers: tenantHeaders,
+      }}
+      ownerView={!!workspace.viewerId && !!sceneTarget}
+      active={
+        employeeDetailsOpen ||
+        (workbenchOpen &&
+          activeModule?.scope === fileScope &&
+          activeModule.kind === 'workflow') ||
+        sceneOpen
+      }
+      employeeName={capabilityEmployeeName}
+      writes={skillWrites.current}
+      copy={employeeSkillHostCopy}
+      navigationRef={skillNavigation}
+      backLabel={
+        skillHostOrigin === 'employee' ? '返回员工详情' : '返回能力列表'
+      }
+      onStart={prepareSkillWork}
+    >
+      {content}
+    </EmployeeSkillsHost>
   );
 }

@@ -332,7 +332,7 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
   useEffect(() => {
     const request = props.moduleRequest;
     if (
-      (!props.desktop && !memoryRequest) ||
+      (!props.desktop && !memoryRequest && request?.kind !== 'workflow') ||
       !request ||
       request.revision === lastModuleRequest.current
     )
@@ -422,11 +422,13 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
         aria-label={
           props.desktop
             ? '工作台'
-            : personalMemoryView
-              ? '记忆'
-              : props.taskRequest
-                ? '任务与交付成果'
-                : '交付成果'
+            : activeTab?.kind === 'workflow'
+              ? '能力'
+              : personalMemoryView
+                ? '记忆'
+                : props.taskRequest
+                  ? '任务与交付成果'
+                  : '交付成果'
         }
         aria-modal={fullscreen ? true : undefined}
         data-fullscreen={fullscreen || undefined}
@@ -628,6 +630,7 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                 }}
               />
             ) : (props.desktop ||
+                tab.kind === 'workflow' ||
                 !!personalMemoryTarget(tab.kind, tab.contentId)) &&
               ['files', 'experience', 'workflow'].includes(tab.kind) ? (
               props.renderModule?.(

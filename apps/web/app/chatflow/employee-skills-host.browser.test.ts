@@ -434,6 +434,15 @@ suite('U1 scoped employee Skill HTTP host candidate', () => {
   async function ready(page: Page) {
     await page.getByText('我添加的 · 1', { exact: true }).waitFor();
   }
+  async function removalFromList(page: Page) {
+    await page
+      .getByRole('region', { name: '技能 Skills' })
+      .getByRole('button', { name: /翻译校对/ })
+      .click();
+    await dialog(page)
+      .getByRole('button', { name: '卸载这个技能', exact: true })
+      .click();
+  }
   async function selectGitHubSource(page: Page) {
     expect(
       await dialog(page)
@@ -925,12 +934,14 @@ suite('U1 scoped employee Skill HTTP host candidate', () => {
   it('keeps a current-binding removal uncommitted in the UI after an unknown and a later conflict', async () => {
     await withFixture({ scenario: 'remove-unknown' }, async (f) => {
       await ready(f.page);
-      await f.page.getByRole('button', { name: '卸载', exact: true }).click();
+      await removalFromList(f.page);
       await dialog(f.page)
         .getByRole('button', { name: '取消', exact: true })
         .click();
       expect(writes(f.requests)).toEqual([]);
-      await f.page.getByRole('button', { name: '卸载', exact: true }).click();
+      await dialog(f.page)
+        .getByRole('button', { name: '卸载这个技能', exact: true })
+        .click();
       await dialog(f.page)
         .getByRole('button', { name: '卸载', exact: true })
         .click();
@@ -1199,9 +1210,7 @@ suite('U1 scoped employee Skill HTTP host candidate', () => {
         },
         async (f) => {
           await ready(f.page);
-          await f.page
-            .getByRole('button', { name: '卸载', exact: true })
-            .click();
+          await removalFromList(f.page);
           await dialog(f.page)
             .getByRole('button', { name: '卸载', exact: true })
             .click();
