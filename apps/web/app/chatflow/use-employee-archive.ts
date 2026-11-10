@@ -77,7 +77,9 @@ export function useEmployeeArchive({
     instance?: EmployeeInstance;
     error?: string;
   }>();
-  const selectedKey = `${scope}/${selectedInstanceId}/${revision}`;
+  // Revalidation must not turn a known employee back into an initial read.
+  // Scope and employee changes still require their own authoritative result.
+  const selectedKey = `${scope}/${selectedInstanceId}`;
   const [mutation, setMutation] = useState<Mutation>();
   const write = useRef<AbortController | null>(null);
   const requests = useRef(new Map<string, LifecycleInput>());
@@ -116,6 +118,12 @@ export function useEmployeeArchive({
   const remember = useCallback(
     (instance: EmployeeInstance) => {
       if (currentScope.current !== scope) return;
+      setSelected((old) =>
+        old?.key === `${scope}/${instance.id}` &&
+        (!old.instance || old.instance.revision <= instance.revision)
+          ? { key: old.key, instance }
+          : old,
+      );
       setPage((previous) => {
         const instances = previous?.scope === scope ? previous.instances : [];
         const old = instances.find((row) => row.id === instance.id);
@@ -228,22 +236,42 @@ export function useEmployeeArchive({
     void readInstance(selectedInstanceId, controller.signal)
       .then((instance) => {
         if (!controller.signal.aborted && currentScope.current === scope) {
-          setSelected({ key: selectedKey, instance });
+          setSelected((old) =>
+            old?.key === selectedKey &&
+            old.instance &&
+            old.instance.revision > instance.revision
+              ? old
+              : { key: selectedKey, instance },
+          );
           remember(instance);
         }
       })
       .catch((cause: unknown) => {
         if (!controller.signal.aborted && currentScope.current === scope)
-          setSelected({
-            key: selectedKey,
-            error:
-              cause instanceof Error
-                ? cause.message
-                : '归档列表读取失败，请重试。',
-          });
+          setSelected((old) =>
+            old?.key === selectedKey &&
+            old.instance &&
+            (!(cause instanceof InstanceReadError) || cause.status >= 500)
+              ? old
+              : {
+                  key: selectedKey,
+                  error:
+                    cause instanceof Error
+                      ? cause.message
+                      : '归档列表读取失败，请重试。',
+                },
+          );
       });
     return () => controller.abort();
-  }, [selectedInstanceId, ownerId, scope, selectedKey, readInstance, remember]);
+  }, [
+    selectedInstanceId,
+    ownerId,
+    scope,
+    selectedKey,
+    revision,
+    readInstance,
+    remember,
+  ]);
 
   useEffect(() => {
     window.addEventListener('focus', reload);

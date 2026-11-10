@@ -270,10 +270,13 @@ suite('U1 employee archive lifecycle', () => {
       failWrite: false,
       deny: false,
       dropReceipt: false,
-      denyReadback: false,
+      readbackStatus: 200,
       failReadback: false,
+      dropReadback: false,
+      failAfterActiveRead: false,
       heldWrite: options.holdWrite ? writeGate.promise : null,
       heldSelected: options.holdSelected ? selectedGate.promise : null,
+      heldSelectedId: id(17),
       selectedReads: 0,
       archivedSessionReads: 0,
       failArchivedSessions: Boolean(options.failArchivedSessions),
@@ -428,16 +431,26 @@ suite('U1 employee archive lifecycle', () => {
           );
         state.selectedReads++;
         const snapshot = structuredClone(current);
-        if (state.heldSelected && current.id === id(17))
+        if (state.heldSelected && current.id === state.heldSelectedId)
           await state.heldSelected;
-        if (state.denyReadback)
+        if (state.dropReadback) return route.abort('failed');
+        if (state.readbackStatus !== 200)
           return route.fulfill(
-            json({ error: { message: '没有访问权限。' } }, 403),
+            json(
+              { error: { message: '没有访问权限。' } },
+              state.readbackStatus,
+            ),
           );
         if (state.failReadback)
           return route.fulfill(
             json({ error: { message: '读取暂不可用。' } }, 503),
           );
+        if (
+          state.failAfterActiveRead &&
+          current.id === id(17) &&
+          !snapshot.archivedAt
+        )
+          state.failReadback = true;
         return route.fulfill(json({ instance: snapshot }));
       }
       if (path === '/api/v1/employee-instances' && request.method() === 'GET') {
@@ -923,6 +936,237 @@ suite('U1 employee archive lifecycle', () => {
       await f.close();
     }
   });
+
+  it.each([200, 503, 'network'] as const)(
+    'keeps the same editable composer, draft and focus while a return to the tab revalidates the employee: %s',
+    async (result) => {
+      const f = await fixture();
+      const refresh = gate();
+      try {
+        const input = f.page.getByRole('textbox', {
+          name: '给 流程哥 的消息',
+          exact: true,
+        });
+        await input.fill('尚未发送的草稿');
+        const original = await input.elementHandle();
+        if (!original) throw new Error('Missing real composer textarea');
+        const reads = f.state.selectedReads;
+        f.state.heldSelected = refresh.promise;
+        f.state.failReadback = result === 503;
+        f.state.dropReadback = result === 'network';
+        const response =
+          result === 'network'
+            ? f.page.waitForEvent('requestfailed', {
+                predicate: (request) =>
+                  new URL(request.url()).pathname ===
+                  `/api/v1/employee-instances/${id(17)}`,
+              })
+            : f.page.waitForResponse(
+                (reply) =>
+                  new URL(reply.url()).pathname ===
+                  `/api/v1/employee-instances/${id(17)}`,
+              );
+        await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+        await expect.poll(() => f.state.selectedReads).toBeGreaterThan(reads);
+        await f.page.keyboard.type('，继续输入');
+        await f.page.evaluate(() =>
+          document.dispatchEvent(new Event('visibilitychange')),
+        );
+        expect(
+          await original.evaluate(
+            (node) => node.isConnected && document.activeElement === node,
+          ),
+        ).toBe(true);
+        expect(await input.isEditable()).toBe(true);
+        expect(await input.inputValue()).toBe('尚未发送的草稿，继续输入');
+        expect(
+          await f.page.getByText('正在读取…', { exact: true }).count(),
+        ).toBe(0);
+        refresh.release();
+        await response;
+        await f.page.evaluate(
+          () =>
+            new Promise<void>((done) =>
+              requestAnimationFrame(() => requestAnimationFrame(() => done())),
+            ),
+        );
+        await f.page.keyboard.type('，刷新后继续');
+        expect(await input.inputValue()).toBe(
+          '尚未发送的草稿，继续输入，刷新后继续',
+        );
+        expect(
+          await original.evaluate(
+            (node) => node.isConnected && document.activeElement === node,
+          ),
+        ).toBe(true);
+        expect(f.state.writes).toEqual([]);
+        expect(f.state.blockedWrites).toEqual([]);
+        expect(f.state.errors).toEqual([]);
+      } finally {
+        refresh.release();
+        await f.close();
+      }
+    },
+  );
+
+  it('protects the first unknown employee and a newly selected employee until each read completes', async () => {
+    const f = await fixture({ holdSelected: true });
+    const switched = gate();
+    try {
+      const loading = f.page.getByText('正在读取…', { exact: true });
+      await loading.waitFor();
+      expect(
+        await f.page.getByRole('textbox', { name: /给.*的消息/ }).count(),
+      ).toBe(0);
+      f.state.failReadback = true;
+      f.releaseSelected();
+      await f.page
+        .getByRole('alert')
+        .getByText('读取暂不可用。', { exact: true })
+        .waitFor();
+      expect(
+        await f.page.getByRole('textbox', { name: /给.*的消息/ }).count(),
+      ).toBe(0);
+      f.state.failReadback = false;
+      await f.page.getByRole('button', { name: '重试', exact: true }).click();
+      await f.page
+        .getByRole('textbox', { name: '给 流程哥 的消息', exact: true })
+        .waitFor();
+      f.state.heldSelected = switched.promise;
+      f.state.heldSelectedId = id(7);
+      const rice = f.page.locator(`[data-row-key="workspace:${id(7)}"]`);
+      if ((await rice.getAttribute('aria-expanded')) !== 'true')
+        await rice.click();
+      await f.page.locator(`[data-row-key="session:${id(2)}"]`).click();
+      await loading.waitFor();
+      expect(
+        await f.page.getByRole('textbox', { name: /给.*的消息/ }).count(),
+      ).toBe(0);
+      switched.release();
+      await f.page
+        .getByRole('textbox', { name: '给 Rice 的消息', exact: true })
+        .waitFor();
+      expect(f.state.writes).toEqual([]);
+      expect(f.state.errors).toEqual([]);
+    } finally {
+      switched.release();
+      await f.close();
+    }
+  });
+
+  it('keeps a known archived employee read-only during revalidation and applies the next confirmed lifecycle', async () => {
+    const f = await fixture({ archived: true });
+    const refresh = gate();
+    try {
+      const archived = f.page.getByText(
+        'AI 员工已归档，可以查看历史；恢复后才能继续工作。',
+        { exact: true },
+      );
+      await archived.waitFor();
+      const reads = f.state.selectedReads;
+      f.state.heldSelected = refresh.promise;
+      await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await expect.poll(() => f.state.selectedReads).toBeGreaterThan(reads);
+      expect(await archived.isVisible()).toBe(true);
+      expect(
+        await f.page.getByRole('textbox', { name: /给.*的消息/ }).count(),
+      ).toBe(0);
+      refresh.release();
+      f.state.heldSelected = null;
+      f.state.instances[1]!.revision++;
+      f.state.instances[1]!.archivedAt = null;
+      await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await f.page
+        .getByRole('textbox', { name: '给 流程哥 的消息', exact: true })
+        .waitFor();
+      f.state.instances[1]!.revision++;
+      f.state.instances[1]!.archivedAt = now;
+      await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await archived.waitFor();
+      expect(
+        await f.page.getByRole('textbox', { name: /给.*的消息/ }).count(),
+      ).toBe(0);
+      expect(f.state.writes).toEqual([]);
+      expect(f.state.errors).toEqual([]);
+    } finally {
+      refresh.release();
+      await f.close();
+    }
+  });
+
+  it('uses a confirmed restore immediately even when the following background read is unavailable', async () => {
+    const f = await fixture({ archived: true });
+    try {
+      await f.page
+        .getByText('AI 员工已归档，可以查看历史；恢复后才能继续工作。', {
+          exact: true,
+        })
+        .waitFor();
+      f.state.failAfterActiveRead = true;
+      const failure = f.page.waitForResponse(
+        (response) =>
+          response.status() === 503 &&
+          new URL(response.url()).pathname ===
+            `/api/v1/employee-instances/${id(17)}`,
+      );
+      await f.page
+        .getByRole('button', { name: '恢复员工', exact: true })
+        .click();
+      await failure;
+      await f.page.evaluate(
+        () =>
+          new Promise<void>((done) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => done())),
+          ),
+      );
+      const input = f.page.getByRole('textbox', {
+        name: '给 流程哥 的消息',
+        exact: true,
+      });
+      await input.fill('恢复后继续工作');
+      expect(await input.isEditable()).toBe(true);
+      expect(f.state.instances[1]!.archivedAt).toBeNull();
+      expect(f.state.writes.map((write) => write.body.operation)).toEqual([
+        'restore',
+      ]);
+      expect(await f.page.getByRole('alert').count()).toBe(0);
+      expect(f.state.blockedWrites).toEqual([]);
+      expect(f.state.errors).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it.each([401, 403, 404])(
+    'fails closed when a refreshed employee read returns HTTP %s and permits a successful retry',
+    async (status) => {
+      const f = await fixture();
+      try {
+        const input = f.page.getByRole('textbox', {
+          name: '给 流程哥 的消息',
+          exact: true,
+        });
+        await input.fill('保留的草稿');
+        f.state.readbackStatus = status;
+        await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+        await f.page
+          .getByRole('alert')
+          .getByText('没有访问权限。', {
+            exact: true,
+          })
+          .waitFor();
+        expect(await input.count()).toBe(0);
+        f.state.readbackStatus = 200;
+        await f.page.getByRole('button', { name: '重试', exact: true }).click();
+        await input.waitFor();
+        expect(await input.inputValue()).toBe('保留的草稿');
+        expect(f.state.writes).toEqual([]);
+        expect(f.state.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+  );
 
   it('drops a late current-instance read after selecting another employee', async () => {
     const f = await fixture({ holdSelected: true });
