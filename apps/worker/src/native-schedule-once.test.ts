@@ -1140,6 +1140,11 @@ function recurringRow(
   return {
     ...base,
     kind: 'recurring',
+    dispatch: {
+      employeeAssignmentId: randomUUID(),
+      employeeInstanceId: randomUUID(),
+      businessSessionId: randomUUID(),
+    },
     rule,
     appliedRevision: null,
     appliedRule: null,

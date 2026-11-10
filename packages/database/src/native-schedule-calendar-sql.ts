@@ -499,36 +499,48 @@ export function createNativeCalendarSqlStore(
             isDeepStrictEqual(j.receiptLinks, [expectedLink]),
           'exact_conflict',
         );
-        const [o] = await tx<
-          {
-            automation_id: string;
-            revision: number | string;
-            scheduled_at: Date | string;
-            client_message_id: string;
-            occurrence_key: string;
-            payload_digest: string;
-            payload: unknown;
-            calendar_period_id: string;
-            calendar_arm_id: string;
-          }[]
-        >`
+        if (j.unprojectedReceipt) {
+          requireCalendar(
+            c.dispatch.consumer === 'ordinary-monthly-v1' &&
+              j.receiptLinks.length === 0 &&
+              ['paused_or_deleted', 'before_resume_watermark'].includes(
+                j.unprojectedReceipt.reason,
+              ) &&
+              isDeepStrictEqual(j.unprojectedReceipt.receipt, payload.receipt),
+            'exact_conflict',
+          );
+        } else {
+          const [o] = await tx<
+            {
+              automation_id: string;
+              revision: number | string;
+              scheduled_at: Date | string;
+              client_message_id: string;
+              occurrence_key: string;
+              payload_digest: string;
+              payload: unknown;
+              calendar_period_id: string;
+              calendar_arm_id: string;
+            }[]
+          >`
           select automation_id,revision,scheduled_at,client_message_id,occurrence_key,payload_digest,payload,calendar_period_id,calendar_arm_id
           from allrice_native_recurring_occurrences where partition_id=${partitionId}
           and control_id=${c.controlId} and occurrence_id=${identity.id}`;
-        requireCalendar(
-          o &&
-            o.automation_id === c.automationId &&
-            Number(o.revision) === pp.revision &&
-            iso(o.scheduled_at) === aa.nativeAt &&
-            o.client_message_id === identity.clientMessageId &&
-            o.occurrence_key === identity.key &&
-            o.payload_digest === expectedLink.payloadDigest &&
-            o.calendar_period_id === pp.periodId &&
-            o.calendar_arm_id === aa.armId &&
-            nativeOnceDigest(o.payload) === expectedLink.payloadDigest &&
-            isDeepStrictEqual(o.payload, payload),
-          'exact_conflict',
-        );
+          requireCalendar(
+            o &&
+              o.automation_id === c.automationId &&
+              Number(o.revision) === pp.revision &&
+              iso(o.scheduled_at) === aa.nativeAt &&
+              o.client_message_id === identity.clientMessageId &&
+              o.occurrence_key === identity.key &&
+              o.payload_digest === expectedLink.payloadDigest &&
+              o.calendar_period_id === pp.periodId &&
+              o.calendar_arm_id === aa.armId &&
+              nativeOnceDigest(o.payload) === expectedLink.payloadDigest &&
+              isDeepStrictEqual(o.payload, payload),
+            'exact_conflict',
+          );
+        }
       } else requireCalendar(j.receiptLinks.length === 0, 'exact_conflict');
     } else {
       requireCalendar(
@@ -1559,7 +1571,7 @@ export function createNativeCalendarSqlStore(
               aa.taskSnapshot,
               options.decodeTask,
             );
-            if (fullTask.lastDelivery) {
+            if (fullTask.lastDelivery && !last.journal.unprojectedReceipt) {
               const [o] = await tx<
                 { payload: { receipt: unknown }; payload_digest: string }[]
               >`

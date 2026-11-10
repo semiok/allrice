@@ -1228,9 +1228,27 @@ suite(
           action: 'pause',
         }),
       ).toMatchObject({
-        status: 'applied',
+        status: 'pending',
         task: { status: 'paused', revision: 2 },
       });
+      // Pause intent raced an already started native delivery. Retain its raw
+      // native evidence but create no business history, even on a cold read.
+      await first.receipt();
+      expect(
+        await f.db`select occurrence_id from allrice_native_recurring_occurrences where calendar_period_id=${first.periodId}`,
+      ).toHaveLength(0);
+      expect(
+        Object.keys(await store.loadTaskRecords(writer)).length,
+      ).toBeGreaterThan(0);
+      expect(await operation(t, pauseId)).toMatchObject({ status: 'pending' });
+      await retireSqlTasks(t.id);
+      for (
+        let i = 0;
+        i < 8 && (await operation(t, pauseId)).status === 'pending';
+        i++
+      )
+        await materializeNativeCalendar(calendar(), writer, reference);
+      expect(await operation(t, pauseId)).toMatchObject({ status: 'applied' });
       const before = await stateCounts(t.id),
         editId = randomUUID();
       const update = {
@@ -1273,12 +1291,10 @@ suite(
       expect(periods[0]!.business_scheduled_for).toEqual(
         periods[1]!.business_scheduled_for,
       );
-      // A canceled old revision can finish native delivery without occupying
-      // the resumed immutable period's receipt or queueing business work.
-      await first.receipt();
-      const [late] =
-        await f.db`select outbox_state from allrice_native_recurring_occurrences where calendar_period_id=${first.periodId}`;
-      expect(late!.outbox_state).toBe('blocked');
+      // Resuming cannot backfill the canceled original native period.
+      expect(
+        await f.db`select occurrence_id from allrice_native_recurring_occurrences where calendar_period_id=${first.periodId}`,
+      ).toHaveLength(0);
       expect(
         await f.db`select id from allrice_automation_runs where automation_id=${t.id}`,
       ).toHaveLength(0);

@@ -4,7 +4,7 @@ import {
   authenticateSession,
   revokeSession,
 } from './identity.ts';
-import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { mkdtemp, realpath, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -13,6 +13,7 @@ import {
   createChatSession,
   sendChatMessage,
   getChatSessionHistory,
+  updateChatSession,
 } from './workspace/service.ts';
 import {
   createRecurringTask,
@@ -728,6 +729,86 @@ suite(
       expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
         false,
       );
+    });
+
+    it.each([true, false])(
+      'stop-and-archive retires an ordinary clock, including before create (%s)',
+      async (prepared) => {
+        const t = await task(
+          '归档时停止泡茶提醒',
+          { kind: 'every', seconds: 60 },
+          { prepareNative: prepared },
+        );
+        const before = await snapshot(t.id);
+        await updateChatSession(f.context, f.workspaceId, t.sessionId, {
+          archived: true,
+          stopActivity: true,
+        });
+        expect((await snapshot(t.id)).control.command).toMatchObject({
+          kind: 'delete',
+          status: 'pending',
+        });
+        await confirmNativeDelete(t.id);
+        expect((await snapshot(t.id)).task).toBeNull();
+        await updateChatSession(f.context, f.workspaceId, t.sessionId, {
+          archived: false,
+        });
+        expect(
+          await changeRecurringTask(f.context, t.sessionId, t.id, {
+            operationId: randomUUID(),
+            expectedRevision: 1,
+            action: 'resume',
+          }),
+        ).toMatchObject({ status: 'pending' });
+        await prepareNativeTask(
+          t.id,
+          new Date(Date.now() + 60_000).toISOString(),
+        );
+        const after = await snapshot(t.id);
+        expect(after.control.nativeTaskId).not.toBe(
+          before.control.nativeTaskId,
+        );
+        expect(after.control.controlSessionId).toBe(
+          before.control.controlSessionId,
+        );
+      },
+    );
+    it('upgrades legacy logical pauses by queuing deletion without changing native documents or historical receipts', async () => {
+      const bound = await task(),
+        reserved = await task(
+          '待建提醒',
+          { kind: 'every', seconds: 60 },
+          { prepareNative: false },
+        );
+      await receipt(bound.id);
+      const oldTask = (await snapshot(bound.id)).task;
+      const oldHistory = Array.from(
+        await f.db`select * from allrice_native_recurring_occurrences where automation_id=${bound.id}`,
+      );
+      // Reproduce the pre-MET-250 pause/archiving persistence, not a native edit.
+      await f.db`update allrice_automations set status='paused' where id in (${bound.id},${reserved.id})`;
+      const migration = await readFile(
+        new URL(
+          '../migrations/0234_native_recurring_pause.sql',
+          import.meta.url,
+        ),
+        'utf8',
+      );
+      await f.db.begin((tx) => tx.unsafe(migration));
+      expect((await snapshot(bound.id)).task).toEqual(oldTask);
+      expect(
+        Array.from(
+          await f.db`select * from allrice_native_recurring_occurrences where automation_id=${bound.id}`,
+        ),
+      ).toEqual(oldHistory);
+      for (const t of [bound, reserved]) {
+        expect((await snapshot(t.id)).control.command).toMatchObject({
+          kind: 'delete',
+          status: 'pending',
+        });
+        await confirmNativeDelete(t.id);
+        expect((await snapshot(t.id)).task).toBeNull();
+      }
     });
 
     it('conversation preserves the business/native revision gap after public pause/resume', async () => {

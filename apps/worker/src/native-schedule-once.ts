@@ -31,7 +31,10 @@ import {
   type NativeCalendarGeneration,
   type NativeCalendarWorkerPorts,
 } from './native-schedule-calendar.ts';
-import type { NativeCalendarMutation } from '@allrice/database';
+import type {
+  NativeCalendarMutation,
+  NativeRecurringControl,
+} from '@allrice/database';
 import type { StorageBackend, KvUnit } from '@deepseek-ai/dsh-storage';
 import type {
   ScheduleTask,
@@ -104,6 +107,7 @@ export interface NativeScheduleRecurringControl extends Omit<
   'kind' | 'at' | 'command'
 > {
   kind: 'recurring';
+  dispatch: NativeRecurringControl['dispatch'];
   rule: NativeScheduleRecurringRule;
   appliedRevision: number | null;
   appliedRule: NativeScheduleRecurringRule | null;
@@ -473,7 +477,13 @@ function controlsMap(rows: readonly NativeScheduleAnyControl[]) {
         (!c.nativeTaskId || tasks.has(c.nativeTaskId))) ||
       (c.kind !== undefined && c.kind !== 'once' && c.kind !== 'recurring') ||
       (c.kind === 'recurring'
-        ? !recurringRuleValid(c.rule) ||
+        ? !c.dispatch ||
+          ('consumer' in c.dispatch
+            ? c.dispatch.consumer !== 'platform-quality-v1'
+            : !c.dispatch.employeeAssignmentId ||
+              !c.dispatch.employeeInstanceId ||
+              !c.dispatch.businessSessionId) ||
+          !recurringRuleValid(c.rule) ||
           !['create', 'update', 'delete'].includes(c.command.kind) ||
           (c.appliedRevision === null) !== (c.appliedRule === null) ||
           (c.appliedRevision !== null &&
@@ -511,6 +521,7 @@ function controlIdentity(c: NativeScheduleAnyControl) {
   if (c.kind === 'recurring')
     return {
       kind: c.kind,
+      dispatch: c.dispatch,
       controlId: c.controlId,
       organizationId: c.organizationId,
       workspaceId: c.workspaceId,

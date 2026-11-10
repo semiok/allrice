@@ -62,6 +62,19 @@ export async function archiveSessionActivity(
   await tx`update allrice_automations set status='paused',updated_at=now()
     where session_id=${sessionId} and organization_id=${context.organizationId}
       and workspace_id=${context.workspaceId!} and owner_id=${context.actor.id} and status='enabled'`;
+  // Archiving is another ordinary fixed-task pause entrance. Keep its existing
+  // Run cancellation policy, but let the native writer durably delete the clock.
+  await tx`update allrice_native_recurring_controls c set
+    snapshot=jsonb_set(c.snapshot,'{control,command}',
+      (c.snapshot->'control'->'command') || '{"kind":"delete","status":"pending"}'::jsonb),
+    snapshot_version=c.snapshot_version+1
+    from allrice_automations p where p.id=c.automation_id and p.session_id=${sessionId}
+      and p.organization_id=${context.organizationId} and p.workspace_id=${context.workspaceId!}
+      and p.owner_id=${context.actor.id} and p.status='paused'
+      and c.snapshot->'control'->>'kind'='recurring'
+      and not (c.snapshot->'control'->'dispatch' ? 'consumer')
+      and c.snapshot->'control'->>'taskDeleted'='false'
+      and c.snapshot->'control'->'command'->>'kind'<>'delete'`;
 }
 
 /** Concurrent worker/root locks can invert a session admission lock. Retrying

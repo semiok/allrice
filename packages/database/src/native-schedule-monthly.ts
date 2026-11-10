@@ -374,9 +374,15 @@ export async function changeOrdinaryMonthlyTaskInTransaction(
       }),
     );
   await prepareCalendarRetirementsInTransaction(tx, c.controlId);
+  // Completion is projected only after all existing native arms are retired.
+  // Preparing a retirement is not proof that its public delete has committed.
   if (input.action === 'pause' || (input.action === 'update' && !enabled))
     await tx`update allrice_native_recurring_operations set status='applied',updated_at=${now}
-    where automation_id=${p.id} and operation_id=${input.operationId}`;
+      where automation_id=${p.id} and operation_id=${input.operationId}
+        and not exists(select 1 from allrice_native_calendar_periods np
+          join allrice_native_calendar_arms arm on arm.period_id=np.period_id
+          where np.control_id=${c.controlId} and (arm.status='creating' or (arm.native_task_id is not null
+            and not exists(select 1 from allrice_native_calendar_retirements r where r.arm_id=arm.arm_id))))`;
 }
 
 /** One accepted business intent, using the common live writer transaction.
@@ -494,7 +500,8 @@ export async function materializeOrdinaryMonthlyCalendar(
             select 1 from allrice_native_calendar_decisions d where d.decision_id=p.closed_decision_id and d.kind='receipt'
               and d.outcome in ('queued','already_claimed','coalesced')))
             and p.plan->'cause'=jsonb_build_object('kind','operation','operationId',op.operation_id::text)))
-        or (op.request->>'action'='delete' and a.deleted_at is not null
+        or (((op.request->>'action'='delete' and a.deleted_at is not null)
+            or (op.request->>'action' in ('pause','update') and a.status='paused' and a.deleted_at is null))
           and not exists(select 1 from allrice_native_calendar_periods p join allrice_native_calendar_arms arm on arm.period_id=p.period_id
             where p.control_id=c.control_id and (arm.status='creating' or (arm.native_task_id is not null
               and not exists(select 1 from allrice_native_calendar_retirements r where r.arm_id=arm.arm_id))))))

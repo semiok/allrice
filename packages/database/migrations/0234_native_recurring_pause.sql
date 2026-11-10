@@ -16,8 +16,8 @@ begin
     and new.snapshot->'control'->'appliedRule'='null'::jsonb
     and new.snapshot->'control'->'command'->>'kind'='create'
     and new.snapshot->'control'->'command'->>'status'='pending'
-    and (new.snapshot->'control'-array['nativeTaskId','taskDeleted','appliedRevision','appliedRule','command'])
-      = (old.snapshot->'control'-array['nativeTaskId','taskDeleted','appliedRevision','appliedRule','command'])
+    and ((new.snapshot->'control')-array['nativeTaskId','taskDeleted','appliedRevision','appliedRule','command'])
+      = ((old.snapshot->'control')-array['nativeTaskId','taskDeleted','appliedRevision','appliedRule','command'])
     and exists(select 1 from allrice_native_recurring_journal j
       where j.partition_id=old.partition_id and j.control_id=old.control_id
         and j.mutation->>'kind'='delete_task'
@@ -88,5 +88,5 @@ from allrice_automations p
 where p.id=c.automation_id and p.status='paused'
   and c.snapshot->'control'->>'kind'='recurring'
   and not (c.snapshot->'control'->'dispatch' ? 'consumer')
-  and c.native_task_id is not null and c.snapshot->'control'->>'taskDeleted'='false'
+  and c.snapshot->'control'->>'taskDeleted'='false'
   and c.snapshot->'control'->'command'->>'kind'<>'delete';
