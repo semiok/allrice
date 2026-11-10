@@ -22,6 +22,7 @@ import {
 } from './employee-memory.ts';
 import { PATCH } from '../../../../apps/web/app/api/v1/memories/[id]/route.ts';
 import { seedLegacyEmployeeMemory } from './employee-memory-v1.fixture.ts';
+import { embedWorkspaceText } from './memory-recall.ts';
 
 const ports = vi.hoisted(() => ({ context: vi.fn() }));
 vi.mock('../../../../apps/web/lib/identity/session', () => ({
@@ -245,14 +246,95 @@ suite(
         correctPersonalEmployeeMemory(f.context, f.workspace, m.id, update),
       ).rejects.toThrow('employee_memory_conflict');
     });
-    it('mechanically adapts one genuine full-content legacy edit, replays its current receipt and then protects the pair', async () => {
+    it.each([
+      ['past', 'original'],
+      ['past', 'null'],
+      ['database-now', 'original'],
+      ['database-now', 'null'],
+    ] as const)(
+      'rejects a historical v1 expired HTTP PATCH at %s with %s expiry and zero writes',
+      async (expiry, requestedExpiry) => {
+        const f = await setup();
+        const content = '历史已过期记忆不得复活';
+        const m = await fixture.db.begin(async (tx) => {
+          // Genuine historical v1 row: pair columns are omitted on first INSERT.
+          const [row] = await tx<{ id: string; expires_at: Date }[]>`
+            with timing as (select clock_timestamp() db_now)
+            insert into allrice_memories
+              (organization_id,workspace_id,employee_id,owner_id,instance_id,content,source_type,
+                captured_at,expires_at,created_at,updated_at,last_verified_at)
+            select ${f.org},${f.workspace},${f.employee},${f.user},${f.assignment},${content},'user',
+              db_now-interval '2 days',db_now-${expiry === 'past' ? '1 day' : '0 seconds'}::interval,
+              db_now-interval '2 days',db_now-interval '2 days',db_now-interval '2 days'
+            from timing returning id,expires_at`;
+          await tx`insert into allrice_memory_revisions
+            (organization_id,workspace_id,memory_id,revision,content,trust_level,lifecycle_state,memory_class,
+              confidence,expires_at,reason,changed_by)
+            select organization_id,workspace_id,id,revision,content,trust_level,lifecycle_state,memory_class,
+              confidence,expires_at,'synthetic historical v1 baseline',owner_id from allrice_memories where id=${row!.id}`;
+          const embedding = `[${embedWorkspaceText(content).join(',')}]`;
+          await tx`insert into allrice_rag_chunks(organization_id,workspace_id,memory_id,owner_id,content,embedding)
+            values(${f.org},${f.workspace},${row!.id},${f.user},${content},${embedding}::vector)`;
+          return row!;
+        });
+        const [boundary] =
+          await fixture.db`select expires_at<=clock_timestamp() expired,
+          captured_at<expires_at valid_capture from allrice_memories where id=${m.id}`;
+        expect(boundary).toEqual({ expired: true, valid_capture: true });
+        const before = await snapshot(m.id);
+        expect(before.memory).toMatchObject({
+          summary: null,
+          details: null,
+          archived_at: null,
+          revision: 1,
+        });
+        expect(before.revisions).toHaveLength(1);
+        expect(before.chunks).toHaveLength(1);
+        ports.context.mockResolvedValue(f.context);
+        const response = await PATCH(
+          new Request(
+            `http://localhost/api/v1/memories/${m.id}?workspaceId=${f.workspace}`,
+            {
+              method: 'PATCH',
+              headers: {
+                origin: 'http://localhost',
+                'content-type': 'application/json',
+              },
+              body: JSON.stringify({
+                instanceId: f.assignment,
+                expectedRevision: 1,
+                contentDigest: memoryContentDigest(content),
+                idempotencyKey: randomUUID(),
+                content: '修改过期记忆',
+                reason: '旧编辑器保存',
+                expiresAt:
+                  requestedExpiry === 'original'
+                    ? m.expires_at.toISOString()
+                    : null,
+              }),
+            },
+          ),
+          { params: Promise.resolve({ id: m.id }) },
+        );
+        expect(response.status).toBe(409);
+        expect(response.headers.get('cache-control')).toBe('private, no-store');
+        expect(await response.json()).toEqual({
+          error: 'employee_memory_contract_changed',
+        });
+        expect(await snapshot(m.id)).toEqual(before);
+      },
+    );
+    it('mechanically adapts a genuine unexpired full-content legacy edit, replays its current receipt and then protects the pair', async () => {
       const f = await setup();
+      const [future] = await fixture.db<{ expires_at: Date }[]>`
+        select clock_timestamp()+interval '1 day' expires_at`;
       const legacy = {
         workspaceId: f.workspace,
         instanceId: f.assignment,
         idempotencyKey: randomUUID(),
         content: '旧正文'.repeat(30),
         sourceType: 'user' as const,
+        expiresAt: future!.expires_at.toISOString(),
       };
       const m = await seedLegacyEmployeeMemory(fixture.db, f.context, legacy);
       const input = {
@@ -270,6 +352,7 @@ suite(
         input,
       );
       expect(edited.content).toBe(input.content);
+      expect(edited.expiresAt).toBeNull();
       expect(
         await correctWorkspaceMemory(f.context, f.workspace, m.id, input),
       ).toEqual(edited);
