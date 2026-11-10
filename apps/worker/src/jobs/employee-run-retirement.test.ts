@@ -12,6 +12,9 @@ import {
 } from '@allrice/database';
 import type * as Database from '@allrice/database';
 import type { ClaimedJobHandlerInput } from '../job-runner.js';
+import type * as PlatformRepair from './platform-repair.js';
+import type * as SubscriptionPreflight from '../subscription-preflight.js';
+import type * as HarnessRouter from '../harness/router.js';
 
 const ports = vi.hoisted(() => ({
   resolve: vi.fn(),
@@ -46,15 +49,15 @@ vi.mock('./platform-quality.js', () => ({
   executePlatformQualityCheck: ports.quality,
 }));
 vi.mock('./platform-repair.js', async (original) => ({
-  ...(await original<typeof import('./platform-repair.js')>()),
+  ...(await original<typeof PlatformRepair>()),
   executePlatformRepairReverification: ports.reverify,
 }));
 vi.mock('../subscription-preflight.js', async (original) => ({
-  ...(await original<typeof import('../subscription-preflight.js')>()),
+  ...(await original<typeof SubscriptionPreflight>()),
   preflightSubscription: ports.preflight,
 }));
 vi.mock('../harness/router.js', async (original) => ({
-  ...(await original<typeof import('../harness/router.js')>()),
+  ...(await original<typeof HarnessRouter>()),
   getHarnessRouter: ports.router,
 }));
 import { executeEmployeeRun } from './employee-run.js';

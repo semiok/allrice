@@ -403,6 +403,7 @@ describe('normal Run PERSONA defaults and sparse personal sources', () => {
       ).toBe(false);
     }
     const { kind: _kind, ...missingKind } = tenant;
+    void _kind;
     expect(
       EmployeeRunPersonaSourceSchema.safeParse({
         ...frozen,

@@ -1091,8 +1091,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     async (kind) => {
       const requests: ModelRequest[] = [];
       let checkedLocks = false;
-      let f!: PublishedTarget;
-      f = await publishedTarget(async (request) => {
+      const f: PublishedTarget = await publishedTarget(async (request) => {
         requests.push(request);
         if (!checkedLocks) {
           checkedLocks = true;
