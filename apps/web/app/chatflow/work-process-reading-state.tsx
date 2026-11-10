@@ -121,6 +121,7 @@ function textPoint(node: Node, offset: number) {
     text: block.textContent,
     appendOnly: block.hasAttribute('data-process-append'),
     offset: range.toString().length,
+    atTextStart: node.nodeType === Node.TEXT_NODE && offset === 0,
   };
 }
 function restoredPoint(
@@ -142,7 +143,10 @@ function restoredPoint(
   const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
   let offset = point.offset;
   for (let text = walker.nextNode(); text; text = walker.nextNode()) {
-    if (offset <= text.textContent!.length)
+    if (
+      offset < text.textContent!.length ||
+      (offset === text.textContent!.length && !point.atTextStart)
+    )
       return { block, node: text, offset };
     offset -= text.textContent!.length;
   }

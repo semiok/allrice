@@ -1070,7 +1070,7 @@ suite('reading a receipt while late native trace changes its group', () => {
       }
     },
   );
-  it('keeps the streamed table selection readable when completion moves the reply outside its process', async () => {
+  const streamedTableSelection = async (direction: 'forward' | 'backward') => {
     const { page, errors, primary } = await openProcess(
       390,
       'light',
@@ -1086,17 +1086,60 @@ suite('reading a receipt while late native trace changes its group', () => {
       ).toBe(true);
       const before = await table
         .getByRole('cell', { name: '12', exact: true })
-        .evaluate((node) => {
+        .evaluate((node, direction) => {
           const text = document
             .createTreeWalker(node, NodeFilter.SHOW_TEXT)
             .nextNode()!;
-          document.getSelection()!.setBaseAndExtent(text, 0, text, 2);
-          return {
-            selected: document.getSelection()!.toString(),
-            blockText: node.closest('[data-process-content]')?.textContent,
+          const selection = document.getSelection()!;
+          const select = () =>
+            selection.setBaseAndExtent(
+              text,
+              direction === 'backward' ? 2 : 0,
+              text,
+              direction === 'backward' ? 0 : 2,
+            );
+          select();
+          const selected = selection.toString();
+          const block = node.closest('[data-process-content]')!;
+          const prefix = document.createRange();
+          prefix.selectNodeContents(block);
+          prefix.setEnd(text, 0);
+          const textOffset = prefix.toString().length;
+          const previousText = document
+            .createTreeWalker(
+              node.previousElementSibling!,
+              NodeFilter.SHOW_TEXT,
+            )
+            .nextNode()!;
+          prefix.setEnd(previousText, previousText.textContent!.length);
+          selection.setBaseAndExtent(
+            previousText,
+            previousText.textContent!.length,
+            text,
+            2,
+          );
+          const boundary = {
+            textOffset,
+            previousEndOffset: prefix.toString().length,
+            selected: selection.toString(),
           };
-        });
+          select();
+          return {
+            selected,
+            restored: selection.toString(),
+            boundary,
+            blockText: block.textContent,
+          };
+        }, direction);
       expect(before.selected).toBe('12');
+      expect(before.restored).toBe('12');
+      expect(before.boundary.textOffset).toBe(
+        before.boundary.previousEndOffset,
+      );
+      console.info(
+        'MET245 table-boundary',
+        JSON.stringify({ direction, ...before.boundary }),
+      );
       await page.evaluate(() => window.processFinish());
       await expect
         .poll(() =>
@@ -1111,6 +1154,8 @@ suite('reading a receipt while late native trace changes its group', () => {
           selected: selection.toString(),
           anchor: selection.anchorNode?.nodeName,
           focus: selection.focusNode?.nodeName,
+          anchorOffset: selection.anchorOffset,
+          focusOffset: selection.focusOffset,
           block: node
             .closest('[data-process-content]')
             ?.getAttribute('data-process-content'),
@@ -1118,6 +1163,8 @@ suite('reading a receipt while late native trace changes its group', () => {
         };
       });
       expect(after.selected, JSON.stringify({ before, after })).toBe('12');
+      expect(after.anchorOffset).toBe(direction === 'backward' ? 2 : 0);
+      expect(after.focusOffset).toBe(direction === 'backward' ? 0 : 2);
       await primary
         .getByRole('link', { name: '核对结果.csv', exact: true })
         .waitFor();
@@ -1131,7 +1178,11 @@ suite('reading a receipt while late native trace changes its group', () => {
     } finally {
       await page.close();
     }
-  });
+  };
+  it.each(['forward', 'backward'] as const)(
+    'keeps the %s streamed table selection readable when completion moves the reply outside its process',
+    streamedTableSelection,
+  );
   for (const width of [1440, 390])
     for (const theme of ['light', 'dark']) {
       it(`renders real shared steps and compact questions at ${width}px in ${theme}`, async () => {
