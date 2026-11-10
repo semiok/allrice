@@ -1,4 +1,6 @@
 import {
+  AccountCapabilitySettingsSchema,
+  defaultAccountCapabilitySettings,
   defaultUserPreferences,
   runtimePolicyActionDecision,
   UserPreferencesInputSchema,
@@ -25,13 +27,15 @@ type PreferenceRow = {
   subagent_max_depth: number | null;
   subagent_max_active: number | null;
   updated_at: Date;
+  capability_settings?: unknown;
 };
 
-const columns = (sql: Sql | TransactionSql) => sql`
+const columns = (sql: Sql | TransactionSql, withCapabilities = true) => sql`
   streaming_output, font_size, transcript_view, collapse_timing, appearance,
   question_wait_mode, question_wait_seconds,
   subagent_max_depth::float8 as subagent_max_depth,
-  subagent_max_active::float8 as subagent_max_active, updated_at`;
+  subagent_max_active::float8 as subagent_max_active, updated_at
+  ${withCapabilities ? sql`, capability_settings` : sql``}`;
 
 function questionWait(row: PreferenceRow): QuestionWait {
   return row.question_wait_mode === 'timed'
@@ -51,6 +55,9 @@ function preferenceView(row: PreferenceRow): UserPreferences {
       maxDepth: row.subagent_max_depth,
       maxActive: row.subagent_max_active,
     },
+    capabilities: AccountCapabilitySettingsSchema.parse(
+      row.capability_settings,
+    ),
     updatedAt: row.updated_at.toISOString(),
   };
 }
@@ -83,14 +90,15 @@ export async function updateUserPreferences(
   const sql = getDatabase();
   const [row] = await sql<PreferenceRow[]>`
     insert into allrice_user_preferences (user_id, streaming_output, font_size, transcript_view, collapse_timing, appearance,
-      question_wait_mode, question_wait_seconds, subagent_max_depth, subagent_max_active)
+      question_wait_mode, question_wait_seconds, subagent_max_depth, subagent_max_active, capability_settings)
     values (${id}, ${input.streamingOutput ?? defaultUserPreferences.streamingOutput},
       ${input.fontSize ?? defaultUserPreferences.fontSize},
       ${input.transcriptView ?? defaultUserPreferences.transcriptView},
       ${input.collapseTiming ?? defaultUserPreferences.collapseTiming},
       ${input.appearance ?? defaultUserPreferences.appearance},
       ${wait.mode}, ${wait.mode === 'timed' ? wait.seconds : null},
-      ${subagents.maxDepth}, ${subagents.maxActive})
+      ${subagents.maxDepth}, ${subagents.maxActive},
+      ${sql.json(input.capabilities ?? defaultAccountCapabilitySettings)})
     on conflict (user_id) do update set
       streaming_output=coalesce(${input.streamingOutput ?? null}::boolean, allrice_user_preferences.streaming_output),
       font_size=coalesce(${input.fontSize ?? null}::integer, allrice_user_preferences.font_size),
@@ -105,6 +113,8 @@ export async function updateUserPreferences(
         then excluded.subagent_max_depth else allrice_user_preferences.subagent_max_depth end,
       subagent_max_active=case when ${input.subagents !== undefined}::boolean
         then excluded.subagent_max_active else allrice_user_preferences.subagent_max_active end,
+      capability_settings=case when ${input.capabilities !== undefined}::boolean
+        then excluded.capability_settings else allrice_user_preferences.capability_settings end,
       updated_at=clock_timestamp()
     returning ${columns(sql)}
   `;
@@ -123,10 +133,19 @@ export async function freezeNativePreferences(
   scope: { organizationId: string; workspaceId: string; userId: string },
 ) {
   const [row] = await sql<PreferenceRow[]>`
-    select ${columns(sql)}
+    select ${columns(sql, false)}
     from allrice_user_preferences where user_id=${scope.userId}
   `;
-  const preferences = row ? preferenceView(row) : defaultUserPreferences;
+  // Never read or re-evaluate account capability configuration at Run time.
+  const preferences = row
+    ? {
+        questionWait: questionWait(row),
+        subagents: {
+          maxDepth: row.subagent_max_depth,
+          maxActive: row.subagent_max_active,
+        },
+      }
+    : defaultUserPreferences;
   const controls = await readRuntimePolicyControls(sql, scope, false).catch(
     (error: unknown) => {
       if (
