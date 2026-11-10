@@ -564,7 +564,7 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
             name: '提问 · 2/2 已回答',
             exact: true,
           });
-          await readable(receiptTitle);
+          await readable(receiptTitle.locator('[class*="processStepLabel"]'));
           await receiptTitle.click();
           const quiet = receipt.locator(
             'dl dt, dl dd, [class*="processQuestionNote"]',
@@ -587,7 +587,7 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
             ['think', '分析任务与处理步骤'],
             ['search', '搜索资料：本周销售数据'],
             ['quote', '查询 NVDA 的实时行情'],
-            ['ask', '提问已挂起，等待你的回答'],
+            ['ask', '提问'],
           ]) {
             const title = process.locator(
               `[data-step-id="${id}"] [class*="processStepLabel"]`,

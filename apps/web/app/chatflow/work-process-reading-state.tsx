@@ -254,7 +254,8 @@ export class WorkProcessReadingState extends Component<
       saved.selection &&
       selection &&
       (!saved.selection.anchor.block.isConnected ||
-        !saved.selection.focus.block.isConnected)
+        !saved.selection.focus.block.isConnected ||
+        selection.toString() !== saved.selection.text)
     ) {
       const anchor = restoredPoint(root, saved.selection.anchor);
       const focus = restoredPoint(root, saved.selection.focus);

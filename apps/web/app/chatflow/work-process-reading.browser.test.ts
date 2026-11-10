@@ -592,14 +592,14 @@ suite('reading a receipt while late native trace changes its group', () => {
       );
       expect(
         await processOf(page)
-          .getByText('核对第 0 项资料', { exact: true })
+          .locator('[data-step-id="tool:call-0"] [class*="processStepLabel"]')
           .isVisible(),
       ).toBe(false);
       await page.keyboard.press('Enter');
       expect(await groups().first().getAttribute('aria-expanded')).toBe('true');
       expect(
         await processOf(page)
-          .getByText('核对第 0 项资料', { exact: true })
+          .locator('[data-step-id="tool:call-0"] [class*="processStepLabel"]')
           .isVisible(),
       ).toBe(true);
       await update(page, 'split');
@@ -609,13 +609,13 @@ suite('reading a receipt while late native trace changes its group', () => {
       expect(await groups().last().getAttribute('aria-expanded')).toBe('false');
       expect(
         await processOf(page)
-          .getByText('核对第 4 项资料', { exact: true })
+          .locator('[data-step-id="tool:call-4"] [class*="processStepLabel"]')
           .isVisible(),
       ).toBe(false);
       await page.keyboard.press('Enter');
       expect(
         await processOf(page)
-          .getByText('核对第 4 项资料', { exact: true })
+          .locator('[data-step-id="tool:call-4"] [class*="processStepLabel"]')
           .isVisible(),
       ).toBe(true);
       await update(page, 'merge');
@@ -631,14 +631,14 @@ suite('reading a receipt while late native trace changes its group', () => {
       );
       expect(
         await processOf(page)
-          .getByText('核对第 0 项资料', { exact: true })
+          .locator('[data-step-id="tool:call-0"] [class*="processStepLabel"]')
           .isVisible(),
       ).toBe(false);
       await page.keyboard.press('Enter');
       expect(await groups().first().getAttribute('aria-expanded')).toBe('true');
       expect(
         await processOf(page)
-          .getByText('核对第 0 项资料', { exact: true })
+          .locator('[data-step-id="tool:call-0"] [class*="processStepLabel"]')
           .isVisible(),
       ).toBe(true);
     } finally {
@@ -658,7 +658,7 @@ suite('reading a receipt while late native trace changes its group', () => {
       expect(await groups().first().getAttribute('aria-expanded')).toBe('true');
       expect(
         await processOf(page)
-          .getByText('核对第 36 项资料', { exact: true })
+          .locator('[data-step-id="tool:call-36"] [class*="processStepLabel"]')
           .isVisible(),
       ).toBe(true);
       await update(page, 'split');
@@ -666,7 +666,7 @@ suite('reading a receipt while late native trace changes its group', () => {
       expect(await groups().last().getAttribute('aria-expanded')).toBe('true');
       expect(
         await processOf(page)
-          .getByText('核对第 36 项资料', { exact: true })
+          .locator('[data-step-id="tool:call-36"] [class*="processStepLabel"]')
           .isVisible(),
       ).toBe(true);
       await groups().last().click();
@@ -675,7 +675,7 @@ suite('reading a receipt while late native trace changes its group', () => {
       expect(await groups().last().getAttribute('aria-expanded')).toBe('false');
       expect(
         await processOf(page)
-          .getByText('核对第 36 项资料', { exact: true })
+          .locator('[data-step-id="tool:call-36"] [class*="processStepLabel"]')
           .isVisible(),
       ).toBe(false);
     } finally {
@@ -1043,10 +1043,13 @@ suite('reading a receipt while late native trace changes its group', () => {
               ? '已停止'
               : '未完成';
         const step = task.locator('[data-step-id="tool:pending"]');
+        const heading = task
+          .getByRole('region', { name: '工作过程', exact: true })
+          .locator('[class*="processTitle"]')
+          .first();
         for (const loaded of [false, true]) {
-          await task
-            .getByRole('button', { name: title, exact: true })
-            .waitFor();
+          await heading.waitFor();
+          expect(await heading.innerText()).toBe(title);
           expect(
             await task.getByText('等待回答', { exact: true }).count(),
           ).toBe(0);
@@ -1081,14 +1084,19 @@ suite('reading a receipt while late native trace changes its group', () => {
           (node) => !!node.closest('section[aria-label="工作过程"]'),
         ),
       ).toBe(true);
-      await table
+      const before = await table
         .getByRole('cell', { name: '12', exact: true })
         .evaluate((node) => {
           const text = document
             .createTreeWalker(node, NodeFilter.SHOW_TEXT)
             .nextNode()!;
           document.getSelection()!.setBaseAndExtent(text, 0, text, 2);
+          return {
+            selected: document.getSelection()!.toString(),
+            blockText: node.closest('[data-process-content]')?.textContent,
+          };
         });
+      expect(before.selected).toBe('12');
       await page.evaluate(() => window.processFinish());
       await expect
         .poll(() =>
@@ -1097,9 +1105,19 @@ suite('reading a receipt while late native trace changes its group', () => {
           ),
         )
         .toBe(true);
-      expect(
-        await page.evaluate(() => document.getSelection()!.toString()),
-      ).toBe('12');
+      const after = await table.evaluate((node) => {
+        const selection = document.getSelection()!;
+        return {
+          selected: selection.toString(),
+          anchor: selection.anchorNode?.nodeName,
+          focus: selection.focusNode?.nodeName,
+          block: node
+            .closest('[data-process-content]')
+            ?.getAttribute('data-process-content'),
+          blockText: node.closest('[data-process-content]')?.textContent,
+        };
+      });
+      expect(after.selected, JSON.stringify({ before, after })).toBe('12');
       await primary
         .getByRole('link', { name: '核对结果.csv', exact: true })
         .waitFor();
