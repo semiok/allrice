@@ -1,5 +1,7 @@
 'use client';
 
+// Install DSH's document-lifetime input modality tracker on every route.
+import '@deepseek-ai/dsh-client-ui-primitives';
 import { useEffect, useLayoutEffect } from 'react';
 import { usePathname } from 'next/navigation';
 import {

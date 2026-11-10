@@ -7,6 +7,7 @@ import './dsh-upstream/scrollbar.css';
 import '@allrice/ui/tokens.css';
 import './styles/base.css';
 import './styles/auth.css';
+import './styles/focus.css';
 import '@allrice/ui/styles.css';
 
 import { ThemeController } from '../components/theme/theme-controller';
