@@ -428,7 +428,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         }),
     };
   }
-  async function state(f: Setup, runId: string) {
+  async function state(f: Pick<Setup, 'db'>, runId: string) {
     return (
       await f.db`select j.status,r.state,r.result,m.content->>'text' text,
       (select count(*)::int from allrice_run_events ev where ev.run_id=r.id and ev.event_type='run.succeeded') successes
@@ -649,7 +649,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     'PERSONA: exact historical %s source gap fails before a Run and recovers only through the original publication/session path',
     async (kind) => {
       const answer = 'Synthetic source recovery completed.';
-      const f = await publishedTarget(() => ({ text: answer }));
+      const f = await publishedTarget(async () => ({ text: answer }));
       const legacy = await historicalSourceGap(f, kind);
       let sessionId = f.chat.id;
       if (kind === 'null_engine') {
