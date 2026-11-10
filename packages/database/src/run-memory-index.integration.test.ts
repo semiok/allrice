@@ -57,7 +57,9 @@ suite(
     async function setup(pairs: Pair[] = [defaultPair], allowed = true) {
       let projection: Awaited<ReturnType<typeof freezeEmployeeMemoryIndexV2>>;
       const f = await createRunAuthorityFixture(fixture.db, {
-        toolNames: ['workspace.memory.read'],
+        toolNames: allowed
+          ? ['workspace.memory.read']
+          : ['workspace.file.read'],
         allowedTools: allowed ? ['workspace.memory.read'] : [],
         memoryContextStateV2: () => projection.memoryContextStateV2,
         preparePrompt: async (transaction, who) => {
