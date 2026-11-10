@@ -10,6 +10,7 @@ import type {
   Browser,
   Page,
   Locator,
+  Request,
 } from '../../../worker/node_modules/playwright-core/index.js';
 import {
   CompanyAssetSchema,
@@ -5557,61 +5558,158 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
 
   it('isolates an employee scope denial and aborts its pending reads when workspace identity changes', async () => {
     const f = await fixture({ running: true });
-    let release = () => {};
+    const startedAt = Date.now();
+    const timeline: {
+      ms: number;
+      event: string;
+      url?: string;
+      status?: number;
+      error?: string;
+    }[] = [];
+    let dropped = 0;
+    const trace = (
+      event: string,
+      request?: Request,
+      status?: number,
+      error = request?.failure()?.errorText,
+    ) => {
+      if (timeline.length < 64)
+        timeline.push({
+          ms: Date.now() - startedAt,
+          event,
+          url: request?.url(),
+          status,
+          error,
+        });
+      else dropped++;
+    };
+    const oldWorkspace = f.state.workspace;
+    const paths = [
+      '/api/v1/employee-instances',
+      `/api/v1/employee-instances/${id(7)}`,
+    ];
+    const held: Request[] = [],
+      responses = new Set<Request>(),
+      settled = new Map<Request, string>();
+    let holdOldReads = false,
+      oldRepliesFinished = 0,
+      release = () => {};
+    const oldReplies = new Promise<void>((done) => {
+      release = done;
+    });
+    const relevant = (request: Request) =>
+      request.method() === 'GET' &&
+      paths.includes(new URL(request.url()).pathname);
+    f.page.on('response', (response) => {
+      if (!relevant(response.request())) return;
+      responses.add(response.request());
+      trace('response', response.request(), response.status());
+    });
+    f.page.on('requestfailed', (request) => {
+      if (!relevant(request)) return;
+      settled.set(request, 'failed');
+      trace('requestfailed', request);
+    });
+    f.page.on('requestfinished', (request) => {
+      if (!relevant(request)) return;
+      settled.set(request, 'finished');
+      trace('requestfinished', request);
+    });
     try {
       await expect.poll(() => f.state.streamRequests).toBeGreaterThan(0);
       const input = f.page.getByRole('textbox', { name: /^给 .+ 的消息$/ });
       await input.waitFor();
-      f.state.employeeHistoryStatus = 403;
-      f.state.employeeInstanceStatus = 503;
-      await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await f.page.route('**/api/v1/employee-instances**', async (route) => {
+        const request = route.request(),
+          url = new URL(request.url());
+        if (
+          !relevant(request) ||
+          url.searchParams.get('workspaceId') !== oldWorkspace
+        )
+          return route.fallback();
+        const heldOldRead = holdOldReads;
+        if (heldOldRead) {
+          held.push(request);
+          trace('hold-entered', request);
+          await oldReplies;
+        }
+        const status = heldOldRead || url.pathname === paths[0] ? 403 : 503;
+        trace('old-reply', request, status);
+        try {
+          await route.fulfill({
+            status,
+            contentType: 'application/json',
+            body: JSON.stringify({ error: { message: 'No access' } }),
+          });
+        } catch (cause) {
+          if (!heldOldRead) throw cause;
+          trace('cancelled-old-reply', request, status, String(cause));
+        } finally {
+          if (heldOldRead) oldRepliesFinished++;
+        }
+      });
+      await Promise.all([
+        f.page.waitForResponse((response) => {
+          const url = new URL(response.url());
+          return (
+            url.pathname === paths[1] &&
+            url.searchParams.get('workspaceId') === oldWorkspace &&
+            response.status() === 503
+          );
+        }),
+        f.page.evaluate(() => window.dispatchEvent(new Event('focus'))),
+      ]);
       const denied = f.page.getByText('归档列表读取失败，请重试。', {
         exact: true,
       });
       await denied.waitFor();
       expect(await input.count()).toBe(0);
-      const oldWorkspace = f.state.workspace;
-      const isOldRead = (url: string, path: string) => {
-        const parsed = new URL(url);
-        return (
-          parsed.pathname === path &&
-          parsed.searchParams.get('workspaceId') === oldWorkspace
-        );
-      };
-      const selectedPath = `/api/v1/employee-instances/${id(7)}`;
-      f.state.employeeHistoryDelay = f.state.employeeInstanceDelay =
-        new Promise<void>((done) => {
-          release = done;
-        });
-      const pending = Promise.all([
-        f.page.waitForRequest((request) =>
-          isOldRead(request.url(), '/api/v1/employee-instances'),
-        ),
-        f.page.waitForRequest((request) =>
-          isOldRead(request.url(), selectedPath),
-        ),
-      ]);
+      holdOldReads = true;
       await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
-      await pending;
-      const aborted = Promise.all([
-        f.page.waitForEvent('requestfailed', {
-          predicate: (request) =>
-            isOldRead(request.url(), '/api/v1/employee-instances'),
-        }),
-        f.page.waitForEvent('requestfailed', {
-          predicate: (request) => isOldRead(request.url(), selectedPath),
-        }),
-      ]);
-      f.state.employeeHistoryDelay = f.state.employeeInstanceDelay = null;
-      f.state.employeeHistoryStatus = f.state.employeeInstanceStatus = 200;
+      // An issued request is not yet proof that its route entered the hold.
+      await expect.poll(() => held.length, { timeout: 5000 }).toBe(2);
+      expect(
+        held.map((request) => new URL(request.url()).pathname).sort(),
+      ).toEqual([...paths].sort());
+      for (const request of held) {
+        expect(request.failure()).toBeNull();
+        expect(responses.has(request)).toBe(false);
+        expect(settled.has(request)).toBe(false);
+        trace('pending-before-scope-change', request);
+      }
+      const newReads = Promise.all(
+        paths.map((path) =>
+          f.page.waitForResponse((response) => {
+            const url = new URL(response.url());
+            return (
+              url.pathname === path &&
+              url.searchParams.get('workspaceId') === id(51) &&
+              response.status() === 200
+            );
+          }),
+        ),
+      );
       f.state.viewer = id(50);
       f.state.workspace = id(51);
+      trace('scope-change');
       f.finishRun();
-      await aborted;
+      await Promise.all([
+        newReads,
+        expect
+          .poll(() => held.map((request) => settled.get(request)), {
+            timeout: 5000,
+          })
+          .toEqual(['failed', 'failed']),
+      ]);
+      for (const request of held) {
+        expect(request.failure()?.errorText).toContain('ERR_ABORTED');
+        expect(await request.response()).toBeNull();
+      }
       await input.waitFor();
       expect(await input.isEditable()).toBe(true);
-      f.state.employeeHistoryStatus = f.state.employeeInstanceStatus = 403;
+      trace('new-scope-editable');
       release();
+      await expect.poll(() => oldRepliesFinished, { timeout: 5000 }).toBe(2);
       await f.page.evaluate(
         () =>
           new Promise<void>((done) =>
@@ -5622,9 +5720,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(await denied.count()).toBe(0);
       expect(f.state.messageInputs).toEqual([]);
       expect(f.errors).toEqual([]);
+      trace('late-denials-isolated');
     } finally {
       release();
-      f.state.employeeHistoryDelay = f.state.employeeInstanceDelay = null;
+      trace('finally');
+      console.info(
+        'MET249_SCOPE_TRACE',
+        JSON.stringify({ startedAt, dropped, timeline }),
+      );
       await f.close();
     }
   });
