@@ -20,7 +20,6 @@ import {
   memoryPairDigest,
   legacyPersonalMemoryPair,
 } from './employee-memory.ts';
-import { PATCH } from '../../../../apps/web/app/api/v1/memories/[id]/route.ts';
 import { seedLegacyEmployeeMemory } from './employee-memory-v1.fixture.ts';
 import { embedWorkspaceText } from './memory-recall.ts';
 
@@ -36,9 +35,18 @@ suite(
   'personal pairs: complete owner writes and legacy PATCH protection',
   () => {
     let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
+    let PATCH: (
+      request: Request,
+      route: { params: Promise<{ id: string }> },
+    ) => Promise<Response>;
     beforeAll(async () => {
       fixture = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
+      // Web uses bundler resolution; its own typecheck still checks this real
+      // route, without pulling it into the database's NodeNext compilation.
+      const routePath =
+        '../../../../apps/web/app/api/v1/memories/[id]/route.ts';
+      ({ PATCH } = (await import(routePath)) as { PATCH: typeof PATCH });
     }, 120000);
     afterAll(async () => {
       vi.restoreAllMocks();
