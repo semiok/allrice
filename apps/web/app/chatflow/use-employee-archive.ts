@@ -120,7 +120,8 @@ export function useEmployeeArchive({
       if (currentScope.current !== scope) return;
       setSelected((old) =>
         old?.key === `${scope}/${instance.id}` &&
-        (!old.instance || old.instance.revision <= instance.revision)
+        old.instance &&
+        old.instance.revision <= instance.revision
           ? { key: old.key, instance }
           : old,
       );

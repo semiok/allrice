@@ -277,6 +277,7 @@ suite('U1 employee archive lifecycle', () => {
       heldWrite: options.holdWrite ? writeGate.promise : null,
       heldSelected: options.holdSelected ? selectedGate.promise : null,
       heldSelectedId: id(17),
+      holdActiveSelectedOnly: false,
       selectedReads: 0,
       archivedSessionReads: 0,
       failArchivedSessions: Boolean(options.failArchivedSessions),
@@ -431,7 +432,11 @@ suite('U1 employee archive lifecycle', () => {
           );
         state.selectedReads++;
         const snapshot = structuredClone(current);
-        if (state.heldSelected && current.id === state.heldSelectedId)
+        if (
+          state.heldSelected &&
+          current.id === state.heldSelectedId &&
+          (!state.holdActiveSelectedOnly || !snapshot.archivedAt)
+        )
           await state.heldSelected;
         if (state.dropReadback) return route.abort('failed');
         if (state.readbackStatus !== 200)
@@ -1137,7 +1142,32 @@ suite('U1 employee archive lifecycle', () => {
     }
   });
 
-  it.each([401, 403, 404])(
+  it('redirects an expired login when a refreshed employee read returns HTTP 401', async () => {
+    const f = await fixture();
+    try {
+      await f.page
+        .getByRole('textbox', { name: '给 流程哥 的消息', exact: true })
+        .fill('保留的草稿');
+      await f.page.route(`${origin}/login?next=/chatflow`, (route) =>
+        route.fulfill({
+          contentType: 'text/html',
+          body: '<!doctype html><title>Login destination</title>',
+        }),
+      );
+      f.state.readbackStatus = 401;
+      await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await f.page.waitForURL(`${origin}/login?next=/chatflow`);
+      expect(
+        await f.page.getByRole('textbox', { name: /给.*的消息/ }).count(),
+      ).toBe(0);
+      expect(f.state.writes).toEqual([]);
+      expect(f.state.errors).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it.each([403, 404])(
     'fails closed when a refreshed employee read returns HTTP %s and permits a successful retry',
     async (status) => {
       const f = await fixture();
@@ -1163,6 +1193,96 @@ suite('U1 employee archive lifecycle', () => {
         expect(f.state.writes).toEqual([]);
         expect(f.state.errors).toEqual([]);
       } finally {
+        await f.close();
+      }
+    },
+  );
+
+  it.each([403, 404])(
+    'keeps editing blocked when an older restore readback arrives after HTTP %s rejection',
+    async (status) => {
+      const f = await fixture({ archived: true });
+      const readback = gate(),
+        refresh = gate();
+      try {
+        await f.page
+          .getByText('AI 员工已归档，可以查看历史；恢复后才能继续工作。', {
+            exact: true,
+          })
+          .waitFor();
+        const reads = f.state.selectedReads;
+        f.state.heldSelected = readback.promise;
+        f.state.holdActiveSelectedOnly = true;
+        await f.page
+          .getByRole('button', { name: '恢复员工', exact: true })
+          .click();
+        await expect
+          .poll(() => f.state.selectedReads)
+          .toBeGreaterThan(reads + 1);
+        f.state.heldSelected = null;
+        f.state.readbackStatus = status;
+        await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+        const denied = f.page
+          .getByRole('alert')
+          .getByText('没有访问权限。', { exact: true });
+        await denied.waitFor();
+        const input = f.page.getByRole('textbox', {
+          name: '给 流程哥 的消息',
+          exact: true,
+        });
+        expect(await input.count()).toBe(0);
+
+        const deniedReads = f.state.selectedReads;
+        f.state.readbackStatus = 200;
+        f.state.failAfterActiveRead = true;
+        f.state.heldSelected = refresh.promise;
+        const lateRead = f.page.waitForResponse(
+          (response) =>
+            response.status() === 200 &&
+            new URL(response.url()).pathname ===
+              `/api/v1/employee-instances/${id(17)}`,
+        );
+        readback.release();
+        await lateRead;
+        await expect
+          .poll(() => f.state.selectedReads)
+          .toBeGreaterThan(deniedReads);
+        await f.page.evaluate(
+          () =>
+            new Promise<void>((done) =>
+              requestAnimationFrame(() => requestAnimationFrame(() => done())),
+            ),
+        );
+        expect(await denied.isVisible()).toBe(true);
+        expect(await input.count()).toBe(0);
+
+        const failure = f.page.waitForResponse(
+          (response) =>
+            response.status() === 503 &&
+            new URL(response.url()).pathname ===
+              `/api/v1/employee-instances/${id(17)}`,
+        );
+        refresh.release();
+        await failure;
+        await f.page
+          .getByRole('alert')
+          .getByText('读取暂不可用。', { exact: true })
+          .waitFor();
+        expect(await input.count()).toBe(0);
+        f.state.heldSelected = null;
+        f.state.failReadback = false;
+        f.state.failAfterActiveRead = false;
+        await f.page.getByRole('button', { name: '重试', exact: true }).click();
+        await input.waitFor();
+        expect(await input.isEditable()).toBe(true);
+        expect(f.state.writes.map((write) => write.body.operation)).toEqual([
+          'restore',
+        ]);
+        expect(f.state.blockedWrites).toEqual([]);
+        expect(f.state.errors).toEqual([]);
+      } finally {
+        readback.release();
+        refresh.release();
         await f.close();
       }
     },
