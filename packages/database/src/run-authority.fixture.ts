@@ -21,6 +21,7 @@ import { createRuntimeOperationLedger } from './runtime-ledger/ledger.ts';
 import { ensureRuntimeOperationRoot } from './runtime-ledger/root-service.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
 import { newEmployeeNativeRootOrigin } from './conversation/native-root-origin.ts';
+import { employeePersonaSourceSystemPrompt } from './platform-employees/runtime-package.ts';
 const defaultControls = (): RuntimePolicyControls => ({
   version: 1,
   enabled: true,
@@ -85,11 +86,37 @@ export async function createRunAuthorityFixture(
   const now = new Date().toISOString();
   const [membership] = await db<{ id: string }[]>`
   select id from allrice_memberships where organization_id=${org} and workspace_id=${workspace} and user_id=${user}`;
+  const personaPackage =
+    options.runtimePackage?.schemaVersion === 3
+      ? options.runtimePackage
+      : undefined;
+  const foundation = personaPackage?.foundation;
   const manifest = employeeManifest({
     runtimePackage: options.runtimePackage,
     key: 'p25-authority',
-    name: 'P25 authority',
-    description: 'Synthetic authority fixture',
+    name: foundation?.name ?? 'P25 authority',
+    description: foundation?.description ?? 'Synthetic authority fixture',
+    ...(foundation
+      ? {
+          appearance: foundation.appearance,
+          identity: {
+            role: foundation.identity.role,
+            mission: foundation.identity.mission,
+            workStyle: foundation.identity.workStyle,
+            behaviorRules: foundation.identity.behaviorRules,
+            safetyBoundaries: foundation.identity.safetyBoundaries,
+          },
+          partnerProfile: {
+            role: foundation.identity.role,
+            mission: foundation.identity.mission,
+            communicationStyle: foundation.identity.expressionStyle,
+            outputLanguage: foundation.identity.outputLanguage,
+            proactivePolicy: 'suggest' as const,
+            approvalPolicy: 'confirm_side_effects' as const,
+          },
+          systemPromptOverride: employeePersonaSourceSystemPrompt(personaPackage!),
+        }
+      : {}),
     toolNames: options.toolNames ?? selectedTools,
     runtimePolicy: options.runtimePolicy ?? {
       harness: 'dsh',
@@ -206,9 +233,9 @@ export async function createRunAuthorityFixture(
     values(${policy},${org},${user},1,${tx.json(frozenPolicy)},clock_timestamp()+interval '1 hour')`;
     await tx`update allrice_runs set policy_snapshot_id=${policy},execution_spec=${tx.json(executionSpec)},input='{}' where id=${rootRunId}`;
     await tx`insert into allrice_employees(id,organization_id,workspace_id,employee_key,name)
-    values(${employee},${org},${workspace},'p25-authority','P25 authority')`;
+    values(${employee},${org},${workspace},'p25-authority',${manifest.name})`;
     await tx`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest,provider_snapshot)
-    values(${version},${org},${workspace},${employee},1,'P25 authority',${manifest.provider.model},${manifest.systemPrompt},${tx.json(manifest.capabilities)},${checksum},${tx.json(manifest)},${tx.json(manifest.provider)})`;
+    values(${version},${org},${workspace},${employee},1,${manifest.name},${manifest.provider.model},${manifest.systemPrompt},${tx.json(manifest.capabilities)},${checksum},${tx.json(manifest)},${tx.json(manifest.provider)})`;
     await tx`insert into allrice_employee_assignments(id,organization_id,workspace_id,employee_id,employee_version_id,user_id,is_default)
         values(${assignment},${org},${workspace},${employee},${version},${user},false)`;
     const origin = options.businessCreationOrigin

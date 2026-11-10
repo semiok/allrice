@@ -6,6 +6,7 @@ import {
   PLATFORM_EMPLOYEE_DSH_APPROVED_PLUGINS,
   PLATFORM_EMPLOYEE_DSH_DISTRIBUTION,
   PlatformEmployeeRuntimeProfileSchema,
+  EmployeeDefinitionSchema,
   type PlatformEmployeeDefinition,
   type SkillBundle,
 } from '@allrice/contracts';
@@ -23,8 +24,12 @@ import {
 import type { PlatformContentCatalog } from './platform-content/catalog.ts';
 import {
   buildEmployeeRuntimePackage,
+  employeePersonaPlatformSystemPrompt,
+  runtimePackageChecksum,
   runtimePackageSystemPrompt,
 } from './platform-employees/runtime-package.ts';
+import { syntheticLegacyRuntimePackage } from './platform-employees/legacy-runtime-package.fixture.ts';
+import { readEmployeePersonaVersion } from './employees/employee-instances.ts';
 import {
   skillBundleChecksum,
   skillBytesChecksum,
@@ -46,7 +51,7 @@ vi.mock('./core/client.ts', async (original) => ({
 /** Deliberately seeds already-published immutable revision fixtures. These tests
  * exercise actual tenant materialization, rollback and persisted Run reads;
  * they do not claim to exercise model preview or the publish approval UI. */
-async function fixture() {
+async function fixture(format: 'legacy' | 'persona' = 'persona') {
   const ids = {
     organizationId: randomUUID(),
     workspaceId: randomUUID(),
@@ -143,11 +148,13 @@ async function fixture() {
       reviewed_at: new Date('2026-09-08T00:00:00Z'),
       bundle,
     };
-    const runtimePackage = buildEmployeeRuntimePackage({
+    const current = buildEmployeeRuntimePackage({
       revision,
       definition,
       skills: [skill],
     });
+    const runtimePackage =
+      format === 'legacy' ? syntheticLegacyRuntimePackage(current) : current;
     const profile = PlatformEmployeeRuntimeProfileSchema.parse({
       schemaVersion: 1,
       harness: 'dsh',
@@ -160,10 +167,13 @@ async function fixture() {
       timeoutMs: 300000,
       credentialReference: definition.modelPolicy.credentialReference,
       baseUrl: null,
-      systemPrompt: runtimePackageSystemPrompt({
-        platformPolicy: definition.systemPrompt,
-        runtimePackage,
-      }),
+      systemPrompt:
+        format === 'legacy'
+          ? runtimePackageSystemPrompt({
+              platformPolicy: definition.systemPrompt,
+              runtimePackage,
+            })
+          : employeePersonaPlatformSystemPrompt(definition),
       nativeSkillIds: [ids.skillId],
       nativeSkillChecksums: [skill.checksum],
       toolNames: ['web.search'],
@@ -181,14 +191,14 @@ async function fixture() {
     await db`insert into allrice_platform_skill_bundle_versions(skill_id,version,checksum,bundle) values(${ids.skillId},${v.bundle.version},${v.bundle.checksum},${db.json(v.bundle)})`;
   await db`insert into allrice_platform_employees(id,employee_key,name,description,status) values(${ids.platformEmployeeId},${employeeKey},'P18 employee','Test fixture','published')`;
   for (const [index, v] of [v1, v2].entries())
-    await db`insert into allrice_platform_employee_revisions(id,employee_id,revision,status,definition,runtime_profile,checksum,published_at,published_by_label) values(${index === 0 ? ids.revision1 : ids.revision2},${ids.platformEmployeeId},${index + 1},'published',${db.json(definition)},${db.json(v.profile)},${v.runtimePackage.checksum},now(),'P18 synthetic reviewer')`;
+    await db`insert into allrice_platform_employee_revisions(id,employee_id,revision,status,definition,runtime_profile,checksum,published_at,published_by_label) values(${index === 0 ? ids.revision1 : ids.revision2},${ids.platformEmployeeId},${index + 1},'published',${db.json(definition)},${db.json(v.profile)},${runtimePackageChecksum(definition)},now(),'P18 synthetic reviewer')`;
   await db`update allrice_platform_employees set current_published_revision_id=${ids.revision1},current_draft_revision_id=${ids.revision1} where id=${ids.platformEmployeeId}`;
   async function tenantSkill() {
     const [row] =
       await db`select content,checksum,bundle from allrice_dsh_skills where organization_id=${ids.organizationId} and workspace_id=${ids.workspaceId} and name=${skillName}`;
     return row;
   }
-  return { ids, employeeKey, skillName, v1, v2, tenantSkill };
+  return { ids, definition, employeeKey, skillName, v1, v2, tenantSkill };
 }
 
 async function persistRun(
@@ -263,6 +273,50 @@ suite(
         await admin.unsafe(`drop schema "${schema}" cascade`);
       await admin?.end({ timeout: 5 });
     });
+    it.each(['legacy', 'persona'] as const)(
+      'materializes clean current input from %s published assets without rewriting their original source',
+      async (format) => {
+        const f = await fixture(format);
+        const [original] = await db`select definition,runtime_profile,checksum from allrice_platform_employee_revisions where id=${f.ids.revision1}`;
+        await assignPublishedPlatformEmployeeToWorkspace(
+          f.employeeKey, f.ids.workspaceId, 'P18 source projection',
+        );
+        const [version] = await db`select v.id,v.employee_id,v.manifest,v.config_checksum
+          from allrice_employee_versions v join allrice_employee_version_sources s on s.employee_version_id=v.id
+          where s.platform_revision_id=${f.ids.revision1} and v.workspace_id=${f.ids.workspaceId}`;
+        const manifest = EmployeeDefinitionSchema.parse(version!.manifest);
+        expect(manifest.systemPrompt).toBe(employeePersonaPlatformSystemPrompt(f.definition));
+        expect(manifest.runtimePackage).toEqual(f.v1.runtimePackage);
+        expect(version!.config_checksum).toBe(f.v1.runtimePackage.checksum);
+        expect((await readEmployeePersonaVersion({
+          organizationId: f.ids.organizationId, workspaceId: f.ids.workspaceId,
+          employeeId: version!.employee_id, versionId: version!.id, role: 'engine',
+        }, db))?.material).toEqual({
+          foundation: {
+            name: f.definition.name, description: f.definition.description,
+            appearance: f.definition.appearance, identity: f.definition.identity,
+          },
+          platformPolicy: f.definition.systemPrompt,
+        });
+        if (format === 'legacy') {
+          // First INSERT of a distinct historical fixture. Neither the newly
+          // materialized version nor the published revision is rewritten.
+          const historicalId = randomUUID();
+          const historical = { ...manifest, systemPrompt: f.v1.profile.systemPrompt };
+          await db`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,description,model,system_prompt,capabilities,manifest,provider_snapshot,skill_version_ids,config_checksum)
+            select ${historicalId},organization_id,workspace_id,employee_id,version+1,name,description,model,${historical.systemPrompt},capabilities,${db.json(historical)},provider_snapshot,skill_version_ids,config_checksum
+            from allrice_employee_versions where id=${version!.id}`;
+          await db`insert into allrice_employee_version_sources(employee_version_id,organization_id,workspace_id,employee_id,platform_employee_id,platform_revision_id)
+            values(${historicalId},${f.ids.organizationId},${f.ids.workspaceId},${version!.employee_id},${f.ids.platformEmployeeId},${f.ids.revision1})`;
+          expect((await readEmployeePersonaVersion({
+            organizationId: f.ids.organizationId, workspaceId: f.ids.workspaceId,
+            employeeId: version!.employee_id, versionId: historicalId, role: 'engine',
+          }, db))?.manifest.systemPrompt).toBe(f.v1.profile.systemPrompt);
+        }
+        const [after] = await db`select definition,runtime_profile,checksum from allrice_platform_employee_revisions where id=${f.ids.revision1}`;
+        expect(after).toEqual(original);
+      },
+    );
     it('materializes an older published body and resource from that revision, not the current platform catalog', async () => {
       const f = await fixture();
       await assignPublishedPlatformEmployeeToWorkspace(

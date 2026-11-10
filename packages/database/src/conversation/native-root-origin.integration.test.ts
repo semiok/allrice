@@ -1,3 +1,6 @@
+import { syntheticLegacyRuntimePackage } from '../platform-employees/legacy-runtime-package.fixture.ts';
+import { personaRuntimePackageChecksum } from '../platform-employees/runtime-package-signature.ts';
+import { employeePersonaSourceSystemPrompt } from '../platform-employees/runtime-package.ts';
 const oldGeneration = 'dsh-0.1.5-rc.3-a4c74a9' as const;
 import {
   claimNextJob,
@@ -96,8 +99,6 @@ suite(
       const runtimePackage = PlatformEmployeeRuntimeProfileSchema.parse(
         row!.frozen_runtime_profile,
       ).runtimePackage!;
-      if (runtimePackage.schemaVersion === 3)
-        throw Error('fixture_legacy_package_required');
       return {
         employee: e,
         test: queued.testRun!,
@@ -188,7 +189,7 @@ suite(
         fixture.db`update allrice_platform_employee_test_runs set native_root_origin=null where id=${p.test.id}`,
       ).rejects.toThrow('native root origin is immutable');
     });
-    function resign(p: Exclude<EmployeeRuntimePackage, { schemaVersion: 3 }>) {
+    function resign(p: EmployeeRuntimePackage) {
       const m = p.runtimeManifest;
       p.capabilityFingerprint = runtimePackageChecksum({
         distributionGeneration: m.distributionGeneration,
@@ -203,6 +204,10 @@ suite(
         })),
         deniedCapabilities: [...m.deniedCapabilities].sort(),
       });
+      if (p.schemaVersion === 3) {
+        p.checksum = personaRuntimePackageChecksum(p);
+        return;
+      }
       p.checksum = runtimePackageChecksum({
         schemaVersion: p.schemaVersion,
         packageVersion: p.packageVersion,
@@ -223,8 +228,25 @@ suite(
     ) {
       const id = randomUUID(),
         manifest = { ...f.manifest, runtimePackage };
+      if (runtimePackage.schemaVersion === 3) {
+        const { foundation } = runtimePackage;
+        const { expressionStyle, outputLanguage, ...identity } =
+          foundation.identity;
+        Object.assign(manifest, {
+          name: foundation.name,
+          description: foundation.description,
+          appearance: foundation.appearance,
+          identity,
+          partnerProfile: {
+            ...manifest.partnerProfile,
+            communicationStyle: expressionStyle,
+            outputLanguage,
+          },
+          systemPrompt: employeePersonaSourceSystemPrompt(runtimePackage),
+        });
+      }
       await fixture.db`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest,provider_snapshot)
-   select ${id},organization_id,workspace_id,employee_id,(select max(version)+1 from allrice_employee_versions where employee_id=${f.employee}),name,model,system_prompt,capabilities,${runtimePackage.checksum},${fixture.db.json(manifest)},provider_snapshot from allrice_employee_versions where id=${f.version}`;
+   select ${id},organization_id,workspace_id,employee_id,(select max(version)+1 from allrice_employee_versions where employee_id=${f.employee}),${manifest.name},model,${manifest.systemPrompt},capabilities,${runtimePackage.checksum},${fixture.db.json(manifest)},provider_snapshot from allrice_employee_versions where id=${f.version}`;
       return id;
     }
     async function send(f: Awaited<ReturnType<typeof authority>>, id: string) {
@@ -271,7 +293,8 @@ suite(
         compactThresholdTokens: 10000,
       });
       const nextPackage = structuredClone(runtimePackage);
-      nextPackage.files.agentsMd += '\nUpdated synthetic style';
+      if (nextPackage.schemaVersion !== 3) throw Error('expected_persona_package');
+      nextPackage.platformPolicy += '\nUpdated synthetic policy';
       resign(nextPackage);
       const next = await publishVersion(f, nextPackage);
       await fixture.db`update allrice_employee_assignments set employee_version_id=${next} where id=${f.assignment}`;
@@ -340,7 +363,7 @@ suite(
       'legacy Session keeps its old package through %s, while a new Session adopts the candidate',
       async (mode) => {
         const { runtimePackage } = await packaged(),
-          oldPackage = structuredClone(runtimePackage);
+          oldPackage = syntheticLegacyRuntimePackage(runtimePackage);
         oldPackage.runtimeManifest.distributionGeneration = oldGeneration;
         resign(oldPackage);
         const f = await authority(oldPackage),

@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   EmployeeRuntimePackageSchema,
-  PlatformEmployeeDefinitionSchema,
   PlatformEmployeeRuntimeProfileSchema,
   type EmployeeRuntimePackage,
 } from '@allrice/contracts';
@@ -13,7 +12,6 @@ import {
 } from '../skill-bundles.ts';
 import {
   personaRuntimePackageChecksum,
-  type PersonaRuntimePackagePayload,
 } from './runtime-package-signature.ts';
 import {
   runtimePackageChecksum,
@@ -46,46 +44,19 @@ function skillMetadata() {
   };
 }
 
-// Fixture-only schema-3 bytes. No production writer or execution compiler is
-// introduced; the profile intentionally retains its original legacy prompt.
+// Exercise the actual new writer; mutations remain fixture-only.
 function personaFixture(format: 'empty' | 'plain' | 'bundled' = 'bundled') {
-  const input = source(newNativeGeneration, format);
-  const definition = PlatformEmployeeDefinitionSchema.parse(input.definition);
-  const profile = PlatformEmployeeRuntimeProfileSchema.parse(
-    input.runtimeProfile,
-  );
-  const legacy = profile.runtimePackage!;
-  if (legacy.schemaVersion === 3)
-    throw Error('fixture_legacy_package_required');
-  const { instructionPrecedence, ...runtimeManifest } = legacy.runtimeManifest;
-  void instructionPrecedence;
-  const payload = {
-    schemaVersion: 3,
-    packageVersion: legacy.packageVersion,
-    capabilityFingerprint: legacy.capabilityFingerprint,
-    foundation: {
-      name: definition.name,
-      description: definition.description,
-      appearance: definition.appearance,
-      identity: definition.identity,
-    },
-    platformPolicy: definition.systemPrompt,
-    skills: legacy.skills.map((skill) => ({
-      ...skill,
-      metadata: skillMetadata(),
-    })),
-    runtimeManifest,
-  } satisfies PersonaRuntimePackagePayload;
-  const pkg = EmployeeRuntimePackageSchema.parse({
-    ...payload,
-    checksum: personaRuntimePackageChecksum(payload),
-  });
+  const input = source(newNativeGeneration, format, 'platform_preview', 'persona');
+  const profile = PlatformEmployeeRuntimeProfileSchema.parse(input.runtimeProfile);
+  const pkg = profile.runtimePackage!;
   if (pkg.schemaVersion !== 3) throw Error('fixture_persona_package_required');
+  for (const skill of pkg.skills) skill.metadata = skillMetadata();
+  pkg.checksum = personaRuntimePackageChecksum(pkg);
   profile.runtimePackage = pkg;
   input.runtimeProfile = profile;
   input.nativeSkills = pkg.skills;
   input.packageChecksum = pkg.checksum;
-  return { input, pkg, legacy };
+  return { input, pkg };
 }
 
 function legacyPayload(schemaVersion: 1 | 2) {
@@ -204,17 +175,18 @@ describe('runtime package data-format readers', () => {
   );
 
   it.each(['empty', 'plain', 'bundled'] as const)(
-    'keeps the current %s writer on legacy formats with unchanged instruction files',
+    'writes independent PERSONA sources for the current %s format',
     (format) => {
-      const input = source(newNativeGeneration, format);
+      const input = source(newNativeGeneration, format, 'platform_preview', 'persona');
       const profile = PlatformEmployeeRuntimeProfileSchema.parse(
         input.runtimeProfile,
       );
       const pkg = profile.runtimePackage!;
-      expect(pkg.schemaVersion).toBe(format === 'bundled' ? 2 : 1);
-      expect(pkg).toHaveProperty('files');
-      expect(pkg).not.toHaveProperty('foundation');
-      expect(pkg).not.toHaveProperty('platformPolicy');
+      expect(pkg.schemaVersion).toBe(3);
+      expect(pkg).not.toHaveProperty('files');
+      expect(pkg.runtimeManifest).not.toHaveProperty('instructionPrecedence');
+      expect(pkg).toHaveProperty('foundation');
+      expect(pkg).toHaveProperty('platformPolicy');
       expect(verifiedRuntimePackageChecksum(reverseKeys(pkg))).toBe(
         pkg.checksum,
       );
@@ -390,11 +362,9 @@ describe('runtime package data-format readers', () => {
     },
   );
 
-  it('keeps preview profile checks and explicitly refuses schema-3 execution until the context compiler exists', () => {
+  it('executes schema-3 previews only with the same verified clean source projection', () => {
     const { input, pkg } = personaFixture();
-    expect(() => validatePlatformEmployeeTestExecutionSnapshot(input)).toThrow(
-      'platform_employee_test_persona_execution_unsupported',
-    );
+    expect(validatePlatformEmployeeTestExecutionSnapshot(input).runtimeProfile.runtimePackage).toEqual(pkg);
     expect(() =>
       runtimePackageSystemPrompt({
         platformPolicy: pkg.platformPolicy,

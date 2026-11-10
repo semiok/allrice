@@ -9,6 +9,7 @@ import {
   EmployeeManifestSchema,
   EmployeeInstanceProfileSchema,
   EmployeeRuntimePackageSchema,
+  EmployeePersonaSourceMaterialSchema,
   PublishEmployeeVersionInputSchema,
 } from './employees.js';
 
@@ -46,6 +47,16 @@ describe('runtime package PERSONA source format', () => {
       skillGovernance: [],
     },
   };
+
+  it('uses the same explicit source shape for new tenant manifests without accepting personal data', () => {
+    const material = {
+      foundation,
+      platformPolicy: package3.platformPolicy,
+    };
+    expect(EmployeePersonaSourceMaterialSchema.parse(material)).toEqual(material);
+    for (const invalid of [null, {}, { ...material, profile: {} }])
+      expect(EmployeePersonaSourceMaterialSchema.safeParse(invalid).success).toBe(false);
+  });
 
   it('reads complete platform identity and hard-policy sources without legacy files or personal data', () => {
     const before = JSON.stringify(package3);
@@ -364,6 +375,7 @@ describe('EmployeeHub contracts', () => {
       },
     });
     expect(definition.schemaVersion).toBe(2);
+    expect(definition).not.toHaveProperty('personaSource');
     expect(definition.capabilityBindings.skillVersionIds).toEqual([
       skillVersionId,
     ]);

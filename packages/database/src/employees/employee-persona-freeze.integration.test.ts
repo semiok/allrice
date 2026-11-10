@@ -1,3 +1,7 @@
+import {
+  legacyRuntimePackageFixture,
+  syntheticLegacyRuntimePackage,
+} from '../platform-employees/legacy-runtime-package.fixture.ts';
 /** Actual owner/authentication/publication/chat/queue/resolve in an isolated DB.
  * Synthetic preview completion only; no provider, native model or Dev data. */
 import { randomUUID } from 'node:crypto';
@@ -980,7 +984,7 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
       );
       const pkg =
         format === 1
-          ? buildEmployeeRuntimePackage({
+          ? legacyRuntimePackageFixture({
               revision: 1,
               definition: {
                 ...template.definition,
@@ -991,7 +995,9 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
               },
               skills: [],
             })
-          : profile.runtimePackage;
+          : profile.runtimePackage
+            ? syntheticLegacyRuntimePackage(profile.runtimePackage)
+            : null;
       if (!pkg || pkg.schemaVersion !== format)
         throw Error('expected original signed format');
       const old = await createRunAuthorityFixture(fixture.db, {

@@ -456,21 +456,32 @@ const legacyRuntimePackageSchema = z
   })
   .strict();
 
+/** Explicit producer-owned materials. Absence on an old manifest is not a
+ * request to reconstruct policy from its composite system prompt. */
+export const EmployeePersonaSourceMaterialSchema = z
+  .object({
+    foundation: EmployeePersonaFoundationSchema,
+    platformPolicy: z.string().trim().min(1).max(20_000),
+  })
+  .strict();
+export type EmployeePersonaSourceMaterial = z.infer<
+  typeof EmployeePersonaSourceMaterialSchema
+>;
+
 const personaRuntimePackageSchema = z
   .object({
     schemaVersion: z.literal(3),
     packageVersion: z.string().trim().min(1).max(240),
     checksum: z.string().regex(/^sha256:[a-f0-9]{64}$/),
     capabilityFingerprint: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-    foundation: EmployeePersonaFoundationSchema,
-    platformPolicy: z.string().trim().min(1).max(20_000),
+    ...EmployeePersonaSourceMaterialSchema.shape,
     skills: z.array(DshNativeSkillSnapshotSchema).max(64),
     runtimeManifest: runtimeManifestSourceSchema,
   })
   .strict();
 
-// Data-format compatibility only: schema 3 does not enable a writer or an
-// execution compiler. In particular it has no legacy instruction files.
+// Historical 1/2 assets retain their strict, ordered checksum reader. New
+// packages carry independent materials rather than legacy instruction files.
 export const EmployeeRuntimePackageSchema = z.union([
   legacyRuntimePackageSchema,
   personaRuntimePackageSchema,
@@ -518,6 +529,9 @@ export const EmployeeDefinitionSchema = z
     }),
     runtimePackage: EmployeeRuntimePackageSchema.nullable().default(null),
     partnerProfile: PartnerProfileSchema.default(DefaultPartnerProfile),
+    // New definition-only producers freeze these in the same immutable
+    // manifest/checksum. Never supply a default for historical manifests.
+    personaSource: EmployeePersonaSourceMaterialSchema.optional(),
   })
   .strict()
   .superRefine((definition, context) => {

@@ -81,11 +81,11 @@ import {
 import { normalizeDraftPlatformPolicy } from '../platform-employees/identity.ts';
 import {
   buildEmployeeRuntimePackage,
+  employeePersonaPlatformSystemPrompt,
   platformEmployeeTestCanFinalize,
   platformEmployeeTestExecutionTerminalState,
   platformEmployeeTestTimeoutAt,
   runtimePackageChecksum as checksum,
-  runtimePackageSystemPrompt,
   validatePlatformEmployeeTestExecutionSnapshot,
 } from '../platform-employees/runtime-package.ts';
 
@@ -1591,10 +1591,7 @@ export async function compilePlatformEmployee(
           timeoutMs: definition.modelPolicy.timeoutMs,
           credentialReference: definition.modelPolicy.credentialReference,
           baseUrl: definition.modelPolicy.baseUrl,
-          systemPrompt: runtimePackageSystemPrompt({
-            platformPolicy: definition.systemPrompt,
-            runtimePackage,
-          }),
+          systemPrompt: employeePersonaPlatformSystemPrompt(definition),
           nativeSkillIds: skills.map((skill) => skill.id),
           nativeSkillChecksums: skills.map((skill) => skill.checksum),
           toolNames: definition.capabilities.toolNames,
@@ -1674,10 +1671,7 @@ function tenantManifest(
     },
     toolNames: definition.capabilities.toolNames,
     connectorRefs: definition.capabilities.connectorRefs,
-    systemPromptOverride: runtimePackageSystemPrompt({
-      platformPolicy: definition.systemPrompt,
-      runtimePackage,
-    }),
+    systemPromptOverride: employeePersonaPlatformSystemPrompt(definition),
     runtimePackage,
   });
 }

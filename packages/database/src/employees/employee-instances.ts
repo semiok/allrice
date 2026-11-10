@@ -25,6 +25,7 @@ import {
   type EmployeeInstanceProfile,
   type EmployeePersonaPin,
   type EmployeePersonaTask,
+  type EmployeePersonaSourceMaterial,
 } from '@allrice/contracts';
 import { getDatabase } from '../core/client.ts';
 import { DataAccessError } from '../data.ts';
@@ -36,6 +37,8 @@ import { frozenPackageSkills } from '../skill-bundles.ts';
 import {
   runtimePackageChecksum,
   runtimePackageSystemPrompt,
+  employeePersonaManifestMaterial,
+  employeePersonaPlatformSystemPrompt,
 } from '../platform-employees/runtime-package.ts';
 import {
   cancelEmployeeAccessRuns,
@@ -100,6 +103,67 @@ export async function readEmployeeVersionPublication(
       and r.status = 'published'
   `;
   return publication;
+}
+
+/** Future definition-only sources have their own real version/checksum, not
+ * a fabricated platform publication. Shared pin consumers wire this interface
+ * after accepting the tenant source variant; old raw absence stays absent. */
+export async function readEmployeeTenantPersonaVersion(
+  scope: {
+    organizationId: string;
+    workspaceId: string;
+    employeeId: string;
+    versionId: string;
+    expectedSource?: EmployeeInstanceSnapshot['source'];
+  },
+  sql: Sql,
+): Promise<
+  | {
+      source: {
+        kind: 'tenant_version';
+        employeeVersionId: string;
+        configChecksum: string;
+        manifestDigest: string;
+      };
+      material: EmployeePersonaSourceMaterial;
+      manifest: ReturnType<typeof EmployeeDefinitionSchema.parse>;
+    }
+  | undefined
+> {
+  const [row] = await sql<
+    { manifest: unknown; config_checksum: string; mapping_id: string | null }[]
+  >`select v.manifest,v.config_checksum,p.employee_version_id mapping_id
+    from allrice_employee_versions v
+    left join allrice_employee_version_sources p on p.employee_version_id=v.id
+    where v.id=${scope.versionId} and v.organization_id=${scope.organizationId}
+      and v.workspace_id=${scope.workspaceId} and v.employee_id=${scope.employeeId}`;
+  if (!row) throw Error('employee_persona_source_unavailable');
+  const raw = row.manifest;
+  if (raw === null || typeof raw !== 'object' || !('personaSource' in raw))
+    return undefined;
+  const manifest = EmployeeDefinitionSchema.parse(raw);
+  if (
+    row.mapping_id !== null ||
+    manifest.runtimePackage !== null ||
+    (scope.expectedSource &&
+      (scope.expectedSource.kind !== 'tenant_version' ||
+        scope.expectedSource.employeeVersionId !== scope.versionId))
+  )
+    throw Error('employee_persona_source_mapping_invalid');
+  if (employeeManifestChecksum(manifest) !== row.config_checksum)
+    throw Error('CURRENT_EXECUTION_SOURCE_CHECKSUM_MISMATCH');
+  const material = employeePersonaManifestMaterial(manifest);
+  if (!material) throw Error('employee_persona_source_unavailable');
+  return {
+    source: {
+      kind: 'tenant_version',
+      employeeVersionId: scope.versionId,
+      configChecksum: row.config_checksum,
+      manifestDigest: runtimePolicyDigest(manifest),
+    },
+    material,
+    manifest,
+  };
 }
 
 /** Only actual raw absence is unmigrated. A default basis is read from its
@@ -182,6 +246,15 @@ export async function readEmployeePersonaVersion(
     templateRevision: row.revision,
     templateChecksum: row.definition_checksum,
   };
+  const material = {
+    foundation: {
+      name: definition.name,
+      description: definition.description,
+      appearance: definition.appearance,
+      identity: definition.identity,
+    },
+    platformPolicy: definition.systemPrompt,
+  };
   if (scope.role === 'basis') {
     // The config checksum is the original version's stored identity, not an
     // assertion that v1 has a package or that a default is executable. The
@@ -193,6 +266,7 @@ export async function readEmployeePersonaVersion(
         manifestDigest: runtimePolicyDigest(manifest),
       }),
       definition,
+      material,
       manifest,
       platformKey: row.platform_key,
     };
@@ -204,8 +278,15 @@ export async function readEmployeePersonaVersion(
     frozenPackageSkills(pkg);
     if (pkg.checksum !== row.config_checksum)
       throw Error('CURRENT_EXECUTION_SOURCE_CHECKSUM_MISMATCH');
-    if (pkg.schemaVersion === 3)
-      throw Error('CURRENT_EXECUTION_SOURCE_PERSONA_EXECUTION_UNSUPPORTED');
+    if (pkg.schemaVersion === 3) {
+      employeePersonaManifestMaterial(manifest);
+      if (
+        runtimePolicyDigest(pkg.foundation) !==
+          runtimePolicyDigest(material.foundation) ||
+        pkg.platformPolicy !== material.platformPolicy
+      )
+        throw Error('employee_persona_source_projection_mismatch');
+    }
   } else if (employeeManifestChecksum(manifest) !== row.config_checksum) {
     throw Error('CURRENT_EXECUTION_SOURCE_CHECKSUM_MISMATCH');
   }
@@ -240,11 +321,13 @@ export async function readEmployeePersonaVersion(
       definition.identity.expressionStyle ||
     manifest.partnerProfile.outputLanguage !==
       definition.identity.outputLanguage ||
-    manifest.systemPrompt !==
-      runtimePackageSystemPrompt({
-        platformPolicy: definition.systemPrompt,
-        runtimePackage: pkg,
-      })
+    (manifest.systemPrompt !== employeePersonaPlatformSystemPrompt(definition) &&
+      (pkg.schemaVersion === 3 ||
+        manifest.systemPrompt !==
+          runtimePackageSystemPrompt({
+            platformPolicy: definition.systemPrompt,
+            runtimePackage: pkg,
+          })))
   )
     throw Error('employee_persona_source_projection_mismatch');
   return {
@@ -254,6 +337,7 @@ export async function readEmployeePersonaVersion(
       packageChecksum: pkg.checksum,
     }),
     definition,
+    material,
     manifest,
     platformKey: row.platform_key,
   };

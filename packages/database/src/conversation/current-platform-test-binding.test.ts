@@ -1,3 +1,4 @@
+import { legacyRuntimePackageFixture as buildEmployeeRuntimePackage } from '../platform-employees/legacy-runtime-package.fixture.ts';
 const oldGeneration = 'dsh-0.1.5-rc.3-a4c74a9' as const;
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -9,7 +10,7 @@ import {
   type PlatformEmployeeDefinition,
 } from '@allrice/contracts';
 import {
-  buildEmployeeRuntimePackage,
+  employeePersonaPlatformSystemPrompt,
   runtimePackageChecksum,
   runtimePackageSystemPrompt,
 } from '../platform-employees/runtime-package.ts';
@@ -666,7 +667,7 @@ describe('PERSONA platform provenance readiness', () => {
     },
   );
 
-  it('recognizes the schema-3 source and policy distinctly while refusing actual preview issuance', () => {
+  it('recognizes schema-3 source policy and issues previews only from the matching clean compiler', () => {
     const s = source(newNativeGeneration, 'bundled');
     const old = validatePlatformTestExecutionSource(s);
     const sourceIdentity = PlatformTestExecutionSourceSchema.parse({
@@ -731,11 +732,15 @@ describe('PERSONA platform provenance readiness', () => {
       checksum: personaRuntimePackageChecksum(payload),
     });
     s.packageChecksum = p.runtimePackage.checksum;
+    p.systemPrompt = employeePersonaPlatformSystemPrompt(definition);
+    expect(validatePlatformTestExecutionSource(s).source.packageSchema).toBe(3);
+    expect(
+      newCurrentPlatformTestOrigin({ scope: scope(), source: s }).birthSource
+        .packageSchema,
+    ).toBe(3);
+    p.systemPrompt += '\nsubstituted policy';
     expect(() => validatePlatformTestExecutionSource(s)).toThrow(
-      'platform_employee_test_persona_execution_unsupported',
+      'platform_employee_test_runtime_snapshot_mismatch',
     );
-    expect(() =>
-      newCurrentPlatformTestOrigin({ scope: scope(), source: s }),
-    ).toThrow('platform_employee_test_persona_execution_unsupported');
   });
 });

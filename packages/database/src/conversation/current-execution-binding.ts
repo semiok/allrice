@@ -12,6 +12,7 @@ import { employeeManifestChecksum } from '../employees/employee-config.ts';
 import {
   runtimePackageChecksum,
   verifiedRuntimePackageChecksum,
+  employeePersonaManifestMaterial,
 } from '../platform-employees/runtime-package.ts';
 import { frozenPackageSkills } from '../skill-bundles.ts';
 
@@ -276,16 +277,15 @@ export function validateEmployeeExecutionSource(
         deniedCapabilities: manifest.securityPolicy.deniedCapabilities,
       },
     });
-    need(
-      pkg.schemaVersion !== 3,
-      'CURRENT_EXECUTION_SOURCE_PERSONA_EXECUTION_UNSUPPORTED',
-    );
   } else {
     need(
       employeeManifestChecksum(manifest) === configChecksum,
       'CURRENT_EXECUTION_SOURCE_CHECKSUM_MISMATCH',
     );
   }
+  // Source-complete schema 3 and new definition-only manifests must prove the
+  // clean projection; historical 1/2/null without materials keep their contract.
+  employeePersonaManifestMaterial(manifest);
   const source = employeeExecutionSourceIdentity(
     { ...input, employeeVersionId, configChecksum },
     manifest,

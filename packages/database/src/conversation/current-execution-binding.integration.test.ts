@@ -1,3 +1,4 @@
+import { legacyRuntimePackageFixture as buildEmployeeRuntimePackage } from '../platform-employees/legacy-runtime-package.fixture.ts';
 const oldGeneration = 'dsh-0.1.5-rc.3-a4c74a9' as const;
 /** Real SQL admission/dispatch only. No native Host, provider, Dev API or live
  * application database is used; the existing fixture owns a UUID schema. */
@@ -29,7 +30,6 @@ import {
 import { resolveEmployeeExecution } from '../employees/employeehub.ts';
 import { employeeManifestChecksum } from '../employees/employee-config.ts';
 import {
-  buildEmployeeRuntimePackage,
   runtimePackageChecksum,
   verifiedRuntimePackageChecksum,
 } from '../platform-employees/runtime-package.ts';
@@ -201,6 +201,55 @@ integration(
         expect(externalCalls).toBe(0);
       }
     }, 30_000);
+
+    it('follows schema-3 within the original SQL generation contract and preserves legacy branches', async () => {
+      const origin = {
+        schemaVersion: 2,
+        contextKind: 'chat',
+        distributionGeneration: newNativeGeneration,
+        sourcePolicy: { family: 'allrice_declarative_employee_v1' },
+      };
+      const manifest = (
+        version: number | null,
+        generation: string = newNativeGeneration,
+      ) => ({
+        schemaVersion: 2,
+        runtimePolicy: { harness: 'dsh' },
+        runtimePackage:
+          version === null
+            ? null
+            : {
+                schemaVersion: version,
+                runtimeManifest: { distributionGeneration: generation },
+              },
+      });
+      const cases = [
+        [origin, manifest(3), true],
+        [origin, manifest(3, oldGeneration), true],
+        [origin, manifest(3, 'synthetic-next-generation'), false],
+        [origin, manifest(4), false],
+        [{ ...origin, contextKind: 'platform_employee_test' }, manifest(3), false],
+        [{ ...origin, sourcePolicy: { family: 'other' } }, manifest(3), false],
+        [{ ...origin, distributionGeneration: 'synthetic-next-generation' }, manifest(3), false],
+        [origin, { ...manifest(3), schemaVersion: 1 }, false],
+        [origin, { ...manifest(3), runtimePolicy: { harness: 'other' } }, false],
+        ...[1, 2, null].map((version) => [origin, manifest(version), true]),
+        [null, manifest(1, oldGeneration), true],
+        [null, manifest(3, oldGeneration), true],
+        [null, manifest(null), true],
+        [null, manifest(3), false],
+        [{ schemaVersion: 1, distributionGeneration: oldGeneration }, manifest(2, oldGeneration), true],
+        [{ schemaVersion: 1, distributionGeneration: oldGeneration }, manifest(3, oldGeneration), true],
+        [{ schemaVersion: 1, distributionGeneration: oldGeneration }, manifest(3), false],
+      ] as const;
+      for (const [birth, declaration, expected] of cases) {
+        const [row] = await fixture.db<{ compatible: boolean }[]>`
+          select allrice_native_session_version_compatible(
+            ${birth === null ? null : fixture.db.json(toJsonValue(birth))},
+            ${fixture.db.json(toJsonValue(declaration))}) compatible`;
+        expect(row?.compatible).toBe(expected);
+      }
+    });
 
     function packageFor(kind: Exclude<SourceKind, 'default-rice'>) {
       const pkg = structuredClone(

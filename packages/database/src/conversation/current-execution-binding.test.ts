@@ -1,3 +1,4 @@
+import { legacyRuntimePackageFixture as buildEmployeeRuntimePackage } from '../platform-employees/legacy-runtime-package.fixture.ts';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -15,7 +16,6 @@ import {
   employeeManifestChecksum,
 } from '../employees/employee-config.ts';
 import {
-  buildEmployeeRuntimePackage,
   runtimePackageChecksum,
 } from '../platform-employees/runtime-package.ts';
 import { skillBundleChecksum, skillBytesChecksum } from '../skill-bundles.ts';
@@ -883,17 +883,8 @@ describe('PERSONA package declaration readiness', () => {
       schemaVersion: 3,
       packageVersion: legacy.packageVersion,
       capabilityFingerprint: legacy.capabilityFingerprint,
-      foundation: {
-        name: manifest.name,
-        description: manifest.description,
-        appearance: manifest.appearance,
-        identity: {
-          ...manifest.identity,
-          expressionStyle: 'structured',
-          outputLanguage: 'zh-CN',
-        },
-      },
-      platformPolicy: manifest.systemPrompt,
+      foundation: manifest.personaSource!.foundation,
+      platformPolicy: manifest.personaSource!.platformPolicy,
       skills: legacy.skills,
       runtimeManifest,
     } satisfies PersonaRuntimePackagePayload;
@@ -908,7 +899,7 @@ describe('PERSONA package declaration readiness', () => {
     return { input, manifest, pkg };
   }
 
-  it('verifies schema-3 declarations and frozen resources but cannot issue a current chat execution source', () => {
+  it('issues schema-3 sources only after checking declarations, resources and the clean projection', () => {
     const { input, manifest, pkg } = personaSource();
     const before = structuredClone(input);
     expect(
@@ -923,16 +914,17 @@ describe('PERSONA package declaration readiness', () => {
         },
       }),
     ).toEqual(pkg.skills);
+    expect(validateEmployeeExecutionSource(input).source.packageSchema).toBe(3);
+    expect(chat(input).origin.birthSource.packageSchema).toBe(3);
+    manifest.systemPrompt += '\nsubstituted policy';
     expect(() => validateEmployeeExecutionSource(input)).toThrow(
-      'CURRENT_EXECUTION_SOURCE_PERSONA_EXECUTION_UNSUPPORTED',
+      'employee_persona_source_projection_mismatch',
     );
-    expect(() => chat(input)).toThrow(
-      'CURRENT_EXECUTION_SOURCE_PERSONA_EXECUTION_UNSUPPORTED',
-    );
+    manifest.systemPrompt = (before.manifest as EmployeeDefinition).systemPrompt;
     expect(input).toEqual(before);
   });
 
-  it('retains declaration and fingerprint checks before schema-3 execution refusal', () => {
+  it('retains declaration and fingerprint checks for schema-3 execution', () => {
     const { input, manifest, pkg } = personaSource();
     manifest.runtimePolicy.model = 'substituted';
     expect(() => validateEmployeeExecutionSource(input)).toThrow(
