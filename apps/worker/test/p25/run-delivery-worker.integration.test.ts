@@ -1155,6 +1155,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       partnerProfile: employeeManifest({
         key: 'lock-probe-calibration',
         name: 'Lock probe calibration',
+        description: 'Isolated row-lock calibration without model execution.',
       }).partnerProfile,
     });
     await ensureGeneralEmployeeInstance(db, assignment.id);
