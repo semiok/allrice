@@ -941,9 +941,26 @@ suite('reading a receipt while late native trace changes its group', () => {
       await page.close();
     }
   });
-  it('preserves an external answer disclosure, keyboard focus and selection when its native trace arrives', async () => {
-    const { page, errors, primary } = await openProcess(390, 'light', 'late');
+  async function readExternalQuestion(choice: 'open' | 'outer' | 'group') {
+    const { page, errors, primary } = await openProcess(
+      390,
+      'light',
+      choice === 'group'
+        ? 'late&standard'
+        : choice === 'open'
+          ? 'late&empty'
+          : 'late',
+    );
     try {
+      const ancestor =
+        choice === 'group'
+          ? primary.getByRole('region', { name: '工作步骤', exact: true })
+          : primary.getByRole('region', { name: '工作过程', exact: true });
+      const fold = ancestor.locator('[data-disclosure-row]').first();
+      if (choice === 'group') await fold.click();
+      if (choice !== 'open') await fold.click();
+      if (choice !== 'open')
+        expect(await fold.getAttribute('aria-expanded')).toBe('false');
       const receipt = answerReceipt(page, 'accepted');
       const toggle = receipt.getByRole('button', {
         name: '提问 · 2/2 已回答',
@@ -969,6 +986,7 @@ suite('reading a receipt while late native trace changes its group', () => {
       expect(selected).toBe('只读检查');
       await page.evaluate(() => window.processTrace());
       await expect.poll(() => primary.locator(receipt).count()).toBe(1);
+      expect(await receipt.isVisible()).toBe(true);
       expect(await page.locator('#message-answer-0').count()).toBe(0);
       expect(await toggle.getAttribute('aria-expanded')).toBe('true');
       expect(
@@ -977,13 +995,63 @@ suite('reading a receipt while late native trace changes its group', () => {
       expect(
         await page.evaluate(() => document.getSelection()!.toString()),
       ).toBe(selected);
+      await fold.click();
+      expect(await receipt.isVisible()).toBe(false);
+      await fold.click();
+      expect(await receipt.isVisible()).toBe(true);
+      await toggle.focus();
       await page.keyboard.press('Space');
       expect(await toggle.getAttribute('aria-expanded')).toBe('false');
       expect(errors).toEqual([]);
     } finally {
       await page.close();
     }
-  });
+  }
+  it.each(['open', 'outer', 'group'] as const)(
+    'preserves an external answer disclosure, focus and selection after a %s ancestor choice',
+    readExternalQuestion,
+  );
+  it.each(['failed', 'completed', 'canceled'] as const)(
+    'keeps authoritative %s above a stale pending view, then reads the complete trace',
+    async (status) => {
+      const { page, errors } = await openProcess(
+        390,
+        'light',
+        `late&terminal=${status}`,
+      );
+      try {
+        const task = page.locator(`#message-${ids.runningRun}`);
+        const title =
+          status === 'completed'
+            ? '工作过程'
+            : status === 'canceled'
+              ? '已停止'
+              : '未完成';
+        const step = task.locator('[data-step-id="tool:pending"]');
+        for (const loaded of [false, true]) {
+          await task
+            .getByRole('button', { name: title, exact: true })
+            .waitFor();
+          expect(
+            await task.getByText('等待回答', { exact: true }).count(),
+          ).toBe(0);
+          expect(
+            await task.getByText('回答已提交', { exact: true }).count(),
+          ).toBe(0);
+          if (!loaded) {
+            expect(await step.getAttribute('data-status')).toBe('结果未确认');
+            await page.evaluate(() => window.processTrace());
+            await expect
+              .poll(() => step.getAttribute('data-status'))
+              .toBe('已完成');
+          }
+        }
+        expect(errors).toEqual([]);
+      } finally {
+        await page.close();
+      }
+    },
+  );
   it('keeps the streamed table selection readable when completion moves the reply outside its process', async () => {
     const { page, errors, primary } = await openProcess(
       390,

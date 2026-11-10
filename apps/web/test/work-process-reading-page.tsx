@@ -312,7 +312,13 @@ const processRequests: UserQuestionRequest[] = [
   };
 });
 const processResult = `最终核对结果。\n\n| 项目 | 数量 |\n| --- | --- |\n| 已核对 | 12 |\n\n[核对结果.csv](/api/v1/files/${ids.artifact}/download)`;
-function processEvents(runId: string, indices: number[], result?: string) {
+type Terminal = 'failed' | 'completed' | 'canceled';
+function processEvents(
+  runId: string,
+  indices: number[],
+  result?: string,
+  terminal?: Terminal,
+) {
   const events: ChatFlowEventEnvelope[] = [];
   const add = (
     type: ChatFlowEventEnvelope['type'],
@@ -343,6 +349,7 @@ function processEvents(runId: string, indices: number[], result?: string) {
         : null,
     });
   };
+  add('turn.started', { turnId: 'process-turn' });
   if (runId === ids.run) {
     for (const [toolCallId, name, activityDetail, end, summary] of [
       [
@@ -383,11 +390,13 @@ function processEvents(runId: string, indices: number[], result?: string) {
             : request,
       },
     );
-    if (index !== 4)
+    if (index !== 4 || terminal)
       add(
-        'tool.failed',
+        index === 4 ? 'tool.completed' : 'tool.failed',
         { toolCallId: request.callId, name: 'ask_user_question' },
-        { type: 'tool/call', payload: { questionWait: true } },
+        index === 4
+          ? null
+          : { type: 'tool/call', payload: { questionWait: true } },
       );
   }
   if (result) {
@@ -401,6 +410,15 @@ function processEvents(runId: string, indices: number[], result?: string) {
     });
     add('run.succeeded', {});
   }
+  if (terminal)
+    add(
+      terminal === 'completed'
+        ? 'run.succeeded'
+        : terminal === 'canceled'
+          ? 'run.canceled'
+          : 'run.failed',
+      {},
+    );
   return events;
 }
 const processTraces = {
@@ -418,19 +436,21 @@ const processTraces = {
   },
 };
 function ProcessFixture() {
+  const params = new URLSearchParams(location.search);
+  const terminal = params.get('terminal') as Terminal | null;
   const [adopted, setAdopted] = useState(false);
-  const [traceLoaded, setTraceLoaded] = useState(
-    !new URLSearchParams(location.search).has('late'),
-  );
-  const [finished, setFinished] = useState(
-    !new URLSearchParams(location.search).has('running'),
-  );
+  const [traceLoaded, setTraceLoaded] = useState(!params.has('late'));
+  const [finished, setFinished] = useState(!params.has('running'));
   window.processAdopt = () => setAdopted(true);
   window.processTrace = () => setTraceLoaded(true);
   window.processFinish = () => setFinished(true);
   const full = processTraces[ids.run]!;
   const events = !traceLoaded
-    ? []
+    ? params.has('empty')
+      ? []
+      : full.events.filter(
+          (event) => event.sourceEvent?.type !== 'session/user-question',
+        )
     : finished
       ? full.events
       : full.events.filter(
@@ -479,6 +499,7 @@ function ProcessFixture() {
         <ChatTranscript
           atBottom
           streamingOutput
+          transcriptView={params.has('standard') ? 'standard' : 'detailed'}
           collapseTiming="next-input"
           messages={[
             user,
@@ -489,23 +510,55 @@ function ProcessFixture() {
                 role: 'assistant',
                 runId,
                 status:
-                  runId === ids.runningRun || (runId === ids.run && !finished)
-                    ? 'pending'
-                    : 'completed',
+                  runId === ids.runningRun &&
+                  terminal &&
+                  terminal !== 'canceled'
+                    ? terminal
+                    : runId === ids.runningRun ||
+                        (runId === ids.run && !finished)
+                      ? 'pending'
+                      : 'completed',
                 content: {
                   text:
                     runId === ids.run
                       ? processResult
                       : runId === ids.runningRun
-                        ? ''
+                        ? terminal
+                          ? '本轮已结束。'
+                          : ''
                         : '另一会话的最终结果。',
                 },
               }),
             ),
             ...answers,
           ]}
-          runTraces={{ ...processTraces, [ids.run]: { ...full, events } }}
-          runViews={{}}
+          runTraces={{
+            ...processTraces,
+            [ids.run]: { ...full, events },
+            ...(terminal
+              ? {
+                  [ids.runningRun]: {
+                    status: traceLoaded ? 'loaded' : 'loading',
+                    events: traceLoaded
+                      ? processEvents(ids.runningRun, [4], undefined, terminal)
+                      : [],
+                  },
+                }
+              : {}),
+          }}
+          runViews={
+            terminal
+              ? {
+                  [ids.runningRun]: {
+                    runId: ids.runningRun,
+                    status: terminal,
+                    cursor: null,
+                    reconnects: 0,
+                    events: processTraces[ids.runningRun]!.events,
+                  },
+                }
+              : {}
+          }
           tenantHeaders={headers}
           transcriptColumn={column}
           workspaceId={ids.workspace}
@@ -514,13 +567,15 @@ function ProcessFixture() {
           onScrollToBottom={() => {}}
         />
       </InputStatusContext.Provider>
-      <UserQuestionComposer
-        busy={false}
-        error=""
-        pending={pending}
-        onCancelRun={() => {}}
-        onSubmit={() => {}}
-      />
+      {!terminal && (
+        <UserQuestionComposer
+          busy={false}
+          error=""
+          pending={pending}
+          onCancelRun={() => {}}
+          onSubmit={() => {}}
+        />
+      )}
     </main>
   );
 }

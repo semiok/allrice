@@ -54,6 +54,7 @@ import {
   TranscriptUserMessage,
 } from './transcript-user-message';
 import { workProcessQuestions } from '../../lib/chatflow/work-process-questions';
+import { mergeChatFlowEvents } from '../../lib/chatflow/run-event-buffer';
 import { WorkProcessReadingState } from './work-process-reading-state';
 import { AutomationRunTaskCards } from './automation-run-task-cards';
 import { AssistantMessageActions } from './message-feedback';
@@ -200,15 +201,19 @@ export const ChatTranscript = memo(function ChatTranscript({
       assistantRuns.has(m.steering.runId),
   );
   const embedded = new Set(adopted.map((m) => m.id));
+  const eventsForMessage = (message: Message) => {
+    const view = runViews[message.runId ?? ''];
+    const trace = runTraces[message.runId ?? ''];
+    return !isMessageRunActive(message, view) && trace?.status === 'loaded'
+      ? mergeChatFlowEvents(trace.events, view?.events ?? [])
+      : (view?.events ?? trace?.events ?? []);
+  };
   const questions = workProcessQuestions(
     messages
       .filter((message) => message.role === 'assistant')
       .map((message) => ({
         id: message.id,
-        events:
-          runViews[message.runId ?? '']?.events ??
-          runTraces[message.runId ?? '']?.events ??
-          [],
+        events: eventsForMessage(message),
       })),
     messages.flatMap((message) =>
       message.role === 'user' &&
@@ -281,7 +286,7 @@ export const ChatTranscript = memo(function ChatTranscript({
               const timing = message.runId
                 ? timingByRun.get(message.runId)
                 : undefined;
-              const traceEvents = messageRun?.events ?? trace?.events ?? [];
+              const traceEvents = eventsForMessage(message);
               const memoryRevision = memoryRevisionForRun(message.runId);
               const messageIsRunning = isMessageRunActive(message, messageRun);
               const streamedText = messageRun

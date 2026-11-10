@@ -59,11 +59,12 @@ describe('native process display surface', () => {
       },
     ];
     const html = render({ items: memory, parts: undefined });
-    expect(html).toContain('已调用工具');
+    expect(html).toContain('整理工作记忆');
+    expect(html).not.toContain('已调用工具');
     expect(html).not.toContain('记忆 · 1 项');
     expect(
-      render({ items: memory, parts: undefined, transcriptView: 'verbose' }),
-    ).toContain('整理工作记忆');
+      render({ items: memory, parts: undefined, transcriptView: 'standard' }),
+    ).toContain('已调用工具');
     expect(html).not.toContain('已记住');
   });
 
@@ -113,8 +114,9 @@ describe('native process display surface', () => {
   it('retains the accepted final answer outside completed process folding', () => {
     const html = render();
     expect(html).toContain('data-process-open="false"');
-    expect(html).toMatch(/data-work-reply="progress" hidden=""/);
-    expect(html).toMatch(/data-work-reply="final-reply">/);
+    expect(html).toMatch(/data-work-reply="progress"[^>]* hidden=""/);
+    expect(html).toMatch(/data-work-reply="final-reply"[^>]*>/);
+    expect(html).not.toMatch(/data-work-reply="final-reply"[^>]* hidden/);
     expect(html).toContain('最终交付');
     expect(html.lastIndexOf('</section>')).toBeLessThan(
       html.indexOf('data-work-reply="final-reply"'),
@@ -168,7 +170,7 @@ describe('native process display surface', () => {
   it('keeps verbose history fully visible without a step-group control', () => {
     const html = render({ transcriptView: 'verbose' });
     expect(html).toContain('data-process-open="true"');
-    expect(html).not.toMatch(/data-work-reply="progress" hidden/);
+    expect(html).not.toMatch(/data-work-reply="progress"[^>]* hidden/);
     expect(html).toContain('检查入口文件');
     expect(html).not.toContain('正在读取文件');
   });
@@ -192,6 +194,64 @@ describe('native process display surface', () => {
     expect(html).not.toContain('等待你的回答');
     expect(html.match(/data-status="已完成"/g)).toHaveLength(1);
   });
+  it.each([
+    [true, false, false, '等待回答'],
+    [false, false, false, '工作过程'],
+    [false, true, false, '未完成'],
+    [false, false, true, '已停止'],
+  ] as const)(
+    'limits an old pending question to the current run state (%s/%s/%s)',
+    (running, failed, canceled, title) => {
+      for (const submitted of [false, true]) {
+        const html = render({
+          running,
+          failed,
+          canceled,
+          parts: undefined,
+          transcriptView: 'verbose',
+          items: [
+            { ...items[0]!, id: 'tool:ask', toolName: 'ask_user_question' },
+          ],
+          questions: [
+            {
+              callId: 'ask',
+              pending: true,
+              answered: false,
+              request: {
+                questionId: 'native:ask',
+                nativeSessionId: 'native',
+                callId: 'ask',
+                durable: true,
+                questions: [
+                  { id: 'sort', question: '按什么排序？', multiSelect: false },
+                ],
+              },
+              answer: submitted
+                ? {
+                    id: 'answer',
+                    text: '排序：跳过',
+                    createdAt: '2026-11-10T00:00:00Z',
+                    status: 'pending',
+                    answer: {
+                      questionId: 'native:ask',
+                      answers: [{ id: 'sort', selected: [] }],
+                    },
+                  }
+                : undefined,
+            },
+          ],
+        });
+        expect(html).toContain(
+          `>${running && submitted ? '回答已提交' : title}<`,
+        );
+        if (!running) {
+          expect(html).not.toContain('等待回答');
+          expect(html).not.toContain('回答已提交');
+          expect(html).not.toContain('Rice 已收到你的回答');
+        }
+      }
+    },
+  );
   it.each(['failed', 'canceled'] as const)(
     'keeps a %s process visible',
     (state) => {

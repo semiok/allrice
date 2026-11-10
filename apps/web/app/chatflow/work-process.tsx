@@ -1,6 +1,13 @@
 'use client';
 
-import { Children, useEffect, useState, useRef, type ReactNode } from 'react';
+import {
+  Children,
+  useEffect,
+  useLayoutEffect,
+  useState,
+  useRef,
+  type ReactNode,
+} from 'react';
 import {
   WorkProcessReadingState,
   WorkProcessDisclosureScope,
@@ -53,6 +60,7 @@ import type { ChatPresentationPolicy } from '@deepseek-ai/dsh-client-ui-chat/cli
 import {
   workProcessDisplayState,
   workProcessPresentation,
+  sameWorkProcessAnswer,
   type WorkProcessDisclosure,
   type WorkProcessPresentation,
 } from '../../lib/chatflow/work-process-presentation';
@@ -159,20 +167,27 @@ export function WorkProcess({
       currentPresentation.identityKnown &&
       disclosure.presentation.runId === currentPresentation.runId
     )
-      setDisclosure({ ...disclosure, presentation: currentPresentation });
+      setDisclosure((current) =>
+        current === disclosure
+          ? { ...disclosure, presentation: currentPresentation }
+          : current,
+      );
   }, [disclosure, currentPresentation]);
   const process = summarizeWorkProcess(items);
   const microStatus = running && (!streaming || !!parts);
   const waiting = timing?.phase === 'waiting';
-  const waitingQuestion = questions.some(
-    (question) => question.pending && !question.answer,
-  );
-  const submittedQuestion = questions.some(
-    (question) =>
-      question.pending &&
-      question.answer &&
-      userQuestionReceiptState(question.answer.status).state !== 'confirmed',
-  );
+  const acceptingAnswers = running && !failed && !canceled;
+  const waitingQuestion =
+    acceptingAnswers &&
+    questions.some((question) => question.pending && !question.answer);
+  const submittedQuestion =
+    acceptingAnswers &&
+    questions.some(
+      (question) =>
+        question.pending &&
+        question.answer &&
+        userQuestionReceiptState(question.answer.status).state !== 'confirmed',
+    );
   const title = waitingQuestion
     ? '等待回答'
     : submittedQuestion
@@ -211,15 +226,37 @@ export function WorkProcess({
       )
     : undefined;
   const history = parts?.filter((part) => part.id !== final?.id);
-  const readingQuestion = useQuestionDisclosureOpen(
-    questions.flatMap((question) =>
-      question.answer
-        ? [
-            `step:${questionReceiptDisclosureId(question.request.questionId, question.answer.id)}`,
-          ]
-        : [],
-    ),
+  const questionKeys = questions.flatMap((question) =>
+    question.answer
+      ? [
+          `step:${questionReceiptDisclosureId(question.request.questionId, question.answer.id)}`,
+        ]
+      : [],
   );
+  const previousQuestions = useRef({
+    presentation: currentPresentation,
+    keys: questionKeys,
+  });
+  const migratedKeys = sameWorkProcessAnswer(
+    previousQuestions.current.presentation,
+    currentPresentation,
+  )
+    ? questionKeys.filter(
+        (key) => !previousQuestions.current.keys.includes(key),
+      )
+    : [];
+  const readingQuestion = useQuestionDisclosureOpen(questionKeys);
+  const revealingQuestion = useQuestionDisclosureOpen(migratedKeys);
+  useLayoutEffect(() => {
+    // Only a committed ownership move invalidates an older closed choice.
+    previousQuestions.current = {
+      presentation: currentPresentation,
+      keys: questionKeys,
+    };
+    if (revealingQuestion)
+      setDisclosure({ presentation: currentPresentation, open: true });
+  });
+  const revealingQuestions = revealingQuestion ? migratedKeys : [];
   const display = workProcessDisplayState({
     policy,
     presentation: currentPresentation,
@@ -228,7 +265,9 @@ export function WorkProcess({
     canceled,
     hasHistory: parts ? Boolean(history?.length || expandable) : expandable,
     disclosure:
-      disclosure ??
+      (revealingQuestion
+        ? { presentation: currentPresentation, open: true }
+        : disclosure) ??
       (readingQuestion
         ? { presentation: currentPresentation, open: true }
         : undefined),
@@ -292,6 +331,7 @@ export function WorkProcess({
           <WorkProcessGroup
             items={part.items}
             questions={questions}
+            revealingQuestions={revealingQuestions}
             renderOperation={renderOperation}
             running={running && !part.closed}
             grouped={display.groupSteps}
@@ -419,6 +459,7 @@ export function WorkProcess({
             key={currentPresentation.answerGeneration}
             items={items}
             questions={questions}
+            revealingQuestions={revealingQuestions}
             running={running}
             grouped={display.groupSteps}
             policy={policy}
@@ -462,6 +503,7 @@ export function WorkProcess({
 function WorkProcessGroup({
   items,
   questions,
+  revealingQuestions,
   running,
   renderOperation,
   grouped,
@@ -470,6 +512,7 @@ function WorkProcessGroup({
 }: {
   items: NativeExperienceItem[];
   questions: readonly WorkProcessQuestion[];
+  revealingQuestions: readonly string[];
   running: boolean;
   renderOperation?: (operationId: string) => ReactNode;
   grouped: boolean;
@@ -484,6 +527,7 @@ function WorkProcessGroup({
         key={answerGeneration}
         items={items}
         questions={questions}
+        revealingQuestions={revealingQuestions}
         running={running}
         grouped={grouped}
         policy={policy}
@@ -509,12 +553,14 @@ function WorkProcessGroup({
 function NativeStepsGroup({
   items,
   questions,
+  revealingQuestions,
   running,
   grouped,
   policy,
 }: {
   items: NativeExperienceItem[];
   questions: readonly WorkProcessQuestion[];
+  revealingQuestions: readonly string[];
   running: boolean;
   grouped: boolean;
   policy: ChatPresentationPolicy;
@@ -523,17 +569,22 @@ function NativeStepsGroup({
     items.map((item) => `group:${item.id}`),
     undefined,
   );
-  const readingQuestion = useQuestionDisclosureOpen(
-    questions.flatMap((question) =>
-      question.answer &&
-      items.some((item) => item.id === `tool:${question.callId}`)
-        ? [
-            `step:${questionReceiptDisclosureId(question.request.questionId, question.answer.id)}`,
-          ]
-        : [],
-    ),
+  const questionKeys = questions.flatMap((question) =>
+    question.answer &&
+    items.some((item) => item.id === `tool:${question.callId}`)
+      ? [
+          `step:${questionReceiptDisclosureId(question.request.questionId, question.answer.id)}`,
+        ]
+      : [],
   );
-  const open = manual ?? readingQuestion;
+  const readingQuestion = useQuestionDisclosureOpen(questionKeys);
+  const revealingQuestion = useQuestionDisclosureOpen(
+    questionKeys.filter((key) => revealingQuestions.includes(key)),
+  );
+  const open = revealingQuestion || (manual ?? readingQuestion);
+  useLayoutEffect(() => {
+    if (revealingQuestion) setOpen(true);
+  });
   const { steps } = summarizeWorkProcess(items);
   if (!steps.length || onlyLiveThinking(steps, running)) return null;
   // The approved default process already has its turn disclosure. Show its
@@ -622,7 +673,7 @@ function WorkProcessSteps({
         const status =
           step.status === 'failed'
             ? '未成功'
-            : question?.pending && !question.answer
+            : running && question?.pending && !question.answer
               ? '等待回答'
               : question?.answered
                 ? '已回答'
