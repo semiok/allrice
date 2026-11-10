@@ -445,10 +445,16 @@ function ProcessFixture() {
   window.processTrace = () => setTraceLoaded(true);
   window.processFinish = () => setFinished(true);
   const full = processTraces[ids.run]!;
+  const early = params.has('partial')
+    ? full.events.slice(
+        0,
+        full.events.findIndex((event) => event.type === 'assistant.text.delta'),
+      )
+    : full.events;
   const events = !traceLoaded
     ? params.has('empty')
       ? []
-      : full.events.filter(
+      : early.filter(
           (event) => event.sourceEvent?.type !== 'session/user-question',
         )
     : finished
@@ -500,7 +506,7 @@ function ProcessFixture() {
           atBottom
           streamingOutput
           transcriptView={params.has('standard') ? 'standard' : 'detailed'}
-          collapseTiming="next-input"
+          collapseTiming={params.has('partial') ? 'completion' : 'next-input'}
           messages={[
             user,
             ...[ids.run, ids.succeededOperation, ids.runningRun].map(

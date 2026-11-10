@@ -941,17 +941,28 @@ suite('reading a receipt while late native trace changes its group', () => {
       await page.close();
     }
   });
-  async function readExternalQuestion(choice: 'open' | 'outer' | 'group') {
+  async function readExternalQuestion(
+    choice: 'open' | 'outer' | 'group',
+    partial = false,
+  ) {
     const { page, errors, primary } = await openProcess(
       390,
       'light',
-      choice === 'group'
+      (choice === 'group'
         ? 'late&standard'
         : choice === 'open'
           ? 'late&empty'
-          : 'late',
+          : 'late') + (partial ? '&partial' : ''),
     );
     try {
+      if (partial) {
+        const outer = primary
+          .getByRole('region', { name: '工作过程', exact: true })
+          .locator('[data-disclosure-row]')
+          .first();
+        expect(await outer.getAttribute('aria-expanded')).toBe('false');
+        await outer.click();
+      }
       const ancestor =
         choice === 'group'
           ? primary.getByRole('region', { name: '工作步骤', exact: true })
@@ -1009,7 +1020,11 @@ suite('reading a receipt while late native trace changes its group', () => {
   }
   it.each(['open', 'outer', 'group'] as const)(
     'preserves an external answer disclosure, focus and selection after a %s ancestor choice',
-    readExternalQuestion,
+    (choice) => readExternalQuestion(choice),
+  );
+  it.each(['outer', 'group'] as const)(
+    'preserves reading through a partial trace completion after closing the %s ancestor',
+    (choice) => readExternalQuestion(choice, true),
   );
   it.each(['failed', 'completed', 'canceled'] as const)(
     'keeps authoritative %s above a stale pending view, then reads the complete trace',

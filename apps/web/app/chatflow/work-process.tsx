@@ -60,7 +60,6 @@ import type { ChatPresentationPolicy } from '@deepseek-ai/dsh-client-ui-chat/cli
 import {
   workProcessDisplayState,
   workProcessPresentation,
-  sameWorkProcessAnswer,
   type WorkProcessDisclosure,
   type WorkProcessPresentation,
 } from '../../lib/chatflow/work-process-presentation';
@@ -234,23 +233,22 @@ export function WorkProcess({
       : [],
   );
   const previousQuestions = useRef({
-    presentation: currentPresentation,
+    runId: currentPresentation.runId,
     keys: questionKeys,
   });
-  const migratedKeys = sameWorkProcessAnswer(
-    previousQuestions.current.presentation,
-    currentPresentation,
-  )
-    ? questionKeys.filter(
-        (key) => !previousQuestions.current.keys.includes(key),
-      )
-    : [];
+  // Exact question/answer ownership can arrive with the final reply identity.
+  const migratedKeys =
+    previousQuestions.current.runId === currentPresentation.runId
+      ? questionKeys.filter(
+          (key) => !previousQuestions.current.keys.includes(key),
+        )
+      : [];
   const readingQuestion = useQuestionDisclosureOpen(questionKeys);
   const revealingQuestion = useQuestionDisclosureOpen(migratedKeys);
   useLayoutEffect(() => {
     // Only a committed ownership move invalidates an older closed choice.
     previousQuestions.current = {
-      presentation: currentPresentation,
+      runId: currentPresentation.runId,
       keys: questionKeys,
     };
     if (revealingQuestion)
