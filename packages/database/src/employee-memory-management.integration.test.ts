@@ -29,20 +29,6 @@ import {
   memoryPairDigest,
 } from './workspace/employee-memory.ts';
 import { freezeEmployeeDocuments } from './employees/employee-documents.ts';
-import { GET as manage } from '../../../apps/web/app/api/v1/memories/manage/route.ts';
-import {
-  POST as create,
-  GET as rawList,
-} from '../../../apps/web/app/api/v1/memories/route.ts';
-import {
-  GET as detail,
-  PATCH as edit,
-  DELETE as remove,
-} from '../../../apps/web/app/api/v1/memories/[id]/route.ts';
-import { POST as promote } from '../../../apps/web/app/api/v1/memories/[id]/promote/route.ts';
-import { POST as pin } from '../../../apps/web/app/api/v1/memories/[id]/pin/route.ts';
-import { GET as adminList } from '../../../apps/web/app/api/v1/admin/organizations/[organizationId]/employee-memories/route.ts';
-import { GET as adminDetail } from '../../../apps/web/app/api/v1/admin/organizations/[organizationId]/employee-memories/[id]/route.ts';
 
 const ports = vi.hoisted(() => ({ context: vi.fn() }));
 vi.mock('../../../apps/web/lib/identity/session', () => ({
@@ -55,11 +41,62 @@ const suite =
 suite(
   'memory management v2: real owner HTTP, atomic admission and administrator audit',
   () => {
+    type ReadHandler = (request: Request) => Promise<Response>;
+    type TargetHandler<T> = (
+      request: Request,
+      route: { params: Promise<T> },
+    ) => Promise<Response>;
+    type MemoryHandler = TargetHandler<{ id: string }>;
+    let manage: ReadHandler, create: ReadHandler, rawList: ReadHandler;
+    let detail: MemoryHandler,
+      edit: MemoryHandler,
+      remove: MemoryHandler,
+      promote: MemoryHandler,
+      pin: MemoryHandler;
+    let adminList: TargetHandler<{ organizationId: string }>;
+    let adminDetail: TargetHandler<{ organizationId: string; id: string }>;
     let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let admin: RequestContext;
     beforeAll(async () => {
       fixture = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
+      // Follow the existing cross-Web route integration seam: runtime-load real
+      // handlers while Web's own bundler typecheck remains responsible for them.
+      const managePath =
+        '../../../apps/web/app/api/v1/memories/manage/route.ts';
+      const createPath = '../../../apps/web/app/api/v1/memories/route.ts';
+      const recordPath = '../../../apps/web/app/api/v1/memories/[id]/route.ts';
+      const promotePath =
+        '../../../apps/web/app/api/v1/memories/[id]/promote/route.ts';
+      const pinPath = '../../../apps/web/app/api/v1/memories/[id]/pin/route.ts';
+      const adminListPath =
+        '../../../apps/web/app/api/v1/admin/organizations/[organizationId]/employee-memories/route.ts';
+      const adminDetailPath =
+        '../../../apps/web/app/api/v1/admin/organizations/[organizationId]/employee-memories/[id]/route.ts';
+      ({ GET: manage } = (await import(managePath)) as { GET: ReadHandler });
+      ({ POST: create, GET: rawList } = (await import(createPath)) as {
+        POST: ReadHandler;
+        GET: ReadHandler;
+      });
+      ({
+        GET: detail,
+        PATCH: edit,
+        DELETE: remove,
+      } = (await import(recordPath)) as {
+        GET: MemoryHandler;
+        PATCH: MemoryHandler;
+        DELETE: MemoryHandler;
+      });
+      ({ POST: promote } = (await import(promotePath)) as {
+        POST: MemoryHandler;
+      });
+      ({ POST: pin } = (await import(pinPath)) as { POST: MemoryHandler });
+      ({ GET: adminList } = (await import(adminListPath)) as {
+        GET: typeof adminList;
+      });
+      ({ GET: adminDetail } = (await import(adminDetailPath)) as {
+        GET: typeof adminDetail;
+      });
       const principal = await ensureBootstrapPortalPrincipal({
         organizationSlug: 'allrice-platform',
         organizationName: 'Platform',
