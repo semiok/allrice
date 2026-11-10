@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   HarnessEventSchema,
+  EmployeeSceneStateSchema,
   MemorySourceEvidenceSchema,
   type PersonalSceneSkill,
   type RequestContext,
@@ -552,15 +553,7 @@ suite(
           expect((await sources(run))[0]!.evidence.scenes).toEqual([]);
       },
     );
-    it.each([
-      'revision',
-      'session',
-      'message',
-      'checksum',
-      'read_run',
-      'read_shape',
-      'read_without_personal',
-    ] as const)(
+    it.each(['revision', 'session', 'message', 'checksum'] as const)(
       'B rejects inconsistent personal Workflow native provenance: %s',
       async (mode) => {
         const s = await setup(),
@@ -579,14 +572,7 @@ suite(
               : mode === 'message'
                 ? '{messageId}'
                 : '{nativePayload,contentChecksum}';
-        if (mode === 'read_run')
-          await f.db`update allrice_employee_runs set content_scene_state=jsonb_set(content_scene_state,'{reads,0,personal,runId}',${f.db.json(randomUUID())}) where run_id=${run.scope.runId}`;
-        else if (mode === 'read_shape')
-          await f.db`update allrice_employee_runs set content_scene_state='{"reads":[{}]}' where run_id=${run.scope.runId}`;
-        else if (mode === 'read_without_personal')
-          await f.db`update allrice_employee_runs set content_scene_state=content_scene_state#-'{reads,0,personal}' where run_id=${run.scope.runId}`;
-        else
-          await f.db`update allrice_run_events set payload=jsonb_set(payload,${path}::text[],${f.db.json(mode === 'revision' ? saved.revision + 1 : mode === 'checksum' ? 'sha256:' + 'f'.repeat(64) : randomUUID())}) where id=${event.id}`;
+        await f.db`update allrice_run_events set payload=jsonb_set(payload,${path}::text[],${f.db.json(mode === 'revision' ? saved.revision + 1 : mode === 'checksum' ? 'sha256:' + 'f'.repeat(64) : randomUUID())}) where id=${event.id}`;
         await collectSources();
         expect(await sources(run)).toEqual([]);
         const [result] =
@@ -594,7 +580,65 @@ suite(
         expect(result!.reason).toBe('dependency_unavailable');
       },
     );
+    it.each(['read_run', 'read_shape', 'read_without_personal'] as const)(
+      'DB rejects receipt mutation; B reader rejects the same in-memory corruption: %s',
+      async (mode) => {
+        const s = await setup(),
+          saved = await save(s),
+          run = await runtime(s);
+        await appendUse(
+          run,
+          useEvent(run, await native(run), await body(run, saved.sceneId)),
+        );
+        await terminal(run);
+        const [stored] = await f.db<sourceScenes.MemorySourceSceneRun[]>`
+          select run_id,organization_id,workspace_id,owner_id,session_id,assistant_message_id,
+            content_generation_id,content_scene_state,execution_snapshot
+          from allrice_employee_runs where run_id=${run.scope.runId}`;
+        const state = EmployeeSceneStateSchema.parse(
+          structuredClone(stored!.content_scene_state),
+        );
+        if (mode === 'read_run') state.reads[0]!.personal!.runId = randomUUID();
+        if (mode === 'read_without_personal') delete state.reads[0]!.personal;
+        const corrupted = mode === 'read_shape' ? { reads: [{}] } : state;
+        await expect(
+          f.db`update allrice_employee_runs set content_scene_state=${f.db.json(corrupted)} where run_id=${run.scope.runId}`,
+        ).rejects.toThrow('scene reads and adoption are immutable');
+        const [unchanged] =
+          await f.db`select content_scene_state from allrice_employee_runs where run_id=${run.scope.runId}`;
+        expect(unchanged!.content_scene_state).toEqual(
+          stored!.content_scene_state,
+        );
+        // The database never stores this bad receipt. Exercise only the
+        // helper's defensive input boundary, then capture the healthy DB row.
+        await f.db.begin(async (tx) => {
+          await expect(
+            sourceScenes.readMemorySourceScenes(
+              tx,
+              {
+                ...stored!,
+                content_scene_state: corrupted,
+              },
+              s.instance.id,
+            ),
+          ).rejects.toMatchObject({ code: 'source_changed' });
+        });
+        await collectSources();
+        const captured = await sources(run);
+        expect(captured).toHaveLength(1);
+        expect(captured[0]!.evidence.scenes[0].receipt).toEqual(
+          EmployeeSceneStateSchema.parse(stored!.content_scene_state).reads[0],
+        );
+      },
+    );
     it('B allows scene removal while capture is open and rejects the stale optimistic commit', async () => {
+      // This earlier pending Run must be captured without consuming the hook
+      // intended for the later target Run.
+      const other = await setup(),
+        otherSaved = await save(other),
+        otherRun = await runtime(other);
+      await body(otherRun, otherSaved.sceneId);
+      await terminal(otherRun);
       const s = await setup(),
         saved = await save(s),
         run = await runtime(s);
@@ -604,23 +648,77 @@ suite(
       );
       await terminal(run);
       const original = sourceScenes.assertMemorySourceScenesAvailable;
+      let removed = false,
+        stagedMemoryId: string | undefined,
+        finalReadRejected = false;
+      const targetPhases: string[] = [];
       const check = vi
         .spyOn(sourceScenes, 'assertMemorySourceScenesAvailable')
-        .mockImplementationOnce(async (...args) => {
-          await original(...args);
-          // Real removal must finish inside the open capture, before its final
-          // check. No scene/identity SHARE lock may be added by the new reader.
-          await removeScene(s, saved);
+        .mockImplementation(async (...args) => {
+          const [tx, , instanceId, scenes] = args;
+          if (
+            instanceId !== s.instance.id ||
+            !scenes.some(
+              (scene) =>
+                scene.runId === run.scope.runId &&
+                scene.receipt.personal.runId === run.scope.runId,
+            )
+          )
+            return original(...args);
+          if (!removed) {
+            await original(...args);
+            expect(await sources(run)).toEqual([]);
+            targetPhases.push('checked_before_write');
+            // Actual removal finishes inside the target's open capture. The
+            // existing identity locks must not be bypassed by a SQL fixture.
+            await removeScene(s, saved);
+            removed = true;
+            return;
+          }
+          const [staged] = await tx<{ memory_id: string }[]>`
+            select memory_id from allrice_experience_reviews
+            where evidence->>'captureRunId'=${run.scope.runId}`;
+          expect(staged).toBeDefined();
+          stagedMemoryId = staged!.memory_id;
+          expect(
+            await tx`select id from allrice_memories where id=${stagedMemoryId}`,
+          ).toHaveLength(1);
+          expect(
+            await tx`select memory_id from allrice_memory_revisions where memory_id=${stagedMemoryId}`,
+          ).toHaveLength(1);
+          expect(
+            await tx`select id from allrice_audit_events where action='memory.source.capture' and resource_id=${stagedMemoryId}`,
+          ).toHaveLength(1);
+          targetPhases.push('checked_before_commit_with_staged_ledger');
+          try {
+            return await original(...args);
+          } catch (error) {
+            finalReadRejected = true;
+            throw error;
+          }
         });
       try {
         await collectSources();
-        expect(check).toHaveBeenCalledTimes(2);
+        expect(removed).toBe(true);
+        expect(finalReadRejected).toBe(true);
+        expect(targetPhases).toEqual([
+          'checked_before_write',
+          'checked_before_commit_with_staged_ledger',
+        ]);
+        expect(stagedMemoryId).toBeDefined();
         expect(await sources(run)).toEqual([]);
         expect(
-          await f.db`select id from allrice_memories where source_id=(select user_message_id from allrice_employee_runs where run_id=${run.scope.runId})`,
+          await f.db`select memory_id from allrice_experience_reviews where memory_id=${stagedMemoryId!}`,
         ).toEqual([]);
         expect(
-          await f.db`select id from allrice_audit_events where action='memory.source.capture' and organization_id=${s.owner.organizationId}`,
+          await f.db`select memory_id from allrice_memory_revisions where memory_id=${stagedMemoryId!}`,
+        ).toEqual([]);
+        expect(
+          await f.db`select id from allrice_memories where id=${stagedMemoryId!} or source_id=(select user_message_id from allrice_employee_runs where run_id=${run.scope.runId})`,
+        ).toEqual([]);
+        expect(
+          await f.db`select id from allrice_audit_events where action='memory.source.capture'
+            and (organization_id=${s.owner.organizationId} or resource_id=${stagedMemoryId!})`,
         ).toEqual([]);
         const [result] =
           await f.db`select experience_capture_state state,experience_capture_reason reason from allrice_employee_runs where run_id=${run.scope.runId}`;
@@ -628,6 +726,11 @@ suite(
           state: 'ignored',
           reason: 'dependency_unavailable',
         });
+        const otherSources = await sources(otherRun);
+        expect(otherSources).toHaveLength(1);
+        expect(
+          otherSources[0]!.evidence.scenes[0].receipt.personal.contentRef,
+        ).toBe(otherSaved.contentRef);
       } finally {
         check.mockRestore();
       }
