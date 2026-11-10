@@ -1083,6 +1083,7 @@ suite(
       const resumed = await snapshot(t.id);
       const alias = {
         ...resumed,
+        task: null,
         control: { ...resumed.control, nativeTaskId: old.control.nativeTaskId },
       };
       await expect(
