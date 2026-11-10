@@ -3,6 +3,7 @@ import {
   DataAccessError,
   IdentityError,
   LegacyScheduleRetiredError,
+  EmployeeMemoryContractChanged,
 } from '@allrice/database';
 import type * as DatabaseModule from '@allrice/database';
 import { GET } from '../../app/api/v1/files/[id]/download/route';
@@ -76,5 +77,14 @@ it('returns a permanent private retirement response for the old schedule entry p
       message:
         '历史定时任务仅支持查看、暂停和删除。后续执行请在对话中创建新任务。',
     },
+  });
+});
+
+it('requires a v2 reread on a paired legacy edit without adding visible copy', async () => {
+  const response = storageErrorResponse(new EmployeeMemoryContractChanged());
+  expect(response.status).toBe(409);
+  expect(response.headers.get('cache-control')).toBe('private, no-store');
+  expect(await response.json()).toEqual({
+    error: 'employee_memory_contract_changed',
   });
 });
