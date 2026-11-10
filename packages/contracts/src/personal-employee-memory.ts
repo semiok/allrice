@@ -60,3 +60,57 @@ export type PersonalMemoryPair = z.infer<typeof PersonalMemoryPairSchema>;
 export type PersonalEmployeeMemory = z.infer<
   typeof PersonalEmployeeMemorySchema
 >;
+
+export const EmployeeMemoryMutationInputSchema = z
+  .object({
+    instanceId: UuidSchema,
+    expectedRevision: z.number().int().positive(),
+    pairDigest: ChecksumSchema,
+    idempotencyKey: UuidSchema,
+  })
+  .strict();
+export const EmployeeMemoryCountsSchema = z
+  .object({
+    active: z.number().int().min(0).max(100),
+    pending: z.number().int().nonnegative(),
+    maxActive: z.literal(100),
+  })
+  .strict();
+export const EmployeeMemoryListQuerySchema = z
+  .object({ workspaceId: UuidSchema, instanceId: UuidSchema })
+  .strict();
+export const EmployeeMemoryRowSchema = z
+  .object({
+    id: UuidSchema,
+    summary: PersonalMemorySummarySchema,
+    hasDetails: z.boolean(),
+    state: z.enum(['active', 'pending']),
+    revision: z.number().int().positive(),
+    pairDigest: ChecksumSchema,
+    capturedAt: TimestampSchema,
+    updatedAt: TimestampSchema,
+  })
+  .strict();
+export const EmployeeMemoryRecordSchema = EmployeeMemoryRowSchema.extend({
+  details: PersonalMemoryDetailsSchema,
+}).refine((row) => row.hasDetails === (row.details !== null));
+export const EmployeeMemoryListSchema = EmployeeMemoryListQuerySchema.extend({
+  schemaVersion: z.literal(2),
+  counts: EmployeeMemoryCountsSchema,
+  active: z.array(EmployeeMemoryRowSchema).max(100),
+  pending: z.array(EmployeeMemoryRowSchema),
+}).refine(
+  (page) =>
+    page.active.length === page.counts.active &&
+    page.pending.length === page.counts.pending &&
+    page.active.every((row) => row.state === 'active') &&
+    page.pending.every((row) => row.state === 'pending'),
+);
+export const EmployeeMemoryDetailResponseSchema = z
+  .object({ schemaVersion: z.literal(2), memory: EmployeeMemoryRecordSchema })
+  .strict();
+export const EmployeeMemoryWriteResponseSchema =
+  EmployeeMemoryDetailResponseSchema.extend({
+    counts: EmployeeMemoryCountsSchema,
+  });
+export type EmployeeMemoryRecord = z.infer<typeof EmployeeMemoryRecordSchema>;

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { ApiErrorSchema } from '@allrice/contracts';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as client from '../core/client.ts';
 import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
@@ -197,9 +198,17 @@ suite(
           { params: Promise.resolve({ id: m.id }) },
         );
         expect(response.status).toBe(409);
-        expect(await response.json()).toEqual({
-          error: 'employee_memory_contract_changed',
-        });
+        expect(ApiErrorSchema.parse(await response.json()).error).toMatchObject(
+          {
+            code: 'CONFLICT',
+            retryable: false,
+            details: {
+              domain: 'employee_memory',
+              reason: 'contract_changed',
+              requiredSchemaVersion: 2,
+            },
+          },
+        );
         expect(await snapshot(m.id)).toEqual(before);
       },
     );
@@ -345,9 +354,17 @@ suite(
         );
         expect(response.status).toBe(409);
         expect(response.headers.get('cache-control')).toBe('private, no-store');
-        expect(await response.json()).toEqual({
-          error: 'employee_memory_contract_changed',
-        });
+        expect(ApiErrorSchema.parse(await response.json()).error).toMatchObject(
+          {
+            code: 'CONFLICT',
+            retryable: false,
+            details: {
+              domain: 'employee_memory',
+              reason: 'contract_changed',
+              requiredSchemaVersion: 2,
+            },
+          },
+        );
         expect(await snapshot(m.id)).toEqual(before);
       },
     );
@@ -443,7 +460,7 @@ suite(
       ).rejects.toThrow('authorization_denied');
       expect(await snapshot(m.id)).toEqual(before);
     });
-    it('preserves legacy pending confirmation and the complete pair; the storage-only v2 editor does not implement pending CRUD', async () => {
+    it('preserves legacy confirmation and uses the same pair editor for pending save-and-confirm', async () => {
       const f = await setup();
       const m = await createTraceableMemory(f.context, {
         workspaceId: f.workspace,
@@ -453,19 +470,7 @@ suite(
         lifecycleState: 'candidate',
         content: '原候选'.repeat(30),
       });
-      const pair = legacyPersonalMemoryPair(m.content),
-        before = await snapshot(m.id);
-      await expect(
-        correctPersonalEmployeeMemory(f.context, f.workspace, m.id, {
-          instanceId: f.assignment,
-          expectedRevision: 1,
-          pairDigest: memoryPairDigest(pair),
-          idempotencyKey: randomUUID(),
-          ...pair,
-          reason: '未接入候选合同',
-        }),
-      ).rejects.toThrow('employee_memory_contract_changed');
-      expect(await snapshot(m.id)).toEqual(before);
+      const pair = legacyPersonalMemoryPair(m.content);
       const promoted = await promoteWorkspaceMemory(
         f.context,
         f.workspace,
@@ -479,6 +484,40 @@ suite(
       );
       expect(promoted.lifecycleState).toBe('durable');
       expect((await snapshot(m.id)).memory).toMatchObject(pair);
+      const pending = await createTraceableMemory(f.context, {
+        workspaceId: f.workspace,
+        instanceId: f.assignment,
+        idempotencyKey: randomUUID(),
+        sourceType: 'user',
+        lifecycleState: 'candidate',
+        content: '另一个待确认候选',
+      });
+      const saved = await correctPersonalEmployeeMemory(
+        f.context,
+        f.workspace,
+        pending.id,
+        {
+          instanceId: f.assignment,
+          expectedRevision: 1,
+          pairDigest: memoryPairDigest(
+            legacyPersonalMemoryPair(pending.content),
+          ),
+          idempotencyKey: randomUUID(),
+          summary: '本人修改并确认',
+          details: '完整保存说明',
+          reason: '本人编辑',
+        },
+      );
+      expect(saved).toMatchObject({
+        summary: '本人修改并确认',
+        details: '完整保存说明',
+        revision: 2,
+      });
+      expect((await snapshot(pending.id)).memory).toMatchObject({
+        lifecycle_state: 'durable',
+        trust_level: 'user_confirmed',
+        expires_at: null,
+      });
     });
     it('rolls back pair, revision, chunks, audit and receipt on the first failed audit', async () => {
       const f = await setup(),

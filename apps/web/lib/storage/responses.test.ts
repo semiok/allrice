@@ -4,7 +4,10 @@ import {
   IdentityError,
   LegacyScheduleRetiredError,
   EmployeeMemoryContractChanged,
+  EmployeeMemoryConflict,
+  EmployeeMemoryLimitReached,
 } from '@allrice/database';
+import { ApiErrorSchema } from '@allrice/contracts';
 import type * as DatabaseModule from '@allrice/database';
 import { GET } from '../../app/api/v1/files/[id]/download/route';
 import { storageErrorResponse } from './responses';
@@ -80,11 +83,44 @@ it('returns a permanent private retirement response for the old schedule entry p
   });
 });
 
-it('requires a v2 reread on a paired legacy edit without adding visible copy', async () => {
-  const response = storageErrorResponse(new EmployeeMemoryContractChanged());
+it.each([
+  [
+    new EmployeeMemoryContractChanged(),
+    {
+      domain: 'employee_memory',
+      reason: 'contract_changed',
+      requiredSchemaVersion: 2,
+    },
+  ],
+  [
+    new EmployeeMemoryConflict(),
+    { domain: 'employee_memory', reason: 'cas_conflict' },
+  ],
+  [
+    new EmployeeMemoryConflict({
+      domain: 'employee_memory',
+      reason: 'idempotency_conflict',
+    }),
+    { domain: 'employee_memory', reason: 'idempotency_conflict' },
+  ],
+  [
+    new EmployeeMemoryLimitReached(),
+    {
+      domain: 'employee_memory',
+      reason: 'memory_limit_reached',
+      counts: { active: 100, maxActive: 100 },
+    },
+  ],
+])('returns a private canonical 409 for %j', async (error, details) => {
+  const response = storageErrorResponse(error);
   expect(response.status).toBe(409);
   expect(response.headers.get('cache-control')).toBe('private, no-store');
-  expect(await response.json()).toEqual({
-    error: 'employee_memory_contract_changed',
+  const body = ApiErrorSchema.parse(await response.json());
+  expect(body.error).toEqual({
+    code: 'CONFLICT',
+    message: '记忆已变化，请重新读取后再操作。',
+    requestId: expect.any(String),
+    retryable: false,
+    details,
   });
 });

@@ -1,133 +1,149 @@
+import type { TransactionSql } from 'postgres';
 import {
-  freezeEmployeeDocuments,
-  employeeMemoryDocument,
-} from './employees/employee-documents.ts';
-import { selectEmployeeDocumentMemories } from '@allrice/contracts';
-import type postgres from 'postgres';
-import {
-  EmployeeMemoryPageQuerySchema,
-  EmployeeMemoryPageSchema,
-  ManagedEmployeeMemorySchema,
+  EmployeeMemoryCountsSchema,
+  EmployeeMemoryDetailResponseSchema,
+  EmployeeMemoryListSchema,
+  EmployeeMemoryRecordSchema,
   UuidSchema,
   type RequestContext,
 } from '@allrice/contracts';
+import { z } from 'zod';
 import { getDatabase } from './core/client.ts';
 import { DataAccessError } from './data.ts';
 import {
+  EmployeeMemoryContractChanged,
+  EmployeeMemoryLimitReached,
   employeeMemoryScope,
-  memoryContentDigest,
+  memoryPairDigest,
+  type EmployeeMemoryScope,
 } from './workspace/employee-memory.ts';
 import {
   requireTenantAdministrationAuthority,
   requireTenantAdministrationTarget,
 } from './tenant-administration.ts';
 
-type Scope = {
-  organizationId: string;
-  workspaceId: string;
-  ownerId: string;
-  instanceId: string;
-};
-type Row = {
+export type PersonalMemoryRow = {
   id: string;
-  content: string;
+  summary: string | null;
+  details: string | null;
   revision: number;
-  state: string;
-  source_type: string;
-  memory_class: string;
   lifecycle_state: string;
   trust_level: string;
-  expires_at: Date | null;
+  captured_at: Date;
   updated_at: Date;
-  pin_order: number | null;
 };
 
-function scopedRows(tx: postgres.TransactionSql, scope: Scope) {
-  return tx`select m.id,m.content,m.revision,m.source_type,m.memory_class,m.lifecycle_state,m.trust_level,m.expires_at,m.updated_at,
-    case when jsonb_typeof(m.metadata->'memoryPinOrder')='number' then (m.metadata->>'memoryPinOrder')::bigint end as pin_order,
-    case when m.archived_at is not null then 'archived'
-      when m.expires_at<=now() then 'expired'
-      when m.lifecycle_state='durable' and m.trust_level='user_confirmed' then 'confirmed'
-      else 'pending' end as state
-    from allrice_memories m
-    where m.organization_id=${scope.organizationId} and m.workspace_id=${scope.workspaceId}
-      and m.owner_id=${scope.ownerId} and m.instance_id=${scope.instanceId}
-      and not exists(select 1 from allrice_experience_reviews er where er.memory_id=m.id)`;
+/** Ordinary private records only. Raw reviews and business-method data retain
+ * their own APIs; this predicate grants neither source nor resource access. */
+export function ordinaryMemoryPredicate(
+  tx: TransactionSql,
+  scope: EmployeeMemoryScope,
+) {
+  return tx`m.organization_id=${scope.organizationId} and m.workspace_id=${scope.workspaceId}
+    and m.owner_id=${scope.ownerId} and m.instance_id=${scope.instanceId}
+    and m.employee_id=${scope.employeeId} and m.visibility='private'
+    and not exists(select 1 from allrice_experience_reviews r where r.memory_id=m.id)
+    and not exists(select 1 from allrice_brand_content_experiences b where b.memory_id=m.id)
+    and not exists(select 1 from allrice_employee_runs origin
+      where origin.organization_id=m.organization_id and origin.workspace_id=m.workspace_id and origin.method_authoring
+        and ((m.source_type='message' and m.source_id in (origin.user_message_id,origin.assistant_message_id))
+          or (m.source_type='checkpoint' and exists(select 1 from allrice_context_checkpoints cp
+            where cp.id=m.source_id and cp.covered_through_message_id in (origin.user_message_id,origin.assistant_message_id)))))`;
 }
 
-/** UI-only capacity estimate. Does not modify the model's retrieval mechanism. */
-export function previewEmployeeMemoryCapacity(
-  rows: Pick<Row, 'id' | 'content' | 'revision'>[],
-  total: number,
-) {
-  const selected = selectEmployeeDocumentMemories(rows, total);
-  const bytes = Buffer.byteLength(
-    employeeMemoryDocument(selected, total),
-    'utf8',
-  );
-  return {
-    mode: 'capacity_preview' as const,
-    maxBytes: 6000 as const,
-    maxItems: 20 as const,
-    usedBytes: bytes,
-    eligibleCount: total,
-    omittedCount: total - selected.length,
-    selectedIds: selected.map((item) => item.id),
-  };
+export function mapEmployeeMemoryRecord(row: PersonalMemoryRow) {
+  if (row.summary === null) throw new EmployeeMemoryContractChanged();
+  return EmployeeMemoryRecordSchema.parse({
+    id: row.id,
+    summary: row.summary,
+    details: row.details,
+    hasDetails: row.details !== null,
+    state:
+      row.lifecycle_state === 'durable' && row.trust_level === 'user_confirmed'
+        ? 'active'
+        : 'pending',
+    revision: row.revision,
+    pairDigest: memoryPairDigest({
+      summary: row.summary,
+      details: row.details,
+    }),
+    capturedAt: row.captured_at.toISOString(),
+    updatedAt: row.updated_at.toISOString(),
+  });
 }
 
-async function readPage(
-  tx: postgres.TransactionSql,
-  scope: Scope,
-  input: unknown,
-  preview: boolean,
+export async function lockEmployeeMemoryOrder(
+  tx: TransactionSql,
+  scope: EmployeeMemoryScope,
 ) {
-  const query = EmployeeMemoryPageQuerySchema.parse(input);
-  const [count] = await tx<
-    { count: number }[]
-  >`with memories as (${scopedRows(tx, scope)})
-    select count(*)::integer as count from memories where (state=${query.state} or (${query.state}='all' and state<>'archived'))`;
-  const rows = await tx<Row[]>`with memories as (${scopedRows(tx, scope)})
-    select * from memories where (state=${query.state} or (${query.state}='all' and state<>'archived')) and (${query.after ?? null}::uuid is null or (updated_at,id)<(select updated_at,id from memories where id=${query.after ?? null}))
-    order by updated_at desc,id desc limit 51`;
-  let budget = null;
-  if (preview) {
-    const projection = await freezeEmployeeDocuments(tx, scope, {}, true);
-    const document = projection.employeeDocuments.memory;
-    const eligibleCount = projection.eligibleCount;
-    budget = {
-      mode: 'capacity_preview' as const,
-      maxBytes: 6000 as const,
-      maxItems: 20 as const,
-      usedBytes: Buffer.byteLength(document, 'utf8'),
-      eligibleCount,
-      omittedCount: eligibleCount - projection.memories.length,
-      selectedIds: projection.memories.map((item) => item.id),
+  await tx`select pg_advisory_xact_lock(hashtextextended(${`memory-order:${scope.organizationId}:${scope.ownerId}:${scope.instanceId}`},0))`;
+}
+
+export async function employeeMemoryCounts(
+  tx: TransactionSql,
+  scope: EmployeeMemoryScope,
+) {
+  const [counts] = await tx<{ active: number; pending: number }[]>`
+    select count(*) filter(where m.lifecycle_state='durable' and m.trust_level='user_confirmed')::integer active,
+      count(*) filter(where not (m.lifecycle_state='durable' and m.trust_level='user_confirmed'))::integer pending
+    from allrice_memories m where ${ordinaryMemoryPredicate(tx, scope)}
+      and m.archived_at is null and (m.expires_at is null or m.expires_at>clock_timestamp())`;
+  if (counts!.active > 100) throw new EmployeeMemoryContractChanged();
+  return EmployeeMemoryCountsSchema.parse({ ...counts, maxActive: 100 });
+}
+
+/** Caller holds the existing same-scope foreground serial point. Background
+ * candidate producers never acquire that lock or consume an active place. */
+export async function assertEmployeeMemoryAdmission(
+  tx: TransactionSql,
+  scope: EmployeeMemoryScope,
+) {
+  const counts = await employeeMemoryCounts(tx, scope);
+  if (counts.active === 100) throw new EmployeeMemoryLimitReached();
+}
+
+async function readManaged(
+  tx: TransactionSql,
+  scope: EmployeeMemoryScope,
+  memoryId?: string,
+) {
+  const rows = await tx<
+    PersonalMemoryRow[]
+  >`select m.id,m.summary,m.details,m.revision,m.lifecycle_state,m.trust_level,m.captured_at,m.updated_at
+    from allrice_memories m where ${ordinaryMemoryPredicate(tx, scope)} and m.archived_at is null
+      and (m.expires_at is null or m.expires_at>clock_timestamp())
+      ${memoryId ? tx`and m.id=${memoryId}` : tx``}
+    order by case when m.lifecycle_state='durable' and m.trust_level='user_confirmed' then m.updated_at else m.captured_at end desc,m.id desc`;
+  if (memoryId) {
+    if (!rows[0]) throw new DataAccessError('not_found');
+    return {
+      schemaVersion: 2 as const,
+      memory: mapEmployeeMemoryRecord(rows[0]),
     };
   }
-  return EmployeeMemoryPageSchema.parse({
-    ...scope,
-    state: query.state,
-    total: count!.count,
-    memories: rows.slice(0, 50).map((row) =>
-      ManagedEmployeeMemorySchema.parse({
-        ...scope,
-        id: row.id,
-        content: row.content,
-        revision: row.revision,
-        contentDigest: memoryContentDigest(row.content),
-        state: row.state,
-        sourceType: row.source_type,
-        memoryClass: row.memory_class,
-        lifecycleState: row.lifecycle_state,
-        trust: row.trust_level,
-        expiresAt: row.expires_at?.toISOString() ?? null,
-        updatedAt: row.updated_at.toISOString(),
-        pinOrder: row.pin_order === null ? null : Number(row.pin_order),
-      }),
-    ),
-    nextCursor: rows.length > 50 ? rows[49]!.id : null,
-    budget,
+  const projected = rows.map((row) => {
+    const record = mapEmployeeMemoryRecord(row);
+    return {
+      id: record.id,
+      summary: record.summary,
+      hasDetails: record.hasDetails,
+      state: record.state,
+      revision: record.revision,
+      pairDigest: record.pairDigest,
+      capturedAt: record.capturedAt,
+      updatedAt: record.updatedAt,
+    };
+  });
+  const active = projected.filter((row) => row.state === 'active');
+  const pending = projected.filter((row) => row.state === 'pending');
+  if (active.length > 100) throw new EmployeeMemoryContractChanged();
+  return EmployeeMemoryListSchema.parse({
+    schemaVersion: 2,
+    workspaceId: scope.workspaceId,
+    instanceId: scope.instanceId,
+    counts: { active: active.length, pending: pending.length, maxActive: 100 },
+    active,
+    pending,
   });
 }
 
@@ -136,6 +152,27 @@ export async function listPersonalEmployeeMemories(
   workspaceInput: string,
   instanceInput: string,
   query: unknown = {},
+) {
+  z.object({}).strict().parse(query);
+  return getDatabase().begin(
+    'isolation level repeatable read read only',
+    async (tx) => {
+      const scope = await employeeMemoryScope(
+        context,
+        UuidSchema.parse(workspaceInput),
+        UuidSchema.parse(instanceInput),
+        tx,
+      );
+      return EmployeeMemoryListSchema.parse(await readManaged(tx, scope));
+    },
+  );
+}
+
+export async function getPersonalEmployeeMemory(
+  context: RequestContext,
+  workspaceInput: string,
+  instanceInput: string,
+  memoryInput: string,
 ) {
   return getDatabase().begin(
     'isolation level repeatable read read only',
@@ -146,23 +183,59 @@ export async function listPersonalEmployeeMemories(
         UuidSchema.parse(instanceInput),
         tx,
       );
-      return readPage(
-        tx,
-        {
-          organizationId: scope.organizationId,
-          workspaceId: scope.workspaceId,
-          ownerId: scope.ownerId,
-          instanceId: scope.instanceId,
-        },
-        query,
-        true,
+      return EmployeeMemoryDetailResponseSchema.parse(
+        await readManaged(tx, scope, UuidSchema.parse(memoryInput)),
       );
     },
   );
 }
 
-/** The administrator remains the real actor. This never creates an owner context
- * or opens the shared-only employee details to private data. GET + audit only. */
+/** Real administrator authority, never a forged owner context. Every successful
+ * list/detail read writes its own body-free audit in the same transaction. */
+async function readAdmin(
+  context: RequestContext,
+  organizationInput: string,
+  ownerInput: string,
+  instanceInput: string,
+  memoryInput?: string,
+) {
+  const organizationId = UuidSchema.parse(organizationInput),
+    ownerId = UuidSchema.parse(ownerInput),
+    instanceId = UuidSchema.parse(instanceInput);
+  const memoryId =
+    memoryInput === undefined ? undefined : UuidSchema.parse(memoryInput);
+  return getDatabase().begin('isolation level repeatable read', async (tx) => {
+    await requireTenantAdministrationAuthority(context, tx);
+    await requireTenantAdministrationTarget(tx, organizationId, null);
+    const [instance] = await tx<
+      { workspace_id: string; employee_id: string }[]
+    >`
+      select i.workspace_id,a.employee_id from allrice_employee_instances i
+      join allrice_employee_assignments a on a.id=i.assignment_id and a.organization_id=i.organization_id and a.workspace_id=i.workspace_id
+      join allrice_workspaces w on w.id=i.workspace_id and w.organization_id=i.organization_id
+      where i.id=${instanceId} and i.organization_id=${organizationId} and i.owner_id=${ownerId} and w.archived_at is null
+        and exists(select 1 from allrice_memberships m where m.organization_id=i.organization_id and m.user_id=i.owner_id)`;
+    if (!instance) throw new DataAccessError('not_found');
+    const result = await readManaged(
+      tx,
+      {
+        organizationId,
+        ownerId,
+        instanceId,
+        workspaceId: instance.workspace_id,
+        employeeId: instance.employee_id,
+      },
+      memoryId,
+    );
+    const returnedCount =
+      'memory' in result ? 1 : result.active.length + result.pending.length;
+    await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,request_id,metadata)
+      values(${organizationId},${instance.workspace_id},${context.actor.id},'employee_memory.admin_read',${memoryId ? 'memory' : 'employee_instance'},${memoryId ?? instanceId},'recorded','administrator_memory_read',${context.requestId},
+        ${tx.json({ ownerId, instanceId, schemaVersion: 2, returnedCount, ...(memoryId ? { memoryId } : {}) })})`;
+    return result;
+  });
+}
+
 export async function listAdminEmployeeMemories(
   context: RequestContext,
   organizationInput: string,
@@ -170,35 +243,25 @@ export async function listAdminEmployeeMemories(
   instanceInput: string,
   query: unknown = {},
 ) {
-  const organizationId = UuidSchema.parse(organizationInput),
-    ownerId = UuidSchema.parse(ownerInput),
-    instanceId = UuidSchema.parse(instanceInput);
-  return getDatabase().begin(async (tx) => {
-    await requireTenantAdministrationAuthority(context, tx);
-    await requireTenantAdministrationTarget(tx, organizationId, null);
-    const [instance] = await tx<
-      { workspace_id: string }[]
-    >`select i.workspace_id from allrice_employee_instances i
-      join allrice_workspaces w on w.id=i.workspace_id and w.organization_id=i.organization_id
-      where i.id=${instanceId} and i.organization_id=${organizationId} and i.owner_id=${ownerId}
-        and w.archived_at is null
-        and exists(select 1 from allrice_memberships m where m.organization_id=i.organization_id and m.user_id=i.owner_id)`;
-    if (!instance) throw new DataAccessError('not_found');
-    const page = await readPage(
-      tx,
-      {
-        organizationId,
-        ownerId,
-        instanceId,
-        workspaceId: instance.workspace_id,
-      },
-      query,
-      false,
-    );
-    const parsed = EmployeeMemoryPageQuerySchema.parse(query);
-    await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,request_id,metadata)
-      values(${organizationId},${instance.workspace_id},${context.actor.id},'employee_memory.admin_read','employee_instance',${instanceId},'recorded','administrator_memory_read',${context.requestId},
-        ${tx.json({ ownerId, instanceId, state: parsed.state, after: parsed.after ?? null, limit: 50, returnedCount: page.memories.length })})`;
-    return page;
-  });
+  z.object({}).strict().parse(query);
+  return EmployeeMemoryListSchema.parse(
+    await readAdmin(context, organizationInput, ownerInput, instanceInput),
+  );
+}
+export async function getAdminEmployeeMemory(
+  context: RequestContext,
+  organizationInput: string,
+  ownerInput: string,
+  instanceInput: string,
+  memoryInput: string,
+) {
+  return EmployeeMemoryDetailResponseSchema.parse(
+    await readAdmin(
+      context,
+      organizationInput,
+      ownerInput,
+      instanceInput,
+      memoryInput,
+    ),
+  );
 }

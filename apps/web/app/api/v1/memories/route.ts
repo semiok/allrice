@@ -1,9 +1,13 @@
 import {
   DataAccessError,
   createTraceableMemory,
+  createManagedEmployeeMemory,
   listWorkspaceMemories,
 } from '@allrice/database';
-import { EmployeeMemoryTextSchema } from '@allrice/contracts';
+import {
+  EmployeeMemoryTextSchema,
+  EmployeeMemoryWriteResponseSchema,
+} from '@allrice/contracts';
 
 import { getRequestContext } from '../../../../lib/identity/session';
 import { sameOriginBrowserWrite } from '../../../../lib/identity/request-origin';
@@ -53,22 +57,32 @@ export async function POST(request: Request) {
     const context = await getRequestContext(request);
     if (!context) throw new DataAccessError('authentication_required');
     const input = await request.json();
-    // Browser edits are the owner speaking directly. Message/checkpoint
-    // proposals are bound by their existing server-side producer gates.
-    if (input?.sourceType !== 'user')
-      throw new DataAccessError('authorization_denied');
-    EmployeeMemoryTextSchema.parse(input.content);
-    const memory = await createTraceableMemory(context, input);
+    // Explicit legacy creation compatibility; its full content is never inferred
+    // from a v2 summary. New management requests use the complete pair contract.
+    if (input && typeof input === 'object' && 'content' in input) {
+      if (input.sourceType !== 'user')
+        throw new DataAccessError('authorization_denied');
+      EmployeeMemoryTextSchema.parse(input.content);
+      const memory = await createTraceableMemory(context, input);
+      return Response.json(
+        { memory: { ...memory, ownedByMe: true } },
+        { status: 201, headers: { 'cache-control': 'private, no-store' } },
+      );
+    }
+    const { counts, ...memory } = await createManagedEmployeeMemory(
+      context,
+      input,
+    );
     return Response.json(
+      EmployeeMemoryWriteResponseSchema.parse({
+        schemaVersion: 2,
+        memory,
+        counts,
+      }),
       {
-        memory: {
-          ...memory,
-          ownedByMe:
-            context.actor.type === 'user' &&
-            memory.ownerId === context.actor.id,
-        },
+        status: 201,
+        headers: { 'cache-control': 'private, no-store' },
       },
-      { status: 201, headers: { 'cache-control': 'private, no-store' } },
     );
   } catch (error) {
     return storageErrorResponse(error);

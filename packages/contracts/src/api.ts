@@ -31,6 +31,31 @@ export const ApiErrorCodeSchema = z.enum([
   'INTERNAL_ERROR',
 ]);
 
+const memoryDomain = { domain: z.literal('employee_memory') };
+export const MemoryConflictDetailsSchema = z.discriminatedUnion('reason', [
+  z.object({ ...memoryDomain, reason: z.literal('cas_conflict') }).strict(),
+  z
+    .object({ ...memoryDomain, reason: z.literal('idempotency_conflict') })
+    .strict(),
+  z
+    .object({
+      ...memoryDomain,
+      reason: z.literal('memory_limit_reached'),
+      counts: z
+        .object({ active: z.literal(100), maxActive: z.literal(100) })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ...memoryDomain,
+      reason: z.literal('contract_changed'),
+      requiredSchemaVersion: z.literal(2),
+    })
+    .strict(),
+]);
+export type MemoryConflictDetails = z.infer<typeof MemoryConflictDetailsSchema>;
+
 export const ApiErrorSchema = z
   .object({
     error: z
@@ -39,8 +64,13 @@ export const ApiErrorSchema = z
         message: z.string().min(1),
         requestId: UuidSchema,
         retryable: z.boolean(),
+        details: MemoryConflictDetailsSchema.optional(),
       })
-      .strict(),
+      .strict()
+      .refine(
+        (error) =>
+          !error.details || (error.code === 'CONFLICT' && !error.retryable),
+      ),
   })
   .strict();
 
