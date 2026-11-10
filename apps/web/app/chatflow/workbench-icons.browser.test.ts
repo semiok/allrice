@@ -146,13 +146,27 @@ suite('workbench icon scale and workflow identity', () => {
     });
 
   const focusState = (target: Locator) =>
-    target.evaluate((element) => ({
-      tag: element.tagName,
-      active: document.activeElement === element,
-      visible: element.matches(':focus-visible'),
-      outline: getComputedStyle(element).outlineWidth,
-      modality: document.documentElement.getAttribute('data-input-modality'),
-    }));
+    target.evaluate((element) => {
+      const style = getComputedStyle(element);
+      // Outline width alone may remain nonzero when its style/color paints nothing.
+      const pixel = document.createElement('canvas').getContext('2d')!;
+      pixel.fillStyle = style.outlineColor;
+      pixel.fillRect(0, 0, 1, 1);
+      return {
+        tag: element.tagName,
+        active: document.activeElement === element,
+        visible: element.matches(':focus-visible'),
+        outline: style.outlineWidth,
+        outlineStyle: style.outlineStyle,
+        outlineColor: style.outlineColor,
+        ring:
+          style.outlineStyle !== 'none' &&
+          style.outlineStyle !== 'hidden' &&
+          parseFloat(style.outlineWidth) > 0 &&
+          pixel.getImageData(0, 0, 1, 1).data[3]! > 0,
+        modality: document.documentElement.getAttribute('data-input-modality'),
+      };
+    });
 
   for (const theme of ['light', 'dark'])
     it(`“鼠标点图标不要像被选中，键盘仍能看见焦点”：${theme}`, async () => {
@@ -168,10 +182,17 @@ suite('workbench icon scale and workflow identity', () => {
         const agents = page.getByRole('button', { name: '1 个子智能体' });
         await agents.waitFor();
         await agents.click();
+        await page.screenshot({
+          path: join(directory, `${theme}-first-mouse.png`),
+        });
+        writeFileSync(
+          join(directory, `${theme}-first-mouse.json`),
+          JSON.stringify(await focusState(agents)),
+        );
         expect(await focusState(agents)).toMatchObject({
           tag: 'BUTTON',
           active: true,
-          outline: '0px',
+          ring: false,
           modality: 'pointer',
         });
         // Closing without entering a row keeps focus on the same trigger.
@@ -179,12 +200,13 @@ suite('workbench icon scale and workflow identity', () => {
         expect(await focusState(agents)).toMatchObject({
           active: true,
           outline: '2px',
+          ring: true,
           modality: 'keyboard',
         });
         await agents.click();
         expect(await focusState(agents)).toMatchObject({
           active: true,
-          outline: '0px',
+          ring: false,
           modality: 'pointer',
         });
         await page.keyboard.press('ArrowDown');
@@ -197,6 +219,7 @@ suite('workbench icon scale and workflow identity', () => {
           active: true,
           visible: true,
           outline: '2px',
+          ring: true,
           modality: 'keyboard',
         });
         await page.screenshot({
@@ -211,11 +234,11 @@ suite('workbench icon scale and workflow identity', () => {
         );
         expect
           .soft(clicked)
-          .toMatchObject({ active: true, outline: '0px', modality: 'pointer' });
+          .toMatchObject({ active: true, ring: false, modality: 'pointer' });
         // A pointer-only second open/close must not regain the old keyboard ring.
         await page.getByRole('heading', { level: 1 }).click();
         await agents.click();
-        expect.soft(await focusState(agents)).toMatchObject({ outline: '0px' });
+        expect.soft(await focusState(agents)).toMatchObject({ ring: false });
         await page.getByRole('heading', { level: 1 }).click();
         const entries = page.getByLabel('工作台入口');
         for (const name of [
@@ -230,12 +253,13 @@ suite('workbench icon scale and workflow identity', () => {
           expect(await focusState(button)).toMatchObject({
             active: true,
             outline: '2px',
+            ring: true,
             modality: 'keyboard',
           });
           await button.click();
           expect.soft(await focusState(button)).toMatchObject({
             active: true,
-            outline: '0px',
+            ring: false,
             modality: 'pointer',
           });
         }
@@ -251,13 +275,13 @@ suite('workbench icon scale and workflow identity', () => {
           .toBe(true);
         expect(
           (await focusState(page.getByRole('textbox', { name: '表单内容' })))
-            .outline,
-        ).not.toBe('0px');
+            .ring,
+        ).toBe(true);
         await page.keyboard.type('保留输入焦点');
         expect(
           (await focusState(page.getByRole('textbox', { name: '表单内容' })))
-            .outline,
-        ).not.toBe('0px');
+            .ring,
+        ).toBe(true);
         await page.keyboard.press('Tab');
         expect(
           await focusState(dialog.getByRole('button', { name: '关闭' })),
@@ -271,19 +295,20 @@ suite('workbench icon scale and workflow identity', () => {
         expect(await focusState(form)).toMatchObject({
           active: true,
           outline: '2px',
+          ring: true,
           modality: 'keyboard',
         });
         await form.click();
         await dialog.getByRole('button', { name: '关闭' }).click();
         expect
           .soft(await focusState(form))
-          .toMatchObject({ active: true, outline: '0px', modality: 'pointer' });
+          .toMatchObject({ active: true, ring: false, modality: 'pointer' });
         await form.click();
         await page.getByRole('textbox', { name: '表单内容' }).waitFor();
         await page.mouse.click(5, 5);
         expect
           .soft(await focusState(form))
-          .toMatchObject({ active: true, outline: '0px', modality: 'pointer' });
+          .toMatchObject({ active: true, ring: false, modality: 'pointer' });
       } finally {
         await page.close();
       }
