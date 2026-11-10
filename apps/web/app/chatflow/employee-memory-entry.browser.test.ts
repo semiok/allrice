@@ -617,6 +617,17 @@ suite('U1 employee details personal-memory entry', () => {
           exact: true,
         });
         await contains(manager, '全部 · 共 0 条');
+        await manager
+          .getByRole('heading', { name: 'Rice · 记忆', exact: true })
+          .waitFor();
+        expect(
+          await manager.getByText('（确认后生效）', { exact: true }).count(),
+        ).toBe(1);
+        expect(
+          await manager
+            .getByText('管理员可以查看你的记忆。', { exact: false })
+            .count(),
+        ).toBe(0);
         const memoryVisual = await manager.evaluate((node) => {
           // Native TabHost publishes these attributes on the same section;
           // dockkit.module.css paints .tabHost:not(.float) with bg-base.
@@ -895,7 +906,7 @@ suite('U1 employee details personal-memory entry', () => {
       });
       await contains(manager, '全部 · 共 0 条');
       await manager
-        .getByRole('button', { name: '新增记忆', exact: true })
+        .getByRole('button', { name: '＋ 新增', exact: true })
         .click();
       await manager
         .getByRole('textbox', { name: '新增记忆内容', exact: true })
@@ -940,7 +951,7 @@ suite('U1 employee details personal-memory entry', () => {
         });
         await contains(manager, '全部 · 共 0 条');
         await manager
-          .getByRole('button', { name: '新增记忆', exact: true })
+          .getByRole('button', { name: '＋ 新增', exact: true })
           .click();
         await manager
           .getByRole('textbox', { name: '新增记忆内容', exact: true })
@@ -960,7 +971,7 @@ suite('U1 employee details personal-memory entry', () => {
         manager = f.page.getByRole('region', { name: '个人记忆', exact: true });
         await contains(manager, '全部 · 共 0 条');
         await manager
-          .getByRole('button', { name: '新增记忆', exact: true })
+          .getByRole('button', { name: '＋ 新增', exact: true })
           .click();
         await manager
           .getByRole('textbox', { name: '新增记忆内容', exact: true })
@@ -1083,7 +1094,7 @@ suite('U1 employee details personal-memory entry', () => {
       });
       await contains(oldManager, '全部 · 共 0 条');
       await oldManager
-        .getByRole('button', { name: '新增记忆', exact: true })
+        .getByRole('button', { name: '＋ 新增', exact: true })
         .click();
       const oldEditor = oldManager.getByRole('textbox', {
         name: '新增记忆内容',
@@ -1127,7 +1138,7 @@ suite('U1 employee details personal-memory entry', () => {
         .click();
       await expect.poll(() => f.state.writes.length).toBe(1);
       await personal
-        .getByRole('button', { name: '新增记忆', exact: true })
+        .getByRole('button', { name: '＋ 新增', exact: true })
         .click();
       await personal
         .getByRole('textbox', { name: '新增记忆内容', exact: true })
@@ -1166,7 +1177,7 @@ suite('U1 employee details personal-memory entry', () => {
       });
       await contains(manager, '全部 · 共 0 条');
       await manager
-        .getByRole('button', { name: '新增记忆', exact: true })
+        .getByRole('button', { name: '＋ 新增', exact: true })
         .click();
       await manager
         .getByRole('textbox', { name: '新增记忆内容', exact: true })

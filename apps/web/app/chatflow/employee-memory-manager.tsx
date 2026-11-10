@@ -23,6 +23,7 @@ type Props = {
   workspaceId: string;
   instanceId: string;
   headers: Record<string, string>;
+  employeeName?: string;
   refreshKey?: string;
 };
 
@@ -338,12 +339,25 @@ function Manager(props: Props) {
   return (
     <section className={css.panel} aria-label="个人记忆">
       <header className={css.header}>
-        <div>
-          <h3>记忆</h3>
-          <p>只属于你和当前 AI 员工。管理员可以查看你的记忆。</p>
+        {props.employeeName && (
+          <span className={css.avatar} aria-hidden="true">
+            {Array.from(props.employeeName)[0]}
+          </span>
+        )}
+        <div className={css.heading}>
+          <h3>
+            {props.employeeName ? `${props.employeeName} · 记忆` : '记忆'}
+          </h3>
+          <small>（确认后生效）</small>
         </div>
-        <Button type="button" disabled={busy} onClick={() => edit('new')}>
-          新增记忆
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={busy}
+          onClick={() => edit('new')}
+        >
+          ＋ 新增
         </Button>
       </header>
       <p className={css.note}>
