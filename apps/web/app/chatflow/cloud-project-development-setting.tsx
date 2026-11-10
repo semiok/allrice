@@ -57,7 +57,10 @@ export function CloudProjectDevelopmentSetting({
             ? {}
             : {
                 method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                  'Content-Type': 'application/json',
+                  'X-AllRice-Expected-Viewer-Id': viewerId ?? '',
+                },
                 body: JSON.stringify({
                   capabilities: {
                     [capabilityId]: { configVersion: 1, enabled },
