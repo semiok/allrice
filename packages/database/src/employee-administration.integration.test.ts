@@ -329,7 +329,7 @@ suite('MET-151 policy and exact employee publication administration', () => {
     });
     const original = created!.currentDraft!;
     expect(original.definition.systemPrompt).not.toContain('You are Rice');
-    expect(original.definition.systemPrompt).toContain('IDENTITY.md');
+    expect(original.definition.systemPrompt).toContain('PERSONA.md');
     expect(await getPlatformEmployee(source!.id)).toEqual(before);
     const saved = await savePlatformEmployeeDraft(created!.id, {
       expectedRevisionId: original.id,
