@@ -70,6 +70,10 @@ export interface WorkProcessStep {
   category: WorkProcessCategory;
   label: string;
   description: string;
+  title: string;
+  input?: string;
+  result?: string;
+  elapsedMs?: number;
   status: NativeExperienceItem['status'];
   error?: string;
 }
@@ -134,11 +138,33 @@ export function summarizeWorkProcess(items: NativeExperienceItem[]) {
                   item.toolName ?? item.title,
                   item.kind === 'search',
                 );
+      const input =
+        item.kind !== 'think'
+          ? readableSummary(item.activityDetail)
+          : undefined;
+      const result =
+        item.kind !== 'think' ? readableSummary(item.detail) : undefined;
+      const started = item.startedAt ? Date.parse(item.startedAt) : NaN;
+      const finished = item.finishedAt ? Date.parse(item.finishedAt) : NaN;
       return {
         id: item.id,
         category,
         label,
         status: item.status,
+        title:
+          item.toolName === 'ask_user_question'
+            ? '提问'
+            : (input ??
+              (fallback === '执行工具操作'
+                ? (item.toolName ?? fallback)
+                : fallback)),
+        ...(input ? { input } : {}),
+        ...(result ? { result } : {}),
+        ...(Number.isFinite(started) &&
+        Number.isFinite(finished) &&
+        finished >= started
+          ? { elapsedMs: finished - started }
+          : {}),
         // Reasoning events expose lifecycle only. Do not infer or quote private thoughts.
         description:
           item.kind === 'think'

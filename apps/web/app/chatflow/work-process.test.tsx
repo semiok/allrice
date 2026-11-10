@@ -116,7 +116,45 @@ describe('native process display surface', () => {
     expect(html).toMatch(/data-work-reply="progress" hidden=""/);
     expect(html).toMatch(/data-work-reply="final-reply">/);
     expect(html).toContain('最终交付');
+    expect(html.lastIndexOf('</section>')).toBeLessThan(
+      html.indexOf('data-work-reply="final-reply"'),
+    );
   });
+  it.each([
+    [200, '0.2秒'],
+    [800, '0.8秒'],
+    [1300, '1.3秒'],
+    [61200, '1分 1.2秒'],
+  ] as const)(
+    'keeps the safe activity and recorded %ims beside its outcome as %s',
+    (elapsed, duration) => {
+      const html = render({
+        parts: undefined,
+        transcriptView: 'verbose',
+        items: [
+          {
+            ...items[0]!,
+            status: 'completed',
+            startedAt: '2026-11-10T00:00:00Z',
+            finishedAt: new Date(
+              Date.parse('2026-11-10T00:00:00Z') + elapsed,
+            ).toISOString(),
+            detail: '入口文件已经读取',
+          },
+        ],
+      });
+      expect(html).toContain('检查入口文件');
+      expect(html).toContain(`已完成 · ${duration}`);
+      expect(html).toContain('data-step-id="tool:read"');
+      expect(html).not.toContain('过程加载失败');
+      const unknownTime = render({
+        parts: undefined,
+        transcriptView: 'verbose',
+        items: [{ ...items[0]!, status: 'completed' }],
+      });
+      expect(unknownTime).not.toContain('已完成 · 0秒');
+    },
+  );
   it('shows actual live details in standard while compact keeps only activity labels', () => {
     const compact = render({ running: true, transcriptView: 'compact' });
     const standard = render({ running: true, transcriptView: 'standard' });
@@ -133,6 +171,26 @@ describe('native process display surface', () => {
     expect(html).not.toMatch(/data-work-reply="progress" hidden/);
     expect(html).toContain('检查入口文件');
     expect(html).not.toContain('正在读取文件');
+  });
+  it('does not call an unfinished plan complete or leave a settled question waiting', () => {
+    const html = render({
+      parts: undefined,
+      transcriptView: 'verbose',
+      items: [
+        { ...items[0]!, id: 'plan', kind: 'todo', status: 'updated' },
+        {
+          ...items[0]!,
+          id: 'question',
+          toolName: 'ask_user_question',
+          activityDetail: undefined,
+          status: 'completed',
+        },
+      ],
+    });
+    expect(html).toContain('data-status="结果未确认"');
+    expect(html).toContain('提问');
+    expect(html).not.toContain('等待你的回答');
+    expect(html.match(/data-status="已完成"/g)).toHaveLength(1);
   });
   it.each(['failed', 'canceled'] as const)(
     'keeps a %s process visible',

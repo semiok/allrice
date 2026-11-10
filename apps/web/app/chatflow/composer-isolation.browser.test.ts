@@ -260,7 +260,7 @@ suite(
           id: string;
           inputId: string;
           label: string;
-          live?: 'adopted' | 'pending' | 'rejected';
+          live?: 'adopted' | 'pending' | 'rejected' | 'unknown';
           history?: 'adopted' | 'pending' | 'rejected' | 'unknown';
         }[];
       } = {},
@@ -2175,14 +2175,20 @@ suite(
     );
 
     // MET-210: saving an answer is only a submission; the receipt says
-    // "已确认" only once the run took it, and shows a rejected one as such.
+    // "已回答" only once the run took it, and shows a rejected one as such.
     it.each([
-      ['adopted', '已确认', 'Rice 已收到你的回答'],
-      ['pending', '已提交', '等待 Rice 接收这次回答'],
-      ['rejected', '未被采纳', '这次回答没有被 Rice 接收'],
+      ['adopted', 'confirmed', '提问 · 1/1 已回答', 'Rice 已收到你的回答'],
+      ['pending', 'waiting', '提问 · 已提交', '等待 Rice 接收这次回答'],
+      ['rejected', 'rejected', '提问 · 未被采纳', '这次回答没有被 Rice 接收'],
+      [
+        'unknown',
+        'unknown',
+        '提问 · 未能确认',
+        '没能确认 Rice 是否收到这次回答',
+      ],
     ] as const)(
-      'shows a %s question answer receipt as %s',
-      async (status, title, note) => {
+      'shows a %s question answer receipt with state %s',
+      async (status, state, title, note) => {
         const f = await fixture({
           answers: [
             { id: answerA, inputId: inputA, label: '只读检查', live: status },
@@ -2192,14 +2198,25 @@ suite(
           const receipt = f.page.getByRole('article', {
             name: '用户确认结果',
           });
-          // The note only appears once the polled status arrived.
+          await expect
+            .poll(() => receipt.getAttribute('data-state'))
+            .toBe(state);
+          expect(
+            await receipt.getByText(note, { exact: true }).isVisible(),
+          ).toBe(false);
+          await receipt
+            .getByRole('button', { name: title, exact: true })
+            .click();
+          // Details only appear after opening the compact receipt.
           await receipt.getByText(note, { exact: true }).waitFor();
           expect(await receipt.getByText(title, { exact: true }).count()).toBe(
             1,
           );
           expect(await receipt.getByText('只读检查').count()).toBe(1);
           if (status !== 'adopted')
-            expect(await receipt.getByText('已确认').count()).toBe(0);
+            expect(await receipt.getByText('提问 · 1/1 已回答').count()).toBe(
+              0,
+            );
           expect(f.errors).toEqual([]);
         } finally {
           await f.close();
@@ -2536,28 +2553,41 @@ suite(
         ],
       });
       try {
-        const receipt = (label: string) =>
+        const receipt = (id: string) =>
           f.page
-            .getByRole('article', { name: '用户确认结果' })
-            .filter({ hasText: label });
-        await receipt('全部检查')
+            .locator(`#message-${id}`)
+            .getByRole('article', { name: '用户确认结果' });
+        await expect
+          .poll(() => receipt(answerB).getAttribute('data-state'))
+          .toBe('rejected');
+        for (const id of [answerA, answerB, answerC])
+          await receipt(id).locator('[data-disclosure-row]').first().click();
+        await receipt(answerB)
           .getByText('这次回答没有被 Rice 接收', { exact: true })
           .waitFor();
         expect(
-          await receipt('只读检查')
-            .getByText('已确认', { exact: true })
+          await receipt(answerA)
+            .getByText('提问 · 1/1 已回答', { exact: true })
             .count(),
         ).toBe(1);
         expect(
-          await receipt('全部检查')
-            .getByText('未被采纳', { exact: true })
+          await receipt(answerB)
+            .getByText('提问 · 未被采纳', { exact: true })
             .count(),
         ).toBe(1);
         expect(
-          await receipt('抽样检查')
-            .getByText('未能确认', { exact: true })
+          await receipt(answerC)
+            .getByText('提问 · 未能确认', { exact: true })
             .count(),
         ).toBe(1);
+        for (const [id, label] of [
+          [answerA, '只读检查'],
+          [answerB, '全部检查'],
+          [answerC, '抽样检查'],
+        ])
+          expect(
+            await receipt(id!).getByText(label!, { exact: true }).count(),
+          ).toBe(1);
         expect(f.errors).toEqual([]);
       } finally {
         await f.close();
@@ -2584,6 +2614,9 @@ suite(
       const f = await fixture({ answers, workbenchOff: true });
       try {
         const receipt = f.page.getByRole('article', { name: '用户确认结果' });
+        await receipt
+          .getByRole('button', { name: '提问 · 已提交', exact: true })
+          .click();
         await receipt
           .getByText('等待 Rice 接收这次回答', { exact: true })
           .waitFor();

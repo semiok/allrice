@@ -4,8 +4,10 @@ import {
   memo,
   useState,
   useEffect,
+  useContext,
   type RefObject,
   type CSSProperties,
+  type ReactNode,
 } from 'react';
 import {
   nativeExecutionFailureText,
@@ -47,7 +49,12 @@ import { CloudOperationPanel } from './cloud-operation-panel';
 import { ArtifactSummaryCards } from './artifact-workbench';
 import { SteeredWorkProcess } from './steered-work-process';
 import { type ReferenceDraft } from './reference-chips';
-import { TranscriptUserMessage } from './transcript-user-message';
+import {
+  InputStatusContext,
+  TranscriptUserMessage,
+} from './transcript-user-message';
+import { workProcessQuestions } from '../../lib/chatflow/work-process-questions';
+import { WorkProcessReadingState } from './work-process-reading-state';
 import { AutomationRunTaskCards } from './automation-run-task-cards';
 import { AssistantMessageActions } from './message-feedback';
 import { isMessageRunActive } from './run-view';
@@ -121,6 +128,7 @@ export const ChatTranscript = memo(function ChatTranscript({
   onOpenAutomation,
   onResolveArtifactLink,
 }: ChatTranscriptProps) {
+  const inputStatus = useContext(InputStatusContext);
   const [downloadFiles, setDownloadFiles] = useState<{
     workspaceId: string;
     files: WorkspaceFile[];
@@ -192,6 +200,31 @@ export const ChatTranscript = memo(function ChatTranscript({
       assistantRuns.has(m.steering.runId),
   );
   const embedded = new Set(adopted.map((m) => m.id));
+  const questions = workProcessQuestions(
+    messages
+      .filter((message) => message.role === 'assistant')
+      .map((message) => ({
+        id: message.id,
+        events:
+          runViews[message.runId ?? '']?.events ??
+          runTraces[message.runId ?? '']?.events ??
+          [],
+      })),
+    messages.flatMap((message) =>
+      message.role === 'user' &&
+      message.content.interaction?.type === 'user_question_answer'
+        ? [
+            {
+              id: message.id,
+              answer: message.content.interaction.answer,
+              text: message.content.text,
+              createdAt: message.createdAt,
+              status: inputStatus.get(message.id) ?? message.answerStatus,
+            },
+          ]
+        : [],
+    ),
+  );
   // Queued drafts and in-turn answers/steering are not a new exchange.
   const followedByInput = new Set<string>();
   let laterInput = false;
@@ -207,7 +240,16 @@ export const ChatTranscript = memo(function ChatTranscript({
     )
       laterInput = true;
   }
-  return (
+  const withReadingState = (content: ReactNode) => (
+    <WorkProcessReadingState
+      key={memoryScope ?? workspaceId}
+      root={transcriptColumn}
+      shareQuestions
+    >
+      {content}
+    </WorkProcessReadingState>
+  );
+  return withReadingState(
     <div
       className={chatUi.root}
       data-conversation-typography
@@ -217,12 +259,14 @@ export const ChatTranscript = memo(function ChatTranscript({
         <div className={chatUi.column} ref={transcriptColumn}>
           {messages
             .filter((message) => !embedded.has(message.id))
+            .filter((message) => !questions.embeddedAnswerIds.has(message.id))
             .filter(
               (message) =>
                 message.role !== 'assistant' ||
                 message.status !== 'completed' ||
                 message.content.text.length > 0 ||
                 !!memoryRevisionForRun(message.runId) ||
+                !!questions.byOwner.get(message.id)?.length ||
                 adopted.some(
                   (input) => input.steering?.runId === message.runId,
                 ),
@@ -386,6 +430,7 @@ export const ChatTranscript = memo(function ChatTranscript({
                                   employeeName={employeeName}
                                   accessibleFiles={accessibleFiles}
                                   items={timeline.items}
+                                  questions={questions.byOwner.get(message.id)}
                                   parts={processParts}
                                   renderOperation={renderOperation}
                                   artifacts={linkedArtifacts}
@@ -619,6 +664,6 @@ export const ChatTranscript = memo(function ChatTranscript({
           </div>
         ) : null}
       </div>
-    </div>
+    </div>,
   );
 });

@@ -3,8 +3,10 @@ import { createRequire } from 'node:module';
 import { mkdir } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { ids } from '../../test/technical-details-fixtures';
 import type {
   Browser,
+  Locator,
   Page,
 } from '../../../worker/node_modules/playwright-core/index.js';
 
@@ -125,6 +127,44 @@ suite('reading a receipt while late native trace changes its group', () => {
       .click();
     await output(page).waitFor();
   }
+  async function openProcess(width = 1440, theme = 'light', scenario = '') {
+    const page = await browser.newPage({ viewport: { width, height: 900 } });
+    page.setDefaultTimeout(8000);
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await page.goto(`${origin}/?process&theme=${theme}&${scenario}`);
+    await expect.poll(() => processOf(page).count()).toBe(3);
+    return { page, errors, primary: page.locator(`#message-${ids.run}`) };
+  }
+  const answerReceipt = (page: Page, call: string, native = ids.session) =>
+    page.locator(`article[data-question-id="dsh-${native}:${call}"]`);
+  const searchStep = (page: Page) =>
+    page.locator(`#message-${ids.run} [data-step-id="tool:search"]`);
+  const textBox = (node: Locator) =>
+    node.evaluate((node) => {
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const box = range.getClientRects()[0]!;
+      return { x: box.x, y: box.y, width: box.width, height: box.height };
+    });
+  const detailGeometry = (page: Page) =>
+    searchStep(page)
+      .locator('dl')
+      .evaluate((grid) => {
+        const label = grid.querySelector('dt')!.getBoundingClientRect();
+        const value = grid.querySelector('dd')!.getBoundingClientRect();
+        return {
+          width: grid.getBoundingClientRect().width,
+          labelX: label.x,
+          labelRight: label.right,
+          labelY: label.y,
+          valueX: value.x,
+          valueY: value.y,
+          contained:
+            value.right <= grid.getBoundingClientRect().right + 1 &&
+            grid.scrollWidth <= grid.clientWidth + 1,
+        };
+      });
   for (const width of [1440, 390]) {
     it(`shows one memory step without internal pruning at ${width}px, including reload`, async () => {
       const page = await browser.newPage({ viewport: { width, height: 900 } });
@@ -757,6 +797,320 @@ suite('reading a receipt while late native trace changes its group', () => {
       expect((await outside.boundingBox())!.y).toBeLessThan(900);
       await page.keyboard.type('继续编辑');
       expect(await outside.inputValue()).toBe('继续编辑');
+    } finally {
+      await page.close();
+    }
+  });
+  it('keeps exact native question ownership, answer authority and final deliverables outside the folded process', async () => {
+    const { page, errors, primary } = await openProcess();
+    try {
+      expect(
+        await page.getByRole('article', { name: '用户确认结果' }).count(),
+      ).toBe(7);
+      expect(
+        await primary.getByRole('article', { name: '用户确认结果' }).count(),
+      ).toBe(4);
+      const cross = answerReceipt(page, 'accepted', ids.runningRun);
+      expect(
+        await page
+          .locator(`#message-${ids.succeededOperation}`)
+          .locator(cross)
+          .count(),
+      ).toBe(1);
+      for (const [call, state, title] of [
+        ['accepted', 'confirmed', '提问 · 2/2 已回答'],
+        ['submitted', 'waiting', '提问 · 已提交'],
+        ['unknown', 'unknown', '提问 · 未能确认'],
+        ['rejected', 'rejected', '提问 · 未被采纳'],
+      ]) {
+        const receipt = answerReceipt(page, call!);
+        expect(await receipt.getAttribute('data-state')).toBe(state);
+        const toggle = receipt.getByRole('button', {
+          name: title,
+          exact: true,
+        });
+        expect(await receipt.locator('dl').isVisible()).toBe(false);
+        await toggle.click();
+        expect(
+          await receipt
+            .getByText('核对哪些资料？', { exact: true })
+            .isVisible(),
+        ).toBe(true);
+      }
+      const accepted = answerReceipt(page, 'accepted');
+      expect(
+        await accepted.getByText('已跳过', { exact: true }).isVisible(),
+      ).toBe(true);
+      expect(
+        await accepted.getByText('推荐', { exact: true }).isVisible(),
+      ).toBe(true);
+      await cross.locator('[data-disclosure-row]').first().click();
+      expect(await cross.innerText()).toContain('另一会话范围');
+      expect(await accepted.innerText()).not.toContain('另一会话范围');
+      expect(await cross.innerText()).not.toContain('只读检查');
+      for (const [call, text] of [
+        ['orphan', '无归属范围'],
+        ['invalid', '身份不符范围'],
+      ]) {
+        const receipt = answerReceipt(page, call!);
+        expect(
+          await receipt.evaluate(
+            (node) => node.closest('section[aria-label="工作过程"]') === null,
+          ),
+        ).toBe(true);
+        await receipt.locator('[data-disclosure-row]').first().click();
+        expect(
+          await receipt.getByText(text!, { exact: true }).isVisible(),
+        ).toBe(true);
+      }
+      const submitted = answerReceipt(page, 'submitted');
+      await submitted
+        .getByText('等待 Rice 接收这次回答', { exact: true })
+        .waitFor();
+      await page.evaluate(() => window.processAdopt());
+      const received = submitted.getByRole('button', {
+        name: '提问 · 1/1 已回答',
+        exact: true,
+      });
+      await received.waitFor();
+      expect(await received.getAttribute('aria-expanded')).toBe('true');
+      expect(
+        await submitted
+          .getByText('Rice 已收到你的回答', { exact: true })
+          .isVisible(),
+      ).toBe(true);
+      const pending = page.getByRole('region', {
+        name: '核对哪些资料？',
+        exact: true,
+      });
+      expect(
+        await pending.evaluate(
+          (node) => node.closest('section[aria-label="工作过程"]') === null,
+        ),
+      ).toBe(true);
+      const option = pending.getByRole('radio', {
+        name: '待答范围',
+        exact: true,
+      });
+      await option.click();
+      expect(await option.getAttribute('aria-checked')).toBe('true');
+      expect(
+        await page
+          .locator(`#message-${ids.runningRun}`)
+          .getByText('等待回答', { exact: true })
+          .count(),
+      ).toBeGreaterThan(0);
+      expect(
+        await primary
+          .locator('[data-step-id="tool:unsettled"]')
+          .getAttribute('data-status'),
+      ).toBe('结果未确认');
+      expect(
+        await primary
+          .locator(
+            '[data-step-id="tool:unsettled"] [class*="processStepStatus"]',
+          )
+          .innerText(),
+      ).toBe('结果未确认');
+      const table = primary.getByRole('table');
+      expect(
+        await table.evaluate((node) => {
+          const reply = node.closest('[data-work-reply]')!;
+          return (
+            !node.closest('section[aria-label="工作过程"]') &&
+            reply.previousElementSibling?.matches(
+              'section[aria-label="工作过程"]',
+            )
+          );
+        }),
+      ).toBe(true);
+      await primary
+        .getByRole('region', { name: '工作过程', exact: true })
+        .locator('[data-disclosure-row]')
+        .first()
+        .click();
+      expect(await table.isVisible()).toBe(true);
+      expect(
+        await primary
+          .getByRole('link', { name: '核对结果.csv', exact: true })
+          .isVisible(),
+      ).toBe(true);
+      expect(await page.evaluate(() => window.readingWrites)).toEqual([]);
+      expect(errors).toEqual([]);
+    } finally {
+      await page.close();
+    }
+  });
+  it('preserves an external answer disclosure, keyboard focus and selection when its native trace arrives', async () => {
+    const { page, errors, primary } = await openProcess(390, 'light', 'late');
+    try {
+      const receipt = answerReceipt(page, 'accepted');
+      const toggle = receipt.getByRole('button', {
+        name: '提问 · 2/2 已回答',
+        exact: true,
+      });
+      expect(
+        await receipt.evaluate(
+          (node) => !node.closest('section[aria-label="工作过程"]'),
+        ),
+      ).toBe(true);
+      await toggle.click();
+      const selected = await receipt
+        .locator('dd')
+        .nth(1)
+        .locator('span')
+        .first()
+        .evaluate((node) => {
+          document
+            .getSelection()!
+            .setBaseAndExtent(node.firstChild!, 0, node.firstChild!, 4);
+          return document.getSelection()!.toString();
+        });
+      expect(selected).toBe('只读检查');
+      await page.evaluate(() => window.processTrace());
+      await expect.poll(() => primary.locator(receipt).count()).toBe(1);
+      expect(await page.locator('#message-answer-0').count()).toBe(0);
+      expect(await toggle.getAttribute('aria-expanded')).toBe('true');
+      expect(
+        await toggle.evaluate((node) => node === document.activeElement),
+      ).toBe(true);
+      expect(
+        await page.evaluate(() => document.getSelection()!.toString()),
+      ).toBe(selected);
+      await page.keyboard.press('Space');
+      expect(await toggle.getAttribute('aria-expanded')).toBe('false');
+      expect(errors).toEqual([]);
+    } finally {
+      await page.close();
+    }
+  });
+  it('keeps the streamed table selection readable when completion moves the reply outside its process', async () => {
+    const { page, errors, primary } = await openProcess(
+      390,
+      'light',
+      'running',
+    );
+    try {
+      const table = primary.getByRole('table');
+      await table.waitFor();
+      expect(
+        await table.evaluate(
+          (node) => !!node.closest('section[aria-label="工作过程"]'),
+        ),
+      ).toBe(true);
+      await table
+        .getByRole('cell', { name: '12', exact: true })
+        .evaluate((node) => {
+          const text = document
+            .createTreeWalker(node, NodeFilter.SHOW_TEXT)
+            .nextNode()!;
+          document.getSelection()!.setBaseAndExtent(text, 0, text, 2);
+        });
+      await page.evaluate(() => window.processFinish());
+      await expect
+        .poll(() =>
+          table.evaluate(
+            (node) => !node.closest('section[aria-label="工作过程"]'),
+          ),
+        )
+        .toBe(true);
+      expect(
+        await page.evaluate(() => document.getSelection()!.toString()),
+      ).toBe('12');
+      await primary
+        .getByRole('link', { name: '核对结果.csv', exact: true })
+        .waitFor();
+      await primary
+        .getByRole('region', { name: '工作过程', exact: true })
+        .locator('[data-disclosure-row]')
+        .first()
+        .click();
+      expect(await table.isVisible()).toBe(true);
+      expect(errors).toEqual([]);
+    } finally {
+      await page.close();
+    }
+  });
+  for (const width of [1440, 390])
+    for (const theme of ['light', 'dark']) {
+      it(`renders real shared steps and compact questions at ${width}px in ${theme}`, async () => {
+        const { page, errors } = await openProcess(width, theme);
+        try {
+          await searchStep(page)
+            .locator('[data-disclosure-row]')
+            .first()
+            .click();
+          const geometry = await detailGeometry(page);
+          expect(geometry.width).toBeGreaterThan(180);
+          expect(geometry.valueX - geometry.labelRight).toBeCloseTo(12, 0);
+          expect(geometry.valueY).toBeCloseTo(geometry.labelY, 0);
+          expect(geometry.contained).toBe(true);
+          const title = await textBox(
+            searchStep(page).locator('[class*="processStepLabel"]'),
+          );
+          const status = searchStep(page).locator(
+            '[class*="processStepStatus"]',
+          );
+          expect(await status.innerText()).toBe('已完成 · 0.8秒');
+          const statusBox = await textBox(status);
+          expect(
+            Math.abs(
+              statusBox.y + statusBox.height / 2 - title.y - title.height / 2,
+            ),
+          ).toBeLessThanOrEqual(2);
+          expect(statusBox.x).toBeGreaterThanOrEqual(title.x + title.width);
+          expect(
+            await page.evaluate(
+              () => document.documentElement.scrollWidth <= innerWidth,
+            ),
+          ).toBe(true);
+          expect(
+            await page.evaluate(() =>
+              document.body.hasAttribute('data-ds-dark-theme'),
+            ),
+          ).toBe(theme === 'dark');
+          await mkdir('.local/quality/met245-process-a', { recursive: true });
+          await page.screenshot({
+            path: `.local/quality/met245-process-a/process-${width}-${theme}.png`,
+            fullPage: true,
+          });
+          await answerReceipt(page, 'accepted')
+            .locator('[data-disclosure-row]')
+            .first()
+            .click();
+          await page.screenshot({
+            path: `.local/quality/met245-process-a/questions-${width}-${theme}.png`,
+            fullPage: true,
+          });
+          expect(errors).toEqual([]);
+        } finally {
+          await page.close();
+        }
+      });
+    }
+  it('keeps two columns at 320px and switches only when the actual detail content reaches 180px', async () => {
+    const { page, errors } = await openProcess(320);
+    try {
+      await searchStep(page).locator('[data-disclosure-row]').first().click();
+      const normal = await detailGeometry(page);
+      expect(normal.width).toBeGreaterThan(180);
+      expect(normal.valueY).toBeCloseTo(normal.labelY, 0);
+      for (const target of [180, 181]) {
+        const before = await detailGeometry(page);
+        await page
+          .locator('main[data-process-fixture]')
+          .evaluate((node, difference) => {
+            node.style.width = `${node.getBoundingClientRect().width + difference}px`;
+          }, target - before.width);
+        const narrow = await detailGeometry(page);
+        expect(narrow.width).toBeCloseTo(target, 0);
+        expect(narrow.contained).toBe(true);
+        if (target === 180) {
+          expect(narrow.valueY).toBeGreaterThan(narrow.labelY);
+          expect(narrow.valueX).toBeCloseTo(narrow.labelX, 0);
+        } else expect(narrow.valueY).toBeCloseTo(narrow.labelY, 0);
+      }
+      expect(errors).toEqual([]);
     } finally {
       await page.close();
     }

@@ -5,6 +5,7 @@ import {
   WorkProcessReadingState,
   WorkProcessDisclosureScope,
   useProcessDisclosure,
+  useQuestionDisclosureOpen,
 } from './work-process-reading-state';
 import { AssistantMarkdown } from './assistant-markdown';
 import type { WorkProgressPart } from '../../lib/chatflow/work-progress';
@@ -39,6 +40,13 @@ import {
 import { IconThinkOutline14 } from './dsh-upstream/ProgressIcons';
 import reasoning from './dsh-upstream/ReasoningRow.module.css';
 import { RunElapsedTime } from './run-timing';
+import { WorkProcessStepView } from './work-process-step';
+import {
+  UserQuestionReceipt,
+  questionReceiptDisclosureId,
+  userQuestionReceiptState,
+} from './user-question-receipt';
+import type { WorkProcessQuestion } from '../../lib/chatflow/work-process-questions';
 import styles from './dsh-saas.module.css';
 import { presentationPolicyFor } from './dsh-upstream/presentation/presentation-policy';
 import type { ChatPresentationPolicy } from '@deepseek-ai/dsh-client-ui-chat/client';
@@ -66,7 +74,6 @@ const stepIcons: Record<WorkProcessCategory, ReactNode> = {
   plan: <IconPlanOutlineRegular />,
   tool: <IconCordisPluginOutlineRegular />,
 };
-const noop = () => {};
 
 /** A live reasoning lifecycle adds no detail beyond the current phase header. */
 function onlyLiveThinking(steps: WorkProcessStep[], running: boolean) {
@@ -84,6 +91,7 @@ function onlyLiveThinking(steps: WorkProcessStep[], running: boolean) {
 /** DSH's native disclosure/Think chrome over Allrice's public event summary. */
 export function WorkProcess({
   items,
+  questions = [],
   parts,
   timing,
   running,
@@ -104,6 +112,7 @@ export function WorkProcess({
   label = '工作过程',
 }: {
   items: NativeExperienceItem[];
+  questions?: readonly WorkProcessQuestion[];
   parts?: WorkProgressPart[];
   timing?: TaskRuntimeTiming;
   running: boolean;
@@ -123,15 +132,22 @@ export function WorkProcess({
   collapseTiming?: UserPreferences['collapseTiming'];
   presentation?: WorkProcessPresentation;
 }) {
-  const root = useRef<HTMLElement>(null);
+  const root = useRef<HTMLDivElement>(null);
   const [disclosure, setDisclosure] = useState<WorkProcessDisclosure>();
   const [settledOnMount] = useState(!running);
   const policy = presentationPolicyFor(transcriptView, collapseTiming);
   const currentPresentation =
     presentation ?? workProcessPresentation([], parts, undefined, false);
-  const withReadingState = (content: ReactNode) => (
+  const withReadingState = (content: ReactNode, result?: ReactNode) => (
     <WorkProcessReadingState key={currentPresentation.runId} root={root}>
-      {content}
+      <div
+        ref={root}
+        className={styles.processBlock}
+        data-process-region={currentPresentation.runId}
+      >
+        {content}
+        {result}
+      </div>
     </WorkProcessReadingState>
   );
   useEffect(() => {
@@ -148,27 +164,40 @@ export function WorkProcess({
   const process = summarizeWorkProcess(items);
   const microStatus = running && (!streaming || !!parts);
   const waiting = timing?.phase === 'waiting';
-  const title = microStatus
-    ? waiting
-      ? timing?.resourceWaiting
-        ? '等待计算资源…'
-        : '等待处理…'
-      : process.active === '正在重新连接模型'
-        ? '正在重新连接模型…'
-        : process.active === '等待模型响应'
-          ? '等待模型响应…'
-          : process.active === '正在整理上下文'
-            ? '正在整理对话…'
-            : process.active
-              ? '执行中…'
-              : streaming
-                ? '回复中…'
-                : '思考中…'
-    : failed
-      ? (failureTitle ?? '未完成')
-      : canceled
-        ? '已停止'
-        : '工作过程';
+  const waitingQuestion = questions.some(
+    (question) => question.pending && !question.answer,
+  );
+  const submittedQuestion = questions.some(
+    (question) =>
+      question.pending &&
+      question.answer &&
+      userQuestionReceiptState(question.answer.status).state !== 'confirmed',
+  );
+  const title = waitingQuestion
+    ? '等待回答'
+    : submittedQuestion
+      ? '回答已提交'
+      : microStatus
+        ? waiting
+          ? timing?.resourceWaiting
+            ? '等待计算资源…'
+            : '等待处理…'
+          : process.active === '正在重新连接模型'
+            ? '正在重新连接模型…'
+            : process.active === '等待模型响应'
+              ? '等待模型响应…'
+              : process.active === '正在整理上下文'
+                ? '正在整理对话…'
+                : process.active
+                  ? '执行中…'
+                  : streaming
+                    ? '回复中…'
+                    : '思考中…'
+        : failed
+          ? (failureTitle ?? '未完成')
+          : canceled
+            ? '已停止'
+            : '工作过程';
   const expandable = Boolean(
     (process.steps.length && !onlyLiveThinking(process.steps, running)) ||
     Children.toArray(children).length ||
@@ -182,6 +211,15 @@ export function WorkProcess({
       )
     : undefined;
   const history = parts?.filter((part) => part.id !== final?.id);
+  const readingQuestion = useQuestionDisclosureOpen(
+    questions.flatMap((question) =>
+      question.answer
+        ? [
+            `step:${questionReceiptDisclosureId(question.request.questionId, question.answer.id)}`,
+          ]
+        : [],
+    ),
+  );
   const display = workProcessDisplayState({
     policy,
     presentation: currentPresentation,
@@ -189,7 +227,11 @@ export function WorkProcess({
     failed,
     canceled,
     hasHistory: parts ? Boolean(history?.length || expandable) : expandable,
-    disclosure,
+    disclosure:
+      disclosure ??
+      (readingQuestion
+        ? { presentation: currentPresentation, open: true }
+        : undefined),
   });
   const toggle = () =>
     setDisclosure({ presentation: currentPresentation, open: !display.open });
@@ -217,12 +259,13 @@ export function WorkProcess({
     const showHistory = display.open;
     const visibleParts = parts.filter(
       (part) =>
-        part.kind === 'reply' ||
-        !onlyLiveThinking(
-          summarizeWorkProcess(part.items).steps,
-          running && !part.closed,
-        ) ||
-        part.items.some((item) => item.operationId && renderOperation),
+        part.id !== final?.id &&
+        (part.kind === 'reply' ||
+          !onlyLiveThinking(
+            summarizeWorkProcess(part.items).steps,
+            running && !part.closed,
+          ) ||
+          part.items.some((item) => item.operationId && renderOperation)),
     );
     const renderPart = (part: WorkProgressPart) =>
       part.kind === 'reply' ? (
@@ -232,6 +275,8 @@ export function WorkProcess({
           }
           className={styles.processReply}
           data-work-reply={part.id}
+          data-process-content={`reply:${part.id}`}
+          data-process-append
           hidden={!showHistory && part.id !== final?.id}
         >
           <AssistantMarkdown
@@ -246,6 +291,7 @@ export function WorkProcess({
         <div key={part.id} hidden={!showHistory}>
           <WorkProcessGroup
             items={part.items}
+            questions={questions}
             renderOperation={renderOperation}
             running={running && !part.closed}
             grouped={display.groupSteps}
@@ -256,7 +302,6 @@ export function WorkProcess({
       );
     return withReadingState(
       <section
-        ref={root}
         className={styles.workProcess}
         aria-label={label}
         data-transcript-view={policy.mode}
@@ -319,11 +364,11 @@ export function WorkProcess({
           </div>
         ) : null}
       </section>,
+      final ? renderPart(final) : null,
     );
   }
   return withReadingState(
     <section
-      ref={root}
       className={`${reasoning.root} ${styles.workProcess}`}
       aria-label={label}
       data-transcript-view={policy.mode}
@@ -373,6 +418,7 @@ export function WorkProcess({
           <NativeStepsGroup
             key={currentPresentation.answerGeneration}
             items={items}
+            questions={questions}
             running={running}
             grouped={display.groupSteps}
             policy={policy}
@@ -415,6 +461,7 @@ export function WorkProcess({
  */
 function WorkProcessGroup({
   items,
+  questions,
   running,
   renderOperation,
   grouped,
@@ -422,6 +469,7 @@ function WorkProcessGroup({
   answerGeneration,
 }: {
   items: NativeExperienceItem[];
+  questions: readonly WorkProcessQuestion[];
   running: boolean;
   renderOperation?: (operationId: string) => ReactNode;
   grouped: boolean;
@@ -435,6 +483,7 @@ function WorkProcessGroup({
       <NativeStepsGroup
         key={answerGeneration}
         items={items}
+        questions={questions}
         running={running}
         grouped={grouped}
         policy={policy}
@@ -459,22 +508,50 @@ function WorkProcessGroup({
 
 function NativeStepsGroup({
   items,
+  questions,
   running,
   grouped,
   policy,
 }: {
   items: NativeExperienceItem[];
+  questions: readonly WorkProcessQuestion[];
   running: boolean;
   grouped: boolean;
   policy: ChatPresentationPolicy;
 }) {
-  const [open, setOpen] = useProcessDisclosure<boolean>(
+  const [manual, setOpen] = useProcessDisclosure<boolean | undefined>(
     items.map((item) => `group:${item.id}`),
-    false,
+    undefined,
   );
+  const readingQuestion = useQuestionDisclosureOpen(
+    questions.flatMap((question) =>
+      question.answer &&
+      items.some((item) => item.id === `tool:${question.callId}`)
+        ? [
+            `step:${questionReceiptDisclosureId(question.request.questionId, question.answer.id)}`,
+          ]
+        : [],
+    ),
+  );
+  const open = manual ?? readingQuestion;
   const { steps } = summarizeWorkProcess(items);
   if (!steps.length || onlyLiveThinking(steps, running)) return null;
-  if (!grouped) return <WorkProcessSteps items={items} running={running} />;
+  // The approved default process already has its turn disclosure. Show its
+  // concrete steps directly; saved compact/standard grouping stays native.
+  if (policy.mode === 'detailed')
+    return (
+      <section aria-label="工作步骤" className={styles.processDetails}>
+        <WorkProcessSteps
+          items={items}
+          questions={questions}
+          running={running}
+        />
+      </section>
+    );
+  if (!grouped || steps.every((step) => step.category === 'question'))
+    return (
+      <WorkProcessSteps items={items} questions={questions} running={running} />
+    );
   const live = [...steps]
     .reverse()
     .find((step) => ['started', 'updated'].includes(step.status));
@@ -512,7 +589,11 @@ function NativeStepsGroup({
         }
       >
         <div className={styles.processDetails}>
-          <WorkProcessSteps items={items} running={running} />
+          <WorkProcessSteps
+            items={items}
+            questions={questions}
+            running={running}
+          />
         </div>
       </DisclosureRow>
     </section>
@@ -521,9 +602,11 @@ function NativeStepsGroup({
 
 function WorkProcessSteps({
   items,
+  questions,
   running,
 }: {
   items: NativeExperienceItem[];
+  questions: readonly WorkProcessQuestion[];
   running: boolean;
 }) {
   const { steps } = summarizeWorkProcess(items);
@@ -531,52 +614,88 @@ function WorkProcessSteps({
   return (
     <ul className={styles.processSteps} aria-label="工作步骤">
       {steps.map((step) => {
-        const pending =
-          ['started', 'updated'].includes(step.status) &&
-          step.category !== 'plan';
+        const question = questions.find(
+          (question) => step.id === `tool:${question.callId}`,
+        );
+        const active = ['started', 'updated'].includes(step.status);
+        const pending = active && step.category !== 'plan';
         const status =
           step.status === 'failed'
-            ? `未成功${step.error ? `：${step.error}` : ''}`
-            : step.status === 'info'
-              ? '等待处理'
-              : pending && !running
-                ? '结果未确认'
-                : undefined;
+            ? '未成功'
+            : question?.pending && !question.answer
+              ? '等待回答'
+              : question?.answered
+                ? '已回答'
+                : step.status === 'info'
+                  ? '结果未确认'
+                  : step.status === 'completed'
+                    ? '已完成'
+                    : active && !running
+                      ? '结果未确认'
+                      : active
+                        ? '运行中'
+                        : '结果未确认';
         return (
           <li
             key={step.id}
             data-category={step.category}
             data-failed={step.status === 'failed' || undefined}
           >
-            <DisclosureRow
-              icon={
-                <span
-                  className={
-                    pending && running ? styles.processPulse : undefined
-                  }
-                  aria-hidden
-                >
-                  {stepIcons[step.category]}
-                </span>
-              }
-              title={step.label}
-              open={false}
-              expandable={false}
-              onToggle={noop}
-              rowClassName={styles.processStepRow}
-              titleClassName={styles.processStepLabel}
-              collapsedContent={
-                <>
-                  <span className={reasoning.separator} aria-hidden />
-                  <span className={styles.processStepDescription}>
-                    {step.description}
+            {question?.answer ? (
+              <UserQuestionReceipt
+                messageId={question.answer.id}
+                answer={question.answer.answer}
+                text={question.answer.text}
+                createdAt={question.answer.createdAt}
+                status={question.answer.status}
+                questions={question.request.questions}
+              />
+            ) : (
+              <WorkProcessStepView
+                id={step.id}
+                icon={
+                  <span
+                    className={
+                      pending && running ? styles.processPulse : undefined
+                    }
+                    aria-hidden
+                  >
+                    {stepIcons[step.category]}
                   </span>
-                </>
-              }
-            />
-            {status ? (
-              <small className={styles.processStepStatus}>{status}</small>
-            ) : null}
+                }
+                title={
+                  question
+                    ? `提问 · ${question.request.questions[0]?.question ?? step.title}`
+                    : step.title
+                }
+                status={status}
+                elapsedMs={step.elapsedMs}
+                running={pending && running}
+                failed={step.status === 'failed'}
+                initialOpen={step.status === 'failed'}
+                details={
+                  question
+                    ? question.request.questions.map((item) => ({
+                        label: '问题',
+                        value: item.question,
+                      }))
+                    : [
+                        ...(step.input
+                          ? [{ label: '输入', value: step.input }]
+                          : []),
+                        ...(step.result
+                          ? [
+                              {
+                                label:
+                                  step.status === 'failed' ? '原因' : '结果',
+                                value: step.result,
+                              },
+                            ]
+                          : []),
+                      ]
+                }
+              />
+            )}
           </li>
         );
       })}

@@ -17,6 +17,41 @@ function call(
   };
 }
 describe('chronological public work process', () => {
+  it('only carries existing safe summaries and ordered recorded timing into inline details', () => {
+    const result = summarizeWorkProcess([
+      call(1, {
+        activityDetail: '查询 NVDA 的实时行情',
+        detail: '找到一条行情',
+        startedAt: '2026-11-10T00:00:00Z',
+        finishedAt: '2026-11-10T00:00:00.121Z',
+      }),
+      call(2, {
+        detail: '```secret\n原始结果\n```',
+        startedAt: 'not-a-date',
+        finishedAt: '2026-11-10T00:00:00Z',
+      }),
+      call(3, {
+        startedAt: '2026-11-10T00:00:01Z',
+        finishedAt: '2026-11-10T00:00:00Z',
+      }),
+      call(4, {
+        kind: 'think',
+        activityDetail: '私有推理',
+        detail: '私有推理结果',
+      }),
+    ]).steps;
+    expect(result[0]).toMatchObject({
+      title: '查询 NVDA 的实时行情',
+      input: '查询 NVDA 的实时行情',
+      result: '找到一条行情',
+      elapsedMs: 121,
+    });
+    expect(result[1]?.result).toBeUndefined();
+    expect(result[1]?.elapsedMs).toBeUndefined();
+    expect(result[2]?.elapsedMs).toBeUndefined();
+    expect(result[3]?.input).toBeUndefined();
+    expect(result[3]?.result).toBeUndefined();
+  });
   it('preserves distinct operations and their actual target in execution order', () => {
     const state = summarizeWorkProcess([
       call(3, {

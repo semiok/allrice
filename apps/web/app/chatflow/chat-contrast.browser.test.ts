@@ -558,12 +558,21 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
               .toBe(true);
           }
 
-          // L07: the answer receipt, on its tinted header.
+          // L07: compact native receipt and its expanded questions/answers.
           const receipt = page.getByRole('article', { name: '用户确认结果' });
-          const quiet = receipt.locator('header span, header time, dt');
-          expect(await quiet.count()).toBeGreaterThanOrEqual(4);
+          const receiptTitle = receipt.getByRole('button', {
+            name: '提问 · 2/2 已回答',
+            exact: true,
+          });
+          await readable(receiptTitle);
+          await receiptTitle.click();
+          const quiet = receipt.locator(
+            'dl dt, dl dd, [class*="processQuestionNote"]',
+          );
+          expect(await quiet.count()).toBeGreaterThanOrEqual(5);
           for (const node of await quiet.all()) await readable(node);
           await readable(receipt.getByText('已跳过', { exact: true }));
+          await readable(receipt.getByText('推荐', { exact: true }));
           // A follow-up the running task did not take.
           await readable(page.getByText('补充未被采纳', { exact: true }));
           // L04: links in a reply.
@@ -574,15 +583,37 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
           // L02 and the failed step, in the work process.
           const process = page.locator('[data-case="process"]');
           await readable(process.getByLabel('本轮运行时间'));
-          for (const words of [
-            '分析任务与处理步骤',
-            '搜索资料：本周销售数据',
-            '查询 NVDA 的实时行情',
-            '提问已挂起，等待你的回答',
-            '等待处理',
-            '未成功：服务超时',
-          ])
-            await readable(process.getByText(words, { exact: true }));
+          for (const [id, words] of [
+            ['think', '分析任务与处理步骤'],
+            ['search', '搜索资料：本周销售数据'],
+            ['quote', '查询 NVDA 的实时行情'],
+            ['ask', '提问已挂起，等待你的回答'],
+          ]) {
+            const title = process.locator(
+              `[data-step-id="${id}"] [class*="processStepLabel"]`,
+            );
+            expect(await title.innerText()).toBe(words);
+            await readable(title);
+          }
+          for (const step of await process.locator('[data-step-id]').all()) {
+            await readable(step.locator('[class*="processStepStatus"]'));
+            const toggle = step.locator('[data-disclosure-row]').first();
+            if ((await toggle.getAttribute('aria-expanded')) === 'false')
+              await toggle.click();
+            for (const detail of await step.locator('dl dt, dl dd').all())
+              await readable(detail);
+          }
+          await readable(
+            process
+              .locator('[data-step-id="ask"]')
+              .getByText('结果未确认', { exact: true }),
+          );
+          await readable(
+            process
+              .locator('[data-step-id="quote"]')
+              .getByText('未成功', { exact: true }),
+          );
+          await readable(process.getByText('服务超时', { exact: true }));
         } finally {
           await page.close();
         }
