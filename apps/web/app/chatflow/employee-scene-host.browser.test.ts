@@ -2308,6 +2308,127 @@ suite('U1 mounted employee Workflow host', () => {
     });
   }
 
+  for (const origin of ['top', 'employee'] as const) {
+    for (const navigation of [
+      'inspect',
+      'reopen',
+      'employee-switch',
+    ] as const) {
+      it(`MET-251 ${origin} consumes a deletion notice before ${navigation} without consuming the receipt`, async () => {
+        await inFixture({}, async (f) => {
+          const employeeName = origin === 'top' ? 'Rice' : '流程哥';
+          const instanceId = origin === 'top' ? id(7) : id(17);
+          let parent =
+            origin === 'top'
+              ? await f.openDirectory()
+              : await f.openEmployeeDetails(employeeName);
+          await parent
+            .getByRole('button', { name: '写周报', exact: true })
+            .click();
+          const detail = employeePage(f.page, { name: '写周报', exact: true });
+          await detail
+            .getByRole('heading', { name: '什么时候用', exact: true })
+            .waitFor();
+          const confirm = await deleteConfirmation(f, detail);
+          await confirm
+            .getByRole('button', { name: '删除', exact: true })
+            .click();
+          await parent.waitFor();
+          await contains(
+            parent.getByRole('status').filter({ hasText: '已删除“写周报”' }),
+            '已删除“写周报”',
+          );
+          expect(f.state.removeReceipts.size).toBe(1);
+          expect([...f.state.removeReceipts.values()][0]!.instanceId).toBe(
+            instanceId,
+          );
+          if (navigation === 'inspect') {
+            await parent
+              .getByRole('button', { name: '客户回访', exact: true })
+              .click();
+            const other = employeePage(f.page, {
+              name: '客户回访',
+              exact: true,
+            });
+            await other
+              .getByRole('heading', { name: '什么时候用', exact: true })
+              .waitFor();
+            await other
+              .getByRole('button', {
+                name: origin === 'top' ? '返回能力列表' : '返回员工详情',
+                exact: true,
+              })
+              .click();
+            await parent.waitFor();
+          } else {
+            await parent
+              .getByRole('button', {
+                name: origin === 'top' ? '关闭工作台' : '关闭',
+                exact: true,
+              })
+              .click();
+            if (navigation === 'employee-switch') {
+              const other = await f.openEmployeeDetails(
+                employeeName === 'Rice' ? '流程哥' : 'Rice',
+              );
+              await other
+                .getByRole('button', { name: '关闭', exact: true })
+                .click();
+            }
+            parent =
+              origin === 'top'
+                ? await f.openDirectory()
+                : await f.openEmployeeDetails(employeeName);
+          }
+          await parent
+            .getByRole('button', { name: '客户回访', exact: true })
+            .waitFor();
+          expect(
+            await parent
+              .getByRole('status')
+              .filter({ hasText: '已删除“写周报”' })
+              .count(),
+          ).toBe(0);
+          expect(f.state.removeReceipts.size).toBe(1);
+          expect(
+            f.state.writes.filter((request) => request.method === 'DELETE'),
+          ).toHaveLength(1);
+          expect(
+            f.state.collections
+              .get(instanceId)!
+              .skills.map((skill) => skill.sceneId),
+          ).toEqual([id(51)]);
+        });
+      });
+    }
+  }
+
+  it('MET-251 opening the same employee detail consumes a sidebar deletion notice', async () => {
+    await inFixture({}, async (f) => {
+      const detail = await f.openDetail();
+      const confirm = await deleteConfirmation(f, detail);
+      await confirm.getByRole('button', { name: '删除', exact: true }).click();
+      await contains(
+        f.directory().getByRole('status').filter({ hasText: '已删除“写周报”' }),
+        '已删除“写周报”',
+      );
+      const employee = await f.openEmployeeDetails();
+      await employee
+        .getByRole('button', { name: '客户回访', exact: true })
+        .waitFor();
+      expect(
+        await employee
+          .getByRole('status')
+          .filter({ hasText: '已删除“写周报”' })
+          .count(),
+      ).toBe(0);
+      expect(f.state.removeReceipts.size).toBe(1);
+      expect(
+        f.state.writes.filter((request) => request.method === 'DELETE'),
+      ).toHaveLength(1);
+    });
+  });
+
   it('delete confirmation keeps native focus and cancellation returns to the same detail', async () => {
     await inFixture({}, async (f) => {
       const detail = await f.openDetail();

@@ -227,16 +227,13 @@ export function EmployeeSceneList(props: {
   controller: EmployeeSceneCatalogController;
   employeeName: string;
   embedded?: boolean;
+  notice?: string;
   onChoose: (entry: Entry) => void;
   onCreate: () => void;
 }) {
   const { controller: catalog } = props;
   const heading = useId();
   const writable = catalog.canMaintain && !catalog.loading && !catalog.error;
-  const removed =
-    catalog.mutation?.kind === 'remove' && catalog.mutation.receipt
-      ? catalog.mutation.scene
-      : undefined;
   const create = (
     <Button
       variant="outline"
@@ -248,9 +245,9 @@ export function EmployeeSceneList(props: {
   );
   return (
     <section aria-labelledby={props.embedded ? heading : undefined}>
-      {removed && (
+      {props.notice && (
         <p className={css.caption} role="status">
-          已删除“{removed.name}”
+          {props.notice}
         </p>
       )}
       {props.embedded && (
@@ -321,6 +318,7 @@ export function EmployeeSceneDialog(props: {
   onClose: () => void;
   onStart: (scene: SceneSelection) => Promise<void>;
   onDeliveries: () => void;
+  onRemoved?: (name: string) => void;
   initial?: { page: 'detail'; entry: Entry } | { page: 'source' };
   onBackToEmployee?: () => void;
   onBackToList?: () => void;
@@ -557,6 +555,7 @@ export function EmployeeSceneDialog(props: {
   async function remove() {
     if (!removing || busy) return;
     if (await catalog.remove(removing)) {
+      props.onRemoved?.(removing.name);
       setRemoving(undefined);
       if (returnToList) returnToList();
       else setPage('list');

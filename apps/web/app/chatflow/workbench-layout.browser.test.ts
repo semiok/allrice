@@ -2855,11 +2855,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         confirmations++;
         await dialog.accept();
       });
-      await f.page
-        .getByRole('button', { name: '工作场景', exact: true })
-        .click();
-      const dialog = f.page.getByRole('dialog', {
-        name: '工作场景 Workflow',
+      await f.page.getByRole('button', { name: '能力', exact: true }).click();
+      const dialog = f.page.getByRole('region', {
+        name: '内容同事 · 能力',
         exact: true,
       });
       await dialog
@@ -2882,7 +2880,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   }, 30000);
 
-  it('MET194 hides the scene directory on employee switch and ignores the prior employee delayed catalog', async () => {
+  it('MET194 hides the prior employee capability body on employee switch and ignores its delayed catalog', async () => {
     const f = await fixture({
       brandContent: { kind: 'custom', registered: true },
     });
@@ -2892,12 +2890,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .locator('[data-row-key="workspace:' + id(7) + '"]')
         .press('ArrowRight');
       const entry = f.page.getByRole('button', {
-        name: '工作场景',
+        name: '能力',
         exact: true,
       });
       await entry.click();
-      const dialog = f.page.getByRole('dialog', {
-        name: '工作场景 Workflow',
+      const dialog = f.page.getByRole('region', {
+        name: '内容同事 · 能力',
         exact: true,
       });
       await dialog
@@ -2912,8 +2910,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         release = done;
       });
       await f.page.getByRole('treeitem', { name: /^研究任务 A/ }).click();
-      await expect.poll(() => entry.getAttribute('aria-pressed')).toBe('false');
-      expect(await dialog.count()).toBe(0);
       await entry.click();
       await expect
         .poll(() => f.state.sceneCatalogReads.length)
@@ -2925,10 +2921,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       release();
       f.state.sceneCatalogDelay = null;
       await entry.click();
-      await dialog
+      const current = f.page.getByRole('region', {
+        name: 'Rice · 能力',
+        exact: true,
+      });
+      await current
         .getByRole('heading', { name: '还没有工作场景', exact: true })
         .waitFor();
-      expect(await dialog.textContent()).not.toContain('内容同事');
+      expect(await dialog.count()).toBe(0);
+      expect(await current.textContent()).not.toContain('内容同事');
       expect(f.state.sceneCatalogReads.at(-1)!.instanceId).toBe(id(7));
       expect(f.state.brandContentCatalogReads).toEqual([]);
       expect(f.state.brandContentBoardReads).toBe(0);
@@ -2946,12 +2947,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     });
     try {
       const entry = f.page.getByRole('button', {
-        name: '工作场景',
+        name: '能力',
         exact: true,
       });
       await entry.click();
-      const dialog = f.page.getByRole('dialog', {
-        name: '工作场景 Workflow',
+      const dialog = f.page.getByRole('region', {
+        name: '内容同事 · 能力',
         exact: true,
       });
       await dialog
@@ -2959,7 +2960,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .waitFor();
       f.state.viewer = id(50);
       f.finishRun();
-      await expect.poll(() => dialog.count()).toBe(0);
+      await expect
+        .poll(() =>
+          dialog
+            .getByRole('heading', { name: '还没有工作场景', exact: true })
+            .count(),
+        )
+        .toBe(0);
       await entry.click();
       await dialog.getByRole('alert').waitFor();
       expect(
