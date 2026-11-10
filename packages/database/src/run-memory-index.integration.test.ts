@@ -248,17 +248,22 @@ suite(
         employeeInstanceId: assignment.id,
         title: 'Synthetic queue rollback',
       });
-      const databaseState = async () =>
+      const queueState = async () =>
         (
           await fixture.db`select
-        (select count(*) from allrice_messages where workspace_id=${source.workspaceId}) messages,
         (select count(*) from allrice_runs where workspace_id=${source.workspaceId}) runs,
         (select count(*) from allrice_jobs where workspace_id=${source.workspaceId}) jobs,
         (select count(*) from allrice_employee_runs where workspace_id=${source.workspaceId}) employee_runs,
-        (select to_jsonb(s) from allrice_chat_sessions s where s.id=${failedSession.id}) session,
+        (select count(*) from allrice_policy_snapshots where organization_id=${source.organizationId} and subject_id=${source.ownerId}) policies,
+        (select count(*) from allrice_task_clocks where workspace_id=${source.workspaceId}) task_clocks,
+        (select count(*) from allrice_conversation_followups where session_id=${failedSession.id}) followups,
+        (select count(*) from allrice_conversation_commands where session_id=${failedSession.id}) commands,
+        (select coalesce(jsonb_agg(jsonb_build_object('runId',r.run_id,'state',r.memory_context_state) order by r.run_id),'[]')
+          from allrice_employee_runs r where r.workspace_id=${source.workspaceId}) memory_states,
         (select coalesce(jsonb_agg(to_jsonb(r)),'[]') from allrice_conversation_runtimes r where r.session_id=${failedSession.id}) runtime`
         )[0];
-      const beforeFailure = await databaseState();
+      const beforeFailure = await queueState();
+      const failedInput = { ...input, clientMessageId: randomUUID() };
       await fixture.db`create function fail_memory_queue_insert() returns trigger language plpgsql as $$ begin
         if new.prompt_snapshot#>>'{employeeDocuments,schemaVersion}' is distinct from '2'
           or new.memory_context_state->>'schemaVersion' is distinct from '2' then
@@ -268,12 +273,66 @@ suite(
         for each row execute function fail_memory_queue_insert()`;
       try {
         await expect(
-          sendChatMessage(context, source.workspaceId, failedSession.id, {
-            ...input,
-            clientMessageId: randomUUID(),
-          }),
+          sendChatMessage(
+            context,
+            source.workspaceId,
+            failedSession.id,
+            failedInput,
+          ),
         ).rejects.toThrow('synthetic_memory_queue_failure');
-        expect(await databaseState()).toEqual(beforeFailure);
+        expect(await queueState()).toEqual(beforeFailure);
+        // Message persistence precedes queue admission. Its durable input and
+        // failed assistant receipt survive; only queue-owned writes roll back.
+        const messages =
+          await fixture.db`select * from allrice_messages where session_id=${failedSession.id}`;
+        expect(messages).toHaveLength(2);
+        const human = messages.find((row) => row.role === 'user');
+        expect(human).toMatchObject({
+          owner_id: source.ownerId,
+          status: 'completed',
+          client_message_id: failedInput.clientMessageId,
+          content: { text: failedInput.text, citations: [] },
+          completed_at: expect.any(Date),
+        });
+        expect(messages.find((row) => row.role === 'assistant')).toMatchObject({
+          owner_id: source.ownerId,
+          reply_to_id: human!.id,
+          status: 'failed',
+          error_code: 'EMPLOYEE_ENQUEUE_FAILED',
+          completed_at: expect.any(Date),
+          content: {
+            text: 'Rice 暂时无法开始这次执行，请稍后重试。',
+            citations: [],
+          },
+        });
+        const receipts =
+          await fixture.db`select * from allrice_chat_input_requests where session_id=${failedSession.id}`;
+        expect(receipts).toEqual([
+          expect.objectContaining({
+            user_message_id: human!.id,
+            client_message_id: failedInput.clientMessageId,
+            owner_id: source.ownerId,
+            kind: 'message',
+            request_digest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+          }),
+        ]);
+        expect(
+          await fixture.db`select id from allrice_audit_events where resource_id=${human!.id} and action='message.create'`,
+        ).toHaveLength(1);
+        expect(
+          await fixture.db`select run_id from allrice_employee_runs where user_message_id=${human!.id}`,
+        ).toHaveLength(0);
+        const [activity] =
+          await fixture.db`select owner_id,employee_assignment_id,employee_instance_id,updated_at
+          from allrice_chat_sessions where id=${failedSession.id}`;
+        expect(activity).toMatchObject({
+          owner_id: source.ownerId,
+          employee_assignment_id: assignment.id,
+          employee_instance_id: assignment.id,
+        });
+        expect(activity!.updated_at.getTime()).toBeGreaterThanOrEqual(
+          new Date(failedSession.updatedAt).getTime(),
+        );
       } finally {
         await fixture.db`drop trigger fail_memory_queue_insert on allrice_employee_runs`;
         await fixture.db`drop function fail_memory_queue_insert()`;
