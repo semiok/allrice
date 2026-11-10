@@ -11,6 +11,7 @@ import './styles/focus.css';
 import '@allrice/ui/styles.css';
 
 import { ThemeController } from '../components/theme/theme-controller';
+import { FocusController } from '../components/theme/focus-controller';
 import { readFrameworkRolloutPolicy } from '../lib/framework/rollout';
 import { themeScript } from '../lib/theme/theme-script';
 
@@ -70,6 +71,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <body suppressHydrationWarning>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
         <ThemeController />
+        <FocusController />
         {children}
       </body>
     </html>

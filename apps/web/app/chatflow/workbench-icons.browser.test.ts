@@ -174,6 +174,19 @@ suite('workbench icon scale and workflow identity', () => {
           outline: '0px',
           modality: 'pointer',
         });
+        // Closing without entering a row keeps focus on the same trigger.
+        await page.keyboard.press('Escape');
+        expect(await focusState(agents)).toMatchObject({
+          active: true,
+          outline: '2px',
+          modality: 'keyboard',
+        });
+        await agents.click();
+        expect(await focusState(agents)).toMatchObject({
+          active: true,
+          outline: '0px',
+          modality: 'pointer',
+        });
         await page.keyboard.press('ArrowDown');
         const child = page.getByRole('treeitem', { name: '核对数据摘要' });
         await expect
@@ -220,13 +233,11 @@ suite('workbench icon scale and workflow identity', () => {
             modality: 'keyboard',
           });
           await button.click();
-          expect
-            .soft(await focusState(button))
-            .toMatchObject({
-              active: true,
-              outline: '0px',
-              modality: 'pointer',
-            });
+          expect.soft(await focusState(button)).toMatchObject({
+            active: true,
+            outline: '0px',
+            modality: 'pointer',
+          });
         }
         const form = page.getByRole('button', { name: '打开焦点测试表单' });
         await form.click();
@@ -238,6 +249,23 @@ suite('workbench icon scale and workflow identity', () => {
               .evaluate((node) => node === document.activeElement),
           )
           .toBe(true);
+        expect(
+          (await focusState(page.getByRole('textbox', { name: '表单内容' })))
+            .outline,
+        ).not.toBe('0px');
+        await page.keyboard.type('保留输入焦点');
+        expect(
+          (await focusState(page.getByRole('textbox', { name: '表单内容' })))
+            .outline,
+        ).not.toBe('0px');
+        await page.keyboard.press('Tab');
+        expect(
+          await focusState(dialog.getByRole('button', { name: '关闭' })),
+        ).toMatchObject({ active: true, visible: true });
+        await page.keyboard.press('Shift+Tab');
+        expect(
+          await focusState(page.getByRole('textbox', { name: '表单内容' })),
+        ).toMatchObject({ active: true, visible: true, modality: 'keyboard' });
         // The existing dialog keeps its focus trap and return target on both inputs.
         await page.keyboard.press('Escape');
         expect(await focusState(form)).toMatchObject({

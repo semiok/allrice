@@ -31,6 +31,7 @@ import shellUi from '../app/chatflow/dsh-saas.module.css';
 import type { Session, Workspace } from '../app/chatflow/chatflow-types';
 import { DshDialog } from '../app/chatflow/dsh-upstream/Dialog';
 import workbenchUi from '../app/chatflow/workbench-modules.module.css';
+import { FocusController } from '../components/theme/focus-controller';
 
 function FocusDialogFixture() {
   const [open, setOpen] = useState(false);
@@ -165,6 +166,7 @@ function Page() {
   );
   return (
     <main style={{ display: 'flex', minHeight: 600 }}>
+      <FocusController />
       <nav
         aria-label="业务会话"
         style={{
