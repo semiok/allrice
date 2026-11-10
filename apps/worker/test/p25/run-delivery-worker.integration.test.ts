@@ -26,9 +26,13 @@ import {
 import { createRunAuthorityFixture } from '../../../../packages/database/src/run-authority.fixture.ts';
 import { createEmployeeAdministrationFixture } from '../../../../packages/database/src/employee-administration.fixture.ts';
 import { savePlatformEmployeeDraft } from '../../../../packages/database/src/employees/platform-employees.ts';
-import { updateEmployeeInstance } from '../../../../packages/database/src/employees/employee-instances.ts';
+import {
+  ensureGeneralEmployeeInstance,
+  updateEmployeeInstance,
+} from '../../../../packages/database/src/employees/employee-instances.ts';
 import {
   assignEmployeeVersion,
+  createEmployee,
   resolveEmployeeExecution,
 } from '../../../../packages/database/src/employees/employeehub.ts';
 import {
@@ -604,6 +608,28 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     };
   }
   type PublishedTarget = Awaited<ReturnType<typeof publishedTarget>>;
+  async function probeModelRequestRows(
+    db: PublishedTarget['db'],
+    identity: Pick<PublishedTarget['identity'], 'user' | 'assignment'>,
+    holderPid?: number,
+  ) {
+    await db.begin(async (tx) => {
+      const [backend] = await tx<
+        { pid: number }[]
+      >`select pg_backend_pid() pid`;
+      if (holderPid !== undefined) expect(backend!.pid).not.toBe(holderPid);
+      await tx`set local lock_timeout='1s'`;
+      expect(
+        await tx`select id from allrice_users where id=${identity.user} for no key update`,
+      ).toHaveLength(1);
+      expect(
+        await tx`select id from allrice_employee_assignments where id=${identity.assignment} for update`,
+      ).toHaveLength(1);
+      expect(
+        await tx`select id from allrice_employee_instances where id=${identity.assignment} for update`,
+      ).toHaveLength(1);
+    });
+  }
   async function historicalSourceGap(
     f: PublishedTarget,
     kind: 'v1_basis' | 'null_engine',
@@ -1109,6 +1135,74 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     return { runId: queued.runId!, rule, event, object, expected };
   }
 
+  it('PERSONA: the model-request probe detects each known row lock until release without a Run or Host', async () => {
+    fixture = await createRuntimeFixtureDatabase();
+    const db = fixture.db;
+    vi.spyOn(DatabaseClient, 'getDatabase').mockReturnValue(db);
+    const source = await createEmployeeAdministrationFixture(db);
+    await authorizeFixturePlatformAdministrator(db, source.ownerId);
+    const context = (await authenticateSession(
+      (await createSession(source.ownerId)).token,
+      {
+        organizationId: source.organizationId,
+        workspaceId: source.workspaceId,
+      },
+    ))!;
+    const assignment = await createEmployee(context, {
+      workspaceId: source.workspaceId,
+      name: 'Lock probe calibration',
+      description: 'Isolated row-lock calibration without model execution.',
+      partnerProfile: employeeManifest({
+        key: 'lock-probe-calibration',
+        name: 'Lock probe calibration',
+      }).partnerProfile,
+    });
+    await ensureGeneralEmployeeInstance(db, assignment.id);
+    const identity = { user: source.ownerId, assignment: assignment.id };
+    for (const [table, id] of [
+      ['allrice_users', identity.user],
+      ['allrice_employee_assignments', identity.assignment],
+      ['allrice_employee_instances', identity.assignment],
+    ] as const) {
+      const ready = gate(),
+        release = gate();
+      let holderPid: number | undefined;
+      const holder = db.begin(async (tx) => {
+        const [backend] = await tx<
+          { pid: number }[]
+        >`select pg_backend_pid() pid`;
+        expect(
+          await tx`select id from ${tx(table)} where id=${id} for share`,
+        ).toHaveLength(1);
+        holderPid = backend!.pid;
+        ready.release();
+        await release.promise;
+      });
+      let probeFailed = false;
+      try {
+        // An early BEGIN/query failure rejects readiness instead of stranding it.
+        await Promise.race([ready.promise, holder]);
+        expect(holderPid).toBeTypeOf('number');
+        await expect(
+          probeModelRequestRows(db, identity, holderPid),
+        ).rejects.toMatchObject({
+          code: '55P03',
+          message: 'canceling statement due to lock timeout',
+        });
+      } catch (error) {
+        probeFailed = true;
+        throw error;
+      } finally {
+        release.release();
+        await holder.catch((error: unknown) => {
+          if (!probeFailed) throw error;
+        });
+      }
+      await probeModelRequestRows(db, identity);
+    }
+    expect(await db`select id from allrice_runs`).toHaveLength(0);
+  }, 45000);
+
   it.each([
     'native_once',
     'native_recurring',
@@ -1128,15 +1222,10 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         requests.push(request);
         if (!checkedLocks) {
           checkedLocks = true;
-          // Model transport is outside the short original admission and ledger
-          // transactions. This connection cannot acquire locks they still hold.
+          // Probe these rows while this provider response remains pending.
+          // Independent short authority checks may commit before acquisition.
           try {
-            await f.db.begin(async (tx) => {
-              await tx`set local lock_timeout='1s'`;
-              await tx`select id from allrice_users where id=${f.identity.user} for no key update nowait`;
-              await tx`select id from allrice_employee_assignments where id=${f.identity.assignment} for update nowait`;
-              await tx`select id from allrice_employee_instances where id=${f.identity.assignment} for update nowait`;
-            });
+            await probeModelRequestRows(f.db, f.identity);
           } catch (error) {
             const failure = error as Error & { code?: string };
             providerErrors.push({
