@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import {
   EmployeeDocumentsSchema,
+  employeeMemoryIndexMaximumInitialBytes,
+  isMemoryIndexDocuments,
   employeeDocumentDigestPlaceholder as digest,
   selectEmployeeDocumentMemories,
   renderEmployeeMemoryDocument,
@@ -560,4 +562,32 @@ describe('normal Run PERSONA defaults and sparse personal sources', () => {
       ),
     ).toThrow();
   });
+});
+
+it('shares only the strict documents version contract while leaving the old 6000-byte shape intact', () => {
+  const legacy = { user: '', memory: 'x'.repeat(6000) };
+  expect(EmployeeDocumentsSchema.parse(legacy)).toEqual(legacy);
+  expect(isMemoryIndexDocuments(legacy)).toBe(false);
+  expect(
+    EmployeeDocumentsSchema.safeParse({
+      ...legacy,
+      memory: legacy.memory + 'x',
+    }).success,
+  ).toBe(false);
+  const current = {
+    schemaVersion: 2 as const,
+    user: '',
+    memory: 'x'.repeat(employeeMemoryIndexMaximumInitialBytes),
+  };
+  expect(EmployeeDocumentsSchema.parse(current)).toEqual(current);
+  expect(isMemoryIndexDocuments(current)).toBe(true);
+  expect(
+    EmployeeDocumentsSchema.safeParse({
+      ...current,
+      memory: current.memory + 'x',
+    }).success,
+  ).toBe(false);
+  expect(
+    EmployeeDocumentsSchema.safeParse({ ...current, writeVersion: 2 }).success,
+  ).toBe(false);
 });

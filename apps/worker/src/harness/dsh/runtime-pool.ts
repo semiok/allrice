@@ -6,6 +6,7 @@ import SubagentRuntime from '@deepseek-ai/dsh-subagent';
 
 import {
   harnessContextKey,
+  isMemoryIndexDocuments,
   UuidSchema,
   QuestionWaitSchema,
   SubagentPreferencesSchema,
@@ -964,7 +965,13 @@ export class DshRuntimePool {
         '[AllRice:question-release-disabled] timed questions: idle close is disabled; blocking questions keep their Run until answered or stopped',
       );
     }
+    const employeeDocumentsSchemaVersion = isMemoryIndexDocuments(
+      input.input.kernel.employeeDocuments,
+    )
+      ? 2
+      : 1;
     const fingerprintInput = {
+      employeeDocumentsSchemaVersion,
       nativeSubagents: {
         preferences: subagentPreferences,
         config: nativeSubagents,
@@ -1253,6 +1260,7 @@ export class DshRuntimePool {
         requireRunAdmission: !!input.input.executionEnvironment.ALLRICE_RUN_ID,
         rootSystemInstructions,
         documentMemory: input.input.documentMemory === true,
+        employeeDocumentsSchemaVersion,
         requireTaskProgress: !!input.input.progress,
         requireNativeAccounting: !!input.input.nativeAccounting,
         requireDurableQuestions: !!input.input.questionWait,

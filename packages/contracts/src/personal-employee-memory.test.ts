@@ -3,6 +3,8 @@ import {
   CorrectPersonalEmployeeMemoryInputSchema,
   CreatePersonalEmployeeMemoryInputSchema,
   PersonalMemoryPairSchema,
+  RememberPersonalMemoryInputSchema,
+  CreateCheckpointPersonalMemoryCandidateInputSchema,
 } from './personal-employee-memory.ts';
 import { CreateWorkspaceMemoryInputSchema } from './workspace.ts';
 
@@ -107,4 +109,50 @@ describe('personal pair storage contracts', () => {
       }).content,
     ).toHaveLength(4000);
   });
+});
+
+it('keeps model pair arguments strict, candidate-only and Unicode bounded', () => {
+  const pair = { summary: '🧑'.repeat(40), details: '🧑'.repeat(2000) };
+  expect(
+    RememberPersonalMemoryInputSchema.parse(JSON.parse(JSON.stringify(pair))),
+  ).toEqual({ ...pair, memoryClass: 'work_note' });
+  expect(
+    RememberPersonalMemoryInputSchema.parse({ summary: '一句话' }).details,
+  ).toBeNull();
+  expect(
+    RememberPersonalMemoryInputSchema.parse({
+      summary: '一句话',
+      details: ' \n ',
+    }).details,
+  ).toBeNull();
+  for (const invalid of [
+    { ...pair, summary: pair.summary + '字' },
+    { ...pair, details: pair.details + '字' },
+    { ...pair, lifecycleState: 'durable' },
+    { ...pair, expiresAt: null },
+    { ...pair, operationKey: id },
+    { ...pair, sourceId: id },
+    { ...pair, summary: '\u0000' },
+  ])
+    expect(RememberPersonalMemoryInputSchema.safeParse(invalid).success).toBe(
+      false,
+    );
+  const checkpoint = {
+    ...pair,
+    workspaceId: id,
+    employeeId: id,
+    sessionId: id,
+    checkpointId: id,
+    sourceLabel: '历史候选',
+    idempotencyKey: id,
+  };
+  expect(
+    CreateCheckpointPersonalMemoryCandidateInputSchema.parse(checkpoint),
+  ).toEqual(checkpoint);
+  expect(
+    CreateCheckpointPersonalMemoryCandidateInputSchema.safeParse({
+      ...checkpoint,
+      content: 'third body',
+    }).success,
+  ).toBe(false);
 });

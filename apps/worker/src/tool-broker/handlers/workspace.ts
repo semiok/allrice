@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import {
   createTraceableMemory,
+  createRememberedMemoryCandidate,
   assertEmployeeChatHumanSource,
   DataAccessError,
   getToolBrokerFile,
@@ -15,6 +16,8 @@ import {
 } from '@allrice/database';
 import {
   WorkspaceDocumentReadArgsSchema,
+  RememberPersonalMemoryInputSchema,
+  isMemoryIndexDocuments,
   type ExecutionContext,
   type RequestContext,
 } from '@allrice/contracts';
@@ -495,7 +498,12 @@ export const rememberWorkspaceMemory: RiceToolHandler = async ({
     });
     return error;
   };
-  memoryLifecycleStateValue(args.lifecycleState);
+  const pairArguments = isMemoryIndexDocuments(input.employeeDocuments)
+    ? RememberPersonalMemoryInputSchema.safeParse(args)
+    : undefined;
+  if (pairArguments && !pairArguments.success)
+    throw new HandlerError('TOOL_INPUT_INVALID', '记忆候选参数不合法', false);
+  if (!pairArguments) memoryLifecycleStateValue(args.lifecycleState);
   if (!input.context.workspaceId || !input.employeeId || !input.userMessageId) {
     throw rejected(
       'MEMORY_SOURCE_MESSAGE_REQUIRED',
@@ -518,35 +526,52 @@ export const rememberWorkspaceMemory: RiceToolHandler = async ({
       );
     throw error;
   }
-  const content = stringValue(args.content, 'content');
-  if (content.length > 10_000) {
-    throw new HandlerError(
-      'TOOL_INPUT_INVALID',
-      'content 不能超过 10000 个字符',
-      false,
+  const memory = await (async () => {
+    if (pairArguments?.success) {
+      if (!input.call.nativeSessionId || !input.call.id)
+        throw rejected('MEMORY_OPERATION_ID_REQUIRED', '记忆缺少原生调用身份');
+      return (input.memoryCandidateCreate ?? createRememberedMemoryCandidate)(
+        requestContextFromExecution(input.context),
+        {
+          ...pairArguments.data,
+          workspaceId: input.context.workspaceId,
+          employeeId: input.employeeId,
+          sourceId: input.userMessageId,
+        },
+        input.context,
+        { nativeSessionId: input.call.nativeSessionId, callId: input.call.id },
+      );
+    }
+    const content = stringValue(args.content, 'content');
+    if (content.length > 10_000) {
+      throw new HandlerError(
+        'TOOL_INPUT_INVALID',
+        'content 不能超过 10000 个字符',
+        false,
+      );
+    }
+    const expiresAt =
+      args.expiresAt === undefined || args.expiresAt === null
+        ? null
+        : stringValue(args.expiresAt, 'expiresAt');
+    return (input.memoryCreate ?? createTraceableMemory)(
+      requestContextFromExecution(input.context),
+      {
+        workspaceId: input.context.workspaceId,
+        employeeId: input.employeeId,
+        content,
+        visibility: 'private',
+        sourceType: 'message',
+        sourceId: input.userMessageId,
+        sourceLabel: '模型提取候选',
+        confidence: 0.8,
+        expiresAt,
+        lifecycleState: 'candidate',
+        memoryClass: memoryClassValue(args.memoryClass),
+      },
+      input.context,
     );
-  }
-  const expiresAt =
-    args.expiresAt === undefined || args.expiresAt === null
-      ? null
-      : stringValue(args.expiresAt, 'expiresAt');
-  const memory = await (input.memoryCreate ?? createTraceableMemory)(
-    requestContextFromExecution(input.context),
-    {
-      workspaceId: input.context.workspaceId,
-      employeeId: input.employeeId,
-      content,
-      visibility: 'private',
-      sourceType: 'message',
-      sourceId: input.userMessageId,
-      sourceLabel: '模型提取候选',
-      confidence: 0.8,
-      expiresAt,
-      lifecycleState: 'candidate',
-      memoryClass: memoryClassValue(args.memoryClass),
-    },
-    input.context,
-  );
+  })();
   return {
     modelContent: JSON.stringify({
       id: memory.id,

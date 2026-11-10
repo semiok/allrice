@@ -93,3 +93,4 @@ export {
 } from './employee-scene-skills.ts';
 
 export * from './employee-documents.ts';
+export { RememberPersonalMemoryInputSchema } from './personal-employee-memory.ts';
