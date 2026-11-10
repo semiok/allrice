@@ -1,5 +1,5 @@
 /** Real chat admission -> Worker -> DSH JSON-RPC -> PostgreSQL completion.
- * Only the model target/transport and installed-artifact approval are synthetic.
+ * Model target/transport, artifact approval and component clock receipts are synthetic.
  * Eligibility, frozen snapshots, native completion and commit guards are real.
  */
 import { createHash, randomUUID } from 'node:crypto';
@@ -456,10 +456,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       .map((line) => JSON.parse(line));
   }
 
-  async function publishedTarget(
-    reply: Parameters<typeof p24Fixture>[0],
-    historical = false,
-  ) {
+  async function publishedTarget(reply: Parameters<typeof p24Fixture>[0]) {
     const base = await setup(reply);
     vi.stubEnv('ALLRICE_STORAGE_ROOT', fixture!.storageRoot!);
     const source = await createEmployeeAdministrationFixture(base.db);
@@ -546,19 +543,17 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         },
       },
     });
-    let chat: { id: string };
-    if (historical) {
-      // Historical NULL is first-INSERT provenance, never an origin rewrite.
-      // Later publication B must not replace this Session's actual engine A.
-      chat = { id: randomUUID() };
-      await base.db`insert into allrice_chat_sessions(id,organization_id,workspace_id,owner_id,employee_assignment_id,employee_instance_id,employee_version_id,title)
-        values(${chat.id},${identity.org},${identity.workspace},${identity.user},${identity.assignment},${identity.assignment},${identity.version},'Historical published A')`;
-    } else
-      chat = await createAssignedChatSession(context, {
-        workspaceId: identity.workspace,
-        employeeAssignmentId: identity.assignment,
-        title: 'Published producer PERSONA',
-      });
+    const chat = await createAssignedChatSession(context, {
+      workspaceId: identity.workspace,
+      employeeAssignmentId: identity.assignment,
+      title: 'Published producer PERSONA',
+    });
+    const [createdSession] = await base.db<
+      { native_root_origin: unknown }[]
+    >`select native_root_origin from allrice_chat_sessions where id=${chat.id}`;
+    expect(createdSession!.native_root_origin).toMatchObject({
+      schemaVersion: 2,
+    });
     await base.db`update allrice_organizations set name='TASK_ORG_FACT',business_context='TASK_BUSINESS_FACT {{missing}}' where id=${identity.org}`;
     const prompt = '请按月报核对流程整理12笔，不合并退款。';
     const memories: Awaited<ReturnType<typeof createTraceableMemory>>[] = [];
@@ -582,6 +577,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       context,
       identity,
       chat,
+      nativeRootOrigin: createdSession!.native_root_origin,
       definition,
       publish,
       prompt,
@@ -742,7 +738,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       );
       expect(targetSessionId === sessionId).toBe(kind === 'v1_basis');
       const persona = resolved.promptSnapshot.employeeDocuments!.persona!;
-      const task = await claim(f, sent.run.id);
+      const task = await claim(f, sent.run.id, true);
       try {
         const result = await task.run();
         const coverage = readCheckedFinalDeliveryForExecution(
@@ -864,12 +860,19 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
               id: randomUUID(),
               kind: 'at',
               title: 'AllRice once control',
-              prompt: 'Synthetic control only',
+              prompt:
+                'Synthetic schedule control only. Never execute business work.',
               scheduledAt: control.at,
             },
             lastDelivery: delivery,
             deliveryHistory: {
-              records: [{ ...delivery, prompt: 'Synthetic control only' }],
+              records: [
+                {
+                  ...delivery,
+                  prompt:
+                    'Synthetic schedule control only. Never execute business work.',
+                },
+              ],
               earlierRecordsUnavailable: false,
             },
           },
@@ -934,8 +937,8 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         id: randomUUID(),
         kind: 'every',
         everySeconds: 60,
-        title: 'AllRice recurring control',
-        prompt: 'Synthetic control only',
+        title: 'AllRice once control',
+        prompt: 'Synthetic schedule control only. Never execute business work.',
         scheduledAt,
       },
     };
@@ -1114,9 +1117,10 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           };
         }
         return { text: 'Synthetic published producer completed.' };
-      }, kind === 'automation_manual');
+      });
       let runId: string,
         folder: Awaited<ReturnType<typeof folderProducer>> | undefined;
+      let assertManualFrozen: (() => Promise<void>) | undefined;
       if (kind === 'native_once') runId = await (await oncePlan(f)).dispatch();
       else if (kind === 'native_recurring') runId = await recurringProducer(f);
       else if (kind === 'folder_event') {
@@ -1124,14 +1128,6 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         runId = folder.runId;
       } else {
         const { plan } = await oncePlan(f);
-        await f.publish({
-          ...f.definition,
-          name: 'CURRENT_DEFAULT_B',
-          identity: {
-            ...f.definition.identity,
-            mission: 'CURRENT_DEFAULT_B_MISSION',
-          },
-        });
         const before = (
           await f.db`select to_jsonb(c) data from allrice_native_once_controls c where automation_id=${plan.id}`
         )[0]!.data;
@@ -1142,6 +1138,37 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           plan.id,
           input,
         );
+        const readFrozen = async () =>
+          (
+            await f.db`select prompt_snapshot,execution_snapshot from allrice_employee_runs where run_id=${receipt.run.id}`
+          )[0]!;
+        const frozen = await readFrozen();
+        expect(frozen.execution_snapshot).toMatchObject({
+          schemaVersion: 2,
+          persona: {
+            source: {
+              engine: { employeeVersionId: f.identity.version },
+              basis: { employeeVersionId: f.identity.version },
+            },
+          },
+        });
+        assertManualFrozen = async () => {
+          const [session] =
+            await f.db`select native_root_origin from allrice_chat_sessions where id=${f.chat.id}`;
+          expect(session!.native_root_origin).toEqual(f.nativeRootOrigin);
+          expect(await readFrozen()).toEqual(frozen);
+        };
+        await assertManualFrozen();
+        // A normal current Session queues A before B is published. The Worker
+        // must keep this admitted input; a new turn after B may select B.
+        await f.publish({
+          ...f.definition,
+          name: 'CURRENT_DEFAULT_B',
+          identity: {
+            ...f.definition.identity,
+            mission: 'CURRENT_DEFAULT_B_MISSION',
+          },
+        });
         expect(
           (
             await runManualAutomation(
@@ -1157,6 +1184,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
             await f.db`select to_jsonb(c) data from allrice_native_once_controls c where automation_id=${plan.id}`
           )[0]!.data,
         ).toEqual(before);
+        await assertManualFrozen();
         runId = receipt.run.id;
       }
       const scope = {
@@ -1247,7 +1275,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           ),
         ).rejects.toThrow();
       const broker = vi.spyOn(ToolBroker, 'executeRiceTool');
-      const task = await claim(f, runId);
+      const task = await claim(f, runId, true);
       try {
         expect(
           await readEmployeeChatSourceKind({
@@ -1262,6 +1290,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           }),
         ).rejects.toMatchObject({ code: 'authorization_denied' });
         await task.run();
+        await assertManualFrozen?.();
         const expectedMemories = resolved.promptSnapshot.memories.filter(
           (m) => kind !== 'automation_manual' || m.id !== f.memories[1]!.id,
         );
@@ -2240,6 +2269,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     const memory = await createTraceableMemory(f.context, {
       workspaceId: f.identity.workspace,
       instanceId: f.identity.assignment,
+      idempotencyKey: randomUUID(),
       sourceType: 'user',
       content: 'R6 冻结偏好：中文摘要并保留依据。',
       memoryClass: 'user_preference',
