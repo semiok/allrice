@@ -634,7 +634,7 @@ export function EmployeeSceneDialog(props: {
                 ? close
                 : back
         }
-        className={`${css.panel} ${page === 'detail' ? css.detailPanel : css.formPanel}`}
+        className={`${css.panel} ${capabilityCss.detailContainer} ${page === 'detail' ? css.detailPanel : css.formPanel}`}
       >
         {page === 'detail' ? (
           <EmployeeCapabilityDetailsHeader

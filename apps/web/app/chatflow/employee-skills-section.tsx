@@ -191,7 +191,7 @@ export function EmployeeSkillDetails({
       ? () => onUninstall(skill)
       : undefined;
   return (
-    <div className={css.detail}>
+    <div className={`${css.detail} ${capabilityCss.detailContainer}`}>
       <EmployeeCapabilityDetailsHeader
         title={skill.displayName}
         version={employeeSkillVersion(skill.version)}

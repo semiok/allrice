@@ -1,7 +1,5 @@
 .panel {
   display: flex;
-  container-type: inline-size;
-  container-name: employee-capabilities;
   flex-direction: column;
   gap: 0;
   max-width: none;

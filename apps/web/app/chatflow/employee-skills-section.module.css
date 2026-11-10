@@ -169,8 +169,6 @@
 
 .detail {
   display: flex;
-  container-type: inline-size;
-  container-name: employee-capabilities;
   flex: 1;
   flex-direction: column;
   min-height: 0;

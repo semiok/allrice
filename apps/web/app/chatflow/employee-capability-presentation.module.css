@@ -108,6 +108,10 @@
   outline: none;
 }
 
+.detailContainer {
+  container-type: inline-size;
+  container-name: employee-capabilities;
+}
 .detailHeader {
   display: grid;
   flex: none;
@@ -171,6 +175,7 @@
   min-height: 36px;
   padding: 7px 14px;
   border-radius: 12px;
+  font: var(--ar-font-body);
   font-size: 14px;
   line-height: 20px;
 }

@@ -1605,6 +1605,21 @@ suite('U1 mounted employee Workflow host', () => {
               actionAppearance(detail, name),
             ),
           );
+          if (width < 700) {
+            expect(
+              actions.slice(0, 2).map((action) => action.minHeight),
+            ).toEqual(['40px', '40px']);
+            for (const name of ['更新', '开始工作']) {
+              const box = await detail
+                .getByRole('button', { name, exact: true })
+                .boundingBox();
+              expect(box!.y).toBeGreaterThanOrEqual(
+                backBox!.y + backBox!.height,
+              );
+              expect(box!.x).toBeGreaterThanOrEqual(0);
+              expect(box!.x + box!.width).toBeLessThanOrEqual(width);
+            }
+          }
           const deliveryAppearance = await detail
             .getByRole('button', { name: '查看交付结果 →', exact: true })
             .evaluate((node) => {
@@ -1632,20 +1647,36 @@ suite('U1 mounted employee Workflow host', () => {
           if (width < 700) {
             const outer = await root.evaluate((node) => {
               const box = node.getBoundingClientRect();
-              const css = getComputedStyle(node);
               return {
                 x: box.x,
                 right: box.right,
                 width: box.width,
-                clientWidth: node.clientWidth,
-                leftBorder: Number.parseFloat(css.borderLeftWidth),
               };
             });
+            const nativeFrame = await root
+              .getByRole('region', { name: / · 能力$/ })
+              .evaluate((node) => {
+                // DockLayout's pane owns the leading border; the outer aside
+                // only positions the native Dock and has no border itself.
+                const pane = node.closest<HTMLElement>('[data-dockkit-pane]')!;
+                const box = pane.getBoundingClientRect();
+                const css = getComputedStyle(pane);
+                return {
+                  x: box.x,
+                  right: box.right,
+                  width: box.width,
+                  clientWidth: pane.clientWidth,
+                  leftBorder: Number.parseFloat(css.borderLeftWidth),
+                };
+              });
             expect(outer.x).toBe(0);
             expect(outer.right).toBe(geometry.clientWidth);
             expect(outer.width).toBe(geometry.clientWidth);
-            expect(panelBox!.x).toBe(outer.x + outer.leftBorder);
-            expect(panelBox!.width).toBe(outer.clientWidth);
+            expect(nativeFrame.x).toBe(outer.x);
+            expect(nativeFrame.right).toBe(outer.right);
+            expect(nativeFrame.width).toBe(outer.width);
+            expect(panelBox!.x).toBe(nativeFrame.x + nativeFrame.leftBorder);
+            expect(panelBox!.width).toBe(nativeFrame.clientWidth);
           } else expect(panelBox!.x).toBeGreaterThan(0);
           const channels = geometry.background.match(/\d+/g)?.map(Number);
           expect(channels?.length).toBe(3);
@@ -1789,6 +1820,8 @@ suite('U1 mounted employee Workflow host', () => {
         expect(box).not.toBeNull();
         expect(box!.x).toBeGreaterThanOrEqual(0);
         expect(box!.x + box!.width).toBeLessThanOrEqual(320);
+        if (name !== '返回能力列表')
+          expect(box!.height).toBeGreaterThanOrEqual(40);
       }
       expect(
         await detail.evaluate(
