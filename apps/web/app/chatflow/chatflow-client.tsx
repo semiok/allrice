@@ -3170,7 +3170,10 @@ export function ChatFlowClient({
           setArchiveConfirmation({ scope: settingsScope, profile });
           setEmployeeDetailsOpen(false);
         }}
-        onClose={() => setEmployeeDetailsOpen(false)}
+        onClose={() => {
+          setSceneNotice(null);
+          setEmployeeDetailsOpen(false);
+        }}
         open={employeeDetailsOpen}
         scopeId={settingsScope}
         instanceId={

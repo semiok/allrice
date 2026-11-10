@@ -2403,6 +2403,41 @@ suite('U1 mounted employee Workflow host', () => {
     }
   }
 
+  it('MET-251 closing employee detail consumes its deletion notice while the same employee sidebar stays open', async () => {
+    await inFixture({}, async (f) => {
+      const root = await f.openDirectory();
+      const employee = await f.openEmployeeDetails();
+      await employee
+        .getByRole('button', { name: '写周报', exact: true })
+        .click();
+      const detail = employeePage(f.page, { name: '写周报', exact: true });
+      await detail
+        .getByRole('heading', { name: '什么时候用', exact: true })
+        .waitFor();
+      const confirm = await deleteConfirmation(f, detail);
+      await confirm.getByRole('button', { name: '删除', exact: true }).click();
+      await employee.waitFor();
+      await contains(
+        employee.getByRole('status').filter({ hasText: '已删除“写周报”' }),
+        '已删除“写周报”',
+      );
+      await employee.getByRole('button', { name: '关闭', exact: true }).click();
+      await root
+        .getByRole('button', { name: '客户回访', exact: true })
+        .waitFor();
+      expect(
+        await root
+          .getByRole('status')
+          .filter({ hasText: '已删除“写周报”' })
+          .count(),
+      ).toBe(0);
+      expect(f.state.removeReceipts.size).toBe(1);
+      expect(
+        f.state.writes.filter((request) => request.method === 'DELETE'),
+      ).toHaveLength(1);
+    });
+  });
+
   it('MET-251 opening the same employee detail consumes a sidebar deletion notice', async () => {
     await inFixture({}, async (f) => {
       const detail = await f.openDetail();
