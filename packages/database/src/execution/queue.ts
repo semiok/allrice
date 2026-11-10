@@ -1,9 +1,11 @@
 import { employeePersonaAdmission } from '../employees/employee-instances.ts';
 import {
   modelFailureText,
+  RunMemoryContextV2StateSchema,
   personalWorkflowHistoryFailureText,
   type ModelFailure,
   type EmployeePersonaTask,
+  type RunMemoryContextV2State,
 } from '@allrice/contracts';
 import { readTerminalModelFailure } from './model-failures.ts';
 import {
@@ -412,6 +414,7 @@ type EnqueueOptions = {
     providerSnapshot: Record<string, unknown>;
   };
   employeeBinding?: {
+    memoryContextStateV2?: RunMemoryContextV2State;
     employeeAssignmentId: string;
     employeeVersionId: string;
     sessionId: string;
@@ -1715,7 +1718,7 @@ async function enqueueRunInTransaction(
         employee_assignment_id, employee_version_id, session_id,
         user_message_id, assistant_message_id, status, provider_snapshot,
         skill_bindings, native_skills, prompt_snapshot, execution_snapshot, native_execution_binding,
-        created_at
+        created_at, memory_context_state
       ) values (
         ${run.id}, ${context.organizationId}, ${workspaceId}, ${ownerId},
         ${options.employeeBinding.employeeAssignmentId},
@@ -1731,7 +1734,14 @@ async function enqueueRunInTransaction(
         ${transaction.json(toJsonValue(options.employeeBinding.promptSnapshot))},
         ${transaction.json(toJsonValue(executionSnapshot))},
         ${nativeExecutionBinding ? transaction.json(toJsonValue(nativeExecutionBinding)) : null},
-        ${executionSnapshot.createdAt}
+        ${executionSnapshot.createdAt},
+        ${transaction.json(
+          options.employeeBinding.memoryContextStateV2
+            ? RunMemoryContextV2StateSchema.parse(
+                options.employeeBinding.memoryContextStateV2,
+              )
+            : { schemaVersion: 1, pending: true },
+        )}
       )
     `;
   }

@@ -33,6 +33,12 @@ export function employeeMemoryReadPredicate(sql: Sql, scope: ReadScope) {
   `;
 }
 
+/** v2 personal memory never adopts the shared table's raw review sources. */
+export function personalMemoryIndexReadPredicate(sql: Sql, scope: ReadScope) {
+  return sql`${employeeMemoryReadPredicate(sql, scope)}
+    and not exists(select 1 from allrice_experience_reviews review where review.memory_id=m.id)`;
+}
+
 type SearchRow = {
   id: string;
   organization_id: string;

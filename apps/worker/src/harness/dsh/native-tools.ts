@@ -79,6 +79,17 @@ export async function selectDshNativeTools(
       )
       .map((tool) => tool.canonicalName as string),
   );
+  // v2 byte accounting requires the native decoded-text render. An older
+  // carrier's generic XML/JSON envelope is not an equivalent disclosure.
+  if (
+    requested.includes('workspace.memory.read') &&
+    !supported.has('workspace.memory.read')
+  )
+    throw new HandlerError(
+      'DSH_NATIVE_TOOL_CAPABILITY_MISMATCH',
+      '当前执行包不支持本次冻结的记忆编号读取，已保留原记录。',
+      false,
+    );
   return requested.filter(
     (name) => supported.has(name) || privateDshNativeToolNames.has(name),
   );

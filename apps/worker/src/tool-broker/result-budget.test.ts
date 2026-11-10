@@ -125,7 +125,11 @@ describe('bounded tool data previews', () => {
       ),
     ).toBe(small);
   });
-  it.each(['workspace.memory.search', 'workspace.experience.read'])(
+  it.each([
+    'workspace.memory.search',
+    'workspace.experience.read',
+    'workspace.memory.read',
+  ])(
     'never exports private %s results into an unguarded file',
     async (name) => {
       // No storage/context exists: any attempt to export would throw differently.
@@ -137,13 +141,34 @@ describe('bounded tool data previews', () => {
       expect(await boundToolResult(input, small)).toBe(small);
       await expect(
         boundToolResult(input, {
-          modelContent: '中'.repeat(3000),
+          modelContent: '中'.repeat(
+            name === 'workspace.memory.read' ? 3334 : 3000,
+          ),
           summary: 'overflow',
         }),
       ).rejects.toMatchObject({
         code: 'MEMORY_CONTEXT_BUDGET_EXHAUSTED',
         retryable: false,
       });
+      expect(storage.create).not.toHaveBeenCalled();
+      expect(storage.put).not.toHaveBeenCalled();
+      expect(storage.register).not.toHaveBeenCalled();
     },
   );
+  it('allows decoded ordinal text above the old8000 cap without changing legacy tools', async () => {
+    const result = { modelContent: '🧑'.repeat(2250), summary: 'complete' };
+    expect(
+      await boundToolResult(
+        { call: { name: 'workspace.memory.read' } } as RiceToolExecutionInput,
+        result,
+      ),
+    ).toBe(result);
+    for (const name of ['workspace.memory.search', 'workspace.experience.read'])
+      await expect(
+        boundToolResult({ call: { name } } as RiceToolExecutionInput, result),
+      ).rejects.toMatchObject({ code: 'MEMORY_CONTEXT_BUDGET_EXHAUSTED' });
+    expect(storage.create).not.toHaveBeenCalled();
+    expect(storage.put).not.toHaveBeenCalled();
+    expect(storage.register).not.toHaveBeenCalled();
+  });
 });
