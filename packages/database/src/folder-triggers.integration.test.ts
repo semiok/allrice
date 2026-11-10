@@ -12,12 +12,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
 import {
+  EmployeeDocumentsSchema,
+  EmployeePersonaPinSchema,
   localFileCapabilities,
   LocalFilePayloadSchema,
 } from '@allrice/contracts';
 import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createCloudExecutionFixture } from './cloud-execution.fixture.ts';
 import { approveSyntheticCurrentEmployeeExecution } from './current-execution.fixture.ts';
+import { runtimePolicyDigest } from './runtime-policy-digest.ts';
 import * as client from './core/client.ts';
 import {
   createBridgeFolderGrant,
@@ -511,9 +514,61 @@ suite(
         await listFolderTriggerHistory(f.context, f.workspace, f.rule.id)
       ).events[0]!;
       expect(before.runId).toBeTruthy();
-      const [binding] =
-        await database.db`select prompt_snapshot->'employeeDocuments' documents from allrice_employee_runs where run_id=${before.runId}`;
-      expect(binding!.documents).toBeNull();
+      const frozenBinding = async () => {
+        const [binding] = await database.db`
+          select er.prompt_snapshot->'employeeDocuments' documents,
+            er.execution_snapshot->'persona' persona, er.employee_version_id,
+            er.owner_id, er.employee_assignment_id, er.session_id,
+            er.user_message_id, a.employee_id, m.client_message_id
+          from allrice_employee_runs er
+          join allrice_employee_assignments a on a.id=er.employee_assignment_id
+          join allrice_messages m on m.id=er.user_message_id
+          where er.run_id=${before.runId}`;
+        return binding;
+      };
+      const binding = await frozenBinding();
+      expect(binding).toBeDefined();
+      expect(binding).toMatchObject({
+        owner_id: f.user,
+        employee_assignment_id: f.assignmentId,
+        session_id: before.sessionId,
+        client_message_id: f.event.eventId,
+      });
+      const pin = EmployeePersonaPinSchema.parse(binding!.persona);
+      expect(pin.source).toMatchObject({
+        kind: 'employee_run',
+        organizationId: f.org,
+        workspaceId: f.workspace,
+        employeeId: binding!.employee_id,
+        assignmentId: f.assignmentId,
+        ownerId: f.user,
+        profileEligibility: 'expression_only',
+        engine: { employeeVersionId: binding!.employee_version_id },
+        task: {
+          kind: 'folder_event',
+          id: f.event.eventId,
+          sessionId: before.sessionId,
+          userMessageId: binding!.user_message_id,
+        },
+      });
+      expect(pin.source.basis).toEqual(pin.source.engine);
+      const documents = EmployeeDocumentsSchema.parse(binding!.documents);
+      expect(documents.persona?.startsWith('# 人设\n')).toBe(true);
+      const persona = JSON.parse(documents.persona!.slice('# 人设\n'.length));
+      expect(persona.source).toEqual(pin.source);
+      expect(persona.name).toEqual({
+        value: 'Folder Fixture',
+        source: 'frozen_task_engine',
+      });
+      expect(pin.personaDigest).toBe(runtimePolicyDigest(documents.persona));
+      expect(documents.user.startsWith('# USER.md\n')).toBe(true);
+      expect(
+        JSON.parse(documents.user.slice('# USER.md\n'.length)).facts,
+      ).toEqual({
+        companyName: 'P15 synthetic',
+        displayName: 'P15 synthetic',
+      });
+      expect(documents.memory).toBe('');
       await database.db`update allrice_automation_folder_events set state='import_pending',run_id=null where id=${f.event.eventId}`;
       await updateAutomation(f.context, f.workspace, f.rule.id, {
         expectedRevision: f.rule.revision,
@@ -528,6 +583,7 @@ suite(
         { n: number }[]
       >`select count(*)::int as n from allrice_employee_runs where session_id=${before.sessionId}`;
       expect(runs!.n).toBe(1);
+      expect(await frozenBinding()).toEqual(binding);
     });
     it('durably ACKs duplicate events, rejects altered bytes and foreign rules', async () => {
       const f = await fixture();
