@@ -62,6 +62,10 @@ async function scenario({
   sceneFirst = false,
   sceneProbe = false,
   personalScene = false,
+  personalSceneName = sceneName,
+  rejectPersonalDirectory = false,
+  rejectPersonalDirectoryAfter,
+  rejectPersonalDirectoryAfterModel = false,
   scenePromptParts,
   rejectPersonalUse = false,
   rejectSceneAdoption = false,
@@ -84,7 +88,8 @@ async function scenario({
   const receiptEntered = Promise.withResolvers(),
     receiptRelease = Promise.withResolvers();
   let serverError, compactionError, accountingCloseError;
-  let adoptionAttempts = 0;
+  let adoptionAttempts = 0,
+    personalDirectoryReads = 0;
   let contentCalls = 0,
     compactionRejected = false,
     progressChecks = 0,
@@ -138,7 +143,7 @@ async function scenario({
                       objectId: privatePin.versionId,
                     })
                   : sceneFirst
-                    ? { name: sceneName }
+                    ? { name: personalScene ? personalSceneName : sceneName }
                     : skillFirst
                       ? { name: 'synthetic-method' }
                       : { path: '.' },
@@ -289,23 +294,32 @@ async function scenario({
           });
           return { receipt: sceneReceipt, content: 'SCENE_WEEKLY_ONLY_85' };
         }
-        if (method === 'allrice/content-scene-personal-list')
+        if (method === 'allrice/content-scene-personal-list') {
+          personalDirectoryReads++;
+          if (
+            rejectPersonalDirectory ||
+            (rejectPersonalDirectoryAfter !== undefined &&
+              personalDirectoryReads > rejectPersonalDirectoryAfter) ||
+            (rejectPersonalDirectoryAfterModel && requests.length > 0)
+          )
+            throw Error('synthetic_scene_namespace_conflict');
           return {
             instanceId: privatePin.instanceId,
             revision: 2,
             skills: [
               {
                 sceneId,
-                nativeName: sceneName,
+                nativeName: personalScene ? personalSceneName : sceneName,
                 name: '周报',
                 description: '核对资料',
               },
             ],
           };
+        }
         if (method === 'allrice/content-scene-personal-load')
           return {
             sceneId,
-            nativeName: sceneName,
+            nativeName: personalScene ? personalSceneName : sceneName,
             name: '周报',
             description: '核对资料',
             contentRef: 'exact-package-v2',
@@ -356,7 +370,12 @@ async function scenario({
           ? ['workspace.personal_skill.install']
           : ['local.fs.list'],
         nativeSkills:
-          (skillFirst || personalSkill) && !emptyCatalog
+          (skillFirst ||
+            personalSkill ||
+            rejectPersonalDirectory ||
+            rejectPersonalDirectoryAfter !== undefined ||
+            rejectPersonalDirectoryAfterModel) &&
+          !emptyCatalog
             ? [
                 {
                   id: personalSkill
@@ -385,7 +404,7 @@ async function scenario({
             ? [
                 {
                   id: sceneId,
-                  nativeName: sceneName,
+                  nativeName: personalScene ? personalSceneName : sceneName,
                   digest: sceneDigest,
                   name: '周报',
                   appliesWhen: '每周经营复盘',
@@ -797,6 +816,92 @@ it('cold native recovery reconciles the saved successful scene result before the
 }, 45000);
 
 describe('personal Workflow native slash source and use evidence', () => {
+  it.each(['initial', 'during-slash', 'during-tool'])(
+    'blocks a same-name base body before native history when a personal directory is denied %s',
+    async (when) => {
+      const r = await scenario({
+        failures: [],
+        personalScene: true,
+        personalSceneName: 'synthetic-method',
+        ...(when === 'initial'
+          ? { rejectPersonalDirectory: true }
+          : when === 'during-slash'
+            ? { rejectPersonalDirectoryAfter: 1 }
+            : { rejectPersonalDirectoryAfterModel: true, sceneFirst: true }),
+        ...(when !== 'during-tool'
+          ? {
+              scenePromptParts: [
+                { kind: 'user', text: '/synthetic-method 按本人场景做' },
+              ],
+            }
+          : {}),
+      });
+      // The tool case permits its initial synthetic request, then changes the
+      // directory before skill.execute. No subsequent request may use a body.
+      expect(r.requests).toHaveLength(when === 'during-tool' ? 1 : 0);
+      expect(r.toolCalls).toEqual([]);
+      expect(
+        r.bridgeCalls.some(
+          (call) => call.method === 'allrice/content-scene-personal-list',
+        ),
+      ).toBe(true);
+      expect(
+        r.bridgeCalls.some(
+          (call) => call.method === 'allrice/content-scene-personal-use',
+        ),
+      ).toBe(false);
+      expect(
+        r.events.filter(
+          (event) =>
+            event.type === 'user/message' &&
+            event.data.source?.kind === 'skill-invocation',
+        ),
+      ).toEqual([]);
+      expect(
+        JSON.stringify(
+          r.events.filter((event) =>
+            ['user/message', 'tool/result'].includes(event.type),
+          ),
+        ),
+      ).not.toContain('FROZEN_NATIVE_SKILL_BODY_42');
+    },
+    45000,
+  );
+
+  it.each(['slash', 'tool'])(
+    'loads an authored native name through the real %s entry and records its exact use',
+    async (entry) => {
+      const name = 'weekly-brief';
+      const r = await scenario({
+        failures: [],
+        personalScene: true,
+        personalSceneName: name,
+        ...(entry === 'slash'
+          ? {
+              scenePromptParts: [
+                { kind: 'user', text: `/${name} 整理本周资料` },
+              ],
+            }
+          : { sceneFirst: true }),
+      });
+      expect(JSON.stringify(r.requests.at(-1))).toContain(
+        'PERSONAL_SCENE_BODY_V2',
+      );
+      expect(
+        r.bridgeCalls.filter(
+          (c) => c.method === 'allrice/content-scene-personal-use',
+        ),
+      ).toMatchObject([
+        {
+          nativeName: name,
+          contentRef: 'exact-package-v2',
+          kind: entry === 'slash' ? 'skill-invocation' : 'tool-result',
+        },
+      ]);
+    },
+    45000,
+  );
+
   it('injects actual native instructions from the human gesture before the first model request', async () => {
     const r = await scenario({
       failures: [],

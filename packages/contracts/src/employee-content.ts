@@ -1,9 +1,11 @@
 import { z } from 'zod';
+import { personalSkillLimits } from './personal-skills.ts';
 import { ReferenceSelectionSchema } from './reference-library.ts';
 import { UuidSchema, TimestampSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
 import { SkillBundleSchema, SkillResourcePathSchema } from './skill-bundle.ts';
 import { WorkflowSkillFrontmatterSchema } from './workflow-skill.ts';
+import { SkillPackageSourceSchema } from './skill-package-source.ts';
 import {
   ContentOwnershipSchema,
   ContentAccessDecisionSchema,
@@ -14,6 +16,7 @@ export const employeeContentLimits = {
   references: 128,
   textEdits: 16,
   textBytes: 32_000,
+  personalSceneBodyBytes: 16 * personalSkillLimits.bodyBytes,
 } as const;
 
 export const personalWorkflowHistoryUnavailableMessage =
@@ -298,6 +301,7 @@ export const EmployeeSceneSkillPayloadSchema = z
     bundle: SkillBundleSchema,
     // Optional only for existing packages; never synthesize metadata for them.
     frontmatter: WorkflowSkillFrontmatterSchema.optional(),
+    source: SkillPackageSourceSchema.optional(),
     resourceSources: z
       .array(
         z
@@ -346,7 +350,12 @@ const packagedTextSchema = z
     body: z
       .string()
       .min(1)
-      .max(8000)
+      .max(personalSkillLimits.bodyBytes)
+      .refine(
+        (body) =>
+          new TextEncoder().encode(body).byteLength <=
+          personalSkillLimits.bodyBytes,
+      )
       .refine((body) => body.trim().length > 0),
     skillPackage: EmployeeSceneSkillPayloadSchema,
   })
@@ -419,6 +428,14 @@ export const EmployeeContentMutationSchema = z
       });
     if (input.operation !== 'save_draft') return;
     if (
+      input.ownership.scope !== 'personal' &&
+      input.textEdits.some((text) => text.body.length > 8000)
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Shared text exceeds the content budget.',
+      });
+    if (
       new Set(input.manifest.scenes.map((s) => s.id)).size !==
       input.manifest.scenes.length
     )
@@ -461,7 +478,11 @@ export const EmployeeContentMutationSchema = z
       });
     if (
       input.textEdits.reduce(
-        (n, t) => n + new TextEncoder().encode(t.body).length,
+        (n, t) =>
+          n +
+          (input.ownership.scope === 'personal' && 'skillPackage' in t
+            ? 0
+            : new TextEncoder().encode(t.body).length),
         0,
       ) > employeeContentLimits.textBytes
     )

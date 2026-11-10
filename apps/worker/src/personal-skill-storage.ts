@@ -56,7 +56,10 @@ export async function readPrivateSkillResource(
     personalSkillLimits.archiveBytes,
     input.signal,
   );
-  const files = await readFileArchive(archive, { signal: input.signal });
+  const files = await readFileArchive(archive, {
+    signal: input.signal,
+    maximumFiles: personalSkillLimits.packageResources + 1,
+  });
   const path = posix.join(
     posix.dirname(selected.sourcePath),
     selected.resource.path,

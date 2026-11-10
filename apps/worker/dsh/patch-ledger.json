@@ -23,7 +23,7 @@
       "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-scene-provider.mjs",
-      "reason": "Public native Skill Provider keeps the backend frozen scene/adoption contract and connects new personal custom Runs to current authorized packages. Native invalidation refreshes the directory; exact resource locators, Worker ACL/lease and durable reads protect every returned byte and retained history. No core patch, stage credential, alternative cache, agent loop or permission grant."
+      "reason": "Public native Skill Provider keeps the backend frozen scene/adoption contract and connects personal Runs to current authorized packages with their native author name, whenToUse, metadata and invocation flags; historical unnamed packages keep their UUID names. Native invalidation refreshes the directory; exact resource locators, Worker ACL/lease and durable reads protect every returned byte and retained history. No core patch, stage credential, alternative cache, agent loop or permission grant."
     },
     {
       "id": "allrice-employee-content-authorization-v1",

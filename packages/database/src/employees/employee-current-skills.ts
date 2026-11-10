@@ -3,7 +3,7 @@ import {
   type EmployeeInstance,
   type DshNativeSkillSnapshot,
 } from '@allrice/contracts';
-import type { ContentTx } from './employee-content-model.ts';
+import type { ContentSql, ContentTx } from './employee-content-model.ts';
 import { DataAccessError } from '../data.ts';
 import { frozenPackageSkills, validateFrozenSkill } from '../skill-bundles.ts';
 import { freezeEmployeeBaseSkills } from './employee-base-skills.ts';
@@ -12,6 +12,17 @@ import { freezeEmployeeBaseSkills } from './employee-base-skills.ts';
  * legacy fallback as Run admission. Does not create or consult a Run, freeze
  * grants, or confer tool permissions. Caller first authorizes the instance. */
 export async function readCurrentEmployeeBaseSkills(
+  sql: ContentSql,
+  instance: EmployeeInstance,
+): Promise<Awaited<ReturnType<typeof readBaseInTransaction>>> {
+  return 'begin' in sql
+    ? sql.begin('isolation level repeatable read read only', (tx) =>
+        readBaseInTransaction(tx, instance),
+      )
+    : readBaseInTransaction(sql, instance);
+}
+
+async function readBaseInTransaction(
   tx: ContentTx,
   instance: EmployeeInstance,
 ) {
@@ -23,8 +34,11 @@ export async function readCurrentEmployeeBaseSkills(
   if (!row) throw new DataAccessError('not_found');
   const manifest = EmployeeManifestSchema.parse(row.manifest);
   let original: DshNativeSkillSnapshot[];
+  const versions = new Map<string, string>();
   if (manifest.schemaVersion === 2 && manifest.runtimePackage) {
     original = frozenPackageSkills(manifest.runtimePackage);
+    for (const entry of manifest.runtimePackage.runtimeManifest.skillGovernance)
+      versions.set(entry.id, entry.version);
   } else {
     const skills = await tx`
       select s.* from allrice_employee_dsh_skill_bindings b
@@ -33,6 +47,7 @@ export async function readCurrentEmployeeBaseSkills(
       where b.organization_id=${instance.organizationId}
         and b.workspace_id=${instance.workspaceId} and b.employee_id=${row.employee_id}
         and b.enabled and s.enabled order by s.name,s.id`;
+    for (const skill of skills) versions.set(skill.id, skill.version);
     original = skills.map((skill) =>
       validateFrozenSkill({
         id: skill.id,
@@ -49,5 +64,8 @@ export async function readCurrentEmployeeBaseSkills(
       }),
     );
   }
-  return freezeEmployeeBaseSkills(original, tx);
+  const current = await freezeEmployeeBaseSkills(original, tx);
+  for (const entry of current.catalog?.skills ?? [])
+    versions.set(entry.id, entry.version);
+  return { ...current, versions };
 }

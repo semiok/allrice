@@ -245,6 +245,31 @@ describe('MET164 bounded byte-only ZIP codec', () => {
     await rejectsArchive(readFileArchive(disagreement), 'FILE_ARCHIVE_INVALID');
   });
 
+  it('L1: explicitly permits SKILL.md plus 32 resources without widening ordinary file tools', async () => {
+    const files = [
+      { path: 'SKILL.md', bytes: Buffer.from('body') },
+      ...Array.from({ length: 32 }, (_, i) => ({
+        path: `assets/${i}.txt`,
+        bytes: Buffer.from(String(i)),
+      })),
+    ];
+    const packed = await createFileArchive(files, { maximumFiles: 33 });
+    expect(await readFileArchive(packed, { maximumFiles: 33 })).toEqual(files);
+    await rejectsArchive(createFileArchive(files), 'FILE_ARCHIVE_LIMIT');
+    await rejectsArchive(readFileArchive(packed), 'FILE_ARCHIVE_LIMIT');
+    await rejectsArchive(
+      createFileArchive([...files, { path: 'extra', bytes: Buffer.alloc(0) }], {
+        maximumFiles: 33,
+      }),
+      'FILE_ARCHIVE_LIMIT',
+    );
+    await rejectsArchive(
+      readFileArchive(storedArchive([...files, { path: 'extra' }]), {
+        maximumFiles: 33,
+      }),
+      'FILE_ARCHIVE_LIMIT',
+    );
+  });
   it('enforces 32 ordinary files and bounded metadata entries', async () => {
     const files = Array.from({ length: 32 }, (_, i) => ({
       path: `file-${i}`,

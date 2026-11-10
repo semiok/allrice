@@ -19,6 +19,7 @@ export * from './content-maintenance.ts';
 export * from './employees/employee-content.ts';
 export * from './employees/employee-scene-skills.ts';
 export * from './employees/personal-scene-files.ts';
+export { parseWorkflowSkillSections } from './employees/workflow-skill.ts';
 export { canUsePersonalEmployeeScenes } from './employees/employee-instance-policy.ts';
 export * from './employees/personal-scene-reads.ts';
 export {
@@ -255,6 +256,7 @@ export * from './reference-runtime.ts';
 export * from './employees/personal-skills.ts';
 export * from './employees/personal-skill-versions.ts';
 export * from './employees/personal-skill-browser.ts';
+export * from './employees/employee-skill-catalog.ts';
 
 export * from './experience-consolidation.ts';
 export { getExperienceOverview } from './experience-overview.ts';
@@ -421,3 +423,5 @@ export {
   getNativeQuestionMode,
   updateNativeQuestionMode,
 } from './native-questions.ts';
+
+export { removePersonalSceneSkill } from './employees/personal-scene-remove.ts';

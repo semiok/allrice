@@ -55,6 +55,9 @@ interface ChatSidebarProps {
   onOpenAutomations?: () => void;
   automationsActive?: boolean;
   scheduledSessions?: ReadonlySet<string>;
+  onOpenArchive?: () => void;
+  employeeArchiveOpen?: boolean;
+  archivedEmployeeInstanceIds?: ReadonlySet<string>;
 }
 
 export function ChatSidebar({
@@ -85,6 +88,9 @@ export function ChatSidebar({
   onOpenAutomations,
   automationsActive = false,
   scheduledSessions,
+  onOpenArchive,
+  employeeArchiveOpen = false,
+  archivedEmployeeInstanceIds,
 }: ChatSidebarProps) {
   const sidebar = useRef<HTMLElement>(null);
   const showingArchive = archive?.filter === 'only';
@@ -210,9 +216,11 @@ export function ChatSidebar({
                 className={archiveCss.archiveButton}
                 type="button"
                 aria-label="查看归档"
-                aria-pressed={showingArchive}
+                aria-pressed={employeeArchiveOpen || showingArchive}
                 onClick={() =>
-                  archive.setFilter(showingArchive ? 'default' : 'only')
+                  onOpenArchive
+                    ? onOpenArchive()
+                    : archive.setFilter(showingArchive ? 'default' : 'only')
                 }
               >
                 <IconArchiveOutlineRegular size={18} />
@@ -291,6 +299,7 @@ export function ChatSidebar({
           <EmployeeSidebar
             scheduledSessions={scheduledSessions}
             archive={archive}
+            excludedEmployeeInstanceIds={archivedEmployeeInstanceIds}
             key={
               employeePreferenceKey(workspace) ??
               `${workspace.organizationId}:${workspace.workspaceId}`

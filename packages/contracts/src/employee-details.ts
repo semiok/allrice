@@ -26,7 +26,15 @@ export const EmployeeDetailsProfileSchema = z
     // Current owner-view capabilities; never frozen as a Run's authority.
     editableFields: z.array(EmployeeInstanceProfileSchema.keyof()).optional(),
     isDefaultRice: z.boolean().optional(),
+    canArchive: z.boolean().optional(),
     defaults: EmployeeInstanceProfileSchema.optional(),
+    // Raw owner presence, not a permissions grant or an effective-value diff.
+    // Optional without defaults so older detail DTOs keep their exact shape.
+    overrides: EmployeeInstanceProfileSchema.optional(),
+    // Platform only after verification. tenant_version retains its existing
+    // meaning (platform provenance unknown); absent means unconfirmed here,
+    // including a declared platform source whose evidence did not verify.
+    defaultSource: EmployeeVersionSourceSchema.optional(),
   })
   .strict();
 export const EmployeeDetailsSchema = z

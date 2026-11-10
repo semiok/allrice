@@ -2,7 +2,6 @@ import { headers } from 'next/headers';
 import { notFound, redirect } from 'next/navigation';
 import { experienceReviewEnabled, resolveWorkspaceId } from '@allrice/database';
 import { getRequestContext } from '../../../lib/identity/session';
-import { ExperiencePanel } from './experience-panel';
 export const dynamic = 'force-dynamic';
 export default async function ExperiencePage({
   searchParams,
@@ -17,8 +16,8 @@ export default async function ExperiencePage({
     }),
   );
   if (!context) redirect('/login');
-  const workspaceId = await resolveWorkspaceId(context, params.workspaceId);
-  return (
-    <ExperiencePanel workspaceId={workspaceId} sessionId={params.sessionId} />
-  );
+  await resolveWorkspaceId(context, params.workspaceId);
+  const query = new URLSearchParams();
+  if (params.sessionId) query.set('session', params.sessionId);
+  redirect(`/chatflow${query.size ? `?${query}` : ''}`);
 }

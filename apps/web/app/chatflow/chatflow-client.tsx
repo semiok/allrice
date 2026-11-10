@@ -15,7 +15,14 @@ import {
   UnifiedWorkbenchControls,
   announceWorkbenchRead,
 } from './unified-workbench-controls';
-import type { WorkbenchModule } from './workbench-modules';
+import { WorkbenchIcon, type WorkbenchModule } from './workbench-modules';
+import { EmployeeSceneDialog } from './employee-scene-dialog';
+import {
+  useEmployeeSceneCatalog,
+  type SceneSelection,
+  type SceneCatalogEntry,
+} from './use-employee-scene-catalog';
+import moduleUi from './workbench-modules.module.css';
 
 import {
   employeeChoices,
@@ -24,6 +31,14 @@ import {
   employeeChoiceProfile,
 } from './employee-instances';
 import { useSessionArchive } from './use-session-archive';
+import { useEmployeeArchive } from './use-employee-archive';
+import {
+  EmployeeArchiveConfirmation,
+  EmployeeArchiveDialog,
+  EmployeeArchiveReadOnly,
+} from './employee-archive';
+import { IconArchiveOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives';
+import employeeArchiveCss from './employee-archive.module.css';
 import archiveCss from './session-archive.module.css';
 
 import {
@@ -44,6 +59,7 @@ import type {
   TaskNextSteps,
   UserQuestionAnswerSubmission,
   EmployeeInstance,
+  EmployeeDetailsProfile,
   ReferenceRevision,
 } from '@allrice/contracts';
 import { isMessageRunActive } from './run-view';
@@ -132,7 +148,6 @@ import { bridgeChips, projectBridgeView } from './bridge-view';
 import { useRunStream } from './use-run-stream';
 import { useSession } from './use-session';
 import { createSessionActions } from './session-actions';
-import { useBrandContentWorkspace } from './use-brand-content-workspace';
 import {
   UserQuestionComposer,
   userQuestionAnswerText,
@@ -141,12 +156,6 @@ import {
 // DSH's whole-row disclosures are divs with button semantics, not <button>s.
 const transcriptDisclosureSelector =
   'button[aria-expanded], [data-disclosure-row][aria-expanded], summary';
-
-const BrandContentPanel = lazy(() =>
-  import('./brand-content-panel').then((module) => ({
-    default: module.BrandContentPanel,
-  })),
-);
 
 const WorkbenchFilesPanel = lazy(() =>
   import('./workbench-files-panel').then((module) => ({
@@ -216,6 +225,11 @@ export function ChatFlowClient({
   const [questionBusy, setQuestionBusy] = useState(false);
   const [error, setError] = useState('');
   const [employeeDetailsOpen, setEmployeeDetailsOpen] = useState(false);
+  const [employeeArchiveOpen, setEmployeeArchiveOpen] = useState(false);
+  const [archiveConfirmation, setArchiveConfirmation] = useState<{
+    scope: string;
+    profile: EmployeeDetailsProfile;
+  } | null>(null);
   const [settings, setSettings] = useState<{
     scope: string;
     section: string;
@@ -273,6 +287,7 @@ export function ChatFlowClient({
     workspace,
     headers: tenantHeaders,
     onUpdated: updateSession,
+    onShowArchived: openEmployeeArchive,
     selectedSession:
       history?.session ?? workspace?.sessions.find((s) => s.id === activeId),
   });
@@ -281,6 +296,39 @@ export function ChatFlowClient({
     workspace?.sessions.find((s) => s.id === activeId)?.archivedAt,
   );
   const settingsScope = `${workspace?.organizationId}/${workspace?.workspaceId}/${workspace?.viewerId}`;
+  const selectedInstanceId =
+    history?.session.employeeInstanceId ??
+    history?.session.employeeAssignmentId ??
+    (newSessionEmployee ? employeeChoiceId(newSessionEmployee) : undefined);
+  const employeeArchive = useEmployeeArchive({
+    workspace,
+    headers: tenantHeaders,
+    selectedInstanceId,
+    onChanged: (instance) => {
+      if (!instance.archivedAt) registerEmployeeInstance(instance);
+      void loadWorkspace().catch((cause: unknown) =>
+        setError(cause instanceof Error ? cause.message : '员工详情更新失败'),
+      );
+    },
+  });
+  const employeeArchived =
+    Boolean(employeeArchive.selectedInstance?.archivedAt) ||
+    Boolean(
+      selectedInstanceId && employeeArchive.archivedIds.has(selectedInstanceId),
+    );
+  const conversationReadOnly =
+    sessionArchived ||
+    employeeArchived ||
+    employeeArchive.selectedPending ||
+    Boolean(employeeArchive.selectedError);
+  function openEmployeeArchive() {
+    setEmployeeArchiveOpen(true);
+    employeeArchive.reload();
+  }
+  const closeEmployeeArchive = () => {
+    setEmployeeArchiveOpen(false);
+  };
+
   useEffect(() => {
     if (!workspace?.viewerId) return;
     const owner = {
@@ -403,6 +451,7 @@ export function ChatFlowClient({
   const [detailsAssignmentId, setDetailsAssignmentId] = useState<string | null>(
     null,
   );
+  const reuseDetailsSceneSnapshot = useRef(false);
   const monthlyQuota = useMonthlyQuota({
     workspaceId: workspace?.workspaceId,
     organizationId: workspace?.organizationId,
@@ -447,8 +496,40 @@ export function ChatFlowClient({
     setSidebarCollapsed,
     narrow: workbenchNarrow,
   } = layout;
+  const [filesRequest, setFilesRequest] = useState({ scope: '', revision: 0 });
+  const fileScope = `${workspace?.viewerId}/${workspace?.workspaceId}/${activeId ?? 'draft'}`;
+  const currentFilesRequest =
+    filesRequest.scope === fileScope ? filesRequest.revision : 0;
+  const [moduleRequest, setModuleRequest] = useState<{
+    scope: string;
+    kind: WorkbenchModule | 'guide' | 'reference';
+    revision: number;
+    id?: string;
+    title?: string;
+    category?: 'all' | 'reference' | 'artifact';
+    view?: 'personal-memory';
+  } | null>(null);
+  const [sceneRequest, setSceneRequest] = useState<{
+    scope: string;
+    instanceId: string;
+    origin: 'top' | 'employee';
+    revision: number;
+    entry?: SceneCatalogEntry;
+    create?: boolean;
+  } | null>(null);
+  const currentModuleRequest =
+    moduleRequest?.scope === fileScope ? moduleRequest : undefined;
+  const currentMemoryRequest =
+    currentModuleRequest?.kind === 'experience' &&
+    currentModuleRequest.view === 'personal-memory' &&
+    currentModuleRequest.id
+      ? currentModuleRequest
+      : undefined;
   const workbenchRequested =
-    (workbenchEnabled || !!currentAutomationRequest) && layout.open;
+    (workbenchEnabled ||
+      !!currentAutomationRequest ||
+      !!currentMemoryRequest) &&
+    layout.open;
   const openAutomationTask = (
     task: { id: string; name?: string },
     sourceSessionId?: string,
@@ -463,6 +544,11 @@ export function ChatFlowClient({
     layout.show();
   };
   const workbenchEntry = useRef<HTMLButtonElement>(null);
+  const [activeModule, setActiveModule] = useState<{
+    scope: string;
+    kind: WorkbenchModule | 'schedule' | null;
+    memoryInstanceId?: string;
+  } | null>(null);
   const workbench = useArtifactWorkbench({
     enabled: workbenchEnabled,
     sessionId: activeId,
@@ -478,32 +564,21 @@ export function ChatFlowClient({
     () => showWorkbench(undefined, true),
     [showWorkbench],
   );
-  const dismissWorkbench = useCallback(() => {
-    closeWorkbench();
-    workbenchEntry.current?.focus();
-  }, [closeWorkbench]);
-  const [filesRequest, setFilesRequest] = useState({ scope: '', revision: 0 });
-  const fileScope = `${workspace?.viewerId}/${workspace?.workspaceId}/${activeId ?? 'draft'}`;
-  const currentFilesRequest =
-    filesRequest.scope === fileScope ? filesRequest.revision : 0;
-  const [moduleRequest, setModuleRequest] = useState<{
-    scope: string;
-    kind: WorkbenchModule | 'guide' | 'reference';
-    revision: number;
-    id?: string;
-    title?: string;
-    category?: 'all' | 'reference' | 'artifact';
-  } | null>(null);
-  const [workbenchCapabilities, setWorkbenchCapabilities] = useState<{
-    scope: string;
-    workflow: boolean;
-  } | null>(null);
-  const currentModuleRequest =
-    moduleRequest?.scope === fileScope ? moduleRequest : undefined;
-  const [activeModule, setActiveModule] = useState<{
-    scope: string;
-    kind: WorkbenchModule | 'schedule' | null;
-  } | null>(null);
+  const activeMemoryId =
+    activeModule?.scope === fileScope
+      ? activeModule.memoryInstanceId
+      : undefined;
+  const dismissWorkbench = useCallback(
+    (memoryInstanceId?: string) => {
+      closeWorkbench();
+      if (memoryInstanceId) {
+        reuseDetailsSceneSnapshot.current = false;
+        setDetailsAssignmentId(memoryInstanceId);
+        setEmployeeDetailsOpen(true);
+      } else workbenchEntry.current?.focus();
+    },
+    [closeWorkbench],
+  );
   const sessionAutomations = useSessionAutomations({
     enabled: workbenchEnabled && !!workspace,
     workspaceId: workspace?.workspaceId ?? '',
@@ -545,8 +620,13 @@ export function ChatFlowClient({
       id?: string;
       title?: string;
       category?: 'all' | 'reference' | 'artifact';
+      view?: 'personal-memory';
     },
   ) => {
+    if (kind === 'workflow') {
+      openSceneDirectory();
+      return;
+    }
     setModuleRequest((previous) => ({
       scope: fileScope,
       kind,
@@ -575,6 +655,7 @@ export function ChatFlowClient({
     [layout.compact, workbenchEnabled, fileScope, showWorkbench],
   );
   const hasWorkbenchContent =
+    !!currentMemoryRequest ||
     (!layout.compact && !!currentModuleRequest) ||
     !!currentAutomationRequest ||
     currentFilesRequest > 0 ||
@@ -743,7 +824,7 @@ export function ChatFlowClient({
     organizationId: workspace?.organizationId,
     workspaceId: workspace?.workspaceId,
     viewerId: workspace?.viewerId,
-    sessionId: sessionArchived ? null : activeId,
+    sessionId: conversationReadOnly ? null : activeId,
     employeeAssignmentId: nextStepEmployee?.id,
     employeeVersionId: nextStepEmployee?.currentVersion.id,
     runRevision: nextStepRunRevision,
@@ -835,7 +916,7 @@ export function ChatFlowClient({
 
   async function sendMessage() {
     const text = draftStore.getSnapshot().trim();
-    if (!workspace || !text || busy || sessionArchived) return;
+    if (!workspace || !text || busy || conversationReadOnly) return;
     const action = sessionActions.begin('composer');
     if (!action) return;
     const draftAttachments = [...pendingAttachments];
@@ -1046,7 +1127,7 @@ export function ChatFlowClient({
     item: QueuedMessage,
     kind: 'edit' | 'remove' | 'steer',
   ) {
-    if (!workspace || !activeId) return;
+    if (!workspace || !activeId || conversationReadOnly) return;
     if (
       kind === 'edit' &&
       (draftStore.getSnapshot().trim() ||
@@ -1179,7 +1260,7 @@ export function ChatFlowClient({
       !activeId ||
       !pendingUserQuestion ||
       questionBusy ||
-      sessionArchived
+      conversationReadOnly
     )
       return;
     const action = sessionActions.begin('question');
@@ -1288,6 +1369,7 @@ export function ChatFlowClient({
   ) {
     if (
       !workspace ||
+      employeeArchive.archivedIds.has(assignmentId) ||
       !(created
         ? created.id === assignmentId &&
           created.ownerId === workspace.viewerId &&
@@ -1369,21 +1451,165 @@ export function ChatFlowClient({
       ? { [activeId]: 'error' as const }
       : {};
 
+  const activeSession = history?.session
+    ? {
+        ...workspace?.sessions.find((s) => s.id === activeId),
+        ...archive.sessions.find((s) => s.id === activeId),
+        ...history.session,
+      }
+    : workspace?.sessions.find((session) => session.id === activeId);
+  const activeEmployee =
+    workspace && activeSession
+      ? employeeForSession(workspace, activeSession)
+      : newSessionEmployee;
+  const currentSceneRequest =
+    sceneRequest?.scope === settingsScope &&
+    (sceneRequest.origin === 'employee'
+      ? sceneRequest.instanceId === detailsAssignmentId
+      : sceneRequest.instanceId === activeEmployee?.instanceId)
+      ? sceneRequest
+      : null;
+  useEffect(() => {
+    // Discard invalid visible navigation. The catalog owns unresolved write
+    // identities separately; returning to an employee must not reopen this UI.
+    if (sceneRequest && !currentSceneRequest)
+      setSceneRequest((previous) =>
+        previous === sceneRequest ? null : previous,
+      );
+  }, [sceneRequest, currentSceneRequest]);
+  const sceneTarget =
+    currentSceneRequest?.instanceId ??
+    detailsAssignmentId ??
+    activeEmployee?.instanceId;
+  const sceneCatalog = useEmployeeSceneCatalog({
+    scopeId: settingsScope,
+    organizationId: workspace?.organizationId,
+    workspaceId: workspace?.workspaceId,
+    viewerId: workspace?.viewerId,
+    instanceId: sceneTarget ?? undefined,
+    headers: tenantHeaders,
+  });
+  const sceneGuard = useRef({
+    key: sceneCatalog.key,
+    busy,
+    unavailable: sceneCatalog.accessUnavailable,
+  });
+  sceneGuard.current = {
+    key: sceneCatalog.key,
+    busy,
+    unavailable: sceneCatalog.accessUnavailable,
+  };
+  const sceneOpen = Boolean(currentSceneRequest);
+  function openSceneDirectory() {
+    const instanceId = activeEmployee?.instanceId;
+    if (!workspace?.viewerId || !instanceId) return;
+    setSceneRequest((previous) => ({
+      scope: settingsScope,
+      instanceId,
+      origin: 'top',
+      revision: (previous?.revision ?? 0) + 1,
+    }));
+    layout.close();
+  }
+  function openEmployeeScene(entry?: SceneCatalogEntry) {
+    if (
+      !detailsAssignmentId ||
+      sceneCatalog.instance?.id !== detailsAssignmentId ||
+      sceneCatalog.accessUnavailable
+    )
+      return;
+    setSceneRequest((previous) => ({
+      scope: settingsScope,
+      instanceId: detailsAssignmentId,
+      origin: 'employee',
+      revision: (previous?.revision ?? 0) + 1,
+      ...(entry ? { entry } : { create: true }),
+    }));
+    setEmployeeDetailsOpen(false);
+  }
+  function returnToEmployee() {
+    const scope = settingsScope,
+      key = sceneCatalog.key;
+    setSceneRequest(null);
+    // Unmount native handlers before restoring the existing DshDialog; one
+    // Escape must not also close the page it is returning to.
+    void nextPaint().then(() => {
+      if (
+        currentSettingsScope.current === scope &&
+        sceneGuard.current.key === key &&
+        !sceneGuard.current.unavailable
+      ) {
+        reuseDetailsSceneSnapshot.current = true;
+        setEmployeeDetailsOpen(true);
+      }
+    });
+  }
+  async function prepareSceneWork(scene: SceneSelection) {
+    if (!workspace || !sceneTarget || busy || composing.current)
+      throw Error('请先完成当前输入或等待工作结束，再调整员工内容。');
+    const nativeName = scene.personal
+      ? scene.value.nativeName
+      : scene.value.skillPackage.frontmatter?.name;
+    const invocation = scene.personal
+      ? scene.value.invocation
+      : scene.value.skillPackage.frontmatter?.invocation;
+    if (!nativeName || invocation?.userInvocable === false)
+      throw Error('这位员工已不在当前工作区，请重新打开详情。');
+    const captured = captureSelection();
+    const target = sceneTarget;
+    const instance = await sceneCatalog.currentInstance();
+    if (
+      !instance ||
+      instance.id !== target ||
+      !captured.current() ||
+      currentSettingsScope.current !== settingsScope ||
+      sceneGuard.current.key !== sceneCatalog.key ||
+      sceneGuard.current.busy ||
+      composing.current
+    )
+      throw Error('工作区已变化，请重新打开员工详情。');
+    const employee = employeeChoices(workspace).find(
+      (entry) => entry.instanceId === target,
+    );
+    if (!employee || employee.id !== instance.assignmentId)
+      throw Error('这位员工已不在当前工作区，请重新打开详情。');
+    // The existing carry path preserves unsent text, attachments and authorized
+    // references. A real Session/Run is created only after the user sends.
+    const wasSession = captured.sessionId !== null;
+    resetRunState();
+    selectSession(null);
+    setHistory(null);
+    setPendingEmployeeAssignmentId(employeeChoiceId(employee));
+    if (wasSession)
+      carriedEmployeeDraft.current = {
+        scope: settingsScope,
+        generation: captureSelection().generation,
+      };
+    prepareDraft(prepareComposerText(`/${nativeName}`), true);
+    setSceneRequest(null);
+    if (layout.compact) setSidebarCollapsed(true);
+  }
+  function showSceneDeliveries() {
+    if (!sceneTarget) return;
+    const target = sceneTarget;
+    const scope = settingsScope;
+    setSceneRequest(null);
+    setSidebarCollapsed(false);
+    void nextPaint().then(() => {
+      if (currentSettingsScope.current !== scope) return;
+      const row = document.querySelector<HTMLElement>(
+        `[role="treeitem"][data-row-key="workspace:${target}"]`,
+      );
+      if (row?.getAttribute('aria-expanded') === 'false') row.click();
+      row?.focus();
+    });
+  }
+
   if (!workspace || !manifest) {
     return <WorkspaceStartup error={error} />;
   }
 
   const sessions = archive.sessions;
-  const activeSession = history?.session
-    ? {
-        ...workspace.sessions.find((s) => s.id === activeId),
-        ...archive.sessions.find((s) => s.id === activeId),
-        ...history.session,
-      }
-    : workspace.sessions.find((session) => session.id === activeId);
-  const activeEmployee = activeSession
-    ? employeeForSession(workspace, activeSession)
-    : newSessionEmployee;
   const activeEmployeeProfile = employeeChoiceProfile(
     workspace,
     activeEmployee ? employeeChoiceId(activeEmployee) : undefined,
@@ -1425,7 +1651,7 @@ export function ChatFlowClient({
   const historyLoading =
     activeId !== null && history === null && !visibleSubmission;
   const isEmptyConversation =
-    !sessionArchived &&
+    !conversationReadOnly &&
     !historyLoading &&
     !transcriptMessages.length &&
     !hasQueuedMessages &&
@@ -1476,6 +1702,8 @@ export function ChatFlowClient({
   }
 
   function prepareEmployeeDraft(text: string, instanceId: string) {
+    if (employeeArchive.archivedIds.has(instanceId))
+      throw Error('AI 员工已归档，可以查看历史；恢复后才能继续工作。');
     if (!workspace) throw Error('工作区已变化，请重新打开员工详情。');
     if (busy || composing.current)
       throw Error('请先完成当前输入或等待工作结束，再调整员工内容。');
@@ -1484,7 +1712,7 @@ export function ChatFlowClient({
     );
     if (!employee || employeeChoiceId(employee) !== detailsAssignmentId)
       throw Error('这位员工已不在当前工作区，请重新打开详情。');
-    if (activeEmployee?.instanceId !== instanceId || sessionArchived) {
+    if (activeEmployee?.instanceId !== instanceId || conversationReadOnly) {
       // Open a draft for the exact employee without discarding the caller's
       // unsent text, attachments or authorized reference selections.
       const wasSession = captureSelection().sessionId !== null;
@@ -1535,7 +1763,7 @@ export function ChatFlowClient({
   }
 
   async function prepareCompanyTemplate(reference: CompanyDraftReference) {
-    if (!workspace || busy || composing.current || sessionArchived)
+    if (!workspace || busy || composing.current || conversationReadOnly)
       throw Error('请先完成当前输入，再选用范本。');
     const selection = captureSelection();
     const templateScope = taskScope;
@@ -1790,7 +2018,20 @@ export function ChatFlowClient({
       {employeePickerOpen && (
         <EmployeePickerDialog
           key={settingsScope}
-          workspace={workspace}
+          workspace={{
+            ...workspace,
+            employees: workspace.employees.map((employee) => ({
+              ...employee,
+              ...(employee.instances
+                ? {
+                    instances: employee.instances.filter(
+                      (instance) =>
+                        !employeeArchive.archivedIds.has(instance.id),
+                    ),
+                  }
+                : {}),
+            })),
+          }}
           onClose={() => setEmployeePickerOpen(false)}
           onSelect={startEmployeeSession}
           onCreated={(instance) => startEmployeeSession(instance.id, instance)}
@@ -1845,6 +2086,9 @@ export function ChatFlowClient({
           if (layout.compact) setSidebarCollapsed(true);
         }}
         archive={archive}
+        onOpenArchive={openEmployeeArchive}
+        employeeArchiveOpen={employeeArchiveOpen}
+        archivedEmployeeInstanceIds={employeeArchive.archivedIds}
         capabilities={(section) => (
           <CapabilityContent
             key={`capabilities/${section}/${workspace.viewerId}/${workspace.workspaceId}/${activeId}`}
@@ -1914,6 +2158,7 @@ export function ChatFlowClient({
           else setError('当前没有可用员工，请先派驻员工。');
         }}
         onOpenEmployeeDetails={(assignmentId) => {
+          reuseDetailsSceneSnapshot.current = false;
           setDetailsAssignmentId(
             assignmentId ??
               (activeEmployee ? employeeChoiceId(activeEmployee) : null),
@@ -2001,6 +2246,16 @@ export function ChatFlowClient({
                   <div
                     className={`${conversationUi.headerActions} ${styles.conversationActions}`}
                   >
+                    {layout.compact && sidebarCollapsed && (
+                      <button
+                        type="button"
+                        className={employeeArchiveCss.mobileEntry}
+                        aria-label="查看归档"
+                        onClick={openEmployeeArchive}
+                      >
+                        <IconArchiveOutlineRegular size={18} />
+                      </button>
+                    )}
                     {activeId ? (
                       <NativeSubagentDirectory
                         key={`${settingsScope}/${activeId}`}
@@ -2015,7 +2270,7 @@ export function ChatFlowClient({
                         canControl={
                           !!workspace.viewerId &&
                           activeSession?.ownerId === workspace.viewerId &&
-                          !activeSession?.archivedAt
+                          !conversationReadOnly
                         }
                         controlRoot={
                           history?.session.id === activeId
@@ -2039,37 +2294,33 @@ export function ChatFlowClient({
                         workspaceId={workspace.workspaceId}
                         viewerId={workspace.viewerId}
                         instanceId={activeEmployee?.instanceId}
-                        kind={
-                          activeEmployee?.instances?.find(
-                            (instance) =>
-                              instance.id === activeEmployee.instanceId,
-                          )?.kind
-                        }
                         headers={tenantHeaders}
                         refreshKey={`${activeId}/${history?.messages.length}/${history?.messages.at(-1)?.status}`}
-                        open={workbenchOpen}
+                        open={workbenchOpen || sceneOpen}
                         selected={
-                          activeModule?.scope === fileScope
-                            ? activeModule.kind === 'schedule' &&
-                              currentAutomationRequest?.sourceSessionId !==
-                                activeId
-                              ? null
-                              : activeModule.kind
-                            : null
+                          sceneOpen
+                            ? 'workflow'
+                            : activeModule?.scope === fileScope
+                              ? activeModule.kind === 'schedule' &&
+                                currentAutomationRequest?.sourceSessionId !==
+                                  activeId
+                                ? null
+                                : activeModule.kind
+                              : null
                         }
                         schedule={
-                          !sessionArchived && currentSessionTasks.length > 0
+                          !conversationReadOnly &&
+                          currentSessionTasks.length > 0
                         }
                         onSchedule={openSessionTasks}
                         onOpen={(kind) => requestWorkbenchModule(kind)}
                         onToggle={() => {
-                          if (workbenchOpen) dismissWorkbench();
+                          if (workbenchOpen) dismissWorkbench(activeMemoryId);
                           else if (!hasWorkbenchContent)
                             requestWorkbenchModule('guide');
                           else layout.show();
                         }}
                         entryRef={workbenchEntry}
-                        onCapabilities={setWorkbenchCapabilities}
                       />
                     ) : (
                       <>
@@ -2084,22 +2335,18 @@ export function ChatFlowClient({
                         >
                           参考资料
                         </button>
-                        <BrandContentWorkspaceEntry
-                          key={`${settingsScope}/${workspace.viewerId}/${activeEmployee?.instanceId ?? 'none'}`}
-                          scopeId={settingsScope}
-                          workspaceId={workspace.workspaceId}
-                          viewerId={workspace.viewerId}
-                          instanceId={activeEmployee?.instanceId}
-                          kind={
-                            activeEmployee?.instances?.find(
-                              (instance) =>
-                                instance.id === activeEmployee.instanceId,
-                            )?.kind
-                          }
-                          employeeName={activeEmployeeName}
-                          headers={tenantHeaders}
-                          onOpenSession={openBrandContentSession}
-                        />
+                        {workspace.viewerId && activeEmployee?.instanceId && (
+                          <button
+                            type="button"
+                            className={`${moduleUi.iconButton} ${moduleUi.workflow}`}
+                            title="工作场景"
+                            aria-label="工作场景"
+                            aria-pressed={sceneOpen}
+                            onClick={openSceneDirectory}
+                          >
+                            <WorkbenchIcon kind="workflow" />
+                          </button>
+                        )}
                         {workbenchEnabled ? (
                           <button
                             type="button"
@@ -2266,7 +2513,7 @@ export function ChatFlowClient({
                     <p role="status">{interactions.error}</p>
                   ) : null}
                   <MessageFeedbackProvider
-                    readOnly={sessionArchived}
+                    readOnly={conversationReadOnly}
                     key={`feedback/${workspace.organizationId}/${workspace.workspaceId}/${workspace.viewerId}/${activeId}`}
                     sessionId={activeId!}
                     workspaceId={workspace.workspaceId}
@@ -2319,7 +2566,7 @@ export function ChatFlowClient({
                   />
                   <QueuedMessagesDock
                     key={`${workspace.organizationId}/${activeId}`}
-                    items={sessionArchived ? [] : queuedMessages}
+                    items={conversationReadOnly ? [] : queuedMessages}
                     busy={busy}
                     canEdit={
                       !hasDraft &&
@@ -2333,7 +2580,12 @@ export function ChatFlowClient({
                     )}
                     updateQueue={updateQueue}
                   />
-                  {sessionArchived ? (
+                  {employeeArchived && employeeArchive.selectedInstance ? (
+                    <EmployeeArchiveReadOnly
+                      archive={employeeArchive}
+                      instance={employeeArchive.selectedInstance}
+                    />
+                  ) : sessionArchived ? (
                     <div className={archiveCss.readOnly} role="status">
                       <span>已归档 · 可以查看记录和交付成果</span>
                       {(!activeSession?.ownerId ||
@@ -2343,6 +2595,21 @@ export function ChatFlowClient({
                           onClick={() => activeId && archive.restore(activeId)}
                         >
                           恢复并继续
+                        </button>
+                      )}
+                    </div>
+                  ) : employeeArchive.selectedPending ||
+                    employeeArchive.selectedError ? (
+                    <div
+                      className={archiveCss.readOnly}
+                      role={employeeArchive.selectedError ? 'alert' : 'status'}
+                    >
+                      <span>
+                        {employeeArchive.selectedError ?? '正在读取…'}
+                      </span>
+                      {employeeArchive.selectedError && (
+                        <button type="button" onClick={employeeArchive.reload}>
+                          重试
                         </button>
                       )}
                     </div>
@@ -2365,30 +2632,38 @@ export function ChatFlowClient({
         )}
       </section>
 
-      {(workbenchEnabled || currentAutomationRequest) && hasWorkbenchContent ? (
+      {(workbenchEnabled || currentAutomationRequest || currentMemoryRequest) &&
+      hasWorkbenchContent ? (
         <ArtifactWorkbench
           desktop={!layout.compact}
           moduleRequest={currentModuleRequest}
-          experienceAvailable={!!activeEmployee?.instanceId}
-          workflowAvailable={
-            workbenchCapabilities?.scope ===
-              `${settingsScope}/${activeEmployee?.instanceId ?? 'none'}` &&
-            workbenchCapabilities.workflow
+          experienceAvailable={
+            !!activeEmployee?.instanceId || !!currentMemoryRequest
           }
-          onModuleViewed={(kind) =>
+          workflowAvailable={false}
+          onModuleViewed={(kind, memoryInstanceId) => {
+            // Reading one employee's memories is not reading the active
+            // employee's old experience/unread stream.
+            if (memoryInstanceId) return;
             announceWorkbenchRead(
               `${settingsScope}/${activeEmployee?.instanceId ?? 'none'}`,
               kind,
-            )
-          }
-          onActiveModule={(kind) =>
+            );
+          }}
+          onActiveModule={(kind, memoryInstanceId) => {
+            if (kind === 'workflow') {
+              openSceneDirectory();
+              return;
+            }
             setActiveModule((previous) =>
-              previous?.scope === fileScope && previous.kind === kind
+              previous?.scope === fileScope &&
+              previous.kind === kind &&
+              previous.memoryInstanceId === memoryInstanceId
                 ? previous
-                : { scope: fileScope, kind },
-            )
-          }
-          renderModule={(kind, active, onOpenFile) => (
+                : { scope: fileScope, kind, memoryInstanceId },
+            );
+          }}
+          renderModule={(kind, active, onOpenFile, memoryInstanceId) => (
             <Suspense fallback={<p role="status">正在打开工作台…</p>}>
               {kind === 'files' ? (
                 <WorkbenchFilesPanel
@@ -2401,7 +2676,7 @@ export function ChatFlowClient({
                       ? currentModuleRequest.category
                       : undefined
                   }
-                  readOnly={sessionArchived}
+                  readOnly={conversationReadOnly}
                   onRead={() =>
                     announceWorkbenchRead(
                       `${settingsScope}/${activeEmployee?.instanceId ?? 'none'}`,
@@ -2418,8 +2693,18 @@ export function ChatFlowClient({
                   onTemplate={viewWorkbenchTemplate}
                   onUse={useWorkbenchReference}
                 />
-              ) : kind === 'experience' ? (
+              ) : kind === 'experience' &&
+                (memoryInstanceId ?? activeEmployee?.instanceId) ? (
                 <WorkbenchExperiencePanel
+                  memoryRequest={{
+                    instanceId: (memoryInstanceId ??
+                      activeEmployee?.instanceId)!,
+                    revision:
+                      currentMemoryRequest &&
+                      currentMemoryRequest.id === memoryInstanceId
+                        ? currentMemoryRequest.revision
+                        : 0,
+                  }}
                   scopeId={settingsScope}
                   workspaceId={workspace.workspaceId}
                   instanceId={activeEmployee?.instanceId}
@@ -2442,7 +2727,7 @@ export function ChatFlowClient({
                   automatic={experienceEnabled}
                   onCorrect={(instanceId, text) => {
                     if (
-                      sessionArchived ||
+                      conversationReadOnly ||
                       activeEmployee?.instanceId !== instanceId
                     ) {
                       if (!confirmSessionNavigation()) return;
@@ -2458,25 +2743,7 @@ export function ChatFlowClient({
                     requestAnimationFrame(() => composerInput.current?.focus());
                   }}
                 />
-              ) : activeEmployee?.instanceId &&
-                workbenchCapabilities?.scope ===
-                  `${settingsScope}/${activeEmployee.instanceId}` &&
-                workbenchCapabilities.workflow ? (
-                <BrandContentPanel
-                  key={`${settingsScope}/${activeEmployee.instanceId}`}
-                  embedded
-                  active={active}
-                  scopeId={settingsScope}
-                  workspaceId={workspace.workspaceId}
-                  instanceId={activeEmployee.instanceId}
-                  employeeName={activeEmployeeName}
-                  headers={tenantHeaders}
-                  onClose={dismissWorkbench}
-                  onOpenSession={openBrandContentSession}
-                />
-              ) : (
-                <p role="status">这位员工当前没有可用的工作流。</p>
-              )}
+              ) : null}
             </Suspense>
           )}
           onOpenReference={openReference}
@@ -2506,7 +2773,7 @@ export function ChatFlowClient({
               onOpenSession={openBrandContentSession}
             />
           )}
-          readOnly={sessionArchived}
+          readOnly={conversationReadOnly}
           open={workbenchOpen}
           width={resize.width}
           selectionRequest={workbench.selectionRequest}
@@ -2577,7 +2844,91 @@ export function ChatFlowClient({
         />
       )}
 
+      <EmployeeSceneDialog
+        key={`${sceneCatalog.key}/${currentSceneRequest?.revision ?? 0}`}
+        controller={sceneCatalog}
+        open={sceneOpen}
+        employeeName={
+          sceneCatalog.profile?.name ??
+          (sceneTarget
+            ? employeeChoiceProfile(workspace, sceneTarget)?.name
+            : undefined) ??
+          'AI 员工'
+        }
+        onClose={() => setSceneRequest(null)}
+        onStart={prepareSceneWork}
+        onDeliveries={showSceneDeliveries}
+        initial={
+          currentSceneRequest?.entry
+            ? { page: 'detail', entry: currentSceneRequest.entry }
+            : currentSceneRequest?.create
+              ? { page: 'source' }
+              : undefined
+        }
+        onBackToEmployee={
+          currentSceneRequest?.origin === 'employee'
+            ? returnToEmployee
+            : undefined
+        }
+      />
+      {archiveConfirmation?.scope === settingsScope && (
+        <EmployeeArchiveConfirmation
+          archive={employeeArchive}
+          target={archiveConfirmation.profile}
+          onCancel={() => {
+            const target = archiveConfirmation;
+            const selection = captureSelection();
+            setArchiveConfirmation(null);
+            if (employeeArchive.mutation?.denied) return;
+            // Native Escape is handled at document; the legacy detail listens
+            // on window. Enter only after that same event and layer cleanup.
+            void nextPaint().then(() => {
+              if (
+                target.scope !== currentSettingsScope.current ||
+                !selection.current()
+              )
+                return;
+              setDetailsAssignmentId(target.profile.instanceId);
+              setEmployeeDetailsOpen(true);
+            });
+          }}
+          onArchived={() => {
+            setArchiveConfirmation(null);
+            openEmployeeArchive();
+          }}
+        />
+      )}
+      {employeeArchiveOpen && (
+        <EmployeeArchiveDialog
+          key={settingsScope}
+          archive={employeeArchive}
+          headers={tenantHeaders}
+          onSessionUpdated={updateSession}
+          workspace={workspace}
+          activeId={activeId}
+          onClose={closeEmployeeArchive}
+          onPrepareSession={prefetchHistory}
+          onSelectSession={(sessionId) => {
+            if (sessionId !== activeId && !confirmSessionNavigation()) return;
+            if (layout.compact) setSidebarCollapsed(true);
+            if (sessionId !== activeId) {
+              clearPendingAttachments();
+              setSessionReferences([]);
+              setReferenceSelections([]);
+              setCompanyReferences([]);
+              setReferencePickerOpen(false);
+              setDraft('');
+            }
+            selectSession(sessionId);
+            closeEmployeeArchive();
+          }}
+        />
+      )}
       <EmployeeDetailsDialog
+        onArchive={(profile) => {
+          setArchiveConfirmation({ scope: settingsScope, profile });
+          setEmployeeDetailsOpen(false);
+        }}
         onClose={() => setEmployeeDetailsOpen(false)}
         open={employeeDetailsOpen}
         scopeId={settingsScope}
@@ -2593,8 +2944,21 @@ export function ChatFlowClient({
         }
         workspaceId={workspace.workspaceId}
         headers={tenantHeaders}
+        sceneCatalog={sceneCatalog}
+        reuseSceneSnapshot={reuseDetailsSceneSnapshot.current}
+        onOpenScene={openEmployeeScene}
+        onCreateScene={() => openEmployeeScene()}
         onPrepare={prepareEmployeeDraft}
         onProfileUpdated={registerEmployeeInstance}
+        onOpenMemory={(instanceId) => {
+          if (instanceId !== detailsAssignmentId) return;
+          requestWorkbenchModule('experience', {
+            id: instanceId,
+            title: '记忆',
+            view: 'personal-memory',
+          });
+          setEmployeeDetailsOpen(false);
+        }}
       />
 
       {referencePickerOpen && (
@@ -2637,54 +3001,5 @@ export function ChatFlowClient({
         versions={deliverableVersions}
       />
     </main>
-  );
-}
-
-function BrandContentWorkspaceEntry({
-  employeeName,
-  onOpenSession,
-  ...scope
-}: {
-  scopeId: string;
-  workspaceId: string;
-  viewerId?: string | null;
-  instanceId?: string;
-  kind?: 'general' | 'custom';
-  employeeName: string;
-  headers: Record<string, string>;
-  onOpenSession: (sessionId: string) => void;
-}) {
-  const catalog = useBrandContentWorkspace(scope);
-  const [openedScope, setOpenedScope] = useState<string | null>(null);
-  if (!catalog.available || !scope.instanceId) return null;
-  const open = openedScope === catalog.scope;
-  return (
-    <>
-      <button
-        type="button"
-        className={workbenchUi.entry}
-        aria-expanded={open}
-        onClick={() => setOpenedScope(catalog.scope)}
-      >
-        内容工作台
-      </button>
-      {open && (
-        <Suspense fallback={<span role="status">正在打开内容工作台…</span>}>
-          <BrandContentPanel
-            key={catalog.scope}
-            scopeId={scope.scopeId}
-            workspaceId={scope.workspaceId}
-            instanceId={scope.instanceId}
-            employeeName={employeeName}
-            headers={scope.headers}
-            onClose={() => setOpenedScope(null)}
-            onOpenSession={(sessionId) => {
-              setOpenedScope(null);
-              onOpenSession(sessionId);
-            }}
-          />
-        </Suspense>
-      )}
-    </>
   );
 }

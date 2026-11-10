@@ -6,6 +6,7 @@ import {
   EmployeeDefinitionSchema,
   EmployeeExecutionSnapshotSchema,
   EmployeeManifestSchema,
+  EmployeeInstanceProfileSchema,
   PublishEmployeeVersionInputSchema,
 } from './employees.js';
 
@@ -470,4 +471,62 @@ describe('EmployeeHub contracts', () => {
       expect(() => parse(fields)).toThrow();
     }
   });
+});
+
+describe('sparse personal appearance', () => {
+  it.each([
+    {},
+    { appearance: {} },
+    { appearance: { accentColor: 'blue' } },
+    { appearance: { avatarType: 'emoji' } },
+    { appearance: { avatarValue: '🍚' } },
+    {
+      appearance: {
+        avatarType: 'image',
+        avatarValue: 'https://example.test/avatar.png',
+        accentColor: 'indigo',
+      },
+    },
+  ])(
+    'retains only explicitly present fields and leaves existing full values intact: %j',
+    (profile) => {
+      expect(EmployeeInstanceProfileSchema.parse(profile)).toEqual(profile);
+    },
+  );
+
+  it('keeps an explicitly chosen expression equal to the default as a real override', () => {
+    expect(
+      EmployeeInstanceProfileSchema.parse({ expressionStyle: 'structured' }),
+    ).toEqual({ expressionStyle: 'structured' });
+    expect(EmployeeInstanceProfileSchema.parse({})).not.toHaveProperty(
+      'expressionStyle',
+    );
+    for (const expressionStyle of ['concise', 'structured', 'exploratory']) {
+      expect(
+        EmployeeInstanceProfileSchema.parse({ expressionStyle })
+          .expressionStyle,
+      ).toBe(expressionStyle);
+    }
+    expect(
+      EmployeeInstanceProfileSchema.safeParse({
+        expressionStyle: 'arbitrary free text',
+      }).success,
+    ).toBe(false);
+  });
+
+  it.each([
+    { appearance: { extra: true } },
+    { appearance: { avatarType: 'other' } },
+    { appearance: { avatarValue: '' } },
+    { appearance: { accentColor: 'unknown-color' } },
+    { appearance: null },
+    { toolNames: ['secret.read'] },
+  ])(
+    'rejects invalid personal values without granting new fields: %j',
+    (profile) => {
+      expect(EmployeeInstanceProfileSchema.safeParse(profile).success).toBe(
+        false,
+      );
+    },
+  );
 });

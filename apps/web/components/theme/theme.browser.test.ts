@@ -52,6 +52,7 @@ suite('theme runtime', () => {
       write: false,
       outdir: '/fixture',
       jsx: 'automatic',
+      loader: { '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl' },
       define: { 'process.env.NODE_ENV': '"development"' },
     });
     type Output = { path: string; contents: Uint8Array };

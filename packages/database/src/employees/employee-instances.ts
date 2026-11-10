@@ -65,9 +65,16 @@ export async function readEmployeeVersionPublication(
   sql: Sql = getDatabase(),
 ) {
   const [publication] = await sql<
-    { revision_id: string; checksum: string; definition: unknown }[]
+    {
+      platform_employee_id: string;
+      revision_id: string;
+      revision: number;
+      checksum: string;
+      definition: unknown;
+    }[]
   >`
-    select r.id as revision_id, r.checksum, r.definition
+    select r.employee_id as platform_employee_id, r.id as revision_id,
+      r.revision, r.checksum, r.definition
     from allrice_employee_version_sources p
     join allrice_platform_employee_revisions r
       on r.id = p.platform_revision_id and r.employee_id = p.platform_employee_id
@@ -81,7 +88,10 @@ export async function readEmployeeVersionPublication(
 }
 
 export class EmployeeInstanceError extends Error {
-  constructor(public readonly code: 'instance_conflict' | 'instance_archived') {
+  constructor(
+    public readonly code:
+      'instance_conflict' | 'instance_archived' | 'default_protected',
+  ) {
     super(code);
   }
 }
@@ -377,7 +387,18 @@ export async function updateEmployeeInstance(
         'operation' in value
           ? {}
           : before.kind === 'general'
-            ? { ...current, ...value.profile }
+            ? {
+                ...current,
+                ...value.profile,
+                ...(value.profile.appearance !== undefined
+                  ? {
+                      appearance: {
+                        ...current.appearance,
+                        ...value.profile.appearance,
+                      },
+                    }
+                  : {}),
+              }
             : value.profile,
       async (before) => {
         const rice = await isBaseRiceInstance(before, tx);
@@ -557,6 +578,10 @@ export async function changeEmployeeInstanceLifecycle(
     const [row] = await tx<
       InstanceRow[]
     >`select * from allrice_employee_instances where id=${id} for update`;
+    // Default identity is immutable provenance, not a mutable display name or
+    // assignment selection. Refuse before receipts, revisions or cancellation.
+    if (value.operation === 'archive' && (await isBaseRiceInstance(before, tx)))
+      throw new EmployeeInstanceError('default_protected');
     const [prior] =
       await tx`select response,request_input=${tx.json(value)}::jsonb matches
       from allrice_employee_instance_revisions where instance_id=${id} and request_id=${value.requestId}`;

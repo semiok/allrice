@@ -19,8 +19,8 @@ import css from './workbench-modules.module.css';
 export type WorkbenchModule = 'files' | 'experience' | 'workflow';
 export const moduleLabels = {
   files: '工作区文件',
-  experience: '经验管理',
-  workflow: '工作流',
+  experience: '记忆',
+  workflow: '工作场景',
 };
 export function WorkbenchIcon({
   kind,
@@ -198,7 +198,7 @@ export function WorkbenchStart(props: {
                 {kind === 'files'
                   ? '文件、交付成果与参考资料'
                   : kind === 'experience'
-                    ? '查看、使用和纠正工作经验'
+                    ? '记忆'
                     : '打开这位员工的业务工作台'}
               </small>
             </span>

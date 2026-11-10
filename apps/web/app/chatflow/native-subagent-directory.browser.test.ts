@@ -565,7 +565,7 @@ suite('native subagent directory and employee sidebar', () => {
         ).toBe(colors[0]);
         expect(
           await page
-            .getByRole('button', { name: '经验管理，1 项新增', exact: true })
+            .getByRole('button', { name: '记忆，1 项新增', exact: true })
             .locator('span')
             .evaluate((node) => getComputedStyle(node).backgroundColor),
         ).toBe(colors[0]);
@@ -893,7 +893,7 @@ suite('native subagent directory and employee sidebar', () => {
           name: '工作区文件，33 项新增',
           exact: true,
         }),
-        page.getByRole('button', { name: '经验管理，1 项新增', exact: true }),
+        page.getByRole('button', { name: '记忆，1 项新增', exact: true }),
       ]) {
         expect(
           await button.locator('span[aria-hidden="true"]').evaluate((node) => {

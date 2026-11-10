@@ -1,3 +1,7 @@
+import { skillSourceErrorHeader } from '@allrice/contracts';
+import { savePersonalSceneSkill } from './personal-scene-skills.ts';
+import { sceneSkillFixture } from './employee-scene-skills.fixture.ts';
+import { skillBytesChecksum, skillBundleChecksum } from '../skill-bundles.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { access } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -10,12 +14,20 @@ import {
   it,
   vi,
 } from 'vitest';
-import type { RequestContext, StoragePort } from '@allrice/contracts';
+import {
+  EmployeeSkillCatalogSchema,
+  PersonalSkillPreviewResponseSchema,
+  PersonalSkillConfirmResponseSchema,
+  type RequestContext,
+  type StoragePort,
+} from '@allrice/contracts';
 import { createFileArchive, readFileArchive } from '@allrice/file-archives';
 import { SkillPreviewTokens, parsePersonalSkill } from '@allrice/skill-import';
 import * as client from '../core/client.ts';
 import * as data from '../data.ts';
 import * as browserWriter from './personal-skill-browser.ts';
+import { loadPlatformContentCatalog } from '../platform-content/catalog.ts';
+import { synchronizePlatformContent } from '../platform-content/sync.ts';
 import { previewPersonalSkillUpdateTarget } from './personal-skill-versions.ts';
 import {
   createRuntimeFixtureDatabase,
@@ -233,7 +245,9 @@ suite('browser Skill source preview and confirmation', () => {
       bytes ?? (await zip()),
     );
     expect(response.status).toBe(200);
-    const preview = await response.json();
+    const preview = PersonalSkillPreviewResponseSchema.parse(
+      await response.json(),
+    );
     const requestId = randomUUID();
     const applied = await confirm(
       s.owner.context,
@@ -243,8 +257,267 @@ suite('browser Skill source preview and confirmation', () => {
       requestId,
     );
     expect(applied.status).toBe(200);
-    return { preview, requestId, result: await applied.json() };
+    return {
+      preview,
+      requestId,
+      result: PersonalSkillConfirmResponseSchema.parse(await applied.json()),
+    };
   }
+  async function catalogGet(
+    context: RequestContext | null,
+    id: string,
+    workspaceId: string,
+  ) {
+    browser.context = context;
+    const path =
+      '../../../../apps/web/app/api/v1/employee-instances/[id]/skills/route.ts';
+    const { GET } = await import(path);
+    return GET(
+      new Request('http://localhost:3000/skills?workspaceId=' + workspaceId),
+      { params: Promise.resolve({ id }) },
+    );
+  }
+  it('L1: previews, confirms and freezes 256 KiB plus all 32 resource entries, rejecting oversized bodies before writes', async () => {
+    const s = await setup(true),
+      body = '字'.repeat(87381) + 'x';
+    const raw =
+      '---\nname: maximum-web\ndescription: Exact package\n---\n' + body;
+    const resources = Array.from({ length: 32 }, (_, i) => ({
+      path: `assets/${i}.txt`,
+      bytes: Buffer.from(String(i)),
+    }));
+    const bytes = await createFileArchive(
+      [{ path: 'SKILL.md', bytes: Buffer.from(raw) }, ...resources],
+      { maximumFiles: 33 },
+    );
+    const { preview, result } = await installWeb(s, s.assigned.id, bytes);
+    expect(preview.files).toHaveLength(33);
+    expect(result.skill.resourceCount).toBe(32);
+    const frozen = await freezePersonalSkills(
+      s.owner.context,
+      { id: s.assigned.id },
+      { nativeSkills: [] },
+    );
+    expect(
+      frozen.nativeSkills.find((skill) => skill.name === 'maximum-web')
+        ?.content,
+    ).toBe(body);
+    const [row] =
+      await f.db`select original_text,definition,resource_manifest from allrice_personal_skill_versions where id=${result.skill.versionId}`;
+    expect(row!.original_text).toBe(raw);
+    expect(row!.definition.content).toBe(body);
+    expect(row!.resource_manifest.resources).toHaveLength(32);
+    const before = await counts();
+    const bad = await createFileArchive([
+      { path: 'SKILL.md', bytes: Buffer.from(raw + 'x') },
+    ]);
+    const rejected = await send(
+      s.owner.context,
+      s.assigned.id,
+      s.owner.workspaceId,
+      bad,
+    );
+    expect(rejected.status).toBe(422);
+    expect(await rejected.json()).toMatchObject({
+      error: { code: 'VALIDATION_FAILED', retryable: false },
+    });
+    expect(await counts()).toEqual(before);
+  });
+  it.each(['rice', 'custom', 'professional'] as const)(
+    'catalog: projects actual base and enabled personal Skills for %s without writes',
+    async (kind) => {
+      const platform = await loadPlatformContentCatalog();
+      await synchronizePlatformContent(platform);
+      const s = await setup(kind === 'rice');
+      const second = await createEmployeeInstance(s.owner.context, {
+        workspaceId: s.owner.workspaceId,
+        assignmentId: s.assigned.id,
+        requestId: randomUUID(),
+        profile: { name: 'Other' },
+      });
+      const id = kind === 'custom' ? second.id : s.assigned.id;
+      const installed = await installWeb(s, id);
+      const unused = await createFileArchive([
+        {
+          path: 'SKILL.md',
+          bytes: Buffer.from(sourceText.replace('name: weekly', 'name: other')),
+        },
+        {
+          path: 'references/rules.md',
+          bytes: Buffer.from('Private to other employee'),
+        },
+      ]);
+      await installWeb(s, id === second.id ? s.assigned.id : second.id, unused);
+      const before = await counts();
+      const response = await catalogGet(
+        s.owner.context,
+        id,
+        s.owner.workspaceId,
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get('cache-control')).toBe('private, no-store');
+      const body = EmployeeSkillCatalogSchema.parse(await response.json());
+      expect(
+        EmployeeSkillCatalogSchema.safeParse({ ...body, content: 'private' })
+          .success,
+      ).toBe(false);
+      expect(body.instanceId).toBe(id);
+      expect(body.canInstall).toBe(true);
+      const hidden = [
+        'governed-memory',
+        'workflow-automation',
+        'employee-customization',
+        'experience-consolidation',
+      ];
+      const names = body.platformSkills.map(
+        (item: { name: string }) => item.name,
+      );
+      for (const entry of platform.skills.filter(
+        (item) => item.enabled && !hidden.includes(item.name),
+      ))
+        expect(names).toContain(entry.name);
+      for (const name of hidden) expect(names).not.toContain(name);
+      expect(names).not.toContain('document-analysis');
+      expect(
+        body.platformSkills.find(
+          (item: { name: string }) => item.name === 'office',
+        ),
+      ).toMatchObject({
+        displayName: 'Office 文档',
+        kind: 'platform',
+        canUninstall: false,
+      });
+      expect(body.personalSkills).toHaveLength(1);
+      expect(body.personalSkills[0]).toMatchObject({
+        kind: 'personal',
+        name: 'weekly',
+        displayName: 'Weekly summary',
+        version: '1.2.0',
+        installationVersion: 1,
+        installationId: installed.result.skill.id,
+        versionId: installed.result.skill.versionId,
+        revision: installed.result.skill.revision,
+        binding: { instanceId: id, enabled: true, epoch: 1 },
+        canUninstall: true,
+      });
+      expect(body.personalSkills[0]).not.toHaveProperty('bindings');
+      expect(JSON.stringify(body)).not.toContain('Always count records.');
+      expect(await counts()).toEqual(before);
+      await managePersonalSkill(s.owner.context, {
+        workspaceId: s.owner.workspaceId,
+        instanceId: id,
+        installationId: installed.result.skill.id,
+        expectedRevision: installed.result.skill.revision,
+        requestId: randomUUID(),
+        operation: 'disable',
+      });
+      expect(
+        (
+          await (
+            await catalogGet(s.owner.context, id, s.owner.workspaceId)
+          ).json()
+        ).personalSkills,
+      ).toEqual([]);
+    },
+  );
+  it('catalog: follows current catalog versions and disabled entries without taking an old Run directory', async () => {
+    const platform = await loadPlatformContentCatalog();
+    await synchronizePlatformContent(platform);
+    const s = await setup();
+    const before = await counts();
+    const web = platform.skills.find((skill) => skill.name === 'web-research')!;
+    await synchronizePlatformContent({
+      ...platform,
+      catalogChecksum: 'sha256:' + '7'.repeat(64),
+      skills: platform.skills.map((skill) =>
+        skill.id === web.id
+          ? {
+              ...skill,
+              version: '92.0.0',
+              description: 'Current reviewed description',
+            }
+          : skill,
+      ),
+    });
+    try {
+      const current = await (
+        await catalogGet(s.owner.context, s.assigned.id, s.owner.workspaceId)
+      ).json();
+      expect(
+        current.platformSkills.find(
+          (item: { name: string }) => item.name === 'web-research',
+        ),
+      ).toMatchObject({
+        version: '92.0.0',
+        description: 'Current reviewed description',
+        displayName: '网页调研',
+      });
+      await f.db`update allrice_platform_dsh_skills set enabled=false where id=${web.id}`;
+      const disabled = await (
+        await catalogGet(s.owner.context, s.assigned.id, s.owner.workspaceId)
+      ).json();
+      expect(
+        disabled.platformSkills.some(
+          (item: { name: string }) => item.name === 'web-research',
+        ),
+      ).toBe(false);
+      expect(await counts()).toEqual(before);
+    } finally {
+      // Restore only this disposable fixture; no production downgrade.
+      await f.db`update allrice_platform_dsh_skills set version=${web.version},description=${web.description},enabled=true where id=${web.id}`;
+      await synchronizePlatformContent(platform);
+    }
+  });
+  it('catalog: excludes uninstalled entries and enforces current read and write authority', async () => {
+    const s = await setup(true),
+      foreign = await setup();
+    const installed = await installWeb(s);
+    await f.db`update allrice_memberships set role='viewer' where user_id=${s.owner.user.id}`;
+    const readonly = await (
+      await catalogGet(s.owner.context, s.assigned.id, s.owner.workspaceId)
+    ).json();
+    expect(readonly.canInstall).toBe(false);
+    expect(readonly.personalSkills[0].canUninstall).toBe(false);
+    const before = await counts();
+    for (const context of [s.peer.context, foreign.owner.context]) {
+      const response = await catalogGet(
+        context,
+        s.assigned.id,
+        s.owner.workspaceId,
+      );
+      expect([403, 404]).toContain(response.status);
+      expect(JSON.stringify(await response.json())).not.toContain('weekly');
+    }
+    expect(
+      (await catalogGet(null, s.assigned.id, s.owner.workspaceId)).status,
+    ).toBe(401);
+    expect(await counts()).toEqual(before);
+    await f.db`update allrice_memberships set role='member' where user_id=${s.owner.user.id}`;
+    await managePersonalSkill(s.owner.context, {
+      workspaceId: s.owner.workspaceId,
+      installationId: installed.result.skill.id,
+      expectedRevision: installed.result.skill.revision,
+      requestId: randomUUID(),
+      operation: 'uninstall',
+    });
+    expect(
+      (
+        await (
+          await catalogGet(s.owner.context, s.assigned.id, s.owner.workspaceId)
+        ).json()
+      ).personalSkills,
+    ).toEqual([]);
+    await f.db`update allrice_employee_assignments set active=false where id=${s.assigned.id}`;
+    expect(
+      (await catalogGet(s.owner.context, s.assigned.id, s.owner.workspaceId))
+        .status,
+    ).toBe(403);
+    await f.db`update allrice_memberships set active=false where user_id=${s.owner.user.id}`;
+    expect(
+      (await catalogGet(s.owner.context, s.assigned.id, s.owner.workspaceId))
+        .status,
+    ).toBe(403);
+  });
   it.each(['rice', 'custom', 'professional'] as const)(
     'confirms the exact ZIP for an owned %s, stores resources and replays without new writes',
     async (kind) => {
@@ -477,6 +750,8 @@ suite('browser Skill source preview and confirmation', () => {
     const [previous] =
       await f.db`select source from allrice_personal_skill_versions where id=${old.skill.versionId}`;
     expect(previous!.source.fileName).toBe('weekly.zip');
+    if (old.skill.source.kind !== 'attachment')
+      throw new Error('ZIP fixture must retain its attachment source');
     expect(result.skill.source.objectId).toBe(old.skill.source.objectId);
     expect(await counts()).toEqual(before);
   });
@@ -691,6 +966,78 @@ suite('browser Skill source preview and confirmation', () => {
       ),
     ).toBe(true);
   });
+  it('native names: ordinary install and enable cannot shadow an owned scene, and enabled ordinary Skills block a scene save', async () => {
+    const s = await setup(true),
+      id = s.assigned.id;
+    const installed = await installWeb(s);
+    const payload = sceneSkillFixture();
+    payload.body =
+      '## 工作步骤\n1. 核对资料\n## 交付内容\n- 周报\n## 执行细节\n只读资料。';
+    const bundle = payload.skillPackage.bundle;
+    bundle.contentChecksum = skillBytesChecksum(payload.body);
+    const { checksum: _checksum, ...bundlePayload } = bundle;
+    void _checksum;
+    bundle.checksum = skillBundleChecksum(bundlePayload);
+    const input = {
+      workspaceId: s.owner.workspaceId,
+      requestId: randomUUID(),
+      expectedRevision: 0,
+      expectedContentRef: null,
+      scene: { id: randomUUID(), name: '周报', appliesWhen: '整理周报' },
+      procedure: {
+        kind: 'procedure',
+        title: '周报',
+        ...payload,
+        skillPackage: {
+          ...payload.skillPackage,
+          frontmatter: {
+            name: 'weekly',
+            description: '整理周报',
+            whenToUse: '每周',
+            metadata: { displayName: '周报', version: '1' },
+            invocation: { modelInvocable: true, userInvocable: true },
+          },
+        },
+      },
+      references: [],
+      changeSummary: '安装本人场景',
+    };
+    await expect(
+      savePersonalSceneSkill(s.owner.context, id, input),
+    ).rejects.toMatchObject({ code: 'version_conflict' });
+    const disabled = await managePersonalSkill(s.owner.context, {
+      workspaceId: s.owner.workspaceId,
+      instanceId: id,
+      installationId: installed.result.skill.id,
+      expectedRevision: installed.result.skill.revision,
+      requestId: randomUUID(),
+      operation: 'disable',
+    });
+    await savePersonalSceneSkill(s.owner.context, id, input);
+    const before = await counts();
+    await expect(
+      managePersonalSkill(s.owner.context, {
+        workspaceId: s.owner.workspaceId,
+        instanceId: id,
+        installationId: installed.result.skill.id,
+        expectedRevision: disabled.revision,
+        requestId: randomUUID(),
+        operation: 'enable',
+      }),
+    ).rejects.toMatchObject({ code: 'name_conflict' });
+    const preview = await (
+      await send(s.owner.context, id, s.owner.workspaceId, await zip())
+    ).json();
+    expect(
+      (await confirm(s.owner.context, id, s.owner.workspaceId, preview)).status,
+    ).toBe(409);
+    expect(await counts()).toEqual(before);
+    expect(
+      (await listPersonalSkills(s.owner.context))[0]!.bindings.find(
+        (binding) => binding.instanceId === id,
+      )?.enabled,
+    ).toBe(false);
+  });
   it('coalesces concurrent confirmation and refuses platform-name shadowing or revoked receipt replay', async () => {
     const s = await setup();
     const preview = await (
@@ -813,14 +1160,16 @@ suite('browser Skill source preview and confirmation', () => {
       },
       verified.bytes,
     );
-    expect(
-      (
-        await confirm(s.owner.context, s.assigned.id, s.owner.workspaceId, {
-          ...preview,
-          previewId: expired,
-        })
-      ).status,
-    ).toBe(422);
+    const expiredResponse = await confirm(
+      s.owner.context,
+      s.assigned.id,
+      s.owner.workspaceId,
+      { ...preview, previewId: expired },
+    );
+    expect(expiredResponse.status).toBe(422);
+    expect(expiredResponse.headers.get('X-AllRice-Skill-Error')).toBe(
+      'preview_expired',
+    );
     expect(await counts()).toEqual(before);
   });
 
@@ -908,14 +1257,22 @@ suite('browser Skill source preview and confirmation', () => {
   it('rejects missing root SKILL.md and invalid archives without writes', async () => {
     const s = await setup(),
       before = await counts();
-    for (const bytes of [
-      await zip('nested/SKILL.md'),
-      Buffer.from('not a zip'),
-    ])
-      expect(
-        (await send(s.owner.context, s.assigned.id, s.owner.workspaceId, bytes))
-          .status,
-      ).toBe(422);
+    for (const [bytes, reason] of [
+      [await zip('nested/SKILL.md'), 'skill_missing'],
+      [Buffer.from('not a zip'), 'package_invalid'],
+    ] as const) {
+      const rejected = await send(
+        s.owner.context,
+        s.assigned.id,
+        s.owner.workspaceId,
+        bytes,
+      );
+      expect(rejected.status).toBe(422);
+      expect(rejected.headers.get(skillSourceErrorHeader)).toBe(reason);
+      expect(await rejected.json()).toMatchObject({
+        error: { code: 'VALIDATION_FAILED', retryable: false },
+      });
+    }
     expect(await counts()).toEqual(before);
   });
   it('returns non-retryable validation errors for malformed multipart and UTF-8 bodies', async () => {
@@ -1258,6 +1615,7 @@ suite('browser Skill source preview and confirmation', () => {
     expect(remainingAccess).toHaveLength(0);
     const inaccessible = await request(bytes);
     expect(inaccessible.status).toBe(403);
+    expect(inaccessible.headers.has(skillSourceErrorHeader)).toBe(false);
     const denied = await inaccessible.json();
     expect(denied).toMatchObject({
       error: { code: 'AUTHORIZATION_DENIED', retryable: false },
@@ -1286,7 +1644,18 @@ suite('browser Skill source preview and confirmation', () => {
         ),
       },
     ]);
-    expect((await request(different)).status).toBe(409);
+    const nameMismatch = await request(different);
+    expect(nameMismatch.status).toBe(409);
+    expect(nameMismatch.headers.get(skillSourceErrorHeader)).toBe(
+      'name_mismatch',
+    );
+    expect(await nameMismatch.json()).toMatchObject({
+      error: {
+        code: 'VALIDATION_FAILED',
+        message: '新包的 name 与当前技能不同，不能用于更新。',
+        retryable: false,
+      },
+    });
     await f.db`update allrice_personal_skill_bindings set enabled=false where installation_id=${id}`;
     expect((await request(bytes)).status).toBe(404);
     expect(await counts()).toEqual(before);

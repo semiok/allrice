@@ -8,12 +8,12 @@ import type {
   ReferenceSelection,
   ContentOwnership,
 } from '@allrice/contracts';
-import { employeeAccent, employeeAccentStyle } from './employee-navigation';
 import {
-  IconEditOutlineRegular,
   IconSparkleRegular,
   IconShieldOutlineRegular,
 } from '@deepseek-ai/dsh-client-ui-primitives';
+import { EmployeePersonaCard } from './employee-persona-card';
+import { canEditEmployeePersona } from './employee-profile-form';
 import {
   createEmployeeScenePrompt,
   adjustEmployeeContentPrompt,
@@ -151,6 +151,8 @@ export function EmployeeProfileDetails({
   experienceContent,
   workflowContent,
   workflowReadContent,
+  memoryEntry,
+  sceneContent,
   onEdit,
   onPrepare,
 }: {
@@ -160,6 +162,8 @@ export function EmployeeProfileDetails({
   experienceContent?: ReactNode;
   workflowContent?: ReactNode;
   workflowReadContent?: ReactNode;
+  memoryEntry?: ReactNode;
+  sceneContent?: ReactNode;
   onEdit?: () => void;
   onPrepare?: (text: string) => void;
 }) {
@@ -212,6 +216,18 @@ export function EmployeeProfileDetails({
             }),
           )
       : undefined;
+  if (view === 'personal' && sceneContent !== undefined)
+    return (
+      <div className={css.details}>
+        <EmployeePersonaCard
+          profile={profile}
+          view={view}
+          onEdit={canEditEmployeePersona(profile) ? onEdit : undefined}
+        />
+        {memoryEntry}
+        {sceneContent}
+      </div>
+    );
   return (
     <div className={css.details}>
       {view === 'shared' && (
@@ -219,61 +235,16 @@ export function EmployeeProfileDetails({
           已配发基础人设与公司／部门共享内容。个人名称、人设、偏好、场景和资料由本人查看，不在组织视图中展示。
         </p>
       )}
-      <section
-        className={css.intro}
-        aria-label="基础与人设"
-        data-employee-accent={employeeAccent(
-          profile.name,
-          profile.appearance?.accentColor,
-        )}
-        style={employeeAccentStyle(
-          profile.name,
-          profile.appearance?.accentColor,
-        )}
-      >
-        <div className={css.identity}>
-          <span className={css.avatar} aria-hidden="true">
-            {Array.from(profile.name)[0]}
-          </span>
-          <div className={css.identityText}>
-            <h3>{profile.name}</h3>
-            <p className={css.mission}>{profile.identity.mission}</p>
-          </div>
-          <div className={css.profileActions}>
-            {personal && onEdit && (
-              <button
-                className={css.action}
-                type="button"
-                aria-label="编辑员工"
-                onClick={onEdit}
-              >
-                <IconEditOutlineRegular size={16} />
-                编辑
-              </button>
-            )}
-          </div>
-        </div>
-        <dl className={css.persona}>
-          <div>
-            <dt>工作方式</dt>
-            <dd>{profile.identity.workStyle}</dd>
-          </div>
-          {profile.expressionStyle && (
-            <div>
-              <dt>表达偏好</dt>
-              <dd>
-                {
-                  {
-                    concise: '简洁，结论优先',
-                    structured: '结构清晰，分步说明',
-                    exploratory: '比较方案与取舍',
-                  }[profile.expressionStyle]
-                }
-              </dd>
-            </div>
-          )}
-        </dl>
-      </section>
+      <EmployeePersonaCard
+        profile={profile}
+        view={view}
+        onEdit={
+          view === 'personal' && canEditEmployeePersona(profile)
+            ? onEdit
+            : undefined
+        }
+      />
+      {view === 'personal' && memoryEntry}
       {view === 'personal' && profile.kind === 'custom' && workflowReadContent}
       {personal && workflowContent}
       <section className={css.workArea} aria-label="工作场景与内容">

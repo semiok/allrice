@@ -1,6 +1,9 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { EmployeeDetailsSchema } from '@allrice/contracts';
+import {
+  EmployeeDetailsSchema,
+  EmployeeInstanceProfileSchema,
+} from '@allrice/contracts';
 import { employeeDetailsFixture } from '../../test/employee-details-fixture';
 import {
   ContentSourceBadge,
@@ -8,6 +11,53 @@ import {
 } from './employee-profile-details';
 
 describe('EmployeeProfileDetails', () => {
+  it.each(['general', 'custom'] as const)(
+    'mounts the actual scene slot beside persona and memory without legacy content for %s',
+    (kind) => {
+      const details = employeeDetailsFixture();
+      details.profile.kind = kind;
+      const props = {
+        details,
+        onPreview: () => {},
+        sceneContent: <p>AUTHORIZED_SCENE_SLOT</p>,
+        memoryEntry: <p>OWNER_MEMORY_SLOT</p>,
+        workflowContent: <p>OLD_FILE_READER</p>,
+        workflowReadContent: <p>OLD_READ_AUDIT</p>,
+        experienceContent: <p>OLD_EXPERIENCE</p>,
+      };
+      const html = renderToStaticMarkup(<EmployeeProfileDetails {...props} />);
+      for (const text of [
+        'Rice',
+        '帮助完成研究',
+        '按步骤交付',
+        '简洁，结论优先',
+        'AUTHORIZED_SCENE_SLOT',
+        'OWNER_MEMORY_SLOT',
+      ])
+        expect(html).toContain(text);
+      for (const text of [
+        'OLD_FILE_READER',
+        'OLD_READ_AUDIT',
+        'OLD_EXPERIENCE',
+        '执行要求',
+        '执行流程',
+        '经验积累',
+        'AI新增工作场景',
+        '公司核对标准正文',
+      ])
+        expect(html).not.toContain(text);
+      const shared = renderToStaticMarkup(
+        <EmployeeProfileDetails {...props} view="shared" />,
+      );
+      for (const text of [
+        'AUTHORIZED_SCENE_SLOT',
+        'OWNER_MEMORY_SLOT',
+        '表达偏好',
+        '简洁，结论优先',
+      ])
+        expect(shared).not.toContain(text);
+    },
+  );
   it('shows the current persona and personal style, without drafts, another scene or technical settings', () => {
     const html = renderToStaticMarkup(
       <EmployeeProfileDetails
@@ -18,6 +68,9 @@ describe('EmployeeProfileDetails', () => {
     for (const text of [
       'Rice',
       '帮助完成研究',
+      '使命',
+      '工作方式',
+      '表达偏好',
       '简洁，结论优先',
       '公司核对标准正文',
       '个人输出偏好正文',
@@ -64,6 +117,10 @@ describe('EmployeeProfileDetails', () => {
       const details = employeeDetailsFixture();
       details.profile.kind = kind;
       details.profile.canMaintainPersonal = maintain;
+      details.profile.editableFields =
+        kind === 'custom'
+          ? EmployeeInstanceProfileSchema.keyof().options
+          : ['expressionStyle'];
       const html = renderToStaticMarkup(
         <EmployeeProfileDetails
           details={details}
@@ -78,6 +135,11 @@ describe('EmployeeProfileDetails', () => {
       expect(html.includes('本人读取入口')).toBe(
         view === 'personal' && kind === 'custom',
       );
+      if (view === 'shared') {
+        expect(html).not.toContain('表达偏好');
+        expect(html).not.toContain('简洁，结论优先');
+        expect(html).not.toContain('未设置');
+      }
       if (editable) {
         expect(html).toContain('编辑');
         expect(html).toContain('AI 新增');
@@ -91,6 +153,35 @@ describe('EmployeeProfileDetails', () => {
       }
     },
   );
+  it('edits the authorized Rice persona without opening the legacy personal content and scene actions', () => {
+    const details = employeeDetailsFixture();
+    details.profile.kind = 'general';
+    details.profile.name = '已改名的员工';
+    details.profile.isDefaultRice = true;
+    details.profile.personalFields = [];
+    details.profile.editableFields =
+      EmployeeInstanceProfileSchema.keyof().options;
+    const props = {
+      details,
+      onPreview: () => {},
+      onEdit: () => {},
+      onPrepare: () => {},
+      workflowContent: <p>本人文件入口</p>,
+      workflowReadContent: <p>本人读取入口</p>,
+    };
+    const html = renderToStaticMarkup(<EmployeeProfileDetails {...props} />);
+    expect(html).toContain('>编辑<');
+    for (const text of ['AI 新增', 'AI 调整', '本人文件入口', '本人读取入口'])
+      expect(html).not.toContain(text);
+    const shared = renderToStaticMarkup(
+      <EmployeeProfileDetails {...props} view="shared" />,
+    );
+    expect(shared).not.toContain('>编辑<');
+    delete details.profile.editableFields;
+    expect(
+      renderToStaticMarkup(<EmployeeProfileDetails {...props} />),
+    ).not.toContain('>编辑<');
+  });
   it('keeps inherited and unavailable content free of personal adjustment actions', () => {
     const details = employeeDetailsFixture();
     details.profile.kind = 'custom';

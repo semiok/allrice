@@ -416,7 +416,7 @@ it('keeps general employee list and details on published identity despite legacy
   });
 });
 
-it('E3 applies only a proven basic Rice name preference, leaving professional general identity and all capabilities intact', () => {
+it('U1 applies the proven Rice personal identity and appearance, leaving professional general identity and all capabilities intact', () => {
   const id = '00000000-0000-4000-8000-000000000001';
   const source = {
     kind: 'platform' as const,
@@ -436,8 +436,15 @@ it('E3 applies only a proven basic Rice name preference, leaving professional ge
     revision: 2,
     profile: {
       name: 'My assistant',
-      description: 'ignored',
-      role: 'ignored',
+      description: 'Personal description',
+      role: 'Personal role',
+      mission: 'Personal mission',
+      workStyle: 'Personal method',
+      appearance: {
+        avatarType: 'emoji',
+        avatarValue: '🦊',
+        accentColor: 'green',
+      },
       expressionStyle: 'concise',
     },
     source,
@@ -490,10 +497,20 @@ it('E3 applies only a proven basic Rice name preference, leaving professional ge
   expect(employeeChoice(view, id)?.currentVersion.manifest).toEqual({
     ...view.employees[0]!.currentVersion.manifest,
     name: 'My assistant',
+    description: instance.profile.description,
+    appearance: instance.profile.appearance,
   });
   expect(employeeChoiceProfile(view, id)).toEqual({
     ...base,
     name: 'My assistant',
+    description: instance.profile.description,
+    appearance: instance.profile.appearance,
+    identity: {
+      ...base.identity,
+      role: 'Personal role',
+      mission: 'Personal mission',
+      workStyle: 'Personal method',
+    },
   });
   // A display name and assignment default flag cannot make a specialist Rice.
   view.employees[0]!.employeeKey = 'professional';

@@ -20,6 +20,26 @@ describe('personal import through the native filesystem Skill provider', () => {
     );
     expect(result.definition.checksum).not.toBe(skillBytesChecksum(raw));
   });
+  it('L1: accepts exact 256 KiB native UTF-8 body independently of frontmatter and rejects one byte more', async () => {
+    const body = '字'.repeat(87381) + 'x';
+    expect(Buffer.byteLength(body)).toBe(262144);
+    const raw = `---
+name: maximum-body
+description: Exact bytes
+metadata:
+  comment: ${'m'.repeat(5000)}
+---
+${body}`;
+    const result = await parsePersonalSkill(Buffer.from(raw));
+    expect(result.originalText).toBe(raw);
+    expect(result.definition.content).toBe(body);
+    await expect(parsePersonalSkill(Buffer.from(raw + 'x'))).rejects.toThrow();
+    await expect(
+      parsePersonalSkill(
+        Buffer.from(raw.replace('maximum-body', 'n'.repeat(65))),
+      ),
+    ).rejects.toThrow();
+  });
   it.each([
     'No frontmatter',
     '---\nname: ../../escape\ndescription: test\n---\nbody',
@@ -33,6 +53,8 @@ describe('personal import through the native filesystem Skill provider', () => {
     await expect(
       parsePersonalSkill(Uint8Array.from([0xff, 0xfe])),
     ).rejects.toThrow();
-    await expect(parsePersonalSkill(new Uint8Array(262145))).rejects.toThrow();
+    await expect(
+      parsePersonalSkill(new Uint8Array(8_000_001)),
+    ).rejects.toThrow();
   });
 });

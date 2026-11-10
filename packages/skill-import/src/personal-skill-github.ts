@@ -4,7 +4,6 @@ import {
   parsePersonalSkillGitHubUrl,
   personalSkillLimits,
 } from '@allrice/contracts';
-import { fileArchiveMaximumFiles } from '@allrice/file-archives';
 
 const shaPattern = /^[a-f0-9]{40}$/u;
 const limits = {
@@ -19,7 +18,7 @@ const limits = {
   references: 8,
   requests: 300,
   timeoutMs: 60_000,
-  archiveFiles: fileArchiveMaximumFiles,
+  archiveFiles: personalSkillLimits.packageResources + 1,
 } as const;
 export class PersonalSkillSourceError extends Error {
   constructor(

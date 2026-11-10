@@ -30,7 +30,16 @@ export const PersonalSceneFileSchema = z
   })
   .strict()
   .superRefine((file, ctx) => {
-    if (file.scene.nativeName !== `allrice-scene-${file.scene.id}`)
+    const authorName =
+      'skillPackage' in file.procedure
+        ? file.procedure.skillPackage.frontmatter?.name
+        : undefined;
+    // D0 files made before native-name wiring remain readable. A supplied name
+    // never selects a package: exact scene/source identities are rechecked.
+    if (
+      file.scene.nativeName !== `allrice-scene-${file.scene.id}` &&
+      file.scene.nativeName !== authorName
+    )
       ctx.addIssue({
         code: 'custom',
         path: ['scene', 'nativeName'],

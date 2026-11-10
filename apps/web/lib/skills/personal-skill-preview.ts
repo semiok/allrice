@@ -1,8 +1,7 @@
-import { z } from 'zod';
 import {
-  PersonalSkillGitHubUrlSchema,
+  PersonalSkillPreviewRequestSchema,
+  PersonalSkillPreviewResponseSchema,
   UuidSchema,
-  personalSkillLimits,
   type RequestContext,
 } from '@allrice/contracts';
 import {
@@ -13,41 +12,18 @@ import {
   PersonalSkillError,
   skillBytesChecksum,
 } from '@allrice/database';
-import { createFileArchive, readFileArchive } from '@allrice/file-archives';
 import {
   inspectPersonalSkillPackage,
-  readPublicGitHubSource,
   SkillPreviewError,
   SkillPreviewTokens,
-  skillPreviewTargetSchema,
 } from '@allrice/skill-import';
-
-const inputSchema = z
-  .object({
-    workspaceId: UuidSchema,
-    target: skillPreviewTargetSchema,
-    source: z.discriminatedUnion('kind', [
-      z
-        .object({
-          kind: z.literal('github'),
-          url: PersonalSkillGitHubUrlSchema,
-        })
-        .strict(),
-      z
-        .object({
-          kind: z.literal('zip'),
-          fileName: z.string().min(1).max(255),
-        })
-        .strict(),
-    ]),
-  })
-  .strict();
+import { readSkillPreviewSource } from './preview-source';
 
 /** Same lifetime as existing signed file reads. A preview has no installation
  * or permission state; exact bytes are attested in the returned payload. */
 export const skillPreviewLifetimeSeconds = 300;
 
-export function getSkillPreviewTokens() {
+export function skillPreviewSigningSecret() {
   const secret =
     process.env.ALLRICE_STORAGE_SIGNING_SECRET ??
     (process.env.NODE_ENV === 'production'
@@ -55,7 +31,11 @@ export function getSkillPreviewTokens() {
       : 'allrice-development-signing-secret-change-me');
   if (!secret)
     throw new Error('ALLRICE_STORAGE_SIGNING_SECRET is required in production');
-  return new SkillPreviewTokens(secret);
+  return secret;
+}
+
+export function getSkillPreviewTokens() {
+  return new SkillPreviewTokens(skillPreviewSigningSecret());
 }
 
 export async function previewPersonalSkillSource(
@@ -65,7 +45,7 @@ export async function previewPersonalSkillSource(
   archive?: Uint8Array,
   signal?: AbortSignal,
 ) {
-  const input = inputSchema.parse(raw);
+  const input = PersonalSkillPreviewRequestSchema.parse(raw);
   const instanceId = UuidSchema.parse(instanceIdInput);
   if (!originalContext.sessionId || originalContext.actor.type !== 'user')
     throw new DataAccessError('authorization_denied');
@@ -89,29 +69,11 @@ export async function previewPersonalSkillSource(
   await authorize();
   signal?.throwIfAborted();
 
-  let bytes: Uint8Array;
-  let files;
-  let github;
-  if (input.source.kind === 'github') {
-    if (archive !== undefined) throw new SkillPreviewError('source_invalid');
-    github = await readPublicGitHubSource(input.source.url, {
-      signal,
-      rootOnly: true,
-    });
-    files = github.files;
-    bytes = await createFileArchive(files, { signal });
-  } else {
-    if (!archive || archive.byteLength > personalSkillLimits.archiveBytes)
-      throw new SkillPreviewError('source_invalid');
-    bytes = Buffer.from(archive);
-    // Same bounded ZIP read deadline as the existing personal Skill reader.
-    const timeout = AbortSignal.timeout(15_000);
-    files = await readFileArchive(bytes, {
-      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-    });
-  }
-  if (bytes.byteLength > personalSkillLimits.archiveBytes)
-    throw new SkillPreviewError('source_invalid');
+  const { bytes, files, source } = await readSkillPreviewSource(
+    input.source,
+    archive,
+    signal,
+  );
   const candidates = await inspectPersonalSkillPackage(files, signal, [
     'SKILL.md',
   ]);
@@ -128,21 +90,6 @@ export async function previewPersonalSkillSource(
   const expiresAt = new Date(
     Date.now() + skillPreviewLifetimeSeconds * 1000,
   ).toISOString();
-  const source = github
-    ? {
-        kind: 'github' as const,
-        ...github.provenance,
-        fileName: `${github.provenance.repository}.zip`,
-        originalChecksum: digest,
-        byteLength: bytes.byteLength,
-        candidatePath: 'SKILL.md',
-      }
-    : {
-        kind: 'zip' as const,
-        fileName: input.source.kind === 'zip' ? input.source.fileName : '',
-        originalChecksum: digest,
-        byteLength: bytes.byteLength,
-      };
   const tokens = getSkillPreviewTokens();
   const attestedTarget =
     target.operation === 'update'
@@ -170,7 +117,7 @@ export async function previewPersonalSkillSource(
     },
     bytes,
   );
-  return {
+  return PersonalSkillPreviewResponseSchema.parse({
     instanceId,
     operation: target.operation,
     previewId,
@@ -206,5 +153,5 @@ export async function previewPersonalSkillSource(
     effectiveFrom: 'next_task' as const,
     installed: false as const,
     scriptsExecuted: false as const,
-  };
+  });
 }

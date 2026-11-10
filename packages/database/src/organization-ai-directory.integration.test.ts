@@ -323,9 +323,29 @@ suite(
       expect(text).toContain('公司共享场景');
       expect(text).toContain('科研共享场景');
       expect(text).not.toMatch(/PRIVATE_|CANDIDATE_|财务共享场景/);
+      const platformExpression =
+        s.publication.definition.identity.expressionStyle;
+      const personalExpression = s.custom.profile.expressionStyle;
+      expect(platformExpression).toBe('structured');
+      expect(personalExpression).toBe('concise');
+      expect(s.custom.source).toMatchObject({
+        kind: 'platform',
+        templateId: s.publication.employeeId,
+        templateRevisionId: s.publication.revisionId,
+        templateRevision: 1,
+      });
       expect(result.details.profile.expressionStyle).toBeUndefined();
+      expect(result.details.profile.defaults?.expressionStyle).toBe(
+        platformExpression,
+      );
+      expect(result.details.profile.source).toEqual(s.custom.source);
+      expect(result.details.profile.defaultSource).toEqual(s.custom.source);
+      expect(result.details.profile.overrides).toEqual({});
       expect(result.details.profile.personalFields).toEqual([]);
       expect(result.details.profile.canMaintainPersonal).toBe(false);
+      expect(result.details.profile.editableFields).toEqual([]);
+      expect(result.details.profile.canArchive).toBe(false);
+      expect(result.details.profile.isDefaultRice).toBeUndefined();
       expect(result.details.content.layers).toHaveLength(2);
       expect(
         result.details.content.layers.every(
@@ -340,6 +360,15 @@ suite(
       ).toBe(true);
       const owner = await getEmployeeDetails(s.owner, s.custom.id);
       expect(owner.profile.name).toBe('PRIVATE_NAME_SENTINEL');
+      expect(owner.profile.expressionStyle).toBe(personalExpression);
+      expect(owner.profile.expressionStyle).not.toBe(
+        result.details.profile.expressionStyle,
+      );
+      expect(owner.profile.overrides?.expressionStyle).toBe(personalExpression);
+      expect(owner.profile.personalFields).toContain('expressionStyle');
+      expect(owner.profile.defaults?.expressionStyle).toBe(platformExpression);
+      expect(owner.profile.source).toEqual(s.custom.source);
+      expect(owner.profile.defaultSource).toEqual(s.custom.source);
       expect(JSON.stringify(owner)).toContain('PRIVATE_SCENE_SENTINEL');
       await expect(
         getEmployeeDetails(

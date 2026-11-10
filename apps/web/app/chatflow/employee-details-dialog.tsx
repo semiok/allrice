@@ -6,20 +6,29 @@ import {
   EmployeeInstanceSchema,
   OrganizationAiSharedDetailsSchema,
   type EmployeeDetails,
+  type EmployeeDetailsProfile,
   type EmployeeInstance,
   type ReferenceSelection,
   type ExperienceSummary,
 } from '@allrice/contracts';
 import { DshDialog } from './dsh-upstream/Dialog';
+import { EmployeeMemoryEntry } from './employee-memory-entry';
+import { EmployeeSceneList } from './employee-scene-dialog';
+import type {
+  EmployeeSceneCatalogController,
+  SceneCatalogEntry,
+} from './use-employee-scene-catalog';
 import {
   EmployeeProfileDetails,
   EmployeeProfileSkeleton,
 } from './employee-profile-details';
 import {
   EmployeeProfileForm,
+  canEditEmployeePersona,
   employeeProfileFormFromRaw,
   mergeEmployeeProfileForm,
   type EmployeeProfileFormValues,
+  type EmployeeProfileEditedFields,
 } from './employee-profile-form';
 import { readJson } from './chatflow-utils';
 import formCss from './employee-profile-form.module.css';
@@ -40,6 +49,7 @@ import {
   type ArtifactPreview,
 } from '../../lib/chatflow/workbench-model';
 import css from './employee-profile-details.module.css';
+import archiveCss from './employee-archive.module.css';
 
 interface EmployeeDetailsDialogProps {
   open: boolean;
@@ -51,7 +61,13 @@ interface EmployeeDetailsDialogProps {
   onClose: () => void;
   onPrepare?: (text: string, instanceId: string) => void;
   onProfileUpdated?: (instance: EmployeeInstance) => void;
+  onOpenMemory?: (instanceId: string) => void;
+  onArchive?: (profile: EmployeeDetailsProfile) => void;
   organizationView?: { organizationId: string; userId: string };
+  sceneCatalog?: EmployeeSceneCatalogController;
+  reuseSceneSnapshot?: boolean;
+  onOpenScene?: (entry: SceneCatalogEntry) => void;
+  onCreateScene?: () => void;
 }
 
 export function EmployeeDetailsDialog(props: EmployeeDetailsDialogProps) {
@@ -63,7 +79,7 @@ export function EmployeeDetailsDialog(props: EmployeeDetailsDialogProps) {
   // even for the frame before an effect or an aborted request settles.
   return (
     <EmployeeDetailsReader
-      key={`${props.scopeId}/${props.instanceId ?? 'missing'}`}
+      key={`${props.scopeId}/${props.workspaceId}/${props.instanceId ?? 'missing'}`}
       {...props}
       fileWrites={fileWrites.current}
     />
@@ -81,6 +97,7 @@ function EmployeeDetailsReader(
     data?: EmployeeDetails;
     experienceSummary?: ExperienceSummary;
     historicalCustom?: { name: string };
+    sceneReadDone?: boolean;
     error?: string;
   }>();
   const [reference, setReference] = useState<ReferenceSelection | null>(null);
@@ -94,8 +111,29 @@ function EmployeeDetailsReader(
   const editRead = useRef<AbortController | null>(null);
   const editWrite = useRef<AbortController | null>(null);
   const writeRequest = useRef<{ payload: string; id: string } | null>(null);
-  const data = result?.attempt === attempt ? result.data : undefined;
-  const error = result?.attempt === attempt ? result.error : undefined;
+  const sceneCatalog =
+    props.organizationView || !props.instanceId
+      ? undefined
+      : props.sceneCatalog;
+  const latestSceneCatalog = useRef(sceneCatalog);
+  latestSceneCatalog.current = sceneCatalog;
+  const sceneReady =
+    props.reuseSceneSnapshot ||
+    (result?.attempt === attempt && result.sceneReadDone);
+  const data = sceneCatalog
+    ? sceneReady
+      ? sceneCatalog.details
+      : undefined
+    : result?.attempt === attempt
+      ? result.data
+      : undefined;
+  const error = sceneCatalog
+    ? sceneReady && !data && sceneCatalog.error
+      ? '无法读取这位 AI 员工的当前详情，请重新打开或联系管理员核对配发。'
+      : undefined
+    : result?.attempt === attempt
+      ? result.error
+      : undefined;
   const historicalCustom =
     result?.attempt === attempt ? result.historicalCustom : undefined;
   useEffect(
@@ -107,6 +145,15 @@ function EmployeeDetailsReader(
   );
   useEffect(() => {
     const controller = new AbortController();
+    if (latestSceneCatalog.current) {
+      if (props.reuseSceneSnapshot) latestSceneCatalog.current.ensureLoaded();
+      else
+        void latestSceneCatalog.current.load(true).then(() => {
+          if (!controller.signal.aborted)
+            setResult({ attempt, sceneReadDone: true });
+        });
+      return () => controller.abort();
+    }
     if (!props.instanceId) {
       setResult({ attempt, error: '这位 AI 员工暂不可用，请关闭后重新选择。' });
       return () => controller.abort();
@@ -179,14 +226,58 @@ function EmployeeDetailsReader(
     props.workspaceId,
     props.headers,
     props.organizationView,
+    sceneCatalog?.key,
+    props.reuseSceneSnapshot,
     attempt,
+  ]);
+  // Preserve the existing owner/history reader when current content is gone.
+  // This is not a fallback catalog and never restores maintenance authority.
+  useEffect(() => {
+    if (!sceneCatalog?.error || data || !props.instanceId || result?.error)
+      return;
+    const controller = new AbortController();
+    void workbenchJson(
+      `/api/v1/employee-instances/${encodeURIComponent(props.instanceId)}?workspaceId=${encodeURIComponent(props.workspaceId)}`,
+      props.headers,
+      { signal: controller.signal, cache: 'no-store' },
+    )
+      .then((value) => {
+        const instance = EmployeeInstanceSchema.parse(
+          value && typeof value === 'object' && 'instance' in value
+            ? value.instance
+            : undefined,
+        );
+        if (
+          instance.id !== props.instanceId ||
+          instance.workspaceId !== props.workspaceId
+        )
+          throw Error('History instance target changed');
+        if (!controller.signal.aborted && instance.kind === 'custom')
+          setResult((previous) => ({
+            ...previous,
+            attempt,
+            historicalCustom: { name: instance.profile.name ?? 'AI 员工' },
+          }));
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [
+    sceneCatalog?.error,
+    sceneCatalog?.key,
+    data,
+    props.instanceId,
+    props.workspaceId,
+    props.headers,
+    attempt,
+    result?.error,
   ]);
   const refresh = () => {
     editRead.current?.abort();
     setEditor(null);
     setPrepareError('');
     setReference(null);
-    setAttempt((value) => value + 1);
+    if (latestSceneCatalog.current) void latestSceneCatalog.current.load(true);
+    else setAttempt((value) => value + 1);
   };
   const instanceUrl = props.instanceId
     ? `/api/v1/employee-instances/${encodeURIComponent(props.instanceId)}`
@@ -201,8 +292,7 @@ function EmployeeDetailsReader(
       !instanceUrl ||
       !data ||
       props.organizationView ||
-      data.profile.kind !== 'custom' ||
-      !data.profile.canMaintainPersonal
+      !canEditEmployeePersona(data.profile)
     )
       return;
     editRead.current?.abort();
@@ -226,7 +316,7 @@ function EmployeeDetailsReader(
       if (
         instance.id !== props.instanceId ||
         instance.workspaceId !== props.workspaceId ||
-        instance.kind !== 'custom' ||
+        instance.kind !== data.profile.kind ||
         instance.archivedAt ||
         instance.revision !== data.profile.revision ||
         JSON.stringify(instance.source) !== JSON.stringify(data.profile.source)
@@ -241,18 +331,52 @@ function EmployeeDetailsReader(
           loading: false,
           error: message,
         });
-        if ([401, 403, 404].includes(responseStatus))
-          setResult({ attempt, error: message });
+        if ([401, 403, 404].includes(responseStatus)) {
+          latestSceneCatalog.current?.denyAccess(responseStatus);
+          setResult({
+            attempt,
+            error: message,
+            ...(sceneCatalog ? { sceneReadDone: true } : {}),
+          });
+        }
       }
     }
   }
-  async function saveProfile(values: EmployeeProfileFormValues) {
-    if (!instanceUrl || !editor?.instance || editWrite.current) return;
+  async function saveProfile(
+    values: EmployeeProfileFormValues,
+    editedFields: EmployeeProfileEditedFields,
+  ) {
+    if (
+      !instanceUrl ||
+      !editor?.instance ||
+      editWrite.current ||
+      !data ||
+      props.organizationView ||
+      !canEditEmployeePersona(data.profile)
+    )
+      return;
+    if (!editedFields.size) {
+      cancelEdit();
+      return;
+    }
     const current = editor.instance;
+    const profile = mergeEmployeeProfileForm(
+      current.profile,
+      values,
+      data.profile,
+      editedFields,
+    );
+    if (
+      Object.keys(profile).some(
+        (field) =>
+          !data.profile.editableFields?.some((allowed) => allowed === field),
+      )
+    )
+      throw Error('员工设置已变化，请重新读取详情后再编辑。');
     const body = {
       workspaceId: props.workspaceId,
       expectedRevision: current.revision,
-      profile: mergeEmployeeProfileForm(current.profile, values),
+      profile,
     };
     const payload = JSON.stringify(body);
     if (writeRequest.current?.payload !== payload)
@@ -278,7 +402,8 @@ function EmployeeDetailsReader(
         instance.organizationId !== current.organizationId ||
         instance.ownerId !== current.ownerId ||
         instance.assignmentId !== current.assignmentId ||
-        instance.kind !== 'custom' ||
+        instance.kind !== current.kind ||
+        JSON.stringify(instance.source) !== JSON.stringify(current.source) ||
         instance.archivedAt ||
         instance.revision !== current.revision + 1
       )
@@ -294,7 +419,12 @@ function EmployeeDetailsReader(
         if ([401, 403, 404].includes(responseStatus)) {
           // A denied/revoked read must not keep the old private profile on screen.
           setEditor({ loading: false, error: message });
-          setResult({ attempt, error: message });
+          latestSceneCatalog.current?.denyAccess(responseStatus);
+          setResult({
+            attempt,
+            error: message,
+            ...(sceneCatalog ? { sceneReadDone: true } : {}),
+          });
         } else setEditor({ loading: false, instance: current, error: message });
       }
     } finally {
@@ -328,21 +458,29 @@ function EmployeeDetailsReader(
     <DshDialog
       ariaLabel={
         editor
-          ? '编辑员工'
+          ? '编辑人设'
           : data
             ? `${data.profile.name}员工详情`
             : historicalCustom
               ? `${historicalCustom.name}员工详情`
               : 'AI 员工详情'
       }
-      bodyClassName={editor ? formCss.body : css.body}
+      bodyClassName={
+        editor
+          ? formCss.editBody
+          : `${css.body} ${sceneCatalog ? css.unifiedBody : ''}`
+      }
       className={
         editor
-          ? formCss.dialog
-          : `${css.dialog} ${!reference ? css.profileDialog : ''}`
+          ? formCss.editDialog
+          : `${css.dialog} ${!reference ? css.profileDialog : ''} ${sceneCatalog ? css.unifiedDialog : ''}`
       }
       onClose={editor ? cancelEdit : props.onClose}
-      title={editor ? '编辑员工' : 'AI 员工详情'}
+      onBack={editor ? cancelEdit : undefined}
+      backLabel="返回员工详情"
+      closeDisabled={!!editor && saving}
+      showCloseButton={!editor}
+      title={editor ? '编辑人设' : 'AI 员工详情'}
       initialFocusSelector={editor?.instance ? 'input' : undefined}
     >
       {editor ? (
@@ -413,6 +551,29 @@ function EmployeeDetailsReader(
               props.organizationView || !props.onPrepare ? undefined : prepare
             }
             view={props.organizationView ? 'shared' : 'personal'}
+            sceneContent={
+              sceneCatalog && props.onOpenScene && props.onCreateScene ? (
+                <EmployeeSceneList
+                  controller={sceneCatalog}
+                  employeeName={data.profile.name}
+                  embedded
+                  onChoose={props.onOpenScene}
+                  onCreate={props.onCreateScene}
+                />
+              ) : undefined
+            }
+            memoryEntry={
+              !props.organizationView &&
+              props.onOpenMemory && (
+                <EmployeeMemoryEntry
+                  scopeId={props.scopeId}
+                  workspaceId={props.workspaceId}
+                  instanceId={data.profile.instanceId}
+                  headers={props.headers}
+                  onOpen={props.onOpenMemory}
+                />
+              )
+            }
             workflowReadContent={workflowReadContent}
             workflowContent={
               !props.organizationView &&
@@ -446,6 +607,19 @@ function EmployeeDetailsReader(
                   )
             }
           />
+          {!props.organizationView &&
+            data.profile.canArchive === true &&
+            props.onArchive && (
+              <div className={archiveCss.archiveZone}>
+                <button
+                  type="button"
+                  className={archiveCss.archiveAction}
+                  onClick={() => props.onArchive?.(data.profile)}
+                >
+                  归档这个员工
+                </button>
+              </div>
+            )}
         </>
       )}
     </DshDialog>

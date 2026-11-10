@@ -1,68 +1,14 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { z } from 'zod';
+import type { z } from 'zod';
 import {
-  PersonalSkillGitHubSourceSchema,
-  ChecksumSchema,
+  PersonalSkillPreviewAttestationSchema as previewSchema,
   personalSkillLimits,
-  TimestampSchema,
-  UuidSchema,
+  type PersonalSkillPreviewAttestation as SkillPreview,
+  PersonalScenePreviewAttestationSchema,
+  type PersonalScenePreviewAttestation,
 } from '@allrice/contracts';
-
-export const skillPreviewTargetSchema = z.discriminatedUnion('operation', [
-  z.object({ operation: z.literal('install') }).strict(),
-  z
-    .object({
-      operation: z.literal('update'),
-      installationId: UuidSchema,
-      expectedRevision: z.number().int().positive(),
-      expectedVersionId: UuidSchema,
-    })
-    .strict(),
-]);
-
-const previewSchema = z
-  .object({
-    schemaVersion: z.literal(1),
-    organizationId: UuidSchema,
-    workspaceId: UuidSchema,
-    ownerId: UuidSchema,
-    instanceId: UuidSchema,
-    source: z.union([
-      PersonalSkillGitHubSourceSchema,
-      z
-        .object({
-          kind: z.literal('zip'),
-          fileName: z.string().min(1).max(255),
-          originalChecksum: ChecksumSchema,
-          byteLength: z
-            .number()
-            .int()
-            .positive()
-            .max(personalSkillLimits.archiveBytes),
-        })
-        .strict(),
-    ]),
-    sourcePath: z.literal('SKILL.md'),
-    digest: ChecksumSchema,
-    target: z.discriminatedUnion('operation', [
-      skillPreviewTargetSchema.options[0].extend({
-        expectedInstallation: z
-          .object({
-            id: UuidSchema,
-            revision: z.number().int().positive(),
-            versionId: UuidSchema,
-          })
-          .strict()
-          .nullable(),
-      }),
-      skillPreviewTargetSchema.options[1].extend({
-        bindingsDigest: ChecksumSchema,
-      }),
-    ]),
-    expiresAt: TimestampSchema,
-  })
-  .strict();
-export type SkillPreview = z.infer<typeof previewSchema>;
+export { PersonalSkillPreviewTargetSchema as skillPreviewTargetSchema } from '@allrice/contracts';
+export type { PersonalSkillPreviewAttestation as SkillPreview } from '@allrice/contracts';
 
 export class SkillPreviewError extends Error {
   constructor(
@@ -80,23 +26,28 @@ export class SkillPreviewError extends Error {
 /** A source attestation, never a write grant. Confirmation must recheck current
  * owner/instance authority, the exact attested bytes and all mutation guards.
  * Domain separation prevents ordinary signed file URLs from becoming previews. */
-export class SkillPreviewTokens {
-  constructor(private readonly secret: string) {
+type PreviewSource = Omit<SkillPreview, 'target'>;
+class SourcePreviewTokens<T extends PreviewSource> {
+  constructor(
+    private readonly secret: string,
+    private readonly schema: z.ZodType<T>,
+    private readonly domain: string,
+  ) {
     if (Buffer.byteLength(secret) < 32)
       throw new Error('storage signing secret must contain at least 32 bytes');
   }
 
   private signature(payload: string, archive: string) {
     return createHmac('sha256', this.secret)
-      .update('allrice:personal-skill-preview:v1\n')
+      .update(this.domain)
       .update(payload)
       .update('.')
       .update(archive)
       .digest();
   }
 
-  issue(input: SkillPreview, bytes: Uint8Array) {
-    const value = previewSchema.parse(input);
+  issue(input: T, bytes: Uint8Array) {
+    const value = this.schema.parse(input);
     if (
       bytes.byteLength > personalSkillLimits.archiveBytes ||
       value.source.byteLength !== bytes.byteLength ||
@@ -149,7 +100,7 @@ export class SkillPreviewTokens {
     } catch {
       return invalid();
     }
-    const parsed = previewSchema.safeParse(decoded);
+    const parsed = this.schema.safeParse(decoded);
     if (!parsed.success) return invalid();
     const value = parsed.data;
     if (
@@ -172,6 +123,21 @@ export class SkillPreviewTokens {
     )
       return invalid();
     return { preview: value, bytes };
+  }
+}
+
+export class SkillPreviewTokens extends SourcePreviewTokens<SkillPreview> {
+  constructor(secret: string) {
+    super(secret, previewSchema, 'allrice:personal-skill-preview:v1\n');
+  }
+}
+export class ScenePreviewTokens extends SourcePreviewTokens<PersonalScenePreviewAttestation> {
+  constructor(secret: string) {
+    super(
+      secret,
+      PersonalScenePreviewAttestationSchema,
+      'allrice:personal-scene-preview:v1\n',
+    );
   }
 }
 
