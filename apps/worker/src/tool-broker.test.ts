@@ -1854,16 +1854,81 @@ describe('Codex hosted search Tool Broker integration', () => {
       codexSearch,
     });
 
-    expect(codexSearch).toHaveBeenCalledWith('AllRice', 3);
+    expect(codexSearch).toHaveBeenCalledWith('AllRice', 3, undefined);
     expect(JSON.parse(result.modelContent)).toMatchObject({
-      provider: 'codex-hosted-search',
-      retrievedAt: expect.any(String),
-      output: 'AllRice search summary',
+      content: 'AllRice search summary',
+      truncated: false,
       sources: [{ url: 'https://example.com/allrice' }],
     });
     expect(recordToolBrokerAudit).toHaveBeenCalledWith(
       expect.objectContaining({ toolName: 'web.search' }),
     );
+  });
+
+  it('joins canceled web work and its single attributed audit before returning', async () => {
+    const context = executionContext(),
+      controller = new AbortController(),
+      callId = randomUUID();
+    const failure = new Error('synthetic canceled web operation');
+    let release!: () => void, finishAudit!: () => void;
+    const resource = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const audit = new Promise<void>((resolve) => {
+      finishAudit = resolve;
+    });
+    const codexSearch = vi.fn(
+      async (
+        _query: string,
+        _limit: number | undefined,
+        signal?: AbortSignal,
+      ) => {
+        await resource;
+        signal!.throwIfAborted();
+        return {
+          provider: 'codex-hosted-search' as const,
+          query: 'test',
+          output: '',
+          results: [],
+        };
+      },
+    );
+    recordToolBrokerAudit.mockImplementationOnce(async () => {
+      await audit;
+    });
+    let settled = false;
+    const pending = executeRiceTool({
+      context,
+      capabilities: ['network:outbound'],
+      storageRoot: '.local/storage',
+      signal: controller.signal,
+      call: { id: callId, name: 'web.search', arguments: { query: 'test' } },
+      codexSearch,
+    })
+      .catch((error: unknown) => error)
+      .finally(() => {
+        settled = true;
+      });
+    await vi.waitFor(() => expect(codexSearch).toHaveBeenCalledOnce());
+    controller.abort(failure);
+    expect(settled).toBe(false);
+    expect(recordToolBrokerAudit).not.toHaveBeenCalled();
+    release();
+    await vi.waitFor(() =>
+      expect(recordToolBrokerAudit).toHaveBeenCalledOnce(),
+    );
+    expect(settled).toBe(false);
+    expect(recordToolBrokerAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        context,
+        toolName: 'web.search',
+        decision: 'denied',
+        metadata: expect.objectContaining({ nativeCallId: callId }),
+      }),
+    );
+    finishAudit();
+    expect(await pending).toBe(failure);
+    expect(recordToolBrokerAudit).toHaveBeenCalledOnce();
   });
 
   it.each(['cancel', 'timeout'] as const)(

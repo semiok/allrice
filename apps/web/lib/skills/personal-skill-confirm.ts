@@ -4,6 +4,7 @@ import {
   PersonalSkillConfirmResponseSchema,
   UuidSchema,
   localFileMediaType,
+  personalSkillLimits,
   type RequestContext,
 } from '@allrice/contracts';
 import {
@@ -43,7 +44,10 @@ export async function confirmPersonalSkillSource(
   const deadline = AbortSignal.timeout(15_000);
   const bounded = signal ? AbortSignal.any([signal, deadline]) : deadline;
   const [candidate] = await inspectPersonalSkillPackage(
-    await readFileArchive(bytes, { signal: bounded }),
+    await readFileArchive(bytes, {
+      signal: bounded,
+      maximumFiles: personalSkillLimits.packageResources + 1,
+    }),
     bounded,
     ['SKILL.md'],
   );

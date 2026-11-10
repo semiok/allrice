@@ -1,3 +1,8 @@
+import { riceToolDefinitions } from './tool-broker/definitions.js';
+import {
+  executeRiceTool,
+  riceReadOnlyToolDefinitionsForPreview,
+} from './tool-broker.js';
 import { executeEmployeeMethodFileStep } from './employee-method-file-tests.js';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -554,3 +559,59 @@ it('binds the personal Skill overlay to the actual test lease and fails closed w
   );
   await run();
 });
+
+it.each(['call', 'root'] as const)(
+  'preview propagates %s cancellation to the actual Broker callback',
+  async (cause) => {
+    const test = claimed();
+    test.methodCandidate = null;
+    test.runtimeProfile.toolNames = ['web.fetch'];
+    test.runtimeProfile.reasoningEffort = 'high';
+    test.runtimeProfile.credentialReference = 'synthetic-preview';
+    test.runtimeProfile.baseUrl = 'http://127.0.0.1:1/v1';
+    const root = new AbortController(),
+      call = new AbortController();
+    const reason = new Error('synthetic cancellation');
+    vi.mocked(claimNextPlatformEmployeeTestRun).mockResolvedValue(test);
+    vi.mocked(riceReadOnlyToolDefinitionsForPreview).mockReturnValue(
+      riceToolDefinitions.filter((tool) => tool.name === 'web.fetch'),
+    );
+    let observed:
+      | { runId: string; before: boolean | undefined; reason: unknown }
+      | undefined;
+    vi.mocked(executeRiceTool).mockImplementation(async (input) => {
+      const before = input.signal?.aborted;
+      (cause === 'call' ? call : root).abort(reason);
+      observed = {
+        runId: input.context.runId,
+        before,
+        reason: input.signal?.reason,
+      };
+      return { modelContent: '{}', summary: 'fixture' };
+    });
+    vi.spyOn(DshHarnessAdapter.prototype, 'execute').mockImplementation(
+      async (input) => {
+        await input.onToolCall!(
+          {
+            id: 'native-fetch',
+            name: 'web.fetch',
+            arguments: { url: 'https://example.com' },
+          },
+          { signal: call.signal },
+        );
+        return receipt;
+      },
+    );
+    await executeNextPlatformEmployeeTest({
+      workerId: randomUUID(),
+      executionRoot: '/tmp/allrice-preview-unit',
+      signal: root.signal,
+    });
+    expect(executeRiceTool).toHaveBeenCalledOnce();
+    expect(observed).toEqual({
+      runId: test.previewExecution.runId,
+      before: false,
+      reason,
+    });
+  },
+);

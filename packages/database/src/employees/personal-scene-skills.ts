@@ -150,6 +150,7 @@ async function resolvePackage(
   const frontmatter = text.skillPackage.frontmatter;
   const skill = PersonalSceneSkillSchema.parse({
     ...summary(scene, frontmatter),
+    ...(text.skillPackage.source ? { source: text.skillPackage.source } : {}),
     ...(frontmatter
       ? {
           frontmatter,
@@ -633,7 +634,10 @@ export async function savePersonalSceneSkillInTransaction(
         );
         if (
           pkg.resolved.reduce(
-            (bytes, source) => bytes + Buffer.byteLength(source.dto.body ?? ''),
+            (bytes, source) =>
+              bytes +
+              Buffer.byteLength(source.dto.body ?? '') -
+              (source.personalPackageBytes ?? 0),
             0,
           ) > employeeContentLimits.textBytes
         )

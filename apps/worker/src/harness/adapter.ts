@@ -211,7 +211,10 @@ export interface HarnessExecutionInput {
    */
   authorizedToolNames?: readonly string[];
   tools: readonly HarnessToolDefinition[];
-  onToolCall?: (call: HarnessToolCall) => Promise<HarnessToolResult>;
+  onToolCall?: (
+    call: HarnessToolCall,
+    options?: { signal: AbortSignal },
+  ) => Promise<HarnessToolResult>;
   onEvent: (event: HarnessEvent) => Promise<void>;
   onThreadBound?: (input: {
     threadId: string;

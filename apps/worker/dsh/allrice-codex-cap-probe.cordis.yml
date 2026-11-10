@@ -5,3 +5,7 @@
   config:
     path: !!js process.env.DSH_CREDENTIALS_PATH
     watch: false
+
+# Abstract provider seam only; no unrestricted HTTP provider or tools.
+- id: web
+  name: '@deepseek-ai/dsh-web'

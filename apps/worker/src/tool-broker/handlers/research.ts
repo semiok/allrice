@@ -1,3 +1,4 @@
+import type { WebSearchResult, WebSearchSource } from '@deepseek-ai/dsh-web';
 import { searchCodexHostedWeb } from '../../codex-search-broker.js';
 import { HandlerError } from '../../errors.js';
 import { getMarketHistory, getMarketQuote } from '../../market-data.js';
@@ -36,6 +37,7 @@ export async function executeResearchTool(input: {
   name: ResearchToolName;
   arguments: Record<string, unknown>;
   overrides?: ResearchToolOverrides;
+  signal?: AbortSignal;
 }): Promise<RiceToolResult> {
   const args = input.arguments;
   if (input.name === 'web.search') {
@@ -50,15 +52,15 @@ export async function executeResearchTool(input: {
     const search = await (input.overrides?.codexSearch ?? searchCodexHostedWeb)(
       query,
       limitValue(args.maxResults, 5, 10),
+      input.signal,
     );
     return {
+      // Internal transport of the public provider contract. DSH alone renders it.
       modelContent: JSON.stringify({
-        provider: search.provider,
-        query: search.query,
-        retrievedAt: new Date().toISOString(),
-        output: search.output,
-        sources: search.results,
-      }),
+        content: search.output,
+        sources: search.results.map(searchSource),
+        truncated: search.truncated ?? false,
+      } satisfies WebSearchResult),
       summary: `已通过 Codex 检索“${query}”`,
       itemCount: search.results.length,
     };
@@ -66,6 +68,7 @@ export async function executeResearchTool(input: {
   if (input.name === 'web.fetch') {
     const page = await (input.overrides?.webFetch ?? fetchPublicWebPage)(
       stringValue(args.url, 'url'),
+      input.signal,
     );
     return {
       modelContent: JSON.stringify(page),
@@ -119,4 +122,32 @@ export async function executeResearchTool(input: {
     summary: `已查询 ${history.symbol} · ${history.range} 历史行情`,
     itemCount: history.rows.length,
   };
+}
+
+function searchSource(value: unknown): WebSearchSource {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new HandlerError(
+      'WEB_SEARCH_RESULT_INVALID',
+      '搜索来源格式无效',
+      false,
+    );
+  const source = value as Record<string, unknown>;
+  if (typeof source.url !== 'string' || !source.url)
+    throw new HandlerError(
+      'WEB_SEARCH_RESULT_INVALID',
+      '搜索来源缺少 URL',
+      false,
+    );
+  const fields: { title?: string; snippet?: string; publishedAt?: string } = {};
+  for (const key of ['title', 'snippet', 'publishedAt'] as const) {
+    if (source[key] === undefined || source[key] === null) continue;
+    if (typeof source[key] !== 'string')
+      throw new HandlerError(
+        'WEB_SEARCH_RESULT_INVALID',
+        '搜索来源字段格式无效',
+        false,
+      );
+    fields[key] = source[key];
+  }
+  return { url: source.url, ...fields };
 }

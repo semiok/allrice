@@ -1,4 +1,5 @@
 import { request as httpRequest } from 'node:http';
+import type { WebFetchResult } from '@deepseek-ai/dsh-web';
 import { request as httpsRequest } from 'node:https';
 
 import { HandlerError } from './errors.js';
@@ -39,7 +40,7 @@ function decodeEntities(text: string) {
     );
 }
 
-export function extractReadableWebText(content: string, mediaType: string) {
+function readableWebText(content: string, mediaType: string) {
   let text = content;
   if (mediaType === 'text/html') {
     text = text
@@ -57,26 +58,40 @@ export function extractReadableWebText(content: string, mediaType: string) {
     )
     .replace(/[ \t]+/g, ' ')
     .replace(/\n\s*\n\s*\n+/g, '\n\n')
-    .trim()
-    .slice(0, maximumExtractedCharacters);
+    .trim();
 }
 
-async function readOnce(url: URL) {
+export function extractReadableWebText(content: string, mediaType: string) {
+  return readableWebText(content, mediaType).slice(
+    0,
+    maximumExtractedCharacters,
+  );
+}
+
+async function readOnce(url: URL, signal?: AbortSignal) {
+  signal?.throwIfAborted();
+  // node:dns lookup cannot be canceled; join it, then check again before
+  // opening a socket. The fallback's bounded DNS requests also settle here.
   const [address] = await resolvePublicWebHostname(url.hostname);
+  signal?.throwIfAborted();
   const resolved = {
     address: address!.address,
     family: address!.family as 4 | 6,
   };
   const transport = url.protocol === 'https:' ? httpsRequest : httpRequest;
-  return new Promise<{
+  type Response = {
     status: number;
     headers: Record<string, string | string[] | undefined>;
     body: string;
-  }>((resolve, reject) => {
+  };
+  return new Promise<Response>((resolve, reject) => {
+    let result: Response | undefined;
+    let failure: Error | undefined;
     const request = transport(
       url,
       {
         method: 'GET',
+        signal,
         headers: {
           accept:
             'text/html,text/plain,text/markdown,application/json,application/xml;q=0.9',
@@ -89,6 +104,10 @@ async function readOnce(url: URL) {
       (response) => {
         const chunks: Buffer[] = [];
         let size = 0;
+        response.on('error', (error) => {
+          failure ??= error;
+          request.destroy(error);
+        });
         response.on('data', (chunk: Buffer) => {
           size += chunk.byteLength;
           if (size > maximumResponseBytes) {
@@ -103,27 +122,47 @@ async function readOnce(url: URL) {
           }
           chunks.push(chunk);
         });
-        response.on('end', () =>
-          resolve({
+        response.on('end', () => {
+          result = {
             status: response.statusCode ?? 0,
             headers: response.headers,
             body: Buffer.concat(chunks).toString('utf8'),
-          }),
-        );
+          };
+        });
       },
     );
     request.setTimeout(requestTimeoutMs, () =>
       request.destroy(new HandlerError('WEB_TIMEOUT', '网页读取超时', true)),
     );
-    request.on('error', reject);
+    request.on('error', (error) => {
+      failure ??= error;
+    });
+    // An error notification alone does not prove HTTP/socket cleanup. Join
+    // close, including cancellation and mid-body failures, before replying.
+    request.on('close', () => {
+      if (signal?.aborted) reject(signal.reason);
+      else if (failure) reject(failure);
+      else if (result) resolve(result);
+      else
+        reject(
+          new HandlerError(
+            'WEB_RESPONSE_INCOMPLETE',
+            '网页响应未完整结束',
+            true,
+          ),
+        );
+    });
     request.end();
   });
 }
 
-export async function fetchPublicWebPage(value: string) {
+export async function fetchPublicWebPage(
+  value: string,
+  signal?: AbortSignal,
+): Promise<WebFetchResult> {
   let url = validatePublicWebUrl(value);
   for (let redirect = 0; redirect <= maximumRedirects; redirect += 1) {
-    const response = await readOnce(url);
+    const response = await readOnce(url, signal);
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       const location = response.headers.location;
       if (
@@ -140,13 +179,6 @@ export async function fetchPublicWebPage(value: string) {
       url = validatePublicWebUrl(new URL(location, url).toString());
       continue;
     }
-    if (response.status < 200 || response.status >= 300) {
-      throw new HandlerError(
-        'WEB_HTTP_ERROR',
-        `网页返回 HTTP ${response.status}`,
-        true,
-      );
-    }
     const mediaType = String(response.headers['content-type'] ?? 'text/plain')
       .split(';')[0]!
       .trim()
@@ -158,13 +190,15 @@ export async function fetchPublicWebPage(value: string) {
         false,
       );
     }
-    const content = extractReadableWebText(response.body, mediaType);
+    const content = readableWebText(response.body, mediaType);
     return {
       url: url.toString(),
-      mediaType,
-      content: `<external-content source="web.fetch" trust="untrusted">\n${content}\n</external-content>`,
-      truncated: content.length >= maximumExtractedCharacters,
-      externalContent: { source: 'web.fetch', untrusted: true, wrapped: true },
+      statusCode: response.status,
+      body: {
+        kind: 'text',
+        content: content.slice(0, maximumExtractedCharacters),
+      },
+      truncated: content.length > maximumExtractedCharacters,
     };
   }
   throw new HandlerError('WEB_REDIRECT_INVALID', '网页重定向过多', false);

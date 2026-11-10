@@ -441,6 +441,77 @@ describe('approved artifact tool catalog consumption', () => {
 });
 
 describe('native artifact v2: closed runtime boundary', () => {
+  it('keeps compile-only declarations outside the executable native root', async () => {
+    const root = await fixture();
+    const approved = await seal(root);
+    const declaration = 'export function createWebCallScope(): unknown;';
+    await put(
+      root,
+      'apps/worker/src/harness/dsh-web-cancellation-types.d.ts',
+      declaration,
+    );
+    expect((await v2(root)).artifactId).toBe(approved.artifactId);
+    await put(
+      root,
+      'apps/worker/dsh/allrice-web-cancellation.d.mts',
+      declaration,
+    );
+    await expect(v2(root)).rejects.toThrow('UNREVIEWED_NATIVE_FILE');
+  });
+
+  it('measures a native web import and its transitive package bytes before approval', async () => {
+    const root = await fixture();
+    const packages = [
+      [
+        '@deepseek-ai/dsh-tool-web',
+        version,
+        { '@deepseek-ai/dsh-web': version, turndown: '7.2.5' },
+      ],
+      ['@deepseek-ai/dsh-web', version, {}],
+      ['turndown', '7.2.5', { '@mixmark-io/domino': '2.2.0' }],
+      ['@mixmark-io/domino', '2.2.0', {}],
+    ] as const;
+    for (const [name, packageVersion, dependencies] of packages) {
+      await put(root, `node_modules/${name}/package.json`, {
+        name,
+        version: packageVersion,
+        type: 'module',
+        exports: './index.js',
+        dependencies,
+      });
+      await put(
+        root,
+        `node_modules/${name}/index.js`,
+        'throw Error("MUST_NOT_EXECUTE");',
+      );
+    }
+    await put(
+      root,
+      'apps/worker/dsh/allrice-native-web.mjs',
+      "import '@deepseek-ai/dsh-tool-web';",
+    );
+    const approved = await seal(root);
+    for (const [name, packageVersion] of packages)
+      expect(approved.content.packages).toContainEqual(
+        expect.objectContaining({ name, version: packageVersion }),
+      );
+    expect(approved.content.imports).toContainEqual(
+      expect.objectContaining({
+        importer: 'apps/worker/dsh/allrice-native-web.mjs',
+        specifier: '@deepseek-ai/dsh-tool-web',
+        target: 'node_modules/@deepseek-ai/dsh-tool-web/index.js',
+      }),
+    );
+    await put(
+      root,
+      'node_modules/@mixmark-io/domino/index.js',
+      'throw Error("CHANGED_MUST_NOT_EXECUTE");',
+    );
+    await expect(
+      verifyDshNativeArtifact({ root, expectedId: approved.artifactId }),
+    ).rejects.toThrow('CONTENT_MISMATCH');
+  });
+
   it('measures real JS, all public metadata/control/probe roots and their actual resolver modes without executing them', async () => {
     const root = await fixture();
     const result = await seal(root);
