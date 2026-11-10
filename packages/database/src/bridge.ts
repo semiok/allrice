@@ -512,6 +512,29 @@ export async function pairBridgeDevice(input: unknown) {
   return { device: mapDevice(device), deviceToken: token };
 }
 
+/** New Run admission has already authenticated this owner and workspace.
+ * Reuse the Bridge presence interpretation, without granting any operation or
+ * pinning a device. Dispatch still rechecks current ACLs, grants and approvals. */
+export async function hasOnlineOwnedBridgeDevice(
+  scope: { organizationId: string; workspaceId: string; ownerId: string },
+  sql: ReturnType<typeof getDatabase> | postgres.TransactionSql = getDatabase(),
+) {
+  const rows = await sql<DeviceRow[]>`
+    select d.id, d.organization_id, d.workspace_id, d.owner_id, d.name,
+      d.platform, d.protocol_version, d.capabilities, d.last_seen_at,
+      d.created_at, d.revoked_at, t.metadata
+    from allrice_bridge_devices d
+    left join allrice_execution_targets t on t.organization_id=d.organization_id
+      and t.workspace_id=d.workspace_id and t.kind='rice_bridge'
+      and t.target_key='bridge.'||d.id::text
+    where d.organization_id=${scope.organizationId}
+      and d.workspace_id=${scope.workspaceId} and d.owner_id=${scope.ownerId}
+      and d.revoked_at is null
+  `;
+  const now = Date.now();
+  return rows.some((row) => mapDevice(row, now).status === 'online');
+}
+
 export async function listBridgeDevices(
   context: RequestContext,
   workspaceIdInput: string,

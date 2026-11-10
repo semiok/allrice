@@ -1,5 +1,6 @@
 import { freezeEmployeeDocuments } from './employee-documents.ts';
 import { isBaseRiceInstance } from './employee-instance-policy.ts';
+import { freezeConnectedLocalToolNames } from './local-tool-qualification.ts';
 import { readChatNativeRootOrigin } from '../conversation/native-session-binding.ts';
 import {
   freezePersonalSkills,
@@ -1534,20 +1535,28 @@ export async function prepareEmployeeRunBinding(
   )
     grantedCapabilities.push('secret:use');
   const baseRice = instance ? await isBaseRiceInstance(instance, sql) : false;
-  const boundToolNames = freezeMemorySourceToolNames(
-    withEmployeeCustomizationTools(
-      // Only new Runs of the verified platform Rice lose project development.
-      // Published employees and old Run snapshots remain immutable; custom
-      // instances keep their explicitly published tools.
-      capabilityBindings(manifest.data).toolNames.filter(
-        (name) => !baseRice || name !== 'workspace.project',
+  const boundToolNames = await freezeConnectedLocalToolNames(
+    freezeMemorySourceToolNames(
+      withEmployeeCustomizationTools(
+        // Only new Runs of the verified platform Rice lose project development.
+        // Published employees and old Run snapshots remain immutable; custom
+        // instances keep their explicitly published tools.
+        capabilityBindings(manifest.data).toolNames.filter(
+          (name) => !baseRice || name !== 'workspace.project',
+        ),
+        grantedCapabilities,
+        instance?.kind,
+        baseRice,
       ),
       grantedCapabilities,
-      instance?.kind,
-      baseRice,
+      modelSnapshot,
     ),
-    grantedCapabilities,
-    modelSnapshot,
+    {
+      organizationId: input.context.organizationId,
+      workspaceId: input.workspaceId,
+      ownerId: actorId,
+    },
+    sql,
   );
   const documentProjection =
     input.employeeDocuments && instance
