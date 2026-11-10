@@ -2,7 +2,9 @@
 import {
   DockLayout,
   type TabId,
+  activeDockPaneId,
   dockPaneIds,
+  findContentTab,
   findPaneContentTab,
   findTabPane,
 } from '@deepseek-ai/dsh-client-ui-dockkit';
@@ -107,6 +109,13 @@ class DiffBoundary extends Component<
     );
   }
 }
+const personalMemoryPagePrefix = 'employee-memory:';
+function personalMemoryTarget(kind: string, contentId: string) {
+  return kind === 'experience' && contentId.startsWith(personalMemoryPagePrefix)
+    ? contentId.slice(personalMemoryPagePrefix.length) || undefined
+    : undefined;
+}
+
 type Props = {
   desktop?: boolean;
   terminalIdentity?: { organizationId: string; ownerId: string };
@@ -116,6 +125,7 @@ type Props = {
     revision: number;
     id?: string;
     title?: string;
+    view?: 'personal-memory';
   };
   workflowAvailable?: boolean;
   experienceAvailable?: boolean;
@@ -123,9 +133,13 @@ type Props = {
     kind: WorkbenchModule,
     active: boolean,
     onOpenFile: (id: string, title: string) => void,
+    memoryInstanceId?: string,
   ) => ReactNode;
-  onModuleViewed?: (kind: WorkbenchModule) => void;
-  onActiveModule?: (kind: WorkbenchModule | 'schedule' | null) => void;
+  onModuleViewed?: (kind: WorkbenchModule, memoryInstanceId?: string) => void;
+  onActiveModule?: (
+    kind: WorkbenchModule | 'schedule' | null,
+    memoryInstanceId?: string,
+  ) => void;
   open: boolean;
   width: number;
   dockScope: string;
@@ -151,7 +165,7 @@ type Props = {
   narrow: boolean;
   noticeId?: string | null;
   onSelect: (id: string) => void;
-  onClose: () => void;
+  onClose: (memoryInstanceId?: string) => void;
   onReload: (cursor?: ArtifactCursor) => Promise<void>;
   readOnly?: boolean;
   onContinued?: (runId: string) => void;
@@ -162,9 +176,19 @@ type Props = {
 
 /** Focus-contained narrow panel; keeps the same component mounted when resized. */
 export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
+  const memoryRequest =
+    props.moduleRequest?.kind === 'experience' &&
+    props.moduleRequest.view === 'personal-memory' &&
+    props.moduleRequest.id
+      ? props.moduleRequest
+      : undefined;
   const panel = useRef<HTMLElement>(null),
     previousFocus = useRef<HTMLElement | null>(null);
-  const close = props.onClose;
+  const lastModuleRequest = useRef(0);
+  // Do not activate a retained legacy experience tab for the frame before
+  // the native Dock consumes an explicit personal-memory request.
+  const enteringMemory =
+    !!memoryRequest && memoryRequest.revision !== lastModuleRequest.current;
   const [terminalTitles, setTerminalTitles] = useState<Record<string, string>>(
     {},
   );
@@ -183,9 +207,38 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
       terminalClose.current(id);
       return true;
     },
-    props.onClose,
+    () => close(),
     props.desktop ? '开始' : '交付成果',
   );
+  // Match the native open's resource reveal and dock-pane fallback. A target
+  // already seated in another pane must not deactivate the current pane.
+  const existingMemoryTab =
+    enteringMemory && memoryRequest
+      ? findContentTab(
+          dock.surface.layout,
+          personalMemoryPagePrefix + memoryRequest.id,
+          'experience',
+        )
+      : undefined;
+  const enteringMemoryPaneId = enteringMemory
+    ? existingMemoryTab !== undefined
+      ? findTabPane(dock.surface.layout, existingMemoryTab).id
+      : activeDockPaneId(dock.surface.layout)
+    : undefined;
+  const activePane =
+    dock.surface.layout.nodes[dock.surface.layout.activePaneId];
+  const activeTab =
+    activePane?.kind === 'pane' && activePane.activeTabId
+      ? dock.surface.layout.tabs[activePane.activeTabId]
+      : undefined;
+  const activeMemoryId = activeTab
+    ? personalMemoryTarget(activeTab.kind, activeTab.contentId)
+    : undefined;
+  const visibleMemoryId = enteringMemory ? memoryRequest?.id : activeMemoryId;
+  const personalMemoryView = !!visibleMemoryId;
+  function close() {
+    props.onClose(visibleMemoryId);
+  }
   terminalClose.current = (id) => {
     const tab = dock.surface.layout.tabs[id];
     if (terminalIdentity && tab?.kind === 'terminal')
@@ -212,22 +265,17 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
   const activeModule = useRef(props.onActiveModule);
   activeModule.current = props.onActiveModule;
   useEffect(() => {
-    const layout = dock.surface.layout;
-    const pane = layout.nodes[layout.activePaneId];
-    const tab =
-      pane?.kind === 'pane' && pane.activeTabId
-        ? layout.tabs[pane.activeTabId]
-        : null;
     activeModule.current?.(
-      !props.open || !tab
+      !props.open || !activeTab
         ? null
-        : ['files', 'experience', 'workflow'].includes(tab.kind)
-          ? (tab.kind as WorkbenchModule)
-          : ['scheduleTask', 'sessionSchedules'].includes(tab.kind)
+        : ['files', 'experience', 'workflow'].includes(activeTab.kind)
+          ? (activeTab.kind as WorkbenchModule)
+          : ['scheduleTask', 'sessionSchedules'].includes(activeTab.kind)
             ? 'schedule'
             : null,
+      props.open ? visibleMemoryId : undefined,
     );
-  }, [props.open, dock.surface.layout]);
+  }, [props.open, dock.surface.layout, visibleMemoryId]);
   useEffect(() => {
     if (!props.open) return;
     const element = panel.current;
@@ -260,15 +308,31 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
         pane?.kind === 'pane' && pane.activeTabId
           ? dock.surface.layout.tabs[pane.activeTabId]
           : null;
-      if (tab && ['files', 'experience', 'workflow'].includes(tab.kind))
-        props.onModuleViewed?.(tab.kind as WorkbenchModule);
+      if (
+        tab &&
+        ['files', 'experience', 'workflow'].includes(tab.kind) &&
+        !(
+          paneId === enteringMemoryPaneId &&
+          tab.kind === 'experience' &&
+          !personalMemoryTarget(tab.kind, tab.contentId)
+        )
+      )
+        props.onModuleViewed?.(
+          tab.kind as WorkbenchModule,
+          personalMemoryTarget(tab.kind, tab.contentId),
+        );
     }
-  }, [props.open, props.desktop, dock.surface.layout, props.onModuleViewed]);
-  const lastModuleRequest = useRef(0);
+  }, [
+    props.open,
+    props.desktop,
+    dock.surface.layout,
+    props.onModuleViewed,
+    enteringMemoryPaneId,
+  ]);
   useEffect(() => {
     const request = props.moduleRequest;
     if (
-      !props.desktop ||
+      (!props.desktop && !memoryRequest) ||
       !request ||
       request.revision === lastModuleRequest.current
     )
@@ -276,7 +340,9 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
     lastModuleRequest.current = request.revision;
     dock.open(
       request.kind,
-      request.id ?? pageAddress(request.kind),
+      memoryRequest
+        ? personalMemoryPagePrefix + memoryRequest.id
+        : (request.id ?? pageAddress(request.kind)),
       request.title ??
         (request.kind === 'guide'
           ? '开始'
@@ -356,9 +422,11 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
         aria-label={
           props.desktop
             ? '工作台'
-            : props.taskRequest
-              ? '任务与交付成果'
-              : '交付成果'
+            : personalMemoryView
+              ? '记忆'
+              : props.taskRequest
+                ? '任务与交付成果'
+                : '交付成果'
         }
         aria-modal={fullscreen ? true : undefined}
         data-fullscreen={fullscreen || undefined}
@@ -559,13 +627,20 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                   );
                 }}
               />
-            ) : props.desktop &&
+            ) : (props.desktop ||
+                !!personalMemoryTarget(tab.kind, tab.contentId)) &&
               ['files', 'experience', 'workflow'].includes(tab.kind) ? (
               props.renderModule?.(
                 tab.kind as WorkbenchModule,
                 props.open &&
                   findTabPane(dock.surface.layout, tab.id).activeTabId ===
-                    tab.id,
+                    tab.id &&
+                  !(
+                    findTabPane(dock.surface.layout, tab.id).id ===
+                      enteringMemoryPaneId &&
+                    tab.kind === 'experience' &&
+                    !personalMemoryTarget(tab.kind, tab.contentId)
+                  ),
                 (id, title) =>
                   dock.open(
                     'managedFile',
@@ -573,6 +648,7 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                     title,
                     findTabPane(dock.surface.layout, tab.id).id,
                   ),
+                personalMemoryTarget(tab.kind, tab.contentId),
               )
             ) : tab.kind === 'reference' ? (
               <ReferenceSnapshotPreview
@@ -692,10 +768,14 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
               <button
                 type="button"
                 className={moduleUi.iconButton}
-                aria-label="关闭工作台"
+                aria-label={personalMemoryView ? '返回员工详情' : '关闭工作台'}
                 onClick={close}
               >
-                {props.desktop ? <WorkbenchIcon kind="panel" /> : '×'}
+                {props.desktop && !personalMemoryView ? (
+                  <WorkbenchIcon kind="panel" />
+                ) : (
+                  '×'
+                )}
               </button>
             </>
           }
@@ -1243,7 +1323,6 @@ function ArtifactReview({
                   onUse={onUseFileReference}
                   onTemplate={onTemplateFile}
                   referenceAction={
-                    !readOnly &&
                     !toolResult &&
                     ['document', 'plan', 'file'].includes(artifact.kind) ? (
                       <SaveArtifactReference
@@ -1253,6 +1332,7 @@ function ArtifactReview({
                         versionId={artifact.version.id}
                         fileName={artifact.version.fileName}
                         version={artifact.version.version}
+                        readOnly={readOnly}
                         icon
                       />
                     ) : (
@@ -1312,7 +1392,6 @@ function ArtifactReview({
             }}
           >
             {!onUseFileReference &&
-              !readOnly &&
               !toolResult &&
               ['document', 'plan', 'file'].includes(artifact.kind) && (
                 <SaveArtifactReference
@@ -1322,6 +1401,7 @@ function ArtifactReview({
                   versionId={artifact.version.id}
                   fileName={artifact.version.fileName}
                   version={artifact.version.version}
+                  readOnly={readOnly}
                 />
               )}
           </DocumentToolbar>

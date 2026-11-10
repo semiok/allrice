@@ -1,38 +1,52 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  RouteDecisionSchema,
+  resolveSubscriptionSnapshot,
+} from '@allrice/contracts';
 import { createP27CodexWorkerFixture } from '../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
-import { authorizeFixturePlatformAdministrator } from './platform-authority.fixture.ts';
-import { seedExperienceCalendarRule } from './experience-native.fixture.ts';
-import { loadPlatformContentCatalog } from './platform-content/catalog.ts';
-import { synchronizePlatformContent } from './platform-content/sync.ts';
-import { freezeEmployeeBaseSkills } from './employees/employee-base-skills.ts';
-import { createNativeRecurringSqlStore } from './native-schedule-recurring-sql.ts';
+import { createExperienceFixture } from './experience.fixture.ts';
+import { prepareEmployeeInstanceSnapshot } from './employees/employee-instances.ts';
 import {
-  lockNativeRecurringAdmissions,
-  dispatchNextNativeRecurringOccurrence,
-} from './native-schedule-recurring-product.ts';
+  seedHistoricalExperienceSource,
+  seedHistoricalExperienceRule,
+  seedHistoricalExperienceOccurrence,
+  seedHistoricalExperienceReceipt,
+  seedHistoricalExperienceValidation,
+} from './experience-history.fixture.ts';
 import {
-  lockExperienceCalendarAdmissions,
-  materializeExperienceNativeCalendar,
-} from './experience-native.ts';
+  syncExperienceAdoptions,
+  reassessReportStyleAdoption,
+} from './experience-adoption.ts';
+import {
+  syncExperienceValidations,
+  experienceValidationStillCurrent,
+} from './experience-validation.ts';
 import {
   dispatchExperienceOccurrence,
   recoverExperienceOccurrences,
   getExperienceExecution,
-  readExperiencePolicy,
-  reserveExperienceOccurrenceInTransaction,
-  updateExperiencePolicy,
-  type ExperienceScheduleRule,
+  prepareExperienceExecution,
 } from './experience-consolidation.ts';
-import { claimNextJob, startClaimedJob } from './execution/queue.ts';
-import { runAutomationNow, nextScheduleAt } from './execution/automation.ts';
-import { lockNativeOnceJobAdmission } from './native-schedule-once-authority.ts';
 import {
-  nativeOnceDigest,
-  type NativeOnceTask,
-  type NativeOnceWriter,
-} from './native-schedule-once-state.ts';
-import type { NativeCalendarWrite } from './native-schedule-calendar-state.ts';
+  enqueueExperienceConsolidationRun,
+  completeJob,
+  failJob,
+} from './execution/queue.ts';
+import {
+  claimNextPlatformEmployeeTestRun,
+  completePlatformEmployeeTestRun,
+} from './employees/platform-employees.ts';
+import { loadPlatformContentCatalog } from './platform-content/catalog.ts';
+import { synchronizePlatformContent } from './platform-content/sync.ts';
+import { runtimePolicyDigest } from './runtime-policy.ts';
+import {
+  recordRouteDecision,
+  completeRouteDecision,
+} from './execution/route-decision.ts';
+import { freezeRouteSubscriptionSnapshot } from './execution/route-subscription.ts';
+import { providerSnapshotForModelTarget } from '../../../apps/worker/src/routing/provider-snapshot.ts';
+import { attendanceAnswer } from './experience-validation.fixture.ts';
 import * as client from './core/client.ts';
 
 const suite =
@@ -40,342 +54,336 @@ const suite =
     ? describe.sequential
     : describe.skip;
 suite(
-  'native experience nonempty sources and original queue; SQL only, no Host/provider',
-  { timeout: 30_000 },
+  'M5-A old jobs, receipts and validation fees — isolated SQL, no model',
   () => {
-    let f: Awaited<ReturnType<typeof createP27CodexWorkerFixture>>;
-    let store: ReturnType<typeof createNativeRecurringSqlStore>,
-      writer: NativeOnceWriter;
-    const reference = {
-      artifactId: `sha256:${'a'.repeat(64)}`,
-      profileId: 'allrice-recurring-control-v1',
-      storageId: 'isolated-populated',
-      stateRoot: '/isolated/populated',
-    };
-    const ready = {
-      enabled: true,
-      storageReady: true,
-      legacyClockExcluded: true,
-      controlArtifactApproved: true,
-    };
-    const write = (
-      mutation: NativeCalendarWrite['mutation'],
-    ): NativeCalendarWrite => ({
-      writeId: randomUUID(),
-      digest: nativeOnceDigest(mutation),
-      mutation,
-    });
+    let host: Awaited<ReturnType<typeof createP27CodexWorkerFixture>>;
     beforeEach(async () => {
       vi.stubEnv('ALLRICE_EXPERIENCE_REVIEW_ENABLED', '1');
       vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '1');
       vi.stubEnv('ALLRICE_NATIVE_CALENDAR_ENABLED', '1');
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
-      // This suite reserves new executable occurrences using SQL only.
-      vi.stubEnv(
-        'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
-        'sha256:' + 'a'.repeat(64),
-      );
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
-      f = await createP27CodexWorkerFixture({
+      host = await createP27CodexWorkerFixture({
         allowCiDatabase: true,
         personalProfile: 'writable',
       });
-      vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
-      // Match the original experience suite's actual published Skill setup.
+      vi.spyOn(client, 'getDatabase').mockReturnValue(host.db);
+      vi.spyOn(globalThis, 'fetch').mockRejectedValue(
+        Error('No provider/network in retirement SQL tests'),
+      );
       await synchronizePlatformContent(await loadPlatformContentCatalog());
-      const published = await freezeEmployeeBaseSkills([]);
-      expect(published.catalog).toBeTruthy();
-      expect(
-        published.nativeSkills.some(
-          (s) => s.name === 'experience-consolidation',
-        ),
-      ).toBe(true);
-      await authorizeFixturePlatformAdministrator(f.db, f.ownerId);
-      const previous = await readExperiencePolicy(f.organizationId);
-      await updateExperiencePolicy(f.context, f.organizationId, {
-        frequency: 'monthly',
-        timezone: 'America/New_York',
-        time: '02:30',
-        weekday: 1,
-        monthDay: 31,
-        expectedRevision: previous.revision,
-        validationMode: 'off',
-        adoptionMode: 'off',
-      });
-      await f.db`insert into allrice_native_once_partitions(partition_id,reference,activation)
-      values('allrice-recurring-v1',${f.db.json(reference)},${f.db.json(ready)})`;
-      store = createNativeRecurringSqlStore({
-        db: f.db,
-        partitionId: 'allrice-recurring-v1',
-        ownerId: randomUUID(),
-        reference,
-        ttlMs: 300_000,
-        readiness: () => ready,
-        decodeTask: (v) => structuredClone(v) as NativeOnceTask,
-        lockAdmission: lockNativeRecurringAdmissions,
-        calendar: {
-          enabled: true,
-          lockAdmission: lockExperienceCalendarAdmissions,
-        },
-        proveClosed: async () => null,
-      });
-      writer = (await store.acquireWriter())!.writer;
-    }, 120_000);
+    }, 120000);
     afterEach(async () => {
       try {
-        await f?.close();
+        await host?.close();
       } finally {
         vi.restoreAllMocks();
         vi.unstubAllEnvs();
       }
-    }, 30_000);
-    async function sqlReceipt(automationId: string) {
-      const calendar = store.calendar!;
-      expect(
-        await materializeExperienceNativeCalendar(calendar, writer, reference),
-      ).toBe(true);
-      let state = await calendar.loadCalendarState(writer);
-      const c = state.controls.find(
-        (r) => r.control.automationId === automationId,
-      )!.control;
-      let b = state.bindings.find(
-        (r) => r.period.automationId === automationId && !r.closed,
-      )!;
-      for (const [action, version] of [
-        ['session_initializing', 0],
-        ['session_ready', 1],
-      ] as const)
-        expect(
-          await store.commitMutation(
-            writer,
-            write({
-              kind: 'calendar',
-              action,
-              controlId: c.controlId,
-              expectedControlVersion: version,
-            }),
-          ),
-        ).toBe('committed');
-      // Use the REAL combined store document, including its null prototype.
-      expect(
-        Object.getPrototypeOf(await store.loadTaskRecords(writer)),
-      ).toBeNull();
-      const absent = await calendar.confirmCalendarArmAbsent(writer, {
-        periodId: b.period.periodId,
-        armId: b.arm.armId,
-        requestDigest: b.arm.requestDigest,
-        expectedPeriodVersion: b.period.version,
-        expectedArmVersion: b.arm.snapshotVersion,
-        taskRecords: await store.loadTaskRecords(writer),
-      });
-      const prepared = await calendar.prepareCalendarArm(writer, {
-        periodId: absent.period.periodId,
-        previousArmId: absent.arm.armId,
-        expectedPeriodVersion: absent.period.version,
-        expectedArmVersion: absent.arm.snapshotVersion,
-        armId: randomUUID(),
-        nativeAt: new Date(Date.now() + 60_000).toISOString(),
-      });
-      const started = await calendar.beginCalendarArmCreate(writer, {
-        periodId: prepared.period.periodId,
-        armId: prepared.arm.armId,
-        requestDigest: prepared.arm.requestDigest,
-        expectedPeriodVersion: prepared.period.version,
-        expectedArmVersion: prepared.arm.snapshotVersion,
-      });
-      b = { ...b, ...started };
-      let task: NativeOnceTask = {
-        sessionId: c.controlSessionId,
-        status: 'active',
-        record: {
-          id: randomUUID(),
-          kind: 'at',
-          scheduledAt: b.arm.nativeAt,
-          title: 'AllRice once control',
-          prompt:
-            'Synthetic schedule control only. Never execute business work.',
-        },
-      };
-      async function put() {
-        const w = write({
-          kind: 'calendar',
-          action: 'put_task',
-          controlId: c.controlId,
-          periodId: b.period.periodId,
-          armId: b.arm.armId,
-          requestDigest: b.arm.requestDigest,
-          expectedPeriodVersion: b.period.version,
-          expectedArmVersion: b.arm.snapshotVersion,
-          task,
+    }, 30000);
+    async function historical() {
+      const db = host.db,
+        f = await createExperienceFixture(db, {
+          published: true,
+          authenticated: true,
         });
-        expect(await store.commitMutation(writer, w)).toBe('committed');
-        const exact = await calendar.readExactCalendarArm(
-          b.arm.armId,
-          b.arm.requestDigest,
-        );
-        if (exact.state !== 'bound')
-          throw Error('calendar_fixture_task_not_bound');
-        b = { ...b, period: exact.period, arm: exact.arm };
-        return w;
-      }
-      await put();
-      const delivery = {
-        scheduledAt: b.arm.nativeAt,
-        deliveredAt: new Date(Date.parse(b.arm.nativeAt) + 1_000).toISOString(),
-        messageId: randomUUID(),
+      const [er] =
+        await db`select * from allrice_employee_runs where run_id=${f.run}`;
+      const instance = await prepareEmployeeInstanceSnapshot(
+        f.owner,
+        f.session.id,
+        er!.employee_assignment_id,
+        er!.employee_version_id,
+      );
+      // Historical execution snapshots are immutable; create the synthetic source
+      // with its snapshot at birth, never mutate a completed employee Run.
+      const sourceRunId = randomUUID(),
+        messageId = randomUUID(),
+        assistantId = randomUUID();
+      await db`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content,status)
+        values(${messageId},${f.org},${f.workspace},${f.session.id},${f.user},'user','{"text":"Synthetic historical feedback","citations":[]}','completed'),
+          (${assistantId},${f.org},${f.workspace},${f.session.id},${f.user},'assistant','{"text":"Synthetic historical reply","citations":[]}','completed')`;
+      await db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input)
+        values(${sourceRunId},${f.org},${f.workspace},${f.user},'succeeded','{}','{}')`;
+      await db`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,session_id,user_message_id,assistant_message_id,status,completed_at,provider_snapshot,prompt_snapshot,execution_snapshot)
+        values(${sourceRunId},${f.org},${f.workspace},${f.user},${er!.employee_assignment_id},${er!.employee_version_id},${f.session.id},${messageId},${assistantId},'succeeded',clock_timestamp(),'{}','{}',${db.json({ instance, personalSkills: { skills: [] } })})`;
+      const sourceId = await seedHistoricalExperienceSource(db, sourceRunId);
+      const rule = await seedHistoricalExperienceRule(db, sourceRunId);
+      const h = await seedHistoricalExperienceOccurrence(
+        db,
+        sourceRunId,
+        rule.id,
+      );
+      const output = {
+        schemaVersion: 1 as const,
+        drafts: [
+          {
+            sourceIds: [sourceId],
+            rule: '统计到场情况时，依据原始名单分别核对到场和未到人数，并在结果中分项列出。',
+            reason: 'Synthetic historical evidence',
+            applicability:
+              '适用于有原始名单且到场状态明确的人员统计任务，不适用于缺少名单或状态不明时推算人数。',
+            confidence: 'tentative' as const,
+            validation: {
+              kind: 'calculation' as const,
+              check: 'Synthetic independent case',
+            },
+          },
+        ],
+        discarded: [],
       };
-      task = {
-        ...task,
-        status: 'inactive',
-        lastDelivery: delivery,
-        deliveryHistory: {
-          records: [{ ...delivery, prompt: task.record.prompt }],
-          earlierRecordsUnavailable: false,
-        },
-      };
-      const receiptWrite = await put();
-      state = await calendar.loadCalendarState(writer);
-      return { period: b.period, arm: b.arm, receiptWrite, state };
+      return { ...f, ...h, output, sourceId, rule };
     }
-    it.each(['queued', 'budget'] as const)(
-      '%s keeps original incremental pins, queue/instance quota and one successor N',
-      async (mode) => {
-        const seeded = await seedExperienceCalendarRule(f, mode);
-        if (seeded.legacyOccurrenceId)
-          await dispatchExperienceOccurrence(seeded.legacyOccurrenceId);
-        const beforeRuns =
-          await f.db`select id from allrice_automation_runs where automation_id=${seeded.automationId}`;
-        const native = await sqlReceipt(seeded.automationId);
-        expect(native.period.businessScheduledFor).toBe(seeded.P.toISOString());
-        expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
-          true,
-        );
-        const [d] =
-          await f.db`select * from allrice_native_calendar_decisions where period_id=${native.period.periodId}`;
-        expect(d!.outcome).toBe(mode);
-        const [successor] =
-          await f.db`select * from allrice_native_calendar_plans where period_id=${d!.successor_period_id}`;
-        const [v] =
-          await f.db`select configuration from allrice_native_recurring_versions where automation_id=${seeded.automationId} and revision=1`;
-        expect(successor!.business_scheduled_for.toISOString()).toBe(
-          nextScheduleAt(
-            v!.configuration.schedule,
-            d!.decided_at,
-          ).toISOString(),
-        );
-        expect(await store.readExactCommit(writer, native.receiptWrite)).toBe(
-          'committed',
-        );
-        const [source] =
-          await f.db`select consolidation_occurrence_id from allrice_experience_reviews where memory_id=${seeded.source!.id}`;
-        if (mode === 'budget') {
-          expect(d!.automation_run_id).toBeNull();
-          expect(d!.decision.budget).toEqual({
-            globalCount: 1,
-            organizationCount: 1,
-            instanceCount: 1,
-          });
-          expect(source!.consolidation_occurrence_id).toBeNull();
-          expect(
-            await f.db`select id from allrice_automation_runs where automation_id=${seeded.automationId}`,
-          ).toHaveLength(beforeRuns.length);
-          expect(
-            await f.db`select id from allrice_jobs where payload->>'type'='allrice.experience.consolidate'`,
-          ).toHaveLength(1);
-        } else {
-          expect(source!.consolidation_occurrence_id).toBe(
-            d!.automation_run_id,
-          );
-          const [pending] =
-            await f.db`select run_id,status from allrice_automation_runs where id=${d!.automation_run_id}`;
-          expect(pending).toMatchObject({ run_id: null, status: 'queued' });
-          // Recovery consumes a committed native AR, never the legacy due clock.
-          await expect(
-            runAutomationNow(f.context, f.workspaceId, seeded.automationId),
-          ).rejects.toMatchObject({ code: 'not_found' });
-          const [stillPending] =
-            await f.db`select run_id,status from allrice_automation_runs where id=${d!.automation_run_id}`;
-          expect(stillPending).toEqual(pending);
-          expect(await recoverExperienceOccurrences(1)).toContain(
-            d!.automation_run_id,
-          );
-          await dispatchExperienceOccurrence(d!.automation_run_id);
-          expect(await recoverExperienceOccurrences(1)).not.toContain(
-            d!.automation_run_id,
-          );
-          await dispatchExperienceOccurrence(d!.automation_run_id);
-          const [run] =
-            await f.db`select * from allrice_automation_runs where id=${d!.automation_run_id}`;
-          expect(
-            run!.experience_occurrence.sources.map((s: { id: string }) => s.id),
-          ).toEqual([seeded.source!.id]);
-          expect(run!.run_id).toBeTruthy();
-          const jobs =
-            await f.db`select * from allrice_jobs where run_id=${run!.run_id}`;
-          expect(jobs).toHaveLength(1);
-          const job = jobs[0]!;
-          expect(
-            await f.db.begin((tx) => lockNativeOnceJobAdmission(tx, job.id)),
-          ).toEqual({ scheduled: true, allowed: true, runId: run!.run_id });
-          const workerId = randomUUID(),
-            claimed = await claimNextJob(workerId, 120_000, {
-              allowBackground: true,
-            });
-          expect(claimed!.id).toBe(job.id);
-          expect(
-            await startClaimedJob(workerId, claimed!.id, claimed!.lease!.token),
-          ).not.toBeNull();
-          expect(
-            (await getExperienceExecution(run!.run_id)).occurrence.id,
-          ).toBe(d!.automation_run_id);
-          const exact = await f.db.begin(async (tx) => {
-            const [rule] = await tx<
-              ExperienceScheduleRule[]
-            >`select * from allrice_automations where id=${seeded.automationId} for update`;
-            return reserveExperienceOccurrenceInTransaction(
-              tx,
-              rule!,
-              seeded.P,
-              null,
-            );
-          });
-          expect(exact).toEqual({
-            outcome: 'already_claimed',
-            automationRunId: d!.automation_run_id,
-          });
-          const rollback = Error('fixture permission rollback');
-          await expect(
-            f.db.begin(async (tx) => {
-              await tx`update allrice_memberships set role='viewer' where user_id=${f.ownerId} and organization_id=${f.organizationId}`;
-              expect(await lockNativeOnceJobAdmission(tx, job.id)).toEqual({
-                scheduled: true,
-                allowed: false,
-                runId: run!.run_id,
-              });
-              throw rollback;
-            }),
-          ).rejects.toBe(rollback);
-        }
-        expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
-          false,
-        );
+    async function route(
+      f: Awaited<ReturnType<typeof historical>>,
+      runId: string,
+      model: typeof f.frozen.execution.model,
+    ) {
+      const decision = await recordRouteDecision(
+        RouteDecisionSchema.parse({
+          schemaVersion: 1,
+          id: randomUUID(),
+          runId,
+          organizationId: f.org,
+          workspaceId: f.workspace,
+          actorId: f.user,
+          employeeId: f.frozen.occurrence.employeeId,
+          inputChecksum: runtimePolicyDigest(model),
+          candidates: [],
+          selectedKind: 'direct',
+          selectedCandidateId: 'synthetic-direct',
+          harness: model.harness,
+          provider: model.provider,
+          model: model.model,
+          modelConnectionId: model.connectionId,
+          modelCatalogEntryId: model.modelCatalogEntryId,
+          modelPolicyRevision: model.policyRevision,
+          generation: 0,
+          attempt: 1,
+          reasonCodes: ['minimum_necessary_capability'],
+          createdAt: new Date().toISOString(),
+        }),
+      );
+      // The original claim binds the route before freezing its subscription.
+      if (model.occurrenceId !== f.row.id)
+        await host.db`update allrice_platform_employee_test_runs set experience_route_id=${decision.id} where id=${model.occurrenceId} and experience_run_id=${runId}`;
+      const subscription = resolveSubscriptionSnapshot({
+        occurrenceId: model.occurrenceId,
+        modelSnapshot: model,
+        decision,
+        providerSnapshot: providerSnapshotForModelTarget(model),
+      })!;
+      await freezeRouteSubscriptionSnapshot({
+        organizationId: f.org,
+        workspaceId: f.workspace,
+        decisionId: decision.id,
+        snapshot: subscription,
+      });
+      return decision;
+    }
+    it('cannot replay a retained occurrence, enqueue it directly, validate or adopt its retained receipt', async () => {
+      const f = await historical(),
+        db = host.db;
+      await seedHistoricalExperienceReceipt(db, f.row.id, f.output);
+      const snapshot = async () => ({
+        occurrence: (
+          await db`select to_jsonb(r) data from allrice_automation_runs r where id=${f.row.id}`
+        )[0]!.data,
+        reviews:
+          await db`select to_jsonb(e) data from allrice_experience_reviews e where owner_id=${f.user} order by memory_id`,
+        audits:
+          await db`select to_jsonb(a) data from allrice_audit_events a where organization_id=${f.org} order by id`,
+      });
+      const before = await snapshot();
+      expect(await recoverExperienceOccurrences()).toEqual([]);
+      await dispatchExperienceOccurrence(f.row.id);
+      for (const call of [
+        () => prepareExperienceExecution(f.row.id),
+        () => getExperienceExecution(f.row.run_id),
+        () => enqueueExperienceConsolidationRun(f.row.id),
+      ])
+        await expect(call()).rejects.toMatchObject({ code: 'disabled' });
+      await syncExperienceValidations();
+      await syncExperienceAdoptions();
+      await expect(
+        reassessReportStyleAdoption(f.owner, {
+          occurrenceId: f.row.id,
+          draftIndex: 0,
+          expectedOutputDigest: runtimePolicyDigest(f.output),
+          expectedPlanDigest: runtimePolicyDigest([]),
+        }),
+      ).rejects.toMatchObject({ code: 'disabled' });
+      expect(await snapshot()).toEqual(before);
+      expect(
+        await db`select id from allrice_platform_employee_test_runs where experience_binding->>'occurrenceId'=${f.row.id}`,
+      ).toHaveLength(0);
+      expect(
+        await db`select id from allrice_jobs where owner_id=${f.user}`,
+      ).toHaveLength(0);
+    });
+    it('rejects an old queued validation through the existing failure finalizer without creating a model Run', async () => {
+      const f = await historical(),
+        db = host.db;
+      await seedHistoricalExperienceReceipt(db, f.row.id, f.output);
+      const test = await seedHistoricalExperienceValidation(
+        db,
+        f.row.id,
+        'queued',
+      );
+      const before =
+        await db`select id from allrice_runs where organization_id=${f.org} order by id`;
+      expect(await claimNextPlatformEmployeeTestRun(randomUUID())).toBeNull();
+      const [saved] =
+        await db`select status,experience_assertion,experience_run_id,output from allrice_platform_employee_test_runs where id=${test.testId}`;
+      expect(saved).toMatchObject({
+        status: 'failed',
+        experience_run_id: null,
+        experience_assertion: { passed: false },
+        output: { error: { code: 'TEST_ENVIRONMENT_UNAVAILABLE' } },
+      });
+      expect(
+        await db`select id from allrice_runs where organization_id=${f.org} order by id`,
+      ).toEqual(before);
+    });
+    it.each([true, false])(
+      'keeps settled usage (known=%s) when an old consolidation completion is rejected, then uses existing failure',
+      async (known) => {
+        const f = await historical(),
+          db = host.db,
+          runId = f.row.run_id as string;
+        const lease = {
+          jobId: randomUUID(),
+          workerId: randomUUID(),
+          leaseToken: randomUUID(),
+        };
+        await db`update allrice_runs set state='running' where id=${runId}`;
+        await db`update allrice_automation_runs set status='running',completed_at=null where id=${f.row.id}`;
+        await db`insert into allrice_jobs(id,organization_id,workspace_id,owner_id,run_id,status,idempotency_key,timeout_at,payload,worker_id,lease_token,claimed_at,heartbeat_at,lease_expires_at,attempt,max_attempts)
+   values(${lease.jobId},${f.org},${f.workspace},${f.user},${runId},'running',${randomUUID()},clock_timestamp()+interval '5 minutes',
+    ${db.json({ schemaVersion: 1, type: 'allrice.experience.consolidate', input: { occurrenceId: f.row.id } })},${lease.workerId},${lease.leaseToken},clock_timestamp(),clock_timestamp(),clock_timestamp()+interval '5 minutes',1,1)`;
+        const decision = await route(f, runId, f.frozen.execution.model);
+        await completeRouteDecision({
+          organizationId: f.org,
+          workspaceId: f.workspace,
+          outcome: {
+            decisionId: decision.id,
+            status: 'succeeded',
+            inputTokens: known ? 30 : 0,
+            cachedInputTokens: 0,
+            outputTokens: known ? 10 : 0,
+            costCents: null,
+            usageComplete: known,
+            cacheUsageKnown: known,
+            errorCode: null,
+            completedAt: new Date().toISOString(),
+          },
+        });
+        const ledger =
+          await db`select to_jsonb(l) data from allrice_model_usage_ledger l where route_decision_id=${decision.id}`;
+        expect(ledger).toHaveLength(1);
+        await expect(
+          completeJob({ ...lease, result: f.output }),
+        ).rejects.toMatchObject({ code: 'disabled' });
+        await expect(
+          failJob({
+            ...lease,
+            code: 'EXPERIENCE_CONSOLIDATION_FAILED',
+            message: 'Synthetic retired consumer',
+            retryable: false,
+          }),
+        ).resolves.toMatchObject({ retrying: false });
         expect(
-          await f.db`select period_id from allrice_native_calendar_plans where automation_id=${seeded.automationId} and closed_decision_id is null`,
-        ).toHaveLength(1);
+          (
+            await db`select status from allrice_jobs where id=${lease.jobId}`
+          )[0]!.status,
+        ).toBe('failed');
         expect(
-          await materializeExperienceNativeCalendar(
-            store.calendar!,
-            writer,
-            reference,
-            false,
-          ),
-        ).toBe(true);
-        const next = (
-          await store.calendar!.loadCalendarState(writer)
-        ).bindings.find((b) => b.period.periodId === successor!.period_id)!;
-        expect(next.period.businessScheduledFor).toBe(
-          successor!.business_scheduled_for.toISOString(),
+          (await db`select state from allrice_runs where id=${runId}`)[0]!
+            .state,
+        ).toBe('failed');
+        expect(
+          (
+            await db`select experience_receipt from allrice_automation_runs where id=${f.row.id}`
+          )[0]!.experience_receipt,
+        ).toBeNull();
+        expect(
+          await db`select to_jsonb(l) data from allrice_model_usage_ledger l where route_decision_id=${decision.id}`,
+        ).toEqual(ledger);
+      },
+    );
+    it.each(['succeeded', 'failed', 'canceled'] as const)(
+      'settles a late validation %s without a passing proof or adoption',
+      async (status) => {
+        const f = await historical(),
+          db = host.db;
+        await seedHistoricalExperienceReceipt(db, f.row.id, f.output);
+        const test = await seedHistoricalExperienceValidation(
+          db,
+          f.row.id,
+          'running',
         );
+        const decision = await route(f, test.validationRun, test.binding.model);
+        await db`update allrice_platform_employee_test_runs set experience_route_id=${decision.id} where id=${test.testId}`;
+        expect(
+          await experienceValidationStillCurrent(test.testId, {
+            runId: test.validationRun,
+            jobId: randomUUID(),
+            workerId: randomUUID(),
+            leaseToken: randomUUID(),
+          }),
+        ).toBe(false);
+        const error =
+          status === 'succeeded'
+            ? null
+            : {
+                code:
+                  status === 'canceled' ? 'TEST_CANCELED' : 'SYNTHETIC_FAILURE',
+                message: 'Synthetic late result',
+              };
+        // The public finalizer determines actual outcome from error/cancellation. A
+        // canceled synthetic execution has the same existing stop evidence as before.
+        await db`update allrice_runs set execution_spec=${db.json({ platformEmployeeTestRunId: test.testId })} where id=${test.validationRun}`;
+        await db`insert into allrice_jobs(id,organization_id,workspace_id,owner_id,run_id,status,idempotency_key,timeout_at,payload,cancel_requested_at)
+          values(${randomUUID()},${f.org},${f.workspace},${f.user},${test.validationRun},'running',${randomUUID()},clock_timestamp()+interval '5 minutes',
+            ${db.json({ schemaVersion: 1, type: 'platform_employee_preview', input: { testRunId: test.testId } })},${status === 'canceled' ? new Date() : null})`;
+        await completePlatformEmployeeTestRun(test.testId, {
+          answer: JSON.stringify(attendanceAnswer),
+          provider: test.binding.model.provider,
+          model: test.binding.model.model,
+          threadId: null,
+          usage: { inputTokens: 100, outputTokens: 120, cachedInputTokens: 0 },
+          events: [],
+          error,
+          modelExecution: {
+            dispatched: true,
+            subscriptionSnapshotCreated: true,
+            usageComplete: true,
+            cacheUsageKnown: true,
+            costCents: null,
+          },
+        });
+        const [saved] =
+          await db`select status,experience_assertion from allrice_platform_employee_test_runs where id=${test.testId}`;
+        // Existing preview contract has no canceled test status; the Run, Job
+        // and route carry cancellation while the test retains failed.
+        expect(saved!.status).toBe(status === 'canceled' ? 'failed' : status);
+        const [execution] =
+          await db`select r.state,j.status from allrice_runs r join allrice_jobs j on j.run_id=r.id where r.id=${test.validationRun}`;
+        expect(execution).toMatchObject({ state: status, status });
+        expect(saved!.experience_assertion).toMatchObject({
+          passed: false,
+          reason: 'authority_changed',
+        });
+        const [ledger] =
+          await db`select * from allrice_model_usage_ledger where route_decision_id=${decision.id}`;
+        expect(ledger!.status).toBe(status);
+        expect(Number(ledger!.input_tokens)).toBe(100);
+        expect(Number(ledger!.output_tokens)).toBe(120);
+        expect(ledger!.cost_cents).toBeNull();
+        await syncExperienceAdoptions();
+        expect(
+          await db`select memory_id from allrice_experience_reviews where owner_id=${f.user} and origin_kind='derived'`,
+        ).toHaveLength(0);
       },
     );
   },

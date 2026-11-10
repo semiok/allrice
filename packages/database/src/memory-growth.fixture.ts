@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import type postgres from 'postgres';
-import { collectPendingExperienceEvidence } from './experience-evidence.ts';
+import { seedHistoricalExperienceSource } from './experience-history.fixture.ts';
 import {
   ExperienceOccurrenceSchema,
   type ExperienceOccurrence,
@@ -96,8 +96,8 @@ export async function memoryGrowthFixture(sql: Sql, target: Target) {
       });
       if (!records.length) return;
       // Empty, successful collection ticks are a real supported history shape:
-      // no model Run/receipt is invented. Pending positive feedback is collected
-      // separately by the production evidence producer below.
+      // no model Run/receipt is invented. Synthetic prior feedback is seeded
+      // explicitly below; the retired production writer is never reopened.
       await sql`insert into allrice_automation_runs(id,organization_id,workspace_id,automation_id,status,
         scheduled_for,started_at,completed_at,created_at,experience_occurrence)
         select x.id,${target.org},${target.workspace},${target.rule.id},'succeeded',x.at,x.at,x.at,x.at,x.occurrence
@@ -124,21 +124,9 @@ export async function memoryGrowthFixture(sql: Sql, target: Target) {
         from jsonb_to_recordset(${sql.json(records)}) x(run uuid,message uuid,assistant uuid)
         cross join allrice_employee_runs er where er.run_id=${target.sourceRunId}`;
       const ids = records.map((r) => r.run);
-      for (let n = 0; n < Math.ceil(records.length / 16) + 2; n++) {
-        const [remaining] =
-          await sql`select count(*)::int pending from allrice_employee_runs
-          where run_id in ${sql(ids)} and experience_capture_state='pending'`;
-        if (!remaining!.pending) break;
-        const result = await collectPendingExperienceEvidence({
-          database: sql,
-          limit: 16,
-        });
-        assert.equal(
-          result.busy,
-          0,
-          'Diagnose fixture contention instead of silently skipping records',
-        );
-      }
+      // The old writer is retired. Populate immutable synthetic history directly;
+      // this benchmark still measures readers, not a live collection pipeline.
+      for (const id of ids) await seedHistoricalExperienceSource(sql, id);
       const [collected] =
         await sql`select count(*)::int captured from allrice_employee_runs
         where run_id in ${sql(ids)} and experience_capture_state='captured'`;

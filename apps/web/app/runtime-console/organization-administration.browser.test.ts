@@ -240,7 +240,7 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
     if (fixture) await fixture.close();
   }, 30000);
 
-  it('saves the company schedule, validation and private adoption opt-ins through the real admin API and reloads the exact revision', async () => {
+  it('reads historical experience opt-ins but rejects re-enabling the retired writer without changing the saved revision', async () => {
     const admin = (await authenticateSession(adminToken))!;
     const company = await createManagedOrganization(admin, {
       name: '经验整理设置测试',
@@ -252,6 +252,36 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
       { name: 'fixture_session', value: adminToken, url: origin },
     ]);
     const page = await context.newPage();
+    const url = `${origin}/api/v1/admin/organizations/${company.organizationId}/experience-policy`;
+    const original = (await (await context.request.get(url)).json()).policy;
+    // Historical policy predates retirement; do not reopen the production writer
+    // just to establish readable settings in this isolated database fixture.
+    const historical = {
+      ...original,
+      schemaVersion: 4,
+      revision: 2,
+      adoptionMode: 'supported_private',
+      adoptionAuthorizedBy: admin.actor.id,
+      frequency: 'monthly',
+      validationMode: 'supported_cases',
+      timezone: 'Asia/Shanghai',
+      weekday: 1,
+      monthDay: 31,
+      time: '04:15',
+    };
+    await fixture.db`insert into allrice_settings(scope_type,scope_id,key,value)
+      values('organization',${company.organizationId},'employee_experience_policy',${fixture.db.json(historical)})`;
+    const state = async () => ({
+      settings:
+        await fixture.db`select value from allrice_settings where scope_type='organization'
+          and scope_id=${company.organizationId} and key='employee_experience_policy'`,
+      rules:
+        await fixture.db`select id,revision,status from allrice_automations where organization_id=${company.organizationId} order by id`,
+      policyAudit:
+        await fixture.db`select id from allrice_audit_events where organization_id=${company.organizationId}
+          and action='experience.policy.update' order by id`,
+    });
+    const before = await state();
     try {
       await page.goto(`${origin}/?organizationId=${company.organizationId}`);
       await page
@@ -272,6 +302,7 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
       await page.getByText('经验自动整理设置', { exact: true }).click();
       const loadedResponse = await loaded;
       expect(loadedResponse.status(), await loadedResponse.text()).toBe(200);
+      expect((await loadedResponse.json()).policy).toEqual(historical);
       await expect
         .poll(() => page.getByLabel('整理频率', { exact: true }).count(), {
           timeout: 3000,
@@ -281,30 +312,40 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
             .then((x) => x.join(' ')),
         })
         .toBe(1);
-      await page
-        .getByLabel('整理频率', { exact: true })
-        .selectOption('monthly');
-      await page.getByLabel('每月日期', { exact: true }).fill('31');
-      await page.getByLabel('整理时间', { exact: true }).fill('04:15');
+      await expect
+        .poll(() => page.getByLabel('整理频率', { exact: true }).inputValue())
+        .toBe('monthly');
+      await page.getByLabel('每月日期', { exact: true }).fill('30');
+      await page.getByLabel('整理时间', { exact: true }).fill('05:30');
       const validation = page.getByRole('checkbox', {
         name: '自动专项验证',
         exact: true,
       });
-      expect(await validation.isChecked()).toBe(false);
-      await validation.check();
+      expect(await validation.isChecked()).toBe(true);
       const adoption = page.getByRole('checkbox', {
         name: '自动采用已验证的私人经验',
         exact: true,
       });
-      expect(await adoption.isChecked()).toBe(false);
-      await adoption.check();
+      expect(await adoption.isChecked()).toBe(true);
+      // All legacy feature flags remain on: retirement itself must reject this.
+      const rejected = page.waitForResponse(
+        (r) => r.url() === url && r.request().method() === 'PUT',
+      );
       await page
         .getByRole('button', { name: '保存整理设置', exact: true })
         .click();
+      const response = await rejected;
+      expect(response.status()).toBe(503);
+      expect(response.headers()['cache-control']).toBe('private, no-store');
+      expect(await response.json()).toMatchObject({
+        code: 'EXPERIENCE_SCHEDULING_UNAVAILABLE',
+      });
       await page
-        .getByRole('status')
-        .filter({ hasText: '已保存。整理按下一周期执行' })
+        .getByText('经验自动整理暂不可用，本次设置未保存；仍可关闭整理。', {
+          exact: true,
+        })
         .waitFor();
+      expect(await state()).toEqual(before);
       await page.reload();
       await page
         .getByRole('tab', { name: 'AI 员工与工作沉淀', exact: true })
@@ -323,16 +364,10 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
       expect(await adoption.isChecked()).toBe(true);
       const [saved] =
         await fixture.db`select value from allrice_settings where scope_type='organization' and scope_id=${company.organizationId} and key='employee_experience_policy'`;
-      expect(saved!.value).toMatchObject({
-        schemaVersion: 4,
-        revision: 2,
-        adoptionMode: 'supported_private',
-        adoptionAuthorizedBy: admin.actor.id,
-        frequency: 'monthly',
-        validationMode: 'supported_cases',
-        monthDay: 31,
-        time: '04:15',
-      });
+      expect(saved!.value).toEqual(historical);
+      expect((await (await context.request.get(url)).json()).policy).toEqual(
+        historical,
+      );
       const anonymous = await browser.newContext();
       try {
         expect(

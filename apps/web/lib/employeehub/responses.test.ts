@@ -5,6 +5,18 @@ import { EmployeeContentError } from '../../../../packages/database/src/employee
 import { employeeHubErrorResponse } from './responses';
 
 describe('employee instance content error distinctions', () => {
+  it('uses the existing protected-default conflict for instance archival', async () => {
+    const response = employeeHubErrorResponse(
+      new EmployeeInstanceError('default_protected'),
+    );
+    expect(response.status).toBe(409);
+    expect(ApiErrorSchema.parse(await response.json()).error).toMatchObject({
+      code: 'DEFAULT_EMPLOYEE_PROTECTED',
+      message: 'Rice is the protected default employee',
+      retryable: false,
+    });
+  });
+
   it('identifies archived instances without changing the HTTP conflict or safe message', async () => {
     const response = employeeHubErrorResponse(
       new EmployeeInstanceError('instance_archived'),

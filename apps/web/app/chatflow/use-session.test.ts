@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { EmployeeInstanceSchema } from '@allrice/contracts';
 import type { History, Session, Workspace } from './chatflow-types';
 
 // Exercises the actual hook's async control flow, not a DOM/React renderer.
@@ -137,6 +138,106 @@ describe('P26 History selection async control flow (synthetic fetch, explicit ho
   afterEach(() => {
     vi.unstubAllGlobals();
   });
+
+  it.each(['default', 'employee-url'])(
+    'projects the real general instance after a Rice save in the empty %s entry without changing assignment authority',
+    async (entry) => {
+      const id = (n: number) =>
+        `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+      const source = {
+        kind: 'platform' as const,
+        employeeVersionId: id(8),
+        templateId: id(70),
+        templateRevisionId: id(71),
+        templateRevision: 1,
+        templateChecksum: `sha256:${'a'.repeat(64)}`,
+      };
+      const general = EmployeeInstanceSchema.parse({
+        id: id(7),
+        assignmentId: id(107),
+        organizationId: id(3),
+        workspaceId: id(4),
+        ownerId: id(5),
+        kind: 'general',
+        revision: 2,
+        profile: {},
+        source,
+        creationSource: source,
+        createdAt: '2026-11-05T00:00:00Z',
+        updatedAt: '2026-11-05T00:00:00Z',
+        archivedAt: null,
+      });
+      const child = EmployeeInstanceSchema.parse({
+        ...general,
+        id: id(17),
+        kind: 'custom',
+        profile: { name: '另一本人员工' },
+      });
+      const view: Workspace = {
+        ...workspace,
+        organizationId: id(3),
+        workspaceId: id(4),
+        viewerId: id(5),
+        sessions: [],
+        employees: [
+          {
+            id: id(107),
+            employeeId: id(9),
+            employeeKey: 'default-assistant',
+            isDefault: true,
+            versions: [],
+            instances: [child, general],
+            currentVersion: {
+              id: id(8),
+              manifest: {
+                name: 'Rice',
+                schemaVersion: 2,
+                key: 'default-assistant',
+                isDefaultRice: true,
+              },
+            },
+          },
+        ],
+      };
+      window.location.search =
+        entry === 'employee-url' ? `?employee=${id(9)}` : '';
+      const pending = render().loadWorkspace();
+      requests[0]!.result.resolve(Response.json({ workspace: view }));
+      requests[1]!.result.resolve(Response.json({ capabilities: {} }));
+      await pending;
+      expect(render().activeId).toBeNull();
+      expect(render().newSessionEmployee).toMatchObject({
+        id: id(107),
+        instanceId: id(7),
+        currentVersion: { manifest: { name: 'Rice' } },
+      });
+      render().registerEmployeeInstance(
+        EmployeeInstanceSchema.parse({
+          ...general,
+          revision: 3,
+          profile: {
+            name: '青禾',
+            appearance: {
+              avatarType: 'initials',
+              avatarValue: '青',
+              accentColor: 'teal',
+            },
+          },
+        }),
+      );
+      expect(render().newSessionEmployee).toMatchObject({
+        id: id(107),
+        instanceId: id(7),
+        employeeId: id(9),
+        currentVersion: {
+          id: id(8),
+          manifest: { name: '青禾', appearance: { accentColor: 'teal' } },
+        },
+      });
+      expect(view.employees[0]!.currentVersion.manifest.name).toBe('Rice');
+      expect(requests).toHaveLength(2);
+    },
+  );
 
   it('an archive receipt for another session does not abort the selected history request', async () => {
     const state = await ready();

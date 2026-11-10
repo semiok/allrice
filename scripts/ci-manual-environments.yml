@@ -93,7 +93,6 @@ files:
     - packages/database/src/freeze-helpers.transaction.test.ts
     - scripts/acceptance/runtime/p27-codex-worker-fixture.test.ts
   manual-db:
-    - apps/worker/test/native-schedule-calendar.integration.test.ts
     - apps/worker/test/native-schedule-monthly.integration.test.ts
     - apps/worker/test/p25/dsh-control-journal-capture.test.ts
     - packages/database/src/desktop-bridge.integration.test.ts

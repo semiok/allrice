@@ -26,28 +26,30 @@ type Props = {
   fileName: string;
   version: number;
   icon?: boolean;
+  readOnly?: boolean;
 };
 export function SaveArtifactReference(props: Props) {
   const [open, setOpen] = useState(false);
   return (
     <>
-      {props.icon ? (
-        <Tooltip label="设为参考资料" side="bottom" portal>
-          <button
-            type="button"
-            className={reader.iconButton}
-            aria-label="设为参考资料"
-            onClick={() => setOpen(true)}
-          >
-            <WorkbenchFileIcon
-              kind="reference"
-              className={reader.opticalIcon}
-            />
-          </button>
-        </Tooltip>
-      ) : (
-        <Button onClick={() => setOpen(true)}>保存为参考资料</Button>
-      )}
+      {!props.readOnly &&
+        (props.icon ? (
+          <Tooltip label="设为参考资料" side="bottom" portal>
+            <button
+              type="button"
+              className={reader.iconButton}
+              aria-label="设为参考资料"
+              onClick={() => setOpen(true)}
+            >
+              <WorkbenchFileIcon
+                kind="reference"
+                className={reader.opticalIcon}
+              />
+            </button>
+          </Tooltip>
+        ) : (
+          <Button onClick={() => setOpen(true)}>保存为参考资料</Button>
+        ))}
       {open && <SaveDialog {...props} onClose={() => setOpen(false)} />}
     </>
   );
@@ -57,6 +59,7 @@ function SaveDialog({
   headers,
   versionId,
   fileName,
+  readOnly,
   onClose,
 }: Props & { onClose: () => void }) {
   const [options, setOptions] = useState<z.infer<
@@ -91,6 +94,13 @@ function SaveDialog({
     return () => controller.abort();
   }, [workspaceId, headerKey]);
   async function save() {
+    if (
+      readOnly ||
+      busy ||
+      !options?.writable ||
+      (scope === 'department' && !departmentId)
+    )
+      return;
     const value = {
       workspaceId,
       artifactVersionId: versionId,
@@ -162,7 +172,7 @@ function SaveDialog({
               保存范围
               <select
                 aria-label="保存范围"
-                disabled={busy || !options?.writable}
+                disabled={readOnly || busy || !options?.writable}
                 value={scope}
                 onChange={(e) => setScope(e.target.value as typeof scope)}
               >
@@ -181,7 +191,7 @@ function SaveDialog({
                 部门
                 <select
                   aria-label="部门"
-                  disabled={busy}
+                  disabled={readOnly || busy}
                   value={departmentId}
                   onChange={(e) => setDepartmentId(e.target.value)}
                 >
@@ -199,7 +209,7 @@ function SaveDialog({
                 aria-label="参考资料用途"
                 value={purpose}
                 maxLength={1000}
-                disabled={busy}
+                disabled={readOnly || busy}
                 onChange={(e) => setPurpose(e.target.value)}
                 placeholder="例如：每月经营报告的格式参考"
               />
@@ -231,6 +241,7 @@ function SaveDialog({
             <Button
               size="sm"
               disabled={
+                readOnly ||
                 busy ||
                 !options?.writable ||
                 (scope === 'department' && !departmentId)

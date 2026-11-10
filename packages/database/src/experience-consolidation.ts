@@ -1,18 +1,15 @@
-import { randomUUID, createHash } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import type postgres from 'postgres';
 import { z } from 'zod';
-import { newCurrentInternalNativeRootOrigin } from './conversation/native-root-origin.ts';
+
 import {
   ExperienceCollectionPolicySchema,
   ExperiencePolicySettingsSchema,
-  ExperienceEvidenceSchema,
   experiencePolicySchedule,
-  validateExperienceDraftOutput,
   UuidSchema,
   PlatformEmployeeDefinitionSchema,
   type EmployeeInstance,
   type RequestContext,
-  type Membership,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
 import { DataAccessError } from './data.ts';
@@ -32,11 +29,7 @@ import {
   assertPersonalSkillsReadable,
   PersonalSkillError,
 } from './employees/personal-skills.ts';
-import {
-  freezeEmployeeBaseSkills,
-  assertFrozenBaseSkillCatalog,
-} from './employees/employee-base-skills.ts';
-import { freezeExperienceModelSnapshot } from './providers/model-pool.ts';
+
 import { nextScheduleAt } from './execution/automation.ts';
 import type { ResourcePrincipal } from './resource-principal.ts';
 import {
@@ -44,7 +37,6 @@ import {
   ExperienceOccurrenceSchema,
   ExperienceExecutionSchema,
   ExperienceReceiptSchema,
-  experienceConsolidationLimits as limits,
   type ExperienceOccurrence,
 } from './experience-consolidation-contracts.ts';
 
@@ -260,74 +252,9 @@ export async function updateExperiencePolicy(
 }
 
 /** Materialize only instances with NEW captured evidence. No historical chat scan. */
+/** No new schedules for the retired experience-consolidation-v1 consumer. */
 export async function syncExperienceConsolidationSchedules() {
-  const { experienceNativeCalendarEnabled } =
-    await import('./experience-native.ts');
-  if (!experienceNativeCalendarEnabled()) return 0;
-  const db = getDatabase();
-  const instances = await db<
-    {
-      organization_id: string;
-      workspace_id: string;
-      owner_id: string;
-      instance_id: string;
-      assignment_id: string;
-    }[]
-  >`
-    select distinct e.organization_id,e.workspace_id,e.owner_id,e.instance_id,i.assignment_id
-    from allrice_experience_reviews e join allrice_memories m on m.id=e.memory_id and m.archived_at is null
-    join allrice_employee_instances i on i.id=e.instance_id and i.archived_at is null
-    join allrice_users u on u.id=e.owner_id and u.status='active'
-    join allrice_organizations o on o.id=e.organization_id and o.archived_at is null
-    join allrice_workspaces w on w.id=e.workspace_id and w.organization_id=e.organization_id and w.archived_at is null
-    join allrice_employee_assignments x on x.id=i.assignment_id and x.user_id=e.owner_id and x.active
-    join allrice_employees employee on employee.id=x.employee_id and employee.status='active'
-    left join allrice_settings policy on policy.scope_type='organization' and policy.scope_id=e.organization_id and policy.key='employee_experience_policy'
-    left join allrice_settings default_policy on default_policy.scope_type='system' and default_policy.scope_id is null and default_policy.key='employee_experience_policy'
-    where coalesce(policy.value,default_policy.value)->>'frequency'<>'off'
-      and exists(select 1 from allrice_memberships membership where membership.organization_id=e.organization_id and membership.user_id=e.owner_id
-        and membership.active and membership.role in ('member','admin') and (membership.workspace_id is null or membership.workspace_id=e.workspace_id))
-      and not exists(select 1 from allrice_platform_employee_tenant_assignments d where d.organization_id=x.organization_id and d.workspace_id=x.workspace_id and d.tenant_employee_id=x.employee_id and not d.active)
-      and e.origin_kind='incremental' and e.status='pending' and e.consolidation_occurrence_id is null
-      and not exists(select 1 from allrice_automations a where a.organization_id=e.organization_id and a.workspace_id=e.workspace_id
-        and a.owner_id=e.owner_id and a.experience_binding->>'instanceId'=e.instance_id::text and a.deleted_at is null)
-    order by e.organization_id,e.workspace_id,e.owner_id,e.instance_id,i.assignment_id limit 64`;
-  let count = 0;
-  for (const i of instances) {
-    try {
-      await db.begin(async (tx) => {
-        await tx`select pg_advisory_xact_lock(hashtextextended(${`experience-policy:${i.organization_id}`},183))`;
-        const policy = await readExperiencePolicy(i.organization_id, tx);
-        if (policy.frequency === 'off') return;
-        await resolveEmployeeSessionInstance(
-          identity({
-            organizationId: i.organization_id,
-            workspaceId: i.workspace_id,
-            ownerId: i.owner_id,
-          }),
-          i.assignment_id,
-          i.instance_id,
-          tx,
-        );
-        const schedule = experiencePolicySchedule(policy);
-        const inserted =
-          await tx`insert into allrice_automations(organization_id,workspace_id,owner_id,name,description,prompt,
-          trigger_type,schedule,status,conversation_mode,employee_assignment_id,next_run_at,experience_binding)
-          values(${i.organization_id},${i.workspace_id},${i.owner_id},'AI 员工经验整理','私有增量反馈整理；草稿尚未生效',
-            '仅整理已授权的私有反馈证据','schedule',${tx.json(schedule)},'enabled','new_each_run',${i.assignment_id},${nextScheduleAt(schedule)},
-            ${tx.json({ schemaVersion: 1, instanceId: i.instance_id, policyDigest: runtimePolicyDigest(policy) })})
-          on conflict do nothing returning id`;
-        count += inserted.length;
-      });
-    } catch (error) {
-      if (!(
-        error instanceof DataAccessError ||
-        error instanceof EmployeeInstanceError
-      ))
-        throw error;
-    }
-  }
-  return count;
+  return 0;
 }
 
 export type ExperienceOccurrenceReservation =
@@ -342,170 +269,18 @@ export type ExperienceOccurrenceReservation =
     }
   | { outcome: 'policy_blocked'; reason: 'disabled' | 'policy_changed' };
 
-/** Original source/budget/Run reservation, composable with the calendar P
- * decision. The caller already owns the business automation lock. An exact
- * historical Run is checked before budget counts or any source reservation. */
+/** Retained native receipts cannot reserve or replay old business work. */
 export async function reserveExperienceOccurrenceInTransaction(
   tx: Tx,
   rule: Rule,
   scheduledFor: Date,
   nativeRecurringOccurrenceId: string | null = null,
 ): Promise<ExperienceOccurrenceReservation> {
-  if (!experienceReviewEnabled())
-    return { outcome: 'policy_blocked', reason: 'disabled' };
-  const binding = ExperienceAutomationBindingSchema.parse(
-    rule.experience_binding,
-  );
-  async function existing() {
-    const [row] = await tx<
-      {
-        id: string;
-        organization_id: string;
-        workspace_id: string;
-        experience_occurrence: unknown;
-      }[]
-    >`
-      select id,organization_id,workspace_id,experience_occurrence from allrice_automation_runs
-      where automation_id=${rule.id} and scheduled_for=${scheduledFor} and folder_event_id is null for share`;
-    if (!row) return null;
-    const occurrence = ExperienceOccurrenceSchema.parse(
-      row.experience_occurrence,
-    );
-    if (
-      row.organization_id !== rule.organization_id ||
-      row.workspace_id !== rule.workspace_id ||
-      occurrence.ownerId !== rule.owner_id ||
-      occurrence.assignmentId !== rule.employee_assignment_id ||
-      occurrence.instanceId !== binding.instanceId ||
-      occurrence.id !== row.id
-    )
-      return deny();
-    return row.id;
-  }
-  const prior = await existing();
-  if (prior) return { outcome: 'already_claimed', automationRunId: prior };
-  const policy = await readExperiencePolicy(rule.organization_id, tx);
-  if (
-    policy.frequency === 'off' ||
-    runtimePolicyDigest(policy) !== binding.policyDigest
-  ) {
-    await tx`update allrice_automations set status='paused',next_run_at=null where id=${rule.id}`;
-    return { outcome: 'policy_blocked', reason: 'policy_changed' };
-  }
-  await tx`select pg_advisory_xact_lock(hashtext('experience-consolidation-daily-budget'))`;
-  const [budget] = await tx<
-    { global_count: number; org_count: number; instance_count: number }[]
-  >`
-    select count(*)::int global_count,count(*) filter(where organization_id=${rule.organization_id})::int org_count,
-      count(*) filter(where experience_occurrence->>'instanceId'=${binding.instanceId})::int instance_count
-    from allrice_automation_runs where experience_occurrence is not null
-      and jsonb_array_length(experience_occurrence->'sources')>0 and created_at>clock_timestamp()-interval '24 hours'`;
-  if (
-    budget!.global_count >= limits.globalDailyRuns ||
-    budget!.org_count >= limits.organizationDailyRuns ||
-    budget!.instance_count >= 1
-  )
-    return {
-      outcome: 'budget',
-      budget: {
-        globalCount: budget!.global_count,
-        organizationCount: budget!.org_count,
-        instanceCount: budget!.instance_count,
-      },
-    };
-  const owner = {
-    organizationId: rule.organization_id,
-    workspaceId: rule.workspace_id,
-    ownerId: rule.owner_id,
-  };
-  const instance = await resolveEmployeeSessionInstance(
-    identity(owner),
-    rule.employee_assignment_id!,
-    binding.instanceId,
-    tx,
-  );
-  const rows = await tx<
-    {
-      memory_id: string;
-      run_id: string;
-      session_id: string;
-      message_id: string;
-      source_excerpt: string;
-      source_digest: string;
-      evidence: unknown;
-    }[]
-  >`
-    select e.memory_id,e.run_id,e.session_id,e.message_id,e.source_excerpt,e.source_digest,e.evidence
-    from allrice_experience_reviews e join allrice_memories m on m.id=e.memory_id
-    join allrice_chat_sessions s on s.id=e.session_id and s.owner_id=e.owner_id and s.archived_at is null
-    where e.organization_id=${rule.organization_id} and e.workspace_id=${rule.workspace_id} and e.owner_id=${rule.owner_id}
-      and e.instance_id=${binding.instanceId} and e.origin_kind='incremental' and e.status='pending'
-      and e.consolidation_occurrence_id is null and m.archived_at is null and m.lifecycle_state='candidate'
-    order by e.created_at,e.memory_id for update of e,m skip locked limit ${limits.sources}`;
-  let characters = 0;
-  const sources = rows
-    .filter((r) => {
-      characters += r.source_excerpt.length;
-      return characters <= limits.sourceCharacters;
-    })
-    .map((r) => ({
-      id: r.memory_id,
-      runId: r.run_id,
-      sessionId: r.session_id,
-      messageId: r.message_id,
-      excerpt: r.source_excerpt,
-      sourceDigest: r.source_digest,
-      evidence: ExperienceEvidenceSchema.parse(r.evidence),
-    }));
-  const [assignment] = await tx<
-    { employee_id: string }[]
-  >`select employee_id from allrice_employee_assignments where id=${instance.assignmentId}`;
-  if (!assignment) return deny();
-  await tx`select pg_advisory_xact_lock_shared(hashtextextended(${`employee-content:${owner.organizationId}`},0))`;
-  const occurrence = ExperienceOccurrenceSchema.parse({
-    schemaVersion: 1,
-    id: randomUUID(),
-    ...owner,
-    assignmentId: instance.assignmentId,
-    instanceId: instance.id,
-    employeeId: assignment.employee_id,
-    employeeVersionId: instance.source.employeeVersionId,
-    instanceDigest: stableInstance(instance),
-    currentRules: await currentRules(
-      tx,
-      { ...owner, employeeId: assignment.employee_id },
-      instance,
-    ),
-    policy,
-    policyDigest: runtimePolicyDigest(policy),
-    createdAt: new Date().toISOString(),
-    sources,
-  });
-  const origin = sources.length
-    ? newCurrentInternalNativeRootOrigin(
-        'experience_consolidation',
-        occurrence.id,
-        {
-          recipe: 'allrice-experience-consolidation/v1',
-          occurrence,
-        },
-      )
-    : null;
-  const [written] =
-    await tx`insert into allrice_automation_runs(id,organization_id,workspace_id,automation_id,scheduled_for,status,
-    experience_occurrence,completed_at,error_code,native_root_origin,native_recurring_occurrence_id) values(${occurrence.id},${rule.organization_id},${rule.workspace_id},${rule.id},
-      ${scheduledFor},${sources.length ? 'queued' : 'succeeded'},${tx.json(occurrence)},${sources.length ? null : new Date()},${sources.length ? null : 'EXPERIENCE_NO_NEW_EVIDENCE'},${origin ? tx.json(origin) : null},${nativeRecurringOccurrenceId})
-    on conflict(automation_id,scheduled_for) where folder_event_id is null and manual_request_id is null do nothing returning id`;
-  if (!written) {
-    const exact = await existing();
-    if (!exact) return deny();
-    return { outcome: 'already_claimed', automationRunId: exact };
-  }
-  if (!sources.length)
-    return { outcome: 'empty', automationRunId: occurrence.id }; // No job, route, native runtime or model charge.
-  await tx`update allrice_experience_reviews set consolidation_occurrence_id=${occurrence.id}
-    where memory_id in ${tx(sources.map((s) => s.id))} and consolidation_occurrence_id is null`;
-  return { outcome: 'queued', automationRunId: occurrence.id };
+  void tx;
+  void rule;
+  void scheduledFor;
+  void nativeRecurringOccurrenceId;
+  return { outcome: 'policy_blocked', reason: 'disabled' };
 }
 
 async function loadOccurrence(
@@ -542,14 +317,8 @@ async function assertCurrent(
   lock = true,
 ) {
   if (!experienceReviewEnabled()) throw new ExperienceError('disabled');
-  if (executing) {
-    const policy = await readExperiencePolicy(occurrence.organizationId, tx);
-    if (
-      policy.frequency === 'off' ||
-      runtimePolicyDigest(policy) !== occurrence.policyDigest
-    )
-      return deny();
-  }
+  // Existing source reads use executing=false; only old execution is closed.
+  if (executing) throw new ExperienceError('disabled');
   const who = identity(occurrence);
   // Match personal-Skill mutation order and retain the shared content lock
   // through receipt commit, so a concurrent revocation cannot slip past pins.
@@ -670,71 +439,15 @@ export async function readExperienceValidationSource(
 export async function experienceOccurrencePrincipal(
   id: string,
 ): Promise<ResourcePrincipal> {
-  return getDatabase().begin(async (tx) => {
-    const { occurrence, row } = await loadOccurrence(tx, id);
-    if (
-      row.deleted_at ||
-      row.automation_status !== 'enabled' ||
-      !occurrence.sources.length
-    )
-      return deny();
-    await assertCurrent(tx, occurrence);
-    const rows = await tx<
-      { id: string; role: Membership['role']; workspace_id: string | null }[]
-    >`
-      select id,role,workspace_id from allrice_memberships where user_id=${occurrence.ownerId} and organization_id=${occurrence.organizationId}
-        and active and role in ('member','admin') and (workspace_id is null or workspace_id=${occurrence.workspaceId})`;
-    return {
-      requestId: occurrence.id,
-      ...identity(occurrence),
-      memberships: rows.map((r) => ({
-        id: r.id,
-        userId: occurrence.ownerId,
-        organizationId: occurrence.organizationId,
-        workspaceId: r.workspace_id,
-        role: r.role,
-        active: true,
-      })),
-    };
-  });
+  void id;
+  throw new ExperienceError('disabled');
 }
 
-export async function prepareExperienceExecution(id: string) {
-  await experienceOccurrencePrincipal(id);
-  const db = getDatabase(),
-    { row, occurrence } = await loadOccurrence(db, id);
-  if (row.experience_execution)
-    return ExperienceExecutionSchema.parse(row.experience_execution);
-  const base = await freezeEmployeeBaseSkills([]);
-  const skill = base.nativeSkills.find(
-    (s) => s.name === 'experience-consolidation',
-  );
-  const entry = base.catalog?.skills.find((s) => s.id === skill?.id);
-  if (!skill || !entry || !base.catalog)
-    throw Error('EXPERIENCE_SKILL_UNAVAILABLE');
-  const nativeSkills = [skill],
-    skills = [entry];
-  const catalog = {
-    ...base.catalog,
-    skills,
-    snapshotChecksum: runtimePolicyDigest({ skills, nativeSkills }),
-  };
-  const model = await freezeExperienceModelSnapshot({
-    ...occurrence,
-    occurrenceId: occurrence.id,
-  });
-  const execution = ExperienceExecutionSchema.parse({
-    schemaVersion: 1,
-    occurrenceDigest: runtimePolicyDigest(occurrence),
-    model,
-    nativeSkills,
-    catalog,
-  });
-  await db`update allrice_automation_runs set experience_execution=${db.json(execution)} where id=${id}
-    and experience_execution is null and run_id is null and status='queued'`;
-  return ExperienceExecutionSchema.parse(
-    (await loadOccurrence(db, id)).row.experience_execution,
-  );
+export async function prepareExperienceExecution(
+  id: string,
+): Promise<z.infer<typeof ExperienceExecutionSchema>> {
+  void id;
+  throw new ExperienceError('disabled');
 }
 
 export async function bindExperienceRun(
@@ -743,23 +456,11 @@ export async function bindExperienceRun(
   runId: string,
   ownerId: string,
 ) {
-  const { row, occurrence } = await loadOccurrence(tx, id);
-  await assertCurrent(tx, occurrence);
-  if (
-    ownerId !== occurrence.ownerId ||
-    row.status !== 'queued' ||
-    row.deleted_at ||
-    row.automation_status !== 'enabled' ||
-    (row.run_id && row.run_id !== runId)
-  )
-    return deny();
-  const execution = ExperienceExecutionSchema.parse(row.experience_execution);
-  if (
-    execution.model.occurrenceId !== id ||
-    execution.occurrenceDigest !== runtimePolicyDigest(occurrence)
-  )
-    return deny();
-  await tx`update allrice_automation_runs set run_id=${runId} where id=${id} and run_id is null`;
+  void tx;
+  void id;
+  void runId;
+  void ownerId;
+  throw new ExperienceError('disabled');
 }
 
 export async function getExperienceExecution(runId: string) {
@@ -768,30 +469,22 @@ export async function getExperienceExecution(runId: string) {
   );
 }
 
-/** Preserves the full source/policy/Skill authority check in the caller's
- * existing Job transaction, without acquiring a second connection or lock183. */
+/** Existing queue/native gates translate the disabled business authority
+ * through their existing failure contracts, before any new model execution. */
 export async function getExperienceExecutionInTransaction(
   tx: Tx,
   runId: string,
-) {
-  const [r] =
-    await tx`select id from allrice_automation_runs where run_id=${runId} and experience_occurrence is not null`;
-  if (!r) return deny();
-  const { row, occurrence } = await loadOccurrence(tx, r.id);
-  if (row.deleted_at || row.automation_status !== 'enabled') return deny();
-  await assertCurrent(tx, occurrence);
-  const execution = ExperienceExecutionSchema.parse(row.experience_execution);
-  assertFrozenBaseSkillCatalog(execution.catalog, execution.nativeSkills);
-  if (
-    execution.model.occurrenceId !== occurrence.id ||
-    execution.model.employeeId !== occurrence.employeeId ||
-    execution.occurrenceDigest !== runtimePolicyDigest(occurrence)
-  )
-    return deny();
-  return { occurrence, execution };
+): Promise<{
+  occurrence: ExperienceOccurrence;
+  execution: z.infer<typeof ExperienceExecutionSchema>;
+}> {
+  void tx;
+  void runId;
+  throw new ExperienceError('disabled');
 }
 
-/** completeJob owns the lease lock and commits receipt + source progress atomically. */
+/** Refuse late business output. The Worker already settles model usage in
+ * its route transaction; the ordinary Job failure path retains that ledger. */
 export async function completeExperienceConsolidation(
   tx: Tx,
   job: {
@@ -802,76 +495,24 @@ export async function completeExperienceConsolidation(
     lease_expires_at: Date | null;
   },
   raw: unknown,
-) {
-  const [r] =
-    await tx`select id from allrice_automation_runs where run_id=${job.run_id} and experience_occurrence is not null for update`;
-  if (!r || job.timeout_at <= new Date()) return deny();
-  const { row, occurrence } = await loadOccurrence(tx, r.id);
-  if (
-    row.deleted_at ||
-    row.automation_status !== 'enabled' ||
-    occurrence.ownerId !== job.owner_id
-  )
-    return deny();
-  await assertCurrent(tx, occurrence);
-  const execution = ExperienceExecutionSchema.parse(row.experience_execution);
-  const output = validateExperienceDraftOutput(
-    raw,
-    occurrence.sources.map((s) => s.id),
-  );
-  const skill = execution.nativeSkills[0]!,
-    pin = execution.catalog.skills[0]!;
-  const [load] =
-    await tx`select id from allrice_run_events where run_id=${job.run_id} and event_type='tool.completed'
-    and payload->>'name'='skill' and payload->'nativePayload'->>'skillStatus'='loaded'
-    and payload->'nativePayload'->>'skillId'=${skill.id} and payload->'nativePayload'->>'skillChecksum'=${skill.checksum}
-    and payload->'nativePayload'->>'skillVersion'=${pin.version}
-    and payload->'nativePayload'->>'skillCatalogChecksum'=${execution.catalog.catalogChecksum}
-    and payload->'internalTask'->>'occurrenceId'=${occurrence.id} order by sequence limit 1`;
-  const [accounted] =
-    await tx`select d.id from allrice_route_decisions d join allrice_model_usage_ledger l on l.route_decision_id=d.id
-    where d.run_id=${job.run_id} and d.status='succeeded'`;
-  if (!load || !accounted) throw Error('EXPERIENCE_EXECUTION_PROOF_REQUIRED');
-  // Authority checks can wait for concurrent content changes. The job lock
-  // prevents heartbeats while we wait: recheck real database time at commit.
-  const [clock] = await tx<{ now: Date }[]>`select clock_timestamp() as now`;
-  if (
-    !job.lease_expires_at ||
-    job.lease_expires_at <= clock!.now ||
-    job.timeout_at <= clock!.now
-  ) {
-    const { QueueError } = await import('./execution/queue.ts');
-    throw new QueueError('lease_lost');
-  }
-  const receipt = ExperienceReceiptSchema.parse({
-    schemaVersion: 1,
-    state: 'pending_validation',
-    occurrenceDigest: runtimePolicyDigest(occurrence),
-    executionDigest: runtimePolicyDigest(execution),
-    runId: job.run_id,
-    output,
-    revision: 1,
-    outputDigest: runtimePolicyDigest(output),
-    skillLoadEventId: load.id,
-    createdAt: new Date().toISOString(),
-  });
-  await tx`update allrice_automation_runs set experience_receipt=${tx.json(receipt)} where id=${occurrence.id} and experience_receipt is null`;
-  await tx`update allrice_experience_reviews set consolidated_at=clock_timestamp() where consolidation_occurrence_id=${occurrence.id}`;
-  return {
-    occurrenceId: occurrence.id,
-    state: receipt.state,
-    draftCount: output.drafts.length,
-  };
+): Promise<{
+  occurrenceId: string;
+  state: 'pending_validation';
+  draftCount: number;
+}> {
+  void tx;
+  void job;
+  void raw;
+  throw new ExperienceError('disabled');
 }
 
-export async function recoverExperienceOccurrences(limit = 4) {
-  if (!experienceReviewEnabled()) return [];
-  const rows = await getDatabase()<
-    { id: string }[]
-  >`select id from allrice_automation_runs
-    where experience_occurrence is not null and run_id is null and status='queued' order by created_at,id limit ${Math.min(limit, 16)}`;
-  return rows.map((r) => r.id);
+export async function recoverExperienceOccurrences(
+  limit = 4,
+): Promise<string[]> {
+  void limit;
+  return [];
 }
+
 export async function dispatchExperienceOccurrence(id: string) {
   const { enqueueExperienceConsolidationRun } =
     await import('./execution/queue.ts');

@@ -12,6 +12,25 @@ import { PersonalSkillError, skillBytesChecksum } from '@allrice/database';
 /** The upstream parser sees only this owned file. No default/project roots,
  * watchers, archive paths, scripts, symlinks or dependency installation. */
 export async function parsePersonalSkill(bytes: Uint8Array) {
+  const { originalText, skill } = await parseNativeSkill(bytes);
+  const definition = PersonalSkillDefinitionSchema.parse({
+    name: skill.name,
+    description: skill.description,
+    content: skill.content,
+    checksum: skillBytesChecksum(skill.content),
+    invocation: skill.invocation,
+    ...(skill.whenToUse ? { whenToUse: skill.whenToUse } : {}),
+    ...(skill.metadata ? { metadata: skill.metadata } : {}),
+  });
+  return { originalText, definition };
+}
+
+/** Shared public native parser; caller-specific ordinary/Workflow contracts
+ * are applied after the same isolated, non-executing read. */
+export async function parseNativeSkill(bytes: Uint8Array): Promise<{
+  originalText: string;
+  skill: NonNullable<Awaited<ReturnType<FileSystemSkillProvider['get']>>>;
+}> {
   if (!bytes.byteLength || bytes.byteLength > personalSkillLimits.sourceBytes)
     throw new PersonalSkillError('source_invalid');
   let originalText: string;
@@ -50,16 +69,7 @@ export async function parsePersonalSkill(bytes: Uint8Array) {
       throw new PersonalSkillError('source_invalid');
     const skill = await provider.get(candidates[0]!, options);
     if (!skill) throw new PersonalSkillError('source_invalid');
-    const definition = PersonalSkillDefinitionSchema.parse({
-      name: skill.name,
-      description: skill.description,
-      content: skill.content,
-      checksum: skillBytesChecksum(skill.content),
-      invocation: skill.invocation,
-      ...(skill.whenToUse ? { whenToUse: skill.whenToUse } : {}),
-      ...(skill.metadata ? { metadata: skill.metadata } : {}),
-    });
-    return { originalText, definition };
+    return { originalText, skill };
   } finally {
     control.abort();
     await provider.dispose();

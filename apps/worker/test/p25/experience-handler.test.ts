@@ -150,3 +150,17 @@ it.each([false, true])(
     expect(ports.close).toHaveBeenCalledOnce();
   },
 );
+
+it('rejects a retired occurrence before creating an adapter, route or model request', async () => {
+  const disabled = new Error('disabled');
+  ports.frozen.mockRejectedValue(disabled);
+  await expect(
+    executeExperienceConsolidation({
+      execution: { context: { runId: randomUUID() } },
+    } as unknown as ClaimedJobHandlerInput),
+  ).rejects.toBe(disabled);
+  expect(ports.execute).not.toHaveBeenCalled();
+  expect(ports.route).not.toHaveBeenCalled();
+  expect(ports.subscription).not.toHaveBeenCalled();
+  expect(ports.admit).not.toHaveBeenCalled();
+});

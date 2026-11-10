@@ -45,7 +45,8 @@
 .experience {
   color: light-dark(#8551ce, #b18aef);
 }
-.workflow {
+.workflow,
+.iconButton.workflow {
   color: light-dark(#249552, #69cf8b);
 }
 .schedule {
