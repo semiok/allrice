@@ -475,6 +475,10 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
         const kernel = EmployeeKernelRequestSchema.parse(input.kernel);
         expect(kernel.employeeDocuments).toEqual(prompt.employeeDocuments);
         expect(kernel.rootSystemInstructions).toBe(kernel.systemInstructions);
+        expect(input.tools.map((tool) => tool.name)).toEqual([
+          'platform.repository.repair',
+        ]);
+        expect(input.nativeSkills).toEqual([]);
         expect(input.nativeSubagents).toBeUndefined();
         expect(input.nativeRunAuthority).toBeUndefined();
         return actualExecute(input);
@@ -508,8 +512,12 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
       expect(content('system')).toContain(platformRepairInstructions);
       expect(content('system')).toContain(prompt.systemPrompt);
       expect(content('system')).not.toContain('FIXED_PERSONA_LITERAL');
+      // The restricted profile retains these native DSH control tools.
       expect(request.tools?.map((tool) => tool.function.name)).toEqual([
+        'ask_user_question',
         'platform_repository_repair',
+        'skill',
+        'todo_write',
       ]);
       expect(
         request.messages.some(

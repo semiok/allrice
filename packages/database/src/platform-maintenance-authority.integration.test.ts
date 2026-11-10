@@ -658,6 +658,10 @@ suite('immutable report-bound maintenance authority', () => {
           const kernel = EmployeeKernelRequestSchema.parse(input.kernel);
           expect(kernel.employeeDocuments).toEqual(prompt.employeeDocuments);
           expect(kernel.rootSystemInstructions).toBe(kernel.systemInstructions);
+          expect(input.tools.map((tool) => tool.name)).toEqual([
+            'platform.repository.repair',
+          ]);
+          expect(input.nativeSkills).toEqual([]);
           expect(input.nativeSubagents).toBeUndefined();
           expect(input.nativeRunAuthority).toBeUndefined();
           expect(
@@ -698,8 +702,12 @@ suite('immutable report-bound maintenance authority', () => {
         );
         expect(content('system')).toContain(prompt.systemPrompt);
         expect(content('system')).not.toContain('MAINTENANCE_PERSONA_LITERAL');
+        // The restricted profile retains these native DSH control tools.
         expect(request.tools?.map((tool) => tool.function.name)).toEqual([
+          'ask_user_question',
           'platform_repository_repair',
+          'skill',
+          'todo_write',
         ]);
         expect(
           request.messages.some(
@@ -917,6 +925,16 @@ suite('immutable report-bound maintenance authority', () => {
     expect(
       await fixture.db`select * from allrice_memberships where organization_id=${company.org} order by id`,
     ).toEqual(untouched);
+    // The fixture's handler and every late receipt have now returned.
+    await failJob({
+      ...lease,
+      code: 'AUTHORITY_FIXTURE_COMPLETE',
+      message: 'Synthetic authority receipts settled; no physical repair',
+      retryable: false,
+    });
+    const [finished] =
+      await fixture.db`select status from allrice_jobs where id=${lease.jobId}`;
+    expect(finished!.status).toBe('canceled');
   }
   it('creates one real Employee Run from persisted authority without fabricating a browser login; manifest, budgets and revocation survive DB round trips', () =>
     exerciseMaintenanceAuthority('authority'));
