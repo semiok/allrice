@@ -145,6 +145,122 @@ suite('workbench icon scale and workflow identity', () => {
       };
     });
 
+  const focusState = (target: Locator) =>
+    target.evaluate((element) => ({
+      tag: element.tagName,
+      active: document.activeElement === element,
+      visible: element.matches(':focus-visible'),
+      outline: getComputedStyle(element).outlineWidth,
+      modality: document.documentElement.getAttribute('data-input-modality'),
+    }));
+
+  for (const theme of ['light', 'dark'])
+    it(`“鼠标点图标不要像被选中，键盘仍能看见焦点”：${theme}`, async () => {
+      const page = await browser.newPage({
+        viewport: { width: 1200, height: 800 },
+      });
+      const fixture = feed.register({ summary: () => summary });
+      const directory = join(process.cwd(), '.local', 'pointer-focus');
+      mkdirSync(directory, { recursive: true });
+      try {
+        await feed.bindPage(page, origin, fixture);
+        await page.goto(`${origin}/?icons&focus&theme=${theme}`);
+        const agents = page.getByRole('button', { name: '1 个子智能体' });
+        await agents.waitFor();
+        await agents.click();
+        expect(await focusState(agents)).toMatchObject({
+          tag: 'BUTTON',
+          active: true,
+          outline: '0px',
+          modality: 'pointer',
+        });
+        await page.keyboard.press('ArrowDown');
+        const child = page.getByRole('treeitem', { name: '核对数据摘要' });
+        await expect
+          .poll(() => child.evaluate((node) => node === document.activeElement))
+          .toBe(true);
+        await page.keyboard.press('Escape');
+        expect(await focusState(agents)).toMatchObject({
+          active: true,
+          visible: true,
+          outline: '2px',
+          modality: 'keyboard',
+        });
+        await page.screenshot({
+          path: join(directory, `${theme}-keyboard.png`),
+        });
+        await agents.click();
+        const clicked = await focusState(agents);
+        await page.screenshot({ path: join(directory, `${theme}-mouse.png`) });
+        writeFileSync(
+          join(directory, `${theme}-mouse.json`),
+          JSON.stringify(clicked),
+        );
+        expect
+          .soft(clicked)
+          .toMatchObject({ active: true, outline: '0px', modality: 'pointer' });
+        // A pointer-only second open/close must not regain the old keyboard ring.
+        await page.getByRole('heading', { level: 1 }).click();
+        await agents.click();
+        expect.soft(await focusState(agents)).toMatchObject({ outline: '0px' });
+        await page.getByRole('heading', { level: 1 }).click();
+        const entries = page.getByLabel('工作台入口');
+        for (const name of [
+          '工作区文件，33 项新增',
+          '记忆，1 项新增',
+          '工作场景',
+        ]) {
+          const button = entries.getByRole('button', { name, exact: true });
+          await button.click();
+          await page.keyboard.press('Tab');
+          await page.keyboard.press('Shift+Tab');
+          expect(await focusState(button)).toMatchObject({
+            active: true,
+            outline: '2px',
+            modality: 'keyboard',
+          });
+          await button.click();
+          expect
+            .soft(await focusState(button))
+            .toMatchObject({
+              active: true,
+              outline: '0px',
+              modality: 'pointer',
+            });
+        }
+        const form = page.getByRole('button', { name: '打开焦点测试表单' });
+        await form.click();
+        const dialog = page.getByRole('dialog', { name: '焦点测试表单' });
+        await expect
+          .poll(() =>
+            page
+              .getByRole('textbox', { name: '表单内容' })
+              .evaluate((node) => node === document.activeElement),
+          )
+          .toBe(true);
+        // The existing dialog keeps its focus trap and return target on both inputs.
+        await page.keyboard.press('Escape');
+        expect(await focusState(form)).toMatchObject({
+          active: true,
+          outline: '2px',
+          modality: 'keyboard',
+        });
+        await form.click();
+        await dialog.getByRole('button', { name: '关闭' }).click();
+        expect
+          .soft(await focusState(form))
+          .toMatchObject({ active: true, outline: '0px', modality: 'pointer' });
+        await form.click();
+        await page.getByRole('textbox', { name: '表单内容' }).waitFor();
+        await page.mouse.click(5, 5);
+        expect
+          .soft(await focusState(form))
+          .toMatchObject({ active: true, outline: '0px', modality: 'pointer' });
+      } finally {
+        await page.close();
+      }
+    });
+
   for (const width of [1440, 390])
     for (const theme of ['light', 'dark'] as const)
       it(`“图标一样大，工作流改绿色路线”：${width}px ${theme}`, async () => {

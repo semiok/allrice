@@ -29,6 +29,29 @@ import { createSessionRunStream } from '../app/chatflow/session-run-stream';
 import conversationUi from '../app/chatflow/dsh-upstream/ConversationRoot.module.css';
 import shellUi from '../app/chatflow/dsh-saas.module.css';
 import type { Session, Workspace } from '../app/chatflow/chatflow-types';
+import { DshDialog } from '../app/chatflow/dsh-upstream/Dialog';
+import workbenchUi from '../app/chatflow/workbench-modules.module.css';
+
+function FocusDialogFixture() {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button className={workbenchUi.iconButton} onClick={() => setOpen(true)}>
+        打开焦点测试表单
+      </button>
+      {open && (
+        <DshDialog
+          ariaLabel="焦点测试表单"
+          title="焦点测试表单"
+          initialFocusSelector="input"
+          onClose={() => setOpen(false)}
+        >
+          <input aria-label="表单内容" />
+        </DshDialog>
+      )}
+    </>
+  );
+}
 
 export const sessions: Session[] = ['parent-a', 'parent-b', 'parent-c'].map(
   (id) => ({
@@ -208,6 +231,7 @@ function Page() {
             </div>
           </div>
         </header>
+        {query.has('focus') && <FocusDialogFixture />}
         {(controls || query.has('details')) && (
           <DetailFixture
             key={activeId}
