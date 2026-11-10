@@ -7,16 +7,35 @@ import type { MemoryContextItem } from './memory-context.ts';
 const utf8Bytes = (text: string) => new TextEncoder().encode(text).byteLength;
 const boundedText = (maximum: number) =>
   z.string().refine((text) => utf8Bytes(text) <= maximum);
+export const employeeMemoryIndexMaximumInitialBytes = 18_303;
 
 /** Generated database views, never editable files or permission assertions. */
-export const EmployeeDocumentsSchema = z
+export const EmployeeDocumentsV1Schema = z
   .object({
     persona: boundedText(16384).optional(),
     user: boundedText(2048),
     memory: boundedText(6000),
   })
   .strict();
+export const EmployeeDocumentsV2Schema = z
+  .object({
+    schemaVersion: z.literal(2),
+    user: boundedText(2048),
+    memory: boundedText(employeeMemoryIndexMaximumInitialBytes),
+  })
+  .strict();
+export const EmployeeDocumentsSchema = z.union([
+  EmployeeDocumentsV1Schema,
+  EmployeeDocumentsV2Schema,
+]);
 export type EmployeeDocuments = z.infer<typeof EmployeeDocumentsSchema>;
+export function isMemoryIndexDocuments(
+  documents: EmployeeDocuments | undefined,
+): documents is z.infer<typeof EmployeeDocumentsV2Schema> {
+  return (
+    !!documents && 'schemaVersion' in documents && documents.schemaVersion === 2
+  );
+}
 
 /** Platform test provenance is not an owner/instance version or a permissions grant. */
 const PreviewPersonaSourceSchema = z
