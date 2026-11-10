@@ -68,6 +68,7 @@ import {
   type PlatformEmployeeDefinition,
 } from '@allrice/contracts';
 import { authorizeFixturePlatformAdministrator } from '../../../../packages/database/src/platform-authority.fixture.ts';
+import { setRuntimePolicyControls } from '../../../../packages/database/src/runtime-policy.ts';
 import {
   createSession,
   authenticateSession,
@@ -472,6 +473,17 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       `${source.ownerId}@example.test`,
     );
     await authorizeFixturePlatformAdministrator(base.db, source.ownerId);
+    const controls = { version: 1, enabled: true, mode: 'execute', rules: [] };
+    await setRuntimePolicyControls(context, controls, null, base.db);
+    const [policy] =
+      await base.db`select organization_id,workspace_id,version,controls from allrice_runtime_policy_controls
+        where organization_id=${source.organizationId} and workspace_id=${source.workspaceId}`;
+    expect(policy).toEqual({
+      organization_id: source.organizationId,
+      workspace_id: source.workspaceId,
+      version: 1,
+      controls,
+    });
     const definition: PlatformEmployeeDefinition = {
       ...source.definition,
       name: 'TASK_ENGINE_A {{missing}}',
@@ -555,11 +567,12 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       schemaVersion: 2,
     });
     await base.db`update allrice_organizations set name='TASK_ORG_FACT',business_context='TASK_BUSINESS_FACT {{missing}}' where id=${identity.org}`;
-    const prompt = '请按月报核对流程整理12笔，不合并退款。';
+    const prompt =
+      '月报核对流程：整理12笔交易记录，逐笔保留原始编号与核对依据。退款记录单独列示，不合并退款。先输出中文表格，再列出差异与待确认事项。';
     const memories: Awaited<ReturnType<typeof createTraceableMemory>>[] = [];
     for (const content of [
-      '月报核对流程：整理12笔，不合并退款。TASK_MEMORY_KEEP {{missing}}',
-      '月报核对流程：整理12笔，不合并退款。TASK_MEMORY_WITHDRAW',
+      `${prompt}TASK_MEMORY_KEEP {{missing}}`,
+      `${prompt}TASK_MEMORY_WITHDRAW`,
     ])
       memories.push(
         await createTraceableMemory(context, {
