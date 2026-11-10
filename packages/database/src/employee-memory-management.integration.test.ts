@@ -7,6 +7,7 @@ import {
 import * as client from './core/client.ts';
 import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createRunAuthorityFixture } from './run-authority.fixture.ts';
+import { seedLegacyEmployeeMemory } from './workspace/employee-memory-v1.fixture.ts';
 import {
   authenticateSession,
   createSession,
@@ -100,12 +101,19 @@ suite(
       contentDigest: m.contentDigest,
       idempotencyKey: randomUUID(),
     });
-    it('lists the current owner instance; direct edit confirms exactly what was saved; old confirmation conflicts', async () => {
+    it('lists the owner instance; historical v1 edit confirms the exact body and stale confirmation conflicts', async () => {
       const s = await setup();
       const empty = await s.page();
       expect(empty.memories).toEqual([]);
       expect(empty).not.toHaveProperty('employeeId');
-      const memory = await s.save('月报常用入口', 'candidate');
+      const memory = await seedLegacyEmployeeMemory(fixture.db, s.context, {
+        workspaceId: s.workspace,
+        instanceId: s.assignment,
+        sourceType: 'user',
+        content: '月报常用入口',
+        lifecycleState: 'candidate',
+        memoryClass: 'user_preference',
+      });
       await s.save('别的实例入口', 'durable', s.other.id);
       expect(
         (await s.page({ state: 'pending' })).memories.map((m) => m.id),

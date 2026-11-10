@@ -3,12 +3,15 @@ import type { TransactionSql } from 'postgres';
 import {
   UuidSchema,
   WorkspaceMemorySchema,
+  PersonalMemoryPairSchema,
+  type PersonalMemoryPair,
   type RequestContext,
 } from '@allrice/contracts';
 import type { z } from 'zod';
 import { DataAccessError } from '../data.ts';
 import type { getDatabase } from '../core/client.ts';
 import { readContentPrincipal } from '../content-maintenance.ts';
+import { runtimePolicyDigest } from '../runtime-policy-digest.ts';
 import { resolveEmployeeSessionInstance } from '../employees/employee-instances.ts';
 import type { ResourcePrincipal } from '../resource-principal.ts';
 
@@ -29,6 +32,14 @@ export class EmployeeMemoryConflict extends Error {
   }
 }
 
+export class EmployeeMemoryContractChanged extends EmployeeMemoryConflict {
+  readonly code = 'employee_memory_contract_changed';
+  constructor() {
+    super();
+    this.message = this.code;
+  }
+}
+
 export class EmployeeMemoryCapacityError extends Error {
   constructor(public readonly remainingBytes: number) {
     super('employee_memory_capacity');
@@ -37,6 +48,33 @@ export class EmployeeMemoryCapacityError extends Error {
 
 export const memoryContentDigest = (content: string) =>
   `sha256:${createHash('sha256').update(content).digest('hex')}`;
+
+export const memoryPairDigest = (pair: PersonalMemoryPair) =>
+  runtimePolicyDigest({
+    version: 2,
+    summary: pair.summary,
+    details: pair.details,
+  });
+
+export function legacyPersonalMemoryPair(content: string): PersonalMemoryPair {
+  return PersonalMemoryPairSchema.parse({
+    summary: Array.from(content).slice(0, 40).join(''),
+    details: Array.from(content).length > 40 ? content : null,
+  });
+}
+
+export function assertMemoryPairRevision(
+  current: { revision: number; summary: string | null; details: string | null },
+  expected: { expectedRevision: number; pairDigest: string },
+) {
+  if (current.summary === null) throw new EmployeeMemoryContractChanged();
+  if (
+    current.revision !== expected.expectedRevision ||
+    memoryPairDigest({ summary: current.summary, details: current.details }) !==
+      expected.pairDigest
+  )
+    throw new EmployeeMemoryConflict();
+}
 
 /** The browser selects an instance, never an owner. Resolve current persisted
  * membership and the existing assignment/instance gate inside the transaction.
@@ -150,13 +188,16 @@ export async function lockMemorySource(
 /** The caller has already locked current identity and instance authority.
  * Persist the receipt in the same transaction as content/revisions/audit.
  * A later edit/archive prevents an old acknowledgement becoming a fresh one. */
-export async function memoryOperation(
+export async function memoryOperation<
+  T extends { id: string; revision: number },
+>(
   tx: TransactionSql,
   scope: EmployeeMemoryScope,
   operation: 'create' | 'correct' | 'promote' | 'archive',
   key: string,
   request: unknown,
-  mutate: () => Promise<z.infer<typeof WorkspaceMemorySchema>>,
+  mutate: () => Promise<T>,
+  responseSchema: z.ZodType<T> = WorkspaceMemorySchema as unknown as z.ZodType<T>,
 ) {
   const digest = memoryContentDigest(JSON.stringify({ operation, request }));
   const lockKey = `employee-memory:${scope.organizationId}:${scope.workspaceId}:${scope.ownerId}:${scope.instanceId}:${key}`;
@@ -177,9 +218,9 @@ export async function memoryOperation(
       and op.owner_id=${scope.ownerId} and op.instance_id=${scope.instanceId} and op.operation_key=${key}
     for share of m`;
   if (prior) {
-    const response = WorkspaceMemorySchema.parse(prior.response);
+    if (prior.request_digest !== digest) throw new EmployeeMemoryConflict();
+    const response = responseSchema.parse(prior.response);
     if (
-      prior.request_digest !== digest ||
       prior.revision !== response.revision ||
       Boolean(prior.archived_at) !== (operation === 'archive')
     )

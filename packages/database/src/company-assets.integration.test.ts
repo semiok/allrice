@@ -43,8 +43,12 @@ import {
 } from './company-assets.ts';
 import {
   createTraceableMemory,
-  correctWorkspaceMemory,
+  correctPersonalEmployeeMemory,
 } from './workspace/service.ts';
+import {
+  memoryPairDigest,
+  legacyPersonalMemoryPair,
+} from './workspace/employee-memory.ts';
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
@@ -484,16 +488,22 @@ suite(
         await listCompanyRuleSources(admin, a.context.organizationId, f.db)
       ).sources.find((s) => s.id === memory.id)!;
       expect(chosen.revision).toBe(1);
-      await correctWorkspaceMemory(owner, owner.workspaceId!, memory.id, {
-        instanceId: memory.instanceId!,
-        expectedRevision: memory.revision,
-        contentDigest: memory.contentDigest,
-        idempotencyKey: randomUUID(),
-        content: 'Current memory changed after selection',
-        confidence: 1,
-        reason: 'Correction for revision provenance',
-        expiresAt: null,
-      });
+      await correctPersonalEmployeeMemory(
+        owner,
+        owner.workspaceId!,
+        memory.id,
+        {
+          instanceId: memory.instanceId!,
+          expectedRevision: memory.revision,
+          pairDigest: memoryPairDigest(
+            legacyPersonalMemoryPair(memory.content),
+          ),
+          idempotencyKey: randomUUID(),
+          summary: 'Current memory changed after selection',
+          details: null,
+          reason: 'Correction for revision provenance',
+        },
+      );
       const current = (
         await listCompanyRuleSources(admin, a.context.organizationId, f.db)
       ).sources.find((s) => s.id === memory.id)!;

@@ -1,5 +1,7 @@
 /** Real cookie auth, memory HTTP routes and isolated PG; only host/transport is
- * synthetic. The separate Worker matrix covers model -> broker -> storage. */
+ * synthetic. Legacy editing cases explicitly reconstruct v1 full-content data.
+ * Paired writes require the future v2 UI; PR1 tests their HTTP refusal separately.
+ * The separate Worker matrix covers model -> broker -> storage. */
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
@@ -16,6 +18,7 @@ import type {
 import * as client from '../../../../packages/database/src/core/client.ts';
 import { createRuntimeFixtureDatabase } from '../../../../packages/database/src/runtime.fixture.ts';
 import { createRunAuthorityFixture } from '../../../../packages/database/src/run-authority.fixture.ts';
+import { seedLegacyEmployeeMemory } from '../../../../packages/database/src/workspace/employee-memory-v1.fixture.ts';
 import {
   createSession,
   authenticateSession,
@@ -327,7 +330,11 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     expect(failures).toEqual([]);
   }, 30000);
 
-  async function remember(content: string, expiresAt: string | null = null) {
+  async function remember(
+    content: string,
+    expiresAt: string | null = null,
+    historicalV1 = false,
+  ) {
     const [run] =
       await f.db`select user_message_id from allrice_employee_runs where run_id=${identity.rootRunId}`;
     let sourceId = run!.user_message_id as string;
@@ -361,19 +368,23 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       await f.db`insert into allrice_conversation_commands(organization_id,workspace_id,session_id,owner_id,followup_run_id,command_type,client_user_message_id,expected_generation,expected_turn_id,message,input_kind,state,native_proof)
         values(${identity.org},${identity.workspace},${identity.session},${identity.user},${followup},'steer',${inputId},1,${turn},${content},'steer_current','consumed',${f.db.json(proof)})`;
     }
-    return createTraceableMemory(owner, {
+    const input = {
       workspaceId: identity.workspace,
+      instanceId: identity.assignment,
       employeeId: identity.employee,
       content,
-      visibility: 'private',
-      sourceType: 'message',
+      visibility: 'private' as const,
+      sourceType: 'message' as const,
       sourceId,
       sourceLabel: '模型提取候选',
       confidence: 0.8,
       expiresAt,
-      lifecycleState: 'candidate',
-      memoryClass: 'user_preference',
-    });
+      lifecycleState: 'candidate' as const,
+      memoryClass: 'user_preference' as const,
+    };
+    return historicalV1
+      ? seedLegacyEmployeeMemory(f.db, owner, input)
+      : createTraceableMemory(owner, input);
   }
   function api(
     path: string,
@@ -736,14 +747,14 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
   });
 
   it.each(['future', 'expired'] as const)(
-    'shows the existing %s expiry before and after confirmation without extending it',
+    'retains historical v1 %s expiry before and after confirmation without extending it',
     async (period) => {
       const future = new Date(Date.now() + 86400000).toISOString();
       const expiresAt =
         period === 'future'
           ? future
           : new Date(Date.now() - 86400000).toISOString();
-      const pending = await remember('已有期限的候选 ' + period, future);
+      const pending = await remember('已有期限的候选 ' + period, future, true);
       if (period === 'expired') {
         // Reconstruct a legally captured older record in the isolated fixture:
         // expiry stays after capture, while both dates are now in the past.
@@ -915,8 +926,8 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     },
   );
 
-  it('rejects a stale card after another view edits the exact revision and refreshes to the saved content', async () => {
-    const pending = await remember('月报入口使用原始账单');
+  it('rejects a stale historical v1 card after another view edits the exact revision and refreshes to saved content', async () => {
+    const pending = await remember('月报入口使用原始账单', null, true);
     const ui = await open();
     try {
       await card(ui.page, pending.id)
@@ -1199,7 +1210,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       await ui.close();
     }
   });
-  it('owner adds and directly edits memory, retains oversized draft, then withdraws with a real receipt', async () => {
+  it('owner adds a real pair, retains oversized draft, gets zero-write legacy edit refusal, and can still withdraw', async () => {
     const ui = await open('management');
     try {
       await ui.page.getByText('（确认后生效）', { exact: true }).waitFor();
@@ -1239,18 +1250,35 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
         lifecycle_state: 'durable',
         instance_id: identity.assignment,
       });
+      const snapshot = () => f.db`select to_jsonb(m) as memory,
+        (select jsonb_agg(to_jsonb(r) order by revision) from allrice_memory_revisions r where memory_id=m.id) revisions,
+        (select jsonb_agg(to_jsonb(o) order by operation_key) from allrice_employee_memory_operations o where memory_id=m.id) receipts
+        from allrice_memories m where id=${stored!.id}`;
+      const beforeEdit = await snapshot();
+      expect(beforeEdit[0]!.memory.details).toBe(content);
       const row = card(ui.page, stored!.id);
       await row.getByRole('button', { name: '编辑', exact: true }).click();
       await ui.page.getByLabel('编辑记忆内容').fill(content + ' 已更正');
+      const rejected = ui.page.waitForResponse(
+        (r) => r.request().method() === 'PATCH' && r.url().includes(stored!.id),
+      );
       await ui.page
         .getByRole('button', { name: '保存记忆', exact: true })
         .click();
-      await row.getByText(content + ' 已更正', { exact: true }).waitFor();
-      expect(
-        (
-          await f.db`select revision from allrice_memories where id=${stored!.id}`
-        )[0]!.revision,
-      ).toBe(2);
+      const response = await rejected;
+      expect(response.status()).toBe(409);
+      expect(await response.json()).toEqual({
+        error: 'employee_memory_contract_changed',
+      });
+      await ui.page
+        .getByRole('alert')
+        .filter({ hasText: '编辑内容已保留' })
+        .waitFor();
+      expect(await ui.page.getByLabel('编辑记忆内容').inputValue()).toBe(
+        content + ' 已更正',
+      );
+      expect(await snapshot()).toEqual(beforeEdit);
+      await ui.page.getByRole('button', { name: '取消', exact: true }).click();
       await ui.page.locator('summary').filter({ hasText: '容量预览' }).click();
       await ui.page
         .getByText('任务开始时会重新核对资格。', { exact: false })
@@ -1270,7 +1298,39 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     }
   });
 
-  it('owner pin receipts and a real capacity rejection retain the edit and preview at desktop and narrow widths', async () => {
+  it('edits a directly seeded historical v1 full-content row without rewriting its old revision', async () => {
+    const content = '历史v1本人记忆 ' + randomUUID();
+    const memory = await seedLegacyEmployeeMemory(f.db, owner, {
+      workspaceId: identity.workspace,
+      instanceId: identity.assignment,
+      sourceType: 'user',
+      content,
+    });
+    const ui = await open('management');
+    try {
+      const row = card(ui.page, memory.id);
+      await row.getByRole('button', { name: '编辑', exact: true }).click();
+      await ui.page.getByLabel('编辑记忆内容').fill(content + ' 已更正');
+      await ui.page
+        .getByRole('button', { name: '保存记忆', exact: true })
+        .click();
+      await row.getByText(content + ' 已更正', { exact: true }).waitFor();
+      expect(
+        (
+          await f.db`select revision,content from allrice_memories where id=${memory.id}`
+        )[0],
+      ).toEqual({ revision: 2, content: content + ' 已更正' });
+      expect(
+        (
+          await f.db`select revision,content,summary,details from allrice_memory_revisions where memory_id=${memory.id} and revision=1`
+        )[0],
+      ).toEqual({ revision: 1, content, summary: null, details: null });
+    } finally {
+      await ui.close();
+    }
+  });
+
+  it('historical v1 pin receipts and capacity rejection retain the edit and preview at desktop and narrow widths', async () => {
     const saved: WorkspaceMemory[] = [];
     const write = (body: unknown, method = 'POST') => ({
       method,
@@ -1284,21 +1344,16 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       idempotencyKey: randomUUID(),
     });
     for (let i = 0; i < 8; i++) {
-      const created = await api(
-        '',
-        write({
-          workspaceId: identity.workspace,
-          instanceId: identity.assignment,
-          content: `预算入口${i}`,
-          sourceType: 'user',
-          sourceLabel: '本人新增',
-          lifecycleState: 'durable',
-          memoryClass: 'user_preference',
-          idempotencyKey: randomUUID(),
-        }),
-      );
-      expect(created.status).toBe(201);
-      const memory = (await created.json()).memory;
+      const memory = await seedLegacyEmployeeMemory(f.db, owner, {
+        workspaceId: identity.workspace,
+        instanceId: identity.assignment,
+        content: `预算入口${i}`,
+        sourceType: 'user',
+        sourceLabel: '本人新增',
+        lifecycleState: 'durable',
+        memoryClass: 'user_preference',
+        idempotencyKey: randomUUID(),
+      });
       const pinned = await api(
         '/' + memory.id + '/pin',
         write({ ...exact(memory), pinned: true }),

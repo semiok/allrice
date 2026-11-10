@@ -1,6 +1,13 @@
 import { personalInstanceNameSql } from '../employees/employee-instance-policy.ts';
 import { freezeConversationCapabilities } from './conversation-capabilities.ts';
-import { EmployeeMemoryPinInputSchema } from '@allrice/contracts';
+import {
+  EmployeeMemoryPinInputSchema,
+  CreatePersonalEmployeeMemoryInputSchema,
+  CorrectPersonalEmployeeMemoryInputSchema,
+  PersonalEmployeeMemorySchema,
+  WorkspaceMemorySchema as WorkspaceMemoryResponseSchema,
+  type PersonalMemoryPair,
+} from '@allrice/contracts';
 import { freezeEmployeeDocuments } from '../employees/employee-documents.ts';
 import { isModelFailureCode, modelFailure } from '@allrice/contracts';
 import { requireNativeQuestionAdmission } from '../native-questions.ts';
@@ -33,10 +40,14 @@ import { platformEmployeeModelPolicy } from '../providers/platform-model-setting
 import { createHash, randomUUID } from 'node:crypto';
 import {
   assertMemoryRevision,
+  assertMemoryPairRevision,
   EmployeeMemoryConflict,
+  EmployeeMemoryContractChanged,
   EmployeeMemoryCapacityError,
   employeeMemoryScope,
   memoryContentDigest,
+  memoryPairDigest,
+  legacyPersonalMemoryPair,
   memoryOperation,
   lockMemorySource,
   type EmployeeMemoryIdentity,
@@ -208,6 +219,8 @@ interface MemoryRow {
   instance_id: string | null;
   owner_id: string;
   content: string;
+  summary: string | null;
+  details: string | null;
   visibility: Visibility;
   source_type: WorkspaceMemory['sourceType'];
   source_id: string | null;
@@ -2542,6 +2555,26 @@ function mapMemory(row: MemoryRow): WorkspaceMemory {
   };
 }
 
+function mapPersonalMemory(row: MemoryRow) {
+  if (row.summary === null) throw new EmployeeMemoryContractChanged();
+  return PersonalEmployeeMemorySchema.parse({
+    id: row.id,
+    organizationId: row.organization_id,
+    workspaceId: row.workspace_id,
+    ownerId: row.owner_id,
+    instanceId: row.instance_id,
+    summary: row.summary,
+    details: row.details,
+    revision: row.revision,
+    pairDigest: memoryPairDigest({
+      summary: row.summary,
+      details: row.details,
+    }),
+    createdAt: row.created_at.toISOString(),
+    updatedAt: row.updated_at.toISOString(),
+  });
+}
+
 export async function listWorkspaceMemories(
   context: RequestContext,
   workspaceIdInput: string,
@@ -2620,6 +2653,49 @@ export async function createTraceableMemory(
   executionContext?: ExecutionContext,
 ) {
   const memory = CreateWorkspaceMemoryInputSchema.parse(input);
+  return createEmployeeMemoryRecord(
+    context,
+    memory,
+    executionContext,
+    null,
+    mapMemory,
+    WorkspaceMemoryResponseSchema,
+  );
+}
+
+/** Storage-only v2 seam. It grants neither model tools nor candidate confirmation. */
+export async function createPersonalEmployeeMemory(
+  context: RequestContext,
+  input: unknown,
+) {
+  const pair = CreatePersonalEmployeeMemoryInputSchema.parse(input);
+  const memory = CreateWorkspaceMemoryInputSchema.parse({
+    workspaceId: pair.workspaceId,
+    instanceId: pair.instanceId,
+    idempotencyKey: pair.idempotencyKey,
+    content: pair.summary,
+    sourceType: 'user',
+  });
+  return createEmployeeMemoryRecord(
+    context,
+    memory,
+    undefined,
+    { summary: pair.summary, details: pair.details },
+    mapPersonalMemory,
+    PersonalEmployeeMemorySchema,
+  );
+}
+
+async function createEmployeeMemoryRecord<
+  T extends { id: string; revision: number },
+>(
+  context: RequestContext,
+  memory: z.infer<typeof CreateWorkspaceMemoryInputSchema>,
+  executionContext: ExecutionContext | undefined,
+  pair: PersonalMemoryPair | null,
+  map: (row: MemoryRow) => T,
+  responseSchema: z.ZodType<T>,
+) {
   const workspaceId = await resolveWorkspaceId(context, memory.workspaceId);
   return employeeAccessTransaction(getDatabase(), async (tx) => {
     let identity: EmployeeMemoryIdentity = context;
@@ -2733,7 +2809,12 @@ export async function createTraceableMemory(
       scope,
       'create',
       key,
-      { ...memory, instanceId, lifecycleState },
+      {
+        ...memory,
+        instanceId,
+        lifecycleState,
+        ...(pair ? { version: 2, pair } : {}),
+      },
       async () => {
         // An existing, current receipt may still be replayed when a different
         // proposal from this source was discarded. Only new creation is barred.
@@ -2745,13 +2826,14 @@ export async function createTraceableMemory(
               and archived_at is not null limit 1`;
           if (discarded) throw new EmployeeMemoryConflict();
         }
+        const savedPair = pair ?? legacyPersonalMemoryPair(memory.content);
         const [row] = await tx<MemoryRow[]>`
           insert into allrice_memories(organization_id,workspace_id,employee_id,owner_id,instance_id,
-            content,visibility,source_type,source_id,trust_level,confidence,source_label,
+            content,summary,details,visibility,source_type,source_id,trust_level,confidence,source_label,
             lifecycle_state,memory_class,expires_at,last_verified_at)
           values(${scope.organizationId},${workspaceId},${scope.employeeId},${scope.ownerId},${scope.instanceId},
-            ${memory.content},'private',${memory.sourceType},${memory.sourceId},${trust},${memory.confidence},
-            ${memory.sourceLabel},${lifecycleState},${memory.memoryClass},${memory.expiresAt},
+            ${memory.content},${savedPair.summary},${savedPair.details},'private',${memory.sourceType},${memory.sourceId},${trust},${memory.confidence},
+            ${memory.sourceLabel},${lifecycleState},${memory.memoryClass},null,
             ${trust === 'user_confirmed' ? new Date() : null}) returning *`;
         if (!row) throw new Error('memory creation failed');
         await insertMemoryRevision(
@@ -2772,8 +2854,9 @@ export async function createTraceableMemory(
           },
           tx,
         );
-        return mapMemory(row);
+        return map(row);
       },
+      responseSchema,
     );
   });
 }
@@ -2792,9 +2875,9 @@ async function insertMemoryRevision(
   reason: string,
 ) {
   await tx`insert into allrice_memory_revisions
-    (organization_id,workspace_id,memory_id,revision,content,trust_level,lifecycle_state,memory_class,
+    (organization_id,workspace_id,memory_id,revision,content,summary,details,trust_level,lifecycle_state,memory_class,
       confidence,expires_at,reason,changed_by)
-    values(${row.organization_id},${row.workspace_id},${row.id},${row.revision},${row.content},
+    values(${row.organization_id},${row.workspace_id},${row.id},${row.revision},${row.content},${row.summary},${row.details},
       ${row.trust_level},${row.lifecycle_state},${row.memory_class},${row.confidence},${row.expires_at},
       ${reason},${requireUser(context)})`;
 }
@@ -2835,6 +2918,47 @@ export async function correctWorkspaceMemory(
 ) {
   await rejectGovernedMemoryMutation(context, workspaceIdInput, memoryIdInput);
   const correction = CorrectMemoryInputSchema.parse(input);
+  return correctEmployeeMemoryRecord(
+    context,
+    workspaceIdInput,
+    memoryIdInput,
+    correction,
+    mapMemory,
+    WorkspaceMemoryResponseSchema,
+  );
+}
+
+/** Storage-only editor for current active owner pairs; not pending management CRUD. */
+export async function correctPersonalEmployeeMemory(
+  context: RequestContext,
+  workspaceIdInput: string,
+  memoryIdInput: string,
+  input: unknown,
+) {
+  await rejectGovernedMemoryMutation(context, workspaceIdInput, memoryIdInput);
+  const correction = CorrectPersonalEmployeeMemoryInputSchema.parse(input);
+  return correctEmployeeMemoryRecord(
+    context,
+    workspaceIdInput,
+    memoryIdInput,
+    correction,
+    mapPersonalMemory,
+    PersonalEmployeeMemorySchema,
+  );
+}
+
+async function correctEmployeeMemoryRecord<
+  T extends { id: string; revision: number },
+>(
+  context: RequestContext,
+  workspaceIdInput: string,
+  memoryIdInput: string,
+  correction:
+    | z.infer<typeof CorrectMemoryInputSchema>
+    | z.infer<typeof CorrectPersonalEmployeeMemoryInputSchema>,
+  map: (row: MemoryRow) => T,
+  responseSchema: z.ZodType<T>,
+) {
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
   const memoryId = UuidSchema.parse(memoryIdInput);
   return employeeAccessTransaction(getDatabase(), async (tx) => {
@@ -2851,7 +2975,11 @@ export async function correctWorkspaceMemory(
       scope,
       'correct',
       correction.idempotencyKey,
-      { memoryId, ...correction },
+      {
+        memoryId,
+        ...correction,
+        ...('pairDigest' in correction ? { version: 2 } : {}),
+      },
       async () => {
         const current = await lockPersonalMemory(
           tx,
@@ -2860,11 +2988,42 @@ export async function correctWorkspaceMemory(
           memoryId,
           scope.instanceId,
         );
-        assertMemoryRevision(current, correction);
+        if (
+          current.employee_id !== scope.employeeId ||
+          current.visibility !== 'private'
+        )
+          throw new DataAccessError('authorization_denied');
+        const [nonPersonal] = await tx`select 1 where
+          exists(select 1 from allrice_brand_content_experiences b where b.memory_id=${memoryId})
+          or exists(select 1 from allrice_employee_runs origin
+            where origin.organization_id=${scope.organizationId} and origin.workspace_id=${workspaceId} and origin.method_authoring
+              and ((${current.source_type}='message' and ${current.source_id}::uuid in (origin.user_message_id,origin.assistant_message_id))
+                or (${current.source_type}='checkpoint' and exists(select 1 from allrice_context_checkpoints cp
+                  where cp.id=${current.source_id}::uuid and cp.covered_through_message_id in (origin.user_message_id,origin.assistant_message_id)))))`;
+        if (nonPersonal) throw new DataAccessError('authorization_denied');
+        let pair: PersonalMemoryPair;
+        if ('pairDigest' in correction) {
+          assertMemoryPairRevision(current, correction);
+          // Pending confirmation belongs to the separately gated candidate package.
+          if (
+            current.lifecycle_state !== 'durable' ||
+            current.trust_level !== 'user_confirmed' ||
+            (current.expires_at !== null && current.expires_at <= new Date())
+          )
+            throw new EmployeeMemoryContractChanged();
+          pair = { summary: correction.summary, details: correction.details };
+        } else {
+          // Check after a valid current receipt can replay, before ANY write.
+          if (current.summary !== null || current.details !== null)
+            throw new EmployeeMemoryContractChanged();
+          assertMemoryRevision(current, correction);
+          legacyPersonalMemoryPair(current.content);
+          pair = legacyPersonalMemoryPair(correction.content);
+        }
         const [row] = await tx<MemoryRow[]>`update allrice_memories
-        set content=${correction.content},revision=revision+1,trust_level='user_confirmed',
-          confidence=${correction.confidence},lifecycle_state='durable',source_label='用户更正',
-          expires_at=${correction.expiresAt},last_verified_at=now(),updated_at=now()
+        set content=${'content' in correction ? correction.content : pair.summary},summary=${pair.summary},details=${pair.details},revision=revision+1,trust_level='user_confirmed',
+          confidence=${'confidence' in correction ? correction.confidence : 1},lifecycle_state='durable',source_label='用户更正',
+          expires_at=null,last_verified_at=now(),updated_at=now()
         where id=${memoryId} returning *`;
         if (!row) throw new Error('memory correction failed');
         if (current.metadata?.memoryPinOrder !== undefined)
@@ -2884,8 +3043,9 @@ export async function correctWorkspaceMemory(
           },
           tx,
         );
-        return mapMemory(row);
+        return map(row);
       },
+      responseSchema,
     );
   });
 }

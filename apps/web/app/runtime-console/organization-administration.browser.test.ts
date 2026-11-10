@@ -28,8 +28,12 @@ import {
   getEmployeeWorkspace,
   inspectCompanyDeliverable,
   createTraceableMemory,
-  correctWorkspaceMemory,
+  correctPersonalEmployeeMemory,
 } from '@allrice/database';
+import {
+  memoryPairDigest,
+  legacyPersonalMemoryPair,
+} from '../../../../packages/database/src/workspace/employee-memory.ts';
 import {
   CompanyAssetDirectorySchema,
   CompanyAssetRevisionSchema,
@@ -1336,16 +1340,22 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
 
         // A later Memory correction must not silently replace the selected
         // revision or the separately authored rule body.
-        await correctWorkspaceMemory(owner, owner.workspaceId!, memory.id, {
-          instanceId: memory.instanceId!,
-          expectedRevision: memory.revision,
-          contentDigest: memory.contentDigest,
-          idempotencyKey: randomUUID(),
-          content: '后续记忆修订：此内容不是所选择的原摘录。',
-          confidence: 1,
-          reason: 'Browser regression: selected revision remains pinned',
-          expiresAt: null,
-        });
+        await correctPersonalEmployeeMemory(
+          owner,
+          owner.workspaceId!,
+          memory.id,
+          {
+            instanceId: memory.instanceId!,
+            expectedRevision: memory.revision,
+            pairDigest: memoryPairDigest(
+              legacyPersonalMemoryPair(memory.content),
+            ),
+            idempotencyKey: randomUUID(),
+            summary: '后续记忆修订：此内容不是所选择的原摘录。',
+            details: null,
+            reason: 'Browser regression: selected revision remains pinned',
+          },
+        );
         const saveResponse = page.waitForResponse(
           (response) =>
             response.url() === `${origin}${base}` &&
