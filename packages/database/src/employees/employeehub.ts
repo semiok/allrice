@@ -42,6 +42,7 @@ import {
   EmployeeHubAssignmentSchema,
   EmployeeManifestSchema,
   EmployeePromptSnapshotSchema,
+  type EmployeePersonaTask,
   EmployeeRuntimePolicySchema,
   EmployeeUserProfileSchema,
   EmployeeUserProfilePolicySchema,
@@ -1187,9 +1188,12 @@ export async function prepareEmployeeRunBinding(
     promptSnapshot: EmployeeRunBinding['promptSnapshot'];
     // The literal requests identity only; it is never a human-data grant.
     employeeDocuments?: boolean | 'persona_only';
+    taskPersona?: EmployeePersonaTask;
   },
   transaction?: TransactionSql,
 ): Promise<EmployeeRunBinding> {
+  if (input.taskPersona && input.employeeDocuments === true)
+    throw Error('employee_persona_snapshot_invalid');
   const actorId = userId(input.context);
   const sql = transaction ?? getDatabase();
   const rows = await sql<EmployeeAssignmentRow[]>`
@@ -1587,13 +1591,15 @@ export async function prepareEmployeeRunBinding(
             ? { instance, employeeId: assignment.employee_id }
             : undefined,
         )
-      : input.employeeDocuments === 'persona_only' &&
+      : (input.employeeDocuments === 'persona_only' || input.taskPersona) &&
           instance &&
           manifest.data.schemaVersion === 2
         ? await freezeEmployeePersonaDocuments(
             sql,
             instance,
             assignment.employee_id,
+            input.taskPersona,
+            input.taskPersona ? (organizationContext ?? {}) : {},
           )
         : undefined;
   return {
@@ -1700,7 +1706,9 @@ export async function prepareEmployeeRunBinding(
       organizationContext,
       ...(documentProjection
         ? {
-            memories: documentProjection.memories,
+            memories: input.taskPersona
+              ? input.promptSnapshot.memories
+              : documentProjection.memories,
             employeeDocuments: documentProjection.employeeDocuments,
           }
         : {}),
@@ -1726,6 +1734,7 @@ export async function resolveEmployeeExecution(input: {
       legacy_workflow_execution: boolean;
       native_root_origin: { schemaVersion?: number } | null;
       session_id: string;
+      user_message_id: string;
       employee_assignment_id: string;
       project_id: string | null;
       employee_version_id: string;
@@ -1740,7 +1749,7 @@ export async function resolveEmployeeExecution(input: {
   >`
     select er.provider_snapshot, er.skill_bindings, er.native_skills,
       er.prompt_snapshot,
-      er.execution_snapshot,er.native_execution_binding,er.session_id,er.employee_assignment_id,er.employee_version_id,
+      er.execution_snapshot,er.native_execution_binding,er.session_id,er.user_message_id,er.employee_assignment_id,er.employee_version_id,
       c.project_id,c.native_root_origin,v.config_checksum,bv.id birth_version_id,bv.manifest birth_manifest,bv.config_checksum birth_config_checksum,
       m.content->>'text' current_user_request,
       v.system_prompt, v.manifest,
@@ -1821,7 +1830,10 @@ export async function resolveEmployeeExecution(input: {
         ownerId: input.ownerId,
         assignmentId: row.employee_assignment_id,
         employeeVersionId: row.employee_version_id,
+        sessionId: row.session_id,
+        userMessageId: row.user_message_id,
       },
+      { phase: 'resolve', runId: input.runId },
     );
   }
   if (

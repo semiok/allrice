@@ -362,6 +362,50 @@ describe('normal Run PERSONA defaults and sparse personal sources', () => {
       engine: version(),
     });
   const read = (text: string) => JSON.parse(text.slice('# 人设\n'.length));
+  it.each([
+    'native_once',
+    'native_recurring',
+    'folder_event',
+    'automation_manual',
+  ] as const)(
+    'renders the actual frozen %s engine without changing ordinary default provenance',
+    (kind) => {
+      const ordinary = source();
+      const task = {
+        kind,
+        id: randomUUID(),
+        sessionId: randomUUID(),
+        userMessageId: randomUUID(),
+      };
+      const frozen = EmployeeRunPersonaSourceSchema.parse({
+        ...ordinary,
+        basis: ordinary.engine,
+        task,
+      });
+      const persona = renderEmployeePersonaDocument(foundation, frozen, {
+        mission: 'TASK_LITERAL {{missing}}',
+      });
+      const document = read(persona);
+      expect(document.source.task).toEqual(task);
+      expect(document.source.basis).toEqual(document.source.engine);
+      expect(document.name.source).toBe('frozen_task_engine');
+      expect(document.mission).toEqual({
+        value: 'TASK_LITERAL {{missing}}',
+        source: 'personal_override',
+      });
+      expect(document.boundary).toContain('任务实际执行版本');
+      expect(
+        read(renderEmployeePersonaDocument(foundation, ordinary)).name.source,
+      ).toBe('platform_default');
+      expect(Buffer.byteLength(persona)).toBeLessThanOrEqual(16384);
+      expect(
+        EmployeeRunPersonaSourceSchema.safeParse({
+          ...frozen,
+          task: { ...task, human: true },
+        }).success,
+      ).toBe(false);
+    },
+  );
   it('retains an explicit equal-default override and changes only supplied appearance leaves', () => {
     const original = source();
     const document = read(

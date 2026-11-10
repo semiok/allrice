@@ -217,6 +217,78 @@ it('replaces only root facts and memories while preserving knowledge and the chi
   expect(current.employeeDocuments).toEqual(
     input.resolved.promptSnapshot.employeeDocuments,
   );
+  // Task provenance was independently checked at enqueue/resolve. It changes
+  // the carrier in both kernel scopes, not the original authority or tool set.
+  const digest = `sha256:${'a'.repeat(64)}`;
+  const version = {
+    employeeVersionId: input.employeeVersionId,
+    configChecksum: digest,
+    manifestDigest: digest,
+    templateId: randomUUID(),
+    templateRevisionId: randomUUID(),
+    templateRevision: 1,
+    templateChecksum: digest,
+    packageChecksum: digest,
+  };
+  input.resolved.executionSnapshot = {
+    schemaVersion: 2,
+    persona: EmployeePersonaPinSchema.parse({
+      schemaVersion: 1,
+      personaDigest: digest,
+      systemDigest: digest,
+      source: {
+        kind: 'employee_run',
+        organizationId: randomUUID(),
+        workspaceId: randomUUID(),
+        employeeId: randomUUID(),
+        assignmentId: input.employeeAssignmentId,
+        instanceId: randomUUID(),
+        ownerId: randomUUID(),
+        profileRevision: 1,
+        profileEligibility: 'expression_only',
+        basis: version,
+        engine: version,
+        task: {
+          kind: 'automation_manual',
+          id: randomUUID(),
+          sessionId: input.sessionId,
+          userMessageId: input.userMessageId,
+        },
+      },
+    }),
+  } as NonNullable<typeof input.resolved.executionSnapshot>;
+  input.resolved.promptSnapshot.employeeDocuments.persona =
+    'TASK_LITERAL {{missing}}';
+  input.commonContent![0]!.reference.contentId =
+    input.resolved.promptSnapshot.memories[0]!.id;
+  input.commonContent![0]!.body =
+    input.resolved.promptSnapshot.memories[0]!.content;
+  input.commonContent!.push({
+    ...input.commonContent![0]!,
+    reference: {
+      ...input.commonContent![0]!.reference,
+      contentId: randomUUID(),
+    },
+    body: 'EXISTING_LEGAL_TASK_METHOD',
+  });
+  const task = assembleEmployeeKernel(input);
+  expect(task.systemInstructions).toBe(task.rootSystemInstructions);
+  expect(task.systemInstructions).toContain('frozen actual task engine');
+  expect(task.systemInstructions).toContain('EXISTING_LEGAL_TASK_METHOD');
+  expect(task.systemInstructions).toContain(
+    'original memory eligibility and byte budget',
+  );
+  expect(task.systemInstructions).not.toContain('facts or confirmed memories');
+  for (const literal of [
+    'ORG_FACT',
+    'LEGACY_RECALLED_MEMORY',
+    'OLD_COMMON_MEMORY',
+    'TASK_LITERAL',
+  ])
+    expect(task.systemInstructions).not.toContain(literal);
+  expect(task.employeeDocuments?.persona).toBe('TASK_LITERAL {{missing}}');
+  expect(task.authorizedMemoryContext).toBe('');
+  expect(task.grantedCapabilities).toEqual(current.grantedCapabilities);
 });
 
 it('bootstraps authorized messages and memories without consuming a retired automatic summary', () => {

@@ -11,6 +11,7 @@ import {
   isBaseRiceInstanceDefinition,
   modelProviderRuntimeSupported,
   EmployeeKernelRequestSchema,
+  renderMemoryContext,
   RouteDecisionSchema,
   type HarnessEvent,
   type HarnessExecutionSnapshot,
@@ -340,15 +341,25 @@ export async function executeEmployeeRun({
     input.sessionId,
     execution.context.runId,
   );
+  const personaTask =
+    resolved.executionSnapshot?.schemaVersion === 2
+      ? resolved.executionSnapshot.persona?.source.task
+      : undefined;
+  // Preserve every pre-existing document-memory branch (including deterministic
+  // changesets and identity-only repair/review). A task PERSONA carrier never
+  // opts into that ledger mode or proves human authority.
+  const documentMemory =
+    !personaTask && !!resolved.promptSnapshot.employeeDocuments;
   if (!repairTask && !repositoryReviewTask && !changesetRun)
     await admitEmployeeDocuments({
       context: execution.context,
       userMessageId,
       documents: !!resolved.promptSnapshot.employeeDocuments,
+      personaTask,
     });
   let contentRuntime: Awaited<ReturnType<typeof prepareEmployeeContentContext>>;
   try {
-    const experience = resolved.promptSnapshot.employeeDocuments
+    const experience = documentMemory
       ? { memories: [], receipt: null }
       : await prepareRunExperiences(contentScope, {
           ...workflowLease,
@@ -464,6 +475,7 @@ export async function executeEmployeeRun({
                   .filter(
                     (source) =>
                       !employeeDocuments ||
+                      !!personaTask ||
                       source.reference.sourceKind !== 'experience',
                   )
                   .map(({ reference, ownership, title, body }) => ({
@@ -637,7 +649,7 @@ export async function executeEmployeeRun({
     resolved.promptSnapshot.memories,
   );
   if (
-    resolved.promptSnapshot.employeeDocuments &&
+    documentMemory &&
     eligibleMemories.length !== resolved.promptSnapshot.memories.length
   )
     throw new HandlerError(
@@ -655,8 +667,17 @@ export async function executeEmployeeRun({
       worker: { ...workflowLease, attempt: execution.job.attempt },
     },
     resolved.promptSnapshot.memories,
-    resolved.promptSnapshot.employeeDocuments?.memory,
+    documentMemory
+      ? resolved.promptSnapshot.employeeDocuments?.memory
+      : undefined,
   );
+  if (personaTask && resolved.promptSnapshot.employeeDocuments)
+    resolved.promptSnapshot.employeeDocuments = {
+      ...resolved.promptSnapshot.employeeDocuments,
+      // Same selected items and renderer as the original internal input. The
+      // ledger already charged these complete literal bytes; no new pins/spend.
+      memory: renderMemoryContext(resolved.promptSnapshot.memories),
+    };
   const kernelInput = {
     employeeAssignmentId: input.employeeAssignmentId,
     employeeVersionId: input.employeeVersionId,
@@ -1616,7 +1637,7 @@ export async function executeEmployeeRun({
                     generation,
                   },
                 });
-                if (routedKernel.employeeDocuments) {
+                if (documentMemory && routedKernel.employeeDocuments) {
                   await admitEmployeeDocuments({
                     context: execution.context,
                     userMessageId,

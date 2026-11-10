@@ -3,7 +3,15 @@
  * Eligibility, frozen snapshots, native completion and commit guards are real.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, readdir, readFile, realpath, rm } from 'node:fs/promises';
+import {
+  mkdtemp,
+  mkdir,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import ExcelJS from 'exceljs';
@@ -16,6 +24,41 @@ import {
   runtimeFixtureStorage,
 } from '../../../../packages/database/src/runtime.fixture.ts';
 import { createRunAuthorityFixture } from '../../../../packages/database/src/run-authority.fixture.ts';
+import { createEmployeeAdministrationFixture } from '../../../../packages/database/src/employee-administration.fixture.ts';
+import { savePlatformEmployeeDraft } from '../../../../packages/database/src/employees/platform-employees.ts';
+import { updateEmployeeInstance } from '../../../../packages/database/src/employees/employee-instances.ts';
+import { resolveEmployeeExecution } from '../../../../packages/database/src/employees/employeehub.ts';
+import { assertFrozenEmployeePersona } from '../../../../packages/database/src/employees/employee-documents.ts';
+import {
+  readEmployeeChatSourceKind,
+  assertEmployeeChatHumanSource,
+} from '../../../../packages/database/src/employees/employee-chat-authority.ts';
+import { runManualAutomation } from '../../../../packages/database/src/automation-manual.ts';
+import {
+  createAutomation,
+  updateAutomation,
+} from '../../../../packages/database/src/execution/automation.ts';
+import {
+  receiveFolderTriggerEvent,
+  processFolderTriggerEvents,
+  listFolderTriggerHistory,
+} from '../../../../packages/database/src/folder-triggers.ts';
+import {
+  createBridgeFolderGrant,
+  heartbeatBridgeDevice,
+  claimNextBridgeCommand,
+  completeBridgeCommand,
+} from '../../../../packages/database/src/bridge.ts';
+import { storeLocalFileUpload } from '../../../../packages/database/src/local-files.ts';
+import { inspectLocalFile } from '../../../rice-bridge/src/local-files.js';
+import {
+  localFileCapabilities,
+  LocalFilePayloadSchema,
+  renderMemoryContext,
+  initialMemoryContextBytes,
+  EmployeeExecutionSnapshotSchema,
+  type PlatformEmployeeDefinition,
+} from '@allrice/contracts';
 import { authorizeFixturePlatformAdministrator } from '../../../../packages/database/src/platform-authority.fixture.ts';
 import {
   createSession,
@@ -27,6 +70,7 @@ import {
   createTraceableMemory,
   createCheckpointMemoryCandidate,
   listWorkspaceMemories,
+  getEmployeeWorkspace,
   promoteWorkspaceMemory,
   deleteWorkspaceMemory,
 } from '../../../../packages/database/src/workspace/service.ts';
@@ -37,6 +81,18 @@ import {
   initializeNativeRecurringPartition,
   lockNativeRecurringAdmissions,
 } from '../../../../packages/database/src/native-schedule-recurring-product.ts';
+import {
+  createOnceTask,
+  initializeNativeOncePartition,
+  lockNativeOnceAdmissions,
+  dispatchNextNativeOnceOccurrence,
+} from '../../../../packages/database/src/native-schedule-once-product.ts';
+import { createNativeOnceSqlStore } from '../../../../packages/database/src/native-schedule-once-sql.ts';
+import type {
+  NativeOnceControl,
+  NativeOnceMutation,
+  NativeOnceTask,
+} from '../../../../packages/database/src/native-schedule-once-state.ts';
 import { createNativeRecurringSqlStore } from '../../../../packages/database/src/native-schedule-recurring-sql.ts';
 import type {
   NativeRecurringSnapshot,
@@ -98,7 +154,7 @@ import {
   beginCheckedFinalDeliveryExecution,
   readCheckedFinalDeliveryForExecution,
 } from '../../src/final-delivery/checked-delivery.ts';
-import { p24Fixture, gate } from '../p24/fixture.ts';
+import { p24Fixture, gate, type ModelRequest } from '../p24/fixture.ts';
 import {
   assistantReplies,
   assistantStreamText,
@@ -274,7 +330,16 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       employeeAssignmentId: identity.assignment,
       title: 'PR1b synthetic Worker',
     });
-    return { db, identity, context, chat, artifactId, launch };
+    return {
+      db,
+      identity,
+      context,
+      chat,
+      artifactId,
+      launch,
+      connectionId,
+      catalogId,
+    };
   }
   type Setup = Awaited<ReturnType<typeof setup>>;
   async function prepare(f: Setup, prompt: string, persistEvents = false) {
@@ -291,7 +356,14 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     expect(sent.run).toBeDefined();
     return claim(f, sent.run!.id, persistEvents);
   }
-  async function claim(f: Setup, runId: string, persistEvents = false) {
+  async function claim(
+    f: {
+      db: Setup['db'];
+      identity: Pick<Setup['identity'], 'org' | 'workspace' | 'user'>;
+    },
+    runId: string,
+    persistEvents = false,
+  ) {
     const workerId = randomUUID();
     const job = (await claimNextJob(workerId, 300000))!;
     const [queued] =
@@ -375,6 +447,708 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       .filter(Boolean)
       .map((line) => JSON.parse(line));
   }
+
+  async function publishedTarget(
+    reply: Parameters<typeof p24Fixture>[0],
+    historical = false,
+  ) {
+    const base = await setup(reply);
+    vi.stubEnv('ALLRICE_STORAGE_ROOT', fixture!.storageRoot!);
+    const source = await createEmployeeAdministrationFixture(base.db);
+    const context = (await authenticateSession(
+      (await createSession(source.ownerId)).token,
+      {
+        organizationId: source.organizationId,
+        workspaceId: source.workspaceId,
+      },
+    ))!;
+    vi.stubEnv(
+      'ALLRICE_PLATFORM_ADMIN_EMAILS',
+      `${source.ownerId}@example.test`,
+    );
+    await authorizeFixturePlatformAdministrator(base.db, source.ownerId);
+    const definition: PlatformEmployeeDefinition = {
+      ...source.definition,
+      name: 'TASK_ENGINE_A {{missing}}',
+      identity: {
+        ...source.definition.identity,
+        mission: 'TASK_LITERAL {{missing}} # IDENTITY.md remains literal',
+      },
+      systemPrompt: 'TASK_PLATFORM_POLICY',
+      capabilities: {
+        ...source.definition.capabilities,
+        nativeSkillIds: [],
+        toolNames: [
+          'workspace.memory.remember',
+          'workspace.memory.search',
+          'local.file.import',
+          'workspace.file.read',
+        ],
+      },
+      securityPolicy: {
+        ...source.definition.securityPolicy,
+        bridgeAccess: 'read_write',
+      },
+    };
+    const publish = async (next: PlatformEmployeeDefinition) => {
+      await savePlatformEmployeeDraft(source.employeeId, { definition: next });
+      await source.preview();
+      expect((await source.publish()).valid).toBe(true);
+    };
+    await publish(definition);
+    const assignment = (
+      await getEmployeeWorkspace(context, source.workspaceId)
+    ).employees.find((entry) => entry.employeeKey === definition.key)!;
+    expect(assignment).toBeDefined();
+    const [actual] = await base.db<
+      { employee_id: string; employee_version_id: string }[]
+    >`
+      select employee_id,employee_version_id from allrice_employee_assignments where id=${assignment.id}`;
+    const identity = {
+      org: source.organizationId,
+      workspace: source.workspaceId,
+      user: source.ownerId,
+      employee: actual!.employee_id,
+      version: actual!.employee_version_id,
+      assignment: assignment.id,
+    };
+    await updateEmployeeInstance(context, assignment.id, {
+      workspaceId: identity.workspace,
+      expectedRevision: 1,
+      requestId: randomUUID(),
+      profile: { expressionStyle: 'concise' },
+    });
+    await upsertEmployeeModelPolicy({
+      context,
+      workspaceId: identity.workspace,
+      employeeId: identity.employee,
+      policy: {
+        connectionId: base.connectionId,
+        modelCatalogEntryId: base.catalogId,
+        reasoningEffort: 'low',
+        fallbackPolicy: 'disabled',
+        fallbackTargets: [],
+        fallbackOn: [],
+        runLimits: {
+          timeoutMs: 300000,
+          maxInputTokens: 100000,
+          maxOutputTokens: 4000,
+          maxTotalTokens: 150000,
+          maxCostCents: 10000,
+        },
+      },
+    });
+    let chat: { id: string };
+    if (historical) {
+      // Historical NULL is first-INSERT provenance, never an origin rewrite.
+      // Later publication B must not replace this Session's actual engine A.
+      chat = { id: randomUUID() };
+      await base.db`insert into allrice_chat_sessions(id,organization_id,workspace_id,owner_id,employee_assignment_id,employee_instance_id,employee_version_id,title)
+        values(${chat.id},${identity.org},${identity.workspace},${identity.user},${identity.assignment},${identity.assignment},${identity.version},'Historical published A')`;
+    } else
+      chat = await createAssignedChatSession(context, {
+        workspaceId: identity.workspace,
+        employeeAssignmentId: identity.assignment,
+        title: 'Published producer PERSONA',
+      });
+    await base.db`update allrice_organizations set name='TASK_ORG_FACT',business_context='TASK_BUSINESS_FACT {{missing}}' where id=${identity.org}`;
+    const prompt = '请按月报核对流程整理12笔，不合并退款。';
+    const memories: Awaited<ReturnType<typeof createTraceableMemory>>[] = [];
+    for (const content of [
+      '月报核对流程：整理12笔，不合并退款。TASK_MEMORY_KEEP {{missing}}',
+      '月报核对流程：整理12笔，不合并退款。TASK_MEMORY_WITHDRAW',
+    ])
+      memories.push(
+        await createTraceableMemory(context, {
+          workspaceId: identity.workspace,
+          instanceId: identity.assignment,
+          idempotencyKey: randomUUID(),
+          content,
+          sourceType: 'user',
+          lifecycleState: 'durable',
+        }),
+      );
+    return {
+      ...base,
+      source,
+      context,
+      identity,
+      chat,
+      definition,
+      publish,
+      prompt,
+      memories,
+    };
+  }
+  type PublishedTarget = Awaited<ReturnType<typeof publishedTarget>>;
+  async function oncePlan(f: PublishedTarget) {
+    vi.stubEnv('ALLRICE_NATIVE_ONCE_ENABLED', '1');
+    const reference = {
+      artifactId: f.artifactId,
+      profileId: 'allrice-once-control-v1',
+      storageId: 'persona-once-sql',
+      stateRoot: directory!,
+    };
+    vi.stubEnv('ALLRICE_NATIVE_ONCE_REFERENCE', JSON.stringify(reference));
+    const { activation } = await initializeNativeOncePartition(reference);
+    const store = createNativeOnceSqlStore({
+      db: f.db,
+      partitionId: 'allrice-once-v1',
+      ownerId: randomUUID(),
+      reference,
+      ttlMs: 300000,
+      readiness: () => activation,
+      decodeTask: (value) => structuredClone(value) as NativeOnceTask,
+      lockAdmission: lockNativeOnceAdmissions,
+      proveClosed: async () => null,
+    });
+    const grant = (await store.acquireWriter())!;
+    const plan = await createOnceTask(f.context, f.chat.id, {
+      clientRequestId: randomUUID(),
+      name: '稍后核对月报',
+      prompt: f.prompt,
+      runAt: new Date(Date.now() + 6500).toISOString(),
+      timezone: 'Asia/Shanghai',
+    });
+    return {
+      plan,
+      dispatch: async () => {
+        const [row] = await f.db<
+          { snapshot: { control: NativeOnceControl } }[]
+        >`
+        select snapshot from allrice_native_once_controls where automation_id=${plan.id}`;
+        const control = row!.snapshot.control;
+        const mutate = async (mutation: NativeOnceMutation) => {
+          const write = {
+            writeId: randomUUID(),
+            digest: nativeOnceDigest(mutation),
+            mutation,
+          };
+          expect(await store.commitMutation(grant.writer, write)).toBe(
+            'committed',
+          );
+        };
+        await new Promise((done) =>
+          setTimeout(
+            done,
+            Math.max(0, Date.parse(control.at) - Date.now() + 20),
+          ),
+        );
+        await mutate({
+          kind: 'session_initializing',
+          controlId: control.controlId,
+        });
+        await mutate({ kind: 'session_ready', controlId: control.controlId });
+        const delivery = {
+          scheduledAt: control.at,
+          deliveredAt: control.at,
+          messageId: randomUUID(),
+        };
+        await mutate({
+          kind: 'put_task',
+          controlId: control.controlId,
+          task: {
+            sessionId: control.controlSessionId,
+            status: 'inactive',
+            record: {
+              id: randomUUID(),
+              kind: 'at',
+              title: 'AllRice once control',
+              prompt: 'Synthetic control only',
+              scheduledAt: control.at,
+            },
+            lastDelivery: delivery,
+            deliveryHistory: {
+              records: [{ ...delivery, prompt: 'Synthetic control only' }],
+              earlierRecordsUnavailable: false,
+            },
+          },
+        });
+        expect(await dispatchNextNativeOnceOccurrence(randomUUID())).toBe(true);
+        const [queued] =
+          await f.db`select run_id from allrice_automation_runs where automation_id=${plan.id}`;
+        return queued!.run_id as string;
+      },
+    };
+  }
+  async function recurringProducer(f: PublishedTarget) {
+    vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '1');
+    const reference = {
+      artifactId: f.artifactId,
+      profileId: 'allrice-recurring-control-v1',
+      storageId: 'persona-recurring-sql',
+      stateRoot: directory!,
+    };
+    vi.stubEnv('ALLRICE_NATIVE_RECURRING_REFERENCE', JSON.stringify(reference));
+    const { activation } = await initializeNativeRecurringPartition(reference);
+    const store = createNativeRecurringSqlStore({
+      db: f.db,
+      partitionId: 'allrice-recurring-v1',
+      ownerId: randomUUID(),
+      reference,
+      ttlMs: 300000,
+      readiness: () => activation,
+      decodeTask: (value) => structuredClone(value) as NativeRecurringTask,
+      lockAdmission: lockNativeRecurringAdmissions,
+      proveClosed: async () => null,
+    });
+    const grant = (await store.acquireWriter())!;
+    const plan = await createRecurringTask(f.context, f.chat.id, {
+      clientRequestId: randomUUID(),
+      name: '每期核对月报',
+      prompt: f.prompt,
+      rule: { kind: 'every', seconds: 60 },
+    });
+    const [row] = await f.db<
+      { snapshot: NativeRecurringSnapshot }[]
+    >`select snapshot from allrice_native_recurring_controls where automation_id=${plan.id}`;
+    const control = row!.snapshot.control;
+    const mutate = async (mutation: NativeRecurringMutation) => {
+      const write = {
+        writeId: randomUUID(),
+        digest: nativeOnceDigest(mutation),
+        mutation,
+      };
+      expect(await store.commitMutation(grant.writer, write)).toBe('committed');
+    };
+    await mutate({
+      kind: 'session_initializing',
+      controlId: control.controlId,
+    });
+    await mutate({ kind: 'session_ready', controlId: control.controlId });
+    const scheduledAt = new Date(Date.now() - 180000).toISOString();
+    const native: NativeRecurringTask = {
+      sessionId: control.controlSessionId,
+      status: 'active',
+      record: {
+        id: randomUUID(),
+        kind: 'every',
+        everySeconds: 60,
+        title: 'AllRice recurring control',
+        prompt: 'Synthetic control only',
+        scheduledAt,
+      },
+    };
+    await mutate({
+      kind: 'put_task',
+      controlId: control.controlId,
+      task: native,
+    });
+    await mutate({
+      kind: 'confirm_command',
+      controlId: control.controlId,
+      commandId: control.command.id,
+      nativeTaskId: native.record.id,
+    });
+    native.lastDelivery = {
+      scheduledAt,
+      deliveredAt: new Date().toISOString(),
+      messageId: randomUUID(),
+    };
+    native.deliveryHistory = {
+      records: [{ ...native.lastDelivery, prompt: native.record.prompt }],
+      earlierRecordsUnavailable: false,
+    };
+    native.record.scheduledAt = new Date(
+      Date.parse(scheduledAt) + 60000,
+    ).toISOString();
+    await mutate({
+      kind: 'put_task',
+      controlId: control.controlId,
+      task: native,
+    });
+    expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
+      true,
+    );
+    const [queued] =
+      await f.db`select run_id from allrice_automation_runs where automation_id=${plan.id}`;
+    return queued!.run_id as string;
+  }
+  async function folderProducer(f: PublishedTarget) {
+    const token = `persona-folder-${randomUUID()}`,
+      deviceId = randomUUID();
+    const folder = join(directory!, 'folder-input');
+    await mkdir(folder);
+    await f.db`insert into allrice_bridge_devices(id,organization_id,workspace_id,owner_id,name,platform,protocol_version,capabilities,token_hash,last_seen_at)
+      values(${deviceId},${f.identity.org},${f.identity.workspace},${f.identity.user},'Synthetic folder','macos-x64',2,${localFileCapabilities},${createHash('sha256').update(token).digest('hex')},clock_timestamp())`;
+    const grant = await createBridgeFolderGrant(token, {
+      label: '月报收件',
+      rootFingerprint: createHash('sha256').update(folder).digest('hex'),
+    });
+    await heartbeatBridgeDevice(token, {
+      protocolVersion: 2,
+      capabilities: [...localFileCapabilities],
+      environment: {
+        version: 1,
+        clientVersion: 'synthetic-folder',
+        browser: 'unavailable',
+        sandbox: 'unavailable',
+        preview: 'unavailable',
+        paused: false,
+        folderTriggerVersion: 1,
+        readiness: localFileCapabilities.map((capability) => ({
+          capability,
+          state: 'ready' as const,
+          reason: 'ready',
+          missing: [],
+          versions: { bridge: 'synthetic-folder', binaryFiles: '1' },
+          observedAt: new Date().toISOString(),
+        })),
+      },
+    });
+    const [generation] =
+      await f.db`select runtime_generation from allrice_bridge_folder_grants where id=${grant.id}`;
+    const rule = await createAutomation(f.context, {
+      workspaceId: f.identity.workspace,
+      name: '整理新月报',
+      prompt: f.prompt,
+      triggerType: 'folder',
+      employeeAssignmentId: f.identity.assignment,
+      folder: {
+        contractVersion: 1,
+        deviceId,
+        folderGrantId: grant.id,
+        folderGrantVersion: Number(generation!.runtime_generation),
+        relativePath: '.',
+        extensions: ['csv'],
+        ignorePaths: ['成果'],
+      },
+    });
+    const path = '月报.csv',
+      bytes = Buffer.from('项目,金额\n收入,100\n');
+    await writeFile(join(folder, path), bytes);
+    const expected = await inspectLocalFile(folder, path);
+    const event = {
+      eventId: randomUUID(),
+      ruleId: rule.id,
+      revision: rule.revision,
+      grantId: grant.id,
+      grantVersion: Number(generation!.runtime_generation),
+      path,
+      expected,
+      observedAt: new Date().toISOString(),
+    };
+    await receiveFolderTriggerEvent(token, event);
+    await processFolderTriggerEvents(16);
+    const command = (await claimNextBridgeCommand(token))!;
+    expect(LocalFilePayloadSchema.parse(command.payload).capability).toBe(
+      'local.file.import',
+    );
+    const object = await storeLocalFileUpload({
+      token,
+      kind: 'command',
+      id: command.id,
+      leaseToken: command.leaseToken!,
+      version: expected,
+      fileName: path,
+      stream: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(bytes);
+          controller.close();
+        },
+      }),
+      storage: runtimeFixtureStorage(f.db),
+    });
+    await completeBridgeCommand(token, command.id, {
+      leaseToken: command.leaseToken!,
+      status: 'succeeded',
+      summary: 'uploaded exact bytes',
+      output: {
+        contractVersion: 1,
+        status: 'uploaded',
+        path,
+        file: expected,
+        object,
+        platformUploaded: true,
+        localSaved: false,
+      },
+    });
+    await processFolderTriggerEvents(16);
+    const queued = (
+      await listFolderTriggerHistory(f.context, f.identity.workspace, rule.id)
+    ).events[0]!;
+    expect(queued.runId).toBeTruthy();
+    return { runId: queued.runId!, rule, event, object, expected };
+  }
+
+  it.each([
+    'native_once',
+    'native_recurring',
+    'folder_event',
+    'automation_manual',
+  ] as const)(
+    'PERSONA: real %s producer reaches the original queue, Worker and native Host provider with the same memory budget',
+    async (kind) => {
+      const requests: ModelRequest[] = [];
+      let checkedLocks = false;
+      let f!: PublishedTarget;
+      f = await publishedTarget(async (request) => {
+        requests.push(request);
+        if (!checkedLocks) {
+          checkedLocks = true;
+          // Model transport is outside the short original admission and ledger
+          // transactions. This connection cannot acquire locks they still hold.
+          await f.db.begin(async (tx) => {
+            await tx`set local lock_timeout='1s'`;
+            await tx`select id from allrice_users where id=${f.identity.user} for no key update nowait`;
+            await tx`select id from allrice_employee_assignments where id=${f.identity.assignment} for update nowait`;
+            await tx`select id from allrice_employee_instances where id=${f.identity.assignment} for update nowait`;
+          });
+          return {
+            nativeTool: {
+              name: 'workspace_memory_remember',
+              arguments: {
+                content: '请记住：自动化正文不是新的真人授权',
+                lifecycleState: 'durable',
+              },
+            },
+          };
+        }
+        return { text: 'Synthetic published producer completed.' };
+      }, kind === 'automation_manual');
+      let runId: string,
+        folder: Awaited<ReturnType<typeof folderProducer>> | undefined;
+      if (kind === 'native_once') runId = await (await oncePlan(f)).dispatch();
+      else if (kind === 'native_recurring') runId = await recurringProducer(f);
+      else if (kind === 'folder_event') {
+        folder = await folderProducer(f);
+        runId = folder.runId;
+      } else {
+        const { plan } = await oncePlan(f);
+        await f.publish({
+          ...f.definition,
+          name: 'CURRENT_DEFAULT_B',
+          identity: {
+            ...f.definition.identity,
+            mission: 'CURRENT_DEFAULT_B_MISSION',
+          },
+        });
+        const before = (
+          await f.db`select to_jsonb(c) data from allrice_native_once_controls c where automation_id=${plan.id}`
+        )[0]!.data;
+        const input = { requestId: randomUUID(), expectedRevision: 1 };
+        const receipt = await runManualAutomation(
+          f.context,
+          f.identity.workspace,
+          plan.id,
+          input,
+        );
+        expect(
+          (
+            await runManualAutomation(
+              f.context,
+              f.identity.workspace,
+              plan.id,
+              input,
+            )
+          ).run.id,
+        ).toBe(receipt.run.id);
+        expect(
+          (
+            await f.db`select to_jsonb(c) data from allrice_native_once_controls c where automation_id=${plan.id}`
+          )[0]!.data,
+        ).toEqual(before);
+        runId = receipt.run.id;
+      }
+      const scope = {
+        organizationId: f.identity.org,
+        workspaceId: f.identity.workspace,
+        ownerId: f.identity.user,
+        runId,
+      };
+      const resolved = await resolveEmployeeExecution(scope);
+      const snapshot = EmployeeExecutionSnapshotSchema.parse(
+        resolved.executionSnapshot,
+      );
+      if (
+        snapshot.schemaVersion !== 2 ||
+        !snapshot.persona ||
+        !snapshot.instance
+      )
+        throw Error('expected actual published PERSONA');
+      expect(snapshot.persona.source.task?.kind).toBe(kind);
+      expect(snapshot.persona.source.basis).toEqual(
+        snapshot.persona.source.engine,
+      );
+      expect(snapshot.persona.source.engine.employeeVersionId).toBe(
+        f.identity.version,
+      );
+      const frozenDocs = resolved.promptSnapshot.employeeDocuments!;
+      expect(frozenDocs.persona).toContain('TASK_LITERAL {{missing}}');
+      expect(frozenDocs.user).toContain('TASK_ORG_FACT');
+      expect(frozenDocs.user).not.toContain('departmentName');
+      expect(frozenDocs.memory).toBe('');
+      expect(resolved.promptSnapshot.memories.map((m) => m.id)).toEqual(
+        expect.arrayContaining(f.memories.map((m) => m.id)),
+      );
+      if (kind === 'automation_manual') {
+        const [latest] =
+          await f.db`select employee_version_id from allrice_employee_assignments where id=${f.identity.assignment}`;
+        expect(latest!.employee_version_id).not.toBe(f.identity.version);
+        const memory = f.memories[1]!;
+        await deleteWorkspaceMemory(
+          f.context,
+          f.identity.workspace,
+          memory.id,
+          {
+            instanceId: f.identity.assignment,
+            expectedRevision: memory.revision,
+            contentDigest: memory.contentDigest,
+            idempotencyKey: randomUUID(),
+          },
+        );
+      }
+      const forged = structuredClone(snapshot);
+      forged.persona!.source.task!.id = randomUUID();
+      await expect(
+        assertFrozenEmployeePersona(
+          f.db,
+          forged,
+          resolved.promptSnapshot,
+          {
+            ...scope,
+            assignmentId: f.identity.assignment,
+            employeeVersionId: f.identity.version,
+            sessionId: snapshot.persona.source.task!.sessionId,
+            userMessageId: snapshot.persona.source.task!.userMessageId,
+          },
+          { phase: 'resolve', runId },
+        ),
+      ).rejects.toThrow('employee_persona_source_unavailable');
+      const runScope = {
+        ...scope,
+        assignmentId: f.identity.assignment,
+        employeeVersionId: f.identity.version,
+        sessionId: snapshot.persona.source.task!.sessionId,
+        userMessageId: snapshot.persona.source.task!.userMessageId,
+      };
+      for (const field of [
+        'ownerId',
+        'assignmentId',
+        'sessionId',
+        'userMessageId',
+      ] as const)
+        await expect(
+          assertFrozenEmployeePersona(
+            f.db,
+            snapshot,
+            resolved.promptSnapshot,
+            { ...runScope, [field]: randomUUID() },
+            { phase: 'resolve', runId },
+          ),
+        ).rejects.toThrow();
+      const broker = vi.spyOn(ToolBroker, 'executeRiceTool');
+      const task = await claim(f, runId);
+      try {
+        expect(
+          await readEmployeeChatSourceKind({
+            context: task.execution.context,
+            userMessageId: snapshot.persona.source.task!.userMessageId,
+          }),
+        ).toBe('internal');
+        await expect(
+          assertEmployeeChatHumanSource({
+            context: task.execution.context,
+            userMessageId: snapshot.persona.source.task!.userMessageId,
+          }),
+        ).rejects.toMatchObject({ code: 'authorization_denied' });
+        await task.run();
+        const expectedMemories = resolved.promptSnapshot.memories.filter(
+          (m) => kind !== 'automation_manual' || m.id !== f.memories[1]!.id,
+        );
+        const memory = renderMemoryContext(expectedMemories);
+        const contexts = requests
+          .flatMap((request) => request.messages)
+          .filter(
+            (message) =>
+              message.role === 'user' &&
+              JSON.stringify(message.content).includes(
+                'Current runtime context.',
+              ),
+          );
+        const current = JSON.stringify(contexts.at(-1));
+        for (const literal of [frozenDocs.persona!, frozenDocs.user, memory])
+          expect(current).toContain(JSON.stringify(literal).slice(1, -1));
+        expect(current).toContain('TASK_MEMORY_KEEP {{missing}}');
+        if (kind === 'automation_manual')
+          expect(current).not.toContain('TASK_MEMORY_WITHDRAW');
+        const systems = JSON.stringify(
+          requests
+            .flatMap((request) => request.messages)
+            .filter((message) => message.role === 'system'),
+        );
+        expect(systems).toContain('TASK_PLATFORM_POLICY');
+        for (const literal of [
+          'TASK_ENGINE_A',
+          'TASK_LITERAL',
+          'TASK_ORG_FACT',
+          'TASK_MEMORY_KEEP',
+          'CURRENT_DEFAULT_B_MISSION',
+        ])
+          expect(systems).not.toContain(literal);
+        const [stored] =
+          await f.db`select memory_context_state s,prompt_snapshot from allrice_employee_runs where run_id=${runId}`;
+        expect(stored!.s.initial.ids).toEqual(
+          expectedMemories.map((m) => m.id),
+        );
+        expect(stored!.s.initial.bytes).toBe(
+          initialMemoryContextBytes(expectedMemories),
+        );
+        expect(stored!.s.initial.bytes).toBeLessThanOrEqual(6000);
+        expect(stored!.s.spentBytes).toBe(stored!.s.initial.bytes);
+        expect(stored!.s.toolReads).toBe(0);
+        expect(stored!.s.initial).not.toHaveProperty('documentDigest');
+        expect(stored!.s).not.toHaveProperty('confirmedPins');
+        expect(stored!.prompt_snapshot.employeeDocuments).toEqual(frozenDocs);
+        const index = broker.mock.calls.findIndex(
+          ([input]) => input.call.name === 'workspace.memory.remember',
+        );
+        expect(index).toBeGreaterThanOrEqual(0);
+        expect(
+          await broker.mock.results[index]!.value.catch(
+            (error: unknown) => error,
+          ),
+        ).toMatchObject({ code: 'MEMORY_HUMAN_SOURCE_REQUIRED' });
+        expect(checkedLocks).toBe(true);
+        if (folder) {
+          const [attachment] =
+            await f.db`select o.id,o.checksum,o.size_bytes from allrice_message_attachments a join allrice_storage_objects o on o.id=a.object_id where a.message_id=${snapshot.persona.source.task!.userMessageId}`;
+          expect(attachment!.id).toBe(folder.object.objectId);
+          expect(attachment!.checksum).toBe(folder.expected.checksum);
+          expect(Number(attachment!.size_bytes)).toBe(
+            folder.expected.sizeBytes,
+          );
+          await f.db`update allrice_automation_folder_events set run_id=null,state='import_pending' where id=${folder.event.eventId}`;
+          await updateAutomation(
+            f.context,
+            f.identity.workspace,
+            folder.rule.id,
+            { expectedRevision: folder.rule.revision, status: 'paused' },
+          );
+          await processFolderTriggerEvents(16);
+          expect(
+            (
+              await listFolderTriggerHistory(
+                f.context,
+                f.identity.workspace,
+                folder.rule.id,
+              )
+            ).events[0]!.runId,
+          ).toBe(runId);
+          expect(
+            (await resolveEmployeeExecution(scope)).promptSnapshot
+              .employeeDocuments,
+          ).toEqual(frozenDocs);
+        }
+        expect(
+          await f.db`select run_id from allrice_employee_runs where organization_id=${f.identity.org}`,
+        ).toHaveLength(1);
+      } finally {
+        await task.isolation.cleanup();
+      }
+    },
+    90000,
+  );
 
   it('MET231: 双 child 静默尾步的真实 Host 候选、Worker 发布与网页正文同源且只显示一次', async () => {
     const childrenRelease = gate(),

@@ -77,6 +77,7 @@ import {
   type ChatMessageSchema,
   type ChatSessionSchema,
   type EmployeeAssignmentSchema,
+  type EmployeePersonaTask,
   type ImageMediaType,
   type RequestContext,
   type ExecutionContext,
@@ -1879,6 +1880,7 @@ async function prepareChatRunBinding(
   runContext: ChatRunContext,
   database: ChatRunDatabase,
   employeeDocuments = false,
+  task?: Pick<EmployeePersonaTask, 'kind' | 'id'>,
 ) {
   const {
     context,
@@ -1909,6 +1911,15 @@ async function prepareChatRunBinding(
     {
       context,
       employeeDocuments,
+      ...(task
+        ? {
+            taskPersona: {
+              ...task,
+              sessionId: session.id,
+              userMessageId: result.userMessage.id,
+            },
+          }
+        : {}),
       workspaceId,
       assignmentId: session.employee_assignment_id,
       employeeVersionId: effectiveEmployeeVersionId,
@@ -2049,6 +2060,10 @@ async function prepareNativeScheduledChatRunInTransaction(
     context,
     reservation,
     kind === 'once' ? 'native_once_occurrence' : 'native_recurring_occurrence',
+    {
+      kind: kind === 'once' ? 'native_once' : 'native_recurring',
+      id: occurrenceId,
+    },
     (submission, options) =>
       enqueue(transaction, context, occurrenceId, submission, options),
   );
@@ -2074,6 +2089,7 @@ export async function prepareManualAutomationChatRunInTransaction(
     context,
     reservation,
     'automation_manual_request',
+    { kind: 'automation_manual', id: manualRunId },
     (submission, options) =>
       queue.enqueueManualAutomationRunInTransaction(
         transaction,
@@ -2098,6 +2114,7 @@ async function prepareAutomationChatRunInTransaction(
     prompt: string;
   },
   reason: string,
+  task: Pick<EmployeePersonaTask, 'kind' | 'id'>,
   enqueue: (
     submission: PreparedAutomationChatInput['submission'],
     options: PreparedAutomationChatInput['enqueueOptions'],
@@ -2142,6 +2159,8 @@ async function prepareAutomationChatRunInTransaction(
     preparation,
     runContext,
     database,
+    false,
+    task,
   );
   const { submission, enqueueOptions } = await prepareChatRunInput(
     preparation,
@@ -2275,6 +2294,9 @@ export async function sendChatMessage(
       runContext,
       database,
       !options.folderEventId,
+      options.folderEventId
+        ? { kind: 'folder_event', id: options.folderEventId }
+        : undefined,
     );
     const { enqueueRun, getRun } = await import('../execution/queue.ts');
     const { submission, enqueueOptions } = await prepareChatRunInput(

@@ -24,6 +24,7 @@ import {
   type ExecutionContext,
   type EmployeeInstanceProfile,
   type EmployeePersonaPin,
+  type EmployeePersonaTask,
 } from '@allrice/contracts';
 import { getDatabase } from '../core/client.ts';
 import { DataAccessError } from '../data.ts';
@@ -902,6 +903,7 @@ export async function assertEmployeeInstanceAdmission(
   sessionId: string,
   snapshotInput: EmployeeInstanceSnapshot,
   personaInput?: EmployeePersonaPin,
+  taskProducer?: EmployeePersonaTask,
 ) {
   const snapshot = EmployeeInstanceSnapshotSchema.parse(snapshotInput);
   if (
@@ -936,6 +938,13 @@ export async function assertEmployeeInstanceAdmission(
   if (personaInput !== undefined) {
     const pin = EmployeePersonaPinSchema.parse(personaInput);
     if (
+      pin.source.task &&
+      (!taskProducer ||
+        runtimePolicyDigest(pin.source.task) !==
+          runtimePolicyDigest(taskProducer))
+    )
+      throw Error('employee_persona_snapshot_invalid');
+    if (
       pin.source.instanceId !== snapshot.id ||
       pin.source.assignmentId !== snapshot.assignmentId ||
       pin.source.profileRevision !== snapshot.revision ||
@@ -951,14 +960,16 @@ export async function assertEmployeeInstanceAdmission(
       workspaceId: snapshot.workspaceId,
       employeeId: currentAssignment.employee_id,
     };
-    const basis = await readEmployeePersonaVersion(
-      {
-        ...scope,
-        role: 'basis',
-        versionId: currentAssignment.employee_version_id,
-      },
-      tx,
-    );
+    const basis = pin.source.task
+      ? undefined
+      : await readEmployeePersonaVersion(
+          {
+            ...scope,
+            role: 'basis',
+            versionId: currentAssignment.employee_version_id,
+          },
+          tx,
+        );
     const engine = await readEmployeePersonaVersion(
       {
         ...scope,
@@ -968,9 +979,9 @@ export async function assertEmployeeInstanceAdmission(
       tx,
     );
     if (
-      !basis ||
       !engine ||
-      runtimePolicyDigest(basis.source) !==
+      (!pin.source.task && !basis) ||
+      runtimePolicyDigest(pin.source.task ? engine.source : basis!.source) !==
         runtimePolicyDigest(pin.source.basis) ||
       runtimePolicyDigest(engine.source) !==
         runtimePolicyDigest(pin.source.engine)

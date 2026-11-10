@@ -323,6 +323,98 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
     };
   }
 
+  it.each([
+    'native_once',
+    'native_recurring',
+    'folder_event',
+    'automation_manual',
+  ] as const)(
+    'does not let a browser acquire %s provenance by copying a task locator',
+    async (kind) => {
+      const f = await setup(),
+        instance = await custom(f);
+      const actual = hub.prepareEmployeeRunBinding;
+      const spy = vi
+        .spyOn(hub, 'prepareEmployeeRunBinding')
+        .mockImplementationOnce((input, transaction) =>
+          actual(
+            {
+              ...input,
+              employeeDocuments: false,
+              taskPersona: {
+                kind,
+                id: randomUUID(),
+                sessionId: input.sessionId,
+                userMessageId: input.userMessageId,
+              },
+            },
+            transaction,
+          ),
+        );
+      const before = await runCount(f);
+      try {
+        await expect(send(f, instance.id)).rejects.toThrow(
+          'employee_persona_snapshot_invalid',
+        );
+      } finally {
+        spy.mockRestore();
+      }
+      expect(await runCount(f)).toBe(before);
+    },
+  );
+
+  it('projects a task identity from the actual old engine without using a different current default', async () => {
+    const f = await setup(),
+      basis = await v1Default(f, 'valid');
+    // Projection only: a fabricated locator must still fail real enqueue. The
+    // four actual producer/queue/Worker/Host paths live in the p25 suite.
+    const actual = hub.prepareEmployeeRunBinding;
+    const captured: { binding?: Awaited<ReturnType<typeof actual>> } = {};
+    const spy = vi
+      .spyOn(hub, 'prepareEmployeeRunBinding')
+      .mockImplementationOnce(async (input, transaction) => {
+        captured.binding = await actual(
+          {
+            ...input,
+            employeeDocuments: false,
+            taskPersona: {
+              kind: 'native_once',
+              id: randomUUID(),
+              sessionId: input.sessionId,
+              userMessageId: input.userMessageId,
+            },
+          },
+          transaction,
+        );
+        return captured.binding;
+      });
+    try {
+      await expect(send(f, basis.instance.id, basis.sessionId)).rejects.toThrow(
+        'employee_persona_snapshot_invalid',
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    const taskBinding = captured.binding;
+    if (!taskBinding) throw Error('expected captured task projection');
+    const pin = EmployeePersonaPinSchema.parse(
+      taskBinding.executionSnapshot.persona,
+    );
+    expect(pin.source.basis).toEqual(pin.source.engine);
+    expect(pin.source.engine.employeeVersionId).toBe(f.versionId);
+    expect(pin.source.basis.employeeVersionId).not.toBe(basis.versionId);
+    expect(taskBinding.promptSnapshot.employeeDocuments?.persona).toContain(
+      'frozen_task_engine',
+    );
+    expect(taskBinding.promptSnapshot.systemPrompt).toContain(
+      'PLATFORM_POLICY_A',
+    );
+    expect(taskBinding.promptSnapshot.systemPrompt).not.toContain(
+      'DEFAULT_B_POLICY',
+    );
+    expect(await runCount(f)).toBe(0);
+  });
+
   it.each(['custom', 'rice', 'professional'] as const)(
     'freezes actual %s identity and keeps literal personal data out of both system inputs',
     async (kind) => {

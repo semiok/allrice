@@ -15,7 +15,11 @@ import { setPersonalEmployeeMemoryPin } from './service.ts';
  * No model calls. Test data and all schema changes live in runtime.fixture. */
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { ExecutionContext } from '@allrice/contracts';
+import {
+  renderMemoryContext,
+  initialMemoryContextBytes,
+  type ExecutionContext,
+} from '@allrice/contracts';
 import * as client from '../core/client.ts';
 import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
 import { createRunAuthorityFixture } from '../run-authority.fixture.ts';
@@ -140,6 +144,98 @@ suite(
       expectedRevision: m.revision,
       contentDigest: m.contentDigest,
       idempotencyKey: randomUUID(),
+    });
+
+    it('keeps internal first-withdrawal filtering and rebuilds literal memory from the original ledger selection', async () => {
+      const f = await setup();
+      const withdrawn = await f.create('撤回后不能送入首轮模型'),
+        kept = await f.create(
+          '原冻结字节 {{missing}}；必须保留12笔，不合并退款。',
+        );
+      const frozen = [withdrawn, kept].map(({ id, revision, content }) => ({
+        id,
+        revision,
+        content,
+      }));
+      const scope = { ...f.scope, sessionId: f.session };
+      const [job] =
+        await fixture.db`select attempt from allrice_jobs where id=${f.worker.jobId}`;
+      const auth = {
+        scope,
+        worker: { ...f.worker, attempt: Number(job!.attempt) },
+      };
+      await fixture.db`update allrice_employee_runs set status='running',memory_context_state='{"schemaVersion":1,"pending":true}' where run_id=${f.rootRunId}`;
+      await deleteWorkspaceMemory(
+        f.context,
+        f.workspace,
+        withdrawn.id,
+        exact(withdrawn),
+      );
+      const eligible = await filterEmployeeMethodMemories(scope, frozen);
+      const selected = await prepareRunMemoryContext(auth, eligible);
+      expect(selected).toEqual([frozen[1]]);
+      expect(renderMemoryContext(selected)).toContain('原冻结字节 {{missing}}');
+      expect(renderMemoryContext(selected)).not.toContain('撤回后');
+      const state = async () =>
+        (
+          await fixture.db`select memory_context_state s from allrice_employee_runs where run_id=${f.rootRunId}`
+        )[0]!.s;
+      const initial = await state();
+      expect(initial.initial.ids).toEqual([kept.id]);
+      expect(initial.initial.bytes).toBe(initialMemoryContextBytes(selected));
+      expect(initial.initial).not.toHaveProperty('documentDigest');
+      expect(initial).not.toHaveProperty('confirmedPins');
+      const edited = await correctWorkspaceMemory(
+        f.context,
+        f.workspace,
+        kept.id,
+        {
+          ...exact(kept),
+          content: '下个任务的新正文',
+          reason: '本人更新',
+        },
+      );
+      const resumed = await prepareRunMemoryContext(
+        auth,
+        await filterEmployeeMethodMemories(scope, frozen),
+      );
+      expect(renderMemoryContext(resumed)).toBe(renderMemoryContext(selected));
+      expect(await state()).toEqual(initial);
+      await deleteWorkspaceMemory(
+        f.context,
+        f.workspace,
+        kept.id,
+        exact(edited),
+      );
+      await expect(
+        prepareRunMemoryContext(
+          auth,
+          await filterEmployeeMethodMemories(scope, frozen),
+        ),
+      ).rejects.toThrow('MEMORY_CONTEXT_UNAVAILABLE');
+      expect(await state()).toEqual(initial);
+    });
+
+    it('does not issue a document budget or pins when an internal old ledger is NULL', async () => {
+      const f = await setup(),
+        memory = await f.create('旧任务不得重新获额度');
+      const scope = { ...f.scope, sessionId: f.session };
+      const [job] =
+        await fixture.db`select attempt from allrice_jobs where id=${f.worker.jobId}`;
+      await fixture.db`update allrice_employee_runs set status='running',memory_context_state=null where run_id=${f.rootRunId}`;
+      const selected = await prepareRunMemoryContext(
+        {
+          scope,
+          worker: { ...f.worker, attempt: Number(job!.attempt) },
+        },
+        [{ id: memory.id, revision: memory.revision, content: memory.content }],
+      );
+      expect(renderMemoryContext(selected)).toBe('');
+      expect(
+        (
+          await fixture.db`select memory_context_state s from allrice_employee_runs where run_id=${f.rootRunId}`
+        )[0]!.s,
+      ).toBeNull();
     });
 
     it('freezes whole document revisions, shares search/source pins and spend, and stops after withdrawal', async () => {
