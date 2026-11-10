@@ -212,7 +212,7 @@ export function assertMemoryRevision(
     throw new EmployeeMemoryConflict();
 }
 
-/** Source tombstones cover rephrasing of one old proposal, not future human messages. */
+/** Serialize source-bound mutations; deletion applies to identities, not new proposals. */
 export async function lockMemorySource(
   tx: TransactionSql,
   scope: EmployeeMemoryScope,

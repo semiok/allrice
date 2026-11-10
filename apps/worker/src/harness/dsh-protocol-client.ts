@@ -222,6 +222,7 @@ export class DshProtocolClient {
     provider: string;
     model: string;
     nativeTools?: string[];
+    employeeDocumentsSchemaVersion?: 1 | 2;
     nativeSkills?: DshNativeSkillSnapshot[];
     contentScenes?: EmployeeRuntimeScene[];
     personalContentScenes?: boolean;
@@ -272,6 +273,15 @@ export class DshProtocolClient {
       throw new HandlerError(
         'DSH_PERSONAL_METHOD_SCOPE_UNAVAILABLE',
         'DSH did not confirm personal-only method tools',
+        false,
+      );
+    if (
+      input.employeeDocumentsSchemaVersion === 2 &&
+      record(result.capabilities)?.employeeDocumentsSchemaVersion !== 2
+    )
+      throw new HandlerError(
+        'DSH_EMPLOYEE_DOCUMENT_VERSION_UNAVAILABLE',
+        'DSH did not confirm the frozen employee document version',
         false,
       );
     const serverInfo = record(result.serverInfo);

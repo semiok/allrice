@@ -1097,12 +1097,16 @@ suite(
       await expect(
         createTraceableMemory(f.context, proposal),
       ).rejects.toBeInstanceOf(EmployeeMemoryConflict);
-      await expect(
-        createTraceableMemory(f.context, {
-          ...proposal,
-          content: 'Rephrased old discarded proposal',
-        }),
-      ).rejects.toBeInstanceOf(EmployeeMemoryConflict);
+      const reproposed = await createTraceableMemory(f.context, {
+        ...proposal,
+        content: 'Rephrased old discarded proposal',
+      });
+      expect(reproposed).toMatchObject({
+        lifecycleState: 'candidate',
+        trust: 'derived',
+      });
+      expect(reproposed.id).not.toBe(first.id);
+      expect(reproposed.id).not.toBe(second.id);
     });
 
     it('serializes historical v1 edit/confirmation, preserves one winning revision and rejects changed idempotency payloads', async () => {
