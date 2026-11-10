@@ -1215,6 +1215,21 @@ suite('U1 mounted employee Workflow host', () => {
     await expect.poll(() => locator.textContent()).toContain(value);
   }
 
+  async function actionAppearance(page: Locator, name: string) {
+    return page.getByRole('button', { name, exact: true }).evaluate((node) => {
+      const css = getComputedStyle(node);
+      return {
+        font: css.font,
+        padding: css.padding,
+        minHeight: css.minHeight,
+        border: css.border,
+        radius: css.borderRadius,
+        color: css.color,
+        background: css.backgroundColor,
+      };
+    });
+  }
+
   type Fixture = Awaited<ReturnType<typeof fixture>>;
   async function inFixture(
     options: Parameters<typeof fixture>[0],
@@ -1531,6 +1546,13 @@ suite('U1 mounted employee Workflow host', () => {
             .boundingBox();
           expect(closeBox?.width).toBe(32);
           expect(closeBox?.height).toBe(32);
+          await f.page.screenshot({
+            path: resolve(
+              evidence,
+              `capability-list-${width}-${dark ? 'dark' : 'light'}.png`,
+            ),
+            fullPage: true,
+          });
           await root.getByRole('button', { name: /写周报/ }).click();
           const detail = employeePage(f.page, {
             name: '写周报',
@@ -1577,6 +1599,12 @@ suite('U1 mounted employee Workflow host', () => {
             });
           await expect.poll(async () => (await measure()).focused).toBe(true);
           const geometry = await measure();
+          await f.page.mouse.move(1, 1);
+          const actions = await Promise.all(
+            ['更新', '开始工作', '删除场景'].map((name) =>
+              actionAppearance(detail, name),
+            ),
+          );
           const deliveryAppearance = await detail
             .getByRole('button', { name: '查看交付结果 →', exact: true })
             .evaluate((node) => {
@@ -1601,8 +1629,24 @@ suite('U1 mounted employee Workflow host', () => {
             geometry.clientHeight,
           );
           expect(geometry.radius).toBe('0px');
-          if (width < 700) expect(panelBox!.width).toBe(geometry.clientWidth);
-          else expect(panelBox!.x).toBeGreaterThan(0);
+          if (width < 700) {
+            const outer = await root.evaluate((node) => {
+              const box = node.getBoundingClientRect();
+              const css = getComputedStyle(node);
+              return {
+                x: box.x,
+                right: box.right,
+                width: box.width,
+                clientWidth: node.clientWidth,
+                leftBorder: Number.parseFloat(css.borderLeftWidth),
+              };
+            });
+            expect(outer.x).toBe(0);
+            expect(outer.right).toBe(geometry.clientWidth);
+            expect(outer.width).toBe(geometry.clientWidth);
+            expect(panelBox!.x).toBe(outer.x + outer.leftBorder);
+            expect(panelBox!.width).toBe(outer.clientWidth);
+          } else expect(panelBox!.x).toBeGreaterThan(0);
           const channels = geometry.background.match(/\d+/g)?.map(Number);
           expect(channels?.length).toBe(3);
           if (dark) expect(Math.max(...channels!)).toBeLessThan(90);
@@ -1684,11 +1728,16 @@ suite('U1 mounted employee Workflow host', () => {
               .count(),
           ).toBe(1);
           expect(await employee.locator('footer').count()).toBe(0);
-          if (!dark)
-            await f.page.screenshot({
-              path: resolve(evidence, `employee-root-${width}-light.png`),
-              fullPage: true,
-            });
+          await employee
+            .getByRole('button', { name: '写周报', exact: true })
+            .scrollIntoViewIfNeeded();
+          await f.page.screenshot({
+            path: resolve(
+              evidence,
+              `employee-root-${width}-${dark ? 'dark' : 'light'}.png`,
+            ),
+            fullPage: true,
+          });
           await writeFile(
             resolve(
               evidence,
@@ -1696,10 +1745,77 @@ suite('U1 mounted employee Workflow host', () => {
             ),
             JSON.stringify({ ...employeeGeometry, memoryAppearance }, null, 2),
           );
+          await employee
+            .getByRole('button', { name: '写周报', exact: true })
+            .click();
+          const employeeDetail = employeePage(f.page, {
+            name: '写周报',
+            exact: true,
+          });
+          await employeeDetail
+            .getByRole('heading', { name: '什么时候用', exact: true })
+            .waitFor();
+          await f.page.mouse.move(1, 1);
+          expect(
+            await Promise.all(
+              ['更新', '开始工作', '删除场景'].map((name) =>
+                actionAppearance(employeeDetail, name),
+              ),
+            ),
+          ).toEqual(actions);
+          await f.page.screenshot({
+            path: resolve(
+              evidence,
+              `employee-workflow-${width}-${dark ? 'dark' : 'light'}.png`,
+            ),
+            fullPage: true,
+          });
+          await employeeDetail
+            .getByRole('button', { name: '返回员工详情', exact: true })
+            .click();
+          await employee.waitFor();
           expect(f.state.writes).toEqual([]);
         });
       });
     }
+
+  it('MET-251 capability actions and source fit the actual 320px native drawer', async () => {
+    await inFixture({ width: 320 }, async (f) => {
+      const detail = await f.openDetail();
+      for (const name of ['更新', '开始工作', '返回能力列表']) {
+        const box = await detail
+          .getByRole('button', { name, exact: true })
+          .boundingBox();
+        expect(box).not.toBeNull();
+        expect(box!.x).toBeGreaterThanOrEqual(0);
+        expect(box!.x + box!.width).toBeLessThanOrEqual(320);
+      }
+      expect(
+        await detail.evaluate(
+          (node) =>
+            node.scrollWidth <= node.clientWidth &&
+            document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
+      await f.page.screenshot({
+        path: resolve(evidence, 'workflow-320-light.png'),
+        fullPage: true,
+      });
+      await detail.getByRole('button', { name: '更新', exact: true }).click();
+      const form = employeePage(f.page, { name: '更新“写周报”', exact: true });
+      await form
+        .getByRole('textbox', { name: '仓库链接', exact: true })
+        .waitFor();
+      expect(
+        await form.evaluate(
+          (node) =>
+            node.scrollWidth <= node.clientWidth &&
+            document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
+      expect(f.state.writes).toEqual([]);
+    });
+  });
 
   it('directory failure retries into a genuine empty directory without showing a false empty state', async () => {
     await inFixture({ empty: true }, async (f) => {

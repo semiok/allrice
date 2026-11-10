@@ -233,6 +233,10 @@ export function EmployeeSceneList(props: {
   const { controller: catalog } = props;
   const heading = useId();
   const writable = catalog.canMaintain && !catalog.loading && !catalog.error;
+  const removed =
+    catalog.mutation?.kind === 'remove' && catalog.mutation.receipt
+      ? catalog.mutation.scene
+      : undefined;
   const create = (
     <Button
       variant="outline"
@@ -244,6 +248,11 @@ export function EmployeeSceneList(props: {
   );
   return (
     <section aria-labelledby={props.embedded ? heading : undefined}>
+      {removed && (
+        <p className={css.caption} role="status">
+          已删除“{removed.name}”
+        </p>
+      )}
       {props.embedded && (
         <EmployeeCapabilityHeading
           id={heading}
@@ -365,7 +374,6 @@ export function EmployeeSceneDialog(props: {
         : undefined,
   );
   const [starting, setStarting] = useState(false);
-  const [toast, setToast] = useState('');
   const [mounted, setMounted] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const title = useRef<HTMLHeadingElement>(null);
@@ -466,7 +474,6 @@ export function EmployeeSceneDialog(props: {
     if (busy) return;
     setEntry(entry);
     setError('');
-    setToast('');
     setPage('detail');
     void catalog.inspect(entry);
   }
@@ -550,7 +557,6 @@ export function EmployeeSceneDialog(props: {
   async function remove() {
     if (!removing || busy) return;
     if (await catalog.remove(removing)) {
-      setToast(`已删除“${removing.name}”`);
       setRemoving(undefined);
       if (returnToList) returnToList();
       else setPage('list');
@@ -689,11 +695,6 @@ export function EmployeeSceneDialog(props: {
         <div className={css.body}>
           {page === 'list' ? (
             <>
-              {toast && (
-                <p className={css.caption} role="status">
-                  {toast}
-                </p>
-              )}
               <EmployeeSceneList
                 controller={catalog}
                 employeeName={employeeName}
