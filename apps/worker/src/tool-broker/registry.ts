@@ -67,6 +67,7 @@ function researchHandler(name: ResearchToolName): RiceToolHandler {
     executeResearchTool({
       name,
       arguments: args,
+      signal: input.signal,
       overrides: {
         ...(input.codexSearch ? { codexSearch: input.codexSearch } : {}),
         ...(input.wechatSearch ? { wechatSearch: input.wechatSearch } : {}),

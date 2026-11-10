@@ -211,6 +211,77 @@ describe('confirmed native dispatch stop receipt', () => {
     return { adapter, input, original, runtime, prompt, confirmStopped, drop };
   }
 
+  it('web cancellation on the real Adapter is Run-bound and waits for the exact callback cleanup', async () => {
+    const f = stoppedExecution(async () => {});
+    f.input.tools = [
+      { name: 'web.fetch', description: 'web', inputSchema: {} },
+    ];
+    let release!: () => void;
+    const cleanup = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let callSignal: AbortSignal | undefined;
+    f.input.onToolCall = async (_call, options) => {
+      callSignal = options!.signal;
+      await cleanup;
+      callSignal.throwIfAborted();
+      return { modelContent: '{}', summary: 'unused' };
+    };
+    let checked = false;
+    f.input.onEvent = async (event) => {
+      if (event.sourceEventType !== 'allrice/runtime-preparation') return;
+      const identity = {
+        runId: f.input.executionEnvironment.ALLRICE_RUN_ID!,
+        nativeSessionId: f.runtime.sessionId,
+        rootSessionId: f.runtime.sessionId,
+        parentSessionId: null,
+        delegationDepth: 0,
+      };
+      vi.mocked(f.runtime.client.subscribe).mock.calls[0]![0]({
+        method: 'allrice.run-session',
+        params: identity,
+      });
+      const handler = vi.mocked(f.runtime.client.setRequestHandler).mock
+        .calls[0]![0]!;
+      const params = {
+        ...identity,
+        toolCallId: 'web-call',
+        name: 'web.fetch',
+        arguments: { url: 'https://example.com' },
+      };
+      const call = handler('allrice/tool-call', params).catch(
+        (error: unknown) => error,
+      );
+      await vi.waitFor(() => expect(callSignal).toBeDefined());
+      for (const mismatch of [
+        { runId: 'old-run' },
+        { nativeSessionId: 'another-child' },
+      ])
+        await expect(
+          handler('allrice/web-cancel', { ...params, ...mismatch }),
+        ).rejects.toMatchObject({ code: 'DSH_RUN_SESSION_DENIED' });
+      expect(callSignal!.aborted).toBe(false);
+      let settled = false;
+      const cancel = handler('allrice/web-cancel', params).then((receipt) => {
+        settled = true;
+        return receipt;
+      });
+      expect(callSignal!.aborted).toBe(true);
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      release();
+      expect(await call).toBeInstanceOf(Error);
+      expect(await cancel).toEqual({ settled: true });
+      checked = true;
+      throw f.original;
+    };
+    expect(
+      await f.adapter.execute(f.input).catch((error: unknown) => error),
+    ).toBe(f.original);
+    expect(checked).toBe(true);
+    expect(f.prompt).not.toHaveBeenCalled();
+  });
+
   it.each([
     'local-error',
     'root-revoked',
@@ -569,6 +640,48 @@ const schedulingTools: HarnessExecutionInput['tools'] = [
 ];
 
 describe('DshHarnessAdapter', () => {
+  it.each(['web.search', 'web.fetch'])(
+    'rejects legacy %s envelopes before Broker dispatch',
+    async (name) => {
+      const call = {
+        id: randomUUID(),
+        name,
+        arguments:
+          name === 'web.fetch'
+            ? { url: 'https://example.com' }
+            : { query: '公开资料' },
+      };
+      const runtime = await schedulingRuntime([
+        `<allrice_tool_call>${JSON.stringify(call)}</allrice_tool_call>`,
+      ]);
+      const onToolCall = vi.fn(async () => ({
+        modelContent: 'should not run',
+        summary: 'unexpected',
+      }));
+      const input = executionInput({
+        prompt: '查找并读取公开资料',
+        provider: runtime.provider,
+        events: [],
+        onToolCall,
+      });
+      input.workDirectory = runtime.root;
+      input.tools = [
+        { name, description: 'native web', inputSchema: { type: 'object' } },
+      ];
+      input.authorizedToolNames = [name];
+      try {
+        await expect(runtime.adapter.execute(input)).rejects.toMatchObject({
+          code: 'DSH_TOOL_ENVELOPE_INVALID',
+        });
+        expect(onToolCall).not.toHaveBeenCalled();
+        expect(runtime.requests).toHaveLength(1);
+      } finally {
+        await runtime.close();
+      }
+    },
+    20000,
+  );
+
   it('does not attribute a replaced workflow prompt or its reply to inherited SQL message identities', async () => {
     const runtime = await schedulingRuntime(['STEP_REPLY', 'CHAT_REPLY']);
     const hash = (role: string, text: string) =>

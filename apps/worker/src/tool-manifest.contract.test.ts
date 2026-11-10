@@ -3,6 +3,11 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { allRiceToolManifest, employeeToolCatalog } from '@allrice/contracts';
+import { Context } from '@deepseek-ai/cordis';
+import { ToolCallId } from '@deepseek-ai/dsh-llm';
+import SystemPrompt from '@deepseek-ai/dsh-system-prompt';
+import Tools from '@deepseek-ai/dsh-tools';
+import Web from '@deepseek-ai/dsh-web';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -233,6 +238,66 @@ describe('AllRice worker tool manifest contract', () => {
           wireName,
         })),
       );
+    }
+    // Native tool-web registers fetch through its public factory, not the
+    // declaration array. Exercise that registration and its Broker dispatch.
+    expect(runtimeSource).toContain(
+      "import { installNativeWeb } from './allrice-native-web.mjs';",
+    );
+    expect(runtimeSource).toContain(
+      'this.registerWeb ??= installNativeWeb(this.ctx, (params, signal) =>',
+    );
+    expect(runtimeSource).toContain('this.registerWeb(this.nativeTools);');
+    const { installNativeWeb } = await import(
+      pathToFileURL(
+        resolve(import.meta.dirname, '../dsh/allrice-native-web.mjs'),
+      ).href
+    );
+    const ctx = new Context();
+    try {
+      await ctx.plugin(SystemPrompt);
+      await ctx.plugin(Tools);
+      await ctx.plugin(Web, {});
+      const calls: { name: string }[] = [];
+      installNativeWeb(ctx, async (params: { name: string }) => {
+        calls.push(params);
+        return {
+          modelContent: JSON.stringify({
+            url: 'https://example.com/',
+            statusCode: 200,
+            body: { kind: 'text', content: 'contract fixture' },
+            truncated: false,
+          }),
+        };
+      })(new Set(['web.fetch']));
+      const nativeFetch = ctx.tools.get('web_fetch');
+      expect(nativeFetch).toBeDefined();
+      expect(ctx.tools.get('web_search')).toBeUndefined();
+      const result = await ctx.tools.execute({
+        name: nativeFetch!.name,
+        arguments: { url: 'https://example.com/' },
+        callId: ToolCallId('manifest-fetch'),
+        // This fixture exercises the tool pipeline's identity projection only.
+        agent: { id: 'manifest-root' } as NonNullable<
+          Parameters<typeof ctx.tools.execute>[0]['agent']
+        >,
+        signal: new AbortController().signal,
+      });
+      expect(result.isError).toBe(false);
+      expect(calls).toEqual([
+        {
+          nativeSessionId: 'manifest-root',
+          toolCallId: 'manifest-fetch',
+          name: 'web.fetch',
+          arguments: { url: 'https://example.com/' },
+        },
+      ]);
+      runtimePairs.push({
+        canonicalName: calls[0]!.name,
+        wireName: nativeFetch!.name,
+      });
+    } finally {
+      await ctx.fiber.dispose();
     }
     const expectedPairs: { canonicalName: string; wireName: string }[] =
       allRiceToolManifest

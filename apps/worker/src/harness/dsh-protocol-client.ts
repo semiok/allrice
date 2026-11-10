@@ -1,3 +1,7 @@
+/// <reference types="./dsh-web-cancellation-types.d.ts" />
+
+import { randomUUID } from 'node:crypto';
+import { requestCancellableWeb } from '../../dsh/allrice-web-cancellation.mjs';
 import type { EmployeeDocuments } from '@allrice/contracts';
 import {
   BootstrapCoverageResultSchema,
@@ -586,11 +590,13 @@ export class DshProtocolClient {
     return this.request('provider/image-generation', input, 310_000);
   }
 
-  async searchCodexWeb(query: string, maxResults = 5) {
-    const result = await this.request(
+  async searchCodexWeb(query: string, maxResults = 5, signal?: AbortSignal) {
+    const result = await requestCancellableWeb(
+      (method, params) => this.request(method, params, 70_000),
       'provider/web-search',
-      { query, maxResults },
-      70_000,
+      'provider/web-search-cancel',
+      { query, maxResults, callId: randomUUID() },
+      signal,
     );
     if (
       result.provider !== 'codex-hosted-search' ||
@@ -608,6 +614,7 @@ export class DshProtocolClient {
       provider: 'codex-hosted-search' as const,
       query: result.query,
       output: result.output,
+      ...(result.truncated === true ? { truncated: true } : {}),
       results: result.results,
     };
   }
