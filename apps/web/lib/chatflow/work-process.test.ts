@@ -17,6 +17,82 @@ function call(
   };
 }
 describe('chronological public work process', () => {
+  it.each([
+    ['mapped', { toolName: 'web.search' }, '搜索资料', '搜索', '搜索资料'],
+    [
+      'prefix',
+      { toolName: 'workspace.memory.remember' },
+      '整理工作记忆',
+      '记忆',
+      '整理工作记忆',
+    ],
+    [
+      'search',
+      { kind: 'search', toolName: 'partner.lookup' },
+      '搜索资料',
+      '搜索',
+      '搜索资料',
+    ],
+    [
+      'unknown',
+      { toolName: 'cloud_mcp_call' },
+      'cloud_mcp_call',
+      '工具',
+      '执行工具操作',
+    ],
+    [
+      'missing',
+      { toolName: undefined, title: 'Tool' },
+      '执行工具操作',
+      '工具',
+      '执行工具操作',
+    ],
+    [
+      'title identity',
+      { toolName: undefined, title: 'web.search' },
+      '搜索资料',
+      '搜索',
+      '搜索资料',
+    ],
+  ] as const)(
+    'shows the concrete %s tool without changing its activity label',
+    (_case, identity, title, label, description) => {
+      const state = summarizeWorkProcess([
+        call(1, { status: 'started', ...identity }),
+      ]);
+      expect(state.steps[0]).toMatchObject({ title, label, description });
+      expect(state.active).toBe(description);
+    },
+  );
+  it.each([
+    [
+      'model wait',
+      { modelWait: true, title: '等待模型响应' },
+      '等待模型响应',
+      '等待',
+      '等待模型响应',
+    ],
+    [
+      'compaction',
+      { kind: 'compaction', title: '正在整理会话上下文' },
+      '正在整理会话上下文',
+      '整理',
+      '正在整理上下文',
+    ],
+  ] as const)(
+    'keeps the %s phase independent of a carried tool identity',
+    (_case, phase, title, label, active) => {
+      const state = summarizeWorkProcess([
+        call(1, { toolName: 'web.search', status: 'started', ...phase }),
+      ]);
+      expect(state.steps[0]).toMatchObject({
+        title,
+        label,
+        description: title,
+      });
+      expect(state.active).toBe(active);
+    },
+  );
   it('only carries existing safe summaries and ordered recorded timing into inline details', () => {
     const result = summarizeWorkProcess([
       call(1, {

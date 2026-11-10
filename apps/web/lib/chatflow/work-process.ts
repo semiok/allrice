@@ -36,7 +36,9 @@ const toolLabels: Record<string, string> = {
   ask_user_question: '等待你的回答',
 };
 
-export function toolActivityLabel(name: string, search = false) {
+const genericToolLabel = '执行工具操作';
+
+function resolvedToolActivityLabel(name: string, search = false) {
   if (toolLabels[name]) return toolLabels[name];
   if (search) return '搜索资料';
   if (name.startsWith('market.')) return '查询市场数据';
@@ -45,7 +47,11 @@ export function toolActivityLabel(name: string, search = false) {
   if (name.startsWith('workspace.memory.')) return '整理工作记忆';
   if (name.startsWith('local.process.')) return '管理本地任务';
   if (name.startsWith('local.service.')) return '管理本地服务';
-  return '执行工具操作';
+  return undefined;
+}
+
+export function toolActivityLabel(name: string, search = false) {
+  return resolvedToolActivityLabel(name, search) ?? genericToolLabel;
 }
 
 export type WorkProcessCategory =
@@ -126,6 +132,13 @@ export function summarizeWorkProcess(items: NativeExperienceItem[]) {
     )
     .map((item) => {
       const [category, label] = classification(item);
+      const isTool = !item.modelWait && ['tool', 'search'].includes(item.kind);
+      const toolLabel = isTool
+        ? resolvedToolActivityLabel(
+            item.toolName ?? item.title,
+            item.kind === 'search',
+          )
+        : undefined;
       const fallback = item.modelWait
         ? (readableSummary(item.title) ?? '等待模型响应')
         : item.kind === 'think'
@@ -134,10 +147,7 @@ export function summarizeWorkProcess(items: NativeExperienceItem[]) {
             ? (readableSummary(item.title) ?? '整理会话记录')
             : item.kind === 'todo'
               ? '更新工作计划'
-              : toolActivityLabel(
-                  item.toolName ?? item.title,
-                  item.kind === 'search',
-                );
+              : (toolLabel ?? genericToolLabel);
       const input =
         item.kind !== 'think'
           ? readableSummary(item.activityDetail)
@@ -151,14 +161,11 @@ export function summarizeWorkProcess(items: NativeExperienceItem[]) {
         category,
         label,
         status: item.status,
-        // r1-exempt(own-text): 仅识别本文件工具标签函数产生的固定兜底以展示真实工具名，不读取用户或模型措辞、不判断意图或授权，未命中保留原展示
         title:
           item.toolName === 'ask_user_question'
             ? '提问'
             : (input ??
-              (fallback === '执行工具操作'
-                ? (item.toolName ?? fallback)
-                : fallback)),
+              (isTool ? (toolLabel ?? item.toolName ?? fallback) : fallback)),
         ...(input ? { input } : {}),
         ...(result ? { result } : {}),
         ...(Number.isFinite(started) &&
