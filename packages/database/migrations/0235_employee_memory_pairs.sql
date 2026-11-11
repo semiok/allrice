@@ -87,6 +87,21 @@ language sql volatile set search_path from current as $$
   )
 $$;
 
+-- Match 0225: pin both functions to the migration schema, not the session path.
+do $$
+declare
+  app_schema text := current_schema();
+  signature text;
+begin
+  foreach signature in array array[
+    'allrice_personal_memory_pair_valid(summary text, details text)',
+    'allrice_employee_memory_pair_preflight()'
+  ] loop
+    execute format('alter function %I.%s set search_path = pg_catalog, %I',
+      app_schema, signature, app_schema);
+  end loop;
+end $$;
+
 -- Deployment must already be stopped for writes; these relation locks also
 -- make the preflight/CAS/backfill one indivisible migration transaction.
 lock table allrice_memories,allrice_memory_revisions in share row exclusive mode;

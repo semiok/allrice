@@ -295,6 +295,22 @@ suite('0225 function search_path and standard backup restore', () => {
         });
         assertSearchPaths(await functionCatalog(source.db, 'public'), 'public');
 
+        await source.db.unsafe(
+          'create table restore_memory_pairs (summary text, details text)',
+        );
+        const [pairCheck] =
+          await source.db`select pg_get_constraintdef(oid) as definition from pg_constraint
+        where conrelid='allrice_memories'::regclass and conname='allrice_memories_pair_check'`;
+        await source.db.unsafe(
+          `alter table restore_memory_pairs add constraint memory_pair_check ${pairCheck!.definition}`,
+        );
+        const pair = {
+          summary: '备份记忆：保留原文',
+          details: '第一行详情。\n第二行保留原文与末尾空白。  ',
+        };
+        await source.db`insert into restore_memory_pairs(summary,details)
+        values(${pair.summary},${pair.details})`;
+
         const dump = pgClient('pg_dump', source.url, [
           `--format=${format}`,
           '--no-owner',
@@ -330,6 +346,7 @@ suite('0225 function search_path and standard backup restore', () => {
           'restore_controls',
           'restore_versions',
           'restore_conversations',
+          'restore_memory_pairs',
         ]) {
           const original = await source.db.unsafe(
             `select to_jsonb(t) as value from ${table} t`,
@@ -353,6 +370,14 @@ suite('0225 function search_path and standard backup restore', () => {
         set snapshot=jsonb_set(snapshot,'{control,revision}', '0')`).rejects.toMatchObject(
           { code: '23514' },
         );
+        expect(
+          await restored.db`insert into public.restore_memory_pairs(summary,details)
+        values(${pair.summary},${pair.details}) returning summary,details`,
+        ).toEqual([pair]);
+        await expect(restored.db`update public.restore_memory_pairs
+        set summary=${'x'.repeat(41)}`).rejects.toMatchObject({ code: '23514' });
+        await expect(restored.db`update public.restore_memory_pairs
+        set details='   '`).rejects.toMatchObject({ code: '23514' });
       } finally {
         await Promise.all(clients.map((db) => db.end({ timeout: 5 })));
         try {
