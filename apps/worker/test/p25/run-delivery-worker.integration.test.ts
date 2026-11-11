@@ -1064,8 +1064,12 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
               input.call.name,
             )
               ? [
-                  broker.mock.results[index]!.value.then((result) =>
-                    JSON.parse(result.modelContent),
+                  broker.mock.results[index]!.value.then(
+                    (
+                      result: Awaited<
+                        ReturnType<typeof ToolBroker.executeRiceTool>
+                      >,
+                    ) => JSON.parse(result.modelContent),
                   ),
                 ]
               : [],
