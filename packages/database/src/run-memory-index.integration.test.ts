@@ -14,7 +14,6 @@ import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createRunAuthorityFixture } from './run-authority.fixture.ts';
 import { ensureGeneralEmployeeInstance } from './employees/employee-instances.ts';
 import { freezeEmployeeMemoryIndexV2 } from './employees/employee-documents.ts';
-import { memoryPairDigest } from './workspace/employee-memory.ts';
 import {
   employeeMemoryCounts,
   listPersonalEmployeeMemories,
