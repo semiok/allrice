@@ -279,11 +279,14 @@ suite('MET-214 native subagent directory design', () => {
           ).toBe('nowrap');
           const surface = await panel.evaluate((node) => {
             const style = getComputedStyle(node);
+            const rect = node.getBoundingClientRect();
             return {
               background: style.backgroundColor,
               radius: style.borderRadius,
               padding: style.padding,
-              width: node.getBoundingClientRect().width,
+              width: rect.width,
+              left: rect.left,
+              right: innerWidth - rect.right,
               secondary: getComputedStyle(document.body)
                 .getPropertyValue('--ar-text-secondary')
                 .trim(),
@@ -298,6 +301,8 @@ suite('MET-214 native subagent directory design', () => {
             overflow: false,
           });
           expect(surface.width).toBe(Math.min(432, width - 16));
+          if (width <= 448)
+            expect(surface).toMatchObject({ left: 8, right: 8 });
           expect(surface.background).toBe(
             theme === 'light' ? 'rgb(255, 255, 255)' : 'rgb(44, 44, 46)',
           );

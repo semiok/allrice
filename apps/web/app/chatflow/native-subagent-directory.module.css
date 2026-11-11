@@ -309,6 +309,11 @@ button.trigger.trigger[aria-expanded='true']:not(:disabled) {
   outline-offset: 2px;
   border-radius: var(--ar-radius-sm);
 }
+@media (max-width: 448px) {
+  .catalog {
+    left: 8px !important;
+  }
+}
 @media (max-width: 720px) {
   .catalog {
     width: min(432px, calc(100vw - 16px));
