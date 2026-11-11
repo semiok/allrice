@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Button, Modal } from '@deepseek-ai/dsh-client-ui-primitives';
 import {
   PersonalMemoryPairSchema,
@@ -72,6 +72,8 @@ function Sidebar(props: Props) {
   const [error, setError] = useState('');
   const pendingWrite = useRef(false);
   const readController = useRef<AbortController | null>(null);
+  const detailHeader = useRef<HTMLElement | null>(null);
+  const restoreDetailLayer = useRef<(() => void) | null>(null);
   const alive = useRef(true);
   const active = props.rows
     .filter((row) => row.state === 'active')
@@ -91,6 +93,28 @@ function Sidebar(props: Props) {
   }, []);
   // Detail, edit and delete retain the exact selected snapshot. A background
   // list refresh cannot silently replace its identity, revision or pairDigest.
+  useLayoutEffect(() => {
+    if (!deleting || props.active === false) return;
+    const layer = detailHeader.current?.closest('[role="dialog"]')?.parentElement;
+    if (!layer) return;
+    const previousInert = layer.inert;
+    const previousHidden = layer.getAttribute('aria-hidden');
+    const restore = () => {
+      layer.inert = previousInert;
+      if (previousHidden === null) layer.removeAttribute('aria-hidden');
+      else layer.setAttribute('aria-hidden', previousHidden);
+    };
+    // Native Modal has already moved focus into its top layer. Only this
+    // sidebar's retained parent layer is hidden from assistive technology.
+    layer.inert = true;
+    layer.setAttribute('aria-hidden', 'true');
+    restoreDetailLayer.current = restore;
+    return () => {
+      restore();
+      if (restoreDetailLayer.current === restore)
+        restoreDetailLayer.current = null;
+    };
+  }, [deleting, props.active]);
 
   function close() {
     if (pendingWrite.current) return;
@@ -160,6 +184,9 @@ function Sidebar(props: Props) {
   }
   function cancelDelete() {
     if (pendingWrite.current) return;
+    // Re-enable the invoking control before native Modal's layout cleanup
+    // restores focus, including Escape and mask cancellation.
+    restoreDetailLayer.current?.();
     setDeleting(null);
     setError('');
   }
@@ -310,7 +337,7 @@ function Sidebar(props: Props) {
         }
         className={css.dialog}
       >
-        <header className={css.dialogHeader}>
+        <header ref={detailHeader} className={css.dialogHeader}>
           {editing ? (
             <h2>{selected ? '修改记忆' : '新增记忆'}</h2>
           ) : (

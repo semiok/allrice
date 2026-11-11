@@ -435,9 +435,41 @@ suite('MET251 v10 memory sidebar presentation', () => {
           name: '确认删除这条记忆？',
           exact: true,
         });
+        const detailName =
+          entry === 'row'
+            ? null
+            : await f.page.getByRole('dialog').getAttribute('aria-label');
+        const parentLayer = detailName
+          ? f.page
+              .getByRole('dialog', {
+                name: detailName,
+                exact: true,
+                includeHidden: true,
+              })
+              .locator('..')
+          : null;
         for (const cancel of ['button', 'escape', 'mask']) {
           await trigger.click();
           await confirmation.waitFor();
+          expect(await f.page.getByRole('dialog').count()).toBe(1);
+          if (parentLayer) {
+            expect(await parentLayer.getAttribute('aria-hidden')).toBe('true');
+            expect(
+              await parentLayer.evaluate(
+                (node) => node instanceof HTMLElement && node.inert,
+              ),
+            ).toBe(true);
+          }
+          if (width < 640)
+            expect(
+              await confirmation
+                .locator('footer button')
+                .evaluateAll((buttons) =>
+                  buttons.every(
+                    (button) => button.getBoundingClientRect().height >= 40,
+                  ),
+                ),
+            ).toBe(true);
           expect(await confirmation.locator('p').first().innerText()).toBe(
             await row
               .locator('button')
@@ -461,6 +493,14 @@ suite('MET251 v10 memory sidebar presentation', () => {
               .locator(':scope > [aria-hidden="true"]')
               .click({ position: { x: 4, y: 4 } });
           await confirmation.waitFor({ state: 'detached' });
+          if (parentLayer) {
+            expect(await parentLayer.getAttribute('aria-hidden')).toBeNull();
+            expect(
+              await parentLayer.evaluate(
+                (node) => node instanceof HTMLElement && node.inert,
+              ),
+            ).toBe(false);
+          }
           expect(await row.count()).toBe(1);
           expect(
             await trigger.evaluate((node) => node === document.activeElement),
@@ -486,6 +526,43 @@ suite('MET251 v10 memory sidebar presentation', () => {
       }
     },
   );
+  it('keeps mobile add, detail, edit and deletion actions at least 40px high', async () => {
+    const f = await fixture('', 390);
+    const assertFooter = async () => {
+      await f.page.getByRole('dialog').waitFor();
+      const buttons = f.page.getByRole('dialog').locator('footer button');
+      expect(await buttons.count()).toBeGreaterThan(0);
+      expect(
+        await buttons.evaluateAll((items) =>
+          items.every((button) => button.getBoundingClientRect().height >= 40),
+        ),
+      ).toBe(true);
+    };
+    const openDetail = async () => {
+      await f.page.locator('[data-memory-id="a1"] button').click();
+      await f.page
+        .getByRole('dialog')
+        .getByRole('button', { name: '修改', exact: true })
+        .waitFor();
+    };
+    try {
+      await f.page.getByRole('button', { name: '＋ 新增', exact: true }).click();
+      await assertFooter();
+      await f.page.getByRole('button', { name: '取消', exact: true }).click();
+      await openDetail();
+      await assertFooter();
+      await f.page.getByRole('button', { name: '修改', exact: true }).click();
+      await assertFooter();
+      await f.page.getByRole('button', { name: '取消', exact: true }).click();
+      await openDetail();
+      await f.page.getByRole('button', { name: '删除', exact: true }).click();
+      await f.page.getByRole('dialog', { name: '确认删除这条记忆？' }).waitFor();
+      await assertFooter();
+      expect(await f.operations()).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
   it('keeps the edit CAS snapshot and nonempty detail whitespace across a background refresh', async () => {
     const f = await fixture('reject=save');
     try {
