@@ -630,12 +630,18 @@ function NativeStepsGroup({
           items={items}
           questions={questions}
           running={running}
+          policy={policy}
         />
       </section>
     );
   if (!grouped || steps.every((step) => step.category === 'question'))
     return (
-      <WorkProcessSteps items={items} questions={questions} running={running} />
+      <WorkProcessSteps
+        items={items}
+        questions={questions}
+        running={running}
+        policy={policy}
+      />
     );
   const live = [...steps]
     .reverse()
@@ -678,6 +684,7 @@ function NativeStepsGroup({
             items={items}
             questions={questions}
             running={running}
+            policy={policy}
           />
         </div>
       </DisclosureRow>
@@ -689,10 +696,12 @@ function WorkProcessSteps({
   items,
   questions,
   running,
+  policy,
 }: {
   items: NativeExperienceItem[];
   questions: readonly WorkProcessQuestion[];
   running: boolean;
+  policy: ChatPresentationPolicy;
 }) {
   const { steps } = summarizeWorkProcess(items);
   if (!steps.length) return null;
@@ -757,7 +766,9 @@ function WorkProcessSteps({
                 elapsedMs={step.elapsedMs}
                 running={pending && running}
                 failed={step.status === 'failed'}
-                initialOpen={step.status === 'failed'}
+                initialOpen={
+                  policy.mode === 'verbose' || step.status === 'failed'
+                }
                 details={
                   question
                     ? question.request.questions.map((item) => ({

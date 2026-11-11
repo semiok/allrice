@@ -10,6 +10,7 @@ import { createRoot } from 'react-dom/client';
 import { createRef, useState } from 'react';
 import type {
   ChatFlowEventEnvelope,
+  UserPreferences,
   UserQuestionRequest,
 } from '@allrice/contracts';
 import type { CloudOperationView } from '@allrice/database';
@@ -157,6 +158,7 @@ declare global {
     processAdopt: () => void;
     processTrace: () => void;
     processFinish: () => void;
+    processView: (view: UserPreferences['transcriptView']) => void;
   }
 }
 window.readingWrites = [];
@@ -441,9 +443,17 @@ function ProcessFixture() {
   const [adopted, setAdopted] = useState(false);
   const [traceLoaded, setTraceLoaded] = useState(!params.has('late'));
   const [finished, setFinished] = useState(!params.has('running'));
+  const [view, setView] = useState<UserPreferences['transcriptView']>(
+    params.has('verbose')
+      ? 'verbose'
+      : params.has('standard')
+        ? 'standard'
+        : 'detailed',
+  );
   window.processAdopt = () => setAdopted(true);
   window.processTrace = () => setTraceLoaded(true);
   window.processFinish = () => setFinished(true);
+  window.processView = setView;
   const full = processTraces[ids.run]!;
   const early = params.has('partial')
     ? full.events.slice(
@@ -505,7 +515,7 @@ function ProcessFixture() {
         <ChatTranscript
           atBottom
           streamingOutput
-          transcriptView={params.has('standard') ? 'standard' : 'detailed'}
+          transcriptView={view}
           collapseTiming={params.has('partial') ? 'completion' : 'next-input'}
           messages={[
             user,

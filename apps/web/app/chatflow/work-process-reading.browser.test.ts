@@ -1016,6 +1016,71 @@ suite('reading a receipt while late native trace changes its group', () => {
       await page.close();
     }
   });
+  it.each(['detailed', 'verbose'] as const)(
+    'honors verbose tool details and manual choices when starting in %s',
+    async (view) => {
+      const { page, errors, primary } = await openProcess(
+        390,
+        'light',
+        `running${view === 'verbose' ? '&verbose' : ''}`,
+      );
+      const process = primary.getByRole('region', {
+        name: '工作过程',
+        exact: true,
+      });
+      const toggle = searchStep(page).locator('[data-disclosure-row]');
+      const result = searchStep(page).getByText('已找到十二项对应资料', {
+        exact: true,
+      });
+      const setView = async (next: 'detailed' | 'verbose') => {
+        await page.evaluate((next) => window.processView(next), next);
+        await expect
+          .poll(() => process.getAttribute('data-transcript-view'))
+          .toBe(next);
+      };
+      try {
+        expect(await toggle.getAttribute('aria-expanded')).toBe(
+          String(view === 'verbose'),
+        );
+        expect(await result.isVisible()).toBe(view === 'verbose');
+        expect(
+          await primary
+            .locator('[data-step-id="tool:failed"]')
+            .getByText('服务超时', { exact: true })
+            .isVisible(),
+        ).toBe(true);
+        await setView('detailed');
+        expect(await toggle.getAttribute('aria-expanded')).toBe('false');
+        expect(await result.isVisible()).toBe(false);
+        await setView('verbose');
+        expect(await toggle.getAttribute('aria-expanded')).toBe('true');
+        expect(await result.isVisible()).toBe(true);
+        await toggle.click();
+        expect(await toggle.getAttribute('aria-expanded')).toBe('false');
+        await page.evaluate(() => window.processFinish());
+        const final = primary.locator(
+          '[data-work-reply]:not([data-process-member])',
+        );
+        await final.waitFor();
+        expect(await final.count()).toBe(1);
+        expect(await final.locator('table').isVisible()).toBe(true);
+        expect(await processOwns(process, final.locator('table'))).toBe(false);
+        expect(await toggle.getAttribute('aria-expanded')).toBe('false');
+        expect(await result.isVisible()).toBe(false);
+        await setView('detailed');
+        await setView('verbose');
+        expect(await toggle.getAttribute('aria-expanded')).toBe('false');
+        expect(await result.isVisible()).toBe(false);
+        await toggle.press('Enter');
+        expect(await toggle.getAttribute('aria-expanded')).toBe('true');
+        expect(await result.isVisible()).toBe(true);
+        expect(await page.evaluate(() => window.readingWrites)).toEqual([]);
+        expect(errors).toEqual([]);
+      } finally {
+        await page.close();
+      }
+    },
+  );
   async function readExternalQuestion(
     choice: 'open' | 'outer' | 'group',
     partial = false,
