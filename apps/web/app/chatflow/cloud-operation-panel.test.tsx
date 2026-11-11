@@ -462,7 +462,9 @@ describe('Cloud/MCP approval presentation', () => {
     expect(html).toContain('不联网');
     expect(html).toContain('input.json');
     expect(html).toContain('会生成：');
-    expect(cardHeader(html)).not.toContain('11111111-1111-4111-8111-111111111111');
+    expect(cardHeader(html)).not.toContain(
+      '11111111-1111-4111-8111-111111111111',
+    );
     expect(cardHeader(html)).not.toContain('sha256:');
     expect(html).toContain('11111111-1111-4111-8111-111111111111');
     expect(html).toContain(`sha256:${'a'.repeat(64)}`);
