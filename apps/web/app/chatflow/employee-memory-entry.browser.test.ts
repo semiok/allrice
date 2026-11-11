@@ -10,7 +10,7 @@ import {
   EmployeeInstanceSchema,
   EmployeeSkillCatalogSchema,
   EmployeeSceneSkillCatalogSchema,
-  EmployeeMemoryListSchema,
+  type EmployeeMemoryListSchema,
   type EmployeeMemoryRecord,
 } from '@allrice/contracts';
 import type { z } from 'zod';
