@@ -46,6 +46,7 @@ import type {
   Browser,
   Locator,
   Page,
+  Request,
 } from '../../../worker/node_modules/playwright-core/index.js';
 import type { Session, Workspace } from './chatflow-types';
 import { employeeDetailsFixture } from '../../test/employee-details-fixture';
@@ -1470,6 +1471,167 @@ suite('U1 mounted employee Workflow host', () => {
           (path) => path === `/api/v1/employee-instances/${id(7)}/skills`,
         ),
       ).toHaveLength(1);
+      expect(f.state.writes).toEqual([]);
+    });
+  });
+
+  for (const destination of ['prepared', 'session'] as const) {
+    it(`MET-251 Skill focus survives the selected employee loading gap for ${destination}`, async () => {
+      await inFixture({ session: true }, async (f) => {
+        const original = '  加载空窗草稿\n保留结尾。\n';
+        const expected = `请使用「翻译校对」帮我……\n\n${original}`;
+        await f.page
+          .getByRole('textbox', { name: '给 Rice 的消息', exact: true })
+          .fill(original);
+        await f.page.locator('input[type=file][multiple]').setInputFiles({
+          name: 'mount-carry.txt',
+          mimeType: 'text/plain',
+          buffer: Buffer.from('Synthetic mount handoff attachment'),
+        });
+        await f.page.getByText('mount-carry.txt', { exact: true }).waitFor();
+        const employee = await f.openEmployeeDetails('流程哥');
+        await employee
+          .getByRole('button', { name: '翻译校对', exact: true })
+          .click();
+        const start = skillPage(f, 'employee', '翻译校对').getByRole('button', {
+          name: '开始工作',
+          exact: true,
+        });
+        await start.waitFor();
+        const held = gate(),
+          entered = gate(),
+          finished = gate();
+        let reads = 0;
+        let heldRequest: Request | undefined;
+        await f.page.route(
+          (url) => url.pathname === `/api/v1/employee-instances/${id(17)}`,
+          async (route) => {
+            const request = route.request();
+            expect(request.method()).toBe('GET');
+            expect(new URL(request.url()).searchParams.get('workspaceId')).toBe(
+              id(4),
+            );
+            expect(request.headers()['x-allrice-workspace-id']).toBe(id(4));
+            if (++reads !== 2) return route.fallback();
+            heldRequest = request;
+            entered.release();
+            try {
+              await held.promise;
+              if (!request.failure()) await route.fallback();
+            } finally {
+              finished.release();
+            }
+          },
+        );
+        try {
+          await start.click();
+          await entered.promise;
+          expect(reads).toBe(2);
+          const input = f.page.getByRole('textbox', {
+            name: '给 流程哥 的消息',
+            exact: true,
+          });
+          expect(await input.count()).toBe(0);
+          await f.page.getByText('正在读取…', { exact: true }).waitFor();
+          // The original one-shot frame must expire while the real read is held.
+          await f.page.evaluate(() => new Promise(requestAnimationFrame));
+          if (destination === 'session') {
+            const canceled = f.page.waitForEvent('requestfailed', {
+              predicate: (request) => request === heldRequest,
+            });
+            f.page.once('dialog', (dialog) => dialog.accept());
+            await f.page.getByText('保留的旧工作', { exact: true }).click();
+            expect((await canceled).failure()).not.toBeNull();
+            const current = f.page.getByRole('textbox', {
+              name: '给 Rice 的消息',
+              exact: true,
+            });
+            await current.fill('切回后的新草稿');
+            const selected = f.page.getByRole('button', {
+              name: '查看Rice详情',
+              exact: true,
+            });
+            await selected.focus();
+            held.release();
+            await finished.promise;
+            await f.page.evaluate(() => new Promise(requestAnimationFrame));
+            expect(await current.inputValue()).toBe('切回后的新草稿');
+            expect(
+              await selected.evaluate((node) => node === document.activeElement),
+            ).toBe(true);
+          } else {
+            held.release();
+            await finished.promise;
+            await expect.poll(() => input.inputValue()).toBe(expected);
+            expect(
+              await input.evaluate((node) => node === document.activeElement),
+            ).toBe(true);
+            expect(
+              await f.page
+                .getByRole('group', { name: '待发送附件', exact: true })
+                .getByText('mount-carry.txt', { exact: true })
+                .count(),
+            ).toBe(1);
+          }
+          expect(f.state.writes).toEqual([]);
+        } finally {
+          held.release();
+        }
+      });
+    });
+  }
+
+  it('MET-251 a later edit and undo cancel the pending Skill focus', async () => {
+    await inFixture({ session: true }, async (f) => {
+      const original = '用户先前草稿';
+      const expected = `请使用「翻译校对」帮我……\n\n${original}`;
+      const input = f.page.getByRole('textbox', {
+        name: '给 Rice 的消息',
+        exact: true,
+      });
+      await input.fill(original);
+      const directory = await f.openDirectory();
+      await directory
+        .getByRole('button', { name: '翻译校对', exact: true })
+        .click();
+      await f.page.evaluate((expected) => {
+        const observer = new MutationObserver(() => {
+          const input = document.querySelector<HTMLTextAreaElement>(
+            'textarea[aria-label="给 Rice 的消息"]',
+          );
+          if (input?.value !== expected) return;
+          observer.disconnect();
+          // Public input events model an edit and undo before the pending frame.
+          const set = Object.getOwnPropertyDescriptor(
+            HTMLTextAreaElement.prototype,
+            'value',
+          )!.set!;
+          for (const value of ['用户后续修改', expected]) {
+            set.call(input, value);
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+          }
+          document
+            .querySelector<HTMLButtonElement>('button[aria-label="查看Rice详情"]')
+            ?.focus();
+        });
+        observer.observe(document, {
+          subtree: true,
+          childList: true,
+          attributes: true,
+          attributeFilter: ['disabled', 'inert'],
+        });
+      }, expected);
+      await skillPage(f, 'sidebar', '翻译校对')
+        .getByRole('button', { name: '开始工作', exact: true })
+        .click();
+      await expect.poll(() => input.inputValue()).toBe(expected);
+      await f.page.evaluate(() => new Promise(requestAnimationFrame));
+      expect(
+        await f.page
+          .getByRole('button', { name: '查看Rice详情', exact: true })
+          .evaluate((node) => node === document.activeElement),
+      ).toBe(true);
+      expect(await input.inputValue()).toBe(expected);
       expect(f.state.writes).toEqual([]);
     });
   });

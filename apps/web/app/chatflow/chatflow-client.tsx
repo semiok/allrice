@@ -262,6 +262,16 @@ export function ChatFlowClient({
   const transcriptColumn = useRef<HTMLDivElement | null>(null);
   const followTranscript = useRef(true);
   const composerInput = useRef<HTMLTextAreaElement | null>(null);
+  const preparedDraftFocus = useRef<{
+    waitingForMount: boolean;
+    complete: () => void;
+  } | null>(null);
+  const committedComposer = useRef<{
+    scope: string;
+    generation: number;
+    instanceId: string | undefined;
+    input: HTMLTextAreaElement | null;
+  } | null>(null);
   const composing = useRef(false);
   const dragDepth = useRef(0);
 
@@ -777,6 +787,25 @@ export function ChatFlowClient({
   useLayoutEffect(() => {
     resizeComposerTextarea(composerInput.current);
   }, [activeId, transcriptMessages.length, sidebarCollapsed, workspace]);
+
+  // A later edit also revokes the old handoff when an undo restores its text.
+  useLayoutEffect(
+    () =>
+      draftStore.subscribe(() => {
+        preparedDraftFocus.current = null;
+      }),
+    [draftStore],
+  );
+  useLayoutEffect(() => {
+    committedComposer.current = {
+      scope: settingsScope,
+      generation: captureSelection().generation,
+      instanceId: selectedInstanceId,
+      input: composerInput.current,
+    };
+    if (preparedDraftFocus.current?.waitingForMount)
+      preparedDraftFocus.current.complete();
+  });
 
   useEffect(() => {
     const textarea = composerInput.current;
@@ -1697,7 +1726,7 @@ export function ChatFlowClient({
         scope: settingsScope,
         generation: captureSelection().generation,
       };
-    prepareDraft(prepareComposerText(`/${nativeName}`), true);
+    prepareDraft(prepareComposerText(`/${nativeName}`), true, target);
     setSceneRequest(null);
     layout.close();
     if (layout.compact) setSidebarCollapsed(true);
@@ -1758,6 +1787,7 @@ export function ChatFlowClient({
     prepareDraft(
       prepareComposerText(`请使用「${skill.displayName}」帮我……`),
       true,
+      target,
     );
     setEmployeeDetailsOpen(false);
     setSceneRequest(null);
@@ -1848,7 +1878,11 @@ export function ChatFlowClient({
     count: companyReferences.length,
     taskScope,
   };
-  function prepareDraft(prepared: PreparedComposerDraft, atStart = false) {
+  function prepareDraft(
+    prepared: PreparedComposerDraft,
+    atStart = false,
+    instanceId = selectedInstanceId,
+  ) {
     if (busy || composing.current) return;
     const selection = captureSelection();
     const insert = (current: string) =>
@@ -1860,21 +1894,44 @@ export function ChatFlowClient({
       insertion = insert(current);
       return insertion.text;
     });
-    requestAnimationFrame(() => {
-      const textarea = composerInput.current;
-      if (
-        !selection.current() ||
-        !textarea ||
-        textarea.value !== insertion.text
-      )
-        return;
-      resizeComposerTextarea(textarea);
-      textarea.focus({ preventScroll: true });
-      textarea.setSelectionRange(
-        insertion.selectionStart,
-        insertion.selectionEnd,
-      );
-    });
+    const action = {
+      waitingForMount: false,
+      complete() {
+        if (preparedDraftFocus.current !== action) return;
+        if (
+          !selection.current() ||
+          currentSettingsScope.current !== settingsScope ||
+          draftStore.getSnapshot() !== insertion.text
+        ) {
+          preparedDraftFocus.current = null;
+          return;
+        }
+        const textarea = composerInput.current;
+        const committed = committedComposer.current;
+        if (
+          !textarea ||
+          !committed ||
+          committed.scope !== settingsScope ||
+          committed.generation !== selection.generation ||
+          committed.instanceId !== instanceId ||
+          committed.input !== textarea
+        ) {
+          // Resume from a real composer commit, never another timed frame.
+          action.waitingForMount = true;
+          return;
+        }
+        preparedDraftFocus.current = null;
+        if (textarea.value !== insertion.text) return;
+        resizeComposerTextarea(textarea);
+        textarea.focus({ preventScroll: true });
+        textarea.setSelectionRange(
+          insertion.selectionStart,
+          insertion.selectionEnd,
+        );
+      },
+    };
+    preparedDraftFocus.current = action;
+    requestAnimationFrame(action.complete);
   }
 
   function prepareEmployeeDraft(text: string, instanceId: string) {
@@ -1905,7 +1962,7 @@ export function ChatFlowClient({
     if (layout.compact) setSidebarCollapsed(true);
     // Method writes require an explicit leading request. Keep any previous
     // draft intact after that request instead of weakening the server gate.
-    prepareDraft(prepareComposerText(text), true);
+    prepareDraft(prepareComposerText(text), true, instanceId);
   }
 
   async function prepareNextStep(step: TaskNextStep, snapshot: TaskNextSteps) {
