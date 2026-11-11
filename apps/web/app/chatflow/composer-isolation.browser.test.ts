@@ -1538,14 +1538,26 @@ suite(
         ).toBe(true);
         const reads = f.reads.length;
         await trigger.hover();
-        await expect
-          .poll(() => trigger.getAttribute('aria-expanded'))
-          .toBe('true');
-        await f.page.getByText('暂无子智能体', { exact: true }).waitFor();
+        await f.page.waitForTimeout(350);
+        expect(await trigger.getAttribute('aria-expanded')).toBe('false');
+        expect(
+          await f.page.getByText('暂无子智能体', { exact: true }).count(),
+        ).toBe(0);
         await f.page.screenshot({
           path: resolve(directory, 'new-work-hover.png'),
         });
+        await trigger.click();
+        await f.page.getByText('暂无子智能体', { exact: true }).waitFor();
+        expect(await trigger.getAttribute('aria-expanded')).toBe('true');
+        await trigger.click();
+        expect(await trigger.getAttribute('aria-expanded')).toBe('false');
+        await trigger.click();
+        await f.page.getByText('暂无子智能体', { exact: true }).waitFor();
         await f.page.mouse.move(800, 800);
+        expect(await trigger.getAttribute('aria-expanded')).toBe('true');
+        await f.page
+          .getByRole('heading', { level: 1, name: '新的工作', exact: true })
+          .click();
         await expect
           .poll(() => trigger.getAttribute('aria-expanded'))
           .toBe('false');
@@ -1570,9 +1582,10 @@ suite(
             .getByRole('heading', { name: '子智能体', exact: true })
             .evaluate((node) => ({
               size: getComputedStyle(node).fontSize,
+              line: getComputedStyle(node).lineHeight,
               weight: getComputedStyle(node).fontWeight,
             })),
-        ).toEqual({ size: '16px', weight: '600' });
+        ).toEqual({ size: '14px', line: '20px', weight: '500' });
         expect(
           f.reads.slice(reads).filter((url) => url.includes('/subagents')),
         ).toEqual([]);
@@ -1581,15 +1594,18 @@ suite(
           path: resolve(directory, 'new-work-empty.png'),
         });
         await f.page.keyboard.press('Escape');
+        expect(await trigger.getAttribute('aria-expanded')).toBe('false');
         expect(
           await trigger.evaluate((node) => node === document.activeElement),
         ).toBe(true);
+        expect(f.writes).toEqual([]);
+        expect(f.errors).toEqual([]);
       } finally {
         await f.close();
       }
     });
 
-    it('waits for the active full read, refreshes the native catalog on keyboard opening and keeps summary selection inert', async () => {
+    it('waits for the active full read, refreshes the native catalog on keyboard opening and opens an unknown-generation child summary without following', async () => {
       const f = await fixture({
         nativeParents: 3,
         nativeDelayFull: true,
@@ -1634,7 +1650,29 @@ suite(
         expect(
           await f.page.getByLabel('子智能体摘要', { exact: true }).count(),
         ).toBe(0);
-        expect(await trigger.getAttribute('aria-expanded')).toBe('true');
+        expect(await trigger.getAttribute('aria-expanded')).toBe('false');
+        const view = f.page.getByRole('region', {
+          name: '子智能体工作过程',
+          exact: true,
+        });
+        await view.waitFor();
+        expect(await view.count()).toBe(1);
+        expect(await view.getAttribute('data-native-subagent-id')).toBe(
+          'child-0',
+        );
+        expect(await view.innerText()).toContain('Child 0');
+        expect(await view.getByLabel('交给子智能体的任务').innerText()).toBe(
+          '暂无自有任务记录',
+        );
+        expect(
+          await view.getByText(`${A} own reply`, { exact: true }).isVisible(),
+        ).toBe(true);
+        expect(await view.getByText('运行中', { exact: true }).count()).toBe(1);
+        expect(
+          await view
+            .getByRole('region', { name: '工作过程', exact: true })
+            .count(),
+        ).toBe(0);
         await expect
           .poll(
             () =>
@@ -1644,6 +1682,11 @@ suite(
                 .length,
           )
           .toBe(0);
+        expect(
+          f.reads.filter((url) =>
+            new URL(url, f.native.origin).searchParams.has('childId'),
+          ),
+        ).toEqual([]);
         expect(f.native.fullRequests()).toBe(requestsBeforeOpen + 1);
         expect(f.native.browserWrites.count).toBe(0);
         expect(f.writes).toEqual([]);
@@ -1655,7 +1698,7 @@ suite(
     });
 
     it.each(['Escape', 'button'] as const)(
-      'keeps the native catalog closed when %s cancels a pending hover timer',
+      'keeps the native catalog closed after %s dismissal and pointer re-entry',
       async (action) => {
         const f = await fixture({
           nativeParents: 3,
@@ -1689,22 +1732,39 @@ suite(
           await trigger.focus();
           const box = await trigger.boundingBox();
           expect(box).not.toBeNull();
-          // Re-entering the pinned trigger still arms its existing hover callback.
+          // Pointer re-entry leaves a click-opened catalog open.
           await f.page.mouse.move(
             box!.x + box!.width / 2,
             box!.y + box!.height / 2,
           );
           await f.page.clock.runFor(100);
           expect(await trigger.getAttribute('aria-expanded')).toBe('true');
-          // Escape or Enter on the actual trigger must cancel that pending callback.
+          // Escape or Enter on the actual trigger closes the catalog.
           await f.page.keyboard.press(action === 'Escape' ? 'Escape' : 'Enter');
           await tree.waitFor({ state: 'hidden' });
           await f.page.clock.runFor(200);
+          await f.page.mouse.move(0, 0);
+          await f.page.mouse.move(
+            box!.x + box!.width / 2,
+            box!.y + box!.height / 2,
+          );
+          await f.page.clock.runFor(350);
+          expect(await trigger.getAttribute('aria-expanded')).toBe('false');
           expect(await tree.count()).toBe(0);
           expect(
             await f.page.getByLabel('子智能体摘要', { exact: true }).count(),
           ).toBe(0);
+          expect(
+            await f.page
+              .getByRole('region', { name: '子智能体工作过程', exact: true })
+              .count(),
+          ).toBe(0);
           expect(childConnections()).toBe(0);
+          expect(
+            f.reads.filter((url) =>
+              new URL(url, f.native.origin).searchParams.has('childId'),
+            ),
+          ).toEqual([]);
           expect(f.native.fullRequests()).toBe(readsBeforeOpen + 1);
           expect(
             await trigger.evaluate((node) => node === document.activeElement),
@@ -1766,6 +1826,11 @@ suite(
           .waitFor();
         expect(
           await f.page.getByLabel('子智能体摘要', { exact: true }).count(),
+        ).toBe(0);
+        expect(
+          await f.page
+            .getByRole('region', { name: '子智能体工作过程', exact: true })
+            .count(),
         ).toBe(0);
         await expect.poll(() => active(A).length).toBe(1);
         await expect
