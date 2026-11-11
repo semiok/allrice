@@ -1508,8 +1508,24 @@ suite('U1 mounted employee Workflow host', () => {
                   detail.getByRole('button', { name, exact: true }).isEnabled(),
                 )
                 .toBe(true);
+            if (host === 'employee') {
+              await detail
+                .getByRole('button', { name: '返回员工详情', exact: true })
+                .click();
+              parent = f.page.getByRole('dialog', {
+                name: 'Rice员工详情',
+                exact: true,
+              });
+              await parent.waitFor();
+            }
           } else {
             await expect.poll(() => detail.count()).toBe(0);
+            if (host === 'employee')
+              parent = f.page.getByRole('dialog', {
+                name: 'AI 员工详情',
+                exact: true,
+              });
+            await parent.waitFor();
             for (const text of [source.description, source.source.requestedUrl])
               expect(
                 await f.page.getByText(text, { exact: true }).count(),
@@ -1519,6 +1535,10 @@ suite('U1 mounted employee Workflow host', () => {
                 .getByRole('button', { name: '翻译校对', exact: true })
                 .count(),
             ).toBe(0);
+            for (const name of ['更新', '开始工作', '卸载这个技能'])
+              expect(
+                await parent.getByRole('button', { name, exact: true }).count(),
+              ).toBe(0);
           }
           expect(f.state.scope).toEqual({
             workspaceId: id(4),
