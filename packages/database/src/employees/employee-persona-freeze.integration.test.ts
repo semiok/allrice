@@ -50,7 +50,7 @@ import {
   updateEmployeeInstance,
 } from './employee-instances.ts';
 import { savePlatformEmployeeDraft } from './platform-employees.ts';
-import { cancelRun } from '../execution/queue.ts';
+import { cancelRun, maintainQueue } from '../execution/queue.ts';
 import {
   buildEmployeeRuntimePackage,
   runtimePackageChecksum,
@@ -732,9 +732,10 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
       const [sessionBefore] =
         await fixture.db`select native_root_origin from allrice_chat_sessions where id=${first.sessionId}`;
       expect(sessionBefore!.native_root_origin.schemaVersion).toBe(2);
-      // Original cancellation produces a terminal historical fixture without
-      // pretending this unexecuted test has completed an old model response.
+      // Request cancellation, then let the original queue maintenance settle
+      // the unclaimed Job without pretending an old model response completed.
       await cancelRun(f.context, f.workspaceId, first.runId, {});
+      await maintainQueue();
       const [before] =
         await fixture.db`select prompt_snapshot,execution_snapshot,native_execution_binding,status from allrice_employee_runs where run_id=${first.runId}`;
       expect(before!.status).toBe('canceled');
