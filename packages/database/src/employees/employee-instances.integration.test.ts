@@ -5173,6 +5173,18 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         instance.id,
         '请保存并恢复这份工作方法。',
       );
+      if (!shared) {
+        expect(run.frozen.content).toMatchObject({
+          personalScenes: true,
+          layers: [],
+        });
+        expect(
+          (await listPersonalSceneSkills(f.a.context, instance.id)).skills,
+        ).toEqual([]);
+        expect(
+          (await getEffectiveEmployeeContent(f.a.context, instance.id)).scenes,
+        ).toMatchObject([{ name: 'Existing legacy scene' }]);
+      }
       const effects =
         () => fixture.db`select er.execution_snapshot,er.method_authoring,c.retired_at,c.invalidated_at,c.updated_at,
         (select jsonb_agg(s order by s.id) from allrice_employee_content_sets s where s.organization_id=er.organization_id) sets,
