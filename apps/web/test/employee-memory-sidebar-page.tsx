@@ -78,7 +78,14 @@ function Fixture() {
     await record('confirm', row.id);
     setRows((value) =>
       value.map((item) =>
-        item.id === row.id ? { ...item, state: 'active', revision: item.revision + 1, updatedAt: at } : item,
+        item.id === row.id
+          ? {
+              ...item,
+              state: 'active',
+              revision: item.revision + 1,
+              updatedAt: at,
+            }
+          : item,
       ),
     );
   }
@@ -87,7 +94,12 @@ function Fixture() {
     setRows((value) => value.filter((item) => item.id !== row.id));
   }
   async function save(input: MemorySidebarInput, row: MemorySidebarRow | null) {
-    await record('save', { input, id: row?.id ?? null, revision: row?.revision, pairDigest: row?.pairDigest });
+    await record('save', {
+      input,
+      id: row?.id ?? null,
+      revision: row?.revision,
+      pairDigest: row?.pairDigest,
+    });
     setRows((value) => [
       ...value.filter((item) => item.id !== row?.id),
       {
@@ -112,11 +124,24 @@ function Fixture() {
         <button
           type="button"
           id="refresh-memory"
-          onClick={() => setRows((value) => value.map((row) => row.id === 'a1' ? {
-            ...row, summary: '后台更新的一句话', details: '后台更新的详情', revision: row.revision + 1,
-            pairDigest: `sha256:${'c'.repeat(64)}`,
-          } : row))}
-        >后台刷新（测试控件）</button>
+          onClick={() =>
+            setRows((value) =>
+              value.map((row) =>
+                row.id === 'a1'
+                  ? {
+                      ...row,
+                      summary: '后台更新的一句话',
+                      details: '后台更新的详情',
+                      revision: row.revision + 1,
+                      pairDigest: `sha256:${'c'.repeat(64)}`,
+                    }
+                  : row,
+              ),
+            )
+          }
+        >
+          后台刷新（测试控件）
+        </button>
         <button
           type="button"
           id="switch-target"

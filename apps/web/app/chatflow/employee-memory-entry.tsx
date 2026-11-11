@@ -47,14 +47,21 @@ function MemoryEntry(props: Props) {
       instanceId: props.instanceId,
     });
     void workbenchJson('/api/v1/memories/manage?' + query, headers, {
-      cache: 'no-store', signal: controller.signal,
+      cache: 'no-store',
+      signal: controller.signal,
     })
       .then((raw) => {
         const page = EmployeeMemoryListSchema.parse(raw);
-        if (page.workspaceId !== props.workspaceId || page.instanceId !== props.instanceId)
+        if (
+          page.workspaceId !== props.workspaceId ||
+          page.instanceId !== props.instanceId
+        )
           throw Error('Memory count target changed');
         if (!controller.signal.aborted)
-          setCounts({ confirmed: page.counts.active, pending: page.counts.pending });
+          setCounts({
+            confirmed: page.counts.active,
+            pending: page.counts.pending,
+          });
       })
       .catch(() => {
         if (!controller.signal.aborted) setError(true);

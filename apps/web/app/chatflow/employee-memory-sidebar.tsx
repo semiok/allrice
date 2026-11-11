@@ -2,8 +2,16 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { Button, Modal } from '@deepseek-ai/dsh-client-ui-primitives';
-import { PersonalMemoryPairSchema, type EmployeeMemoryRecord } from '@allrice/contracts';
-import { MemoryClientError, memoryUnknown, type MemoryPair, type MemoryRow } from '../../lib/memory/employee-memory-client';
+import {
+  PersonalMemoryPairSchema,
+  type EmployeeMemoryRecord,
+} from '@allrice/contracts';
+import {
+  MemoryClientError,
+  memoryUnknown,
+  type MemoryPair,
+  type MemoryRow,
+} from '../../lib/memory/employee-memory-client';
 import { EmployeeMemoryDeleteConfirmation } from './employee-memory-delete-confirmation';
 import css from './employee-memory-sidebar.module.css';
 
@@ -138,7 +146,9 @@ function Sidebar(props: Props) {
       setDeleting(null);
     } catch (cause) {
       if (alive.current)
-        setError(cause instanceof MemoryClientError ? cause.message : memoryUnknown);
+        setError(
+          cause instanceof MemoryClientError ? cause.message : memoryUnknown,
+        );
     } finally {
       pendingWrite.current = false;
       if (alive.current) setBusy(false);
@@ -158,7 +168,10 @@ function Sidebar(props: Props) {
     summary.trim().length > 0 &&
     size(summary) <= 40 &&
     size(details) <= 2000 &&
-    PersonalMemoryPairSchema.safeParse({ summary, details: details.trim() ? details : null }).success &&
+    PersonalMemoryPairSchema.safeParse({
+      summary,
+      details: details.trim() ? details : null,
+    }).success &&
     (!full || selected?.state === 'active');
   const shown = detail ?? selected;
   const timestamp = shown
@@ -367,7 +380,13 @@ function Sidebar(props: Props) {
               {props.error && (
                 <p role="alert" className={css.message}>
                   {props.error}{' '}
-                  <button type="button" disabled={busy} onClick={props.onReload}>重试</button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={props.onReload}
+                  >
+                    重试
+                  </button>
                 </p>
               )}
               {error && (

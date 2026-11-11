@@ -55,11 +55,23 @@ function memoryPage(
 ): z.infer<typeof EmployeeMemoryListSchema> {
   const row = (n: number, state: 'active' | 'pending') => ({
     id: id(1000 + n + (state === 'pending' ? 100 : 0)),
-    summary: `测试记忆 ${n}`, hasDetails: false, state, revision: 1,
-    pairDigest: `sha256:${'a'.repeat(64)}`, capturedAt: now, updatedAt: now,
+    summary: `测试记忆 ${n}`,
+    hasDetails: false,
+    state,
+    revision: 1,
+    pairDigest: `sha256:${'a'.repeat(64)}`,
+    capturedAt: now,
+    updatedAt: now,
   });
   const rows = Array.from({ length: active }, (_, n) => row(n, 'active'));
-  if (saved) rows.unshift({ ...row(90, 'active'), id: id(90), summary: saved.summary, hasDetails: saved.details !== null, pairDigest: `sha256:${'b'.repeat(64)}` });
+  if (saved)
+    rows.unshift({
+      ...row(90, 'active'),
+      id: id(90),
+      summary: saved.summary,
+      hasDetails: saved.details !== null,
+      pairDigest: `sha256:${'b'.repeat(64)}`,
+    });
   return {
     schemaVersion: 2,
     workspaceId: id(4),
@@ -178,7 +190,10 @@ suite('U1 employee details personal-memory entry', () => {
         ? countGate.promise
         : (null as Promise<void> | null),
       writeGate: null as Promise<void> | null,
-      savedPairs: {} as Record<string, { summary: string; details: string | null }>,
+      savedPairs: {} as Record<
+        string,
+        { summary: string; details: string | null }
+      >,
       loseNextSaveAck: false,
     };
     page.on('pageerror', (cause) => state.errors.push(cause.message));
@@ -209,13 +224,23 @@ suite('U1 employee details personal-memory entry', () => {
           body: request.postDataJSON() ?? {},
         });
       if (path === '/api/v1/memories/manage') {
-        expect([...url.searchParams.keys()].sort()).toEqual(['instanceId', 'workspaceId']);
-        if (state.countGate && instanceId === id(7))
-          await state.countGate;
+        expect([...url.searchParams.keys()].sort()).toEqual([
+          'instanceId',
+          'workspaceId',
+        ]);
+        if (state.countGate && instanceId === id(7)) await state.countGate;
         if (state.denyMemory || state.failCounts)
           return route.fulfill(json({ error: 'unavailable' }, 403));
-        return route.fulfill(json(memoryPage(instanceId!, options.zero ? 0 : instanceId === id(7) ? 6 : 65,
-          options.zero ? 0 : 1, state.savedPairs[instanceId!])));
+        return route.fulfill(
+          json(
+            memoryPage(
+              instanceId!,
+              options.zero ? 0 : instanceId === id(7) ? 6 : 65,
+              options.zero ? 0 : 1,
+              state.savedPairs[instanceId!],
+            ),
+          ),
+        );
       }
       if (path === '/api/v1/experiences')
         return route.fulfill(
@@ -257,21 +282,35 @@ suite('U1 employee details personal-memory entry', () => {
       if (path === '/api/v1/memories' && request.method() === 'POST') {
         const body = request.postDataJSON();
         if (state.writeGate) await state.writeGate;
-        state.savedPairs[body.instanceId] = { summary: body.summary, details: body.details };
+        state.savedPairs[body.instanceId] = {
+          summary: body.summary,
+          details: body.details,
+        };
         if (state.loseNextSaveAck) {
           state.loseNextSaveAck = false;
           return route.fulfill(json({}, 503));
         }
         const memory: EmployeeMemoryRecord = {
-          id: id(90), summary: body.summary, details: body.details,
-          hasDetails: body.details !== null, state: 'active', revision: 1,
-          pairDigest: `sha256:${'b'.repeat(64)}`, capturedAt: now, updatedAt: now,
+          id: id(90),
+          summary: body.summary,
+          details: body.details,
+          hasDetails: body.details !== null,
+          state: 'active',
+          revision: 1,
+          pairDigest: `sha256:${'b'.repeat(64)}`,
+          capturedAt: now,
+          updatedAt: now,
         };
         return route.fulfill(
           json(
             {
-              schemaVersion: 2, memory,
-              counts: { active: body.instanceId === id(7) ? 7 : 66, pending: 1, maxActive: 100 },
+              schemaVersion: 2,
+              memory,
+              counts: {
+                active: body.instanceId === id(7) ? 7 : 66,
+                pending: 1,
+                maxActive: 100,
+              },
             },
             201,
           ),
@@ -951,103 +990,211 @@ suite('U1 employee details personal-memory entry', () => {
 
   // External host activation is invoked through the real native controls while
   // the modal owns pointer input. This exercises retained panes, not a second UI.
-  const activate = (control: Locator) => control.evaluate((node) => (node as HTMLButtonElement).click());
+  const activate = (control: Locator) =>
+    control.evaluate((node) => (node as HTMLButtonElement).click());
 
   it('retains the unknown request key after closing and reopening a real native Dock tab', async () => {
     const f = await fixture();
     try {
       const details = await f.openDetails('流程哥');
-      await details.getByRole('region', { name: '记忆', exact: true }).getByRole('button', { name: '查看', exact: true }).click();
-      let manager = f.page.getByRole('region', { name: '个人记忆', exact: true });
+      await details
+        .getByRole('region', { name: '记忆', exact: true })
+        .getByRole('button', { name: '查看', exact: true })
+        .click();
+      let manager = f.page.getByRole('region', {
+        name: '个人记忆',
+        exact: true,
+      });
       await contains(manager, '生效中');
-      await manager.getByRole('button', { name: '＋ 新增', exact: true }).click();
-      let form = f.page.getByRole('form', { name: '流程哥 · 新增记忆', exact: true });
+      await manager
+        .getByRole('button', { name: '＋ 新增', exact: true })
+        .click();
+      let form = f.page.getByRole('form', {
+        name: '流程哥 · 新增记忆',
+        exact: true,
+      });
       await form.getByLabel(/一句话/).fill('明确重填原请求以恢复回执');
       f.state.loseNextSaveAck = true;
       await form.getByRole('button', { name: '保存', exact: true }).click();
-      await form.getByRole('alert').filter({ hasText: '暂时无法确认保存结果。' }).waitFor();
+      await form
+        .getByRole('alert')
+        .filter({ hasText: '暂时无法确认保存结果。' })
+        .waitFor();
       await f.page.keyboard.press('Escape');
       const tab = f.page.getByRole('tab').filter({ hasText: '记忆' });
       await tab.getByRole('button', { name: '关闭标签', exact: true }).click();
       await tab.waitFor({ state: 'detached' });
-      let reopened = f.page.getByRole('dialog', { name: '流程哥员工详情', exact: true });
-      if (!(await reopened.isVisible())) reopened = await f.openDetails('流程哥');
-      await reopened.getByRole('region', { name: '记忆', exact: true }).getByRole('button', { name: '查看', exact: true }).click();
+      let reopened = f.page.getByRole('dialog', {
+        name: '流程哥员工详情',
+        exact: true,
+      });
+      if (!(await reopened.isVisible()))
+        reopened = await f.openDetails('流程哥');
+      await reopened
+        .getByRole('region', { name: '记忆', exact: true })
+        .getByRole('button', { name: '查看', exact: true })
+        .click();
       manager = f.page.getByRole('region', { name: '个人记忆', exact: true });
       await contains(manager, '生效中');
       expect(f.state.writes).toHaveLength(1);
-      await manager.getByRole('button', { name: '＋ 新增', exact: true }).click();
-      form = f.page.getByRole('form', { name: '流程哥 · 新增记忆', exact: true });
+      await manager
+        .getByRole('button', { name: '＋ 新增', exact: true })
+        .click();
+      form = f.page.getByRole('form', {
+        name: '流程哥 · 新增记忆',
+        exact: true,
+      });
       expect(await form.getByLabel(/一句话/).inputValue()).toBe('');
       await form.getByLabel(/一句话/).fill('明确重填原请求以恢复回执');
       await form.getByRole('button', { name: '保存', exact: true }).click();
-      await f.page.getByRole('dialog', { name: '新增记忆', exact: true }).waitFor({ state: 'detached' });
+      await f.page
+        .getByRole('dialog', { name: '新增记忆', exact: true })
+        .waitFor({ state: 'detached' });
       expect(f.state.writes).toHaveLength(2);
       expect(f.state.writes[0]!.body).toEqual(f.state.writes[1]!.body);
       expect(f.state.errors).toEqual([]);
-    } finally { await f.close(); }
+    } finally {
+      await f.close();
+    }
   });
 
   it('hides the pane-owned modal on native dock activation and restores its draft', async () => {
     const f = await fixture();
     try {
       const details = await f.openDetails();
-      await details.getByRole('region', { name: '记忆', exact: true })
-        .getByRole('button', { name: '查看', exact: true }).click();
-      const manager = f.page.getByRole('region', { name: '个人记忆', exact: true });
+      await details
+        .getByRole('region', { name: '记忆', exact: true })
+        .getByRole('button', { name: '查看', exact: true })
+        .click();
+      const manager = f.page.getByRole('region', {
+        name: '个人记忆',
+        exact: true,
+      });
       await contains(manager, '生效中');
-      await manager.getByRole('button', { name: '＋ 新增', exact: true }).click();
-      let form = f.page.getByRole('form', { name: '流程哥 · 新增记忆', exact: true });
+      await manager
+        .getByRole('button', { name: '＋ 新增', exact: true })
+        .click();
+      let form = f.page.getByRole('form', {
+        name: '流程哥 · 新增记忆',
+        exact: true,
+      });
       await form.getByLabel(/一句话/).fill('切换标签保留的记忆草稿');
-      await activate(f.page.getByRole('button', { name: '交付成果', exact: true }));
+      await activate(
+        f.page.getByRole('button', { name: '交付成果', exact: true }),
+      );
       await expect.poll(() => manager.isVisible()).toBe(false);
-      expect(await f.page.getByRole('dialog', { name: '新增记忆', exact: true }).count()).toBe(0);
+      expect(
+        await f.page
+          .getByRole('dialog', { name: '新增记忆', exact: true })
+          .count(),
+      ).toBe(0);
       await f.page.getByRole('tab').filter({ hasText: '记忆' }).click();
-      form = f.page.getByRole('form', { name: '流程哥 · 新增记忆', exact: true });
-      expect(await form.getByLabel(/一句话/).inputValue()).toBe('切换标签保留的记忆草稿');
+      form = f.page.getByRole('form', {
+        name: '流程哥 · 新增记忆',
+        exact: true,
+      });
+      expect(await form.getByLabel(/一句话/).inputValue()).toBe(
+        '切换标签保留的记忆草稿',
+      );
       await f.page.keyboard.press('Escape');
-      await f.page.getByRole('button', { name: '返回员工详情', exact: true }).click();
-      await contains(f.page.getByRole('dialog', { name: '流程哥员工详情', exact: true }), '65 条');
+      await f.page
+        .getByRole('button', { name: '返回员工详情', exact: true })
+        .click();
+      await contains(
+        f.page.getByRole('dialog', { name: '流程哥员工详情', exact: true }),
+        '65 条',
+      );
       expect(f.state.writes).toEqual([]);
       expect(f.state.errors).toEqual([]);
-    } finally { await f.close(); }
+    } finally {
+      await f.close();
+    }
   });
 
-  it.each([1440, 390])('keeps employee drafts isolated across native memory tabs at %ipx', async (width) => {
-    const f = await fixture({ width });
-    try {
-      const rice = await f.openDetails('Rice');
-      await rice.getByRole('region', { name: '记忆', exact: true }).getByRole('button', { name: '查看', exact: true }).click();
-      let manager = f.page.getByRole('region', { name: '个人记忆', exact: true });
-      await contains(manager, '生效中');
-      await manager.getByRole('button', { name: '＋ 新增', exact: true }).click();
-      await f.page.getByRole('form', { name: 'Rice · 新增记忆', exact: true }).getByLabel(/一句话/).fill('Rice 独立记忆草稿');
-      await activate(f.page.getByRole('button', { name: '返回员工详情', exact: true }));
-      await f.page.getByRole('dialog', { name: 'Rice员工详情', exact: true }).getByRole('button', { name: '关闭', exact: true }).click();
-      const flow = await f.openDetails('流程哥');
-      await flow.getByRole('region', { name: '记忆', exact: true }).getByRole('button', { name: '查看', exact: true }).click();
-      manager = f.page.getByRole('region', { name: '个人记忆', exact: true });
-      await contains(manager, '生效中');
-      await manager.getByRole('button', { name: '＋ 新增', exact: true }).click();
-      await f.page.getByRole('form', { name: '流程哥 · 新增记忆', exact: true }).getByLabel(/一句话/).fill('流程哥独立记忆草稿');
-      const tabs = f.page.getByRole('tab').filter({ hasText: '记忆' });
-      expect(await tabs.count()).toBe(2);
-      await activate(tabs.first());
-      const riceForm = f.page.getByRole('form', { name: 'Rice · 新增记忆', exact: true });
-      await riceForm.waitFor();
-      expect(await riceForm.getByLabel(/一句话/).inputValue()).toBe('Rice 独立记忆草稿');
-      expect(await f.page.getByRole('form', { name: '流程哥 · 新增记忆', exact: true }).count()).toBe(0);
-      await activate(tabs.last());
-      const flowForm = f.page.getByRole('form', { name: '流程哥 · 新增记忆', exact: true });
-      await flowForm.waitFor();
-      expect(await flowForm.getByLabel(/一句话/).inputValue()).toBe('流程哥独立记忆草稿');
-      await f.page.keyboard.press('Escape');
-      await f.page.getByRole('button', { name: '返回员工详情', exact: true }).click();
-      await contains(f.page.getByRole('dialog', { name: '流程哥员工详情', exact: true }), '65 条');
-      expect(f.state.writes).toEqual([]);
-      expect(f.state.errors).toEqual([]);
-    } finally { await f.close(); }
-  }, 30_000);
+  it.each([1440, 390])(
+    'keeps employee drafts isolated across native memory tabs at %ipx',
+    async (width) => {
+      const f = await fixture({ width });
+      try {
+        const rice = await f.openDetails('Rice');
+        await rice
+          .getByRole('region', { name: '记忆', exact: true })
+          .getByRole('button', { name: '查看', exact: true })
+          .click();
+        let manager = f.page.getByRole('region', {
+          name: '个人记忆',
+          exact: true,
+        });
+        await contains(manager, '生效中');
+        await manager
+          .getByRole('button', { name: '＋ 新增', exact: true })
+          .click();
+        await f.page
+          .getByRole('form', { name: 'Rice · 新增记忆', exact: true })
+          .getByLabel(/一句话/)
+          .fill('Rice 独立记忆草稿');
+        await activate(
+          f.page.getByRole('button', { name: '返回员工详情', exact: true }),
+        );
+        await f.page
+          .getByRole('dialog', { name: 'Rice员工详情', exact: true })
+          .getByRole('button', { name: '关闭', exact: true })
+          .click();
+        const flow = await f.openDetails('流程哥');
+        await flow
+          .getByRole('region', { name: '记忆', exact: true })
+          .getByRole('button', { name: '查看', exact: true })
+          .click();
+        manager = f.page.getByRole('region', { name: '个人记忆', exact: true });
+        await contains(manager, '生效中');
+        await manager
+          .getByRole('button', { name: '＋ 新增', exact: true })
+          .click();
+        await f.page
+          .getByRole('form', { name: '流程哥 · 新增记忆', exact: true })
+          .getByLabel(/一句话/)
+          .fill('流程哥独立记忆草稿');
+        const tabs = f.page.getByRole('tab').filter({ hasText: '记忆' });
+        expect(await tabs.count()).toBe(2);
+        await activate(tabs.first());
+        const riceForm = f.page.getByRole('form', {
+          name: 'Rice · 新增记忆',
+          exact: true,
+        });
+        await riceForm.waitFor();
+        expect(await riceForm.getByLabel(/一句话/).inputValue()).toBe(
+          'Rice 独立记忆草稿',
+        );
+        expect(
+          await f.page
+            .getByRole('form', { name: '流程哥 · 新增记忆', exact: true })
+            .count(),
+        ).toBe(0);
+        await activate(tabs.last());
+        const flowForm = f.page.getByRole('form', {
+          name: '流程哥 · 新增记忆',
+          exact: true,
+        });
+        await flowForm.waitFor();
+        expect(await flowForm.getByLabel(/一句话/).inputValue()).toBe(
+          '流程哥独立记忆草稿',
+        );
+        await f.page.keyboard.press('Escape');
+        await f.page
+          .getByRole('button', { name: '返回员工详情', exact: true })
+          .click();
+        await contains(
+          f.page.getByRole('dialog', { name: '流程哥员工详情', exact: true }),
+          '65 条',
+        );
+        expect(f.state.writes).toEqual([]);
+        expect(f.state.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+    30_000,
+  );
 
   it('all host memory entries retire the experience collector while the explicit detail target stays independent', async () => {
     const f = await fixture({ legacy: true });
@@ -1101,43 +1248,84 @@ suite('U1 employee details personal-memory entry', () => {
     const f = await fixture({ legacy: true });
     try {
       await f.page.getByRole('button', { name: '记忆', exact: true }).click();
-      const oldPaneId = await f.page.getByRole('region', { name: '记忆', exact: true })
-        .evaluate((node) => node.closest('[data-dockkit-pane]')?.getAttribute('data-dockkit-pane'));
+      const oldPaneId = await f.page
+        .getByRole('region', { name: '记忆', exact: true })
+        .evaluate((node) =>
+          node
+            .closest('[data-dockkit-pane]')
+            ?.getAttribute('data-dockkit-pane'),
+        );
       expect(oldPaneId).toBeTruthy();
-      const old = f.page.locator('[data-dockkit-pane=' + JSON.stringify(oldPaneId) + ']');
-      const oldManager = old.getByRole('region', { name: '个人记忆', exact: true });
+      const old = f.page.locator(
+        '[data-dockkit-pane=' + JSON.stringify(oldPaneId) + ']',
+      );
+      const oldManager = old.getByRole('region', {
+        name: '个人记忆',
+        exact: true,
+      });
       await contains(oldManager, '生效中');
-      await f.page.getByRole('button', { name: '并排查看', exact: true }).click();
-      await expect.poll(() => f.page.locator('[data-dockkit-pane]').count()).toBe(2);
+      await f.page
+        .getByRole('button', { name: '并排查看', exact: true })
+        .click();
+      await expect
+        .poll(() => f.page.locator('[data-dockkit-pane]').count())
+        .toBe(2);
       const details = await f.openDetails('流程哥');
-      await details.getByRole('region', { name: '记忆', exact: true }).getByRole('button', { name: '查看', exact: true }).click();
-      const personal = f.page.locator('[data-dockkit-pane]:not([data-dockkit-pane=' + JSON.stringify(oldPaneId) + '])')
+      await details
+        .getByRole('region', { name: '记忆', exact: true })
+        .getByRole('button', { name: '查看', exact: true })
+        .click();
+      const personal = f.page
+        .locator(
+          '[data-dockkit-pane]:not([data-dockkit-pane=' +
+            JSON.stringify(oldPaneId) +
+            '])',
+        )
         .getByRole('region', { name: '个人记忆', exact: true });
       await contains(personal, '生效中');
       expect(await oldManager.isVisible()).toBe(true);
-      await oldManager.getByRole('heading', { name: 'Rice · 记忆', exact: true }).waitFor();
-      await personal.getByRole('heading', { name: '流程哥 · 记忆', exact: true }).waitFor();
+      await oldManager
+        .getByRole('heading', { name: 'Rice · 记忆', exact: true })
+        .waitFor();
+      await personal
+        .getByRole('heading', { name: '流程哥 · 记忆', exact: true })
+        .waitFor();
       expect(f.state.writes).toEqual([]);
       expect(f.state.errors).toEqual([]);
-    } finally { await f.close(); }
+    } finally {
+      await f.close();
+    }
   });
 
   it('keeps a hidden pane draft and exactly one in-flight request when the same target reopens', async () => {
     const f = await fixture({ host: 'lifecycle' });
     const writeGate = gate();
     try {
-      const manager = f.page.getByRole('region', { name: '个人记忆', exact: true });
+      const manager = f.page.getByRole('region', {
+        name: '个人记忆',
+        exact: true,
+      });
       await contains(manager, '生效中');
-      await manager.getByRole('button', { name: '＋ 新增', exact: true }).click();
-      let form = f.page.getByRole('form', { name: '流程哥 · 新增记忆', exact: true });
+      await manager
+        .getByRole('button', { name: '＋ 新增', exact: true })
+        .click();
+      let form = f.page.getByRole('form', {
+        name: '流程哥 · 新增记忆',
+        exact: true,
+      });
       await form.getByLabel(/一句话/).fill('切标签保留的记忆草稿');
       await activate(f.page.locator('#switch-tab'));
       expect(await f.page.getByRole('dialog').count()).toBe(0);
       await f.page.locator('#reopen-target').click();
       await f.page.locator('#switch-tab').click();
-      form = f.page.getByRole('form', { name: '流程哥 · 新增记忆', exact: true });
+      form = f.page.getByRole('form', {
+        name: '流程哥 · 新增记忆',
+        exact: true,
+      });
       await form.waitFor();
-      expect(await form.getByLabel(/一句话/).inputValue()).toBe('切标签保留的记忆草稿');
+      expect(await form.getByLabel(/一句话/).inputValue()).toBe(
+        '切标签保留的记忆草稿',
+      );
       f.state.writeGate = writeGate.promise;
       await form.getByRole('button', { name: '保存', exact: true }).click();
       await expect.poll(() => f.state.writes.length).toBe(1);
@@ -1145,17 +1333,35 @@ suite('U1 employee details personal-memory entry', () => {
       expect(await f.page.getByRole('dialog').count()).toBe(0);
       await f.page.locator('#reopen-target').click();
       await f.page.locator('#switch-tab').click();
-      form = f.page.getByRole('form', { name: '流程哥 · 新增记忆', exact: true });
+      form = f.page.getByRole('form', {
+        name: '流程哥 · 新增记忆',
+        exact: true,
+      });
       await form.waitFor();
-      expect(await form.getByRole('button', { name: '保存', exact: true }).isDisabled()).toBe(true);
-      expect(await form.getByLabel(/一句话/).inputValue()).toBe('切标签保留的记忆草稿');
+      expect(
+        await form
+          .getByRole('button', { name: '保存', exact: true })
+          .isDisabled(),
+      ).toBe(true);
+      expect(await form.getByLabel(/一句话/).inputValue()).toBe(
+        '切标签保留的记忆草稿',
+      );
       writeGate.release();
-      await f.page.getByRole('dialog', { name: '新增记忆', exact: true }).waitFor({ state: 'detached' });
+      await f.page
+        .getByRole('dialog', { name: '新增记忆', exact: true })
+        .waitFor({ state: 'detached' });
       await contains(manager, '切标签保留的记忆草稿');
       expect(f.state.writes).toHaveLength(1);
-      expect(f.state.writes[0]?.body).toMatchObject({ instanceId: id(17), summary: '切标签保留的记忆草稿', details: null });
+      expect(f.state.writes[0]?.body).toMatchObject({
+        instanceId: id(17),
+        summary: '切标签保留的记忆草稿',
+        details: null,
+      });
       expect(f.state.writes[0]?.body).not.toHaveProperty('contentDigest');
       expect(f.state.errors).toEqual([]);
-    } finally { writeGate.release(); await f.close(); }
+    } finally {
+      writeGate.release();
+      await f.close();
+    }
   });
 });

@@ -186,8 +186,12 @@ suite('MET251 v10 memory sidebar presentation', () => {
           .getByRole('dialog')
           .getByLabel(/一句话/)
           .waitFor();
-        expect(await f.page.getByRole('dialog').getByLabel(/一句话/)
-          .evaluate((node) => node === document.activeElement)).toBe(true);
+        expect(
+          await f.page
+            .getByRole('dialog')
+            .getByLabel(/一句话/)
+            .evaluate((node) => node === document.activeElement),
+        ).toBe(true);
         await f.page.keyboard.press('Tab');
         expect(
           await f.page
@@ -378,8 +382,10 @@ suite('MET251 v10 memory sidebar presentation', () => {
         .getByRole('dialog')
         .getByRole('button', { name: '删除', exact: true })
         .click();
-      await f.page.getByRole('dialog', { name: '确认删除这条记忆？', exact: true })
-        .getByRole('button', { name: '删除', exact: true }).click();
+      await f.page
+        .getByRole('dialog', { name: '确认删除这条记忆？', exact: true })
+        .getByRole('button', { name: '删除', exact: true })
+        .click();
       await expect.poll(() => f.page.getByRole('dialog').count()).toBe(0);
       expect(
         await f.page
@@ -394,68 +400,141 @@ suite('MET251 v10 memory sidebar presentation', () => {
       await f.close();
     }
   });
-  it.each((['row', 'active', 'pending'] as const).flatMap((entry) =>
-    ([ [1440, 'light'], [1440, 'dark'], [390, 'light'], [390, 'dark'] ] as const)
-      .map(([width, theme]) => ({ entry, width, theme })),
-  ))('confirms $entry deletion and restores cancel/Escape/mask focus at $width/$theme', async ({ entry, width, theme }) => {
-    const f = await fixture('theme=' + theme, width);
-    try {
-      const id = entry === 'active' ? 'a1' : 'p1';
-      const row = f.page.locator(`[data-memory-id="${id}"]`);
-      if (entry !== 'row') {
-        await row.locator('button').first().click();
-        await f.page.getByRole('dialog').getByRole('button', { name: '修改', exact: true }).waitFor({ state: 'visible' });
-      }
-      const trigger = entry === 'row'
-        ? row.getByRole('button', { name: /^删除/ })
-        : f.page.getByRole('dialog').getByRole('button', { name: '删除', exact: true });
-      const confirmation = f.page.getByRole('dialog', { name: '确认删除这条记忆？', exact: true });
-      for (const cancel of ['button', 'escape', 'mask']) {
+  it.each(
+    (['row', 'active', 'pending'] as const).flatMap((entry) =>
+      (
+        [
+          [1440, 'light'],
+          [1440, 'dark'],
+          [390, 'light'],
+          [390, 'dark'],
+        ] as const
+      ).map(([width, theme]) => ({ entry, width, theme })),
+    ),
+  )(
+    'confirms $entry deletion and restores cancel/Escape/mask focus at $width/$theme',
+    async ({ entry, width, theme }) => {
+      const f = await fixture('theme=' + theme, width);
+      try {
+        const id = entry === 'active' ? 'a1' : 'p1';
+        const row = f.page.locator(`[data-memory-id="${id}"]`);
+        if (entry !== 'row') {
+          await row.locator('button').first().click();
+          await f.page
+            .getByRole('dialog')
+            .getByRole('button', { name: '修改', exact: true })
+            .waitFor({ state: 'visible' });
+        }
+        const trigger =
+          entry === 'row'
+            ? row.getByRole('button', { name: /^删除/ })
+            : f.page
+                .getByRole('dialog')
+                .getByRole('button', { name: '删除', exact: true });
+        const confirmation = f.page.getByRole('dialog', {
+          name: '确认删除这条记忆？',
+          exact: true,
+        });
+        for (const cancel of ['button', 'escape', 'mask']) {
+          await trigger.click();
+          await confirmation.waitFor();
+          expect(await confirmation.locator('p').first().innerText()).toBe(
+            await row
+              .locator('button')
+              .first()
+              .locator('span')
+              .nth(1)
+              .textContent(),
+          );
+          expect(
+            (await f.operations()).filter((item) => item.action === 'delete'),
+          ).toHaveLength(0);
+          expect(await row.count()).toBe(1);
+          if (cancel === 'button')
+            await confirmation
+              .getByRole('button', { name: '取消', exact: true })
+              .click();
+          else if (cancel === 'escape') await f.page.keyboard.press('Escape');
+          else
+            await confirmation
+              .locator('..')
+              .locator(':scope > [aria-hidden="true"]')
+              .click({ position: { x: 4, y: 4 } });
+          await confirmation.waitFor({ state: 'detached' });
+          expect(await row.count()).toBe(1);
+          expect(
+            await trigger.evaluate((node) => node === document.activeElement),
+          ).toBe(true);
+          expect(await f.page.getByRole('dialog').count()).toBe(
+            entry === 'row' ? 0 : 1,
+          );
+        }
         await trigger.click();
-        await confirmation.waitFor();
-        expect(await confirmation.locator('p').first().innerText()).toBe(await row.locator('button').first().locator('span').nth(1).textContent());
-        expect((await f.operations()).filter((item) => item.action === 'delete')).toHaveLength(0);
-        expect(await row.count()).toBe(1);
-        if (cancel === 'button') await confirmation.getByRole('button', { name: '取消', exact: true }).click();
-        else if (cancel === 'escape') await f.page.keyboard.press('Escape');
-        else await confirmation.locator('..').locator(':scope > [aria-hidden="true"]').click({ position: { x: 4, y: 4 } });
-        await confirmation.waitFor({ state: 'detached' });
-        expect(await row.count()).toBe(1);
-        expect(await trigger.evaluate((node) => node === document.activeElement)).toBe(true);
-        expect(await f.page.getByRole('dialog').count()).toBe(entry === 'row' ? 0 : 1);
+        await f.page.screenshot({
+          path: resolve(evidence, `delete-${entry}-${width}-${theme}.png`),
+        });
+        await confirmation
+          .getByRole('button', { name: '删除', exact: true })
+          .click();
+        await row.waitFor({ state: 'detached' });
+        await expect.poll(() => f.page.getByRole('dialog').count()).toBe(0);
+        expect(
+          (await f.operations()).filter((item) => item.action === 'delete'),
+        ).toEqual([{ action: 'delete', payload: id }]);
+      } finally {
+        await f.close();
       }
-      await trigger.click();
-      await f.page.screenshot({ path: resolve(evidence, `delete-${entry}-${width}-${theme}.png`) });
-      await confirmation.getByRole('button', { name: '删除', exact: true }).click();
-      await row.waitFor({ state: 'detached' });
-      await expect.poll(() => f.page.getByRole('dialog').count()).toBe(0);
-      expect((await f.operations()).filter((item) => item.action === 'delete')).toEqual([{ action: 'delete', payload: id }]);
-    } finally { await f.close(); }
-  });
+    },
+  );
   it('keeps the edit CAS snapshot and nonempty detail whitespace across a background refresh', async () => {
     const f = await fixture('reject=save');
     try {
       await f.page.locator('[data-memory-id="a1"] button').click();
-      await f.page.getByRole('dialog').getByRole('button', { name: '修改', exact: true }).click();
-      const form = f.page.getByRole('form', { name: 'Rice · 修改记忆', exact: true });
+      await f.page
+        .getByRole('dialog')
+        .getByRole('button', { name: '修改', exact: true })
+        .click();
+      const form = f.page.getByRole('form', {
+        name: 'Rice · 修改记忆',
+        exact: true,
+      });
       const raw = '  第一行\n\n第二行  \n';
       await form.getByLabel(/详细说明/).fill(raw);
-      await f.page.locator('#refresh-memory').evaluate((node) => (node as HTMLButtonElement).click());
-      expect(await form.getByLabel(/一句话/).inputValue()).toBe('报价规则：含税、PDF、文件名带客户和日期');
+      await f.page
+        .locator('#refresh-memory')
+        .evaluate((node) => (node as HTMLButtonElement).click());
+      expect(await form.getByLabel(/一句话/).inputValue()).toBe(
+        '报价规则：含税、PDF、文件名带客户和日期',
+      );
       expect(await form.getByLabel(/详细说明/).inputValue()).toBe(raw);
       await form.getByRole('button', { name: '保存', exact: true }).click();
       await form.getByRole('alert').waitFor();
-      expect((await f.operations()).find((item) => item.action === 'save')?.payload).toEqual({
-        id: 'a1', revision: 1, pairDigest: `sha256:${'a'.repeat(64)}`,
-        input: { summary: '报价规则：含税、PDF、文件名带客户和日期', details: raw },
+      expect(
+        (await f.operations()).find((item) => item.action === 'save')?.payload,
+      ).toEqual({
+        id: 'a1',
+        revision: 1,
+        pairDigest: `sha256:${'a'.repeat(64)}`,
+        input: {
+          summary: '报价规则：含税、PDF、文件名带客户和日期',
+          details: raw,
+        },
       });
-    } finally { await f.close(); }
+    } finally {
+      await f.close();
+    }
   });
   it('keeps a delete target until the final receipt and respects native IME Escape', async () => {
     const f = await fixture('hold=delete', 390);
     try {
-      await f.page.locator('[data-memory-id="p1"]').getByRole('button', { name: /^删除/ }).click();
-      const dialog = f.page.getByRole('dialog', { name: '确认删除这条记忆？', exact: true });
+      await f.page
+        .locator('[data-memory-id="p1"]')
+        .getByRole('button', { name: /^删除/ })
+        .click();
+      const dialog = f.page.getByRole('dialog', {
+        name: '确认删除这条记忆？',
+        exact: true,
+      });
       await dialog.dispatchEvent('compositionstart');
       await f.page.keyboard.press('Escape');
       expect(await dialog.count()).toBe(1);
@@ -463,13 +542,21 @@ suite('MET251 v10 memory sidebar presentation', () => {
       await f.page.keyboard.press('ArrowRight');
       await dialog.getByRole('button', { name: '删除', exact: true }).click();
       expect(await f.page.locator('[data-memory-id="p1"]').count()).toBe(1);
-      expect(await dialog.getByRole('button', { name: '取消', exact: true }).isDisabled()).toBe(true);
+      expect(
+        await dialog
+          .getByRole('button', { name: '取消', exact: true })
+          .isDisabled(),
+      ).toBe(true);
       await f.page.keyboard.press('Escape');
       expect(await dialog.count()).toBe(1);
-      await f.page.locator('#release').evaluate((node) => (node as HTMLButtonElement).click());
+      await f.page
+        .locator('#release')
+        .evaluate((node) => (node as HTMLButtonElement).click());
       await dialog.waitFor({ state: 'detached' });
       expect(await f.page.locator('[data-memory-id="p1"]').count()).toBe(0);
-    } finally { await f.close(); }
+    } finally {
+      await f.close();
+    }
   });
   it('discards a late detail when the target changes and never displays unknown data as empty', async () => {
     const f = await fixture('hold=read');
