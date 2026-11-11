@@ -1557,7 +1557,9 @@ suite('U1 mounted employee Workflow host', () => {
             await f.page.evaluate(() => new Promise(requestAnimationFrame));
             expect(await current.inputValue()).toBe('切回后的新草稿');
             expect(
-              await selected.evaluate((node) => node === document.activeElement),
+              await selected.evaluate(
+                (node) => node === document.activeElement,
+              ),
             ).toBe(true);
           } else {
             held.release();
@@ -1611,7 +1613,9 @@ suite('U1 mounted employee Workflow host', () => {
             input.dispatchEvent(new Event('input', { bubbles: true }));
           }
           document
-            .querySelector<HTMLButtonElement>('button[aria-label="查看Rice详情"]')
+            .querySelector<HTMLButtonElement>(
+              'button[aria-label="查看Rice详情"]',
+            )
             ?.focus();
         });
         observer.observe(document, {
