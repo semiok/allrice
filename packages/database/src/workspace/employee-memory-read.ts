@@ -3,10 +3,8 @@ import type { Visibility, WorkspaceMemorySchema } from '@allrice/contracts';
 import type { z } from 'zod';
 import type { getDatabase } from '../core/client.ts';
 import { memorySearchPatterns } from '../memory/search-patterns.ts';
-import {
-  ordinaryMemoryPredicate,
-  type EmployeeMemoryScope,
-} from './employee-memory.ts';
+import { ordinaryMemoryPredicate } from './employee-memory-primitives.ts';
+import type { EmployeeMemoryScope } from './employee-memory.ts';
 
 type WorkspaceMemory = z.infer<typeof WorkspaceMemorySchema>;
 type Sql = ReturnType<typeof getDatabase> | TransactionSql;
