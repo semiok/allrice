@@ -2823,13 +2823,45 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             expect(target!.y + target!.height).toBeLessThanOrEqual(
               strip.y + strip.height,
             );
+            expect(
+              await back.evaluate((button) => {
+                const box = button.getBoundingClientRect();
+                return [box.y + box.height / 2, box.bottom - 1].every((y) => {
+                  const hit = document.elementFromPoint(
+                    box.x + box.width / 2,
+                    y,
+                  );
+                  return hit === button || button.contains(hit);
+                });
+              }),
+            ).toBe(true);
           }
           await mkdir('.local/quality/met245-process-b', { recursive: true });
           await f.page.screenshot({
             path: `.local/quality/met245-process-b/host-${width}-${appearance}.png`,
           });
           if (width <= 1100) {
-            await back.click();
+            await expect
+              .poll(
+                () =>
+                  [...subagentFeed.connections].filter(
+                    (connection) =>
+                      connection.fixture === f.nativeFixture &&
+                      connection.childId,
+                  ).length,
+              )
+              .toBe(1);
+            const target = (await back.boundingBox())!;
+            if (width <= 760)
+              await f.page.touchscreen.tap(
+                target.x + target.width / 2,
+                target.y + target.height - 1,
+              );
+            else
+              await f.page.mouse.click(
+                target.x + target.width / 2,
+                target.y + target.height - 1,
+              );
             await expect
               .poll(
                 () =>
