@@ -42,6 +42,10 @@ export function browserOperationMaterial(
   employeeName = 'AI 员工',
 ): WorkProcessMaterial {
   const observation = workspace.observation;
+  const action = op.command.action;
+  const url = action.type === 'navigate' || action.type === 'request'
+    ? action.url
+    : op.command.observationId === observation?.id ? observation?.url : undefined;
   return {
     source: 'browser',
     id: op.snapshot.binding.attempt.operationId,
@@ -68,7 +72,7 @@ export function browserOperationMaterial(
             {workspace.transport === 'local'
               ? (workspace.localDeviceName ?? '你的电脑')
               : '云端浏览器'}
-            {observation && ` · ${siteLabel(observation.url)}`}
+            {url && ` · ${siteLabel(url)}`}
           </>
         ),
       },

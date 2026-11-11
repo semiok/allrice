@@ -29,7 +29,7 @@ describe('local execution permission disclosure', () => {
       nativeCallId: 'native-call',
       command: {
         ...command,
-        executable: 'node',
+        executable: '/usr/local/bin/node',
         args: ['line 1\nline 2: <script>payload</script>'],
         files: [{ path: 'input.csv', sha256: 'sha256:' + 'a'.repeat(64) }],
       },

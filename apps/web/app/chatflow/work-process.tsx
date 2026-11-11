@@ -13,6 +13,7 @@ import {
   WorkProcessReadingState,
   WorkProcessDisclosureScope,
   useProcessDisclosure,
+  useProcessMaterialReveal,
   useQuestionDisclosureOpen,
 } from './work-process-reading-state';
 import { AssistantMarkdown } from './assistant-markdown';
@@ -65,6 +66,7 @@ import type { ChatPresentationPolicy } from '@deepseek-ai/dsh-client-ui-chat/cli
 import {
   workProcessDisplayState,
   workProcessPresentation,
+  sameWorkProcessAnswer,
   type WorkProcessDisclosure,
   type WorkProcessPresentation,
 } from '../../lib/chatflow/work-process-presentation';
@@ -118,6 +120,7 @@ export function WorkProcess({
   accessibleFiles,
   onOpenArtifact,
   renderMaterial,
+  sharedReadingState = false,
   transcriptView = 'detailed',
   collapseTiming = 'completion',
   presentation,
@@ -140,6 +143,7 @@ export function WorkProcess({
   onOpenArtifact?: (id: string) => void;
   label?: string;
   renderMaterial?: (reference: WorkProcessReference) => ReactNode;
+  sharedReadingState?: boolean;
   transcriptView?: UserPreferences['transcriptView'];
   collapseTiming?: UserPreferences['collapseTiming'];
   presentation?: WorkProcessPresentation;
@@ -148,11 +152,15 @@ export function WorkProcess({
   const processId = useId();
   const [disclosure, setDisclosure] = useState<WorkProcessDisclosure>();
   const [settledOnMount] = useState(!running);
+  const [materialReveal, setMaterialReveal] = useProcessMaterialReveal();
+  const revealingMaterial = materialReveal && items.some((item) =>
+    item.operations?.some((ref) => workProcessReferenceKey(ref) === materialReveal),
+  ) ? materialReveal : undefined;
   const policy = presentationPolicyFor(transcriptView, collapseTiming);
   const currentPresentation =
     presentation ?? workProcessPresentation([], parts, undefined, false);
-  const withReadingState = (content: ReactNode) => (
-    <WorkProcessReadingState key={currentPresentation.runId} root={root}>
+  const withReadingState = (content: ReactNode) => {
+    const frame = (
       <div
         ref={root}
         className={styles.processBlock}
@@ -160,8 +168,26 @@ export function WorkProcess({
       >
         {content}
       </div>
-    </WorkProcessReadingState>
-  );
+    );
+    return sharedReadingState ? frame : (
+      <WorkProcessReadingState key={currentPresentation.runId} root={root}>
+        {frame}
+      </WorkProcessReadingState>
+    );
+  };
+  useLayoutEffect(() => {
+    if (!revealingMaterial) return;
+    if (!disclosure?.open || !sameWorkProcessAnswer(disclosure.presentation, currentPresentation))
+      setDisclosure({ presentation: currentPresentation, open: true });
+    const target = root.current?.querySelector<HTMLElement>(
+      `[data-process-material="${CSS.escape(revealingMaterial)}"]`,
+    );
+    if (!target?.getClientRects().length) return;
+    target.closest('[data-step-id]')?.querySelector<HTMLElement>('[data-disclosure-row]')
+      ?.focus({ preventScroll: true });
+    target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    setMaterialReveal(undefined);
+  });
   useEffect(() => {
     // A history answer can be expanded before its trace arrives. Bind that
     // choice once to the restored identity, so a later retry still resets it.
@@ -268,7 +294,7 @@ export function WorkProcess({
     canceled,
     hasHistory: parts ? Boolean(history?.length || expandable) : expandable,
     disclosure:
-      (revealingQuestion
+      (revealingQuestion || revealingMaterial
         ? { presentation: currentPresentation, open: true }
         : disclosure) ??
       (readingQuestion
@@ -575,10 +601,19 @@ function NativeStepsGroup({
   grouped: boolean;
   policy: ChatPresentationPolicy;
 }) {
+  const aliases = items.flatMap((item) => item.operations?.map(
+    (ref) => `operation:${workProcessReferenceKey(ref)}`,
+  ) ?? []);
+  const keys = [...new Set([...items.map((item) => item.id), ...aliases])]
+    .map((id) => `group:${id}`);
   const [manual, setOpen] = useProcessDisclosure<boolean | undefined>(
-    items.map((item) => `group:${item.id}`),
+    keys,
     undefined,
+    false,
+    aliases.length > 0,
   );
+  const [materialReveal] = useProcessMaterialReveal();
+  const revealingMaterial = aliases.includes(`operation:${materialReveal}`);
   const questionKeys = questions.flatMap((question) =>
     question.answer &&
     items.some((item) => item.id === `tool:${question.callId}`)
@@ -591,9 +626,9 @@ function NativeStepsGroup({
   const revealingQuestion = useQuestionDisclosureOpen(
     questionKeys.filter((key) => revealingQuestions.includes(key)),
   );
-  const open = revealingQuestion || (manual ?? readingQuestion);
+  const open = revealingMaterial || revealingQuestion || (manual ?? readingQuestion);
   useLayoutEffect(() => {
-    if (revealingQuestion) setOpen(true);
+    if ((revealingMaterial || revealingQuestion) && manual !== true) setOpen(true);
   });
   const { steps } = summarizeWorkProcess(items);
   if (!steps.length || onlyLiveThinking(steps, running)) return null;
@@ -645,8 +680,8 @@ function NativeStepsGroup({
         titleClassName={styles.processTitle}
         collapsedContent={
           <>
-            {items.map((item) => (
-              <span key={item.id} data-process-control={`group:${item.id}`} />
+            {keys.map((key) => (
+              <span key={key} data-process-control={key} />
             ))}
             {!open && preview ? (
               <>
@@ -684,6 +719,7 @@ function WorkProcessSteps({
   renderMaterial?: (reference: WorkProcessReference) => ReactNode;
   policy: ChatPresentationPolicy;
 }) {
+  const [materialReveal] = useProcessMaterialReveal();
   const { steps } = summarizeWorkProcess(items);
   if (!steps.length) return null;
   return (
@@ -735,6 +771,8 @@ function WorkProcessSteps({
             ) : (
               <WorkProcessStepView
                 id={step.id}
+                disclosureIds={operations.map((ref) => `operation:${workProcessReferenceKey(ref)}`)}
+                reveal={operations.some((ref) => workProcessReferenceKey(ref) === materialReveal)}
                 icon={
                   <span
                     className={

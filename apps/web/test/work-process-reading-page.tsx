@@ -45,6 +45,10 @@ const at = new Date().toISOString();
 const memoryScenario = new URLSearchParams(location.search).has('memory');
 const processScenario = new URLSearchParams(location.search).has('process');
 const cardsScenario = new URLSearchParams(location.search).has('cards');
+const regression = new URLSearchParams(location.search).get('regression');
+const timelineCards = regression === 'order' || regression === 'late-open';
+const tick = (seconds: number) =>
+  new Date(Date.parse(at) + seconds * 1000).toISOString();
 const longField = '核对这次对外发送的内容及附件。'.repeat(60);
 const longOutput = Array.from(
   { length: 160 },
@@ -117,6 +121,9 @@ const cardsCloud = [
     ...sample.snapshot,
     binding: binding(sample.snapshot.binding.attempt.operationId),
   },
+  ...((regression === 'order' && index === 4) ||
+    (regression === 'late-open' && [2, 3].includes(index))
+      ? { createdAt: tick(15) } : {}),
   ...(index === 2
     ? {
         result: {
@@ -128,6 +135,7 @@ const cardsCloud = [
             version: 1,
             objectId: id(350),
             checksum: `sha256:${'9'.repeat(64)}`,
+            ...(regression === 'late-open' ? { detail: longOutput } : {}),
           }),
         },
         projectService: {
@@ -153,6 +161,34 @@ const cardsCloud = [
       }
     : {}),
 }));
+const retryCloud = regression === 'retry'
+  ? (['failed', 'succeeded'] as const).map((status, index) => {
+      const source = samples[4]!;
+      return {
+        ...source,
+        nativeCallId: `cards-retry-${index}`,
+        createdAt: tick(index + 1),
+        snapshot: {
+          ...source.snapshot, status, binding: binding(id(370 + index)),
+          result: {
+            ...source.snapshot.result!, status,
+            effects: index ? 'applied' : 'none',
+            evidence: {
+              ...source.snapshot.result!.evidence,
+              id: id(372 + index), recordedAt: tick(index + 1),
+            },
+          },
+        },
+        result: index ? {
+          code: 'OK', trusted: false,
+          output: '{"delivered":true,"messageId":"retry-371"}',
+        } : {
+          code: 'MCP_UNAVAILABLE', trusted: false,
+          output: 'MCP connection unavailable before dispatch',
+        },
+      };
+    })
+  : [];
 const scopedLocal = <
   T extends {
     snapshot: { binding: { attempt: { operationId: string } } };
@@ -239,6 +275,22 @@ const cardsBrowser = [
     ],
   },
 ];
+const currentBrowser = () => cardsBrowser.map((workspace) => ({
+  ...workspace,
+  profile: regression === 'browser' ? {
+    ...workspace.profile,
+    origins: ['https://example.com', 'https://current.example', 'https://newer.example'],
+  } : workspace.profile,
+  observation: regression === 'browser' ? {
+    version: 1, id: id(stage === 'initial' ? 360 : 361),
+    profileId: workspace.profileId, fence: 2, revision: 1, capturedAt: at,
+    expiresAt: '2099-01-01T00:00:00.000Z',
+    url: `https://${stage === 'initial' ? 'current' : 'newer'}.example/page`,
+    title: stage === 'initial' ? '当前观察甲' : '当前观察乙',
+    text: '当前授权页面。', pageDigest: `sha256:${'a'.repeat(64)}`,
+    elements: [], screenshotObjectId: null,
+  } : workspace.observation,
+}));
 const cardsManaged = [2, 1].map((jobAttempt) =>
   ManagedBrowserTaskSchema.parse({
     id: id(320 + jobAttempt),
@@ -350,6 +402,7 @@ function eventsFor(runId: string): ChatFlowEventEnvelope[] {
   const add = (
     type: ChatFlowEventEnvelope['type'],
     payload: Record<string, unknown>,
+    occurredAt = at,
   ) => {
     const seq = events.length + 1;
     events.push({
@@ -364,13 +417,16 @@ function eventsFor(runId: string): ChatFlowEventEnvelope[] {
       sequence: seq,
       harness: 'dsh',
       sourceEvent: null,
-      occurredAt: at,
+      occurredAt,
       type,
       payload: { generation: 0, attempt: 2, ...payload },
     });
   };
   if (cardsScenario) {
-    for (const [toolCallId, name] of [
+    if (timelineCards) add('assistant.text.delta', {
+      replyId: 'cards-before', text: '采用补充前的说明。',
+    }, tick(10));
+    const calls = [
       ['cards-sales', 'cloud_mcp_call'],
       ['cards-partner', 'cloud_mcp_call'],
       ['cards-pair', 'cloud_compute'],
@@ -378,14 +434,34 @@ function eventsFor(runId: string): ChatFlowEventEnvelope[] {
       ['cards-browser', 'local.browser.workspace'],
       ['cards-command', 'local.process.execute'],
       ['cards-local-mcp', 'local.mcp.call'],
-    ]) {
-      add('tool.started', { toolCallId, name });
-      add('tool.completed', { toolCallId, name });
+      ...retryCloud.map((op) => [op.nativeCallId, 'cloud_mcp_call']),
+    ];
+    for (const [index, [toolCallId, name]] of calls.entries()) {
+      if (regression?.startsWith('late-') && stage === 'initial' &&
+        toolCallId === 'cards-pair') continue;
+      const start = timelineCards
+        ? tick(index === 0 ? 20 : 50 + index * 2) : at;
+      add('tool.started', { toolCallId, name }, start);
+      const failed = (regression === 'late-closed' && toolCallId === 'cards-pair') ||
+        toolCallId === 'cards-retry-0';
+      add(failed ? 'tool.failed' : 'tool.completed', { toolCallId, name }, start);
+      if (timelineCards && index === 0) {
+        add('harness.native', { turnId: 'cards-turn' }, tick(30));
+        events.at(-1)!.sourceEvent = {
+          id: 'dsh:4242', type: 'user/message', occurredAt: tick(30), payload: {},
+        };
+        add('assistant.text.delta', {
+          replyId: 'cards-after', text: '采用补充后的说明。',
+        }, tick(40));
+      }
     }
+    if (timelineCards && stage !== 'initial') add('assistant.text.delta', {
+      replyId: 'cards-later', text: '补充后追加的说明。',
+    }, tick(90));
     add('assistant.text.completed', {
       replyId: 'answer',
       text: '最终核对结果。\n\n| 项目 | 数量 |\n| --- | --- |\n| 已核对 | 12 |',
-    });
+    }, timelineCards ? tick(100) : at);
     return events;
   }
   if (panelsEnabled)
@@ -480,7 +556,7 @@ window.fetch = async (input, init) => {
   if (url.startsWith('/api/v1/managed-browser-tasks'))
     return Response.json({ tasks: cardsScenario ? cardsManaged : [] });
   if (url.startsWith('/api/v1/runtime/browser-workspaces'))
-    return Response.json({ workspaces: cardsScenario ? cardsBrowser : [] });
+    return Response.json({ workspaces: cardsScenario ? currentBrowser() : [] });
   if (url.startsWith('/api/v1/runtime/local-commands'))
     return Response.json({ operations: cardsScenario ? cardsCommands : [] });
   if (url.startsWith('/api/v1/runtime/local-mcp'))
@@ -537,7 +613,7 @@ window.fetch = async (input, init) => {
   if (url.startsWith('/api/v1/runtime/cloud-operations'))
     return Response.json({
       operations: cardsScenario
-        ? cardsCloud
+        ? [...cardsCloud, ...retryCloud]
         : Array.from(
             {
               length:
@@ -618,6 +694,13 @@ function Fixture() {
           collapseTiming="completion"
           messages={[
             user,
+            ...(timelineCards ? [{
+              ...user, id: 'cards-steering', content: { text: '按补充继续核对。' },
+              steering: {
+                runId: run, turnId: 'cards-turn', generation: 0,
+                status: 'adopted' as const, sequence: 4242,
+              },
+            }] : []),
             {
               ...user,
               id: 'assistant',

@@ -28,6 +28,7 @@ export function ProcessMaterialFields({
   ];
   return (
     <div
+      id={`process-material-${material.source}-${material.id}`}
       data-process-operation={material.id}
       data-process-source={material.source}
       data-process-material={`${material.source}:${material.id}`}

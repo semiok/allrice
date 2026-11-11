@@ -232,6 +232,25 @@ describe('Cloud/MCP approval presentation', () => {
       );
       expect(html).toContain('之后再试的一次已经完成');
       expect(html).toContain('href="#operation-later-success"');
+      const inline = renderToStaticMarkup(
+        <CloudOperationCard
+          op={failed}
+          busy={false}
+          laterSuccessId="later-success"
+          interactionOnly
+          onAct={() => {}}
+        />,
+      );
+      expect(inline).toContain('href="#process-material-cloud-later-success"');
+      expect(inline).not.toContain('href="#operation-later-success"');
+      expect(renderToStaticMarkup(
+        <CloudOperationCard
+          op={succeeded}
+          busy={false}
+          interactionOnly
+          onAct={() => {}}
+        />,
+      )).toBe('');
       expect(failed.snapshot.status).toBe('failed');
       const other = structuredClone(succeeded);
       other.snapshot.binding.task.runId = 'run-b';
@@ -267,6 +286,7 @@ describe('Cloud/MCP approval presentation', () => {
   });
   it('keeps all sixty MCP values in the external review and read-only history', () => {
     const op = view();
+    op.createdAt = '2026-11-10T00:00:00Z';
     if (op.proposal.kind !== 'mcp') throw Error('MCP fixture required');
     op.proposal.arguments = Object.fromEntries(
       Array.from({ length: 60 }, (_, i) => [`field-${i}`, `值${i}<script>`]),
@@ -289,6 +309,7 @@ describe('Cloud/MCP approval presentation', () => {
     }
     expect(material.runId).toBe(op.snapshot.binding.task.runId);
     expect(material.binding).toBe(op.snapshot.binding);
+    expect(material.createdAt).toBe(op.createdAt);
     expect(html.match(/data-process-control="approve"/g)).toHaveLength(1);
     expect(html).not.toContain('查看详情');
     expect(html).not.toContain('技术详情');

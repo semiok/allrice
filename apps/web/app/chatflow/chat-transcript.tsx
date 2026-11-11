@@ -5,6 +5,7 @@ import {
   useState,
   useEffect,
   useContext,
+  useRef,
   type RefObject,
   type CSSProperties,
   type ReactNode,
@@ -133,6 +134,12 @@ function ProcessMaterialPanels({
   onServiceChanged: () => void;
   children: (feed: WorkProcessMaterialFeed) => ReactNode;
 }) {
+  const root = useRef<HTMLDivElement>(null);
+  const render = (feed: WorkProcessMaterialFeed) => (
+    <WorkProcessReadingState root={root}>
+      <div ref={root} style={{ display: 'contents' }}>{children(feed)}</div>
+    </WorkProcessReadingState>
+  );
   const common = { runId, workspaceId, tenantHeaders, runActive };
   return (
     <CloudOperationPanel {...common}>
@@ -160,7 +167,7 @@ function ProcessMaterialPanels({
                       enabled={!!runId && localMcpEnabled}
                     >
                       {(mcp) =>
-                        children({
+                        render({
                           history: [
                             ...cloud.history,
                             ...managed.history,
@@ -567,6 +574,7 @@ export const ChatTranscript = memo(function ChatTranscript({
                                   employeeName={employeeName}
                                   accessibleFiles={accessibleFiles}
                                   items={timeline.items}
+                                  sharedReadingState
                                   questions={questions.byOwner.get(message.id)}
                                   parts={processParts}
                                   renderMaterial={(reference) => {

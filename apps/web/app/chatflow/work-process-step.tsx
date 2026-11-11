@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, type ReactNode } from 'react';
+import { Fragment, useLayoutEffect, type ReactNode } from 'react';
 import { DisclosureRow } from '@deepseek-ai/dsh-client-ui-primitives';
 import { useProcessDisclosure } from './work-process-reading-state';
 import styles from './dsh-saas.module.css';
@@ -17,6 +17,8 @@ export function WorkProcessStepView({
   failed,
   initialOpen = false,
   sharedQuestion = false,
+  disclosureIds = [],
+  reveal = false,
   details = [],
   children,
 }: {
@@ -29,14 +31,20 @@ export function WorkProcessStepView({
   failed?: boolean;
   initialOpen?: boolean;
   sharedQuestion?: boolean;
+  disclosureIds?: readonly string[];
+  reveal?: boolean;
   details?: readonly { label: string; value: ReactNode }[];
   children?: ReactNode;
 }) {
-  const [open, setOpen] = useProcessDisclosure(
-    `step:${id}`,
+  const keys = [...new Set([id, ...disclosureIds])].map((id) => `step:${id}`);
+  const [manualOpen, setOpen] = useProcessDisclosure(
+    disclosureIds.length ? keys : keys[0]!,
     initialOpen,
     sharedQuestion,
+    disclosureIds.length > 0,
   );
+  const open = reveal || manualOpen;
+  useLayoutEffect(() => { if (reveal && !manualOpen) setOpen(true); });
   const expandable = details.length > 0 || !!children;
   const tenths = elapsedMs !== undefined ? Math.round(elapsedMs / 100) : 0;
   const elapsed =
@@ -71,7 +79,9 @@ export function WorkProcessStepView({
           ) : undefined
         }
         collapsedContent={
-          <span aria-hidden data-process-control={`step:${id}`} />
+          <>{keys.map((key) => (
+            <span key={key} aria-hidden data-process-control={key} />
+          ))}</>
         }
       >
         <div

@@ -53,6 +53,7 @@ export function useProcessDisclosure<T extends Choice>(
   key: string | string[],
   initial: T,
   sharedQuestion = false,
+  preserveAliases = false,
 ) {
   const localContext = useContext(ReadingContext);
   const questionContext = useContext(QuestionReadingContext);
@@ -62,7 +63,8 @@ export function useProcessDisclosure<T extends Choice>(
     JSON.stringify([...(context?.scope ?? []), id]),
   );
   const current = (values: Choices) => {
-    const id = keys.find((id) => values.get(id) === true) ?? keys[0]!;
+    const id = keys.find((id) => values.get(id) === true) ??
+      (preserveAliases ? keys.find((id) => values.has(id)) : undefined) ?? keys[0]!;
     return values.has(id) ? (values.get(id) as T) : initial;
   };
   const value = context ? current(context.values) : local[0];
@@ -80,12 +82,25 @@ export function useProcessDisclosure<T extends Choice>(
     if (
       Array.isArray(key) &&
       context &&
-      value === true &&
+      (preserveAliases ? keys.some((id) => context.values.has(id)) : value === true) &&
       keys.some((id) => !context.values.has(id))
     )
       setValue(value, true);
   });
   return [value, setValue] as const;
+}
+
+/** A per-run view action, independent of an approval field's disclosure scope. */
+export function useProcessMaterialReveal() {
+  const context = useContext(ReadingContext);
+  const key = JSON.stringify(['material-reveal']);
+  const value = context?.values.get(key);
+  return [
+    typeof value === 'string' ? value : undefined,
+    (target: string | undefined) => context?.setValues(
+      (values) => new Map(values).set(key, target),
+    ),
+  ] as const;
 }
 
 const inView = (node: HTMLElement) =>

@@ -23,6 +23,7 @@ import {
 import {
   WorkProcessDisclosureScope,
   useProcessDisclosure,
+  useProcessMaterialReveal,
 } from './work-process-reading-state';
 import {
   approvalState,
@@ -191,6 +192,7 @@ export function cloudOperationMaterial(
     id: op.snapshot.binding.attempt.operationId,
     runId: op.snapshot.binding.task.runId,
     nativeCallId: op.nativeCallId,
+    createdAt: op.createdAt,
     binding: op.snapshot.binding,
     title:
       op.proposal.kind === 'mcp'
@@ -385,6 +387,7 @@ export function CloudOperationCard({
   onAct: (op: CloudOperationView, decision: Decision) => void;
   interactionOnly?: boolean;
 }) {
+  const [, revealMaterial] = useProcessMaterialReveal();
   const request = op.approval?.request,
     proposal = op.proposal;
   const mcpUnavailable =
@@ -479,7 +482,13 @@ export function CloudOperationCard({
         <p className={styles.notice}>
           之后再试的一次已经完成，这次的记录仍保留。
           <a
-            href={`#operation-${laterSuccessId}`}
+            href={interactionOnly
+              ? `#process-material-cloud-${laterSuccessId}`
+              : `#operation-${laterSuccessId}`}
+            onClick={interactionOnly ? (event) => {
+              event.preventDefault();
+              revealMaterial(`cloud:${laterSuccessId}`);
+            } : undefined}
             data-process-control="later-success"
           >
             查看完成的那次

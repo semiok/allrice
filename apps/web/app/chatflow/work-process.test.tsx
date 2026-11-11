@@ -99,6 +99,10 @@ describe('native process display surface', () => {
       expect(
         html.match(new RegExp(`data-process-material="cloud:${id}"`, 'g')),
       ).toHaveLength(1);
+      expect(step).toContain(`data-process-control="step:operation:cloud:${id}"`);
+      expect(
+        html.match(new RegExp(`id="process-material-cloud-${id}"`, 'g')),
+      ).toHaveLength(1);
     }
     expect(step).toContain('data-status="已完成"');
     expect(step).toContain('2秒');
