@@ -30,7 +30,7 @@ import {
   employeeMemoryReadPredicate,
   personalMemoryIndexReadPredicate,
 } from '../workspace/employee-memory-read.ts';
-import { memoryPairDigest } from '../workspace/employee-memory.ts';
+import { memoryPairDigest } from '../workspace/employee-memory-primitives.ts';
 import {
   getEmployeeInstance,
   readEmployeePersonaVersion,
