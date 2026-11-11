@@ -4813,7 +4813,7 @@ suite(
         ).rejects.toMatchObject({ code: 'legacy_method_retired' });
       await expect(
         mutateEmployeeContent(s.a, {
-          ...original,
+          ...s.base,
           requestId: randomUUID(),
           expectedRevision: committed.revision,
           operation: 'restore_draft',
@@ -5027,7 +5027,7 @@ suite(
         ).rejects.toMatchObject({ code: 'legacy_method_retired' });
       await expect(
         mutateEmployeeContent(s.a, {
-          ...input,
+          ...s.base,
           requestId: randomUUID(),
           expectedRevision: historical.revision,
           operation: 'restore_draft',

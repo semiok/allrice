@@ -317,7 +317,7 @@ suite(
           user_message_id,assistant_message_id,provider_snapshot,prompt_snapshot,skill_bindings,native_skills,execution_snapshot,native_execution_binding)
           values(${runId},${f.owner.organizationId},${f.owner.workspaceId},${f.owner.user.id},${binding.employeeAssignmentId},${binding.employeeVersionId},${session.id},
             ${userMessageId},${assistantMessageId},${tx.json(binding.providerSnapshot)},${tx.json(binding.promptSnapshot)},${tx.json(binding.skillBindings)},
-            ${tx.json(binding.nativeSkills)},${tx.json(frozen)},${native ? tx.json(native) : null})`;
+            ${tx.json(binding.nativeSkills)},${tx.json(JSON.parse(JSON.stringify(frozen)))},${native ? tx.json(native) : null})`;
       });
       const execution = await startClaimedJob(workerId, jobId, leaseToken);
       if (!execution) throw Error('method authorizing chat did not start');

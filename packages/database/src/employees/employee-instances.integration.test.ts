@@ -562,7 +562,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         user_message_id,assistant_message_id,provider_snapshot,prompt_snapshot,skill_bindings,native_skills,execution_snapshot,native_execution_binding)
         values(${runId},${f.a.organizationId},${f.a.workspaceId},${f.a.user.id},${binding.employeeAssignmentId},${binding.employeeVersionId},${session.id},
           ${userMessageId},${assistantMessageId},${tx.json(binding.providerSnapshot)},${tx.json(binding.promptSnapshot)},${tx.json(binding.skillBindings)},
-          ${tx.json(binding.nativeSkills)},${tx.json(frozen)},${native ? tx.json(native) : null})`;
+          ${tx.json(binding.nativeSkills)},${tx.json(JSON.parse(JSON.stringify(frozen)))},${native ? tx.json(native) : null})`;
     });
     const execution = await queue.startClaimedJob(workerId, jobId, leaseToken);
     if (!execution) throw new Error('historical_run_fixture_failed_to_start');
@@ -2818,6 +2818,15 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       procedure: '整数分相加',
       changeSummary: 'Same scope',
     };
+    const call = { ...editing, arguments: args };
+    const effects =
+      () => fixture.db`select to_jsonb(s) content_set,er.execution_snapshot,er.method_authoring,to_jsonb(c) context,
+      (select count(*)::int from allrice_employee_content_requests where set_id=s.id) requests,
+      (select count(*)::int from allrice_employee_content_publications where set_id=s.id) publications,
+      (select count(*)::int from allrice_employee_method_activations where instance_id=${x.instance.id}) activations
+      from allrice_employee_content_sets s join allrice_employee_runs er on er.run_id=${editing.context.runId}
+      join allrice_employee_content_contexts c on c.generation_id=er.content_generation_id where s.id=${x.saved.setId}`;
+    const initial = await effects();
     await expect(
       saveEmployeeMethodFromChat({
         ...editing,
@@ -2855,17 +2864,66 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       sharedTarget: x.args.sharedTarget,
       setId: x.saved.setId,
     });
+    expect(await effects()).toEqual(initial);
+    const manifest = (await getEmployeeContentSet(x.f.a.context, x.saved.setId))
+      .set.candidate!.manifest;
+    expect(manifest.common).toEqual([]);
+    const committed = await historicalMethod(
+      x.f,
+      x.instance.id,
+      {
+        sharedTarget: x.args.sharedTarget,
+        scenes: manifest.scenes.map((scene) =>
+          scene.id === args.scene.id
+            ? {
+                ...scene,
+                procedure: args.procedure,
+                references: scene.references.filter(
+                  (ref) => ref.sourceKind !== 'procedure',
+                ),
+              }
+            : scene,
+        ),
+      },
+      {
+        requestId: employeeChatIdentity(call).requestId,
+        inputDigest: runtimePolicyDigest({
+          instanceId: x.instance.id,
+          runId: editing.context.runId,
+          userMessageId: editing.userMessageId,
+          arguments: toolSelection.EmployeeMethodSaveSchema.parse(args),
+        }),
+      },
+    );
+    const authorized = await effects();
+    expect(await saveEmployeeMethodFromChat(call)).toEqual(committed);
+    expect(await effects()).toEqual(authorized);
     await x.departmentInfo!.configure(
       x.f.a.user.id,
       x.departmentInfo!.other.id,
       'department',
     );
+    const revoked = await effects();
+    await expect(saveEmployeeMethodFromChat(call)).rejects.toThrow(
+      'authorization_denied',
+    );
     await expect(
-      saveEmployeeMethodFromChat({ ...editing, arguments: args }),
+      inspectEmployeeMethodFromChat({
+        ...editing,
+        arguments: {
+          view: 'history',
+          scope: 'department',
+          departmentId: x.departmentInfo!.department.id,
+        },
+      }),
     ).rejects.toThrow('authorization_denied');
+    await expect(
+      saveEmployeeMethodFromChat({ ...call, callId: randomUUID() }),
+    ).rejects.toThrow('legacy_method_retired');
+    expect(await effects()).toEqual(revoked);
     const [unchanged] =
       await fixture.db`select revision from allrice_employee_content_sets where id=${x.saved.setId}`;
-    expect(unchanged!.revision).toBe(x.saved.revision);
+    expect(unchanged!.revision).toBe(committed.revision);
     await editing.finish();
   });
 
@@ -5132,8 +5190,9 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       );
       expect(next.runtime.generationId).toBe(run.runtime.generationId);
       expect(next.runtime.nativeContextKey).toBe(run.runtime.nativeContextKey);
-      expect(next.runtime.allowedMessageIds).toContain(next.userMessageId);
-      expect(next.runtime.allowedMessageIds).toContain(run.userMessageId);
+      // With no retired generation there is no extra conversation filter.
+      expect(next.runtime.allowedMessageIds).toBeNull();
+      expect(next.runtime.historyFromMessageId).toBeNull();
       expect(next.runtime.historyFromMessageId).toBe(
         run.runtime.historyFromMessageId,
       );
@@ -5143,8 +5202,15 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       await expect(
         assertEmployeeContentReferenceMessages(f.a.context, run.sessionId, [
           run.userMessageId,
+          next.userMessageId,
         ]),
       ).resolves.toBeUndefined();
+      await expect(
+        assertEmployeeContentReferenceMessages(f.b.context, run.sessionId, [
+          run.userMessageId,
+          next.userMessageId,
+        ]),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
       const [message] =
         await fixture.db`select content->>'text' text from allrice_messages where id=${run.userMessageId}`;
       expect(message!.text).toContain('DRAFT_BOUNDARY');
