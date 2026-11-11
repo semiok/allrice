@@ -752,7 +752,7 @@ suite('reading a receipt while late native trace changes its group', () => {
       }
     },
   );
-  it('keeps the later reader when an old selection is clipped inside a visible input', async () => {
+  const keepsClippedInputReader = async (focusTarget: 'body' | 'input') => {
     const page = await open(390);
     try {
       await update(page, 'prefix');
@@ -761,8 +761,9 @@ suite('reading a receipt while late native trace changes its group', () => {
       const oldInput = material(page, 1).locator(
         'pre[data-process-content="input"]',
       );
-      const selected = await oldInput.evaluate((node) => {
+      const selected = await oldInput.evaluate((node, focusTarget) => {
         (document.activeElement as HTMLElement)?.blur();
+        if (focusTarget === 'input') node.focus({ preventScroll: true });
         document
           .getSelection()!
           .setBaseAndExtent(node.firstChild!, 0, node.firstChild!, 30);
@@ -771,7 +772,7 @@ suite('reading a receipt while late native trace changes its group', () => {
           text: document.getSelection()!.toString(),
           scrollTop: node.scrollTop,
         };
-      });
+      }, focusTarget);
       expect(selected.text.length).toBe(30);
       expect(selected.scrollTop).toBeGreaterThan(0);
       const later = card(page, 30);
@@ -820,7 +821,12 @@ suite('reading a receipt while late native trace changes its group', () => {
         ),
       );
       expect(
-        await page.evaluate(() => document.activeElement === document.body),
+        await oldInput.evaluate(
+          (node, focusTarget) =>
+            document.activeElement ===
+            (focusTarget === 'input' ? node : document.body),
+          focusTarget,
+        ),
       ).toBe(true);
       await update(page, 'merge');
       const after = await receiptGeometry(later);
@@ -834,13 +840,22 @@ suite('reading a receipt while late native trace changes its group', () => {
         await page.evaluate(() => document.getSelection()!.toString()),
       ).toBe(selected.text);
       expect(
-        await page.evaluate(() => document.activeElement === document.body),
+        await oldInput.evaluate(
+          (node, focusTarget) =>
+            document.activeElement ===
+            (focusTarget === 'input' ? node : document.body),
+          focusTarget,
+        ),
       ).toBe(true);
       expect(await page.evaluate(() => window.readingWrites)).toEqual([]);
     } finally {
       await page.close();
     }
-  });
+  };
+  it.each(['body', 'input'] as const)(
+    'keeps the later reader when an old selection is clipped inside a visible input with %s focus',
+    keepsClippedInputReader,
+  );
   it.each(['process title', 'outside input'] as const)(
     'keeps the wheel reader while focus stays on the %s',
     async (target) => {
