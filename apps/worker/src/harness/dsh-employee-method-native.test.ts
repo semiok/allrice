@@ -10,10 +10,23 @@ import {
   EmployeeMethodTestStartSchema,
   EmployeeMethodTestInspectSchema,
   withEmployeeCustomizationTools,
+  type DshNativeSkillSnapshot,
 } from '@allrice/contracts';
-import { loadPlatformContentCatalog } from '../../../../packages/database/src/platform-content/catalog.ts';
 import { riceToolDefinitionsForCapabilities } from '../tool-broker.js';
 import { nativeBrokerRoundtrip } from './dsh-native-broker.fixture.js';
+
+// Keep test-only cross-package source loading outside the Worker emit graph.
+const { loadPlatformContentCatalog } = (await import(
+  new URL(
+    '../../../../packages/database/src/platform-content/catalog.ts',
+    import.meta.url,
+  ).href
+)) as {
+  loadPlatformContentCatalog: () => Promise<{
+    skills: (Omit<DshNativeSkillSnapshot, 'invocation'> &
+      DshNativeSkillSnapshot['invocation'])[];
+  }>;
+};
 
 const departmentTarget = {
   scope: 'department',
