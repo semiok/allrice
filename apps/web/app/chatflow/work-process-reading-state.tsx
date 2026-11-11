@@ -106,10 +106,10 @@ export function useProcessMaterialReveal() {
   ] as const;
 }
 
-function inView(node: HTMLElement) {
+function inView(node: HTMLElement, rect?: DOMRect) {
   let top = 0,
     bottom = innerHeight;
-  for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+  for (let parent = rect ? node : node.parentElement; parent; parent = parent.parentElement) {
     if (
       parent === document.scrollingElement ||
       !['auto', 'scroll', 'hidden', 'clip'].includes(
@@ -121,7 +121,7 @@ function inView(node: HTMLElement) {
     top = Math.max(top, box.top + parent.clientTop);
     bottom = Math.min(bottom, box.top + parent.clientTop + parent.clientHeight);
   }
-  const box = node.getBoundingClientRect();
+  const box = rect ?? node.getBoundingClientRect();
   return bottom > top && box.bottom > top && box.top < bottom;
 }
 const visible = (node: HTMLElement) => node.getClientRects().length > 0;
@@ -186,7 +186,7 @@ function restoredPoint(
 }
 
 /** A visible reading position is independent of an older focus or selection. */
-function processPositions(root: HTMLElement) {
+function processPositions(root: HTMLElement, readingBody?: HTMLElement) {
   return [
     ...root.querySelectorAll<HTMLElement>('[data-process-scrollport]'),
   ].flatMap((body) => {
@@ -212,7 +212,8 @@ function processPositions(root: HTMLElement) {
         key: keyOf(marker, attribute),
         top,
         innerTop: top - body.getBoundingClientRect().top,
-        overflowing: body.scrollHeight > body.clientHeight,
+        currentReading: body === readingBody,
+        scrolled: body.scrollTop > 0,
       },
     ];
   });
@@ -230,13 +231,15 @@ function restoreProcessPositions(
       marker?.closest<HTMLElement>('[data-disclosure-row]') ?? marker;
     const body = target?.closest<HTMLElement>('[data-process-scrollport]');
     if (!target || !body || !visible(body) || restored.has(body)) continue;
-    // A fitting source cannot displace a real inner scroll position when
-    // their old groups merge into the same body.
+    // Keep the visible reading target before an older inner scroll position
+    // when their groups merge into the same body.
     if (
-      !item.overflowing &&
       positions.some(
         (other) =>
-          other.overflowing &&
+          ((other.currentReading && !item.currentReading) ||
+            (other.currentReading === item.currentReading &&
+              other.scrolled &&
+              !item.scrolled)) &&
           locate(root, other.attribute, other.key)?.closest(
             '[data-process-scrollport]',
           ) === body,
@@ -281,6 +284,32 @@ function takeReadingSnapshot(root: HTMLElement) {
     selection?.focusNode && root.contains(selection.focusNode)
       ? textPoint(selection.focusNode, selection.focusOffset)
       : undefined;
+  const bodyFor = (node: HTMLElement | null | undefined) => {
+    const body = node?.closest<HTMLElement>('[data-process-scrollport]');
+    return node && body && root.contains(body) && inView(node)
+      ? body
+      : undefined;
+  };
+  const selectionBodies = [selection?.anchorNode, selection?.focusNode].map(
+    (node, index) => {
+      const element = node instanceof HTMLElement ? node : node?.parentElement;
+      const body = bodyFor(element);
+      if (!node || !element || !body || !selection) return;
+      const point = document.createRange();
+      point.setStart(node, index === 0 ? selection.anchorOffset : selection.focusOffset);
+      point.collapse(true);
+      return [...point.getClientRects()].some((box) => box.height > 0 && inView(element, box))
+        ? body
+        : undefined;
+    },
+  );
+  const readingBody =
+    bodyFor(inside) ??
+    (selection &&
+    !selection.isCollapsed &&
+    selectionBodies[0] === selectionBodies[1]
+      ? selectionBodies[0]
+      : undefined);
   const scroll = [
     ...root.querySelectorAll<HTMLElement>('[data-process-content]'),
   ]
@@ -303,7 +332,7 @@ function takeReadingSnapshot(root: HTMLElement) {
     content: inside && textPoint(inside, 0),
     inView: !!inside && inView(inside),
     scroll,
-    positions: processPositions(root),
+    positions: processPositions(root, readingBody),
     selection:
       selection && !selection.isCollapsed && anchor && focus
         ? { anchor, focus, text: selection.toString() }

@@ -314,6 +314,51 @@ describe('native process display surface', () => {
     expect(html).toContain('检查入口文件');
     expect(html).not.toContain('正在读取文件');
   });
+  it.each([
+    ['tool', 'tool:call', 'started', true, '运行中'],
+    ['tool', 'tool:call', 'updated', true, '运行中'],
+    ['search', 'tool:call', 'started', true, '运行中'],
+    ['think', 'think:closed', 'started', true, '结果未确认'],
+    ['compaction', 'compaction:closed', 'updated', true, '结果未确认'],
+    ['todo', 'plan:closed', 'updated', true, '结果未确认'],
+    ['tool', 'tool:call', 'started', false, '结果未确认'],
+    ['tool', 'tool:call', 'completed', true, '已完成'],
+    ['tool', 'tool:call', 'completed', false, '已完成'],
+    ['tool', 'tool:call', 'failed', true, '未成功'],
+  ] as const)(
+    'keeps %s %s status %s with running=%s in a closed process group',
+    (kind, id, status, running, expected) => {
+      const row: NativeExperienceItem = {
+        ...items[0]!,
+        id,
+        kind,
+        status,
+        toolName:
+          kind === 'tool' ? 'read' : kind === 'search' ? 'web.search' : undefined,
+      };
+      const html = render({
+        items: [row],
+        running,
+        transcriptView: 'detailed',
+        parts: [
+          {
+            kind: 'steps',
+            id: 'closed-group',
+            sequence: 1,
+            items: [row],
+            closed: true,
+          },
+          {
+            kind: 'reply',
+            id: 'later-reply',
+            sequence: 2,
+            text: '继续核对，工具结果尚未到达。',
+          },
+        ],
+      });
+      expect(html).toContain(`data-status="${expected}"`);
+    },
+  );
   it('does not call an unfinished plan complete or leave a settled question waiting', () => {
     const html = render({
       parts: undefined,

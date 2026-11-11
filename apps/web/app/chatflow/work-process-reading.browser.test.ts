@@ -659,6 +659,125 @@ suite('reading a receipt while late native trace changes its group', () => {
       await page.close();
     }
   });
+  it.each(['focus', 'selection', 'neither'] as const)(
+    'keeps the visible short group during merge with %s',
+    async (reading) => {
+      const page = await open(390);
+      try {
+        await update(page, 'prefix');
+        await update(page, 'split');
+        const ports = processBodyOf(page).locator('[data-process-scrollport]');
+        const metrics = await ports.evaluateAll((nodes) => nodes.map((node) => ({
+          clientHeight: node.clientHeight,
+          scrollHeight: node.scrollHeight,
+          scrollTop: node.scrollTop,
+        })));
+        expect(metrics).toHaveLength(2);
+        expect(metrics[0]!.scrollHeight).toBe(metrics[0]!.clientHeight);
+        expect(metrics[1]!.scrollHeight).toBeGreaterThan(metrics[1]!.clientHeight);
+        expect(metrics.every((port) => port.scrollTop === 0)).toBe(true);
+        const row = stepToggle(card(page, 1));
+        expect((await receiptGeometry(stepToggle(card(page, 4)))).readable).toBe(true);
+        const original = await row.innerText();
+        await page.evaluate(() => {
+          (document.activeElement as HTMLElement)?.blur();
+          document.getSelection()!.removeAllRanges();
+        });
+        let selected = '';
+        if (reading === 'focus') await row.focus();
+        if (reading === 'selection') {
+          selected = await row.evaluate((node) => {
+            const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+            let text = walker.nextNode();
+            while (text && !text.textContent?.trim()) text = walker.nextNode();
+            if (!text) throw Error('Missing step title text');
+            document.getSelection()!.setBaseAndExtent(
+              text, 0, text, text.textContent!.length,
+            );
+            return document.getSelection()!.toString();
+          });
+          expect(selected.length).toBeGreaterThan(0);
+        }
+        if (reading !== 'focus')
+          expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
+        const before = await receiptGeometry(row);
+        expect(before.identity).toBe('tool:call-1');
+        expect(before.readable).toBe(true);
+        await update(page, 'merge');
+        const after = await receiptGeometry(row);
+        expect(after.identity).toBe(before.identity);
+        expect(after.readable).toBe(true);
+        expect(after.clip[1]! - after.clip[0]!).toBeGreaterThanOrEqual(after.box.height - 1);
+        expect(after.relativeTop).toBeCloseTo(before.relativeTop!, 0);
+        expect(await row.innerText()).toBe(original);
+        expect(await row.evaluate((node) => node === document.activeElement)).toBe(reading === 'focus');
+        if (reading !== 'focus')
+          expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
+        expect(await page.evaluate(() => document.getSelection()!.toString())).toBe(selected);
+        if (reading === 'selection') {
+          expect(await row.evaluate((node) => {
+            const selection = document.getSelection()!;
+            return !!selection.anchorNode && !!selection.focusNode &&
+              node.contains(selection.anchorNode) && node.contains(selection.focusNode);
+          })).toBe(true);
+        }
+        expect(await page.evaluate(() => window.readingWrites)).toEqual([]);
+      } finally {
+        await page.close();
+      }
+    },
+  );
+  it('keeps the later reader when an old selection is clipped inside a visible input', async () => {
+    const page = await open(390);
+    try {
+      await update(page, 'prefix');
+      await update(page, 'split');
+      await stepToggle(card(page, 1)).click();
+      const oldInput = material(page, 1).locator('pre[data-process-content="input"]');
+      const selected = await oldInput.evaluate((node) => {
+        (document.activeElement as HTMLElement)?.blur();
+        document.getSelection()!.setBaseAndExtent(node.firstChild!, 0, node.firstChild!, 30);
+        node.scrollTop = node.clientHeight / 2;
+        return { text: document.getSelection()!.toString(), scrollTop: node.scrollTop };
+      });
+      expect(selected.text.length).toBe(30);
+      expect(selected.scrollTop).toBeGreaterThan(0);
+      const later = card(page, 30);
+      const port = processBodyOf(page).locator('[data-process-scrollport]').nth(1);
+      const portBox = (await port.boundingBox())!;
+      const visiblePort = await receiptGeometry(port);
+      expect(visiblePort.readable).toBe(true);
+      await page.mouse.move(portBox.x + 10, (visiblePort.clip[0]! + visiblePort.clip[1]!) / 2);
+      await page.mouse.wheel(0, (await later.boundingBox())!.y - visiblePort.clip[0]! - 100);
+      await expect.poll(async () => (await receiptGeometry(later)).relativeTop).toBeCloseTo(visiblePort.clip[0]! - portBox.y + 100, 0);
+      const before = await receiptGeometry(later);
+      expect(before.readable).toBe(true);
+      expect(before.port!.scrollTop).toBeGreaterThan(0);
+      const inputBefore = await receiptGeometry(oldInput);
+      expect(inputBefore.readable).toBe(true);
+      expect(inputBefore.port!.scrollTop).toBe(0);
+      const glyph = await oldInput.evaluate((node) => {
+        const box = document.getSelection()!.getRangeAt(0).getBoundingClientRect();
+        return { top: box.top, bottom: box.bottom,
+          inputTop: node.getBoundingClientRect().top + node.clientTop };
+      });
+      expect(glyph.bottom).toBeLessThan(glyph.inputTop);
+      expect(glyph.top).toBeGreaterThanOrEqual(Math.max(0, ...inputBefore.ancestors.map((clip) => clip.top)));
+      expect(glyph.bottom).toBeLessThanOrEqual(Math.min(900, ...inputBefore.ancestors.map((clip) => clip.top + clip.height)));
+      expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
+      await update(page, 'merge');
+      const after = await receiptGeometry(later);
+      expect(after.identity).toBe('tool:call-30');
+      expect(after.readable).toBe(true);
+      expect(after.relativeTop).toBeCloseTo(before.relativeTop!, 0);
+      expect(await oldInput.evaluate((node) => node.scrollTop)).toBe(selected.scrollTop);
+      expect(await page.evaluate(() => document.getSelection()!.toString())).toBe(selected.text);
+      expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
+      expect(await page.evaluate(() => window.readingWrites)).toEqual([]);
+    } finally {
+      await page.close();
+    }
+  });
   it.each(['process title', 'outside input'] as const)(
     'keeps the wheel reader while focus stays on the %s',
     async (target) => {

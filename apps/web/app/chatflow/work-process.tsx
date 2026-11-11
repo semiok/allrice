@@ -396,6 +396,7 @@ export function WorkProcess({
             revealingQuestions={revealingQuestions}
             renderMaterial={renderMaterial}
             running={running && !part.closed}
+            runActive={running}
             grouped={display.groupSteps}
             policy={policy}
             answerGeneration={currentPresentation.answerGeneration}
@@ -566,6 +567,7 @@ function WorkProcessGroup({
   questions,
   revealingQuestions,
   running,
+  runActive,
   renderMaterial,
   grouped,
   policy,
@@ -575,6 +577,7 @@ function WorkProcessGroup({
   questions: readonly WorkProcessQuestion[];
   revealingQuestions: readonly string[];
   running: boolean;
+  runActive: boolean;
   renderMaterial?: (reference: WorkProcessReference) => ReactNode;
   grouped: boolean;
   policy: ChatPresentationPolicy;
@@ -589,6 +592,7 @@ function WorkProcessGroup({
         questions={questions}
         revealingQuestions={revealingQuestions}
         running={running}
+        runActive={runActive}
         renderMaterial={renderMaterial}
         grouped={grouped}
         policy={policy}
@@ -602,6 +606,7 @@ function NativeStepsGroup({
   questions,
   revealingQuestions,
   running,
+  runActive = running,
   renderMaterial,
   grouped,
   policy,
@@ -610,6 +615,7 @@ function NativeStepsGroup({
   questions: readonly WorkProcessQuestion[];
   revealingQuestions: readonly string[];
   running: boolean;
+  runActive?: boolean;
   renderMaterial?: (reference: WorkProcessReference) => ReactNode;
   grouped: boolean;
   policy: ChatPresentationPolicy;
@@ -664,6 +670,7 @@ function NativeStepsGroup({
           items={items}
           questions={questions}
           running={running}
+          runActive={runActive}
           renderMaterial={renderMaterial}
           policy={policy}
         />
@@ -675,6 +682,7 @@ function NativeStepsGroup({
         items={items}
         questions={questions}
         running={running}
+        runActive={runActive}
         renderMaterial={renderMaterial}
         policy={policy}
       />
@@ -720,6 +728,7 @@ function NativeStepsGroup({
             items={items}
             questions={questions}
             running={running}
+            runActive={runActive}
             renderMaterial={renderMaterial}
             policy={policy}
           />
@@ -733,12 +742,14 @@ function WorkProcessSteps({
   items,
   questions,
   running,
+  runActive,
   renderMaterial,
   policy,
 }: {
   items: NativeExperienceItem[];
   questions: readonly WorkProcessQuestion[];
   running: boolean;
+  runActive: boolean;
   renderMaterial?: (reference: WorkProcessReference) => ReactNode;
   policy: ChatPresentationPolicy;
 }) {
@@ -748,8 +759,14 @@ function WorkProcessSteps({
   return (
     <ul className={styles.processSteps} aria-label="工作步骤">
       {steps.map((step) => {
-        const operations =
-          items.find((item) => item.id === step.id)?.operations ?? [];
+        const item = items.find((item) => item.id === step.id);
+        const operations = item?.operations ?? [];
+        const stepRunning =
+          item &&
+          (item.kind === 'tool' || item.kind === 'search') &&
+          item.id.startsWith('tool:')
+            ? runActive
+            : running;
         const materialized = !!renderMaterial && operations.length > 0;
         const unassigned = step.id.startsWith('operation:')
           ? operations[0]
@@ -763,7 +780,7 @@ function WorkProcessSteps({
           unassigned?.status ??
           (step.status === 'failed'
             ? '未成功'
-            : running && question?.pending && !question.answer
+            : stepRunning && question?.pending && !question.answer
               ? '等待回答'
               : question?.answered
                 ? '已回答'
@@ -771,7 +788,7 @@ function WorkProcessSteps({
                   ? '结果未确认'
                   : step.status === 'completed'
                     ? '已完成'
-                    : active && !running
+                    : active && !stepRunning
                       ? '结果未确认'
                       : active
                         ? '运行中'
@@ -803,7 +820,7 @@ function WorkProcessSteps({
                 icon={
                   <span
                     className={
-                      pending && running ? styles.processPulse : undefined
+                      pending && stepRunning ? styles.processPulse : undefined
                     }
                     aria-hidden
                   >
@@ -817,7 +834,7 @@ function WorkProcessSteps({
                 }
                 status={status}
                 elapsedMs={unassigned ? unassigned.elapsedMs : step.elapsedMs}
-                running={pending && running}
+                running={pending && stepRunning}
                 failed={step.status === 'failed'}
                 initialOpen={
                   policy.mode === 'verbose' || step.status === 'failed'
