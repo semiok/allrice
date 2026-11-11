@@ -190,8 +190,10 @@ export interface EmployeeSkillsHostProps {
   writes: EmployeeSkillWriteStore;
   copy: EmployeeSkillHostCopy;
   active?: boolean;
+  activeEntry?: 'sidebar' | 'employee';
   backLabel?: string;
-  onStart?: (skill: EmployeeSkill) => Promise<void>;
+  /** The caller reports confirmed access loss through this reader's callback. */
+  onStart?: (skill: EmployeeSkill, onAccessLost: () => void) => Promise<void>;
   navigationRef?: Ref<{ navigateHome: () => void }>;
   onNotice?: (message: string) => void;
   children: ReactNode | ((view: EmployeeSkillsHostView) => ReactNode);
@@ -322,6 +324,7 @@ function EmployeeSkillsReader({
   writes,
   copy,
   active,
+  activeEntry,
   backLabel,
   onStart,
   navigationRef,
@@ -359,6 +362,7 @@ function EmployeeSkillsReader({
 
   const revoke = () => {
     read.current?.abort();
+    read.current = null;
     readSequence.current += 1;
     catalog.current = null;
     clearEmployeeSkillWriteContents(writes, (write) => sameScope(write, scope));
@@ -414,7 +418,7 @@ function EmployeeSkillsReader({
   useEffect(() => {
     if (active !== false && !read.current) retryCatalog();
     // The keyed reader fixes every scope/header used by its requests.
-  }, [active]);
+  }, [active, activeEntry]);
 
   const returnFromSource = (source: SourcePage) => {
     read.current?.abort();
@@ -860,7 +864,9 @@ function EmployeeSkillsReader({
     setStarting(true);
     setStartError('');
     try {
-      await onStart(skill);
+      await onStart(skill, () => {
+        if (mounted.current) revoke();
+      });
       if (mounted.current) show(null);
     } catch (cause) {
       if (mounted.current)

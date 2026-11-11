@@ -297,6 +297,8 @@ suite('U1 mounted employee Workflow host', () => {
       directoryGate: null as Promise<void> | null,
       writeGate: null as Promise<void> | null,
       instanceGate: null as Promise<void> | null,
+      instanceReadStatus: undefined as 401 | 403 | 404 | 503 | undefined,
+      skillCatalogStatus: undefined as 403 | undefined,
       loseConfirm: false,
       loseRemove: false,
       failConfirm: false,
@@ -560,12 +562,29 @@ suite('U1 mounted employee Workflow host', () => {
         if (resource === 'content' && method === 'GET')
           return route.fulfill(json(details(target)));
         if (!resource && method === 'GET') {
+          if (state.instanceReadStatus)
+            return route.fulfill(
+              problem(
+                state.instanceReadStatus,
+                {
+                  401: 'AUTHENTICATION_REQUIRED',
+                  403: 'AUTHORIZATION_DENIED',
+                  404: 'RESOURCE_NOT_FOUND',
+                  503: 'DEPENDENCY_UNAVAILABLE',
+                }[state.instanceReadStatus],
+              ),
+            );
           const snapshot = instance(target);
           if (state.instanceGate) await state.instanceGate;
           return route.fulfill(json({ instance: snapshot }));
         }
-        if (resource === 'skills' && method === 'GET')
+        if (resource === 'skills' && method === 'GET') {
+          if (state.skillCatalogStatus)
+            return route.fulfill(
+              problem(state.skillCatalogStatus, 'AUTHORIZATION_DENIED'),
+            );
           return route.fulfill(json(skillCatalogs.get(target)));
+        }
         if (resource === 'skills/preview' && method === 'POST') {
           const input = PersonalSkillPreviewRequestSchema.parse(
             request.postDataJSON(),
@@ -1426,6 +1445,162 @@ suite('U1 mounted employee Workflow host', () => {
       expect(f.state.writes).toEqual([]);
     });
   });
+
+  for (const host of ['sidebar', 'employee'] as const) {
+    for (const status of [401, 403, 404, 503] as const) {
+      it(`MET-251 Skill start handles same-scope fresh ${status} in ${host} without changing or sending the draft`, async () => {
+        await inFixture({ session: true }, async (f) => {
+          const original = '  不应改变的草稿\n保留空白。\n';
+          const input = f.page.getByRole('textbox', {
+            name: '给 Rice 的消息',
+            exact: true,
+          });
+          await input.fill(original);
+          await f.page.locator('input[type=file][multiple]').setInputFiles({
+            name: 'permission-carry.txt',
+            mimeType: 'text/plain',
+            buffer: Buffer.from('Synthetic retained permission attachment'),
+          });
+          await f.page
+            .getByText('permission-carry.txt', { exact: true })
+            .waitFor();
+          const directory = await f.openDirectory();
+          // Keep the same employee's sidebar mounted behind employee details.
+          let parent =
+            host === 'sidebar' ? directory : await f.openEmployeeDetails();
+          await parent
+            .getByRole('button', { name: '翻译校对', exact: true })
+            .click();
+          const detail = employeePage(f.page, {
+            name: '翻译校对',
+            exact: true,
+          });
+          const source = f.state.skillCatalogs.get(id(7))!.personalSkills[0]!;
+          if (source.source.kind !== 'github')
+            throw Error('This case requires the existing GitHub skill');
+          await detail
+            .getByText(source.source.requestedUrl, { exact: true })
+            .waitFor();
+          const catalogPath = `/api/v1/employee-instances/${id(7)}/skills`;
+          const catalogReads = () =>
+            f.state.reads.filter((path) => path === catalogPath).length;
+          const before = catalogReads();
+          f.state.instanceReadStatus = status;
+          await Promise.all([
+            f.page.waitForResponse(
+              (response) =>
+                new URL(response.url()).pathname ===
+                  `/api/v1/employee-instances/${id(7)}` &&
+                response.status() === status,
+            ),
+            detail
+              .getByRole('button', { name: '开始工作', exact: true })
+              .click(),
+          ]);
+          if (status === 503) {
+            await detail.getByRole('alert').waitFor();
+            await detail
+              .getByText(source.source.requestedUrl, { exact: true })
+              .waitFor();
+            for (const name of ['更新', '开始工作', '卸载这个技能'])
+              await expect
+                .poll(() =>
+                  detail.getByRole('button', { name, exact: true }).isEnabled(),
+                )
+                .toBe(true);
+          } else {
+            await expect.poll(() => detail.count()).toBe(0);
+            for (const text of [source.description, source.source.requestedUrl])
+              expect(
+                await f.page.getByText(text, { exact: true }).count(),
+              ).toBe(0);
+            expect(
+              await parent
+                .getByRole('button', { name: '翻译校对', exact: true })
+                .count(),
+            ).toBe(0);
+          }
+          expect(f.state.scope).toEqual({
+            workspaceId: id(4),
+            viewerId: id(5),
+            offset: 0,
+          });
+          expect(catalogReads()).toBe(before);
+          expect(f.state.writes).toEqual([]);
+          f.state.instanceReadStatus = undefined;
+          await parent
+            .getByRole('button', {
+              name: host === 'sidebar' ? '关闭工作台' : '关闭',
+              exact: true,
+            })
+            .click();
+          await expect.poll(() => input.inputValue()).toBe(original);
+          expect(
+            await f.page
+              .getByRole('group', { name: '待发送附件', exact: true })
+              .getByText('permission-carry.txt', { exact: true })
+              .count(),
+          ).toBe(1);
+          parent =
+            host === 'sidebar'
+              ? await f.openDirectory()
+              : await f.openEmployeeDetails();
+          await parent
+            .getByRole('button', { name: '翻译校对', exact: true })
+            .waitFor();
+          expect(catalogReads()).toBe(before + (status === 503 ? 0 : 1));
+          expect(f.state.writes).toEqual([]);
+        });
+      });
+    }
+
+    it(`MET-251 same-scope Skill catalog denial recovers on explicit ${host} reopen with only a new read`, async () => {
+      await inFixture({}, async (f) => {
+        const catalogPath = `/api/v1/employee-instances/${id(7)}/skills`;
+        f.state.skillCatalogStatus = 403;
+        let [, parent] = await Promise.all([
+          f.page.waitForResponse(
+            (response) =>
+              new URL(response.url()).pathname === catalogPath &&
+              response.status() === 403,
+          ),
+          host === 'sidebar' ? f.openDirectory() : f.openEmployeeDetails(),
+        ]);
+        await parent
+          .getByText('暂时无法访问这个员工的技能，请返回后重新打开。', {
+            exact: true,
+          })
+          .waitFor();
+        expect(
+          await parent
+            .getByRole('button', { name: '翻译校对', exact: true })
+            .count(),
+        ).toBe(0);
+        const before = f.state.reads.filter(
+          (path) => path === catalogPath,
+        ).length;
+        expect(before).toBe(1);
+        await parent
+          .getByRole('button', {
+            name: host === 'sidebar' ? '关闭工作台' : '关闭',
+            exact: true,
+          })
+          .click();
+        f.state.skillCatalogStatus = undefined;
+        parent =
+          host === 'sidebar'
+            ? await f.openDirectory()
+            : await f.openEmployeeDetails();
+        await parent
+          .getByRole('button', { name: '翻译校对', exact: true })
+          .waitFor();
+        expect(
+          f.state.reads.filter((path) => path === catalogPath),
+        ).toHaveLength(before + 1);
+        expect(f.state.writes).toEqual([]);
+      });
+    });
+  }
 
   for (const oldPage of ['detail', 'source'] as const) {
     it(`MET-251 opening employee B from inline employee A ${oldPage} gives every capability read the B target`, async () => {

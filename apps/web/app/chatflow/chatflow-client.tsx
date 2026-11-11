@@ -32,6 +32,7 @@ import {
   EmployeeCapabilitiesSections,
 } from './employee-capabilities-panel';
 import {
+  SceneSourceHttpError,
   useEmployeeSceneCatalog,
   type SceneSelection,
   type SceneCatalogEntry,
@@ -1701,12 +1702,30 @@ export function ChatFlowClient({
     layout.close();
     if (layout.compact) setSidebarCollapsed(true);
   }
-  async function prepareSkillWork(skill: EmployeeSkill) {
+  async function prepareSkillWork(
+    skill: EmployeeSkill,
+    onAccessLost: () => void,
+  ) {
     if (!workspace || !sceneTarget || busy || composing.current)
       throw Error('请先完成当前输入或等待工作结束，再调整员工内容。');
     const captured = captureSelection();
     const target = sceneTarget;
-    const instance = await sceneCatalog.currentInstance();
+    let instance: EmployeeInstance | undefined;
+    try {
+      instance = await sceneCatalog.currentInstance();
+    } catch (cause) {
+      if (
+        cause instanceof SceneSourceHttpError &&
+        [401, 403, 404].includes(cause.status) &&
+        captured.current() &&
+        currentSettingsScope.current === settingsScope &&
+        sceneGuard.current.key === sceneCatalog.key
+      ) {
+        onAccessLost();
+        return;
+      }
+      throw cause;
+    }
     if (
       !instance ||
       instance.id !== target ||
@@ -3263,6 +3282,16 @@ export function ChatFlowClient({
           activeModule?.scope === fileScope &&
           activeModule.kind === 'workflow') ||
         sceneOpen
+      }
+      activeEntry={
+        employeeDetailsOpen
+          ? 'employee'
+          : sceneOpen ||
+              (workbenchOpen &&
+                activeModule?.scope === fileScope &&
+                activeModule.kind === 'workflow')
+            ? 'sidebar'
+            : undefined
       }
       employeeName={capabilityEmployeeName}
       writes={skillWrites.current}
