@@ -76,7 +76,7 @@ function App({ fixture }: { fixture: Fixture }) {
   const [workspaceId, setWorkspace] = useState(fixture.workspaceId);
   const instanceId =
     workspaceId === fixture.workspaceId
-      ? fixture.assignmentId
+      ? new URLSearchParams(location.search).get('instance') ?? fixture.assignmentId
       : fixture.otherInstanceId;
   const column = useRef<HTMLDivElement>(null);
   const query = new URLSearchParams(location.search);
@@ -156,13 +156,13 @@ function App({ fixture }: { fixture: Fixture }) {
       </main>
     );
   return (
-    <main style={{ width: '100%', maxWidth: 900, margin: '0 auto' }}>
-      <button
+    <main style={{ width: '100%', maxWidth: query.has('instance') ? 440 : 900, height: query.has('instance') ? '100dvh' : undefined, margin: '0 auto' }}>
+      {!query.has('instance') && <button
         type="button"
         onClick={() => setWorkspace(fixture.otherWorkspaceId)}
       >
         切换测试工作区
-      </button>
+      </button>}
       {recovery && (
         <>
           <button type="button" onClick={() => stream.restoreHistory(history)}>
@@ -183,10 +183,11 @@ function App({ fixture }: { fixture: Fixture }) {
       )}
       {management ? (
         <WorkbenchExperiencePanel
+          memoryRequest={query.has('instance') ? { instanceId, revision: 1 } : undefined}
           scopeId={workspaceId}
           workspaceId={workspaceId}
           instanceId={instanceId}
-          employees={[{ id: instanceId, name: '测试助手' }]}
+          employees={[{ id: instanceId, name: query.has('instance') ? 'Rice' : '测试助手' }]}
           headers={headers}
           active
           automatic={false}

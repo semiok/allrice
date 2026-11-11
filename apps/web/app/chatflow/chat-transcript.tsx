@@ -68,6 +68,7 @@ import { AssistantMessageActions } from './message-feedback';
 import { isMessageRunActive } from './run-view';
 import { HistoryRefreshNotice } from './history-refresh-notice';
 import { MemoryPanel, memoryReadRevision } from './memory-panel';
+import type { MemoryWriteStore } from '../../lib/memory/employee-memory-client';
 import { workProcessPresentation } from '../../lib/chatflow/work-process-presentation';
 import {
   presentReplyFailure,
@@ -76,6 +77,7 @@ import {
 
 interface ChatTranscriptProps {
   memoryScope?: string;
+  memoryWrites?: MemoryWriteStore;
   onOpenReference?: (reference: ReferenceDraft) => void;
   messageImages?: MessageImageSource;
   streamingOutput?: boolean;
@@ -213,6 +215,7 @@ function ProcessMaterialPanels({
 
 export const ChatTranscript = memo(function ChatTranscript({
   memoryScope,
+  memoryWrites,
   onOpenReference,
   messageImages,
   streamingOutput = false,
@@ -734,6 +737,7 @@ export const ChatTranscript = memo(function ChatTranscript({
                             scopeId={memoryScope ?? workspaceId}
                             workspaceId={workspaceId}
                             headers={tenantHeaders}
+                            writes={memoryWrites}
                             runId={message.runId}
                             refreshKey={memoryRevision}
                           />

@@ -318,6 +318,20 @@
   margin-right: auto;
   color: var(--ar-danger) !important;
 }
+.deleteDialog {
+  width: min(440px, 100%) !important;
+}
+.deleteSummary {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  line-height: 24px;
+}
+.deleteConfirm {
+  color: var(--ar-danger) !important;
+  border-color: var(--ar-danger) !important;
+}
 .field {
   display: grid;
   gap: 8px;

@@ -97,7 +97,7 @@ function LifecycleHost() {
         scopeId={scopeId}
         workspaceId={id(4)}
         instanceId={id(7)}
-        employees={[{ id: id(7), name: 'Rice' }]}
+        employees={[{ id: id(7), name: 'Rice' }, { id: id(17), name: '流程哥' }]}
         headers={headers}
         automatic={false}
         onCorrect={() => {}}
