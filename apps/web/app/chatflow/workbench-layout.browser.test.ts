@@ -2465,6 +2465,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page
         .getByRole('button', { name: /^查看子智能体 · 2 个智能体/ })
         .click();
+      await f.page.getByRole('tree', { name: '子智能体目录' }).waitFor();
       expect(
         await f.page.getByRole('tree', { name: '子智能体目录' }).count(),
       ).toBe(1);
@@ -2587,25 +2588,29 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await f.page.mouse.move(x, y, { steps: 10 });
           await f.page.mouse.up();
         };
+        const dockPane = f.panel.locator(
+          '[data-dockkit-pane]:not([data-dockkit-float]):has([data-dockkit-strip])',
+        );
+        const guide = dockPane
+          .getByRole('tab')
+          .filter({ hasText: /^(开始|交付成果)/ });
+        const showGuide = async () => {
+          expect(await dockPane.count()).toBe(1);
+          if (!(await guide.count()))
+            await dockPane.locator('[data-dockkit-add-tab]').click();
+          await guide.click();
+          return guide;
+        };
         if (floating) {
           await float(tabs.last(), 120, 160);
           await expect
             .poll(() => f.panel.locator('[data-dockkit-float-grip]').count())
             .toBe(1);
-          await f.panel
-            .getByRole('button', { name: '新建标签页', exact: true })
-            .click();
-          await float(
-            f.panel.getByRole('tab').filter({ hasText: '开始' }),
-            280,
-            260,
-          );
+          await float(await showGuide(), 280, 260);
           await expect
             .poll(() => f.panel.locator('[data-dockkit-float-grip]').count())
             .toBe(2);
-          await f.panel
-            .getByRole('button', { name: '新建标签页', exact: true })
-            .click();
+          await showGuide();
         } else {
           await f.panel
             .getByRole('button', { name: '全屏查看', exact: true })
@@ -2626,13 +2631,24 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         ).length;
         const placement = () =>
           f.panel.evaluate((panel) => ({
-            panes: [...panel.querySelectorAll('[data-dockkit-pane]')]
-              .filter((pane) => pane.querySelector('[data-dockkit-strip]'))
-              .map((pane) => ({
-                active: pane.querySelector('[role="tab"][aria-selected="true"]')
-                  ?.textContent,
-                global: pane.hasAttribute('data-dockkit-pane-active'),
-              })),
+            panes: Object.fromEntries(
+              [...panel.querySelectorAll<HTMLElement>('[data-dockkit-pane]')]
+                .filter((pane) => pane.querySelector('[data-dockkit-strip]'))
+                .map((pane) => {
+                  const box = pane.getBoundingClientRect();
+                  return [
+                    pane.dataset.dockkitPane!,
+                    {
+                      column: pane.dataset.dockkitColumn,
+                      rect: [box.x, box.y, box.width, box.height],
+                      active: pane.querySelector(
+                        '[role="tab"][aria-selected="true"]',
+                      )?.textContent,
+                      global: pane.hasAttribute('data-dockkit-pane-active'),
+                    },
+                  ] as const;
+                }),
+            ),
             floats: [
               ...panel.querySelectorAll<HTMLElement>('[data-dockkit-float]'),
             ]

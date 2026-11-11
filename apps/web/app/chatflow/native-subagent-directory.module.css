@@ -20,6 +20,9 @@
   box-shadow: var(--ar-shadow-2);
   font: var(--ar-font-body);
 }
+.catalog.catalog {
+  max-width: none;
+}
 .title {
   margin: 0;
   font: var(--ar-font-label);
@@ -220,7 +223,7 @@ button.trigger.trigger[aria-expanded='true']:not(:disabled) {
   padding: 0;
   background: var(--dsw-alias-state-error-primary);
   color: #fff;
-  border-color: #fff;
+  border-color: var(--ar-surface-floating);
 }
 .workbench {
   min-width: 0;

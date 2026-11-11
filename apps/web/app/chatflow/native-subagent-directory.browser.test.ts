@@ -2251,7 +2251,14 @@ suite('native subagent directory and employee sidebar', () => {
   });
 
   it('retains diagnostic nodes and clears stale running badges on errors and lost observations', async () => {
-    const { page, setResponse } = await open();
+    const { page, setResponse, followCalls } = await open(
+      summary(),
+      1200,
+      undefined,
+      undefined,
+      'workbench',
+    );
+    const beforeWrites = posts.length;
     try {
       await expect
         .poll(() => row(page, 'parent-a').innerText())
@@ -2288,11 +2295,26 @@ suite('native subagent directory and employee sidebar', () => {
       expect(
         await page.getByRole('tree', { name: '子智能体目录' }).innerText(),
       ).toContain('暂不支持此类型');
+      const diagnosticEntry = page
+        .getByRole('treeitem', { name: 'unsupported-child摘要' })
+        .getByRole('button', { name: /查看读取说明/ });
+      expect(await diagnosticEntry.isEnabled()).toBe(true);
+      await diagnosticEntry.click();
+      const view = page.getByRole('region', {
+        name: '子智能体工作过程',
+        exact: true,
+      });
+      expect(await view.getByRole('status').innerText()).toBe('暂不支持此类型');
       expect(
-        await page
-          .getByRole('treeitem', { name: 'unsupported-child摘要' })
-          .getAttribute('aria-disabled'),
-      ).toBe('true');
+        await page.evaluate(() => window.nativeSubagentViewFixture.reference),
+      ).toMatchObject({
+        kind: 'diagnostic',
+        id: 'unsupported-child',
+        rootId: diagnostic.rootId,
+      });
+      expect(await view.getByLabel('交给子智能体的任务').count()).toBe(0);
+      expect(followCalls().filter((call) => call.childId)).toEqual([]);
+      expect(posts.length).toBe(beforeWrites);
       expect(await trigger.innerText()).not.toContain('0 个运行中');
       expect(await trigger.locator('span[aria-hidden="true"]').count()).toBe(0);
       await page.evaluate(() => window.dispatchEvent(new Event('offline')));
