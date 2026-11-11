@@ -3008,7 +3008,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         )
         .toBe(0);
       await entry.click();
-      await dialog.getByRole('alert').waitFor();
+      await dialog
+        .getByRole('region', { name: '工作场景 Workflow', exact: true })
+        .getByRole('alert')
+        .waitFor();
       expect(
         await dialog
           .getByRole('heading', { name: '还没有场景', exact: true })
