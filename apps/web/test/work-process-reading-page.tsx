@@ -20,7 +20,6 @@ import {
 } from '@allrice/contracts';
 import type { CloudOperationView } from '@allrice/database';
 import { ChatTranscript } from '../app/chatflow/chat-transcript';
-import { WorkProcessReadingState } from '../app/chatflow/work-process-reading-state';
 import { ArtifactWorkbench } from '../app/chatflow/artifact-workbench';
 import type { Message } from '../app/chatflow/chatflow-types';
 import { InputStatusContext } from '../app/chatflow/transcript-user-message';
@@ -42,144 +41,6 @@ import {
 } from './experience-command-theme-fixtures';
 
 type Stage = 'initial' | 'prefix' | 'split' | 'merge' | 'append';
-type ReaderSnapshot = ReturnType<
-  WorkProcessReadingState['getSnapshotBeforeUpdate']
->;
-let readerDiagnostics:
-  | {
-      root: HTMLElement | null;
-      bodies: HTMLElement[];
-      phase: string;
-      output: unknown;
-    }[]
-  | null = null;
-const readerKey = (node: HTMLElement, attribute: string) =>
-  JSON.stringify([
-    node.closest<HTMLElement>('[data-process-operation]')?.dataset
-      .processOperation,
-    node.closest<HTMLElement>('[data-process-region]')?.dataset.processRegion,
-    node.getAttribute(attribute),
-  ]);
-const readerGeometry = (node: HTMLElement) => {
-  const box = node.getBoundingClientRect();
-  return {
-    connected: node.isConnected,
-    box: [box.top, box.bottom],
-    scroll: [
-      node.scrollTop,
-      node.clientTop,
-      node.clientHeight,
-      node.scrollHeight,
-    ],
-    overflow: getComputedStyle(node).overflowY,
-  };
-};
-function readerProbe(
-  reader: WorkProcessReadingState,
-  saved: ReaderSnapshot,
-  phase: string,
-) {
-  if (!readerDiagnostics) return;
-  const root = reader.props.root.current;
-  if (!root) return;
-  try {
-    const bodies = [
-      ...root.querySelectorAll<HTMLElement>('[data-process-scrollport]'),
-    ];
-    const old = readerDiagnostics.findLast(
-      (entry) => entry.root === root && entry.phase === 'snapshot',
-    );
-    const outer = [];
-    for (let node = root.parentElement; node; node = node.parentElement)
-      if (
-        node === document.scrollingElement ||
-        ['auto', 'scroll', 'hidden', 'clip'].includes(
-          getComputedStyle(node).overflowY,
-        )
-      )
-        outer.push(readerGeometry(node));
-    const positions = saved.positions.map((item) => ({
-      ...item,
-      matches: [...root.querySelectorAll<HTMLElement>(`[${item.attribute}]`)]
-        .filter((node) => readerKey(node, item.attribute) === item.key)
-        .map((node) => ({
-          layout: !!node.getClientRects().length,
-          target: readerGeometry(
-            node.closest<HTMLElement>('[data-disclosure-row]') ?? node,
-          ),
-          body: bodies.indexOf(
-            node.closest<HTMLElement>('[data-process-scrollport]')!,
-          ),
-        })),
-    }));
-    const output = {
-      stage,
-      phase,
-      reader: root.style.display === 'contents' ? 'run' : 'transcript',
-      window: [scrollY, innerHeight],
-      outer,
-      positions,
-      bodies: bodies.map((body) => ({
-        ...readerGeometry(body),
-        old: old?.bodies.indexOf(body) ?? -1,
-      })),
-      oldBodies: old?.bodies.map(readerGeometry),
-      focus: [
-        saved.active === document.body,
-        saved.active?.isConnected,
-        document.activeElement === saved.active,
-        document.activeElement === document.body,
-        saved.control,
-        saved.content?.key,
-      ],
-      scroll: saved.scroll.map((item) => ({
-        key: item.key,
-        connected: item.node.isConnected,
-        top: item.top,
-        left: item.left,
-      })),
-      selection: {
-        endpoints: saved.selection && [
-          saved.selection.anchor.key,
-          saved.selection.focus.key,
-        ],
-        equal:
-          !saved.selection ||
-          document.getSelection()?.toString() === saved.selection.text,
-      },
-    };
-    readerDiagnostics.push({ root, bodies, phase, output });
-  } catch {
-    readerDiagnostics.push({
-      root,
-      bodies: [],
-      phase,
-      output: { error: 'geometry_unavailable' },
-    });
-  }
-}
-const originalReaderSnapshot =
-  WorkProcessReadingState.prototype.getSnapshotBeforeUpdate;
-WorkProcessReadingState.prototype.getSnapshotBeforeUpdate = function (
-  this: WorkProcessReadingState,
-) {
-  const saved = originalReaderSnapshot.call(this);
-  readerProbe(this, saved, 'snapshot');
-  return saved;
-};
-const originalReaderUpdate =
-  WorkProcessReadingState.prototype.componentDidUpdate;
-WorkProcessReadingState.prototype.componentDidUpdate = function (
-  this: WorkProcessReadingState,
-  ...args: Parameters<typeof originalReaderUpdate>
-) {
-  readerProbe(this, args[2], 'restore-before');
-  try {
-    return originalReaderUpdate.apply(this, args);
-  } finally {
-    readerProbe(this, args[2], 'restore-after');
-  }
-};
 const at = new Date().toISOString();
 const memoryScenario = new URLSearchParams(location.search).has('memory');
 const processScenario = new URLSearchParams(location.search).has('process');
@@ -735,17 +596,10 @@ declare global {
     processView: (view: UserPreferences['transcriptView']) => void;
     readingEnablePanels: () => void;
     readingReads: Record<string, number>;
-    readingDiagnostic: (enabled?: boolean) => unknown;
   }
 }
 window.readingWrites = [];
 window.readingReads = {};
-window.readingDiagnostic = (enabled) => {
-  if (enabled === true) readerDiagnostics = [];
-  const output = readerDiagnostics?.map((entry) => entry.output);
-  if (enabled === false) readerDiagnostics = null;
-  return output;
-};
 let panelsEnabled = false;
 window.fetch = async (input, init) => {
   const url = String(input);

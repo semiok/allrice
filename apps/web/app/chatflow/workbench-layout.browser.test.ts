@@ -10301,9 +10301,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       const readHistory = async (secondRunning = false) => {
         expect(await groups.count()).toBe(2);
         for (const [index, group] of (await groups.all()).entries()) {
-          const summary = group.getByRole('button', {
-            name: secondRunning && index === 1 ? '正在调用工具' : '已调用工具',
-            exact: true,
+          const title =
+            secondRunning && index === 1 ? '正在调用工具' : '已调用工具';
+          const summary = group.getByRole('button').filter({
+            has: f.page.getByText(title, { exact: true }),
           });
           if ((await summary.getAttribute('aria-expanded')) === 'false')
             await summary.click();

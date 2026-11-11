@@ -628,10 +628,8 @@ suite('reading a receipt while late native trace changes its group', () => {
   });
   it('keeps the reader at the later receipt after scrolling away from an old selection', async () => {
     const page = await open(390);
-    const geometry: unknown[] = [];
     try {
       await readResult(page);
-      await page.evaluate(() => window.readingDiagnostic(true));
       const selected = await output(page).evaluate((node) => {
         node.scrollTop = 650;
         node.scrollIntoView({ block: 'center' });
@@ -646,10 +644,8 @@ suite('reading a receipt while late native trace changes its group', () => {
       const old = (await output(page).boundingBox())!;
       expect(old.y + old.height).toBeLessThan(0);
       for (const stage of ['prefix', 'split', 'merge'] as const) {
-        geometry.push({ stage, before: await receiptGeometry(later) });
         await update(page, stage);
         const box = (await later.boundingBox())!;
-        geometry.push({ stage, after: await receiptGeometry(later) });
         expect(box.y, stage).toBeLessThan(900);
         expect(box.y + box.height, stage).toBeGreaterThan(0);
         expect(
@@ -660,17 +656,6 @@ suite('reading a receipt while late native trace changes its group', () => {
         ).toBe(true);
       }
     } finally {
-      try {
-        console.log(
-          'Reading later diagnostic',
-          JSON.stringify({
-            geometry,
-            reader: await page.evaluate(() => window.readingDiagnostic(false)),
-          }),
-        );
-      } catch {
-        console.log('Reading later diagnostic unavailable');
-      }
       await page.close();
     }
   });

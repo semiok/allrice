@@ -212,6 +212,7 @@ function processPositions(root: HTMLElement) {
         key: keyOf(marker, attribute),
         top,
         innerTop: top - body.getBoundingClientRect().top,
+        overflowing: body.scrollHeight > body.clientHeight,
       },
     ];
   });
@@ -229,6 +230,19 @@ function restoreProcessPositions(
       marker?.closest<HTMLElement>('[data-disclosure-row]') ?? marker;
     const body = target?.closest<HTMLElement>('[data-process-scrollport]');
     if (!target || !body || !visible(body) || restored.has(body)) continue;
+    // A fitting source cannot displace a real inner scroll position when
+    // their old groups merge into the same body.
+    if (
+      !item.overflowing &&
+      positions.some(
+        (other) =>
+          other.overflowing &&
+          locate(root, other.attribute, other.key)?.closest(
+            '[data-process-scrollport]',
+          ) === body,
+      )
+    )
+      continue;
     body.scrollTop +=
       target.getBoundingClientRect().top -
       body.getBoundingClientRect().top -
