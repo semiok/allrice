@@ -516,6 +516,8 @@ suite(
           rootId: 'memory-test-root',
           rootSystemInstructions: modern ? 'ROOT_DOCUMENT_PERSONA' : undefined,
           employeeDocuments: modern ? f.document.employeeDocuments : undefined,
+          // Low-level description selection, not proof of human admission.
+          documentMemory: modern,
           nativeTools: [
             'workspace.memory.search',
             'workspace.experience.read',
