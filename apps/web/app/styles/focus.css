@@ -1,0 +1,9 @@
+/* DSH ui-primitives owns input modality for the document. A mouse click on
+ * the already focused control can retain Chrome's :focus-visible match.
+ * Suppress only the outline while pointer input owns focus; keep focus,
+ * borders, shadows and the existing keyboard focus styles intact.
+ * Important is needed above component-local focus-visible specificity. */
+:root[data-input-modality='pointer']
+  :focus-visible:not(input, textarea, select, [contenteditable]) {
+  outline: none !important;
+}

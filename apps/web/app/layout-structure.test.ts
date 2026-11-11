@@ -18,7 +18,7 @@ const chatFlowStyles = readFileSync(
 describe('root layout structure', () => {
   it('mounts the active page directly without the retired AppShell', () => {
     expect(layoutSource).toMatch(
-      /<body suppressHydrationWarning>\s*<script dangerouslySetInnerHTML=\{\{ __html: themeScript \}\} \/>\s*<ThemeController \/>\s*\{children\}\s*<\/body>/,
+      /<body suppressHydrationWarning>\s*<script dangerouslySetInnerHTML=\{\{ __html: themeScript \}\} \/>\s*<ThemeController \/>\s*<FocusController \/>\s*\{children\}\s*<\/body>/,
     );
     expect(layoutSource).not.toMatch(/AppShell|app-shell/);
   });
@@ -45,6 +45,7 @@ describe('root layout structure', () => {
       "import '@allrice/ui/tokens.css';",
       "import './styles/base.css';",
       "import './styles/auth.css';",
+      "import './styles/focus.css';",
       "import '@allrice/ui/styles.css';",
     ];
 
