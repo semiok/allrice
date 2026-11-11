@@ -2,9 +2,13 @@
 
 import {
   createContext,
+  memo,
+  useCallback,
   useContext,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -213,13 +217,22 @@ export const useEmployeeSkillsHostView = () =>
 function renderHostChildren(
   children: EmployeeSkillsHostProps['children'],
   view: EmployeeSkillsHostView,
+  reader: ReactNode,
 ) {
   return (
     <EmployeeSkillsContext.Provider value={view}>
+      {reader}
       {typeof children === 'function' ? children(view) : children}
     </EmployeeSkillsContext.Provider>
   );
 }
+
+const emptyHostView: EmployeeSkillsHostView = {
+  section: null,
+  layer: null,
+  renderSection: () => null,
+  navigateHome: () => {},
+};
 
 export function EmployeeSkillConfirmationLayer({
   active,
@@ -233,6 +246,7 @@ export function EmployeeSkillConfirmationLayer({
 }
 
 export function EmployeeSkillsHost(props: EmployeeSkillsHostProps) {
+  const { children, ownerView, navigationRef, ...readerProps } = props;
   // Account changes erase content even when a pending request identity remains.
   clearEmployeeSkillWriteContents(
     props.writes,
@@ -240,20 +254,58 @@ export function EmployeeSkillsHost(props: EmployeeSkillsHostProps) {
       write.scopeId !== props.scope.scopeId ||
       (!props.ownerView && sameScope(write, props.scope)),
   );
-  if (!props.ownerView)
-    return renderHostChildren(props.children, {
-      section: null,
-      layer: null,
-      renderSection: () => null,
-      navigateHome: () => {},
-    });
   const key = JSON.stringify([
     props.scope.scopeId,
     props.scope.workspaceId,
     props.scope.instanceId,
     Object.entries(props.scope.headers).sort(),
   ]);
-  return <EmployeeSkillsReader key={key} {...props} />;
+  const projectionScope = useMemo(() => ({ key, ownerView }), [key, ownerView]);
+  const currentScope = useRef(projectionScope);
+  currentScope.current = projectionScope;
+  const projection = useRef<{
+    scope: typeof projectionScope;
+    view: EmployeeSkillsHostView;
+  } | null>(null);
+  const [, setRevision] = useState(0);
+  // Erase private presentation synchronously, including owner false -> true
+  // in the same scope. The keyed Reader remains the only catalog authority.
+  if (!ownerView || projection.current?.scope !== projectionScope)
+    projection.current = null;
+  const publish = useCallback(
+    (view: EmployeeSkillsHostView) => {
+      if (
+        currentScope.current !== projectionScope ||
+        !projectionScope.ownerView
+      )
+        return;
+      projection.current = { scope: projectionScope, view };
+      setRevision((revision) => revision + 1);
+    },
+    [projectionScope],
+  );
+  useImperativeHandle(
+    navigationRef,
+    () => ({
+      navigateHome: () => {
+        const visible = projection.current;
+        if (
+          visible?.scope === currentScope.current &&
+          currentScope.current.ownerView
+        )
+          visible.view.navigateHome();
+      },
+    }),
+    [],
+  );
+  // Keep the native Dock and its editors outside the changing Reader key.
+  return renderHostChildren(
+    children,
+    projection.current?.view ?? emptyHostView,
+    ownerView ? (
+      <EmployeeSkillsReader key={key} {...readerProps} onView={publish} />
+    ) : null,
+  );
 }
 
 function initialPage(
@@ -318,7 +370,7 @@ function sourceError(
   }
 }
 
-function EmployeeSkillsReader({
+const EmployeeSkillsReader = memo(function EmployeeSkillsReader({
   scope,
   employeeName,
   writes,
@@ -327,10 +379,11 @@ function EmployeeSkillsReader({
   activeEntry,
   backLabel,
   onStart,
-  navigationRef,
   onNotice,
-  children,
-}: EmployeeSkillsHostProps) {
+  onView,
+}: Omit<EmployeeSkillsHostProps, 'children' | 'ownerView' | 'navigationRef'> & {
+  onView: (view: EmployeeSkillsHostView) => void;
+}) {
   const [view, setView] = useState<EmployeeSkillsView>({
     status: 'loading',
     label: copy.loading,
@@ -887,7 +940,6 @@ function EmployeeSkillsReader({
     setStartError('');
     show(null);
   };
-  useImperativeHandle(navigationRef, () => ({ navigateHome }));
 
   let layer: EmployeeSkillLayer | null = null;
   if (page) {
@@ -1068,10 +1120,10 @@ function EmployeeSkillsReader({
       }}
     />
   );
-  return renderHostChildren(children, {
-    section: renderSection(),
-    layer,
-    renderSection,
-    navigateHome,
+  // Publish before paint. Memo prevents the projection's parent render from
+  // republishing unchanged Reader state; no second catalog or scope cache.
+  useLayoutEffect(() => {
+    onView({ section: renderSection(), layer, renderSection, navigateHome });
   });
-}
+  return null;
+});

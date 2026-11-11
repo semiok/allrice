@@ -17,6 +17,7 @@ import {
   defaultUserPreferences,
   defaultWorkAutomation,
   EmployeeInstanceSchema,
+  EmployeeSkillCatalogSchema,
   EmployeeMemoryPageSchema,
   EmployeeSceneSkillCatalogSchema,
   EmployeeSceneSkillSummarySchema,
@@ -34,6 +35,7 @@ import {
   PersonalSkillPreviewRequestSchema,
   PersonalSkillConfirmRequestSchema,
   PersonalSkillRemoveRequestSchema,
+  PersonalSkillSourceSchema,
   type PersonalScenePreviewResponse,
   type PersonalSceneConfirmReceipt,
   type PersonalSceneRemoveReceipt,
@@ -1290,6 +1292,16 @@ suite('U1 mounted employee Workflow host', () => {
   };
 
   type Fixture = Awaited<ReturnType<typeof fixture>>;
+  function skillPage(f: Fixture, host: 'sidebar' | 'employee', title: string) {
+    if (host === 'employee')
+      return employeePage(f.page, { name: title, exact: true });
+    return f
+      .directory()
+      .getByRole('region', { name: 'Rice · 能力', exact: true })
+      .filter({
+        has: f.page.getByRole('heading', { name: title, exact: true }),
+      });
+  }
   async function inFixture(
     options: Parameters<typeof fixture>[0],
     body: (f: Fixture) => Promise<void>,
@@ -1450,6 +1462,8 @@ suite('U1 mounted employee Workflow host', () => {
     for (const status of [401, 403, 404, 503] as const) {
       it(`MET-251 Skill start handles same-scope fresh ${status} in ${host} without changing or sending the draft`, async () => {
         await inFixture({ session: true }, async (f) => {
+          f.state.skillCatalogs.get(id(7))!.personalSkills[0]!.source =
+            PersonalSkillSourceSchema.parse(skillTestPreview().source);
           const original = '  不应改变的草稿\n保留空白。\n';
           const input = f.page.getByRole('textbox', {
             name: '给 Rice 的消息',
@@ -1471,10 +1485,7 @@ suite('U1 mounted employee Workflow host', () => {
           await parent
             .getByRole('button', { name: '翻译校对', exact: true })
             .click();
-          const detail = employeePage(f.page, {
-            name: '翻译校对',
-            exact: true,
-          });
+          const detail = skillPage(f, host, '翻译校对');
           const source = f.state.skillCatalogs.get(id(7))!.personalSkills[0]!;
           if (source.source.kind !== 'github')
             throw Error('This case requires the existing GitHub skill');
@@ -1806,6 +1817,25 @@ suite('U1 mounted employee Workflow host', () => {
   ] as const) {
     it(`MET-251 capabilities share rows and detail actions across both hosts at ${width} ${dark ? 'dark' : 'light'}`, async () => {
       await inFixture({ width, dark }, async (f) => {
+        const catalog = f.state.skillCatalogs.get(id(7))!;
+        const first = catalog.personalSkills[0]!;
+        f.state.skillCatalogs.set(
+          id(7),
+          EmployeeSkillCatalogSchema.parse({
+            ...catalog,
+            personalSkills: [
+              first,
+              {
+                ...first,
+                name: 'second-review',
+                displayName: '第二项技能',
+                installationId: id(220),
+                versionId: id(221),
+                binding: { ...first.binding, id: id(222) },
+              },
+            ],
+          }),
+        );
         const root = await f.openDirectory();
         const workflow = root.getByRole('button', {
           name: '写周报',
@@ -1819,6 +1849,18 @@ suite('U1 mounted employee Workflow host', () => {
         await f.page.mouse.move(1, 1);
         const normal = await capabilityAppearance(workflow);
         expect(await capabilityAppearance(skill)).toEqual(normal);
+        expect(normal.borderWidth).toBe('0px 0px 1px');
+        const lastWorkflow = root.getByRole('button', {
+          name: '客户回访',
+          exact: true,
+        });
+        const lastSkill = root.getByRole('button', {
+          name: '第二项技能',
+          exact: true,
+        });
+        const lastAppearance = await capabilityAppearance(lastWorkflow);
+        expect(await capabilityAppearance(lastSkill)).toEqual(lastAppearance);
+        expect(lastAppearance.borderWidth).toBe('0px');
         expect(normal).toMatchObject({
           minHeight: '64px',
           paddingTop: '10px',
@@ -1892,10 +1934,7 @@ suite('U1 mounted employee Workflow host', () => {
           .getByRole('button', { name: '返回能力列表', exact: true })
           .click();
         await skill.click();
-        const skillDetail = employeePage(f.page, {
-          name: '翻译校对',
-          exact: true,
-        });
+        const skillDetail = skillPage(f, 'sidebar', '翻译校对');
         await skillDetail
           .getByRole('button', { name: '开始工作', exact: true })
           .waitFor();
@@ -1963,10 +2002,7 @@ suite('U1 mounted employee Workflow host', () => {
           fullPage: true,
         });
         await employeeSkill.click();
-        const employeeDetail = employeePage(f.page, {
-          name: '翻译校对',
-          exact: true,
-        });
+        const employeeDetail = skillPage(f, 'employee', '翻译校对');
         await f.page.mouse.move(1, 1);
         expect(await typography(employeeDetail, fontTargets)).toEqual(
           skillFonts,
@@ -2033,10 +2069,11 @@ suite('U1 mounted employee Workflow host', () => {
           await parent
             .getByRole('button', { name: target.name, exact: true })
             .click();
-          const detail = employeePage(f.page, {
-            name: target.name,
-            exact: true,
-          });
+          const detail = skillPage(
+            f,
+            target.origin === 'top' ? 'sidebar' : 'employee',
+            target.name,
+          );
           await detail
             .getByRole('button', { name: '开始工作', exact: true })
             .waitFor();
@@ -2094,7 +2131,7 @@ suite('U1 mounted employee Workflow host', () => {
       const root = await f.openDirectory();
       await root.getByText('我添加的 · 0', { exact: true }).waitFor();
       await root.getByRole('button', { name: '添加技能', exact: true }).click();
-      const source = employeePage(f.page, { name: '添加技能', exact: true });
+      const source = skillPage(f, 'sidebar', '添加技能');
       await source
         .getByRole('tab', { name: 'GitHub 链接', exact: true })
         .click();
@@ -2102,7 +2139,7 @@ suite('U1 mounted employee Workflow host', () => {
         .getByRole('textbox', { name: '仓库链接', exact: true })
         .fill('https://github.com/example/translation-review');
       await source.getByRole('button', { name: '读取', exact: true }).click();
-      const confirm = employeePage(f.page, { name: '确认添加', exact: true });
+      const confirm = skillPage(f, 'sidebar', '确认添加');
       await confirm
         .getByRole('button', { name: '确认添加', exact: true })
         .waitFor();
@@ -2114,7 +2151,7 @@ suite('U1 mounted employee Workflow host', () => {
       await confirm
         .getByRole('button', { name: '确认添加', exact: true })
         .click();
-      const success = employeePage(f.page, { name: '添加完成', exact: true });
+      const success = skillPage(f, 'sidebar', '添加完成');
       await success.getByRole('button', { name: '完成', exact: true }).click();
       await root
         .getByRole('button', { name: '翻译校对', exact: true })
@@ -2137,7 +2174,7 @@ suite('U1 mounted employee Workflow host', () => {
       await employee
         .getByRole('button', { name: '翻译校对', exact: true })
         .click();
-      const detail = employeePage(f.page, { name: '翻译校对', exact: true });
+      const detail = skillPage(f, 'employee', '翻译校对');
       await detail
         .getByRole('button', { name: '卸载这个技能', exact: true })
         .click();
@@ -2184,7 +2221,7 @@ suite('U1 mounted employee Workflow host', () => {
         await employee
           .getByRole('button', { name: '翻译校对', exact: true })
           .click();
-        const detail = employeePage(f.page, { name: '翻译校对', exact: true });
+        const detail = skillPage(f, 'employee', '翻译校对');
         await detail
           .getByRole('button', { name: '开始工作', exact: true })
           .waitFor();
@@ -2208,13 +2245,27 @@ suite('U1 mounted employee Workflow host', () => {
           viewerId: id(105),
           offset: 100,
         };
+        const newScopeRead = f.page.waitForRequest((request) => {
+          const url = new URL(request.url());
+          return (
+            request.method() === 'GET' &&
+            url.pathname === `/api/v1/employee-instances/${id(107)}` &&
+            url.searchParams.get('workspaceId') === id(104) &&
+            request.headers()['x-allrice-workspace-id'] === id(104)
+          );
+        });
         refresh.release();
         await expect
           .poll(() => f.state.workspaceReplies.at(-1))
           .toBe(`${id(104)}/${id(105)}`);
+        await newScopeRead;
+        const reader = f.page.getByRole('dialog', {
+          name: 'AI 员工详情',
+          exact: true,
+        });
+        await reader.waitFor();
         instanceRead.release();
         await expect.poll(() => detail.count()).toBe(0);
-        const reader = employeePage(f.page, { name: /员工详情/ });
         await reader.getByRole('button', { name: '关闭', exact: true }).click();
         await expect
           .poll(() =>
