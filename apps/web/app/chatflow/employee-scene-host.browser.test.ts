@@ -1576,7 +1576,7 @@ suite('U1 mounted employee Workflow host', () => {
             }),
             listFontTargets,
           );
-          expect(listFonts.heading.weight).toBe('600');
+          expect(listFonts.heading?.weight).toBe('600');
           expect(
             await root
               .getByRole('button', { name: '关闭工作台', exact: true })
