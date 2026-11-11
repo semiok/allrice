@@ -35,6 +35,7 @@ import {
   PersonalSkillPreviewRequestSchema,
   PersonalSkillConfirmRequestSchema,
   PersonalSkillRemoveRequestSchema,
+  PersonalSkillRemoveResponseSchema,
   PersonalSkillSourceSchema,
   type PersonalScenePreviewResponse,
   type PersonalSceneConfirmReceipt,
@@ -53,7 +54,6 @@ import {
   skillTestCatalogAfter,
   skillTestConfirmed,
   skillTestPreview,
-  skillTestRemoved,
 } from '../../test/employee-skills-host-data';
 
 const suite =
@@ -625,7 +625,24 @@ suite('U1 mounted employee Workflow host', () => {
           if (!current) throw Error('Skill removal requires a current binding');
           expect(resource.slice('skills/'.length)).toBe(current.installationId);
           expect(input.workspaceId).toBe(targetScope.workspaceId);
-          const result = skillTestRemoved(input.requestId, target);
+          expect(input.expectedRevision).toBe(current.revision);
+          const result = PersonalSkillRemoveResponseSchema.parse({
+            receipt: {
+              operation: 'disable',
+              scope: 'instance',
+              requestId: input.requestId,
+              workspaceId: targetScope.workspaceId,
+              instanceId: target,
+              installationId: current.installationId,
+              revision: current.revision + 1,
+              versionId: current.versionId,
+              binding: {
+                ...current.binding,
+                enabled: false,
+                epoch: current.binding.epoch + 1,
+              },
+            },
+          });
           skillCatalogs.set(target, {
             ...skillCatalogs.get(target)!,
             personalSkills: [],
@@ -1975,6 +1992,16 @@ suite('U1 mounted employee Workflow host', () => {
           .getByRole('button', { name: '关闭工作台', exact: true })
           .click();
         const employee = await f.openEmployeeDetails();
+        const navigation = f.page.getByRole('dialog', {
+          name: '任务与历史',
+          exact: true,
+        });
+        const navigationCount = width < 760 ? 1 : 0;
+        expect(await navigation.count()).toBe(navigationCount);
+        expect(await employee.count()).toBe(1);
+        expect(await f.page.getByRole('dialog').count()).toBe(
+          navigationCount + 1,
+        );
         const employeeSkill = employee.getByRole('button', {
           name: '翻译校对',
           exact: true,
@@ -2027,7 +2054,12 @@ suite('U1 mounted employee Workflow host', () => {
             }),
           ),
         ).toEqual(workflowDanger);
-        expect(await f.page.getByRole('dialog').count()).toBe(1);
+        expect(await navigation.count()).toBe(navigationCount);
+        expect(await employee.count()).toBe(0);
+        expect(await employeeDetail.count()).toBe(1);
+        expect(await f.page.getByRole('dialog').count()).toBe(
+          navigationCount + 1,
+        );
         expect(
           await f.page.evaluate(
             () => document.documentElement.scrollWidth <= innerWidth,
@@ -2037,6 +2069,12 @@ suite('U1 mounted employee Workflow host', () => {
           .getByRole('button', { name: '返回员工详情', exact: true })
           .click();
         await employee.waitFor();
+        expect(await employee.count()).toBe(1);
+        expect(await employeeDetail.count()).toBe(0);
+        expect(await navigation.count()).toBe(navigationCount);
+        expect(await f.page.getByRole('dialog').count()).toBe(
+          navigationCount + 1,
+        );
       });
     });
   }
@@ -2207,13 +2245,22 @@ suite('U1 mounted employee Workflow host', () => {
   });
 
   it('MET-251 capabilities reject a late Skill start after the workspace and employee authority changes', async () => {
-    await inFixture({ session: true }, async (f) => {
+    await inFixture({}, async (f) => {
       const refresh = gate(),
         instanceRead = gate();
       const original = '当前输入保留';
       await f.page
         .getByRole('textbox', { name: '给 Rice 的消息', exact: true })
         .fill(original);
+      await f.page.locator('input[type=file][multiple]').setInputFiles({
+        name: 'late-skill-carry.txt',
+        mimeType: 'text/plain',
+        buffer: Buffer.from('Synthetic retained late Skill attachment'),
+      });
+      const attachment = f.page
+        .getByRole('group', { name: '待发送附件', exact: true })
+        .getByText('late-skill-carry.txt', { exact: true });
+      await attachment.waitFor();
       f.state.workspaceGate = refresh.promise;
       try {
         const employee = await f.openEmployeeDetails('流程哥');
@@ -2239,6 +2286,8 @@ suite('U1 mounted employee Workflow host', () => {
               ).length,
           )
           .toBe(previousReads + 1);
+        // Only the old request captured this gate; new-scope reads stay live.
+        f.state.instanceGate = null;
         f.state.scope = {
           workspaceId: id(104),
           viewerId: id(105),
@@ -2257,22 +2306,55 @@ suite('U1 mounted employee Workflow host', () => {
         await expect
           .poll(() => f.state.workspaceReplies.at(-1))
           .toBe(`${id(104)}/${id(105)}`);
-        await newScopeRead;
+        const currentRequest = await newScopeRead;
+        const currentResponse = await currentRequest.response();
+        expect(currentResponse?.status()).toBe(200);
+        expect(
+          EmployeeInstanceSchema.parse(
+            (await currentResponse!.json()).instance,
+          ),
+        ).toMatchObject({
+          id: id(107),
+          workspaceId: id(104),
+          ownerId: id(105),
+        });
         const reader = f.page.getByRole('dialog', {
           name: 'AI 员工详情',
           exact: true,
         });
         await reader.waitFor();
-        instanceRead.release();
         await expect.poll(() => detail.count()).toBe(0);
         await reader.getByRole('button', { name: '关闭', exact: true }).click();
-        await expect
-          .poll(() =>
-            f.page
-              .getByRole('textbox', { name: '给 Rice 的消息', exact: true })
-              .inputValue(),
-          )
-          .toBe(original);
+        const input = f.page.getByRole('textbox', {
+          name: '给 Rice 的消息',
+          exact: true,
+        });
+        await input.waitFor();
+        await expect.poll(() => input.isEditable()).toBe(true);
+        expect(await input.inputValue()).toBe(original);
+        expect(await attachment.count()).toBe(1);
+        expect(f.state.writes).toEqual([]);
+        // currentInstance uses a fresh fetch without an AbortSignal.
+        const lateResponse = f.page.waitForResponse((response) => {
+          const url = new URL(response.url());
+          return (
+            response.request().method() === 'GET' &&
+            url.pathname === `/api/v1/employee-instances/${id(17)}` &&
+            url.searchParams.get('workspaceId') === id(4)
+          );
+        });
+        instanceRead.release();
+        const response = await lateResponse;
+        expect(response.status()).toBe(200);
+        expect(await response.finished()).toBeNull();
+        await f.page.evaluate(
+          () =>
+            new Promise<void>((done) => requestAnimationFrame(() => done())),
+        );
+        expect(await input.isEditable()).toBe(true);
+        expect(await attachment.count()).toBe(1);
+        expect(await detail.count()).toBe(0);
+        await expect.poll(() => input.inputValue()).toBe(original);
         expect(f.state.writes).toEqual([]);
       } finally {
         refresh.release();
