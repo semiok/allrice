@@ -3357,9 +3357,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           const after = await geometry();
           expect(Math.abs(after.top - before.top)).toBeLessThan(2);
           expect(Math.abs(after.scroll - before.scroll)).toBeLessThan(2);
-          expect((await tools.boundingBox())!.y).toBeGreaterThan(
-            after.top,
-          );
+          expect((await tools.boundingBox())!.y).toBeGreaterThan(after.top);
           expect(await process.locator('[data-work-reply]').count()).toBe(0);
           const toolsTop = (await tools.boundingBox())!.y;
           await tools.click();
@@ -3382,7 +3380,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           expect(
             (await processBody.locator('[data-work-reply]').boundingBox())!.y,
           ).toBeGreaterThan((await steps.last().boundingBox())!.y);
-          expect(await processBody.locator('[id^="operation-"]').count()).toBe(0);
+          expect(await processBody.locator('[id^="operation-"]').count()).toBe(
+            0,
+          );
           await settle();
           expect(
             Math.abs((await tools.boundingBox())!.y - toolsTop),
@@ -3513,11 +3513,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await settle();
           const after = await geometry();
           const detailHeight = await card
-            .locator(`[data-process-content="step:operation:cloud:${id(8900)}:details"]`)
+            .locator(
+              `[data-process-content="step:operation:cloud:${id(8900)}:details"]`,
+            )
             .evaluate((node) => {
               const style = getComputedStyle(node);
-              return node.getBoundingClientRect().height +
-                parseFloat(style.marginTop) + parseFloat(style.marginBottom);
+              return (
+                node.getBoundingClientRect().height +
+                parseFloat(style.marginTop) +
+                parseFloat(style.marginBottom)
+              );
             });
           expect(after.height - before.height).toBe(detailHeight);
           expect(detailHeight).toBeGreaterThan(100);
@@ -3576,11 +3581,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           `[data-process-material="cloud:${id(8904)}"]`,
         );
         expect(
-          await material.locator('[data-process-content="result"]').textContent(),
+          await material
+            .locator('[data-process-content="result"]')
+            .textContent(),
         ).toBe(operations[4]!.result.output);
         expect(
           JSON.parse(
-            (await material.locator('[data-process-content="input"]').textContent())!,
+            (await material
+              .locator('[data-process-content="input"]')
+              .textContent())!,
           ).arguments,
         ).toEqual(operations[4]!.proposal.arguments);
         expect(await material.getByRole('button').count()).toBe(0);
@@ -3729,7 +3738,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           });
         const before = await measure();
         expect(before).toMatchObject({ height: 42, secondHeight: 42, gap: 8 });
-        expect(await first.locator('[data-disclosure-row]').getAttribute('aria-expanded')).toBe('false');
+        expect(
+          await first
+            .locator('[data-disclosure-row]')
+            .getAttribute('aria-expanded'),
+        ).toBe('false');
         await first.locator('[data-disclosure-row]').click();
         const material = first.locator(
           `[data-process-material="cloud:${id(8870)}"]`,
@@ -3740,43 +3753,64 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .locator('[data-process-content="step:tool:compact-0:details"]')
           .evaluate((node) => {
             const style = getComputedStyle(node);
-            return node.getBoundingClientRect().height +
-              parseFloat(style.marginTop) + parseFloat(style.marginBottom);
+            return (
+              node.getBoundingClientRect().height +
+              parseFloat(style.marginTop) +
+              parseFloat(style.marginBottom)
+            );
           });
         expect(after.height - before.height).toBe(detailHeight);
         expect(after.secondHeight).toBe(before.secondHeight);
         expect(after.gap).toBe(before.gap);
         expect(after.distance - before.distance).toBe(detailHeight);
-        expect(await second.locator('[data-disclosure-row]').getAttribute('aria-expanded')).toBe('false');
-        expect(await material.locator(':scope > dl > dt').allTextContents()).toEqual([
-          '状态', '位置', '输入', '结果',
-        ]);
+        expect(
+          await second
+            .locator('[data-disclosure-row]')
+            .getAttribute('aria-expanded'),
+        ).toBe('false');
+        expect(
+          await material.locator(':scope > dl > dt').allTextContents(),
+        ).toEqual(['状态', '位置', '输入', '结果']);
         const { kind: proposalKind, ...input } = operations[0]!.proposal;
         expect(proposalKind).toBe(mcp ? 'mcp' : project ? 'project' : 'cloud');
         expect(
           JSON.parse(
-            (await material.locator('[data-process-content="input"]').textContent())!,
+            (await material
+              .locator('[data-process-content="input"]')
+              .textContent())!,
           ),
         ).toEqual(input);
         expect(
-          await material.locator('[data-process-content="result"]').textContent(),
+          await material
+            .locator('[data-process-content="result"]')
+            .textContent(),
         ).toBe(operations[0]!.result.output);
         expect(
-          await material.getByText('EXECUTION_FAILED', { exact: true }).isVisible(),
+          await material
+            .getByText('EXECUTION_FAILED', { exact: true })
+            .isVisible(),
         ).toBe(true);
         expect(
           await material.getByText('未完成', { exact: true }).isVisible(),
         ).toBe(true);
         expect(
-          await material.getByText('你已允许这一步', { exact: true }).isVisible(),
+          await material
+            .getByText('你已允许这一步', { exact: true })
+            .isVisible(),
         ).toBe(true);
         expect(await material.getByRole('button').count()).toBe(0);
         expect(
-          await process.locator('..').getByRole('button', {
-            name: '技术详情', exact: true,
-          }).count(),
+          await process
+            .locator('..')
+            .getByRole('button', {
+              name: '技术详情',
+              exact: true,
+            })
+            .count(),
         ).toBe(0);
-        expect(await material.locator('[data-process-artifact]').count()).toBe(0);
+        expect(await material.locator('[data-process-artifact]').count()).toBe(
+          0,
+        );
         if (!mcp)
           expect(input.outputs).toEqual([
             { path: 'result.json', fileName: 'result.json', format: 'json' },
@@ -3792,13 +3826,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await completed.getByText('已完成', { exact: true }).isVisible(),
         ).toBe(true);
         expect(
-          await completed.locator('[data-process-content="result"]').textContent(),
+          await completed
+            .locator('[data-process-content="result"]')
+            .textContent(),
         ).toBe(operations[1]!.result.output);
         for (const operation of operations) {
           expect(
-            await f.page.locator(
-              `[data-process-material="cloud:${operation.snapshot.binding.attempt.operationId}"]`,
-            ).count(),
+            await f.page
+              .locator(
+                `[data-process-material="cloud:${operation.snapshot.binding.attempt.operationId}"]`,
+              )
+              .count(),
           ).toBe(1);
         }
         expect(
@@ -4082,14 +4120,19 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await card.locator('header').getByRole('status').innerText(),
         ).toBe('进行中');
         expect(
-          await card.locator('header').getByRole('status').evaluate(
-            (node) => getComputedStyle(node).fontSize,
-          ),
+          await card
+            .locator('header')
+            .getByRole('status')
+            .evaluate((node) => getComputedStyle(node).fontSize),
         ).toBe(width === 1440 ? '12px' : '11px');
         const cardBox = (await card.boundingBox())!;
         const stopBox = (await stop.boundingBox())!;
-        expect(stopBox.x + stopBox.width).toBeLessThan(cardBox.x + cardBox.width);
-        expect(await card.getByRole('button', { name: '查看详情' }).count()).toBe(0);
+        expect(stopBox.x + stopBox.width).toBeLessThan(
+          cardBox.x + cardBox.width,
+        );
+        expect(
+          await card.getByRole('button', { name: '查看详情' }).count(),
+        ).toBe(0);
         // The current control card never toggles historical input or result.
         await label.click();
         expect(await toggle.getAttribute('aria-expanded')).toBe('false');
@@ -4124,18 +4167,27 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const scrollTop = await scroll.evaluate((node) => node.scrollTop);
         await toggle.press('Enter');
         await f.page.evaluate(
-          () => new Promise<void>((resolve) =>
-            requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-          ),
+          () =>
+            new Promise<void>((resolve) =>
+              requestAnimationFrame(() =>
+                requestAnimationFrame(() => resolve()),
+              ),
+            ),
         );
-        expect(Math.abs((await toggle.boundingBox())!.y - headerTop)).toBeLessThan(2);
         expect(
-          Math.abs((await scroll.evaluate((node) => node.scrollTop)) - scrollTop),
+          Math.abs((await toggle.boundingBox())!.y - headerTop),
+        ).toBeLessThan(2);
+        expect(
+          Math.abs(
+            (await scroll.evaluate((node) => node.scrollTop)) - scrollTop,
+          ),
         ).toBeLessThan(2);
         expect(await toggle.getAttribute('aria-expanded')).toBe('true');
         expect(await material.isVisible()).toBe(true);
         const input = JSON.parse(
-          (await material.locator('[data-process-content="input"]').textContent())!,
+          (await material
+            .locator('[data-process-content="input"]')
+            .textContent())!,
         );
         expect(input.tool).toBe('mcp__app__list_pull_requests');
         expect(input.arguments).toEqual({});
@@ -4182,11 +4234,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           output: 'Done',
           trusted: false,
         };
-        await expect.poll(() => history.getAttribute('data-status')).toBe('已完成');
+        await expect
+          .poll(() => history.getAttribute('data-status'))
+          .toBe('已完成');
         expect(await stopping.count()).toBe(0);
         expect(await card.count()).toBe(0);
         expect(
-          await material.locator('[data-process-content="result"]').textContent(),
+          await material
+            .locator('[data-process-content="result"]')
+            .textContent(),
         ).toBe('Done');
         operation.snapshot.status = 'failed';
         operation.result = {
@@ -4194,25 +4250,39 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           output: 'network request failed',
           trusted: false,
         };
-        await expect.poll(() => history.getAttribute('data-status')).toBe('未完成');
+        await expect
+          .poll(() => history.getAttribute('data-status'))
+          .toBe('未完成');
         expect(await card.count()).toBe(0);
         expect(
-          await material.locator('[data-process-content="result"]').textContent(),
+          await material
+            .locator('[data-process-content="result"]')
+            .textContent(),
         ).toBe('network request failed');
         expect(
           JSON.parse(
-            (await material.locator('[data-process-content="input"]').textContent())!,
+            (await material
+              .locator('[data-process-content="input"]')
+              .textContent())!,
           ).tool,
         ).toBe('mcp__app__list_pull_requests');
         await toggle.press('Space');
         operation.snapshot.status = 'unknown';
-        await card.locator('header').getByRole('status', {
-          name: '结果待确认', exact: true,
-        }).waitFor();
+        await card
+          .locator('header')
+          .getByRole('status', {
+            name: '结果待确认',
+            exact: true,
+          })
+          .waitFor();
         expect(
-          await card.locator('header').getByRole('status', {
-            name: '未完成', exact: true,
-          }).count(),
+          await card
+            .locator('header')
+            .getByRole('status', {
+              name: '未完成',
+              exact: true,
+            })
+            .count(),
         ).toBe(0);
         expect('nativeCallId' in operation).toBe(false);
         expect(requests).toHaveLength(2);
@@ -10171,15 +10241,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       const first = f.page.locator(
           `[data-process-material="cloud:${id(8990)}"]`,
         ),
-        second = f.page.locator(
-          `[data-process-material="cloud:${id(8991)}"]`,
-        );
+        second = f.page.locator(`[data-process-material="cloud:${id(8991)}"]`);
       const groups = f.page.locator('section[aria-label="工作步骤"]');
       const readHistory = async () => {
         expect(await groups.count()).toBe(2);
         for (const group of await groups.all()) {
           const summary = group.getByRole('button', {
-            name: '已调用工具', exact: true,
+            name: '已调用工具',
+            exact: true,
           });
           if ((await summary.getAttribute('aria-expanded')) === 'false')
             await summary.click();
@@ -10187,8 +10256,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await steps.waitFor();
           expect(await steps.locator('li').count()).toBe(1);
           expect(
-            await steps.locator('[data-disclosure-header]')
-              .getByText('进行中', { exact: true }).count(),
+            await steps
+              .locator('[data-disclosure-header]')
+              .getByText('进行中', { exact: true })
+              .count(),
           ).toBe(0);
         }
         for (const call of ['first', 'second']) {
@@ -10225,18 +10296,23 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .filter({ visible: true });
       expect(await inProgress.count()).toBe(1);
       expect(
-        await f.page.locator('[data-step-id="tool:second"]')
+        await f.page
+          .locator('[data-step-id="tool:second"]')
           .getAttribute('data-status'),
       ).toBe('运行中');
       expect(await groups.last().innerText()).toContain('使用已连接的服务');
       expect(
         JSON.parse(
-          (await first.locator('[data-process-content="input"]').textContent())!,
+          (await first
+            .locator('[data-process-content="input"]')
+            .textContent())!,
         ).arguments,
       ).toEqual({ page: 1 });
       expect(
         JSON.parse(
-          (await second.locator('[data-process-content="input"]').textContent())!,
+          (await second
+            .locator('[data-process-content="input"]')
+            .textContent())!,
         ).arguments,
       ).toEqual({ page: 2 });
       expect(await second.getByRole('button').count()).toBe(0);
@@ -10677,7 +10753,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         ];
         await f.page.reload();
         const panel = f.page.getByRole('region', { name: '电脑工具操作' });
-        const feedback = f.page.locator(`#message-${id(20)}`).getByRole('alert');
+        const feedback = f.page
+          .locator(`#message-${id(20)}`)
+          .getByRole('alert');
         await feedback.waitFor();
         expect(await feedback.innerText()).toContain(
           '暂时无法更新电脑操作状态，请稍后重试。',
@@ -10690,7 +10768,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           });
         expect(decisions).toEqual([]);
         failing = false;
-        await feedback.getByRole('button', { name: '刷新', exact: true }).click();
+        await feedback
+          .getByRole('button', { name: '刷新', exact: true })
+          .click();
         const approve = panel.getByRole('button', {
           name: '批准这一次启动发现',
         });

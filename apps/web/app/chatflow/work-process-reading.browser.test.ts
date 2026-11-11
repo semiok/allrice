@@ -553,7 +553,9 @@ suite('reading a receipt while late native trace changes its group', () => {
             document.getSelection()!.removeAllRanges();
             document.getSelection()!.addRange(range);
           }
-          return select ? document.getSelection()!.toString() : range.toString();
+          return select
+            ? document.getSelection()!.toString()
+            : range.toString();
         }, select);
       const expected = await rangeText(true);
       for (const stage of ['split', 'merge'] as const) {
@@ -630,34 +632,31 @@ suite('reading a receipt while late native trace changes its group', () => {
       await expect
         .poll(async () => {
           const header = (await group().boundingBox())!;
-          return later.evaluate(
-            (node, headerBottom) => {
-              const box = node.getBoundingClientRect();
-              let top = Math.max(0, box.top);
-              let bottom = Math.min(innerHeight, box.bottom);
-              for (
-                let parent = node.parentElement;
-                parent;
-                parent = parent.parentElement
-              ) {
-                if (
-                  parent === document.scrollingElement ||
-                  !/(auto|scroll|hidden|clip)/.test(
-                    getComputedStyle(parent).overflowY,
-                  )
+          return later.evaluate((node, headerBottom) => {
+            const box = node.getBoundingClientRect();
+            let top = Math.max(0, box.top);
+            let bottom = Math.min(innerHeight, box.bottom);
+            for (
+              let parent = node.parentElement;
+              parent;
+              parent = parent.parentElement
+            ) {
+              if (
+                parent === document.scrollingElement ||
+                !/(auto|scroll|hidden|clip)/.test(
+                  getComputedStyle(parent).overflowY,
                 )
-                  continue;
-                const clip = parent.getBoundingClientRect();
-                top = Math.max(top, clip.top + parent.clientTop);
-                bottom = Math.min(
-                  bottom,
-                  clip.top + parent.clientTop + parent.clientHeight,
-                );
-              }
-              return headerBottom < 0 && bottom > top;
-            },
-            header.y + header.height,
-          );
+              )
+                continue;
+              const clip = parent.getBoundingClientRect();
+              top = Math.max(top, clip.top + parent.clientTop);
+              bottom = Math.min(
+                bottom,
+                clip.top + parent.clientTop + parent.clientHeight,
+              );
+            }
+            return headerBottom < 0 && bottom > top;
+          }, header.y + header.height);
         })
         .toBe(true);
       expect(

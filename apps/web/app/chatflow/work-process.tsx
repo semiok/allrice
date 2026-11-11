@@ -655,7 +655,11 @@ function NativeStepsGroup({
   // concrete steps directly; saved compact/standard grouping stays native.
   if (policy.mode === 'detailed')
     return (
-      <section aria-label="工作步骤" className={styles.processDetails} data-process-scrollport>
+      <section
+        aria-label="工作步骤"
+        className={styles.processDetails}
+        data-process-scrollport
+      >
         <WorkProcessSteps
           items={items}
           questions={questions}
