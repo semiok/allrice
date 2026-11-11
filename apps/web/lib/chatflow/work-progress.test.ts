@@ -172,16 +172,27 @@ describe('native reading order adapted to Allrice', () => {
   });
 });
 
-function reference(id: string, call: string | null = 'read'): WorkProcessReference {
+function reference(
+  id: string,
+  call: string | null = 'read',
+): WorkProcessReference {
   const proof = tool(1, 'tool.started');
   return {
-    source: 'cloud', id, runId: proof.runId, nativeCallId: call,
-    title: 'read', status: '已完成',
+    source: 'cloud',
+    id,
+    runId: proof.runId,
+    nativeCallId: call,
+    title: 'read',
+    status: '已完成',
     // Only persisted identity fields used by this pure association are needed.
     binding: {
       task: {
-        runId: proof.runId, rootRunId: proof.runId,
-        scope: { organizationId: proof.organizationId, workspaceId: proof.workspaceId },
+        runId: proof.runId,
+        rootRunId: proof.runId,
+        scope: {
+          organizationId: proof.organizationId,
+          workspaceId: proof.workspaceId,
+        },
       },
       attempt: { operationId: id, generation: 0, attemptNumber: 1 },
     } as WorkProcessReference['binding'],
@@ -193,53 +204,110 @@ describe('authorized history association', () => {
     // Existing native-experience fixture shapes; sourceMetadata preserves seq
     // as dsh:7 through runtime-contract and the public events route.
     const source = { turn: 1, step: 0, callId: 'read', name: 'read' };
-    const normalized = event(2, 'tool.started', {
-      toolCallId: 'read', name: 'read', generation: 0, attempt: 2,
-    }, source);
-    const native = event(1, 'harness.native', {
-      presentation: 'tool', status: 'started', generation: 0, attempt: 2,
-    }, source);
+    const normalized = event(
+      2,
+      'tool.started',
+      {
+        toolCallId: 'read',
+        name: 'read',
+        generation: 0,
+        attempt: 2,
+      },
+      source,
+    );
+    const native = event(
+      1,
+      'harness.native',
+      {
+        presentation: 'tool',
+        status: 'started',
+        generation: 0,
+        attempt: 2,
+      },
+      source,
+    );
     for (const receipt of [native, normalized]) {
       receipt.sourceEvent!.id = 'dsh:7';
       receipt.sourceEvent!.type = 'tool/call';
     }
-    const view = projectWorkProgress([native, normalized], '', true, true, [reference('exact')]);
+    const view = projectWorkProgress([native, normalized], '', true, true, [
+      reference('exact'),
+    ]);
     expect(view.items).toHaveLength(1);
     expect(view.items[0]).toMatchObject({
-      id: 'tool:read', status: 'started', operations: [{ id: 'exact' }],
+      id: 'tool:read',
+      status: 'started',
+      operations: [{ id: 'exact' }],
     });
   });
-  it.each([true, false])('keeps 1:N, duplicate receipts and old failures without changing native state (streaming=%s)', (streaming) => {
-    const failed = { ...reference('first'), status: '未成功', failed: true },
-      later = reference('second');
-    const view = projectWorkProgress([
-      reply(1, 'a', '开始'), tool(2, 'tool.started'), reply(4, 'b', '结束'),
-    ], '', true, streaming, [failed, { ...failed }, later]);
-    const call = view.items.find((item) => item.id === 'tool:read')!;
-    expect(call).toMatchObject({ status: 'started', sequence: 2 });
-    expect(call.operations?.map(workProcessReferenceKey)).toEqual(['cloud:first', 'cloud:second']);
-    expect(call.operations?.map((op) => op.status)).toEqual(['未成功', '已完成']);
-    expect(failed.failed).toBe(true);
-    if (streaming) expect(view.parts?.at(-1)).toMatchObject({ kind: 'reply', text: '结束' });
-    else expect(view.parts).toBeUndefined();
-  });
+  it.each([true, false])(
+    'keeps 1:N, duplicate receipts and old failures without changing native state (streaming=%s)',
+    (streaming) => {
+      const failed = { ...reference('first'), status: '未成功', failed: true },
+        later = reference('second');
+      const view = projectWorkProgress(
+        [reply(1, 'a', '开始'), tool(2, 'tool.started'), reply(4, 'b', '结束')],
+        '',
+        true,
+        streaming,
+        [failed, { ...failed }, later],
+      );
+      const call = view.items.find((item) => item.id === 'tool:read')!;
+      expect(call).toMatchObject({ status: 'started', sequence: 2 });
+      expect(call.operations?.map(workProcessReferenceKey)).toEqual([
+        'cloud:first',
+        'cloud:second',
+      ]);
+      expect(call.operations?.map((op) => op.status)).toEqual([
+        '未成功',
+        '已完成',
+      ]);
+      expect(failed.failed).toBe(true);
+      if (streaming)
+        expect(view.parts?.at(-1)).toMatchObject({
+          kind: 'reply',
+          text: '结束',
+        });
+      else expect(view.parts).toBeUndefined();
+    },
+  );
   it('separates same-name native calls and preserves a true browser parent without inventing a child call', () => {
-    const second = event(3, 'tool.completed', { toolCallId: 'second-call', name: 'read' });
+    const second = event(3, 'tool.completed', {
+      toolCallId: 'second-call',
+      name: 'read',
+    });
     const parent = { ...reference('parent'), source: 'browser' as const },
-      child = { ...reference('child', null), source: 'browser' as const, parentOperationId: 'parent' };
-    const view = projectWorkProgress([tool(2, 'tool.started'), second], '', true, true, [
-      parent, reference('other', 'second-call'), child,
-    ]);
-    expect(view.items.map((item) => [item.id, item.operations?.map((op) => op.id)])).toEqual([
-      ['tool:read', ['parent']], ['tool:second-call', ['other']],
+      child = {
+        ...reference('child', null),
+        source: 'browser' as const,
+        parentOperationId: 'parent',
+      };
+    const view = projectWorkProgress(
+      [tool(2, 'tool.started'), second],
+      '',
+      true,
+      true,
+      [parent, reference('other', 'second-call'), child],
+    );
+    expect(
+      view.items.map((item) => [item.id, item.operations?.map((op) => op.id)]),
+    ).toEqual([
+      ['tool:read', ['parent']],
+      ['tool:second-call', ['other']],
       ['operation:browser:child', ['child']],
     ]);
-    expect(view.items.at(-1)?.operations?.[0]?.parentOperationId).toBe('parent');
+    expect(view.items.at(-1)?.operations?.[0]?.parentOperationId).toBe(
+      'parent',
+    );
     expect(view.items[1]?.status).toBe('completed');
   });
   it.each(['missing-call', 'missing-proof', 'legacy', 'ambiguous'])(
-    'retains %s history without claiming a native call', (reason) => {
-      const op = reference('unassigned', reason === 'missing-call' ? null : 'read');
+    'retains %s history without claiming a native call',
+    (reason) => {
+      const op = reference(
+        'unassigned',
+        reason === 'missing-call' ? null : 'read',
+      );
       const events = [tool(2, 'tool.started')];
       if (reason === 'missing-proof') delete op.binding;
       if (reason === 'legacy') {
@@ -248,44 +316,72 @@ describe('authorized history association', () => {
       }
       if (reason === 'ambiguous') events.push(tool(3, 'tool.started'));
       const view = projectWorkProgress(events, '', true, true, [op]);
-      expect(view.items.find((item) => item.id === 'tool:read')?.operations).toBeUndefined();
+      expect(
+        view.items.find((item) => item.id === 'tool:read')?.operations,
+      ).toBeUndefined();
       expect(view.items.at(-1)).toMatchObject({
-        id: 'operation:cloud:unassigned', operations: [op],
+        id: 'operation:cloud:unassigned',
+        operations: [op],
       });
     },
   );
-  it.each(['run', 'root', 'agent', 'generation', 'organization', 'workspace', 'operation', 'missing-generation', 'envelope-conflict'])(
-    'does not associate mismatched real %s facts', (field) => {
-      const op = reference('mismatched'), binding = op.binding!, native = tool(2, 'tool.started');
-      if (field === 'run') op.runId = 'another-run';
-      if (field === 'root') binding.task.rootRunId = 'another-root';
-      if (field === 'agent') binding.task.runId = 'another-agent-run';
-      if (field === 'generation') binding.attempt.generation = 1;
-      if (field === 'organization') binding.task.scope.organizationId = 'another-org';
-      if (field === 'workspace') binding.task.scope.workspaceId = 'another-workspace';
-      if (field === 'operation') binding.attempt.operationId = 'another-operation';
-      if (field === 'missing-generation') native.generation = null;
-      if (field === 'envelope-conflict') { native.generation = 1; native.payload.generation = 0; }
-      const view = projectWorkProgress([native], '', true, true, [op]);
-      expect(view.items[0]?.operations).toBeUndefined();
-      expect(view.items[1]?.operations).toEqual([op]);
-    },
-  );
+  it.each([
+    'run',
+    'root',
+    'agent',
+    'generation',
+    'organization',
+    'workspace',
+    'operation',
+    'missing-generation',
+    'envelope-conflict',
+  ])('does not associate mismatched real %s facts', (field) => {
+    const op = reference('mismatched'),
+      binding = op.binding!,
+      native = tool(2, 'tool.started');
+    if (field === 'run') op.runId = 'another-run';
+    if (field === 'root') binding.task.rootRunId = 'another-root';
+    if (field === 'agent') binding.task.runId = 'another-agent-run';
+    if (field === 'generation') binding.attempt.generation = 1;
+    if (field === 'organization')
+      binding.task.scope.organizationId = 'another-org';
+    if (field === 'workspace')
+      binding.task.scope.workspaceId = 'another-workspace';
+    if (field === 'operation')
+      binding.attempt.operationId = 'another-operation';
+    if (field === 'missing-generation') native.generation = null;
+    if (field === 'envelope-conflict') {
+      native.generation = 1;
+      native.payload.generation = 0;
+    }
+    const view = projectWorkProgress([native], '', true, true, [op]);
+    expect(view.items[0]?.operations).toBeUndefined();
+    expect(view.items[1]?.operations).toEqual([op]);
+  });
   it('requires real managed job attempt and scope, never operation attemptNumber or fallback attempt 1', () => {
     const native = tool(2, 'tool.started');
     native.payload.attempt = 2;
     const managed: WorkProcessReference = {
-      ...reference('task'), source: 'managed-browser', binding: undefined,
-      organizationId: native.organizationId, workspaceId: native.workspaceId, jobAttempt: 2,
+      ...reference('task'),
+      source: 'managed-browser',
+      binding: undefined,
+      organizationId: native.organizationId,
+      workspaceId: native.workspaceId,
+      jobAttempt: 2,
     };
     const bound = reference('bound');
     bound.binding!.attempt.attemptNumber = 9;
     const old = { ...managed, id: 'old-task', jobAttempt: 1, failed: true };
-    expect(projectWorkProgress([native], '', true, true, [managed, bound, old]).items.map(
-      (item) => item.operations?.map((op) => op.id),
-    )).toEqual([['task', 'bound'], ['old-task']]);
+    expect(
+      projectWorkProgress([native], '', true, true, [
+        managed,
+        bound,
+        old,
+      ]).items.map((item) => item.operations?.map((op) => op.id)),
+    ).toEqual([['task', 'bound'], ['old-task']]);
     for (const op of [
-      { ...managed, organizationId: 'other-org' }, { ...managed, workspaceId: 'other-workspace' },
+      { ...managed, organizationId: 'other-org' },
+      { ...managed, workspaceId: 'other-workspace' },
     ]) {
       const view = projectWorkProgress([native], '', true, true, [op]);
       expect(view.items[0]?.operations).toBeUndefined();
@@ -293,7 +389,8 @@ describe('authorized history association', () => {
     }
     delete native.payload.attempt;
     for (const op of [
-      { ...managed, jobAttempt: 1 }, { ...managed, jobAttempt: undefined },
+      { ...managed, jobAttempt: 1 },
+      { ...managed, jobAttempt: undefined },
     ]) {
       const view = projectWorkProgress([native], '', true, true, [op]);
       expect(view.items[0]?.operations).toBeUndefined();
@@ -301,9 +398,16 @@ describe('authorized history association', () => {
     }
   });
   it('keeps no-event history and the authoritative final without fabricating tool:call', () => {
-    const view = projectWorkProgress([], '历史结论', false, true, [reference('history')]);
-    expect(view.items.map((item) => item.id)).toEqual(['operation:cloud:history']);
+    const view = projectWorkProgress([], '历史结论', false, true, [
+      reference('history'),
+    ]);
+    expect(view.items.map((item) => item.id)).toEqual([
+      'operation:cloud:history',
+    ]);
     expect(view.parts?.map((part) => part.kind)).toEqual(['steps', 'reply']);
-    expect(view.parts?.at(-1)).toMatchObject({ text: '历史结论', finalAnswer: true });
+    expect(view.parts?.at(-1)).toMatchObject({
+      text: '历史结论',
+      finalAnswer: true,
+    });
   });
 });

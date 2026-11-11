@@ -354,15 +354,25 @@ describeDatabase(
         taskInput(f, 'reused-call'),
         nextLease,
       );
-      expect(first).toMatchObject({ nativeCallId: 'reused-call', jobAttempt: 1 });
-      expect(second).toMatchObject({ nativeCallId: 'reused-call', jobAttempt: 2 });
+      expect(first).toMatchObject({
+        nativeCallId: 'reused-call',
+        jobAttempt: 1,
+      });
+      expect(second).toMatchObject({
+        nativeCallId: 'reused-call',
+        jobAttempt: 2,
+      });
       expect(second.id).not.toBe(first.id);
       const read = () =>
         listManagedBrowserTasks(context, f.ids.workspaceId, {
           runId: f.ids.runId,
         });
       expect(
-        (await read()).map((task) => [task.id, task.nativeCallId, task.jobAttempt]),
+        (await read()).map((task) => [
+          task.id,
+          task.nativeCallId,
+          task.jobAttempt,
+        ]),
       ).toEqual([
         [second.id, 'reused-call', 2],
         [first.id, 'reused-call', 1],

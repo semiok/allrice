@@ -6,7 +6,10 @@ import {
   type RuntimeLocalCommand,
   type RuntimeOperationSnapshot,
 } from '@allrice/contracts';
-import { LocalCommandRuntimeScope, localCommandMaterial } from './local-command-panel';
+import {
+  LocalCommandRuntimeScope,
+  localCommandMaterial,
+} from './local-command-panel';
 
 const command = {
   path: '.',
@@ -31,16 +34,26 @@ describe('local execution permission disclosure', () => {
         files: [{ path: 'input.csv', sha256: 'sha256:' + 'a'.repeat(64) }],
       },
       approval: null,
-      evidence: { summary: '已返回', output: { full: '<script>result</script>' } },
+      evidence: {
+        summary: '已返回',
+        output: { full: '<script>result</script>' },
+      },
       output: [],
     });
-    const html = renderToStaticMarkup(<>{material.fields.map((field) =>
-      <div key={field.label}>{field.value}</div>)}</>);
+    const html = renderToStaticMarkup(
+      <>
+        {material.fields.map((field) => (
+          <div key={field.label}>{field.value}</div>
+        ))}
+      </>,
+    );
     expect(material.binding).toBe(binding);
     expect(material.runId).toBe('persisted-run');
     expect(material.nativeCallId).toBe('native-call');
     expect(material.jobAttempt).toBeUndefined();
-    expect(html).toContain('line 1\\nline 2: &lt;script&gt;payload&lt;/script&gt;');
+    expect(html).toContain(
+      'line 1\\nline 2: &lt;script&gt;payload&lt;/script&gt;',
+    );
     expect(html).toContain('input.csv');
     expect(html).toContain('sha256:' + 'a'.repeat(64));
     expect(html).toContain('&lt;script&gt;result&lt;/script&gt;');

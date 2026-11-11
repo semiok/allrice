@@ -15,24 +15,48 @@ export interface WorkProcessMaterialFeed {
 }
 
 /** Read-only fields inside the existing native step, without a second title. */
-export function ProcessMaterialFields({ material, artifacts = [] }: {
+export function ProcessMaterialFields({
+  material,
+  artifacts = [],
+}: {
   material: WorkProcessMaterial;
   artifacts?: readonly WorkbenchArtifact[];
 }) {
-  const fields = [{ label: '状态', value: material.status }, ...material.fields];
-  return <div data-process-operation={material.id} data-process-source={material.source}
-    data-process-material={`${material.source}:${material.id}`}>
-    <dl className={styles.processDetailGrid} data-process-operation={`${material.source}:${material.id}`}>
-      {fields.map((field) => <Fragment key={field.label}>
-        <dt>{field.label}</dt><dd data-process-content={`material:${material.source}:${material.id}:${field.label}`}>{field.value}</dd>
-      </Fragment>)}
-      {artifacts.map((artifact) => <Fragment key={artifact.id}>
-        <dt>成果</dt><dd data-process-artifact={artifact.id}>
-          {artifact.version.fileName} · 版本 {artifact.version.version}
-        </dd>
-      </Fragment>)}
-    </dl>
-  </div>;
+  const fields = [
+    { label: '状态', value: material.status },
+    ...material.fields,
+  ];
+  return (
+    <div
+      data-process-operation={material.id}
+      data-process-source={material.source}
+      data-process-material={`${material.source}:${material.id}`}
+    >
+      <dl
+        className={styles.processDetailGrid}
+        data-process-operation={`${material.source}:${material.id}`}
+      >
+        {fields.map((field) => (
+          <Fragment key={field.label}>
+            <dt>{field.label}</dt>
+            <dd
+              data-process-content={`material:${material.source}:${material.id}:${field.label}`}
+            >
+              {field.value}
+            </dd>
+          </Fragment>
+        ))}
+        {artifacts.map((artifact) => (
+          <Fragment key={artifact.id}>
+            <dt>成果</dt>
+            <dd data-process-artifact={artifact.id}>
+              {artifact.version.fileName} · 版本 {artifact.version.version}
+            </dd>
+          </Fragment>
+        ))}
+      </dl>
+    </div>
+  );
 }
 
 /** The same authorized fields in place, without another disclosure or reader. */

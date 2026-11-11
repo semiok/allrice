@@ -41,10 +41,21 @@ suite('reading a receipt while late native trace changes its group', () => {
     server = createServer((req, res) => {
       const path = new URL(req.url!, origin).pathname,
         asset = assets.get(path);
-      if ([350, 336].some((number) => path === `/api/v1/files/${id(number)}/download`)) {
+      if (
+        [350, 336].some(
+          (number) => path === `/api/v1/files/${id(number)}/download`,
+        )
+      ) {
         res.setHeader('Content-Type', 'text/csv');
-        res.setHeader('Content-Disposition', 'attachment; filename="result.csv"');
-        res.end(path.includes(id(350)) ? 'item,count\nchecked,12\n' : 'public page evidence\n');
+        res.setHeader(
+          'Content-Disposition',
+          'attachment; filename="result.csv"',
+        );
+        res.end(
+          path.includes(id(350))
+            ? 'item,count\nchecked,12\n'
+            : 'public page evidence\n',
+        );
         return;
       }
       res.setHeader(
@@ -115,18 +126,24 @@ suite('reading a receipt while late native trace changes its group', () => {
     return state.owned;
   };
   const card = (page: Page, i: number) =>
-    i === 0 ? page.locator('#operation-reading-0')
+    i === 0
+      ? page.locator('#operation-reading-0')
       : page.locator(`[data-step-id="tool:call-${i}"]`);
   const material = (page: Page, i: number) =>
     page.locator(`[data-process-material="cloud:reading-${i}"]`);
-  const stepToggle = (step: Locator) => step.locator('[data-disclosure-row]').first();
+  const stepToggle = (step: Locator) =>
+    step.locator('[data-disclosure-row]').first();
   async function openGroups(page: Page) {
-    for (const row of await processBodyOf(page).getByRole('button', { name: '已调用工具', exact: true }).all())
-      if (await row.getAttribute('aria-expanded') !== 'true') await row.click();
+    for (const row of await processBodyOf(page)
+      .getByRole('button', { name: '已调用工具', exact: true })
+      .all())
+      if ((await row.getAttribute('aria-expanded')) !== 'true')
+        await row.click();
   }
   const fullButton = (page: Page) =>
     card(page, 0).getByRole('button', { name: '收起', exact: true });
-  const output = (page: Page) => material(page, 5).locator('pre[data-process-content="result"]').last();
+  const output = (page: Page) =>
+    material(page, 5).locator('pre[data-process-content="result"]').last();
   async function open(width = 1440, expandGroups = true) {
     const page = await browser.newPage({ viewport: { width, height: 900 } });
     page.setDefaultTimeout(8000);
@@ -141,7 +158,9 @@ suite('reading a receipt while late native trace changes its group', () => {
     await processOf(page).locator('[data-disclosure-row]').first().click();
     if (expandGroups) {
       await openGroups(page);
-      expect(await page.locator('[data-step-id^="tool:call-"]').count()).toBe(36);
+      expect(await page.locator('[data-step-id^="tool:call-"]').count()).toBe(
+        36,
+      );
     }
     return page;
   }
@@ -165,10 +184,13 @@ suite('reading a receipt while late native trace changes its group', () => {
   async function readResult(page: Page) {
     await openGroups(page);
     const toggle = stepToggle(card(page, 5));
-    if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
+    if ((await toggle.getAttribute('aria-expanded')) !== 'true')
+      await toggle.click();
     await output(page).waitFor();
     // The input scroller now precedes the result in the single native detail.
-    await material(page, 5).locator('pre[data-process-content="input"]').focus();
+    await material(page, 5)
+      .locator('pre[data-process-content="input"]')
+      .focus();
   }
   async function openProcess(width = 1440, theme = 'light', scenario = '') {
     const page = await browser.newPage({ viewport: { width, height: 900 } });
@@ -581,10 +603,15 @@ suite('reading a receipt while late native trace changes its group', () => {
       await group().focus();
       await page.keyboard.press('Enter');
       const later = card(page, 30);
-      const list = processBodyOf(page).locator('ul[aria-label="工作步骤"]').first();
+      const list = processBodyOf(page)
+        .locator('ul[aria-label="工作步骤"]')
+        .first();
       const listBox = (await list.boundingBox())!;
       await page.mouse.move(listBox.x + 10, listBox.y + 30);
-      await page.mouse.wheel(0, (await later.boundingBox())!.y - listBox.y - 100);
+      await page.mouse.wheel(
+        0,
+        (await later.boundingBox())!.y - listBox.y - 100,
+      );
       await page.mouse.move(2, 850);
       const groupBox = (await group().boundingBox())!;
       await page.mouse.wheel(0, groupBox.y + groupBox.height + 1);
@@ -783,7 +810,9 @@ suite('reading a receipt while late native trace changes its group', () => {
       for (const row of await group().all())
         expect(await row.getAttribute('aria-expanded')).toBe('false');
       await openGroups(page);
-      expect(await stepToggle(card(page, 5)).getAttribute('aria-expanded')).toBe('false');
+      expect(
+        await stepToggle(card(page, 5)).getAttribute('aria-expanded'),
+      ).toBe('false');
       await readResult(page);
       await page.evaluate(() => window.readingMount(false));
       await expect.poll(() => processOf(page).count()).toBe(0);
@@ -791,7 +820,9 @@ suite('reading a receipt while late native trace changes its group', () => {
       await processOf(page).waitFor();
       await processOf(page).locator('[data-disclosure-row]').first().click();
       await openGroups(page);
-      expect(await stepToggle(card(page, 5)).getAttribute('aria-expanded')).toBe('false');
+      expect(
+        await stepToggle(card(page, 5)).getAttribute('aria-expanded'),
+      ).toBe('false');
     } finally {
       await page.close();
     }
@@ -830,14 +861,22 @@ suite('reading a receipt while late native trace changes its group', () => {
       for (let index = 0; index < 36; index++) {
         const step = page.locator(`[data-step-id="tool:call-${index}"]`);
         await stepToggle(step).click();
-        expect(await step.locator(`[data-process-material="cloud:reading-${index}"]`).count()).toBe(1);
+        expect(
+          await step
+            .locator(`[data-process-material="cloud:reading-${index}"]`)
+            .count(),
+        ).toBe(1);
       }
       await update(page, 'append');
       await stepToggle(card(page, 36)).click();
       await material(page, 36).waitFor();
-      expect(await page.locator('[data-process-material^="cloud:reading-"]').count()).toBe(37);
+      expect(
+        await page.locator('[data-process-material^="cloud:reading-"]').count(),
+      ).toBe(37);
       expect(await page.evaluate(() => window.readingWrites)).toEqual([]);
-    } finally { await page.close(); }
+    } finally {
+      await page.close();
+    }
   });
   it('keeps the real reader mounted when late native and feature gates enable four panels', async () => {
     const page = await open(390);
@@ -846,20 +885,59 @@ suite('reading a receipt while late native trace changes its group', () => {
       const process = await processOf(page).elementHandle();
       const text = await output(page).evaluate((node) => {
         node.focus();
-        document.getSelection()!.setBaseAndExtent(node.firstChild!, 200, node.firstChild!, 220);
+        document
+          .getSelection()!
+          .setBaseAndExtent(node.firstChild!, 200, node.firstChild!, 220);
         return document.getSelection()!.toString();
       });
-      const paths = ['managed-browser-tasks', 'runtime/browser-workspaces', 'runtime/local-commands', 'runtime/local-mcp'];
-      for (const path of paths) expect(await page.evaluate((path) => window.readingReads[`/api/v1/${path}`] ?? 0, path)).toBe(0);
-      await page.evaluate(() => { window.readingEnablePanels(); window.readingUpdate('prefix'); });
-      for (const path of paths) await expect.poll(() => page.evaluate((path) => window.readingReads[`/api/v1/${path}`], path)).toBe(1);
-      expect(await processOf(page).evaluate((node, before) => node === before, process)).toBe(true);
-      expect(await card(page, 5).getAttribute('data-step-id')).toBe('tool:call-5');
-      expect(await stepToggle(card(page, 5)).getAttribute('aria-expanded')).toBe('true');
-      expect(await output(page).evaluate((node) => node === document.activeElement)).toBe(true);
-      expect(await page.evaluate(() => document.getSelection()!.toString())).toBe(text);
+      const paths = [
+        'managed-browser-tasks',
+        'runtime/browser-workspaces',
+        'runtime/local-commands',
+        'runtime/local-mcp',
+      ];
+      for (const path of paths)
+        expect(
+          await page.evaluate(
+            (path) => window.readingReads[`/api/v1/${path}`] ?? 0,
+            path,
+          ),
+        ).toBe(0);
+      await page.evaluate(() => {
+        window.readingEnablePanels();
+        window.readingUpdate('prefix');
+      });
+      for (const path of paths)
+        await expect
+          .poll(() =>
+            page.evaluate(
+              (path) => window.readingReads[`/api/v1/${path}`],
+              path,
+            ),
+          )
+          .toBe(1);
+      expect(
+        await processOf(page).evaluate(
+          (node, before) => node === before,
+          process,
+        ),
+      ).toBe(true);
+      expect(await card(page, 5).getAttribute('data-step-id')).toBe(
+        'tool:call-5',
+      );
+      expect(
+        await stepToggle(card(page, 5)).getAttribute('aria-expanded'),
+      ).toBe('true');
+      expect(
+        await output(page).evaluate((node) => node === document.activeElement),
+      ).toBe(true);
+      expect(
+        await page.evaluate(() => document.getSelection()!.toString()),
+      ).toBe(text);
       expect(await page.evaluate(() => window.readingWrites)).toEqual([]);
-    } finally { await page.close(); }
+    } finally {
+      await page.close();
+    }
   });
   const cardsMaterial = (page: Page, source: string, operation: string) =>
     page.locator(`[data-process-material="${source}:${operation}"]`);
@@ -869,60 +947,142 @@ suite('reading a receipt while late native trace changes its group', () => {
     await page.getByLabel('发送的完整参数', { exact: true }).waitFor();
     await stepToggle(processOf(page)).click();
     for (const step of await page.locator('[data-step-id]').all())
-      if (await stepToggle(step).getAttribute('aria-expanded') !== 'true') await stepToggle(step).click();
+      if ((await stepToggle(step).getAttribute('aria-expanded')) !== 'true')
+        await stepToggle(step).click();
     return page;
   }
   it('keeps exact mixed operation history, complete exterior approval and fixed unique deliverables', async () => {
     const page = await openCards(390, 'light');
     try {
       const pair = page.locator('[data-step-id="tool:cards-pair"]');
-      expect(await pair.locator('[data-process-material^="cloud:"]').count()).toBe(2);
+      expect(
+        await pair.locator('[data-process-material^="cloud:"]').count(),
+      ).toBe(2);
       expect(await pair.getAttribute('data-status')).toBe('已完成');
       expect(await pair.innerText()).toContain('Cannot find module');
-      for (const [call, operation] of [['cards-sales', ids.mcpOperation], ['cards-partner', ids.partnerOperation]])
-        expect(await page.locator(`[data-step-id="tool:${call}"] [data-process-material="cloud:${operation}"]`).count()).toBe(1);
-      expect(await page.locator(`[data-step-id="tool:cards-managed"] [data-process-material="managed-browser:${id(322)}"]`).count()).toBe(1);
-      expect(await page.locator(`[data-step-id="operation:managed-browser:${id(321)}"] [data-process-material]`).count()).toBe(1);
-      expect(await page.locator(`[data-step-id="operation:cloud:${ids.unknownOperation}"] [data-process-material]`).count()).toBe(1);
-      for (const [source, operation] of [['browser', id(310)], ['command', id(70)], ['mcp', id(92)]])
+      for (const [call, operation] of [
+        ['cards-sales', ids.mcpOperation],
+        ['cards-partner', ids.partnerOperation],
+      ])
+        expect(
+          await page
+            .locator(
+              `[data-step-id="tool:${call}"] [data-process-material="cloud:${operation}"]`,
+            )
+            .count(),
+        ).toBe(1);
+      expect(
+        await page
+          .locator(
+            `[data-step-id="tool:cards-managed"] [data-process-material="managed-browser:${id(322)}"]`,
+          )
+          .count(),
+      ).toBe(1);
+      expect(
+        await page
+          .locator(
+            `[data-step-id="operation:managed-browser:${id(321)}"] [data-process-material]`,
+          )
+          .count(),
+      ).toBe(1);
+      expect(
+        await page
+          .locator(
+            `[data-step-id="operation:cloud:${ids.unknownOperation}"] [data-process-material]`,
+          )
+          .count(),
+      ).toBe(1);
+      for (const [source, operation] of [
+        ['browser', id(310)],
+        ['command', id(70)],
+        ['mcp', id(92)],
+      ])
         expect(await cardsMaterial(page, source!, operation!).count()).toBe(1);
       for (const number of [313, 314]) {
-        const unassigned = page.locator(`[data-step-id="operation:browser:${id(number)}"]`);
-        expect(await unassigned.locator(`[data-process-material="browser:${id(number)}"]`).count()).toBe(1);
-        expect(await page.locator(`[data-step-id="tool:cards-browser"] [data-process-material="browser:${id(number)}"]`).count()).toBe(0);
+        const unassigned = page.locator(
+          `[data-step-id="operation:browser:${id(number)}"]`,
+        );
+        expect(
+          await unassigned
+            .locator(`[data-process-material="browser:${id(number)}"]`)
+            .count(),
+        ).toBe(1);
+        expect(
+          await page
+            .locator(
+              `[data-step-id="tool:cards-browser"] [data-process-material="browser:${id(number)}"]`,
+            )
+            .count(),
+        ).toBe(0);
       }
       const service = page.getByRole('region', { name: '项目实时预览' });
       expect(await service.innerText()).toContain('状态待核实');
-      expect(await service.getByRole('button', { name: '打开预览', exact: true }).isDisabled()).toBe(true);
+      expect(
+        await service
+          .getByRole('button', { name: '打开预览', exact: true })
+          .isDisabled(),
+      ).toBe(true);
       await stepToggle(processOf(page)).click();
       const complete = page.getByLabel('发送的完整参数', { exact: true });
       expect(await complete.isVisible()).toBe(true);
       expect(JSON.parse(await complete.innerText())).toEqual(partnerArguments);
       expect(await page.locator('[data-forged-review]').count()).toBe(0);
       const command = page.locator(`#operation-${id(70)}`);
-      for (const text of ['/usr/local/bin/node', 'scripts/report.mjs', '2026-10', 'data/sales.csv'])
+      for (const text of [
+        '/usr/local/bin/node',
+        'scripts/report.mjs',
+        '2026-10',
+        'data/sales.csv',
+      ])
         expect(await command.innerText()).toContain(text);
       const localMcp = page.locator(`#operation-${id(92)}`);
       expect(await localMcp.innerText()).toContain('上海星河贸易');
-      for (const target of [complete, command, localMcp, service, page.locator('table'), page.getByRole('button', { name: '我来操作' })]) {
+      for (const target of [
+        complete,
+        command,
+        localMcp,
+        service,
+        page.locator('table'),
+        page.getByRole('button', { name: '我来操作' }),
+      ]) {
         expect(await target.isVisible()).toBe(true);
         expect(await processOwns(processOf(page), target)).toBe(false);
       }
-      expect(await page.getByRole('button', { name: '核对结果.csv 文件选项', exact: true }).count()).toBe(2);
+      expect(
+        await page
+          .getByRole('button', { name: '核对结果.csv 文件选项', exact: true })
+          .count(),
+      ).toBe(2);
       expect(await page.evaluate(() => window.readingWrites)).toEqual([]);
-      await page.locator(`#operation-${ids.partnerOperation}`).getByRole('button', { name: '允许对外发送内容' }).click();
-      await expect.poll(() => page.evaluate(() => window.readingWrites.length)).toBe(1);
+      await page
+        .locator(`#operation-${ids.partnerOperation}`)
+        .getByRole('button', { name: '允许对外发送内容' })
+        .click();
+      await expect
+        .poll(() => page.evaluate(() => window.readingWrites.length))
+        .toBe(1);
       expect(await page.evaluate(() => window.readingWrites[0])).toMatchObject({
         url: `/api/v1/runtime/approvals/${ids.partnerApproval}`,
-        body: { approvalId: ids.partnerApproval, version: 1, requestDigest: `sha256:${'b'.repeat(64)}`, decision: 'approved' },
+        body: {
+          approvalId: ids.partnerApproval,
+          version: 1,
+          requestDigest: `sha256:${'b'.repeat(64)}`,
+          decision: 'approved',
+        },
       });
-      await service.getByRole('button', { name: '停止预览', exact: true }).click();
-      await expect.poll(() => page.evaluate(() => window.readingWrites.length)).toBe(2);
+      await service
+        .getByRole('button', { name: '停止预览', exact: true })
+        .click();
+      await expect
+        .poll(() => page.evaluate(() => window.readingWrites.length))
+        .toBe(2);
       expect(await page.evaluate(() => window.readingWrites[1])).toEqual({
         url: `/api/v1/runtime/project-services?workspaceId=${ids.workspace}&serviceId=${id(301)}`,
         body: { action: 'stop' },
       });
-      await expect.poll(() => service.innerText()).toContain('正在等待运行环境确认');
+      await expect
+        .poll(() => service.innerText())
+        .toContain('正在等待运行环境确认');
       expect(await pair.getAttribute('data-status')).toBe('已完成');
       const evidence = page.getByRole('region', { name: '云端浏览器任务' });
       await evidence.locator('summary').click();
@@ -931,34 +1091,72 @@ suite('reading a receipt while late native trace changes its group', () => {
       await evidence.getByRole('button', { name: '下载', exact: true }).click();
       await evidenceDownload;
       expect(await page.evaluate(() => window.readingWrites[2])).toEqual({
-        url: `/api/v1/files/${id(336)}/sign`, body: { lifetimeSeconds: 900 },
+        url: `/api/v1/files/${id(336)}/sign`,
+        body: { lifetimeSeconds: 900 },
       });
-      await page.getByRole('button', { name: '核对结果.csv 文件选项', exact: true }).first().click();
+      await page
+        .getByRole('button', { name: '核对结果.csv 文件选项', exact: true })
+        .first()
+        .click();
       const download = page.waitForEvent('download');
-      await page.getByRole('menuitem', { name: '下载文件', exact: true }).click();
+      await page
+        .getByRole('menuitem', { name: '下载文件', exact: true })
+        .click();
       const bytes: Buffer[] = [];
-      for await (const chunk of (await (await download).createReadStream())!) bytes.push(Buffer.from(chunk));
+      for await (const chunk of (await (await download).createReadStream())!)
+        bytes.push(Buffer.from(chunk));
       expect(Buffer.concat(bytes).toString()).toBe('item,count\nchecked,12\n');
-      await page.getByRole('button', { name: '核对结果.csv 文件选项', exact: true }).first().click();
-      await page.getByRole('menuitem', { name: '侧栏预览', exact: true }).click();
+      await page
+        .getByRole('button', { name: '核对结果.csv 文件选项', exact: true })
+        .first()
+        .click();
+      await page
+        .getByRole('menuitem', { name: '侧栏预览', exact: true })
+        .click();
       await page.getByText('item,count', { exact: true }).waitFor();
-      expect(await page.evaluate((path) => window.readingReads[path],
-        `/api/v1/sessions/${ids.session}/artifacts/${ids.artifact}`)).toBeGreaterThan(0);
-      await page.getByRole('button', { name: '关闭工作台', exact: true }).click();
-      await page.getByRole('button', { name: '文件修改建议.json 文件选项', exact: true }).click();
-      await page.getByRole('menuitem', { name: '侧栏预览', exact: true }).click();
+      expect(
+        await page.evaluate(
+          (path) => window.readingReads[path],
+          `/api/v1/sessions/${ids.session}/artifacts/${ids.artifact}`,
+        ),
+      ).toBeGreaterThan(0);
+      await page
+        .getByRole('button', { name: '关闭工作台', exact: true })
+        .click();
+      await page
+        .getByRole('button', {
+          name: '文件修改建议.json 文件选项',
+          exact: true,
+        })
+        .click();
+      await page
+        .getByRole('menuitem', { name: '侧栏预览', exact: true })
+        .click();
       await page.getByRole('button', { name: '允许保存这些修改' }).waitFor();
-      expect(await page.evaluate((path) => window.readingReads[path],
-        `/api/v1/sessions/${ids.session}/artifacts/${ids.doneArtifact}/executions`)).toBeGreaterThan(0);
+      expect(
+        await page.evaluate(
+          (path) => window.readingReads[path],
+          `/api/v1/sessions/${ids.session}/artifacts/${ids.doneArtifact}/executions`,
+        ),
+      ).toBeGreaterThan(0);
       expect(await page.evaluate(() => window.readingWrites.length)).toBe(3);
       await page.getByLabel('提案文件', { exact: true }).waitFor();
       await page.getByRole('button', { name: '允许保存这些修改' }).click();
-      await expect.poll(() => page.evaluate(() => window.readingWrites.length)).toBe(4);
+      await expect
+        .poll(() => page.evaluate(() => window.readingWrites.length))
+        .toBe(4);
       expect(await page.evaluate(() => window.readingWrites[3])).toMatchObject({
         url: `/api/v1/runtime/approvals/${ids.changesetApproval}`,
-        body: { approvalId: ids.changesetApproval, version: 1, requestDigest: `sha256:${'b'.repeat(64)}`, decision: 'approved' },
+        body: {
+          approvalId: ids.changesetApproval,
+          version: 1,
+          requestDigest: `sha256:${'b'.repeat(64)}`,
+          decision: 'approved',
+        },
       });
-    } finally { await page.close(); }
+    } finally {
+      await page.close();
+    }
   });
   it('keeps the original polling deadlines when opening and closing mixed history', async () => {
     const page = await browser.newPage();
@@ -968,9 +1166,20 @@ suite('reading a receipt while late native trace changes its group', () => {
       await page.clock.pauseAt(new Date(time.getTime() + 1000));
       await page.goto(`${origin}/?cards`);
       await page.getByLabel('发送的完整参数', { exact: true }).waitFor();
-      await expect.poll(() => page.evaluate(() => window.readingReads['/api/v1/runtime/local-mcp'])).toBe(2);
-      await page.getByRole('button', { name: '文件修改建议.json 文件选项', exact: true }).click();
-      await page.getByRole('menuitem', { name: '侧栏预览', exact: true }).click();
+      await expect
+        .poll(() =>
+          page.evaluate(() => window.readingReads['/api/v1/runtime/local-mcp']),
+        )
+        .toBe(2);
+      await page
+        .getByRole('button', {
+          name: '文件修改建议.json 文件选项',
+          exact: true,
+        })
+        .click();
+      await page
+        .getByRole('menuitem', { name: '侧栏预览', exact: true })
+        .click();
       await page.getByRole('button', { name: '允许保存这些修改' }).waitFor();
       const before = await page.evaluate(() => ({ ...window.readingReads }));
       await page.clock.runFor(500);
@@ -980,77 +1189,185 @@ suite('reading a receipt while late native trace changes its group', () => {
       expect(await page.evaluate(() => window.readingReads)).toEqual(before);
       await page.clock.runFor(700);
       for (const [path, count] of Object.entries(before))
-        expect(await page.evaluate((path) => window.readingReads[path], path)).toBe(count + (
-          ['cloud-operations', 'local-commands', 'local-mcp', 'browser-workspaces', 'executions'].some((name) => path.endsWith(name)) ? 1 : 0
-        ));
+        expect(
+          await page.evaluate((path) => window.readingReads[path], path),
+        ).toBe(
+          count +
+            ([
+              'cloud-operations',
+              'local-commands',
+              'local-mcp',
+              'browser-workspaces',
+              'executions',
+            ].some((name) => path.endsWith(name))
+              ? 1
+              : 0),
+        );
       expect(await page.evaluate(() => window.readingWrites)).toEqual([]);
-    } finally { await page.close(); }
+    } finally {
+      await page.close();
+    }
   });
-  for (const width of [1440, 390]) for (const theme of ['light', 'dark'])
-    it(`captures real mixed history and exterior review at ${width}px in ${theme}`, async () => {
-      const page = await openCards(width, theme);
-      try {
-        const weak = await page.locator('[data-process-material] dt, [data-process-material] dd, [data-process-material] pre, [class*="processStepStatus"]').evaluateAll((nodes) => {
-          const context = document.createElement('canvas').getContext('2d')!;
-          const paint = (colour: string) => { context.fillStyle = colour; context.fillRect(0, 0, 1, 1); };
-          const light = (rgb: Uint8ClampedArray) => [...rgb].slice(0, 3).map((v) => {
-            const channel = v / 255;
-            return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
-          }).reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index]!, 0);
-          return nodes.filter((node) => node.getClientRects().length).flatMap((node) => {
-            const backgrounds: string[] = [];
-            for (let at: Element | null = node; at; at = at.parentElement) backgrounds.unshift(getComputedStyle(at).backgroundColor);
-            paint('white'); backgrounds.forEach(paint);
-            const ground = light(context.getImageData(0, 0, 1, 1).data);
-            paint(getComputedStyle(node).color);
-            const ink = light(context.getImageData(0, 0, 1, 1).data);
-            const ratio = (Math.max(ink, ground) + 0.05) / (Math.min(ink, ground) + 0.05);
-            return ratio < 4.5 ? [`${node.textContent?.slice(0, 30)} ${ratio}`] : [];
-          });
-        });
-        expect(weak).toEqual([]);
-        const outputDirectory = '.local/quality/met245-process-c';
-        await mkdir(outputDirectory, { recursive: true });
-        const sourceSha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-        for (const view of ['history', 'current']) {
-          const target = view === 'history'
-            ? page.locator('[data-step-id="tool:cards-pair"] [data-process-material]').last().locator('dt').first()
-            : page.getByLabel('发送的完整参数', { exact: true });
-          if (view === 'current') await stepToggle(processOf(page)).click();
-          await target.evaluate((node, view) => node.scrollIntoView({ block: view === 'history' ? 'center' : 'start' }), view);
-          const framing = await page.locator('[data-step-id="tool:cards-pair"] [data-process-material]').evaluateAll((nodes) => nodes.map((node) => {
-            const bounds = node.getBoundingClientRect();
-            let top = Math.max(0, bounds.top), bottom = Math.min(innerHeight, bounds.bottom);
-            const scrolls: { className: string; scrollTop: number; clientHeight: number }[] = [];
-            for (let parent = node.parentElement; parent; parent = parent.parentElement) {
-              if (/(auto|scroll|hidden|clip)/.test(getComputedStyle(parent).overflowY)) {
-                const clip = parent.getBoundingClientRect();
-                top = Math.max(top, clip.top); bottom = Math.min(bottom, clip.bottom);
-                scrolls.push({ className: parent.className, scrollTop: parent.scrollTop, clientHeight: parent.clientHeight });
-              }
+  for (const width of [1440, 390])
+    for (const theme of ['light', 'dark'])
+      it(`captures real mixed history and exterior review at ${width}px in ${theme}`, async () => {
+        const page = await openCards(width, theme);
+        try {
+          const weak = await page
+            .locator(
+              '[data-process-material] dt, [data-process-material] dd, [data-process-material] pre, [class*="processStepStatus"]',
+            )
+            .evaluateAll((nodes) => {
+              const context = document
+                .createElement('canvas')
+                .getContext('2d')!;
+              const paint = (colour: string) => {
+                context.fillStyle = colour;
+                context.fillRect(0, 0, 1, 1);
+              };
+              const light = (rgb: Uint8ClampedArray) =>
+                [...rgb]
+                  .slice(0, 3)
+                  .map((v) => {
+                    const channel = v / 255;
+                    return channel <= 0.04045
+                      ? channel / 12.92
+                      : ((channel + 0.055) / 1.055) ** 2.4;
+                  })
+                  .reduce(
+                    (sum, value, index) =>
+                      sum + value * [0.2126, 0.7152, 0.0722][index]!,
+                    0,
+                  );
+              return nodes
+                .filter((node) => node.getClientRects().length)
+                .flatMap((node) => {
+                  const backgrounds: string[] = [];
+                  for (let at: Element | null = node; at; at = at.parentElement)
+                    backgrounds.unshift(getComputedStyle(at).backgroundColor);
+                  paint('white');
+                  backgrounds.forEach(paint);
+                  const ground = light(context.getImageData(0, 0, 1, 1).data);
+                  paint(getComputedStyle(node).color);
+                  const ink = light(context.getImageData(0, 0, 1, 1).data);
+                  const ratio =
+                    (Math.max(ink, ground) + 0.05) /
+                    (Math.min(ink, ground) + 0.05);
+                  return ratio < 4.5
+                    ? [`${node.textContent?.slice(0, 30)} ${ratio}`]
+                    : [];
+                });
+            });
+          expect(weak).toEqual([]);
+          const outputDirectory = '.local/quality/met245-process-c';
+          await mkdir(outputDirectory, { recursive: true });
+          const sourceSha = execFileSync('git', ['rev-parse', 'HEAD'], {
+            encoding: 'utf8',
+          }).trim();
+          for (const view of ['history', 'current']) {
+            const target =
+              view === 'history'
+                ? page
+                    .locator(
+                      '[data-step-id="tool:cards-pair"] [data-process-material]',
+                    )
+                    .last()
+                    .locator('dt')
+                    .first()
+                : page.getByLabel('发送的完整参数', { exact: true });
+            if (view === 'current') await stepToggle(processOf(page)).click();
+            await target.evaluate(
+              (node, view) =>
+                node.scrollIntoView({
+                  block: view === 'history' ? 'center' : 'start',
+                }),
+              view,
+            );
+            const framing = await page
+              .locator(
+                '[data-step-id="tool:cards-pair"] [data-process-material]',
+              )
+              .evaluateAll((nodes) =>
+                nodes.map((node) => {
+                  const bounds = node.getBoundingClientRect();
+                  let top = Math.max(0, bounds.top),
+                    bottom = Math.min(innerHeight, bounds.bottom);
+                  const scrolls: {
+                    className: string;
+                    scrollTop: number;
+                    clientHeight: number;
+                  }[] = [];
+                  for (
+                    let parent = node.parentElement;
+                    parent;
+                    parent = parent.parentElement
+                  ) {
+                    if (
+                      /(auto|scroll|hidden|clip)/.test(
+                        getComputedStyle(parent).overflowY,
+                      )
+                    ) {
+                      const clip = parent.getBoundingClientRect();
+                      top = Math.max(top, clip.top);
+                      bottom = Math.min(bottom, clip.bottom);
+                      scrolls.push({
+                        className: parent.className,
+                        scrollTop: parent.scrollTop,
+                        clientHeight: parent.clientHeight,
+                      });
+                    }
+                  }
+                  return {
+                    material: node.getAttribute('data-process-material'),
+                    bounds: bounds.toJSON(),
+                    visibleHeight: Math.max(0, bottom - top),
+                    scrolls,
+                  };
+                }),
+              );
+            if (view === 'history') {
+              expect(framing.length).toBe(2);
+              for (const material of framing)
+                expect(material.visibleHeight).toBeGreaterThan(24);
             }
-            return { material: node.getAttribute('data-process-material'), bounds: bounds.toJSON(), visibleHeight: Math.max(0, bottom - top), scrolls };
-          }));
-          if (view === 'history') {
-            expect(framing.length).toBe(2);
-            for (const material of framing) expect(material.visibleHeight).toBeGreaterThan(24);
+            const name = `cards-${view}-${width}-${theme}`;
+            await page.screenshot({ path: `${outputDirectory}/${name}.png` });
+            await writeFile(
+              `${outputDirectory}/${name}.json`,
+              JSON.stringify(
+                {
+                  sourceSha,
+                  width,
+                  height: 900,
+                  theme,
+                  scenario: 'cards',
+                  view,
+                  scrollY: await page.evaluate(() => scrollY),
+                  target: await target.boundingBox(),
+                  framing,
+                  scope:
+                    view === 'history'
+                      ? 'partial 1:N boundary: first result tail and second status/location/input; full values covered by behavior'
+                      : 'complete MCP parameter scroller and exterior approval; other controls/artifacts covered by behavior',
+                },
+                null,
+                2,
+              ),
+            );
           }
-          const name = `cards-${view}-${width}-${theme}`;
-          await page.screenshot({ path: `${outputDirectory}/${name}.png` });
-          await writeFile(`${outputDirectory}/${name}.json`, JSON.stringify({
-            sourceSha, width, height: 900, theme, scenario: 'cards', view,
-            scrollY: await page.evaluate(() => scrollY), target: await target.boundingBox(), framing,
-            scope: view === 'history' ? 'partial 1:N boundary: first result tail and second status/location/input; full values covered by behavior'
-              : 'complete MCP parameter scroller and exterior approval; other controls/artifacts covered by behavior',
-          }, null, 2));
+        } finally {
+          await page.close();
         }
-      } finally { await page.close(); }
-    });
+      });
   it('keeps real mixed fields inside 320px and uses actual 180/181px detail layout', async () => {
     const page = await openCards(320, 'light');
     try {
       const fields = cardsMaterial(page, 'command', id(70));
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
       for (const width of [180, 181]) {
         const before = await detailGeometry(page, fields);
         await page.locator('main').evaluate((node, difference) => {
@@ -1065,7 +1382,9 @@ suite('reading a receipt while late native trace changes its group', () => {
           expect(geometry.valueX).toBeCloseTo(geometry.labelX, 0);
         } else expect(geometry.valueY).toBeCloseTo(geometry.labelY, 0);
       }
-    } finally { await page.close(); }
+    } finally {
+      await page.close();
+    }
   });
   it('keeps exact native question ownership, answer authority and final deliverables outside the folded process', async () => {
     const { page, errors, primary } = await openProcess();

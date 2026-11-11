@@ -31,8 +31,9 @@ function render(
   overrides: Partial<ComponentProps<typeof ChatTranscript>> = {},
   cloudFeed: Partial<WorkProcessMaterialFeed> = {},
 ) {
-  panels.local.mockImplementation(({ children }) =>
-    children?.({ history: [], interaction: null, feedback: null }) ?? null,
+  panels.local.mockImplementation(
+    ({ children }) =>
+      children?.({ history: [], interaction: null, feedback: null }) ?? null,
   );
   panels.cloud.mockImplementation(
     ({ children }) =>
@@ -67,16 +68,31 @@ function render(
 describe('historical transcript capability gating', () => {
   it('renders the first material selected by source and id without borrowing a duplicate body', () => {
     const first = {
-      source: 'cloud' as const, id: 'same', runId: 'run-0',
-      title: '第一份历史材料', status: '已完成',
+      source: 'cloud' as const,
+      id: 'same',
+      runId: 'run-0',
+      title: '第一份历史材料',
+      status: '已完成',
       fields: [{ label: '结果', value: 'FIRST_BODY' }],
     };
-    const html = render(false, [messages[0]!], undefined, { transcriptView: 'verbose' }, {
-      history: [first,
-        { ...first, fields: [{ label: '结果', value: 'DUPLICATE_BODY' }] },
-        { ...first, source: 'mcp', fields: [{ label: '结果', value: 'OTHER_SOURCE_BODY' }] }],
-      interaction: <button>唯一当前审批</button>,
-    });
+    const html = render(
+      false,
+      [messages[0]!],
+      undefined,
+      { transcriptView: 'verbose' },
+      {
+        history: [
+          first,
+          { ...first, fields: [{ label: '结果', value: 'DUPLICATE_BODY' }] },
+          {
+            ...first,
+            source: 'mcp',
+            fields: [{ label: '结果', value: 'OTHER_SOURCE_BODY' }],
+          },
+        ],
+        interaction: <button>唯一当前审批</button>,
+      },
+    );
     expect(html.match(/data-process-material="cloud:same"/g)).toHaveLength(1);
     expect(html.match(/data-process-material="mcp:same"/g)).toHaveLength(1);
     expect(html).toContain('FIRST_BODY');

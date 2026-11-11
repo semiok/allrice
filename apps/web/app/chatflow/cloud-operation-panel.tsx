@@ -182,7 +182,9 @@ function McpApprovalDetails({
 
 type Decision = 'approved' | 'rejected' | 'cancel';
 
-export function cloudOperationMaterial(op: CloudOperationView): WorkProcessMaterial {
+export function cloudOperationMaterial(
+  op: CloudOperationView,
+): WorkProcessMaterial {
   const { kind, ...input } = op.proposal;
   return {
     source: 'cloud',
@@ -201,13 +203,18 @@ export function cloudOperationMaterial(op: CloudOperationView): WorkProcessMater
     fields: [
       {
         label: '位置',
-        value: op.proposal.kind === 'mcp'
-          ? serviceHost(op.proposal.endpoint)
-          : '云端计算',
+        value:
+          op.proposal.kind === 'mcp'
+            ? serviceHost(op.proposal.endpoint)
+            : '云端计算',
       },
       {
         label: '输入',
-        value: <pre data-process-content="input">{JSON.stringify(input, null, 2)}</pre>,
+        value: (
+          <pre data-process-content="input">
+            {JSON.stringify(input, null, 2)}
+          </pre>
+        ),
       },
       {
         label: '结果',
@@ -219,12 +226,18 @@ export function cloudOperationMaterial(op: CloudOperationView): WorkProcessMater
               ['返回代码', op.result?.code ?? '无'],
             ]}
           >
-            {op.approval?.response && <p>
-              {op.approval.response.decision === 'approved' ? '你已允许这一步' : '你已拒绝这一步'}
-              {op.approval.revokedAt ? '，之后已撤回' : ''}
-            </p>}
+            {op.approval?.response && (
+              <p>
+                {op.approval.response.decision === 'approved'
+                  ? '你已允许这一步'
+                  : '你已拒绝这一步'}
+                {op.approval.revokedAt ? '，之后已撤回' : ''}
+              </p>
+            )}
             <pre data-process-content="result">
-              {op.result ? op.result.output || '没有返回内容。' : '还没有返回内容。'}
+              {op.result
+                ? op.result.output || '没有返回内容。'
+                : '还没有返回内容。'}
             </pre>
           </InlineProcessFields>
         ),
@@ -872,9 +885,16 @@ export function CloudOperationCard({
     ];
   }
   if (
-    interactionOnly && terminal && !op.projectService && op.enabled &&
-    !mcpUnavailable && !failure && !networkFailure && !resolutionFailure
-  ) return null;
+    interactionOnly &&
+    terminal &&
+    !op.projectService &&
+    op.enabled &&
+    !mcpUnavailable &&
+    !failure &&
+    !networkFailure &&
+    !resolutionFailure
+  )
+    return null;
   return (
     <article
       className={styles.card}
@@ -958,36 +978,47 @@ export function CloudOperationCard({
       </header>
       {!isMcp && notices}
       {isMcp && interactionOnly && (
-        <div className={styles.receiptNotes}>{notices}{receiptNotes}</div>
+        <div className={styles.receiptNotes}>
+          {notices}
+          {receiptNotes}
+        </div>
       )}
-      {!interactionOnly && <div id={detailsId} hidden={!detailsOpen}>
-        <WorkProcessDisclosureScope id={`details:${!!pending}`}>
-          <OperationDetails
-            key={`${op.snapshot.binding.attempt.operationId}-${!!pending}`}
-            sections={sections}
-            initialSection={
-              pending ? (isMcp ? 'arguments' : 'execution') : null
-            }
-          />
-        </WorkProcessDisclosureScope>
-        {isMcp && (
-          <div className={styles.receiptNotes}>
-            {notices}
-            {receiptNotes}
-          </div>
-        )}
-      </div>}
+      {!interactionOnly && (
+        <div id={detailsId} hidden={!detailsOpen}>
+          <WorkProcessDisclosureScope id={`details:${!!pending}`}>
+            <OperationDetails
+              key={`${op.snapshot.binding.attempt.operationId}-${!!pending}`}
+              sections={sections}
+              initialSection={
+                pending ? (isMcp ? 'arguments' : 'execution') : null
+              }
+            />
+          </WorkProcessDisclosureScope>
+          {isMcp && (
+            <div className={styles.receiptNotes}>
+              {notices}
+              {receiptNotes}
+            </div>
+          )}
+        </div>
+      )}
       {pending && (
         <div className={styles.approvalReview}>
           <p>{approvalSummary(proposal)}</p>
           {proposal.kind === 'mcp' && (
             <McpApprovalDetails proposal={proposal} />
           )}
-          {interactionOnly && sections.filter((section) => section.key !== 'result').map((section) => (
-            <div key={section.key} data-process-content={`approval:${section.key}`}>
-              {section.content}
-            </div>
-          ))}
+          {interactionOnly &&
+            sections
+              .filter((section) => section.key !== 'result')
+              .map((section) => (
+                <div
+                  key={section.key}
+                  data-process-content={`approval:${section.key}`}
+                >
+                  {section.content}
+                </div>
+              ))}
           {plannedOutputs}
           <div className={styles.actions}>
             <Button
@@ -1032,11 +1063,13 @@ export function CloudOperationPanel({
   workspaceId: string;
   tenantHeaders: Record<string, string>;
   runActive: boolean;
-  children?: (feed: WorkProcessMaterialFeed & {
-    operations: CloudOperationView[];
-    renderOperation: (operationId: string) => ReactNode;
-    feedback: ReactNode;
-  }) => ReactNode;
+  children?: (
+    feed: WorkProcessMaterialFeed & {
+      operations: CloudOperationView[];
+      renderOperation: (operationId: string) => ReactNode;
+      feedback: ReactNode;
+    },
+  ) => ReactNode;
 }) {
   const [operations, setOperations] = useState<CloudOperationView[]>([]),
     [loadError, setLoadError] = useState(''),
@@ -1197,35 +1230,41 @@ export function CloudOperationPanel({
       (op) => op.snapshot.binding.attempt.operationId === operationId,
     );
     return op ? (
-      <WorkProcessDisclosureScope key={operationId} id={`${runId}:${operationId}`}>
-      <CloudOperationCard
-        projectServiceContext={{
-          workspaceId,
-          tenantHeaders,
-          onChanged: () => setRevision((value) => value + 1),
-        }}
-        key={op.snapshot.binding.attempt.operationId}
-        op={op}
-        interactionOnly={interactionOnly}
-        runActive={runActive}
-        laterSuccessId={laterSuccessfulMcpCall(op, operations)}
-        busy={busy}
-        cancelPending={
-          pendingDecision === 'cancel' ||
-          (cancellationRunId === runId && op.snapshot.status !== 'unknown')
-        }
-        onAct={(operation, decision) => void act(operation, decision)}
-      />
+      <WorkProcessDisclosureScope
+        key={operationId}
+        id={`${runId}:${operationId}`}
+      >
+        <CloudOperationCard
+          projectServiceContext={{
+            workspaceId,
+            tenantHeaders,
+            onChanged: () => setRevision((value) => value + 1),
+          }}
+          key={op.snapshot.binding.attempt.operationId}
+          op={op}
+          interactionOnly={interactionOnly}
+          runActive={runActive}
+          laterSuccessId={laterSuccessfulMcpCall(op, operations)}
+          busy={busy}
+          cancelPending={
+            pendingDecision === 'cancel' ||
+            (cancellationRunId === runId && op.snapshot.status !== 'unknown')
+          }
+          onAct={(operation, decision) => void act(operation, decision)}
+        />
       </WorkProcessDisclosureScope>
     ) : null;
   };
-  if (children) return children({
-    operations,
-    renderOperation,
-    feedback,
-    history: operations.map(cloudOperationMaterial),
-    interaction: operations.map((op) => renderOperation(op.snapshot.binding.attempt.operationId, true)),
-  });
+  if (children)
+    return children({
+      operations,
+      renderOperation,
+      feedback,
+      history: operations.map(cloudOperationMaterial),
+      interaction: operations.map((op) =>
+        renderOperation(op.snapshot.binding.attempt.operationId, true),
+      ),
+    });
   if (!operations.length && !loadError && !actionError && !readFeedback)
     return null;
   return (

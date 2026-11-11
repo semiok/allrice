@@ -1355,7 +1355,12 @@ suite('P22 real PostgreSQL device browser authority', () => {
       b = f.browser!;
     await db`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy)
       select id,organization_id,workspace_id,'{"version":1,"timeoutMs":300000,"sources":[]}'::jsonb from allrice_runs where id=${f.run}`;
-    const op = await createBrowserOperation(f.context, b.command, randomUUID(), db),
+    const op = await createBrowserOperation(
+        f.context,
+        b.command,
+        randomUUID(),
+        db,
+      ),
       operationId = op.snapshot.binding.attempt.operationId;
     await linkTaskOperationCall(db, operationId, 'local-native-call');
     await f.approve(op);

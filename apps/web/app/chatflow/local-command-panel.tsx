@@ -55,45 +55,87 @@ const statusLabels: Record<string, string> = {
 export function localCommandMaterial(op: Operation): WorkProcessMaterial {
   const result = RuntimeLocalCommandResultSchema.safeParse(op.evidence?.output);
   const receipt = result.success
-    ? { ...result.data, stdout: undefined, stderr: undefined } : op.evidence?.output;
+    ? { ...result.data, stdout: undefined, stderr: undefined }
+    : op.evidence?.output;
   return {
     source: 'command',
     id: op.snapshot.binding.attempt.operationId,
     runId: op.snapshot.binding.task.runId,
     nativeCallId: op.nativeCallId,
     binding: op.snapshot.binding,
-    title: op.command?.diagnostics ? '项目环境诊断'
-      : op.command?.dependencies || op.command?.projectPreparation ? '依赖准备与验证'
-      : op.file ? '本地文件' : '本地命令',
+    title: op.command?.diagnostics
+      ? '项目环境诊断'
+      : op.command?.dependencies || op.command?.projectPreparation
+        ? '依赖准备与验证'
+        : op.file
+          ? '本地文件'
+          : '本地命令',
     status: statusLabels[op.snapshot.status] ?? op.snapshot.status,
     failed: op.snapshot.status === 'failed',
     fields: [
-      { label: '位置', value: op.command?.path ?? op.file?.arguments.path ?? '本地沙箱' },
+      {
+        label: '位置',
+        value: op.command?.path ?? op.file?.arguments.path ?? '本地沙箱',
+      },
       {
         label: '输入',
-        value: <pre data-process-content="input">{JSON.stringify({
-          command: op.command,
-          file: op.file,
-          executionBudget: op.executionBudget,
-        }, null, 2)}</pre>,
+        value: (
+          <pre data-process-content="input">
+            {JSON.stringify(
+              {
+                command: op.command,
+                file: op.file,
+                executionBudget: op.executionBudget,
+              },
+              null,
+              2,
+            )}
+          </pre>
+        ),
       },
       {
         label: '结果',
-        value: <>
-          {op.evidence && <p>{op.evidence.summary}</p>}
-          {op.approval?.response && <p>你的决定：{op.approval.response.decision === 'approved'
-            ? '已批准这一次执行（不等于已完成）' : '已拒绝'}</p>}
-          {receipt !== undefined && <pre data-process-content="result">
-            {JSON.stringify(receipt, null, 2)}
-          </pre>}
-          {result.success ? <>
-            <pre aria-label="stdout">{result.data.stdout}</pre>
-            <pre aria-label="stderr" className={styles.stderr}>{result.data.stderr}</pre>
-          </> : op.output.length > 0 && <pre data-process-content="output">
-            {op.output.map((chunk) => <span key={chunk.sequence}
-              className={chunk.stream === 'stderr' ? styles.stderr : undefined}>{chunk.content}</span>)}
-          </pre>}
-        </>,
+        value: (
+          <>
+            {op.evidence && <p>{op.evidence.summary}</p>}
+            {op.approval?.response && (
+              <p>
+                你的决定：
+                {op.approval.response.decision === 'approved'
+                  ? '已批准这一次执行（不等于已完成）'
+                  : '已拒绝'}
+              </p>
+            )}
+            {receipt !== undefined && (
+              <pre data-process-content="result">
+                {JSON.stringify(receipt, null, 2)}
+              </pre>
+            )}
+            {result.success ? (
+              <>
+                <pre aria-label="stdout">{result.data.stdout}</pre>
+                <pre aria-label="stderr" className={styles.stderr}>
+                  {result.data.stderr}
+                </pre>
+              </>
+            ) : (
+              op.output.length > 0 && (
+                <pre data-process-content="output">
+                  {op.output.map((chunk) => (
+                    <span
+                      key={chunk.sequence}
+                      className={
+                        chunk.stream === 'stderr' ? styles.stderr : undefined
+                      }
+                    >
+                      {chunk.content}
+                    </span>
+                  ))}
+                </pre>
+              )
+            )}
+          </>
+        ),
       },
     ],
   };
@@ -274,16 +316,19 @@ export function LocalCommandPanel({
       setBusy(null);
     }
   }
-  if (!enabled) return children?.({ history: [], interaction: null, feedback: null }) ?? null;
+  if (!enabled)
+    return (
+      children?.({ history: [], interaction: null, feedback: null }) ?? null
+    );
   if (!operations.length && !error && !children) return null;
   const feedback = error && (
-        <p role="alert">
-          {error}{' '}
-          <button type="button" onClick={() => setRevision((v) => v + 1)}>
-            重试
-          </button>
-        </p>
-      );
+    <p role="alert">
+      {error}{' '}
+      <button type="button" onClick={() => setRevision((v) => v + 1)}>
+        重试
+      </button>
+    </p>
+  );
   const interaction = (
     <section className={styles.root} aria-label="本地命令审批与执行">
       {!children && feedback}
@@ -299,8 +344,11 @@ export function LocalCommandPanel({
         const result = RuntimeLocalCommandResultSchema.safeParse(
           op.evidence?.output,
         );
-        const active = !['succeeded', 'failed', 'canceled', 'partial'].includes(op.snapshot.status);
-        const currentMaterial = pending || op.command?.candidate || op.command?.background;
+        const active = !['succeeded', 'failed', 'canceled', 'partial'].includes(
+          op.snapshot.status,
+        );
+        const currentMaterial =
+          pending || op.command?.candidate || op.command?.background;
         if (children && !active && !currentMaterial) return null;
         return (
           <article
@@ -637,7 +685,11 @@ export function LocalCommandPanel({
       })}
     </section>
   );
-  return children ? children({
-    history: operations.map(localCommandMaterial), interaction, feedback,
-  }) : interaction;
+  return children
+    ? children({
+        history: operations.map(localCommandMaterial),
+        interaction,
+        feedback,
+      })
+    : interaction;
 }

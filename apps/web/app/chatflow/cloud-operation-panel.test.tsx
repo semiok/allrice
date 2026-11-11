@@ -272,10 +272,17 @@ describe('Cloud/MCP approval presentation', () => {
       Array.from({ length: 60 }, (_, i) => [`field-${i}`, `值${i}<script>`]),
     );
     const html = renderToStaticMarkup(
-      <CloudOperationCard op={op} busy={false} interactionOnly onAct={() => {}} />,
+      <CloudOperationCard
+        op={op}
+        busy={false}
+        interactionOnly
+        onAct={() => {}}
+      />,
     );
     const material = cloudOperationMaterial(op);
-    const history = renderToStaticMarkup(<>{material.fields.map((field) => field.value)}</>);
+    const history = renderToStaticMarkup(
+      <>{material.fields.map((field) => field.value)}</>,
+    );
     for (let i = 0; i < 60; i++) {
       expect(html).toContain(`值${i}&lt;script&gt;`);
       expect(history).toContain(`值${i}&lt;script&gt;`);
@@ -376,9 +383,9 @@ describe('Cloud/MCP approval presentation', () => {
     // The standalone details remain folded; the history material is intact.
     expect(html).not.toContain('saved:synthetic;call-count:1');
     const material = cloudOperationMaterial(op);
-    expect(renderToStaticMarkup(<>{material.fields.at(-1)!.value}</>)).toContain(
-      'saved:synthetic;call-count:1',
-    );
+    expect(
+      renderToStaticMarkup(<>{material.fields.at(-1)!.value}</>),
+    ).toContain('saved:synthetic;call-count:1');
     expect(html).not.toContain('请求停止本轮全部操作');
     expect(op.result.trusted).toBe(false);
   });

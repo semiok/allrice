@@ -288,8 +288,9 @@ suite('authorized operation records stay readable inline', () => {
         'notify',
         'recipients 第 1 项 · email',
         'note',
-        ...Array.from({ length: 45 }, (_, index) =>
-          `review · field_${String(index + 1).padStart(2, '0')}`,
+        ...Array.from(
+          { length: 45 },
+          (_, index) => `review · field_${String(index + 1).padStart(2, '0')}`,
         ),
       ]);
       expect(Object.fromEntries(partner).note).toBe(forgedNote);
@@ -350,9 +351,7 @@ suite('authorized operation records stay readable inline', () => {
     const page = await open(390, 'light');
     try {
       const pending = card(page, ids.mcpOperation);
-      expect(
-        await pending.getByLabel('发送的原始参数').isVisible(),
-      ).toBe(true);
+      expect(await pending.getByLabel('发送的原始参数').isVisible()).toBe(true);
       expect(await pending.innerText()).toContain('"channel": "sales"');
       for (const [operation, raw] of [
         [ids.projectOperation, 'EXECUTION_FAILED'],
@@ -409,7 +408,8 @@ suite('authorized operation records stay readable inline', () => {
       );
       const original = cloudOperations([]).find(
         (operation) =>
-          operation.snapshot.binding.attempt.operationId === ids.partnerOperation,
+          operation.snapshot.binding.attempt.operationId ===
+          ids.partnerOperation,
       )!.approval!.request;
       expect(first!.url).toBe(
         `/api/v1/runtime/approvals/${ids.partnerApproval}`,

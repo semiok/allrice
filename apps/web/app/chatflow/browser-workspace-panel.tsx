@@ -48,22 +48,47 @@ export function browserOperationMaterial(
     runId: op.snapshot.binding.task.runId,
     nativeCallId: op.nativeCallId,
     ...(op.command.action.type === 'request'
-      ? { parentOperationId: op.command.action.parentOperationId } : {}),
+      ? { parentOperationId: op.command.action.parentOperationId }
+      : {}),
     binding: op.snapshot.binding,
-    title: browserActionSummary(op.command.action, employeeName,
-      op.command.observationId === observation?.id ? observation?.elements : undefined),
+    title: browserActionSummary(
+      op.command.action,
+      employeeName,
+      op.command.observationId === observation?.id
+        ? observation?.elements
+        : undefined,
+    ),
     status: browserOperationStatusLabel(op, employeeName),
     failed: op.snapshot.status === 'failed',
     fields: [
       {
         label: '位置',
-        value: <>{workspace.transport === 'local'
-          ? workspace.localDeviceName ?? '你的电脑' : '云端浏览器'}
-          {observation && ` · ${siteLabel(observation.url)}`}</>,
+        value: (
+          <>
+            {workspace.transport === 'local'
+              ? (workspace.localDeviceName ?? '你的电脑')
+              : '云端浏览器'}
+            {observation && ` · ${siteLabel(observation.url)}`}
+          </>
+        ),
       },
-      { label: '输入', value: <pre data-process-content="input">{JSON.stringify(op.command.action, null, 2)}</pre> },
-      { label: '结果', value: op.result != null
-        ? <pre data-process-content="result">{JSON.stringify(op.result, null, 2)}</pre> : null },
+      {
+        label: '输入',
+        value: (
+          <pre data-process-content="input">
+            {JSON.stringify(op.command.action, null, 2)}
+          </pre>
+        ),
+      },
+      {
+        label: '结果',
+        value:
+          op.result != null ? (
+            <pre data-process-content="result">
+              {JSON.stringify(op.result, null, 2)}
+            </pre>
+          ) : null,
+      },
     ],
   };
 }
@@ -295,15 +320,24 @@ export function BrowserWorkspacePanel({
     )
       submitted.current.delete(r.approvalId);
   }
-  if (!enabled) return children?.({ history: [], interaction: null, feedback: null }) ?? null;
+  if (!enabled)
+    return (
+      children?.({ history: [], interaction: null, feedback: null }) ?? null
+    );
   if (!workspaces.length && !error && !loadError && !children) return null;
   const feedback = (error || loadError) && (
     <p role="alert" className={styles.alert}>
       <span>{error || loadError}</span>
-      <Button size="sm" variant="ghost" onClick={() => {
-        setError('');
-        setRevision((v) => v + 1);
-      }}>刷新状态</Button>
+      <Button
+        size="sm"
+        variant="ghost"
+        onClick={() => {
+          setError('');
+          setRevision((v) => v + 1);
+        }}
+      >
+        刷新状态
+      </Button>
     </p>
   );
   const interaction = (
@@ -726,21 +760,33 @@ export function BrowserWorkspacePanel({
                     </dd>
                   </div>
                 )}
-                {w.operations.filter((op) => !children || op.snapshot.status === 'waiting_user').map((op) => (
-                  <div key={op.snapshot.binding.attempt.operationId}
-                    data-process-operation={op.snapshot.binding.attempt.operationId}>
-                    <dt>
-                      {op.command.action.type} · {op.snapshot.status}
-                      {op.available ? '' : ' · 授权已失效'}
-                    </dt>
-                    <dd>
-                      <pre data-process-content="input">{JSON.stringify(op.command.action, null, 2)}</pre>
-                      {op.result != null && (
-                        <pre data-process-content="result">{JSON.stringify(op.result, null, 2)}</pre>
-                      )}
-                    </dd>
-                  </div>
-                ))}
+                {w.operations
+                  .filter(
+                    (op) => !children || op.snapshot.status === 'waiting_user',
+                  )
+                  .map((op) => (
+                    <div
+                      key={op.snapshot.binding.attempt.operationId}
+                      data-process-operation={
+                        op.snapshot.binding.attempt.operationId
+                      }
+                    >
+                      <dt>
+                        {op.command.action.type} · {op.snapshot.status}
+                        {op.available ? '' : ' · 授权已失效'}
+                      </dt>
+                      <dd>
+                        <pre data-process-content="input">
+                          {JSON.stringify(op.command.action, null, 2)}
+                        </pre>
+                        {op.result != null && (
+                          <pre data-process-content="result">
+                            {JSON.stringify(op.result, null, 2)}
+                          </pre>
+                        )}
+                      </dd>
+                    </div>
+                  ))}
               </dl>
             </div>
           </article>
@@ -748,10 +794,15 @@ export function BrowserWorkspacePanel({
       })}
     </section>
   );
-  return children ? children({
-    history: workspaces.flatMap((workspace) => workspace.operations.map((op) =>
-      browserOperationMaterial(workspace, op, employeeName))),
-    interaction,
-    feedback,
-  }) : interaction;
+  return children
+    ? children({
+        history: workspaces.flatMap((workspace) =>
+          workspace.operations.map((op) =>
+            browserOperationMaterial(workspace, op, employeeName),
+          ),
+        ),
+        interaction,
+        feedback,
+      })
+    : interaction;
 }

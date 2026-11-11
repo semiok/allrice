@@ -689,16 +689,20 @@ function WorkProcessSteps({
   return (
     <ul className={styles.processSteps} aria-label="工作步骤">
       {steps.map((step) => {
-        const operations = items.find((item) => item.id === step.id)?.operations ?? [];
+        const operations =
+          items.find((item) => item.id === step.id)?.operations ?? [];
         const materialized = !!renderMaterial && operations.length > 0;
-        const unassigned = step.id.startsWith('operation:') ? operations[0] : undefined;
+        const unassigned = step.id.startsWith('operation:')
+          ? operations[0]
+          : undefined;
         const question = questions.find(
           (question) => step.id === `tool:${question.callId}`,
         );
         const active = ['started', 'updated'].includes(step.status);
         const pending = active && step.category !== 'plan';
-        const status = unassigned?.status ?? (
-          step.status === 'failed'
+        const status =
+          unassigned?.status ??
+          (step.status === 'failed'
             ? '未成功'
             : running && question?.pending && !question.answer
               ? '等待回答'
@@ -744,7 +748,7 @@ function WorkProcessSteps({
                 title={
                   question
                     ? `提问 · ${question.request.questions[0]?.question ?? step.title}`
-                    : unassigned?.title ?? step.title
+                    : (unassigned?.title ?? step.title)
                 }
                 status={status}
                 elapsedMs={unassigned ? unassigned.elapsedMs : step.elapsedMs}
@@ -759,31 +763,39 @@ function WorkProcessSteps({
                         label: '问题',
                         value: item.question,
                       }))
-                    : materialized ? [] : [
-                        ...(step.input
-                          ? [{ label: '输入', value: step.input }]
-                          : []),
-                        ...(step.result
-                          ? [
-                              {
-                                label:
-                                  step.status === 'failed' ? '原因' : '结果',
-                                value: step.result,
-                              },
-                            ]
-                          : []),
-                      ]
+                    : materialized
+                      ? []
+                      : [
+                          ...(step.input
+                            ? [{ label: '输入', value: step.input }]
+                            : []),
+                          ...(step.result
+                            ? [
+                                {
+                                  label:
+                                    step.status === 'failed' ? '原因' : '结果',
+                                  value: step.result,
+                                },
+                              ]
+                            : []),
+                        ]
                 }
               >
-                {materialized && step.result && <p data-process-content={`step:${step.id}:receipt`}>
-                  {step.status === 'failed' && <strong>原因：</strong>}{step.result}
-                </p>}
-                {renderMaterial && operations.map((reference) => (
-                  <WorkProcessDisclosureScope key={workProcessReferenceKey(reference)}
-                    id={workProcessReferenceKey(reference)}>
-                    {renderMaterial(reference)}
-                  </WorkProcessDisclosureScope>
-                ))}
+                {materialized && step.result && (
+                  <p data-process-content={`step:${step.id}:receipt`}>
+                    {step.status === 'failed' && <strong>原因：</strong>}
+                    {step.result}
+                  </p>
+                )}
+                {renderMaterial &&
+                  operations.map((reference) => (
+                    <WorkProcessDisclosureScope
+                      key={workProcessReferenceKey(reference)}
+                      id={workProcessReferenceKey(reference)}
+                    >
+                      {renderMaterial(reference)}
+                    </WorkProcessDisclosureScope>
+                  ))}
               </WorkProcessStepView>
             )}
           </li>

@@ -5064,7 +5064,8 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
       await listLocalCommandOperations(f.context, f.run, database),
     ).toHaveLength(1);
     expect(
-      (await listLocalCommandOperations(f.context, f.run, database))[0]!.nativeCallId,
+      (await listLocalCommandOperations(f.context, f.run, database))[0]!
+        .nativeCallId,
     ).toBe('p05-call');
     for (const context of [
       { ...f.context, actor: { type: 'user' as const, id: randomUUID() } },

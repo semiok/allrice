@@ -107,9 +107,18 @@ interface ChatTranscriptProps {
 
 /** A fixed parent chain preserves the reader when an original feature gate opens. */
 function ProcessMaterialPanels({
-  runId, workspaceId, tenantHeaders, runActive, employeeName, refreshKey,
-  managedBrowserEnabled, browserEnabled, localCommandsEnabled, localMcpEnabled,
-  onServiceChanged, children,
+  runId,
+  workspaceId,
+  tenantHeaders,
+  runActive,
+  employeeName,
+  refreshKey,
+  managedBrowserEnabled,
+  browserEnabled,
+  localCommandsEnabled,
+  localMcpEnabled,
+  onServiceChanged,
+  children,
 }: {
   runId: string;
   workspaceId: string;
@@ -125,21 +134,70 @@ function ProcessMaterialPanels({
   children: (feed: WorkProcessMaterialFeed) => ReactNode;
 }) {
   const common = { runId, workspaceId, tenantHeaders, runActive };
-  return <CloudOperationPanel {...common}>{(cloud) => (
-    <ManagedBrowserTaskPanel {...common} enabled={!!runId && managedBrowserEnabled}>{(managed) => (
-      <BrowserWorkspacePanel {...common} employeeName={employeeName} refreshKey={refreshKey}
-        enabled={!!runId && browserEnabled}>{(browser) => (
-        <LocalCommandPanel {...common} onServiceChanged={onServiceChanged}
-          enabled={!!runId && localCommandsEnabled}>{(command) => (
-          <LocalMcpPanel {...common} enabled={!!runId && localMcpEnabled}>{(mcp) => children({
-            history: [...cloud.history, ...managed.history, ...browser.history, ...command.history, ...mcp.history],
-            interaction: <>{cloud.interaction}{managed.interaction}{browser.interaction}{command.interaction}{mcp.interaction}</>,
-            feedback: <>{cloud.feedback}{managed.feedback}{browser.feedback}{command.feedback}{mcp.feedback}</>,
-          })}</LocalMcpPanel>
-        )}</LocalCommandPanel>
-      )}</BrowserWorkspacePanel>
-    )}</ManagedBrowserTaskPanel>
-  )}</CloudOperationPanel>;
+  return (
+    <CloudOperationPanel {...common}>
+      {(cloud) => (
+        <ManagedBrowserTaskPanel
+          {...common}
+          enabled={!!runId && managedBrowserEnabled}
+        >
+          {(managed) => (
+            <BrowserWorkspacePanel
+              {...common}
+              employeeName={employeeName}
+              refreshKey={refreshKey}
+              enabled={!!runId && browserEnabled}
+            >
+              {(browser) => (
+                <LocalCommandPanel
+                  {...common}
+                  onServiceChanged={onServiceChanged}
+                  enabled={!!runId && localCommandsEnabled}
+                >
+                  {(command) => (
+                    <LocalMcpPanel
+                      {...common}
+                      enabled={!!runId && localMcpEnabled}
+                    >
+                      {(mcp) =>
+                        children({
+                          history: [
+                            ...cloud.history,
+                            ...managed.history,
+                            ...browser.history,
+                            ...command.history,
+                            ...mcp.history,
+                          ],
+                          interaction: (
+                            <>
+                              {cloud.interaction}
+                              {managed.interaction}
+                              {browser.interaction}
+                              {command.interaction}
+                              {mcp.interaction}
+                            </>
+                          ),
+                          feedback: (
+                            <>
+                              {cloud.feedback}
+                              {managed.feedback}
+                              {browser.feedback}
+                              {command.feedback}
+                              {mcp.feedback}
+                            </>
+                          ),
+                        })
+                      }
+                    </LocalMcpPanel>
+                  )}
+                </LocalCommandPanel>
+              )}
+            </BrowserWorkspacePanel>
+          )}
+        </ManagedBrowserTaskPanel>
+      )}
+    </CloudOperationPanel>
+  );
 }
 
 export const ChatTranscript = memo(function ChatTranscript({
@@ -412,15 +470,26 @@ export const ChatTranscript = memo(function ChatTranscript({
                           tenantHeaders={tenantHeaders}
                           runActive={messageIsRunning}
                           employeeName={employeeName}
-                          refreshKey={browserRevisions[message.runId ?? ''] ?? 0}
-                          managedBrowserEnabled={hasManagedBrowserEvents(traceEvents)}
-                          browserEnabled={hasBrowserWorkspaceEvents(traceEvents)}
+                          refreshKey={
+                            browserRevisions[message.runId ?? ''] ?? 0
+                          }
+                          managedBrowserEnabled={hasManagedBrowserEvents(
+                            traceEvents,
+                          )}
+                          browserEnabled={hasBrowserWorkspaceEvents(
+                            traceEvents,
+                          )}
                           localCommandsEnabled={localCommandsEnabled}
-                          localMcpEnabled={localMcpEnabled && hasLocalMcpEvents(traceEvents)}
-                          onServiceChanged={() => setBrowserRevisions((previous) => ({
-                            ...previous,
-                            [message.runId!]: (previous[message.runId!] ?? 0) + 1,
-                          }))}
+                          localMcpEnabled={
+                            localMcpEnabled && hasLocalMcpEvents(traceEvents)
+                          }
+                          onServiceChanged={() =>
+                            setBrowserRevisions((previous) => ({
+                              ...previous,
+                              [message.runId!]:
+                                (previous[message.runId!] ?? 0) + 1,
+                            }))
+                          }
                         >
                           {({ history, interaction, feedback }) => {
                             const timeline = projectWorkProgress(
@@ -430,10 +499,14 @@ export const ChatTranscript = memo(function ChatTranscript({
                               streamingOutput,
                               history,
                             );
-                            const materials = new Map<string, WorkProcessMaterial>();
+                            const materials = new Map<
+                              string,
+                              WorkProcessMaterial
+                            >();
                             for (const material of history) {
                               const key = workProcessReferenceKey(material);
-                              if (!materials.has(key)) materials.set(key, material);
+                              if (!materials.has(key))
+                                materials.set(key, material);
                             }
                             // History text arrives before the native event trace.
                             // Keep a settled streaming reply in the same process
@@ -497,12 +570,23 @@ export const ChatTranscript = memo(function ChatTranscript({
                                   questions={questions.byOwner.get(message.id)}
                                   parts={processParts}
                                   renderMaterial={(reference) => {
-                                    const material = materials.get(workProcessReferenceKey(reference));
-                                    return material ? <ProcessMaterialFields material={material}
-                                      artifacts={linkedArtifacts.filter((artifact) =>
-                                        artifact.provenance.runId === reference.runId &&
-                                        artifact.provenance.operationId !== null &&
-                                        artifact.provenance.operationId === reference.id)} /> : null;
+                                    const material = materials.get(
+                                      workProcessReferenceKey(reference),
+                                    );
+                                    return material ? (
+                                      <ProcessMaterialFields
+                                        material={material}
+                                        artifacts={linkedArtifacts.filter(
+                                          (artifact) =>
+                                            artifact.provenance.runId ===
+                                              reference.runId &&
+                                            artifact.provenance.operationId !==
+                                              null &&
+                                            artifact.provenance.operationId ===
+                                              reference.id,
+                                        )}
+                                      />
+                                    ) : null;
                                   }}
                                   artifacts={linkedArtifacts}
                                   onOpenArtifact={onOpenArtifact}

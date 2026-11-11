@@ -29,7 +29,8 @@ function matchesReference(
   reference: WorkProcessReference,
   event: ChatFlowEventEnvelope,
 ) {
-  if (reference.runId !== event.runId || event.payload.internalTask) return false;
+  if (reference.runId !== event.runId || event.payload.internalTask)
+    return false;
   const binding = reference.binding;
   const scope = binding?.task?.scope ?? reference;
   if (
@@ -47,7 +48,8 @@ function matchesReference(
     const attempt = reference.jobAttempt;
     if (
       typeof attempt !== 'number' ||
-      !Number.isInteger(attempt) || attempt < 1 ||
+      !Number.isInteger(attempt) ||
+      attempt < 1 ||
       attempt !== event.payload.attempt
     )
       return false;
@@ -151,15 +153,16 @@ export function projectWorkProgress(
         ? current.filter((event) => nativeCallId(event) === call)
         : [];
     const starts = candidates.filter(
-      (event) => event.type === 'tool.started' || event.payload.status === 'started',
+      (event) =>
+        event.type === 'tool.started' || event.payload.status === 'started',
     );
     // Canonical and historical views can share one actual native source event.
     // Distinct starts with the same call ID do not prove a single call.
     const item =
       candidates.length &&
       candidates.every((event) => matchesReference(op, event)) &&
-      new Set(starts.map((event) => event.sourceEvent?.id ?? event.eventId)).size <=
-        1
+      new Set(starts.map((event) => event.sourceEvent?.id ?? event.eventId))
+        .size <= 1
         ? items.find((item) => item.id === `tool:${call}`)
         : undefined;
     if (item) {

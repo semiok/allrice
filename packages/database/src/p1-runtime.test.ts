@@ -350,7 +350,8 @@ describe('MET-98 execution governance', () => {
       { jobAttempt: 0 },
       { jobAttempt: 1.5 },
       { jobAttempt: '2' },
-    ]) expect(identity.safeParse(invalid).success).toBe(false);
+    ])
+      expect(identity.safeParse(invalid).success).toBe(false);
     expect(
       ExternalActionSchema.parse({
         id: ids.action,
