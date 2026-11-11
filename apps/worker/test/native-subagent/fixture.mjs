@@ -60,6 +60,7 @@ export async function host({
   active = 8,
   runId,
   rootSystemInstructions,
+  documentMemory,
   employeeDocuments,
   progress = false,
   questionMode = 'timed',
@@ -196,6 +197,7 @@ export async function host({
     requireTaskProgress: false,
     requireRunAdmission: !!runId,
     rootSystemInstructions,
+    documentMemory,
   });
   const root = (await server.ensureRoot(rootId)).agent;
   if (runId)

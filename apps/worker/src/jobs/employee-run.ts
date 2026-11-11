@@ -364,13 +364,15 @@ export async function executeEmployeeRun({
   // opts into that ledger mode or proves human authority.
   const documentMemory =
     !personaTask && !!resolved.promptSnapshot.employeeDocuments;
-  if (!repairTask && !repositoryReviewTask && !changesetRun)
-    await admitEmployeeDocuments({
-      context: execution.context,
-      userMessageId,
-      documents: !!resolved.promptSnapshot.employeeDocuments,
-      personaTask,
-    });
+  const documentSource =
+    !repairTask && !repositoryReviewTask && !changesetRun
+      ? await admitEmployeeDocuments({
+          context: execution.context,
+          userMessageId,
+          documents: !!resolved.promptSnapshot.employeeDocuments,
+          personaTask,
+        })
+      : undefined;
   let contentRuntime: Awaited<ReturnType<typeof prepareEmployeeContentContext>>;
   try {
     const experience = documentMemory
@@ -1592,6 +1594,7 @@ export async function executeEmployeeRun({
     const result: HarnessExecutionResult = await adapter
       .execute({
         nativeFileRead,
+        documentMemory: documentMemory && documentSource === 'human',
         nativeQuestionMode,
         nativeSubagents:
           !repairTask &&

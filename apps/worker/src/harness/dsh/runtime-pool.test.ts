@@ -798,6 +798,29 @@ it.each([false, true])(
   },
 );
 
+it.each([false, true])(
+  'separates document-memory descriptions in both directions and reuses the same mode, first=%s',
+  async (documentFirst) => {
+    const { runtimes, value } = currentExecutionRequest('current');
+    value.input.documentMemory = documentFirst ? true : undefined;
+    const first = await runtimes.acquire(value);
+    expect(first.runtime.fingerprintParts.documentMemory).toBe(
+      createHash('sha256').update(String(documentFirst)).digest('hex'),
+    );
+    value.input.documentMemory = !documentFirst;
+    const second = await runtimes.acquire(value);
+    expect(second.runtime).not.toBe(first.runtime);
+    expect(second.runtime.fingerprintParts.documentMemory).toBe(
+      createHash('sha256').update(String(!documentFirst)).digest('hex'),
+    );
+    expect(first.runtime.client.processState()).toMatchObject({
+      state: 'exited',
+      stdioClosed: true,
+    });
+    expect((await runtimes.acquire(value)).runtime).toBe(second.runtime);
+  },
+);
+
 it('reuses one current executor across Run bindings while rechecking the new Run identity', async () => {
   const { runtimes, value, payload } = currentExecutionRequest('current');
   const first = await runtimes.acquire(value);

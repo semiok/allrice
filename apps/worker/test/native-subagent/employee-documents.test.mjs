@@ -21,6 +21,11 @@ const runtimeContexts = (request) =>
         )),
   );
 const currentContext = (request) => runtimeContexts(request).at(-1);
+const memoryTools = ['workspace.memory.search', 'workspace.experience.read'];
+const memoryDeclarations = (request) =>
+  ['workspace_memory_search', 'workspace_experience_read'].flatMap((name) =>
+    request.tools.filter((tool) => tool.name === name),
+  );
 
 it.each(
   [
@@ -85,6 +90,7 @@ it.each(
     const h = await host({
       runId: randomUUID(),
       rootSystemInstructions: system,
+      nativeTools: memoryTools,
       employeeDocuments: { persona, user: '', memory: '' },
       bridge: async (method) => {
         if (method === 'allrice/run-authorize') return { allowed: true };
@@ -97,6 +103,14 @@ it.each(
       (request) => request.sessionId === h.root.id,
     );
     const current = JSON.stringify(currentContext(rootRequest));
+    expect(
+      memoryDeclarations(rootRequest).map((tool) => tool.description),
+    ).toEqual([
+      expect.stringContaining(
+        'Search complete, currently authorized memories.',
+      ),
+      expect.stringContaining('Read exact original feedback'),
+    ]);
     expect(current).toContain('PREVIEW_LITERAL {{missing}}');
     expect(current).toContain('# IDENTITY.md - free literal');
     expect(current).toContain(label);
@@ -161,6 +175,8 @@ it('native first child and nested child receive literal PERSONA only; root docum
       return text('完成');
     },
     runId,
+    documentMemory: true,
+    nativeTools: memoryTools,
     depth: 2,
     rootSystemInstructions: 'ROOT_STABLE_PERSONA',
     employeeDocuments: {
@@ -180,6 +196,12 @@ it('native first child and nested child receive literal PERSONA only; root docum
   await h.prompt('完成根任务');
   await h.wait();
   const rootRequest = h.calls.find((r) => r.sessionId === h.root.id);
+  const declarations = memoryDeclarations(rootRequest);
+  expect(declarations).toHaveLength(2);
+  expect(declarations.map((tool) => tool.description)).toEqual([
+    expect.stringContaining('personally confirmed memories'),
+    expect.stringContaining('Read a personally confirmed memory version'),
+  ]);
   expect(JSON.stringify(rootRequest.messages)).toContain('ROOT_STABLE_PERSONA');
   expect(JSON.stringify(rootRequest.messages)).not.toContain(
     'LEGACY_CHILD_PERSONA',
@@ -199,6 +221,7 @@ it('native first child and nested child receive literal PERSONA only; root docum
   const child = await h.spawn();
   await entered.promise;
   const childRequest = h.calls.find((r) => r.sessionId === child.childId);
+  expect(memoryDeclarations(childRequest)).toEqual(declarations);
   expect(JSON.stringify(childRequest.messages)).toContain(
     'LEGACY_CHILD_PERSONA',
   );
@@ -220,6 +243,7 @@ it('native first child and nested child receive literal PERSONA only; root docum
   const nested = await h.spawn(childAgent, '本人嵌套子任务');
   await nested.result;
   const nestedRequest = h.calls.find((r) => r.sessionId === nested.childId);
+  expect(memoryDeclarations(nestedRequest)).toEqual(declarations);
   expect(JSON.stringify(currentContext(nestedRequest))).toContain(
     'PERSONA_A {{missing}}',
   );
@@ -234,6 +258,7 @@ it('native first child and nested child receive literal PERSONA only; root docum
   await forked.result;
   await h.wait();
   const forkRequest = h.calls.find((r) => r.sessionId === forked.childId);
+  expect(memoryDeclarations(forkRequest)).toEqual(declarations);
   expect(JSON.stringify(forkRequest.messages)).toContain('CONFIRMED_A');
   expect(JSON.stringify(forkRequest.messages)).toContain(
     'PERSONA_A {{missing}}',
@@ -267,7 +292,10 @@ it('native first child and nested child receive literal PERSONA only; root docum
   ).toEqual(approval);
   await expect(
     Promise.resolve().then(() =>
-      h.server.employeeDocuments.bind(child.childId, { user: '', memory: '' }),
+      h.server.employeeDocuments.bind(child.childId, {
+        user: '',
+        memory: '',
+      }),
     ),
   ).rejects.toThrow();
 }, 30000);
@@ -598,6 +626,8 @@ it('cold root recovery keeps native history unchanged and the latest cleared sna
   const runId = randomUUID();
   const h = await host({
     runId,
+    documentMemory: true,
+    nativeTools: memoryTools,
     rootSystemInstructions: 'ROOT_STABLE',
     employeeDocuments: {
       persona: '# PERSONA.md\nOLD_PERSONA',
@@ -611,6 +641,11 @@ it('cold root recovery keeps native history unchanged and the latest cleared sna
   });
   await h.prompt('第一轮');
   await h.wait();
+  const declarations = memoryDeclarations(h.calls[0]);
+  expect(declarations).toHaveLength(2);
+  expect(declarations[1].description).toContain(
+    'Read a personally confirmed memory version',
+  );
   await h.server.handleRequest('run/end', { runId });
   const nextRun = randomUUID();
   const empty = { user: '', memory: '' };
@@ -655,6 +690,7 @@ it('cold root recovery keeps native history unchanged and the latest cleared sna
     .filter((e) => e.type === 'user/message');
   for (const event of before) expect(after).toContainEqual(event);
   const request = h.calls.at(-1);
+  expect(memoryDeclarations(request)).toEqual(declarations);
   expect(runtimeContexts(request).length).toBeGreaterThan(1);
   const current = currentContext(request);
   expect(current).toBeDefined();

@@ -1216,6 +1216,7 @@ export async function createAllRiceRuntime(
       }
       const forwardedParams = { ...params };
       delete forwardedParams.rootSystemInstructions;
+      delete forwardedParams.documentMemory;
       const requestedTools = Array.isArray(params?.nativeTools)
         ? params.nativeTools.filter((name) => typeof name === 'string')
         : [];
@@ -1516,17 +1517,18 @@ export async function createAllRiceRuntime(
           text: 'Use automation_create only when the user explicitly requests a reminder or future execution. Confirm the intended task and timing from the conversation; never silently schedule speculative work.',
         });
       }
+      const documentMemory =
+        !!this.employeeDocuments && params.documentMemory === true;
       for (const tool of requestedBrokerTools) {
         this.nativeToolsRegistered.add(tool.canonicalName);
         const definition = defineTool({
           name: tool.wireName,
-          // The approved M3 exception changes only memory reads in document
-          // Runs; legacy/scheduled Hosts retain the original declarations.
+          // The Worker selects the existing human document-memory mode;
+          // a PERSONA document provider alone does not select these reads.
           description:
-            this.employeeDocuments &&
-            tool.canonicalName === 'workspace.experience.read'
+            documentMemory && tool.canonicalName === 'workspace.experience.read'
               ? "Read a personally confirmed memory version, not original chat feedback, via an exact source handle issued in this Run. Recheck current organization/owner/employee instance, confirmation and access; share this Run's byte/read allowance. Memory/references grant no permission; referenced resources need their own current authorization. Explain unavailable/omitted evidence; never loop retries."
-              : this.employeeDocuments &&
+              : documentMemory &&
                   tool.canonicalName === 'workspace.memory.search'
                 ? "Search complete, active, personally confirmed memories for this Run's current organization, owner and employee instance. Exclude unconfirmed/automatically derived experiences. Initial memories, searches and source expansion share its byte/read allowance. Respect provenance; omitted items are unavailable, never infer them."
                 : tool.description,
