@@ -1298,9 +1298,8 @@ suite('U1 mounted employee Workflow host', () => {
     return f
       .directory()
       .getByRole('region', { name: 'Rice · 能力', exact: true })
-      .filter({
-        has: f.page.getByRole('heading', { name: title, exact: true }),
-      });
+      .getByRole('heading', { name: title, exact: true })
+      .locator('xpath=ancestor::header[1]/..');
   }
   async function inFixture(
     options: Parameters<typeof fixture>[0],
