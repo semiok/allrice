@@ -1288,7 +1288,9 @@ export async function createAllRiceRuntime(
           this.accountingBridge,
           (p) => this.runAdmission.attribute(p),
         );
-      this.registerNativeTools();
+      this.registerNativeTools(
+        !!this.employeeDocuments && params.documentMemory === true,
+      );
       if (this.nativeTools.has('platform.repository.review')) {
         // The profile also installs native tools. Restrict the review Agent's
         // complete inherited set, not only the calls forwarded to the Broker.
@@ -1393,7 +1395,7 @@ export async function createAllRiceRuntime(
       }));
     }
 
-    registerNativeTools() {
+    registerNativeTools(documentMemory = false) {
       if (
         this.nativeTools.has('web.search') ||
         this.nativeTools.has('web.fetch')
@@ -1517,8 +1519,6 @@ export async function createAllRiceRuntime(
           text: 'Use automation_create only when the user explicitly requests a reminder or future execution. Confirm the intended task and timing from the conversation; never silently schedule speculative work.',
         });
       }
-      const documentMemory =
-        !!this.employeeDocuments && params.documentMemory === true;
       for (const tool of requestedBrokerTools) {
         this.nativeToolsRegistered.add(tool.canonicalName);
         const definition = defineTool({
