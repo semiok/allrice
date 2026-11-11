@@ -39,6 +39,8 @@ import {
   seedHistoricalExperienceAdoption,
 } from '../../../../packages/database/src/experience-history.fixture.ts';
 import { searchRunExperiences } from '../../../../packages/database/src/experience-runtime.ts';
+import { loadPlatformContentCatalog } from '../../../../packages/database/src/platform-content/catalog.ts';
+import { synchronizePlatformContent } from '../../../../packages/database/src/platform-content/sync.ts';
 import {
   assignEmployeeVersion,
   createEmployee,
@@ -620,6 +622,9 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
   type PublishedTarget = Awaited<ReturnType<typeof publishedTarget>>;
   async function historicalReadSource(f: PublishedTarget) {
     vi.stubEnv('ALLRICE_EXPERIENCE_REVIEW_ENABLED', '1');
+    // Historical helpers require the real reviewed Skill catalog, which the
+    // migration-only isolated database does not populate by itself.
+    await synchronizePlatformContent(await loadPlatformContentCatalog());
     const instance = await prepareEmployeeInstanceSnapshot(
       f.context,
       f.chat.id,
