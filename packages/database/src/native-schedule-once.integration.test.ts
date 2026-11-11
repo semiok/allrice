@@ -307,20 +307,22 @@ suite(
           '请在原会话整理本周工作，保持原任务资格。',
         );
         if (kind === 'native_once') await receipt(t.task.id);
-        const db = f.db,
+        const db = getDatabase(),
           begin = db.begin.bind(db);
         const material = personaRuntime.employeePersonaManifestMaterial;
         let active = false;
-        const phases: boolean[] = [];
+        let beginCalls = 0;
+        const phases: { active: boolean; beginCalls: number }[] = [];
         const source = vi
           .spyOn(personaRuntime, 'employeePersonaManifestMaterial')
           .mockImplementation((...args) => {
-            phases.push(active);
+            phases.push({ active, beginCalls });
             return Reflect.apply(material, personaRuntime, args);
           });
         const wrap = vi.spyOn(db, 'begin').mockImplementation((async (
           ...args: unknown[]
         ) => {
+          beginCalls++;
           const operation = args.pop() as (
             tx: TransactionSql,
           ) => Promise<unknown>;
@@ -360,8 +362,17 @@ suite(
           wrap.mockRestore();
           source.mockRestore();
         }
+        // Observe both real entry transactions; an untouched fixture pool must
+        // never make inactive=false look like a successful boundary proof.
+        expect(beginCalls).toBe(2);
         expect(phases.length).toBeGreaterThan(0);
-        expect(phases.every((inTransaction) => !inTransaction)).toBe(true);
+        expect(
+          phases.every(
+            (phase) =>
+              !phase.active &&
+              phase.beginCalls === (kind === 'native_once' ? 1 : 0),
+          ),
+        ).toBe(true);
         const [run] =
           await db`select ar.id,ar.native_once_occurrence_id,er.session_id,er.user_message_id,
           er.execution_snapshot->'persona' persona from allrice_automation_runs ar
@@ -376,39 +387,110 @@ suite(
         expect(pin.source.engine.employeeVersionId).toBe(f.employeeVersionId);
       },
     );
-    it('rolls back every new business row when the source raw value changes after preparation', async () => {
+    it('rejects a switch to an unprepared source version after preparation despite the same stored checksum, with zero new business rows', async () => {
       const t = await task(undefined, '请核对来源，再在原会话交回结果。');
-      await receipt(t.task.id);
+      const native = await receipt(t.task.id);
       const [original] =
-        await f.db`select manifest from allrice_employee_versions where id=${f.employeeVersionId}`;
+        await f.db`select v.manifest,v.config_checksum,a.employee_version_id
+        from allrice_employee_assignments a join allrice_employee_versions v on v.id=a.employee_version_id
+        where a.id=${f.assignmentId}`;
+      expect(original!.employee_version_id).toBe(f.employeeVersionId);
+      const versionId = randomUUID(),
+        workerId = randomUUID();
       onTestFinished(async () => {
-        await f.db`update allrice_employee_versions set manifest=${f.db.json(original!.manifest)} where id=${f.employeeVersionId}`;
+        await f.db`update allrice_employee_assignments set employee_version_id=${f.employeeVersionId}
+          where id=${f.assignmentId}`;
         await cancelOnceTask(f.context, t.sessionId, t.task.id);
       });
+      // Same first-INSERT corruption pattern as the PERSONA source fixtures.
+      // Published versions/triggers stay intact; this extra owned version lives
+      // only until fixture.close. Reserve a version away from later v2/v3/v4 tests.
+      await f.db`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,
+        version,name,description,model,system_prompt,capabilities,config_checksum,manifest,
+        provider_snapshot,skill_version_ids)
+        select ${versionId},organization_id,workspace_id,employee_id,version+100,name,description,
+          model,system_prompt,capabilities,config_checksum,
+          jsonb_set(manifest,'{description}',to_jsonb('different raw source with the same stored checksum'::text)),
+          provider_snapshot,skill_version_ids from allrice_employee_versions where id=${f.employeeVersionId}`;
+      const [unprepared] =
+        await f.db`select manifest,config_checksum from allrice_employee_versions where id=${versionId}`;
+      expect(unprepared!.config_checksum).toBe(original!.config_checksum);
+      expect(unprepared!.manifest).not.toEqual(original!.manifest);
+      const [savedReceipt] =
+        await f.db`select occurrence_id,payload,payload_digest,outbox_epoch
+        from allrice_native_once_occurrences where automation_id=${t.task.id}`;
       const before = await counts();
-      const db = f.db,
+      const db = getDatabase(),
         begin = db.begin.bind(db);
-      let calls = 0;
+      let calls = 0,
+        prepared = false,
+        injected = false;
+      const material = personaRuntime.employeePersonaManifestMaterial;
+      const source = vi
+        .spyOn(personaRuntime, 'employeePersonaManifestMaterial')
+        .mockImplementation((...args) => {
+          const value = Reflect.apply(material, personaRuntime, args);
+          if (calls === 1) prepared = true;
+          return value;
+        });
       const wrap = vi.spyOn(db, 'begin').mockImplementation((async (
         ...args: unknown[]
       ) => {
-        // The claim committed, then preparation read the original source. The
-        // second begin is still the original business/admission transaction.
-        if (++calls === 2)
-          await db`update allrice_employee_versions
-          set manifest=jsonb_set(manifest,'{description}',to_jsonb('changed without changing config_checksum'::text))
-          where id=${f.employeeVersionId}`;
+        // The production pool's claim committed, then preparation consumed A.
+        // Switch the real assignment before its original business begin uses B.
+        if (++calls === 2) {
+          expect(prepared).toBe(true);
+          const [current] =
+            await f.db`select employee_version_id from allrice_employee_assignments where id=${f.assignmentId}`;
+          expect(current!.employee_version_id).toBe(f.employeeVersionId);
+          const [changed] =
+            await f.db`update allrice_employee_assignments set employee_version_id=${versionId}
+            where id=${f.assignmentId} returning employee_version_id`;
+          expect(changed!.employee_version_id).toBe(versionId);
+          injected = true;
+        }
         return Reflect.apply(begin, db, args);
       }) as typeof db.begin);
       try {
         await expect(
-          dispatchNextNativeOnceOccurrence(randomUUID()),
+          dispatchNextNativeOnceOccurrence(workerId),
         ).rejects.toMatchObject({ code: 'instance_conflict' });
       } finally {
         wrap.mockRestore();
+        source.mockRestore();
       }
       expect(calls).toBe(2);
+      expect(prepared).toBe(true);
+      expect(injected).toBe(true);
       expect(await counts()).toEqual(before);
+      const [receiptAfter] =
+        await f.db`select occurrence_id,payload,payload_digest,outbox_state,
+        outbox_reason,outbox_owner_id,outbox_epoch,business_binding
+        from allrice_native_once_occurrences where automation_id=${t.task.id}`;
+      expect(receiptAfter).toMatchObject({
+        occurrence_id: savedReceipt!.occurrence_id,
+        payload: savedReceipt!.payload,
+        payload_digest: savedReceipt!.payload_digest,
+        outbox_state: 'pending',
+        outbox_reason: null,
+        outbox_owner_id: workerId,
+        business_binding: null,
+      });
+      expect(Number(receiptAfter!.outbox_epoch)).toBe(
+        Number(savedReceipt!.outbox_epoch) + 1,
+      );
+      expect(await store.readExactCommit(writer, native.write)).toBe(
+        'committed',
+      );
+      const [unchanged] =
+        await f.db`select manifest,config_checksum from allrice_employee_versions where id=${f.employeeVersionId}`;
+      expect(unchanged).toEqual({
+        manifest: original!.manifest,
+        config_checksum: original!.config_checksum,
+      });
+      const [current] =
+        await f.db`select employee_version_id from allrice_employee_assignments where id=${f.assignmentId}`;
+      expect(current!.employee_version_id).toBe(versionId);
     });
     it('freezes the session owner preferences when a scheduled occurrence queues its run', async () => {
       const before = await getUserPreferences(f.context);
