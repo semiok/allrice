@@ -228,9 +228,25 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
   for (const width of [1440, 390, 320]) {
     for (const theme of ['light', 'dark'] as const) {
       it(`MET-251 v9 controlled plugin presentation shares actions and compact empties in both hosts at ${width} ${theme}`, async () => {
+        let phase = 'fixture',
+          activeHost = 'setup';
+        const observation = () => ({ width, theme, host: activeHost, phase });
+        const mark = (next: string) => {
+          phase = next;
+          console.info('MET251_PLUGIN_PHASE', JSON.stringify(observation()));
+        };
+        mark('fixture-open');
         const f = await fixture(width, theme, true);
+        const onPage = (popup: Page) =>
+          console.info(
+            'MET251_PLUGIN_PAGE',
+            JSON.stringify({ ...observation(), url: popup.url() }),
+          );
+        f.page.context().on('page', onPage);
         try {
           for (const host of ['sidebar', 'employee']) {
+            activeHost = host;
+            mark('host-select');
             await f.page
               .getByLabel('插件展示宿主', { exact: true })
               .selectOption(host);
@@ -283,15 +299,23 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
             );
             expect(await primaryPaint(open)).toEqual(await primaryPaint(start));
             for (const pressed of [false, true]) {
+              mark(pressed ? 'primary-pressed' : 'primary-hover');
               await open.hover();
               if (pressed) await f.page.mouse.down();
               const pluginPaint = await primaryPaint(open);
-              if (pressed) await f.page.mouse.up();
+              if (pressed) {
+                await f.page.mouse.move(0, 0);
+                await f.page.mouse.up();
+              }
               await start.hover();
               if (pressed) await f.page.mouse.down();
               expect(pluginPaint).toEqual(await primaryPaint(start));
-              if (pressed) await f.page.mouse.up();
+              if (pressed) {
+                await f.page.mouse.move(0, 0);
+                await f.page.mouse.up();
+              }
             }
+            mark('primary-focus');
             await f.page.mouse.move(0, 0);
             await f.page.keyboard.press('Tab');
             await open.focus();
@@ -305,6 +329,13 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
             ).toBe(true);
             expect(pluginFocus).toEqual(await primaryPaint(start));
             await start.blur();
+            expect(
+              f.page
+                .context()
+                .pages()
+                .filter((page) => page !== f.page)
+                .map((page) => page.url()),
+            ).toEqual([]);
             if (width !== 320)
               await f.page.screenshot({
                 path: resolve(
@@ -313,10 +344,12 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
                 ),
                 fullPage: true,
               });
+            mark('popup-open');
             const [popup] = await Promise.all([
               f.page.context().waitForEvent('page'),
               open.click(),
             ]);
+            mark('popup-heading');
             await popup
               .getByRole('heading', { name: 'Rice · 品牌内容', exact: true })
               .waitFor();
@@ -324,6 +357,7 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
             expect(await open.getAttribute('target')).toBe('_blank');
             expect(await open.getAttribute('rel')).toContain('noopener');
             await popup.close();
+            mark('detail-open');
             await root
               .getByRole('button', { name: '详情', exact: true })
               .click();
@@ -374,6 +408,7 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
                 ),
                 fullPage: true,
               });
+            mark('disabled');
             await f.page.getByLabel('禁用打开', { exact: true }).check();
             const disabled = root.getByRole('button', {
               name: '打开插件',
@@ -390,6 +425,7 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
                 .isDisabled(),
             ).toBe(true);
             await f.page.getByLabel('禁用打开', { exact: true }).uncheck();
+            mark('remove-empty');
             await root
               .getByRole('button', { name: '从此员工移除', exact: true })
               .click();
@@ -438,7 +474,22 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
               });
             await f.page.getByLabel('空态', { exact: true }).uncheck();
           }
+          mark('complete');
+        } catch (error) {
+          console.error(
+            'MET251_PLUGIN_FAILURE',
+            JSON.stringify({
+              ...observation(),
+              message: String(error),
+              pages: f.page
+                .context()
+                .pages()
+                .map((page) => page.url()),
+            }),
+          );
+          throw error;
         } finally {
+          f.page.context().off('page', onPage);
           await f.close();
         }
       });
