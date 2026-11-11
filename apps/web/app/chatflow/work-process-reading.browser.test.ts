@@ -1143,7 +1143,7 @@ suite('reading a receipt while late native trace changes its group', () => {
           .allTextContents();
       const reads = () =>
         page.evaluate(
-          () => window.readingReads['/api/v1/runtime/browser-workspaces'],
+          () => window.readingReads['/api/v1/runtime/browser-workspaces'] ?? 0,
         );
       const original = await contents();
       const before = await reads();
