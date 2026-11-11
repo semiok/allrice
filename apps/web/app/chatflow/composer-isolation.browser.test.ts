@@ -817,6 +817,9 @@ suite(
           : {}),
       });
       const page: Page = await context.newPage();
+      const webSocketUrls: string[] = [];
+      // Record browser requests even when the gateway never forwards a GET.
+      page.on('websocket', (socket) => webSocketUrls.push(socket.url()));
       await nativeFeed.bindPage(page, origin, nativeFixture);
       if (options.nativeClock) await page.clock.install();
       if (options.nativeParents)
@@ -907,6 +910,7 @@ suite(
         errors,
         native: {
           origin,
+          webSocketUrls: (): readonly string[] => webSocketUrls,
           nativeIds,
           nativeRequests,
           browserWrites,
@@ -1589,6 +1593,11 @@ suite(
         expect(
           f.reads.slice(reads).filter((url) => url.includes('/subagents')),
         ).toEqual([]);
+        expect(
+          f.native
+            .webSocketUrls()
+            .filter((url) => new URL(url).searchParams.has('childId')),
+        ).toEqual([]);
         expect(f.pending).toEqual([]);
         await f.page.screenshot({
           path: resolve(directory, 'new-work-empty.png'),
@@ -1633,6 +1642,19 @@ suite(
             f.page.locator(`[data-row-key="session:${A}"]`).innerText(),
           )
           .toContain('1 个子智能体运行中');
+        await expect
+          .poll(() =>
+            f.native.webSocketUrls().some((url) => {
+              const target = new URL(url);
+              return (
+                target.pathname === `/api/v1/sessions/${A}/subagents` &&
+                target.searchParams.get('workspaceId') === B &&
+                target.searchParams.get('follow') === 'true' &&
+                !target.searchParams.has('childId')
+              );
+            }),
+          )
+          .toBe(true);
         expect(await trigger.getAttribute('aria-expanded')).toBe('false');
         const requestsBeforeOpen = f.native.fullRequests();
         await trigger.focus();
@@ -1687,6 +1709,11 @@ suite(
             new URL(url, f.native.origin).searchParams.has('childId'),
           ),
         ).toEqual([]);
+        expect(
+          f.native
+            .webSocketUrls()
+            .filter((url) => new URL(url).searchParams.has('childId')),
+        ).toEqual([]);
         expect(f.native.fullRequests()).toBe(requestsBeforeOpen + 1);
         expect(f.native.browserWrites.count).toBe(0);
         expect(f.writes).toEqual([]);
@@ -1717,6 +1744,19 @@ suite(
             .getByRole('treeitem', { name: 'Child 0摘要', exact: true })
             .waitFor();
           await expect.poll(f.native.fullRequests).toBe(readsBeforeOpen + 1);
+          await expect
+            .poll(() =>
+              f.native.webSocketUrls().some((url) => {
+                const target = new URL(url);
+                return (
+                  target.pathname === `/api/v1/sessions/${A}/subagents` &&
+                  target.searchParams.get('workspaceId') === B &&
+                  target.searchParams.get('follow') === 'true' &&
+                  !target.searchParams.has('childId')
+                );
+              }),
+            )
+            .toBe(true);
           const childConnections = () =>
             f.native
               .connections()
@@ -1765,6 +1805,11 @@ suite(
               new URL(url, f.native.origin).searchParams.has('childId'),
             ),
           ).toEqual([]);
+          expect(
+            f.native
+              .webSocketUrls()
+              .filter((url) => new URL(url).searchParams.has('childId')),
+          ).toEqual([]);
           expect(f.native.fullRequests()).toBe(readsBeforeOpen + 1);
           expect(
             await trigger.evaluate((node) => node === document.activeElement),
@@ -1797,6 +1842,19 @@ suite(
           });
         await header(1).waitFor();
         await expect.poll(() => active(A).length).toBe(1);
+        await expect
+          .poll(() =>
+            f.native.webSocketUrls().some((url) => {
+              const target = new URL(url);
+              return (
+                target.pathname === `/api/v1/sessions/${A}/subagents` &&
+                target.searchParams.get('workspaceId') === B &&
+                target.searchParams.get('follow') === 'true' &&
+                !target.searchParams.has('childId')
+              );
+            }),
+          )
+          .toBe(true);
         await expect
           .poll(() => badge(A).innerText())
           .toContain('1 个子智能体运行中');
@@ -1876,6 +1934,11 @@ suite(
         expect(
           await f.page.getByText(`${B} own reply`, { exact: true }).count(),
         ).toBe(0);
+        expect(
+          f.native
+            .webSocketUrls()
+            .filter((url) => new URL(url).searchParams.has('childId')),
+        ).toEqual([]);
         expect(f.native.browserWrites.count).toBe(0);
         expect(f.writes).toEqual([]);
         expect(f.errors).toEqual([]);
