@@ -1021,10 +1021,7 @@ suite(
         [detail, `/api/v1/memories/${row.id}`],
         [revisions, `/api/v1/memories/${row.id}/revisions`],
       ] as const) {
-        const response = await handler(
-          request(f, 'GET', path),
-          params(row.id),
-        );
+        const response = await handler(request(f, 'GET', path), params(row.id));
         expect(response.status).toBe(404);
         const body = await response.json();
         expect(ApiErrorSchema.parse(body).error.code).toBe('NOT_FOUND');
