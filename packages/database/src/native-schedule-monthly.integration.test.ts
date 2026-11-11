@@ -40,6 +40,7 @@ import {
 import { getWorkAutomation, updateWorkAutomation } from './work-automation.ts';
 import {
   calendarControlIdentity,
+  calendarWriterIdentity,
   type NativeCalendarWrite,
 } from './native-schedule-calendar-state.ts';
 import {
@@ -217,22 +218,49 @@ suite(
     async function readyParent(id: string) {
       const state = await calendar().loadCalendarState(writer);
       const parent = state.controls.find((r) => r.control.automationId === id)!;
-      if (parent.control.sessionState === 'reserved')
+      if (parent.control.sessionState === 'reserved') {
         for (const [action, expectedControlVersion] of [
           ['session_initializing', parent.version],
           ['session_ready', parent.version + 1],
-        ] as const)
-          expect(
-            await store.commitMutation(
-              writer,
-              write({
-                kind: 'calendar',
-                action,
-                controlId: parent.control.controlId,
-                expectedControlVersion,
+        ] as const) {
+          const request = write({
+            kind: 'calendar',
+            action,
+            controlId: parent.control.controlId,
+            expectedControlVersion,
+          });
+          const outcome = await store.commitMutation(writer, request);
+          if (outcome !== 'committed') {
+            // Read only after rejection: no new write, renewal or retry.
+            const evidence = await Promise.allSettled([
+              calendar().readExactCommit(writer, request),
+              f.db`select clock_timestamp() database_now,
+                p.partition_id,p.owner_id,p.epoch::text epoch,p.token_digest,
+                p.expires_at,p.closed,p.activation,p.reference,
+                c.control_id,c.snapshot_version::text control_version,
+                c.snapshot->'control' control
+                from allrice_native_once_partitions p
+                left join allrice_native_recurring_controls c
+                  on c.partition_id=p.partition_id and c.control_id=${parent.control.controlId}
+                where p.partition_id=${writer.partitionId}`,
+            ]);
+            console.error(
+              'MET251_MONTHLY_READY_REJECTED',
+              JSON.stringify({
+                request,
+                writer: calendarWriterIdentity(writer),
+                before: parent,
+                evidence: evidence.map((item) =>
+                  item.status === 'fulfilled'
+                    ? item
+                    : { status: item.status, error: String(item.reason) },
+                ),
               }),
-            ),
-          ).toBe('committed');
+            );
+          }
+          expect(outcome).toBe('committed');
+        }
+      }
     }
     /** Component-only backend put/receipt. Actual public create/delivery/delete
      * and normal Host drain are a separately executed parent-owned acceptance. */
