@@ -20,7 +20,10 @@ import {
   correctPersonalEmployeeMemory,
   createTraceableMemory,
   deleteWorkspaceMemory,
+  deleteManagedEmployeeMemory,
+  listWorkspaceMemoryRevisions,
 } from './workspace/service.ts';
+import { getPersonalEmployeeMemory } from './employee-memory-management.ts';
 import {
   legacyPersonalMemoryPair,
   memoryContentDigest,
@@ -375,6 +378,75 @@ suite(
         expect(
           (await readRunExperienceSource(auth, pin.sourceHandle!)).items[0],
         ).toMatchObject({ memory: { content: pin.content } });
+    });
+
+    it('hides a deleted mechanically migrated record while preserving full-content history and migration audit', async () => {
+      const current = (
+        await getPersonalEmployeeMemory(
+          context,
+          f.workspace,
+          f.assignment,
+          longId,
+        )
+      ).memory;
+      expect(current).toMatchObject({ details: original, revision: 2 });
+      expect(
+        (
+          await listWorkspaceMemoryRevisions(
+            context,
+            f.workspace,
+            longId,
+            f.assignment,
+          )
+        ).map((row) => row.content),
+      ).toEqual([original, original]);
+      const before =
+        await fixture.db`select * from allrice_memory_revisions where memory_id=${longId} order by revision`;
+      const auditBefore =
+        await fixture.db`select * from allrice_audit_events where resource_id=${longId} order by id`;
+      expect(auditBefore).toHaveLength(1);
+      expect(auditBefore[0]!.action).toBe('memory.migrate_pair');
+      await deleteManagedEmployeeMemory(context, f.workspace, longId, {
+        instanceId: f.assignment,
+        expectedRevision: current.revision,
+        pairDigest: current.pairDigest,
+        idempotencyKey: randomUUID(),
+      });
+      await expect(
+        getPersonalEmployeeMemory(context, f.workspace, f.assignment, longId),
+      ).rejects.toThrow('not_found');
+      await expect(
+        listWorkspaceMemoryRevisions(
+          context,
+          f.workspace,
+          longId,
+          f.assignment,
+        ),
+      ).rejects.toThrow('not_found');
+      const saved =
+        await fixture.db`select * from allrice_memory_revisions where memory_id=${longId} order by revision`;
+      expect(saved).toHaveLength(3);
+      expect(saved.slice(0, 2)).toEqual(before);
+      expect(saved[2]).toMatchObject({
+        content: original,
+        summary: current.summary,
+        details: original,
+        revision: 3,
+        reason: 'archived by owner',
+      });
+      const auditAfter =
+        await fixture.db`select * from allrice_audit_events where resource_id=${longId} order by id`;
+      expect(auditAfter).toHaveLength(auditBefore.length + 1);
+      expect(auditAfter).toEqual(expect.arrayContaining(auditBefore));
+      expect(
+        auditAfter.filter((row) => row.action === 'memory.delete'),
+      ).toHaveLength(1);
+      const [deleted] =
+        await fixture.db`select content,archived_at from allrice_memories where id=${longId}`;
+      expect(deleted).toMatchObject({
+        content: original,
+        archived_at: expect.any(Date),
+      });
     });
   },
 );

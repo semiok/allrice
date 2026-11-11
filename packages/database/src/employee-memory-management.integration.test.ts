@@ -5,6 +5,7 @@ import {
   EmployeeMemoryListSchema,
   EmployeeMemoryDetailResponseSchema,
   EmployeeMemoryWriteResponseSchema,
+  MemoryRevisionSchema,
   ExecutionContextSchema,
   makeObjectKey,
   type EmployeeInstanceSnapshot,
@@ -61,7 +62,8 @@ suite(
       edit: MemoryHandler,
       remove: MemoryHandler,
       promote: MemoryHandler,
-      pin: MemoryHandler;
+      pin: MemoryHandler,
+      revisions: MemoryHandler;
     let adminList: TargetHandler<{ organizationId: string }>;
     let adminDetail: TargetHandler<{ organizationId: string; id: string }>;
     let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
@@ -78,6 +80,8 @@ suite(
       const promotePath =
         '../../../apps/web/app/api/v1/memories/[id]/promote/route.ts';
       const pinPath = '../../../apps/web/app/api/v1/memories/[id]/pin/route.ts';
+      const revisionsPath =
+        '../../../apps/web/app/api/v1/memories/[id]/revisions/route.ts';
       const adminListPath =
         '../../../apps/web/app/api/v1/admin/organizations/[organizationId]/employee-memories/route.ts';
       const adminDetailPath =
@@ -100,6 +104,9 @@ suite(
         POST: MemoryHandler;
       });
       ({ POST: pin } = (await import(pinPath)) as { POST: MemoryHandler });
+      ({ GET: revisions } = (await import(revisionsPath)) as {
+        GET: MemoryHandler;
+      });
       ({ GET: adminList } = (await import(adminListPath)) as {
         GET: typeof adminList;
       });
@@ -962,6 +969,69 @@ suite(
         await edit(request(f, 'PATCH', undefined, input), params(active.id)),
         'idempotency_conflict',
       );
+    });
+
+    it('hides deleted v2 detail and history over HTTP while retaining stored revisions and audit', async () => {
+      const f = await setup();
+      const row = (
+        await add(f, {
+          summary: '本人删除后不再展示',
+          details: '删除后不得从历史入口找回的完整说明',
+        })
+      ).memory;
+      expect(await read(f, row.id)).toEqual(row);
+      const history = await revisions(
+        request(f, 'GET', `/api/v1/memories/${row.id}/revisions`),
+        params(row.id),
+      );
+      expect(history.status).toBe(200);
+      expect(history.headers.get('cache-control')).toBe('private, no-store');
+      expect(
+        MemoryRevisionSchema.array().parse((await history.json()).revisions),
+      ).toMatchObject([{ memoryId: row.id, revision: 1, content: row.summary }]);
+      const before = await snapshot(row.id);
+      const deleted = await remove(
+        request(f, 'DELETE', `/api/v1/memories/${row.id}`, cas(f, row)),
+        params(row.id),
+      );
+      expect(deleted.status).toBe(204);
+      expect(await deleted.text()).toBe('');
+      const saved = await snapshot(row.id);
+      expect(saved.memory).toMatchObject({
+        archived_at: expect.any(String),
+        revision: 2,
+      });
+      expect(saved.revisions).toHaveLength(before.revisions.length + 1);
+      expect(saved.revisions.slice(0, -1)).toEqual(before.revisions);
+      expect(saved.revisions[1]).toMatchObject({
+        content: row.summary,
+        summary: row.summary,
+        details: row.details,
+        revision: 2,
+        reason: 'archived by owner',
+      });
+      expect(saved.audit).toHaveLength(before.audit.length + 1);
+      expect(saved.audit).toEqual(expect.arrayContaining(before.audit));
+      expect(
+        saved.audit.filter(
+          (event: { action: string }) => event.action === 'memory.delete',
+        ),
+      ).toHaveLength(1);
+      for (const [handler, path] of [
+        [detail, `/api/v1/memories/${row.id}`],
+        [revisions, `/api/v1/memories/${row.id}/revisions`],
+      ] as const) {
+        const response = await handler(
+          request(f, 'GET', path),
+          params(row.id),
+        );
+        expect(response.status).toBe(404);
+        const body = await response.json();
+        expect(ApiErrorSchema.parse(body).error.code).toBe('NOT_FOUND');
+        expect(JSON.stringify(body)).not.toContain(row.summary);
+        expect(JSON.stringify(body)).not.toContain(row.details!);
+      }
+      expect(await snapshot(row.id)).toEqual(saved);
     });
 
     it('serializes deletion against confirmation at 100 and only releases the deleted identity', async () => {
