@@ -375,7 +375,9 @@ suite('0225 function search_path and standard backup restore', () => {
         values(${pair.summary},${pair.details}) returning summary,details`,
         ).toEqual([pair]);
         await expect(restored.db`update public.restore_memory_pairs
-        set summary=${'x'.repeat(41)}`).rejects.toMatchObject({ code: '23514' });
+        set summary=${'x'.repeat(41)}`).rejects.toMatchObject({
+          code: '23514',
+        });
         await expect(restored.db`update public.restore_memory_pairs
         set details='   '`).rejects.toMatchObject({ code: '23514' });
       } finally {
