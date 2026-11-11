@@ -48,7 +48,7 @@ it.each([
       kind,
       rice,
     );
-    const nativeTools = riceToolDefinitionsForCapabilities(
+    const nativeTools: string[] = riceToolDefinitionsForCapabilities(
       [...capabilities],
       grants,
     ).map((tool) => tool.name);
