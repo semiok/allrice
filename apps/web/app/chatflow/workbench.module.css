@@ -485,7 +485,6 @@
 .nativeDock :global([data-dockkit-strip]) :global([role='tab']) {
   padding: 0 8px;
 }
-.nativeDock :global([data-dockkit-strip]:has([data-native-subagent-tab])),
 .nativeDock :global([data-dockkit-strip-tabs]:has([data-native-subagent-tab])),
 .nativeDock :global([role='tab']:has([data-native-subagent-tab])) {
   height: 32px;
@@ -516,7 +515,6 @@
   color: var(--ar-text);
 }
 @media (max-width: 760px) {
-  .nativeDock :global([data-dockkit-strip]:has([data-native-subagent-tab])),
   .nativeDock
     :global([data-dockkit-strip-tabs]:has([data-native-subagent-tab])),
   .nativeDock :global([role='tab']:has([data-native-subagent-tab])) {

@@ -2797,6 +2797,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           const close = f.panel.locator(
             '[role="tab"]:has([data-native-subagent-tab]) [data-dockkit-tab-close]',
           );
+          const strip = (await f.panel
+            .locator('[data-dockkit-strip]')
+            .boundingBox())!;
+          expect(strip.height).toBe(56);
           const closeBox = await close.boundingBox();
           expect(closeBox!.width).toBeGreaterThanOrEqual(
             width <= 760 ? 44 : 32,
@@ -2804,14 +2808,21 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           expect(closeBox!.height).toBeGreaterThanOrEqual(
             width <= 760 ? 44 : 32,
           );
+          expect(
+            Math.abs(
+              closeBox!.y + closeBox!.height / 2 - (strip.y + strip.height / 2),
+            ),
+          ).toBeLessThanOrEqual(1);
           if (width <= 1100) {
-            const target = await back.boundingBox(),
-              strip = await f.panel
-                .locator('[data-dockkit-strip]')
-                .boundingBox();
+            const target = await back.boundingBox();
             expect(target!.width).toBe(44);
             expect(target!.height).toBe(44);
-            expect(target!.x).toBeLessThan(strip!.x + 56);
+            expect(target!.x).toBeGreaterThanOrEqual(strip.x);
+            expect(target!.x + target!.width).toBeLessThanOrEqual(strip.x + 56);
+            expect(target!.y).toBeGreaterThanOrEqual(strip.y);
+            expect(target!.y + target!.height).toBeLessThanOrEqual(
+              strip.y + strip.height,
+            );
           }
           await mkdir('.local/quality/met245-process-b', { recursive: true });
           await f.page.screenshot({
