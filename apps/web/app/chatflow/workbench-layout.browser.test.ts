@@ -2861,7 +2861,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         exact: true,
       });
       await dialog
-        .getByRole('heading', { name: '还没有工作场景', exact: true })
+        .getByRole('heading', { name: '还没有场景', exact: true })
         .waitFor();
       expect(
         await f.page
@@ -2899,7 +2899,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         exact: true,
       });
       await dialog
-        .getByRole('heading', { name: '还没有工作场景', exact: true })
+        .getByRole('heading', { name: '还没有场景', exact: true })
         .waitFor();
       await f.page
         .getByRole('treeitem', { name: /^研究任务 B/ })
@@ -2926,7 +2926,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         exact: true,
       });
       await current
-        .getByRole('heading', { name: '还没有工作场景', exact: true })
+        .getByRole('heading', { name: '还没有场景', exact: true })
         .waitFor();
       expect(await dialog.count()).toBe(0);
       expect(await current.textContent()).not.toContain('内容同事');
@@ -2956,14 +2956,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         exact: true,
       });
       await dialog
-        .getByRole('heading', { name: '还没有工作场景', exact: true })
+        .getByRole('heading', { name: '还没有场景', exact: true })
         .waitFor();
       f.state.viewer = id(50);
       f.finishRun();
       await expect
         .poll(() =>
           dialog
-            .getByRole('heading', { name: '还没有工作场景', exact: true })
+            .getByRole('heading', { name: '还没有场景', exact: true })
             .count(),
         )
         .toBe(0);
@@ -2971,12 +2971,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await dialog.getByRole('alert').waitFor();
       expect(
         await dialog
-          .getByRole('heading', { name: '还没有工作场景', exact: true })
+          .getByRole('heading', { name: '还没有场景', exact: true })
           .count(),
       ).toBe(0);
       expect(
         await dialog
-          .getByRole('button', { name: '新建场景', exact: true })
+          .getByRole('button', { name: '添加场景', exact: true })
           .count(),
       ).toBe(0);
       expect(f.state.sceneCatalogReads.some((r) => r.viewerId === id(50))).toBe(
@@ -7151,10 +7151,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         let dialog = await openOwnerDetails(f);
         await expectRetiredTabs(dialog);
         await dialog
-          .getByRole('button', { name: '新建场景', exact: true })
+          .getByRole('button', { name: '添加场景', exact: true })
           .click();
         const form = f.page.getByRole('dialog', {
-          name: '新建工作场景',
+          name: '添加场景',
           exact: true,
         });
         await form
@@ -7175,7 +7175,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await dialog.getByRole('button', { name: '关闭', exact: true }).click();
         f.state.employeeDetails.profile.canMaintainPersonal = false;
         dialog = await openOwnerDetails(f);
-        for (const name of ['编辑员工', '新建场景'])
+        for (const name of ['编辑员工', '添加场景'])
           expect(
             await dialog.getByRole('button', { name, exact: true }).count(),
           ).toBe(0);
@@ -7563,7 +7563,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const dialog = await openOwnerDetails(f);
         await expectRetiredTabs(dialog);
         await dialog
-          .getByRole('heading', { name: '还没有工作场景', exact: true })
+          .getByRole('heading', { name: '还没有场景', exact: true })
           .waitFor();
         expect(await dialog.getByRole('combobox').count()).toBe(0);
         expect(

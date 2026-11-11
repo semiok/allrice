@@ -114,6 +114,34 @@
   outline: none;
 }
 
+.empty {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 74px;
+  padding: 8px 20px;
+  border: 1px dashed var(--ar-border);
+  border-radius: 12px;
+  background: var(--ar-surface-subtle);
+  text-align: center;
+}
+.empty > svg {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  margin: 0;
+  color: var(--ar-text-secondary);
+}
+.empty.empty h3 {
+  margin: 0;
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+}
+
 .detailContainer {
   container-type: inline-size;
   container-name: employee-capabilities;
@@ -185,6 +213,35 @@
   font-size: 14px;
   line-height: 20px;
 }
+.primaryAction.primaryAction {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  gap: 4px;
+  min-height: 36px;
+  padding: 7px 14px;
+  border: 0;
+  border-radius: 12px;
+  color: var(--ar-text-on-primary);
+  background: var(--ar-action-primary);
+  font: var(--ar-font-body);
+  font-size: 14px;
+  line-height: 20px;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.primaryAction.primaryAction:hover:not(:disabled),
+.primaryAction.primaryAction:active:not(:disabled) {
+  background: var(--ar-action-primary-hover);
+}
+.primaryAction:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  outline: none;
+}
 .actions > button:disabled,
 .back:disabled,
 .dangerAction:disabled {
@@ -193,6 +250,7 @@
   outline: none;
 }
 .actions > button:focus-visible,
+.primaryAction:focus-visible,
 .back:focus-visible,
 .dangerAction:focus-visible,
 .pluginActions :is(a, button):focus-visible {
@@ -237,6 +295,7 @@
   min-height: 64px;
   padding: 10px 14px;
   border-bottom: 1px solid var(--ar-border);
+  background: var(--ar-surface);
 }
 .pluginRow:last-child {
   border-bottom: 0;
@@ -248,7 +307,6 @@
 .pluginHeading {
   display: flex;
   align-items: center;
-  gap: 18px;
   min-height: 22px;
 }
 .pluginHeading > strong {
@@ -258,22 +316,7 @@
   font-weight: 500;
   overflow-wrap: anywhere;
 }
-.pluginIcon {
-  display: grid;
-  flex: none;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  border: 1px solid var(--ar-border);
-  border-radius: 8px;
-  background: var(--ar-surface-subtle);
-}
-.pluginIcon svg {
-  width: 18px;
-  height: 18px;
-}
 .pluginInfo > p {
-  padding-left: 40px;
   margin-top: 1px;
 }
 .pluginActions {
@@ -282,9 +325,10 @@
   gap: 12px;
   white-space: nowrap;
 }
-.pluginActions :is(a, button) {
+.pluginActions > button {
   display: inline-flex;
   align-items: center;
+  gap: 4px;
   min-height: 32px;
   padding: 5px 10px;
   border: 1px solid var(--ar-border);
@@ -300,8 +344,33 @@
   border: 0;
   color: var(--ar-text-secondary);
 }
-.pluginActions :is(a, button):hover {
+.pluginActions button > svg {
+  width: 14px;
+  height: 14px;
+}
+.pluginActions > button:hover {
   background: var(--ar-surface-subtle);
+}
+.pluginBody {
+  padding: 20px 24px;
+  font-size: 14px;
+  line-height: 24px;
+}
+.pluginBody > section + section {
+  margin-top: 24px;
+}
+.pluginBody.pluginBody h3 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 600;
+}
+.pluginBody p {
+  margin: 0;
+}
+.pluginBody > section > p {
+  font-size: 14px;
+  line-height: 24px;
 }
 
 @container employee-capabilities (max-width: 440px) {
@@ -320,7 +389,11 @@
     min-height: 40px;
     padding: 9px 14px;
   }
-  .actions > button:last-child {
+  .primaryAction.primaryAction {
+    min-height: 40px;
+    padding: 9px 14px;
+  }
+  .actions > :last-child {
     flex: 1;
     min-width: 0;
   }
@@ -337,19 +410,13 @@
   .pluginRow {
     gap: 8px;
   }
-  .pluginHeading {
-    gap: 14px;
-  }
-  .pluginInfo > p {
-    padding-left: 36px;
-  }
   .pluginActions {
     gap: 8px;
   }
-  .pluginActions :is(a, button) {
+  .pluginActions > button {
     min-height: 36px;
   }
-  .pluginActions a {
-    padding-inline: 6px;
+  .pluginBody {
+    padding: 20px;
   }
 }

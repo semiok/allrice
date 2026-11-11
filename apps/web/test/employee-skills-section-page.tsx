@@ -21,6 +21,7 @@ import '@allrice/ui/tokens.css';
 import '../app/styles/base.css';
 import '@allrice/ui/styles.css';
 import css from './employee-skills-section-page.module.css';
+import { EmployeePluginPresentationFixture } from './employee-plugin-presentation';
 
 const id = (n: number) =>
   `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -323,4 +324,10 @@ function App() {
     </main>
   );
 }
-createRoot(document.getElementById('root')!).render(<App />);
+createRoot(document.getElementById('root')!).render(
+  new URLSearchParams(location.search).has('plugins') ? (
+    <EmployeePluginPresentationFixture />
+  ) : (
+    <App />
+  ),
+);

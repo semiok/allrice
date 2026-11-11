@@ -19,7 +19,7 @@ export function sceneSourceErrorResponse(
       status: 409,
       code: 'VERSION_CONFLICT',
       retryable: false,
-      message: `这是另一个 Workflow（${error.incomingName}），不能更新到“${error.currentSceneName}”。要安装它，请新建场景。`,
+      message: `这是另一个 Workflow（${error.incomingName}），不能更新到“${error.currentSceneName}”。要安装它，请添加场景。`,
     });
   else if (error instanceof SkillPreviewError)
     response = apiProblem({

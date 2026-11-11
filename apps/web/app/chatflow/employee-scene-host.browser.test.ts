@@ -1153,10 +1153,10 @@ suite('U1 mounted employee Workflow host', () => {
         await (
           await openDirectory()
         )
-          .getByRole('button', { name: '新建场景', exact: true })
+          .getByRole('button', { name: '添加场景', exact: true })
           .click();
       const form = employeePage(page, {
-        name: update ? '更新“写周报”' : '新建工作场景',
+        name: update ? '更新“写周报”' : '添加场景',
         exact: true,
       });
       await form
@@ -1477,10 +1477,10 @@ suite('U1 mounted employee Workflow host', () => {
             ? await f.openDirectory()
             : await f.openEmployeeDetails('流程哥');
         await parent
-          .getByRole('button', { name: '新建场景', exact: true })
+          .getByRole('button', { name: '添加场景', exact: true })
           .click();
         const form = employeePage(f.page, {
-          name: '新建工作场景',
+          name: '添加场景',
           exact: true,
         });
         const input = form.getByRole('textbox', {
@@ -1566,6 +1566,89 @@ suite('U1 mounted employee Workflow host', () => {
 
   for (const width of [1440, 390])
     for (const dark of [false, true]) {
+      it(`MET-251 v9 full-width compact Workflow empty and its copy match both real hosts at ${width} ${dark ? 'dark' : 'light'}`, async () => {
+        await inFixture({ width, dark, empty: true }, async (f) => {
+          const directory = await f.openDirectory();
+          const inspect = async (host: Locator, name: string) => {
+            const section = host.getByRole('region', {
+              name: '工作场景 Workflow',
+              exact: true,
+            });
+            const empty = section
+              .getByRole('heading', { name: '还没有场景', exact: true })
+              .locator('..');
+            await empty.waitFor();
+            const description = section.getByText(
+              '安装一个 Workflow，Rice就能按固定流程干活。',
+              { exact: true },
+            );
+            expect(await description.count()).toBe(1);
+            expect(
+              await empty
+                .getByText('安装一个 Workflow，Rice就能按固定流程干活。', {
+                  exact: true,
+                })
+                .count(),
+            ).toBe(0);
+            expect(
+              await section
+                .getByRole('heading', {
+                  name: '工作场景 Workflow',
+                  exact: true,
+                })
+                .count(),
+            ).toBe(1);
+            expect(
+              await section
+                .getByRole('button', { name: '添加场景', exact: true })
+                .isEnabled(),
+            ).toBe(true);
+            const paint = await empty.evaluate((node) => {
+              const style = getComputedStyle(node),
+                box = node.getBoundingClientRect();
+              return {
+                height: box.height,
+                fullWidth:
+                  Math.abs(
+                    box.width -
+                      node.parentElement!.getBoundingClientRect().width,
+                  ) < 1,
+                border: style.border,
+                background: style.backgroundColor,
+                padding: style.padding,
+                radius: style.borderRadius,
+              };
+            });
+            expect(paint.height).toBe(74);
+            expect(paint.fullWidth).toBe(true);
+            expect(paint.border).toContain('dashed');
+            expect(await empty.locator('p, button').count()).toBe(0);
+            expect(
+              await host.evaluate(
+                (node) =>
+                  node.scrollWidth <= node.clientWidth &&
+                  document.documentElement.scrollWidth <= innerWidth,
+              ),
+            ).toBe(true);
+            await f.page.screenshot({
+              path: resolve(
+                evidence,
+                `workflow-empty-${name}-${width}-${dark ? 'dark' : 'light'}.png`,
+              ),
+              fullPage: true,
+            });
+            return paint;
+          };
+          const sidebarPaint = await inspect(directory, 'sidebar');
+          await directory
+            .getByRole('button', { name: '关闭工作台', exact: true })
+            .click();
+          const employee = await f.openEmployeeDetails();
+          expect(await inspect(employee, 'employee')).toEqual(sidebarPaint);
+          expect(f.state.writes).toEqual([]);
+        });
+      });
+
       it(`mounted Workflow list/detail uses approved layout at ${width} ${dark ? 'dark' : 'light'}`, async () => {
         await inFixture({ width, dark }, async (f) => {
           const root = await f.openDirectory();
@@ -1943,7 +2026,7 @@ suite('U1 mounted employee Workflow host', () => {
       await contains(employee.getByRole('alert'), '工作场景读取失败，请重试。');
       expect(
         await employee
-          .getByRole('heading', { name: '还没有工作场景', exact: true })
+          .getByRole('heading', { name: '还没有场景', exact: true })
           .count(),
       ).toBe(0);
       await employee.getByRole('button', { name: '关闭', exact: true }).click();
@@ -1951,7 +2034,7 @@ suite('U1 mounted employee Workflow host', () => {
       await contains(root.getByRole('alert'), '工作场景读取失败，请重试。');
       expect(
         await root
-          .getByRole('heading', { name: '还没有工作场景', exact: true })
+          .getByRole('heading', { name: '还没有场景', exact: true })
           .count(),
       ).toBe(0);
       f.state.failDirectory = false;
@@ -1961,17 +2044,17 @@ suite('U1 mounted employee Workflow host', () => {
       await root.getByRole('status').waitFor();
       expect(
         await root
-          .getByRole('heading', { name: '还没有工作场景', exact: true })
+          .getByRole('heading', { name: '还没有场景', exact: true })
           .count(),
       ).toBe(0);
       pending.release();
       await root
-        .getByRole('heading', { name: '还没有工作场景', exact: true })
+        .getByRole('heading', { name: '还没有场景', exact: true })
         .waitFor();
       expect(await root.getByRole('alert').count()).toBe(0);
       expect(
         await root
-          .getByRole('button', { name: '新建场景', exact: true })
+          .getByRole('button', { name: '添加场景', exact: true })
           .isEnabled(),
       ).toBe(true);
     });
@@ -2056,7 +2139,7 @@ suite('U1 mounted employee Workflow host', () => {
       const root = await f.openDirectory();
       expect(
         await root
-          .getByRole('button', { name: '新建场景', exact: true })
+          .getByRole('button', { name: '添加场景', exact: true })
           .count(),
       ).toBe(0);
       await root.getByRole('button', { name: /写周报/ }).click();
@@ -2131,10 +2214,10 @@ suite('U1 mounted employee Workflow host', () => {
         .toBe(true);
       expect(catalogReads()).toHaveLength(before);
       await employee
-        .getByRole('button', { name: '新建场景', exact: true })
+        .getByRole('button', { name: '添加场景', exact: true })
         .click();
       const source = employeePage(f.page, {
-        name: '新建工作场景',
+        name: '添加场景',
         exact: true,
       });
       await source.waitFor();
@@ -2356,7 +2439,7 @@ suite('U1 mounted employee Workflow host', () => {
     await inFixture({}, async (f) => {
       const form = await f.sourceForm(true);
       const message =
-        '这是另一个 Workflow（other-work），不能更新到“写周报<img src=x>”。要安装它，请新建场景。';
+        '这是另一个 Workflow（other-work），不能更新到“写周报<img src=x>”。要安装它，请添加场景。';
       f.state.previewReason = 'name_mismatch';
       f.state.previewMessage = message;
       await form.getByRole('button', { name: '读取', exact: true }).click();
@@ -2730,12 +2813,12 @@ suite('U1 mounted employee Workflow host', () => {
       expect(await confirmation(f).count()).toBe(0);
       expect(
         await root
-          .getByRole('button', { name: '新建场景', exact: true })
+          .getByRole('button', { name: '添加场景', exact: true })
           .count(),
       ).toBe(0);
       expect(
         await root
-          .getByRole('heading', { name: '还没有工作场景', exact: true })
+          .getByRole('heading', { name: '还没有场景', exact: true })
           .count(),
       ).toBe(0);
       expect(await root.getByText('客户回访', { exact: true }).count()).toBe(0);
@@ -2858,7 +2941,7 @@ suite('U1 mounted employee Workflow host', () => {
       expect(confirmWrites(f)[1]!.input).toEqual(original);
       await dialog.getByRole('button', { name: '取消', exact: true }).click();
       const form = employeePage(f.page, {
-        name: '新建工作场景',
+        name: '添加场景',
         exact: true,
       });
       await form.waitFor();
@@ -3090,7 +3173,7 @@ suite('U1 mounted employee Workflow host', () => {
       ).toBe(0);
       await dialog.getByRole('button', { name: '取消', exact: true }).click();
       const form = employeePage(f.page, {
-        name: '新建工作场景',
+        name: '添加场景',
         exact: true,
       });
       await form.waitFor();
@@ -3104,7 +3187,7 @@ suite('U1 mounted employee Workflow host', () => {
       expect(
         await f
           .directory()
-          .getByRole('button', { name: '新建场景', exact: true })
+          .getByRole('button', { name: '添加场景', exact: true })
           .isDisabled(),
       ).toBe(true);
       expect(
@@ -3147,7 +3230,7 @@ suite('U1 mounted employee Workflow host', () => {
       expect(await confirmation(f).count()).toBe(0);
       expect(
         await restored
-          .getByRole('button', { name: '新建场景', exact: true })
+          .getByRole('button', { name: '添加场景', exact: true })
           .isDisabled(),
       ).toBe(true);
       expect(confirmWrites(f)).toHaveLength(2);
@@ -3225,10 +3308,10 @@ suite('U1 mounted employee Workflow host', () => {
                   .click();
               } else
                 await employee
-                  .getByRole('button', { name: '新建场景', exact: true })
+                  .getByRole('button', { name: '添加场景', exact: true })
                   .click();
               form = employeePage(f.page, {
-                name: operation === 'update' ? '更新“写周报”' : '新建工作场景',
+                name: operation === 'update' ? '更新“写周报”' : '添加场景',
                 exact: true,
               });
               await form
@@ -3406,10 +3489,10 @@ suite('U1 mounted employee Workflow host', () => {
         expect(close?.width).toBe(32);
         expect(close?.height).toBe(32);
         await root
-          .getByRole('button', { name: '新建场景', exact: true })
+          .getByRole('button', { name: '添加场景', exact: true })
           .click();
         const form = employeePage(f.page, {
-          name: '新建工作场景',
+          name: '添加场景',
           exact: true,
         });
         const back = await form
@@ -3444,10 +3527,10 @@ suite('U1 mounted employee Workflow host', () => {
             let dialog: Locator;
             if (operation === 'confirm') {
               await employee
-                .getByRole('button', { name: '新建场景', exact: true })
+                .getByRole('button', { name: '添加场景', exact: true })
                 .click();
               const form = employeePage(f.page, {
-                name: '新建工作场景',
+                name: '添加场景',
                 exact: true,
               });
               await readGithub(form);
@@ -3503,7 +3586,7 @@ suite('U1 mounted employee Workflow host', () => {
             const other = await f.openDirectory();
             expect(
               await other
-                .getByRole('button', { name: '新建场景', exact: true })
+                .getByRole('button', { name: '添加场景', exact: true })
                 .isEnabled(),
             ).toBe(true);
             expect(await confirmation(f).count()).toBe(0);
@@ -3535,7 +3618,7 @@ suite('U1 mounted employee Workflow host', () => {
             expect(await confirmation(f).count()).toBe(0);
             expect(
               await restored
-                .getByRole('button', { name: '新建场景', exact: true })
+                .getByRole('button', { name: '添加场景', exact: true })
                 .isDisabled(),
             ).toBe(true);
             expect(f.state.writes).toHaveLength(1);

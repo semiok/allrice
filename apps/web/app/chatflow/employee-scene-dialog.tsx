@@ -22,6 +22,7 @@ import css from './employee-scene-dialog.module.css';
 import {
   EmployeeCapabilityDanger,
   EmployeeCapabilityDetailsHeader,
+  EmployeeCapabilityEmpty,
   EmployeeCapabilityHeading,
   EmployeeCapabilityRow,
 } from './employee-capability-presentation';
@@ -240,7 +241,7 @@ export function EmployeeSceneList(props: {
       disabled={catalog.busy || catalog.uncertain}
       onClick={props.onCreate}
     >
-      新建场景
+      添加场景
     </Button>
   );
   return (
@@ -258,9 +259,14 @@ export function EmployeeSceneList(props: {
           id={heading}
           title="工作场景"
           kind="Workflow"
-          description="固定流程的工作，你发起，它按步骤做。"
+          description={`安装一个 Workflow，${props.employeeName}就能按固定流程干活。`}
           action={writable && create}
         />
+      )}
+      {!props.embedded && (
+        <p className={capabilityCss.description}>
+          安装一个 Workflow，{props.employeeName}就能按固定流程干活。
+        </p>
       )}
       {catalog.loading ? (
         <Reading />
@@ -294,20 +300,14 @@ export function EmployeeSceneList(props: {
           })}
         </div>
       ) : (
-        <div className={css.empty}>
-          <SceneIcon kind="box" />
-          <h3>还没有工作场景</h3>
-          <p className={css.caption}>
-            安装一个 Workflow，{props.employeeName}就能按固定流程干活。
-          </p>
-          {!props.embedded && writable && create}
-        </div>
+        <EmployeeCapabilityEmpty
+          title="还没有场景"
+          icon={<SceneIcon kind="box" />}
+        />
       )}
-      {!props.embedded &&
-        writable &&
-        !!catalog.catalog?.value.skills.length && (
-          <div className={css.requestActions}>{create}</div>
-        )}
+      {!props.embedded && writable && (
+        <div className={css.requestActions}>{create}</div>
+      )}
     </section>
   );
 }
@@ -605,7 +605,7 @@ export function EmployeeSceneDialog(props: {
         : page === 'source'
           ? sourceTarget
             ? `更新“${sourceTarget.name}”`
-            : '新建工作场景'
+            : '添加场景'
           : page === 'confirm'
             ? sourceTarget || preview?.operation === 'update'
               ? '确认更新'

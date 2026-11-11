@@ -82,6 +82,7 @@ export function EmployeeCapabilityDetailsHeader({
   starting,
   onUpdate,
   onStart,
+  action,
 }: {
   title: string;
   version?: string;
@@ -94,6 +95,7 @@ export function EmployeeCapabilityDetailsHeader({
   starting?: boolean;
   onUpdate?: () => void;
   onStart?: () => void;
+  action?: ReactNode;
 }) {
   return (
     <header className={css.detailHeader}>
@@ -127,8 +129,9 @@ export function EmployeeCapabilityDetailsHeader({
         </h2>
         {version && <span className={css.pill}>{version}</span>}
       </div>
-      {(onUpdate || onStart) && (
+      {(action || onUpdate || onStart) && (
         <div className={css.actions}>
+          {action}
           {onUpdate && (
             <Button
               type="button"
@@ -143,6 +146,7 @@ export function EmployeeCapabilityDetailsHeader({
             <Button
               type="button"
               variant="primary"
+              className={css.primaryAction}
               disabled={disabled || startDisabled}
               aria-busy={starting}
               onClick={onStart}
@@ -156,17 +160,64 @@ export function EmployeeCapabilityDetailsHeader({
   );
 }
 
+export function EmployeeCapabilityEmpty({
+  title,
+  icon,
+}: {
+  title: string;
+  icon: ReactNode;
+}) {
+  return (
+    <div className={css.empty}>
+      {icon}
+      <h3>{title}</h3>
+    </div>
+  );
+}
+
+/** A real link when usable; disabled states never retain a navigation target. */
+export function EmployeePluginOpenLink({
+  href,
+  pluginName,
+  children,
+  disabled,
+}: {
+  href: string;
+  pluginName: string;
+  children: string;
+  disabled?: boolean;
+}) {
+  return disabled ? (
+    <Button variant="primary" className={css.primaryAction} disabled>
+      {children} <span aria-hidden="true">↗</span>
+    </Button>
+  ) : (
+    <a
+      className={css.primaryAction}
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      aria-label={`${children} ${pluginName}，在新标签页打开`}
+    >
+      {children} <span aria-hidden="true">↗</span>
+    </a>
+  );
+}
+
 export function EmployeeCapabilityDanger({
   children,
+  description,
   disabled,
   onRemove,
 }: {
   children: ReactNode;
+  description?: string;
   disabled?: boolean;
   onRemove: () => void;
 }) {
   return (
     <div className={css.dangerZone}>
+      {description && <p className={css.caption}>{description}</p>}
       <button
         type="button"
         className={css.dangerAction}
@@ -192,14 +243,16 @@ export function EmployeePluginSection({
     id: string;
     name: string;
     description: string;
-    icon: ReactNode;
     href: string;
   }>;
   onDetails: (id: string) => void;
   onAdd?: () => void;
 }) {
   return (
-    <section className={css.typography} aria-labelledby={headingId}>
+    <section
+      className={`${css.typography} ${css.detailContainer}`}
+      aria-labelledby={headingId}
+    >
       <EmployeeCapabilityHeading
         id={headingId}
         title="插件"
@@ -213,29 +266,118 @@ export function EmployeePluginSection({
           )
         }
       />
-      <div className={css.list}>
-        {plugins.map((plugin) => (
-          <div className={css.pluginRow} key={plugin.id}>
-            <div className={css.pluginInfo}>
-              <div className={css.pluginHeading}>
-                <span className={css.pluginIcon} aria-hidden="true">
-                  {plugin.icon}
-                </span>
-                <strong>{plugin.name}</strong>
+      {plugins.length ? (
+        <div className={css.list}>
+          {plugins.map((plugin) => (
+            <div className={css.pluginRow} key={plugin.id}>
+              <div className={css.pluginInfo}>
+                <div className={css.pluginHeading}>
+                  <strong>{plugin.name}</strong>
+                </div>
+                <p className={css.caption}>{plugin.description}</p>
               </div>
-              <p className={css.caption}>{plugin.description}</p>
+              <div className={css.pluginActions}>
+                <EmployeePluginOpenLink
+                  href={plugin.href}
+                  pluginName={plugin.name}
+                >
+                  打开
+                </EmployeePluginOpenLink>
+                <button type="button" onClick={() => onDetails(plugin.id)}>
+                  详情
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.75"
+                    aria-hidden="true"
+                  >
+                    <path d="m9 5 7 7-7 7" />
+                  </svg>
+                </button>
+              </div>
             </div>
-            <div className={css.pluginActions}>
-              <a href={plugin.href} target="_blank" rel="noopener noreferrer">
-                打开 ↗
-              </a>
-              <button type="button" onClick={() => onDetails(plugin.id)}>
-                详情
-              </button>
-            </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      ) : (
+        <EmployeeCapabilityEmpty
+          title="还没有插件"
+          icon={
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.75"
+              aria-hidden="true"
+            >
+              <path d="M8 3v4M16 3v4M6 7h12v4a6 6 0 0 1-6 6v4M6 7v4a6 6 0 0 0 6 6" />
+            </svg>
+          }
+        />
+      )}
     </section>
+  );
+}
+
+/** Presentation only, for the same future authorized plugin host as the list.
+ * Removing a binding and its confirmation belong to that caller, not this view. */
+export function EmployeePluginDetails({
+  name,
+  description,
+  version,
+  employeeName,
+  href,
+  backLabel,
+  onBack,
+  onRemove,
+  disabled,
+}: {
+  name: string;
+  description: string;
+  version?: string;
+  employeeName: string;
+  href: string;
+  backLabel: string;
+  onBack: () => void;
+  onRemove?: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className={css.detailContainer}>
+      <EmployeeCapabilityDetailsHeader
+        title={name}
+        version={version}
+        backLabel={backLabel}
+        onBack={onBack}
+        action={
+          <EmployeePluginOpenLink
+            href={href}
+            pluginName={name}
+            disabled={disabled}
+          >
+            打开插件
+          </EmployeePluginOpenLink>
+        }
+      />
+      <div className={css.pluginBody}>
+        <section>
+          <h3>插件介绍</h3>
+          <p>{description}</p>
+        </section>
+        <section>
+          <h3>使用说明</h3>
+          <p>点击「打开插件」，在新页面使用。</p>
+        </section>
+        {onRemove && (
+          <EmployeeCapabilityDanger
+            description={`只从 ${employeeName} 移除，其他员工不受影响。`}
+            disabled={disabled}
+            onRemove={onRemove}
+          >
+            从此员工移除
+          </EmployeeCapabilityDanger>
+        )}
+      </div>
+    </div>
   );
 }
