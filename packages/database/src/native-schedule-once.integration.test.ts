@@ -341,15 +341,21 @@ suite(
             expect(await dispatchNextNativeOnceOccurrence(randomUUID())).toBe(
               true,
             );
-          else
+          else {
+            const [automation] = await db<{ revision: number }[]>`
+              select revision from allrice_automations where id=${t.task.id}
+                and organization_id=${f.organizationId} and workspace_id=${f.workspaceId}
+                and owner_id=${f.ownerId}`;
+            if (!automation) throw Error('fixture_automation_missing');
             expect(
               (
                 await runManualAutomation(f.context, f.workspaceId, t.task.id, {
                   requestId: randomUUID(),
-                  expectedRevision: t.task.revision,
+                  expectedRevision: automation.revision,
                 })
               ).run.id,
             ).toBeTruthy();
+          }
         } finally {
           wrap.mockRestore();
           source.mockRestore();
