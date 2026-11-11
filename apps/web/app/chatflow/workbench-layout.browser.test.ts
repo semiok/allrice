@@ -548,6 +548,114 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     page.setDefaultTimeout(5000);
     // Loading the development bundle can outlast interaction waits under CI load.
     page.setDefaultNavigationTimeout(15_000);
+    const nativeDiagnostic =
+      options.nativeSubagents && options.appearance
+        ? ([] as { at: number; kind: string; detail: unknown }[])
+        : null;
+    const recordNative = (kind: string, detail: unknown) =>
+      nativeDiagnostic?.push({ at: Date.now(), kind, detail });
+    if (nativeDiagnostic) {
+      const relevant = (url: string) =>
+        /^\/api\/v1\/(workspace|sessions|runs)(\/|$)/.test(
+          new URL(url).pathname,
+        );
+      page.on('request', (request) => {
+        if (relevant(request.url()))
+          recordNative('request', {
+            url: request.url(),
+            method: request.method(),
+            organization: request.headers()['x-allrice-organization-id'],
+            workspace: request.headers()['x-allrice-workspace-id'],
+          });
+      });
+      page.on('requestfailed', (request) => {
+        if (relevant(request.url()))
+          recordNative('requestfailed', {
+            url: request.url(),
+            failure: request.failure(),
+          });
+      });
+      page.on('response', (response) => {
+        if (!relevant(response.url())) return;
+        recordNative('response', {
+          url: response.url(),
+          status: response.status(),
+          contentType: response.headers()['content-type'],
+        });
+        if (response.headers()['content-type']?.includes('application/json'))
+          void response.text().then(
+            (body) => recordNative('body', { url: response.url(), body }),
+            (error) => recordNative('body-error', String(error)),
+          );
+      });
+      page.on('websocket', (socket) => {
+        recordNative('ws-open', socket.url());
+        socket.on('framereceived', (frame) =>
+          recordNative('ws-frame', {
+            url: socket.url(),
+            payload: frame.payload.toString(),
+          }),
+        );
+        socket.on('socketerror', (error) => recordNative('ws-error', error));
+        socket.on('close', () => recordNative('ws-close', socket.url()));
+      });
+      page.on('console', (message) => {
+        if (message.text().startsWith('NATIVE_HOST_DOM '))
+          recordNative('dom', JSON.parse(message.text().slice(16)));
+      });
+      await page.addInitScript(() => {
+        document.addEventListener('DOMContentLoaded', () => {
+          let previous = '';
+          const capture = () => {
+            const snapshot = JSON.stringify({
+              title: document.querySelector('h1')?.textContent,
+              triggers: [
+                ...document.querySelectorAll<HTMLButtonElement>(
+                  'button[aria-haspopup="tree"]',
+                ),
+              ].map((button) => ({
+                label: button.getAttribute('aria-label'),
+                expanded: button.getAttribute('aria-expanded'),
+                disabled: button.disabled,
+                rect: button.getBoundingClientRect().toJSON(),
+              })),
+              children: [...document.querySelectorAll('[data-child]')].map(
+                (child) => ({
+                  id: child.getAttribute('data-child'),
+                  text: child.textContent,
+                }),
+              ),
+              steps: [...document.querySelectorAll('[data-step-id]')].map(
+                (step) => step.getAttribute('data-step-id'),
+              ),
+              notices: [
+                ...document.querySelectorAll('[role="status"],[role="alert"]'),
+              ].map((node) => node.textContent),
+            });
+            if (snapshot === previous) return;
+            previous = snapshot;
+            console.info(
+              'NATIVE_HOST_DOM ' +
+                JSON.stringify({ at: Date.now(), state: JSON.parse(snapshot) }),
+            );
+          };
+          new MutationObserver(capture).observe(document.documentElement, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: [
+              'aria-label',
+              'aria-expanded',
+              'aria-hidden',
+              'data-child',
+              'data-step-id',
+              'disabled',
+            ],
+          });
+          capture();
+        });
+      });
+    }
     const employeeHistorySessions = [
       ...Array.from({ length: options.employeeHistoryCount ?? 7 }, (_, n) => ({
         ...session(id(600 + n)),
@@ -2331,6 +2439,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         );
         throw error;
       });
+    recordNative('fixture-ready', { url: page.url(), nativeFixture });
     const panel = page.locator('#artifact-workbench:not([aria-hidden="true"])');
     // Dock refresh can hide a retained tab between resolving a role locator
     // and clicking. Resolve the currently visible menu throughout the action.
@@ -2426,6 +2535,38 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(errors).toEqual([]);
         expect(writes).toEqual([]);
         expect(unexpected).toEqual([]);
+      },
+      async captureNativeDiagnostic() {
+        if (!nativeDiagnostic) return;
+        const directory = '.local/quality/met245-process-b';
+        const name = `host-diagnostic-${options.width}-${options.appearance}`;
+        await mkdir(directory, { recursive: true });
+        await writeFile(
+          `${directory}/${name}.json`,
+          JSON.stringify(
+            {
+              timeline: nativeDiagnostic,
+              calls: subagentFeed.calls.filter(
+                (call) => call.fixture === nativeFixture,
+              ),
+              connections: [...subagentFeed.connections]
+                .filter((connection) => connection.fixture === nativeFixture)
+                .map(({ fixture, sessionId, childId, liveOnly }) => ({
+                  fixture,
+                  sessionId,
+                  childId,
+                  liveOnly,
+                })),
+              errors,
+              writes,
+              unexpected,
+            },
+            null,
+            2,
+          ),
+        );
+        await writeFile(`${directory}/${name}.html`, await page.content());
+        await page.screenshot({ path: `${directory}/${name}.png` });
       },
     };
   }
@@ -2930,6 +3071,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .toBe(0);
           expect(f.writes).toEqual([]);
         } finally {
+          await f
+            .captureNativeDiagnostic()
+            .catch((error) =>
+              console.error('NATIVE_HOST_CAPTURE_FAILED', error),
+            );
           await f.close();
         }
       });
