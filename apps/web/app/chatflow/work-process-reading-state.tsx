@@ -109,7 +109,11 @@ export function useProcessMaterialReveal() {
 function inView(node: HTMLElement, rect?: DOMRect) {
   let top = 0,
     bottom = innerHeight;
-  for (let parent = rect ? node : node.parentElement; parent; parent = parent.parentElement) {
+  for (
+    let parent = rect ? node : node.parentElement;
+    parent;
+    parent = parent.parentElement
+  ) {
     if (
       parent === document.scrollingElement ||
       !['auto', 'scroll', 'hidden', 'clip'].includes(
@@ -296,9 +300,14 @@ function takeReadingSnapshot(root: HTMLElement) {
       const body = bodyFor(element);
       if (!node || !element || !body || !selection) return;
       const point = document.createRange();
-      point.setStart(node, index === 0 ? selection.anchorOffset : selection.focusOffset);
+      point.setStart(
+        node,
+        index === 0 ? selection.anchorOffset : selection.focusOffset,
+      );
       point.collapse(true);
-      return [...point.getClientRects()].some((box) => box.height > 0 && inView(element, box))
+      return [...point.getClientRects()].some(
+        (box) => box.height > 0 && inView(element, box),
+      )
         ? body
         : undefined;
     },

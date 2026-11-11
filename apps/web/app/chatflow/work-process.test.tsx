@@ -334,7 +334,11 @@ describe('native process display surface', () => {
         kind,
         status,
         toolName:
-          kind === 'tool' ? 'read' : kind === 'search' ? 'web.search' : undefined,
+          kind === 'tool'
+            ? 'read'
+            : kind === 'search'
+              ? 'web.search'
+              : undefined,
       };
       const html = render({
         items: [row],
