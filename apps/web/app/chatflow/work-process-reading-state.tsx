@@ -317,9 +317,11 @@ export class WorkProcessReadingState extends Component<
     saved: ReturnType<typeof takeReadingSnapshot>,
   ) {
     const root = this.props.root.current!;
+    const stableFocus =
+      document.activeElement === document.body ||
+      document.activeElement === saved.active;
     const untouchedFocus =
-      (document.activeElement === document.body ||
-        document.activeElement === saved.active) &&
+      stableFocus &&
       (saved.active === document.body || !!(saved.control ?? saved.content));
     let reading: HTMLElement | undefined;
     for (const item of saved.scroll) {
@@ -374,7 +376,9 @@ export class WorkProcessReadingState extends Component<
         else if (saved.selection.focus.inView) reading = focus.block;
       }
     }
-    if (untouchedFocus && !restoreProcessPositions(root, saved.positions))
+    const positioned =
+      stableFocus && restoreProcessPositions(root, saved.positions);
+    if (untouchedFocus && !positioned)
       reading?.scrollIntoView({
         block: 'nearest',
         inline: 'nearest',

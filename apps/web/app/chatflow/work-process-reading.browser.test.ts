@@ -144,6 +144,28 @@ suite('reading a receipt while late native trace changes its group', () => {
     card(page, 0).getByRole('button', { name: '收起', exact: true });
   const output = (page: Page) =>
     material(page, 5).locator('pre[data-process-content="result"]').last();
+  const receiptGeometry = (target: Locator) => target.evaluate((node) => {
+    const box = node.getBoundingClientRect();
+    const step = node.closest('[data-step-id]') ?? node;
+    const body = node.closest<HTMLElement>('[data-process-scrollport]');
+    let top = Math.max(0, box.top), bottom = Math.min(innerHeight, box.bottom);
+    const ancestors = [];
+    for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+      if (parent === document.scrollingElement ||
+        !['auto', 'scroll', 'hidden', 'clip'].includes(getComputedStyle(parent).overflowY)) continue;
+      const clip = parent.getBoundingClientRect();
+      const edge = clip.top + parent.clientTop;
+      top = Math.max(top, edge);
+      bottom = Math.min(bottom, edge + parent.clientHeight);
+      ancestors.push({ top: edge, height: parent.clientHeight, scrollTop: parent.scrollTop,
+        scrollHeight: parent.scrollHeight, overflow: getComputedStyle(parent).overflowY });
+    }
+    return { identity: step.getAttribute('data-step-id'), box: { y: box.y, height: box.height },
+      materials: [...step.querySelectorAll('[data-process-material]')].map((item) => item.getAttribute('data-process-material')),
+      readable: bottom > top, clip: [top, bottom], ancestors, window: [scrollY, innerHeight],
+      relativeTop: body ? box.top - body.getBoundingClientRect().top : null,
+      port: body ? { scrollTop: body.scrollTop, clientHeight: body.clientHeight, scrollHeight: body.scrollHeight } : null };
+  });
   async function open(width = 1440, expandGroups = true) {
     const page = await browser.newPage({ viewport: { width, height: 900 } });
     page.setDefaultTimeout(8000);
@@ -576,8 +598,10 @@ suite('reading a receipt while late native trace changes its group', () => {
   });
   it('keeps the reader at the later receipt after scrolling away from an old selection', async () => {
     const page = await open(390);
+    const geometry: unknown[] = [];
     try {
       await readResult(page);
+      await page.evaluate(() => window.readingDiagnostic(true));
       const selected = await output(page).evaluate((node) => {
         node.scrollTop = 650;
         node.scrollIntoView({ block: 'center' });
@@ -592,10 +616,12 @@ suite('reading a receipt while late native trace changes its group', () => {
       const old = (await output(page).boundingBox())!;
       expect(old.y + old.height).toBeLessThan(0);
       for (const stage of ['prefix', 'split', 'merge'] as const) {
+        geometry.push({ stage, before: await receiptGeometry(later) });
         await update(page, stage);
         const box = (await later.boundingBox())!;
-        expect(box.y).toBeLessThan(900);
-        expect(box.y + box.height).toBeGreaterThan(0);
+        geometry.push({ stage, after: await receiptGeometry(later) });
+        expect(box.y, stage).toBeLessThan(900);
+        expect(box.y + box.height, stage).toBeGreaterThan(0);
         expect(
           await page.evaluate(() => document.getSelection()!.toString()),
         ).toBe(selected);
@@ -604,9 +630,65 @@ suite('reading a receipt while late native trace changes its group', () => {
         ).toBe(true);
       }
     } finally {
+      try {
+        console.log('Reading later diagnostic', JSON.stringify({ geometry,
+          reader: await page.evaluate(() => window.readingDiagnostic(false)),
+        }));
+      } catch {
+        console.log('Reading later diagnostic unavailable');
+      }
       await page.close();
     }
   });
+  it.each(['process title', 'outside input'] as const)(
+    'keeps the wheel reader while focus stays on the %s', async (target) => {
+      const page = await open(390);
+      try {
+        const title = processOf(page).locator('[data-disclosure-row]').first();
+        const outside = page.getByRole('textbox', { name: '另外阅读的位置' });
+        const focused = target === 'process title' ? title : outside;
+        const later = card(page, 30);
+        await stepToggle(later).click();
+        const reading = material(page, 30).locator('pre[data-process-content="result"]');
+        const original = await reading.textContent();
+        await focused.focus();
+        const port = processBodyOf(page).locator('[data-process-scrollport]').first();
+        const portBox = (await port.boundingBox())!;
+        const visiblePort = await receiptGeometry(port);
+        expect(visiblePort.readable).toBe(true);
+        await page.mouse.move(portBox.x + 10, (visiblePort.clip[0]! + visiblePort.clip[1]!) / 2);
+        await page.mouse.wheel(0, (await reading.boundingBox())!.y - visiblePort.clip[0]! - 100);
+        await page.mouse.move(2, 850);
+        const titleBox = (await title.boundingBox())!;
+        await page.mouse.wheel(0, titleBox.y + titleBox.height + 1);
+        await expect.poll(async () => {
+          const header = (await title.boundingBox())!;
+          const current = await receiptGeometry(reading);
+          return header.y + header.height < 0 && current.readable && (current.port?.scrollTop ?? 0) > 0;
+        }).toBe(true);
+        const before = await receiptGeometry(reading);
+        expect(before.identity).toBe('tool:call-30');
+        expect(before.materials).toEqual(['cloud:reading-30']);
+        for (const stage of ['prefix', 'split', 'merge'] as const) {
+          await update(page, stage);
+          const after = await receiptGeometry(reading);
+          expect(after.identity, stage).toBe(before.identity);
+          expect(after.materials, stage).toEqual(before.materials);
+          expect(after.readable, stage).toBe(true);
+          expect(after.relativeTop, stage).toBeCloseTo(before.relativeTop!, 0);
+          expect(await reading.textContent(), stage).toBe(original);
+          expect(await focused.evaluate((node) => node === document.activeElement), stage).toBe(true);
+        }
+        if (target === 'outside input') {
+          await page.keyboard.type('继续阅读');
+          expect(await outside.inputValue()).toBe('继续阅读');
+        }
+        expect(await page.evaluate(() => window.readingWrites)).toEqual([]);
+      } finally {
+        await page.close();
+      }
+    },
+  );
   it('keeps an offscreen focused group title without pulling back a wheel reader', async () => {
     const page = await open(390, false);
     try {
@@ -1647,6 +1729,123 @@ suite('reading a receipt while late native trace changes its group', () => {
                     view === 'history'
                       ? 'partial 1:N boundary: first result tail and second status/location/input; full values covered by behavior'
                       : 'complete MCP parameter scroller and exterior approval; other controls/artifacts covered by behavior',
+                },
+                null,
+                2,
+              ),
+            );
+            const overview = page.locator(
+              view === 'history'
+                ? '[data-step-id="tool:cards-browser"]'
+                : `#operation-${ids.mcpOperation}`,
+            );
+            const overviewHeader =
+              view === 'history'
+                ? stepToggle(overview)
+                : overview.locator('header').first();
+            await overviewHeader.evaluate((node) =>
+              node.scrollIntoView({ block: 'start' }),
+            );
+            if (view === 'history')
+              await stepToggle(processOf(page)).evaluate((node) =>
+                node.scrollIntoView({ block: 'start' }),
+              );
+            const overviewFraming = await overview
+              .locator(
+                view === 'history'
+                  ? `[data-disclosure-row], [data-process-material="browser:${id(310)}"] > dl > dt, [data-process-material="browser:${id(310)}"] > dl > dd`
+                  : 'header, [aria-label="这次要做的事"] > div:first-child, [aria-label="这次要做的事"] > div:nth-child(2), [aria-label="参数"]',
+              )
+              .evaluateAll((nodes) =>
+                nodes.map((node) => {
+                  const bounds = node.getBoundingClientRect();
+                  let left = Math.max(0, bounds.left);
+                  let right = Math.min(innerWidth, bounds.right);
+                  let top = Math.max(0, bounds.top);
+                  let bottom = Math.min(innerHeight, bounds.bottom);
+                  const clips = [];
+                  for (
+                    let parent = node.parentElement;
+                    parent;
+                    parent = parent.parentElement
+                  ) {
+                    if (parent === document.scrollingElement) continue;
+                    const style = getComputedStyle(parent);
+                    const clipX = /(auto|scroll|hidden|clip)/.test(
+                      style.overflowX,
+                    );
+                    const clipY = /(auto|scroll|hidden|clip)/.test(
+                      style.overflowY,
+                    );
+                    if (!clipX && !clipY) continue;
+                    const box = parent.getBoundingClientRect();
+                    const clip = {
+                      left: box.left + parent.clientLeft,
+                      top: box.top + parent.clientTop,
+                      width: parent.clientWidth,
+                      height: parent.clientHeight,
+                    };
+                    if (clipX) {
+                      left = Math.max(left, clip.left);
+                      right = Math.min(right, clip.left + clip.width);
+                    }
+                    if (clipY) {
+                      top = Math.max(top, clip.top);
+                      bottom = Math.min(bottom, clip.top + clip.height);
+                    }
+                    clips.push({
+                      tag: parent.tagName,
+                      className: parent.className,
+                      overflowX: style.overflowX,
+                      overflowY: style.overflowY,
+                      scrollLeft: parent.scrollLeft,
+                      scrollTop: parent.scrollTop,
+                      clip,
+                    });
+                  }
+                  return {
+                    tag: node.tagName,
+                    text: node.textContent,
+                    bounds: bounds.toJSON(),
+                    visibleWidth: Math.max(0, right - left),
+                    visibleHeight: Math.max(0, bottom - top),
+                    clips,
+                  };
+                }),
+              );
+            expect(overviewFraming.length).toBe(view === 'history' ? 9 : 4);
+            for (const anchor of overviewFraming) {
+              expect(anchor.visibleWidth).toBeGreaterThan(0);
+              expect(anchor.visibleHeight).toBeGreaterThan(0);
+              expect(anchor.visibleWidth).toBeGreaterThanOrEqual(
+                anchor.bounds.width - 1,
+              );
+              expect(anchor.visibleHeight).toBeGreaterThanOrEqual(
+                anchor.bounds.height - 1,
+              );
+            }
+            const overviewName = `cards-overview-${view}-${width}-${theme}`;
+            await page.screenshot({
+              path: `${outputDirectory}/${overviewName}.png`,
+            });
+            await writeFile(
+              `${outputDirectory}/${overviewName}.json`,
+              JSON.stringify(
+                {
+                  sourceSha,
+                  width,
+                  height: 900,
+                  theme,
+                  scenario: 'cards',
+                  view,
+                  kind: 'overview',
+                  scroll: await page.evaluate(() => ({ x: scrollX, y: scrollY })),
+                  target: await overviewHeader.boundingBox(),
+                  framing: overviewFraming,
+                  scope:
+                    view === 'history'
+                      ? 'browser step title and complete status/location/input/result; full mixed and 1:N records covered separately'
+                      : 'sales pending title, action, recipient and short parameter preview; full approval content and controls covered separately',
                 },
                 null,
                 2,

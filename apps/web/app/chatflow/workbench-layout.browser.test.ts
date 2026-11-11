@@ -3306,6 +3306,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             },
           }),
         );
+        await f.page.route('**/api/v1/runs/*/events?**', (route) =>
+          route.fulfill({
+            json: {
+              events:
+                new URL(route.request().url()).pathname.split('/').at(-2) === run
+                  ? f.state.events
+                  : [],
+            },
+          }),
+        );
         await f.page.reload();
         if (width < 760) {
           const hide = f.page.getByRole('button', {
@@ -3314,10 +3324,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           });
           if (await hide.isVisible()) await hide.click();
         }
-        const process = f.page
-          .getByRole('region', { name: '工作过程', exact: true })
-          .last();
-        const header = process.locator('[data-disclosure-row]').first();
+        const owner = f.page.locator(`#message-${id(2003)}`);
+        const process = owner.getByRole('region', { name: '工作过程', exact: true });
+        const header = process.getByRole('button', {
+          name: '工作过程', exact: true,
+        });
         const processBody = process.locator('..');
         const steps = processBody.locator('[data-step-id^="tool:lookup-"]');
         const tools = processBody.getByRole('button', { name: '已调用工具' });
@@ -3706,6 +3717,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             },
           }),
         );
+        await f.page.route('**/api/v1/runs/*/events?**', (route) =>
+          route.fulfill({
+            json: {
+              events:
+                new URL(route.request().url()).pathname.split('/').at(-2) === run
+                  ? f.state.events
+                  : [],
+            },
+          }),
+        );
         await f.page.reload();
         if (width < 760) {
           const collapse = f.page.getByRole('button', {
@@ -3714,19 +3735,24 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           });
           if (await collapse.isVisible()) await collapse.click();
         }
-        const process = f.page
-          .getByRole('region', { name: '工作过程', exact: true })
-          .last();
-        await process.locator('[data-disclosure-row]').first().click();
-        const first = f.page.locator('[data-step-id="tool:compact-0"]');
-        const second = f.page.locator('[data-step-id="tool:compact-1"]');
+        const owner = f.page.locator(`#message-${id(2003)}`);
+        const previousOwner = f.page.locator(`#message-${id(2001)}`);
+        const process = owner.getByRole('region', { name: '工作过程', exact: true });
+        await process.getByRole('button', { name: '工作过程', exact: true }).click();
+        const first = owner.locator('[data-step-id="tool:compact-0"]');
+        const second = owner.locator('[data-step-id="tool:compact-1"]');
         await first.waitFor();
+        expect(await owner.count()).toBe(1);
+        expect(await previousOwner.count()).toBe(1);
+        expect(
+          await previousOwner.getByText('第 1 项答复', { exact: true }).isVisible(),
+        ).toBe(true);
         const measure = () =>
-          f.page.evaluate(() => {
-            const one = document
+          owner.evaluate((node) => {
+            const one = node
               .querySelector('[data-step-id="tool:compact-0"]')!
               .getBoundingClientRect();
-            const two = document
+            const two = node
               .querySelector('[data-step-id="tool:compact-1"]')!
               .getBoundingClientRect();
             return {
@@ -3831,6 +3857,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .textContent(),
         ).toBe(operations[1]!.result.output);
         for (const operation of operations) {
+          expect(await f.page.locator(
+            `[data-step-id="tool:${operation.nativeCallId}"]`,
+          ).count()).toBe(1);
+          expect(await previousOwner.locator(
+            `[data-step-id="tool:${operation.nativeCallId}"], [data-process-material="cloud:${operation.snapshot.binding.attempt.operationId}"]`,
+          ).count()).toBe(0);
           expect(
             await f.page
               .locator(
@@ -4234,9 +4266,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           output: 'Done',
           trusted: false,
         };
-        await expect
-          .poll(() => history.getAttribute('data-status'))
-          .toBe('已完成');
+        await history
+          .locator('[data-disclosure-header]')
+          .getByText('已完成', { exact: true })
+          .waitFor();
+        expect(await history.getAttribute('data-status')).toBe('已完成');
         expect(await stopping.count()).toBe(0);
         expect(await card.count()).toBe(0);
         expect(
@@ -4250,9 +4284,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           output: 'network request failed',
           trusted: false,
         };
-        await expect
-          .poll(() => history.getAttribute('data-status'))
-          .toBe('未完成');
+        await history
+          .locator('[data-disclosure-header]')
+          .getByText('未完成', { exact: true })
+          .waitFor();
+        expect(await history.getAttribute('data-status')).toBe('未完成');
         expect(await card.count()).toBe(0);
         expect(
           await material
@@ -10243,11 +10279,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         ),
         second = f.page.locator(`[data-process-material="cloud:${id(8991)}"]`);
       const groups = f.page.locator('section[aria-label="工作步骤"]');
-      const readHistory = async () => {
+      const readHistory = async (secondRunning = false) => {
         expect(await groups.count()).toBe(2);
-        for (const group of await groups.all()) {
+        for (const [index, group] of (await groups.all()).entries()) {
           const summary = group.getByRole('button', {
-            name: '已调用工具',
+            name: secondRunning && index === 1 ? '正在调用工具' : '已调用工具',
             exact: true,
           });
           if ((await summary.getAttribute('aria-expanded')) === 'false')
@@ -10270,7 +10306,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             await toggle.click();
         }
       };
-      await readHistory();
+      await readHistory(true);
       await second.waitFor();
       await push('assistant.text.delta', {
         replyId: 'final',
@@ -10778,7 +10814,24 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(decisions).toEqual([]);
         await approve.click();
         await panel.getByRole('button', { name: '停止本轮任务' }).click();
-        await panel.getByText('已确认停止', { exact: true }).waitFor();
+        const owner = f.page.locator(`#message-${id(20)}`);
+        await owner
+          .getByRole('region', { name: '工作过程', exact: true })
+          .getByRole('button', { name: '工作过程', exact: true })
+          .click();
+        const stopped = owner.locator(
+          `[data-step-id="operation:mcp:${id(9401)}"]`,
+        );
+        await stopped
+          .locator('[data-disclosure-header]')
+          .getByText('已确认停止', { exact: true })
+          .waitFor();
+        expect(await stopped.getAttribute('data-status')).toBe('已确认停止');
+        await stopped.locator('[data-disclosure-row]').click();
+        expect(await stopped.locator(
+          `[data-process-material="mcp:${id(9401)}"]`,
+        ).isVisible()).toBe(true);
+        expect(await panel.locator(`#operation-${id(9401)}`).count()).toBe(0);
         expect(decisions).toEqual(['approved', 'cancel']);
         expect(f.errors).toEqual([]);
       } finally {
