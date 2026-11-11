@@ -229,6 +229,7 @@ export function employeeMemoryClient(
         throw error;
       }
       operation.uncertain = true;
+      // r1-exempt(own-text): 只比较本模块固定错误文案来选择错误显示，不读取用户、模型或服务端 message，不判断授权、不免确认；未命中仍抛错。
       if (
         (action === 'create' || action === 'edit') &&
         (!(error instanceof MemoryClientError) ||
