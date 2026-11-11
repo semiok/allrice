@@ -434,7 +434,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     init: RequestInit = {},
     token = ownerToken,
     workspace = identity.workspace,
-    instance = token === foreignToken
+    instance: string = token === foreignToken
       ? foreign.assignment
       : identity.assignment,
   ) {
@@ -635,14 +635,14 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
   });
   const exact = (
     row: Pick<EmployeeMemoryRecord, 'revision' | 'pairDigest'>,
-    instanceId = identity.assignment,
+    instanceId: string = identity.assignment,
   ) => ({
     instanceId,
     expectedRevision: row.revision,
     pairDigest: row.pairDigest,
     idempotencyKey: randomUUID(),
   });
-  async function detail(id: string, instanceId = identity.assignment) {
+  async function detail(id: string, instanceId: string = identity.assignment) {
     const response = await api(
       '/' + id,
       {},
@@ -654,7 +654,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     return EmployeeMemoryDetailResponseSchema.parse(await response.json())
       .memory;
   }
-  async function collection(instanceId = identity.assignment) {
+  async function collection(instanceId: string = identity.assignment) {
     const response = await api(
       '/manage',
       {},
