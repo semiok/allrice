@@ -655,7 +655,7 @@ function NativeStepsGroup({
   // concrete steps directly; saved compact/standard grouping stays native.
   if (policy.mode === 'detailed')
     return (
-      <section aria-label="工作步骤" className={styles.processDetails}>
+      <section aria-label="工作步骤" className={styles.processDetails} data-process-scrollport>
         <WorkProcessSteps
           items={items}
           questions={questions}
@@ -711,7 +711,7 @@ function NativeStepsGroup({
           </>
         }
       >
-        <div className={styles.processDetails}>
+        <div className={styles.processDetails} data-process-scrollport>
           <WorkProcessSteps
             items={items}
             questions={questions}

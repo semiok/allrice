@@ -296,7 +296,14 @@ suite('authorized operation records stay readable inline', () => {
       expect(Object.fromEntries(partner).note).toBe(forgedNote);
       for (const id of [ids.mcpOperation, ids.partnerOperation])
         expect(
-          await card(page, id).getByLabel('这次要做的事').innerText(),
+          (
+            await card(page, id)
+              .getByLabel('这次要做的事')
+              .locator(
+                ':scope > div > dd:not(:has([data-process-content="approval-arguments"])), [aria-label="参数"]',
+              )
+              .allInnerTexts()
+          ).join('\n'),
         ).not.toMatch(/[{}]/);
       // A long value is clipped, and 展开全文 shows the real text.
       const text = () =>

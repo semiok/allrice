@@ -636,7 +636,7 @@ window.fetch = async (input, init) => {
         },
       })),
     });
-  if (path.endsWith('/preview'))
+  if (path.endsWith('/content'))
     return Response.json(
       path.includes(ids.doneArtifact)
         ? {

@@ -536,21 +536,33 @@ suite('reading a receipt while late native trace changes its group', () => {
     try {
       await readResult(page);
       await update(page, 'prefix');
-      const expected = await page.evaluate(() => {
-        (document.activeElement as HTMLElement)?.blur();
-        const from = document.querySelector(
-          '#operation-reading-0 pre',
-        )!.firstChild!;
-        const to = document.querySelector(
-          '[data-process-material="cloud:reading-5"] [data-process-content="result"]',
-        )!.firstChild!;
-        document
-          .getSelection()!
-          .setBaseAndExtent(from, from.textContent!.length - 15, to, 50);
-        return document.getSelection()!.toString();
-      });
+      await stepToggle(card(page, 1)).click();
+      const rangeText = (select: boolean) =>
+        page.evaluate((select) => {
+          if (select) (document.activeElement as HTMLElement)?.blur();
+          const from = document.querySelector(
+            '[data-process-material="cloud:reading-1"] [data-process-content="input"]',
+          )!.firstChild!;
+          const to = document.querySelector(
+            '[data-process-material="cloud:reading-5"] [data-process-content="result"]',
+          )!.firstChild!;
+          const range = document.createRange();
+          range.setStart(from, from.textContent!.length - 15);
+          range.setEnd(to, 50);
+          if (select) {
+            document.getSelection()!.removeAllRanges();
+            document.getSelection()!.addRange(range);
+          }
+          return select ? document.getSelection()!.toString() : range.toString();
+        }, select);
+      const expected = await rangeText(true);
       for (const stage of ['split', 'merge'] as const) {
         await update(page, stage);
+        if (stage === 'split') {
+          const changed = await rangeText(false);
+          expect(changed).not.toBe(expected);
+          expect(changed).toContain('补充发现：继续核对后半部分。');
+        }
         expect(
           await page.evaluate(() => document.getSelection()!.toString()),
         ).toBe('');
@@ -617,8 +629,35 @@ suite('reading a receipt while late native trace changes its group', () => {
       await page.mouse.wheel(0, groupBox.y + groupBox.height + 1);
       await expect
         .poll(async () => {
-          const box = (await later.boundingBox())!;
-          return box.y < 900 && box.y + box.height > 0;
+          const header = (await group().boundingBox())!;
+          return later.evaluate(
+            (node, headerBottom) => {
+              const box = node.getBoundingClientRect();
+              let top = Math.max(0, box.top);
+              let bottom = Math.min(innerHeight, box.bottom);
+              for (
+                let parent = node.parentElement;
+                parent;
+                parent = parent.parentElement
+              ) {
+                if (
+                  parent === document.scrollingElement ||
+                  !/(auto|scroll|hidden|clip)/.test(
+                    getComputedStyle(parent).overflowY,
+                  )
+                )
+                  continue;
+                const clip = parent.getBoundingClientRect();
+                top = Math.max(top, clip.top + parent.clientTop);
+                bottom = Math.min(
+                  bottom,
+                  clip.top + parent.clientTop + parent.clientHeight,
+                );
+              }
+              return headerBottom < 0 && bottom > top;
+            },
+            header.y + header.height,
+          );
         })
         .toBe(true);
       expect(
@@ -1149,8 +1188,11 @@ suite('reading a receipt while late native trace changes its group', () => {
       const before = await reads();
       for (const title of ['当前观察甲', '当前观察乙']) {
         await page.getByText(title, { exact: true }).waitFor();
-        for (const operation of [310, 313])
-          expect(await location(operation)).toBe('组合测试电脑 · example.com');
+        for (const [operation, expected] of [
+          [310, '组合测试电脑 · example.com'],
+          [313, '组合测试电脑 · example.com/submit'],
+        ] as const)
+          expect(await location(operation)).toBe(expected);
         expect(await location(314)).toBe('组合测试电脑');
         expect(await contents()).toEqual(original);
         if (title === '当前观察甲') await update(page, 'prefix');
@@ -1366,7 +1408,11 @@ suite('reading a receipt while late native trace changes its group', () => {
       await page
         .getByRole('menuitem', { name: '侧栏预览', exact: true })
         .click();
-      await page.getByText('item,count', { exact: true }).waitFor();
+      const preview = page
+        .getByRole('region', { name: '文件正文', exact: true })
+        .locator('code');
+      await preview.waitFor();
+      expect(await preview.textContent()).toBe('item,count\nchecked,12');
       expect(
         await page.evaluate(
           (path) => window.readingReads[path],

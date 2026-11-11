@@ -106,9 +106,18 @@ export function useProcessMaterialReveal() {
   ] as const;
 }
 
-const inView = (node: HTMLElement) =>
-  node.getBoundingClientRect().bottom > 0 &&
-  node.getBoundingClientRect().top < innerHeight;
+function inView(node: HTMLElement) {
+  let top = 0, bottom = innerHeight;
+  for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+    if (parent === document.scrollingElement ||
+      !['auto', 'scroll', 'hidden', 'clip'].includes(getComputedStyle(parent).overflowY)) continue;
+    const box = parent.getBoundingClientRect();
+    top = Math.max(top, box.top + parent.clientTop);
+    bottom = Math.min(bottom, box.top + parent.clientTop + parent.clientHeight);
+  }
+  const box = node.getBoundingClientRect();
+  return bottom > top && box.bottom > top && box.top < bottom;
+}
 const visible = (node: HTMLElement) => node.getClientRects().length > 0;
 function keyOf(node: HTMLElement, attribute: string) {
   const operation = node.closest<HTMLElement>('[data-process-operation]');
@@ -170,6 +179,41 @@ function restoredPoint(
   }
 }
 
+/** A visible reading position is independent of an older focus or selection. */
+function processPositions(root: HTMLElement) {
+  return [...root.querySelectorAll<HTMLElement>('[data-process-scrollport]')].flatMap((body) => {
+    const marker = [...body.querySelectorAll<HTMLElement>('[data-process-control],[data-process-content]')].find((node) =>
+      node.closest('[data-process-scrollport]') === body &&
+      !node.querySelector('[data-process-content]') &&
+      inView(node.closest<HTMLElement>('[data-disclosure-row]') ?? node),
+    );
+    if (!marker) return [];
+    const node = marker.closest<HTMLElement>('[data-disclosure-row]') ?? marker;
+    const attribute = marker.hasAttribute('data-process-control') ? 'data-process-control' : 'data-process-content';
+    const top = node.getBoundingClientRect().top;
+    return [{ attribute, key: keyOf(marker, attribute), top, innerTop: top - body.getBoundingClientRect().top }];
+  });
+}
+
+function restoreProcessPositions(root: HTMLElement, positions: ReturnType<typeof processPositions>) {
+  let positioned = false;
+  const restored = new Set<HTMLElement>();
+  for (const item of positions) {
+    const marker = locate(root, item.attribute, item.key);
+    const target = marker?.closest<HTMLElement>('[data-disclosure-row]') ?? marker;
+    const body = target?.closest<HTMLElement>('[data-process-scrollport]');
+    if (!target || !body || !visible(body) || restored.has(body)) continue;
+    body.scrollTop += target.getBoundingClientRect().top - body.getBoundingClientRect().top - item.innerTop;
+    if (!positioned)
+      for (let parent = body.parentElement; parent; parent = parent.parentElement)
+        if (parent === document.scrollingElement || ['auto', 'scroll'].includes(getComputedStyle(parent).overflowY))
+          parent.scrollTop += target.getBoundingClientRect().top - item.top;
+    positioned = true;
+    restored.add(body);
+  }
+  return positioned;
+}
+
 function takeReadingSnapshot(root: HTMLElement) {
   const active = document.activeElement;
   const inside =
@@ -209,6 +253,7 @@ function takeReadingSnapshot(root: HTMLElement) {
     content: inside && textPoint(inside, 0),
     inView: !!inside && inView(inside),
     scroll,
+    positions: processPositions(root),
     selection:
       selection && !selection.isCollapsed && anchor && focus
         ? { anchor, focus, text: selection.toString() }
@@ -293,7 +338,7 @@ export class WorkProcessReadingState extends Component<
         else if (saved.selection.focus.inView) reading = focus.block;
       }
     }
-    if (untouchedFocus)
+    if (untouchedFocus && !restoreProcessPositions(root, saved.positions))
       reading?.scrollIntoView({
         block: 'nearest',
         inline: 'nearest',
