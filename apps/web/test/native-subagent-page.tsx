@@ -182,7 +182,7 @@ function Page() {
     organizationId: headers['x-allrice-organization-id'],
     workspaceId: headers['x-allrice-workspace-id'],
     sessionId: activeId,
-    viewerId: workspace.viewerId,
+    viewerId: workspace.viewerId ?? null,
     ownerId,
     rootRunId,
     generation: 1,

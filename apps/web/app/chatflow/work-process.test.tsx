@@ -1,8 +1,12 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { ComponentProps } from 'react';
+import type { ChatFlowEventEnvelope } from '@allrice/contracts';
 import { WorkProcess } from './work-process';
-import type { NativeExperienceItem } from '../../lib/chatflow/native-experience';
+import {
+  projectNativeExperience,
+  type NativeExperienceItem,
+} from '../../lib/chatflow/native-experience';
 import { workProcessPresentation } from '../../lib/chatflow/work-process-presentation';
 
 const items: NativeExperienceItem[] = [
@@ -47,6 +51,46 @@ const render = (overrides: Partial<ComponentProps<typeof WorkProcess>> = {}) =>
   );
 
 describe('native process display surface', () => {
+  it('projects each native create/list failure receipt and its safe reason into the process', () => {
+    const events: ChatFlowEventEnvelope[] = [
+      'subagent',
+      'subagent_fork',
+      'list_agents',
+      'list_agents',
+    ].map((name, index): ChatFlowEventEnvelope => ({
+      schemaVersion: 3,
+      eventId: `failure-${index}`,
+      organizationId: 'organization',
+      workspaceId: 'workspace',
+      conversationId: 'session',
+      runId: 'run',
+      generation: 0,
+      cursor: `run:${index + 1}`,
+      sequence: index + 1,
+      harness: 'dsh',
+      type: 'tool.failed',
+      occurredAt: '2026-11-10T00:00:00.000Z',
+      sourceEvent: null,
+      payload: {
+        name,
+        toolCallId: `failure-${index}`,
+        summary: `授权读取被拒绝 ${index + 1}`,
+      },
+    }));
+    const calls = projectNativeExperience(events);
+    expect(calls.map((call) => call.status)).toEqual(Array(4).fill('failed'));
+    const html = render({
+      items: calls,
+      parts: undefined,
+      transcriptView: 'verbose',
+    });
+    for (let index = 0; index < events.length; index++) {
+      expect(
+        html.match(new RegExp(`data-step-id="tool:failure-${index}"`, 'g')),
+      ).toHaveLength(1);
+      expect(html).toContain(`授权读取被拒绝 ${index + 1}`);
+    }
+  });
   it.each([false, true])(
     'keeps each failed create/list fact and unknown outcome with parts=%s',
     (withParts) => {

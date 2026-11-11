@@ -120,6 +120,29 @@ export function nativeSubagentReferencedEntry(
     : undefined;
 }
 
+/** Complete a missing trace fact once, after rechecking the exact authorized address. */
+export function nativeSubagentRefineGeneration(
+  scope: NativeSubagentViewScope,
+  reference: NativeSubagentReference,
+  summary: NativeSubagentSummary | null,
+): NativeSubagentReference | null {
+  if (
+    reference.generation != null ||
+    scope.generation == null ||
+    !scope.rootRunId ||
+    !scope.bindingRevision
+  )
+    return null;
+  const entry = nativeSubagentReferencedEntry(
+    { ...scope, generation: null },
+    reference,
+    summary,
+  );
+  return entry?.kind === reference.kind
+    ? { ...reference, generation: scope.generation }
+    : null;
+}
+
 export const nativeSubagentDiagnostic = {
   corrupt: '记录损坏',
   unavailable: '暂时无法读取',

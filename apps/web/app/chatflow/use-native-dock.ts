@@ -60,6 +60,7 @@ export function useNativeDock(
     title: string,
     paneId?: PaneId,
     replaceTab?: TabId,
+    settled?: (tabId: TabId) => void,
   ) => {
     actions.openContent(
       scope,
@@ -70,7 +71,7 @@ export function useNativeDock(
         ...(paneId ? { paneId } : {}),
         ...(replaceTab ? { replaceTab } : {}),
       },
-      () => {},
+      settled ?? (() => {}),
     );
   };
   const intents: DockIntents = {
@@ -97,6 +98,7 @@ export function useNativeDock(
     surface,
     open,
     reveal: () => actions.open(scope),
+    setExpanded: (value: boolean) => actions.setExpanded(scope, value),
     intents,
     canCloseTab: (id: TabId) => canCloseTab(surface, id),
     setFullscreen: (value: boolean) =>

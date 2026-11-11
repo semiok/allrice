@@ -7,6 +7,7 @@ import {
   nativeSubagentEntryState,
   nativeSubagentReference,
   nativeSubagentReferencedEntry,
+  nativeSubagentRefineGeneration,
   nativeSubagentReferenceFromTabId,
   nativeSubagentScopeKey,
   nativeSubagentTabId,
@@ -56,6 +57,52 @@ const summary: NativeSubagentSummary = {
 };
 
 describe('native child view projection', () => {
+  it('only fills a missing generation for the same authorized scope and exact child address', () => {
+    const ref = nativeSubagentReference(
+      { ...scope, generation: null },
+      summary,
+      child,
+    );
+    const refined = nativeSubagentRefineGeneration(scope, ref, summary);
+    expect(refined).toEqual({ ...ref, generation: 0 });
+    expect(nativeSubagentReferencedEntry(scope, ref, summary)).toBeUndefined();
+    for (const patch of [
+      { organizationId: 'other' },
+      { workspaceId: 'other' },
+      { sessionId: 'other' },
+      { viewerId: 'other' },
+      { ownerId: 'other' },
+      { rootRunId: 'other' },
+      { bindingRevision: 'other' },
+    ])
+      expect(
+        nativeSubagentRefineGeneration({ ...scope, ...patch }, ref, summary),
+      ).toBeNull();
+    for (const patch of [
+      { rootId: 'other' },
+      { parentId: 'other' },
+      { id: 'other' },
+      { kind: 'diagnostic' as const },
+    ])
+      expect(
+        nativeSubagentRefineGeneration(scope, { ...ref, ...patch }, summary),
+      ).toBeNull();
+    expect(
+      nativeSubagentRefineGeneration(
+        { ...scope, generation: 1 },
+        refined!,
+        summary,
+      ),
+    ).toBeNull();
+    expect(
+      nativeSubagentReferencedEntry(
+        { ...scope, generation: 1 },
+        refined!,
+        summary,
+      ),
+    ).toBeUndefined();
+    expect(nativeSubagentRefineGeneration(scope, ref, null)).toBeNull();
+  });
   it('keys exact scope and address, independently of labels or observation source', () => {
     const ref = nativeSubagentReference(scope, summary, child);
     const id = nativeSubagentTabId(ref);

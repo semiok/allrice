@@ -8,6 +8,7 @@ import { NativeSubagentWorkbench } from './native-subagent-workbench';
 import {
   nativeSubagentReferencedEntry,
   nativeSubagentReferenceFromTabId,
+  nativeSubagentRefineGeneration,
   nativeSubagentScopeKey,
   nativeSubagentTabId,
   type NativeSubagentReference,
@@ -556,18 +557,65 @@ export function ChatFlowClient({
           bindingRevision: nativeBindingRevision,
         }
       : null;
+  const nativeReadable =
+    !!workspace &&
+    !!activeId &&
+    (!nativeSession?.ownerId || nativeSession.ownerId === workspace.viewerId);
+  // A new session waits for native-ready; settled history can read cold.
+  const nativeQueryReady =
+    history?.session.id === activeId &&
+    (nativeReadyKey ||
+      history.messages.some(
+        (message) =>
+          message.role === 'assistant' &&
+          message.runId &&
+          message.status !== 'pending',
+      ));
+  // The active header includes durable children; background rows stay live-only.
+  const nativeObservation = useNativeSubagents(
+    workspace?.workspaceId ?? '',
+    tenantHeaders,
+    nativeReadable && nativeQueryReady
+      ? { [activeId!]: nativeBindingRevision }
+      : {},
+    false,
+  );
+  const activeNativeReads = nativeReadable
+    ? nativeObservation.reads
+    : activeId
+      ? { [activeId]: 'error' as const }
+      : {};
+  const subagentSummary = activeId ? activeNativeReads[activeId] : null;
+  function refineSubagentReference(reference: NativeSubagentReference) {
+    return subagentScope && subagentSummary && subagentSummary !== 'error'
+      ? nativeSubagentRefineGeneration(
+          subagentScope,
+          reference,
+          subagentSummary,
+        )
+      : null;
+  }
   const [subagentRequest, setSubagentRequest] = useState<{
     reference: NativeSubagentReference;
     title: string;
     revision: number;
   } | null>(null);
+  const refinedSubagentReference = subagentRequest
+    ? refineSubagentReference(subagentRequest.reference)
+    : null;
   const currentSubagentRequest =
-    subagentScope &&
-    subagentRequest &&
-    nativeSubagentScopeKey(subagentScope) ===
-      nativeSubagentScopeKey(subagentRequest.reference)
-      ? subagentRequest
-      : undefined;
+    refinedSubagentReference && subagentRequest
+      ? { ...subagentRequest, reference: refinedSubagentReference }
+      : subagentScope &&
+          subagentRequest &&
+          nativeSubagentScopeKey(subagentScope) ===
+            nativeSubagentScopeKey(subagentRequest.reference)
+        ? subagentRequest
+        : undefined;
+  useLayoutEffect(() => {
+    if (refinedSubagentReference && currentSubagentRequest)
+      setSubagentRequest(currentSubagentRequest);
+  }, [refinedSubagentReference, currentSubagentRequest]);
   const [subagentDirectoryRequest, setSubagentDirectoryRequest] = useState<{
     id: number;
     scopeKey: string;
@@ -1456,21 +1504,6 @@ export function ChatFlowClient({
     requestAnimationFrame(() => composerInput.current?.focus());
   }
 
-  const nativeReadable =
-    !!workspace &&
-    !!activeId &&
-    (!nativeSession?.ownerId || nativeSession.ownerId === workspace.viewerId);
-  // A new SaaS session exists before its first native binding. Wait for the
-  // existing native-ready event; settled history still reads on a cold page.
-  const nativeQueryReady =
-    history?.session.id === activeId &&
-    (nativeReadyKey ||
-      history.messages.some(
-        (message) =>
-          message.role === 'assistant' &&
-          message.runId &&
-          message.status !== 'pending',
-      ));
   const {
     pending: pendingNativeSessions,
     admitted: recordNativeAdmission,
@@ -1482,23 +1515,6 @@ export function ChatFlowClient({
     history,
     nativeReadyKey,
   );
-  // The active header includes durable children; background rows stay live-only.
-  const nativeObservation = useNativeSubagents(
-    workspace?.workspaceId ?? '',
-    tenantHeaders,
-    nativeReadable && nativeQueryReady
-      ? {
-          [activeId!]: nativeBindingRevision,
-        }
-      : {},
-    false,
-  );
-  const activeNativeReads = nativeReadable
-    ? nativeObservation.reads
-    : activeId
-      ? { [activeId]: 'error' as const }
-      : {};
-  const subagentSummary = activeId ? activeNativeReads[activeId] : null;
   function openSubagentDirectory(origin?: { runId: string; callId: string }) {
     if (
       !subagentScope ||
@@ -2847,6 +2863,11 @@ export function ChatFlowClient({
           onUseFileReference={useWorkbenchReference}
           onTemplateFile={viewWorkbenchTemplate}
           taskRequest={currentAutomationRequest}
+          refineSubagent={(id) => {
+            const reference = nativeSubagentReferenceFromTabId(id);
+            const refined = reference && refineSubagentReference(reference);
+            return refined ? nativeSubagentTabId(refined) : undefined;
+          }}
           subagentRequest={
             currentSubagentRequest
               ? {
