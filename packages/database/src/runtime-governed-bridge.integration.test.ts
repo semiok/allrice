@@ -30,6 +30,7 @@ import {
   type RequestContext,
   type RuntimeActionBinding,
   EmployeeExecutionSnapshotSchema,
+  EmployeeDefinitionSchema,
   ExecutionContextSchema,
   RuntimeLocalCommandResultSchema,
   localCommandToolchainImageV1,
@@ -64,7 +65,10 @@ import { BridgeJournal } from '../../../apps/rice-bridge/src/journal.js';
 import { RuntimeBridgeOperationClient } from '../../../apps/rice-bridge/src/operation-client.js';
 import { createRuntimeBridgeHttpHandler } from '../../../apps/web/lib/bridge/operation-http.js';
 import { LocalStorageAdapter } from '../../storage/src/local.ts';
-import { riceManifest } from './employees/employee-config.ts';
+import {
+  employeeManifestChecksum,
+  riceManifest,
+} from './employees/employee-config.ts';
 import { updateQueuedMessage } from './conversation/queued-messages.ts';
 import { sendChatMessage, getChatSessionHistory } from './workspace/service.ts';
 import { claimNextJob, cancelRun } from './execution/queue.ts';
@@ -203,10 +207,17 @@ async function fixture(
       values(${target},${org},${workspace},${`bridge.${deviceId}`},'rice_bridge','B1 device','online',
         ${tx.json(['files.read', 'files.write'])},${tx.json({ bridgeDeviceId: deviceId })})`;
     if (chat) {
+      const definition =
+        manifest === undefined
+          ? undefined
+          : EmployeeDefinitionSchema.parse(manifest);
+      const configChecksum = definition
+        ? employeeManifestChecksum(definition)
+        : digest('employee');
       await tx`insert into allrice_employees(id,organization_id,workspace_id,employee_key,name)
         values(${employeeId},${org},${workspace},'assembly','B1 employee')`;
       await tx`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest)
-        values(${versionId},${org},${workspace},${employeeId},1,'B1 frozen employee','synthetic','synthetic','[]',${digest('employee')},${tx.json(JSON.parse(JSON.stringify(manifest ?? {})))})`;
+        values(${versionId},${org},${workspace},${employeeId},1,'B1 frozen employee','synthetic','synthetic','[]',${configChecksum},${tx.json(JSON.parse(JSON.stringify(definition ?? {})))})`;
       await tx`insert into allrice_employee_assignments(id,organization_id,workspace_id,employee_id,employee_version_id,user_id)
         values(${assignmentId},${org},${workspace},${employeeId},${versionId},${user})`;
       await tx`insert into allrice_chat_sessions(id,organization_id,workspace_id,owner_id,title,employee_assignment_id,employee_version_id)
