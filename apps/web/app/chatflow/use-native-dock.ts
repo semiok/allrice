@@ -96,6 +96,7 @@ export function useNativeDock(
   };
   return {
     surface,
+    getLayout: () => store.getSnapshot().bySession[scope]!.layout,
     open,
     reveal: () => actions.open(scope),
     setExpanded: (value: boolean) => actions.setExpanded(scope, value),

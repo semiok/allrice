@@ -1355,6 +1355,52 @@ suite('native subagent directory and employee sidebar', () => {
     await view.waitFor();
     return view;
   }
+  it('keeps incomplete child identity summary-only without changing the native running state', async () => {
+    const { page, followCalls } = await open(
+      summary(),
+      390,
+      undefined,
+      ownProcess,
+      childScene,
+    );
+    const beforeWrites = posts.length;
+    try {
+      for (const patch of [
+        { generation: null },
+        { rootRunId: null },
+        { bindingRevision: '' },
+      ]) {
+        await page.evaluate(
+          (patch) =>
+            window.nativeSubagentViewFixture.scope({
+              generation: 1,
+              rootRunId: 'root-run',
+              bindingRevision: 'initial/',
+              ...patch,
+            }),
+          patch,
+        );
+        const view = await selectWorkbench(page);
+        expect(
+          await page.evaluate(() => window.nativeSubagentViewFixture.reference),
+        ).toMatchObject(patch);
+        expect(await view.getByLabel('交给子智能体的任务').innerText()).toBe(
+          'fork-a 自己的初始任务',
+        );
+        expect(await view.innerText()).toContain('fork-a 自己的最后回复');
+        expect(await view.getByText('运行中', { exact: true }).count()).toBe(1);
+        expect(
+          await view.getByRole('region', { name: '工作过程' }).count(),
+        ).toBe(0);
+        expect(followCalls().filter((call) => call.childId)).toEqual([]);
+        await page.evaluate(() => window.nativeSubagentViewFixture.close());
+        await view.waitFor({ state: 'hidden' });
+      }
+      expect(posts.length).toBe(beforeWrites);
+    } finally {
+      await page.close();
+    }
+  });
   it.each(['light', 'dark'])(
     'renders the real read-only child and shared main/child steps in %s',
     async (theme) => {
@@ -1440,7 +1486,9 @@ suite('native subagent directory and employee sidebar', () => {
                 document.documentElement.scrollWidth <= innerWidth,
             ),
           ).toBe(true);
-          const directory = resolve('.local/quality/met245-process-b');
+          const directory = resolve(
+            '.local/integration-collection/met245-process-b-screenshots',
+          );
           mkdirSync(directory, { recursive: true });
           await view.screenshot({
             path: join(directory, `child-component-${width}-${theme}.png`),

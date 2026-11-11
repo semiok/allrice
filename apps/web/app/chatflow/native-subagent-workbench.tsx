@@ -62,6 +62,16 @@ export function NativeSubagentWorkbench(props: Props) {
       {entry && summary ? (
         entry.kind === 'diagnostic' ? (
           <ReadingNotice text={nativeSubagentEntryState(summary, entry).text} />
+        ) : reference.generation == null ||
+          !reference.rootRunId ||
+          !reference.bindingRevision ? (
+          <SubagentBody
+            summary={summary}
+            child={entry}
+            snapshot={null}
+            presentation={props.presentation}
+            employeeName={props.employeeName}
+          />
         ) : (
           <ActiveSubagent
             key={nativeSubagentTabId(reference)}

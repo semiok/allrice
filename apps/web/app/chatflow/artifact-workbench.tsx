@@ -1,6 +1,7 @@
 'use client';
 import {
   DockLayout,
+  type PaneId,
   type TabId,
   activeDockPaneId,
   dockPaneIds,
@@ -405,8 +406,12 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
     });
     if (!replacements.length) return;
     const replaced = new Map<TabId, TabId>();
+    const relocatedFloats = new Set<TabId>();
     for (const { tab, id } of replacements) {
-      const pane = findTabPane(before, tab.id);
+      const current = dock.getLayout();
+      if (!current.tabs[tab.id]) continue;
+      const pane = findTabPane(current, tab.id);
+      const held = findContentTab(current, id, 'nativeSubagent');
       let settled: TabId | undefined;
       // The native callback is synchronous, before the open commits. Restore
       // placement only after open returns, never from inside that callback.
@@ -415,27 +420,34 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
       });
       if (settled === undefined) continue;
       replaced.set(tab.id, settled);
-      if (pane.host === 'float') dock.intents.floatTab(settled, pane.rect);
+      if (pane.host === 'float' && held === undefined) {
+        if (findTabPane(dock.getLayout(), settled).host === 'dock')
+          dock.intents.floatTab(settled, pane.rect);
+        relocatedFloats.add(tab.id);
+      }
     }
-    const restoreTab = (id: TabId) =>
-      dock.intents.focusTab(replaced.get(id) ?? id);
-    for (const pane of Object.values(before.nodes))
-      if (pane.kind === 'pane' && pane.host === 'dock' && pane.activeTabId)
-        restoreTab(pane.activeTabId);
-    // Focus raises floats; replay bottom-to-top before restoring global focus.
-    for (const id of before.floats) {
+    const restorePane = (id: PaneId) => {
       const pane = before.nodes[id];
-      if (pane?.kind === 'pane' && pane.activeTabId)
-        restoreTab(pane.activeTabId);
-    }
+      if (pane?.kind !== 'pane' || !pane.activeTabId) return;
+      const tab = replaced.get(pane.activeTabId) ?? pane.activeTabId;
+      const current = dock.getLayout();
+      if (
+        current.tabs[tab] &&
+        (findTabPane(current, tab).id === id ||
+          relocatedFloats.has(pane.activeTabId))
+      )
+        dock.intents.focusTab(tab);
+    };
+    for (const pane of Object.values(before.nodes))
+      if (pane.kind === 'pane' && pane.host === 'dock') restorePane(pane.id);
+    // Focus raises floats; replay bottom-to-top before restoring global focus.
+    for (const id of before.floats) restorePane(id);
     const active = before.nodes[before.activePaneId];
-    if (
-      active?.kind === 'pane' &&
-      active.host === 'float' &&
-      active.activeTabId
-    )
-      restoreTab(active.activeTabId);
-    else dock.intents.focusPane(before.activePaneId);
+    if (active?.kind === 'pane' && active.activeTabId) {
+      const tab = replaced.get(active.activeTabId) ?? active.activeTabId;
+      if (dock.getLayout().tabs[tab]) dock.intents.focusTab(tab);
+    } else if (dock.getLayout().nodes[before.activePaneId]?.kind === 'pane')
+      dock.intents.focusPane(before.activePaneId);
     dock.setExpanded(before.expanded);
   });
   useEffect(() => {

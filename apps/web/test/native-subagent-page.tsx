@@ -186,7 +186,7 @@ function Page() {
     ownerId,
     rootRunId,
     generation: 1,
-    bindingRevision: nativeReadyKey,
+    bindingRevision: `initial/${nativeReadyKey}`,
     ...scopePatch,
   };
   window.nativeSubagentViewFixture = {

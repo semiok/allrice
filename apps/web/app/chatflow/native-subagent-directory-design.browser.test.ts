@@ -214,7 +214,10 @@ suite('MET-214 native subagent directory design', () => {
     return { page, panel, title, fixture, release };
   }
   async function capture(panel: Locator, name: string) {
-    const directory = join(process.cwd(), '.local/quality/met245-process-b');
+    const directory = join(
+      process.cwd(),
+      '.local/integration-collection/met245-process-b-screenshots',
+    );
     mkdirSync(directory, { recursive: true });
     await panel.screenshot({ path: join(directory, `directory-${name}.png`) });
   }

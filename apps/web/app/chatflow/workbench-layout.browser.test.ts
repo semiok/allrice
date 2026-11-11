@@ -558,114 +558,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     page.setDefaultTimeout(5000);
     // Loading the development bundle can outlast interaction waits under CI load.
     page.setDefaultNavigationTimeout(15_000);
-    const nativeDiagnostic =
-      options.nativeSubagents && options.appearance
-        ? ([] as { at: number; kind: string; detail: unknown }[])
-        : null;
-    const recordNative = (kind: string, detail: unknown) =>
-      nativeDiagnostic?.push({ at: Date.now(), kind, detail });
-    if (nativeDiagnostic) {
-      const relevant = (url: string) =>
-        /^\/api\/v1\/(workspace|sessions|runs)(\/|$)/.test(
-          new URL(url).pathname,
-        );
-      page.on('request', (request) => {
-        if (relevant(request.url()))
-          recordNative('request', {
-            url: request.url(),
-            method: request.method(),
-            organization: request.headers()['x-allrice-organization-id'],
-            workspace: request.headers()['x-allrice-workspace-id'],
-          });
-      });
-      page.on('requestfailed', (request) => {
-        if (relevant(request.url()))
-          recordNative('requestfailed', {
-            url: request.url(),
-            failure: request.failure(),
-          });
-      });
-      page.on('response', (response) => {
-        if (!relevant(response.url())) return;
-        recordNative('response', {
-          url: response.url(),
-          status: response.status(),
-          contentType: response.headers()['content-type'],
-        });
-        if (response.headers()['content-type']?.includes('application/json'))
-          void response.text().then(
-            (body) => recordNative('body', { url: response.url(), body }),
-            (error) => recordNative('body-error', String(error)),
-          );
-      });
-      page.on('websocket', (socket) => {
-        recordNative('ws-open', socket.url());
-        socket.on('framereceived', (frame) =>
-          recordNative('ws-frame', {
-            url: socket.url(),
-            payload: frame.payload.toString(),
-          }),
-        );
-        socket.on('socketerror', (error) => recordNative('ws-error', error));
-        socket.on('close', () => recordNative('ws-close', socket.url()));
-      });
-      page.on('console', (message) => {
-        if (message.text().startsWith('NATIVE_HOST_DOM '))
-          recordNative('dom', JSON.parse(message.text().slice(16)));
-      });
-      await page.addInitScript(() => {
-        document.addEventListener('DOMContentLoaded', () => {
-          let previous = '';
-          const capture = () => {
-            const snapshot = JSON.stringify({
-              title: document.querySelector('h1')?.textContent,
-              triggers: [
-                ...document.querySelectorAll<HTMLButtonElement>(
-                  'button[aria-haspopup="tree"]',
-                ),
-              ].map((button) => ({
-                label: button.getAttribute('aria-label'),
-                expanded: button.getAttribute('aria-expanded'),
-                disabled: button.disabled,
-                rect: button.getBoundingClientRect().toJSON(),
-              })),
-              children: [...document.querySelectorAll('[data-child]')].map(
-                (child) => ({
-                  id: child.getAttribute('data-child'),
-                  text: child.textContent,
-                }),
-              ),
-              steps: [...document.querySelectorAll('[data-step-id]')].map(
-                (step) => step.getAttribute('data-step-id'),
-              ),
-              notices: [
-                ...document.querySelectorAll('[role="status"],[role="alert"]'),
-              ].map((node) => node.textContent),
-            });
-            if (snapshot === previous) return;
-            previous = snapshot;
-            console.info(
-              'NATIVE_HOST_DOM ' +
-                JSON.stringify({ at: Date.now(), state: JSON.parse(snapshot) }),
-            );
-          };
-          new MutationObserver(capture).observe(document.documentElement, {
-            childList: true,
-            subtree: true,
-            attributes: true,
-            attributeFilter: [
-              'aria-label',
-              'aria-expanded',
-              'aria-hidden',
-              'data-child',
-              'data-step-id',
-              'disabled',
-            ],
-          });
-          capture();
-        });
-      });
-    }
     const employeeHistorySessions = [
       ...Array.from({ length: options.employeeHistoryCount ?? 7 }, (_, n) => ({
         ...session(id(600 + n)),
@@ -2454,7 +2346,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         );
         throw error;
       });
-    recordNative('fixture-ready', { url: page.url(), nativeFixture });
     const panel = page.locator('#artifact-workbench:not([aria-hidden="true"])');
     // Dock refresh can hide a retained tab between resolving a role locator
     // and clicking. Resolve the currently visible menu throughout the action.
@@ -2552,38 +2443,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(writes).toEqual([]);
         expect(unexpected).toEqual([]);
       },
-      async captureNativeDiagnostic() {
-        if (!nativeDiagnostic) return;
-        const directory = '.local/quality/met245-process-b';
-        const name = `host-diagnostic-${options.width}-${options.appearance}`;
-        await mkdir(directory, { recursive: true });
-        await writeFile(
-          `${directory}/${name}.json`,
-          JSON.stringify(
-            {
-              timeline: nativeDiagnostic,
-              calls: subagentFeed.calls.filter(
-                (call) => call.fixture === nativeFixture,
-              ),
-              connections: [...subagentFeed.connections]
-                .filter((connection) => connection.fixture === nativeFixture)
-                .map(({ fixture, sessionId, childId, liveOnly }) => ({
-                  fixture,
-                  sessionId,
-                  childId,
-                  liveOnly,
-                })),
-              errors,
-              writes,
-              unexpected,
-            },
-            null,
-            2,
-          ),
-        );
-        await writeFile(`${directory}/${name}.html`, await page.content());
-        await page.screenshot({ path: `${directory}/${name}.png` });
-      },
     };
   }
 
@@ -2599,6 +2458,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     const view = f.panel.locator(`[data-native-subagent-id="${childId}"]`);
     await view.getByLabel('交给子智能体的任务').waitFor();
     return view;
+  }
+
+  async function settleWorkbenchMotion(f: Awaited<ReturnType<typeof fixture>>) {
+    await f.panel.evaluate(async (panel) => {
+      await Promise.all(
+        panel.getAnimations().map((animation) => animation.finished),
+      );
+    });
   }
 
   it('opens native child tabs from the same directory with no artifacts, isolates same names and stops inactive reads', async () => {
@@ -2739,6 +2606,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await openNativeChild(f);
         await openNativeChild(f, 'child-b');
         const float = async (tab: Locator, x: number, y: number) => {
+          await settleWorkbenchMotion(f);
           const box = (await tab.boundingBox())!;
           await f.page.mouse.move(box.x + 12, box.y + box.height / 2);
           await f.page.mouse.down();
@@ -2779,9 +2647,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .poll(() => f.panel.locator('[data-dockkit-strip]').count())
             .toBe(2);
         }
-        await expect
-          .poll(() => connections().map((connection) => connection.childId))
-          .toEqual(['child-b']);
+        expect(connections()).toEqual([]);
+        expect(
+          subagentFeed.calls.filter(
+            (call) => call.fixture === f.nativeFixture && call.childId,
+          ),
+        ).toEqual([]);
         const backgroundReads = subagentFeed.calls.filter(
           (call) =>
             call.fixture === f.nativeFixture && call.childId === 'child-a',
@@ -2884,6 +2755,196 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     },
   );
 
+  it('keeps delayed prepared history summary-only after its identity becomes canonical', async () => {
+    let releaseTrace!: () => void;
+    const eventsDelay = new Promise<void>((resolve) => {
+      releaseTrace = resolve;
+    });
+    const value = nativeChildSummary();
+    value.root.source = 'prepared';
+    value.descendants = value.descendants.map((entry) =>
+      entry.kind === 'child'
+        ? {
+            ...entry,
+            running: null,
+            observation: { source: 'prepared', cursor: 8 },
+          }
+        : entry,
+    );
+    const f = await fixture({
+      disabled: true,
+      nativeSubagents: value,
+      nativeEvents: nativeChildCalls(),
+      eventsDelay,
+    });
+    try {
+      const view = await openNativeChild(f);
+      expect(await view.innerText()).toContain('child-a 获授权的回复');
+      expect(await view.getByText('状态未知', { exact: true }).count()).toBe(1);
+      releaseTrace();
+      await f.page
+        .locator('[data-step-id="tool:native-0"]')
+        .waitFor({ state: 'attached' });
+      await openNativeChild(f);
+      expect(await f.panel.locator('[data-native-subagent-tab]').count()).toBe(
+        1,
+      );
+      expect(
+        subagentFeed.calls.filter(
+          (call) => call.fixture === f.nativeFixture && call.childId,
+        ),
+      ).toEqual([]);
+    } finally {
+      releaseTrace();
+      await f.close();
+    }
+  });
+
+  it.each([false, true])(
+    'keeps a persisted canonical float when a cold summary merges, background=%s',
+    async (background) => {
+      const f = await fixture({
+        disabled: true,
+        nativeSubagents: nativeChildSummary(),
+        nativeEvents: nativeChildCalls(),
+      });
+      const connections = () =>
+        [...subagentFeed.connections].filter(
+          (connection) =>
+            connection.fixture === f.nativeFixture && connection.childId,
+        );
+      let releaseTrace = () => {};
+      const float = async (tab: Locator, x: number, y: number) => {
+        await settleWorkbenchMotion(f);
+        const box = (await tab.boundingBox())!;
+        await f.page.mouse.move(box.x + 12, box.y + box.height / 2);
+        await f.page.mouse.down();
+        await f.page.mouse.move(x, y, { steps: 10 });
+        await f.page.mouse.up();
+      };
+      try {
+        await f.page
+          .locator('[data-step-id="tool:native-0"]')
+          .waitFor({ state: 'attached' });
+        await openNativeChild(f);
+        const tab = f.panel.locator(
+          '[role="tab"]:has([data-native-subagent-tab])',
+        );
+        const canonicalId = (await tab.getAttribute('data-dockkit-tab'))!;
+        await float(tab, 120, 160);
+        const canonical = f.panel.locator(
+          `[data-dockkit-content="${canonicalId}"][data-dockkit-float]`,
+        );
+        await canonical.waitFor();
+        const paneId = await canonical.getAttribute('data-dockkit-float');
+        const rect = () =>
+          canonical.evaluate((node) => [
+            node.style.left,
+            node.style.top,
+            node.style.width,
+            node.style.height,
+          ]);
+        const beforeRect = await rect();
+        f.state.eventsDelay = new Promise<void>((resolve) => {
+          releaseTrace = resolve;
+        });
+        await f.page.reload();
+        await f.page.getByRole('textbox', { name: /^给 .+ 的消息$/ }).waitFor();
+        await expect.poll(() => connections().length).toBe(0);
+        const reads = subagentFeed.calls.filter(
+          (call) => call.fixture === f.nativeFixture && call.childId,
+        ).length;
+        await openNativeChild(f);
+        await float(
+          f.panel.locator('[role="tab"]:has([data-native-subagent-tab])'),
+          280,
+          260,
+        );
+        await expect
+          .poll(() => f.panel.locator('[data-dockkit-float-grip]').count())
+          .toBe(2);
+        if (background)
+          await f.panel
+            .locator('[data-dockkit-pane]:has([data-dockkit-strip])')
+            .getByRole('tab')
+            .filter({ hasText: /^(开始|交付成果)/ })
+            .click();
+        const selection = () =>
+          f.panel
+            .locator(
+              '[data-dockkit-pane][data-dockkit-pane-active],[data-dockkit-float][data-dockkit-float-active]',
+            )
+            .evaluateAll((nodes) =>
+              nodes.map(
+                (node) =>
+                  node.getAttribute('data-dockkit-float') ??
+                  node.getAttribute('data-dockkit-pane'),
+              ),
+            );
+        const beforeSelection = await selection();
+        expect(connections()).toEqual([]);
+        expect(
+          subagentFeed.calls.filter(
+            (call) => call.fixture === f.nativeFixture && call.childId,
+          ),
+        ).toHaveLength(reads);
+        releaseTrace();
+        await f.page
+          .locator('[data-step-id="tool:native-0"]')
+          .waitFor({ state: 'attached' });
+        await expect
+          .poll(() => f.panel.locator('[data-native-subagent-tab]').count())
+          .toBe(1);
+        expect(await canonical.getAttribute('data-dockkit-float')).toBe(paneId);
+        expect(await rect()).toEqual(beforeRect);
+        expect(await selection()).toEqual(
+          background ? beforeSelection : [paneId],
+        );
+        expect(await f.panel.locator('[data-dockkit-float-grip]').count()).toBe(
+          1,
+        );
+        await expect
+          .poll(() => connections().map((connection) => connection.childId))
+          .toEqual(['child-a']);
+        const connection = connections()[0]!;
+        const knownReads = subagentFeed.calls.filter(
+          (call) => call.fixture === f.nativeFixture && call.childId,
+        ).length;
+        const prepared = f.state.nativeSubagents!;
+        prepared.descendants = prepared.descendants.map((entry) =>
+          entry.kind === 'child'
+            ? {
+                ...entry,
+                running: null,
+                observation: { source: 'prepared', cursor: 9 },
+                lastReply: '当前canonical摘要',
+              }
+            : entry,
+        );
+        subagentFeed.push(
+          f.nativeFixture!,
+          { type: 'directory', summary: prepared },
+          null,
+          A,
+        );
+        await expect
+          .poll(() => canonical.innerText())
+          .toContain('当前canonical摘要');
+        expect(subagentFeed.connections.has(connection)).toBe(true);
+        expect(
+          subagentFeed.calls.filter(
+            (call) => call.fixture === f.nativeFixture && call.childId,
+          ),
+        ).toHaveLength(knownReads);
+        expect(await rect()).toEqual(beforeRect);
+        expect(f.writes).toEqual([]);
+      } finally {
+        releaseTrace();
+        await f.close();
+      }
+    },
+  );
+
   it('invalidates a known generation when the same Run emits a new native generation', async () => {
     const f = await fixture({
       disabled: true,
@@ -2955,6 +3016,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         });
         try {
           const view = await openNativeChild(f);
+          await settleWorkbenchMotion(f);
           expect(await view.locator('input,textarea,footer').count()).toBe(0);
           expect(
             await view
@@ -3009,9 +3071,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               }),
             ).toBe(true);
           }
-          await mkdir('.local/quality/met245-process-b', { recursive: true });
+          await mkdir(
+            '.local/integration-collection/met245-process-b-screenshots',
+            { recursive: true },
+          );
           await f.page.screenshot({
-            path: `.local/quality/met245-process-b/host-${width}-${appearance}.png`,
+            path: `.local/integration-collection/met245-process-b-screenshots/host-${width}-${appearance}.png`,
           });
           if (width <= 1100) {
             await expect
@@ -3046,6 +3111,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               )
               .toBe(0);
             await openNativeChild(f);
+            await settleWorkbenchMotion(f);
             expect(
               await f.panel
                 .locator('[role="tab"]:has([data-native-subagent-tab])')
@@ -3086,12 +3152,18 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             )
             .toBe(0);
           expect(f.writes).toEqual([]);
-        } finally {
-          await f
-            .captureNativeDiagnostic()
-            .catch((error) =>
-              console.error('NATIVE_HOST_CAPTURE_FAILED', error),
+        } catch (error) {
+          const path = `.local/integration-collection/met245-process-b-screenshots/host-failure-${width}-${appearance}`;
+          await mkdir(dirname(path), { recursive: true })
+            .then(async () => {
+              await writeFile(`${path}.html`, await f.page.content());
+              await f.page.screenshot({ path: `${path}.png` });
+            })
+            .catch((captureError) =>
+              console.error('NATIVE_HOST_CAPTURE_FAILED', captureError),
             );
+          throw error;
+        } finally {
           await f.close();
         }
       });
