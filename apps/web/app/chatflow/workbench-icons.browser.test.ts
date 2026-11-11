@@ -244,7 +244,7 @@ suite('workbench icon scale and workflow identity', () => {
         for (const name of [
           '工作区文件，33 项新增',
           '记忆，1 项新增',
-          '工作场景',
+          '能力',
         ]) {
           const button = entries.getByRole('button', { name, exact: true });
           await button.click();
