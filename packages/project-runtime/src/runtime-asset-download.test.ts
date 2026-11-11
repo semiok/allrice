@@ -619,6 +619,11 @@ function ownedChild(
   });
   return {
     cancel: () => child.stdin.end('cancel'),
+    observation: () => ({
+      childDone: natural,
+      resultReady: result !== undefined,
+      ioFailed,
+    }),
     stage: (name: string) =>
       within(
         Promise.race([
@@ -724,6 +729,7 @@ it.each(['CONNECT', 'tunnel TLS'])(
     const proxy = createServer();
     const sockets = new Set<Socket>();
     const closes: Promise<void>[] = [];
+    let peerEnded = 0;
     proxy.on('connection', (socket) => {
       sockets.add(socket);
       socket.on('error', () => undefined);
@@ -737,11 +743,18 @@ it.each(['CONNECT', 'tunnel TLS'])(
       );
     });
     proxy.on('connect', (_req, socket) => {
+      // HTTP upgrades retain allowHalfOpen. Finish our half only after the
+      // owned client has sent FIN, and drain so that FIN can be observed.
+      socket.once('end', () => {
+        peerEnded++;
+        socket.end();
+      });
       if (stage === 'CONNECT') reached();
       else {
         socket.once('data', () => reached());
         socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
       }
+      socket.resume();
     });
     cleanups.push(async () => {
       for (const socket of sockets) socket.destroy();
@@ -759,7 +772,17 @@ it.each(['CONNECT', 'tunnel TLS'])(
       Promise.all([child.done(), ...closes]),
       5_000,
       'proxy-canceled-close',
-    );
+    ).catch((error: unknown) => {
+      throw new Error(
+        JSON.stringify({
+          phase: 'proxy-canceled-close',
+          ...child.observation(),
+          peerEnded,
+          openSockets: sockets.size,
+        }),
+        { cause: error },
+      );
+    });
     expect(result[0]).toMatchObject({
       success: false,
       sameCallerReason: true,
