@@ -14,6 +14,7 @@ import {
 import type { TransactionSql } from 'postgres';
 import * as client from './core/client.ts';
 import * as personaRuntime from './platform-employees/runtime-package.ts';
+import * as personaDigest from './runtime-policy-digest.ts';
 import { getDatabase } from './core/client.ts';
 import {
   EmployeeDocumentsSchema,
@@ -314,11 +315,31 @@ suite(
         let beginCalls = 0;
         let birthId: string | undefined;
         const phases: { active: boolean; beginCalls: number }[] = [];
+        const digestPhases: typeof phases = [];
         const source = vi
           .spyOn(personaRuntime, 'employeePersonaManifestMaterial')
           .mockImplementation((...args) => {
             phases.push({ active, beginCalls });
             return Reflect.apply(material, personaRuntime, args);
+          });
+        const digest = personaDigest.runtimePolicyDigest;
+        const fullSource = vi
+          .spyOn(personaDigest, 'runtimePolicyDigest')
+          .mockImplementation((value) => {
+            // Complete definitions, not baseline native-root/package payloads
+            // or the allowed final persona/pin/string digests.
+            if (
+              value &&
+              typeof value === 'object' &&
+              'schemaVersion' in value &&
+              value.schemaVersion === 2 &&
+              'key' in value &&
+              'systemPrompt' in value &&
+              'runtimePolicy' in value &&
+              'runtimePackage' in value
+            )
+              digestPhases.push({ active, beginCalls });
+            return digest(value);
           });
         const wrap = vi.spyOn(db, 'begin').mockImplementation((async (
           ...args: unknown[]
@@ -374,6 +395,7 @@ suite(
         } finally {
           wrap.mockRestore();
           source.mockRestore();
+          fullSource.mockRestore();
         }
         // Observe both real entry transactions; an untouched fixture pool must
         // never make inactive=false look like a successful boundary proof.
@@ -381,6 +403,14 @@ suite(
         expect(phases.length).toBeGreaterThan(0);
         expect(
           phases.every(
+            (phase) =>
+              !phase.active &&
+              phase.beginCalls === (kind === 'native_once' ? 1 : 0),
+          ),
+        ).toBe(true);
+        expect(digestPhases.length).toBeGreaterThan(0);
+        expect(
+          digestPhases.every(
             (phase) =>
               !phase.active &&
               phase.beginCalls === (kind === 'native_once' ? 1 : 0),

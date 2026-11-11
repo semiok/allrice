@@ -5,6 +5,7 @@ import {
 /** Actual owner/authentication/publication/chat/queue/resolve in an isolated DB.
  * Synthetic preview completion only; no provider, native model or Dev data. */
 import { randomUUID } from 'node:crypto';
+import type { TransactionSql } from 'postgres';
 import {
   afterAll,
   afterEach,
@@ -27,6 +28,7 @@ import {
 } from '@allrice/contracts';
 import * as client from '../core/client.ts';
 import * as hub from './employeehub.ts';
+import * as personaDigest from '../runtime-policy-digest.ts';
 import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
 import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
 import { createRunAuthorityFixture } from '../run-authority.fixture.ts';
@@ -422,6 +424,154 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
       'DEFAULT_B_POLICY',
     );
     expect(await runCount(f)).toBe(0);
+  });
+
+  it('keeps complete manifest digests outside realtime admission and rejects full-body tampering without a business Run', async () => {
+    const f = await setup();
+    const session = await createChatSession(f.context, {
+      workspaceId: f.workspaceId,
+      employeeAssignmentId: f.assignmentId,
+      title: 'Complete source admission proof',
+    });
+    const db = client.getDatabase(),
+      begin = db.begin.bind(db);
+    let active = false,
+      beginCalls = 0,
+      injected = false;
+    const phases: { active: boolean; beginCalls: number }[] = [];
+    const digest = personaDigest.runtimePolicyDigest;
+    const fullSource = vi
+      .spyOn(personaDigest, 'runtimePolicyDigest')
+      .mockImplementation((value) => {
+        if (
+          value &&
+          typeof value === 'object' &&
+          'schemaVersion' in value &&
+          value.schemaVersion === 2 &&
+          'key' in value &&
+          'systemPrompt' in value &&
+          'runtimePolicy' in value &&
+          'runtimePackage' in value
+        )
+          phases.push({ active, beginCalls });
+        return digest(value);
+      });
+    const wrap = vi.spyOn(db, 'begin').mockImplementation((async (
+      ...args: unknown[]
+    ) => {
+      beginCalls++;
+      const operation = args.pop() as (tx: TransactionSql) => Promise<unknown>;
+      return Reflect.apply(begin, db, [
+        ...args,
+        async (tx: TransactionSql) => {
+          active = true;
+          try {
+            return await operation(tx);
+          } finally {
+            active = false;
+          }
+        },
+      ]);
+    }) as typeof db.begin);
+    const actual = hub.prepareEmployeeRunBinding;
+    const tamper = vi
+      .spyOn(hub, 'prepareEmployeeRunBinding')
+      .mockImplementationOnce(async (...args) => {
+        const binding = await actual(...args);
+        const definition = EmployeeManifestSchema.parse(
+          binding.executionSnapshot.employee.definition,
+        );
+        if (
+          !binding.executionSnapshot.persona ||
+          definition.schemaVersion !== 2 ||
+          definition.runtimePackage?.schemaVersion !== 3
+        )
+          throw Error('fixture_persona_package_missing');
+        const snapshot = {
+          ...binding.executionSnapshot,
+          employee: { ...binding.executionSnapshot.employee, definition },
+        };
+        const checksum = snapshot.employee.definitionChecksum;
+        const persona = structuredClone(snapshot.persona);
+        const pkg = structuredClone(definition.runtimePackage);
+        // A valid top-level field outside the signed package. Do not reseal the
+        // package, change the declared checksum, or replace the original pin.
+        snapshot.employee.definition.applicableScenarios.push(
+          'Substituted full manifest field',
+        );
+        expect(
+          EmployeeManifestSchema.safeParse(snapshot.employee.definition)
+            .success,
+        ).toBe(true);
+        expect(snapshot.employee.definition.runtimePackage).toEqual(pkg);
+        expect(snapshot.employee.definitionChecksum).toBe(checksum);
+        expect(checksum).toBe(pkg.checksum);
+        expect(snapshot.persona).toEqual(persona);
+        injected = true;
+        return { ...binding, executionSnapshot: snapshot };
+      });
+    const message = () => ({
+      text: 'Verify the complete frozen source',
+      clientMessageId: randomUUID(),
+    });
+    try {
+      await expect(
+        sendChatMessage(f.context, f.workspaceId, session.id, message()),
+      ).rejects.toThrow('employee_persona_snapshot_invalid');
+      expect(injected).toBe(true);
+      expect(beginCalls).toBe(2);
+      expect(await runCount(f)).toBe(0);
+      expect(
+        await db`select id from allrice_jobs where organization_id=${f.organizationId}
+        and workspace_id=${f.workspaceId} and owner_id=${f.ownerId}
+        and payload->>'type'='allrice.employee.run'`,
+      ).toHaveLength(0);
+      expect(
+        await db`select run_id from allrice_employee_runs where organization_id=${f.organizationId}
+        and workspace_id=${f.workspaceId} and owner_id=${f.ownerId}`,
+      ).toHaveLength(0);
+      // The one-shot tamper is exhausted. Exercise an unchanged valid message
+      // through the same production client and both of its real transactions.
+      const sent = await sendChatMessage(
+        f.context,
+        f.workspaceId,
+        session.id,
+        message(),
+      );
+      pending.push({
+        context: f.context,
+        workspaceId: f.workspaceId,
+        runId: sent.run.id,
+      });
+      const [stored] =
+        await db`select employee_version_id,session_id,user_message_id,
+        execution_snapshot->'persona' persona from allrice_employee_runs where run_id=${sent.run.id}`;
+      expect(stored).toMatchObject({
+        employee_version_id: f.versionId,
+        session_id: session.id,
+        user_message_id: sent.userMessage.id,
+      });
+      expect(
+        EmployeePersonaPinSchema.parse(stored!.persona).source.engine
+          .employeeVersionId,
+      ).toBe(f.versionId);
+      expect(await runCount(f)).toBe(1);
+      expect(beginCalls).toBe(4);
+      expect(phases.length).toBeGreaterThan(0);
+      expect(
+        [...new Set(phases.map((phase) => phase.beginCalls))].sort(),
+      ).toEqual([1, 3]);
+      expect(
+        phases.every(
+          (phase) =>
+            !phase.active && (phase.beginCalls === 1 || phase.beginCalls === 3),
+        ),
+      ).toBe(true);
+    } finally {
+      tamper.mockRestore();
+      wrap.mockRestore();
+      fullSource.mockRestore();
+    }
   });
 
   it.each(['custom', 'rice', 'professional'] as const)(

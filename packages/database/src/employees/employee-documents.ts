@@ -17,7 +17,10 @@ import {
   type EmployeePersonaTask,
 } from '@allrice/contracts';
 import type { getDatabase } from '../core/client.ts';
-import { runtimePolicyDigest } from '../runtime-policy-digest.ts';
+import {
+  RuntimePolicyError,
+  runtimePolicyDigest,
+} from '../runtime-policy-digest.ts';
 import { employeeMemoryReadPredicate } from '../workspace/employee-memory-read.ts';
 import {
   getEmployeeInstance,
@@ -178,6 +181,55 @@ export async function freezeEmployeePersonaDocuments(
   };
 }
 
+/** Same JSON equality as the source digest, without sorting/encoding/hashing.
+ * The reader already proved expected is JSON. Traverse every value on the left
+ * even after a mismatch so non-JSON retains its original error. */
+function equalManifestJson(value: unknown, expected: unknown): boolean {
+  if (
+    value === null ||
+    typeof value === 'string' ||
+    typeof value === 'boolean' ||
+    (typeof value === 'number' && Number.isFinite(value))
+  )
+    return value === expected; // Canonical JSON treats +0 and -0 identically.
+  if (Array.isArray(value)) {
+    const right = Array.isArray(expected) ? expected : undefined;
+    let equal = right !== undefined && value.length === right.length;
+    for (let i = 0; i < value.length; i++) {
+      if (!Object.hasOwn(value, i))
+        throw new RuntimePolicyError('non_json_binding');
+      const itemEqual = equalManifestJson(value[i], right?.[i]);
+      equal = itemEqual && equal;
+    }
+    return equal;
+  }
+  if (
+    value &&
+    typeof value === 'object' &&
+    Object.getPrototypeOf(value) === Object.prototype
+  ) {
+    const right =
+      expected &&
+      typeof expected === 'object' &&
+      Object.getPrototypeOf(expected) === Object.prototype
+        ? (expected as Record<string, unknown>)
+        : undefined;
+    const keys = Object.keys(value);
+    let equal =
+      right !== undefined && keys.length === Object.keys(right).length;
+    for (const key of keys) {
+      const itemEqual = equalManifestJson(
+        (value as Record<string, unknown>)[key],
+        right?.[key],
+      );
+      equal =
+        itemEqual && equal && right !== undefined && Object.hasOwn(right, key);
+    }
+    return equal;
+  }
+  throw new RuntimePolicyError('non_json_binding');
+}
+
 /** Resolve only immutable frozen versions and the already-frozen profile.
  * Current assignment/default/profile edits must not re-render this Run. */
 export async function assertFrozenEmployeePersona(
@@ -310,8 +362,7 @@ export async function assertFrozenEmployeePersona(
   );
   if (
     runtimePolicyDigest(expected.pin) !== runtimePolicyDigest(pin) ||
-    runtimePolicyDigest(snapshot.employee.definition) !==
-      source.engine.manifestDigest ||
+    !equalManifestJson(snapshot.employee.definition, engine.manifest) ||
     prompt.employeeDocuments?.persona !== expected.persona ||
     prompt.systemPrompt !== expected.systemPrompt
   )
