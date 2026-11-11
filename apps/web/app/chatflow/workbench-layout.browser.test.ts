@@ -3310,7 +3310,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           route.fulfill({
             json: {
               events:
-                new URL(route.request().url()).pathname.split('/').at(-2) === run
+                new URL(route.request().url()).pathname.split('/').at(-2) ===
+                run
                   ? f.state.events
                   : [],
             },
@@ -3325,9 +3326,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           if (await hide.isVisible()) await hide.click();
         }
         const owner = f.page.locator(`#message-${id(2003)}`);
-        const process = owner.getByRole('region', { name: '工作过程', exact: true });
+        const process = owner.getByRole('region', {
+          name: '工作过程',
+          exact: true,
+        });
         const header = process.getByRole('button', {
-          name: '工作过程', exact: true,
+          name: '工作过程',
+          exact: true,
         });
         const processBody = process.locator('..');
         const steps = processBody.locator('[data-step-id^="tool:lookup-"]');
@@ -3721,7 +3726,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           route.fulfill({
             json: {
               events:
-                new URL(route.request().url()).pathname.split('/').at(-2) === run
+                new URL(route.request().url()).pathname.split('/').at(-2) ===
+                run
                   ? f.state.events
                   : [],
             },
@@ -3737,15 +3743,22 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         }
         const owner = f.page.locator(`#message-${id(2003)}`);
         const previousOwner = f.page.locator(`#message-${id(2001)}`);
-        const process = owner.getByRole('region', { name: '工作过程', exact: true });
-        await process.getByRole('button', { name: '工作过程', exact: true }).click();
+        const process = owner.getByRole('region', {
+          name: '工作过程',
+          exact: true,
+        });
+        await process
+          .getByRole('button', { name: '工作过程', exact: true })
+          .click();
         const first = owner.locator('[data-step-id="tool:compact-0"]');
         const second = owner.locator('[data-step-id="tool:compact-1"]');
         await first.waitFor();
         expect(await owner.count()).toBe(1);
         expect(await previousOwner.count()).toBe(1);
         expect(
-          await previousOwner.getByText('第 1 项答复', { exact: true }).isVisible(),
+          await previousOwner
+            .getByText('第 1 项答复', { exact: true })
+            .isVisible(),
         ).toBe(true);
         const measure = () =>
           owner.evaluate((node) => {
@@ -3857,12 +3870,18 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .textContent(),
         ).toBe(operations[1]!.result.output);
         for (const operation of operations) {
-          expect(await f.page.locator(
-            `[data-step-id="tool:${operation.nativeCallId}"]`,
-          ).count()).toBe(1);
-          expect(await previousOwner.locator(
-            `[data-step-id="tool:${operation.nativeCallId}"], [data-process-material="cloud:${operation.snapshot.binding.attempt.operationId}"]`,
-          ).count()).toBe(0);
+          expect(
+            await f.page
+              .locator(`[data-step-id="tool:${operation.nativeCallId}"]`)
+              .count(),
+          ).toBe(1);
+          expect(
+            await previousOwner
+              .locator(
+                `[data-step-id="tool:${operation.nativeCallId}"], [data-process-material="cloud:${operation.snapshot.binding.attempt.operationId}"]`,
+              )
+              .count(),
+          ).toBe(0);
           expect(
             await f.page
               .locator(
@@ -10828,9 +10847,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .waitFor();
         expect(await stopped.getAttribute('data-status')).toBe('已确认停止');
         await stopped.locator('[data-disclosure-row]').click();
-        expect(await stopped.locator(
-          `[data-process-material="mcp:${id(9401)}"]`,
-        ).isVisible()).toBe(true);
+        expect(
+          await stopped
+            .locator(`[data-process-material="mcp:${id(9401)}"]`)
+            .isVisible(),
+        ).toBe(true);
         expect(await panel.locator(`#operation-${id(9401)}`).count()).toBe(0);
         expect(decisions).toEqual(['approved', 'cancel']);
         expect(f.errors).toEqual([]);

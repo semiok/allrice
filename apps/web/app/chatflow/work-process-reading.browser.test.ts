@@ -144,28 +144,58 @@ suite('reading a receipt while late native trace changes its group', () => {
     card(page, 0).getByRole('button', { name: '收起', exact: true });
   const output = (page: Page) =>
     material(page, 5).locator('pre[data-process-content="result"]').last();
-  const receiptGeometry = (target: Locator) => target.evaluate((node) => {
-    const box = node.getBoundingClientRect();
-    const step = node.closest('[data-step-id]') ?? node;
-    const body = node.closest<HTMLElement>('[data-process-scrollport]');
-    let top = Math.max(0, box.top), bottom = Math.min(innerHeight, box.bottom);
-    const ancestors = [];
-    for (let parent = node.parentElement; parent; parent = parent.parentElement) {
-      if (parent === document.scrollingElement ||
-        !['auto', 'scroll', 'hidden', 'clip'].includes(getComputedStyle(parent).overflowY)) continue;
-      const clip = parent.getBoundingClientRect();
-      const edge = clip.top + parent.clientTop;
-      top = Math.max(top, edge);
-      bottom = Math.min(bottom, edge + parent.clientHeight);
-      ancestors.push({ top: edge, height: parent.clientHeight, scrollTop: parent.scrollTop,
-        scrollHeight: parent.scrollHeight, overflow: getComputedStyle(parent).overflowY });
-    }
-    return { identity: step.getAttribute('data-step-id'), box: { y: box.y, height: box.height },
-      materials: [...step.querySelectorAll('[data-process-material]')].map((item) => item.getAttribute('data-process-material')),
-      readable: bottom > top, clip: [top, bottom], ancestors, window: [scrollY, innerHeight],
-      relativeTop: body ? box.top - body.getBoundingClientRect().top : null,
-      port: body ? { scrollTop: body.scrollTop, clientHeight: body.clientHeight, scrollHeight: body.scrollHeight } : null };
-  });
+  const receiptGeometry = (target: Locator) =>
+    target.evaluate((node) => {
+      const box = node.getBoundingClientRect();
+      const step = node.closest('[data-step-id]') ?? node;
+      const body = node.closest<HTMLElement>('[data-process-scrollport]');
+      let top = Math.max(0, box.top),
+        bottom = Math.min(innerHeight, box.bottom);
+      const ancestors = [];
+      for (
+        let parent = node.parentElement;
+        parent;
+        parent = parent.parentElement
+      ) {
+        if (
+          parent === document.scrollingElement ||
+          !['auto', 'scroll', 'hidden', 'clip'].includes(
+            getComputedStyle(parent).overflowY,
+          )
+        )
+          continue;
+        const clip = parent.getBoundingClientRect();
+        const edge = clip.top + parent.clientTop;
+        top = Math.max(top, edge);
+        bottom = Math.min(bottom, edge + parent.clientHeight);
+        ancestors.push({
+          top: edge,
+          height: parent.clientHeight,
+          scrollTop: parent.scrollTop,
+          scrollHeight: parent.scrollHeight,
+          overflow: getComputedStyle(parent).overflowY,
+        });
+      }
+      return {
+        identity: step.getAttribute('data-step-id'),
+        box: { y: box.y, height: box.height },
+        materials: [...step.querySelectorAll('[data-process-material]')].map(
+          (item) => item.getAttribute('data-process-material'),
+        ),
+        readable: bottom > top,
+        clip: [top, bottom],
+        ancestors,
+        window: [scrollY, innerHeight],
+        relativeTop: body ? box.top - body.getBoundingClientRect().top : null,
+        port: body
+          ? {
+              scrollTop: body.scrollTop,
+              clientHeight: body.clientHeight,
+              scrollHeight: body.scrollHeight,
+            }
+          : null,
+      };
+    });
   async function open(width = 1440, expandGroups = true) {
     const page = await browser.newPage({ viewport: { width, height: 900 } });
     page.setDefaultTimeout(8000);
@@ -631,9 +661,13 @@ suite('reading a receipt while late native trace changes its group', () => {
       }
     } finally {
       try {
-        console.log('Reading later diagnostic', JSON.stringify({ geometry,
-          reader: await page.evaluate(() => window.readingDiagnostic(false)),
-        }));
+        console.log(
+          'Reading later diagnostic',
+          JSON.stringify({
+            geometry,
+            reader: await page.evaluate(() => window.readingDiagnostic(false)),
+          }),
+        );
       } catch {
         console.log('Reading later diagnostic unavailable');
       }
@@ -641,7 +675,8 @@ suite('reading a receipt while late native trace changes its group', () => {
     }
   });
   it.each(['process title', 'outside input'] as const)(
-    'keeps the wheel reader while focus stays on the %s', async (target) => {
+    'keeps the wheel reader while focus stays on the %s',
+    async (target) => {
       const page = await open(390);
       try {
         const title = processOf(page).locator('[data-disclosure-row]').first();
@@ -649,23 +684,39 @@ suite('reading a receipt while late native trace changes its group', () => {
         const focused = target === 'process title' ? title : outside;
         const later = card(page, 30);
         await stepToggle(later).click();
-        const reading = material(page, 30).locator('pre[data-process-content="result"]');
+        const reading = material(page, 30).locator(
+          'pre[data-process-content="result"]',
+        );
         const original = await reading.textContent();
         await focused.focus();
-        const port = processBodyOf(page).locator('[data-process-scrollport]').first();
+        const port = processBodyOf(page)
+          .locator('[data-process-scrollport]')
+          .first();
         const portBox = (await port.boundingBox())!;
         const visiblePort = await receiptGeometry(port);
         expect(visiblePort.readable).toBe(true);
-        await page.mouse.move(portBox.x + 10, (visiblePort.clip[0]! + visiblePort.clip[1]!) / 2);
-        await page.mouse.wheel(0, (await reading.boundingBox())!.y - visiblePort.clip[0]! - 100);
+        await page.mouse.move(
+          portBox.x + 10,
+          (visiblePort.clip[0]! + visiblePort.clip[1]!) / 2,
+        );
+        await page.mouse.wheel(
+          0,
+          (await reading.boundingBox())!.y - visiblePort.clip[0]! - 100,
+        );
         await page.mouse.move(2, 850);
         const titleBox = (await title.boundingBox())!;
         await page.mouse.wheel(0, titleBox.y + titleBox.height + 1);
-        await expect.poll(async () => {
-          const header = (await title.boundingBox())!;
-          const current = await receiptGeometry(reading);
-          return header.y + header.height < 0 && current.readable && (current.port?.scrollTop ?? 0) > 0;
-        }).toBe(true);
+        await expect
+          .poll(async () => {
+            const header = (await title.boundingBox())!;
+            const current = await receiptGeometry(reading);
+            return (
+              header.y + header.height < 0 &&
+              current.readable &&
+              (current.port?.scrollTop ?? 0) > 0
+            );
+          })
+          .toBe(true);
         const before = await receiptGeometry(reading);
         expect(before.identity).toBe('tool:call-30');
         expect(before.materials).toEqual(['cloud:reading-30']);
@@ -677,7 +728,10 @@ suite('reading a receipt while late native trace changes its group', () => {
           expect(after.readable, stage).toBe(true);
           expect(after.relativeTop, stage).toBeCloseTo(before.relativeTop!, 0);
           expect(await reading.textContent(), stage).toBe(original);
-          expect(await focused.evaluate((node) => node === document.activeElement), stage).toBe(true);
+          expect(
+            await focused.evaluate((node) => node === document.activeElement),
+            stage,
+          ).toBe(true);
         }
         if (target === 'outside input') {
           await page.keyboard.type('继续阅读');
@@ -1839,7 +1893,10 @@ suite('reading a receipt while late native trace changes its group', () => {
                   scenario: 'cards',
                   view,
                   kind: 'overview',
-                  scroll: await page.evaluate(() => ({ x: scrollX, y: scrollY })),
+                  scroll: await page.evaluate(() => ({
+                    x: scrollX,
+                    y: scrollY,
+                  })),
                   target: await overviewHeader.boundingBox(),
                   framing: overviewFraming,
                   scope:
