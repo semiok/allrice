@@ -37,6 +37,7 @@ import { freezeEmployeeDocuments } from './employees/employee-documents.ts';
 import { freezeEmployeeRuntimeContent } from './employees/employee-content.ts';
 import { prepareEmployeeContentContext } from './employees/employee-runtime-content.ts';
 import { enterMethodChat } from './employees/employee-method-chat.ts';
+import { contextCheckpointChecksum } from './conversation/conversation-checkpoint.ts';
 
 const ports = vi.hoisted(() => ({ context: vi.fn() }));
 vi.mock('../../../apps/web/lib/identity/session', () => ({
@@ -1201,9 +1202,24 @@ suite(
       );
       const checkpointId = randomUUID(),
         incompleteLineageCheckpointId = randomUUID();
-      for (const id of [checkpointId, incompleteLineageCheckpointId]) {
+      for (const [id, summary] of [
+        [checkpointId, '待撤回的真实checkpoint摘要'],
+        [incompleteLineageCheckpointId, '无完整lineage也不新增门槛'],
+      ] as const) {
+        const checksum = contextCheckpointChecksum({
+          sessionId: f.session,
+          harness: 'dsh',
+          threadId: null,
+          generation: 1,
+          coveredThroughMessageId: origin!.user_message_id,
+          summaryVersion: 'extractive-v1',
+          summary,
+          configChecksum: 'sha256:' + 'b'.repeat(64),
+          estimatedTokens: 1,
+          messageCount: 1,
+        });
         await fixture.db`insert into allrice_context_checkpoints(id,organization_id,workspace_id,session_id,owner_id,harness,thread_generation,covered_through_message_id,summary_version,summary,checksum,config_checksum,estimated_tokens,message_count)
-      values(${id},${f.org},${f.workspace},${f.session},${f.user},'dsh',1,${origin!.user_message_id},'extractive-v1','无完整lineage也不新增门槛',${'sha256:' + 'a'.repeat(64)},${'sha256:' + 'b'.repeat(64)},1,1)`;
+      values(${id},${f.org},${f.workspace},${f.session},${f.user},'dsh',1,${origin!.user_message_id},'extractive-v1',${summary},${checksum},${'sha256:' + 'b'.repeat(64)},1,1)`;
       }
       const cp = await pending(
         f,
