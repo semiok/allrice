@@ -45,7 +45,9 @@ export class MemoryClientError extends Error {
   }
 }
 export class MemoryAccessLost extends MemoryClientError {
-  constructor() { super(memoryReadFailed, true); }
+  constructor() {
+    super(memoryReadFailed, true);
+  }
 }
 
 async function rejectResponse(response: Response): Promise<never> {
@@ -62,7 +64,10 @@ async function rejectResponse(response: Response): Promise<never> {
       ? error.details
       : null;
   const definitive = Boolean(
-    error && !error.retryable && response.status >= 400 && response.status < 500,
+    error &&
+    !error.retryable &&
+    response.status >= 400 &&
+    response.status < 500,
   );
   throw new MemoryClientError(
     details?.reason === 'memory_limit_reached'
@@ -115,7 +120,11 @@ export function employeeMemoryClient(
     if (value.memory.id !== row.id) throw Error(memoryReadFailed);
     return value.memory;
   }
-  async function write(action: Action, row: MemoryRow | null, pair?: MemoryPair) {
+  async function write(
+    action: Action,
+    row: MemoryRow | null,
+    pair?: MemoryPair,
+  ) {
     // The complete request signature identifies an intent, excluding CAS. If an
     // uncertain operation is explicitly retried after a refresh, both its key
     // AND original CAS survive. Explicitly changed content is a different
@@ -174,7 +183,8 @@ export function employeeMemoryClient(
     operation.inFlight += 1;
     try {
       const response = await fetch(url, {
-        method: action === 'edit' ? 'PATCH' : action === 'delete' ? 'DELETE' : 'POST',
+        method:
+          action === 'edit' ? 'PATCH' : action === 'delete' ? 'DELETE' : 'POST',
         headers: { ...headers, 'content-type': 'application/json' },
         body: JSON.stringify(body),
       });
@@ -186,7 +196,9 @@ export function employeeMemoryClient(
       }
       if (response.status !== (action === 'create' ? 201 : 200))
         throw new MemoryClientError(memoryUnknown);
-      const result = EmployeeMemoryWriteResponseSchema.parse(await response.json());
+      const result = EmployeeMemoryWriteResponseSchema.parse(
+        await response.json(),
+      );
       if (
         result.memory.state !== 'active' ||
         (action === 'create' && result.memory.revision !== 1) ||
@@ -196,9 +208,11 @@ export function employeeMemoryClient(
             ? result.memory.revision !== operation.cas.expectedRevision + 1
             : result.memory.revision < operation.cas.expectedRevision ||
               result.memory.revision > operation.cas.expectedRevision + 1)) ||
-        (action === 'promote' && result.memory.pairDigest !== operation.cas?.pairDigest) ||
+        (action === 'promote' &&
+          result.memory.pairDigest !== operation.cas?.pairDigest) ||
         (pair &&
-          (result.memory.summary !== pair.summary || result.memory.details !== pair.details))
+          (result.memory.summary !== pair.summary ||
+            result.memory.details !== pair.details))
       )
         throw new MemoryClientError(memoryUnknown);
       if (writes.get(slot) === operation) writes.delete(slot);
@@ -206,14 +220,24 @@ export function employeeMemoryClient(
     } catch (error) {
       if (error instanceof MemoryClientError && error.definitive) {
         // A later denial/conflict cannot disprove an earlier unknown outcome.
-        if (!operation.uncertain && operation.inFlight === 1 && writes.get(slot) === operation) writes.delete(slot);
+        if (
+          !operation.uncertain &&
+          operation.inFlight === 1 &&
+          writes.get(slot) === operation
+        )
+          writes.delete(slot);
         throw error;
       }
       operation.uncertain = true;
-      if ((action === 'create' || action === 'edit') &&
-          (!(error instanceof MemoryClientError) || error.message === memoryUnknown))
+      if (
+        (action === 'create' || action === 'edit') &&
+        (!(error instanceof MemoryClientError) ||
+          error.message === memoryUnknown)
+      )
         throw new MemoryClientError(memorySaveUnknown);
-      throw error instanceof MemoryClientError ? error : new MemoryClientError(memoryUnknown);
+      throw error instanceof MemoryClientError
+        ? error
+        : new MemoryClientError(memoryUnknown);
     } finally {
       operation.inFlight -= 1;
     }

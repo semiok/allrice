@@ -91,17 +91,38 @@ export function MemoryCard(props: {
   const pendingWrite = useRef(false);
   const live = useRef(true);
   const lastMemory = useRef(memory);
-  const frozen = useRef<{ action: 'promote' | 'delete'; row: MemoryRow } | null>(null);
-  const client = useMemo(() => employeeMemoryClient({
-    scopeId: props.scopeId, workspaceId: props.workspaceId,
-    instanceId: memory.instanceId!, headers: props.headers,
-  }, props.writes), [props.scopeId, props.workspaceId, memory.instanceId, props.headers, props.writes]);
+  const frozen = useRef<{
+    action: 'promote' | 'delete';
+    row: MemoryRow;
+  } | null>(null);
+  const client = useMemo(
+    () =>
+      employeeMemoryClient(
+        {
+          scopeId: props.scopeId,
+          workspaceId: props.workspaceId,
+          instanceId: memory.instanceId!,
+          headers: props.headers,
+        },
+        props.writes,
+      ),
+    [
+      props.scopeId,
+      props.workspaceId,
+      memory.instanceId,
+      props.headers,
+      props.writes,
+    ],
+  );
   useEffect(() => {
     // Accepted reads replace settled rows; pending rows retain their object.
     // Starting or failing a read must leave the operation error visible.
     const refreshed = lastMemory.current !== memory;
     lastMemory.current = memory;
-    if (refreshed && !busy) { setError(''); setSettled(false); }
+    if (refreshed && !busy) {
+      setError('');
+      setSettled(false);
+    }
   }, [memory, busy]);
   useEffect(() => {
     live.current = true;
@@ -114,19 +135,34 @@ export function MemoryCard(props: {
     // A stale legacy card may not approve newer, unseen content. The pair is
     // read from the real v2 detail endpoint, never derived from contentDigest.
     if (row.revision !== memory.revision)
-      throw new MemoryClientError('记忆已变化，请重新读取后再操作。', true, 'cas_conflict');
+      throw new MemoryClientError(
+        '记忆已变化，请重新读取后再操作。',
+        true,
+        'cas_conflict',
+      );
     return row;
   }
   async function askDelete() {
     if (pendingWrite.current || settled || !ownedByMe) return;
     pendingWrite.current = true;
-    setBusy(true); setError(''); props.onPending(true);
+    setBusy(true);
+    setError('');
+    props.onPending(true);
     try {
-      const row = frozen.current?.action === 'delete' ? frozen.current.row : await snapshot();
+      const row =
+        frozen.current?.action === 'delete'
+          ? frozen.current.row
+          : await snapshot();
       if (live.current) setDeleting(row);
     } catch (cause) {
-      if (live.current && cause instanceof MemoryAccessLost) props.onAccessLost();
-      if (live.current) setError(cause instanceof MemoryClientError ? cause.message : '记忆读取失败，请重试。');
+      if (live.current && cause instanceof MemoryAccessLost)
+        props.onAccessLost();
+      if (live.current)
+        setError(
+          cause instanceof MemoryClientError
+            ? cause.message
+            : '记忆读取失败，请重试。',
+        );
     } finally {
       pendingWrite.current = false;
       props.onPending(false);
@@ -141,21 +177,31 @@ export function MemoryCard(props: {
     props.onPending(true);
     let acknowledged = false;
     try {
-      const row = action === 'delete'
-        ? deleting!
-        : frozen.current?.action === action ? frozen.current.row : await snapshot();
+      const row =
+        action === 'delete'
+          ? deleting!
+          : frozen.current?.action === action
+            ? frozen.current.row
+            : await snapshot();
       if (!live.current || !row) return;
       frozen.current = { action, row };
       if (action === 'promote') await client.confirm(row);
       else await client.remove(row);
       acknowledged = true;
       frozen.current = null;
-      if (live.current) { setSettled(true); setDeleting(null); }
+      if (live.current) {
+        setSettled(true);
+        setDeleting(null);
+      }
     } catch (cause) {
-      if (live.current && cause instanceof MemoryAccessLost) props.onAccessLost();
-      if (cause instanceof MemoryClientError && cause.definitive) frozen.current = null;
+      if (live.current && cause instanceof MemoryAccessLost)
+        props.onAccessLost();
+      if (cause instanceof MemoryClientError && cause.definitive)
+        frozen.current = null;
       if (live.current)
-        setError(cause instanceof MemoryClientError ? cause.message : memoryUnknown);
+        setError(
+          cause instanceof MemoryClientError ? cause.message : memoryUnknown,
+        );
     } finally {
       pendingWrite.current = false;
       props.onPending(false);
@@ -169,11 +215,7 @@ export function MemoryCard(props: {
   }
   const candidate = memory.lifecycleState === 'candidate';
   return (
-    <article
-      className={css.card}
-      data-memory-id={memory.id}
-      aria-busy={busy}
-    >
+    <article className={css.card} data-memory-id={memory.id} aria-busy={busy}>
       <strong>
         {candidate
           ? memory.expiresAt
@@ -224,11 +266,7 @@ export function MemoryCard(props: {
             disabled={busy || settled}
             onClick={() => void askDelete()}
           >
-            {candidate
-                ? '放弃'
-                : props.onEdit
-                  ? '撤回'
-                  : '删除'}
+            {candidate ? '放弃' : props.onEdit ? '撤回' : '删除'}
           </Button>
         </div>
       )}
@@ -244,7 +282,12 @@ export function MemoryCard(props: {
         memory={deleting}
         busy={busy}
         error={error}
-        onCancel={() => { if (!pendingWrite.current) { setDeleting(null); setError(''); } }}
+        onCancel={() => {
+          if (!pendingWrite.current) {
+            setDeleting(null);
+            setError('');
+          }
+        }}
         onDelete={() => void mutate('delete')}
       />
     </article>
@@ -353,7 +396,9 @@ export function MemoryPanel(props: {
         setSnapshot((value) => {
           if (!current()) return value;
           return {
-            ...(value?.scope === scope && !(cause instanceof MemoryAccessLost) ? value : {}),
+            ...(value?.scope === scope && !(cause instanceof MemoryAccessLost)
+              ? value
+              : {}),
             scope,
             error: '记忆读取失败，请重新读取。',
           };
@@ -396,14 +441,17 @@ export function MemoryPanel(props: {
         }}
         onChange={(action) => {
           if (active.current !== scope) return;
-          if (action === 'delete') setSnapshot((value) =>
-            value?.scope === scope
-              ? {
-                  scope,
-                  memories: value.memories?.filter((item) => item.id !== memory.id),
-                }
-              : value,
-          );
+          if (action === 'delete')
+            setSnapshot((value) =>
+              value?.scope === scope
+                ? {
+                    scope,
+                    memories: value.memories?.filter(
+                      (item) => item.id !== memory.id,
+                    ),
+                  }
+                : value,
+            );
           window.dispatchEvent(
             new CustomEvent(changedEvent, {
               detail: { scopeId: props.scopeId },
