@@ -906,6 +906,7 @@ export function CloudOperationCard({
     op.enabled &&
     !mcpUnavailable &&
     !failure &&
+    !laterSuccessId &&
     !networkFailure &&
     !resolutionFailure
   )

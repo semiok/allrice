@@ -43,6 +43,11 @@ const render = (op: CloudOperationView, busy = false) =>
   renderToStaticMarkup(
     <CloudOperationCard op={op} busy={busy} onAct={() => {}} />,
   );
+const cardHeader = (html: string) => {
+  const matches = html.match(/<header\b[^>]*>[\s\S]*?<\/header>/g);
+  expect(matches).toHaveLength(1);
+  return matches![0]!;
+};
 describe('Cloud/MCP approval presentation', () => {
   it('labels dependency resolution without claiming installation success', () => {
     const op = view();
@@ -138,8 +143,10 @@ describe('Cloud/MCP approval presentation', () => {
     expect(html).toContain('云端项目');
     expect(html).toContain('执行命令');
     expect(html).toContain('项目版本');
-    // The exact command is technical detail, rendered only once expanded.
-    expect(html).not.toContain('verify.cjs');
+    // The authorized command is inline; the header stays concise.
+    expect(cardHeader(html)).not.toContain('verify.cjs');
+    expect(html).toContain('&quot;verify.cjs&quot;');
+    expect(html).toContain('&lt;script&gt;');
     expect(html).toContain('result.html');
     expect(html).not.toContain('云端待执行脚本');
     expect(html).not.toContain('第三方服务');
@@ -242,6 +249,8 @@ describe('Cloud/MCP approval presentation', () => {
         />,
       );
       expect(inline).toContain('href="#process-material-cloud-later-success"');
+      expect(inline).toContain('data-status="failed"');
+      expect(inline).toContain('之后再试的一次已经完成');
       expect(inline).not.toContain('href="#operation-later-success"');
       expect(
         renderToStaticMarkup(
@@ -403,8 +412,10 @@ describe('Cloud/MCP approval presentation', () => {
     const html = render(op);
     expect(cloudOperationDisplayStatus(op)).toBe('已完成');
     expect(html).toContain('已完成');
-    // The standalone details remain folded; the history material is intact.
-    expect(html).not.toContain('saved:synthetic;call-count:1');
+    // Current execution authority does not erase authorized historical output.
+    expect(html).toContain('saved:synthetic;call-count:1');
+    expect(cardHeader(html)).not.toContain('saved:synthetic;call-count:1');
+    expect(html).not.toContain('data-process-control="approve"');
     const material = cloudOperationMaterial(op);
     expect(
       renderToStaticMarkup(<>{material.fields.at(-1)!.value}</>),
@@ -451,8 +462,10 @@ describe('Cloud/MCP approval presentation', () => {
     expect(html).toContain('不联网');
     expect(html).toContain('input.json');
     expect(html).toContain('会生成：');
-    expect(html).not.toContain('11111111-1111-4111-8111-111111111111');
-    expect(html).not.toContain('sha256:');
+    expect(cardHeader(html)).not.toContain('11111111-1111-4111-8111-111111111111');
+    expect(cardHeader(html)).not.toContain('sha256:');
+    expect(html).toContain('11111111-1111-4111-8111-111111111111');
+    expect(html).toContain(`sha256:${'a'.repeat(64)}`);
     const review = renderToStaticMarkup(
       <CloudOperationCard op={op} busy interactionOnly onAct={() => {}} />,
     );
@@ -466,7 +479,8 @@ describe('Cloud/MCP approval presentation', () => {
     expect(render(op)).toMatch(/<button[^>]*aria-expanded="false"[^>]*>/);
     expect(render(op)).toContain('查看详情');
     expect(html).toContain('30 秒');
-    expect(html).not.toContain('毫核');
+    expect(cardHeader(html)).not.toContain('毫核');
+    expect(html).toContain('毫核');
     expect(html).toContain('disabled=""');
     expect(html).toContain('允许运行脚本');
     expect(html).not.toContain('<script>');
@@ -490,8 +504,8 @@ describe('Cloud/MCP approval presentation', () => {
     expect(failedHtml).toContain('与已授权服务的连接中断或建立失败');
     expect(failedHtml).toContain('网络请求可能已经生效');
     expect(failedHtml).not.toContain('允许运行脚本');
-    // The compact notices stay readable; the exact code is kept for support
-    // in the collapsed technical details, not in the summary.
+    // Compact status notices stay readable; the exact code stays in the
+    // authorized inline result fields.
     const notices = [
       ...failedHtml.matchAll(/<p[^>]*role="status"[^>]*>(.*?)<\/p>/gs),
     ]
@@ -499,7 +513,7 @@ describe('Cloud/MCP approval presentation', () => {
       .join(' ');
     expect(notices).toContain('与已授权服务的连接中断或建立失败');
     expect(notices).not.toContain('SANDBOX_NETWORK_CONNECT_FAILED');
-    expect(failedHtml).not.toContain('SANDBOX_NETWORK_CONNECT_FAILED');
+    expect(failedHtml).toContain('SANDBOX_NETWORK_CONNECT_FAILED');
     expect(failedHtml).toMatch(/<button[^>]*aria-expanded="false"[^>]*>/);
   });
 });
