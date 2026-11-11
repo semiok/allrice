@@ -260,7 +260,8 @@ suite('U1 mounted employee Workflow host', () => {
     const skillCatalogs = new Map(
       [7, 17, 107, 117].map((n) => {
         const catalog = skillTestCatalog(id(n), id(n > 100 ? 104 : 4));
-        if (options.emptySkills || options.frozen) catalog.personalSkills = [];
+        if ((options.emptySkills && [7, 107].includes(n)) || options.frozen)
+          catalog.personalSkills = [];
         if (options.frozen) catalog.canInstall = false;
         return [id(n), catalog] as const;
       }),
@@ -1349,20 +1350,54 @@ suite('U1 mounted employee Workflow host', () => {
     return dialog;
   }
 
-  it('MET-251 keeps unapproved Skill host copy and missing plugin contracts unactivated in both real hosts', async () => {
+  async function capabilityAppearance(target: Locator) {
+    return target.evaluate((node) => {
+      const css = getComputedStyle(node);
+      return Object.fromEntries(
+        [
+          'fontFamily',
+          'fontSize',
+          'lineHeight',
+          'fontWeight',
+          'paddingTop',
+          'paddingRight',
+          'paddingBottom',
+          'paddingLeft',
+          'minHeight',
+          'borderRadius',
+          'borderWidth',
+          'borderStyle',
+          'borderColor',
+          'backgroundColor',
+          'color',
+          'outlineWidth',
+          'outlineStyle',
+          'outlineColor',
+        ].map((property) => [
+          property,
+          css[property as keyof CSSStyleDeclaration],
+        ]),
+      );
+    });
+  }
+
+  it('MET-251 mounts shared Skills without inventing missing plugin contracts in both real hosts', async () => {
     await inFixture({}, async (f) => {
       const root = await f.openDirectory();
       expect(
         await root
           .getByRole('heading', { name: '技能 Skills', exact: true })
           .count(),
-      ).toBe(0);
+      ).toBe(1);
       expect(
         await root
           .getByRole('heading', { name: '插件 Plugins', exact: true })
           .count(),
       ).toBe(0);
       await root.getByRole('button', { name: '写周报', exact: true }).waitFor();
+      await root
+        .getByRole('button', { name: '翻译校对', exact: true })
+        .waitFor();
       await root
         .getByRole('button', { name: '关闭工作台', exact: true })
         .click();
@@ -1371,7 +1406,7 @@ suite('U1 mounted employee Workflow host', () => {
         await employee
           .getByRole('heading', { name: '技能 Skills', exact: true })
           .count(),
-      ).toBe(0);
+      ).toBe(1);
       expect(
         await employee
           .getByRole('heading', { name: '插件 Plugins', exact: true })
@@ -1380,11 +1415,14 @@ suite('U1 mounted employee Workflow host', () => {
       await employee
         .getByRole('button', { name: '写周报', exact: true })
         .waitFor();
+      await employee
+        .getByRole('button', { name: '翻译校对', exact: true })
+        .waitFor();
       expect(
-        f.state.requests.filter((request) =>
-          /\/skills(?:\/|$)/.test(request.path),
+        f.state.reads.filter(
+          (path) => path === `/api/v1/employee-instances/${id(7)}/skills`,
         ),
-      ).toEqual([]);
+      ).toHaveLength(1);
       expect(f.state.writes).toEqual([]);
     });
   });
@@ -1563,6 +1601,440 @@ suite('U1 mounted employee Workflow host', () => {
       });
     });
   }
+
+  for (const [width, dark] of [
+    [1440, false],
+    [1440, true],
+    [390, false],
+    [390, true],
+    [320, false],
+  ] as const) {
+    it(`MET-251 capabilities share rows and detail actions across both hosts at ${width} ${dark ? 'dark' : 'light'}`, async () => {
+      await inFixture({ width, dark }, async (f) => {
+        const root = await f.openDirectory();
+        const workflow = root.getByRole('button', {
+          name: '写周报',
+          exact: true,
+        });
+        const skill = root.getByRole('button', {
+          name: '翻译校对',
+          exact: true,
+        });
+        await skill.waitFor();
+        await f.page.mouse.move(1, 1);
+        const normal = await capabilityAppearance(workflow);
+        expect(await capabilityAppearance(skill)).toEqual(normal);
+        expect(normal).toMatchObject({
+          minHeight: '64px',
+          paddingTop: '10px',
+          paddingRight: '14px',
+          paddingBottom: '10px',
+          paddingLeft: '14px',
+        });
+        expect(
+          await root.getByRole('button', { name: '卸载', exact: true }).count(),
+        ).toBe(0);
+        // No synthetic plugin catalog, business URL or success is mounted.
+        expect(
+          await root
+            .getByRole('heading', { name: '插件 Plugins', exact: true })
+            .count(),
+        ).toBe(0);
+        if (width === 1440) {
+          await workflow.hover();
+          const hover = await capabilityAppearance(workflow);
+          await skill.hover();
+          expect(await capabilityAppearance(skill)).toEqual(hover);
+          await f.page.mouse.move(1, 1);
+          await f.page.keyboard.press('Tab');
+          await workflow.focus();
+          const focus = await capabilityAppearance(workflow);
+          expect(focus.outlineWidth).toBe('2px');
+          await skill.focus();
+          expect(await capabilityAppearance(skill)).toEqual(focus);
+        }
+        await skill.scrollIntoViewIfNeeded();
+        await f.page.screenshot({
+          path: resolve(
+            evidence,
+            `capabilities-${width}-${dark ? 'dark' : 'light'}-sidebar.png`,
+          ),
+          fullPage: true,
+        });
+        await workflow.click();
+        const sceneDetail = employeePage(f.page, {
+          name: '写周报',
+          exact: true,
+        });
+        await sceneDetail
+          .getByRole('heading', { name: '什么时候用', exact: true })
+          .waitFor();
+        await f.page.mouse.move(1, 1);
+        const fontTargets = {
+          title: 'header h2',
+          version: 'header h2 + span',
+          body: 'header + div',
+        };
+        const workflowFonts = await typography(sceneDetail, fontTargets);
+        const workflowUpdate = await capabilityAppearance(
+          sceneDetail.getByRole('button', { name: '更新', exact: true }),
+        );
+        const workflowStart = await capabilityAppearance(
+          sceneDetail.getByRole('button', { name: '开始工作', exact: true }),
+        );
+        const workflowDanger = await capabilityAppearance(
+          sceneDetail.getByRole('button', { name: '删除场景', exact: true }),
+        );
+        if ((width === 1440 && !dark) || (width === 390 && dark))
+          await f.page.screenshot({
+            path: resolve(
+              evidence,
+              `capabilities-${width}-${dark ? 'dark' : 'light'}-workflow-detail.png`,
+            ),
+            fullPage: true,
+          });
+        await sceneDetail
+          .getByRole('button', { name: '返回能力列表', exact: true })
+          .click();
+        await skill.click();
+        const skillDetail = employeePage(f.page, {
+          name: '翻译校对',
+          exact: true,
+        });
+        await skillDetail
+          .getByRole('button', { name: '开始工作', exact: true })
+          .waitFor();
+        await f.page.mouse.move(1, 1);
+        const skillFonts = await typography(skillDetail, fontTargets);
+        expect(skillFonts.title).toEqual(workflowFonts.title);
+        expect(skillFonts.version).toEqual(workflowFonts.version);
+        expect(skillFonts.body?.family).toBe(workflowFonts.body?.family);
+        expect(
+          await capabilityAppearance(
+            skillDetail.getByRole('button', { name: '更新', exact: true }),
+          ),
+        ).toEqual(workflowUpdate);
+        expect(
+          await capabilityAppearance(
+            skillDetail.getByRole('button', { name: '开始工作', exact: true }),
+          ),
+        ).toEqual(workflowStart);
+        expect(
+          await capabilityAppearance(
+            skillDetail.getByRole('button', {
+              name: '卸载这个技能',
+              exact: true,
+            }),
+          ),
+        ).toEqual(workflowDanger);
+        expect(await skillDetail.locator('footer').count()).toBe(0);
+        if ((width === 1440 && !dark) || (width === 390 && dark))
+          await f.page.screenshot({
+            path: resolve(
+              evidence,
+              `capabilities-${width}-${dark ? 'dark' : 'light'}-skill-detail.png`,
+            ),
+            fullPage: true,
+          });
+        await f.page.keyboard.press('Escape');
+        await skill.waitFor();
+        await root
+          .getByRole('button', { name: '关闭工作台', exact: true })
+          .click();
+        const employee = await f.openEmployeeDetails();
+        const employeeSkill = employee.getByRole('button', {
+          name: '翻译校对',
+          exact: true,
+        });
+        await employeeSkill.waitFor();
+        await f.page.mouse.move(1, 1);
+        expect(await capabilityAppearance(employeeSkill)).toEqual(normal);
+        expect(
+          await employee
+            .getByRole('region', { name: '基础与人设', exact: true })
+            .count(),
+        ).toBe(1);
+        expect(
+          await employee
+            .getByRole('region', { name: '记忆', exact: true })
+            .count(),
+        ).toBe(1);
+        await employeeSkill.scrollIntoViewIfNeeded();
+        await f.page.screenshot({
+          path: resolve(
+            evidence,
+            `capabilities-${width}-${dark ? 'dark' : 'light'}-employee.png`,
+          ),
+          fullPage: true,
+        });
+        await employeeSkill.click();
+        const employeeDetail = employeePage(f.page, {
+          name: '翻译校对',
+          exact: true,
+        });
+        await f.page.mouse.move(1, 1);
+        expect(await typography(employeeDetail, fontTargets)).toEqual(
+          skillFonts,
+        );
+        expect(
+          await capabilityAppearance(
+            employeeDetail.getByRole('button', { name: '更新', exact: true }),
+          ),
+        ).toEqual(workflowUpdate);
+        expect(
+          await capabilityAppearance(
+            employeeDetail.getByRole('button', {
+              name: '开始工作',
+              exact: true,
+            }),
+          ),
+        ).toEqual(workflowStart);
+        expect(
+          await capabilityAppearance(
+            employeeDetail.getByRole('button', {
+              name: '卸载这个技能',
+              exact: true,
+            }),
+          ),
+        ).toEqual(workflowDanger);
+        expect(await f.page.getByRole('dialog').count()).toBe(1);
+        expect(
+          await f.page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBe(true);
+        await employeeDetail
+          .getByRole('button', { name: '返回员工详情', exact: true })
+          .click();
+        await employee.waitFor();
+      });
+    });
+  }
+
+  for (const target of [
+    { name: '翻译校对', employee: 'Rice', origin: 'top' },
+    { name: '行情数据', employee: 'Rice', origin: 'top' },
+    { name: '翻译校对', employee: '流程哥', origin: 'employee' },
+  ] as const) {
+    it(`MET-251 capabilities start ${target.name} from ${target.origin} for ${target.employee} without sending or replacing the draft`, async () => {
+      const mobile = target.name === '翻译校对' && target.origin === 'top';
+      await inFixture(
+        { session: true, width: mobile ? 390 : 1440, dark: mobile },
+        async (f) => {
+          const original = '  用户原有草稿\n保留空白与内容。\n';
+          await f.page
+            .getByRole('textbox', { name: '给 Rice 的消息', exact: true })
+            .fill(original);
+          await f.page.locator('input[type=file][multiple]').setInputFiles({
+            name: 'skill-carry.txt',
+            mimeType: 'text/plain',
+            buffer: Buffer.from('Synthetic retained attachment'),
+          });
+          await f.page.getByText('skill-carry.txt', { exact: true }).waitFor();
+          const parent =
+            target.origin === 'top'
+              ? await f.openDirectory()
+              : await f.openEmployeeDetails(target.employee);
+          await parent
+            .getByRole('button', { name: target.name, exact: true })
+            .click();
+          const detail = employeePage(f.page, {
+            name: target.name,
+            exact: true,
+          });
+          await detail
+            .getByRole('button', { name: '开始工作', exact: true })
+            .waitFor();
+          if (target.name === '行情数据') {
+            expect(
+              await detail
+                .getByRole('button', { name: '更新', exact: true })
+                .count(),
+            ).toBe(0);
+            expect(
+              await detail
+                .getByRole('button', { name: '卸载这个技能', exact: true })
+                .count(),
+            ).toBe(0);
+          }
+          await detail
+            .getByRole('button', { name: '开始工作', exact: true })
+            .click();
+          const input = f.page.getByRole('textbox', {
+            name: `给 ${target.employee} 的消息`,
+            exact: true,
+          });
+          await expect
+            .poll(() => input.inputValue())
+            .toBe(`请使用「${target.name}」帮我……\n\n${original}`);
+          expect(
+            await f.page
+              .getByRole('group', { name: '待发送附件', exact: true })
+              .getByText('skill-carry.txt', { exact: true })
+              .count(),
+          ).toBe(1);
+          expect(
+            await input.evaluate((node) => node === document.activeElement),
+          ).toBe(true);
+          expect(f.state.writes).toEqual([]);
+          if (mobile) {
+            await input.evaluate((node) => {
+              node.scrollTop = 0;
+            });
+            await f.page.screenshot({
+              path: resolve(
+                evidence,
+                'capabilities-skill-start-mobile-dark.png',
+              ),
+              fullPage: true,
+            });
+          }
+        },
+      );
+    });
+  }
+
+  it('MET-251 capabilities add and remove one binding through opposite hosts with one shared Skill reader', async () => {
+    await inFixture({ emptySkills: true }, async (f) => {
+      const root = await f.openDirectory();
+      await root.getByText('我添加的 · 0', { exact: true }).waitFor();
+      await root.getByRole('button', { name: '添加技能', exact: true }).click();
+      const source = employeePage(f.page, { name: '添加技能', exact: true });
+      await source
+        .getByRole('tab', { name: 'GitHub 链接', exact: true })
+        .click();
+      await source
+        .getByRole('textbox', { name: '仓库链接', exact: true })
+        .fill('https://github.com/example/translation-review');
+      await source.getByRole('button', { name: '读取', exact: true }).click();
+      const confirm = employeePage(f.page, { name: '确认添加', exact: true });
+      await confirm
+        .getByRole('button', { name: '确认添加', exact: true })
+        .waitFor();
+      expect(f.state.writes).toEqual([]);
+      await f.page.screenshot({
+        path: resolve(evidence, 'capabilities-skill-add-confirmation.png'),
+        fullPage: true,
+      });
+      await confirm
+        .getByRole('button', { name: '确认添加', exact: true })
+        .click();
+      const success = employeePage(f.page, { name: '添加完成', exact: true });
+      await success.getByRole('button', { name: '完成', exact: true }).click();
+      await root
+        .getByRole('button', { name: '翻译校对', exact: true })
+        .waitFor();
+      await root
+        .getByRole('button', { name: '关闭工作台', exact: true })
+        .click();
+      const readsBefore = f.state.reads.filter(
+        (path) => path === `/api/v1/employee-instances/${id(7)}/skills`,
+      ).length;
+      const employee = await f.openEmployeeDetails();
+      await employee
+        .getByRole('button', { name: '翻译校对', exact: true })
+        .waitFor();
+      expect(
+        f.state.reads.filter(
+          (path) => path === `/api/v1/employee-instances/${id(7)}/skills`,
+        ),
+      ).toHaveLength(readsBefore);
+      await employee
+        .getByRole('button', { name: '翻译校对', exact: true })
+        .click();
+      const detail = employeePage(f.page, { name: '翻译校对', exact: true });
+      await detail
+        .getByRole('button', { name: '卸载这个技能', exact: true })
+        .click();
+      const removal = employeePage(f.page, {
+        name: '卸载“翻译校对”？',
+        exact: true,
+      });
+      await removal
+        .getByRole('button', { name: '卸载', exact: true })
+        .waitFor();
+      await f.page.screenshot({
+        path: resolve(evidence, 'capabilities-skill-remove-confirmation.png'),
+        fullPage: true,
+      });
+      await removal.getByRole('button', { name: '卸载', exact: true }).click();
+      await employee.getByText('我添加的 · 0', { exact: true }).waitFor();
+      await employee.getByRole('button', { name: '关闭', exact: true }).click();
+      const updated = await f.openDirectory();
+      await updated.getByText('我添加的 · 0', { exact: true }).waitFor();
+      expect(
+        await updated
+          .getByRole('button', { name: '翻译校对', exact: true })
+          .count(),
+      ).toBe(0);
+      expect(f.state.skillCatalogs.get(id(17))?.personalSkills).toHaveLength(1);
+      expect(f.state.writes.map((write) => write.path)).toEqual([
+        `/api/v1/employee-instances/${id(7)}/skills/confirm`,
+        `/api/v1/employee-instances/${id(7)}/skills/${id(200)}`,
+      ]);
+    });
+  });
+
+  it('MET-251 capabilities reject a late Skill start after the workspace and employee authority changes', async () => {
+    await inFixture({ session: true }, async (f) => {
+      const refresh = gate(),
+        instanceRead = gate();
+      const original = '当前输入保留';
+      await f.page
+        .getByRole('textbox', { name: '给 Rice 的消息', exact: true })
+        .fill(original);
+      f.state.workspaceGate = refresh.promise;
+      try {
+        const employee = await f.openEmployeeDetails('流程哥');
+        await employee
+          .getByRole('button', { name: '翻译校对', exact: true })
+          .click();
+        const detail = employeePage(f.page, { name: '翻译校对', exact: true });
+        await detail
+          .getByRole('button', { name: '开始工作', exact: true })
+          .waitFor();
+        f.state.instanceGate = instanceRead.promise;
+        const previousReads = f.state.reads.filter(
+          (path) => path === `/api/v1/employee-instances/${id(17)}`,
+        ).length;
+        await detail
+          .getByRole('button', { name: '开始工作', exact: true })
+          .click();
+        await expect
+          .poll(
+            () =>
+              f.state.reads.filter(
+                (path) => path === `/api/v1/employee-instances/${id(17)}`,
+              ).length,
+          )
+          .toBe(previousReads + 1);
+        f.state.scope = {
+          workspaceId: id(104),
+          viewerId: id(105),
+          offset: 100,
+        };
+        refresh.release();
+        await expect
+          .poll(() => f.state.workspaceReplies.at(-1))
+          .toBe(`${id(104)}/${id(105)}`);
+        instanceRead.release();
+        await expect.poll(() => detail.count()).toBe(0);
+        const reader = employeePage(f.page, { name: /员工详情/ });
+        await reader.getByRole('button', { name: '关闭', exact: true }).click();
+        await expect
+          .poll(() =>
+            f.page
+              .getByRole('textbox', { name: '给 Rice 的消息', exact: true })
+              .inputValue(),
+          )
+          .toBe(original);
+        expect(f.state.writes).toEqual([]);
+      } finally {
+        refresh.release();
+        instanceRead.release();
+      }
+    });
+  });
 
   for (const width of [1440, 390])
     for (const dark of [false, true]) {

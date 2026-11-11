@@ -3248,7 +3248,6 @@ export function ChatFlowClient({
       />
     </main>
   );
-  if (!employeeSkillHostCopy) return content;
   return (
     <EmployeeSkillsHost
       scope={{

@@ -45,8 +45,7 @@ import {
 } from './employee-skill-confirmation';
 import css from './employee-skills-host.module.css';
 
-/** Unapproved copy is an explicit integration gap, never a production default.
- * Supplying fixture copy does not approve it for a real employee entry. */
+/** The host supplies user-facing text without changing the API outcome rules. */
 export interface EmployeeSkillHostCopy {
   loading: string;
   catalogError: string;
