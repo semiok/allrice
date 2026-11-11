@@ -118,7 +118,8 @@ function ReadableMemories(
     props.onAccessLost,
   );
   const validData = data?.instanceId === props.instanceId ? data : undefined;
-  const readError = error || (data && !validData ? memoryReadFailed : undefined);
+  const readError =
+    error || (data && !validData ? memoryReadFailed : undefined);
   return (
     <>
       {readError && (
@@ -182,7 +183,8 @@ function AdminMemoryDetail(props: {
     props.onAccessLost,
   );
   const validData = data?.memory.id === props.selected.id ? data : undefined;
-  const readError = error || (data && !validData ? memoryReadFailed : undefined);
+  const readError =
+    error || (data && !validData ? memoryReadFailed : undefined);
   return (
     <Modal
       open

@@ -546,7 +546,9 @@ suite('MET251 v10 memory sidebar presentation', () => {
         .waitFor();
     };
     try {
-      await f.page.getByRole('button', { name: '＋ 新增', exact: true }).click();
+      await f.page
+        .getByRole('button', { name: '＋ 新增', exact: true })
+        .click();
       await assertFooter();
       await f.page.getByRole('button', { name: '取消', exact: true }).click();
       await openDetail();
@@ -556,7 +558,9 @@ suite('MET251 v10 memory sidebar presentation', () => {
       await f.page.getByRole('button', { name: '取消', exact: true }).click();
       await openDetail();
       await f.page.getByRole('button', { name: '删除', exact: true }).click();
-      await f.page.getByRole('dialog', { name: '确认删除这条记忆？' }).waitFor();
+      await f.page
+        .getByRole('dialog', { name: '确认删除这条记忆？' })
+        .waitFor();
       await assertFooter();
       expect(await f.operations()).toEqual([]);
     } finally {
