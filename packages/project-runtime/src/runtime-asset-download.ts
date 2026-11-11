@@ -2,15 +2,13 @@ import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { open, rename, rm } from 'node:fs/promises';
 import {
-  request as requestHttp,
-  type ClientRequest,
-  type OutgoingHttpHeaders,
-} from 'node:http';
-import { request as requestHttps } from 'node:https';
-import type { Socket } from 'node:net';
-import { Readable } from 'node:stream';
-import type { ReadableStreamDefaultReader } from 'node:stream/web';
+  TransformStream,
+  type ReadableStream,
+  type ReadableStreamDefaultReader,
+} from 'node:stream/web';
 import { setTimeout as delay } from 'node:timers/promises';
+import { transferableAbortController } from 'node:util';
+import { Worker } from 'node:worker_threads';
 import { RuntimeCommandError as LocalCommandError } from './errors.js';
 type Asset = {
   fileName: string;
@@ -71,103 +69,144 @@ const redirectHosts = new Set([
   'download.docker.com',
   'raw.githubusercontent.com',
 ]);
-// Preserve Node 22 fetch's blocked network ports when owning its transport.
-const blockedPorts = new Set([
-  1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79,
-  87, 95, 101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137,
-  139, 143, 161, 179, 389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532,
-  540, 548, 554, 556, 563, 587, 601, 636, 989, 990, 993, 995, 1719, 1720, 1723,
-  2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669,
-  6679, 6697, 10080,
-]);
 type AssetResponse = {
   status: number;
   headers: Headers;
-  body: ReturnType<typeof Readable.toWeb>;
+  body: ReadableStream<Uint8Array> | null;
   close: () => Promise<void>;
 };
+// Each native fetch owns an isolated Node environment, including its default
+// startup proxy configuration. Only metadata and the native stream cross it.
+const assetFetchWorker = new URL(
+  `data:text/javascript,${encodeURIComponent(`
+import { parentPort, workerData } from 'node:worker_threads';
+parentPort.once('message', () => parentPort.close());
+try {
+  const response = await fetch(workerData.url, {
+    redirect: 'manual',
+    headers: workerData.headers,
+    signal: workerData.signal,
+  });
+  const body = response.body;
+  parentPort.postMessage(
+    { status: response.status, headers: [...response.headers], body },
+    body ? [body] : [],
+  );
+  if (!body) parentPort.close();
+} catch (error) {
+  parentPort.postMessage(error);
+  parentPort.close();
+}
+`)}`,
+);
 async function requestAsset(
   url: URL,
-  headers: OutgoingHttpHeaders,
+  headers: Record<string, string>,
   signal: AbortSignal,
 ): Promise<AssetResponse> {
-  // Node request would otherwise turn URL credentials into Basic auth.
-  if (
-    !['http:', 'https:'].includes(url.protocol) ||
-    url.username ||
-    url.password ||
-    blockedPorts.has(Number(url.port))
-  )
-    throw new TypeError('Runtime asset URL is unavailable');
   signal.throwIfAborted();
-  let request: ClientRequest;
-  try {
-    request = (url.protocol === 'https:' ? requestHttps : requestHttp)(url, {
-      agent: false,
-      headers,
-    });
-  } catch (error) {
-    throw new TypeError('Runtime asset connection failed', { cause: error });
-  }
-  let socket: Socket | undefined;
-  let socketClosed: Promise<void> | undefined;
-  const requestClosed = new Promise<void>((resolve) =>
-    request.once('close', resolve),
-  );
-  request.once('socket', (ownedSocket) => {
-    socket = ownedSocket;
-    socketClosed = new Promise<void>((resolve) =>
-      ownedSocket.once('close', () => resolve()),
-    );
-    if (request.destroyed || signal.aborted) ownedSocket.destroy();
+  const owned = transferableAbortController();
+  const worker = new Worker(assetFetchWorker, {
+    workerData: { url: url.href, headers, signal: owned.signal },
+    transferList: [owned.signal],
   });
-  const destroy = () => {
-    request.destroy();
-    socket?.destroy();
+  let eof = false;
+  let source: AssetResponse['body'] = null;
+  let body: AssetResponse['body'] = null;
+  let piping: Promise<void> | undefined;
+  let closing: Promise<void> | undefined;
+  let rejectHeaders!: (error: unknown) => void;
+  const fail = (error: Error) => {
+    owned.abort(error);
+    rejectHeaders(error);
   };
-  const close = async () => {
-    destroy();
-    await requestClosed;
-    await socketClosed;
-    signal.removeEventListener('abort', destroy);
+  const exited = new Promise<void>((resolve) =>
+    worker.once('exit', () => {
+      if (!eof && !owned.signal.aborted)
+        fail(new TypeError('Runtime asset worker exited before EOF'));
+      resolve();
+    }),
+  );
+  const abort = () => {
+    if (eof) return;
+    // Keep the caller's possibly non-cloneable reason in this thread.
+    owned.abort(new Error('Runtime asset request canceled'));
+    rejectHeaders(signal.reason);
   };
-  signal.addEventListener('abort', destroy, { once: true });
-  try {
-    return await new Promise<AssetResponse>((resolve, reject) => {
-      request.once('error', reject);
-      request.once('close', () =>
-        reject(new TypeError('Runtime asset connection closed before headers')),
-      );
-      request.once('response', (response) => {
+  const close = () =>
+    (closing ??= (async () => {
+      if (!eof) {
+        owned.abort(new Error('Runtime asset request released'));
+        if (body && !body.locked) await body.cancel().catch(() => undefined);
+        // Native cancellation closes the receiving stream port before its
+        // producer is terminated, including a read already waiting for data.
+        await piping?.catch(() => undefined);
+        if (source && !source.locked)
+          await source.cancel().catch(() => undefined);
+        await worker.terminate();
+      }
+      await exited;
+      await piping?.catch(() => undefined);
+      if (!eof && source && !source.locked)
+        await source.cancel().catch(() => undefined);
+      signal.removeEventListener('abort', abort);
+    })());
+  const response = new Promise<AssetResponse>((resolve, reject) => {
+    rejectHeaders = reject;
+    worker.once('error', fail);
+    worker.once(
+      'message',
+      (
+        message:
+          | Error
+          | {
+              status: number;
+              headers: [string, string][];
+              body: ReadableStream<Uint8Array> | null;
+            },
+      ) => {
         try {
-          const body = Readable.toWeb(response);
-          const responseHeaders = new Headers();
-          for (let i = 0; i < response.rawHeaders.length; i += 2) {
-            const name = response.rawHeaders[i];
-            const value = response.rawHeaders[i + 1];
-            if (name === undefined || value === undefined)
-              throw new TypeError('Runtime asset response headers unavailable');
-            responseHeaders.append(name, value);
+          if (message instanceof Error) return fail(message);
+          source = message.body;
+          if (owned.signal.aborted) {
+            piping = message.body?.cancel();
+            return reject(signal.aborted ? signal.reason : owned.signal.reason);
           }
-          resolve({
-            status: response.statusCode ?? 0,
-            headers: responseHeaders,
-            body,
-            close,
-          });
+          const headers = new Headers(message.headers);
+          if (message.body) {
+            const stream = new TransformStream<Uint8Array, Uint8Array>({
+              flush() {
+                eof = true;
+                worker.postMessage('release');
+              },
+            });
+            body = stream.readable;
+            piping = message.body.pipeTo(stream.writable, {
+              signal: owned.signal,
+            });
+            void piping.catch(() => undefined);
+          } else eof = true;
+          resolve({ status: message.status, headers, body, close });
         } catch (error) {
-          reject(error);
+          if (!(message instanceof Error) && !message.body?.locked)
+            piping = message.body?.cancel();
+          fail(
+            error instanceof Error
+              ? error
+              : new TypeError('Runtime asset response unavailable'),
+          );
         }
-      });
-      if (signal.aborted) {
-        destroy();
-        reject(signal.reason);
-      } else request.end();
-    });
+      },
+    );
+  });
+  signal.addEventListener('abort', abort, { once: true });
+  if (signal.aborted) abort();
+  try {
+    return await response;
   } catch (error) {
     await close();
     if (signal.aborted) throw signal.reason;
-    throw new TypeError('Runtime asset connection failed', { cause: error });
+    throw error;
   }
 }
 async function fetchAsset(
@@ -181,22 +220,9 @@ async function fetchAsset(
     const response = await requestAsset(
       url,
       {
-        Accept: '*/*',
-        'Accept-Language': '*',
-        'User-Agent': 'node',
-        'Sec-Fetch-Mode': 'cors',
         'Accept-Encoding': 'identity',
         ...(offset
-          ? {
-              Range: `bytes=${offset}-`,
-              ...(etag
-                ? {
-                    'If-Range': etag,
-                    Pragma: 'no-cache',
-                    'Cache-Control': 'no-cache',
-                  }
-                : {}),
-            }
+          ? { Range: `bytes=${offset}-`, ...(etag ? { 'If-Range': etag } : {}) }
           : {}),
       },
       signal,
@@ -403,11 +429,7 @@ export async function downloadManagedRuntimeAsset(
           });
           for (;;) {
             resetIdle();
-            const next = await reader.read().catch((error) => {
-              throw new TypeError('Runtime asset body connection failed', {
-                cause: error,
-              });
-            });
+            const next = await reader.read();
             if (next.done) break;
             requestSignal.throwIfAborted();
             if (offset + next.value.length > asset.sizeBytes) {
