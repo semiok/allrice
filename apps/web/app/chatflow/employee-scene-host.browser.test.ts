@@ -1238,7 +1238,14 @@ suite('U1 mounted employee Workflow host', () => {
             const element = node.querySelector(selector);
             if (!element) throw new Error(`Missing typography target: ${name}`);
             const css = getComputedStyle(element);
-            return [name, { font: css.font, family: css.fontFamily }];
+            return [
+              name,
+              {
+                font: css.font,
+                family: css.fontFamily,
+                weight: css.fontWeight,
+              },
+            ];
           }),
         ),
       selectors,
@@ -1569,6 +1576,7 @@ suite('U1 mounted employee Workflow host', () => {
             }),
             listFontTargets,
           );
+          expect(listFonts.heading.weight).toBe('600');
           expect(
             await root
               .getByRole('button', { name: '关闭工作台', exact: true })
