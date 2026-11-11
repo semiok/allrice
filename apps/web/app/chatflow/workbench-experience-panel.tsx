@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   EmployeeDetailsSchema,
   ExperienceDraftBatchSchema,
@@ -14,6 +14,7 @@ import { workbenchJson } from '../../lib/chatflow/workbench-model';
 import { WorkbenchIcon } from './workbench-modules';
 import css from './workbench-experience-panel.module.css';
 import { EmployeeMemoryManager } from './employee-memory-manager';
+import type { MemoryWriteStore } from '../../lib/memory/employee-memory-client';
 const scopes = {
   personal: '个人',
   department: '部门',
@@ -29,10 +30,13 @@ type Props = {
   active: boolean;
   automatic: boolean;
   memoryRequest?: { instanceId: string; revision: number };
+  memoryWrites?: MemoryWriteStore;
   onCorrect: (instanceId: string, text: string) => void;
 };
 
 export function WorkbenchExperiencePanel(props: Props) {
+  const localMemoryWrites = useRef<MemoryWriteStore>(new Map());
+  const memoryWrites = props.memoryWrites ?? localMemoryWrites.current;
   // An explicit employee-memory entry never mounts the old experience reader,
   // selector or collector UI. Its target is not the active chat's employee.
   if (props.memoryRequest)
@@ -43,7 +47,7 @@ export function WorkbenchExperiencePanel(props: Props) {
         hidden={!props.active}
         style={!props.active ? { display: 'none' } : undefined}
       >
-        <div className={css.body}>
+        <div className={css.body} style={{ padding: 0, overflow: 'hidden' }}>
           <EmployeeMemoryManager
             key={`${props.scopeId}/${props.workspaceId}/${props.memoryRequest.instanceId}`}
             scopeId={props.scopeId}
@@ -55,14 +59,16 @@ export function WorkbenchExperiencePanel(props: Props) {
               )?.name
             }
             headers={props.headers}
+            writes={memoryWrites}
+            active={props.active}
           />
         </div>
       </section>
     );
-  return <ExperienceBrowser {...props} />;
+  return <ExperienceBrowser {...props} memoryWrites={memoryWrites} />;
 }
 
-function ExperienceBrowser(props: Props) {
+function ExperienceBrowser(props: Props & { memoryWrites: MemoryWriteStore }) {
   const [employee, setEmployee] = useState(props.instanceId ?? 'all'),
     [scope, setScope] = useState('all'),
     [query, setQuery] = useState(''),
@@ -302,6 +308,8 @@ function ExperienceBrowser(props: Props) {
                 instanceId={item.id}
                 employeeName={item.name}
                 headers={props.headers}
+                writes={props.memoryWrites}
+                active={props.active}
                 refreshKey={String(revision)}
               />
             </section>

@@ -32,6 +32,9 @@ const sample = (
         ? '报价规则：含税、PDF、文件名带客户和日期'
         : '回复先给结论，300 字以内',
   details,
+  hasDetails: details !== null,
+  revision: 1,
+  pairDigest: `sha256:${'a'.repeat(64)}`,
   capturedAt: before,
   updatedAt: before,
 });
@@ -75,7 +78,7 @@ function Fixture() {
     await record('confirm', row.id);
     setRows((value) =>
       value.map((item) =>
-        item.id === row.id ? { ...item, state: 'active', updatedAt: at } : item,
+        item.id === row.id ? { ...item, state: 'active', revision: item.revision + 1, updatedAt: at } : item,
       ),
     );
   }
@@ -84,13 +87,16 @@ function Fixture() {
     setRows((value) => value.filter((item) => item.id !== row.id));
   }
   async function save(input: MemorySidebarInput, row: MemorySidebarRow | null) {
-    await record('save', { input, id: row?.id ?? null });
+    await record('save', { input, id: row?.id ?? null, revision: row?.revision, pairDigest: row?.pairDigest });
     setRows((value) => [
       ...value.filter((item) => item.id !== row?.id),
       {
         ...input,
         id: row?.id ?? 'new-memory',
         state: 'active',
+        hasDetails: input.details !== null,
+        revision: (row?.revision ?? 0) + 1,
+        pairDigest: `sha256:${'b'.repeat(64)}`,
         capturedAt: row?.capturedAt ?? at,
         updatedAt: at,
       },
@@ -103,6 +109,14 @@ function Fixture() {
         <button type="button" id="release" onClick={() => release.current?.()}>
           释放测试回执
         </button>
+        <button
+          type="button"
+          id="refresh-memory"
+          onClick={() => setRows((value) => value.map((row) => row.id === 'a1' ? {
+            ...row, summary: '后台更新的一句话', details: '后台更新的详情', revision: row.revision + 1,
+            pairDigest: `sha256:${'c'.repeat(64)}`,
+          } : row))}
+        >后台刷新（测试控件）</button>
         <button
           type="button"
           id="switch-target"

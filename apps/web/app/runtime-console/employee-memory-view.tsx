@@ -1,9 +1,9 @@
 'use client';
 import { useState } from 'react';
-import { EmployeeMemoryPageSchema } from '@allrice/contracts';
+import { EmployeeMemoryDetailResponseSchema, EmployeeMemoryListSchema } from '@allrice/contracts';
+import { Modal } from '@deepseek-ai/dsh-client-ui-primitives';
 import { AdminButton } from '../../components/admin/admin-ui';
 import { useAdminRead } from './admin-read';
-import { memoryStateLabels } from '../chatflow/employee-memory-manager';
 import css from '../chatflow/employee-memory-manager.module.css';
 
 export function EmployeeMemoryView(props: {
@@ -23,80 +23,76 @@ function ReadOnlyMemories(props: {
   ownerId: string;
   instanceId: string;
 }) {
-  const [state, setState] =
-    useState<keyof typeof memoryStateLabels>('confirmed');
-  const [cursors, setCursors] = useState<string[]>([]);
+  const [selected, setSelected] = useState<{ id: string; summary: string } | null>(null);
+  // The administrator uses its own audited scope, never the owner endpoint.
+  const base = `/api/v1/admin/organizations/${encodeURIComponent(props.organizationId)}/employee-memories`;
   const params = new URLSearchParams({
     ownerId: props.ownerId,
     instanceId: props.instanceId,
-    state,
   });
-  if (cursors.length) params.set('after', cursors.at(-1)!);
   const { data, error, refresh } = useAdminRead(
-    `/api/v1/admin/organizations/${props.organizationId}/employee-memories?${params}`,
-    EmployeeMemoryPageSchema,
+    `${base}?${params}`,
+    EmployeeMemoryListSchema,
   );
+  const readError = error || (data && data.instanceId !== props.instanceId ? '记忆读取失败，请重试。' : undefined);
   return (
     <section className={css.panel} aria-label="员工记忆只读查看">
       <h4>记忆</h4>
       <p>
         仅供查看，读取已记录审计。无法代本人修改、确认或撤回，也不展示聊天原文。
       </p>
-      <div className={css.tabs}>
-        {Object.entries(memoryStateLabels).map(([key, label]) => (
-          <AdminButton
-            key={key}
-            aria-pressed={state === key}
-            onClick={() => {
-              setState(key as typeof state);
-              setCursors([]);
-            }}
-          >
-            {label}
-          </AdminButton>
-        ))}
-      </div>
-      {error ? (
+      {readError ? (
         <p role="alert">
-          {error} <AdminButton onClick={refresh}>重新读取</AdminButton>
+          {readError} <AdminButton onClick={refresh}>重新读取</AdminButton>
         </p>
       ) : !data ? (
         <p role="status">正在读取记忆…</p>
       ) : (
         <>
-          <p>
-            {memoryStateLabels[state]} · 共 {data.total} 条
-          </p>
-          {data.memories.map((memory) => (
-            <article className={css.card} key={memory.id}>
-              <strong>{memoryStateLabels[memory.state]}</strong>
-              <p className={css.content}>{memory.content}</p>
-              <small>
-                更新于 {new Date(memory.updatedAt).toLocaleString()}
-                {memory.expiresAt
-                  ? ` · 有效期至 ${new Date(memory.expiresAt).toLocaleString()}`
-                  : ''}
-              </small>
-            </article>
+          {(['pending', 'active'] as const).map((state) => (
+            <section key={state} aria-label={state === 'active' ? '生效中' : '待确认'}>
+              <h4>{state === 'active' ? `生效中 ${data.counts.active} / 100` : `待确认 ${data.counts.pending}`}</h4>
+              {data[state].map((memory) => (
+                <article className={css.card} key={memory.id}>
+                  <p className={css.content}>{memory.summary}</p>
+                  <small>更新于 {new Date(memory.updatedAt).toLocaleString()}</small>{' '}
+                  <AdminButton onClick={() => setSelected(memory)}>查看</AdminButton>
+                </article>
+              ))}
+            </section>
           ))}
-          {!data.memories.length && <p>暂无此状态的记忆。</p>}
-          <div className={css.actions}>
-            <AdminButton
-              disabled={!cursors.length}
-              onClick={() => setCursors((c) => c.slice(0, -1))}
-            >
-              上一页记忆
-            </AdminButton>
-            <span>第 {cursors.length + 1} 页</span>
-            <AdminButton
-              disabled={!data.nextCursor}
-              onClick={() => setCursors((c) => [...c, data.nextCursor!])}
-            >
-              下一页记忆
-            </AdminButton>
-          </div>
+          {!data.counts.active && !data.counts.pending && <p>还没有记忆</p>}
         </>
       )}
+      {selected && (
+        <AdminMemoryDetail
+          key={selected.id}
+          path={`${base}/${encodeURIComponent(selected.id)}?${params}`}
+          selected={selected}
+          onClose={() => setSelected(null)}
+        />
+      )}
     </section>
+  );
+}
+
+function AdminMemoryDetail(props: {
+  path: string;
+  selected: { id: string; summary: string };
+  onClose: () => void;
+}) {
+  const { data, error, refresh } = useAdminRead(props.path, EmployeeMemoryDetailResponseSchema);
+  const readError = error || (data && data.memory.id !== props.selected.id ? '记忆读取失败，请重试。' : undefined);
+  return (
+    <Modal open title={props.selected.summary} closeLabel="关闭" onClose={props.onClose}>
+      {readError ? (
+        <p role="alert">{readError} <AdminButton onClick={refresh}>重新读取</AdminButton></p>
+      ) : !data ? <p role="status">正在读取记忆…</p> : (
+        <>
+          <p>{data.memory.state === 'active' ? '生效中' : '待确认'}</p>
+          <p className={css.content}>{data.memory.details ?? '没有详细说明'}</p>
+        </>
+      )}
+    </Modal>
   );
 }
