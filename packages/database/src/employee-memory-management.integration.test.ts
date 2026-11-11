@@ -988,7 +988,9 @@ suite(
       expect(history.headers.get('cache-control')).toBe('private, no-store');
       expect(
         MemoryRevisionSchema.array().parse((await history.json()).revisions),
-      ).toMatchObject([{ memoryId: row.id, revision: 1, content: row.summary }]);
+      ).toMatchObject([
+        { memoryId: row.id, revision: 1, content: row.summary },
+      ]);
       const before = await snapshot(row.id);
       const deleted = await remove(
         request(f, 'DELETE', `/api/v1/memories/${row.id}`, cas(f, row)),
