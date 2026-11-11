@@ -281,8 +281,17 @@ suite('ordinary pair candidates through native/Worker storage', () => {
       idempotencyKey: randomUUID(),
     });
     expect(fresh.id).not.toBe(first.id);
+    // One unarchived candidate per checkpoint remains the database contract.
+    const legacyCheckpointId = randomUUID();
+    const legacyCheckpoint = {
+      ...checkpoint,
+      summary: 'historical legacy checkpoint',
+    };
+    await fixture.db`insert into allrice_context_checkpoints(id,organization_id,workspace_id,session_id,owner_id,harness,thread_id,thread_generation,covered_through_message_id,summary_version,summary,checksum,config_checksum,estimated_tokens,message_count)
+      values(${legacyCheckpointId},${f.org},${f.workspace},${f.session},${f.user},'dsh',${legacyCheckpoint.threadId},0,${f.messageId},'extractive-v1',${legacyCheckpoint.summary},${contextCheckpointChecksum(legacyCheckpoint)},${legacyCheckpoint.configChecksum},10,1)`;
     const legacy = await createCheckpointMemoryCandidate(f.context, {
       ...identity,
+      checkpointId: legacyCheckpointId,
       content: '历史普通候选',
     });
     expect(legacy.lifecycleState).toBe('candidate');
