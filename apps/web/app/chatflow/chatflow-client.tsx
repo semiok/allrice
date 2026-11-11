@@ -4,6 +4,15 @@ import {
   EmptyNativeSubagentDirectory,
   NativeSubagentDirectory,
 } from './native-subagent-directory';
+import { NativeSubagentWorkbench } from './native-subagent-workbench';
+import {
+  nativeSubagentReferencedEntry,
+  nativeSubagentReferenceFromTabId,
+  nativeSubagentScopeKey,
+  nativeSubagentTabId,
+  type NativeSubagentReference,
+  type NativeSubagentViewScope,
+} from '../../lib/chatflow/native-subagent-view';
 import {
   nativeSubagentReadyKey,
   useNativeSubagents,
@@ -500,6 +509,69 @@ export function ChatFlowClient({
   const fileScope = `${workspace?.viewerId}/${workspace?.workspaceId}/${activeId ?? 'draft'}`;
   const currentFilesRequest =
     filesRequest.scope === fileScope ? filesRequest.revision : 0;
+  const {
+    loadRunTrace,
+    recoverRun,
+    resetRunState,
+    runTraces,
+    runViews,
+    streamRun,
+  } = useRunStream({
+    activeId,
+    history,
+    loadHistory,
+    loadWorkspace,
+    setError,
+    tenantHeaders,
+    workspace,
+  });
+  const nativeRootRunId =
+    history?.session.id === activeId
+      ? (history.messages.findLast((message) => message.runId)?.runId ?? null)
+      : null;
+  const nativeReadyKey = nativeSubagentReadyKey(
+    runViews[nativeRootRunId ?? ''],
+  );
+  const nativeRootEvents =
+    runViews[nativeRootRunId ?? '']?.events ??
+    runTraces[nativeRootRunId ?? '']?.events ??
+    [];
+  const nativeSession =
+    archive.sessions.find((session) => session.id === activeId) ??
+    (history?.session.id === activeId ? history.session : undefined);
+  const nativeBindingRevision = `${settingsScope}/${nativeSession?.ownerId}/${nativeSession?.employeeAssignmentId}/${nativeSession?.employeeInstanceId}/${nativeSession?.employeeVersionId}/${nativeReadyKey}`;
+  const subagentScope: NativeSubagentViewScope | null =
+    workspace && activeId
+      ? {
+          organizationId: workspace.organizationId,
+          workspaceId: workspace.workspaceId,
+          sessionId: activeId,
+          viewerId: workspace.viewerId ?? null,
+          ownerId: nativeSession?.ownerId ?? null,
+          rootRunId: nativeRootRunId,
+          generation:
+            nativeRootEvents.findLast(
+              (event) => event.runId === nativeRootRunId,
+            )?.generation ?? null,
+          bindingRevision: nativeBindingRevision,
+        }
+      : null;
+  const [subagentRequest, setSubagentRequest] = useState<{
+    reference: NativeSubagentReference;
+    title: string;
+    revision: number;
+  } | null>(null);
+  const currentSubagentRequest =
+    subagentScope &&
+    subagentRequest &&
+    nativeSubagentScopeKey(subagentScope) ===
+      nativeSubagentScopeKey(subagentRequest.reference)
+      ? subagentRequest
+      : undefined;
+  const [subagentDirectoryRequest, setSubagentDirectoryRequest] = useState<{
+    id: number;
+    scopeKey: string;
+  }>();
   const [moduleRequest, setModuleRequest] = useState<{
     scope: string;
     kind: WorkbenchModule | 'guide' | 'reference';
@@ -528,7 +600,8 @@ export function ChatFlowClient({
   const workbenchRequested =
     (workbenchEnabled ||
       !!currentAutomationRequest ||
-      !!currentMemoryRequest) &&
+      !!currentMemoryRequest ||
+      !!currentSubagentRequest) &&
     layout.open;
   const openAutomationTask = (
     task: { id: string; name?: string },
@@ -656,6 +729,7 @@ export function ChatFlowClient({
   );
   const hasWorkbenchContent =
     !!currentMemoryRequest ||
+    !!currentSubagentRequest ||
     (!layout.compact && !!currentModuleRequest) ||
     !!currentAutomationRequest ||
     currentFilesRequest > 0 ||
@@ -692,23 +766,6 @@ export function ChatFlowClient({
     )
       void workbench.reload();
   }, [workbenchEnabled, artifactRevision, workbench.reload, workbench.scope]);
-
-  const {
-    loadRunTrace,
-    recoverRun,
-    resetRunState,
-    runTraces,
-    runViews,
-    streamRun,
-  } = useRunStream({
-    activeId,
-    history,
-    loadHistory,
-    loadWorkspace,
-    setError,
-    tenantHeaders,
-    workspace,
-  });
 
   useEffect(() => {
     followTranscript.current = true;
@@ -1399,15 +1456,6 @@ export function ChatFlowClient({
     requestAnimationFrame(() => composerInput.current?.focus());
   }
 
-  const nativeReadyKey =
-    history?.session.id === activeId
-      ? nativeSubagentReadyKey(
-          runViews[history.messages.findLast((m) => m.runId)?.runId ?? ''],
-        )
-      : '';
-  const nativeSession =
-    archive.sessions.find((session) => session.id === activeId) ??
-    (history?.session.id === activeId ? history.session : undefined);
   const nativeReadable =
     !!workspace &&
     !!activeId &&
@@ -1440,7 +1488,7 @@ export function ChatFlowClient({
     tenantHeaders,
     nativeReadable && nativeQueryReady
       ? {
-          [activeId!]: `${settingsScope}/${nativeSession?.ownerId}/${nativeSession?.employeeAssignmentId}/${nativeSession?.employeeInstanceId}/${nativeSession?.employeeVersionId}/${nativeReadyKey}`,
+          [activeId!]: nativeBindingRevision,
         }
       : {},
     false,
@@ -1450,6 +1498,36 @@ export function ChatFlowClient({
     : activeId
       ? { [activeId]: 'error' as const }
       : {};
+  const subagentSummary = activeId ? activeNativeReads[activeId] : null;
+  function openSubagentDirectory(origin?: { runId: string; callId: string }) {
+    if (
+      !subagentScope ||
+      !nativeReadable ||
+      (origin &&
+        !history?.messages.some((message) => message.runId === origin.runId))
+    )
+      return;
+    setSubagentDirectoryRequest((previous) => ({
+      id: (previous?.id ?? 0) + 1,
+      scopeKey: nativeSubagentScopeKey(subagentScope),
+    }));
+  }
+  function openSubagent(reference: NativeSubagentReference) {
+    if (!subagentScope || !subagentSummary || subagentSummary === 'error')
+      return;
+    const entry = nativeSubagentReferencedEntry(
+      subagentScope,
+      reference,
+      subagentSummary,
+    );
+    if (!entry) return;
+    setSubagentRequest((previous) => ({
+      reference,
+      title: entry.kind === 'child' ? (entry.label ?? entry.id) : entry.id,
+      revision: (previous?.revision ?? 0) + 1,
+    }));
+    layout.show();
+  }
 
   const activeSession = history?.session
     ? {
@@ -2267,6 +2345,10 @@ export function ChatFlowClient({
                           ...nativeObservation,
                           reads: activeNativeReads,
                         }}
+                        scope={subagentScope ?? undefined}
+                        onOpen={openSubagent}
+                        openRequest={subagentDirectoryRequest}
+                        employeeName={activeEmployeeName}
                         viewerId={workspace.viewerId}
                         canControl={
                           !!workspace.viewerId &&
@@ -2550,6 +2632,17 @@ export function ChatFlowClient({
                         workspaceId={workspace.workspaceId}
                         artifacts={workbench.artifacts}
                         onOpenArtifact={showWorkbench}
+                        onOpenSubagents={
+                          nativeReadable ? openSubagentDirectory : undefined
+                        }
+                        subagentCount={
+                          subagentSummary && subagentSummary !== 'error'
+                            ? subagentSummary.descendants.filter(
+                                (entry) =>
+                                  entry.parentId === subagentSummary.rootId,
+                              ).length
+                            : undefined
+                        }
                       />
                     </InputStatusContext.Provider>
                   </MessageFeedbackProvider>
@@ -2633,7 +2726,10 @@ export function ChatFlowClient({
         )}
       </section>
 
-      {(workbenchEnabled || currentAutomationRequest || currentMemoryRequest) &&
+      {(workbenchEnabled ||
+        currentAutomationRequest ||
+        currentMemoryRequest ||
+        currentSubagentRequest) &&
       hasWorkbenchContent ? (
         <ArtifactWorkbench
           desktop={!layout.compact}
@@ -2751,6 +2847,32 @@ export function ChatFlowClient({
           onUseFileReference={useWorkbenchReference}
           onTemplateFile={viewWorkbenchTemplate}
           taskRequest={currentAutomationRequest}
+          subagentRequest={
+            currentSubagentRequest
+              ? {
+                  id: nativeSubagentTabId(currentSubagentRequest.reference),
+                  title: currentSubagentRequest.title,
+                  revision: currentSubagentRequest.revision,
+                }
+              : undefined
+          }
+          renderSubagent={(id, active) => {
+            const reference = nativeSubagentReferenceFromTabId(id);
+            return reference && subagentScope ? (
+              <NativeSubagentWorkbench
+                scope={subagentScope}
+                reference={reference}
+                active={active}
+                observation={{ ...nativeObservation, reads: activeNativeReads }}
+                headers={tenantHeaders}
+                presentation={presentationPolicyFor(
+                  preferences.value.transcriptView,
+                  preferences.value.collapseTiming,
+                )}
+                employeeName={activeEmployeeName}
+              />
+            ) : null;
+          }}
           renderSessionTasks={(sessionId, active) =>
             active ? (
               <AutomationTaskList

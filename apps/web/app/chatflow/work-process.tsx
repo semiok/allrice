@@ -358,7 +358,8 @@ export function WorkProcess({
       .filter(Boolean)
       .join(' ');
     const hasVisibleHistory =
-      (showHistory && Boolean(historyIds.length || childrenId || directoryId)) ||
+      (showHistory &&
+        Boolean(historyIds.length || childrenId || directoryId)) ||
       !!retryId;
     const renderPart = (part: WorkProgressPart, index: number) =>
       part.kind === 'reply' ? (
@@ -763,11 +764,9 @@ function WorkProcessSteps({
   return (
     <ul className={styles.processSteps} aria-label="工作步骤">
       {steps.map((step) => {
-        const creatingSubagent = items.some(
-          (item) =>
-            item.id === step.id &&
-            item.kind === 'tool' &&
-            nativeSubagentCallKind(item.toolName) === 'create',
+        const subagentCallKind = nativeSubagentCallKind(
+          items.find((item) => item.id === step.id && item.kind === 'tool')
+            ?.toolName,
         );
         const question = questions.find(
           (question) => step.id === `tool:${question.callId}`,
@@ -821,9 +820,11 @@ function WorkProcessSteps({
                 title={
                   question
                     ? `提问 · ${question.request.questions[0]?.question ?? step.title}`
-                    : creatingSubagent
+                    : subagentCallKind === 'create'
                       ? `创建子智能体${step.input ? ` · ${step.input}` : ''}`
-                      : step.title
+                      : subagentCallKind === 'directory'
+                        ? '查看子智能体'
+                        : step.title
                 }
                 status={status}
                 elapsedMs={step.elapsedMs}
@@ -838,7 +839,8 @@ function WorkProcessSteps({
                         label: '问题',
                         value: item.question,
                       }))
-                    : creatingSubagent && step.status === 'completed'
+                    : subagentCallKind === 'create' &&
+                        step.status === 'completed'
                       ? []
                       : [
                           ...(step.input

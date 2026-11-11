@@ -15,7 +15,8 @@
     :where(
       [data-office-font-warning] button,
       [data-terminal-workbench] button,
-      [data-terminal-guide] button
+      [data-terminal-guide] button,
+      [data-native-subagent-id] button
     )
   ),
 .entry {
@@ -483,6 +484,40 @@
 }
 .nativeDock :global([data-dockkit-strip]) :global([role='tab']) {
   padding: 0 8px;
+}
+.nativeDock
+  :global(
+    [role='tab']:has([data-native-subagent-tab]) [data-dockkit-tab-close]
+  ) {
+  width: 32px;
+  height: 32px;
+  flex: none;
+}
+.nativeDock[data-subagent-back] :global([data-dockkit-strip]) {
+  padding-inline-start: 56px;
+}
+.panel.nativeDock .subagentBack {
+  position: absolute;
+  z-index: 11;
+  inset: 6px auto auto 8px;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ar-text);
+}
+@media (max-width: 760px) {
+  .nativeDock
+    :global(
+      [role='tab']:has([data-native-subagent-tab]) [data-dockkit-tab-close]
+    ) {
+    width: 44px;
+    height: 44px;
+    opacity: 1;
+  }
 }
 .nativeDock .body {
   height: 100%;

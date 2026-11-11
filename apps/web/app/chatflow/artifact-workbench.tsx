@@ -152,6 +152,8 @@ type Props = {
     kind?: 'scheduleTask' | 'sessionSchedules';
   };
   renderTask?: (taskId: string, active: boolean) => ReactNode;
+  subagentRequest?: { id: string; title: string; revision: number };
+  renderSubagent?: (id: string, active: boolean) => ReactNode;
   renderSessionTasks?: (sessionId: string, active: boolean) => ReactNode;
   onBrowseFiles?: () => void;
   sessionId: string | null;
@@ -391,6 +393,13 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
     lastTaskRequest.current = request.revision;
     dock.open(request.kind ?? 'scheduleTask', request.id, request.title);
   });
+  const lastSubagentRequest = useRef(0);
+  useEffect(() => {
+    const request = props.subagentRequest;
+    if (!request || lastSubagentRequest.current === request.revision) return;
+    lastSubagentRequest.current = request.revision;
+    dock.open('nativeSubagent', request.id, request.title);
+  });
   const lastFilesRequest = useRef(0);
   useEffect(() => {
     if (!props.filesRequest || lastFilesRequest.current === props.filesRequest)
@@ -422,14 +431,22 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
         aria-label={
           props.desktop
             ? '工作台'
-            : personalMemoryView
-              ? '记忆'
-              : props.taskRequest
-                ? '任务与交付成果'
-                : '交付成果'
+            : activeTab?.kind === 'nativeSubagent'
+              ? '子智能体'
+              : personalMemoryView
+                ? '记忆'
+                : props.taskRequest
+                  ? '任务与交付成果'
+                  : '交付成果'
         }
         aria-modal={fullscreen ? true : undefined}
         data-fullscreen={fullscreen || undefined}
+        data-subagent-back={
+          (props.open &&
+            props.narrow &&
+            activeTab?.kind === 'nativeSubagent') ||
+          undefined
+        }
         onKeyDown={(event) => {
           if (
             event.defaultPrevented ||
@@ -467,6 +484,28 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
           }
         }}
       >
+        {props.open && props.narrow && activeTab?.kind === 'nativeSubagent' && (
+          <button
+            type="button"
+            className={styles.subagentBack}
+            aria-label="返回主对话"
+            onClick={close}
+          >
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <path d="m14 6-6 6 6 6" />
+            </svg>
+          </button>
+        )}
         <DockLayout
           state={dock.surface.layout}
           intents={{
@@ -489,7 +528,12 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
           renderTabTitle={
             props.desktop
               ? (tab) => (
-                  <span className={moduleUi.dockTitle}>
+                  <span
+                    className={moduleUi.dockTitle}
+                    data-native-subagent-tab={
+                      tab.kind === 'nativeSubagent' || undefined
+                    }
+                  >
                     {['files', 'experience', 'workflow'].includes(tab.kind) ? (
                       <span className={moduleUi[tab.kind]}>
                         <WorkbenchIcon
@@ -497,6 +541,8 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                           size={17}
                         />
                       </span>
+                    ) : tab.kind === 'nativeSubagent' ? (
+                      <WorkbenchIcon kind="subagent" size={17} />
                     ) : ['scheduleTask', 'sessionSchedules'].includes(
                         tab.kind,
                       ) ? (
@@ -520,7 +566,14 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                     </span>
                   </span>
                 )
-              : (tab) => (tab.kind === GUIDE_KIND ? '交付成果' : tab.title)
+              : (tab) =>
+                  tab.kind === 'nativeSubagent' ? (
+                    <span data-native-subagent-tab>{tab.title}</span>
+                  ) : tab.kind === GUIDE_KIND ? (
+                    '交付成果'
+                  ) : (
+                    tab.title
+                  )
           }
           canSplit={
             !props.narrow && dockPaneIds(dock.surface.layout).length < 2
@@ -572,6 +625,13 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                   );
                 }}
               />
+            ) : tab.kind === 'nativeSubagent' ? (
+              props.renderSubagent?.(
+                tab.contentId,
+                props.open &&
+                  findTabPane(dock.surface.layout, tab.id).activeTabId ===
+                    tab.id,
+              )
             ) : tab.kind === 'sessionSchedules' ? (
               props.renderSessionTasks?.(
                 tab.contentId,
