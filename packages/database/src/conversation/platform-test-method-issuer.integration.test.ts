@@ -32,7 +32,7 @@ import {
   sendChatMessage,
 } from '../workspace/service.ts';
 import { createEmployeeInstance } from '../employees/employee-instances.ts';
-import { saveEmployeeMethodFromChat } from '../employees/employee-method-chat.ts';
+import { seedHistoricalEmployeeContent } from '../employees/employee-method-history.fixture.ts';
 import { getEmployeeContentSet } from '../employees/employee-content.ts';
 import { prepareEmployeeContentContext } from '../employees/employee-runtime-content.ts';
 import {
@@ -254,21 +254,48 @@ suite(
 
     async function candidate() {
       const f = await setup();
-      const editing = await methodRun(
-        f,
-        '请保存我的工作场景候选：金额汇总，保留原始数据。',
-      );
-      const saved = await saveEmployeeMethodFromChat({
-        ...editing,
-        arguments: {
+      const contentId = randomUUID();
+      const saved = await seedHistoricalEmployeeContent(
+        fixture.db,
+        f.owner.context,
+        {
+          workspaceId: f.owner.workspaceId,
+          setId: randomUUID(),
+          requestId: randomUUID(),
           expectedRevision: 0,
-          section: 'scene',
-          scene: { name: '金额汇总', appliesWhen: '固定合成数据' },
-          procedure: '只将整数分相加',
-          changeSummary: 'B2a 原始来源与重试边界样例',
+          ownership: {
+            scope: 'personal',
+            organizationId: f.owner.organizationId,
+            ownerId: f.owner.context.actor.id,
+          },
+          target: { kind: 'instance', instanceId: f.instance.id },
+          operation: 'save_draft',
+          changeSummary: 'Pre-retirement B2a candidate fixture',
+          manifest: {
+            schemaVersion: 1,
+            common: [],
+            declaredConflicts: [],
+            scenes: [
+              {
+                id: randomUUID(),
+                name: '金额汇总',
+                appliesWhen: '固定合成数据',
+                references: [{ sourceKind: 'draft_text', contentId }],
+              },
+            ],
+          },
+          textEdits: [
+            {
+              contentId,
+              revisionId: randomUUID(),
+              expectedRevision: 0,
+              kind: 'procedure',
+              title: '金额汇总',
+              body: '只将整数分相加',
+            },
+          ],
         },
-      });
-      await editing.finish();
+      );
       const content = await getEmployeeContentSet(f.owner.context, saved.setId);
       const args = {
         expectedRevision: saved.revision,

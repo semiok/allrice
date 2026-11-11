@@ -20,7 +20,11 @@ import {
 } from '../workspace/service.ts';
 import { loadPlatformContentCatalog } from '../platform-content/catalog.ts';
 import { synchronizePlatformContent } from '../platform-content/sync.ts';
-import { readFrozenSkillResource } from '../skill-bundles.ts';
+import {
+  readFrozenSkillResource,
+  skillBytesChecksum,
+} from '../skill-bundles.ts';
+import { runtimePolicyDigest } from '../runtime-policy.ts';
 import {
   resolveEmployeeExecution,
   resolveEmployeeCapabilities,
@@ -147,13 +151,13 @@ suite('foundation Skills: catalog → ordinary Run → frozen execution', () => 
       expect(resolved.grantedCapabilities).toEqual(expectedGrants);
       expect(snapshot.capabilitySnapshot.bindings.toolNames).toEqual([
         'workspace.skill.read',
-        ...(kind === 'custom'
-          ? [
-              'workspace.brand_content.read',
-              'workspace.employee.method.inspect',
-            ]
-          : []),
+        ...(kind === 'custom' ? ['workspace.brand_content.read'] : []),
       ]);
+      const customization = resolved.nativeSkills.find(
+        (s) => s.name === 'employee-customization',
+      )!;
+      expect(customization.requiredToolRefs).toEqual([]);
+      expect(customization.content).toContain('旧文字方法不再接受新增');
       expect(resolved.grantedCapabilities).not.toContain('storage:write');
       const office = resolved.nativeSkills.find((s) => s.name === 'office')!;
       expect(office.bundle).toBeDefined();
@@ -173,6 +177,66 @@ suite('foundation Skills: catalog → ordinary Run → frozen execution', () => 
     const [versionAfter] =
       await f.db`select manifest,config_checksum from allrice_employee_versions where id=${x.assignment.currentVersion.id}`;
     expect(versionAfter).toEqual(versionBefore);
+  });
+
+  it('replaces a managed legacy Skill only for new freezes and preserves exact historical bytes and checksum', async () => {
+    const current = catalog.skills.find(
+      (s) => s.name === 'employee-customization',
+    )!;
+    const content = '# Historical method maintenance\n';
+    const legacy = {
+      id: current.id,
+      name: current.name,
+      description: 'Historical text instructions',
+      content,
+      checksum: skillBytesChecksum(content),
+      invocation: { modelInvocable: true, userInvocable: true },
+      requiredToolRefs: ['inspect', 'save_candidate', 'restore_candidate'].map(
+        (action) => `workspace.employee.method.${action}`,
+      ),
+    };
+    const governance = [
+      {
+        id: legacy.id,
+        name: legacy.name,
+        version: '2.1.0',
+        checksum: legacy.checksum,
+        source: current.source,
+        sourceRef: `https://github.com/semiok/allrice/tree/main/skills/employee-customization?content-sha256=${legacy.checksum.slice(7)}`,
+        license: current.license,
+        reviewedByLabel: 'Historical review',
+      },
+    ];
+    const historical = {
+      schemaVersion: 1 as const,
+      authority: 'skills/catalog.json' as const,
+      catalogChecksum: `sha256:${'8'.repeat(64)}`,
+      snapshotChecksum: runtimePolicyDigest({
+        skills: governance,
+        nativeSkills: [legacy],
+      }),
+      skills: governance,
+    };
+    const before = JSON.stringify({ historical, legacy });
+    assertFrozenBaseSkillCatalog(historical, [legacy]);
+    const next = await freezeEmployeeBaseSkills([legacy]);
+    expect(next.nativeSkills.filter((s) => s.id === current.id)).toEqual([
+      expect.objectContaining({
+        content: current.content,
+        checksum: current.checksum,
+        requiredToolRefs: [],
+      }),
+    ]);
+    expect(next.catalog!.skills.find((s) => s.id === current.id)?.version).toBe(
+      '3.0.0',
+    );
+    assertFrozenBaseSkillCatalog(historical, [legacy]);
+    expect(JSON.stringify({ historical, legacy })).toBe(before);
+    expect(() =>
+      assertFrozenBaseSkillCatalog(historical, [
+        { ...legacy, checksum: current.checksum },
+      ]),
+    ).toThrow('base_skill_snapshot_checksum_mismatch');
   });
 
   it('retains exact versions and original request receipts after catalog updates; new Runs use the new reviewed version', async () => {

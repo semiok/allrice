@@ -1,5 +1,12 @@
 import { assembleEmployeeKernel } from '../../../../apps/worker/src/employee-kernel.js';
-import { resolveEmployeeExecution } from './employeehub.ts';
+import {
+  prepareEmployeeRunBinding,
+  resolveEmployeeExecution,
+} from './employeehub.ts';
+import { captureReferenceSelections } from '../reference-runtime.ts';
+import { freezeChatRunExecutionBinding } from '../conversation/native-session-binding.ts';
+import { isBaseRiceInstance } from './employee-instance-policy.ts';
+import { sharedEmployeeMethodTarget } from './employee-method-target.ts';
 import { sceneSkillFixture } from './employee-scene-skills.fixture.ts';
 import type { RequestContext } from '@allrice/contracts';
 import {
@@ -14,6 +21,11 @@ import {
 import { heartbeatJob } from '../execution/queue.ts';
 import { createReadPathProbe } from '../read-path-probe.fixture.ts';
 import { sharedHistoryMethodAcceptancePhrases } from './employee-method-shared-history.fixture.ts';
+import { seedHistoricalEmployeeContent } from './employee-method-history.fixture.ts';
+import {
+  employeeChatIdentity,
+  employeeChatUuid,
+} from './employee-chat-authority.ts';
 import {
   appendNativeModelReceipt,
   bindJobNativeSession,
@@ -39,10 +51,6 @@ import {
   updateOrganizationPerson,
 } from '../organization-administration.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
-import {
-  updateNativeQuestionMode,
-  type NativeQuestionProjection,
-} from '../native-questions.ts';
 import type { RuntimeNativeInputProof } from '@allrice/contracts';
 import {
   CurrentPlatformTestOriginSchema,
@@ -72,7 +80,6 @@ import {
 import {
   ExecutionContextSchema,
   cloudToolchainImageV1,
-  EmployeeContentMutationSchema,
   cloudPlatform,
 } from '@allrice/contracts';
 import {
@@ -114,10 +121,7 @@ import {
   getEffectiveEmployeeContent,
   getEmployeeDetails,
   getEmployeeContentHistory,
-  mutateEmployeeContent,
-  mutateEmployeeContentInTransaction,
 } from './employee-content.ts';
-import type { ContentTx } from './employee-content-model.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   prepareReferenceUpload,
@@ -128,15 +132,7 @@ import {
   claimReferenceProcessing,
   finishReferenceProcessing,
 } from '../reference-processing.ts';
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  describe,
-  expect,
-  it,
-  vi,
-} from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { EmployeeInstanceProfileSchema } from '@allrice/contracts';
 import * as client from '../core/client.ts';
 import * as queue from '../execution/queue.ts';
@@ -212,36 +208,13 @@ const suite =
     : describe.skip;
 suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
   let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
-  // Preserve regression coverage for the historical draft/test/activation
-  // protocol by freezing its original grants only in legacy fixtures.
-  const currentMethodTools = toolSelection.withEmployeeCustomizationTools;
-  let legacyMethodTools = true;
   beforeAll(async () => {
     // Synthetic SQL approval only; production must provide a measured artifact.
     vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
     vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
     fixture = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
-    vi.spyOn(
-      toolSelection,
-      'withEmployeeCustomizationTools',
-    ).mockImplementation((names, capabilities, kind, baseRice) => [
-      ...currentMethodTools(names, capabilities, kind, baseRice),
-      ...(legacyMethodTools && kind === 'custom'
-        ? toolSelection
-            .employeeCustomizationToolsForInstance(kind)
-            .filter((tool) => capabilities.includes(tool.capability))
-            .map((tool) => tool.name)
-            .filter(
-              (name) =>
-                !currentMethodTools(names, capabilities, kind).includes(name),
-            )
-        : []),
-    ]);
   }, 120000);
-  afterEach(() => {
-    legacyMethodTools = true;
-  });
   afterAll(async () => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
@@ -440,6 +413,261 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     };
     return { ...input, scope, runtime: runtime!, finish };
   }
+  /** Synthetic pre-retirement Run. Every immutable field is present on its
+   * first INSERT; normal methodRun/profileRun always use the real selector. */
+  async function historicalMethodRun(
+    f: Awaited<ReturnType<typeof setup>>,
+    instanceId: string,
+    text = '请保存我的工作场景候选：每周对账和每月对账，保留原始数据。',
+    sessionId?: string,
+    referenceRevisionIds: string[] = [],
+  ) {
+    const session = sessionId ? { id: sessionId } : await f.session(instanceId);
+    const userMessageId = randomUUID(),
+      assistantMessageId = randomUUID();
+    const runId = randomUUID(),
+      jobId = randomUUID(),
+      policyId = randomUUID();
+    const workerId = randomUUID(),
+      leaseToken = randomUUID();
+    await fixture.db.begin(async (tx) => {
+      const references = await captureReferenceSelections(
+        f.a.context,
+        referenceRevisionIds,
+        tx,
+      );
+      const conversation = await tx<
+        { id: string; role: 'user' | 'assistant'; text: string }[]
+      >`
+        select id,role,content->>'text' text from allrice_messages
+        where session_id=${session.id} and status='completed' order by created_at,id`;
+      await tx`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content,status,client_message_id)
+        values(${userMessageId},${f.a.organizationId},${f.a.workspaceId},${session.id},${f.a.user.id},'user',
+          ${tx.json({ text, citations: [], referenceSelections: references })},'completed',${randomUUID()})`;
+      await tx`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content,status,reply_to_id)
+        values(${assistantMessageId},${f.a.organizationId},${f.a.workspaceId},${session.id},${f.a.user.id},'assistant',
+          '{"text":"Synthetic historical response","citations":[]}', 'pending',${userMessageId})`;
+      const [target] = await tx<
+        { employee_assignment_id: string; employee_version_id: string }[]
+      >`
+        select employee_assignment_id,employee_version_id from allrice_chat_sessions where id=${session.id}`;
+      const binding = await prepareEmployeeRunBinding(
+        {
+          context: f.a.context,
+          workspaceId: f.a.workspaceId,
+          assignmentId: target!.employee_assignment_id,
+          employeeVersionId: target!.employee_version_id,
+          sessionId: session.id,
+          userMessageId,
+          assistantMessageId,
+          promptSnapshot: {
+            systemPrompt: '',
+            conversation,
+            memories: [],
+            userRequest: text,
+            referenceSelections: references,
+          },
+        },
+        tx,
+      );
+      const snapshot = binding.executionSnapshot;
+      const baseRice = snapshot.instance
+        ? await isBaseRiceInstance(snapshot.instance, tx)
+        : false;
+      const oldTools = toolSelection
+        .employeeCustomizationToolsForInstance(
+          snapshot.instance?.kind,
+          baseRice,
+        )
+        .filter((tool) =>
+          snapshot.capabilitySnapshot.grantedCapabilities.includes(
+            tool.capability,
+          ),
+        )
+        .map((tool) => tool.name);
+      const frozen = toolSelection.EmployeeExecutionSnapshotSchema.parse({
+        ...snapshot,
+        capabilitySnapshot: {
+          ...snapshot.capabilitySnapshot,
+          bindings: {
+            ...snapshot.capabilitySnapshot.bindings,
+            toolNames: [
+              ...new Set([
+                ...snapshot.capabilitySnapshot.bindings.toolNames,
+                ...oldTools,
+              ]),
+            ],
+          },
+        },
+        tenantContext: {
+          organizationId: f.a.organizationId,
+          workspaceId: f.a.workspaceId,
+          actorId: f.a.user.id,
+          policySnapshotId: policyId,
+        },
+        createdAt: new Date().toISOString(),
+      });
+      await tx`insert into allrice_policy_snapshots(id,organization_id,subject_id,version,payload,expires_at)
+        values(${policyId},${f.a.organizationId},${f.a.user.id},1,${tx.json({
+          memberships: f.a.context.memberships,
+          grants: [
+            {
+              resourceType: 'job',
+              action: 'job:execute',
+              workspaceId: f.a.workspaceId,
+            },
+            ...['storage_object', 'memory', 'chat_session'].map(
+              (resourceType) => ({
+                resourceType,
+                action: 'resource:read',
+                workspaceId: f.a.workspaceId,
+              }),
+            ),
+          ],
+        })},clock_timestamp()+interval '1 hour')`;
+      const input = {
+        employeeAssignmentId: binding.employeeAssignmentId,
+        employeeVersionId: binding.employeeVersionId,
+        sessionId: session.id,
+        userMessageId,
+        assistantMessageId,
+      };
+      await tx`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,policy_snapshot_id,execution_spec,input)
+        values(${runId},${f.a.organizationId},${f.a.workspaceId},${f.a.user.id},'queued',${policyId},
+          ${tx.json({ schemaVersion: 1, handler: 'allrice.employee.run', employeeVersionId: binding.employeeVersionId, provider: 'codex' })},${tx.json(input)})`;
+      await tx`insert into allrice_jobs(id,organization_id,workspace_id,owner_id,run_id,status,idempotency_key,timeout_at,payload,worker_id,lease_token,claimed_at,heartbeat_at,lease_expires_at)
+        values(${jobId},${f.a.organizationId},${f.a.workspaceId},${f.a.user.id},${runId},'claimed',${randomUUID()},clock_timestamp()+interval '1 hour',
+          ${tx.json({ schemaVersion: 1, type: 'allrice.employee.run', input })},${workerId},${leaseToken},clock_timestamp(),clock_timestamp(),clock_timestamp()+interval '5 minutes')`;
+      const native = await freezeChatRunExecutionBinding(tx, {
+        organizationId: f.a.organizationId,
+        workspaceId: f.a.workspaceId,
+        ownerId: f.a.user.id,
+        sessionId: session.id,
+        runId,
+        employeeVersionId: binding.employeeVersionId,
+        executionSnapshot: frozen,
+      });
+      await tx`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,session_id,
+        user_message_id,assistant_message_id,provider_snapshot,prompt_snapshot,skill_bindings,native_skills,execution_snapshot,native_execution_binding)
+        values(${runId},${f.a.organizationId},${f.a.workspaceId},${f.a.user.id},${binding.employeeAssignmentId},${binding.employeeVersionId},${session.id},
+          ${userMessageId},${assistantMessageId},${tx.json(binding.providerSnapshot)},${tx.json(binding.promptSnapshot)},${tx.json(binding.skillBindings)},
+          ${tx.json(binding.nativeSkills)},${tx.json(frozen)},${native ? tx.json(native) : null})`;
+    });
+    const execution = await queue.startClaimedJob(workerId, jobId, leaseToken);
+    if (!execution) throw new Error('historical_run_fixture_failed_to_start');
+    const [row] =
+      await fixture.db`select execution_snapshot from allrice_employee_runs where run_id=${runId}`;
+    const scope = {
+      organizationId: f.a.organizationId,
+      workspaceId: f.a.workspaceId,
+      ownerId: f.a.user.id,
+      sessionId: session.id,
+      runId,
+    };
+    const runtime = await prepareEmployeeContentContext(scope);
+    if (!runtime) throw new Error('historical_run_content_context_missing');
+    const finish = async () => {
+      await fixture.db`update allrice_jobs set status='succeeded',completed_at=now() where run_id=${runId}`;
+      await fixture.db`update allrice_runs set state='succeeded',completed_at=now() where id=${runId}`;
+      await fixture.db`update allrice_employee_runs set status='succeeded',completed_at=now() where run_id=${runId}`;
+    };
+    return {
+      context: execution.context,
+      sessionId: session.id,
+      userMessageId,
+      worker: { attempt: execution.job.attempt, leaseToken },
+      callId: randomUUID(),
+      frozen: row!.execution_snapshot,
+      scope,
+      runtime,
+      finish,
+    };
+  }
+  // Complete historical snapshots only. No partial-edit merge, permission,
+  // intent, CAS or activation behavior is implemented by this fixture.
+  async function historicalMethod(
+    f: Awaited<ReturnType<typeof setup>>,
+    instanceId: string,
+    snapshot: {
+      sharedTarget?: toolSelection.EmployeeMethodSharedTarget;
+      common?: string;
+      scenes: {
+        id?: string;
+        name: string;
+        appliesWhen: string;
+        procedure?: string;
+        references?: toolSelection.EmployeeContentReference[];
+      }[];
+    },
+    options: Parameters<typeof seedHistoricalEmployeeContent>[3] & {
+      requestId?: string;
+    } = {},
+  ) {
+    const shared = snapshot.sharedTarget;
+    const [existing] =
+      await fixture.db`select id from allrice_employee_content_sets
+      where instance_id=${instanceId} and scope='personal'`;
+    const edits: unknown[] = [];
+    const text = (kind: 'requirement' | 'procedure', body: string) => {
+      const contentId = randomUUID();
+      edits.push({
+        contentId,
+        revisionId: randomUUID(),
+        expectedRevision: 0,
+        kind,
+        title: 'Explicit historical fixture',
+        body,
+      });
+      return { sourceKind: 'draft_text', contentId };
+    };
+    return seedHistoricalEmployeeContent(
+      fixture.db,
+      f.a.context,
+      {
+        operation: 'save_draft',
+        workspaceId: f.a.workspaceId,
+        setId:
+          shared?.setId ??
+          existing?.id ??
+          employeeChatUuid('employee-method', instanceId),
+        requestId: options.requestId ?? randomUUID(),
+        ownership: shared
+          ? {
+              scope: shared.scope,
+              organizationId: f.a.organizationId,
+              ...(shared.scope === 'department'
+                ? { departmentId: shared.departmentId }
+                : {}),
+            }
+          : {
+              scope: 'personal',
+              organizationId: f.a.organizationId,
+              ownerId: f.a.user.id,
+            },
+        target: shared
+          ? { kind: 'employee', employeeId: shared.employeeId }
+          : { kind: 'instance', instanceId },
+        expectedRevision: 0,
+        changeSummary: 'Explicit pre-retirement snapshot',
+        textEdits: edits,
+        manifest: {
+          schemaVersion: 1,
+          common: snapshot.common ? [text('requirement', snapshot.common)] : [],
+          scenes: snapshot.scenes.map((scene) => ({
+            id: scene.id ?? randomUUID(),
+            name: scene.name,
+            appliesWhen: scene.appliesWhen,
+            references: [
+              ...(scene.references ?? []),
+              ...(scene.procedure ? [text('procedure', scene.procedure)] : []),
+            ],
+          })),
+          declaredConflicts: [],
+        },
+      },
+      options,
+    );
+  }
   it('freezes sandbox caps per new Run in the same session without rewriting old execution snapshots', async () => {
     const f = await setup(),
       instance = await f.custom('Sandbox budget fixture');
@@ -524,142 +752,99 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
               departmentInfo!.other.name,
             )
           : departmentMethodAcceptancePhrases;
-    if (department === 'selected')
+    if (department === 'selected' || department === 'company')
       await departmentInfo!.configure(
         f.a.user.id,
         departmentInfo!.department.id,
         'company',
       );
+    const [assignment] =
+      await fixture.db`select employee_id from allrice_employee_assignments where id=${instance.assignmentId}`;
     if (department === 'company') {
-      await departmentInfo!.configure(
-        f.a.user.id,
-        departmentInfo!.department.id,
-        'company',
-      );
-      // A real active department requirement must never enter a company test.
-      const [assignment] =
-        await fixture.db`select employee_id from allrice_employee_assignments where id=${instance.assignmentId}`;
       const textId = randomUUID();
-      const base = {
-        workspaceId: f.a.workspaceId,
-        setId: randomUUID(),
-        ownership: {
-          scope: 'department',
-          organizationId: f.a.organizationId,
-          departmentId: departmentInfo!.department.id,
-        },
-        target: { kind: 'employee', employeeId: assignment!.employee_id },
-        changeSummary: 'Existing department requirement',
-      };
-      const saved = await mutateEmployeeContent(f.a.context, {
-        ...base,
-        operation: 'save_draft',
-        expectedRevision: 0,
-        requestId: randomUUID(),
-        textEdits: [
-          {
-            contentId: textId,
-            revisionId: randomUUID(),
-            expectedRevision: 0,
-            kind: 'requirement',
-            title: 'Department only',
-            body: 'DEPARTMENT-ONLY-MUST-NOT-ENTER-COMPANY-TEST',
+      await seedHistoricalEmployeeContent(
+        fixture.db,
+        f.a.context,
+        {
+          workspaceId: f.a.workspaceId,
+          setId: randomUUID(),
+          ownership: {
+            scope: 'department',
+            organizationId: f.a.organizationId,
+            departmentId: departmentInfo!.department.id,
           },
-        ],
-        manifest: {
-          schemaVersion: 1,
-          common: [{ sourceKind: 'draft_text', contentId: textId }],
-          scenes: [],
-          declaredConflicts: [],
-        },
-      });
-      const pin = {
-        candidateRevisionId: saved.candidate.id,
-        candidateDigest: saved.candidate.digest,
-      };
-      const validated = await mutateEmployeeContent(f.a.context, {
-        ...base,
-        ...pin,
-        operation: 'validate',
-        expectedRevision: saved.revision,
-        requestId: randomUUID(),
-      });
-      await mutateEmployeeContent(f.a.context, {
-        ...base,
-        ...pin,
-        operation: 'activate',
-        expectedRevision: validated.revision,
-        requestId: randomUUID(),
-      });
-    }
-    if (inheritedCommon) {
-      // Trusted, pre-existing company configuration; no product write bypass.
-      const setId = randomUUID(),
-        revisionId = randomUUID(),
-        sceneId = randomUUID();
-      const manifest = {
-        schemaVersion: 1,
-        common: [],
-        scenes: [
-          {
-            id: sceneId,
-            name: '公司继承场景',
-            appliesWhen: '固定合成业务',
-            references: [],
-          },
-        ],
-        declaredConflicts: [],
-      };
-      const [assignment] =
-        await fixture.db`select employee_id from allrice_employee_assignments where id=${instance.assignmentId}`;
-      await fixture.db`insert into allrice_employee_content_sets(id,organization_id,workspace_id,employee_id,scope,created_by)
-        values(${setId},${f.a.organizationId},${f.a.workspaceId},${assignment!.employee_id},'company',${f.a.user.id})`;
-      await fixture.db`insert into allrice_employee_content_revisions(id,set_id,number,manifest,digest,change_summary,created_by)
-        values(${revisionId},${setId},1,${fixture.db.json(manifest)},${runtimePolicyDigest(manifest)},'Pre-existing synthetic company scene',${f.a.user.id})`;
-      await fixture.db`update allrice_employee_content_sets set revision=1,candidate_revision_id=${revisionId},active_revision_id=${revisionId} where id=${setId}`;
-      await fixture.db`insert into allrice_employee_content_publications(set_id,revision_id) values(${setId},${revisionId})`;
-    }
-    if (department) {
-      const privateRun = await methodRun(f, instance.id);
-      const own = await saveEmployeeMethodFromChat({
-        ...privateRun,
-        arguments: {
+          target: { kind: 'employee', employeeId: assignment!.employee_id },
+          changeSummary: 'Existing department requirement',
+          operation: 'save_draft',
           expectedRevision: 0,
-          section: 'scene',
-          scene: { name: '私有机密', appliesWhen: 'Private' },
-          procedure: 'PRIVATE-CONTENT-MUST-NOT-ENTER-SHARED-TEST',
-          changeSummary: 'Private fixture',
+          requestId: randomUUID(),
+          textEdits: [
+            {
+              contentId: textId,
+              revisionId: randomUUID(),
+              expectedRevision: 0,
+              kind: 'requirement',
+              title: 'Department only',
+              body: 'DEPARTMENT-ONLY-MUST-NOT-ENTER-COMPANY-TEST',
+            },
+          ],
+          manifest: {
+            schemaVersion: 1,
+            common: [{ sourceKind: 'draft_text', contentId: textId }],
+            scenes: [],
+            declaredConflicts: [],
+          },
         },
-      });
-      const base = {
-        workspaceId: f.a.workspaceId,
-        setId: own.setId,
-        ownership: {
-          scope: 'personal',
-          organizationId: f.a.organizationId,
-          ownerId: f.a.user.id,
-        },
-        target: { kind: 'instance', instanceId: instance.id },
-        candidateRevisionId: own.candidate.id,
-        candidateDigest: own.candidate.digest,
-        changeSummary: 'Pre-existing effective personal method',
-      };
-      const validated = await mutateEmployeeContent(f.a.context, {
-        ...base,
-        operation: 'validate',
-        expectedRevision: own.revision,
-        requestId: randomUUID(),
-      });
-      await mutateEmployeeContent(f.a.context, {
-        ...base,
-        operation: 'activate',
-        expectedRevision: validated.revision,
-        requestId: randomUUID(),
-      });
-      await privateRun.finish();
+        { active: true },
+      );
     }
+    if (inheritedCommon)
+      await seedHistoricalEmployeeContent(
+        fixture.db,
+        f.a.context,
+        {
+          workspaceId: f.a.workspaceId,
+          setId: randomUUID(),
+          ownership: { scope: 'company', organizationId: f.a.organizationId },
+          target: { kind: 'employee', employeeId: assignment!.employee_id },
+          changeSummary: 'Pre-existing synthetic company scene',
+          operation: 'save_draft',
+          expectedRevision: 0,
+          requestId: randomUUID(),
+          textEdits: [],
+          manifest: {
+            schemaVersion: 1,
+            common: [],
+            scenes: [
+              {
+                id: randomUUID(),
+                name: '公司继承场景',
+                appliesWhen: '固定合成业务',
+                references: [],
+              },
+            ],
+            declaredConflicts: [],
+          },
+        },
+        { active: true },
+      );
+    if (department)
+      await historicalMethod(
+        f,
+        instance.id,
+        {
+          scenes: [
+            {
+              name: '私有机密',
+              appliesWhen: 'Private',
+              procedure: 'PRIVATE-CONTENT-MUST-NOT-ENTER-SHARED-TEST',
+            },
+          ],
+        },
+        { active: true },
+      );
     if (caseId === 'cny-file-flow-v1') await methodFileCloud(f);
-    const editing = await methodRun(
+    const editing = await historicalMethodRun(
       f,
       instance.id,
       department ? phrases.save : undefined,
@@ -680,47 +865,18 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       inspected && 'sharedTarget' in inspected && inspected.sharedTarget
         ? { sharedTarget: inspected.sharedTarget }
         : {};
-    let saved = await saveEmployeeMethodFromChat({
-      ...editing,
-      arguments: {
-        ...shared,
-        expectedRevision: 0,
-        section: 'scene',
-        scene: {
+    const saved = await historicalMethod(f, instance.id, {
+      ...shared,
+      ...(inheritedCommon ? { common: '所有场景均增加固定校验' } : {}),
+      scenes: [
+        {
           name: department ? '金额合计' : '金额汇总',
           appliesWhen: '固定合成数据',
+          procedure: '只将整数分相加',
         },
-        procedure: '只将整数分相加',
-        changeSummary: '重试边界样例',
-      },
+      ],
     });
     await editing.finish();
-    if (inheritedCommon) {
-      const commonRun = await methodRun(
-        f,
-        instance.id,
-        department
-          ? departmentCommonAcceptancePhrases(
-              (department === 'selected'
-                ? departmentInfo!.other
-                : departmentInfo!.department
-              ).name,
-            ).correct
-          : '请保存我的通用执行要求：所有场景均增加固定校验。',
-      );
-      saved = await saveEmployeeMethodFromChat({
-        ...commonRun,
-        callId: randomUUID(),
-        arguments: {
-          ...shared,
-          expectedRevision: saved.revision,
-          section: 'common',
-          requirements: '所有场景均增加固定校验',
-          changeSummary: '改变通用要求',
-        },
-      });
-      await commonRun.finish();
-    }
     const content = await getEmployeeContentSet(f.a.context, saved.setId);
     const testingText =
       inheritedCommon && department
@@ -733,7 +889,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         : department
           ? phrases.test
           : '请测试我的工作场景候选：金额汇总。';
-    const run = await methodRun(f, instance.id, testingText);
+    const run = await historicalMethodRun(f, instance.id, testingText);
     const plan =
       inheritedCommon && department
         ? await inspectEmployeeMethodFromChat({
@@ -892,7 +1048,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
           )
       )
         continue;
-      const testing = await methodRun(
+      const testing = await historicalMethodRun(
         f,
         instance.id,
         companyCommon
@@ -915,7 +1071,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       await passActivationTest(f, inheritedTest);
       testIds.push(inheritedTest.id);
     }
-    const run = await methodRun(
+    const run = await historicalMethodRun(
       f,
       instance.id,
       companyCommon
@@ -1130,408 +1286,60 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     };
   }
 
-  it.each(['question_resolved', 'question_replied'] as const)(
-    'native %s preserves exact structured activation consent across turn changes',
-    async (checkpoint) => {
-      const x = await activationFixture(false, false, false, true);
-      await x.show();
-      // Exact words in ordinary chat carry no card evidence.
-      await sendChatMessage(x.f.a.context, x.f.a.workspaceId, x.run.sessionId, {
-        text: '确认启用',
-        clientMessageId: randomUUID(),
-        deliveryMode: 'follow_up',
-      });
-      await expect(x.activate()).rejects.toThrow('activation_answer_pending');
-      const adopted = await x.answer(
-        checkpoint === 'question_resolved' ? ['确认启用'] : [],
-        checkpoint === 'question_replied' ? '确认启用' : undefined,
-        true,
-        checkpoint,
-      );
-      await fixture.db`update allrice_conversation_commands set owner_id=${x.f.b.user.id} where id=${adopted.command.id}`;
-      await expect(x.activate()).rejects.toThrow('activation_answer_pending');
-      await fixture.db`update allrice_conversation_commands set owner_id=${x.f.a.user.id} where id=${adopted.command.id}`;
-      await expect(x.activate()).resolves.toMatchObject({ enabled: true });
-      await x.run.finish();
-    },
-  );
-
-  it('PR4 company confirmation consumes the real Host public projection without display detail', async () => {
-    const x = await activationFixture('company', false, true, true);
-    expect(x.preview.question.detail).toBeTruthy();
-    await fixture.db`update allrice_settings set value='"timed"'::jsonb where key='native_question_mode'`;
-    const fixtureUrl = new URL(
-      '../../../../apps/worker/test/p25/native-question-public.fixture.mjs',
-      import.meta.url,
-    );
-    const { withQuestionHost } = await import(fixtureUrl.href);
-    await withQuestionHost(
-      { sessionId: x.threadId, callId: x.callId, preview: x.preview },
-      async (h: {
-        server: {
-          pendingUserQuestions: Map<
-            string,
-            { questions: { detail?: string }[] }
-          >;
-          handleRequest(method: string, params: unknown): Promise<unknown>;
-        };
-        ctx: {
-          sessionProjections: {
-            stateOf(
-              session: unknown,
-              key: string,
-            ): {
-              questions: NativeQuestionProjection['questions'];
-            };
-          };
-        };
-        root: { session: { seq: number } };
-        prompt(): Promise<unknown>;
-        wait(): Promise<unknown>;
-      }) => {
-        await h.prompt();
-        await expect
-          .poll(() => h.server.pendingUserQuestions.has(x.threadId))
-          .toBe(true);
-        const projectHost = async () => {
-          const view = h.ctx.sessionProjections.stateOf(
-            h.root.session,
-            'userQuestions',
-          ).questions;
-          await queue.appendJobEvent({
-            workerId: x.run.context.worker.id,
-            jobId: x.run.context.jobId,
-            leaseToken: x.run.worker.leaseToken,
-            type: 'harness.native',
-            payload: {
-              source: 'dsh',
-              sourceEventType: 'session/user-questions',
-              nativePayload: {
-                sessionId: x.threadId,
-                sequence: h.root.session.seq,
-                questions: view,
-              },
-            },
-          });
-          return view;
-        };
-        const view = await projectHost();
-        expect(view.active[0]!.questions[0]).not.toHaveProperty('detail');
-        expect(
-          h.server.pendingUserQuestions.get(x.threadId)!.questions[0]!.detail,
-        ).toBe(x.preview.question.detail);
-        await x.show();
-        await x.answer(
-          ['确认启用'],
-          undefined,
-          true,
-          'question_resolved',
-          async (inputId) => {
-            const proof = await h.server.handleRequest('session/steer', {
-              sessionId: x.threadId,
-              turnId: x.turnId,
-              inputId,
-              kind: 'ask_user',
-              text: `allrice:user-question:v1:${JSON.stringify({ questionId: `${x.threadId}:${x.callId}`, answers: [{ id: x.preview.question.id, selected: ['确认启用'] }] })}`,
-            });
-            await h.wait();
-            await projectHost();
-            return toolSelection.RuntimeNativeInputProofSchema.parse(proof);
-          },
-        );
-        await expect(x.activate()).resolves.toMatchObject({ enabled: true });
-      },
-    );
-    await x.run.finish();
-  }, 60000);
-
-  it('PR4 native activation keeps the prepared source while a later Run consumes the answer', async () => {
-    const x = await activationFixture(false, false, false, true);
-    await x.show();
-    const consumer = await methodRun(
-      x.f,
-      x.instance.id,
-      '请按我对原确认题的回答处理。',
-      x.run.sessionId,
-    );
-    await x.answer([], '确认启用', true, 'question_replied');
-    expect(consumer.context.runId).not.toBe(x.run.context.runId);
-    await expect(x.activate(consumer)).resolves.toMatchObject({
-      enabled: true,
-    });
-    await consumer.finish();
-    await x.run.finish();
-  });
-
-  it.each(['rollback-first', 'activation-first'] as const)(
-    'PR4 native activation and rollback serialize without receipt/root inversion: %s',
-    async (order) => {
-      const x = await activationFixture(false, false, false, true);
-      await x.show();
-      await x.answer();
-      // Verify the real platform principal before introducing either blocker.
-      await updateNativeQuestionMode(x.f.admin.context, 'timed');
-      let release!: () => void, ready!: (pid: number) => void;
-      const proceed = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      const held = new Promise<number>((resolve) => {
-        ready = resolve;
-      });
-      const gate = fixture.db.begin(async (tx) => {
-        if (order === 'rollback-first')
-          await tx`select id from allrice_settings where scope_type='system' and scope_id is null
-            and key='native_question_mode' for update`;
-        else
-          // The receipt uses NOWAIT. Hold the existing content mutex instead,
-          // after activation has acquired its mode fence and before its receipt.
-          await tx`select pg_advisory_xact_lock(hashtextextended(${`employee-content:${x.f.a.organizationId}`},0))`;
-        const [row] = await tx<{ pid: number }[]>`select pg_backend_pid() pid`;
-        ready(row!.pid);
-        await proceed;
-      });
-      const pending: Promise<unknown>[] = [];
-      const failures: unknown[] = [];
-      const start = <T>(work: Promise<T>) => {
-        pending.push(work);
-        void work.catch((error: unknown) => failures.push(error));
-        return work;
-      };
-      const blocked = async (pid: number, query: string) => {
-        let rows: { pid: number }[] = [];
-        await expect
-          .poll(
-            async () => {
-              if (failures.length) throw failures[0];
-              rows = await fixture.db<{ pid: number }[]>`
-            select pid from pg_stat_activity where ${pid}=any(pg_blocking_pids(pid))
-              and query like ${`%${query}%`} and wait_event_type='Lock'`;
-              return rows.length;
-            },
-            { timeout: 2000, interval: 10 },
-          )
-          .toBe(1);
-        return rows[0]!.pid;
-      };
-      try {
-        const pid = await held;
-        if (order === 'rollback-first') {
-          const rollback = start(
-            updateNativeQuestionMode(x.f.admin.context, 'legacy'),
-          );
-          const rollbackPid = await blocked(pid, 'native_question_mode');
-          const activation = start(x.activate());
-          // PostgreSQL queues this reader behind the earlier mode writer.
-          await blocked(rollbackPid, 'for share');
-          // A waiting mode reader must not already own the business receipt.
-          await fixture.db.begin(async (tx) => {
-            await tx`select id from allrice_employee_method_activations where id=${x.preview.receiptId} for update nowait`;
-            await tx`select id from allrice_jobs where id=${x.run.context.jobId} for update nowait`;
-          });
-          release();
-          await gate;
-          await rollback;
-          await expect(activation).rejects.toMatchObject({
-            code: 'activation_answer_pending',
-          });
-          expect(
-            (await getEmployeeContentSet(x.f.a.context, x.saved.setId)).set
-              .active,
-          ).toBeNull();
-          expect(
-            await fixture.db`select consumed_at from allrice_employee_method_activations where id=${x.preview.receiptId}`,
-          ).toMatchObject([{ consumed_at: null }]);
-        } else {
-          const activation = start(x.activate());
-          const activationPid = await blocked(pid, 'pg_advisory_xact_lock');
-          const rollback = start(
-            updateNativeQuestionMode(x.f.admin.context, 'legacy'),
-          );
-          await blocked(activationPid, 'native_question_mode');
-          release();
-          await gate;
-          await expect(activation).resolves.toMatchObject({ enabled: true });
-          await rollback;
-        }
-      } finally {
-        release();
-        await gate;
-        await Promise.allSettled(pending);
-        await x.run.finish();
-      }
-    },
-  );
-
-  it('PR4 native activation requires the durable question body to match the exact prepared candidate', async () => {
-    const x = await activationFixture(false, false, false, true);
-    // Model/Host snapshots are synthetic; both presentation and projection
-    // still enter via appendJobEvent with the real live Worker lease.
-    const differentQuestion = {
-      ...x.preview.question,
-      question: '是否确认另一份工作方法？这不是刚才准备的候选。',
+  // Historical publication/consumption metadata, never a product activation.
+  async function seedHistoricalMethodPublication(
+    x: Awaited<ReturnType<typeof activationFixture>>,
+    consumed = false,
+  ) {
+    const current = await getEmployeeContentSet(x.f.a.context, x.saved.setId);
+    const candidate = current.set.candidate!;
+    const validation = {
+      valid: true,
+      issues: [],
+      dependencyDigest: x.preview.preview.content.dependencyDigest,
+      semanticConsistency: 'not_proven' as const,
     };
-    await x.show(x.preview.question, differentQuestion);
-    await x.answer();
-    expect(
-      await fixture.db`select questions,source_run_id,state from allrice_native_questions
-        where session_id=${x.run.sessionId} and call_id=${x.callId}`,
-    ).toMatchObject([
-      {
-        questions: [differentQuestion],
-        source_run_id: x.run.context.runId,
-        state: 'settled',
-      },
-    ]);
-    await expect.soft(x.activate()).rejects.toThrow();
-    expect
-      .soft(
-        (await getEmployeeContentSet(x.f.a.context, x.saved.setId)).set.active,
-      )
-      .toBeNull();
-    expect
-      .soft(
-        await fixture.db`select consumed_at,answer_message_id from allrice_employee_method_activations
-        where id=${x.preview.receiptId}`,
-      )
-      .toMatchObject([{ consumed_at: null, answer_message_id: null }]);
-    await x.run.finish();
-  }, 60000);
-
-  it.each([
-    'wrong-call',
-    'different-answer',
-    'settled-only',
-    'revoked',
-    'new-candidate',
-  ] as const)(
-    'PR4 native activation refuses %s without publishing or consuming the receipt',
-    async (boundary) => {
-      const x = await activationFixture(false, false, false, true);
-      if (boundary === 'settled-only') {
-        await fixture.db`update allrice_settings set value='"timed"'::jsonb
-          where scope_type='system' and key='native_question_mode'`;
-        // Recovery can first observe settled, which has no body. The older
-        // active snapshot in show() must not manufacture one afterwards.
-        await x.project(6, [
-          { id: x.preview.question.id, selected: ['确认启用'] },
-        ]);
+    const receipt = {
+      ...x.saved,
+      revision: x.saved.revision + (consumed ? 2 : 0),
+      active: x.saved.candidate,
+      validation,
+    };
+    await fixture.db.begin(async (tx) => {
+      await tx`insert into allrice_employee_content_publications(set_id,revision_id)
+        values(${x.saved.setId},${candidate.id}) on conflict do nothing`;
+      await tx`update allrice_employee_content_sets set active_revision_id=${candidate.id} where id=${x.saved.setId}`;
+      const refs = new Map(
+        [
+          ...candidate.manifest.common,
+          ...candidate.manifest.scenes.flatMap((scene) => scene.references),
+        ].map((ref) => [`${ref.contentId}:${ref.revisionId}`, ref]),
+      );
+      for (const ref of refs.values()) {
+        if (!['requirement', 'procedure'].includes(ref.sourceKind)) continue;
+        await tx`insert into allrice_company_asset_publications(asset_id,revision_id,published_by)
+          values(${ref.contentId},${ref.revisionId},${x.f.a.user.id}) on conflict do nothing`;
+        await tx`update allrice_company_assets set state='published',published_revision_id=${ref.revisionId},revision=revision+1
+          where id=${ref.contentId} and latest_revision_id=${ref.revisionId}`;
       }
-      await x.show();
-      const adopted = await x.answer();
-      if (boundary === 'wrong-call') {
-        // Fault injection into a consumed receipt: it must still be checked
-        // against the durable native identity by the business gate.
-        await fixture.db`update allrice_conversation_commands
-          set native_proof=${fixture.db.json({ ...adopted.proof, callId: 'another-call' })}
-          where id=${adopted.command.id}`;
-      } else if (boundary === 'different-answer') {
-        await x.project(7, [
-          { id: x.preview.question.id, selected: ['暂不启用'] },
-        ]);
-      } else if (boundary === 'settled-only') {
-        expect(
-          await fixture.db`select questions from allrice_native_questions
-            where session_id=${x.run.sessionId} and call_id=${x.callId}`,
-        ).toMatchObject([{ questions: [] }]);
-      } else if (boundary === 'revoked') {
-        await fixture.db`update allrice_native_questions set closed_at=clock_timestamp()
-          where session_id=${x.run.sessionId} and call_id=${x.callId}`;
-      } else {
-        const edit = await methodRun(
-          x.f,
-          x.instance.id,
-          '请修改我的工作场景候选：增加复核。',
-        );
-        await saveEmployeeMethodFromChat({
-          ...edit,
-          arguments: {
-            expectedRevision: x.saved.revision,
-            section: 'scene',
-            scene: { id: x.args.sceneId },
-            procedure: '新版必须重新确认',
-            changeSummary: '确认后候选发生变化',
-          },
-        });
-        await edit.finish();
+      if (consumed) {
+        await tx`update allrice_employee_content_sets set revision=${receipt.revision},validation=${tx.json(validation)} where id=${x.saved.setId}`;
+        await tx`update allrice_employee_method_activations set consumed_at=clock_timestamp(),response=${tx.json(receipt)}
+            where id=${x.preview.receiptId}`;
       }
-      await expect(x.activate()).rejects.toMatchObject({
-        code:
-          boundary === 'new-candidate'
-            ? 'version_conflict'
-            : 'activation_answer_pending',
-      });
-      expect(
-        (await getEmployeeContentSet(x.f.a.context, x.saved.setId)).set.active,
-      ).toBeNull();
-      expect(
-        await fixture.db`select consumed_at,answer_message_id from allrice_employee_method_activations
-          where id=${x.preview.receiptId}`,
-      ).toMatchObject([{ consumed_at: null, answer_message_id: null }]);
-      await x.run.finish();
-    },
-    60000,
-  );
-
-  it('PR4 native activation requires the question source Run to match its preparation receipt', async () => {
-    const x = await activationFixture(false, false, false, true);
-    await fixture.db`update allrice_settings set value='"timed"'::jsonb
-      where scope_type='system' and key='native_question_mode'`;
-    const other = await methodRun(
-      x.f,
-      x.instance.id,
-      '只整理资料，先不启用工作方法。',
-      x.run.sessionId,
-    );
-    await x.project(1, undefined, x.preview.question, other);
-    // A different live Job is not this conversation's leased native source.
-    expect(
-      await fixture.db`select * from allrice_native_questions where session_id=${x.run.sessionId}`,
-    ).toEqual([]);
-    await other.finish();
-    await x.show();
-    await x.answer();
-    // Separately corrupt the synthetic ledger's original source to exercise
-    // the business receipt check even behind the stricter projection guard.
-    await fixture.db`update allrice_native_questions set source_run_id=${other.context.runId}
-      where session_id=${x.run.sessionId} and native_session_id=${x.threadId} and call_id=${x.callId}`;
-    expect(
-      await fixture.db`select source_run_id,state from allrice_native_questions
-        where session_id=${x.run.sessionId} and call_id=${x.callId}`,
-    ).toMatchObject([{ source_run_id: other.context.runId, state: 'settled' }]);
-    expect(other.context.runId).not.toBe(x.run.context.runId);
-    await expect.soft(x.activate()).rejects.toThrow();
-    expect
-      .soft(
-        (await getEmployeeContentSet(x.f.a.context, x.saved.setId)).set.active,
-      )
-      .toBeNull();
-    expect
-      .soft(
-        await fixture.db`select consumed_at from allrice_employee_method_activations where id=${x.preview.receiptId}`,
-      )
-      .toMatchObject([{ consumed_at: null }]);
-    await x.run.finish();
-  }, 60000);
+    });
+    return receipt;
+  }
 
   async function publishDepartmentOverlay(
     x: Awaited<ReturnType<typeof retryFixture>>,
     departmentId: string,
     count = 1,
-    tx?: ContentTx,
   ) {
-    const sql = tx ?? fixture.db;
-    const mutate = (input: unknown) =>
-      tx
-        ? mutateEmployeeContentInTransaction(
-            x.f.a.context,
-            EmployeeContentMutationSchema.parse(input),
-            tx,
-          )
-        : mutateEmployeeContent(x.f.a.context, input);
     const [assignment] =
-      await sql`select employee_id from allrice_employee_assignments where id=${x.instance.assignmentId}`;
+      await fixture.db`select employee_id from allrice_employee_assignments where id=${x.instance.assignmentId}`;
     const [old] =
-      await sql`select s.*, r.manifest from allrice_employee_content_sets s
+      await fixture.db`select s.*, r.manifest from allrice_employee_content_sets s
       left join allrice_employee_content_revisions r on r.id=s.active_revision_id
       where s.organization_id=${x.f.a.organizationId} and s.workspace_id=${x.f.a.workspaceId}
         and s.scope='department' and s.department_id=${departmentId} and s.employee_id=${assignment!.employee_id}`;
@@ -1546,43 +1354,29 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       target: { kind: 'employee', employeeId: assignment!.employee_id },
       changeSummary: 'Existing departmental overlay',
     };
-    const saved = await mutate({
-      ...base,
-      operation: 'save_draft',
-      expectedRevision: old?.revision ?? 0,
-      requestId: randomUUID(),
-      textEdits: [],
-      manifest: {
-        schemaVersion: 1,
-        common: old?.manifest?.common ?? [],
-        declaredConflicts: [],
-        scenes: Array.from({ length: count }, (_, i) => ({
-          id: randomUUID(),
-          name: `部门独有金额场景 ${i + 1}`,
-          appliesWhen: 'Synthetic fixed cents',
-          references: [],
-        })),
+    return seedHistoricalEmployeeContent(
+      fixture.db,
+      x.f.a.context,
+      {
+        ...base,
+        operation: 'save_draft',
+        expectedRevision: old?.revision ?? 0,
+        requestId: randomUUID(),
+        textEdits: [],
+        manifest: {
+          schemaVersion: 1,
+          common: old?.manifest?.common ?? [],
+          declaredConflicts: [],
+          scenes: Array.from({ length: count }, (_, i) => ({
+            id: randomUUID(),
+            name: `部门独有金额场景 ${i + 1}`,
+            appliesWhen: 'Synthetic fixed cents',
+            references: [],
+          })),
+        },
       },
-    });
-    const pin = {
-      candidateRevisionId: saved.candidate.id,
-      candidateDigest: saved.candidate.digest,
-    };
-    const validated = await mutate({
-      ...base,
-      ...pin,
-      operation: 'validate',
-      expectedRevision: saved.revision,
-      requestId: randomUUID(),
-    });
-    await mutate({
-      ...base,
-      ...pin,
-      operation: 'activate',
-      expectedRevision: validated.revision,
-      requestId: randomUUID(),
-    });
-    return saved;
+      { active: true },
+    );
   }
 
   async function companyCommonFixture(full32 = false) {
@@ -1594,7 +1388,53 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         base.saved.setId,
       );
       const manifest = content.set.candidate!.manifest;
-      base.saved = await mutateEmployeeContent(base.f.a.context, {
+      base.saved = await seedHistoricalEmployeeContent(
+        fixture.db,
+        base.f.a.context,
+        {
+          workspaceId: base.f.a.workspaceId,
+          setId: base.saved.setId,
+          ownership: {
+            scope: 'company',
+            organizationId: base.f.a.organizationId,
+          },
+          target: {
+            kind: 'employee',
+            employeeId: base.args.sharedTarget!.employeeId,
+          },
+          operation: 'save_draft',
+          requestId: randomUUID(),
+          expectedRevision: base.saved.revision,
+          changeSummary: 'Maximum complete coverage fixture',
+          textEdits: [],
+          manifest: {
+            ...manifest,
+            scenes: Array.from({ length: 16 }, (_, i) => ({
+              ...manifest.scenes[0]!,
+              id: i ? randomUUID() : base.args.sceneId,
+              name: `${i + 1}：${'完整长名称金额场景'.repeat(5)}`,
+            })),
+          },
+        },
+      );
+    }
+    await publishDepartmentOverlay(
+      base,
+      base.departmentInfo!.department.id,
+      full32 ? 0 : 1,
+    );
+    if (!full32)
+      await publishDepartmentOverlay(base, base.departmentInfo!.other.id);
+    const content = await getEmployeeContentSet(
+      base.f.a.context,
+      base.saved.setId,
+    );
+    const textId = randomUUID();
+    const saved = await seedHistoricalEmployeeContent(
+      fixture.db,
+      base.f.a.context,
+      {
+        operation: 'save_draft',
         workspaceId: base.f.a.workspaceId,
         setId: base.saved.setId,
         ownership: {
@@ -1605,47 +1445,29 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
           kind: 'employee',
           employeeId: base.args.sharedTarget!.employeeId,
         },
-        operation: 'save_draft',
+        expectedRevision: base.saved.revision,
         requestId: randomUUID(),
-        expectedRevision: base.saved.revision,
-        changeSummary: 'Maximum complete coverage fixture',
-        textEdits: [],
+        changeSummary:
+          'Historical company requirements for all execution views',
         manifest: {
-          ...manifest,
-          scenes: Array.from({ length: 16 }, (_, i) => ({
-            ...manifest.scenes[0]!,
-            id: i ? randomUUID() : base.args.sceneId,
-            name: `${i + 1}：${'完整长名称金额场景'.repeat(5)}`,
-          })),
+          ...content.set.candidate!.manifest,
+          common: [{ sourceKind: 'draft_text', contentId: textId }],
         },
-      });
-    }
-    await publishDepartmentOverlay(
-      base,
-      base.departmentInfo!.department.id,
-      full32 ? 0 : 1,
-    );
-    if (!full32)
-      await publishDepartmentOverlay(base, base.departmentInfo!.other.id);
-    const edit = await methodRun(
-      base.f,
-      base.instance.id,
-      companyCommonAcceptancePhrases.save,
-    );
-    const saved = await saveEmployeeMethodFromChat({
-      ...edit,
-      arguments: {
-        sharedTarget: base.args.sharedTarget,
-        expectedRevision: base.saved.revision,
-        section: 'common',
-        requirements:
-          '金额一律使用人民币整数分；只将输入金额相加，不增加其他金额。' +
-          (full32 ? '保留依据及原始记录。'.repeat(160) : ''),
-        changeSummary: 'Company requirements for all shared execution views',
+        textEdits: [
+          {
+            contentId: textId,
+            revisionId: randomUUID(),
+            expectedRevision: 0,
+            kind: 'requirement',
+            title: 'Historical company requirements',
+            body:
+              '金额一律使用人民币整数分；只将输入金额相加，不增加其他金额。' +
+              (full32 ? '保留依据及原始记录。'.repeat(160) : ''),
+          },
+        ],
       },
-    });
-    await edit.finish();
-    const run = await methodRun(
+    );
+    const run = await historicalMethodRun(
       base.f,
       base.instance.id,
       companyCommonAcceptancePhrases.test,
@@ -1803,7 +1625,9 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       expect(x.preview.question.detail).toContain(scene.sceneId);
     await x.show();
     await x.answer();
-    expect((await x.activate()).enabled).toBe(true);
+    await expect(x.activate()).rejects.toMatchObject({
+      code: 'legacy_method_retired',
+    });
     await x.run.finish();
   }, 120000);
 
@@ -1825,7 +1649,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
           ).department;
           await publishDepartmentOverlay(x, d.id, 0);
         }
-      const run = await methodRun(
+      const run = await historicalMethodRun(
         x.f,
         x.instance.id,
         companyCommonAcceptancePhrases.test,
@@ -1851,57 +1675,6 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     },
     60000,
   );
-
-  it('company common activation serializes behind a concurrent new department publication and rejects stale coverage', async () => {
-    const x = await activationFixture('company', false, true);
-    await x.show();
-    await x.answer();
-    const added = (
-      await createOrganizationDepartment(
-        x.f.admin.context,
-        x.f.a.organizationId,
-        { name: '并发新增部门', requestId: randomUUID() },
-      )
-    ).department;
-    let locked!: (pid: number) => void, release!: () => void;
-    const ready = new Promise<number>((resolve) => {
-      locked = resolve;
-    });
-    const proceed = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const publication = fixture.db.begin(async (tx) => {
-      await tx`select pg_advisory_xact_lock(hashtextextended(${`employee-content:${x.f.a.organizationId}`},0))`;
-      const [row] = await tx`select pg_backend_pid() pid`;
-      locked(row!.pid);
-      await proceed;
-      await publishDepartmentOverlay(x, added.id, 1, tx);
-    });
-    void publication.catch(() => undefined);
-    const pid = await ready,
-      activation = x.activate();
-    void activation.catch(() => undefined);
-    try {
-      await expect
-        .poll(
-          async () => {
-            const [row] =
-              await fixture.db`select count(*)::int n from pg_stat_activity where datname=current_database() and ${pid}::int=any(pg_blocking_pids(pid))`;
-            return row!.n;
-          },
-          { timeout: 3000, interval: 20 },
-        )
-        .toBeGreaterThan(0);
-    } finally {
-      release();
-    }
-    await publication;
-    await expect(activation).rejects.toThrow('validation_required');
-    expect(
-      (await getEmployeeContentSet(x.f.a.context, x.saved.setId)).set.active,
-    ).toBeNull();
-    await x.run.finish();
-  }, 60000);
 
   it('candidate test pagination is exact at sub-millisecond timestamps and rejects foreign or stale candidate anchors', async () => {
     const x = await companyCommonFixture();
@@ -1945,7 +1718,11 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     };
     for (let i = 0; i < 35; i++) await clone(x.f.a.user.id, i);
     const foreign = await clone(x.f.b.user.id);
-    const run = await methodRun(x.f, x.instance.id, '请查看公司候选测试记录。');
+    const run = await historicalMethodRun(
+      x.f,
+      x.instance.id,
+      '请查看公司候选测试记录。',
+    );
     const first = await inspectEmployeeMethodFromChat({
       ...run,
       arguments: { view: 'candidate', scope: 'company' },
@@ -2026,24 +1803,31 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
   it('company common coverage keeps an empty base view without inventing a test and rejects a globally empty plan', async () => {
     const x = await companyCommonFixture();
     await passActivationTest(x.f, x.test);
-    const edit = await methodRun(
+    const edit = await historicalMethodRun(
       x.f,
       x.instance.id,
       '请移除公司的“金额合计”工作场景。',
     );
-    const saved = await saveEmployeeMethodFromChat({
-      ...edit,
-      arguments: {
-        sharedTarget: x.args.sharedTarget,
+    const existing = (await getEmployeeContentSet(x.f.a.context, x.saved.setId))
+      .set;
+    const saved = await seedHistoricalEmployeeContent(
+      fixture.db,
+      x.f.a.context,
+      {
+        operation: 'save_draft',
+        workspaceId: x.f.a.workspaceId,
+        setId: x.saved.setId,
+        requestId: randomUUID(),
         expectedRevision: x.saved.revision,
-        section: 'scene',
-        operation: 'remove_scene',
-        scene: { id: x.args.sceneId },
-        changeSummary: 'Only department scenes remain',
+        ownership: existing.ownership,
+        target: existing.target,
+        textEdits: [],
+        changeSummary: 'Historical common-only candidate',
+        manifest: { ...existing.candidate!.manifest, scenes: [] },
       },
-    });
+    );
     await edit.finish();
-    const run = await methodRun(
+    const run = await historicalMethodRun(
       x.f,
       x.instance.id,
       companyCommonAcceptancePhrases.test,
@@ -2067,7 +1851,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     await run.finish();
     const ids: string[] = [];
     for (const scene of plan.testCoverage.scenes) {
-      const testing = await methodRun(
+      const testing = await historicalMethodRun(
         x.f,
         x.instance.id,
         companyCommonAcceptancePhrases.test,
@@ -2089,7 +1873,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       await passActivationTest(x.f, test);
       ids.push(test.id);
     }
-    const confirm = await methodRun(
+    const confirm = await historicalMethodRun(
       x.f,
       x.instance.id,
       companyCommonAcceptancePhrases.confirm,
@@ -2163,7 +1947,10 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     ).rejects.toThrow('activation_question_invalid');
     await x.show();
     await x.answer();
-    expect((await x.activate()).enabled).toBe(true);
+    await expect(x.activate()).rejects.toMatchObject({
+      code: 'legacy_method_retired',
+    });
+    await seedHistoricalMethodPublication(x);
     await x.run.finish();
     for (const department of [
       x.departmentInfo!.department,
@@ -2176,7 +1963,11 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       );
       // Shared methods still run on the original assigned employee. A new
       // owner custom Run intentionally does not inherit these layers.
-      const next = await methodRun(x.f, x.f.assignment.id, '普通金额任务');
+      const next = await historicalMethodRun(
+        x.f,
+        x.f.assignment.id,
+        '普通金额任务',
+      );
       expect(JSON.stringify(next.runtime.snapshot)).toContain(
         x.saved.candidate.id,
       );
@@ -2199,7 +1990,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
   it('company common coverage rejects partial proof, forged or omitted execution views, and scene-only authorization', async () => {
     const x = await companyCommonFixture();
     await passActivationTest(x.f, x.test);
-    const run = await methodRun(
+    const run = await historicalMethodRun(
       x.f,
       x.instance.id,
       companyCommonAcceptancePhrases.test,
@@ -2229,7 +2020,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         }),
       ).rejects.toMatchObject({ code: 'source_changed' });
     await run.finish();
-    const sceneOnly = await methodRun(
+    const sceneOnly = await historicalMethodRun(
       x.f,
       x.instance.id,
       companyMethodAcceptancePhrases.test,
@@ -2265,7 +2056,9 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       if (stage === 'queued')
         expect(await claimNextPlatformEmployeeTestRun(randomUUID())).toBeNull();
       else if ('activate' in x) {
-        await expect(x.activate()).rejects.toThrow('validation_required');
+        await expect(x.activate()).rejects.toMatchObject({
+          code: 'legacy_method_retired',
+        });
         await x.run.finish();
       }
       expect(
@@ -2287,6 +2080,10 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     expect(x.preview.question.question).not.toContain('影响本部门');
     await x.show();
     await x.answer();
+    await expect(x.activate()).rejects.toMatchObject({
+      code: 'legacy_method_retired',
+    });
+    await seedHistoricalMethodPublication(x, true);
     expect((await x.activate()).enabled).toBe(true);
     expect((await x.activate()).replayed).toBe(true);
     await x.run.finish();
@@ -2303,7 +2100,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       employeeInstanceId: peer.id,
       title: '目标部门独立任务',
     });
-    const adopted = await methodRun(
+    const adopted = await historicalMethodRun(
       { ...x.f, a: x.f.b },
       peer.id,
       selectedDepartmentMethodAcceptancePhrases(target.name).adopt,
@@ -2320,7 +2117,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       x.departmentInfo!.department.id,
       'department',
     );
-    const replay = await methodRun(x.f, x.instance.id);
+    const replay = await historicalMethodRun(x.f, x.instance.id);
     await expect(
       inspectEmployeeMethodFromChat({
         ...replay,
@@ -2337,7 +2134,80 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
   // MET-210: the receipt lives with the message, so it survives past the
   // polled interactions window and without the workbench.
   it('history keeps each question answer receipt from its command', async () => {
-    const x = await activationFixture('selected');
+    const f = await setup(true),
+      instance = await f.custom('Ordinary question');
+    const run = await methodRun(f, instance.id, '请继续这个合成任务。');
+    const runtime = { ...run.scope, workerId: run.context.worker.id };
+    const threadId = `native-${randomUUID()}`,
+      turnId = `turn-${randomUUID()}`,
+      questionId = `question-${randomUUID()}`;
+    await acquireConversationRuntime({
+      ...runtime,
+      configChecksum: `sha256:${'a'.repeat(64)}`,
+      compactThresholdTokens: 10000,
+    });
+    await bindConversationThread({ ...runtime, threadId });
+    const binding = await recordConversationTurn({
+      ...runtime,
+      threadId,
+      turnId,
+    });
+    const question = {
+      id: 'ordinary-confirmation',
+      question: '是否继续合成任务？',
+      options: [{ label: '继续' }, { label: '停止' }],
+    };
+    const x = {
+      f,
+      run,
+      runtime,
+      show: () =>
+        queue.appendJobEvent({
+          workerId: runtime.workerId,
+          jobId: run.context.jobId,
+          leaseToken: run.worker.leaseToken,
+          type: 'harness.native',
+          payload: {
+            source: 'dsh',
+            sourceEventType: 'session/user-question',
+            nativePayload: { questionId, questions: [question] },
+          },
+        }),
+      answer: async (selected = ['继续'], _custom?: string, adopt = true) => {
+        const inputId = randomUUID();
+        await sendChatMessage(f.a.context, f.a.workspaceId, run.sessionId, {
+          text: selected.join('，'),
+          clientMessageId: inputId,
+          deliveryMode: 'steer',
+          expectedTurnId: turnId,
+          expectedGeneration: binding.generation,
+          userQuestionAnswer: {
+            questionId,
+            answers: [{ id: question.id, selected }],
+          },
+        });
+        const command = await claimConversationSteer({
+          ...runtime,
+          generation: binding.generation,
+          turnId,
+        });
+        if (!command) throw Error('ordinary_question_command_missing');
+        if (adopt)
+          await consumeConversationSteer({
+            commandId: command.id,
+            workerId: runtime.workerId,
+            proof: {
+              status: 'adopted',
+              inputId,
+              messageId: questionId,
+              turnId,
+              sequence: 5,
+              checkpoint: 'question_resolved',
+            },
+          });
+        return { command };
+      },
+    };
     await x.show();
     const { getChatSessionHistory } = await import('../workspace/service.ts');
     const receipts = async () =>
@@ -2350,14 +2220,14 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       ).messages
         .filter((m) => m.content.interaction?.type === 'user_question_answer')
         .map((m) => m.answerStatus);
-    const rejected = await x.answer(['确认启用'], undefined, false);
+    const rejected = await x.answer(['继续'], undefined, false);
     expect(await receipts()).toEqual(['pending']);
     await rejectConversationSteer({
       commandId: rejected.command.id,
       workerId: x.runtime.workerId,
       errorCode: 'QUESTION_ANSWER_INVALID',
     });
-    const unknown = await x.answer(['确认启用'], undefined, false);
+    const unknown = await x.answer(['继续'], undefined, false);
     await rejectConversationSteer({
       commandId: unknown.command.id,
       workerId: x.runtime.workerId,
@@ -2372,7 +2242,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     const x = await activationFixture('selected');
     await x.show();
     await x.answer();
-    await x.activate();
+    await seedHistoricalMethodPublication(x, true);
     await x.departmentInfo!.configure(
       x.f.a.user.id,
       x.departmentInfo!.department.id,
@@ -2393,7 +2263,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       `部门 ${x.departmentInfo!.other.name}`,
       `部门 ${x.departmentInfo!.other.id}`,
     ]) {
-      const editing = await methodRun(
+      const editing = await historicalMethodRun(
         x.f,
         x.instance.id,
         phrases.save + `不要向${target}共享。`,
@@ -2410,7 +2280,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
             changeSummary: 'Denied sharing',
           },
         }),
-      ).rejects.toThrow('explicit_method_request_required');
+      ).rejects.toThrow('legacy_method_retired');
       expect(
         (await getEmployeeContentSet(x.f.a.context, x.saved.setId)).set
           .revision,
@@ -2421,7 +2291,11 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       '先不要测试部门「验收运营部」的工作场景候选。',
       '暂不测试。',
     ]) {
-      const run = await methodRun(x.f, x.instance.id, phrases.test + denial);
+      const run = await historicalMethodRun(
+        x.f,
+        x.instance.id,
+        phrases.test + denial,
+      );
       const count = () => fixture.db`select
         (select count(*)::int from allrice_employee_method_tests where instance_id=${x.instance.id}) tests,
         (select count(*)::int from allrice_runs where organization_id=${x.f.a.organizationId}) runs,
@@ -2440,7 +2314,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       instance = await f.custom('部门选择'),
       d = await departmentFixture(f);
     await d.configure(f.a.user.id, null, 'company');
-    const editing = await methodRun(
+    const editing = await historicalMethodRun(
       f,
       instance.id,
       selectedDepartmentMethodAcceptancePhrases(d.other.name).save,
@@ -2510,7 +2384,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
               : selectedDepartmentMethodAcceptancePhrases(
                   x.departmentInfo!.other.name,
                 ).save;
-      const editing = await methodRun(x.f, x.instance.id, text);
+      const editing = await historicalMethodRun(x.f, x.instance.id, text);
       await expect(
         saveEmployeeMethodFromChat({
           ...editing,
@@ -2532,7 +2406,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
           .revision,
       ).toBe(x.saved.revision);
       await editing.finish();
-      const testing = await methodRun(
+      const testing = await historicalMethodRun(
         x.f,
         x.instance.id,
         mismatch === 'wrong-name'
@@ -2577,116 +2451,6 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     },
   );
 
-  it.each(['rename', 'demotion', 'archive'] as const)(
-    'selected department pending exact confirmation rejects %s',
-    async (change) => {
-      const x = await activationFixture('selected');
-      await x.show();
-      await x.answer();
-      if (change === 'demotion')
-        await x.departmentInfo!.configure(
-          x.f.a.user.id,
-          x.departmentInfo!.department.id,
-          'department',
-        );
-      else
-        await updateOrganizationDepartment(
-          x.f.admin.context,
-          x.f.a.organizationId,
-          x.departmentInfo!.other.id,
-          {
-            name:
-              change === 'rename' ? '新部门名' : x.departmentInfo!.other.name,
-            expectedRevision: x.departmentInfo!.other.revision,
-            active: change !== 'archive',
-          },
-        );
-      await expect(x.activate()).rejects.toThrow();
-      const [row] =
-        await fixture.db`select active_revision_id from allrice_employee_content_sets where id=${x.saved.setId}`;
-      expect(row!.active_revision_id).toBeNull();
-      await x.run.finish();
-    },
-  );
-
-  it('company original wording completes exact confirmation without department and new-session adoption in two departments', async () => {
-    const x = await activationFixture('company');
-    expect(x.args.sharedTarget?.scope).toBe('company');
-    expect(x.args.sharedTarget).not.toHaveProperty('departmentId');
-    const [person] =
-      await fixture.db`select department_id from allrice_organization_people where organization_id=${x.f.a.organizationId} and user_id=${x.f.a.user.id}`;
-    expect(person!.department_id).toBeNull();
-    expect(x.preview.question.question).toContain('公司工作方法');
-    expect(x.preview.question.question).toContain(x.f.a.organizationId);
-    expect(x.preview.question.question).toContain(
-      x.args.sharedTarget!.employeeId,
-    );
-    expect(x.preview.question.question).toContain('各部门及未分配部门');
-    const [binding] =
-      await fixture.db`select candidate_snapshot from allrice_employee_method_tests where test_id=${x.test.id}`;
-    expect(binding!.candidate_snapshot.content.sharedTarget).toEqual(
-      x.args.sharedTarget,
-    );
-    expect(JSON.stringify(binding!.candidate_snapshot.content)).not.toMatch(
-      /PRIVATE-CONTENT|DEPARTMENT-ONLY/,
-    );
-    // The test was created while the maintainer had both active lower overlays;
-    // moving them out of a department cannot change company-only evidence.
-    expect(
-      (await getEmployeeMethodTest(x.f.a.context, x.test.id)).applicable,
-    ).toBe(true);
-    await x.show();
-    await x.answer();
-    expect((await x.activate()).enabled).toBe(true);
-    expect((await x.activate()).replayed).toBe(true);
-    await x.run.finish();
-    // Preserve the backend assigned employee's original shared reader.
-    const peer = { id: x.f.bAssignment.id };
-    for (const department of [
-      x.departmentInfo!.department,
-      x.departmentInfo!.other,
-    ]) {
-      await x.departmentInfo!.configure(
-        x.f.b.user.id,
-        department.id,
-        'personal',
-      );
-      const session = await createChatSession(x.f.b.context, {
-        workspaceId: x.f.b.workspaceId,
-        employeeInstanceId: peer.id,
-        title: '公司方法新会话',
-      });
-      const run = await methodRun(
-        { ...x.f, a: x.f.b },
-        peer.id,
-        companyMethodAcceptancePhrases.adopt,
-        session.id,
-      );
-      expect(run.frozen.content.layers).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            setId: x.saved.setId,
-            revisionId: x.saved.candidate.id,
-          }),
-        ]),
-      );
-      expect(JSON.stringify(run.frozen.content)).not.toContain(
-        'PRIVATE-CONTENT',
-      );
-      await expect(
-        inspectEmployeeMethodFromChat({
-          ...run,
-          arguments: { view: 'candidate', scope: 'company' },
-        }),
-      ).rejects.toThrow('authorization_denied');
-      await run.finish();
-    }
-    const foreign = await principal();
-    await expect(
-      getEmployeeContentSet(foreign.context, x.saved.setId),
-    ).rejects.toThrow();
-  });
-
   it.each(['personal', 'department'] as const)(
     'company queued test refuses downgrade to %s before model admission',
     async (level) => {
@@ -2710,7 +2474,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       const x = await activationFixture('company');
       await x.show();
       await x.answer();
-      if (consumed) await x.activate();
+      if (consumed) await seedHistoricalMethodPublication(x, true);
       await x.departmentInfo!.configure(
         x.f.a.user.id,
         x.departmentInfo!.department.id,
@@ -2746,13 +2510,13 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       'Please save company work method: sum integer cents; do not save company work method.',
       '请保存本公司工作场景候选：整数分相加。只用于这次任务。',
     ]) {
-      const run = await methodRun(x.f, x.instance.id, phrase);
+      const run = await historicalMethodRun(x.f, x.instance.id, phrase);
       await expect(
         saveEmployeeMethodFromChat({ ...run, arguments: args }),
-      ).rejects.toThrow('explicit_method_request_required');
+      ).rejects.toThrow('legacy_method_retired');
       await run.finish();
     }
-    const run = await methodRun(
+    const run = await historicalMethodRun(
       x.f,
       x.instance.id,
       companyMethodAcceptancePhrases.save,
@@ -2784,14 +2548,14 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         ...run,
         arguments: { ...args, section: 'common', scene: undefined },
       }),
-    ).rejects.toThrow('explicit_method_request_required');
+    ).rejects.toThrow('legacy_method_retired');
     expect(
       await fixture.db`select revision,candidate_revision_id,active_revision_id from allrice_employee_content_sets where id=${x.saved.setId}`,
     ).toEqual(before);
     await run.finish();
   });
 
-  it('company maintainers in separate departments share one exact set and stale candidates cannot overwrite', async () => {
+  it('company maintainers in separate departments discover one exact set and retired writes cannot overwrite', async () => {
     const x = await activationFixture('company');
     await x.run.finish();
     await x.departmentInfo!.configure(
@@ -2810,7 +2574,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       employeeInstanceId: peer.id,
       title: '另一公司维护人',
     });
-    const run = await methodRun(
+    const run = await historicalMethodRun(
       { ...x.f, a: x.f.b },
       peer.id,
       companyMethodAcceptancePhrases.save,
@@ -2831,128 +2595,24 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       procedure: '校验后整数分相加',
       changeSummary: 'Concurrent company change',
     };
-    await saveEmployeeMethodFromChat({ ...run, arguments: args });
+    await expect(
+      saveEmployeeMethodFromChat({ ...run, arguments: args }),
+    ).rejects.toMatchObject({ code: 'legacy_method_retired' });
     await expect(
       saveEmployeeMethodFromChat({
         ...run,
         callId: randomUUID(),
         arguments: args,
       }),
-    ).rejects.toThrow('version_conflict');
+    ).rejects.toThrow('legacy_method_retired');
     await run.finish();
   });
-
-  it('department shared original wording completes save, test, scoped answer and peer adoption without private overlays', async () => {
-    const x = await activationFixture(true);
-    expect(x.args.sharedTarget?.scope).toBe('department');
-    expect(x.preview.question.question).toContain('验收财务部');
-    expect(x.preview.question.question).toContain(
-      x.args.sharedTarget!.employeeId,
-    );
-    expect(x.preview.question.question).not.toContain('重试测试');
-    const [binding] =
-      await fixture.db`select candidate_snapshot from allrice_employee_method_tests where test_id=${x.test.id}`;
-    expect(binding!.candidate_snapshot.content.sharedTarget).toEqual(
-      x.args.sharedTarget,
-    );
-    // The already ACTIVE private method must not contaminate the shared test.
-    const own = await getEffectiveEmployeeContent(x.f.a.context, x.instance.id);
-    expect(JSON.stringify(own)).toContain('PRIVATE-CONTENT');
-    expect(JSON.stringify(binding!.candidate_snapshot.content)).not.toContain(
-      'PRIVATE-CONTENT',
-    );
-    await x.show();
-    await x.answer();
-    const enabled = await x.activate();
-    expect(enabled.enabled).toBe(true);
-    expect((await x.activate()).replayed).toBe(true);
-    await x.run.finish();
-    // Preserve the backend assigned employee's original shared reader.
-    const peerInstance = { id: x.f.bAssignment.id };
-    const effective = await getEffectiveEmployeeContent(
-      x.f.b.context,
-      peerInstance.id,
-    );
-    expect(effective.scenes.map((scene) => scene.name)).toContain('金额合计');
-    expect(JSON.stringify(effective)).not.toContain('PRIVATE-CONTENT');
-    const peerSession = await createChatSession(x.f.b.context, {
-      workspaceId: x.f.b.workspaceId,
-      employeeInstanceId: peerInstance.id,
-      title: '新会话采用部门方法',
-    });
-    const adopted = await methodRun(
-      { ...x.f, a: x.f.b },
-      peerInstance.id,
-      departmentMethodAcceptancePhrases.adopt,
-      peerSession.id,
-    );
-    expect(adopted.frozen.content.layers).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ setId: x.saved.setId }),
-      ]),
-    );
-    await adopted.finish();
-    await x.departmentInfo!.configure(
-      x.f.b.user.id,
-      x.departmentInfo!.other.id,
-      'personal',
-    );
-    const outside = await getEffectiveEmployeeContent(
-      x.f.b.context,
-      peerInstance.id,
-    );
-    expect(outside.scenes.map((scene) => scene.name)).not.toContain('金额合计');
-  });
-
-  it.each(['demotion', 'transfer', 'archive'] as const)(
-    'department shared pending confirmation rejects %s and retains inactive candidate',
-    async (change) => {
-      const x = await activationFixture(true);
-      await x.show();
-      await x.answer();
-      if (change === 'demotion')
-        await x.departmentInfo!.configure(
-          x.f.a.user.id,
-          x.departmentInfo!.department.id,
-          'personal',
-        );
-      else {
-        await x.departmentInfo!.configure(
-          x.f.a.user.id,
-          x.departmentInfo!.other.id,
-          'department',
-        );
-        if (change === 'archive') {
-          await x.departmentInfo!.configure(
-            x.f.b.user.id,
-            x.departmentInfo!.other.id,
-            'personal',
-          );
-          await updateOrganizationDepartment(
-            x.f.admin.context,
-            x.f.a.organizationId,
-            x.departmentInfo!.department.id,
-            {
-              name: x.departmentInfo!.department.name,
-              expectedRevision: x.departmentInfo!.department.revision,
-              active: false,
-            },
-          );
-        }
-      }
-      await expect(x.activate()).rejects.toThrow();
-      const [row] =
-        await fixture.db`select active_revision_id from allrice_employee_content_sets where id=${x.saved.setId}`;
-      expect(row!.active_revision_id).toBeNull();
-      await x.run.finish();
-    },
-  );
 
   it('department shared consumed receipt cannot be replayed after maintenance revocation', async () => {
     const x = await activationFixture(true);
     await x.show();
     await x.answer();
-    await x.activate();
+    await seedHistoricalMethodPublication(x, true);
     await x.departmentInfo!.configure(
       x.f.a.user.id,
       x.departmentInfo!.department.id,
@@ -2982,7 +2642,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
   it('department shared selection cannot redirect after transfer or admit company/private/files/common targets', async () => {
     const x = await retryFixture('cny-total-v1', false, true);
     await passActivationTest(x.f, x.test);
-    const editing = await methodRun(
+    const editing = await historicalMethodRun(
       x.f,
       x.instance.id,
       departmentMethodAcceptancePhrases.save,
@@ -3000,13 +2660,13 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         ...editing,
         arguments: { ...args, sharedTarget: undefined },
       }),
-    ).rejects.toThrow('explicit_method_request_required');
+    ).rejects.toThrow('legacy_method_retired');
     await expect(
       saveEmployeeMethodFromChat({
         ...editing,
         arguments: { ...args, section: 'common', scene: undefined },
       }),
-    ).rejects.toThrow('explicit_method_request_required');
+    ).rejects.toThrow('legacy_method_retired');
     await expect(
       saveEmployeeMethodFromChat({
         ...editing,
@@ -3049,7 +2709,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
   it('department shared writes reject personal-only original wording with zero mutations', async () => {
     const x = await retryFixture('cny-total-v1', false, true);
     await passActivationTest(x.f, x.test);
-    const run = await methodRun(
+    const run = await historicalMethodRun(
       x.f,
       x.instance.id,
       '请保存仅供我个人使用而非本部门共享的工作场景候选：金额只相加。',
@@ -3068,7 +2728,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
           changeSummary: 'Must remain personal',
         },
       }),
-    ).rejects.toThrow('explicit_method_request_required');
+    ).rejects.toThrow('legacy_method_retired');
     expect(
       await fixture.db`select revision,candidate_revision_id from allrice_employee_content_sets where id=${x.saved.setId}`,
     ).toEqual(before);
@@ -3108,7 +2768,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       await publication;
     }
   });
-  it('department shared two maintainers share one set and reject a stale candidate write', async () => {
+  it('department shared maintainers discover one set and reject retired candidate writes', async () => {
     const x = await retryFixture('cny-total-v1', false, true);
     await passActivationTest(x.f, x.test);
     await x.departmentInfo!.configure(
@@ -3127,7 +2787,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       employeeInstanceId: peer.id,
       title: '同一部门候选',
     });
-    const run = await methodRun(
+    const run = await historicalMethodRun(
       { ...x.f, a: x.f.b },
       peer.id,
       departmentMethodAcceptancePhrases.save,
@@ -3148,277 +2808,252 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       procedure: '核对后将整数分相加',
       changeSummary: '第二维护人修改',
     };
-    await saveEmployeeMethodFromChat({ ...run, arguments: args });
+    await expect(
+      saveEmployeeMethodFromChat({ ...run, arguments: args }),
+    ).rejects.toMatchObject({ code: 'legacy_method_retired' });
     await expect(
       saveEmployeeMethodFromChat({
         ...run,
         callId: randomUUID(),
         arguments: args,
       }),
-    ).rejects.toThrow('version_conflict');
+    ).rejects.toThrow('legacy_method_retired');
     await run.finish();
   });
-  it.each([false, true, 'company', 'selected'] as const)(
-    'restores exact chat history and repeatedly forks old text without altering active sources: %s',
+  it.each([false, true, 'company', 'selected', 'rice'] as const)(
+    'historical save/restore receipts preserve exact input, current authority and immutable source history: %s',
     async (scope) => {
-      const x = await activationFixture(scope);
-      const shared = x.args.sharedTarget
-        ? { sharedTarget: x.args.sharedTarget }
-        : {};
-      const target =
-        scope === 'company'
-          ? ('company' as const)
-          : {
-              departmentName:
-                scope === 'selected'
-                  ? (x.departmentInfo?.other.name ?? '')
-                  : (x.departmentInfo?.department.name ?? ''),
-            };
-      const phrases = sharedHistoryMethodAcceptancePhrases(target, 1);
-      await x.show();
-      await x.answer();
-      await x.activate();
-      await x.run.finish();
-      const initial = await getEmployeeContentSet(x.f.a.context, x.saved.setId);
-      const original = initial.set.candidate!;
-      const scene = original.manifest.scenes[0]!;
-      const oldPin = scene.references[0]!;
-      const edit = await methodRun(
-        x.f,
-        x.instance.id,
-        scope ? phrases.edit : undefined,
-      );
-      const newer = await saveEmployeeMethodFromChat({
-        ...edit,
-        arguments: {
-          ...shared,
-          expectedRevision: initial.set.revision,
-          section: 'scene',
-          scene: { id: scene.id },
-          procedure: '错误地额外加100分',
-          changeSummary: 'Known wrong candidate',
-        },
-      });
-      await edit.finish();
-      const sourceBefore =
-        await fixture.db`select * from allrice_company_assets where id=${oldPin.contentId}`;
-      expect(sourceBefore[0]!.latest_revision_id).not.toBe(oldPin.revisionId);
-      const restore = await methodRun(
-        x.f,
-        x.instance.id,
-        scope
-          ? sharedHistoryMethodAcceptancePhrases(target, original.number)
-              .restore
-          : `请恢复我的整份工作方法到第${original.number}版，只保存候选。`,
-      );
-      const history = await inspectEmployeeMethodFromChat({
-        ...restore,
-        arguments: {
-          view: 'history',
-          ...(scope
-            ? { scope: scope === 'company' ? 'company' : 'department' }
-            : {}),
-          ...(scope === 'selected'
-            ? { departmentId: x.departmentInfo!.other.id }
-            : {}),
-        },
-      });
-      if (!('revisions' in history)) throw Error('History response missing');
-      expect(history.revisions.map((r) => r.id)).toContain(original.id);
-      expect(JSON.stringify(history)).not.toContain('错误地额外加100分');
-      expect(history.activeRevisionId).toBe(original.id);
-      expect(
-        (
-          await fixture.db`select retired_at from allrice_employee_content_contexts where generation_id=${restore.runtime.generationId}`
-        )[0]?.retired_at,
-      ).not.toBeNull();
-      const args = {
-        ...shared,
-        expectedRevision: newer.revision,
-        sourceRevisionId: original.id,
-        changeSummary: '恢复已启用的历史版本',
+      const f = await setup(true, scope === 'rice');
+      const instance =
+        scope === 'rice'
+          ? { id: f.assignment.id }
+          : await f.custom('Historical owner');
+      const departmentInfo =
+        scope && scope !== 'rice' ? await departmentFixture(f) : undefined;
+      if (scope === 'company' || scope === 'selected')
+        await departmentInfo!.configure(
+          f.a.user.id,
+          departmentInfo!.department.id,
+          'company',
+        );
+      const sharedTarget = departmentInfo
+        ? (
+            await fixture.db.begin((tx) =>
+              sharedEmployeeMethodTarget(
+                f.a.context,
+                instance.id,
+                scope === 'company' ? 'company' : 'department',
+                tx,
+                scope === 'selected' ? departmentInfo.other.id : undefined,
+              ),
+            )
+          ).sharedTarget
+        : undefined;
+      const scene = {
+        id: randomUUID(),
+        name: '金额汇总',
+        appliesWhen: 'Synthetic historical amount',
       };
-      const call = { ...restore, arguments: args };
-      const restored = await restoreEmployeeMethodFromChat(call);
-      expect(await restoreEmployeeMethodFromChat(call)).toEqual(restored);
-      await expect(
-        restoreEmployeeMethodFromChat({
-          ...call,
-          arguments: { ...args, changeSummary: 'Different input' },
-        }),
-      ).rejects.toMatchObject({ code: 'request_conflict' });
-      await expect(
-        restoreEmployeeMethodFromChat({ ...call, callId: randomUUID() }),
-      ).rejects.toMatchObject({ code: 'version_conflict' });
-      const read = await getEmployeeContentSet(x.f.a.context, x.saved.setId);
-      expect(read.set.active!.id).toBe(original.id);
-      expect(read.set.candidate).toMatchObject({
-        restoredFromRevisionId: original.id,
-        manifest: original.manifest,
-      });
-      expect(read.set.candidate!.id).not.toBe(original.id);
-      expect(read.set.validation).toBeNull();
-      await expect(
-        prepareEmployeeMethodActivationFromChat({
-          ...restore,
-          callId: randomUUID(),
-          arguments: {
-            ...shared,
-            expectedRevision: restored.revision,
-            candidateRevisionId: restored.candidate.id,
-            candidateDigest: restored.candidate.digest,
-            testIds: [x.test.id],
-          },
-        }),
-      ).rejects.toThrow();
-      await expect(
-        prepareEmployeeMethodActivationFromChat({
-          ...restore,
-          callId: randomUUID(),
-          arguments: {
-            ...shared,
-            expectedRevision: restored.revision,
-            candidateRevisionId: restored.candidate.id,
-            candidateDigest: restored.candidate.digest,
-            testIds: [],
-          },
-        }),
-      ).rejects.toMatchObject({ code: 'activation_test_coverage' });
-      await restore.finish();
-      let previous = restored;
-      let pin = oldPin;
-      const correction = await methodRun(
-        x.f,
-        x.instance.id,
-        scope ? phrases.edit : '请更新我的工作场景候选：核对金额再汇总。',
-      );
-      const noOp = await saveEmployeeMethodFromChat({
-        ...correction,
-        callId: randomUUID(),
-        arguments: {
-          ...shared,
-          expectedRevision: previous.revision,
-          section: 'scene',
-          scene: { id: scene.id, name: scene.name },
-          changeSummary: 'Unchanged scene name',
+      const initial = await historicalMethod(
+        f,
+        instance.id,
+        {
+          sharedTarget,
+          scenes: [{ ...scene, procedure: 'ORIGINAL_HISTORY_BODY' }],
         },
-      });
-      expect(
-        (await getEmployeeContentSet(x.f.a.context, x.saved.setId)).set
-          .candidate!.restoredFromRevisionId,
-      ).toBe(original.id);
-      await expect(
-        prepareEmployeeMethodActivationFromChat({
-          ...correction,
-          callId: randomUUID(),
-          arguments: {
-            ...shared,
-            expectedRevision: noOp.revision,
-            candidateRevisionId: noOp.candidate.id,
-            candidateDigest: noOp.candidate.digest,
-            testIds: [],
+        { active: true },
+      );
+      const immutable =
+        await fixture.db`select * from allrice_company_asset_revisions where organization_id=${f.a.organizationId} order by id`;
+      const phrases =
+        scope === 'company'
+          ? companyMethodAcceptancePhrases
+          : scope === 'selected'
+            ? selectedDepartmentMethodAcceptancePhrases(
+                departmentInfo!.other.name,
+              )
+            : scope === true
+              ? departmentMethodAcceptancePhrases
+              : undefined;
+      for (const restore of [false, true]) {
+        const source = (
+          await getEmployeeContentHistory(f.a.context, initial.setId)
+        ).revisions.find((r) => r.id === initial.candidate.id)!;
+        const wording = restore
+          ? sharedHistoryMethodAcceptancePhrases(
+              scope === 'company'
+                ? 'company'
+                : {
+                    departmentName:
+                      scope === 'selected'
+                        ? departmentInfo!.other.name
+                        : (departmentInfo?.department.name ?? ''),
+                  },
+              source.number,
+            ).restore
+          : phrases?.save;
+        const run = await historicalMethodRun(
+          f,
+          instance.id,
+          restore && !sharedTarget
+            ? `请恢复我的整份工作方法到第${source.number}版，只保存候选。`
+            : wording,
+        );
+        const current = (
+          await getEmployeeContentSet(f.a.context, initial.setId)
+        ).set;
+        const args = restore
+          ? {
+              ...(sharedTarget ? { sharedTarget } : {}),
+              expectedRevision: current.revision,
+              sourceRevisionId: source.id,
+              changeSummary: 'Original historical restore',
+            }
+          : {
+              ...(sharedTarget ? { sharedTarget } : {}),
+              expectedRevision: current.revision,
+              section: 'scene',
+              scene: { id: scene.id },
+              procedure: 'COMMITTED_HISTORY_BODY',
+              changeSummary: 'Original historical save',
+            };
+        const call = { ...run, arguments: args };
+        const parsed = restore
+          ? toolSelection.EmployeeMethodRestoreSchema.parse(args)
+          : toolSelection.EmployeeMethodSaveSchema.parse(args);
+        const original = await historicalMethod(
+          f,
+          instance.id,
+          {
+            sharedTarget,
+            scenes: [
+              {
+                ...scene,
+                procedure: restore
+                  ? 'ORIGINAL_HISTORY_BODY'
+                  : 'COMMITTED_HISTORY_BODY',
+              },
+            ],
           },
-        }),
-      ).rejects.toMatchObject({ code: 'activation_test_coverage' });
-      previous = noOp;
-      await expect(
-        saveEmployeeMethodFromChat({
-          ...correction,
-          arguments: {
-            ...shared,
-            expectedRevision: previous.revision,
-            section: 'scene',
-            scene: { id: scene.id },
-            procedure: '新的文字',
-            changeSummary: 'Must name historical pin',
+          {
+            requestId: employeeChatIdentity(call).requestId,
+            inputDigest: runtimePolicyDigest({
+              instanceId: instance.id,
+              runId: run.context.runId,
+              userMessageId: run.userMessageId,
+              arguments: parsed,
+            }),
+            requestOperation: restore ? 'restore_draft' : 'save_draft',
+            ...(restore ? { restoredFromRevisionId: source.id } : {}),
           },
-        }),
-      ).rejects.toMatchObject({ code: 'source_changed' });
-      for (const body of ['先检查整数分再相加', '核对输入后只将整数分相加']) {
-        previous = await saveEmployeeMethodFromChat({
-          ...correction,
-          callId: randomUUID(),
+        );
+        const originalManifest = (
+          await getEmployeeContentSet(f.a.context, original.setId)
+        ).set.candidate!.manifest;
+        const pin = originalManifest.scenes[0]!.references[0]!;
+        await fixture.db`insert into allrice_company_asset_publications(asset_id,revision_id,published_by) values(${pin.contentId},${pin.revisionId},${f.a.user.id})`;
+        await fixture.db`update allrice_company_assets set state='published',published_revision_id=${pin.revisionId},revision=revision+1 where id=${pin.contentId}`;
+        const later = await seedHistoricalEmployeeContent(
+          fixture.db,
+          f.a.context,
+          {
+            operation: 'save_draft',
+            workspaceId: f.a.workspaceId,
+            setId: original.setId,
+            requestId: randomUUID(),
+            expectedRevision: original.revision,
+            ownership: current.ownership,
+            target: current.target,
+            manifest: originalManifest,
+            textEdits: [],
+            changeSummary: 'Later historical publication',
+          },
+          { active: true },
+        );
+        const foreign = await createChatSession(f.b.context, {
+          workspaceId: f.b.workspaceId,
+          employeeInstanceId: f.bAssignment.id,
+          title: 'Foreign owner',
+        });
+        const effects =
+          () => fixture.db`select s.revision,s.candidate_revision_id,s.active_revision_id,er.execution_snapshot,er.method_authoring,c.retired_at,c.invalidated_at,
+          (select count(*)::int from allrice_employee_content_requests where set_id=s.id) requests,
+          (select count(*)::int from allrice_employee_content_publications where set_id=s.id) publications,
+          (select count(*)::int from allrice_audit_events where organization_id=s.organization_id) audits
+          from allrice_employee_content_sets s join allrice_employee_runs er on er.run_id=${run.context.runId}
+          join allrice_employee_content_contexts c on c.generation_id=er.content_generation_id where s.id=${original.setId}`;
+        const before = await effects();
+        const invoke = restore
+          ? restoreEmployeeMethodFromChat
+          : saveEmployeeMethodFromChat;
+        const expected =
+          scope === 'rice' ? { ...original, personalTextOnly: true } : original;
+        expect(await invoke(call)).toEqual(expected);
+        await expect(
+          invoke({
+            ...call,
+            arguments: { ...args, changeSummary: 'Different payload' },
+          }),
+        ).rejects.toMatchObject({ code: 'request_conflict' });
+        await expect(
+          invoke({ ...call, callId: randomUUID() }),
+        ).rejects.toMatchObject({ code: 'legacy_method_retired' });
+        await expect(
+          invoke({ ...call, userMessageId: randomUUID() }),
+        ).rejects.toMatchObject({ code: 'authorization_denied' });
+        await fixture.db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${run.context.jobId}`;
+        await expect(invoke(call)).rejects.toMatchObject({
+          code: 'authorization_denied',
+        });
+        await fixture.db`update allrice_jobs set lease_expires_at=clock_timestamp()+interval '5 minutes' where id=${run.context.jobId}`;
+        await expect(
+          invoke({ ...call, sessionId: foreign.id }),
+        ).rejects.toThrow();
+        const history = await inspectEmployeeMethodFromChat({
+          ...run,
           arguments: {
-            ...shared,
-            expectedRevision: previous.revision,
-            section: 'scene',
-            scene: { id: scene.id },
-            procedure: body,
-            replaceTextReferences: [pin],
-            changeSummary: 'Explicit private replacement',
+            view: 'history',
+            ...(sharedTarget
+              ? {
+                  scope: sharedTarget.scope,
+                  ...(sharedTarget.scope === 'department'
+                    ? { departmentId: sharedTarget.departmentId }
+                    : {}),
+                }
+              : {}),
           },
         });
-        const current = await getEmployeeContentSet(
-          x.f.a.context,
-          x.saved.setId,
-        );
-        const next = current.set.candidate!.manifest.scenes[0]!.references[0]!;
-        expect(next.contentId).not.toBe(pin.contentId);
         expect(
-          current.sources.find((v) => v.reference.contentId === next.contentId)
-            ?.body,
-        ).toBe(body);
-        pin = next;
+          'revisions' in history && history.revisions.map((r) => r.id),
+        ).toEqual(
+          expect.arrayContaining([
+            initial.candidate.id,
+            original.candidate.id,
+            later.candidate.id,
+          ]),
+        );
+        expect(JSON.stringify(history)).not.toContain('ORIGINAL_HISTORY_BODY');
+        expect(JSON.stringify(history)).not.toContain('COMMITTED_HISTORY_BODY');
+        await fixture.db`update allrice_company_assets set state='archived' where id=${pin.contentId}`;
+        expect(await invoke(call)).toEqual(expected);
+        const unavailable = await getEmployeeContentSet(
+          f.a.context,
+          original.setId,
+        );
+        expect(
+          unavailable.sources.find(
+            (s) => s.reference.revisionId === pin.revisionId,
+          ),
+        ).toMatchObject({ available: false });
+        expect(JSON.stringify(unavailable)).not.toContain(
+          restore ? 'ORIGINAL_HISTORY_BODY' : 'COMMITTED_HISTORY_BODY',
+        );
+        expect(await effects()).toEqual(before);
+        await run.finish();
       }
       expect(
-        await fixture.db`select * from allrice_company_assets where id=${oldPin.contentId}`,
-      ).toEqual(sourceBefore);
-      expect(
-        (
-          await getEmployeeContentHistory(x.f.a.context, x.saved.setId)
-        ).revisions.find((r) => r.id === original.id),
-      ).toMatchObject(original);
-      await correction.finish();
-      const testRun = await methodRun(
-        x.f,
-        x.instance.id,
-        scope ? phrases.test : '请测试我的工作场景候选',
-      );
-      const freshTest = await startEmployeeMethodTestFromChat({
-        ...testRun,
-        arguments: {
-          ...shared,
-          expectedRevision: previous.revision,
-          candidateRevisionId: previous.candidate.id,
-          candidateDigest: previous.candidate.digest,
-          sceneId: scene.id,
-          caseId: 'cny-total-v1',
-        },
-      });
-      expect(freshTest.id).not.toBe(x.test.id);
-      await testRun.finish();
-      await passActivationTest(x.f, freshTest);
-      expect(
-        (await getEmployeeMethodTest(x.f.a.context, freshTest.id))
-          .validationStatus,
-      ).toBe('passed');
-      expect(
-        (await getEmployeeContentSet(x.f.a.context, x.saved.setId)).set.active!
-          .id,
-      ).toBe(original.id);
-      const confirmation = await methodRun(
-        x.f,
-        x.instance.id,
-        scope ? phrases.confirm : '请查看通过的测试并让我确认启用。',
-      );
-      const preview = await prepareEmployeeMethodActivationFromChat({
-        ...confirmation,
-        arguments: {
-          ...shared,
-          expectedRevision: previous.revision,
-          candidateRevisionId: previous.candidate.id,
-          candidateDigest: previous.candidate.digest,
-          testIds: [freshTest.id],
-        },
-      });
-      expect(preview.question.question).toContain(
-        scope === 'company'
-          ? '公司工作方法'
-          : scope
-            ? '部门工作方法'
-            : '个人工作方法',
-      );
-      await confirmation.finish();
+        await fixture.db`select * from allrice_company_asset_revisions where id in ${fixture.db(immutable.map((r) => r.id))} order by id`,
+      ).toEqual(immutable);
     },
     60000,
   );
@@ -3427,79 +3062,68 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     'shared restore requires exact direct scope/version and rechecks receipt authority: %s',
     async (scope) => {
       const x = await activationFixture(scope);
-      await x.show();
-      await x.answer();
-      await x.activate();
+      await seedHistoricalMethodPublication(x);
       await x.run.finish();
-      const current = await getEmployeeContentSet(x.f.a.context, x.saved.setId);
-      const source = current.set.candidate!;
+      const current = (
+        await getEmployeeContentSet(x.f.a.context, x.saved.setId)
+      ).set;
+      const source = current.candidate!;
       const target =
         scope === 'company'
           ? ('company' as const)
           : { departmentName: x.departmentInfo!.other.name };
-      const text = sharedHistoryMethodAcceptancePhrases(
-        target,
-        source.number,
-      ).restore;
+      const run = await historicalMethodRun(
+        x.f,
+        x.instance.id,
+        sharedHistoryMethodAcceptancePhrases(target, source.number).restore,
+      );
       const args = {
         sharedTarget: x.args.sharedTarget,
-        expectedRevision: current.set.revision,
+        expectedRevision: current.revision,
         sourceRevisionId: source.id,
         changeSummary: 'Restore exact shared history',
       };
-      const privateSet =
-        await fixture.db`select candidate_revision_id from allrice_employee_content_sets where instance_id=${x.instance.id} and scope='personal'`;
-      for (const denied of [
-        { text: `请恢复我的整份工作方法到第${source.number}版。`, args },
-        { text: text + '先不要保存候选。', args },
-        { text: text + '只用于本次任务。', args },
-        { text: text + '只在本次任务使用。', args },
-        { text: text + '仅限本次任务。', args },
-        { text: text + '暂时不要长期保存。', args },
-        { text: `资料原文如下：\n${text}`, args },
-        {
-          text,
-          args: {
-            ...args,
-            sourceRevisionId: privateSet[0]!.candidate_revision_id,
-          },
-        },
-        {
-          text,
-          args: {
-            ...args,
-            sharedTarget: { ...x.args.sharedTarget, setId: randomUUID() },
-          },
-        },
-        ...(scope === 'selected'
-          ? [
-              {
-                text: `请恢复本部门的整份工作方法到第${source.number}版。`,
-                args,
-              },
-            ]
-          : []),
-      ]) {
-        const run = await methodRun(x.f, x.instance.id, denied.text);
-        await expect(
-          restoreEmployeeMethodFromChat({ ...run, arguments: denied.args }),
-        ).rejects.toThrow();
-        expect(
-          (await getEmployeeContentSet(x.f.a.context, x.saved.setId)).set
-            .revision,
-        ).toBe(current.set.revision);
-        await run.finish();
-      }
-      const run = await methodRun(x.f, x.instance.id, text);
       const call = { ...run, arguments: args };
-      const restored = await restoreEmployeeMethodFromChat(call);
+      const restored = await seedHistoricalEmployeeContent(
+        fixture.db,
+        x.f.a.context,
+        {
+          operation: 'save_draft',
+          workspaceId: x.f.a.workspaceId,
+          setId: x.saved.setId,
+          requestId: employeeChatIdentity(call).requestId,
+          ownership: current.ownership,
+          target: current.target,
+          expectedRevision: current.revision,
+          manifest: source.manifest,
+          textEdits: [],
+          changeSummary: args.changeSummary,
+        },
+        {
+          requestOperation: 'restore_draft',
+          restoredFromRevisionId: source.id,
+          inputDigest: runtimePolicyDigest({
+            instanceId: x.instance.id,
+            runId: run.context.runId,
+            userMessageId: run.userMessageId,
+            arguments: toolSelection.EmployeeMethodRestoreSchema.parse(args),
+          }),
+        },
+      );
+      const before =
+        await fixture.db`select * from allrice_employee_content_sets where id=${x.saved.setId}`;
       expect(await restoreEmployeeMethodFromChat(call)).toEqual(restored);
+      await expect(
+        restoreEmployeeMethodFromChat({
+          ...call,
+          arguments: { ...args, changeSummary: 'Different payload' },
+        }),
+      ).rejects.toThrow('request_conflict');
       await x.departmentInfo!.configure(
         x.f.a.user.id,
         x.departmentInfo!.department.id,
         'department',
       );
-      // Company -> department and other-department -> own-department both revoke this exact target.
       await expect(restoreEmployeeMethodFromChat(call)).rejects.toThrow(
         'authorization_denied',
       );
@@ -3515,13 +3139,14 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
           },
         }),
       ).rejects.toThrow('authorization_denied');
-      const [row] =
-        await fixture.db`select revision,active_revision_id,candidate_revision_id from allrice_employee_content_sets where id=${x.saved.setId}`;
-      expect(row).toMatchObject({
-        revision: restored.revision,
-        active_revision_id: source.id,
-        candidate_revision_id: restored.candidate.id,
-      });
+      expect(
+        await fixture.db`select * from allrice_employee_content_sets where id=${x.saved.setId}`,
+      ).toEqual(before);
+      expect(
+        (
+          await fixture.db`select execution_snapshot from allrice_employee_runs where run_id=${run.context.runId}`
+        )[0]!.execution_snapshot,
+      ).toEqual(run.frozen);
       await run.finish();
     },
     60000,
@@ -3531,44 +3156,55 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     const x = await activationFixture('selected');
     await x.show();
     await x.answer();
-    await x.activate();
+    await seedHistoricalMethodPublication(x);
     await x.run.finish();
     const initial = await getEmployeeContentSet(x.f.a.context, x.saved.setId);
     const sharedTarget = x.args.sharedTarget!;
     const target = { departmentName: x.departmentInfo!.other.name };
     const phrases = sharedHistoryMethodAcceptancePhrases(target, 1);
-    const edit = await methodRun(x.f, x.instance.id, phrases.edit);
-    const multiple = await saveEmployeeMethodFromChat({
-      ...edit,
-      arguments: {
-        sharedTarget,
-        expectedRevision: initial.set.revision,
-        section: 'scene',
-        scene: {
+    const edit = await historicalMethodRun(x.f, x.instance.id, phrases.edit);
+    const multiple = await historicalMethod(x.f, x.instance.id, {
+      sharedTarget,
+      scenes: [
+        ...initial.set.candidate!.manifest.scenes,
+        {
+          id: randomUUID(),
           name: '第二个金额场景',
           appliesWhen: 'Second synthetic amount case',
+          procedure: '只将整数分相加',
         },
-        procedure: '只将整数分相加',
-        changeSummary: 'Two-scene history',
-      },
+      ],
     });
     await edit.finish();
-    const restore = await methodRun(
+    const restore = await historicalMethodRun(
       x.f,
       x.instance.id,
       sharedHistoryMethodAcceptancePhrases(target, multiple.revision).restore,
     );
-    const restored = await restoreEmployeeMethodFromChat({
-      ...restore,
-      arguments: {
-        sharedTarget,
-        expectedRevision: multiple.revision,
-        sourceRevisionId: multiple.candidate.id,
-        changeSummary: 'Restore both scenes',
+    const multi = (await getEmployeeContentSet(x.f.a.context, x.saved.setId))
+      .set;
+    const restored = await seedHistoricalEmployeeContent(
+      fixture.db,
+      x.f.a.context,
+      {
+        operation: 'save_draft',
+        workspaceId: x.f.a.workspaceId,
+        setId: x.saved.setId,
+        requestId: randomUUID(),
+        expectedRevision: multi.revision,
+        ownership: multi.ownership,
+        target: multi.target,
+        manifest: multi.candidate!.manifest,
+        textEdits: [],
+        changeSummary: 'Historical restored multi-scene snapshot',
       },
-    });
+      {
+        requestOperation: 'restore_draft',
+        restoredFromRevisionId: multiple.candidate.id,
+      },
+    );
     await restore.finish();
-    const testRun = await methodRun(x.f, x.instance.id, phrases.test);
+    const testRun = await historicalMethodRun(x.f, x.instance.id, phrases.test);
     const test = await startEmployeeMethodTestFromChat({
       ...testRun,
       arguments: {
@@ -3581,7 +3217,11 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     });
     await testRun.finish();
     await passActivationTest(x.f, test);
-    const confirmation = await methodRun(x.f, x.instance.id, phrases.confirm);
+    const confirmation = await historicalMethodRun(
+      x.f,
+      x.instance.id,
+      phrases.confirm,
+    );
     await expect(
       prepareEmployeeMethodActivationFromChat({
         ...confirmation,
@@ -3597,44 +3237,64 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     await confirmation.finish();
     // Historical empty manifests can exist from earlier admin maintenance; they
     // must not turn the fresh-proof requirement into a vacuous all-pass.
-    const empty = await mutateEmployeeContent(x.f.a.context, {
-      operation: 'save_draft',
-      workspaceId: x.f.a.workspaceId,
-      setId: x.saved.setId,
-      requestId: randomUUID(),
-      ownership: {
-        scope: 'department',
-        organizationId: x.f.a.organizationId,
-        departmentId:
-          sharedTarget.scope === 'department'
-            ? sharedTarget.departmentId
-            : null,
+    const empty = await seedHistoricalEmployeeContent(
+      fixture.db,
+      x.f.a.context,
+      {
+        operation: 'save_draft',
+        workspaceId: x.f.a.workspaceId,
+        setId: x.saved.setId,
+        requestId: randomUUID(),
+        ownership: {
+          scope: 'department',
+          organizationId: x.f.a.organizationId,
+          departmentId:
+            sharedTarget.scope === 'department'
+              ? sharedTarget.departmentId
+              : null,
+        },
+        target: { kind: 'employee', employeeId: sharedTarget.employeeId },
+        expectedRevision: restored.revision,
+        manifest: {
+          schemaVersion: 1,
+          common: [],
+          scenes: [],
+          declaredConflicts: [],
+        },
+        textEdits: [],
+        changeSummary: 'Pre-existing empty history',
       },
-      target: { kind: 'employee', employeeId: sharedTarget.employeeId },
-      expectedRevision: restored.revision,
-      manifest: {
-        schemaVersion: 1,
-        common: [],
-        scenes: [],
-        declaredConflicts: [],
-      },
-      textEdits: [],
-      changeSummary: 'Pre-existing empty history',
-    });
-    const emptyRun = await methodRun(
+    );
+    const emptyRun = await historicalMethodRun(
       x.f,
       x.instance.id,
       sharedHistoryMethodAcceptancePhrases(target, empty.revision).restore,
     );
-    const emptyRestore = await restoreEmployeeMethodFromChat({
-      ...emptyRun,
-      arguments: {
-        sharedTarget,
+    const emptyRestore = await seedHistoricalEmployeeContent(
+      fixture.db,
+      x.f.a.context,
+      {
+        operation: 'save_draft',
+        workspaceId: x.f.a.workspaceId,
+        setId: x.saved.setId,
+        requestId: randomUUID(),
         expectedRevision: empty.revision,
-        sourceRevisionId: empty.candidate.id,
-        changeSummary: 'Restore empty history',
+        ownership: multi.ownership,
+        target: multi.target,
+        manifest: {
+          schemaVersion: 1,
+          common: [],
+          scenes: [],
+          declaredConflicts: [],
+        },
+        textEdits: [],
+        changeSummary: 'Historical empty restored snapshot',
       },
-    });
+      {
+        requestOperation: 'restore_draft',
+        restoredFromRevisionId: empty.candidate.id,
+      },
+    );
     await expect(
       prepareEmployeeMethodActivationFromChat({
         ...emptyRun,
@@ -3652,311 +3312,6 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         .id,
     ).toBe(initial.set.active!.id);
     await emptyRun.finish();
-  }, 60000);
-
-  it('keeps old unpublished pins unavailable and rechecks restore target, intent and current authority', async () => {
-    const f = await setup(true),
-      instance = await f.custom('历史边界');
-    const editing = await methodRun(f, instance.id);
-    const first = await saveEmployeeMethodFromChat({
-      ...editing,
-      arguments: {
-        expectedRevision: 0,
-        section: 'scene',
-        scene: { name: '金额', appliesWhen: '合成样例' },
-        procedure: '原未发布文字',
-        changeSummary: 'Unpublished history',
-      },
-    });
-    const before = await getEmployeeContentSet(f.a.context, first.setId);
-    const scene = before.set.candidate!.manifest.scenes[0]!;
-    const second = await saveEmployeeMethodFromChat({
-      ...editing,
-      callId: randomUUID(),
-      arguments: {
-        expectedRevision: first.revision,
-        section: 'scene',
-        scene: { id: scene.id },
-        procedure: '新草稿',
-        changeSummary: 'New draft',
-      },
-    });
-    await editing.finish();
-    const args = {
-      expectedRevision: second.revision,
-      sourceRevisionId: first.candidate.id,
-      changeSummary: 'Restore history',
-    };
-    const unrelated = await f.custom('另一个小白');
-    const other = await methodRun(
-      f,
-      unrelated.id,
-      '请恢复我的整份工作方法到第1版，保存候选后，只展示差异。',
-    );
-    await expect(
-      restoreEmployeeMethodFromChat({ ...other, arguments: args }),
-    ).rejects.toThrow();
-    await other.finish();
-    for (const text of [
-      '请恢复我的每周场景到第1版',
-      '请恢复我的整份工作方法到第2版',
-      '> 请恢复我的整份工作方法到第1版',
-      '请恢复我的整份工作方法到第1版：不要保存，只展示差异。',
-      '请恢复我的整份工作方法到第1版，先不要保存，只展示差异。',
-      '请恢复我的整份工作方法到第1版，只讨论，不执行。',
-      '请恢复我的整份工作方法到第1版，本次暂时不要实际恢复。',
-      '请恢复我的整份工作方法到第1版，先别保存候选。',
-      '请恢复我的整份工作方法到第1版，暂不保存。',
-      '请恢复我的整份工作方法到第1版，保存候选后，先不要保存，只展示差异。',
-      '请恢复我的工作方法到第1版，只恢复周度场景，月度场景保持不变。',
-    ]) {
-      const denied = await methodRun(f, instance.id, text);
-      await expect(
-        restoreEmployeeMethodFromChat({ ...denied, arguments: args }),
-      ).rejects.toMatchObject({ code: 'explicit_method_restore_required' });
-      await denied.finish();
-    }
-    expect(
-      (await getEmployeeContentSet(f.a.context, first.setId)).set.candidate!.id,
-    ).toBe(second.candidate.id);
-    const restore = await methodRun(
-      f,
-      instance.id,
-      '请恢复我的整份工作方法到第1版，保存候选后，只展示差异。',
-    );
-    await expect(
-      restoreEmployeeMethodFromChat({
-        ...restore,
-        arguments: { ...args, sourceRevisionId: randomUUID() },
-      }),
-    ).rejects.toThrow();
-    const restored = await restoreEmployeeMethodFromChat({
-      ...restore,
-      arguments: args,
-    });
-    const content = await getEmployeeContentSet(f.a.context, first.setId);
-    expect(content.sources.some((s) => !s.available)).toBe(true);
-    await restore.finish();
-    const correcting = await methodRun(f, instance.id);
-    await expect(
-      saveEmployeeMethodFromChat({
-        ...correcting,
-        arguments: {
-          expectedRevision: restored.revision,
-          section: 'scene',
-          scene: { id: scene.id },
-          procedure: 'copy unavailable old text',
-          replaceTextReferences: scene.references,
-          changeSummary: 'Denied copy',
-        },
-      }),
-    ).rejects.toMatchObject({ code: 'source_changed' });
-    await correcting.finish();
-    const stale = await methodRun(
-      f,
-      instance.id,
-      '请恢复我的整份工作方法到第1版',
-    );
-    await fixture.db`update allrice_jobs set cancel_requested_at=now() where id=${stale.context.jobId}`;
-    await expect(
-      restoreEmployeeMethodFromChat({
-        ...stale,
-        arguments: { ...args, expectedRevision: restored.revision },
-      }),
-    ).rejects.toThrow();
-    await stale.finish();
-    const revoked = await methodRun(
-      f,
-      instance.id,
-      '请恢复我的整份工作方法到第1版',
-    );
-    await f.change('withdraw');
-    await expect(
-      restoreEmployeeMethodFromChat({
-        ...revoked,
-        arguments: { ...args, expectedRevision: restored.revision },
-      }),
-    ).rejects.toThrow();
-    await revoked.finish();
-  }, 60000);
-
-  it('replaces exact legacy text in one scene without contradicting or rewriting old sources', async () => {
-    const f = await setup(true),
-      instance = await f.custom('旧流程迁移');
-    const source = randomUUID(),
-      revision = randomUUID(),
-      sceneId = randomUUID(),
-      otherScene = randomUUID(),
-      setId = randomUUID();
-    const saved = await mutateEmployeeContent(f.a.context, {
-      operation: 'save_draft',
-      workspaceId: f.a.workspaceId,
-      setId,
-      requestId: randomUUID(),
-      expectedRevision: 0,
-      ownership: {
-        scope: 'personal',
-        organizationId: f.a.organizationId,
-        ownerId: f.a.user.id,
-      },
-      target: { kind: 'instance', instanceId: instance.id },
-      changeSummary: '原有手工流程',
-      manifest: {
-        schemaVersion: 1,
-        common: [],
-        scenes: [
-          {
-            id: sceneId,
-            name: '周度',
-            appliesWhen: '每周',
-            references: [{ sourceKind: 'draft_text', contentId: source }],
-          },
-          {
-            id: otherScene,
-            name: '月度',
-            appliesWhen: '每月',
-            references: [{ sourceKind: 'draft_text', contentId: source }],
-          },
-        ],
-        declaredConflicts: [],
-      },
-      textEdits: [
-        {
-          contentId: source,
-          revisionId: revision,
-          expectedRevision: 0,
-          kind: 'procedure',
-          title: '旧流程',
-          body: '先汇总再校验',
-        },
-      ],
-    });
-    const before = await getEmployeeContentSet(f.a.context, setId),
-      ref = before.set.candidate!.manifest.scenes[0]!.references[0]!;
-    const run = await methodRun(
-      f,
-      instance.id,
-      '请调整我的「周度」工作场景候选：把执行流程改成先校验再汇总，保留月度流程。',
-    );
-    const args = {
-      expectedRevision: saved.revision,
-      section: 'scene',
-      scene: { id: sceneId },
-      procedure: '先校验再汇总',
-      changeSummary: '纠正顺序',
-    };
-    await expect(
-      saveEmployeeMethodFromChat({ ...run, arguments: args }),
-    ).rejects.toMatchObject({ code: 'method_text_target_required' });
-    await expect(
-      saveEmployeeMethodFromChat({
-        ...run,
-        arguments: {
-          ...args,
-          replaceTextReferences: [{ ...ref, revisionId: randomUUID() }],
-        },
-      }),
-    ).rejects.toMatchObject({ code: 'version_conflict' });
-    const result = await saveEmployeeMethodFromChat({
-      ...run,
-      arguments: { ...args, replaceTextReferences: [ref] },
-    });
-    expect(
-      await saveEmployeeMethodFromChat({
-        ...run,
-        arguments: { ...args, replaceTextReferences: [ref] },
-      }),
-    ).toEqual(result);
-    const after = await getEmployeeContentSet(f.a.context, setId);
-    expect(after.set.active).toBeNull();
-    expect(after.set.candidate!.manifest.scenes[0]!.references).toHaveLength(1);
-    expect(
-      after.set.candidate!.manifest.scenes[0]!.references[0]!.contentId,
-    ).not.toBe(ref.contentId);
-    expect(after.set.candidate!.manifest.scenes[1]).toEqual(
-      before.set.candidate!.manifest.scenes[1],
-    );
-    expect(
-      after.sources.find((s) => s.reference.contentId === ref.contentId)?.body,
-    ).toBe('先汇总再校验');
-    expect(
-      (await getEmployeeContentHistory(f.a.context, setId)).revisions.some(
-        (r) => r.id === saved.candidate.id,
-      ),
-    ).toBe(true);
-    await run.finish();
-  }, 60000);
-
-  it('activates only the displayed exact candidate after adopted confirmation and returns one durable receipt', async () => {
-    const x = await activationFixture();
-    await expect(x.activate()).rejects.toMatchObject({
-      code: 'activation_answer_pending',
-    });
-    await expect(
-      x.show({ ...x.preview.question, question: '请确认另一个候选' }),
-    ).rejects.toMatchObject({ code: 'activation_question_invalid' });
-    await x.show();
-    const pending = await x.answer(['确认启用'], undefined, false);
-    await expect(x.activate()).rejects.toMatchObject({
-      code: 'activation_answer_pending',
-    });
-    await consumeConversationSteer({
-      commandId: pending.command.id,
-      workerId: x.runtime.workerId,
-      proof: pending.proof,
-    });
-    const concurrent = await Promise.all([
-      x.activate(),
-      x.activate(),
-      x.activate(),
-    ]);
-    expect(concurrent.filter((r) => !r.replayed)).toHaveLength(1);
-    const result = concurrent.find((r) => !r.replayed)!;
-    expect(result).toMatchObject({
-      enabled: true,
-      replayed: false,
-      receipt: { active: x.saved.candidate },
-    });
-    const again = await x.activate();
-    expect(again).toMatchObject({
-      enabled: true,
-      replayed: true,
-      receipt: result.receipt,
-    });
-    const [count] =
-      await fixture.db`select count(*)::int n from allrice_employee_content_publications where set_id=${x.saved.setId}`;
-    expect(count!.n).toBe(1);
-    const [oldRun] =
-      await fixture.db`select execution_snapshot from allrice_employee_runs where run_id=${x.run.context.runId}`;
-    expect(JSON.stringify(oldRun!.execution_snapshot)).not.toContain(
-      x.saved.candidate.id,
-    );
-    await x.run.finish();
-    const next = await methodRun(
-      x.f,
-      x.instance.id,
-      '普通任务',
-      x.run.sessionId,
-    );
-    // The legacy activation receipt remains valid, but a plain procedure is
-    // not silently converted into a new personal Workflow package.
-    expect(next.frozen.content).toMatchObject({
-      personalScenes: true,
-      layers: [],
-    });
-    expect(
-      (await listPersonalSceneSkills(x.f.a.context, x.instance.id)).skills,
-    ).toEqual([]);
-    expect(
-      (await getEmployeeContentSet(x.f.a.context, x.saved.setId)).set.active
-        ?.id,
-    ).toBe(x.saved.candidate.id);
-    expect(await x.activate(next)).toMatchObject({
-      enabled: true,
-      replayed: true,
-      receipt: result.receipt,
-    });
-    await next.finish();
   }, 60000);
 
   it('department common requirements test inherited and own scenes before exact confirmation and fresh adoption', async () => {
@@ -3979,11 +3334,18 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     expect(x.preview.question.question).toContain('不读取或验证个人定制内容');
     await x.show();
     await x.answer();
-    expect(await x.activate()).toMatchObject({ enabled: true });
+    await expect(x.activate()).rejects.toMatchObject({
+      code: 'legacy_method_retired',
+    });
+    await seedHistoricalMethodPublication(x);
     await x.run.finish();
     // Shared methods still run on the original assigned employee. A new
     // owner custom Run intentionally does not inherit these layers.
-    const next = await methodRun(x.f, x.f.assignment.id, '普通金额任务');
+    const next = await historicalMethodRun(
+      x.f,
+      x.f.assignment.id,
+      '普通金额任务',
+    );
     expect(JSON.stringify(next.runtime.snapshot)).toContain(
       x.saved.candidate.id,
     );
@@ -3998,7 +3360,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
   it('department common coverage cannot use only its own proof, a substituted digest or a scene-only test request', async () => {
     const x = await retryFixture('cny-total-v1', true, true);
     await passActivationTest(x.f, x.test);
-    const run = await methodRun(
+    const run = await historicalMethodRun(
       x.f,
       x.instance.id,
       departmentCommonAcceptancePhrases(x.departmentInfo!.department.name).test,
@@ -4031,7 +3393,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         }),
       ).rejects.toMatchObject({ code: 'source_changed' });
     await run.finish();
-    const sceneOnly = await methodRun(
+    const sceneOnly = await historicalMethodRun(
       x.f,
       x.instance.id,
       departmentMethodAcceptancePhrases.test,
@@ -4051,24 +3413,31 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
   it('department common-only candidate can test its inherited scene without inventing an own scene', async () => {
     const x = await retryFixture('cny-total-v1', true, true);
     await passActivationTest(x.f, x.test);
-    const edit = await methodRun(
+    const edit = await historicalMethodRun(
       x.f,
       x.instance.id,
       '请移除本部门的“金额合计”工作场景。',
     );
-    const saved = await saveEmployeeMethodFromChat({
-      ...edit,
-      arguments: {
-        sharedTarget: x.args.sharedTarget,
+    const existing = (await getEmployeeContentSet(x.f.a.context, x.saved.setId))
+      .set;
+    const saved = await seedHistoricalEmployeeContent(
+      fixture.db,
+      x.f.a.context,
+      {
+        operation: 'save_draft',
+        workspaceId: x.f.a.workspaceId,
+        setId: x.saved.setId,
+        requestId: randomUUID(),
         expectedRevision: x.saved.revision,
-        section: 'scene',
-        operation: 'remove_scene',
-        scene: { id: x.args.sceneId },
-        changeSummary: 'Only inherited scene remains',
+        ownership: existing.ownership,
+        target: existing.target,
+        textEdits: [],
+        changeSummary: 'Historical common-only candidate',
+        manifest: { ...existing.candidate!.manifest, scenes: [] },
       },
-    });
+    );
     await edit.finish();
-    const run = await methodRun(
+    const run = await historicalMethodRun(
       x.f,
       x.instance.id,
       departmentCommonAcceptancePhrases(x.departmentInfo!.department.name).test,
@@ -4105,7 +3474,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     ).toBe(test.id);
     await run.finish();
     await passActivationTest(x.f, test);
-    const confirm = await methodRun(
+    const confirm = await historicalMethodRun(
       x.f,
       x.instance.id,
       '请查看部门共同要求并确认启用。',
@@ -4143,43 +3512,30 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       target: { kind: 'employee', employeeId: company!.employee_id },
       changeSummary: 'Upstream coverage changes',
     };
-    const saved = await mutateEmployeeContent(x.f.b.context, {
-      ...base,
-      operation: 'save_draft',
-      requestId: randomUUID(),
-      expectedRevision: company!.revision,
-      textEdits: [],
-      manifest: {
-        ...company!.manifest,
-        scenes: [
-          ...company!.manifest.scenes,
-          {
-            id: randomUUID(),
-            name: '新增公司场景',
-            appliesWhen: 'Additional synthetic case',
-            references: [],
-          },
-        ],
+    await seedHistoricalEmployeeContent(
+      fixture.db,
+      x.f.b.context,
+      {
+        ...base,
+        operation: 'save_draft',
+        requestId: randomUUID(),
+        expectedRevision: company!.revision,
+        textEdits: [],
+        manifest: {
+          ...company!.manifest,
+          scenes: [
+            ...company!.manifest.scenes,
+            {
+              id: randomUUID(),
+              name: '新增公司场景',
+              appliesWhen: 'Additional synthetic case',
+              references: [],
+            },
+          ],
+        },
       },
-    });
-    const pins = {
-      candidateRevisionId: saved.candidate.id,
-      candidateDigest: saved.candidate.digest,
-    };
-    const validated = await mutateEmployeeContent(x.f.b.context, {
-      ...base,
-      ...pins,
-      operation: 'validate',
-      requestId: randomUUID(),
-      expectedRevision: saved.revision,
-    });
-    await mutateEmployeeContent(x.f.b.context, {
-      ...base,
-      ...pins,
-      operation: 'activate',
-      requestId: randomUUID(),
-      expectedRevision: validated.revision,
-    });
+      { active: true },
+    );
   }
 
   it.each(['queued', 'between-tests', 'after-question'] as const)(
@@ -4190,7 +3546,12 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         await x.show();
         await x.answer();
         await changeInheritedCompany(x);
-        await expect(x.activate()).rejects.toThrow('validation_required');
+        expect(
+          (await getEmployeeMethodTest(x.f.a.context, x.test.id)).applicable,
+        ).toBe(false);
+        await expect(x.activate()).rejects.toMatchObject({
+          code: 'legacy_method_retired',
+        });
         expect(
           (await getEmployeeContentSet(x.f.a.context, x.saved.setId)).set
             .active,
@@ -4210,7 +3571,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
           await fixture.db`select run_id from allrice_employee_method_tests where test_id=${x.test.id}`;
         expect(row!.run_id).toBeNull();
       }
-      const run = await methodRun(
+      const run = await historicalMethodRun(
         x.f,
         x.instance.id,
         departmentCommonAcceptancePhrases(x.departmentInfo!.department.name)
@@ -4234,7 +3595,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
   it('does not approve changed common requirements with only a private scene test while an inherited scene is affected', async () => {
     const x = await retryFixture('cny-total-v1', true);
     await passActivationTest(x.f, x.test);
-    const run = await methodRun(x.f, x.instance.id, '请启用个人方法');
+    const run = await historicalMethodRun(x.f, x.instance.id, '请启用个人方法');
     await expect(
       prepareEmployeeMethodActivationFromChat({
         ...run,
@@ -4269,8 +3630,15 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       configuration: { ...settings.configuration, reasoningEffort: 'low' },
     });
     try {
+      await expect(
+        prepareEmployeeMethodActivationFromChat({
+          ...x.run,
+          callId: randomUUID(),
+          arguments: x.preparation,
+        }),
+      ).rejects.toMatchObject({ code: 'source_changed' });
       await expect(x.activate()).rejects.toMatchObject({
-        code: 'source_changed',
+        code: 'legacy_method_retired',
       });
       expect(
         (await getEmployeeContentSet(x.f.a.context, x.saved.setId)).set.active,
@@ -4282,103 +3650,6 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       });
       await x.run.finish();
     }
-  }, 60000);
-
-  it.each([
-    'decline',
-    'skipped',
-    'quoted',
-    'changed',
-    'foreign',
-    'expired',
-    'canceled',
-    'wrong-proof',
-    'new-instruction',
-  ] as const)(
-    'does not activate after %s',
-    async (mode) => {
-      const x = await activationFixture();
-      await x.show();
-      if (mode === 'decline') await x.answer(['暂不启用']);
-      // MET-210: "跳过本题" ({ selected: [] }) is never an approval.
-      else if (mode === 'skipped') await x.answer([]);
-      else if (mode === 'quoted') await x.answer([], '资料中写“确认启用”');
-      else await x.answer();
-      if (mode === 'changed') {
-        const edit = await methodRun(
-          x.f,
-          x.instance.id,
-          '请修改我的工作场景候选：再加检查。',
-        );
-        await saveEmployeeMethodFromChat({
-          ...edit,
-          arguments: {
-            expectedRevision: x.saved.revision,
-            section: 'scene',
-            scene: { id: x.args.sceneId },
-            procedure: '新版待验证',
-            changeSummary: '并发修改',
-          },
-        });
-        await edit.finish();
-      }
-      if (mode === 'expired')
-        await fixture.db`update allrice_employee_method_activations set expires_at=now()-interval '1 minute' where id=${x.preview.receiptId}`;
-      if (mode === 'canceled')
-        await fixture.db`update allrice_jobs set cancel_requested_at=clock_timestamp() where id=${x.run.context.jobId}`;
-      if (mode === 'wrong-proof')
-        await fixture.db`update allrice_conversation_commands set native_proof=jsonb_set(native_proof,'{messageId}','"another-question"') where session_id=${x.run.sessionId} and state='consumed'`;
-      if (mode === 'new-instruction')
-        await sendChatMessage(
-          x.f.a.context,
-          x.f.a.workspaceId,
-          x.run.sessionId,
-          { text: '先不要启用，稍后再说', clientMessageId: randomUUID() },
-        );
-      const other =
-        mode === 'foreign'
-          ? await methodRun(x.f, x.instance.id, '确认启用另一个会话')
-          : null;
-      await expect(x.activate(other ?? x.run)).rejects.toMatchObject({
-        code: (
-          {
-            decline: 'activation_declined',
-            skipped: 'activation_declined',
-            quoted: 'activation_declined',
-            changed: 'version_conflict',
-            foreign: 'not_found',
-            expired: 'activation_expired',
-            canceled: 'authorization_denied',
-            'wrong-proof': 'activation_answer_pending',
-            'new-instruction': 'activation_declined',
-          } as const
-        )[mode],
-      });
-      expect(
-        (await getEmployeeContentSet(x.f.a.context, x.saved.setId)).set.active,
-      ).toBeNull();
-      await x.run.finish();
-      if (other) await other.finish();
-    },
-    60000,
-  );
-
-  it('accepts the original question proof after native parked continuation changes turn and job attempt', async () => {
-    const x = await activationFixture();
-    await x.show();
-    await x.answer();
-    const resumed = {
-      ...x.run,
-      worker: { ...x.run.worker, attempt: x.run.worker.attempt + 1 },
-    };
-    await fixture.db`update allrice_jobs set attempt=${resumed.worker.attempt} where id=${x.run.context.jobId}`;
-    await recordConversationTurn({
-      ...x.runtime,
-      threadId: x.threadId,
-      turnId: `resumed-${randomUUID()}`,
-    });
-    expect(await x.activate(resumed)).toMatchObject({ enabled: true });
-    await x.run.finish();
   }, 60000);
 
   async function methodFileCloud(f: Awaited<ReturnType<typeof setup>>) {
@@ -4596,7 +3867,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       assertion: { passed: false, reason: 'wrong_stage' },
       files: [],
     });
-    const retry = await methodRun(
+    const retry = await historicalMethodRun(
       f.f,
       f.instance.id,
       `请重试测试 ${f.test.id}`,
@@ -4867,7 +4138,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         assertion: { reason: 'execution_failed' },
       },
     );
-    const retry = await methodRun(
+    const retry = await historicalMethodRun(
       f.f,
       f.instance.id,
       `请重试测试 ${f.test.id}`,
@@ -4917,7 +4188,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       currency: 'CNY',
       amountUnit: 'cent',
     });
-    const ordinary = await methodRun(
+    const ordinary = await historicalMethodRun(
       f,
       instance.id,
       '请测试我的工作场景候选：金额汇总。',
@@ -4934,7 +4205,11 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       }),
     ).rejects.toMatchObject({ code: 'explicit_test_retry_required' });
     await ordinary.finish();
-    const retrying = await methodRun(f, instance.id, `请重试测试 ${test.id}。`);
+    const retrying = await historicalMethodRun(
+      f,
+      instance.id,
+      `请重试测试 ${test.id}。`,
+    );
     expect(retrying.sessionId).not.toBe(run.sessionId);
     const retryArgs = { ...args, retryOfTestId: test.id };
     const attempts = await Promise.all(
@@ -5018,7 +4293,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       snapshot: subscription!,
     });
     await fail(child.id);
-    const repeatParent = await methodRun(
+    const repeatParent = await historicalMethodRun(
       f,
       instance.id,
       `请重试测试 ${test.id}。`,
@@ -5032,7 +4307,11 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       ).id,
     ).toBe(child.id);
     await repeatParent.finish();
-    const next = await methodRun(f, instance.id, `请重试测试 ${child.id}。`);
+    const next = await historicalMethodRun(
+      f,
+      instance.id,
+      `请重试测试 ${child.id}。`,
+    );
     await expect(
       startEmployeeMethodTestFromChat({ ...next, arguments: retryArgs }),
     ).rejects.toMatchObject({ code: 'explicit_test_retry_required' });
@@ -5065,7 +4344,11 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       test.id,
     );
     await fail(test.id);
-    const retrying = await methodRun(f, instance.id, `请重试测试 ${test.id}。`);
+    const retrying = await historicalMethodRun(
+      f,
+      instance.id,
+      `请重试测试 ${test.id}。`,
+    );
     const results = await Promise.all(
       Array.from({ length: 3 }, () =>
         startEmployeeMethodTestFromChat({
@@ -5107,7 +4390,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
           events: [],
           error: null,
         });
-      const retrying = await methodRun(
+      const retrying = await historicalMethodRun(
         f,
         instance.id,
         `请重试测试 ${test.id}。`,
@@ -5131,7 +4414,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     60000,
   );
   it('rejects stale candidate and model changes instead of creating a differently bound retry', async () => {
-    const { f, instance, saved, args, test, fail } = await retryFixture();
+    const { f, instance, args, test, fail } = await retryFixture();
     expect((await claimNextPlatformEmployeeTestRun(randomUUID()))?.id).toBe(
       test.id,
     );
@@ -5141,7 +4424,11 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       expectedRevision: settings.revision,
       configuration: { ...settings.configuration, reasoningEffort: 'low' },
     });
-    const retrying = await methodRun(f, instance.id, `请重试测试 ${test.id}。`);
+    const retrying = await historicalMethodRun(
+      f,
+      instance.id,
+      `请重试测试 ${test.id}。`,
+    );
     await expect(
       startEmployeeMethodTestFromChat({
         ...retrying,
@@ -5149,19 +4436,23 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       }),
     ).rejects.toMatchObject({ code: 'test_retry_model_changed' });
     await retrying.finish();
-    const edit = await methodRun(f, instance.id);
-    await saveEmployeeMethodFromChat({
-      ...edit,
-      arguments: {
-        expectedRevision: saved.revision,
-        section: 'scene',
-        scene: { id: args.sceneId },
-        procedure: '先核对输入，再将整数分相加',
-        changeSummary: '新候选',
-      },
+    const edit = await historicalMethodRun(f, instance.id);
+    await historicalMethod(f, instance.id, {
+      scenes: [
+        {
+          id: args.sceneId,
+          name: '金额汇总',
+          appliesWhen: '固定合成数据',
+          procedure: '先核对输入，再将整数分相加',
+        },
+      ],
     });
     await edit.finish();
-    const stale = await methodRun(f, instance.id, `请重试测试 ${test.id}。`);
+    const stale = await historicalMethodRun(
+      f,
+      instance.id,
+      `请重试测试 ${test.id}。`,
+    );
     await expect(
       startEmployeeMethodTestFromChat({
         ...stale,
@@ -5180,16 +4471,16 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
   it('validates an exact candidate through the shared queue and ledger without activating or exposing it', async () => {
     const f = await setup(true),
       instance = await f.custom('金额助手');
-    const editing = await methodRun(f, instance.id);
-    const saved = await saveEmployeeMethodFromChat({
-      ...editing,
-      arguments: {
-        expectedRevision: 0,
-        section: 'scene',
-        scene: { name: '金额汇总', appliesWhen: '合成金额测试' },
-        procedure: '将输入整数分相加后额外加 100 分。只输出 totalCents JSON。',
-        changeSummary: '已知错误的候选',
-      },
+    const editing = await historicalMethodRun(f, instance.id);
+    const saved = await historicalMethod(f, instance.id, {
+      scenes: [
+        {
+          name: '金额汇总',
+          appliesWhen: '合成金额测试',
+          procedure:
+            '将输入整数分相加后额外加 100 分。只输出 totalCents JSON。',
+        },
+      ],
     });
     await editing.finish();
     const content = await getEmployeeContentSet(f.a.context, saved.setId);
@@ -5200,7 +4491,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       sceneId: content.set.candidate!.manifest.scenes[0]!.id,
       caseId: 'cny-total-v1',
     };
-    const testing = await methodRun(
+    const testing = await historicalMethodRun(
       f,
       instance.id,
       '请测试我的工作场景候选：金额汇总。',
@@ -5343,27 +4634,27 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     expect(
       (await getEmployeeMethodTest(f.a.context, first.id)).assertion?.actual,
     ).toBe(30100);
-    const correcting = await methodRun(
+    const correcting = await historicalMethodRun(
       f,
       instance.id,
       '请调整我的工作场景候选：金额汇总不再额外加 100 分。',
     );
-    const corrected = await saveEmployeeMethodFromChat({
-      ...correcting,
-      arguments: {
-        expectedRevision: saved.revision,
-        section: 'scene',
-        scene: { id: args.sceneId },
-        procedure:
-          '将输入的金额整数分相加，不加其他金额；只输出 totalCents JSON。',
-        changeSummary: '修正多加金额',
-      },
+    const corrected = await historicalMethod(f, instance.id, {
+      scenes: [
+        {
+          id: args.sceneId,
+          name: '金额汇总',
+          appliesWhen: '合成金额测试',
+          procedure:
+            '将输入的金额整数分相加，不加其他金额；只输出 totalCents JSON。',
+        },
+      ],
     });
     expect(
       (await getEmployeeMethodTest(f.a.context, first.id)).applicable,
     ).toBe(false);
     await correcting.finish();
-    const repeat = await methodRun(
+    const repeat = await historicalMethodRun(
       f,
       instance.id,
       '请测试我的工作场景候选：金额汇总。',
@@ -5425,21 +4716,20 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     async (mode) => {
       const f = await setup(true),
         instance = await f.custom('边界测试');
-      const editing = await methodRun(f, instance.id);
-      const saved = await saveEmployeeMethodFromChat({
-        ...editing,
-        arguments: {
-          expectedRevision: 0,
-          section: 'scene',
-          scene: { name: '金额汇总', appliesWhen: '合成数据' },
-          procedure: '整数分相加',
-          changeSummary: '固定样例',
-        },
+      const editing = await historicalMethodRun(f, instance.id);
+      const saved = await historicalMethod(f, instance.id, {
+        scenes: [
+          {
+            name: '金额汇总',
+            appliesWhen: '合成数据',
+            procedure: '整数分相加',
+          },
+        ],
       });
       await editing.finish();
       const scene = (await getEmployeeContentSet(f.a.context, saved.setId)).set
         .candidate!.manifest.scenes[0]!;
-      const run = await methodRun(
+      const run = await historicalMethodRun(
         f,
         instance.id,
         '请测试我的工作场景候选：金额汇总。',
@@ -5544,7 +4834,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     await finishReferenceProcessing(claim!, [
       { content: '按实际回款核对', start: 0, end: 7 },
     ]);
-    const run = await methodRun(
+    const run = await historicalMethodRun(
       f,
       instance.id,
       '请保存我的工作场景候选：按回款核对。请长期引用本次选择的周度口径资料。',
@@ -5562,16 +4852,15 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       contentId: file.sourceId,
       revisionId: file.revisionId,
     });
-    const saved = await saveEmployeeMethodFromChat({
-      ...run,
-      arguments: {
-        expectedRevision: 0,
-        section: 'scene',
-        scene: { name: '每周对账', appliesWhen: '每周' },
-        procedure: '核对回款',
-        references: [pin],
-        changeSummary: '保存周度场景及资料',
-      },
+    const saved = await historicalMethod(f, instance.id, {
+      scenes: [
+        {
+          name: '每周对账',
+          appliesWhen: '每周',
+          procedure: '核对回款',
+          references: [pin],
+        },
+      ],
     });
     const snapshot = await getEmployeeContentSet(f.a.context, saved.setId);
     expect(
@@ -5591,499 +4880,12 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     ).rejects.toMatchObject({ code: 'source_changed' });
   }, 60000);
 
-  it.each([
-    '请保存我的第一个工作场景候选「美股监控助手」：我主动询问时查询并回复；不自动监控或推送；监控标的和信号条件待补充。',
-    '请保存我的工作场景候选「美股监控助手」：仅在我主动询问时查询并回复；不自动监控或推送；监控标的和信号条件待补充。',
-    '请保存我的工作场景「美股监控助手」：不要自动启用监控，只在我主动询问时查询并回复。',
-    '请将 NVDA、COIN、CRCL、MSTR、HOOD、SK 海力士（000660.KS）、闪迪（SNDK）、美光（MU）保存到我的「美股监控助手」工作场景。',
-  ])(
-    'saves and publishes a trailing named personal scene immediately: %s',
-    async (text) => {
-      const f = await setup(true),
-        instance = await f.custom('小白');
-      legacyMethodTools = false;
-      const run = await methodRun(f, instance.id, text);
-      expect(
-        await inspectEmployeeMethodFromChat({
-          ...run,
-          arguments: { view: 'candidate' },
-        }),
-      ).toMatchObject({ revision: 0, candidate: null, active: null });
-      const input = {
-        ...run,
-        arguments: {
-          expectedRevision: 0,
-          section: 'scene',
-          scene: {
-            name: '美股监控助手',
-            appliesWhen: '用户主动询问美股相关信息时使用。',
-          },
-          requirements: text.includes('NVDA')
-            ? '仅在用户主动询问时查询并回复；不自动监控或推送；标的：NVDA、COIN、CRCL、MSTR、HOOD、000660.KS、SNDK、MU。'
-            : '仅在用户主动询问时查询并回复；不自动监控或推送；监控标的和信号条件待补充。',
-          procedure:
-            '等待用户主动询问，查询并回复后结束，不安排自动监控或推送。',
-          changeSummary: '保存首个个人工作场景候选',
-        },
-      };
-      const frozen = JSON.stringify(run.frozen);
-      const saved = await saveEmployeeMethodAndPublishFromChat(input);
-      expect(saved).toMatchObject({ revision: 1, validation: { valid: true } });
-      expect(saved.active).toEqual(saved.candidate);
-      expect(await saveEmployeeMethodAndPublishFromChat(input)).toEqual(saved);
-      const content = await getEmployeeContentSet(f.a.context, saved.setId);
-      if (text.includes('NVDA'))
-        expect(
-          content.sources.some((source) => source.body?.includes('NVDA、COIN')),
-        ).toBe(true);
-      expect(content.set.candidate!.manifest.scenes).toMatchObject([
-        {
-          name: '美股监控助手',
-          appliesWhen: '用户主动询问美股相关信息时使用。',
-        },
-      ]);
-      expect(
-        (await getEmployeeDetails(f.a.context, instance.id)).content.scenes,
-      ).toMatchObject([{ name: '美股监控助手' }]);
-      const [unchanged] =
-        await fixture.db`select execution_snapshot from allrice_employee_runs where run_id=${run.context.runId}`;
-      expect(JSON.stringify(unchanged!.execution_snapshot)).toBe(frozen);
-      expect(run.frozen.capabilitySnapshot.bindings.toolNames).not.toContain(
-        'workspace.employee.method.prepare_activation',
-      );
-      const [tests] =
-        await fixture.db`select count(*)::int n from allrice_employee_method_tests where set_id=${saved.setId}`;
-      expect(tests!.n).toBe(0);
-      await run.finish();
-      const next = await methodRun(f, instance.id, '普通一次性查询');
-      // Retained plain methods are readable through their existing view, not
-      // auto-migrated into the package-only personal runtime.
-      expect(next.frozen.content).toMatchObject({
-        personalScenes: true,
-        layers: [],
-      });
-      expect(
-        (await listPersonalSceneSkills(f.a.context, instance.id)).skills,
-      ).toEqual([]);
-      expect(
-        (await getEmployeeContentSet(f.a.context, saved.setId)).set.active?.id,
-      ).toBe(saved.active!.id);
-      expect(
-        (await getEffectiveEmployeeContent(f.a.context, instance.id)).scenes,
-      ).toMatchObject([{ name: '美股监控助手' }]);
-      await next.finish();
-      legacyMethodTools = true;
-    },
-  );
-
-  it('publishes partial edits, removal and historical restore without losing other scenes or old publications', async () => {
-    const f = await setup(true),
-      instance = await f.custom('Immediate history');
-    const run = await methodRun(
-      f,
-      instance.id,
-      '请保存我的工作场景：每周对账和每月对账，保留原始数据。',
-    );
-    const first = await saveEmployeeMethodAndPublishFromChat({
-      ...run,
-      arguments: {
-        expectedRevision: 0,
-        section: 'scene',
-        scene: { name: '每周对账', appliesWhen: '每周' },
-        requirements: '保留原始数据',
-        changeSummary: '保存每周场景',
-      },
-    });
-    const second = await saveEmployeeMethodAndPublishFromChat({
-      ...run,
-      callId: randomUUID(),
-      arguments: {
-        expectedRevision: 1,
-        section: 'scene',
-        scene: { name: '每月对账', appliesWhen: '每月' },
-        procedure: '按原始记录核对',
-        changeSummary: '添加每月场景',
-      },
-    });
-    expect(second.active).toEqual(second.candidate);
-    const initial = (await getEmployeeDetails(f.a.context, instance.id)).content
-      .scenes;
-    expect(initial.map((scene) => scene.name)).toEqual([
-      '每周对账',
-      '每月对账',
-    ]);
-    await run.finish();
-    const remove = await methodRun(
-      f,
-      instance.id,
-      '请更新我的工作场景：请移除每月对账场景。',
-    );
-    const removed = await saveEmployeeMethodAndPublishFromChat({
-      ...remove,
-      arguments: {
-        expectedRevision: second.revision,
-        section: 'scene',
-        operation: 'remove_scene',
-        scene: { id: initial[1]!.id },
-        changeSummary: '移除每月场景',
-      },
-    });
-    expect(removed.active).toEqual(removed.candidate);
-    expect(
-      (await getEmployeeDetails(f.a.context, instance.id)).content.scenes,
-    ).toMatchObject([{ id: initial[0]!.id }]);
-    await remove.finish();
-    const restore = await methodRun(
-      f,
-      instance.id,
-      '请恢复我的整份工作方法到第2版。',
-    );
-    const restored = await restoreEmployeeMethodAndPublishFromChat({
-      ...restore,
-      arguments: {
-        expectedRevision: removed.revision,
-        sourceRevisionId: second.active!.id,
-        changeSummary: '恢复第二版',
-      },
-    });
-    expect(restored.active).toEqual(restored.candidate);
-    expect(
-      (await getEmployeeDetails(f.a.context, instance.id)).content.scenes,
-    ).toEqual(initial);
-    const history = await getEmployeeContentHistory(f.a.context, first.setId);
-    expect(history.revisions).toHaveLength(4);
-    const publications =
-      await fixture.db`select revision_id,invalidated_at from allrice_employee_content_publications where set_id=${first.setId}`;
-    expect(publications).toHaveLength(4);
-    expect(publications.every((row) => row.invalidated_at === null)).toBe(true);
-    await restore.finish();
-  });
-
-  it('rolls back both saved text and publication when a referenced source is unavailable, and never saves against a stale version', async () => {
-    const f = await setup(true),
-      instance = await f.custom('Atomic immediate save');
-    const run = await methodRun(
-      f,
-      instance.id,
-      '请保存我的工作场景。请将这份资料长期引用。',
-    );
-    await expect(
-      saveEmployeeMethodAndPublishFromChat({
-        ...run,
-        arguments: {
-          expectedRevision: 0,
-          section: 'scene',
-          scene: { name: '资料检查', appliesWhen: '收到资料时' },
-          requirements: '保留资料',
-          references: [
-            {
-              sourceKind: 'knowledge',
-              contentId: randomUUID(),
-              revisionId: randomUUID(),
-              digest: 'sha256:' + 'a'.repeat(64),
-            },
-          ],
-          changeSummary: '不应留下半次保存',
-        },
-      }),
-    ).rejects.toBeDefined();
-    expect(
-      await fixture.db`select id from allrice_employee_content_sets where instance_id=${instance.id}`,
-    ).toHaveLength(0);
-    expect(
-      await fixture.db`select id from allrice_company_assets where owner_id=${f.a.user.id}`,
-    ).toHaveLength(0);
-    const good = await saveEmployeeMethodAndPublishFromChat({
-      ...run,
-      callId: randomUUID(),
-      arguments: {
-        expectedRevision: 0,
-        section: 'scene',
-        scene: { name: '资料检查', appliesWhen: '收到资料时' },
-        requirements: '保留资料',
-        changeSummary: '保存有效内容',
-      },
-    });
-    await expect(
-      saveEmployeeMethodAndPublishFromChat({
-        ...run,
-        callId: randomUUID(),
-        arguments: {
-          expectedRevision: 0,
-          section: 'scene',
-          scene: { name: '不应覆盖', appliesWhen: '收到资料时' },
-          requirements: '过时保存',
-          changeSummary: '拒绝旧版本',
-        },
-      }),
-    ).rejects.toMatchObject({ code: 'version_conflict' });
-    expect(
-      (await getEmployeeContentHistory(f.a.context, good.setId)).revisions,
-    ).toHaveLength(1);
-    expect(
-      (await getEmployeeDetails(f.a.context, instance.id)).content.scenes,
-    ).toMatchObject([{ name: '资料检查' }]);
-    await run.finish();
-  });
-
-  it('does not make a draft-only request effective', async () => {
-    const f = await setup(true),
-      instance = await f.custom('Explicit draft only');
-    const run = await methodRun(
-      f,
-      instance.id,
-      '请保存我的工作场景：每周核对。只保存草稿，先不启用。',
-    );
-    await expect(
-      saveEmployeeMethodAndPublishFromChat({
-        ...run,
-        arguments: {
-          expectedRevision: 0,
-          section: 'scene',
-          scene: { name: '每周核对', appliesWhen: '每周' },
-          requirements: '核对记录',
-          changeSummary: '不应生效',
-        },
-      }),
-    ).rejects.toMatchObject({ code: 'save_takes_effect' });
-    expect(
-      await fixture.db`select id from allrice_employee_content_sets where instance_id=${instance.id}`,
-    ).toHaveLength(0);
-    await run.finish();
-  });
-
-  it.each(['company', 'department'] as const)(
-    'makes an authorized %s text scene effective at save, with no private scope expansion',
-    async (scope) => {
-      const f = await setup(true),
-        instance = await f.custom('Shared immediate save');
-      const department = await departmentFixture(f);
-      await department.configure(
-        f.a.user.id,
-        department.department.id,
-        scope === 'company' ? 'company' : 'department',
-      );
-      const run = await methodRun(
-        f,
-        instance.id,
-        scope === 'company'
-          ? '请保存本公司的工作场景：每周核对。'
-          : '请保存本部门的工作场景：每周核对。',
-      );
-      const selected = await inspectEmployeeMethodFromChat({
-        ...run,
-        arguments: { view: 'candidate', scope },
-      });
-      if (!('sharedTarget' in selected) || !selected.sharedTarget)
-        throw Error('fixture shared target');
-      const saved = await saveEmployeeMethodAndPublishFromChat({
-        ...run,
-        arguments: {
-          expectedRevision: 0,
-          sharedTarget: selected.sharedTarget,
-          section: 'scene',
-          scene: { name: '共享每周核对', appliesWhen: '每周' },
-          requirements: '保留原始记录',
-          changeSummary: '保存共享场景',
-        },
-      });
-      expect(saved.active).toEqual(saved.candidate);
-      const [set] =
-        await fixture.db`select scope,owner_id,instance_id,active_revision_id from allrice_employee_content_sets where id=${saved.setId}`;
-      expect(set).toMatchObject({
-        scope,
-        owner_id: null,
-        instance_id: null,
-        active_revision_id: saved.active!.id,
-      });
-      expect(
-        (await getEmployeeDetails(f.a.context, instance.id)).content.scenes,
-      ).toMatchObject([{ name: '共享每周核对' }]);
-      await run.finish();
-    },
-  );
-
-  it('keeps historical unenabled drafts out of a later immediate partial save', async () => {
-    const f = await setup(true),
-      instance = await f.custom('Historical draft boundary');
-    const oldRun = await methodRun(
-      f,
-      instance.id,
-      '请保存我的工作场景：旧的待定方案。只保存候选，不启用。',
-    );
-    const draft = await saveEmployeeMethodFromChat({
-      ...oldRun,
-      arguments: {
-        expectedRevision: 0,
-        section: 'scene',
-        scene: { name: '旧的待定方案', appliesWhen: '尚未决定' },
-        requirements: '这不是生效内容',
-        changeSummary: '保留历史草稿',
-      },
-    });
-    await oldRun.finish();
-    legacyMethodTools = false;
-    const run = await methodRun(
-      f,
-      instance.id,
-      '请保存我的工作场景：每周核对记录。',
-    );
-    expect(
-      await inspectEmployeeMethodFromChat({
-        ...run,
-        arguments: { view: 'candidate' },
-      }),
-    ).toMatchObject({ revision: 1, candidate: null, active: null });
-    const saved = await saveEmployeeMethodAndPublishFromChat({
-      ...run,
-      arguments: {
-        expectedRevision: 1,
-        section: 'scene',
-        scene: { name: '每周核对记录', appliesWhen: '每周' },
-        requirements: '核对记录',
-        changeSummary: '仅保存明确要求的场景',
-      },
-    });
-    expect(saved.active).toEqual(saved.candidate);
-    expect(
-      (await getEmployeeDetails(f.a.context, instance.id)).content.scenes.map(
-        (scene) => scene.name,
-      ),
-    ).toEqual(['每周核对记录']);
-    const history = await getEmployeeContentHistory(f.a.context, saved.setId);
-    expect(history.revisions).toHaveLength(2);
-    expect(
-      history.revisions.some((revision) => revision.id === draft.candidate.id),
-    ).toBe(true);
-    expect(
-      await fixture.db`select revision_id from allrice_employee_content_publications where set_id=${saved.setId} and revision_id=${draft.candidate.id}`,
-    ).toHaveLength(0);
-    await run.finish();
-  });
-
-  it('does not save a trailing named scene when the original request denies persistence', async () => {
-    const f = await setup(true),
-      instance = await f.custom('小白');
-    const run = await methodRun(
-      f,
-      instance.id,
-      '请保存我的工作场景候选「美股监控助手」。请不要保存我的第一个工作场景候选「美股监控助手」。',
-    );
-    await expect(
-      saveEmployeeMethodFromChat({
-        ...run,
-        arguments: {
-          expectedRevision: 0,
-          section: 'scene',
-          scene: { name: '美股监控助手', appliesWhen: '主动询问时' },
-          procedure: '仅查询并回复',
-          changeSummary: '不应保存',
-        },
-      }),
-    ).rejects.toMatchObject({ code: 'explicit_method_request_required' });
-    expect(
-      await inspectEmployeeMethodFromChat({
-        ...run,
-        arguments: { view: 'candidate' },
-      }),
-    ).toMatchObject({ revision: 0, candidate: null, active: null });
-    await run.finish();
-  });
-
-  it('saves several personal scene candidates, replays exact receipts before merging, and continues across sessions without activation', async () => {
-    const f = await setup(true),
-      instance = await f.custom('小白');
-    const run = await methodRun(f, instance.id);
-    const inspect = async (view: 'effective' | 'candidate' = 'candidate') =>
-      inspectEmployeeMethodFromChat({ ...run, arguments: { view } });
-    expect(await inspect()).toMatchObject({ revision: 0, candidate: null });
-    const common = {
-      expectedRevision: 0,
-      section: 'common',
-      requirements: '保留原始数据 DRAFT_ONLY_MARKER',
-      changeSummary: '通用要求',
-    };
-    const save = (args: unknown, callId = randomUUID()) =>
-      saveEmployeeMethodFromChat({ ...run, callId, arguments: args });
-    const first = await save(common, run.callId);
-    const weekly = await save({
-      expectedRevision: 1,
-      section: 'scene',
-      scene: { name: '每周对账', appliesWhen: '每周' },
-      procedure: '先核对流水，再解释差异',
-      changeSummary: '周对账',
-    });
-    const monthly = await save({
-      expectedRevision: 2,
-      section: 'scene',
-      scene: { name: '每月对账', appliesWhen: '每月' },
-      procedure: '按月汇总后核对',
-      changeSummary: '月对账',
-    });
-    expect([first.revision, weekly.revision, monthly.revision]).toEqual([
-      1, 2, 3,
-    ]);
-    expect(monthly.active).toBeNull();
-    expect(await save(common, run.callId)).toEqual(first);
-    await expect(
-      save({ ...common, requirements: '变更回执输入' }, run.callId),
-    ).rejects.toMatchObject({ code: 'request_conflict' });
-    await expect(save(common)).rejects.toMatchObject({
-      code: 'version_conflict',
-    });
-    const initial = await getEmployeeContentSet(f.a.context, first.setId);
-    const [week, month] = initial.set.candidate!.manifest.scenes;
-    expect(week!.name).toBe('每周对账');
-    expect(month!.name).toBe('每月对账');
-    expect(JSON.stringify(await inspect('effective'))).not.toContain(
-      'DRAFT_ONLY_MARKER',
-    );
-    await run.finish();
-    const continuation = await methodRun(
-      f,
-      instance.id,
-      '请调整我的每月对账工作场景候选：增加检查期间。',
-    );
-    const continued = await inspectEmployeeMethodFromChat({
-      ...continuation,
-      arguments: { view: 'candidate' },
-    });
-    expect(continued).toMatchObject({ revision: 3 });
-    const updated = await saveEmployeeMethodFromChat({
-      ...continuation,
-      arguments: {
-        expectedRevision: 3,
-        section: 'scene',
-        scene: {
-          id: month!.id,
-          name: month!.name,
-          appliesWhen: month!.appliesWhen,
-        },
-        requirements: '先检查月份完整',
-        changeSummary: '增加期间检查',
-      },
-    });
-    expect(updated).toMatchObject({ revision: 4, active: null });
-    const final = await getEmployeeContentSet(f.a.context, first.setId);
-    expect(final.set.candidate!.manifest.scenes[0]).toEqual(week);
-    expect(final.set.candidate!.manifest.scenes[1]!.references).toEqual(
-      expect.arrayContaining(month!.references),
-    );
-    expect(final.sources.some((s) => s.body?.includes('先检查月份完整'))).toBe(
-      true,
-    );
-    expect(continuation.frozen.content.layers).toEqual([]);
-    await expect(
-      getEmployeeContentSet(f.b.context, first.setId),
-    ).rejects.toMatchObject({ code: 'not_found' });
-  }, 60000);
-
   it.each(['read', 'conflict', 'intent'] as const)(
-    'retires %s draft context without revoking the original Run or visible history',
+    'keeps inspect and rejected %s writes read-only without revoking the Run or visible history',
     async (action) => {
       const f = await setup(true),
         instance = await f.custom('小白');
-      const run = await methodRun(
+      const run = await historicalMethodRun(
         f,
         instance.id,
         action === 'intent'
@@ -6107,32 +4909,37 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
             },
           }),
         ).rejects.toMatchObject({
-          code:
-            action === 'conflict'
-              ? 'version_conflict'
-              : 'explicit_method_request_required',
+          code: 'legacy_method_retired',
         });
       const [old] =
         await fixture.db`select retired_at,invalidated_at from allrice_employee_content_contexts where generation_id=${run.runtime.generationId}`;
-      expect(old!.retired_at).not.toBeNull();
+      expect(old!.retired_at).toBeNull();
       expect(old!.invalidated_at).toBeNull();
       expect(
         (await prepareEmployeeContentContext(run.scope))!.generationId,
       ).toBe(run.runtime.generationId);
+      expect(
+        (
+          await fixture.db`select method_authoring,execution_snapshot from allrice_employee_runs where run_id=${run.context.runId}`
+        )[0],
+      ).toMatchObject({
+        method_authoring: false,
+        execution_snapshot: run.frozen,
+      });
       await run.finish();
-      const next = await methodRun(
+      const next = await historicalMethodRun(
         f,
         instance.id,
         '计算 17 乘以 23。',
         run.sessionId,
       );
-      expect(next.runtime.generationId).not.toBe(run.runtime.generationId);
-      expect(next.runtime.nativeContextKey).not.toBe(
-        run.runtime.nativeContextKey,
-      );
+      expect(next.runtime.generationId).toBe(run.runtime.generationId);
+      expect(next.runtime.nativeContextKey).toBe(run.runtime.nativeContextKey);
       expect(next.runtime.allowedMessageIds).toContain(next.userMessageId);
-      expect(next.runtime.allowedMessageIds).not.toContain(run.userMessageId);
-      expect(next.runtime.historyFromMessageId).toBe(next.userMessageId);
+      expect(next.runtime.allowedMessageIds).toContain(run.userMessageId);
+      expect(next.runtime.historyFromMessageId).toBe(
+        run.runtime.historyFromMessageId,
+      );
       await expect(
         assertEmployeeContentContext(run.scope, run.runtime.generationId),
       ).resolves.toBeUndefined();
@@ -6151,7 +4958,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
   it("keeps the owner's ordinary watchlist across scene inspection while excluding candidate turns and prior answers", async () => {
     const f = await setup(true),
       instance = await f.custom('小白');
-    const first = await methodRun(
+    const first = await historicalMethodRun(
       f,
       instance.id,
       '观察名单：NVDA、COIN、CRCL、MSTR、HOOD、000660.KS、SNDK、MU。你要记住。',
@@ -6171,18 +4978,21 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       expiresAt: null,
     });
     await first.finish();
-    const inspect = await methodRun(
+    const inspect = await historicalMethodRun(
       f,
       instance.id,
       '查看当前工作场景。',
       first.sessionId,
     );
+    // Already persisted pre-retirement authoring metadata; inspect must not create it.
+    await fixture.db`update allrice_employee_runs set method_authoring=true where run_id=${inspect.context.runId}`;
+    await fixture.db`update allrice_employee_content_contexts set retired_at=clock_timestamp() where generation_id=${inspect.runtime.generationId}`;
     await inspectEmployeeMethodFromChat({
       ...inspect,
       arguments: { view: 'candidate' },
     });
     await inspect.finish();
-    const next = await methodRun(
+    const next = await historicalMethodRun(
       f,
       instance.id,
       '将上述名单保存到我的「美股监控助手」工作场景。',
@@ -6213,7 +5023,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
   it('does not recall memory saved before candidate entry and blocks later memory or implicit reference binding', async () => {
     const f = await setup(true),
       instance = await f.custom('小白');
-    const run = await methodRun(
+    const run = await historicalMethodRun(
       f,
       instance.id,
       '请保存我的工作场景候选：以后保持 DRAFT_MEMORY_MARKER。附件仅供本次参考，不要长期绑定。',
@@ -6259,6 +5069,9 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     expect(
       await filterEmployeeMethodMemories(run.scope, frozenMemories),
     ).toEqual(frozenMemories);
+    // Already persisted pre-retirement authoring metadata; inspect must not create it.
+    await fixture.db`update allrice_employee_runs set method_authoring=true where run_id=${run.context.runId}`;
+    await fixture.db`update allrice_employee_content_contexts set retired_at=clock_timestamp() where generation_id=${run.runtime.generationId}`;
     await inspectEmployeeMethodFromChat({
       ...run,
       arguments: { view: 'candidate' },
@@ -6297,9 +5110,9 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
           ],
         },
       }),
-    ).rejects.toMatchObject({ code: 'explicit_method_request_required' });
-    expect(
-      await saveEmployeeMethodFromChat({
+    ).rejects.toMatchObject({ code: 'legacy_method_retired' });
+    await expect(
+      saveEmployeeMethodFromChat({
         ...run,
         arguments: {
           expectedRevision: 0,
@@ -6308,385 +5121,162 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
           changeSummary: '仅保存文本',
         },
       }),
-    ).toMatchObject({ revision: 1, active: null });
+    ).rejects.toMatchObject({ code: 'legacy_method_retired' });
   }, 60000);
 
-  it('pins explicitly requested sources and serializes two-session edits without replacing other scenes', async () => {
-    const f = await setup(true),
-      instance = await f.custom('小白');
-    const first = await methodRun(f, instance.id);
-    const original = await saveEmployeeMethodFromChat({
-      ...first,
-      arguments: {
-        expectedRevision: 0,
-        section: 'common',
-        requirements: '原始凭据不可改',
-        changeSummary: '通用要求',
-      },
-    });
-    const initial = await getEmployeeContentSet(f.a.context, original.setId);
-    const ref = initial.set.candidate!.manifest.common[0]!;
-    const authoring = await methodRun(
-      f,
-      instance.id,
-      '请保存我的工作场景候选。请将这份通用要求长期引用。',
-    );
-    const saved = await saveEmployeeMethodFromChat({
-      ...authoring,
-      arguments: {
-        expectedRevision: 1,
-        section: 'scene',
-        scene: { name: '月度', appliesWhen: '每月' },
-        references: [ref],
-        changeSummary: '绑定现有版本',
-      },
-    });
-    const linked = await getEmployeeContentSet(f.a.context, saved.setId);
-    expect(linked.set.candidate!.manifest.scenes[0]!.references).toEqual([ref]);
-    const a = await methodRun(f, instance.id),
-      b = await methodRun(f, instance.id);
-    const edits = await Promise.allSettled(
-      [a, b].map((run, index) =>
-        saveEmployeeMethodFromChat({
+  it.each([false, true, 'company', 'selected', 'rice'] as const)(
+    'frozen legacy text calls reject every new save/restore without changing content or context: %s',
+    async (scope) => {
+      const f = await setup(true, scope === 'rice'),
+        instance =
+          scope === 'rice'
+            ? { id: f.assignment.id }
+            : await f.custom('Retired writer');
+      const department =
+        scope && scope !== 'rice' ? await departmentFixture(f) : undefined;
+      if (scope === 'company' || scope === 'selected')
+        await department!.configure(
+          f.a.user.id,
+          department!.department.id,
+          'company',
+        );
+      const shared = department
+        ? (
+            await fixture.db.begin((tx) =>
+              sharedEmployeeMethodTarget(
+                f.a.context,
+                instance.id,
+                scope === 'company' ? 'company' : 'department',
+                tx,
+                scope === 'selected' ? department.other.id : undefined,
+              ),
+            )
+          ).sharedTarget
+        : undefined;
+      const original = await historicalMethod(
+        f,
+        instance.id,
+        {
+          sharedTarget: shared,
+          scenes: [
+            {
+              name: 'Existing legacy scene',
+              appliesWhen: 'Historical task',
+              procedure: 'Retained immutable text',
+            },
+          ],
+        },
+        { active: true },
+      );
+      const run = await historicalMethodRun(
+        f,
+        instance.id,
+        '请保存并恢复这份工作方法。',
+      );
+      const effects =
+        () => fixture.db`select er.execution_snapshot,er.method_authoring,c.retired_at,c.invalidated_at,c.updated_at,
+        (select jsonb_agg(s order by s.id) from allrice_employee_content_sets s where s.organization_id=er.organization_id) sets,
+        (select count(*)::int from allrice_employee_content_revisions r join allrice_employee_content_sets s on s.id=r.set_id where s.organization_id=er.organization_id) revisions,
+        (select count(*)::int from allrice_employee_content_requests where organization_id=er.organization_id) requests,
+        (select count(*)::int from allrice_employee_content_publications p join allrice_employee_content_sets s on s.id=p.set_id where s.organization_id=er.organization_id) publications,
+        (select count(*)::int from allrice_company_asset_revisions where organization_id=er.organization_id) source_revisions,
+        (select count(*)::int from allrice_audit_events where organization_id=er.organization_id) audits
+        from allrice_employee_runs er join allrice_employee_content_contexts c on c.generation_id=er.content_generation_id where er.run_id=${run.context.runId}`;
+      const before = await effects();
+      for (const view of ['effective', 'candidate', 'history'] as const)
+        await inspectEmployeeMethodFromChat({
           ...run,
           arguments: {
-            expectedRevision: 2,
-            section: 'common',
-            requirements: `第${index}个并发调整`,
-            changeSummary: '并发候选',
+            view,
+            ...(shared
+              ? {
+                  scope: shared.scope,
+                  ...(shared.scope === 'department'
+                    ? { departmentId: shared.departmentId }
+                    : {}),
+                }
+              : {}),
           },
-        }),
-      ),
-    );
-    expect(edits.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
-    expect(edits.filter((r) => r.status === 'rejected')).toHaveLength(1);
-    const final = await getEmployeeContentSet(f.a.context, saved.setId);
-    expect(final.set.revision).toBe(3);
-    expect(final.set.candidate!.manifest.scenes).toEqual(
-      linked.set.candidate!.manifest.scenes,
-    );
-    expect(final.set.active).toBeNull();
-  }, 60000);
-
-  it('renames and removes only the intended candidate scene, preserving active content, source bodies and replay receipts', async () => {
-    const f = await setup(true),
-      instance = await f.custom('小白');
-    const first = await methodRun(f, instance.id);
-    const save = (run: typeof first, args: unknown, callId = randomUUID()) =>
-      saveEmployeeMethodFromChat({ ...run, callId, arguments: args });
-    const weekly = await save(first, {
-      expectedRevision: 0,
-      section: 'scene',
-      scene: { name: '每周对账', appliesWhen: '每周' },
-      procedure: '逐笔核对',
-      changeSummary: '周度',
-    });
-    const monthly = await save(first, {
-      expectedRevision: 1,
-      section: 'scene',
-      scene: { name: '每月对账', appliesWhen: '月末' },
-      procedure: '按月汇总',
-      changeSummary: '月度',
-    });
-    await first.finish();
-    const snapshot = await getEmployeeContentSet(f.a.context, weekly.setId);
-    const [week, month] = snapshot.set.candidate!.manifest.scenes;
-    const activation = {
-      workspaceId: f.a.workspaceId,
-      setId: weekly.setId,
-      ownership: {
-        scope: 'personal' as const,
-        organizationId: f.a.organizationId,
-        ownerId: f.a.user.id,
-      },
-      target: { kind: 'instance' as const, instanceId: instance.id },
-      candidateRevisionId: monthly.candidate.id,
-      candidateDigest: monthly.candidate.digest,
-      changeSummary: 'Isolated pre-existing active fixture',
-    };
-    const validation = await mutateEmployeeContent(f.a.context, {
-      ...activation,
-      operation: 'validate',
-      expectedRevision: monthly.revision,
-      requestId: randomUUID(),
-    });
-    const active = await mutateEmployeeContent(f.a.context, {
-      ...activation,
-      operation: 'activate',
-      expectedRevision: validation.revision,
-      requestId: randomUUID(),
-    });
-    const run = await methodRun(
-      f,
-      instance.id,
-      '上次连接失败后尚未保存修改，请继续未完成的移除操作。请更新我的工作场景候选：请移除每月对账场景。将每周对账改名为每周回款。只保存候选，不启用。',
-    );
-    const renameArgs = {
-        expectedRevision: active.revision,
-        section: 'scene',
-        scene: { id: week!.id, name: '每周回款' },
-        changeSummary: '只改名称',
-      },
-      renameId = randomUUID();
-    const renamed = await save(run, renameArgs, renameId);
-    const afterRename = await getEmployeeContentSet(f.a.context, weekly.setId);
-    expect(afterRename.set.candidate!.manifest.scenes).toEqual([
-      { ...week, name: '每周回款' },
-      month,
-    ]);
-    expect(afterRename.sources).toEqual(snapshot.sources);
-    const remove = {
-        expectedRevision: renamed.revision,
-        section: 'scene',
-        operation: 'remove_scene',
-        scene: { id: month!.id },
-        changeSummary: '候选不再包含月度',
-      },
-      removeId = randomUUID();
-    await expect(
-      save(run, { ...remove, scene: { id: randomUUID() } }),
-    ).rejects.toMatchObject({ code: 'version_conflict' });
-    await expect(
-      save(run, { ...remove, expectedRevision: active.revision }),
-    ).rejects.toMatchObject({ code: 'version_conflict' });
-    const removed = await save(run, remove, removeId);
-    expect(await save(run, remove, removeId)).toEqual(removed);
-    expect(await save(run, renameArgs, renameId)).toEqual(renamed);
-    const final = await getEmployeeContentSet(f.a.context, weekly.setId);
-    expect(final.set.active).toMatchObject(active.active!);
-    expect(final.set.active!.manifest).toEqual(
-      snapshot.set.candidate!.manifest,
-    );
-    expect(final.set.candidate!.manifest.scenes).toEqual([
-      { ...week, name: '每周回款' },
-    ]);
-    expect(
-      (
-        await getEmployeeContentHistory(f.a.context, weekly.setId)
-      ).revisions.some((r) => r.id === monthly.candidate.id),
-    ).toBe(true);
-    const ids = snapshot.sources.map((s) => s.reference.contentId);
-    expect(
-      await fixture.db`select id from allrice_company_assets where id=any(${ids}::uuid[]) and state<>'archived'`,
-    ).toHaveLength(2);
-    await expect(
-      getEmployeeContentSet(f.b.context, weekly.setId),
-    ).rejects.toMatchObject({ code: 'not_found' });
-    const ordinary = await methodRun(
-      f,
-      instance.id,
-      '请更新我的工作场景候选：只改名称。',
-    );
-    await expect(
-      save(ordinary, {
-        ...remove,
-        expectedRevision: removed.revision,
-        scene: { id: week!.id },
-      }),
-    ).rejects.toMatchObject({ code: 'explicit_method_request_required' });
-    for (const text of [
-      '请更新我的工作场景候选：删除每周回款场景中的重复步骤。',
-      '请更新我的工作场景候选：删除重复步骤，保留每周回款场景。',
-      '请翻译下文：\n第一段是背景。\n\n请更新我的工作场景候选：请移除每周回款场景。请解除月度资料引用。',
-      '客户的原话是：\n请更新我的工作场景候选：请移除每周回款场景。请解除月度资料引用。',
-      '请翻译下面这段话。\n请更新我的工作场景候选：请移除每周回款场景。请解除月度资料引用。',
-      '上次网络中断。请更新我的工作场景候选：请移除每周回款场景。不要保存，只是讨论。',
-      '上次连接失败。\n    请更新我的工作场景候选：请移除每周回款场景。请解除月度资料引用。',
-      'The previous request failed.\n\tPlease update my workflow candidate: remove this scene.',
-    ]) {
-      const contentEdit = await methodRun(f, instance.id, text);
-      await expect(
-        save(contentEdit, {
-          ...remove,
-          expectedRevision: removed.revision,
-          scene: { id: week!.id },
-        }),
-      ).rejects.toMatchObject({ code: 'explicit_method_request_required' });
-      await contentEdit.finish();
-    }
-    const unchanged = await getEmployeeContentSet(f.a.context, weekly.setId);
-    expect(unchanged.set.revision).toBe(removed.revision);
-    expect(unchanged.set.candidate).toEqual(final.set.candidate);
-  }, 60000);
-
-  it('replaces an exact Knowledge pin and can unlink an archived source without deleting its historical versions', async () => {
-    const f = await setup(true),
-      instance = await f.custom('小白');
-    async function upload(previous?: { sourceId: string }) {
-      const file = await prepareReferenceUpload(f.a.context, {
-        workspaceId: f.a.workspaceId,
-        requestId: randomUUID(),
-        scope: 'personal',
-        fileName: '核对口径.txt',
-        purpose: '合成口径',
-        mediaType: 'text/plain',
-        contentBase64: Buffer.from(previous ? '新版口径' : '旧版口径').toString(
-          'base64',
-        ),
-        ...(previous
-          ? { sourceId: previous.sourceId, expectedRevision: 1 }
-          : {}),
+        });
+      expect(await effects()).toEqual(before);
+      for (const expectedRevision of [original.revision, 99]) {
+        const args = {
+          ...(shared ? { sharedTarget: shared } : {}),
+          expectedRevision,
+          section: 'common',
+          requirements: 'Must not overwrite history',
+          changeSummary: 'Retired write',
+        };
+        for (const invoke of [
+          saveEmployeeMethodFromChat,
+          saveEmployeeMethodAndPublishFromChat,
+        ])
+          await expect(
+            invoke({ ...run, callId: randomUUID(), arguments: args }),
+          ).rejects.toMatchObject({ code: 'legacy_method_retired' });
+        for (const invoke of [
+          restoreEmployeeMethodFromChat,
+          restoreEmployeeMethodAndPublishFromChat,
+        ])
+          await expect(
+            invoke({
+              ...run,
+              callId: randomUUID(),
+              arguments: {
+                ...(shared ? { sharedTarget: shared } : {}),
+                expectedRevision,
+                sourceRevisionId: original.candidate.id,
+                changeSummary: 'Retired restore',
+              },
+            }),
+          ).rejects.toMatchObject({ code: 'legacy_method_retired' });
+      }
+      expect(await effects()).toEqual(before);
+      expect(before[0]).toMatchObject({
+        method_authoring: false,
+        retired_at: null,
+        invalidated_at: null,
+        execution_snapshot: run.frozen,
       });
-      await completeReferenceUpload(
-        f.a.context,
-        f.a.workspaceId,
-        file.revisionId,
-      );
-      const claim = await claimReferenceProcessing();
-      expect(claim?.revisionId).toBe(file.revisionId);
-      await finishReferenceProcessing(claim!, [
-        { content: '核对口径', start: 0, end: 4 },
-      ]);
-      return file;
-    }
-    const v1 = await upload(),
-      first = await methodRun(
-        f,
-        instance.id,
-        '请保存我的工作场景候选。请长期引用本次资料。',
-        undefined,
-        [v1.revisionId],
-      );
-    const pin1 = (
-      await inspectEmployeeMethodFromChat({
-        ...first,
-        arguments: { view: 'candidate' },
-      })
-    ).selectedReferences[0]!.reference;
-    const saved = await saveEmployeeMethodFromChat({
-      ...first,
-      arguments: {
-        expectedRevision: 0,
-        section: 'scene',
-        scene: { name: '周度', appliesWhen: '每周' },
-        references: [pin1],
-        changeSummary: '原始资料版本',
-      },
+      await run.finish();
+    },
+  );
+
+  it('rejects an unconsumed legacy activation after an adopted answer without consuming or publishing', async () => {
+    const x = await activationFixture();
+    await x.show();
+    await x.answer();
+    const effects =
+      () => fixture.db`select s.*,a.consumed_at,a.response,er.method_authoring,er.execution_snapshot,c.retired_at,c.invalidated_at,c.updated_at,
+      (select count(*)::int from allrice_employee_content_requests where set_id=s.id) requests,
+      (select count(*)::int from allrice_employee_content_publications where set_id=s.id) publications
+      from allrice_employee_content_sets s join allrice_employee_method_activations a on a.id=${x.preview.receiptId}
+      join allrice_employee_runs er on er.run_id=${x.run.context.runId}
+      join allrice_employee_content_contexts c on c.generation_id=er.content_generation_id where s.id=${x.saved.setId}`;
+    const before = await effects();
+    await expect(x.activate()).rejects.toMatchObject({
+      code: 'legacy_method_retired',
     });
-    await first.finish();
-    const scene = (await getEmployeeContentSet(f.a.context, saved.setId)).set
-      .candidate!.manifest.scenes[0]!;
-    const v2 = await upload(v1),
-      next = await methodRun(
-        f,
-        instance.id,
-        '请更新我的工作场景候选。请替换旧资料引用。请将本次选择的资料新版长期引用到周度，替代原来的同一资料 v1。',
-        undefined,
-        [v2.revisionId],
-      );
-    const pin2 = (
-      await inspectEmployeeMethodFromChat({
-        ...next,
-        arguments: { view: 'candidate' },
-      })
-    ).selectedReferences[0]!.reference;
-    const replace = {
-      expectedRevision: 1,
-      section: 'scene',
-      scene: { id: scene.id },
-      references: [pin2],
-      removeReferences: [pin1],
-      changeSummary: '固定新版口径',
-    };
-    await expect(
-      saveEmployeeMethodFromChat({
-        ...next,
-        callId: randomUUID(),
-        arguments: {
-          expectedRevision: replace.expectedRevision,
-          section: replace.section,
-          scene: replace.scene,
-          references: replace.references,
-          changeSummary: replace.changeSummary,
-        },
-      }),
-    ).rejects.toMatchObject({ code: 'version_conflict' });
-    const updated = await saveEmployeeMethodFromChat({
-      ...next,
-      arguments: replace,
+    expect(await effects()).toEqual(before);
+    expect(before[0]).toMatchObject({
+      consumed_at: null,
+      response: null,
+      active_revision_id: null,
     });
-    expect(
-      await saveEmployeeMethodFromChat({ ...next, arguments: replace }),
-    ).toEqual(updated);
-    expect(
-      (await getEmployeeContentSet(f.a.context, saved.setId)).set.candidate!
-        .manifest.scenes[0]!.references,
-    ).toEqual([pin2]);
-    const contentEdit = await methodRun(
-      f,
-      instance.id,
-      '请更新我的工作场景候选：删除资料中的空行后再核对。',
-    );
-    await expect(
-      saveEmployeeMethodFromChat({
-        ...contentEdit,
-        arguments: {
-          expectedRevision: 2,
-          section: 'scene',
-          scene: { id: scene.id },
-          removeReferences: [pin2],
-          changeSummary: 'Must reject body edit interpreted as unlink',
-        },
-      }),
-    ).rejects.toMatchObject({ code: 'explicit_method_request_required' });
-    const unchanged = await getEmployeeContentSet(f.a.context, saved.setId);
-    expect(unchanged.set.revision).toBe(2);
-    expect(unchanged.set.candidate!.manifest.scenes[0]!.references).toEqual([
-      pin2,
-    ]);
-    await contentEdit.finish();
-    await expect(
-      saveEmployeeMethodFromChat({
-        ...next,
-        callId: randomUUID(),
-        arguments: { ...replace, expectedRevision: 2 },
-      }),
-    ).rejects.toMatchObject({ code: 'version_conflict' });
-    await next.finish();
-    await changeReference(f.a.context, v2.sourceId, {
-      workspaceId: f.a.workspaceId,
-      requestId: randomUUID(),
-      expectedRevision: 2,
-      action: 'archive',
-    });
-    const unlink = await methodRun(
-      f,
-      instance.id,
-      '上次连接失败后尚未保存修改。请更新我的工作场景候选：请解除旧资料引用。',
-    );
-    const unlinked = await saveEmployeeMethodFromChat({
-      ...unlink,
-      arguments: {
-        expectedRevision: 2,
-        section: 'scene',
-        scene: { id: scene.id },
-        removeReferences: [pin2],
-        changeSummary: '解除已归档资料引用',
-      },
-    });
-    expect(unlinked.active).toBeNull();
-    const final = await getEmployeeContentSet(f.a.context, saved.setId);
-    expect(final.set.candidate!.manifest.scenes[0]!.references).toEqual([]);
-    expect(
-      await fixture.db`select id from allrice_knowledge_revisions where id in (${v1.revisionId},${v2.revisionId})`,
-    ).toHaveLength(2);
-    expect(
-      (
-        await getEmployeeContentHistory(f.a.context, saved.setId)
-      ).revisions.some((r) => r.id === saved.candidate.id),
-    ).toBe(true);
-  }, 60000);
+    await x.run.finish();
+  });
 
   it('rejects foreign actor, general instance, stale lease and revoked assignment for method tools', async () => {
     const f = await setup(true),
       instance = await f.custom('小白'),
-      run = await methodRun(f, instance.id);
+      run = await historicalMethodRun(f, instance.id);
     const read = (extra = {}) =>
       inspectEmployeeMethodFromChat({
         ...run,
         arguments: { view: 'candidate' },
         ...extra,
       });
+    expect(await read()).toMatchObject({ revision: 0 });
     await expect(
       read({ worker: { ...run.worker, leaseToken: randomUUID() } }),
     ).rejects.toBeDefined();
@@ -8099,172 +6689,78 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     },
   );
 
-  it('U1 gives the real Rice owner exactly three personal methods with current CAS and no shared discovery', async () => {
-    const f = await setup(true, true),
-      id = f.assignment.id;
-    legacyMethodTools = false;
-    // This prose is not an authorization grammar; structured calls below are
-    // the deterministic model substitute, admitted by source/owner/grant/CAS.
-    const run = await methodRun(f, id, '以后按这份办法来做。');
-    const names = run.frozen.capabilitySnapshot.bindings.toolNames as string[];
-    expect(
-      names.filter((name) => name.startsWith('workspace.employee.method.')),
-    ).toEqual([
-      'workspace.employee.method.inspect',
-      'workspace.employee.method.save_candidate',
-      'workspace.employee.method.restore_candidate',
-    ]);
-    expect(names).not.toContain('workspace.brand_content.read');
-    const resolved = await resolveEmployeeExecution({
-      organizationId: f.a.organizationId,
-      workspaceId: f.a.workspaceId,
-      ownerId: f.a.user.id,
-      runId: run.context.runId,
-    });
-    expect(resolved.promptSnapshot.employeeDocuments).toEqual({
-      user: expect.any(String),
-      memory: expect.any(String),
-    });
-    const kernel = assembleEmployeeKernel({
-      employeeAssignmentId: id,
-      employeeVersionId: run.frozen.employee.versionId,
-      sessionId: run.sessionId,
-      userMessageId: run.userMessageId,
-      assistantMessageId: randomUUID(),
-      resolved,
-    });
-    expect(kernel.employeeDocuments).toEqual(
-      resolved.promptSnapshot.employeeDocuments,
-    );
-    for (const instructions of [
-      kernel.systemInstructions,
-      kernel.rootSystemInstructions,
-    ]) {
-      expect(instructions).toContain(
+  it.each([false, true] as const)(
+    'normal new Run admission has no legacy methods (Rice=%s)',
+    async (rice) => {
+      const f = await setup(true, rice),
+        id = rice ? f.assignment.id : (await f.custom('Current owner')).id;
+      const run = await methodRun(f, id, '以后按这份办法来做。');
+      expect(
+        run.frozen.capabilitySnapshot.bindings.toolNames.filter(
+          (name: string) => name.startsWith('workspace.employee.method.'),
+        ),
+      ).toEqual([]);
+      const resolved = await resolveEmployeeExecution(run.scope);
+      const kernel = assembleEmployeeKernel({
+        employeeAssignmentId: run.frozen.assignment.id,
+        employeeVersionId: run.frozen.employee.versionId,
+        sessionId: run.sessionId,
+        userMessageId: run.userMessageId,
+        assistantMessageId: randomUUID(),
+        resolved,
+      });
+      expect(kernel.employeeDocuments).toEqual(
+        resolved.promptSnapshot.employeeDocuments,
+      );
+      expect(kernel.systemInstructions).not.toContain(
         'The three method tools inspect, save_candidate and restore_candidate',
       );
-      expect(instructions).toContain(
-        'they cannot target shared company or department content',
-      );
-    }
-    const empty = await inspectEmployeeMethodFromChat({
-      ...run,
-      arguments: { view: 'effective' },
-    });
-    expect(empty).not.toHaveProperty('sharedTarget');
-    expect(empty).not.toHaveProperty('departments');
-    for (const scope of ['company', 'department']) {
-      await expect(
-        inspectEmployeeMethodFromChat({
-          ...run,
-          arguments: { view: 'candidate', scope },
-        }),
-      ).rejects.toMatchObject({ code: 'authorization_denied' });
-    }
-    const sharedTarget = {
-      scope: 'company',
-      setId: randomUUID(),
-      employeeId: f.assignment.employeeId,
-    };
-    const args = {
-      expectedRevision: 0,
-      section: 'scene',
-      scene: { name: 'Owner method', appliesWhen: 'Owner asks' },
-      procedure: 'Use exact supplied facts.',
-      changeSummary: 'Owner method',
-    };
-    await expect(
-      saveEmployeeMethodAndPublishFromChat({
-        ...run,
-        arguments: { ...args, sharedTarget },
-      }),
-    ).rejects.toMatchObject({ code: 'authorization_denied' });
-    await expect(
-      restoreEmployeeMethodAndPublishFromChat({
-        ...run,
-        arguments: {
-          expectedRevision: 0,
-          sourceRevisionId: randomUUID(),
-          changeSummary: 'Forbidden shared target',
-          sharedTarget,
-        },
-      }),
-    ).rejects.toMatchObject({ code: 'authorization_denied' });
-    expect(
-      (
-        await fixture.db`select method_authoring from allrice_employee_runs where run_id=${run.context.runId}`
-      )[0]!.method_authoring,
-    ).toBe(false);
-    const first = await saveEmployeeMethodAndPublishFromChat({
-      ...run,
-      arguments: args,
-    });
-    expect(first).toMatchObject({
-      revision: 1,
-      validation: { valid: true },
-      personalTextOnly: true,
-    });
-    expect(first.active).toEqual(first.candidate);
-    const inspected = await inspectEmployeeMethodFromChat({
-      ...run,
-      callId: randomUUID(),
-      arguments: { view: 'candidate' },
-    });
-    expect(inspected).toMatchObject({ revision: 1 });
-    expect(inspected).not.toHaveProperty('sharedTarget');
-    const firstManifest = (
-      await getEmployeeContentSet(f.a.context, first.setId)
-    ).set.active!.manifest;
-    const sceneId = firstManifest.scenes[0]!.id;
-    const second = await saveEmployeeMethodAndPublishFromChat({
-      ...run,
-      callId: randomUUID(),
-      arguments: {
-        ...args,
-        expectedRevision: 1,
-        scene: { id: sceneId },
-        procedure: 'Check the supplied facts twice.',
-      },
-    });
-    await expect(
-      saveEmployeeMethodAndPublishFromChat({
-        ...run,
-        callId: randomUUID(),
-        arguments: { ...args, expectedRevision: 1 },
-      }),
-    ).rejects.toMatchObject({ code: 'version_conflict' });
-    const restored = await restoreEmployeeMethodAndPublishFromChat({
-      ...run,
-      callId: randomUUID(),
-      arguments: {
-        expectedRevision: 2,
-        sourceRevisionId: first.active!.id,
-        changeSummary: 'Restore exact owner method',
-      },
-    });
-    expect(restored).toMatchObject({ revision: 3, personalTextOnly: true });
-    expect(
-      (await getEmployeeContentSet(f.a.context, first.setId)).set.active!
-        .manifest,
-    ).toEqual(firstManifest);
-    expect(second.active!.id).not.toBe(first.active!.id);
-    expect(
-      (await getEmployeeContentHistory(f.a.context, first.setId)).revisions,
-    ).toHaveLength(3);
-    const [frozen] =
-      await fixture.db`select execution_snapshot from allrice_employee_runs where run_id=${run.context.runId}`;
-    expect(frozen!.execution_snapshot).toEqual(run.frozen);
-    expect(
-      await fixture.db`select id from allrice_employee_content_sets where instance_id=${f.bAssignment.id}`,
-    ).toHaveLength(0);
-    await run.finish();
-  });
+      for (const [invoke, args] of [
+        [inspectEmployeeMethodFromChat, { view: 'candidate' }],
+        [
+          saveEmployeeMethodAndPublishFromChat,
+          {
+            expectedRevision: 0,
+            section: 'scene',
+            scene: { name: 'Owner method', appliesWhen: 'Owner asks' },
+            procedure: 'Keep facts.',
+            changeSummary: 'New text',
+          },
+        ],
+        [
+          restoreEmployeeMethodAndPublishFromChat,
+          {
+            expectedRevision: 0,
+            sourceRevisionId: randomUUID(),
+            changeSummary: 'New restore',
+          },
+        ],
+      ] as const)
+        await expect(invoke({ ...run, arguments: args })).rejects.toMatchObject(
+          { code: 'authorization_denied' },
+        );
+      expect(
+        (
+          await fixture.db`select execution_snapshot from allrice_employee_runs where run_id=${run.scope.runId}`
+        )[0]!.execution_snapshot,
+      ).toEqual(run.frozen);
+      expect(
+        await fixture.db`select id from allrice_employee_content_sets where instance_id=${id}`,
+      ).toHaveLength(0);
+      await run.finish();
+    },
+  );
 
   it('U1 rejects other owners, absent frozen grants, stale leases and internal sources for Rice methods', async () => {
     const f = await setup(true, true),
       id = f.assignment.id;
-    legacyMethodTools = false;
-    let run = await methodRun(f, id, '把这套办法留下。');
+    let run = await historicalMethodRun(f, id, '把这套办法留下。');
+    expect(
+      await inspectEmployeeMethodFromChat({
+        ...run,
+        arguments: { view: 'candidate' },
+      }),
+    ).toMatchObject({ revision: 0 });
     const foreign = await createChatSession(f.b.context, {
       workspaceId: f.b.workspaceId,
       employeeInstanceId: f.bAssignment.id,
@@ -8303,22 +6799,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         }),
       ).rejects.toThrow();
     await run.finish();
-    let missing!: Awaited<ReturnType<typeof methodRun>>;
-    // Freeze an old-style grant set at creation, never rewrite the immutable
-    // execution snapshot to simulate missing authority.
-    const selectionSpy = vi.mocked(
-      toolSelection.withEmployeeCustomizationTools,
-    );
-    const originalSelection = selectionSpy.getMockImplementation();
-    if (!originalSelection) throw new Error('Missing tool selection fixture');
-    selectionSpy.mockImplementation((names, capabilities, kind) =>
-      currentMethodTools(names, capabilities, kind, false),
-    );
-    try {
-      missing = await methodRun(f, id, '此前未授予方法工具。');
-    } finally {
-      selectionSpy.mockImplementation(originalSelection);
-    }
+    const missing = await methodRun(f, id, '此前未授予方法工具。');
     expect(
       missing.frozen.capabilitySnapshot.bindings.toolNames.filter(
         (name: string) => name.startsWith('workspace.employee.method.'),
@@ -8329,7 +6810,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         call.invoke({ ...missing, arguments: call.arguments }),
       ).rejects.toMatchObject({ code: 'authorization_denied' });
     await missing.finish();
-    run = await methodRun(f, id, '检查当前租约和消息来源。');
+    run = await historicalMethodRun(f, id, '检查当前租约和消息来源。');
     expect(run.frozen.capabilitySnapshot.bindings.toolNames).toContain(
       'workspace.employee.method.inspect',
     );
@@ -8622,7 +7103,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       changeSummary: 'Package v2',
     });
     const current = (await getEmployeeContentSet(f.a.context, before!.id)).set;
-    const run = await methodRun(f, id, '调整本人方法。');
+    const run = await historicalMethodRun(f, id, '调整本人方法。');
     const base = {
       expectedRevision: current.revision,
       section: 'scene',
@@ -8655,7 +7136,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
           callId: randomUUID(),
           arguments: args,
         }),
-      ).rejects.toMatchObject({ code: 'authorization_denied' });
+      ).rejects.toMatchObject({ code: 'legacy_method_retired' });
     }
     await expect(
       restoreEmployeeMethodAndPublishFromChat({
@@ -8667,7 +7148,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
           changeSummary: 'Cannot restore package via text tool',
         },
       }),
-    ).rejects.toMatchObject({ code: 'authorization_denied' });
+    ).rejects.toMatchObject({ code: 'legacy_method_retired' });
     const after = (await getEmployeeContentSet(f.a.context, before!.id)).set;
     expect(after.revision).toBe(current.revision);
     expect(after.active).toEqual(current.active);
@@ -8701,16 +7182,46 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     await savePersonalSceneSkill(f.a.context, id, input);
     const [set] =
       await fixture.db`select id,active_revision_id from allrice_employee_content_sets where instance_id=${id}`;
-    const run = await methodRun(f, id, '保存本人文字方法。');
-    const text = await saveEmployeeMethodAndPublishFromChat({
-      ...run,
-      arguments: {
-        expectedRevision: 1,
-        section: 'common',
-        requirements: 'Retained owner text',
-        changeSummary: 'Text only',
+    const run = await historicalMethodRun(f, id, '保存本人文字方法。');
+    const sourceManifest = (await getEmployeeContentSet(f.a.context, set!.id))
+      .set.active!.manifest;
+    const textId = randomUUID();
+    const base = {
+      workspaceId: f.a.workspaceId,
+      setId: set!.id,
+      ownership: {
+        scope: 'personal',
+        organizationId: f.a.organizationId,
+        ownerId: f.a.user.id,
       },
-    });
+      target: { kind: 'instance', instanceId: id },
+    };
+    const text = await seedHistoricalEmployeeContent(
+      fixture.db,
+      f.a.context,
+      {
+        ...base,
+        operation: 'save_draft',
+        requestId: randomUUID(),
+        expectedRevision: 1,
+        changeSummary: 'Historical text only',
+        manifest: {
+          ...sourceManifest,
+          common: [{ sourceKind: 'draft_text', contentId: textId }],
+        },
+        textEdits: [
+          {
+            contentId: textId,
+            revisionId: randomUUID(),
+            expectedRevision: 0,
+            kind: 'requirement',
+            title: 'Historical text',
+            body: 'Retained owner text',
+          },
+        ],
+      },
+      { active: true },
+    );
     const restoreCall = {
       ...run,
       callId: randomUUID(),
@@ -8720,7 +7231,33 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         changeSummary: 'Restore text only',
       },
     };
-    const restored = await restoreEmployeeMethodAndPublishFromChat(restoreCall);
+    const restored = await seedHistoricalEmployeeContent(
+      fixture.db,
+      f.a.context,
+      {
+        ...base,
+        operation: 'save_draft',
+        requestId: employeeChatIdentity(restoreCall).requestId,
+        expectedRevision: text.revision,
+        manifest: sourceManifest,
+        textEdits: [],
+        changeSummary: restoreCall.arguments.changeSummary,
+      },
+      {
+        active: true,
+        requestOperation: 'restore_draft',
+        restoredFromRevisionId: set!.active_revision_id,
+        inputDigest: runtimePolicyDigest({
+          publication: 'save_and_publish',
+          instanceId: id,
+          runId: run.context.runId,
+          userMessageId: run.userMessageId,
+          arguments: toolSelection.EmployeeMethodRestoreSchema.parse(
+            restoreCall.arguments,
+          ),
+        }),
+      },
+    );
     const [skill] = (await listPersonalSceneSkills(f.a.context, id)).skills;
     const updated = await savePersonalSceneSkill(f.a.context, id, {
       ...input,
@@ -8730,9 +7267,29 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       procedure: { ...input.procedure, ...sceneSkillFixture('2.0.0') },
       changeSummary: 'Package B',
     });
-    expect(await restoreEmployeeMethodAndPublishFromChat(restoreCall)).toEqual(
-      restored,
-    );
+    const beforeReplay =
+      await fixture.db`select * from allrice_employee_content_sets where id=${set!.id}`;
+    expect(await restoreEmployeeMethodAndPublishFromChat(restoreCall)).toEqual({
+      ...restored,
+      personalTextOnly: true,
+    });
+    await expect(
+      restoreEmployeeMethodAndPublishFromChat({
+        ...restoreCall,
+        arguments: {
+          ...restoreCall.arguments,
+          changeSummary: 'Changed historical payload',
+        },
+      }),
+    ).rejects.toThrow('request_conflict');
+    expect(
+      await fixture.db`select * from allrice_employee_content_sets where id=${set!.id}`,
+    ).toEqual(beforeReplay);
+    expect(
+      (
+        await fixture.db`select execution_snapshot from allrice_employee_runs where run_id=${run.context.runId}`
+      )[0]!.execution_snapshot,
+    ).toEqual(run.frozen);
     const after = (await getEmployeeContentSet(f.a.context, set!.id)).set;
     expect(after.revision).toBe(updated.revision);
     expect(
@@ -8759,33 +7316,31 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     const setId = randomUUID();
     let old;
     {
-      await fixture.db.begin((tx) =>
-        mutateEmployeeContentInTransaction(
-          f.a.context,
-          {
-            workspaceId: f.a.workspaceId,
-            requestId: randomUUID(),
-            setId,
-            expectedRevision: 0,
-            operation: 'save_draft',
-            ownership: {
-              scope: 'personal',
-              organizationId: f.a.organizationId,
-              ownerId: f.a.user.id,
-            },
-            target: { kind: 'instance', instanceId: id },
-            manifest: {
-              schemaVersion: 1,
-              common: [],
-              scenes: [],
-              declaredConflicts: [],
-            },
-            textEdits: [],
-            changeSummary: 'Pre-E3 legacy personal layer',
+      await seedHistoricalEmployeeContent(
+        fixture.db,
+        f.a.context,
+        {
+          workspaceId: f.a.workspaceId,
+          requestId: randomUUID(),
+          setId,
+          expectedRevision: 0,
+          operation: 'save_draft',
+          ownership: {
+            scope: 'personal',
+            organizationId: f.a.organizationId,
+            ownerId: f.a.user.id,
           },
-          tx as unknown as ContentTx,
-          { publishOnSave: true, authorize: async () => undefined },
-        ),
+          target: { kind: 'instance', instanceId: id },
+          manifest: {
+            schemaVersion: 1,
+            common: [],
+            scenes: [],
+            declaredConflicts: [],
+          },
+          textEdits: [],
+          changeSummary: 'Pre-E3 legacy personal layer',
+        },
+        { active: true },
       );
       old = await freezeEmployeeRuntimeContent(f.a.context, input, fixture.db);
       expect(old.layers).toHaveLength(1);

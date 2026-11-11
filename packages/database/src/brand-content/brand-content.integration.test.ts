@@ -22,7 +22,6 @@ import {
   type BrandContentMutationReceipt,
   type BrandContentVersionRef,
   type WorkbenchArtifact,
-  type EmployeeContentReceipt,
   type WorkflowPackage,
 } from '@allrice/contracts';
 import {
@@ -54,10 +53,8 @@ import {
   markStorageReady,
   prepareStorageDelete,
 } from '../data.ts';
-import {
-  getEffectiveEmployeeContent,
-  mutateEmployeeContent,
-} from '../employees/employee-content.ts';
+import { getEffectiveEmployeeContent } from '../employees/employee-content.ts';
+import { seedHistoricalEmployeeContent } from '../employees/employee-method-history.fixture.ts';
 import {
   seedLegacyWorkflowPackage,
   seedLegacyWorkflowBinding,
@@ -482,45 +479,33 @@ async function prepareReminderMethod(actor: Actor) {
     target: { kind: 'instance' as const, instanceId: actor.instance.id },
     changeSummary: 'Synthetic reminder handoff method only.',
   };
-  const draft = await mutateEmployeeContent(actor.context, {
-    ...base,
-    requestId: randomUUID(),
-    expectedRevision: 0,
-    operation: 'save_draft',
-    textEdits: [
-      {
-        contentId,
-        revisionId: randomUUID(),
-        expectedRevision: 0,
-        kind: 'procedure',
-        title: 'Synthetic approved handoff',
-        body: '仅交接已审核图文；站内发布提醒不代表对外发布。',
-      },
-    ],
-    manifest: {
-      schemaVersion: 1,
-      common: [{ sourceKind: 'draft_text', contentId }],
-      scenes: [],
-      declaredConflicts: [],
-    },
-  });
-  const next = (
-    receipt: EmployeeContentReceipt,
-    operation: 'validate' | 'activate',
-  ) => ({
-    ...base,
-    requestId: randomUUID(),
-    expectedRevision: receipt.revision,
-    operation,
-    candidateRevisionId: receipt.candidate.id,
-    candidateDigest: receipt.candidate.digest,
-  });
-  const checked = await mutateEmployeeContent(
+  await seedHistoricalEmployeeContent(
+    fixture.db,
     actor.context,
-    next(draft, 'validate'),
+    {
+      ...base,
+      requestId: randomUUID(),
+      expectedRevision: 0,
+      operation: 'save_draft',
+      textEdits: [
+        {
+          contentId,
+          revisionId: randomUUID(),
+          expectedRevision: 0,
+          kind: 'procedure',
+          title: 'Synthetic approved handoff',
+          body: '仅交接已审核图文；站内发布提醒不代表对外发布。',
+        },
+      ],
+      manifest: {
+        schemaVersion: 1,
+        common: [{ sourceKind: 'draft_text', contentId }],
+        scenes: [],
+        declaredConflicts: [],
+      },
+    },
+    { active: true },
   );
-  expect(checked.validation?.valid).toBe(true);
-  await mutateEmployeeContent(actor.context, next(checked, 'activate'));
   const current = await getEffectiveEmployeeContent(
     actor.context,
     actor.instance.id,

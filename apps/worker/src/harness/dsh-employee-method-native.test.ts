@@ -9,7 +9,10 @@ import {
   EmployeeMethodRestoreSchema,
   EmployeeMethodTestStartSchema,
   EmployeeMethodTestInspectSchema,
+  withEmployeeCustomizationTools,
 } from '@allrice/contracts';
+import { loadPlatformContentCatalog } from '../../../../packages/database/src/platform-content/catalog.ts';
+import { riceToolDefinitionsForCapabilities } from '../tool-broker.js';
 import { nativeBrokerRoundtrip } from './dsh-native-broker.fixture.js';
 
 const departmentTarget = {
@@ -23,6 +26,66 @@ const companyTarget = {
   setId: departmentTarget.setId,
   employeeId: departmentTarget.employeeId,
 };
+
+it.each([
+  ['custom', false],
+  ['general', false],
+  ['general', true],
+  [undefined, false],
+] as const)(
+  'loads current Workflow guidance on demand with no retired method in actual new native schemas (%s, Rice=%s)',
+  async (kind, rice) => {
+    const { skills } = await loadPlatformContentCatalog();
+    const skill = skills.find((s) => s.name === 'employee-customization')!;
+    const retired = ['inspect', 'save_candidate', 'restore_candidate'];
+    const capabilities = ['storage:read', 'storage:write'] as const;
+    const grants = withEmployeeCustomizationTools(
+      [
+        'workspace.file.read',
+        ...retired.map((action) => `workspace.employee.method.${action}`),
+      ],
+      capabilities,
+      kind,
+      rice,
+    );
+    const nativeTools = riceToolDefinitionsForCapabilities(
+      [...capabilities],
+      grants,
+    ).map((tool) => tool.name);
+    expect(
+      skill.requiredToolRefs.every((name) => nativeTools.includes(name)),
+    ).toBe(true);
+    await nativeBrokerRoundtrip({
+      canonicalName: 'skill',
+      wireName: 'skill',
+      nativeTools,
+      nativeSkills: [
+        {
+          id: skill.id,
+          name: skill.name,
+          description: skill.description,
+          content: skill.content,
+          checksum: skill.checksum,
+          invocation: {
+            modelInvocable: skill.modelInvocable,
+            userInvocable: skill.userInvocable,
+          },
+          requiredToolRefs: skill.requiredToolRefs,
+        },
+      ],
+      args: { name: skill.name },
+      invalidArgs: { name: 'not-a-current-skill' },
+      prompt: '请说明如何开发并确认保存我的每周核对 Workflow。',
+      expectedBrokerCalls: 0,
+      excludedToolNames: retired.map(
+        (action) => `workspace_employee_method_${action}`,
+      ),
+      initialMessagesExclude: '262,144 UTF-8 bytes',
+      modelResultIncludes: '262,144 UTF-8 bytes',
+    });
+  },
+  45000,
+);
 
 it.each([
   { scope: 'company' },
