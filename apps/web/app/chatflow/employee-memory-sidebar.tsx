@@ -95,7 +95,8 @@ function Sidebar(props: Props) {
   // list refresh cannot silently replace its identity, revision or pairDigest.
   useLayoutEffect(() => {
     if (!deleting || props.active === false) return;
-    const layer = detailHeader.current?.closest('[role="dialog"]')?.parentElement;
+    const layer =
+      detailHeader.current?.closest('[role="dialog"]')?.parentElement;
     if (!layer) return;
     const previousInert = layer.inert;
     const previousHidden = layer.getAttribute('aria-hidden');

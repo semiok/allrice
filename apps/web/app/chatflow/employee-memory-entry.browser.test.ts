@@ -848,14 +848,18 @@ suite('U1 employee details personal-memory entry', () => {
           .getByRole('button', { name: '取消', exact: true })
           .click();
         await confirmation.waitFor({ state: 'detached' });
-        expect(await detail.locator('..').getAttribute('aria-hidden')).toBeNull();
+        expect(
+          await detail.locator('..').getAttribute('aria-hidden'),
+        ).toBeNull();
         expect(
           await detail
             .locator('..')
             .evaluate((node) => node instanceof HTMLElement && node.inert),
         ).toBe(false);
         expect(
-          await deleteButton.evaluate((node) => node === document.activeElement),
+          await deleteButton.evaluate(
+            (node) => node === document.activeElement,
+          ),
         ).toBe(true);
         await f.page.keyboard.press('Escape');
         await detail.waitFor({ state: 'detached' });
