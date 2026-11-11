@@ -12,9 +12,12 @@ import type {
   ChatFlowEventEnvelope,
   UserPreferences,
   UserQuestionRequest,
+  RuntimeActionApprovalSnapshot,
 } from '@allrice/contracts';
+import { ManagedBrowserTaskSchema, WorkbenchArtifactSchema } from '@allrice/contracts';
 import type { CloudOperationView } from '@allrice/database';
 import { ChatTranscript } from '../app/chatflow/chat-transcript';
+import { ArtifactWorkbench } from '../app/chatflow/artifact-workbench';
 import type { Message } from '../app/chatflow/chatflow-types';
 import { InputStatusContext } from '../app/chatflow/transcript-user-message';
 import {
@@ -23,12 +26,14 @@ import {
 } from '../app/chatflow/user-question-composer';
 import { projectPendingUserQuestion } from '../lib/chatflow/user-question-state';
 import { applyTheme } from '../lib/theme/theme';
-import { cloudOperations, ids } from './technical-details-fixtures';
+import { changesetRuns, cloudOperations, ids } from './technical-details-fixtures';
+import { id, operations, mcpOperations } from './experience-command-theme-fixtures';
 
 type Stage = 'initial' | 'prefix' | 'split' | 'merge' | 'append';
 const at = new Date().toISOString();
 const memoryScenario = new URLSearchParams(location.search).has('memory');
 const processScenario = new URLSearchParams(location.search).has('process');
+const cardsScenario = new URLSearchParams(location.search).has('cards');
 const longField = '核对这次对外发送的内容及附件。'.repeat(60);
 const longOutput = Array.from(
   { length: 160 },
@@ -36,11 +41,17 @@ const longOutput = Array.from(
     `结果第 ${String(i).padStart(3, '0')} 行：核对记录的原文与对应动作。`,
 ).join('\n');
 const samples = cloudOperations([]);
+const task = samples[1]!.approval!.request.task;
+const binding = (operationId: string, runId = ids.run) => ({
+  ...samples[1]!.snapshot.binding,
+  task: { ...task, runId, rootRunId: runId },
+  attempt: { operationId, generation: 0, attemptNumber: 1 },
+});
 let stage: Stage = 'initial';
 let changed = false;
 let answered = false;
 let appended = false;
-const operation = (i: number): CloudOperationView => {
+const operation = (i: number, runId = ids.run): CloudOperationView => {
   const sample = samples[1]!;
   return {
     ...sample,
@@ -53,15 +64,13 @@ const operation = (i: number): CloudOperationView => {
     snapshot: {
       ...sample.snapshot,
       status: i === 0 && !answered ? 'waiting_user' : 'succeeded',
-      binding: {
-        ...sample.snapshot.binding,
-        attempt: { operationId: `reading-${i}` },
-      },
+      binding: binding(`reading-${i}`, runId),
     },
     approval:
       i === 0
         ? {
             ...sample.approval,
+            request: { ...sample.approval!.request, task: binding(`reading-${i}`, runId).task },
             response: answered ? { decision: 'approved' } : null,
           }
         : null,
@@ -75,6 +84,92 @@ const operation = (i: number): CloudOperationView => {
           },
   } as CloudOperationView;
 };
+const cardsCloud = [samples[0]!, samples[1]!, samples[5]!, samples[6]!, samples[7]!]
+  .map((sample, index) => ({
+    ...sample,
+    nativeCallId: ['cards-sales', 'cards-partner', 'cards-pair', 'cards-pair', null][index],
+    snapshot: { ...sample.snapshot, binding: binding(sample.snapshot.binding.attempt.operationId) },
+    ...(index === 2 ? {
+      result: { code: 'OK', trusted: true, output: JSON.stringify({
+        rows: 12, artifactId: ids.artifact, version: 1, objectId: id(350), checksum: `sha256:${'9'.repeat(64)}`,
+      }) },
+      projectService: {
+      version: 1, id: id(301), runId: ids.run, sessionId: ids.session,
+      backend: 'cloud', state: 'unknown', project: { projectId: id(51), snapshot: { kind: 'artifact', id: id(52), version: '1' } },
+      sourceDigest: `sha256:${'d'.repeat(64)}`, expiresAt: '2099-01-01T00:00:00.000Z',
+      hardDeadlineAt: '2099-01-01T00:00:00.000Z', lastSeenAt: at,
+      stopRequested: false, stopped: false, canRenew: false, updatePending: false,
+    } } : {}),
+  }));
+const scopedLocal = <T extends { snapshot: { binding: { attempt: { operationId: string } } }; approval: unknown }>(
+  value: T, nativeCallId: string,
+) => {
+  const current = binding(value.snapshot.binding.attempt.operationId);
+  const approval = value.approval as RuntimeActionApprovalSnapshot | null;
+  return { ...value, nativeCallId, snapshot: { ...value.snapshot, binding: current },
+    approval: approval ? { ...approval, request: { ...approval.request, task: current.task } } : null };
+};
+const cardsCommands = operations.slice(0, 1).map((value) => scopedLocal(value, 'cards-command'));
+const cardsMcp = mcpOperations.slice(0, 1).map((value) => scopedLocal(value, 'cards-local-mcp'));
+const browserOperationId = id(310);
+const cardsBrowser = [{
+  id: id(311), runId: ids.run, profileId: id(312), transport: 'local',
+  localDeviceName: '组合测试电脑', persistLogin: false, preview: null,
+  state: 'agent', fence: 2, acknowledgedFence: 2, available: true,
+  profile: { origins: ['https://example.com'], allowUploads: false,
+    allowDownloads: true, allowHumanCredentials: false, maximumFileBytes: 1_000_000 },
+  observation: null,
+  operations: [{
+    snapshot: { status: 'succeeded', binding: binding(browserOperationId) },
+    nativeCallId: 'cards-browser', command: { actor: 'agent', fence: 2,
+      observationId: null, action: { type: 'navigate', url: 'https://example.com' } },
+    approval: null, result: { title: '组合网页' }, available: true,
+  }, ...['agent', 'human'].map((actor, index) => ({
+    snapshot: { status: 'succeeded', binding: binding(id(313 + index)) },
+    nativeCallId: null, command: { actor, fence: 2, observationId: null,
+      action: index === 0 ? { type: 'request', method: 'POST', url: 'https://example.com/submit', parentOperationId: browserOperationId }
+        : { type: 'observe' } },
+    approval: null, result: { title: index === 0 ? '原动作的网络请求' : '人工复核' }, available: true,
+  }))],
+}];
+const cardsManaged = [2, 1].map((jobAttempt) => ManagedBrowserTaskSchema.parse({
+  id: id(320 + jobAttempt), organizationId: task.scope.organizationId,
+  workspaceId: ids.workspace, runId: ids.run, nativeCallId: 'cards-managed', jobAttempt,
+  targetId: id(330), status: 'succeeded', startUrl: 'https://managed.example/path?private=query',
+  allowedDomains: ['managed.example'], steps: [],
+  evidence: [{ url: 'https://managed.example/path?private=query', title: '公开网页',
+    capturedAt: at, contentChecksum: `sha256:${'f'.repeat(64)}`, contentObjectId: id(336),
+    screenshotObjectId: null, downloadObjectIds: [], events: [{ sequence: 1,
+      kind: 'navigation', status: 'succeeded', label: '访问页面', summary: `授权证据 attempt ${jobAttempt}`,
+      occurredAt: at, url: 'https://managed.example/path?private=query' }] }],
+  artifacts: jobAttempt === 2 ? [{ id: id(335), objectId: id(336), kind: 'content',
+    name: '页面证据.txt', checksum: `sha256:${'f'.repeat(64)}`, mediaType: 'text/plain', sizeBytes: 21, createdAt: at }] : [],
+  createdAt: at, startedAt: at, completedAt: new Date(Date.parse(at) + 800).toISOString(),
+  cancelRequestedAt: null, errorCode: null,
+}));
+const savedChange = changesetRuns(ids.artifact)[0]!;
+const cardsArtifacts = [ids.artifact, ids.doneArtifact, id(340)].map((artifactId, index) => WorkbenchArtifactSchema.parse({
+  contractVersion: 1, id: artifactId, kind: index === 1 ? 'changeset' : 'document',
+  version: {
+    id: artifactId, organizationId: task.scope.organizationId, workspaceId: ids.workspace,
+    ownerId: ids.user, objectId: id(350 + index),
+    seriesId: artifactId, version: 1, parentVersionId: null, parentObjectId: null,
+    sessionId: ids.session, platformTestRunId: null,
+    fileName: index === 1 ? '文件修改建议.json' : '核对结果.csv',
+    format: index === 1 ? 'json' : 'text', changeSummary: null, createdAt: at,
+  },
+  object: {
+    id: id(350 + index), organizationId: task.scope.organizationId, workspaceId: ids.workspace,
+    ownerId: ids.user,
+    key: `organizations/${task.scope.organizationId}/workspaces/${ids.workspace}/owners/${ids.user}/exports/${id(350 + index)}`,
+    mediaType: index === 1 ? 'application/json' : 'text/csv', checksum: `sha256:${'9'.repeat(64)}`,
+    sizeBytes: index === 1 ? 32 : 22, retentionUntil: null, deletedAt: null, immutable: true,
+  },
+  provenance: { kind: 'model_proposal', runId: ids.run,
+    operationId: index === 1 ? ids.projectOperation : ids.succeededOperation, stepId: null },
+  execution: index === 1 ? savedChange.snapshot.binding.execution : null,
+  latestVersionId: artifactId, stale: false,
+}));
 function eventsFor(runId: string): ChatFlowEventEnvelope[] {
   const events: ChatFlowEventEnvelope[] = [];
   const add = (
@@ -85,7 +180,7 @@ function eventsFor(runId: string): ChatFlowEventEnvelope[] {
     events.push({
       schemaVersion: 3,
       eventId: `event-${seq}`,
-      organizationId: ids.user,
+      organizationId: task.scope.organizationId,
       workspaceId: ids.workspace,
       conversationId: ids.session,
       runId,
@@ -96,9 +191,27 @@ function eventsFor(runId: string): ChatFlowEventEnvelope[] {
       sourceEvent: null,
       occurredAt: at,
       type,
-      payload,
+      payload: { generation: 0, attempt: 2, ...payload },
     });
   };
+  if (cardsScenario) {
+    for (const [toolCallId, name] of [
+      ['cards-sales', 'cloud_mcp_call'], ['cards-partner', 'cloud_mcp_call'],
+      ['cards-pair', 'cloud_compute'], ['cards-managed', 'browser.run'],
+      ['cards-browser', 'local.browser.workspace'], ['cards-command', 'local.process.execute'],
+      ['cards-local-mcp', 'local.mcp.call'],
+    ]) {
+      add('tool.started', { toolCallId, name });
+      add('tool.completed', { toolCallId, name });
+    }
+    add('assistant.text.completed', { replyId: 'answer',
+      text: '最终核对结果。\n\n| 项目 | 数量 |\n| --- | --- |\n| 已核对 | 12 |' });
+    return events;
+  }
+  if (panelsEnabled) for (const name of ['browser.run', 'local.browser.workspace', 'local.mcp.call']) {
+    add('tool.started', { toolCallId: `gate-${name}`, name });
+    add('tool.completed', { toolCallId: `gate-${name}`, name });
+  }
   if (memoryScenario) {
     for (let i = 0; i < 5; i++) {
       add('harness.native', {
@@ -159,11 +272,39 @@ declare global {
     processTrace: () => void;
     processFinish: () => void;
     processView: (view: UserPreferences['transcriptView']) => void;
+    readingEnablePanels: () => void;
+    readingReads: Record<string, number>;
   }
 }
 window.readingWrites = [];
+window.readingReads = {};
+let panelsEnabled = false;
 window.fetch = async (input, init) => {
   const url = String(input);
+  const path = new URL(url, location.origin).pathname;
+  if (init?.method === 'POST') window.readingWrites.push({ url, body: JSON.parse(String(init.body)) });
+  else window.readingReads[path] = (window.readingReads[path] ?? 0) + 1;
+  if (path === '/api/v1/runtime/project-services') {
+    const service = cardsCloud[2]!.projectService!;
+    service.stopRequested = true;
+    return Response.json({ service });
+  }
+  if (path === `/api/v1/files/${id(336)}/sign`) return Response.json({ url: `/api/v1/files/${id(336)}/download` });
+  if (url.startsWith('/api/v1/managed-browser-tasks')) return Response.json({ tasks: cardsScenario ? cardsManaged : [] });
+  if (url.startsWith('/api/v1/runtime/browser-workspaces')) return Response.json({ workspaces: cardsScenario ? cardsBrowser : [] });
+  if (url.startsWith('/api/v1/runtime/local-commands')) return Response.json({ operations: cardsScenario ? cardsCommands : [] });
+  if (url.startsWith('/api/v1/runtime/local-mcp')) return Response.json({ operations: cardsScenario ? cardsMcp : [] });
+  const artifact = cardsArtifacts.find((item) => path.endsWith(`/artifacts/${item.id}`));
+  if (artifact) return Response.json({ artifact, feedback: [] });
+  if (path.includes('/artifacts/') && path.endsWith('/executions')) return Response.json({
+    executions: changesetRuns(ids.artifact).map((run) => ({ ...run, payload: {
+      ...run.payload, arguments: { ...run.payload.arguments, artifactId: ids.doneArtifact },
+    } })),
+  });
+  if (path.endsWith('/preview')) return Response.json(path.includes(ids.doneArtifact)
+    ? { kind: 'changeset', changeset: { contractVersion: 1, comparisonScope: 'changeset',
+      execution: savedChange.snapshot.binding.execution, files: savedChange.payload.arguments.files } }
+    : { kind: 'text', text: 'item,count\nchecked,12\n', mediaType: 'text/csv' });
   if (processScenario && url.startsWith('/api/v1/files?'))
     return Response.json({
       files: [
@@ -183,13 +324,12 @@ window.fetch = async (input, init) => {
     return Response.json({ memories: [] });
   if (url.startsWith('/api/v1/runtime/cloud-operations'))
     return Response.json({
-      operations: Array.from(
+      operations: cardsScenario ? cardsCloud : Array.from(
         { length: memoryScenario || processScenario ? 0 : appended ? 37 : 36 },
-        (_, i) => operation(i),
+        (_, i) => operation(i, new URL(url, location.origin).searchParams.get('runId') ?? ids.run),
       ),
     });
   if (url.startsWith('/api/v1/runtime/approvals/')) {
-    window.readingWrites.push({ url, body: JSON.parse(String(init?.body)) });
     answered = true;
     return Response.json({});
   }
@@ -213,6 +353,9 @@ function Fixture() {
   const [current, setCurrent] = useState<Stage>(stage);
   const [run, setRun] = useState<string>(ids.run);
   const [mounted, setMounted] = useState(true);
+  const [enabled, setEnabled] = useState(cardsScenario);
+  const [selected, setSelected] = useState<string | null>(null);
+  window.readingEnablePanels = () => { panelsEnabled = true; setEnabled(true); };
   window.readingUpdate = (next, replace = false) => {
     stage = next;
     if (next === 'append') appended = true;
@@ -242,7 +385,11 @@ function Fixture() {
         <ChatTranscript
           atBottom
           streamingOutput
-          transcriptView="standard"
+          transcriptView={cardsScenario ? 'detailed' : 'standard'}
+          localCommandsEnabled={enabled}
+          localMcpEnabled={enabled}
+          artifacts={cardsScenario ? cardsArtifacts : []}
+          onOpenArtifact={cardsScenario ? setSelected : undefined}
           collapseTiming="completion"
           messages={[
             user,
@@ -268,6 +415,11 @@ function Fixture() {
           onScrollToBottom={() => {}}
         />
       )}
+      {selected && <ArtifactWorkbench open width={600} narrow={innerWidth < 800}
+        dockScope="cards-fixture" sessionId={ids.session} workspaceId={ids.workspace}
+        tenantHeaders={headers} artifacts={cardsArtifacts} selectedId={selected}
+        nextCursor={null} listError="" listLoading={false} onSelect={setSelected}
+        onClose={() => setSelected(null)} onReload={async () => {}} />}
     </main>
   );
 }

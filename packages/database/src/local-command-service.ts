@@ -760,6 +760,7 @@ export async function listLocalCommandOperations(
   const rows = await database<
     {
       id: string;
+      native_call_id: string | null;
       snapshot: unknown;
       bridge_payload: unknown;
       runtime_request: unknown;
@@ -768,8 +769,10 @@ export async function listLocalCommandOperations(
       runtime_consumed_at: Date | null;
     }[]
   >`
-    select op.id,op.snapshot,op.bridge_payload,a.runtime_request,a.runtime_response,a.runtime_revoked_at,a.runtime_consumed_at
+    select op.id,oc.native_call_id,op.snapshot,op.bridge_payload,a.runtime_request,a.runtime_response,a.runtime_revoked_at,a.runtime_consumed_at
     from allrice_runtime_operations op left join allrice_approval_requests a on a.resource_id=op.id and a.resource_type='runtime_operation' and a.organization_id=op.organization_id and a.workspace_id=op.workspace_id and a.actor_id=${context.actor.id}
+    left join allrice_task_operation_calls oc
+      on oc.operation_id=op.id and oc.run_id=op.root_run_id and oc.agent_id=op.run_id
     where op.run_id=${runId} and op.organization_id=${context.organizationId} and op.workspace_id=${context.workspaceId}
       and op.bridge_payload->>'capability' in ('local.process.execute','local.fs.write','local.fs.mkdir') order by op.created_at limit 32`;
   return Promise.all(
@@ -824,6 +827,7 @@ export async function listLocalCommandOperations(
           and o.deleted_at is null and o.state='ready' and (o.retention_until is null or o.retention_until>clock_timestamp())`
         : [];
       return {
+        nativeCallId: row.native_call_id,
         snapshot: RuntimeOperationSnapshotSchema.parse(row.snapshot),
         command,
         executionBudget: localCommand.success

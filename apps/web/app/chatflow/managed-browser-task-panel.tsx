@@ -1,6 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import type {
+  WorkProcessMaterial,
+  WorkProcessMaterialFeed,
+} from './work-process-material';
 
 import type {
   ManagedBrowserEvidenceArtifact,
@@ -19,6 +23,8 @@ interface ManagedBrowserTaskPanelProps {
   workspaceId: string;
   tenantHeaders: Record<string, string>;
   runActive: boolean;
+  enabled?: boolean;
+  children?: (feed: WorkProcessMaterialFeed) => ReactNode;
 }
 
 type TaskResponse = { tasks: ManagedBrowserTask[] };
@@ -98,11 +104,60 @@ function taskFailureLabel(task: ManagedBrowserTask) {
   return '浏览任务未能完成。';
 }
 
+export function managedBrowserMaterial(
+  task: ManagedBrowserTask,
+): WorkProcessMaterial {
+  const started = task.startedAt ? Date.parse(task.startedAt) : NaN;
+  const finished = task.completedAt ? Date.parse(task.completedAt) : NaN;
+  const host = safeBrowserHost(task.startUrl) ?? '公开网页';
+  const events = task.evidence.flatMap((capture) => capture.events)
+    .sort((a, b) => a.sequence - b.sequence);
+  return {
+    source: 'managed-browser',
+    id: task.id,
+    runId: task.runId,
+    organizationId: task.organizationId,
+    workspaceId: task.workspaceId,
+    createdAt: task.createdAt,
+    nativeCallId: task.nativeCallId,
+    jobAttempt: task.jobAttempt,
+    title: host,
+    status: statusLabel(task.status),
+    failed: task.status === 'failed',
+    ...(Number.isFinite(started) && Number.isFinite(finished) && finished >= started
+      ? { elapsedMs: finished - started } : {}),
+    fields: [
+      { label: '位置', value: safeBrowserHost(task.evidence.at(-1)?.url) ?? host },
+      {
+        label: '输入',
+        value: <ul>{task.allowedDomains.map((domain) => <li key={domain}>{domain}</li>)}</ul>,
+      },
+      {
+        label: '结果',
+        value: <>
+          <ol className={styles.browserEvidenceTimeline}>
+            {events.map((event, index) => (
+              <li key={`${event.sequence}:${index}`} data-status={event.status}>
+                <strong>{evidenceKindLabel(event.kind)}</strong>
+                <small>{event.summary}</small>
+                <time>{formatTime(event.occurredAt)}</time>
+              </li>
+            ))}
+          </ol>
+          {taskFailureLabel(task) && <p>{taskFailureLabel(task)}</p>}
+        </>,
+      },
+    ],
+  };
+}
+
 export function ManagedBrowserTaskPanel({
   runId,
   workspaceId,
   tenantHeaders,
   runActive,
+  enabled = true,
+  children,
 }: ManagedBrowserTaskPanelProps) {
   const [tasks, setTasks] = useState<ManagedBrowserTask[]>([]);
   const [loading, setLoading] = useState(true);
@@ -135,14 +190,15 @@ export function ManagedBrowserTaskPanel({
   );
 
   useEffect(() => {
+    if (!enabled) return;
     void loadTasks();
-  }, [loadTasks]);
+  }, [enabled, loadTasks]);
 
   useEffect(() => {
-    if (!runActive && !hasActiveTask) return;
+    if (!enabled || (!runActive && !hasActiveTask)) return;
     const timer = window.setInterval(() => void loadTasks(), 1_500);
     return () => window.clearInterval(timer);
-  }, [hasActiveTask, loadTasks, runActive]);
+  }, [enabled, hasActiveTask, loadTasks, runActive]);
 
   const cancelTask = useCallback(
     async (task: ManagedBrowserTask) => {
@@ -215,13 +271,16 @@ export function ManagedBrowserTaskPanel({
     [tasks],
   );
 
-  if (loading && tasks.length === 0) {
+  if (!enabled) return children?.({ history: [], interaction: null, feedback: null }) ?? null;
+  if (loading && tasks.length === 0 && !children) {
     return <div className={styles.browserTaskLoading}>正在读取浏览任务…</div>;
   }
 
-  if (!orderedTasks.length && !error) return null;
+  if (!orderedTasks.length && !error && !children) return null;
 
-  return (
+  const feedback = error ? <p className={styles.browserTaskError}>{error}</p> :
+    loading && !tasks.length ? <div className={styles.browserTaskLoading}>正在读取浏览任务…</div> : null;
+  const interaction = (
     <section className={styles.browserTasks} aria-label="云端浏览器任务">
       <div className={styles.browserTasksHeader}>
         <strong>云端浏览器</strong>
@@ -229,7 +288,7 @@ export function ManagedBrowserTaskPanel({
           刷新
         </button>
       </div>
-      {error ? <p className={styles.browserTaskError}>{error}</p> : null}
+      {!children && feedback}
       {orderedTasks.map((task) => {
         const host =
           safeBrowserHost(task.evidence.at(-1)?.url) ??
@@ -240,6 +299,7 @@ export function ManagedBrowserTaskPanel({
           .sort((a, b) => a.sequence - b.sequence);
         const failure = taskFailureLabel(task);
         const active = ['queued', 'running'].includes(task.status);
+        if (children && !active && !task.artifacts.length) return null;
         return (
           <details
             className={styles.browserTask}
@@ -262,7 +322,7 @@ export function ManagedBrowserTaskPanel({
               </span>
             </summary>
             <div className={styles.browserTaskBody}>
-              {events.length ? (
+              {!children && events.length ? (
                 <ol className={styles.browserEvidenceTimeline}>
                   {events.map((event, index) => (
                     <li
@@ -278,7 +338,7 @@ export function ManagedBrowserTaskPanel({
                     </li>
                   ))}
                 </ol>
-              ) : active ? (
+              ) : !children && active ? (
                 <p className={styles.browserTaskEmpty}>
                   {task.status === 'queued'
                     ? '浏览器有空位后会自动开始，无需重新发送任务。'
@@ -338,4 +398,7 @@ export function ManagedBrowserTaskPanel({
       })}
     </section>
   );
+  return children ? children({
+    history: orderedTasks.map(managedBrowserMaterial), interaction, feedback,
+  }) : interaction;
 }

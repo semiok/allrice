@@ -52,6 +52,7 @@ import {
 } from './local-browser-files.ts';
 import { heartbeatBridgeDevice } from './bridge.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
+import { linkTaskOperationCall } from './task-clock.ts';
 import { waitBrowserOperationResult } from '../../../apps/worker/src/browser-control/controller.js';
 import type * as Client from './core/client.ts';
 let db: ReturnType<typeof postgres>,
@@ -1351,9 +1352,12 @@ suite('P22 real PostgreSQL device browser authority', () => {
   });
   it('intercepted submissions have a second exact approval, stable retry id, and one permission token', async () => {
     const f = await fixture(),
-      b = f.browser!,
-      op = await createBrowserOperation(f.context, b.command, randomUUID(), db),
+      b = f.browser!;
+    await db`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy)
+      select id,organization_id,workspace_id,'{"version":1,"timeoutMs":300000,"sources":[]}'::jsonb from allrice_runs where id=${f.run}`;
+    const op = await createBrowserOperation(f.context, b.command, randomUUID(), db),
       operationId = op.snapshot.binding.attempt.operationId;
+    await linkTaskOperationCall(db, operationId, 'local-native-call');
     await f.approve(op);
     const start = await startLocalBrowserOperation(
       f.device,
@@ -1377,6 +1381,16 @@ suite('P22 real PostgreSQL device browser authority', () => {
     expect(
       (await requestLocalBrowserEffect(f.device, request, db)).operationId,
     ).toBe(effect.operationId);
+    const [view] = await listBrowserWorkspaces(f.context, f.run, db);
+    expect(view!.operations).toHaveLength(2);
+    expect(view!.operations[0]).toMatchObject({
+      nativeCallId: 'local-native-call',
+    });
+    expect(view!.operations[1]).toMatchObject({
+      nativeCallId: null,
+      snapshot: { binding: { attempt: { operationId: effect.operationId } } },
+      command: { action: { type: 'request', parentOperationId: operationId } },
+    });
     const status = {
       ...b.identity!,
       operationId,

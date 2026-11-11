@@ -1,6 +1,5 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import type { ReactNode } from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import type { CloudOperationView } from '@allrice/database';
 import {
   CloudOperationCard,
@@ -8,6 +7,7 @@ import {
   cloudOperationCompactStatus,
   cloudOperationsNeedPolling,
   laterSuccessfulMcpCall,
+  cloudOperationMaterial,
 } from './cloud-operation-panel';
 
 // Presentation-only fixtures. Contract and authority validation are exercised
@@ -16,7 +16,10 @@ function view(): CloudOperationView {
   return {
     snapshot: {
       status: 'waiting_user',
-      binding: { attempt: { operationId: 'synthetic-display-id' } },
+      binding: {
+        task: { runId: 'synthetic-run' },
+        attempt: { operationId: 'synthetic-display-id' },
+      },
     },
     enabled: true,
     mcpAuthorization: { available: true, reason: 'available' },
@@ -245,36 +248,45 @@ describe('Cloud/MCP approval presentation', () => {
     expect(html).toContain('应用工具');
     expect(html).toContain('会按下面的内容调用 owned.example.test');
     expect(html).toContain('允许写入数据');
-    // The pending call's action and values are shown, escaped, without JSON.
+    // The same authorized parameters stay escaped in both inline views.
     expect(html).toContain('records.append（写入数据）');
     // The name and the escaped value are separate elements.
     expect(html).toMatch(
       /<dt>value<\/dt><dd class="[^"]+"><span data-process-content="field:value">&lt;script&gt;alert\(1\)&lt;\/script&gt;<\/span><\/dd>/,
     );
     expect(html).not.toContain('<script>');
-    expect(html).not.toContain('&quot;value&quot;');
+    expect(html).toContain('&quot;value&quot;');
   });
-  it('escapes the raw parameters once the technical details are open', async () => {
-    vi.resetModules();
-    vi.doMock('./technical-details', () => ({
-      TechnicalDetails: ({ children }: { children?: ReactNode }) => (
-        <div data-technical-open="">{children}</div>
-      ),
-    }));
-    try {
-      const { CloudOperationCard: Open } =
-        await import('./cloud-operation-panel');
-      const html = renderToStaticMarkup(
-        <Open op={view()} busy={false} onAct={() => {}} />,
-      );
-      expect(html).toContain(
-        '&quot;value&quot;: &quot;&lt;script&gt;alert(1)&lt;/script&gt;&quot;',
-      );
-      expect(html).not.toContain('<script>');
-    } finally {
-      vi.doUnmock('./technical-details');
-      vi.resetModules();
+  it('escapes the authorized parameters in place without a technical control', () => {
+    const html = render(view());
+    expect(html).toContain(
+      '&quot;value&quot;: &quot;&lt;script&gt;alert(1)&lt;/script&gt;&quot;',
+    );
+    expect(html).not.toContain('<script>');
+    expect(html).not.toContain('技术详情');
+  });
+  it('keeps all sixty MCP values in the external review and read-only history', () => {
+    const op = view();
+    if (op.proposal.kind !== 'mcp') throw Error('MCP fixture required');
+    op.proposal.arguments = Object.fromEntries(
+      Array.from({ length: 60 }, (_, i) => [`field-${i}`, `值${i}<script>`]),
+    );
+    const html = renderToStaticMarkup(
+      <CloudOperationCard op={op} busy={false} interactionOnly onAct={() => {}} />,
+    );
+    const material = cloudOperationMaterial(op);
+    const history = renderToStaticMarkup(<>{material.fields.map((field) => field.value)}</>);
+    for (let i = 0; i < 60; i++) {
+      expect(html).toContain(`值${i}&lt;script&gt;`);
+      expect(history).toContain(`值${i}&lt;script&gt;`);
     }
+    expect(material.runId).toBe(op.snapshot.binding.task.runId);
+    expect(material.binding).toBe(op.snapshot.binding);
+    expect(html.match(/data-process-control="approve"/g)).toHaveLength(1);
+    expect(html).not.toContain('查看详情');
+    expect(html).not.toContain('技术详情');
+    expect(history).not.toContain('<button');
+    expect(history).not.toContain('<script>');
   });
   it.each(['rejected', 'expired', 'revoked'] as const)(
     'shows %s and removes approval actions',
@@ -361,8 +373,12 @@ describe('Cloud/MCP approval presentation', () => {
     const html = render(op);
     expect(cloudOperationDisplayStatus(op)).toBe('已完成');
     expect(html).toContain('已完成');
-    // The raw output is kept, but only behind the technical details.
+    // The standalone details remain folded; the history material is intact.
     expect(html).not.toContain('saved:synthetic;call-count:1');
+    const material = cloudOperationMaterial(op);
+    expect(renderToStaticMarkup(<>{material.fields.at(-1)!.value}</>)).toContain(
+      'saved:synthetic;call-count:1',
+    );
     expect(html).not.toContain('请求停止本轮全部操作');
     expect(op.result.trusted).toBe(false);
   });
@@ -407,6 +423,13 @@ describe('Cloud/MCP approval presentation', () => {
     expect(html).toContain('会生成：');
     expect(html).not.toContain('11111111-1111-4111-8111-111111111111');
     expect(html).not.toContain('sha256:');
+    const review = renderToStaticMarkup(
+      <CloudOperationCard op={op} busy interactionOnly onAct={() => {}} />,
+    );
+    expect(review).toContain('11111111-1111-4111-8111-111111111111');
+    expect(review).toContain('sha256:');
+    expect(review).toContain('云端待执行脚本');
+    expect(review).toContain('毫核');
     expect(html).toMatch(/<button[^>]*aria-expanded="true"[^>]*>/);
     expect(html).toContain('收起详情');
     op.snapshot.status = 'succeeded';

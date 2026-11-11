@@ -16,7 +16,11 @@ import {
   useQuestionDisclosureOpen,
 } from './work-process-reading-state';
 import { AssistantMarkdown } from './assistant-markdown';
-import type { WorkProgressPart } from '../../lib/chatflow/work-progress';
+import {
+  workProcessReferenceKey,
+  type WorkProgressPart,
+  type WorkProcessReference,
+} from '../../lib/chatflow/work-progress';
 import {
   DisclosureRow,
   IconThinkOutlineRegular,
@@ -113,7 +117,7 @@ export function WorkProcess({
   artifacts,
   accessibleFiles,
   onOpenArtifact,
-  renderOperation,
+  renderMaterial,
   transcriptView = 'detailed',
   collapseTiming = 'completion',
   presentation,
@@ -135,7 +139,7 @@ export function WorkProcess({
   accessibleFiles?: readonly { id: string; fileName: string }[];
   onOpenArtifact?: (id: string) => void;
   label?: string;
-  renderOperation?: (operationId: string) => ReactNode;
+  renderMaterial?: (reference: WorkProcessReference) => ReactNode;
   transcriptView?: UserPreferences['transcriptView'];
   collapseTiming?: UserPreferences['collapseTiming'];
   presentation?: WorkProcessPresentation;
@@ -277,7 +281,7 @@ export function WorkProcess({
     !expandable &&
     !failureTitle &&
     !parts?.length &&
-    !items.some((item) => item.operationId && renderOperation) &&
+    !items.some((item) => item.operations?.length && renderMaterial) &&
     !timing &&
     !microStatus &&
     traceStatus !== 'loading'
@@ -302,7 +306,7 @@ export function WorkProcess({
           summarizeWorkProcess(part.items).steps,
           running && !part.closed,
         ) ||
-        part.items.some((item) => item.operationId && renderOperation),
+        part.items.some((item) => item.operations?.length && renderMaterial),
     );
     const partId = (index: number) => `${processId}-part-${index}`;
     const historyIds = visibleParts.flatMap((part, index) =>
@@ -351,7 +355,7 @@ export function WorkProcess({
             items={part.items}
             questions={questions}
             revealingQuestions={revealingQuestions}
-            renderOperation={renderOperation}
+            renderMaterial={renderMaterial}
             running={running && !part.closed}
             grouped={display.groupSteps}
             policy={policy}
@@ -495,6 +499,7 @@ export function WorkProcess({
             questions={questions}
             revealingQuestions={revealingQuestions}
             running={running}
+            renderMaterial={renderMaterial}
             grouped={display.groupSteps}
             policy={policy}
           />
@@ -510,23 +515,6 @@ export function WorkProcess({
         </div>
         {children}
       </div>
-      {renderOperation && (
-        <div className={styles.processReceipts}>
-          {items
-            .filter((item) => item.operationId)
-            .map((item) => (
-              <div
-                className={styles.operationReceipt}
-                key={item.id}
-                data-process-operation={item.operationId}
-              >
-                <WorkProcessDisclosureScope id={item.operationId!}>
-                  {renderOperation(item.operationId!)}
-                </WorkProcessDisclosureScope>
-              </div>
-            ))}
-        </div>
-      )}
     </section>,
   );
 }
@@ -539,7 +527,7 @@ function WorkProcessGroup({
   questions,
   revealingQuestions,
   running,
-  renderOperation,
+  renderMaterial,
   grouped,
   policy,
   answerGeneration,
@@ -548,13 +536,12 @@ function WorkProcessGroup({
   questions: readonly WorkProcessQuestion[];
   revealingQuestions: readonly string[];
   running: boolean;
-  renderOperation?: (operationId: string) => ReactNode;
+  renderMaterial?: (reference: WorkProcessReference) => ReactNode;
   grouped: boolean;
   policy: ChatPresentationPolicy;
   answerGeneration: string;
 }) {
-  // Receipts supplement the native summary; they must not replace its steps.
-  // Keep both at this process boundary, before any later assistant reply.
+  // Authorized materials belong to the original native step, never a second card.
   return (
     <div className={styles.processReceipts}>
       <NativeStepsGroup
@@ -563,23 +550,10 @@ function WorkProcessGroup({
         questions={questions}
         revealingQuestions={revealingQuestions}
         running={running}
+        renderMaterial={renderMaterial}
         grouped={grouped}
         policy={policy}
       />
-      {renderOperation &&
-        items
-          .filter((item) => item.operationId)
-          .map((item) => (
-            <div
-              className={styles.operationReceipt}
-              key={item.id}
-              data-process-operation={item.operationId}
-            >
-              <WorkProcessDisclosureScope id={item.operationId!}>
-                {renderOperation(item.operationId!)}
-              </WorkProcessDisclosureScope>
-            </div>
-          ))}
     </div>
   );
 }
@@ -589,6 +563,7 @@ function NativeStepsGroup({
   questions,
   revealingQuestions,
   running,
+  renderMaterial,
   grouped,
   policy,
 }: {
@@ -596,6 +571,7 @@ function NativeStepsGroup({
   questions: readonly WorkProcessQuestion[];
   revealingQuestions: readonly string[];
   running: boolean;
+  renderMaterial?: (reference: WorkProcessReference) => ReactNode;
   grouped: boolean;
   policy: ChatPresentationPolicy;
 }) {
@@ -630,6 +606,7 @@ function NativeStepsGroup({
           items={items}
           questions={questions}
           running={running}
+          renderMaterial={renderMaterial}
           policy={policy}
         />
       </section>
@@ -640,6 +617,7 @@ function NativeStepsGroup({
         items={items}
         questions={questions}
         running={running}
+        renderMaterial={renderMaterial}
         policy={policy}
       />
     );
@@ -684,6 +662,7 @@ function NativeStepsGroup({
             items={items}
             questions={questions}
             running={running}
+            renderMaterial={renderMaterial}
             policy={policy}
           />
         </div>
@@ -696,11 +675,13 @@ function WorkProcessSteps({
   items,
   questions,
   running,
+  renderMaterial,
   policy,
 }: {
   items: NativeExperienceItem[];
   questions: readonly WorkProcessQuestion[];
   running: boolean;
+  renderMaterial?: (reference: WorkProcessReference) => ReactNode;
   policy: ChatPresentationPolicy;
 }) {
   const { steps } = summarizeWorkProcess(items);
@@ -708,12 +689,15 @@ function WorkProcessSteps({
   return (
     <ul className={styles.processSteps} aria-label="工作步骤">
       {steps.map((step) => {
+        const operations = items.find((item) => item.id === step.id)?.operations ?? [];
+        const materialized = !!renderMaterial && operations.length > 0;
+        const unassigned = step.id.startsWith('operation:') ? operations[0] : undefined;
         const question = questions.find(
           (question) => step.id === `tool:${question.callId}`,
         );
         const active = ['started', 'updated'].includes(step.status);
         const pending = active && step.category !== 'plan';
-        const status =
+        const status = unassigned?.status ?? (
           step.status === 'failed'
             ? '未成功'
             : running && question?.pending && !question.answer
@@ -728,7 +712,7 @@ function WorkProcessSteps({
                       ? '结果未确认'
                       : active
                         ? '运行中'
-                        : '结果未确认';
+                        : '结果未确认');
         return (
           <li
             key={step.id}
@@ -760,10 +744,10 @@ function WorkProcessSteps({
                 title={
                   question
                     ? `提问 · ${question.request.questions[0]?.question ?? step.title}`
-                    : step.title
+                    : unassigned?.title ?? step.title
                 }
                 status={status}
-                elapsedMs={step.elapsedMs}
+                elapsedMs={unassigned ? unassigned.elapsedMs : step.elapsedMs}
                 running={pending && running}
                 failed={step.status === 'failed'}
                 initialOpen={
@@ -775,7 +759,7 @@ function WorkProcessSteps({
                         label: '问题',
                         value: item.question,
                       }))
-                    : [
+                    : materialized ? [] : [
                         ...(step.input
                           ? [{ label: '输入', value: step.input }]
                           : []),
@@ -790,7 +774,17 @@ function WorkProcessSteps({
                           : []),
                       ]
                 }
-              />
+              >
+                {materialized && step.result && <p data-process-content={`step:${step.id}:receipt`}>
+                  {step.status === 'failed' && <strong>原因：</strong>}{step.result}
+                </p>}
+                {renderMaterial && operations.map((reference) => (
+                  <WorkProcessDisclosureScope key={workProcessReferenceKey(reference)}
+                    id={workProcessReferenceKey(reference)}>
+                    {renderMaterial(reference)}
+                  </WorkProcessDisclosureScope>
+                ))}
+              </WorkProcessStepView>
             )}
           </li>
         );

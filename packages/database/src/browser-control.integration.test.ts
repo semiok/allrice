@@ -8,6 +8,7 @@ import { BrowserObservationSchema } from '@allrice/contracts';
 import { createCloudExecutionFixture } from './cloud-execution.fixture.ts';
 import { listBrowserControlManagement } from './browser-control-management.ts';
 import { currentBrowserWorkspace } from './browser-control-authority.ts';
+import { linkTaskOperationCall } from './task-clock.ts';
 import {
   installBrowserControlGrant,
   createBrowserWorkspace,
@@ -438,6 +439,65 @@ suite('P21 real PostgreSQL control and exact admission', () => {
       await db`select id from allrice_approval_requests where resource_id=${op.snapshot.binding.attempt.operationId}`,
     ).toHaveLength(0);
   });
+  it('projects every direct Agent operation for a call and keeps missing or mismatched mappings unlinked', async () => {
+    const f = await fixture(),
+      other = await fixture();
+    await db`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy)
+      select id,organization_id,workspace_id,'{"version":1,"timeoutMs":300000,"sources":[]}'::jsonb from allrice_runs where id in (${f.run},${other.run})`;
+    const first = await createBrowserOperation(
+        f.context,
+        f.command,
+        randomUUID(),
+        db,
+      ),
+      second = await createBrowserOperation(
+        f.context,
+        f.command,
+        randomUUID(),
+        db,
+      );
+    for (const op of [first, second])
+      await linkTaskOperationCall(
+        db,
+        op.snapshot.binding.attempt.operationId,
+        'one-native-call',
+      );
+    const unlinked = await createBrowserOperation(
+      f.context,
+      f.command,
+      randomUUID(),
+      db,
+    );
+    const read = async () =>
+      (await listBrowserWorkspaces(f.context, f.run, db))[0]!.operations;
+    expect(
+      (await read()).map((op) => [
+        op.snapshot.binding.attempt.operationId,
+        op.nativeCallId,
+      ]),
+    ).toEqual([
+      [first.snapshot.binding.attempt.operationId, 'one-native-call'],
+      [second.snapshot.binding.attempt.operationId, 'one-native-call'],
+      [unlinked.snapshot.binding.attempt.operationId, null],
+    ]);
+    for (const [root, agent] of [
+      [other.run, f.run],
+      [f.run, other.run],
+    ]) {
+      await db`update allrice_task_operation_calls set run_id=${root!},agent_id=${agent!} where operation_id=${second.snapshot.binding.attempt.operationId}`;
+      expect((await read()).map((op) => op.nativeCallId)).toEqual([
+        'one-native-call',
+        null,
+        null,
+      ]);
+    }
+    await revokeBrowserControlGrant(f.context, f.grant.id, db);
+    expect(await read()).toMatchObject([
+      { nativeCallId: 'one-native-call', available: false },
+      { nativeCallId: null, available: false },
+      { nativeCallId: null, available: false },
+    ]);
+  });
   it('exact operation always asks; takeover invalidates old approval without fabricating revocation or stop', async () => {
     const f = await fixture(),
       op = await createBrowserOperation(f.context, f.command, randomUUID(), db);
@@ -545,6 +605,9 @@ suite('P21 real PostgreSQL control and exact admission', () => {
       randomUUID(),
       db,
     );
+    expect(
+      (await listBrowserWorkspaces(f.context, f.run, db))[0]!.operations,
+    ).toMatchObject([{ nativeCallId: null, command: { actor: 'human' } }]);
     expect(JSON.stringify(op.payload)).not.toContain(secret);
     const [stored] = await db<
       { envelope: unknown }[]

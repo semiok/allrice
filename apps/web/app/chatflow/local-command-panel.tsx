@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   RuntimeLocalCommandResultSchema,
   projectDiagnosticLabels,
@@ -14,9 +14,14 @@ import {
 import styles from './local-command-panel.module.css';
 import { LocalServiceCard, type LocalServiceView } from './local-service-card';
 import { CommandCandidatePreview } from './command-candidate-preview';
+import type {
+  WorkProcessMaterial,
+  WorkProcessMaterialFeed,
+} from './work-process-material';
 
 interface Operation {
   snapshot: RuntimeOperationSnapshot;
+  nativeCallId?: string | null;
   executionBudget?: SandboxExecutionBudgetSpec | null;
   command:
     | (Omit<RuntimeLocalCommand['arguments'], 'projectSource'> & {
@@ -46,6 +51,53 @@ const statusLabels: Record<string, string> = {
   unknown: '执行结果待核实',
   partial: '部分完成',
 };
+
+export function localCommandMaterial(op: Operation): WorkProcessMaterial {
+  const result = RuntimeLocalCommandResultSchema.safeParse(op.evidence?.output);
+  const receipt = result.success
+    ? { ...result.data, stdout: undefined, stderr: undefined } : op.evidence?.output;
+  return {
+    source: 'command',
+    id: op.snapshot.binding.attempt.operationId,
+    runId: op.snapshot.binding.task.runId,
+    nativeCallId: op.nativeCallId,
+    binding: op.snapshot.binding,
+    title: op.command?.diagnostics ? '项目环境诊断'
+      : op.command?.dependencies || op.command?.projectPreparation ? '依赖准备与验证'
+      : op.file ? '本地文件' : '本地命令',
+    status: statusLabels[op.snapshot.status] ?? op.snapshot.status,
+    failed: op.snapshot.status === 'failed',
+    fields: [
+      { label: '位置', value: op.command?.path ?? op.file?.arguments.path ?? '本地沙箱' },
+      {
+        label: '输入',
+        value: <pre data-process-content="input">{JSON.stringify({
+          command: op.command,
+          file: op.file,
+          executionBudget: op.executionBudget,
+        }, null, 2)}</pre>,
+      },
+      {
+        label: '结果',
+        value: <>
+          {op.evidence && <p>{op.evidence.summary}</p>}
+          {op.approval?.response && <p>你的决定：{op.approval.response.decision === 'approved'
+            ? '已批准这一次执行（不等于已完成）' : '已拒绝'}</p>}
+          {receipt !== undefined && <pre data-process-content="result">
+            {JSON.stringify(receipt, null, 2)}
+          </pre>}
+          {result.success ? <>
+            <pre aria-label="stdout">{result.data.stdout}</pre>
+            <pre aria-label="stderr" className={styles.stderr}>{result.data.stderr}</pre>
+          </> : op.output.length > 0 && <pre data-process-content="output">
+            {op.output.map((chunk) => <span key={chunk.sequence}
+              className={chunk.stream === 'stderr' ? styles.stderr : undefined}>{chunk.content}</span>)}
+          </pre>}
+        </>,
+      },
+    ],
+  };
+}
 
 export function LocalCommandRuntimeScope({
   command,
@@ -103,12 +155,16 @@ export function LocalCommandPanel({
   tenantHeaders,
   runActive,
   onServiceChanged,
+  enabled = true,
+  children,
 }: {
   runId: string;
   workspaceId: string;
   tenantHeaders: Record<string, string>;
   runActive: boolean;
   onServiceChanged?: () => void;
+  enabled?: boolean;
+  children?: (feed: WorkProcessMaterialFeed) => ReactNode;
 }) {
   const [operations, setOperations] = useState<Operation[]>([]),
     [error, setError] = useState(''),
@@ -126,6 +182,7 @@ export function LocalCommandPanel({
         ),
     );
   useEffect(() => {
+    if (!enabled) return;
     const abort = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     const load = async () => {
@@ -154,7 +211,7 @@ export function LocalCommandPanel({
       abort.abort();
       clearTimeout(timer);
     };
-  }, [api, headerKey, active, revision]);
+  }, [api, headerKey, active, revision, enabled]);
 
   async function act(
     op: Operation,
@@ -217,17 +274,19 @@ export function LocalCommandPanel({
       setBusy(null);
     }
   }
-  if (!operations.length && !error) return null;
-  return (
-    <section className={styles.root} aria-label="本地命令审批与执行">
-      {error && (
+  if (!enabled) return children?.({ history: [], interaction: null, feedback: null }) ?? null;
+  if (!operations.length && !error && !children) return null;
+  const feedback = error && (
         <p role="alert">
           {error}{' '}
           <button type="button" onClick={() => setRevision((v) => v + 1)}>
             重试
           </button>
         </p>
-      )}
+      );
+  const interaction = (
+    <section className={styles.root} aria-label="本地命令审批与执行">
+      {!children && feedback}
       {operations.map((op) => {
         const id = op.snapshot.binding.attempt.operationId,
           request = op.approval?.request;
@@ -240,6 +299,9 @@ export function LocalCommandPanel({
         const result = RuntimeLocalCommandResultSchema.safeParse(
           op.evidence?.output,
         );
+        const active = !['succeeded', 'failed', 'canceled', 'partial'].includes(op.snapshot.status);
+        const currentMaterial = pending || op.command?.candidate || op.command?.background;
+        if (children && !active && !currentMaterial) return null;
         return (
           <article
             key={id}
@@ -260,7 +322,7 @@ export function LocalCommandPanel({
                 {statusLabels[op.snapshot.status] ?? op.snapshot.status}
               </span>
             </header>
-            {op.file ? (
+            {op.file && (!children || currentMaterial) ? (
               <section aria-label="文件操作范围">
                 <p>
                   {op.file.capability === 'local.fs.mkdir'
@@ -275,7 +337,7 @@ export function LocalCommandPanel({
                         ? `仅覆盖此版本：${op.file.arguments.expectedSha256}`
                         : '仅新建，不覆盖已有文件'}
                     </small>
-                    <details>
+                    <details open={children && pending ? true : undefined}>
                       <summary>查看写入内容</summary>
                       <pre>{op.file.arguments.content}</pre>
                     </details>
@@ -283,7 +345,7 @@ export function LocalCommandPanel({
                 ) : null}
               </section>
             ) : null}
-            {op.command ? (
+            {op.command && (!children || currentMaterial) ? (
               <>
                 <p>
                   在你的电脑的 Linux
@@ -361,7 +423,7 @@ export function LocalCommandPanel({
                         ? '禁止执行'
                         : '允许在隔离副本执行，不访问宿主环境'}
                     </p>
-                    <details>
+                    <details open={children && pending ? true : undefined}>
                       <summary>
                         查看 {op.command.projectPreparation.packages.length}{' '}
                         个依赖及锁定版本
@@ -404,7 +466,7 @@ export function LocalCommandPanel({
                   command={op.command}
                   executionBudget={op.executionBudget}
                 />
-                <details>
+                <details open={children && pending ? true : undefined}>
                   <summary>
                     查看 {op.command.files.length} 个输入文件及精确版本
                   </summary>
@@ -462,8 +524,8 @@ export function LocalCommandPanel({
                   停止本轮本地操作
                 </button>
               )}
-            {op.evidence && <p>{op.evidence.summary}</p>}
-            {result.success && result.data.candidate && (
+            {!children && op.evidence && <p>{op.evidence.summary}</p>}
+            {!children && result.success && result.data.candidate && (
               <p>
                 已运行的候选版本：
                 <code>{result.data.candidate.artifactId}</code> · 输入摘要{' '}
@@ -471,7 +533,7 @@ export function LocalCommandPanel({
                 。此回执只说明指定命令的结果，不代表测试覆盖充分或已完成代码审查。
               </p>
             )}
-            {result.success && result.data.dependencies && (
+            {!children && result.success && result.data.dependencies && (
               <p role="status">
                 依赖准备：
                 {result.data.dependencies.status ===
@@ -481,7 +543,7 @@ export function LocalCommandPanel({
                 ；临时环境已停止，原工作区未修改。
               </p>
             )}
-            {result.success && result.data.projectPreparation && (
+            {!children && result.success && result.data.projectPreparation && (
               <p role="status">
                 依赖安装：
                 {result.data.projectPreparation.installation === 'succeeded'
@@ -495,7 +557,7 @@ export function LocalCommandPanel({
                 {result.data.exitCode}；原工作区未修改。
               </p>
             )}
-            {result.success && result.data.diagnostics && (
+            {!children && result.success && result.data.diagnostics && (
               <section aria-label="项目环境诊断结果">
                 <p>
                   实际目标：本机 Linux 隔离副本 ·{' '}
@@ -533,7 +595,7 @@ export function LocalCommandPanel({
                 )}
               </section>
             )}
-            {(op.output.length > 0 || result.success) && (
+            {!children && (op.output.length > 0 || result.success) && (
               <details open={op.snapshot.status === 'running'}>
                 <summary>
                   stdout / stderr
@@ -575,4 +637,7 @@ export function LocalCommandPanel({
       })}
     </section>
   );
+  return children ? children({
+    history: operations.map(localCommandMaterial), interaction, feedback,
+  }) : interaction;
 }

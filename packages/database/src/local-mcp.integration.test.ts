@@ -7,6 +7,7 @@ import {
   localMcpFixtureTool,
 } from './local-mcp.fixture.ts';
 import { createMcpStore } from './mcp-connections.ts';
+import { listLocalMcpOperations } from './local-mcp-view.ts';
 import { runtimePolicyDigest as digest } from './runtime-policy.ts';
 import type * as Client from './core/client.ts';
 let db: ReturnType<typeof postgres>,
@@ -137,6 +138,50 @@ suite(
         ).rejects.toThrow('MCP_DENIED');
       },
     );
+    it('reads discover/call identities only within the original owned scope and retains unlinked history', async () => {
+      const f = await fixture();
+      await f.grantTool();
+      const run = await f.newRun();
+      await db`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy)
+        select id,organization_id,workspace_id,'{"version":1,"timeoutMs":300000,"sources":[]}'::jsonb from allrice_runs where id=${run.run}`;
+      await run.create('local.mcp.discover', 'discover-call');
+      const call = await run.create('local.mcp.call', 'tool-call'),
+        missing = await run.create('local.mcp.discover', 'unlinked-call');
+      const read = () => listLocalMcpOperations(f.context, run.run, db);
+      expect((await read()).map((op) => op.nativeCallId)).toEqual([
+        'discover-call',
+        'tool-call',
+        'unlinked-call',
+      ]);
+      await db`delete from allrice_task_operation_calls where operation_id=${missing.snapshot.binding.attempt.operationId}`;
+      const other = await f.newRun();
+      await db`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy)
+        select id,organization_id,workspace_id,'{"version":1,"timeoutMs":300000,"sources":[]}'::jsonb from allrice_runs where id=${other.run}`;
+      for (const [root, agent] of [
+        [other.run, run.run],
+        [run.run, other.run],
+      ]) {
+        await db`update allrice_task_operation_calls set run_id=${root!},agent_id=${agent!} where operation_id=${call.snapshot.binding.attempt.operationId}`;
+        expect((await read()).map((op) => op.nativeCallId)).toEqual([
+          'discover-call',
+          null,
+          null,
+        ]);
+      }
+      const peer = randomUUID();
+      await db`insert into allrice_users(id,email,display_name,password_hash) values(${peer},${`${peer}@example.test`},'Peer','not-login')`;
+      await db`insert into allrice_memberships(organization_id,workspace_id,user_id,role) values(${f.org},${f.workspace},${peer},'member')`;
+      for (const context of [
+        { ...f.context, actor: { type: 'user' as const, id: peer } },
+        { ...f.context, organizationId: randomUUID() },
+        { ...f.context, workspaceId: randomUUID() },
+      ])
+        await expect(
+          listLocalMcpOperations(context, run.run, db),
+        ).rejects.toThrow('operation_not_found');
+      await db`update allrice_memberships set active=false where organization_id=${f.org} and user_id=${f.user}`;
+      await expect(read()).rejects.toThrow('operation_not_found');
+    });
     it('MET-159 default automatic work admits the existing local MCP runner', async () => {
       const f = await fixture();
       await db`delete from allrice_member_work_automation where organization_id=${f.org}`;

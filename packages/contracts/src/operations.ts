@@ -270,6 +270,8 @@ export const ManagedBrowserTaskSchema = z
     organizationId: UuidSchema,
     workspaceId: UuidSchema,
     runId: UuidSchema,
+    nativeCallId: z.string().min(1).max(255).nullable().optional(),
+    jobAttempt: z.number().int().positive().optional(),
     targetId: UuidSchema,
     status: ManagedBrowserTaskStatusSchema,
     startUrl: z.string().url(),

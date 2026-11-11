@@ -4,8 +4,9 @@ import {
   sandboxExecutionBudgetSpec,
   resolveSandboxExecutionPolicy,
   type RuntimeLocalCommand,
+  type RuntimeOperationSnapshot,
 } from '@allrice/contracts';
-import { LocalCommandRuntimeScope } from './local-command-panel';
+import { LocalCommandRuntimeScope, localCommandMaterial } from './local-command-panel';
 
 const command = {
   path: '.',
@@ -14,6 +15,38 @@ const command = {
   limits: { timeoutMs: 30000, memoryMiB: 128, pids: 32 },
 } as unknown as RuntimeLocalCommand['arguments'];
 describe('local execution permission disclosure', () => {
+  it('keeps full authorized command values and persisted binding in read-only history', () => {
+    const binding = {
+      scope: { organizationId: 'org', workspaceId: 'workspace', generation: 7 },
+      task: { runId: 'persisted-run' },
+      attempt: { operationId: 'operation', attemptNumber: 3 },
+    } as unknown as RuntimeOperationSnapshot['binding'];
+    const material = localCommandMaterial({
+      snapshot: { binding, status: 'succeeded' } as RuntimeOperationSnapshot,
+      nativeCallId: 'native-call',
+      command: {
+        ...command,
+        executable: 'node',
+        args: ['line 1\nline 2: <script>payload</script>'],
+        files: [{ path: 'input.csv', sha256: 'sha256:' + 'a'.repeat(64) }],
+      },
+      approval: null,
+      evidence: { summary: '已返回', output: { full: '<script>result</script>' } },
+      output: [],
+    });
+    const html = renderToStaticMarkup(<>{material.fields.map((field) =>
+      <div key={field.label}>{field.value}</div>)}</>);
+    expect(material.binding).toBe(binding);
+    expect(material.runId).toBe('persisted-run');
+    expect(material.nativeCallId).toBe('native-call');
+    expect(material.jobAttempt).toBeUndefined();
+    expect(html).toContain('line 1\\nline 2: &lt;script&gt;payload&lt;/script&gt;');
+    expect(html).toContain('input.csv');
+    expect(html).toContain('sha256:' + 'a'.repeat(64));
+    expect(html).toContain('&lt;script&gt;result&lt;/script&gt;');
+    expect(html).not.toContain('<button');
+    expect(html).not.toContain('<script>');
+  });
   it('retains the actual legacy timeout and offline state', () => {
     const html = renderToStaticMarkup(
       <LocalCommandRuntimeScope command={command} />,

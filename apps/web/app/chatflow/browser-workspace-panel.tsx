@@ -5,10 +5,13 @@ import {
   DisclosureRow,
   fileSizeText,
   IconChevronRightOutlineRegular,
-  IconInfoOutlineRegular,
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import type { BrowserWorkspaceView } from '@allrice/database';
 import type { BrowserAction } from '@allrice/contracts';
+import type {
+  WorkProcessMaterial,
+  WorkProcessMaterialFeed,
+} from './work-process-material';
 import styles from './browser-workspace-panel.module.css';
 import {
   browserControlAvailability,
@@ -32,6 +35,38 @@ type Decision = 'approved' | 'rejected';
 /** An error whose message is written for the employee; anything else is not shown. */
 class PanelError extends Error {}
 const writeUnknown = '操作结果待确认，请刷新状态查看，确认后再操作。';
+
+export function browserOperationMaterial(
+  workspace: BrowserWorkspaceView,
+  op: Operation,
+  employeeName = 'AI 员工',
+): WorkProcessMaterial {
+  const observation = workspace.observation;
+  return {
+    source: 'browser',
+    id: op.snapshot.binding.attempt.operationId,
+    runId: op.snapshot.binding.task.runId,
+    nativeCallId: op.nativeCallId,
+    ...(op.command.action.type === 'request'
+      ? { parentOperationId: op.command.action.parentOperationId } : {}),
+    binding: op.snapshot.binding,
+    title: browserActionSummary(op.command.action, employeeName,
+      op.command.observationId === observation?.id ? observation?.elements : undefined),
+    status: browserOperationStatusLabel(op, employeeName),
+    failed: op.snapshot.status === 'failed',
+    fields: [
+      {
+        label: '位置',
+        value: <>{workspace.transport === 'local'
+          ? workspace.localDeviceName ?? '你的电脑' : '云端浏览器'}
+          {observation && ` · ${siteLabel(observation.url)}`}</>,
+      },
+      { label: '输入', value: <pre data-process-content="input">{JSON.stringify(op.command.action, null, 2)}</pre> },
+      { label: '结果', value: op.result != null
+        ? <pre data-process-content="result">{JSON.stringify(op.result, null, 2)}</pre> : null },
+    ],
+  };
+}
 
 function Collapsible({
   icon,
@@ -65,6 +100,8 @@ export function BrowserWorkspacePanel({
   runActive,
   refreshKey = 0,
   employeeName = 'AI 员工',
+  enabled = true,
+  children,
 }: {
   runId: string;
   workspaceId: string;
@@ -72,6 +109,8 @@ export function BrowserWorkspacePanel({
   runActive: boolean;
   refreshKey?: number;
   employeeName?: string;
+  enabled?: boolean;
+  children?: (feed: WorkProcessMaterialFeed) => ReactNode;
 }) {
   const [workspaces, setWorkspaces] = useState<BrowserWorkspaceView[]>([]),
     [error, setError] = useState(''),
@@ -85,6 +124,7 @@ export function BrowserWorkspacePanel({
   // Approval answers whose delivery is unknown; only the same one may be resent.
   const responses = useRef(new Map<string, { decision: Decision }>());
   useEffect(() => {
+    if (!enabled) return;
     let live = true,
       pending = runActive,
       timer: ReturnType<typeof setTimeout>;
@@ -130,7 +170,7 @@ export function BrowserWorkspacePanel({
       abort.abort();
       clearTimeout(timer);
     };
-  }, [api, headersKey, runActive, revision, refreshKey]);
+  }, [api, headersKey, runActive, revision, refreshKey, enabled]);
   async function post(
     body: unknown,
     path = api,
@@ -255,8 +295,18 @@ export function BrowserWorkspacePanel({
     )
       submitted.current.delete(r.approvalId);
   }
-  if (!workspaces.length && !error && !loadError) return null;
-  return (
+  if (!enabled) return children?.({ history: [], interaction: null, feedback: null }) ?? null;
+  if (!workspaces.length && !error && !loadError && !children) return null;
+  const feedback = (error || loadError) && (
+    <p role="alert" className={styles.alert}>
+      <span>{error || loadError}</span>
+      <Button size="sm" variant="ghost" onClick={() => {
+        setError('');
+        setRevision((v) => v + 1);
+      }}>刷新状态</Button>
+    </p>
+  );
+  const interaction = (
     <section className={styles.root} aria-label="浏览器">
       {preview && (
         <figure className={styles.preview}>
@@ -270,21 +320,7 @@ export function BrowserWorkspacePanel({
           </Button>
         </figure>
       )}
-      {(error || loadError) && (
-        <p role="alert" className={styles.alert}>
-          <span>{error || loadError}</span>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => {
-              setError('');
-              setRevision((v) => v + 1);
-            }}
-          >
-            刷新状态
-          </Button>
-        </p>
-      )}
+      {!children && feedback}
       {workspaces.map((w) => {
         const controls = browserControlAvailability(w),
           human = controls.human,
@@ -593,6 +629,7 @@ export function BrowserWorkspacePanel({
                       Date.parse(r.expiresAt) > Date.now() &&
                       !submitted.current.has(r.approvalId),
                     resend = r && responses.current.get(r.approvalId);
+                  if (children && !can && !downloadObjectId) return null;
                   return (
                     <li key={id} id={`browser-operation-${id}`}>
                       <span id={`browser-operation-${id}-summary`}>
@@ -656,7 +693,7 @@ export function BrowserWorkspacePanel({
                 })}
               </ol>
             )}
-            <Collapsible icon={<IconInfoOutlineRegular />} title="技术详情">
+            <div>
               <dl className={styles.technical}>
                 <div>
                   <dt>浏览器</dt>
@@ -689,25 +726,32 @@ export function BrowserWorkspacePanel({
                     </dd>
                   </div>
                 )}
-                {w.operations.map((op) => (
-                  <div key={op.snapshot.binding.attempt.operationId}>
+                {w.operations.filter((op) => !children || op.snapshot.status === 'waiting_user').map((op) => (
+                  <div key={op.snapshot.binding.attempt.operationId}
+                    data-process-operation={op.snapshot.binding.attempt.operationId}>
                     <dt>
                       {op.command.action.type} · {op.snapshot.status}
                       {op.available ? '' : ' · 授权已失效'}
                     </dt>
                     <dd>
-                      <pre>{JSON.stringify(op.command.action, null, 2)}</pre>
+                      <pre data-process-content="input">{JSON.stringify(op.command.action, null, 2)}</pre>
                       {op.result != null && (
-                        <pre>{JSON.stringify(op.result, null, 2)}</pre>
+                        <pre data-process-content="result">{JSON.stringify(op.result, null, 2)}</pre>
                       )}
                     </dd>
                   </div>
                 ))}
               </dl>
-            </Collapsible>
+            </div>
           </article>
         );
       })}
     </section>
   );
+  return children ? children({
+    history: workspaces.flatMap((workspace) => workspace.operations.map((op) =>
+      browserOperationMaterial(workspace, op, employeeName))),
+    interaction,
+    feedback,
+  }) : interaction;
 }

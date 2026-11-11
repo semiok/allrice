@@ -1,5 +1,9 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import type {
+  WorkProcessMaterial,
+  WorkProcessMaterialFeed,
+} from './work-process-material';
 import type { LocalMcpOperationView } from '@allrice/database';
 import { bridgeDeviceName } from './bridge-view';
 import styles from './local-command-panel.module.css';
@@ -17,16 +21,63 @@ const labels: Record<string, string> = {
   unknown: '结果待核实，禁止自动重试',
   partial: '部分完成',
 };
+export function localMcpMaterial(op: LocalMcpOperationView): WorkProcessMaterial {
+  const args = op.payload.arguments;
+  return {
+    source: 'mcp',
+    id: op.snapshot.binding.attempt.operationId,
+    runId: op.snapshot.binding.task.runId,
+    nativeCallId: op.nativeCallId,
+    binding: op.snapshot.binding,
+    title: op.payload.capability === 'local.mcp.call'
+      ? op.payload.arguments.tool.name : '发现本地 MCP 工具',
+    status: labels[op.snapshot.status] ?? op.snapshot.status,
+    failed: op.snapshot.status === 'failed',
+    fields: [
+      { label: '位置', value: bridgeDeviceName(op.deviceName) },
+      {
+        label: '输入',
+        value: <pre data-process-content="input">{JSON.stringify({
+          connectionId: args.connectionId,
+          connectionRevision: args.connectionRevision,
+          deviceId: args.deviceId,
+          source: args.source,
+          path: args.path,
+          credentialReference: args.credential,
+          imageDigest: args.imageDigest,
+          isolation: args.isolation,
+          network: args.network,
+          limits: args.limits,
+          ...(op.payload.capability === 'local.mcp.call' ? {
+            tool: op.payload.arguments.tool,
+            toolArguments: op.payload.arguments.toolArguments,
+          } : {}),
+        }, null, 2)}</pre>,
+      },
+      {
+        label: '结果',
+        value: op.evidence !== null
+          ? <pre data-process-content="result">{JSON.stringify(op.evidence, null, 2)}</pre>
+          : null,
+      },
+    ],
+  };
+}
+
 export function LocalMcpPanel({
   runId,
   workspaceId,
   tenantHeaders,
   runActive,
+  enabled = true,
+  children,
 }: {
   runId: string;
   workspaceId: string;
   tenantHeaders: Record<string, string>;
   runActive: boolean;
+  enabled?: boolean;
+  children?: (feed: WorkProcessMaterialFeed) => ReactNode;
 }) {
   const [operations, setOperations] = useState<LocalMcpOperationView[]>([]),
     [error, setError] = useState(''),
@@ -44,6 +95,7 @@ export function LocalMcpPanel({
         ),
     );
   useEffect(() => {
+    if (!enabled) return;
     const abort = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     async function load() {
@@ -71,7 +123,7 @@ export function LocalMcpPanel({
       abort.abort();
       clearTimeout(timer);
     };
-  }, [api, headerKey, active, revision]);
+  }, [api, headerKey, active, revision, enabled]);
   async function act(
     op: LocalMcpOperationView,
     decision: 'approved' | 'rejected' | 'cancel',
@@ -125,15 +177,17 @@ export function LocalMcpPanel({
       setBusy(false);
     }
   }
-  if (!operations.length && !error) return null;
-  return (
+  if (!enabled) return children?.({ history: [], interaction: null, feedback: null }) ?? null;
+  if (!operations.length && !error && !children) return null;
+  const feedback = error && (
+    <p role="alert">
+      {error}{' '}
+      <button onClick={() => setRevision((n) => n + 1)}>刷新</button>
+    </p>
+  );
+  const interaction = (
     <section className={styles.root} aria-label="电脑工具操作">
-      {error && (
-        <p role="alert">
-          {error}{' '}
-          <button onClick={() => setRevision((n) => n + 1)}>刷新</button>
-        </p>
-      )}
+      {!children && feedback}
       {operations.map((op) => {
         const id = op.snapshot.binding.attempt.operationId,
           request = op.approval?.request,
@@ -144,6 +198,9 @@ export function LocalMcpPanel({
             !op.approval?.revokedAt &&
             Date.parse(request.expiresAt) > Date.now() &&
             op.snapshot.status === 'waiting_user';
+        const active = ['running', 'dispatched', 'ready', 'waiting_user', 'unknown', 'cancel_requested'].includes(op.snapshot.status);
+        const manage = op.payload.capability === 'local.mcp.discover' && op.snapshot.status === 'succeeded';
+        if (children && !pending && !active && !manage) return null;
         return (
           <article
             key={id}
@@ -158,6 +215,7 @@ export function LocalMcpPanel({
               </strong>
               <span>{labels[op.snapshot.status] ?? op.snapshot.status}</span>
             </header>
+            {(!children || pending) && <>
             <p>
               执行设备：{bridgeDeviceName(op.deviceName)} · 独立 Linux 沙箱 ·
               无网络 · 最长 {args.limits.timeoutMs / 1000} 秒
@@ -176,7 +234,7 @@ export function LocalMcpPanel({
                 </pre>
               </>
             )}
-            <details>
+            <details open={children && pending ? true : undefined}>
               <summary>
                 输入文件与绑定版本（{args.source.files.length} 个）
               </summary>
@@ -200,6 +258,7 @@ export function LocalMcpPanel({
               执行副本不会改写原目录；输出会回传 SaaS /
               模型。注册和发现不等于调用授权，批准仅限这一次。
             </p>
+            </>}
             {pending && (
               <div className={styles.actions}>
                 <button
@@ -235,7 +294,7 @@ export function LocalMcpPanel({
                   停止本轮任务
                 </button>
               )}
-            {op.evidence !== null && (
+            {!children && op.evidence !== null && (
               <details>
                 <summary>执行结果与停止证据</summary>
                 <pre>{JSON.stringify(op.evidence, null, 2)}</pre>
@@ -258,4 +317,7 @@ export function LocalMcpPanel({
       })}
     </section>
   );
+  return children ? children({
+    history: operations.map(localMcpMaterial), interaction, feedback,
+  }) : interaction;
 }

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 
-import type { ExecutionContext } from '@allrice/contracts';
+import type { ExecutionContext, RequestContext } from '@allrice/contracts';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -11,6 +11,8 @@ import {
   createDefaultManagedBrowserTask,
   startManagedBrowserTask,
   completeManagedBrowserTask,
+  listManagedBrowserTasks,
+  getManagedBrowserTask,
 } from './p1-runtime.ts';
 import { completeJob, failJob, maintainQueue } from './queue.ts';
 
@@ -325,6 +327,125 @@ describeDatabase(
       expect(
         await sql`select id from allrice_managed_browser_tasks where run_id=${f.ids.runId}`,
       ).toHaveLength(0);
+    });
+
+    it('reads exact native call/job attempts without widening private, shared or tenant visibility', async () => {
+      const f = await seedScenario(),
+        sql = getDatabase();
+      const context: RequestContext = {
+        requestId: randomUUID(),
+        sessionId: randomUUID(),
+        organizationId: f.ids.organizationId,
+        workspaceId: f.ids.workspaceId,
+        actor: f.context.delegatedBy,
+        memberships: f.context.policySnapshot.memberships,
+        authenticatedAt: f.context.startedAt,
+      };
+      await sql`update allrice_runs set visibility='private' where id=${f.ids.runId}`;
+      const first = await createManagedBrowserTask(
+        f.context,
+        taskInput(f, 'reused-call'),
+        f.lease,
+      );
+      const nextLease = { attempt: 2, leaseToken: randomUUID() };
+      await sql`update allrice_jobs set attempt=2,lease_token=${nextLease.leaseToken} where id=${f.ids.jobId}`;
+      const second = await createManagedBrowserTask(
+        f.context,
+        taskInput(f, 'reused-call'),
+        nextLease,
+      );
+      expect(first).toMatchObject({ nativeCallId: 'reused-call', jobAttempt: 1 });
+      expect(second).toMatchObject({ nativeCallId: 'reused-call', jobAttempt: 2 });
+      expect(second.id).not.toBe(first.id);
+      const read = () =>
+        listManagedBrowserTasks(context, f.ids.workspaceId, {
+          runId: f.ids.runId,
+        });
+      expect(
+        (await read()).map((task) => [task.id, task.nativeCallId, task.jobAttempt]),
+      ).toEqual([
+        [second.id, 'reused-call', 2],
+        [first.id, 'reused-call', 1],
+      ]);
+      for (const task of [first, second])
+        expect(
+          await getManagedBrowserTask(context, f.ids.workspaceId, task.id),
+        ).toEqual(task);
+      const other = await seedScenario(),
+        workspaceId = randomUUID(),
+        membershipId = randomUUID();
+      await sql`insert into allrice_workspaces(id,organization_id,slug,name) values(${workspaceId},${f.ids.organizationId},'other','Other')`;
+      await sql`insert into allrice_memberships(id,organization_id,workspace_id,user_id,role) values(${membershipId},${f.ids.organizationId},${workspaceId},${f.ids.userId},'member')`;
+      for (const foreign of [
+        {
+          ...context,
+          organizationId: other.ids.organizationId,
+          workspaceId: other.ids.workspaceId,
+          actor: other.context.delegatedBy,
+          memberships: other.context.policySnapshot.memberships,
+        },
+        {
+          ...context,
+          workspaceId,
+          memberships: [
+            { ...context.memberships[0]!, id: membershipId, workspaceId },
+          ],
+        },
+      ]) {
+        expect(
+          await listManagedBrowserTasks(foreign, foreign.workspaceId!, {
+            runId: f.ids.runId,
+          }),
+        ).toEqual([]);
+        await expect(
+          getManagedBrowserTask(foreign, foreign.workspaceId!, first.id),
+        ).rejects.toThrow('not_found');
+      }
+      const peer = randomUUID(),
+        membership = {
+          ...context.memberships[0]!,
+          id: randomUUID(),
+          userId: peer,
+        };
+      await sql`insert into allrice_users(id,email,display_name,password_hash) values(${peer},${`${peer}@example.test`},'Peer','not-login')`;
+      await sql`insert into allrice_memberships(id,organization_id,workspace_id,user_id,role) values(${membership.id},${f.ids.organizationId},${f.ids.workspaceId},${peer},'member')`;
+      const peerContext = {
+        ...context,
+        actor: { type: 'user' as const, id: peer },
+        memberships: [membership],
+      };
+      expect(
+        await listManagedBrowserTasks(peerContext, f.ids.workspaceId),
+      ).toEqual([]);
+      await expect(
+        getManagedBrowserTask(peerContext, f.ids.workspaceId, first.id),
+      ).rejects.toThrow('not_found');
+      await sql`update allrice_runs set visibility='workspace' where id=${f.ids.runId}`;
+      expect(
+        await listManagedBrowserTasks(peerContext, f.ids.workspaceId),
+      ).toHaveLength(2);
+      expect(
+        await getManagedBrowserTask(peerContext, f.ids.workspaceId, first.id),
+      ).toEqual(first);
+      await sql`update allrice_memberships set active=false where id=${membership.id}`;
+      await expect(
+        listManagedBrowserTasks(peerContext, f.ids.workspaceId),
+      ).rejects.toThrow('authorization_denied');
+      await expect(
+        getManagedBrowserTask(peerContext, f.ids.workspaceId, first.id),
+      ).rejects.toThrow('authorization_denied');
+      await sql`update allrice_managed_browser_tasks set tool_call_id=${`legacy:${second.id}`} where id=${second.id}`;
+      expect(
+        await getManagedBrowserTask(context, f.ids.workspaceId, second.id),
+      ).toMatchObject({
+        id: second.id,
+        nativeCallId: null,
+        jobAttempt: 2,
+      });
+      expect((await read()).map((task) => task.nativeCallId)).toEqual([
+        null,
+        'reused-call',
+      ]);
     });
 
     it('binds idempotent tool calls to the exact active worker lease', async () => {
