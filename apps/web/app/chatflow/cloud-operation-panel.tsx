@@ -482,13 +482,19 @@ export function CloudOperationCard({
         <p className={styles.notice}>
           之后再试的一次已经完成，这次的记录仍保留。
           <a
-            href={interactionOnly
-              ? `#process-material-cloud-${laterSuccessId}`
-              : `#operation-${laterSuccessId}`}
-            onClick={interactionOnly ? (event) => {
-              event.preventDefault();
-              revealMaterial(`cloud:${laterSuccessId}`);
-            } : undefined}
+            href={
+              interactionOnly
+                ? `#process-material-cloud-${laterSuccessId}`
+                : `#operation-${laterSuccessId}`
+            }
+            onClick={
+              interactionOnly
+                ? (event) => {
+                    event.preventDefault();
+                    revealMaterial(`cloud:${laterSuccessId}`);
+                  }
+                : undefined
+            }
             data-process-control="later-success"
           >
             查看完成的那次

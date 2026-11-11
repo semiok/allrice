@@ -44,7 +44,9 @@ export function WorkProcessStepView({
     disclosureIds.length > 0,
   );
   const open = reveal || manualOpen;
-  useLayoutEffect(() => { if (reveal && !manualOpen) setOpen(true); });
+  useLayoutEffect(() => {
+    if (reveal && !manualOpen) setOpen(true);
+  });
   const expandable = details.length > 0 || !!children;
   const tenths = elapsedMs !== undefined ? Math.round(elapsedMs / 100) : 0;
   const elapsed =
@@ -79,9 +81,11 @@ export function WorkProcessStepView({
           ) : undefined
         }
         collapsedContent={
-          <>{keys.map((key) => (
-            <span key={key} aria-hidden data-process-control={key} />
-          ))}</>
+          <>
+            {keys.map((key) => (
+              <span key={key} aria-hidden data-process-control={key} />
+            ))}
+          </>
         }
       >
         <div

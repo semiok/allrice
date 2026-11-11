@@ -942,7 +942,10 @@ suite('reading a receipt while late native trace changes its group', () => {
   const cardsMaterial = (page: Page, source: string, operation: string) =>
     page.locator(`[data-process-material="${source}:${operation}"]`);
   async function openCards(
-    width: number, theme: string, scenario = '', expandSteps = true,
+    width: number,
+    theme: string,
+    scenario = '',
+    expandSteps = true,
   ) {
     const page = await browser.newPage({ viewport: { width, height: 900 } });
     await page.goto(`${origin}/?cards&theme=${theme}${scenario}`);
@@ -960,91 +963,125 @@ suite('reading a receipt while late native trace changes its group', () => {
     target.evaluate((node) => node === document.activeElement);
   const precedes = async (first: Locator, second: Locator) =>
     first.evaluate(
-      (node, next) => !!(
-        node.compareDocumentPosition(next!) & Node.DOCUMENT_POSITION_FOLLOWING
-      ),
+      (node, next) =>
+        !!(
+          node.compareDocumentPosition(next!) & Node.DOCUMENT_POSITION_FOLLOWING
+        ),
       await second.elementHandle(),
     );
   it.each(['open', 'closed'] as const)(
     'keeps a manual %s receipt choice and reading after exact late call attribution',
     async (choice) => {
-    const page = await openCards(
-      390, 'light', `&regression=late-${choice}`, false,
-    );
-    try {
-      const operation = choice === 'open'
-        ? ids.succeededOperation : ids.projectOperation;
-      const old = page.locator(`[data-step-id="operation:cloud:${operation}"]`);
-      const result = cardsMaterial(page, 'cloud', operation)
-        .locator('pre[data-process-content="result"]');
-      if (choice === 'open')
-        expect(await page.locator('[data-steering-segment="initial"]')
-          .locator(old).count()).toBe(1);
-      expect(await stepToggle(old).getAttribute('aria-expanded')).toBe(
-        choice === 'open' ? 'false' : 'true',
+      const page = await openCards(
+        390,
+        'light',
+        `&regression=late-${choice}`,
+        false,
       );
-      await stepToggle(old).click();
-      const selected = choice === 'open' ? await result.evaluate((node) => {
-        node.focus();
-        node.scrollTop = 650;
-        document.getSelection()!.setBaseAndExtent(
-          node.firstChild!, 1000, node.firstChild!, 1030,
+      try {
+        const operation =
+          choice === 'open' ? ids.succeededOperation : ids.projectOperation;
+        const old = page.locator(
+          `[data-step-id="operation:cloud:${operation}"]`,
         );
-        return document.getSelection()!.toString();
-      }) : '';
-      if (choice === 'closed') {
-        await stepToggle(old).focus();
-        expect(await focused(stepToggle(old))).toBe(true);
-      } else expect(await result.evaluate((node) => node.scrollTop)).toBe(650);
-      await update(page, 'prefix');
-      const native = page.locator('[data-step-id="tool:cards-pair"]');
-      const toggle = stepToggle(native);
-      await native.waitFor();
-      expect(await old.count()).toBe(0);
-      expect(await toggle.getAttribute('aria-expanded'))
-        .toBe(String(choice === 'open'));
-      expect(await native.getAttribute('data-status')).toBe(
-        choice === 'open' ? '已完成' : '未成功',
-      );
-      if (choice === 'open') {
-        expect(await page.locator('[data-steering-segment="cards-steering"]')
-          .locator(native).count()).toBe(1);
-        expect(await focused(result)).toBe(true);
-        expect(await result.evaluate((node) => node.scrollTop)).toBe(650);
-        expect(await page.evaluate(() => document.getSelection()!.toString()))
-          .toBe(selected);
-        expect(selected.length).toBe(30);
-      } else {
-        expect(await focused(toggle)).toBe(true);
-        await toggle.click();
+        const result = cardsMaterial(page, 'cloud', operation).locator(
+          'pre[data-process-content="result"]',
+        );
+        if (choice === 'open')
+          expect(
+            await page
+              .locator('[data-steering-segment="initial"]')
+              .locator(old)
+              .count(),
+          ).toBe(1);
+        expect(await stepToggle(old).getAttribute('aria-expanded')).toBe(
+          choice === 'open' ? 'false' : 'true',
+        );
+        await stepToggle(old).click();
+        const selected =
+          choice === 'open'
+            ? await result.evaluate((node) => {
+                node.focus();
+                node.scrollTop = 650;
+                document
+                  .getSelection()!
+                  .setBaseAndExtent(
+                    node.firstChild!,
+                    1000,
+                    node.firstChild!,
+                    1030,
+                  );
+                return document.getSelection()!.toString();
+              })
+            : '';
+        if (choice === 'closed') {
+          await stepToggle(old).focus();
+          expect(await focused(stepToggle(old))).toBe(true);
+        } else
+          expect(await result.evaluate((node) => node.scrollTop)).toBe(650);
+        await update(page, 'prefix');
+        const native = page.locator('[data-step-id="tool:cards-pair"]');
+        const toggle = stepToggle(native);
+        await native.waitFor();
+        expect(await old.count()).toBe(0);
+        expect(await toggle.getAttribute('aria-expanded')).toBe(
+          String(choice === 'open'),
+        );
+        expect(await native.getAttribute('data-status')).toBe(
+          choice === 'open' ? '已完成' : '未成功',
+        );
+        if (choice === 'open') {
+          expect(
+            await page
+              .locator('[data-steering-segment="cards-steering"]')
+              .locator(native)
+              .count(),
+          ).toBe(1);
+          expect(await focused(result)).toBe(true);
+          expect(await result.evaluate((node) => node.scrollTop)).toBe(650);
+          expect(
+            await page.evaluate(() => document.getSelection()!.toString()),
+          ).toBe(selected);
+          expect(selected.length).toBe(30);
+        } else {
+          expect(await focused(toggle)).toBe(true);
+          await toggle.click();
+        }
+        for (const exact of [ids.succeededOperation, ids.projectOperation]) {
+          const material = cardsMaterial(page, 'cloud', exact);
+          expect(await native.locator(material).count()).toBe(1);
+          expect(await material.count()).toBe(1);
+          expect(
+            await page
+              .locator(`[data-step-id="operation:cloud:${exact}"]`)
+              .count(),
+          ).toBe(0);
+        }
+        expect(await page.evaluate(() => window.readingWrites)).toEqual([]);
+      } finally {
+        await page.close();
       }
-      for (const exact of [ids.succeededOperation, ids.projectOperation]) {
-        const material = cardsMaterial(page, 'cloud', exact);
-        expect(await native.locator(material).count()).toBe(1);
-        expect(await material.count()).toBe(1);
-        expect(await page.locator(`[data-step-id="operation:cloud:${exact}"]`)
-          .count()).toBe(0);
-      }
-      expect(await page.evaluate(() => window.readingWrites)).toEqual([]);
-    } finally {
-      await page.close();
-    }
-  });
+    },
+  );
   it('reaches the exact later successful MCP material through the original link from a folded process', async () => {
     const page = await openCards(390, 'light', '&regression=retry', false);
     try {
       await stepToggle(processOf(page)).click();
-      expect(await processOf(page).getAttribute('data-process-open'))
-        .toBe('false');
+      expect(await processOf(page).getAttribute('data-process-open')).toBe(
+        'false',
+      );
       const failure = page.locator(
         `article[data-process-operation="${id(370)}"]`,
       );
       const link = failure.getByRole('link', {
-        name: '查看完成的那次', exact: true,
+        name: '查看完成的那次',
+        exact: true,
       });
       expect(await link.count()).toBe(1);
-      const fragment = new URL((await link.getAttribute('href'))!, origin)
-        .hash.slice(1);
+      const fragment = new URL(
+        (await link.getAttribute('href'))!,
+        origin,
+      ).hash.slice(1);
       expect(fragment).not.toBe('');
       expect(await page.evaluate(() => window.readingWrites)).toEqual([]);
       await link.click();
@@ -1055,25 +1092,35 @@ suite('reading a receipt while late native trace changes its group', () => {
       );
       expect(await target.count()).toBe(1);
       expect(await target.isVisible()).toBe(true);
-      expect(await target.evaluate(
-        (node, material) => node.contains(material!) || material!.contains(node),
-        await success.elementHandle(),
-      )).toBe(true);
+      expect(
+        await target.evaluate(
+          (node, material) =>
+            node.contains(material!) || material!.contains(node),
+          await success.elementHandle(),
+        ),
+      ).toBe(true);
       expect(await success.count()).toBe(1);
       const box = (await success.boundingBox())!;
       expect(box.y).toBeLessThan(900);
       expect(box.y + box.height).toBeGreaterThan(0);
-      expect(await page.locator('[data-step-id="tool:cards-retry-1"]')
-        .locator(success).count()).toBe(1);
+      expect(
+        await page
+          .locator('[data-step-id="tool:cards-retry-1"]')
+          .locator(success)
+          .count(),
+      ).toBe(1);
       const result = success.locator('pre[data-process-content="result"]');
       expect(JSON.parse(await result.innerText())).toEqual({
-        delivered: true, messageId: 'retry-371',
+        delivered: true,
+        messageId: 'retry-371',
       });
       expect(await failure.getAttribute('data-status')).toBe('failed');
-      const failedResult = cardsMaterial(page, 'cloud', id(370))
-        .locator('pre[data-process-content="result"]');
-      expect(await failedResult.innerText())
-        .toBe('MCP connection unavailable before dispatch');
+      const failedResult = cardsMaterial(page, 'cloud', id(370)).locator(
+        'pre[data-process-content="result"]',
+      );
+      expect(await failedResult.innerText()).toBe(
+        'MCP connection unavailable before dispatch',
+      );
       expect(await page.evaluate(() => window.readingWrites)).toEqual([]);
     } finally {
       await page.close();
@@ -1083,13 +1130,21 @@ suite('reading a receipt while late native trace changes its group', () => {
     const page = await openCards(390, 'light', '&regression=browser');
     try {
       const location = (operation: number) =>
-        cardsMaterial(page, 'browser', id(operation)).locator('dt')
-          .evaluateAll((nodes) => nodes.find((node) => node.textContent === '位置')!
-            .nextElementSibling!.textContent);
-      const contents = () => page
-        .locator('[data-process-material^="browser:"] pre').allTextContents();
-      const reads = () => page.evaluate(() =>
-        window.readingReads['/api/v1/runtime/browser-workspaces']);
+        cardsMaterial(page, 'browser', id(operation))
+          .locator('dt')
+          .evaluateAll(
+            (nodes) =>
+              nodes.find((node) => node.textContent === '位置')!
+                .nextElementSibling!.textContent,
+          );
+      const contents = () =>
+        page
+          .locator('[data-process-material^="browser:"] pre')
+          .allTextContents();
+      const reads = () =>
+        page.evaluate(
+          () => window.readingReads['/api/v1/runtime/browser-workspaces'],
+        );
       const original = await contents();
       const before = await reads();
       for (const title of ['当前观察甲', '当前观察乙']) {
@@ -1115,19 +1170,30 @@ suite('reading a receipt while late native trace changes its group', () => {
       const input = page.locator('#message-cards-steering');
       for (const phase of ['initial', 'prefix'] as const) {
         expect(await receipt.count()).toBe(1);
-        expect(await page.locator('[data-steering-segment="initial"]')
-          .locator(receipt).count()).toBe(1);
-        expect(await page.locator('[data-steering-segment="cards-steering"]')
-          .locator(receipt).count()).toBe(0);
-        expect(await receipt.locator('xpath=ancestor::*[@data-step-id][1]')
-          .getAttribute('data-step-id'))
-          .toBe(`operation:cloud:${ids.unknownOperation}`);
+        expect(
+          await page
+            .locator('[data-steering-segment="initial"]')
+            .locator(receipt)
+            .count(),
+        ).toBe(1);
+        expect(
+          await page
+            .locator('[data-steering-segment="cards-steering"]')
+            .locator(receipt)
+            .count(),
+        ).toBe(0);
+        expect(
+          await receipt
+            .locator('xpath=ancestor::*[@data-step-id][1]')
+            .getAttribute('data-step-id'),
+        ).toBe(`operation:cloud:${ids.unknownOperation}`);
         expect(await precedes(before, receipt)).toBe(true);
         for (const next of [input, after])
           expect(await precedes(receipt, next)).toBe(true);
         expect(await page.locator('table').count()).toBe(1);
-        expect(await processOwns(processOf(page).last(), page.locator('table')))
-          .toBe(false);
+        expect(
+          await processOwns(processOf(page).last(), page.locator('table')),
+        ).toBe(false);
         if (phase === 'initial') {
           await update(page, 'prefix');
           await page.getByText('补充后追加的说明。', { exact: true }).waitFor();

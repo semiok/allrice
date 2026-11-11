@@ -137,7 +137,9 @@ function ProcessMaterialPanels({
   const root = useRef<HTMLDivElement>(null);
   const render = (feed: WorkProcessMaterialFeed) => (
     <WorkProcessReadingState root={root}>
-      <div ref={root} style={{ display: 'contents' }}>{children(feed)}</div>
+      <div ref={root} style={{ display: 'contents' }}>
+        {children(feed)}
+      </div>
     </WorkProcessReadingState>
   );
   const common = { runId, workspaceId, tenantHeaders, runActive };

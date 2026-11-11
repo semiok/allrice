@@ -243,14 +243,16 @@ describe('Cloud/MCP approval presentation', () => {
       );
       expect(inline).toContain('href="#process-material-cloud-later-success"');
       expect(inline).not.toContain('href="#operation-later-success"');
-      expect(renderToStaticMarkup(
-        <CloudOperationCard
-          op={succeeded}
-          busy={false}
-          interactionOnly
-          onAct={() => {}}
-        />,
-      )).toBe('');
+      expect(
+        renderToStaticMarkup(
+          <CloudOperationCard
+            op={succeeded}
+            busy={false}
+            interactionOnly
+            onAct={() => {}}
+          />,
+        ),
+      ).toBe('');
       expect(failed.snapshot.status).toBe('failed');
       const other = structuredClone(succeeded);
       other.snapshot.binding.task.runId = 'run-b';

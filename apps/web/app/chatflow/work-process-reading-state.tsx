@@ -63,8 +63,10 @@ export function useProcessDisclosure<T extends Choice>(
     JSON.stringify([...(context?.scope ?? []), id]),
   );
   const current = (values: Choices) => {
-    const id = keys.find((id) => values.get(id) === true) ??
-      (preserveAliases ? keys.find((id) => values.has(id)) : undefined) ?? keys[0]!;
+    const id =
+      keys.find((id) => values.get(id) === true) ??
+      (preserveAliases ? keys.find((id) => values.has(id)) : undefined) ??
+      keys[0]!;
     return values.has(id) ? (values.get(id) as T) : initial;
   };
   const value = context ? current(context.values) : local[0];
@@ -82,7 +84,9 @@ export function useProcessDisclosure<T extends Choice>(
     if (
       Array.isArray(key) &&
       context &&
-      (preserveAliases ? keys.some((id) => context.values.has(id)) : value === true) &&
+      (preserveAliases
+        ? keys.some((id) => context.values.has(id))
+        : value === true) &&
       keys.some((id) => !context.values.has(id))
     )
       setValue(value, true);
@@ -97,9 +101,8 @@ export function useProcessMaterialReveal() {
   const value = context?.values.get(key);
   return [
     typeof value === 'string' ? value : undefined,
-    (target: string | undefined) => context?.setValues(
-      (values) => new Map(values).set(key, target),
-    ),
+    (target: string | undefined) =>
+      context?.setValues((values) => new Map(values).set(key, target)),
   ] as const;
 }
 

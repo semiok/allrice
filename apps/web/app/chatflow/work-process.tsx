@@ -153,9 +153,15 @@ export function WorkProcess({
   const [disclosure, setDisclosure] = useState<WorkProcessDisclosure>();
   const [settledOnMount] = useState(!running);
   const [materialReveal, setMaterialReveal] = useProcessMaterialReveal();
-  const revealingMaterial = materialReveal && items.some((item) =>
-    item.operations?.some((ref) => workProcessReferenceKey(ref) === materialReveal),
-  ) ? materialReveal : undefined;
+  const revealingMaterial =
+    materialReveal &&
+    items.some((item) =>
+      item.operations?.some(
+        (ref) => workProcessReferenceKey(ref) === materialReveal,
+      ),
+    )
+      ? materialReveal
+      : undefined;
   const policy = presentationPolicyFor(transcriptView, collapseTiming);
   const currentPresentation =
     presentation ?? workProcessPresentation([], parts, undefined, false);
@@ -169,7 +175,9 @@ export function WorkProcess({
         {content}
       </div>
     );
-    return sharedReadingState ? frame : (
+    return sharedReadingState ? (
+      frame
+    ) : (
       <WorkProcessReadingState key={currentPresentation.runId} root={root}>
         {frame}
       </WorkProcessReadingState>
@@ -177,13 +185,18 @@ export function WorkProcess({
   };
   useLayoutEffect(() => {
     if (!revealingMaterial) return;
-    if (!disclosure?.open || !sameWorkProcessAnswer(disclosure.presentation, currentPresentation))
+    if (
+      !disclosure?.open ||
+      !sameWorkProcessAnswer(disclosure.presentation, currentPresentation)
+    )
       setDisclosure({ presentation: currentPresentation, open: true });
     const target = root.current?.querySelector<HTMLElement>(
       `[data-process-material="${CSS.escape(revealingMaterial)}"]`,
     );
     if (!target?.getClientRects().length) return;
-    target.closest('[data-step-id]')?.querySelector<HTMLElement>('[data-disclosure-row]')
+    target
+      .closest('[data-step-id]')
+      ?.querySelector<HTMLElement>('[data-disclosure-row]')
       ?.focus({ preventScroll: true });
     target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     setMaterialReveal(undefined);
@@ -601,11 +614,15 @@ function NativeStepsGroup({
   grouped: boolean;
   policy: ChatPresentationPolicy;
 }) {
-  const aliases = items.flatMap((item) => item.operations?.map(
-    (ref) => `operation:${workProcessReferenceKey(ref)}`,
-  ) ?? []);
-  const keys = [...new Set([...items.map((item) => item.id), ...aliases])]
-    .map((id) => `group:${id}`);
+  const aliases = items.flatMap(
+    (item) =>
+      item.operations?.map(
+        (ref) => `operation:${workProcessReferenceKey(ref)}`,
+      ) ?? [],
+  );
+  const keys = [...new Set([...items.map((item) => item.id), ...aliases])].map(
+    (id) => `group:${id}`,
+  );
   const [manual, setOpen] = useProcessDisclosure<boolean | undefined>(
     keys,
     undefined,
@@ -626,9 +643,11 @@ function NativeStepsGroup({
   const revealingQuestion = useQuestionDisclosureOpen(
     questionKeys.filter((key) => revealingQuestions.includes(key)),
   );
-  const open = revealingMaterial || revealingQuestion || (manual ?? readingQuestion);
+  const open =
+    revealingMaterial || revealingQuestion || (manual ?? readingQuestion);
   useLayoutEffect(() => {
-    if ((revealingMaterial || revealingQuestion) && manual !== true) setOpen(true);
+    if ((revealingMaterial || revealingQuestion) && manual !== true)
+      setOpen(true);
   });
   const { steps } = summarizeWorkProcess(items);
   if (!steps.length || onlyLiveThinking(steps, running)) return null;
@@ -771,8 +790,12 @@ function WorkProcessSteps({
             ) : (
               <WorkProcessStepView
                 id={step.id}
-                disclosureIds={operations.map((ref) => `operation:${workProcessReferenceKey(ref)}`)}
-                reveal={operations.some((ref) => workProcessReferenceKey(ref) === materialReveal)}
+                disclosureIds={operations.map(
+                  (ref) => `operation:${workProcessReferenceKey(ref)}`,
+                )}
+                reveal={operations.some(
+                  (ref) => workProcessReferenceKey(ref) === materialReveal,
+                )}
                 icon={
                   <span
                     className={

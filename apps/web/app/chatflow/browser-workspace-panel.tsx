@@ -43,9 +43,12 @@ export function browserOperationMaterial(
 ): WorkProcessMaterial {
   const observation = workspace.observation;
   const action = op.command.action;
-  const url = action.type === 'navigate' || action.type === 'request'
-    ? action.url
-    : op.command.observationId === observation?.id ? observation?.url : undefined;
+  const url =
+    action.type === 'navigate' || action.type === 'request'
+      ? action.url
+      : op.command.observationId === observation?.id
+        ? observation?.url
+        : undefined;
   return {
     source: 'browser',
     id: op.snapshot.binding.attempt.operationId,
