@@ -7,6 +7,7 @@ import { captureReferenceSelections } from '../reference-runtime.ts';
 import { freezeChatRunExecutionBinding } from '../conversation/native-session-binding.ts';
 import { isBaseRiceInstance } from './employee-instance-policy.ts';
 import { sharedEmployeeMethodTarget } from './employee-method-target.ts';
+import { resolveEmployeeContentSource } from './employee-content-sources.ts';
 import { sceneSkillFixture } from './employee-scene-skills.fixture.ts';
 import type { RequestContext } from '@allrice/contracts';
 import {
@@ -62,7 +63,9 @@ import * as toolSelection from '@allrice/contracts';
 import {
   prepareEmployeeMethodActivationFromChat,
   activateEmployeeMethodFromChat,
+  employeeMethodActivationChanges,
 } from './employee-method-activation.ts';
+import { askUserQuestionArguments } from './ask-user-question.ts';
 import {
   acquireConversationRuntime,
   bindConversationThread,
@@ -101,6 +104,7 @@ import {
   startEmployeeMethodTestFromChat,
   getEmployeeMethodTest,
   employeeMethodTestStillCurrent,
+  readEmployeeMethodActivationTest,
 } from './employee-method-tests.ts';
 import { freezeRouteSubscriptionSnapshot } from '../execution/route-subscription.ts';
 import {
@@ -117,6 +121,7 @@ import {
 } from './employee-runtime-content.ts';
 import {
   freezeEmployeeRuntimeContent,
+  freezeEmployeeMethodActivationCandidate,
   getEmployeeContentSet,
   getEffectiveEmployeeContent,
   getEmployeeDetails,
@@ -431,6 +436,10 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     const workerId = randomUUID(),
       leaseToken = randomUUID();
     await fixture.db.begin(async (tx) => {
+      await tx`select id from allrice_users where id=${f.a.user.id} for no key update`;
+      const [policyVersion] = await tx<{ version: number }[]>`
+        select coalesce(max(version),0)::int+1 version from allrice_policy_snapshots
+        where organization_id=${f.a.organizationId} and subject_id=${f.a.user.id}`;
       const references = await captureReferenceSelections(
         f.a.context,
         referenceRevisionIds,
@@ -508,23 +517,25 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         createdAt: new Date().toISOString(),
       });
       await tx`insert into allrice_policy_snapshots(id,organization_id,subject_id,version,payload,expires_at)
-        values(${policyId},${f.a.organizationId},${f.a.user.id},1,${tx.json({
-          memberships: f.a.context.memberships,
-          grants: [
-            {
-              resourceType: 'job',
-              action: 'job:execute',
-              workspaceId: f.a.workspaceId,
-            },
-            ...['storage_object', 'memory', 'chat_session'].map(
-              (resourceType) => ({
-                resourceType,
-                action: 'resource:read',
+        values(${policyId},${f.a.organizationId},${f.a.user.id},${policyVersion!.version},${tx.json(
+          {
+            memberships: f.a.context.memberships,
+            grants: [
+              {
+                resourceType: 'job',
+                action: 'job:execute',
                 workspaceId: f.a.workspaceId,
-              }),
-            ),
-          ],
-        })},clock_timestamp()+interval '1 hour')`;
+              },
+              ...['storage_object', 'memory', 'chat_session'].map(
+                (resourceType) => ({
+                  resourceType,
+                  action: 'resource:read',
+                  workspaceId: f.a.workspaceId,
+                }),
+              ),
+            ],
+          },
+        )},clock_timestamp()+interval '1 hour')`;
       const input = {
         employeeAssignmentId: binding.employeeAssignmentId,
         employeeVersionId: binding.employeeVersionId,
@@ -1030,6 +1041,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     inheritedCommon = false,
     companyCommon: boolean | 'max' = false,
     native = false,
+    sqlReceipt = false,
   ) {
     const base = companyCommon
       ? await companyCommonFixture(companyCommon === 'max')
@@ -1109,10 +1121,66 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       candidateDigest: args.candidateDigest,
       testIds,
     };
-    const preview = await prepareEmployeeMethodActivationFromChat({
-      ...run,
-      arguments: preparation,
-    });
+    const preview = sqlReceipt
+      ? await fixture.db.begin(async (tx) => {
+          const { scope, requestId } = employeeChatIdentity({
+            ...run,
+            arguments: preparation,
+          });
+          const content = await freezeEmployeeMethodActivationCandidate(
+            scope,
+            { ...preparation, instanceId: instance.id },
+            tx,
+            false,
+          );
+          const tests: Awaited<
+            ReturnType<typeof readEmployeeMethodActivationTest>
+          >[] = [];
+          for (const id of preparation.testIds)
+            tests.push(
+              await readEmployeeMethodActivationTest(
+                tx,
+                scope,
+                instance.id,
+                id,
+                run.frozen.modelSnapshot,
+                content.testCoverage?.views ? content : undefined,
+              ),
+            );
+          const snapshot = {
+            content,
+            changes: employeeMethodActivationChanges(
+              content.activeManifest,
+              content.manifest,
+            ),
+            tests,
+            modelSettings: await readPlatformModelSettings(),
+          };
+          const question = toolSelection.UserQuestionItemSchema.parse({
+            id: toolSelection.methodActivationQuestionPrefix + requestId,
+            question: 'Synthetic historical review',
+            multiSelect: false,
+            options: [
+              { label: toolSelection.methodActivationApprove },
+              { label: toolSelection.methodActivationDecline },
+            ],
+          });
+          const [row] = await tx`insert into allrice_employee_method_activations
+            (id,organization_id,workspace_id,owner_id,instance_id,session_id,source_run_id,source_job_id,source_attempt,request_digest,snapshot,snapshot_digest,question)
+            values(${requestId},${scope.organizationId},${scope.workspaceId},${scope.actor.id},${instance.id},${run.sessionId},${run.context.runId},${run.context.jobId},${run.worker.attempt},${runtimePolicyDigest(preparation)},${tx.json(snapshot)},${runtimePolicyDigest(snapshot)},${tx.json(question)}) returning expires_at`;
+          return {
+            receiptId: requestId,
+            enabled: false as const,
+            question,
+            askUserQuestion: askUserQuestionArguments(question),
+            expiresAt: row!.expires_at.toISOString(),
+            preview: snapshot,
+          };
+        })
+      : await prepareEmployeeMethodActivationFromChat({
+          ...run,
+          arguments: preparation,
+        });
     const runtime = {
       organizationId: f.a.organizationId,
       workspaceId: f.a.workspaceId,
@@ -1285,6 +1353,16 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       activate,
     };
   }
+
+  const activationFootprint = (
+    x: Awaited<ReturnType<typeof activationFixture>>,
+  ) =>
+    fixture.db`select s.*,to_jsonb(a) activation,er.method_authoring,er.execution_snapshot,to_jsonb(c) context,
+      (select count(*)::int from allrice_employee_content_requests where set_id=s.id) requests,
+      (select count(*)::int from allrice_employee_content_publications where set_id=s.id) publications
+      from allrice_employee_content_sets s join allrice_employee_method_activations a on a.id=${x.preview.receiptId}
+      join allrice_employee_runs er on er.run_id=${x.run.context.runId}
+      join allrice_employee_content_contexts c on c.generation_id=er.content_generation_id where s.id=${x.saved.setId}`;
 
   // Historical publication/consumption metadata, never a product activation.
   async function seedHistoricalMethodPublication(
@@ -2083,9 +2161,39 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     await expect(x.activate()).rejects.toMatchObject({
       code: 'legacy_method_retired',
     });
-    await seedHistoricalMethodPublication(x, true);
-    expect((await x.activate()).enabled).toBe(true);
-    expect((await x.activate()).replayed).toBe(true);
+    const receipt = await seedHistoricalMethodPublication(x, true);
+    const before = await activationFootprint(x);
+    expect(await x.activate()).toMatchObject({
+      enabled: true,
+      replayed: true,
+      receipt,
+    });
+    expect(await x.activate()).toMatchObject({
+      enabled: true,
+      replayed: true,
+      receipt,
+    });
+    expect(await activationFootprint(x)).toEqual(before);
+    await recordConversationTurn({
+      ...x.runtime,
+      threadId: x.threadId,
+      turnId: `continued-${randomUUID()}`,
+    });
+    await fixture.db`update allrice_jobs set attempt=attempt+1 where id=${x.run.context.jobId}`;
+    const resumed = {
+      ...x.run,
+      worker: { ...x.run.worker, attempt: x.run.worker.attempt + 1 },
+    };
+    const continued = await activationFootprint(x);
+    expect(await x.activate(resumed)).toMatchObject({
+      enabled: true,
+      replayed: true,
+      receipt,
+    });
+    await expect(x.activate()).rejects.toMatchObject({
+      code: 'authorization_denied',
+    });
+    expect(await activationFootprint(x)).toEqual(continued);
     await x.run.finish();
     expect(
       (
@@ -2242,13 +2350,48 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     const x = await activationFixture('selected');
     await x.show();
     await x.answer();
-    await seedHistoricalMethodPublication(x, true);
+    const receipt = await seedHistoricalMethodPublication(x, true);
+    const authorized = await activationFootprint(x);
+    expect(await x.activate()).toMatchObject({
+      enabled: true,
+      replayed: true,
+      receipt,
+    });
+    expect(await activationFootprint(x)).toEqual(authorized);
+    const current = (await getEmployeeContentSet(x.f.a.context, x.saved.setId))
+      .set;
+    await seedHistoricalEmployeeContent(
+      fixture.db,
+      x.f.a.context,
+      {
+        operation: 'save_draft',
+        workspaceId: x.f.a.workspaceId,
+        setId: x.saved.setId,
+        requestId: randomUUID(),
+        expectedRevision: current.revision,
+        ownership: current.ownership,
+        target: current.target,
+        manifest: current.candidate!.manifest,
+        textEdits: [],
+        changeSummary: 'Later historical publication',
+      },
+      { active: true },
+    );
+    const later = await activationFootprint(x);
+    expect(await x.activate()).toMatchObject({
+      enabled: false,
+      replayed: true,
+      receipt,
+    });
+    expect(await activationFootprint(x)).toEqual(later);
     await x.departmentInfo!.configure(
       x.f.a.user.id,
       x.departmentInfo!.department.id,
       'department',
     );
+    const revoked = await activationFootprint(x);
     await expect(x.activate()).rejects.toThrow('authorization_denied');
+    expect(await activationFootprint(x)).toEqual(revoked);
     await x.run.finish();
   });
 
@@ -2474,13 +2617,24 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       const x = await activationFixture('company');
       await x.show();
       await x.answer();
-      if (consumed) await seedHistoricalMethodPublication(x, true);
+      if (consumed) {
+        const receipt = await seedHistoricalMethodPublication(x, true);
+        const authorized = await activationFootprint(x);
+        expect(await x.activate()).toMatchObject({
+          enabled: true,
+          replayed: true,
+          receipt,
+        });
+        expect(await activationFootprint(x)).toEqual(authorized);
+      }
       await x.departmentInfo!.configure(
         x.f.a.user.id,
         x.departmentInfo!.department.id,
         'department',
       );
+      const revoked = await activationFootprint(x);
       await expect(x.activate()).rejects.toThrow('authorization_denied');
+      expect(await activationFootprint(x)).toEqual(revoked);
       const [row] =
         await fixture.db`select active_revision_id from allrice_employee_content_sets where id=${x.saved.setId}`;
       expect(row!.active_revision_id).toBe(
@@ -2612,13 +2766,22 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     const x = await activationFixture(true);
     await x.show();
     await x.answer();
-    await seedHistoricalMethodPublication(x, true);
+    const receipt = await seedHistoricalMethodPublication(x, true);
+    const authorized = await activationFootprint(x);
+    expect(await x.activate()).toMatchObject({
+      enabled: true,
+      replayed: true,
+      receipt,
+    });
+    expect(await activationFootprint(x)).toEqual(authorized);
     await x.departmentInfo!.configure(
       x.f.a.user.id,
       x.departmentInfo!.department.id,
       'personal',
     );
+    const revoked = await activationFootprint(x);
     await expect(x.activate()).rejects.toThrow('authorization_denied');
+    expect(await activationFootprint(x)).toEqual(revoked);
     await x.run.finish();
   });
 
@@ -2951,6 +3114,21 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
           await getEmployeeContentSet(f.a.context, original.setId)
         ).set.candidate!.manifest;
         const pin = originalManifest.scenes[0]!.references[0]!;
+        const unpublished = await resolveEmployeeContentSource({
+          context: f.a.context,
+          employeeId: f.assignment.employeeId,
+          instanceId: instance.id,
+          sceneId: scene.id,
+          ownership: current.ownership,
+          ref: pin,
+          sql: fixture.db,
+          lock: false,
+          allowDraft: false,
+        });
+        expect(unpublished.dto.available).toBe(false);
+        expect(JSON.stringify(unpublished.dto)).not.toContain(
+          restore ? 'ORIGINAL_HISTORY_BODY' : 'COMMITTED_HISTORY_BODY',
+        );
         await fixture.db`insert into allrice_company_asset_publications(asset_id,revision_id,published_by) values(${pin.contentId},${pin.revisionId},${f.a.user.id})`;
         await fixture.db`update allrice_company_assets set state='published',published_revision_id=${pin.revisionId},revision=revision+1 where id=${pin.contentId}`;
         const later = await seedHistoricalEmployeeContent(
@@ -2976,13 +3154,21 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
           title: 'Foreign owner',
         });
         const effects =
-          () => fixture.db`select s.revision,s.candidate_revision_id,s.active_revision_id,er.execution_snapshot,er.method_authoring,c.retired_at,c.invalidated_at,
+          () => fixture.db`select s.revision,s.candidate_revision_id,s.active_revision_id,er.execution_snapshot,er.method_authoring,to_jsonb(c) context,
           (select count(*)::int from allrice_employee_content_requests where set_id=s.id) requests,
           (select count(*)::int from allrice_employee_content_publications where set_id=s.id) publications,
+          (select count(*)::int from allrice_employee_method_activations where instance_id=${instance.id}) activations,
           (select count(*)::int from allrice_audit_events where organization_id=s.organization_id) audits
           from allrice_employee_content_sets s join allrice_employee_runs er on er.run_id=${run.context.runId}
           join allrice_employee_content_contexts c on c.generation_id=er.content_generation_id where s.id=${original.setId}`;
         const before = await effects();
+        await expect(
+          getEmployeeContentHistory(f.b.context, original.setId),
+        ).rejects.toThrow();
+        if (!sharedTarget)
+          await expect(
+            getEmployeeContentSet(f.b.context, original.setId),
+          ).rejects.toThrow();
         const invoke = restore
           ? restoreEmployeeMethodFromChat
           : saveEmployeeMethodFromChat;
@@ -3112,6 +3298,14 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       );
       const before =
         await fixture.db`select * from allrice_employee_content_sets where id=${x.saved.setId}`;
+      const effects =
+        () => fixture.db`select er.execution_snapshot,er.method_authoring,to_jsonb(c) context,
+        (select count(*)::int from allrice_employee_content_requests where set_id=${x.saved.setId}) requests,
+        (select count(*)::int from allrice_employee_content_publications where set_id=${x.saved.setId}) publications,
+        (select count(*)::int from allrice_employee_method_activations where instance_id=${x.instance.id}) activations
+        from allrice_employee_runs er join allrice_employee_content_contexts c on c.generation_id=er.content_generation_id
+        where er.run_id=${run.context.runId}`;
+      const authorized = await effects();
       expect(await restoreEmployeeMethodFromChat(call)).toEqual(restored);
       await expect(
         restoreEmployeeMethodFromChat({
@@ -3119,11 +3313,13 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
           arguments: { ...args, changeSummary: 'Different payload' },
         }),
       ).rejects.toThrow('request_conflict');
+      expect(await effects()).toEqual(authorized);
       await x.departmentInfo!.configure(
         x.f.a.user.id,
         x.departmentInfo!.department.id,
         'department',
       );
+      const revoked = await effects();
       await expect(restoreEmployeeMethodFromChat(call)).rejects.toThrow(
         'authorization_denied',
       );
@@ -3139,6 +3335,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
           },
         }),
       ).rejects.toThrow('authorization_denied');
+      expect(await effects()).toEqual(revoked);
       expect(
         await fixture.db`select * from allrice_employee_content_sets where id=${x.saved.setId}`,
       ).toEqual(before);
@@ -4987,10 +5184,15 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     // Already persisted pre-retirement authoring metadata; inspect must not create it.
     await fixture.db`update allrice_employee_runs set method_authoring=true where run_id=${inspect.context.runId}`;
     await fixture.db`update allrice_employee_content_contexts set retired_at=clock_timestamp() where generation_id=${inspect.runtime.generationId}`;
+    const before =
+      await fixture.db`select * from allrice_employee_content_contexts where generation_id=${inspect.runtime.generationId}`;
     await inspectEmployeeMethodFromChat({
       ...inspect,
       arguments: { view: 'candidate' },
     });
+    expect(
+      await fixture.db`select * from allrice_employee_content_contexts where generation_id=${inspect.runtime.generationId}`,
+    ).toEqual(before);
     await inspect.finish();
     const next = await historicalMethodRun(
       f,
@@ -5072,10 +5274,15 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     // Already persisted pre-retirement authoring metadata; inspect must not create it.
     await fixture.db`update allrice_employee_runs set method_authoring=true where run_id=${run.context.runId}`;
     await fixture.db`update allrice_employee_content_contexts set retired_at=clock_timestamp() where generation_id=${run.runtime.generationId}`;
+    const before =
+      await fixture.db`select * from allrice_employee_content_contexts where generation_id=${run.runtime.generationId}`;
     await inspectEmployeeMethodFromChat({
       ...run,
       arguments: { view: 'candidate' },
     });
+    expect(
+      await fixture.db`select * from allrice_employee_content_contexts where generation_id=${run.runtime.generationId}`,
+    ).toEqual(before);
     expect(
       await searchWorkspaceMemories(f.a.context, {
         workspaceId: f.a.workspaceId,
@@ -5190,13 +5397,14 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         (select jsonb_agg(s order by s.id) from allrice_employee_content_sets s where s.organization_id=er.organization_id) sets,
         (select count(*)::int from allrice_employee_content_revisions r join allrice_employee_content_sets s on s.id=r.set_id where s.organization_id=er.organization_id) revisions,
         (select count(*)::int from allrice_employee_content_requests where organization_id=er.organization_id) requests,
+        (select count(*)::int from allrice_employee_method_activations where instance_id=${instance.id}) activations,
         (select count(*)::int from allrice_employee_content_publications p join allrice_employee_content_sets s on s.id=p.set_id where s.organization_id=er.organization_id) publications,
         (select count(*)::int from allrice_company_asset_revisions where organization_id=er.organization_id) source_revisions,
         (select count(*)::int from allrice_audit_events where organization_id=er.organization_id) audits
         from allrice_employee_runs er join allrice_employee_content_contexts c on c.generation_id=er.content_generation_id where er.run_id=${run.context.runId}`;
       const before = await effects();
-      for (const view of ['effective', 'candidate', 'history'] as const)
-        await inspectEmployeeMethodFromChat({
+      for (const view of ['effective', 'candidate', 'history'] as const) {
+        const inspected = await inspectEmployeeMethodFromChat({
           ...run,
           arguments: {
             view,
@@ -5210,6 +5418,19 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
               : {}),
           },
         });
+        if (scope === 'rice') {
+          expect(inspected).not.toHaveProperty('sharedTarget');
+          expect(inspected).not.toHaveProperty('departments');
+        }
+      }
+      if (scope === 'rice')
+        for (const sharedScope of ['company', 'department'] as const)
+          await expect(
+            inspectEmployeeMethodFromChat({
+              ...run,
+              arguments: { view: 'candidate', scope: sharedScope },
+            }),
+          ).rejects.toMatchObject({ code: 'authorization_denied' });
       expect(await effects()).toEqual(before);
       for (const expectedRevision of [original.revision, 99]) {
         const args = {
@@ -5255,24 +5476,16 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
   );
 
   it('rejects an unconsumed legacy activation after an adopted answer without consuming or publishing', async () => {
-    const x = await activationFixture();
+    const x = await activationFixture(false, false, false, false, true);
     await x.show();
     await x.answer();
-    const effects =
-      () => fixture.db`select s.*,a.consumed_at,a.response,er.method_authoring,er.execution_snapshot,c.retired_at,c.invalidated_at,c.updated_at,
-      (select count(*)::int from allrice_employee_content_requests where set_id=s.id) requests,
-      (select count(*)::int from allrice_employee_content_publications where set_id=s.id) publications
-      from allrice_employee_content_sets s join allrice_employee_method_activations a on a.id=${x.preview.receiptId}
-      join allrice_employee_runs er on er.run_id=${x.run.context.runId}
-      join allrice_employee_content_contexts c on c.generation_id=er.content_generation_id where s.id=${x.saved.setId}`;
-    const before = await effects();
+    const before = await activationFootprint(x);
     await expect(x.activate()).rejects.toMatchObject({
       code: 'legacy_method_retired',
     });
-    expect(await effects()).toEqual(before);
+    expect(await activationFootprint(x)).toEqual(before);
     expect(before[0]).toMatchObject({
-      consumed_at: null,
-      response: null,
+      activation: { consumed_at: null, response: null },
       active_revision_id: null,
     });
     await x.run.finish();
