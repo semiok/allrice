@@ -1,4 +1,3 @@
-import { freezeEmployeeDocuments } from '../../../../packages/database/src/employees/employee-documents.ts';
 /** Actual ordinary Worker + isolated PG; native acquisition is forbidden and
  * the adapter supplies synthetic usage. No provider or credential is read. */
 import { createHash, randomUUID } from 'node:crypto';
@@ -18,42 +17,29 @@ import {
   getOrganizationModelQuota,
   assertQuotaAvailable,
   createTraceableMemory,
+  prepareEmployeeRunBinding,
+  enqueueRun,
+  claimNextJob,
+  startClaimedJob,
+  cancelRun,
   completeJob,
 } from '@allrice/database';
 import type * as Database from '@allrice/database';
 import {
   CodexSubscriptionQuotaSnapshotSchema,
+  EmployeePromptSnapshotSchema,
+  RunMemoryContextV2StateSchema,
   type PromptImageAttachment,
 } from '@allrice/contracts';
 import { LocalStorageAdapter } from '@allrice/storage';
 
 const status = vi.hoisted(() => ({
   quota: undefined as unknown,
-  frozenDocument: undefined as
-    Awaited<ReturnType<typeof freezeEmployeeDocuments>> | undefined,
 }));
 vi.mock('@allrice/database', async (original) => {
   const database = await original<typeof Database>();
   return {
     ...database,
-    resolveEmployeeExecution: async (
-      ...args: Parameters<typeof Database.resolveEmployeeExecution>
-    ) => {
-      const resolved = await database.resolveEmployeeExecution(...args);
-      return status.frozenDocument
-        ? {
-            ...resolved,
-            promptSnapshot: {
-              ...resolved.promptSnapshot,
-              memories: status.frozenDocument.memories,
-              employeeDocuments: {
-                ...resolved.promptSnapshot.employeeDocuments,
-                ...status.frozenDocument.employeeDocuments,
-              },
-            },
-          }
-        : resolved;
-    },
     getCodexProviderStatus: vi.fn(async () => ({
       status: 'connected',
       quota: status.quota,
@@ -70,7 +56,6 @@ integration(
   () => {
     beforeEach(() => {
       status.quota = undefined;
-      status.frozenDocument = undefined;
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
       vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
       // Any accidental subscription cash estimation would throw, not silently 0.
@@ -188,28 +173,73 @@ integration(
             );
             images = [image];
           }
-          const task = await fixture.prepareOrdinaryTask(
-            mode === 'personal_method'
-              ? '请保存我的工作场景候选：每周核对数据。'
-              : mode === 'general_profile_writable'
-                ? '请记住我喜欢简短回答。'
-                : mode.startsWith('personal_profile')
-                  ? '往后就叫你小禾，回复也短一点，记下来。'
-                  : mode.startsWith('progress_')
-                    ? '连续失败了，先暂停，等我确认后再继续。'
-                    : 'Synthetic arithmetic.',
-            images,
-          );
+          let ordinaryMemoryId: string | undefined;
           if (mode === 'complete') {
             await fixture.db`insert into allrice_sessions(id,user_id,token_hash,expires_at) values(${fixture.context.sessionId},${fixture.context.actor.id},${createHash('sha256').update(randomUUID()).digest('hex')},now()+interval '1 hour')`;
-            const [source] =
-              await fixture.db`select user_message_id from allrice_employee_runs where run_id=${task.runId}`;
+            // Prepare an independent prior source before the target admission.
+            // Never replace the target's frozen documents or memory allowance.
+            const sessionId = randomUUID(),
+              userMessageId = randomUUID(),
+              assistantMessageId = randomUUID();
+            await fixture.db.begin(async (tx) => {
+              await tx`insert into allrice_chat_sessions(id,organization_id,workspace_id,owner_id,title,employee_assignment_id,employee_version_id)
+                values(${sessionId},${fixture.organizationId},${fixture.workspaceId},${fixture.ownerId},'Synthetic prior discussion',${fixture.assignmentId},${fixture.employeeVersionId})`;
+              await tx`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content)
+                values(${userMessageId},${fixture.organizationId},${fixture.workspaceId},${sessionId},${fixture.ownerId},'user','{"text":"Synthetic prior discussion.","citations":[]}'),
+                  (${assistantMessageId},${fixture.organizationId},${fixture.workspaceId},${sessionId},${fixture.ownerId},'assistant','{"text":"","citations":[]}')`;
+            });
+            const binding = await prepareEmployeeRunBinding({
+              employeeDocuments: true,
+              context: fixture.context,
+              workspaceId: fixture.workspaceId,
+              assignmentId: fixture.assignmentId,
+              employeeVersionId: fixture.employeeVersionId,
+              sessionId,
+              userMessageId,
+              assistantMessageId,
+              promptSnapshot: {
+                systemPrompt: '',
+                userRequest: 'Synthetic prior discussion.',
+                conversation: [],
+                memories: [],
+              },
+            });
+            const prior = await enqueueRun(
+              fixture.context,
+              {
+                workspaceId: fixture.workspaceId,
+                idempotencyKey: randomUUID(),
+                type: 'allrice.employee.run',
+                maxAttempts: 1,
+                timeoutMs: binding.executionSnapshot.runtimePolicy.timeoutMs,
+                input: {
+                  employeeAssignmentId: fixture.assignmentId,
+                  employeeVersionId: fixture.employeeVersionId,
+                  sessionId,
+                  userMessageId,
+                  assistantMessageId,
+                },
+              },
+              { employeeBinding: binding },
+            );
+            const workerId = randomUUID();
+            const job = await claimNextJob(workerId, 30_000);
+            if (!job?.lease) throw Error('TEST_PRIOR_SOURCE_LEASE_MISSING');
+            const [expectedJob] =
+              await fixture.db`select id from allrice_jobs where run_id=${prior.run.id}`;
+            expect(job.id).toBe(expectedJob?.id);
+            const execution = await startClaimedJob(
+              workerId,
+              job.id,
+              job.lease.token,
+            );
+            expect(execution?.context.runId).toBe(prior.run.id);
             const draftMemory = await createTraceableMemory(fixture.context, {
               workspaceId: fixture.workspaceId,
               content: 'QUEUED_DRAFT_MEMORY',
               visibility: 'private',
               sourceType: 'message',
-              sourceId: source!.user_message_id,
+              sourceId: userMessageId,
               sourceLabel: 'Synthetic prior discussion',
               lifecycleState: 'durable',
               memoryClass: 'user_preference',
@@ -233,22 +263,63 @@ integration(
                 expiresAt: null,
               },
             );
-            await fixture.db`update allrice_employee_runs set method_authoring=true where run_id=${task.runId}`;
-            // Freeze through the real document selector at the resolver test
-            // boundary; production snapshot columns remain immutable.
-            status.frozenDocument = await freezeEmployeeDocuments(
-              fixture.db,
-              {
-                organizationId: fixture.context.organizationId,
-                workspaceId: fixture.workspaceId,
-                ownerId: fixture.context.actor.id,
-                instanceId: draftMemory.instanceId!,
-              },
-              {},
-              true,
+            ordinaryMemoryId = ordinaryMemory.id;
+            // Preserve the late method-source exclusion scenario, then close
+            // this owned lease without dispatching a model or native runtime.
+            await fixture.db`update allrice_employee_runs set method_authoring=true where run_id=${prior.run.id}`;
+            await cancelRun(
+              fixture.context,
+              fixture.workspaceId,
+              prior.run.id,
+              { reason: 'Synthetic prior source history' },
             );
-            expect(status.frozenDocument.memories.map((m) => m.id)).toEqual([
-              ordinaryMemory.id,
+            await completeJob({
+              workerId,
+              jobId: job.id,
+              leaseToken: job.lease.token,
+              result: {},
+            });
+            const [history] =
+              await fixture.db`select r.state,j.status,j.lease_token,e.status employee_status,e.method_authoring
+                from allrice_runs r join allrice_jobs j on j.run_id=r.id
+                join allrice_employee_runs e on e.run_id=r.id where r.id=${prior.run.id}`;
+            expect(history).toMatchObject({
+              state: 'canceled',
+              status: 'canceled',
+              lease_token: null,
+              employee_status: 'canceled',
+              method_authoring: true,
+            });
+          }
+          const task = await fixture.prepareOrdinaryTask(
+            mode === 'personal_method'
+              ? '请保存我的工作场景候选：每周核对数据。'
+              : mode === 'general_profile_writable'
+                ? '请记住我喜欢简短回答。'
+                : mode.startsWith('personal_profile')
+                  ? '往后就叫你小禾，回复也短一点，记下来。'
+                  : mode.startsWith('progress_')
+                    ? '连续失败了，先暂停，等我确认后再继续。'
+                    : 'Synthetic arithmetic.',
+            images,
+          );
+          if (mode === 'complete') {
+            const [frozen] =
+              await fixture.db`select prompt_snapshot,memory_context_state,method_authoring
+                from allrice_employee_runs where run_id=${task.runId}`;
+            const prompt = EmployeePromptSnapshotSchema.parse(
+              frozen?.prompt_snapshot,
+            );
+            const memory = RunMemoryContextV2StateSchema.parse(
+              frozen?.memory_context_state,
+            );
+            expect(frozen?.method_authoring).toBe(false);
+            expect(prompt.employeeDocuments).toMatchObject({
+              schemaVersion: 2,
+            });
+            expect(prompt.memories).toEqual([]);
+            expect(memory.pins.map((pin) => pin.id)).toEqual([
+              ordinaryMemoryId,
             ]);
           }
           if (
