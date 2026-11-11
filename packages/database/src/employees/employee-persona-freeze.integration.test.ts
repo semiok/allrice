@@ -519,7 +519,10 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
         sendChatMessage(f.context, f.workspaceId, session.id, message()),
       ).rejects.toThrow('employee_persona_snapshot_invalid');
       expect(injected).toBe(true);
-      expect(beginCalls).toBe(2);
+      // Each send has four real transactions: messages, base Skills (read-only),
+      // personal Skills, then queue admission. Full-source preparation follows
+      // both Skill transactions and precedes the queue transaction.
+      expect(beginCalls).toBe(4);
       expect(await runCount(f)).toBe(0);
       expect(
         await db`select id from allrice_jobs where organization_id=${f.organizationId}
@@ -531,7 +534,7 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
         and workspace_id=${f.workspaceId} and owner_id=${f.ownerId}`,
       ).toHaveLength(0);
       // The one-shot tamper is exhausted. Exercise an unchanged valid message
-      // through the same production client and both of its real transactions.
+      // through the same production client and all four real transactions.
       const sent = await sendChatMessage(
         f.context,
         f.workspaceId,
@@ -556,15 +559,15 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
           .employeeVersionId,
       ).toBe(f.versionId);
       expect(await runCount(f)).toBe(1);
-      expect(beginCalls).toBe(4);
+      expect(beginCalls).toBe(8);
       expect(phases.length).toBeGreaterThan(0);
       expect(
         [...new Set(phases.map((phase) => phase.beginCalls))].sort(),
-      ).toEqual([1, 3]);
+      ).toEqual([3, 7]);
       expect(
         phases.every(
           (phase) =>
-            !phase.active && (phase.beginCalls === 1 || phase.beginCalls === 3),
+            !phase.active && (phase.beginCalls === 3 || phase.beginCalls === 7),
         ),
       ).toBe(true);
     } finally {
