@@ -49,6 +49,11 @@ export function WorkbenchExperiencePanel(props: Props) {
             scopeId={props.scopeId}
             workspaceId={props.workspaceId}
             instanceId={props.memoryRequest.instanceId}
+            employeeName={
+              props.employees.find(
+                (item) => item.id === props.memoryRequest?.instanceId,
+              )?.name
+            }
             headers={props.headers}
           />
         </div>
@@ -295,6 +300,7 @@ function ExperienceBrowser(props: Props) {
                 scopeId={props.scopeId}
                 workspaceId={props.workspaceId}
                 instanceId={item.id}
+                employeeName={item.name}
                 headers={props.headers}
                 refreshKey={String(revision)}
               />

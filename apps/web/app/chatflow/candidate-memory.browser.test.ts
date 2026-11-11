@@ -1202,11 +1202,14 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
   it('owner adds and directly edits memory, retains oversized draft, then withdraws with a real receipt', async () => {
     const ui = await open('management');
     try {
+      await ui.page.getByText('（确认后生效）', { exact: true }).waitFor();
+      expect(
+        await ui.page
+          .getByText('管理员可以查看你的记忆。', { exact: false })
+          .count(),
+      ).toBe(0);
       await ui.page
-        .getByText('管理员可以查看你的记忆。', { exact: false })
-        .waitFor();
-      await ui.page
-        .getByRole('button', { name: '新增记忆', exact: true })
+        .getByRole('button', { name: '＋ 新增', exact: true })
         .click();
       await ui.page.getByLabel('新增记忆内容').fill('中'.repeat(334));
       await ui.page
@@ -1397,7 +1400,9 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       await ui.page.getByText(memory.content, { exact: true }).waitFor();
       expect(
         await ui.page
-          .getByRole('button', { name: /^(编辑|确认并记住|撤回|新增记忆)$/ })
+          .getByRole('button', {
+            name: /^(编辑|确认并记住|撤回|新增记忆|＋ 新增)$/,
+          })
           .count(),
       ).toBe(0);
       expect(await ui.page.locator('a[href]').count()).toBe(0);
