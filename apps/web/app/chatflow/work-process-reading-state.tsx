@@ -323,7 +323,12 @@ function takeReadingSnapshot(root: HTMLElement) {
     !selection.isCollapsed &&
     inside?.contains(selection.anchorNode) &&
     inside.contains(selection.focusNode)
-      ? selectionBody
+      ? selection.rangeCount > 0 &&
+        [...selection.getRangeAt(0).getClientRects()].some(
+          (box) => box.width > 0 && box.height > 0 && inView(inside, box),
+        )
+        ? bodyFor(inside)
+        : undefined
       : (bodyFor(inside) ?? selectionBody);
   const scroll = [
     ...root.querySelectorAll<HTMLElement>('[data-process-content]'),

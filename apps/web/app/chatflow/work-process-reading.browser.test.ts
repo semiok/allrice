@@ -856,6 +856,109 @@ suite('reading a receipt while late native trace changes its group', () => {
     'keeps the later reader when an old selection is clipped inside a visible input with %s focus',
     keepsClippedInputReader,
   );
+  const focusedSelectionGeometry = (node: Element) => {
+    const selection = document.getSelection()!;
+    const range = selection.getRangeAt(0);
+    const box = node.getBoundingClientRect();
+    let top = Math.max(0, box.top + node.clientTop);
+    let bottom = Math.min(innerHeight, box.top + node.clientTop + node.clientHeight);
+    for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+      if (parent === document.scrollingElement ||
+        !['auto', 'scroll', 'hidden', 'clip'].includes(getComputedStyle(parent).overflowY)) continue;
+      const rect = parent.getBoundingClientRect();
+      top = Math.max(top, rect.top + parent.clientTop);
+      bottom = Math.min(bottom, rect.top + parent.clientTop + parent.clientHeight);
+    }
+    const intersects = (rect: DOMRect) =>
+      bottom > top && rect.height > 0 && rect.bottom > top && rect.top < bottom;
+    const endpoints = [true, false].map((start) => {
+      const point = range.cloneRange();
+      point.collapse(start);
+      return [...point.getClientRects()].some(intersects);
+    });
+    return {
+      visible: [...range.getClientRects()].some((rect) => rect.width > 0 && intersects(rect)),
+      endpoints,
+      text: selection.toString(),
+      anchor: selection.anchorOffset,
+      focus: selection.focusOffset,
+      contained: node.contains(selection.anchorNode) && node.contains(selection.focusNode),
+      active: document.activeElement === node,
+      scrollTop: node.scrollTop,
+    };
+  };
+  it.each([
+    ['one end', false], ['one end', true],
+    ['middle', false], ['middle', true],
+  ] as const)(
+    'keeps the focused input reader with %s visible and backward=%s',
+    async (shape, backward) => {
+      const page = await open(390);
+      try {
+        await update(page, 'prefix');
+        await update(page, 'split');
+        await stepToggle(card(page, 1)).click();
+        const input = material(page, 1).locator('pre[data-process-content="input"]');
+        const later = card(page, 30);
+        const port = processBodyOf(page).locator('[data-process-scrollport]').nth(1);
+        const portBox = (await port.boundingBox())!;
+        const visiblePort = await receiptGeometry(port);
+        expect(visiblePort.readable).toBe(true);
+        await page.mouse.move(portBox.x + 10, (visiblePort.clip[0]! + visiblePort.clip[1]!) / 2);
+        await page.mouse.wheel(0, (await later.boundingBox())!.y - visiblePort.clip[0]! - 100);
+        await expect.poll(async () => (await receiptGeometry(later)).relativeTop)
+          .toBeCloseTo(visiblePort.clip[0]! - portBox.y + 100, 0);
+        const oldB = await receiptGeometry(later);
+        expect(oldB.readable).toBe(true);
+        expect(oldB.port!.scrollTop).toBeGreaterThan(0);
+        const inputBox = await receiptGeometry(input);
+        expect(inputBox.readable).toBe(true);
+        await input.evaluate((node, { shape, backward, targetY }) => {
+          node.focus({ preventScroll: true });
+          const text = node.firstChild!;
+          const end = shape === 'middle' ? text.textContent!.length : Math.floor(text.textContent!.length / 2);
+          document.getSelection()!.setBaseAndExtent(text, backward ? end : 0, text, backward ? 0 : end);
+          if (shape === 'middle') node.scrollTop = (node.scrollHeight - node.clientHeight) / 2;
+          else {
+            const point = document.createRange();
+            point.setStart(text, end);
+            point.collapse(true);
+            node.scrollTop += point.getBoundingClientRect().top - targetY;
+          }
+        }, { shape, backward, targetY: (inputBox.clip[0]! + inputBox.clip[1]!) / 2 });
+        const selected = await input.evaluate(focusedSelectionGeometry);
+        expect(selected.active).toBe(true);
+        expect(selected.contained).toBe(true);
+        expect(selected.visible).toBe(true);
+        expect(selected.endpoints).toEqual(shape === 'middle' ? [false, false] : [false, true]);
+        expect(selected.text.length).toBeGreaterThan(30);
+        expect(backward ? selected.anchor : selected.focus).toBeGreaterThan(0);
+        expect(backward ? selected.focus : selected.anchor).toBe(0);
+        expect(selected.scrollTop).toBeGreaterThan(0);
+        expect(await port.evaluate((node) => node.scrollTop)).toBe(oldB.port!.scrollTop);
+        const before = await receiptGeometry(input);
+        expect(before.port!.scrollTop).toBe(0);
+        expect(before.readable).toBe(true);
+        await update(page, 'merge');
+        const after = await receiptGeometry(input);
+        expect(after.identity).toBe('tool:call-1');
+        expect(after.materials).toContain('cloud:reading-1');
+        expect(after.readable).toBe(true);
+        expect(after.relativeTop).toBeCloseTo(before.relativeTop!, 0);
+        const restored = await input.evaluate(focusedSelectionGeometry);
+        expect(restored.active).toBe(true);
+        expect(restored.contained).toBe(true);
+        expect(restored.visible).toBe(true);
+        expect(restored.scrollTop).toBe(selected.scrollTop);
+        expect(restored.text).toBe(selected.text);
+        expect(restored.anchor).toBe(selected.anchor);
+        expect(restored.focus).toBe(selected.focus);
+        expect(await page.evaluate(() => window.readingWrites)).toEqual([]);
+      } finally {
+        await page.close();
+      }
+    },
+  );
   it.each(['process title', 'outside input'] as const)(
     'keeps the wheel reader while focus stays on the %s',
     async (target) => {
