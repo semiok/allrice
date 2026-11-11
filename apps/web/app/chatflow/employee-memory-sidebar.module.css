@@ -92,7 +92,7 @@
 .row:hover {
   background: var(--ar-surface-hover);
 }
-.open {
+.panel .open {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -132,7 +132,7 @@
   font-size: 11.5px;
   color: var(--ar-text-tertiary, var(--ar-text-secondary));
 }
-.confirm {
+.panel .confirm {
   flex: none;
   min-height: 26px;
   padding: 2px 8px;
@@ -145,10 +145,10 @@
   line-height: 18px;
   cursor: pointer;
 }
-.confirm:hover {
+.panel .confirm:hover {
   background: var(--ar-surface-hover);
 }
-.remove,
+.panel .remove,
 .close {
   display: grid;
   place-items: center;
@@ -371,9 +371,9 @@
   font-size: 12px;
   line-height: 18px;
 }
-.open:focus-visible,
-.confirm:focus-visible,
-.remove:focus-visible,
+.panel .open:focus-visible,
+.panel .confirm:focus-visible,
+.panel .remove:focus-visible,
 .close:focus-visible,
 .field input:focus-visible,
 .field textarea:focus-visible,
@@ -401,7 +401,7 @@
   .summary {
     font-size: 13px;
   }
-  .open {
+  .panel .open {
     gap: 9px;
   }
   .dialog {
@@ -415,6 +415,9 @@
   }
   .footer {
     padding: 0 20px 20px;
+  }
+  .footer button {
+    min-height: 40px;
   }
   .detailTitle {
     font-size: 17px;

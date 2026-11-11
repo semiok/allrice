@@ -759,6 +759,106 @@ suite('U1 employee details personal-memory entry', () => {
             true,
           );
         }
+        const pendingRow = manager
+          .getByRole('region', { name: '待确认', exact: true })
+          .locator('[data-memory-id]')
+          .first();
+        const rowStyles = await pendingRow.evaluate((node) => {
+          const buttons = Array.from(node.querySelectorAll('button'));
+          const style = buttons.map((button) => {
+            const computed = getComputedStyle(button);
+            return {
+              border: computed.borderTopWidth,
+              padding: [
+                computed.paddingTop,
+                computed.paddingRight,
+                computed.paddingBottom,
+                computed.paddingLeft,
+              ],
+              background: computed.backgroundColor,
+              fontSize: computed.fontSize,
+            };
+          });
+          return {
+            actualWorkbench: Boolean(node.closest('#artifact-workbench')),
+            open: style[0],
+            confirm: style[1],
+            remove: style[2],
+          };
+        });
+        expect(rowStyles.actualWorkbench).toBe(true);
+        expect(rowStyles.open).toMatchObject({
+          border: '0px',
+          padding: ['6px', '0px', '6px', '0px'],
+          background: 'rgba(0, 0, 0, 0)',
+        });
+        expect(rowStyles.confirm).toMatchObject({
+          padding: ['2px', '8px', '2px', '8px'],
+          fontSize: '12px',
+        });
+        expect(rowStyles.remove).toMatchObject({
+          border: '0px',
+          padding: ['0px', '0px', '0px', '0px'],
+          fontSize: '19px',
+        });
+        const summary = await pendingRow
+          .locator('button')
+          .first()
+          .locator('span')
+          .nth(1)
+          .innerText();
+        await pendingRow.locator('button').first().click();
+        const detail = f.page.getByRole('dialog', {
+          name: summary,
+          exact: true,
+          includeHidden: true,
+        });
+        await detail
+          .getByRole('button', { name: '修改', exact: true })
+          .waitFor();
+        if (width < 640)
+          expect(
+            await detail
+              .locator('footer button')
+              .evaluateAll((buttons) =>
+                buttons.every(
+                  (button) => button.getBoundingClientRect().height >= 40,
+                ),
+              ),
+          ).toBe(true);
+        const deleteButton = detail.getByRole('button', {
+          name: '删除',
+          exact: true,
+        });
+        await deleteButton.click();
+        const confirmation = f.page.getByRole('dialog', {
+          name: '确认删除这条记忆？',
+          exact: true,
+        });
+        await confirmation.waitFor();
+        expect(await detail.locator('..').getAttribute('aria-hidden')).toBe(
+          'true',
+        );
+        expect(
+          await detail
+            .locator('..')
+            .evaluate((node) => node instanceof HTMLElement && node.inert),
+        ).toBe(true);
+        await confirmation
+          .getByRole('button', { name: '取消', exact: true })
+          .click();
+        await confirmation.waitFor({ state: 'detached' });
+        expect(await detail.locator('..').getAttribute('aria-hidden')).toBeNull();
+        expect(
+          await detail
+            .locator('..')
+            .evaluate((node) => node instanceof HTMLElement && node.inert),
+        ).toBe(false);
+        expect(
+          await deleteButton.evaluate((node) => node === document.activeElement),
+        ).toBe(true);
+        await f.page.keyboard.press('Escape');
+        await detail.waitFor({ state: 'detached' });
         const close = f.page.getByRole('button', {
           name: '返回员工详情',
           exact: true,

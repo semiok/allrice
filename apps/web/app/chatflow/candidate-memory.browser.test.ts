@@ -1564,6 +1564,90 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     }
   });
 
+  it.each([401, 403, 404, 503])(
+    'clears cached administrator scope after detail %s and retains lawful context for 5xx',
+    async (status) => {
+      const raw = '管理员读取后仍须按真实失权边界清理的说明';
+      const memory = await createPair(
+        identity.assignment,
+        '管理员详情读取边界 ' + status,
+        raw,
+      );
+      const user = (
+        await f.db.unsafe('select email from allrice_users where id=$1', [
+          identity.user,
+        ])
+      )[0]!;
+      vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', user.email);
+      const ui = await open('admin');
+      const detailPath = `/api/v1/admin/organizations/${identity.org}/employee-memories/${memory.id}`;
+      const detailMatcher = (url: URL) => url.pathname === detailPath;
+      try {
+        const article = ui.page
+          .locator('article')
+          .filter({ hasText: memory.summary });
+        await article.waitFor();
+        if (status === 401) await ui.page.context().clearCookies();
+        else if (status === 403)
+          vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', '');
+        else if (status === 404)
+          expect(
+            (await api('/' + memory.id, write(exact(memory), 'DELETE'))).status,
+          ).toBe(204);
+        else {
+          await article
+            .getByRole('button', { name: '查看', exact: true })
+            .click();
+          await ui.page
+            .getByRole('dialog')
+            .getByText(raw, { exact: true })
+            .waitFor();
+          await ui.page
+            .getByRole('dialog')
+            .getByRole('button', { name: '关闭', exact: true })
+            .click();
+          // Transport failure injection only; all successful reads use real routes.
+          await ui.page.route(detailMatcher, (route) =>
+            route.fulfill({ status: 503, body: '{}' }),
+          );
+        }
+        const before = mutations.length;
+        const response = ui.page.waitForResponse(
+          (value) => new URL(value.url()).pathname === detailPath,
+        );
+        await article
+          .getByRole('button', { name: '查看', exact: true })
+          .click();
+        expect((await response).status()).toBe(status);
+        await ui.page.getByRole('alert').waitFor();
+        if (status === 503) {
+          expect(await article.count()).toBe(1);
+          expect(await ui.page.getByRole('dialog').count()).toBe(1);
+          await ui.page.unroute(detailMatcher);
+          await ui.page
+            .getByRole('dialog')
+            .getByRole('button', { name: '重新读取', exact: true })
+            .click();
+          await ui.page
+            .getByRole('dialog')
+            .getByText(raw, { exact: true })
+            .waitFor();
+        } else {
+          expect(await ui.page.locator('article').count()).toBe(0);
+          expect(await ui.page.getByRole('dialog').count()).toBe(0);
+          expect(
+            await ui.page.getByText(memory.summary, { exact: true }).count(),
+          ).toBe(0);
+          expect(await ui.page.getByText(raw, { exact: true }).count()).toBe(0);
+        }
+        expect(mutations.length).toBe(before);
+      } finally {
+        await ui.close();
+        vi.unstubAllEnvs();
+      }
+    },
+  );
+
   it.each([
     ['light', 1440],
     ['dark', 1440],
