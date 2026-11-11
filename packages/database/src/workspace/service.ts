@@ -576,11 +576,23 @@ export async function createAssignedChatSession(
   options: { sessionId?: string; freezeAccountCapabilities?: true } = {},
   transaction?: TransactionSql,
 ): Promise<z.infer<typeof ChatSessionSchema>> {
-  if (!transaction)
-    return getDatabase().begin((tx) =>
-      createAssignedChatSession(context, input, options, tx),
-    );
   const parsed = CreateChatSessionInputSchema.parse(input);
+  if (!transaction) {
+    const { employeePersonaAdmission } =
+      await import('../employees/employee-instances.ts');
+    return employeePersonaAdmission(
+      getDatabase(),
+      parsed.employeeAssignmentId && context.actor.type === 'user'
+        ? {
+            assignmentId: parsed.employeeAssignmentId,
+            organizationId: context.organizationId,
+            workspaceId: parsed.workspaceId ?? context.workspaceId,
+            ownerId: context.actor.id,
+          }
+        : undefined,
+      (tx) => createAssignedChatSession(context, parsed, options, tx),
+    );
+  }
   if (!parsed.employeeAssignmentId)
     throw new DataAccessError('authorization_denied');
   const sql = transaction ?? getDatabase();
@@ -645,17 +657,20 @@ export async function createAssignedChatSession(
   const [existing] =
     await sql`select id from allrice_chat_sessions where id=${fixedSessionId}`;
   const origin = !existing
-    ? newCurrentEmployeeChatOrigin({
-        organizationId: context.organizationId,
-        workspaceId,
-        ownerId: requireUser(context),
-        sessionId: fixedSessionId,
-        source: {
-          employeeVersionId,
-          configChecksum: versions[0].config_checksum,
-          manifest: versions[0].manifest,
+    ? newCurrentEmployeeChatOrigin(
+        {
+          organizationId: context.organizationId,
+          workspaceId,
+          ownerId: requireUser(context),
+          sessionId: fixedSessionId,
+          source: {
+            employeeVersionId,
+            configChecksum: versions[0].config_checksum,
+            manifest: versions[0].manifest,
+          },
         },
-      })
+        transaction,
+      )
     : null;
   // Both entrypoints also serve scheduled/platform work; only the ordinary
   // authenticated session route opts in. Idempotent retries do not reread config.

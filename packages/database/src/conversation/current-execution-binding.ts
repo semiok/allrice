@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type postgres from 'postgres';
 import {
   allRiceToolManifest,
   DSH_INSTALLED_DISTRIBUTION,
@@ -13,6 +14,7 @@ import {
   runtimePackageChecksum,
   verifiedRuntimePackageChecksum,
   employeePersonaManifestMaterial,
+  readEmployeePersonaAdmissionPreparation,
 } from '../platform-employees/runtime-package.ts';
 import { frozenPackageSkills } from '../skill-bundles.ts';
 
@@ -252,6 +254,7 @@ export type EmployeeExecutionSourceInput = {
 };
 export function validateEmployeeExecutionSource(
   input: EmployeeExecutionSourceInput,
+  transaction?: postgres.TransactionSql,
 ): {
   source: EmployeeExecutionSource;
   sourcePolicy: EmployeeExecutionSourcePolicy;
@@ -285,7 +288,10 @@ export function validateEmployeeExecutionSource(
   }
   // Source-complete schema 3 and new definition-only manifests must prove the
   // clean projection; historical 1/2/null without materials keep their contract.
-  employeePersonaManifestMaterial(manifest);
+  const preparation =
+    transaction && readEmployeePersonaAdmissionPreparation(transaction);
+  if (preparation) preparation.assertProjection(input);
+  else employeePersonaManifestMaterial(manifest);
   const source = employeeExecutionSourceIdentity(
     { ...input, employeeVersionId, configChecksum },
     manifest,
@@ -368,6 +374,7 @@ export type CurrentEmployeeChatOriginInput = z.infer<typeof ownerScope> & {
 /** Only on the first chat INSERT. It never upgrades an existing NULL/v1 row. */
 export function newCurrentEmployeeChatOrigin(
   input: CurrentEmployeeChatOriginInput,
+  transaction?: postgres.TransactionSql,
 ): CurrentEmployeeChatOrigin {
   const scope = ownerScope.parse({
     organizationId: input.organizationId,
@@ -377,6 +384,7 @@ export function newCurrentEmployeeChatOrigin(
   const sessionId = UuidSchema.parse(input.sessionId);
   const { source, sourcePolicy } = validateEmployeeExecutionSource(
     input.source,
+    transaction,
   );
   const execution = readApprovedCurrentEmployeeExecution();
   return CurrentEmployeeChatOriginSchema.parse({
@@ -465,6 +473,7 @@ export type EmployeeRunExecutionBindingInput = {
 /** Freeze once inside admission, alongside the unchanged execution_snapshot. */
 export function freezeEmployeeRunExecutionBinding(
   input: EmployeeRunExecutionBindingInput,
+  transaction?: postgres.TransactionSql,
 ): EmployeeRunExecutionBinding {
   const scope = runScope.parse(input.scope);
   const origin = CurrentEmployeeChatOriginSchema.parse(input.origin);
@@ -482,6 +491,7 @@ export function freezeEmployeeRunExecutionBinding(
   );
   const { source, sourcePolicy } = validateEmployeeExecutionSource(
     input.source,
+    transaction,
   );
   need(
     sourcePolicy.family === origin.sourcePolicy.family,

@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import type postgres from 'postgres';
+import type { EmployeePersonaAdmissionPreparation } from '../employees/employee-instances.ts';
 import { validateFrozenSkill } from '../skill-bundles.ts';
 import {
   RuntimePolicyError,
@@ -18,6 +20,31 @@ import {
   type EmployeePersonaSourceMaterial,
   type PlatformEmployeeDefinition,
 } from '@allrice/contracts';
+
+// The admission owner alone installs its preparation on the actual transaction.
+// Keep this shared lookup below current-binding's dependency graph; the source
+// parser/error/OCC owner is imported only as a type, never during module init.
+const personaPreparations = new WeakMap<
+  postgres.TransactionSql,
+  EmployeePersonaAdmissionPreparation
+>();
+export function readEmployeePersonaAdmissionPreparation(
+  transaction: postgres.TransactionSql,
+) {
+  return personaPreparations.get(transaction);
+}
+export async function withEmployeePersonaAdmissionPreparation<T>(
+  transaction: postgres.TransactionSql,
+  preparation: EmployeePersonaAdmissionPreparation,
+  operation: () => Promise<T>,
+): Promise<T> {
+  personaPreparations.set(transaction, preparation);
+  try {
+    return await operation();
+  } finally {
+    personaPreparations.delete(transaction);
+  }
+}
 
 export function platformEmployeeTestExecutionTerminalState(input: {
   hasError: boolean;

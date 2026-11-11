@@ -299,7 +299,7 @@ suite(
       });
       return { control, write };
     }
-    it.each(['native_once', 'automation_manual'] as const)(
+    it.each(['native_once', 'automation_manual', 'session_birth'] as const)(
       'prepares PERSONA source material before the real %s admission transaction',
       async (kind) => {
         const t = await task(
@@ -312,6 +312,7 @@ suite(
         const material = personaRuntime.employeePersonaManifestMaterial;
         let active = false;
         let beginCalls = 0;
+        let birthId: string | undefined;
         const phases: { active: boolean; beginCalls: number }[] = [];
         const source = vi
           .spyOn(personaRuntime, 'employeePersonaManifestMaterial')
@@ -339,7 +340,19 @@ suite(
           ]);
         }) as typeof db.begin);
         try {
-          if (kind === 'native_once')
+          if (kind === 'session_birth')
+            birthId = (
+              await createChatSession(
+                f.context,
+                {
+                  workspaceId: f.workspaceId,
+                  employeeAssignmentId: f.assignmentId,
+                  title: 'Ordinary HTTP session birth',
+                },
+                { freezeAccountCapabilities: true },
+              )
+            ).id;
+          else if (kind === 'native_once')
             expect(await dispatchNextNativeOnceOccurrence(randomUUID())).toBe(
               true,
             );
@@ -364,7 +377,7 @@ suite(
         }
         // Observe both real entry transactions; an untouched fixture pool must
         // never make inactive=false look like a successful boundary proof.
-        expect(beginCalls).toBe(2);
+        expect(beginCalls).toBe(kind === 'session_birth' ? 1 : 2);
         expect(phases.length).toBeGreaterThan(0);
         expect(
           phases.every(
@@ -373,6 +386,16 @@ suite(
               phase.beginCalls === (kind === 'native_once' ? 1 : 0),
           ),
         ).toBe(true);
+        if (kind === 'session_birth') {
+          const [birth] =
+            await db`select native_root_origin from allrice_chat_sessions
+            where id=${birthId!} and organization_id=${f.organizationId}
+              and workspace_id=${f.workspaceId} and owner_id=${f.ownerId}`;
+          expect(birth!.native_root_origin.birthSource.employeeVersionId).toBe(
+            f.employeeVersionId,
+          );
+          return;
+        }
         const [run] =
           await db`select ar.id,ar.native_once_occurrence_id,er.session_id,er.user_message_id,
           er.execution_snapshot->'persona' persona from allrice_automation_runs ar

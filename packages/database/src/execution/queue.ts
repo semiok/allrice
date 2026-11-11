@@ -831,14 +831,19 @@ async function enqueueRunCore(
   const sql = getDatabase();
   const frozen = options.employeeBinding?.executionSnapshot;
   const personaTarget =
-    frozen?.schemaVersion === 2 && frozen.persona
+    frozen && options.employeeBinding
       ? {
           organizationId: context.organizationId,
           workspaceId,
           employeeId: frozen.employee.id,
           versionIds: [
-            frozen.persona.source.basis.employeeVersionId,
-            frozen.persona.source.engine.employeeVersionId,
+            options.employeeBinding.employeeVersionId,
+            ...(frozen.schemaVersion === 2 && frozen.persona
+              ? [
+                  frozen.persona.source.basis.employeeVersionId,
+                  frozen.persona.source.engine.employeeVersionId,
+                ]
+              : []),
           ],
         }
       : undefined;

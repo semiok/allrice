@@ -1,4 +1,5 @@
 import { UuidSchema } from '@allrice/contracts';
+import type { TransactionSql } from 'postgres';
 import { getDatabase } from './core/client.ts';
 import { DataAccessError } from './data.ts';
 import { cloudStableId } from './cloud-execution.ts';
@@ -106,7 +107,7 @@ export async function startMaintenanceRepairGrant(grantId: string) {
   );
   const text =
     '修复当前登记源码的命令输出凭据遮盖缺陷。按冻结清单修改产品源码，保留原断言；通过原断言和原生包编译后交付待审候选。不操作公司数据，不合并，不部署。';
-  await db.begin(async (tx) => {
+  const persistBirth = async (tx: TransactionSql) => {
     await tx`select pg_advisory_xact_lock(hashtext('allrice-central-maintenance-repair'))`;
     await assertMaintenanceGrant(tx, grantId, source.owner);
     await createAssignedChatSession(
@@ -136,7 +137,19 @@ export async function startMaintenanceRepairGrant(grantId: string) {
         throw new QueueError('conflict');
     }
     await assertMaintenanceGrant(tx, grantId, source.owner);
-  });
+  };
+  const { employeePersonaAdmission } =
+    await import('./employees/employee-instances.ts');
+  await employeePersonaAdmission(
+    db,
+    {
+      assignmentId: employee.assignmentId,
+      organizationId: c.organization_id,
+      workspaceId: c.workspace_id,
+      ownerId: source.owner,
+    },
+    persistBirth,
+  );
   const binding = await prepareEmployeeRunBinding({
     employeeDocuments: 'persona_only',
     context: principal,

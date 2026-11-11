@@ -40,6 +40,8 @@ import {
   runtimePackageSystemPrompt,
   employeePersonaManifestMaterial,
   employeePersonaPlatformSystemPrompt,
+  readEmployeePersonaAdmissionPreparation,
+  withEmployeePersonaAdmissionPreparation,
 } from '../platform-employees/runtime-package.ts';
 import {
   cancelEmployeeAccessRuns,
@@ -262,22 +264,26 @@ type PersonaSourceRow = {
   platform_key: string | null;
 };
 type PreparedPersona = {
+  scope: PersonaSourceScope;
   row: PersonaSourceRow;
+  projection: { error: unknown } | { value: void };
   values: Record<
     'basis' | 'engine',
     | { value: ReturnType<typeof parseEmployeePersonaVersion> }
     | { error: unknown }
   >;
 };
-// Only this module can install a preparation on the actual transaction object.
-// No request/binding flag, persistent cache or cross-transaction proof is trusted.
-const personaPreparations = new WeakMap<
-  Tx,
-  {
-    sources: Map<string, PreparedPersona>;
-    used: Map<string, PersonaSourceScope>;
-  }
->();
+type PersonaProjectionInput = {
+  employeeVersionId: string;
+  configChecksum: string;
+  manifest: unknown;
+};
+export type EmployeePersonaAdmissionPreparation = {
+  sources: Map<string, PreparedPersona>;
+  used: Map<string, PersonaSourceScope>;
+  projections: Map<string, PersonaSourceScope>;
+  assertProjection: (input: PersonaProjectionInput) => void;
+};
 const personaSourceKey = (s: PersonaSourceScope) =>
   `${s.organizationId}:${s.workspaceId}:${s.employeeId}:${s.versionId}`;
 
@@ -324,6 +330,12 @@ export async function employeePersonaAdmission<T>(
         employeeId: string;
         versionIds: string[];
       }
+    | {
+        assignmentId: string;
+        organizationId: string;
+        workspaceId?: string;
+        ownerId: string;
+      }
     | undefined,
   operation: (tx: Tx) => Promise<T>,
 ) {
@@ -361,7 +373,21 @@ export async function employeePersonaAdmission<T>(
             employee_id: target.employeeId,
             version_id: versionId,
           }))
-        : [];
+        : target &&
+            'assignmentId' in target &&
+            UuidSchema.safeParse(target.assignmentId).success
+          ? await sql<
+              {
+                organization_id: string;
+                workspace_id: string;
+                employee_id: string;
+                version_id: string;
+              }[]
+            >`select a.organization_id,a.workspace_id,a.employee_id,a.employee_version_id version_id
+              from allrice_employee_assignments a where a.id=${target.assignmentId}
+                and a.organization_id=${target.organizationId} and a.user_id=${target.ownerId}
+                and (${target.workspaceId ?? null}::uuid is null or a.workspace_id=${target.workspaceId ?? null})`
+          : [];
   const prepared = new Map<string, PreparedPersona>();
   for (const s of scopes) {
     const scope: PersonaSourceScope = {
@@ -385,22 +411,71 @@ export async function employeePersonaAdmission<T>(
         values[role] = { error };
       }
     }
-    prepared.set(personaSourceKey(scope), { row, values });
+    let projection: PreparedPersona['projection'];
+    try {
+      employeePersonaManifestMaterial(
+        EmployeeDefinitionSchema.parse(row.manifest),
+      );
+      projection = { value: undefined };
+    } catch (error) {
+      projection = { error };
+    }
+    prepared.set(personaSourceKey(scope), { scope, row, values, projection });
   }
   return sql.begin(async (tx) => {
     const used = new Map<string, PersonaSourceScope>();
-    personaPreparations.set(tx, { sources: prepared, used });
-    try {
-      const result = await operation(tx);
-      // The real outer owner validates after its last write/wait, including
-      // occurrence/automation bindings after enqueue returns.
-      for (const scope of used.values())
-        await readEmployeePersonaVersion(scope, tx);
-      return result;
-    } finally {
-      personaPreparations.delete(tx);
-    }
+    const projections = new Map<string, PersonaSourceScope>();
+    return withEmployeePersonaAdmissionPreparation(
+      tx,
+      {
+        sources: prepared,
+        used,
+        projections,
+        assertProjection: (input) =>
+          assertPreparedEmployeePersonaProjection(input, prepared, projections),
+      },
+      async () => {
+        const result = await operation(tx);
+        // The real outer owner validates after its last write/wait, including
+        // occurrence/automation bindings after enqueue returns.
+        const checked = new Set<string>();
+        for (const scope of used.values()) {
+          await readEmployeePersonaVersion(scope, tx);
+          checked.add(personaSourceKey(scope));
+        }
+        // Current execution binding also serves legacy/no-PERSONA callers. Its
+        // projection proof adds raw OCC, never an extra engine eligibility gate.
+        for (const [key, scope] of projections) {
+          if (checked.has(key)) continue;
+          const row = await readPersonaSourceRow(scope, tx);
+          if (!isDeepStrictEqual(row, prepared.get(key)?.row))
+            throw new EmployeeInstanceError('instance_conflict');
+        }
+        return result;
+      },
+    );
   });
+}
+
+/** Consume only the projection prepared for this actual admission transaction.
+ * The original current-binding validator still owns all baseline checks. */
+function assertPreparedEmployeePersonaProjection(
+  input: PersonaProjectionInput,
+  sources: Map<string, PreparedPersona>,
+  projections: Map<string, PersonaSourceScope>,
+) {
+  for (const [key, prior] of sources) {
+    if (prior.scope.versionId !== input.employeeVersionId) continue;
+    if (
+      prior.row.config_checksum !== input.configChecksum ||
+      !isDeepStrictEqual(prior.row.manifest, input.manifest)
+    )
+      throw new EmployeeInstanceError('instance_conflict');
+    projections.set(key, prior.scope);
+    if ('error' in prior.projection) throw prior.projection.error;
+    return;
+  }
+  throw new EmployeeInstanceError('instance_conflict');
 }
 
 export async function readEmployeePersonaVersion(
@@ -408,7 +483,7 @@ export async function readEmployeePersonaVersion(
   sql: Sql,
 ) {
   const row = await readPersonaSourceRow(scope, sql);
-  const preparation = personaPreparations.get(sql as Tx);
+  const preparation = readEmployeePersonaAdmissionPreparation(sql as Tx);
   if (!preparation) return parseEmployeePersonaVersion(scope, row);
   if (!row) throw Error('employee_persona_source_unavailable');
   // This exact raw classification deliberately stays in the original short

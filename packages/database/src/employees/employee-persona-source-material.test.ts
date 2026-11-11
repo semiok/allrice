@@ -11,6 +11,8 @@ import {
   readEmployeeTenantPersonaVersion,
 } from './employee-instances.ts';
 import { employeePersonaManifestMaterial } from '../platform-employees/runtime-package.ts';
+import * as personaRuntime from '../platform-employees/runtime-package.ts';
+import { validateEmployeeExecutionSource } from '../conversation/current-execution-binding.ts';
 
 function source() {
   return EmployeeDefinitionSchema.parse(
@@ -262,7 +264,7 @@ describe('PERSONA source preparation and raw OCC', () => {
     let current = {
       manifest,
       config_checksum: employeeManifestChecksum(manifest),
-      mapping_id: null,
+      mapping_id: null as string | null,
     };
     let active = false;
     const tx = vi.fn(async () => [structuredClone(current)]);
@@ -424,5 +426,142 @@ describe('PERSONA source preparation and raw OCC', () => {
     await expect(
       readEmployeePersonaVersion({ ...f.identity, role: 'engine' }, f.database),
     ).rejects.toThrow('CURRENT_EXECUTION_SOURCE_CHECKSUM_MISMATCH');
+  });
+
+  it('reuses the prepared current-binding projection without moving baseline checksum validation', async () => {
+    const f = admissionSource();
+    const input = {
+      employeeVersionId: f.identity.versionId,
+      configChecksum: employeeManifestChecksum(f.manifest),
+      manifest: structuredClone(f.manifest),
+    };
+    const material = personaRuntime.employeePersonaManifestMaterial;
+    const phases: boolean[] = [];
+    const spy = vi
+      .spyOn(personaRuntime, 'employeePersonaManifestMaterial')
+      .mockImplementation((...args) => {
+        phases.push(f.active());
+        return Reflect.apply(material, personaRuntime, args);
+      });
+    try {
+      const actual = await employeePersonaAdmission(
+        f.database,
+        f.target,
+        async (tx) => {
+          expect(() =>
+            validateEmployeeExecutionSource(
+              { ...input, configChecksum: `sha256:${'0'.repeat(64)}` },
+              tx,
+            ),
+          ).toThrow('CURRENT_EXECUTION_SOURCE_CHECKSUM_MISMATCH');
+          return validateEmployeeExecutionSource(input, tx);
+        },
+      );
+      expect(actual.source.employeeVersionId).toBe(f.identity.versionId);
+      expect(phases.length).toBeGreaterThan(0);
+      expect(phases.every((active) => !active)).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it.each(['miss', 'stale'] as const)(
+    'rejects a current-binding projection %s without a locked fallback',
+    async (kind) => {
+      const f = admissionSource();
+      const { runtimePackage, ...rawWithoutDefault } = f.manifest;
+      void runtimePackage;
+      const manifest =
+        kind === 'stale' ? rawWithoutDefault : structuredClone(f.manifest);
+      const input = {
+        employeeVersionId: f.identity.versionId,
+        configChecksum: employeeManifestChecksum(f.manifest),
+        manifest,
+      };
+      // Missing raw null differs from the original bytes, but schema defaults
+      // produce the same valid definition/checksum. A fallback would accept it.
+      expect(EmployeeDefinitionSchema.parse(manifest)).toEqual(f.manifest);
+      expect(
+        validateEmployeeExecutionSource(input).source.employeeVersionId,
+      ).toBe(f.identity.versionId);
+      await expect(
+        employeePersonaAdmission(
+          f.database,
+          kind === 'miss' ? { ...f.target, versionIds: [] } : f.target,
+          async (tx) => validateEmployeeExecutionSource(input, tx),
+        ),
+      ).rejects.toMatchObject({ code: 'instance_conflict' });
+    },
+  );
+
+  it('keeps projection-only callers free of extra engine eligibility and still checks final complete raw facts', async () => {
+    const f = admissionSource();
+    const input = {
+      employeeVersionId: f.identity.versionId,
+      configChecksum: employeeManifestChecksum(f.manifest),
+      manifest: f.manifest,
+    };
+    const row = {
+      manifest: f.manifest,
+      config_checksum: input.configChecksum,
+      mapping_id: randomUUID(),
+    };
+    // Such a row fails the PERSONA engine/publication reader. That eligibility
+    // was never a condition of the existing current-binding projection check.
+    f.replace(row);
+    expect(
+      await employeePersonaAdmission(f.database, f.target, async (tx) =>
+        validateEmployeeExecutionSource(input, tx),
+      ),
+    ).toEqual(validateEmployeeExecutionSource(input));
+    await expect(
+      employeePersonaAdmission(f.database, f.target, async (tx) => {
+        validateEmployeeExecutionSource(input, tx);
+        f.replace({ ...row, mapping_id: randomUUID() });
+      }),
+    ).rejects.toMatchObject({ code: 'instance_conflict' });
+  });
+
+  it('defers cached projection errors behind authority/checksum and fully validates unregistered or expired transaction objects', async () => {
+    const f = admissionSource();
+    const manifest = {
+      ...f.manifest,
+      systemPrompt: `${f.manifest.systemPrompt}\nsubstituted policy`,
+    };
+    const input = {
+      employeeVersionId: f.identity.versionId,
+      configChecksum: employeeManifestChecksum(manifest),
+      manifest,
+    };
+    f.replace({
+      manifest,
+      config_checksum: input.configChecksum,
+      mapping_id: null,
+    });
+    const denied = Error('current authority denied');
+    await expect(
+      employeePersonaAdmission(f.database, f.target, async () => {
+        throw denied;
+      }),
+    ).rejects.toBe(denied);
+    let expired: Parameters<typeof validateEmployeeExecutionSource>[1];
+    await expect(
+      employeePersonaAdmission(f.database, f.target, async (tx) => {
+        expired = tx;
+        expect(() =>
+          validateEmployeeExecutionSource(
+            { ...input, configChecksum: `sha256:${'0'.repeat(64)}` },
+            tx,
+          ),
+        ).toThrow('CURRENT_EXECUTION_SOURCE_CHECKSUM_MISMATCH');
+        return validateEmployeeExecutionSource(input, tx);
+      }),
+    ).rejects.toThrow('employee_persona_source_projection_mismatch');
+    expect(expired).toBeDefined();
+    const forged = vi.fn() as unknown as NonNullable<typeof expired>;
+    for (const tx of [undefined, forged, expired])
+      expect(() => validateEmployeeExecutionSource(input, tx)).toThrow(
+        'employee_persona_source_projection_mismatch',
+      );
   });
 });

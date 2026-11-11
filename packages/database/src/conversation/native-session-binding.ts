@@ -215,22 +215,25 @@ export async function freezeChatRunExecutionBinding(
     where v.id=${input.employeeVersionId} and v.organization_id=${input.organizationId}
       and v.workspace_id=${input.workspaceId} and c.owner_id=${input.ownerId}`;
   if (!version) return deny();
-  return freezeEmployeeRunExecutionBinding({
-    origin,
-    scope: {
-      organizationId: input.organizationId,
-      workspaceId: input.workspaceId,
-      ownerId: input.ownerId,
-      sessionId: input.sessionId,
-      runId: input.runId,
+  return freezeEmployeeRunExecutionBinding(
+    {
+      origin,
+      scope: {
+        organizationId: input.organizationId,
+        workspaceId: input.workspaceId,
+        ownerId: input.ownerId,
+        sessionId: input.sessionId,
+        runId: input.runId,
+      },
+      source: {
+        employeeVersionId: version.id,
+        configChecksum: version.config_checksum,
+        manifest: version.manifest,
+      },
+      executionSnapshot: input.executionSnapshot,
     },
-    source: {
-      employeeVersionId: version.id,
-      configChecksum: version.config_checksum,
-      manifest: version.manifest,
-    },
-    executionSnapshot: input.executionSnapshot,
-  });
+    tx,
+  );
 }
 
 /** Only called with a leased, authorized chat Job. Rechecks the persisted Run
