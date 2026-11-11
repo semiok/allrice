@@ -233,7 +233,7 @@ suite(
           if (outcome !== 'committed') {
             // Read only after rejection: no new write, renewal or retry.
             const evidence = await Promise.allSettled([
-              calendar().readExactCommit(writer, request),
+              store.readExactCommit(writer, request),
               f.db`select clock_timestamp() database_now,
                 p.partition_id,p.owner_id,p.epoch::text epoch,p.token_digest,
                 p.expires_at,p.closed,p.activation,p.reference,
