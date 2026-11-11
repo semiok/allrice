@@ -1049,16 +1049,17 @@ suite(
         candidate.id,
         archive,
       );
-      expect(
-        (
-          await listWorkspaceMemoryRevisions(
-            f.context,
-            f.workspace,
-            candidate.id,
-            f.assignment,
-          )
-        ).map((r) => r.revision),
-      ).toEqual([3, 2, 1]);
+      await expect(
+        listWorkspaceMemoryRevisions(
+          f.context,
+          f.workspace,
+          candidate.id,
+          f.assignment,
+        ),
+      ).rejects.toThrow('not_found');
+      const history =
+        await fixture.db`select revision from allrice_memory_revisions where memory_id=${candidate.id} order by revision desc`;
+      expect(history.map((row) => row.revision)).toEqual([3, 2, 1]);
       const [counts] =
         await fixture.db`select (select count(*)::int from allrice_rag_chunks where memory_id=${candidate.id}) chunks,
       (select count(*)::int from allrice_audit_events where resource_id=${candidate.id} and action='memory.delete') archives`;

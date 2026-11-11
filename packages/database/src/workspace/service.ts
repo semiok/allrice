@@ -3198,6 +3198,7 @@ export async function listWorkspaceMemoryRevisions(
     const [memory] = await sql`select id from allrice_memories m
     where m.id=${memoryId} and m.organization_id=${context.organizationId} and m.workspace_id=${workspaceId}
       and m.owner_id=${scope.ownerId} and m.instance_id=${scope.instanceId}
+      and m.archived_at is null
       and not exists(select 1 from allrice_experience_reviews e where e.memory_id=m.id)`;
     if (!memory) throw new DataAccessError('not_found');
     const rows = await sql<
