@@ -401,6 +401,7 @@ function navigationHistory(count: number, paragraphs = 90): Message[] {
 suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   let browser: Browser, server: Server, origin: string;
   const subagentFeed = new NativeSubagentFixtureFeed();
+  const nativeDocuments = new Map<string, () => string>();
   const downloadFixtures = new Map<
     string,
     { fileName: string; body: string }
@@ -446,6 +447,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         return;
       }
       const path = new URL(request.url!, 'http://localhost').pathname;
+      const nativeDocument =
+        path === '/'
+          ? nativeDocuments.get(
+              request.headers.cookie?.match(
+                /(?:^|; )native-subagent-fixture=([^;]+)/,
+              )?.[1] ?? '',
+            )
+          : undefined;
       response.writeHead(200, {
         'content-type':
           path === '/app.js'
@@ -459,7 +468,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           ? js
           : path === '/app.css'
             ? css
-            : '<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/app.css"></head><body style="margin:0"><div id="root"></div><script src="/app.js"></script></body></html>',
+            : (nativeDocument?.() ??
+              '<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/app.css"></head><body style="margin:0"><div id="root"></div><script src="/app.js"></script></body></html>'),
       );
     });
     await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
@@ -2408,20 +2418,25 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       unexpected.push(path);
       return answer({}, 404);
     });
-    if (serverTheme)
-      await page.route(
-        (url) => url.origin === origin && url.pathname === '/',
-        (route) => {
-          const saved = state.preferences[state.viewer]?.appearance;
-          // What the page looked like right after the theme scripts, before
-          // the app loads and hydrates.
-          const firstPaint = `window.firstPaint={theme:document.documentElement.getAttribute('data-theme'),dark:document.body.hasAttribute('data-ds-dark-theme')}`;
-          return route.fulfill({
-            contentType: 'text/html',
-            body: `<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/app.css"></head><body style="margin:0"><script>${themeScript}</script><script>${appearanceScript({ choice: saved ?? null, viewer: state.viewer })}</script><script>${firstPaint}</script><div id="root"></div><script src="/app.js"></script></body></html>`,
-          });
-        },
-      );
+    if (serverTheme) {
+      const document = () => {
+        const saved = state.preferences[state.viewer]?.appearance;
+        // What the page looked like right after the theme scripts, before
+        // the app loads and hydrates.
+        const firstPaint = `window.firstPaint={theme:document.documentElement.getAttribute('data-theme'),dark:document.body.hasAttribute('data-ds-dark-theme')}`;
+        return `<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/app.css"></head><body style="margin:0"><script>${themeScript}</script><script>${appearanceScript({ choice: saved ?? null, viewer: state.viewer })}</script><script>${firstPaint}</script><div id="root"></div><script src="/app.js"></script></body></html>`;
+      };
+      if (nativeFixture) nativeDocuments.set(nativeFixture, document);
+      else
+        await page.route(
+          (url) => url.origin === origin && url.pathname === '/',
+          (route) =>
+            route.fulfill({
+              contentType: 'text/html',
+              body: document(),
+            }),
+        );
+    }
     await page.goto(
       `${origin}/?session=${options.noSession ? '' : A}${serverTheme ? '&theme=1' : ''}${options.disabled ? '&disabled=1' : ''}${options.taskSuggestions ? '&task-suggestions=1' : ''}${options.localMcp ? '&local-mcp=1' : ''}${options.settingsEntry ? `&settings=${options.settingsEntry}` : ''}`,
     );
@@ -2532,6 +2547,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         releaseStartup();
         finishStream();
         await context.close();
+        if (nativeFixture) nativeDocuments.delete(nativeFixture);
         expect(errors).toEqual([]);
         expect(writes).toEqual([]);
         expect(unexpected).toEqual([]);
