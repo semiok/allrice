@@ -419,3 +419,44 @@ it.each(['HTTP preheaders', 'stalled TLS'] as const)(
   },
   20_000,
 );
+
+it('rejects URL credentials without sending an authenticated asset request', async () => {
+  let calls = 0;
+  const f = await fixture((_req, res) => {
+    calls++;
+    res.end(bytes);
+  });
+  const url = new URL(f.asset.url);
+  url.username = 'fixture';
+  url.password = 'fixture';
+  await expect(
+    downloadManagedRuntimeAsset(
+      f.path,
+      { ...f.asset, url: url.href },
+      new AbortController().signal,
+    ),
+  ).rejects.toMatchObject({ code: 'RUNTIME_DOWNLOAD_CONNECTION_FAILED' });
+  expect(calls).toBe(0);
+  await expect(readFile(f.path)).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+it('classifies a dropped response body as a connection failure after all retries', async () => {
+  let calls = 0;
+  let drop: (() => void) | undefined;
+  const f = await fixture((_req, res) => {
+    calls++;
+    res.writeHead(200, { 'Content-Length': bytes.length, ETag: '"fixed"' });
+    res.write(bytes.subarray(0, 8));
+    drop = () => res.destroy();
+  });
+  await expect(
+    downloadManagedRuntimeAsset(f.path, f.asset, new AbortController().signal, {
+      onProgress: (state) => {
+        if (state.stage === 'downloading' && state.receivedBytes === 8)
+          drop?.();
+      },
+    }),
+  ).rejects.toMatchObject({ code: 'RUNTIME_DOWNLOAD_CONNECTION_FAILED' });
+  expect(calls).toBe(3);
+  await expect(readFile(f.path)).rejects.toMatchObject({ code: 'ENOENT' });
+});

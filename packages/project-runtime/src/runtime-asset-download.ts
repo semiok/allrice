@@ -1,6 +1,15 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { open, rename, rm } from 'node:fs/promises';
+import {
+  request as requestHttp,
+  type ClientRequest,
+  type OutgoingHttpHeaders,
+} from 'node:http';
+import { request as requestHttps } from 'node:https';
+import type { Socket } from 'node:net';
+import { Readable } from 'node:stream';
+import type { ReadableStreamDefaultReader } from 'node:stream/web';
 import { setTimeout as delay } from 'node:timers/promises';
 import { RuntimeCommandError as LocalCommandError } from './errors.js';
 type Asset = {
@@ -62,6 +71,105 @@ const redirectHosts = new Set([
   'download.docker.com',
   'raw.githubusercontent.com',
 ]);
+// Preserve Node 22 fetch's blocked network ports when owning its transport.
+const blockedPorts = new Set([
+  1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79,
+  87, 95, 101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137,
+  139, 143, 161, 179, 389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532,
+  540, 548, 554, 556, 563, 587, 601, 636, 989, 990, 993, 995, 1719, 1720, 1723,
+  2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669,
+  6679, 6697, 10080,
+]);
+type AssetResponse = {
+  status: number;
+  headers: Headers;
+  body: ReturnType<typeof Readable.toWeb>;
+  close: () => Promise<void>;
+};
+async function requestAsset(
+  url: URL,
+  headers: OutgoingHttpHeaders,
+  signal: AbortSignal,
+): Promise<AssetResponse> {
+  // Node request would otherwise turn URL credentials into Basic auth.
+  if (
+    !['http:', 'https:'].includes(url.protocol) ||
+    url.username ||
+    url.password ||
+    blockedPorts.has(Number(url.port))
+  )
+    throw new TypeError('Runtime asset URL is unavailable');
+  signal.throwIfAborted();
+  let request: ClientRequest;
+  try {
+    request = (url.protocol === 'https:' ? requestHttps : requestHttp)(url, {
+      agent: false,
+      headers,
+    });
+  } catch (error) {
+    throw new TypeError('Runtime asset connection failed', { cause: error });
+  }
+  let socket: Socket | undefined;
+  let socketClosed: Promise<void> | undefined;
+  const requestClosed = new Promise<void>((resolve) =>
+    request.once('close', resolve),
+  );
+  request.once('socket', (ownedSocket) => {
+    socket = ownedSocket;
+    socketClosed = new Promise<void>((resolve) =>
+      ownedSocket.once('close', () => resolve()),
+    );
+    if (request.destroyed || signal.aborted) ownedSocket.destroy();
+  });
+  const destroy = () => {
+    request.destroy();
+    socket?.destroy();
+  };
+  const close = async () => {
+    destroy();
+    await requestClosed;
+    await socketClosed;
+    signal.removeEventListener('abort', destroy);
+  };
+  signal.addEventListener('abort', destroy, { once: true });
+  try {
+    return await new Promise<AssetResponse>((resolve, reject) => {
+      request.once('error', reject);
+      request.once('close', () =>
+        reject(new TypeError('Runtime asset connection closed before headers')),
+      );
+      request.once('response', (response) => {
+        try {
+          const body = Readable.toWeb(response);
+          const responseHeaders = new Headers();
+          for (let i = 0; i < response.rawHeaders.length; i += 2) {
+            const name = response.rawHeaders[i];
+            const value = response.rawHeaders[i + 1];
+            if (name === undefined || value === undefined)
+              throw new TypeError('Runtime asset response headers unavailable');
+            responseHeaders.append(name, value);
+          }
+          resolve({
+            status: response.statusCode ?? 0,
+            headers: responseHeaders,
+            body,
+            close,
+          });
+        } catch (error) {
+          reject(error);
+        }
+      });
+      if (signal.aborted) {
+        destroy();
+        reject(signal.reason);
+      } else request.end();
+    });
+  } catch (error) {
+    await close();
+    if (signal.aborted) throw signal.reason;
+    throw new TypeError('Runtime asset connection failed', { cause: error });
+  }
+}
 async function fetchAsset(
   asset: Asset,
   offset: number,
@@ -70,18 +178,31 @@ async function fetchAsset(
 ) {
   let url = new URL(asset.url);
   for (let i = 0; i < 5; i++) {
-    const response = await fetch(url, {
-      redirect: 'manual',
-      signal,
-      headers: {
+    const response = await requestAsset(
+      url,
+      {
+        Accept: '*/*',
+        'Accept-Language': '*',
+        'User-Agent': 'node',
+        'Sec-Fetch-Mode': 'cors',
         'Accept-Encoding': 'identity',
         ...(offset
-          ? { Range: `bytes=${offset}-`, ...(etag ? { 'If-Range': etag } : {}) }
+          ? {
+              Range: `bytes=${offset}-`,
+              ...(etag
+                ? {
+                    'If-Range': etag,
+                    Pragma: 'no-cache',
+                    'Cache-Control': 'no-cache',
+                  }
+                : {}),
+            }
           : {}),
       },
-    });
+      signal,
+    );
     if (response.status < 300 || response.status > 399) return response;
-    await response.body?.cancel();
+    await response.close();
     const location = response.headers.get('location');
     const next = location ? new URL(location, url) : null;
     if (
@@ -190,6 +311,7 @@ export async function downloadManagedRuntimeAsset(
         await file.truncate(0);
       for (let attempt = 1; attempt <= 3; attempt++) {
         budget.throwIfAborted();
+        let response: AssetResponse | undefined;
         let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
         const requestAbort = new AbortController();
         const requestSignal = AbortSignal.any([budget, requestAbort.signal]);
@@ -211,7 +333,7 @@ export async function downloadManagedRuntimeAsset(
           let offset = (await file.stat()).size;
           resumed = offset > 0;
           resetIdle();
-          const response = await fetchAsset(asset, offset, etag, requestSignal);
+          response = await fetchAsset(asset, offset, etag, requestSignal);
           if (!response.body)
             throw new LocalCommandError('RUNTIME_DOWNLOAD_UNAVAILABLE');
           reader = response.body.getReader();
@@ -281,7 +403,11 @@ export async function downloadManagedRuntimeAsset(
           });
           for (;;) {
             resetIdle();
-            const next = await reader.read();
+            const next = await reader.read().catch((error) => {
+              throw new TypeError('Runtime asset body connection failed', {
+                cause: error,
+              });
+            });
             if (next.done) break;
             requestSignal.throwIfAborted();
             if (offset + next.value.length > asset.sizeBytes) {
@@ -362,6 +488,7 @@ export async function downloadManagedRuntimeAsset(
           requestAbort.abort();
           await reader?.cancel().catch(() => undefined);
           reader?.releaseLock();
+          await response?.close();
         }
         await delay(attempt * 250, undefined, { signal: budget });
       }
