@@ -504,7 +504,7 @@
 .panel.nativeDock .subagentBack {
   position: absolute;
   pointer-events: auto;
-  z-index: 11;
+  z-index: calc(var(--dsh-dockkit-dock-layer, 10) + 1);
   inset: 6px auto auto 8px;
   display: grid;
   place-items: center;
