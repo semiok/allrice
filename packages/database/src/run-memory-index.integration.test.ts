@@ -423,8 +423,12 @@ suite(
         values(${checkpointId},${f.org},${f.workspace},${f.session},${f.user},'dsh',null,0,${userMessage},'extractive-v1',
           ${checkpoint.summary},${contextCheckpointChecksum(checkpoint)},${checkpoint.configChecksum},10,1)`;
       await fixture.db`update allrice_memories set source_type='checkpoint',source_id=${checkpointId} where id=${excluded[8]!}`;
+      const ownerContext = (await authenticateSession(
+        (await createSession(f.user)).token,
+        { organizationId: f.org, workspaceId: f.workspace },
+      ))!;
       const page = await listPersonalEmployeeMemories(
-        f.context,
+        ownerContext,
         f.workspace,
         f.assignment,
       );
@@ -474,7 +478,27 @@ suite(
       ).rejects.toThrow();
       const damaged = await setup();
       const pin = damaged.projection.memoryContextStateV2.pins[0]!;
-      await fixture.db`update allrice_memories set summary=null where id=${pin.id}`;
+      const pairState = async () =>
+        (
+          await fixture.db`select content,summary,details,revision from allrice_memories where id=${pin.id}`
+        )[0]!;
+      const frozenRun = async () =>
+        (
+          await fixture.db`select * from allrice_employee_runs where run_id=${damaged.rootRunId}`
+        )[0]!;
+      const beforePair = await pairState();
+      const beforeRun = await frozenRun();
+      await expect(
+        fixture.db`update allrice_memories set summary=null where id=${pin.id}`,
+      ).rejects.toMatchObject({
+        code: '23514',
+        constraint_name: 'allrice_memories_pair_check',
+      });
+      expect(await pairState()).toEqual(beforePair);
+      // SQL permits an unconverted legacy pair; v2 must refuse to repair it.
+      await fixture.db`update allrice_memories set summary=null,details=null where id=${pin.id}`;
+      const legacyPair = { ...beforePair, summary: null, details: null };
+      expect(await pairState()).toEqual(legacyPair);
       await expect(
         freezeEmployeeMemoryIndexV2(
           fixture.db,
@@ -486,11 +510,8 @@ suite(
           {},
         ),
       ).rejects.toThrow();
-      expect(
-        (
-          await fixture.db`select summary from allrice_memories where id=${pin.id}`
-        )[0]!.summary,
-      ).toBeNull();
+      expect(await pairState()).toEqual(legacyPair);
+      expect(await frozenRun()).toEqual(beforeRun);
     });
 
     it('reads one historical complete pair and does not reset on prepare/resume', async () => {
