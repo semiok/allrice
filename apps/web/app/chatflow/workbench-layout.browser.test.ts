@@ -27,6 +27,7 @@ import {
   type ReferenceRevision,
   EmployeeInstanceSchema,
   EmployeeInstanceProfileSchema,
+  EmployeeSkillCatalogSchema,
   EmployeeMemoryPageSchema,
   PersonalSceneSkillCatalogSchema,
   EmployeeSceneSkillCatalogSchema,
@@ -1494,6 +1495,39 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               omittedCount: 0,
               selectedIds: [],
             },
+          }),
+        );
+      }
+      const skillCatalogTarget = path.match(
+        /^\/api\/v1\/employee-instances\/([^/]+)\/skills$/,
+      );
+      if (skillCatalogTarget && route.request().method() === 'GET') {
+        const instanceId = skillCatalogTarget[1]!;
+        expect([
+          id(7),
+          id(17),
+          id(99),
+          ...(options.brandContent ? [id(8100)] : []),
+          ...state.createdEmployeeInstances.map((instance) => instance.id),
+        ]).toContain(instanceId);
+        expect([...url.searchParams.keys()]).toEqual(['workspaceId']);
+        expect(url.searchParams.get('workspaceId')).toBe(state.workspace);
+        expect(route.request().headers()['x-allrice-workspace-id']).toBe(
+          state.workspace,
+        );
+        if (state.viewer !== user)
+          return answer({ error: { message: 'No access' } }, 403);
+        if (options.employeeDetails && state.employeeDetailStatus !== 200)
+          return answer(
+            { error: { message: 'No access' } },
+            state.employeeDetailStatus,
+          );
+        return answer(
+          EmployeeSkillCatalogSchema.parse({
+            instanceId,
+            canInstall: true,
+            platformSkills: [],
+            personalSkills: [],
           }),
         );
       }
