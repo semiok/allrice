@@ -6,6 +6,7 @@ import {
   EmployeeMemoryDetailResponseSchema,
   EmployeeMemoryWriteResponseSchema,
   ExecutionContextSchema,
+  makeObjectKey,
   type EmployeeInstanceSnapshot,
   type EmployeeRuntimeContent,
   type EmployeeMemoryRecord,
@@ -1198,9 +1199,12 @@ suite(
         'message',
         origin!.user_message_id,
       );
-      const checkpointId = randomUUID();
-      await fixture.db`insert into allrice_context_checkpoints(id,organization_id,workspace_id,session_id,owner_id,harness,thread_generation,covered_through_message_id,summary_version,summary,checksum,config_checksum,estimated_tokens,message_count)
-      values(${checkpointId},${f.org},${f.workspace},${f.session},${f.user},'dsh',1,${origin!.user_message_id},'extractive-v1','无完整lineage也不新增门槛',${'sha256:' + 'a'.repeat(64)},${'sha256:' + 'b'.repeat(64)},1,1)`;
+      const checkpointId = randomUUID(),
+        incompleteLineageCheckpointId = randomUUID();
+      for (const id of [checkpointId, incompleteLineageCheckpointId]) {
+        await fixture.db`insert into allrice_context_checkpoints(id,organization_id,workspace_id,session_id,owner_id,harness,thread_generation,covered_through_message_id,summary_version,summary,checksum,config_checksum,estimated_tokens,message_count)
+      values(${id},${f.org},${f.workspace},${f.session},${f.user},'dsh',1,${origin!.user_message_id},'extractive-v1','无完整lineage也不新增门槛',${'sha256:' + 'a'.repeat(64)},${'sha256:' + 'b'.repeat(64)},1,1)`;
+      }
       const cp = await pending(
         f,
         '真实checkpoint候选',
@@ -1211,7 +1215,7 @@ suite(
         f,
         '无完整lineage仍可本人确认',
         'checkpoint',
-        checkpointId,
+        incompleteLineageCheckpointId,
       );
       const ordinaryConfirmation = await promote(
         request(f, 'POST', undefined, cas(f, incompleteLineage)),
@@ -1248,9 +1252,16 @@ suite(
 
     it('does not promote a file candidate after its exact stored resource is withdrawn', async () => {
       const f = await setup(),
-        objectId = randomUUID();
+        objectId = randomUUID(),
+        objectKey = makeObjectKey({
+          organizationId: f.org,
+          workspaceId: f.workspace,
+          ownerId: f.user,
+          category: 'uploads',
+          objectId,
+        });
       await fixture.db`insert into allrice_storage_objects(id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,state)
-      values(${objectId},${f.org},${f.workspace},${f.user},${'synthetic/' + objectId},'uploads','text/plain',1,${'sha256:' + 'c'.repeat(64)},'ready')`;
+      values(${objectId},${f.org},${f.workspace},${f.user},${objectKey},'uploads','text/plain',1,${'sha256:' + 'c'.repeat(64)},'ready')`;
       const row = await pending(f, '文件资料入口', 'file', objectId);
       const before = await snapshot(row.id);
       await fixture.db`update allrice_storage_objects set state='deleted',deleted_at=clock_timestamp() where id=${objectId}`;
