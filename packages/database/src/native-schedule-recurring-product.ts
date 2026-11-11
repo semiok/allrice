@@ -76,6 +76,7 @@ import {
   FixedRecurringScheduleRuleSchema,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
+import { employeePersonaAdmission } from './employees/employee-instances.ts';
 import { DataAccessError } from './data.ts';
 import { acquireDevAdmission } from './dev-maintenance.ts';
 import { readContentPrincipal } from './content-maintenance.ts';
@@ -1618,14 +1619,14 @@ export async function dispatchNextNativeRecurringOccurrence(workerId: string) {
     return claimed!;
   });
   if (!occurrence) return false;
-  await db.begin(async (tx) => {
+  const dispatch = async (tx: Tx) => {
     await tx`set local lock_timeout='1000ms'`;
     await tx`set local statement_timeout='10000ms'`;
     await acquireDevAdmission(tx);
     const [projection] = await tx<
       ControlRow[]
     >`select partition_id,control_id,snapshot from allrice_native_recurring_controls
-      where partition_id=${occurrence.partition_id} and control_id=${occurrence.control_id}`;
+    where partition_id=${occurrence.partition_id} and control_id=${occurrence.control_id}`;
     if (!projection) throw new NativeRecurringProductError('binding_conflict');
     const rawControl: unknown = projection.snapshot.control;
     if (
@@ -1692,7 +1693,7 @@ export async function dispatchNextNativeRecurringOccurrence(workerId: string) {
     if (live.outbox_state === 'blocked') return;
     const [lease] =
       await tx`select 1 from allrice_native_recurring_occurrences where occurrence_id=${live.occurrence_id}
-      and outbox_state='pending' and outbox_expires_at>clock_timestamp()`;
+    and outbox_state='pending' and outbox_expires_at>clock_timestamp()`;
     if (!lease) throw new NativeRecurringProductError('lease_lost');
     if (
       !fact?.allowed ||
@@ -1703,7 +1704,7 @@ export async function dispatchNextNativeRecurringOccurrence(workerId: string) {
           Date.parse(fact.resumeAfter))
     ) {
       await tx`update allrice_native_recurring_occurrences set outbox_state='blocked',outbox_reason='current_authority_or_binding_changed'
-        where occurrence_id=${live.occurrence_id}`;
+      where occurrence_id=${live.occurrence_id}`;
       return;
     }
     const principal = await lockSchedulePrincipal(
@@ -1723,7 +1724,7 @@ export async function dispatchNextNativeRecurringOccurrence(workerId: string) {
     const [v] = await tx<
       { configuration: NativeRecurringRevision }[]
     >`select configuration from allrice_native_recurring_versions
-      where automation_id=${control.automationId} and revision=${live.revision}`;
+    where automation_id=${control.automationId} and revision=${live.revision}`;
     const version = v && NativeRecurringRevisionSchema.parse(v.configuration);
     if (
       !plan ||
@@ -1758,22 +1759,22 @@ export async function dispatchNextNativeRecurringOccurrence(workerId: string) {
         legacy_reuse: boolean;
       })[]
     >`select ar.id,ar.run_id,j.id job_id,ar.organization_id,ar.workspace_id,${scope.ownerId}::uuid owner_id,
-      ar.conversation_snapshot,
-      case when ar.conversation_snapshot is not null then allrice_automation_conversation_handoff_proved(ar.id) else false end snapshot_proved,
-      (ar.native_once_occurrence_id is null and o.automation_id=ar.automation_id and o.scheduled_at=ar.scheduled_for
-        and c.automation_id=ar.automation_id and c.immutable_identity->>'organizationId'=ar.organization_id::text
-        and c.immutable_identity->>'workspaceId'=ar.workspace_id::text and c.immutable_identity->>'ownerId'=${scope.ownerId}
-        and c.immutable_identity->'dispatch'->>'consumer' is null
-        and ar.session_id::text=c.immutable_identity->'dispatch'->>'businessSessionId') legacy_reuse,
-      o.occurrence_id,o.outbox_state,o.payload_digest,o.business_binding,
-      c.immutable_identity || jsonb_build_object('dispatch',c.immutable_identity->'dispatch' || jsonb_build_object('clientMessageId',o.client_message_id::text)) control
-      from allrice_automation_runs ar left join allrice_jobs j on j.run_id=ar.run_id
-        and j.organization_id=ar.organization_id and j.workspace_id=ar.workspace_id and j.owner_id=${scope.ownerId}
-      left join allrice_native_recurring_occurrences o on o.occurrence_id=ar.native_recurring_occurrence_id
-        and o.automation_id=ar.automation_id
-      left join allrice_native_recurring_controls c on c.partition_id=o.partition_id and c.control_id=o.control_id
-      where ar.automation_id=${plan.id} and ar.organization_id=${scope.organizationId} and ar.workspace_id=${scope.workspaceId}
-        and ar.scheduled_for=${live.payload.receipt.scheduledAt}::timestamptz and ar.folder_event_id is null and ar.manual_request_id is null`;
+    ar.conversation_snapshot,
+    case when ar.conversation_snapshot is not null then allrice_automation_conversation_handoff_proved(ar.id) else false end snapshot_proved,
+    (ar.native_once_occurrence_id is null and o.automation_id=ar.automation_id and o.scheduled_at=ar.scheduled_for
+      and c.automation_id=ar.automation_id and c.immutable_identity->>'organizationId'=ar.organization_id::text
+      and c.immutable_identity->>'workspaceId'=ar.workspace_id::text and c.immutable_identity->>'ownerId'=${scope.ownerId}
+      and c.immutable_identity->'dispatch'->>'consumer' is null
+      and ar.session_id::text=c.immutable_identity->'dispatch'->>'businessSessionId') legacy_reuse,
+    o.occurrence_id,o.outbox_state,o.payload_digest,o.business_binding,
+    c.immutable_identity || jsonb_build_object('dispatch',c.immutable_identity->'dispatch' || jsonb_build_object('clientMessageId',o.client_message_id::text)) control
+    from allrice_automation_runs ar left join allrice_jobs j on j.run_id=ar.run_id
+      and j.organization_id=ar.organization_id and j.workspace_id=ar.workspace_id and j.owner_id=${scope.ownerId}
+    left join allrice_native_recurring_occurrences o on o.occurrence_id=ar.native_recurring_occurrence_id
+      and o.automation_id=ar.automation_id
+    left join allrice_native_recurring_controls c on c.partition_id=o.partition_id and c.control_id=o.control_id
+    where ar.automation_id=${plan.id} and ar.organization_id=${scope.organizationId} and ar.workspace_id=${scope.workspaceId}
+      and ar.scheduled_for=${live.payload.receipt.scheduledAt}::timestamptz and ar.folder_event_id is null and ar.manual_request_id is null`;
     if (paid) {
       const { proveNativeOrdinaryJobBinding } =
         await import('./native-schedule-once-authority.ts');
@@ -1789,7 +1790,7 @@ export async function dispatchNextNativeRecurringOccurrence(workerId: string) {
             })));
       if (!proved) throw new NativeRecurringProductError('binding_conflict');
       await tx`update allrice_native_recurring_occurrences set outbox_state='blocked',outbox_reason='ORDINARY_FIXED_ALREADY_CLAIMED'
-        where occurrence_id=${live.occurrence_id}`;
+      where occurrence_id=${live.occurrence_id}`;
       return;
     }
     const queued = await enqueueOrdinaryRecurringBusiness(
@@ -1806,7 +1807,12 @@ export async function dispatchNextNativeRecurringOccurrence(workerId: string) {
       live.payload.receipt.scheduledAt,
     );
     await tx`update allrice_native_recurring_occurrences set outbox_state='enqueued',business_binding=${json(tx, queued.business)}
-      where occurrence_id=${live.occurrence_id}`;
-  });
+    where occurrence_id=${live.occurrence_id}`;
+  };
+  await employeePersonaAdmission(
+    db,
+    { automationId: occurrence.automation_id },
+    dispatch,
+  );
   return true;
 }

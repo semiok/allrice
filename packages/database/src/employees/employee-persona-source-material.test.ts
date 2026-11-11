@@ -5,7 +5,11 @@ import {
   employeeManifest,
   employeeManifestChecksum,
 } from './employee-config.ts';
-import { readEmployeeTenantPersonaVersion } from './employee-instances.ts';
+import {
+  employeePersonaAdmission,
+  readEmployeePersonaVersion,
+  readEmployeeTenantPersonaVersion,
+} from './employee-instances.ts';
 import { employeePersonaManifestMaterial } from '../platform-employees/runtime-package.ts';
 
 function source() {
@@ -248,5 +252,177 @@ describe('explicit definition-only PERSONA materials', () => {
         reader(manifest, employeeManifestChecksum(manifest)),
       ),
     ).rejects.toThrow('employee_persona_source_mapping_invalid');
+  });
+});
+
+describe('PERSONA source preparation and raw OCC', () => {
+  function admissionSource() {
+    const identity = scope();
+    const manifest = source();
+    let current = {
+      manifest,
+      config_checksum: employeeManifestChecksum(manifest),
+      mapping_id: null,
+    };
+    let active = false;
+    const tx = vi.fn(async () => [structuredClone(current)]);
+    const database = Object.assign(
+      vi.fn(async () => [structuredClone(current)]),
+      {
+        begin: vi.fn(
+          async (operation: (sql: typeof tx) => Promise<unknown>) => {
+            active = true;
+            try {
+              return await operation(tx);
+            } finally {
+              active = false;
+            }
+          },
+        ),
+      },
+    ) as unknown as Parameters<typeof employeePersonaAdmission>[0];
+    const target = { ...identity, versionIds: [identity.versionId] };
+    return {
+      identity,
+      manifest,
+      target,
+      database,
+      active: () => active,
+      replace: (next: typeof current) => {
+        current = next;
+      },
+    };
+  }
+
+  it('parses the complete source before begin and only compares current raw facts in admission', async () => {
+    const f = admissionSource();
+    const parse = EmployeeDefinitionSchema.parse;
+    const phases: boolean[] = [];
+    const spy = vi
+      .spyOn(EmployeeDefinitionSchema, 'parse')
+      .mockImplementation((...args) => {
+        phases.push(f.active());
+        return Reflect.apply(parse, EmployeeDefinitionSchema, args);
+      });
+    try {
+      const value = await employeePersonaAdmission(
+        f.database,
+        f.target,
+        async (tx) => {
+          return readEmployeePersonaVersion(
+            { ...f.identity, role: 'engine', forRunInput: true },
+            tx,
+          );
+        },
+      );
+      expect(value?.source).toMatchObject({
+        kind: 'tenant_version',
+        employeeVersionId: f.identity.versionId,
+      });
+      expect(phases.length).toBeGreaterThan(0);
+      expect(phases.every((active) => !active)).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('rejects a full raw manifest change even when its stored checksum is unchanged', async () => {
+    const f = admissionSource();
+    await expect(
+      employeePersonaAdmission(f.database, f.target, async (tx) => {
+        f.replace({
+          manifest: {
+            ...f.manifest,
+            description: 'changed without updating the stored checksum',
+          },
+          config_checksum: employeeManifestChecksum(f.manifest),
+          mapping_id: null,
+        });
+        await readEmployeePersonaVersion({ ...f.identity, role: 'engine' }, tx);
+      }),
+    ).rejects.toMatchObject({ code: 'instance_conflict' });
+  });
+
+  it('rechecks after the last outer write and does not keep a stale prepared proof', async () => {
+    const f = admissionSource();
+    await expect(
+      employeePersonaAdmission(f.database, f.target, async (tx) => {
+        await readEmployeePersonaVersion({ ...f.identity, role: 'engine' }, tx);
+        f.replace({
+          manifest: {
+            ...f.manifest,
+            description: 'changed after inner admission',
+          },
+          config_checksum: employeeManifestChecksum(f.manifest),
+          mapping_id: null,
+        });
+      }),
+    ).rejects.toMatchObject({ code: 'instance_conflict' });
+  });
+
+  it('defers invalid source errors until after the original authority gate', async () => {
+    const f = admissionSource();
+    f.replace({
+      manifest: f.manifest,
+      config_checksum: `sha256:${'0'.repeat(64)}`,
+      mapping_id: null,
+    });
+    const denied = Error('current authority denied');
+    await expect(
+      employeePersonaAdmission(f.database, f.target, async () => {
+        throw denied;
+      }),
+    ).rejects.toBe(denied);
+    await expect(
+      employeePersonaAdmission(f.database, f.target, async (tx) => {
+        await readEmployeePersonaVersion({ ...f.identity, role: 'engine' }, tx);
+      }),
+    ).rejects.toThrow('CURRENT_EXECUTION_SOURCE_CHECKSUM_MISMATCH');
+  });
+
+  it('classifies the current exact legacy null gap inside admission rather than returning a stale preparation error', async () => {
+    const f = admissionSource();
+    await expect(
+      employeePersonaAdmission(f.database, f.target, async (tx) => {
+        const { personaSource, ...legacy } = f.manifest;
+        void personaSource;
+        f.replace({
+          manifest: legacy as typeof f.manifest,
+          config_checksum: employeeManifestChecksum(legacy),
+          mapping_id: null,
+        });
+        await readEmployeePersonaVersion(
+          { ...f.identity, role: 'engine', forRunInput: true },
+          tx,
+        );
+      }),
+    ).rejects.toMatchObject({
+      message: 'employee_persona_source_unavailable',
+      cause: 'legacy_null_package_persona_source_missing',
+    });
+  });
+
+  it('rejects an unprepared source and preserves the historical complete verifier outside admission', async () => {
+    const f = admissionSource();
+    await expect(
+      employeePersonaAdmission(
+        f.database,
+        { ...f.target, versionIds: [] },
+        async (tx) => {
+          await readEmployeePersonaVersion(
+            { ...f.identity, role: 'engine' },
+            tx,
+          );
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'instance_conflict' });
+    f.replace({
+      manifest: f.manifest,
+      config_checksum: `sha256:${'0'.repeat(64)}`,
+      mapping_id: null,
+    });
+    await expect(
+      readEmployeePersonaVersion({ ...f.identity, role: 'engine' }, f.database),
+    ).rejects.toThrow('CURRENT_EXECUTION_SOURCE_CHECKSUM_MISMATCH');
   });
 });

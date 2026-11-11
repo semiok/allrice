@@ -13,6 +13,7 @@ import {
 } from 'vitest';
 import type { TransactionSql } from 'postgres';
 import * as client from './core/client.ts';
+import * as personaRuntime from './platform-employees/runtime-package.ts';
 import { getDatabase } from './core/client.ts';
 import {
   EmployeeDocumentsSchema,
@@ -298,6 +299,111 @@ suite(
       });
       return { control, write };
     }
+    it.each(['native_once', 'automation_manual'] as const)(
+      'prepares PERSONA source material before the real %s admission transaction',
+      async (kind) => {
+        const t = await task(
+          undefined,
+          '请在原会话整理本周工作，保持原任务资格。',
+        );
+        if (kind === 'native_once') await receipt(t.task.id);
+        const db = f.db,
+          begin = db.begin.bind(db);
+        const material = personaRuntime.employeePersonaManifestMaterial;
+        let active = false;
+        const phases: boolean[] = [];
+        const source = vi
+          .spyOn(personaRuntime, 'employeePersonaManifestMaterial')
+          .mockImplementation((...args) => {
+            phases.push(active);
+            return Reflect.apply(material, personaRuntime, args);
+          });
+        const wrap = vi.spyOn(db, 'begin').mockImplementation((async (
+          ...args: unknown[]
+        ) => {
+          const operation = args.pop() as (
+            tx: TransactionSql,
+          ) => Promise<unknown>;
+          return Reflect.apply(begin, db, [
+            ...args,
+            async (tx: TransactionSql) => {
+              active = true;
+              try {
+                return await operation(tx);
+              } finally {
+                active = false;
+              }
+            },
+          ]);
+        }) as typeof db.begin);
+        try {
+          if (kind === 'native_once')
+            expect(await dispatchNextNativeOnceOccurrence(randomUUID())).toBe(
+              true,
+            );
+          else
+            expect(
+              (
+                await runManualAutomation(f.context, f.workspaceId, t.task.id, {
+                  requestId: randomUUID(),
+                  expectedRevision: t.task.revision,
+                })
+              ).run.id,
+            ).toBeTruthy();
+        } finally {
+          wrap.mockRestore();
+          source.mockRestore();
+        }
+        expect(phases.length).toBeGreaterThan(0);
+        expect(phases.every((inTransaction) => !inTransaction)).toBe(true);
+        const [run] =
+          await db`select ar.id,ar.native_once_occurrence_id,er.session_id,er.user_message_id,
+          er.execution_snapshot->'persona' persona from allrice_automation_runs ar
+          join allrice_employee_runs er on er.run_id=ar.run_id where ar.automation_id=${t.task.id}`;
+        const pin = EmployeePersonaPinSchema.parse(run!.persona);
+        expect(pin.source.task).toEqual({
+          kind,
+          id: kind === 'native_once' ? run!.native_once_occurrence_id : run!.id,
+          sessionId: run!.session_id,
+          userMessageId: run!.user_message_id,
+        });
+        expect(pin.source.engine.employeeVersionId).toBe(f.employeeVersionId);
+      },
+    );
+    it('rolls back every new business row when the source raw value changes after preparation', async () => {
+      const t = await task(undefined, '请核对来源，再在原会话交回结果。');
+      await receipt(t.task.id);
+      const [original] =
+        await f.db`select manifest from allrice_employee_versions where id=${f.employeeVersionId}`;
+      onTestFinished(async () => {
+        await f.db`update allrice_employee_versions set manifest=${f.db.json(original!.manifest)} where id=${f.employeeVersionId}`;
+        await cancelOnceTask(f.context, t.sessionId, t.task.id);
+      });
+      const before = await counts();
+      const db = f.db,
+        begin = db.begin.bind(db);
+      let calls = 0;
+      const wrap = vi.spyOn(db, 'begin').mockImplementation((async (
+        ...args: unknown[]
+      ) => {
+        // The claim committed, then preparation read the original source. The
+        // second begin is still the original business/admission transaction.
+        if (++calls === 2)
+          await db`update allrice_employee_versions
+          set manifest=jsonb_set(manifest,'{description}',to_jsonb('changed without changing config_checksum'::text))
+          where id=${f.employeeVersionId}`;
+        return Reflect.apply(begin, db, args);
+      }) as typeof db.begin);
+      try {
+        await expect(
+          dispatchNextNativeOnceOccurrence(randomUUID()),
+        ).rejects.toMatchObject({ code: 'instance_conflict' });
+      } finally {
+        wrap.mockRestore();
+      }
+      expect(calls).toBe(2);
+      expect(await counts()).toEqual(before);
+    });
     it('freezes the session owner preferences when a scheduled occurrence queues its run', async () => {
       const before = await getUserPreferences(f.context);
       onTestFinished(async () => {

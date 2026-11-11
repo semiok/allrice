@@ -10,6 +10,7 @@ import {
   type RequestContext,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
+import { employeePersonaAdmission } from './employees/employee-instances.ts';
 import { DataAccessError } from './data.ts';
 import { readContentPrincipal } from './content-maintenance.ts';
 import { acquireDevAdmission } from './dev-maintenance.ts';
@@ -243,8 +244,15 @@ export async function runManualAutomation(
 ) {
   const parsed = ManualAutomationRunInputSchema.parse(inputRaw);
   const input = { ...parsed, requestId: parsed.requestId.toLowerCase() };
-  await getDatabase()
-    .begin(async (tx) => {
+  await employeePersonaAdmission(
+    getDatabase(),
+    {
+      automationId: taskId,
+      organizationId: raw.organizationId,
+      workspaceId,
+      ownerId: raw.actor.type === 'user' ? raw.actor.id : undefined,
+    },
+    async (tx) => {
       await acquireDevAdmission(tx);
       const { context, scope, plan } = await authority(
         tx,
@@ -324,18 +332,18 @@ export async function runManualAutomation(
       } finally {
         reservations.delete(tx);
       }
-    })
-    .catch((error: unknown) => {
-      // Only a confirmed rejection before COMMIT ends the saved request. Unknown
-      // database/COMMIT acknowledgements never become a retryable rejection.
-      if (
-        error instanceof DataAccessError &&
-        error.code === 'authorization_denied'
-      )
-        throw new ManualAutomationRunError('authority_denied');
-      if (error instanceof DataAccessError && error.code === 'not_found')
-        throw new ManualAutomationRunError('unavailable');
-      throw error;
-    });
+    },
+  ).catch((error: unknown) => {
+    // Only a confirmed rejection before COMMIT ends the saved request. Unknown
+    // database/COMMIT acknowledgements never become a retryable rejection.
+    if (
+      error instanceof DataAccessError &&
+      error.code === 'authorization_denied'
+    )
+      throw new ManualAutomationRunError('authority_denied');
+    if (error instanceof DataAccessError && error.code === 'not_found')
+      throw new ManualAutomationRunError('unavailable');
+    throw error;
+  });
   return getManualAutomationRun(raw, workspaceId, taskId, input.requestId);
 }

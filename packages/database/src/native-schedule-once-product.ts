@@ -38,6 +38,7 @@ import {
   type RequestContext,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
+import { employeePersonaAdmission } from './employees/employee-instances.ts';
 import { DataAccessError } from './data.ts';
 import { readContentPrincipal } from './content-maintenance.ts';
 import { readWorkAutomation } from './work-automation.ts';
@@ -852,14 +853,14 @@ export async function dispatchNextNativeOnceOccurrence(workerId: string) {
   if (!occurrence) return reconcileBrandNativeReminderAttempt();
   // A failed/unknown COMMIT leaves the durable occurrence for exact readback.
   // No new key, receipt or message is created by error handling.
-  await db.begin(async (tx) => {
+  const dispatch = async (tx: Tx) => {
     await tx`set local lock_timeout='1000ms'`;
     await tx`set local statement_timeout='10000ms'`;
     await acquireDevAdmission(tx);
     const [projection] = await tx<
       ControlRow[]
     >`select partition_id,control_id,snapshot from allrice_native_once_controls
-      where partition_id=${occurrence.partition_id} and control_id=${occurrence.control_id}`;
+    where partition_id=${occurrence.partition_id} and control_id=${occurrence.control_id}`;
     if (!projection) throw new NativeOnceProductError('binding_conflict');
     const control = projection.snapshot.control,
       scope = {
@@ -944,13 +945,13 @@ export async function dispatchNextNativeOnceOccurrence(workerId: string) {
     )
       throw new NativeOnceProductError('binding_conflict');
     const [mapped] = await tx`select 1 from allrice_native_once_occurrences o
-      join allrice_native_once_controls c on c.partition_id=o.partition_id and c.control_id=o.control_id
-      where o.occurrence_id=${occurrence.occurrence_id} and o.automation_id=${plan.id} and o.revision=${plan.revision}
-        and c.native_task_id=o.payload->>'nativeTaskId' and c.immutable_control->'dispatch'=o.payload->'control'->'dispatch'`;
+    join allrice_native_once_controls c on c.partition_id=o.partition_id and c.control_id=o.control_id
+    where o.occurrence_id=${occurrence.occurrence_id} and o.automation_id=${plan.id} and o.revision=${plan.revision}
+      and c.native_task_id=o.payload->>'nativeTaskId' and c.immutable_control->'dispatch'=o.payload->'control'->'dispatch'`;
     if (!mapped) throw new NativeOnceProductError('binding_conflict');
     const [prior] =
       await tx`select id from allrice_automation_runs where automation_id=${plan.id}
-      and scheduled_for=${occurrence.payload.receipt.scheduledAt}::timestamptz and folder_event_id is null and manual_request_id is null`;
+    and scheduled_for=${occurrence.payload.receipt.scheduledAt}::timestamptz and folder_event_id is null and manual_request_id is null`;
     if (prior) throw new NativeOnceProductError('binding_conflict');
     const execution = await prepareAutomationConversation(
       tx,
@@ -999,12 +1000,17 @@ export async function dispatchNextNativeOnceOccurrence(workerId: string) {
         snapshotDigest: runtimePolicyDigest(frozen.execution_snapshot),
       };
       await tx`insert into allrice_automation_runs(organization_id,workspace_id,automation_id,scheduled_for,run_id,session_id,status,native_once_occurrence_id,conversation_snapshot)
-        values(${scope.organizationId},${scope.workspaceId},${plan.id},${occurrence.payload.receipt.scheduledAt}::timestamptz,${queued.runId},${execution.target.id},'queued',${occurrence.occurrence_id},${json(tx, execution.conversation)})`;
+      values(${scope.organizationId},${scope.workspaceId},${plan.id},${occurrence.payload.receipt.scheduledAt}::timestamptz,${queued.runId},${execution.target.id},'queued',${occurrence.occurrence_id},${json(tx, execution.conversation)})`;
       await tx`update allrice_native_once_occurrences set outbox_state='enqueued',business_binding=${json(tx, business)} where occurrence_id=${occurrence.occurrence_id}`;
       await tx`update allrice_automations set next_run_at=null,status='paused',updated_at=clock_timestamp() where id=${plan.id}`;
     } finally {
       dispatchReservations.delete(tx);
     }
-  });
+  };
+  await employeePersonaAdmission(
+    db,
+    { automationId: occurrence.automation_id },
+    dispatch,
+  );
   return true;
 }

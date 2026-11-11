@@ -1,3 +1,4 @@
+import { employeePersonaAdmission } from '../employees/employee-instances.ts';
 import {
   modelFailureText,
   personalWorkflowHistoryFailureText,
@@ -828,21 +829,37 @@ async function enqueueRunCore(
     timeoutAt,
   } = parsed;
   const sql = getDatabase();
-  const result = await sql.begin((transaction) =>
-    enqueueRunInTransaction(
-      admission,
-      {
-        submission,
-        options,
-        ownerId,
-        workspaceId,
-        taskPolicy,
-        instanceIdentity,
-        availableAt,
-        timeoutAt,
-      },
-      transaction,
-    ),
+  const frozen = options.employeeBinding?.executionSnapshot;
+  const personaTarget =
+    frozen?.schemaVersion === 2 && frozen.persona
+      ? {
+          organizationId: context.organizationId,
+          workspaceId,
+          employeeId: frozen.employee.id,
+          versionIds: [
+            frozen.persona.source.basis.employeeVersionId,
+            frozen.persona.source.engine.employeeVersionId,
+          ],
+        }
+      : undefined;
+  const result = await employeePersonaAdmission(
+    sql,
+    personaTarget,
+    (transaction) =>
+      enqueueRunInTransaction(
+        admission,
+        {
+          submission,
+          options,
+          ownerId,
+          workspaceId,
+          taskPolicy,
+          instanceIdentity,
+          availableAt,
+          timeoutAt,
+        },
+        transaction,
+      ),
   );
   const row =
     admission.kind !== 'browser'
