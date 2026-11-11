@@ -29,7 +29,13 @@ it('keeps a complete escaped memory text through real JSON-RPC, native render an
     wireName: 'workspace_memory_read',
     args: { number: 100 },
     invalidArgs: { number: 100, ownerId: 'must-not-be-authority' },
-    expectedToolNames: ['workspace_memory_read'],
+    // The restricted profile also installs these three native DSH tools.
+    expectedToolNames: [
+      'ask_user_question',
+      'skill',
+      'todo_write',
+      'workspace_memory_read',
+    ],
     forbiddenToolNames: [
       'workspace_memory_search',
       'workspace_experience_read',
