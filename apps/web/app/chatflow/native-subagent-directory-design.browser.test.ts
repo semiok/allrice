@@ -45,6 +45,7 @@ const child = (
     outputTokens: 0,
   },
   lastReply: null,
+  task: '获授权的子任务摘要。'.repeat(5),
 });
 const summary = (
   descendants = [
@@ -67,6 +68,27 @@ const typography = (node: Locator) =>
       color: style.color,
     };
   });
+const contrast = async (node: Locator, panel: Locator) => {
+  const colors = [
+    (await typography(node)).color,
+    await panel.evaluate((node) => getComputedStyle(node).backgroundColor),
+  ];
+  const luminance = colors.map((color) =>
+    color
+      .match(/[\d.]+/g)!
+      .slice(0, 3)
+      .map(Number)
+      .map((value) => {
+        const v = value / 255;
+        return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+      })
+      .reduce(
+        (sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index]!,
+        0,
+      ),
+  );
+  return (Math.max(...luminance) + 0.05) / (Math.min(...luminance) + 0.05);
+};
 
 suite('MET-214 native subagent directory design', () => {
   let browser: Browser, server: Server, origin: string;
@@ -187,18 +209,18 @@ suite('MET-214 native subagent directory design', () => {
     const title = page.getByRole('heading', { name: '子智能体', exact: true });
     await title.waitFor();
     const panel = title.locator(
-      'xpath=ancestor::*[contains(@class,"catalog")][1]',
+      'xpath=ancestor::*[contains(@class,"catalog") and not(contains(@class,"catalogHead"))][1]',
     );
     return { page, panel, title, fixture, release };
   }
   async function capture(panel: Locator, name: string) {
-    const directory = join(process.cwd(), '.local', 'met214-popover-redesign');
+    const directory = join(process.cwd(), '.local/quality/met245-process-b');
     mkdirSync(directory, { recursive: true });
-    await panel.screenshot({ path: join(directory, `${name}.png`) });
+    await panel.screenshot({ path: join(directory, `directory-${name}.png`) });
   }
 
   for (const theme of ['light', 'dark']) {
-    it.each([1200, 320])(
+    it.each([1440, 1160, 1024, 390, 320])(
       `“名字别被状态挤成两行”：keeps ${theme} names above metadata at %s px`,
       async (width) => {
         const value = summary();
@@ -209,12 +231,23 @@ suite('MET-214 native subagent directory design', () => {
             exact: true,
           });
           const name = row.getByText('首次拍摄检查清单', { exact: true });
-          const status = row.getByText('已结束', { exact: true });
-          const duration = row.getByText('43 秒', { exact: true });
+          const status = row.getByText('上次回合已完成', { exact: true });
+          const duration = row.getByText('43秒', { exact: true });
+          const task = row.getByText('获授权的子任务摘要。'.repeat(5), {
+            exact: true,
+          });
+          for (const words of [name, task, status, duration])
+            expect(await contrast(words, panel)).toBeGreaterThanOrEqual(4.5);
+          expect(
+            await task.evaluate((node) => ({
+              whiteSpace: getComputedStyle(node).whiteSpace,
+              overflow: getComputedStyle(node).textOverflow,
+            })),
+          ).toEqual({ whiteSpace: 'nowrap', overflow: 'ellipsis' });
           expect(await typography(title)).toMatchObject({
-            size: '16px',
-            line: '24px',
-            weight: '600',
+            size: '14px',
+            line: '20px',
+            weight: '500',
           });
           expect(await typography(name)).toMatchObject({
             size: '14px',
@@ -236,7 +269,10 @@ suite('MET-214 native subagent directory design', () => {
           expect(statusBox.y).toBeGreaterThanOrEqual(
             nameBox.y + nameBox.height + 4,
           );
-          expect(durationBox.y).toBe(statusBox.y);
+          expect(durationBox.y).toBeGreaterThanOrEqual(nameBox.y);
+          expect(durationBox.x).toBeGreaterThanOrEqual(
+            nameBox.x + nameBox.width,
+          );
           expect(durationBox.height).toBe(18);
           expect(
             await duration.evaluate((el) => getComputedStyle(el).whiteSpace),
@@ -258,14 +294,21 @@ suite('MET-214 native subagent directory design', () => {
           });
           expect(surface).toMatchObject({
             radius: '12px',
-            padding: '16px',
+            padding: '8px',
             overflow: false,
           });
-          expect(surface.width).toBe(width === 320 ? 288 : 360);
+          expect(surface.width).toBe(Math.min(432, width - 16));
           expect(surface.background).toBe(
             theme === 'light' ? 'rgb(255, 255, 255)' : 'rgb(44, 44, 46)',
           );
-          expect((await typography(status)).color).toBe(surface.secondary);
+          expect((await typography(status)).color).toBe(
+            theme === 'light' ? 'rgb(22, 101, 52)' : 'rgb(134, 239, 172)',
+          );
+          expect(
+            await row
+              .locator('button')
+              .evaluate((node) => node.getBoundingClientRect().height),
+          ).toBeGreaterThanOrEqual(44);
           expect(
             await panel.getByRole('button', { name: /详情|刷新/ }).count(),
           ).toBe(0);
@@ -296,14 +339,12 @@ suite('MET-214 native subagent directory design', () => {
       );
       try {
         const name = page.getByText(longName, { exact: true });
-        const duration = page.getByText('43 秒', { exact: true });
+        const duration = page.getByText('43秒', { exact: true });
         await name.waitFor();
         const nameBox = (await name.boundingBox())!;
         const durationBox = (await duration.boundingBox())!;
         expect(nameBox.height).toBeGreaterThan(20);
-        expect(durationBox.y).toBeGreaterThanOrEqual(
-          nameBox.y + nameBox.height + 4,
-        );
+        expect(durationBox.x).toBeGreaterThanOrEqual(nameBox.x + nameBox.width);
         expect(durationBox.height).toBe(18);
         expect(
           await duration.evaluate((node) => getComputedStyle(node).whiteSpace),
@@ -376,8 +417,8 @@ suite('MET-214 native subagent directory design', () => {
       [true, true, '运行中', false],
       [true, false, '运行中', false],
       [true, undefined, '运行中', false],
-      [false, true, '已结束', false],
-      [false, false, '已结束', true],
+      [false, true, '上次回合已完成', false],
+      [false, false, '未正常结束', true],
       [false, undefined, '未运行', false],
       [null, true, '状态未知', false],
       [null, false, '状态未知', false],
@@ -402,25 +443,44 @@ suite('MET-214 native subagent directory design', () => {
           })
           .toContain(expected);
         expect(await row.getByText(expected, { exact: true }).count()).toBe(1);
-        expect(await row.getByRole('img', { name: '未正常结束' }).count()).toBe(
+        expect(await row.getByText('未正常结束', { exact: true }).count()).toBe(
           abnormal ? 1 : 0,
         );
-        expect(await row.getAttribute('aria-description')).toBe(
-          abnormal ? '未正常结束' : null,
+        expect(
+          await row
+            .getByRole('button', {
+              name: `子智能体 ${i}，${expected}，在工作台打开`,
+              exact: true,
+            })
+            .count(),
+        ).toBe(1);
+        const status = row.getByText(expected, { exact: true });
+        expect(await contrast(status, panel)).toBeGreaterThanOrEqual(4.5);
+        expect((await typography(status)).color).toBe(
+          abnormal
+            ? 'rgb(185, 28, 28)'
+            : i < 3
+              ? 'rgb(30, 64, 175)'
+              : i === 3
+                ? 'rgb(22, 101, 52)'
+                : 'rgb(94, 99, 104)',
         );
+        const dot = row.locator('[class*="stateDot"]');
+        expect(
+          await dot.evaluate((node) => {
+            const style = getComputedStyle(node);
+            return style.backgroundColor === 'rgba(0, 0, 0, 0)'
+              ? style.borderTopColor
+              : style.backgroundColor;
+          }),
+        ).toBe((await typography(status)).color);
       }
-      const abnormal = page.getByRole('img', { name: '未正常结束' });
-      expect(await abnormal.innerText()).toBe('!');
+      const abnormal = page.getByText('未正常结束', { exact: true });
+      expect(await abnormal.innerText()).toBe('未正常结束');
       expect((await typography(abnormal)).color).toBe('rgb(185, 28, 28)');
       await abnormal.locator('xpath=ancestor::*[@role="treeitem"]').focus();
-      expect(
-        await page.locator(':focus').getAttribute('aria-description'),
-      ).toBe('未正常结束');
-      await abnormal.hover();
-      await page
-        .getByRole('tooltip')
-        .filter({ hasText: '未正常结束' })
-        .waitFor();
+      expect(await page.locator(':focus').innerText()).toContain('未正常结束');
+      expect((await panel.boundingBox())!.height).toBeLessThanOrEqual(560);
       await capture(panel, 'light-states');
     } finally {
       await page.close();
@@ -434,7 +494,7 @@ suite('MET-214 native subagent directory design', () => {
       await failure.waitFor();
       expect(await failure.innerText()).toContain('暂时读不到子智能体目录');
       expect(await panel.getByRole('treeitem').count()).toBe(0);
-      expect(await panel.getByRole('img', { name: '未正常结束' }).count()).toBe(
+      expect(await panel.getByText('未正常结束', { exact: true }).count()).toBe(
         0,
       );
       expect(await typography(failure)).toMatchObject({

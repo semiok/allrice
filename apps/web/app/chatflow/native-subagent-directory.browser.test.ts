@@ -330,7 +330,9 @@ suite('native subagent directory and employee sidebar', () => {
         exact: true,
       });
       const menu = await title
-        .locator('xpath=ancestor::*[contains(@class,"catalog")][1]')
+        .locator(
+          'xpath=ancestor::*[contains(@class,"catalog") and not(contains(@class,"catalogHead"))][1]',
+        )
         .boundingBox();
       const trigger = await page
         .locator('button[aria-haspopup="tree"]')
@@ -358,7 +360,7 @@ suite('native subagent directory and employee sidebar', () => {
   }
 
   it.each(['light', 'dark'])(
-    '“看看子智能体，收起来再看看”：refreshes once per opening, keeps %s theme and has no detail or receipt entry',
+    '“看看子智能体，收起来再看看”：refreshes once per click opening, keeps %s theme and has no legacy aside or controls',
     async (theme) => {
       const value = summary();
       const observedAt = Date.now();
@@ -423,6 +425,8 @@ suite('native subagent directory and employee sidebar', () => {
         const before = fullReads();
         const tree = page.getByRole('tree', { name: '子智能体目录' });
         await trigger.hover();
+        expect(await tree.count()).toBe(0);
+        await trigger.click();
         await tree.waitFor();
         await expect.poll(fullReads).toBe(before + 1);
         const title = page.getByRole('heading', {
@@ -433,16 +437,16 @@ suite('native subagent directory and employee sidebar', () => {
           await title.evaluate((node) => ({
             size: getComputedStyle(node).fontSize,
             weight: getComputedStyle(node).fontWeight,
-            background: getComputedStyle(node.closest('[class*="catalog"]')!)
-              .backgroundColor,
+            background: getComputedStyle(
+              node.closest('[class*="catalog"]:not([class*="catalogHead"])')!,
+            ).backgroundColor,
           })),
         ).toEqual({
-          size: '16px',
-          weight: '600',
+          size: '14px',
+          weight: '500',
           background:
             theme === 'light' ? 'rgb(255, 255, 255)' : 'rgb(44, 44, 46)',
         });
-        await trigger.click(); // Pin the existing hover opening.
         await page.getByRole('button', { name: '展开fork-a' }).click();
         const first = page.getByRole('treeitem', {
           name: 'fork-a摘要',
@@ -479,10 +483,12 @@ suite('native subagent directory and employee sidebar', () => {
         expect(await tree.count()).toBe(0);
         expect(fullReads()).toBe(before + 2);
         await page.mouse.move(1100, 800);
-        await trigger.hover();
+        await trigger.click();
         await tree.waitFor();
         await expect.poll(fullReads).toBe(before + 3);
         await page.mouse.move(1100, 800);
+        expect(await tree.count()).toBe(1);
+        await page.getByRole('heading', { level: 1 }).click();
         await expect.poll(() => tree.count()).toBe(0);
         expect(fullReads()).toBe(before + 3);
         expect(followCalls().filter((call) => call.childId)).toEqual([]);
@@ -532,7 +538,7 @@ suite('native subagent directory and employee sidebar', () => {
         expect(await trigger.innerText()).toBe('');
         expect(
           await trigger.evaluate((node) => getComputedStyle(node).color),
-        ).toBe('rgb(37, 99, 235)');
+        ).toBe('rgb(30, 64, 175)');
         expect(await trigger.locator('svg').getAttribute('aria-hidden')).toBe(
           'true',
         );
@@ -576,13 +582,13 @@ suite('native subagent directory and employee sidebar', () => {
         await trigger.click();
         const done = page
           .getByRole('treeitem', { name: 'idle-b摘要' })
-          .locator('[data-state="done"]');
+          .locator('[class*="status"]');
         expect(
           await done.evaluate((node) => getComputedStyle(node).color),
         ).toBe(
           await page.evaluate(() => {
             const marker = document.createElement('span');
-            marker.style.color = 'var(--ar-idle)';
+            marker.style.color = 'var(--ar-success-text)';
             document.body.append(marker);
             const color = getComputedStyle(marker).color;
             marker.remove();
@@ -617,7 +623,7 @@ suite('native subagent directory and employee sidebar', () => {
           .poll(() =>
             badge.evaluate((node) => getComputedStyle(node).backgroundColor),
           )
-          .toBe('rgb(34, 197, 94)');
+          .toBe('rgb(30, 64, 175)');
         expect(await trigger.innerText()).toBe('1');
         expect(await trigger.locator('[data-state="ongoing"]').count()).toBe(0);
         expect(
@@ -652,28 +658,26 @@ suite('native subagent directory and employee sidebar', () => {
           await trigger.evaluate(
             (node) => getComputedStyle(node).backgroundColor,
           ),
-        ).toBe('rgb(238, 242, 255)');
+        ).toBe('rgb(228, 237, 253)');
         expect(
           await badge.evaluate(
             (node) => getComputedStyle(node).backgroundColor,
           ),
-        ).toBe('rgb(34, 197, 94)');
+        ).toBe('rgb(30, 64, 175)');
         const liveRow = page.getByRole('treeitem', { name: 'fork-a摘要' });
-        await expect.poll(() => liveRow.innerText()).toContain('1 秒');
+        await expect.poll(() => liveRow.innerText()).toContain('1秒');
         const readsBeforeClock = calls.length;
         await page.clock.runFor(2000);
-        await expect.poll(() => liveRow.innerText()).toContain('3 秒');
+        await expect.poll(() => liveRow.innerText()).toContain('3秒');
         expect(calls.length).toBe(readsBeforeClock);
         expect(
           await liveRow
-            .locator('[data-state="ongoing"]')
+            .locator('[class*="stateDot"]')
             .evaluate((node) => getComputedStyle(node).backgroundColor),
         ).not.toBe('rgba(0, 0, 0, 0)');
         expect(
-          await liveRow
-            .locator('[data-state="ongoing"] g')
-            .evaluate((node) => getComputedStyle(node).display),
-        ).toBe('none');
+          await liveRow.locator('button[data-state="running"]').count(),
+        ).toBe(1);
         await capture(page, `${width}-expanded`);
         expect(
           await page.evaluate(
@@ -863,7 +867,7 @@ suite('native subagent directory and employee sidebar', () => {
     }
   });
 
-  it('omits idle counts and keeps running and error badge borders white in dark mode', async () => {
+  it('omits idle counts and keeps running and error badges separated from their dark surface', async () => {
     const value = summary();
     value.descendants = value.descendants.map((entry) => ({
       ...entry,
@@ -919,10 +923,10 @@ suite('native subagent directory and employee sidebar', () => {
         .poll(() =>
           badge.evaluate((node) => getComputedStyle(node).backgroundColor),
         )
-        .toBe('rgb(34, 197, 94)');
+        .toBe('rgb(183, 200, 254)');
       expect(
         await badge.evaluate((node) => getComputedStyle(node).borderTopColor),
-      ).toBe('rgb(255, 255, 255)');
+      ).toBe('rgb(44, 44, 46)');
       await capture(page, 'dark-running');
       setResponse('error');
       await page.evaluate(() => window.dispatchEvent(new Event('focus')));
@@ -931,7 +935,7 @@ suite('native subagent directory and employee sidebar', () => {
         .waitFor();
       expect(
         await badge.evaluate((node) => getComputedStyle(node).borderTopColor),
-      ).toBe('rgb(255, 255, 255)');
+      ).toBe('rgb(44, 44, 46)');
       expect(await badge.innerText()).toBe('!');
       await capture(page, 'dark-error');
     } finally {
@@ -956,10 +960,10 @@ suite('native subagent directory and employee sidebar', () => {
       await trigger.click();
       await page.getByRole('button', { name: '展开fork-a' }).click();
       const descendant = page.getByRole('treeitem', { name: 'grandchild摘要' });
-      await expect.poll(() => descendant.innerText()).toContain('1 秒');
+      await expect.poll(() => descendant.innerText()).toContain('1秒');
       const reads = calls.length;
       await page.clock.runFor(2000);
-      await expect.poll(() => descendant.innerText()).toContain('3 秒');
+      await expect.poll(() => descendant.innerText()).toContain('3秒');
       expect(calls.length).toBe(reads);
       expect(await trigger.getAttribute('aria-label')).toBe('2 个子智能体');
       expect(await trigger.locator('span[aria-hidden="true"]').count()).toBe(0);
@@ -1335,6 +1339,423 @@ suite('native subagent directory and employee sidebar', () => {
     return detail;
   }
 
+  const childScene = '?workbench&icons&no-workflow';
+  async function selectWorkbench(page: Page, id = 'fork-a') {
+    const trigger = page.locator('button[aria-haspopup="tree"]');
+    if ((await trigger.getAttribute('aria-expanded')) !== 'true')
+      await trigger.click();
+    await page
+      .getByRole('treeitem', { name: `${id}摘要`, exact: true })
+      .getByText(id, { exact: true })
+      .click();
+    const view = page.getByRole('region', {
+      name: '子智能体工作过程',
+      exact: true,
+    });
+    await view.waitFor();
+    return view;
+  }
+  it.each(['light', 'dark'])(
+    'renders the real read-only child and shared main/child steps in %s',
+    async (theme) => {
+      const value = summary();
+      const cut: typeof snapshotFor = (value, id) => {
+        const snapshot = ownProcess(value, id);
+        snapshot.rows[1] = {
+          ...snapshot.rows[1]!,
+          kind: 'tool',
+          seq: 6,
+          turn: 0,
+          step: 0,
+          callId: 'call-1',
+          name: '读取文件',
+          truncated: false,
+          result: {
+            seq: 7,
+            failed: true,
+            summary: '授权可读的核对记录。'.repeat(12),
+          },
+        };
+        return snapshot;
+      };
+      const { page, fixture } = await open(
+        value,
+        390,
+        undefined,
+        cut,
+        `${childScene}&theme=${theme}&compare`,
+      );
+      const beforeWrites = posts.length;
+      try {
+        const view = await selectWorkbench(page);
+        await expect.poll(() => view.innerText()).toContain('fork-a 中途基线');
+        expect(await view.getByLabel('交给子智能体的任务').innerText()).toBe(
+          'fork-a 自己的初始任务',
+        );
+        expect(
+          await page.evaluate(() => window.nativeSubagentViewFixture.reference),
+        ).toMatchObject({
+          kind: 'child',
+          rootId: 'native-root',
+          parentId: 'native-root',
+          id: 'fork-a',
+          sessionId: 'parent-a',
+        });
+        expect(await view.locator('input, textarea, footer').count()).toBe(0);
+        expect(
+          await view
+            .getByRole('button', {
+              name: /停止|发送|Queue|Steer|来源|技术详情/,
+            })
+            .count(),
+        ).toBe(0);
+        expect(await view.getByText('运行中', { exact: true }).count()).toBe(1);
+        expect(
+          await view
+            .locator('[data-step-id="tool:call-1"]')
+            .getAttribute('data-status'),
+        ).toBe('未成功');
+        expect(await view.locator('dl dt').allTextContents()).toEqual(['原因']);
+        for (const width of [1440, 1160, 1024, 390, 320]) {
+          await page.setViewportSize({ width, height: 900 });
+          const process = view.getByRole('region', {
+            name: '工作过程',
+            exact: true,
+          });
+          await process.locator('[data-disclosure-row]').first().click();
+          for (const text of ['fork-a 已记录文字', 'fork-a 中途基线']) {
+            const reply = view.getByText(text, { exact: true });
+            expect(await reply.isVisible()).toBe(true);
+            expect(
+              await reply.evaluate(
+                (node) => !node.closest('section[aria-label="工作过程"]'),
+              ),
+            ).toBe(true);
+          }
+          await process.locator('[data-disclosure-row]').first().click();
+          expect(
+            await view.evaluate(
+              (node) =>
+                node.scrollWidth <= node.clientWidth &&
+                document.documentElement.scrollWidth <= innerWidth,
+            ),
+          ).toBe(true);
+          const directory = resolve('.local/quality/met245-process-b');
+          mkdirSync(directory, { recursive: true });
+          await view.screenshot({
+            path: join(directory, `child-component-${width}-${theme}.png`),
+          });
+        }
+        await page.setViewportSize({ width: 1440, height: 900 });
+        const steps = page.locator(
+          '[data-step-id="tool:comparison"], [data-native-subagent-id] [data-step-id="tool:call-1"]',
+        );
+        for (const width of [260, 180]) {
+          await steps.evaluateAll(
+            (nodes, width) =>
+              nodes.forEach(
+                (node) => ((node as HTMLElement).style.width = `${width}px`),
+              ),
+            width,
+          );
+          const boxes = await steps.locator('dl').evaluateAll((nodes) =>
+            nodes.map((node) => {
+              const label = node.querySelector('dt')!.getBoundingClientRect();
+              const value = node.querySelector('dd')!.getBoundingClientRect();
+              return {
+                width: node.getBoundingClientRect().width,
+                stacked: value.y >= label.bottom,
+                gap: value.x - label.right,
+                className: node.className,
+              };
+            }),
+          );
+          expect(boxes).toHaveLength(2);
+          expect(boxes[0]!.width).toBeCloseTo(boxes[1]!.width, 0);
+          expect(boxes[0]!.className).toBe(boxes[1]!.className);
+          for (const box of boxes) {
+            expect(box.stacked).toBe(width === 180);
+            if (width === 260) expect(box.gap).toBeCloseTo(12, 0);
+          }
+        }
+        const focused = view
+          .getByRole('region', { name: '工作过程', exact: true })
+          .locator('[data-disclosure-row]')
+          .first();
+        await focused.focus();
+        const selected = await view.locator('dd').evaluate((node) => {
+          const text = document
+            .createTreeWalker(node, NodeFilter.SHOW_TEXT)
+            .nextNode()!;
+          document.getSelection()!.setBaseAndExtent(text, 0, text, 4);
+          return document.getSelection()!.toString();
+        });
+        expect(selected).toBe('授权可读');
+        const snapshot = cut(value, 'fork-a');
+        feed.push(
+          fixture,
+          {
+            type: 'display',
+            rootId: snapshot.rootId,
+            childId: snapshot.childId,
+            hostEpoch: snapshot.hostEpoch,
+            display: {
+              ...snapshot.stream,
+              revision: 1,
+              active: { ...snapshot.stream.active!, text: '新的安全流文字' },
+            },
+          },
+          'fork-a',
+        );
+        await expect.poll(() => view.innerText()).toContain('新的安全流文字');
+        expect(
+          await page.evaluate(() => document.getSelection()!.toString()),
+        ).toBe(selected);
+        expect(
+          await focused.evaluate((node) => node === document.activeElement),
+        ).toBe(true);
+        expect(posts.length).toBe(beforeWrites);
+      } finally {
+        await page.close();
+      }
+    },
+  );
+  it.each([
+    ['active', false],
+    ['close', null],
+    ['organizationId', 'other-org'],
+    ['workspaceId', 'other-workspace'],
+    ['sessionId', 'parent-b'],
+    ['viewerId', 'other-viewer'],
+    ['ownerId', 'other-owner'],
+    ['rootRunId', 'next-run'],
+    ['generation', 2],
+    ['bindingRevision', 'next-binding'],
+  ] as const)(
+    'withdraws old child content and follow after %s changes',
+    async (key, value) => {
+      const { page, fixture, followCalls } = await open(
+        summary(),
+        390,
+        undefined,
+        ownProcess,
+        childScene,
+      );
+      try {
+        const view = await selectWorkbench(page);
+        await expect.poll(() => view.innerText()).toContain('fork-a 中途基线');
+        const before = followCalls().filter((call) => call.childId).length;
+        await page.evaluate(
+          ([key, value]) => {
+            const fixture = window.nativeSubagentViewFixture;
+            if (key === 'active') fixture.active(false);
+            else if (key === 'close') fixture.close();
+            else fixture.scope({ [key]: value });
+          },
+          [key, value] as const,
+        );
+        await expect
+          .poll(() => view.getByLabel('交给子智能体的任务').count())
+          .toBe(0);
+        await expect
+          .poll(
+            () =>
+              [...feed.connections].filter(
+                (call) => call.fixture === fixture && call.childId,
+              ).length,
+          )
+          .toBe(0);
+        expect(followCalls().filter((call) => call.childId)).toHaveLength(
+          before,
+        );
+      } finally {
+        await page.close();
+      }
+    },
+  );
+  it('opens every diagnostic as its current reading notice without child reads or controls', async () => {
+    const reasons = [
+      'corrupt',
+      'unavailable',
+      'unsupported',
+      'identity_mismatch',
+      'parent_unverified',
+    ] as const;
+    const value = summary();
+    value.descendants = reasons.map((reason) => ({
+      kind: 'diagnostic',
+      id: reason,
+      parentId: value.rootId,
+      depth: 1,
+      reason,
+    }));
+    const { page, followCalls } = await open(
+      value,
+      390,
+      undefined,
+      undefined,
+      childScene,
+    );
+    const beforeWrites = posts.length;
+    try {
+      for (const [index, reason] of reasons.entries()) {
+        const view = await selectWorkbench(page, reason);
+        expect(await view.getByRole('status').innerText()).toBe(
+          [
+            '记录损坏',
+            '暂时无法读取',
+            '暂不支持此类型',
+            '身份校验未通过',
+            '父子关系未确认',
+          ][index],
+        );
+        expect(
+          await page.evaluate(() => window.nativeSubagentViewFixture.reference),
+        ).toMatchObject({
+          kind: 'diagnostic',
+          id: reason,
+          rootId: value.rootId,
+        });
+        expect(await view.getByLabel('交给子智能体的任务').count()).toBe(0);
+      }
+      expect(followCalls().filter((call) => call.childId)).toEqual([]);
+      expect(posts.length).toBe(beforeWrites);
+    } finally {
+      await page.close();
+    }
+  });
+  it('replaces a hot snapshot with the current prepared summary on the same durable child read', async () => {
+    const value = summary();
+    const { page, fixture, followCalls } = await open(
+      value,
+      390,
+      undefined,
+      ownProcess,
+      childScene,
+    );
+    try {
+      const view = await selectWorkbench(page);
+      await expect.poll(() => view.innerText()).toContain('fork-a 中途基线');
+      expect(
+        await view
+          .getByRole('region', { name: '工作过程', exact: true })
+          .count(),
+      ).toBe(1);
+      const reads = followCalls().filter((call) => call.childId).length;
+      const connection = [...feed.connections].find(
+        (call) => call.fixture === fixture && call.childId === 'fork-a',
+      )!;
+      value.descendants = value.descendants.map((entry) =>
+        entry.kind === 'child' && entry.id === 'fork-a'
+          ? {
+              ...entry,
+              running: null,
+              observation: { source: 'prepared', cursor: 11 },
+              task: '当前获授权的任务',
+              lastReply: '当前获授权的最后回复',
+            }
+          : entry,
+      );
+      feed.push(fixture, { type: 'directory', summary: value }, 'fork-a');
+      await expect
+        .poll(() => view.innerText())
+        .toContain('当前获授权的最后回复');
+      expect(await view.getByLabel('交给子智能体的任务').innerText()).toBe(
+        '当前获授权的任务',
+      );
+      expect(await view.getByText('状态未知', { exact: true }).count()).toBe(1);
+      expect(
+        await view
+          .getByRole('region', { name: '工作过程', exact: true })
+          .count(),
+      ).toBe(0);
+      expect(await view.innerText()).not.toMatch(
+        /中途基线|已记录文字|安全路径|自己的最后回复/,
+      );
+      expect(followCalls().filter((call) => call.childId)).toHaveLength(reads);
+      expect(feed.connections.has(connection)).toBe(true);
+    } finally {
+      await page.close();
+    }
+  });
+  it.each(['prepared', 'diagnostic', 'parent', 'root'] as const)(
+    'clears live rows on a %s read boundary without inventing process',
+    async (boundary) => {
+      const value = summary();
+      if (boundary === 'prepared')
+        value.descendants = value.descendants.map((entry) =>
+          entry.kind === 'child'
+            ? {
+                ...entry,
+                running: null,
+                observation: { source: 'prepared', cursor: 8 },
+              }
+            : entry,
+        );
+      const { page, fixture, followCalls } = await open(
+        value,
+        390,
+        undefined,
+        ownProcess,
+        childScene,
+      );
+      try {
+        const view = await selectWorkbench(page);
+        if (boundary === 'prepared') {
+          expect(await view.innerText()).toContain('状态未知');
+          expect(await view.innerText()).toContain('fork-a 自己的最后回复');
+          expect(
+            await view
+              .getByRole('region', { name: '工作过程', exact: true })
+              .count(),
+          ).toBe(0);
+          expect(followCalls().filter((call) => call.childId)).toEqual([]);
+        } else {
+          await expect
+            .poll(() => view.innerText())
+            .toContain('fork-a 中途基线');
+          if (boundary === 'diagnostic')
+            value.descendants = [
+              {
+                kind: 'diagnostic',
+                id: 'fork-a',
+                parentId: value.rootId,
+                depth: 1,
+                reason: 'parent_unverified',
+              },
+            ];
+          else if (boundary === 'parent')
+            value.descendants = value.descendants.map((entry) => ({
+              ...entry,
+              parentId: 'different-parent',
+            }));
+          else value.rootId = 'different-root';
+          feed.push(fixture, { type: 'directory', summary: value }, 'fork-a');
+          await expect
+            .poll(() => view.innerText())
+            .toContain(
+              boundary === 'diagnostic'
+                ? '父子关系未确认'
+                : boundary === 'root'
+                  ? '暂时无法读取'
+                  : '当前活动状态未知',
+            );
+          expect(await view.innerText()).not.toContain('中途基线');
+          await expect
+            .poll(
+              () =>
+                [...feed.connections].filter(
+                  (call) => call.fixture === fixture && call.childId,
+                ).length,
+            )
+            .toBe(0);
+        }
+      } finally {
+        await page.close();
+      }
+    },
+  );
+
   it('reads the active full catalog, probes other visible parents and expands descendants with direct header totals', async () => {
     const { page, calls } = await open(
       summary(),
@@ -1386,7 +1807,7 @@ suite('native subagent directory and employee sidebar', () => {
       ).toEqual(['parent-a', 'parent-a']);
       expect(
         await page.getByRole('tree', { name: '子智能体目录' }).innerText(),
-      ).toContain('已结束');
+      ).toContain('上次回合已完成');
       await page.getByRole('button', { name: '展开fork-a' }).click();
       await page.getByRole('treeitem', { name: 'grandchild摘要' }).waitFor();
       expect(
@@ -1415,18 +1836,32 @@ suite('native subagent directory and employee sidebar', () => {
     }
   });
 
-  it('supports hover, pinning, tree keyboard navigation and Escape across clipped header actions', async () => {
-    const { page } = await open();
+  it('opens only by click, preserves tree keyboard navigation and opens the exact child callback', async () => {
+    const { page } = await open(
+      summary(),
+      1200,
+      undefined,
+      undefined,
+      '?workbench',
+    );
     try {
       const trigger = page.getByRole('button', { name: /2 个子智能体/ });
       await trigger.hover();
+      await page.waitForTimeout(180);
+      expect(
+        await page.getByRole('tree', { name: '子智能体目录' }).count(),
+      ).toBe(0);
+      await trigger.click();
       await page.getByRole('tree', { name: '子智能体目录' }).waitFor();
       await page.getByRole('treeitem', { name: 'idle-b摘要' }).hover();
-      await page.waitForTimeout(180);
       expect(
         await page.getByRole('tree', { name: '子智能体目录' }).count(),
       ).toBe(1);
       await page.mouse.move(1100, 800);
+      expect(
+        await page.getByRole('tree', { name: '子智能体目录' }).count(),
+      ).toBe(1);
+      await page.getByRole('heading', { level: 1 }).click();
       await expect
         .poll(() => page.getByRole('tree', { name: '子智能体目录' }).count())
         .toBe(0);
@@ -1485,7 +1920,18 @@ suite('native subagent directory and employee sidebar', () => {
       await expect
         .poll(() => first.evaluate((node) => node === document.activeElement))
         .toBe(true);
-      await page.keyboard.press('Escape');
+      await page.keyboard.press('Enter');
+      expect(
+        await page.evaluate(() => window.nativeSubagentViewFixture.reference),
+      ).toMatchObject({
+        kind: 'child',
+        rootId: 'native-root',
+        parentId: 'native-root',
+        id: 'fork-a',
+      });
+      expect(
+        await page.getByRole('tree', { name: '子智能体目录' }).count(),
+      ).toBe(0);
     } finally {
       await page.close();
     }
@@ -1864,8 +2310,8 @@ suite('native subagent directory and employee sidebar', () => {
     try {
       const detail = await selectChild(page);
       expect(await detail.innerText()).toContain('fork-a 已记录文字');
-      expect(await detail.innerText()).toContain('读取文件');
-      expect(await detail.innerText()).toContain('结果尚未确认');
+      expect(await detail.innerText()).toContain('fork-a 安全路径');
+      expect(await detail.innerText()).toContain('结果未确认');
       const cut = ownProcess(value, 'fork-a');
       const display = {
         ...cut.stream,
@@ -1928,11 +2374,13 @@ suite('native subagent directory and employee sidebar', () => {
       cut.window.omittedRows = 1;
       cut.stream.active = null;
       feed.push(fixture, { type: 'snapshot', snapshot: cut }, 'fork-a');
-      await expect.poll(() => detail.innerText()).toContain('失败');
+      await expect.poll(() => detail.innerText()).toContain('未成功');
       expect(await detail.getByText('读取文件', { exact: true }).count()).toBe(
         1,
       );
       expect(await detail.innerText()).toContain('省略');
+      expect(await detail.innerText()).toContain('安全错误摘要');
+      await detail.getByText('读取文件', { exact: true }).click();
       expect(await detail.innerText()).not.toContain('安全错误摘要');
       await detail.getByText('读取文件', { exact: true }).click();
       await expect.poll(() => detail.innerText()).toContain('安全错误摘要');
@@ -1967,7 +2415,7 @@ suite('native subagent directory and employee sidebar', () => {
         await detail.getByText('唯一安全最后回复', { exact: true }).count(),
       ).toBe(1);
       expect(await detail.innerText()).not.toMatch(
-        /中途基线|已记录文字|读取文件|已确认未截断|内容完整|截断未知/,
+        /中途基线|已记录文字|读取文件|安全路径|已确认未截断|内容完整|截断未知/,
       );
       feed.end(fixture, 'fork-a');
       await expect
@@ -2021,7 +2469,7 @@ suite('native subagent directory and employee sidebar', () => {
           .poll(() => detail.innerText())
           .not.toContain('fork-a 中途基线');
         expect(await detail.innerText()).not.toMatch(
-          /fork-a 已记录文字|读取文件|自己的最后回复/,
+          /fork-a 已记录文字|读取文件|安全路径|自己的最后回复/,
         );
         if (reason === 'resync') {
           feed.push(fixture, { type: 'snapshot', snapshot: cut }, 'fork-a');
@@ -2109,7 +2557,7 @@ suite('native subagent directory and employee sidebar', () => {
           .poll(() => detail.innerText())
           .toContain(`${phase}之前唯一安全回复`);
         expect(await detail.innerText()).not.toMatch(
-          /中途基线|已记录文字|读取文件/,
+          /中途基线|已记录文字|读取文件|安全路径/,
         );
         const unavailable = {
           ...ended,

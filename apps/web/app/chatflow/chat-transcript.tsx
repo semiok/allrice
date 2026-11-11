@@ -95,6 +95,8 @@ interface ChatTranscriptProps {
   onScrollToBottom: () => void;
   artifacts?: WorkbenchArtifact[];
   onOpenArtifact?: (id: string) => void;
+  onOpenSubagents?: (origin: { runId: string; callId: string }) => void;
+  subagentCount?: number;
   onOpenAutomation?: (id: string) => void;
   onResolveArtifactLink?: (href: string, runId: string) => Promise<boolean>;
 }
@@ -126,6 +128,8 @@ export const ChatTranscript = memo(function ChatTranscript({
   onScrollToBottom,
   artifacts = [],
   onOpenArtifact,
+  onOpenSubagents,
+  subagentCount,
   onOpenAutomation,
   onResolveArtifactLink,
 }: ChatTranscriptProps) {
@@ -440,6 +444,10 @@ export const ChatTranscript = memo(function ChatTranscript({
                                   renderOperation={renderOperation}
                                   artifacts={linkedArtifacts}
                                   onOpenArtifact={onOpenArtifact}
+                                  onOpenSubagents={
+                                    message.runId ? onOpenSubagents : undefined
+                                  }
+                                  subagentCount={subagentCount}
                                   timing={timing}
                                   running={messageIsRunning}
                                   streaming={
