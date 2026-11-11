@@ -474,15 +474,24 @@ describe('Cloud/MCP approval presentation', () => {
     expect(review).toContain('11111111-1111-4111-8111-111111111111');
     expect(review).toContain('sha256:');
     expect(review).toContain('云端待执行脚本');
-    expect(review).toContain('毫核');
+    for (const [label, value] of [
+      ['时限', '30 秒'],
+      ['算力', '0.5 核 CPU、256 MB 内存'],
+      ['进程数上限', '64 个'],
+      ['输出上限', '32KB'],
+      ['成果上限', '977KB'],
+    ]) {
+      for (const markup of [html, review]) {
+        expect(markup).toContain(`<dt>${label}</dt><dd>${value}</dd>`);
+        expect(cardHeader(markup)).not.toContain(value);
+      }
+    }
     expect(html).toMatch(/<button[^>]*aria-expanded="true"[^>]*>/);
     expect(html).toContain('收起详情');
     op.snapshot.status = 'succeeded';
     expect(render(op)).toMatch(/<button[^>]*aria-expanded="false"[^>]*>/);
     expect(render(op)).toContain('查看详情');
     expect(html).toContain('30 秒');
-    expect(cardHeader(html)).not.toContain('毫核');
-    expect(html).toContain('毫核');
     expect(html).toContain('disabled=""');
     expect(html).toContain('允许运行脚本');
     expect(html).not.toContain('<script>');
