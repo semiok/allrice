@@ -44,7 +44,9 @@ it('keeps a complete escaped memory text through real JSON-RPC, native render an
     inspectSchema(schema) {
       expect(Object.keys(schema.properties as object)).toEqual(['number']);
       expect(schema.required).toEqual(['number']);
-      expect(schema.additionalProperties).toBe(false);
+      // DSH's parameter-map projection has an implicit open root. The
+      // runtime's strict input guard rejects ownerId before the Broker.
+      expect(schema.additionalProperties).toBeUndefined();
     },
     onToolCall: async () =>
       boundToolResult(
@@ -73,6 +75,14 @@ it('keeps a complete escaped memory text through real JSON-RPC, native render an
       expect(Buffer.byteLength(actual)).toBe(Buffer.byteLength(content));
       expect(actual).not.toContain('fullResult');
       expect(actual).not.toContain('"details":');
+      const invalidMessages = requests[3]!.messages as typeof messages;
+      const invalidResult = invalidMessages.findLast(
+        (entry) => entry.role === 'tool',
+      )!;
+      expect(JSON.stringify(invalidResult.content)).toContain(
+        'unrecognized_keys',
+      );
+      expect(JSON.stringify(invalidResult.content)).toContain('ownerId');
     },
   });
 }, 45000);
