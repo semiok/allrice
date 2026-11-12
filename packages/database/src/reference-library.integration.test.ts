@@ -744,7 +744,77 @@ suite(
       ).toBe(p.object.id);
     });
     it.each([
-      { mediaType: 'application/pdf', content: '%PDF-unsupported' },
+      { mediaType: 'application/pdf', fileName: '旧资料.pdf' },
+      {
+        mediaType:
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        fileName: '旧资料.docx',
+      },
+      {
+        mediaType:
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        fileName: '旧资料.xlsx',
+      },
+      {
+        mediaType:
+          'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        fileName: '旧资料.pptx',
+      },
+    ])(
+      'requeues a previously unsupported approved format through the same authorized revision: $fileName',
+      async ({ mediaType, fileName }) => {
+        const a = await setup(),
+          p = await upload(
+            a.owner,
+            input(a.owner, 'personal', {
+              fileName,
+              mediaType,
+              contentBase64: Buffer.from(
+                'metadata qualification does not parse bytes',
+              ).toString('base64'),
+            }),
+          );
+        await f.db`update allrice_knowledge_processing set state='unsupported',failure='prior unsupported format' where revision_id=${p.revisionId}`;
+        expect(
+          (
+            await listReferenceRevisions(
+              a.owner,
+              a.owner.workspaceId!,
+              p.sourceId,
+            )
+          )[0],
+        ).toMatchObject({
+          processing: 'unsupported',
+          canRetryProcessing: true,
+        });
+        await expect(act(a.reader, p, 'retry')).rejects.toThrow();
+        const request = {
+          workspaceId: a.owner.workspaceId!,
+          requestId: randomUUID(),
+          expectedRevision: 1,
+          action: 'retry' as const,
+        };
+        await changeReference(a.owner, p.sourceId, request);
+        await changeReference(a.owner, p.sourceId, request);
+        expect(
+          (
+            await f.db`select state,attempts,lease_token from allrice_knowledge_processing where revision_id=${p.revisionId}`
+          )[0],
+        ).toMatchObject({ state: 'saved', attempts: 0, lease_token: null });
+        expect(
+          (await getReferenceFile(a.owner, a.owner.workspaceId!, p.revisionId))
+            .object,
+        ).toEqual(p.object);
+        expect(
+          (
+            await f.db`select count(*)::int n from allrice_knowledge_reference_actions where source_id=${p.sourceId} and request_id=${request.requestId}`
+          )[0]!.n,
+        ).toBe(1);
+        await act(a.owner, p, 'archive');
+      },
+    );
+    it.each([
+      { mediaType: 'application/octet-stream', content: 'unknown-format' },
       { mediaType: 'text/csv', content: 'x'.repeat(2_000_001) },
     ])(
       'does not requeue an unsupported format or oversized source: $mediaType',

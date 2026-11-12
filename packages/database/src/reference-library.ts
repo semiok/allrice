@@ -27,7 +27,7 @@ import {
 } from './artifact-review.ts';
 import { businessDeliverablePredicate } from './organization-dashboard.ts';
 import { getDatabase } from './core/client.ts';
-import { isIndexableKnowledgeTextSource } from './memory/knowledge-retrieval.ts';
+import { isIndexableReferenceSource } from './reference-fulltext.ts';
 import { isPlatformAdmin } from './providers/model-pool.ts';
 import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
 import { createStorageMetadata, DataAccessError } from './data.ts';
@@ -339,7 +339,7 @@ export async function listReferenceRevisions(
           canRetryProcessing:
             access.canMaintain &&
             (r.state !== 'unsupported' ||
-              isIndexableKnowledgeTextSource({
+              isIndexableReferenceSource({
                 mediaType: r.media_type,
                 sizeBytes: Number(r.size_bytes),
               })),
@@ -1004,13 +1004,22 @@ export async function changeReference(
       if (legacy) await assertLegacyReferenceRevision(tx, r.id, legacy.id);
       const retryUnsupported =
         r.size_bytes !== null &&
-        isIndexableKnowledgeTextSource({
+        isIndexableReferenceSource({
           mediaType: r.media_type ?? '',
           sizeBytes: Number(r.size_bytes),
         });
       const rows =
         await tx`update allrice_knowledge_processing set state='saved',attempts=0,failure=null,updated_at=clock_timestamp()
         where revision_id=${r.id} and (state='failed' or (state='unsupported' and ${retryUnsupported})) returning revision_id`;
+      // A failed derived-text backfill never withdrew the old ready reference.
+      // Explicit retry releases only that failure, keeping publication and pins.
+      if (!rows.length)
+        await tx`update allrice_knowledge_processing p set attempts=0,failure=null,
+          lease_token=null,lease_until=null,updated_at=clock_timestamp()
+          where p.revision_id=${r.id} and p.state='ready' and p.failure is not null
+            and (p.lease_token is null or p.lease_until<clock_timestamp())
+            and exists(select 1 from allrice_knowledge_documents d
+              where d.knowledge_revision_id=p.revision_id and d.full_text is null)`;
       if (!rows.length) {
         const [p] =
           await tx`select state from allrice_knowledge_processing where revision_id=${r.id}`;

@@ -8,7 +8,20 @@ import {
   PDF_MAXIMUM_PAGES,
   PDF_MAXIMUM_RESULT_BYTES,
   readPdfDocument,
+  hasExtractablePdfText,
 } from './pdf-reader.ts';
+
+it.each([
+  { text: '\ufffd\ufffd\u001f\u007f \n', expected: false },
+  { text: '\n\t\r', expected: false },
+  { text: '尾页有效中文', expected: true },
+  { text: '\ufffd A', expected: true },
+])(
+  'shares the exact native text-quality predicate for $text',
+  ({ text, expected }) => {
+    expect(hasExtractablePdfText(text)).toBe(expected);
+  },
+);
 
 interface ExpectedTable {
   pageNumber: number;

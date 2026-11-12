@@ -126,17 +126,24 @@ export class OfficePackage {
   private constructor(
     readonly zip: JSZip,
     readonly format: OfficeFormat,
+    private readonly readOnly = false,
   ) {}
-  static async open(bytes: Buffer, format: OfficeFormat) {
+  static async open(
+    bytes: Buffer,
+    format: OfficeFormat,
+    options: { readOnly?: true } = {},
+  ) {
     checkZip(bytes);
     const zip = await JSZip.loadAsync(bytes);
     if (
-      Object.keys(zip.files).some((p) =>
-        /(?:vbaProject\.bin|^_xmlsignatures\/)/i.test(p),
+      Object.keys(zip.files).some(
+        (p) =>
+          /vbaProject\.bin/i.test(p) ||
+          (!options.readOnly && /^_xmlsignatures\//i.test(p)),
       )
     )
       officeError('此文件含宏或数字签名，不能按普通 Office 文档修改');
-    const pkg = new OfficePackage(zip, format);
+    const pkg = new OfficePackage(zip, format, options.readOnly === true);
     const types = await pkg.xml('[Content_Types].xml');
     const main = mainParts[format];
     const suffix = {
@@ -230,6 +237,7 @@ export class OfficePackage {
     });
   }
   async finish() {
+    if (this.readOnly) officeError('只读 Office 包不能生成修改后的文件');
     const serializer = new XMLSerializer();
     for (const path of this.changed) {
       const doc = this.documents.get(path)!;
