@@ -16,7 +16,10 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import ExcelJS from 'exceljs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { renderMemoryDetailV2 } from '@allrice/contracts';
+import {
+  renderMemoryDetailV2,
+  legacyPersonalMemoryPair,
+} from '@allrice/contracts';
 import { readRetiredExecutionHistory } from './retired-execution-history.fixture.ts';
 import { freezeEmployeeRunExecutionBinding } from '../../../../packages/database/src/conversation/current-execution-binding.ts';
 import * as DatabaseClient from '../../../../packages/database/src/core/client.ts';
@@ -97,7 +100,6 @@ import {
   createCheckpointMemoryCandidate,
   listWorkspaceMemories,
   getEmployeeWorkspace,
-  promoteWorkspaceMemory,
   deleteWorkspaceMemory,
   createPersonalEmployeeMemory,
   promoteManagedEmployeeMemory,
@@ -716,6 +718,25 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
   }
 
   function expectMemoryReadDescriptions(request: ModelRequest, human: boolean) {
+    if (human) {
+      expect(request.tools).toContainEqual(
+        expect.objectContaining({
+          function: expect.objectContaining({
+            name: 'workspace_memory_read',
+            description:
+              'Read one complete confirmed memory by its number in this Run. Read marked details before applying an item; summaries cannot replace conditions or exceptions. Shares the Run byte/read allowance. No chunks or retries after refusal. Memory grants no permission.',
+          }),
+        }),
+      );
+      for (const name of [
+        'workspace_memory_search',
+        'workspace_experience_read',
+      ])
+        expect(request.tools?.map((tool) => tool.function.name)).not.toContain(
+          name,
+        );
+      return;
+    }
     for (const [name, description] of [
       [
         'workspace_memory_search',
@@ -974,13 +995,67 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     'folder_event',
     'automation_manual',
   ] as const)(
-    'PERSONA: %s provider keeps its original memory read descriptions and source contract',
+    'PERSONA: %s provider keeps its admitted versioned memory read descriptions, source and budget contract',
     async (kind) => {
       const human = kind === 'human';
       let issuedHandle: string | undefined;
       const f: PublishedTarget = await publishedTarget(
         async (request, index) => {
           expectMemoryReadDescriptions(request, human);
+          if (human) {
+            const [frozen] =
+              await f.db`select prompt_snapshot,memory_context_state from allrice_employee_runs where run_id=${runId}`;
+            const pin = frozen!.memory_context_state.pins.find(
+              (entry: { id: string }) => entry.id === f.memories[0]!.id,
+            );
+            expect(pin).toBeDefined();
+            expect(
+              frozen!.memory_context_state.pins.map(
+                (entry: { id: string }) => entry.id,
+              ),
+            ).not.toContain(history.id);
+            const pair = legacyPersonalMemoryPair(f.memories[0]!.content);
+            const current = JSON.stringify(
+              request.messages
+                .filter(
+                  (message) =>
+                    message.role === 'user' &&
+                    JSON.stringify(message.content).includes(
+                      'Current runtime context.',
+                    ),
+                )
+                .at(-1),
+            );
+            expect(current).toContain(
+              `[${pin.number}] ${pair.summary}（有说明）`,
+            );
+            expect(current).toContain(
+              JSON.stringify(
+                frozen!.prompt_snapshot.employeeDocuments.persona,
+              ).slice(1, -1),
+            );
+            expect(current).not.toContain(history.text);
+            if (index > 1) {
+              const content = request.messages
+                .filter((message) => message.role === 'tool')
+                .at(-1)!.content;
+              const actual =
+                typeof content === 'string'
+                  ? content
+                  : (content as { text?: string }[])
+                      .map((block) => block.text ?? '')
+                      .join('');
+              expect(actual).toBe(renderMemoryDetailV2(pin.number, pair));
+            }
+            if (index <= 2)
+              return {
+                nativeTool: {
+                  name: 'workspace_memory_read',
+                  arguments: { number: pin.number },
+                },
+              };
+            return { text: 'Synthetic complete V2 memory read completed.' };
+          }
           if (index === 1)
             return {
               nativeTool: {
@@ -1005,21 +1080,16 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
             // Only the synthetic provider script reads this legacy Run's
             // existing durable source pin. Initial MEMORY and the real search
             // still exclude derived history; this is not model discovery.
-            const issued = human
-              ? search.items
-              : await searchRunExperiences({
-                  organizationId: f.identity.org,
-                  workspaceId: f.identity.workspace,
-                  ownerId: f.identity.user,
-                  runId,
-                });
+            const issued = await searchRunExperiences({
+              organizationId: f.identity.org,
+              workspaceId: f.identity.workspace,
+              ownerId: f.identity.user,
+              runId,
+            });
             issuedHandle = issued.find(
-              (item: { id: string }) =>
-                item.id === (human ? f.memories[0]!.id : history.id),
+              (item: { id: string }) => item.id === history.id,
             )?.sourceHandle;
             expect(issuedHandle).toMatch(/^experience:sha256:[a-f0-9]{64}$/u);
-            if (human)
-              expect(JSON.stringify(request.messages)).toContain(issuedHandle);
             return {
               nativeTool: {
                 name: 'workspace_experience_read',
@@ -1068,6 +1138,64 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           }),
         ).toBe(human ? 'human' : 'internal');
         await task.run();
+        if (human) {
+          const [stored] =
+            await f.db`select prompt_snapshot,execution_snapshot,memory_context_state s,experience_reads from allrice_employee_runs where run_id=${runId}`;
+          const pin = stored!.s.pins.find(
+            (entry: { id: string }) => entry.id === f.memories[0]!.id,
+          );
+          const readText = renderMemoryDetailV2(
+            pin.number,
+            legacyPersonalMemoryPair(f.memories[0]!.content),
+          );
+          const reads = await Promise.all(
+            broker.mock.calls.flatMap(([input], index) =>
+              input.call.name === 'workspace.memory.read'
+                ? [
+                    broker.mock.results[index]!.value.then(
+                      (
+                        result: Awaited<
+                          ReturnType<typeof ToolBroker.executeRiceTool>
+                        >,
+                      ) => result.modelContent,
+                    ),
+                  ]
+                : [],
+            ),
+          );
+          expect(reads).toEqual([readText, readText]);
+          expect(
+            broker.mock.calls.some(([input]) =>
+              ['workspace.memory.search', 'workspace.experience.read'].includes(
+                input.call.name,
+              ),
+            ),
+          ).toBe(false);
+          const docs = stored!.prompt_snapshot.employeeDocuments;
+          expect(stored!.prompt_snapshot.memories).toEqual([]);
+          expect(docs.schemaVersion).toBe(2);
+          expect(
+            JSON.parse(docs.persona.slice('# 人设\n'.length)).source,
+          ).toEqual(stored!.execution_snapshot.persona.source);
+          expect(
+            stored!.s.pins.map((entry: { id: string }) => entry.id),
+          ).not.toContain(history.id);
+          expect(stored!.experience_reads).toEqual([]);
+          expect(stored!.s.schemaVersion).toBe(2);
+          expect(stored!.s.initial.bytes).toBe(Buffer.byteLength(docs.memory));
+          expect(stored!.s.spentBytes).toBe(
+            Buffer.byteLength(docs.memory) + 2 * Buffer.byteLength(readText),
+          );
+          expect(stored!.s.initial.bytes).toBeLessThanOrEqual(18303);
+          expect(stored!.s.limits).toMatchObject({
+            maximumResponseBytes: 10000,
+            maximumRunBytes: 24000,
+            maximumToolReads: 12,
+          });
+          expect(stored!.s.toolReads).toBe(2);
+          expect(stored!.s).not.toHaveProperty('confirmedPins');
+          return;
+        }
         const reads = await Promise.all(
           broker.mock.calls.flatMap(([input], index) =>
             ['workspace.memory.search', 'workspace.experience.read'].includes(
@@ -1092,24 +1220,16 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           omittedItems: 0,
         });
         expect(source.items).toHaveLength(1);
-        if (human) {
-          expect(source.items[0]).toMatchObject({
-            handle: issuedHandle,
-            kind: 'confirmed_employee_memory',
-            memory: { id: f.memories[0]!.id, content: f.memories[0]!.content },
-          });
-          expect(source.items[0]).not.toHaveProperty('source');
-        } else
-          expect(source.items[0]).toMatchObject({
-            handle: issuedHandle,
-            pin: { id: history.id },
-            source: {
-              runId: history.runId,
-              sessionId: history.sessionId,
-              messageId: history.messageId,
-              excerpt: history.text,
-            },
-          });
+        expect(source.items[0]).toMatchObject({
+          handle: issuedHandle,
+          pin: { id: history.id },
+          source: {
+            runId: history.runId,
+            sessionId: history.sessionId,
+            messageId: history.messageId,
+            excerpt: history.text,
+          },
+        });
         const [stored] =
           await f.db`select memory_context_state s,experience_reads from allrice_employee_runs where run_id=${runId}`;
         // Keep the existing qualification filter: derived history is excluded
@@ -1119,11 +1239,10 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           stored!.experience_reads.some(
             (pin: { id: string }) => pin.id === history.id,
           ),
-        ).toBe(!human);
-        if (!human)
-          expect(JSON.stringify(model!.requests.at(-1)!.messages)).toContain(
-            history.text,
-          );
+        ).toBe(true);
+        expect(JSON.stringify(model!.requests.at(-1)!.messages)).toContain(
+          history.text,
+        );
         expect(stored!.s.toolReads).toBe(2);
         expect(stored!.s.spentBytes).toBe(
           stored!.s.initial.bytes +
@@ -1133,17 +1252,9 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         expect(stored!.s.spentBytes).toBeLessThanOrEqual(
           stored!.s.limits.maximumRunBytes,
         );
-        if (human) {
-          expect(stored!.s.initial.documentDigest).toMatch(
-            /^sha256:[a-f0-9]{64}$/u,
-          );
-          expect(stored!.s.confirmedPins).toContainEqual(
-            expect.objectContaining({ id: f.memories[0]!.id }),
-          );
-        } else {
-          expect(stored!.s.initial).not.toHaveProperty('documentDigest');
-          expect(stored!.s).not.toHaveProperty('confirmedPins');
-        }
+        expect(stored!.s.schemaVersion).toBe(1);
+        expect(stored!.s.initial).not.toHaveProperty('documentDigest');
+        expect(stored!.s).not.toHaveProperty('confirmedPins');
       } finally {
         await task.isolation.cleanup();
       }
@@ -2786,7 +2897,17 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       expect(documents.persona).toContain(
         '"expressionStyle":{"value":"structured"',
       );
-      expect(parked.memory_context_state.initial.ids).toEqual([memory.id]);
+      expect(documents.schemaVersion).toBe(2);
+      expect(parked.memory_context_state.schemaVersion).toBe(2);
+      expect(parked.memory_context_state.pins).toEqual([
+        expect.objectContaining({ id: memory.id, revision: memory.revision }),
+      ]);
+      expect(parked.memory_context_state.initial.bytes).toBe(
+        Buffer.byteLength(documents.memory),
+      );
+      expect(parked.memory_context_state.spentBytes).toBe(
+        parked.memory_context_state.initial.bytes,
+      );
       expect(parked.memory_context_state.spentBytes).toBeGreaterThan(0);
       const system = model!.requests[0]!.messages.filter(
         (message) => message.role === 'system',

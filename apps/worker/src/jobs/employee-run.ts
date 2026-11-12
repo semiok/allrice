@@ -692,7 +692,7 @@ export async function executeEmployeeRun({
       ? resolved.promptSnapshot.employeeDocuments?.memory
       : undefined,
     documentMemory &&
-    isMemoryIndexDocuments(resolved.promptSnapshot.employeeDocuments)
+      isMemoryIndexDocuments(resolved.promptSnapshot.employeeDocuments)
       ? 2
       : 1,
   );

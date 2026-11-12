@@ -720,6 +720,173 @@ const documents = (version, memory, user = '') =>
       }
     : { user, memory: memory ? `# MEMORY.md\n${memory}` : '' };
 
+it('keeps maximum V2 memory and PERSONA independent through native child, nested child, fork, next Run and cold recovery', async () => {
+  const heading = '# PERSONA.md\nPERSONA_CURRENT {{missing}}\n';
+  const persona = heading + 'P'.repeat(16384 - Buffer.byteLength(heading));
+  const memory = renderMemoryIndexV2(
+    Array.from({ length: 100 }, () => ({
+      summary: '🧑'.repeat(40),
+      hasDetails: true,
+    })),
+  );
+  const userHeading = '# USER.md\nROOT_ONLY_USER\n';
+  const initial = {
+    schemaVersion: 2,
+    persona,
+    user: userHeading + 'U'.repeat(2048 - Buffer.byteLength(userHeading)),
+    memory,
+  };
+  expect(Buffer.byteLength(memory)).toBe(18303);
+  expect(Buffer.byteLength(persona)).toBe(16384);
+  const entered = gate(),
+    release = gate();
+  let holdFirstChild = true;
+  const runId = randomUUID();
+  const h = await host({
+    runId,
+    depth: 2,
+    documentMemory: true,
+    nativeTools: ['workspace.memory.read'],
+    rootSystemInstructions: 'ROOT_POLICY_ONLY',
+    employeeDocuments: initial,
+    model: async (request) => {
+      if (request.sessionId !== 'pr0-root' && holdFirstChild) {
+        holdFirstChild = false;
+        entered.resolve();
+        await hold(request.signal, release);
+      }
+      return text('已核对');
+    },
+    bridge: async (method) => {
+      if (method === 'allrice/run-authorize') return { allowed: true };
+      throw Error(`unexpected replay ${method}`);
+    },
+  });
+  expect(h.initialization.capabilities.employeeDocumentsSchemaVersion).toBe(2);
+  await h.prompt('按完整索引核对本次任务');
+  await h.wait();
+  const root = h.calls.find((request) => request.sessionId === h.root.id);
+  const rootContext = JSON.stringify(currentContext(root));
+  for (const literal of [persona, memory, initial.user])
+    expect(rootContext).toContain(JSON.stringify(literal).slice(1, -1));
+  const assertChildContext = (request) => {
+    const current = JSON.stringify(currentContext(request));
+    expect(current).toContain(JSON.stringify(persona).slice(1, -1));
+    expect(current).not.toContain('ROOT_ONLY_USER');
+    expect(current).not.toContain('MEMORY_INDEX_V2');
+    expect(
+      JSON.stringify(request.messages.filter((m) => m.role === 'system')),
+    ).not.toContain('PERSONA_CURRENT');
+  };
+  const child = await h.spawn();
+  try {
+    await entered.promise;
+    const childAgent = h.ctx.agents.get(child.childId);
+    const nested = await h.spawn(childAgent, '嵌套核对');
+    await nested.result;
+    assertChildContext(
+      h.calls.find((request) => request.sessionId === child.childId),
+    );
+    assertChildContext(
+      h.calls.find((request) => request.sessionId === nested.childId),
+    );
+  } finally {
+    release.resolve();
+  }
+  await child.result;
+  await h.wait();
+  const fork = await h.spawn(h.root, '沿原生已完成历史分叉', {
+    provider: 'fork',
+  });
+  await fork.result;
+  await h.wait();
+  const forkRequest = h.calls.find(
+    (request) => request.sessionId === fork.childId,
+  );
+  assertChildContext(forkRequest);
+  // Native completed history remains intact; only the current contribution is
+  // persona-only. No AllRice history filter or deletion is introduced.
+  expect(JSON.stringify(forkRequest.messages)).toContain('ROOT_ONLY_USER');
+  expect(JSON.stringify(forkRequest.messages)).toContain('MEMORY_INDEX_V2');
+  await h.server.handleRequest('run/end', { runId });
+  const nextRun = randomUUID();
+  const next = {
+    schemaVersion: 2,
+    persona: '# PERSONA.md\nNEXT_PERSONA',
+    user: '',
+    memory: '',
+  };
+  await h.server.handleRequest('run/begin', {
+    sessionId: h.root.id,
+    runId: nextRun,
+    employeeDocuments: next,
+  });
+  await h.server.handleRequest('session/prompt', {
+    sessionId: h.root.id,
+    runId: nextRun,
+    contentBlocks: text('换人设后的新任务'),
+  });
+  await h.wait();
+  const assertLatestCurrent = (request) => {
+    const current = JSON.stringify(currentContext(request));
+    expect(current).toContain('NEXT_PERSONA');
+    expect(current).not.toContain('PERSONA_CURRENT');
+    expect(current).not.toContain('ROOT_ONLY_USER');
+    expect(current).not.toContain('MEMORY_INDEX_V2');
+  };
+  assertLatestCurrent(h.calls.at(-1));
+  expect(JSON.stringify(h.calls.at(-1).messages)).toContain('MEMORY_INDEX_V2');
+  await h.ctx.subagents.sendMessage(
+    h.root,
+    child.childId,
+    text('后续 Run 恢复原子任务'),
+    {
+      signal: new AbortController().signal,
+    },
+  );
+  await h.wait();
+  const coldChild = h.calls
+    .filter((request) => request.sessionId === child.childId)
+    .at(-1);
+  assertLatestCurrent(coldChild);
+  expect(JSON.stringify(coldChild.messages)).not.toContain('ROOT_ONLY_USER');
+  expect(JSON.stringify(coldChild.messages)).not.toContain('MEMORY_INDEX_V2');
+  expect(JSON.stringify(coldChild.messages)).toContain('PERSONA_CURRENT');
+  await h.ctx.subagents.sendMessage(
+    h.root,
+    fork.childId,
+    text('后续 Run 继续原生分叉'),
+    {
+      signal: new AbortController().signal,
+    },
+  );
+  await h.wait();
+  const continuedFork = h.calls
+    .filter((request) => request.sessionId === fork.childId)
+    .at(-1);
+  assertLatestCurrent(continuedFork);
+  expect(JSON.stringify(continuedFork.messages)).toContain('MEMORY_INDEX_V2');
+  const count = h.calls.length;
+  await h.server.closeRoot(h.root.id);
+  await h.server.handleRequest('run/end', { runId: nextRun });
+  await h.server.handleRequest('session/recover', { sessionId: h.root.id });
+  await h.server.handleRequest('run/begin', {
+    sessionId: h.root.id,
+    runId: nextRun,
+    employeeDocuments: next,
+  });
+  expect(h.calls).toHaveLength(count);
+  await h.server.handleRequest('session/prompt', {
+    sessionId: h.root.id,
+    runId: nextRun,
+    contentBlocks: text('冷恢复当前冻结文档'),
+  });
+  await h.wait();
+  expect(h.calls).toHaveLength(count + 1);
+  assertLatestCurrent(h.calls.at(-1));
+  expect(JSON.stringify(h.calls.at(-1).messages)).toContain('MEMORY_INDEX_V2');
+}, 30000);
+
 it.each([1, 2])(
   'v%s: only the admitted root gets required literal documents; child current prompt/tools/approval stay unchanged and fork inherits completed history',
   async (version) => {
