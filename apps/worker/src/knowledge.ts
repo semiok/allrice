@@ -70,8 +70,13 @@ export async function readKnowledgeText(
   }
 }
 
-export function chunkKnowledgeText(text: string) {
-  const normalized = text.replace(/\r\n?/g, '\n').trim();
+export function chunkKnowledgeText(
+  text: string,
+  options: { preserveOffsets?: true } = {},
+) {
+  const normalized = options.preserveOffsets
+    ? text
+    : text.replace(/\r\n?/g, '\n').trim();
   const chunks: { content: string; start: number; end: number }[] = [];
   let start = 0;
   while (start < normalized.length) {
@@ -80,10 +85,37 @@ export function chunkKnowledgeText(text: string) {
       const paragraph = normalized.lastIndexOf('\n\n', end);
       if (paragraph > start + chunkCharacters / 2) end = paragraph;
     }
-    const content = normalized.slice(start, end).trim();
-    if (content) chunks.push({ content, start, end });
+    // New reference excerpts share the saved UTF-16 string coordinates. Avoid
+    // splitting a surrogate pair before the excerpt is encoded for storage.
+    if (
+      options.preserveOffsets &&
+      end < normalized.length &&
+      normalized.charCodeAt(end - 1) >= 0xd800 &&
+      normalized.charCodeAt(end - 1) <= 0xdbff &&
+      normalized.charCodeAt(end) >= 0xdc00 &&
+      normalized.charCodeAt(end) <= 0xdfff
+    )
+      end--;
+    const segment = normalized.slice(start, end);
+    const content = segment.trim();
+    if (content)
+      chunks.push({
+        content,
+        start: options.preserveOffsets
+          ? start + segment.length - segment.trimStart().length
+          : start,
+        end: options.preserveOffsets
+          ? end - segment.length + segment.trimEnd().length
+          : end,
+      });
     if (end >= normalized.length) break;
     start = Math.max(start + 1, end - chunkOverlap);
+    if (
+      options.preserveOffsets &&
+      normalized.charCodeAt(start) >= 0xdc00 &&
+      normalized.charCodeAt(start) <= 0xdfff
+    )
+      start++;
   }
   return chunks;
 }

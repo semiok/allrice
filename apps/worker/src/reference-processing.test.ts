@@ -163,6 +163,8 @@ it('keeps valid JSON source characters, large integer digits and duplicate field
   ]);
   expect(fullText.text).toContain('9007199254740993');
   expect(fullText.text).toContain('"tag":"第一次", "tag":"第二次"');
+  for (const chunk of vi.mocked(finishReferenceProcessing).mock.calls[0]![1])
+    expect(fullText.text.slice(chunk.start, chunk.end)).toBe(chunk.content);
   expect(failReferenceProcessing).not.toHaveBeenCalled();
   const legacy = await fixture(
     Buffer.from('{"answer":42}'),

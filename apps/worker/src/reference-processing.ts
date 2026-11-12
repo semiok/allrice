@@ -105,6 +105,7 @@ async function extractDocumentText(
     mediaType: claim.object.mediaType,
     fileName: claim.fileName,
     includeStructure: true,
+    requireCompleteText: true as const,
   };
   let parsed = await parseDocument(input);
   const fullText: ReferenceFullText = {
@@ -240,7 +241,7 @@ export async function processNextReference(storageRoot: string) {
     }
     await finishReferenceProcessing(
       claim,
-      chunkKnowledgeText(fullText.text),
+      chunkKnowledgeText(fullText.text, { preserveOffsets: true }),
       fullText,
     );
   } catch (error) {

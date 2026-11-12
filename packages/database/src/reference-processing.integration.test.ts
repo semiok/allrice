@@ -28,7 +28,10 @@ import {
   finishReferenceProcessing,
   type ReferenceFullText,
 } from './reference-processing.ts';
-import { captureReferenceSelections } from './reference-runtime.ts';
+import {
+  captureReferenceSelections,
+  retrieveSelectedReferenceKnowledge,
+} from './reference-runtime.ts';
 import { sendChatMessage } from './workspace/service.ts';
 
 const suite =
@@ -156,6 +159,43 @@ suite(
         { label: '正文', start: 0, end: text.length },
       ]);
       expect(await claimReferenceProcessing(true)).toBeNull();
+    });
+
+    it('returns stored excerpt locators in the same coordinates as the exact saved full text', async () => {
+      const text =
+        '\ufeff \r\n' +
+        '跨行正文与收入\r\n'.repeat(700) +
+        '最后唯一结论：本期九千元。\r\n ';
+      const saved = await upload(Buffer.from(text));
+      await processNextReference(root);
+      const rows =
+        await f.db`select c.content,c.locator,d.full_text from allrice_knowledge_chunks c
+        join allrice_knowledge_documents d on d.id=c.document_id where d.knowledge_revision_id=${saved.revisionId} order by c.ordinal`;
+      expect(rows.length).toBeGreaterThan(1);
+      expect(rows[0]!.locator.start).toBe('\ufeff \r\n'.length);
+      expect(rows.at(-1)!.content).toContain('最后唯一结论');
+      for (const row of rows) {
+        expect(row.full_text).toBe(text);
+        expect(text.slice(row.locator.start, row.locator.end)).toBe(
+          row.content,
+        );
+      }
+      const selections = await f.db.begin((tx) =>
+        captureReferenceSelections(f.context, [saved.revisionId], tx),
+      );
+      const results = await retrieveSelectedReferenceKnowledge({
+        context: f.context,
+        selections,
+        query: '最后唯一结论',
+      });
+      expect(results.length).toBeGreaterThan(0);
+      for (const result of results) {
+        const locator = result.citation.locator as {
+          start: number;
+          end: number;
+        };
+        expect(text.slice(locator.start, locator.end)).toBe(result.content);
+      }
     });
 
     it.each([false, true])(
