@@ -1742,12 +1742,12 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         issues: expect.arrayContaining([expect.stringContaining('32')]),
       });
       const before =
-        await fixture.db`select test_id from allrice_employee_method_tests where instance_id=${x.instance.id}`;
+        await fixture.db`select test_id from allrice_employee_method_tests where instance_id=${x.instance.id} order by test_id`;
       await expect(
         startEmployeeMethodTestFromChat({ ...run, arguments: x.args }),
       ).rejects.toThrow('validation_failed');
       expect(
-        await fixture.db`select test_id from allrice_employee_method_tests where instance_id=${x.instance.id}`,
+        await fixture.db`select test_id from allrice_employee_method_tests where instance_id=${x.instance.id} order by test_id`,
       ).toEqual(before);
       await run.finish();
     },
