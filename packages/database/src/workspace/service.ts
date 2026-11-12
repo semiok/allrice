@@ -52,6 +52,7 @@ import {
   lockMemorySource,
   type EmployeeMemoryIdentity,
 } from './employee-memory.ts';
+import { memoryPairContent } from './employee-memory-primitives.ts';
 import {
   employeeMemoryReadPredicate,
   searchConfirmedEmployeeMemories,
@@ -2827,12 +2828,14 @@ async function createEmployeeMemoryRecord<
           if (discarded) throw new EmployeeMemoryConflict();
         }
         const savedPair = pair ?? legacyPersonalMemoryPair(memory.content);
+        const content =
+          pair === null ? memory.content : memoryPairContent(pair);
         const [row] = await tx<MemoryRow[]>`
           insert into allrice_memories(organization_id,workspace_id,employee_id,owner_id,instance_id,
             content,summary,details,visibility,source_type,source_id,trust_level,confidence,source_label,
             lifecycle_state,memory_class,expires_at,last_verified_at)
           values(${scope.organizationId},${workspaceId},${scope.employeeId},${scope.ownerId},${scope.instanceId},
-            ${memory.content},${savedPair.summary},${savedPair.details},'private',${memory.sourceType},${memory.sourceId},${trust},${memory.confidence},
+            ${content},${savedPair.summary},${savedPair.details},'private',${memory.sourceType},${memory.sourceId},${trust},${memory.confidence},
             ${memory.sourceLabel},${lifecycleState},${memory.memoryClass},null,
             ${trust === 'user_confirmed' ? new Date() : null}) returning *`;
         if (!row) throw new Error('memory creation failed');
@@ -3021,7 +3024,7 @@ async function correctEmployeeMemoryRecord<
           pair = legacyPersonalMemoryPair(correction.content);
         }
         const [row] = await tx<MemoryRow[]>`update allrice_memories
-        set content=${'content' in correction ? correction.content : pair.summary},summary=${pair.summary},details=${pair.details},revision=revision+1,trust_level='user_confirmed',
+        set content=${'content' in correction ? correction.content : memoryPairContent(pair)},summary=${pair.summary},details=${pair.details},revision=revision+1,trust_level='user_confirmed',
           confidence=${'confidence' in correction ? correction.confidence : 1},lifecycle_state='durable',source_label='用户更正',
           expires_at=null,last_verified_at=now(),updated_at=now()
         -- Check the stored expiry at the write, even if a legacy caller sends NULL.
