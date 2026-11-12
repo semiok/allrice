@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 export const repositoryGitMaterialLimits = Object.freeze({
   files: 4096,
   fileBytes: 2_000_000,
-  totalBytes: 40_000_000,
+  totalBytes: 64_000_000,
 });
 /** Shared operator/CI reader. Reads immutable tracked blobs, never credentials or build caches. */
 export function readRepositoryGitMaterial(root, sha) {

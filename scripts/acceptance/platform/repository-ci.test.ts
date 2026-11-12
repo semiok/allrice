@@ -39,7 +39,10 @@ describe('immutable CI material capture and final production inventory', () => {
       fileBytes: repositorySourceLimits.fileBytes,
       totalBytes: repositorySourceLimits.totalBytes,
     });
-    expect(repositorySourceLimits.jsonBytes).toBe(60_000_000);
+    expect(repositorySourceLimits.files).toBe(4096);
+    expect(repositorySourceLimits.fileBytes).toBe(2_000_000);
+    expect(repositorySourceLimits.totalBytes).toBe(64_000_000);
+    expect(repositorySourceLimits.jsonBytes).toBe(96_000_000);
     expect(repositorySourceLimits.archiveBytes).toBe(12_000_000);
     const root = mkdtempSync(join(tmpdir(), 'allrice-ci-source-bound-'));
     const git = (...args: string[]) =>
