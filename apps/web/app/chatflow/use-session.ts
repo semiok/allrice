@@ -124,105 +124,118 @@ export function useSession({ setError }: UseSessionOptions) {
     [tenantOrganizationId, tenantWorkspaceId],
   );
 
-  const loadWorkspace = useCallback(async () => {
-    const scope = selection.capture();
-    const [workspaceResult, capabilityResult] = await Promise.all([
-      fetch('/api/v1/workspace', { cache: 'no-store' }).then(
-        readJson<{ workspace: Workspace }>,
-      ),
-      fetch('/api/v1/saas/capabilities', { cache: 'no-store' }).then(
-        readJson<{ capabilities: SaasCapabilityManifest }>,
-      ),
-    ]);
-    const nextWorkspace = workspaceResult.workspace;
-    const nextScope = `${nextWorkspace.organizationId}/${nextWorkspace.workspaceId}/${nextWorkspace.viewerId}`;
-    if (historyScope.current !== nextScope) {
-      historyScope.current = nextScope;
-      historyCache.current.clear();
-      for (const pending of prefetches.current.values())
-        pending.controller.abort();
-      prefetches.current.clear();
-      historyRequestGeneration.current++;
-      historyRequest.current?.abort();
-      setHistory(null);
-      setStaleHistoryIds(new Set());
-    }
-    const authorized = new Set(nextWorkspace.sessions.map((s) => s.id));
-    for (const id of historyCache.current.keys())
-      if (!authorized.has(id)) historyCache.current.delete(id);
-    for (const [id, pending] of prefetches.current) {
-      if (!authorized.has(id)) {
-        pending.controller.abort();
-        prefetches.current.delete(id);
-      }
-    }
-    const params = new URLSearchParams(window.location.search);
-    const linked = params.get('session');
-    const requested = scope.sessionId ?? linked;
-    // The sidebar is only the first page (30 Sessions), not an authorization
-    // index. A valid old deep link must be read through the normal scoped
-    // history endpoint before adding it to this local list.
-    if (
-      scope.current() &&
-      requested &&
-      /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(requested) &&
-      !nextWorkspace.sessions.some((session) => session.id === requested)
-    ) {
-      const response = await fetch(
-        `/api/v1/sessions/${requested}?workspaceId=${nextWorkspace.workspaceId}`,
-        {
-          cache: 'no-store',
-          headers: {
-            'x-allrice-organization-id': nextWorkspace.organizationId,
-            'x-allrice-workspace-id': nextWorkspace.workspaceId,
+  const loadWorkspace = useCallback(
+    async (signal?: AbortSignal) => {
+      const scope = selection.capture();
+      const [workspaceResult, capabilityResult] = await Promise.all([
+        fetch('/api/v1/workspace', { cache: 'no-store', signal }).then(
+          (response) => {
+            signal?.throwIfAborted();
+            return readJson<{ workspace: Workspace }>(response);
           },
-        },
-      );
-      if (response.ok) {
-        const result = await readJson<{ history: History }>(response);
-        if (scope.current() && result.history.session.id === requested) {
-          rememberHistory(historyCache.current, result.history, true);
-          nextWorkspace.sessions = [
-            result.history.session,
-            ...nextWorkspace.sessions,
-          ];
+        ),
+        fetch('/api/v1/saas/capabilities', { cache: 'no-store', signal }).then(
+          (response) => {
+            signal?.throwIfAborted();
+            return readJson<{ capabilities: SaasCapabilityManifest }>(response);
+          },
+        ),
+      ]);
+      signal?.throwIfAborted();
+      const nextWorkspace = workspaceResult.workspace;
+      const nextScope = `${nextWorkspace.organizationId}/${nextWorkspace.workspaceId}/${nextWorkspace.viewerId}`;
+      if (historyScope.current !== nextScope) {
+        historyScope.current = nextScope;
+        historyCache.current.clear();
+        for (const pending of prefetches.current.values())
+          pending.controller.abort();
+        prefetches.current.clear();
+        historyRequestGeneration.current++;
+        historyRequest.current?.abort();
+        setHistory(null);
+        setStaleHistoryIds(new Set());
+      }
+      const authorized = new Set(nextWorkspace.sessions.map((s) => s.id));
+      for (const id of historyCache.current.keys())
+        if (!authorized.has(id)) historyCache.current.delete(id);
+      for (const [id, pending] of prefetches.current) {
+        if (!authorized.has(id)) {
+          pending.controller.abort();
+          prefetches.current.delete(id);
         }
-      } else if (![403, 404].includes(response.status)) {
-        // A transient failure must not silently open a different task.
-        await readJson(response);
       }
-    }
-    setWorkspace(nextWorkspace);
-    setManifest(capabilityResult.capabilities);
-    if (scope.current()) {
-      const current = scope.sessionId;
+      const params = new URLSearchParams(window.location.search);
+      const linked = params.get('session');
+      const requested = scope.sessionId ?? linked;
+      // The sidebar is only the first page (30 Sessions), not an authorization
+      // index. A valid old deep link must be read through the normal scoped
+      // history endpoint before adding it to this local list.
       if (
-        !current &&
-        linked &&
-        workspaceResult.workspace.sessions.some((s) => s.id === linked)
+        scope.current() &&
+        requested &&
+        /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(requested) &&
+        !nextWorkspace.sessions.some((session) => session.id === requested)
       ) {
-        setActiveId(linked);
-        return;
+        const response = await fetch(
+          `/api/v1/sessions/${requested}?workspaceId=${nextWorkspace.workspaceId}`,
+          {
+            cache: 'no-store',
+            signal,
+            headers: {
+              'x-allrice-organization-id': nextWorkspace.organizationId,
+              'x-allrice-workspace-id': nextWorkspace.workspaceId,
+            },
+          },
+        );
+        signal?.throwIfAborted();
+        if (response.ok) {
+          const result = await readJson<{ history: History }>(response);
+          signal?.throwIfAborted();
+          if (scope.current() && result.history.session.id === requested) {
+            rememberHistory(historyCache.current, result.history, true);
+            nextWorkspace.sessions = [
+              result.history.session,
+              ...nextWorkspace.sessions,
+            ];
+          }
+        } else if (![403, 404].includes(response.status)) {
+          // A transient failure must not silently open a different task.
+          await readJson(response);
+        }
       }
-      if (
-        current &&
-        workspaceResult.workspace.sessions.some(
-          (session) => session.id === current,
-        )
-      ) {
-        return;
+      setWorkspace(nextWorkspace);
+      setManifest(capabilityResult.capabilities);
+      if (scope.current()) {
+        const current = scope.sessionId;
+        if (
+          !current &&
+          linked &&
+          workspaceResult.workspace.sessions.some((s) => s.id === linked)
+        ) {
+          setActiveId(linked);
+          return;
+        }
+        if (
+          current &&
+          workspaceResult.workspace.sessions.some(
+            (session) => session.id === current,
+          )
+        ) {
+          return;
+        }
+        if (params.has('employee') && !linked) {
+          setActiveId(null, true);
+          return;
+        }
+        setActiveId(
+          workspaceResult.workspace.sessions.find(
+            (session) => !session.archivedAt,
+          )?.id ?? null,
+        );
       }
-      if (params.has('employee') && !linked) {
-        setActiveId(null, true);
-        return;
-      }
-      setActiveId(
-        workspaceResult.workspace.sessions.find(
-          (session) => !session.archivedAt,
-        )?.id ?? null,
-      );
-    }
-  }, [selection, setActiveId]);
+    },
+    [selection, setActiveId],
+  );
 
   const prefetchHistory = useCallback(
     (sessionId: string) => {
@@ -444,9 +457,12 @@ export function useSession({ setError }: UseSessionOptions) {
   );
 
   useEffect(() => {
-    loadWorkspace().catch((cause) =>
-      setError(cause instanceof Error ? cause.message : '工作区加载失败'),
-    );
+    const controller = new AbortController();
+    loadWorkspace(controller.signal).catch((cause) => {
+      if (!controller.signal.aborted)
+        setError(cause instanceof Error ? cause.message : '工作区加载失败');
+    });
+    return () => controller.abort();
   }, [loadWorkspace, setError]);
 
   useEffect(

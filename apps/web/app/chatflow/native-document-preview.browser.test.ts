@@ -448,6 +448,7 @@ suite('DSH native document previews', () => {
         const value = await frame.evaluate(
           ({ priorDocument, priorButton, failure }) => {
             const button = document.querySelector('button');
+            const rect = button?.getBoundingClientRect();
             return {
               html: document.documentElement.outerHTML,
               url: document.URL,
@@ -459,15 +460,73 @@ suite('DSH native document previews', () => {
               button: button?.outerHTML,
               handler: failure ? typeof button?.onclick : undefined,
               events: Reflect.get(document, 'htmlClickEvidence'),
+              viewport: {
+                width: innerWidth,
+                height: innerHeight,
+                scrollX,
+                scrollY,
+              },
+              buttonRect: rect?.toJSON(),
+              buttonCenterHit: rect
+                ? document
+                    .elementFromPoint(
+                      rect.x + rect.width / 2,
+                      rect.y + rect.height / 2,
+                    )
+                    ?.outerHTML.slice(0, 500)
+                : null,
             };
           },
           { priorDocument, priorButton, failure },
         );
+        const buttonBox = await priorButton?.boundingBox();
+        const host = await observedPage.current?.evaluate((buttonBox) => {
+          const iframe = document.querySelector(
+            'section[aria-label="interactive.html"] iframe',
+          );
+          const bounds = (node: Element | null | undefined) => {
+            if (!node) return null;
+            const style = getComputedStyle(node);
+            return {
+              rect: node.getBoundingClientRect().toJSON(),
+              client: [node.clientWidth, node.clientHeight],
+              scroll: [
+                node.scrollWidth,
+                node.scrollHeight,
+                node.scrollLeft,
+                node.scrollTop,
+              ],
+              display: style.display,
+              visibility: style.visibility,
+              pointerEvents: style.pointerEvents,
+              transform: style.transform,
+              inert: !!node.closest('[inert]'),
+            };
+          };
+          return {
+            iframe: bounds(iframe),
+            section: bounds(iframe?.closest('section')),
+            viewport: { width: innerWidth, height: innerHeight },
+            focused: document.hasFocus(),
+            visibility: document.visibilityState,
+            buttonCenterHit: buttonBox
+              ? document
+                  .elementFromPoint(
+                    buttonBox.x + buttonBox.width / 2,
+                    buttonBox.y + buttonBox.height / 2,
+                  )
+                  ?.outerHTML.slice(0, 500)
+              : null,
+            events: Reflect.get(document, 'htmlRootClickEvidence'),
+          };
+        }, buttonBox);
         const { html, ...detail } = value;
         return {
           phase,
           frame: frameId(frame),
           ...detail,
+          buttonBox,
+          host,
           sandbox: await iframe?.getAttribute('sandbox'),
           htmlBytes: Buffer.byteLength(html),
           htmlSHA256: createHash('sha256').update(html).digest('hex'),
@@ -609,6 +668,41 @@ suite('DSH native document previews', () => {
         });
       });
       await observe('event-listeners', listeners);
+      await observe(
+        'root-event-listeners',
+        page.evaluate(() => {
+          const events: unknown[] = [];
+          Reflect.set(document, 'htmlRootClickEvidence', events);
+          for (const type of ['pointerdown', 'pointerup', 'click'])
+            document.addEventListener(
+              type,
+              (event) => {
+                if (!event.isTrusted || events.length >= 16) return;
+                events.push({
+                  type: event.type,
+                  trusted: event.isTrusted,
+                  point:
+                    event instanceof MouseEvent
+                      ? [event.clientX, event.clientY]
+                      : null,
+                  target:
+                    event.target instanceof Element
+                      ? event.target.outerHTML.slice(0, 500)
+                      : null,
+                  path: event
+                    .composedPath()
+                    .slice(0, 5)
+                    .map((node) =>
+                      node instanceof Element ? node.tagName : null,
+                    ),
+                  focused: document.hasFocus(),
+                  visibility: document.visibilityState,
+                });
+              },
+              { capture: true, passive: true },
+            );
+        }),
+      );
       await snapshot('before-click');
       await page
         .frameLocator('section[aria-label="interactive.html"] iframe')
