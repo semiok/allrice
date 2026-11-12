@@ -8203,6 +8203,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           const newChatTooltip = f.page
             .getByRole('tooltip')
             .filter({ hasText: '和 Rice 开新会话' });
+          // Match the approved hover state through the existing card control.
+          await riceRow.click();
+          for (let index = 1; index <= 3; index++)
+            await group('Rice')
+              .getByRole('treeitem')
+              .filter({ hasText: `历史工作 ${index}` })
+              .waitFor();
           await plus.hover();
           await newChatTooltip.waitFor();
           // This fixture has no doctype. Qualify :hover so quirks mode does
@@ -8211,6 +8218,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             await plus.evaluate((node) => node.matches('button:hover')),
           ).toBe(true);
           await capture('hover');
+          await riceRow.click();
+          await expect
+            .poll(() => riceRow.getAttribute('aria-expanded'))
+            .toBe('false');
           if (device === 'mobile') {
             await f.page.mouse.move(width - 1, 1);
             await newChatTooltip.waitFor({ state: 'hidden' });
