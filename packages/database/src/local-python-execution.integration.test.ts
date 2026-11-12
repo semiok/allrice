@@ -17,6 +17,8 @@ import {
 } from '@allrice/contracts';
 import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createCloudExecutionFixture } from './cloud-execution.fixture.ts';
+import { cloudStableId } from './cloud-execution.ts';
+import { normalizeCloudPythonArguments } from './cloud-authority.ts';
 import { heartbeatBridgeDevice } from './bridge.ts';
 import {
   runtimePolicyDigest,
@@ -620,6 +622,11 @@ suite(
 
     it('publishes a stopped canonical Python result with its final name while preserving the frozen original and replay', async () => {
       const f = await fixture({ canonicalPython: {} });
+      await reportLocalPythonProfile(
+        f.device,
+        { ...profile, pythonChartsContractVersion: 1 },
+        database.db,
+      );
       const args = {
         script: "print('synthetic JSON')",
         inputs: [
@@ -643,13 +650,15 @@ suite(
         purpose: 'python_charts',
         inputs: args.inputs,
       });
-      const base = payload(f);
+      const base = payload(f),
+        normalized = normalizeCloudPythonArguments(args);
       const p = RuntimeLocalPythonPayloadSchema.parse({
         ...base,
         arguments: {
           ...base.arguments,
           purpose: 'python_charts',
           script: args.script,
+          limits: { ...normalized.limits, inputBytes: 2_000_000 },
           origin: {
             toolName: 'python.execute',
             callId,
@@ -662,8 +671,10 @@ suite(
               mediaType: f.object.mediaType,
             },
           ],
-          outputs: args.outputs.map((output) => ({
-            objectId: randomUUID(),
+          outputs: args.outputs.map((output, index) => ({
+            objectId: cloudStableId(
+              `managed-python-output:${f.run}:${callId}:${index}`,
+            ),
             ...output,
             mediaType: 'application/json',
           })),

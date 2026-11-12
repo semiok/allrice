@@ -989,6 +989,7 @@ describe('Codex hosted search Tool Broker integration', () => {
         id: randomUUID(),
         object: { ...source, id: randomUUID(), mediaType: input.mediaType },
         version: {
+          fileName: input.fileName,
           seriesId: randomUUID(),
           version: 1,
           parentObjectId: null,
@@ -1505,7 +1506,11 @@ describe('Codex hosted search Tool Broker integration', () => {
       id: randomUUID(),
       kind: 'file',
       object: { id: randomUUID(), checksum: 'persisted-checksum' },
-      version: { seriesId: randomUUID(), version: 2 },
+      version: {
+        fileName: 'metrics.json',
+        seriesId: randomUUID(),
+        version: 2,
+      },
     });
     const result = await executeRiceTool({
       context: executionContext(),

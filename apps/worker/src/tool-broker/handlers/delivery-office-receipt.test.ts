@@ -135,7 +135,7 @@ function setup(
       sizeBytes: arg.bytes.length,
     },
     version: {
-      fileName: 'reconciliation（2）.xlsx',
+      fileName: arg.officeReceipt ? 'reconciliation（2）.xlsx' : arg.fileName,
       seriesId: randomUUID(),
       version: 1,
       parentObjectId: null,

@@ -835,6 +835,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expected: string | null;
       }>,
       favoriteSettled: new Set<number>(),
+      deliverableRequestObjects: new Map<Request, Record<string, string>>(),
       updateReads: 0,
       workbenchFiles: [] as WorkbenchFile[],
       workbenchReferenceUses: [] as string[],
@@ -1141,6 +1142,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         state.workbenchReads++;
         const request = Object.fromEntries(url.searchParams);
         state.deliverableRequests.push(request);
+        state.deliverableRequestObjects.set(route.request(), request);
         const reply = async (data: unknown, status = 200) => {
           try {
             return await answer(data, status);
@@ -13069,6 +13071,62 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     30000,
   );
 
+  async function retainedPdfReader(f: Awaited<ReturnType<typeof fixture>>) {
+    await f.panel
+      .getByText('Delivery original preview', { exact: true })
+      .waitFor({ timeout: 15000 });
+    const frame = f.panel.locator('[data-document-zoom-frame]:visible');
+    const zoomButton = frame.getByRole('button', {
+      name: '选择缩放比例',
+      exact: true,
+    });
+    // Exercise the native keyboard entry, independently of the mouse-reveal
+    // failure observed in the separate metadata/FontNotice regression.
+    await zoomButton.focus();
+    await zoomButton.press('Enter');
+    await f.page.getByRole('menuitem', { name: '150%', exact: true }).click();
+    await expect
+      .poll(() => frame.getAttribute('data-document-zoom-mode'))
+      .toBe('fixed');
+    const scroll = frame.locator('[data-document-zoom-scrollport]');
+    await expect
+      .poll(() =>
+        scroll.evaluate((node) => node.scrollHeight > node.clientHeight),
+      )
+      .toBe(true);
+    const top = await scroll.evaluate((node) => {
+      node.scrollTop = 80;
+      return node.scrollTop;
+    });
+    expect(top).toBeGreaterThan(0);
+    const original = await frame.elementHandle();
+    if (!original) throw Error('The native PDF frame must be present.');
+    const zoom = await original.evaluate((node) =>
+      node.style.getPropertyValue('--document-zoom'),
+    );
+    const previewReads = f.state.workbenchPreviewReads;
+    return async (visible = false) => {
+      expect(await original.evaluate((node) => node.isConnected)).toBe(true);
+      expect(
+        await original.evaluate((node) =>
+          node.style.getPropertyValue('--document-zoom'),
+        ),
+      ).toBe(zoom);
+      expect(
+        await original.evaluate(
+          (node) =>
+            node.querySelector<HTMLElement>('[data-document-zoom-scrollport]')
+              ?.scrollTop,
+        ),
+      ).toBe(top);
+      expect(f.state.workbenchPreviewReads).toBe(previewReads);
+      if (visible)
+        expect(
+          await frame.evaluate((node, prior) => node === prior, original),
+        ).toBe(true);
+    };
+  }
+
   it.each([
     { width: 1440, completeBeforeReopen: true },
     { width: 390, completeBeforeReopen: true },
@@ -13081,10 +13139,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       let release = () => {};
       try {
         const file = catalogFile(9582, {
-          fileName: '详情收藏对账.md',
+          fileName: '详情收藏对账.pdf',
           category: 'artifact',
         });
         f.state.workbenchFiles.push(file);
+        f.state.filePreview = deliverablePdf();
         const input = f.page.getByRole('textbox', { name: /给 .* 的消息/ });
         await input.fill('详情隐藏期间保留草稿');
         const entry = f.page
@@ -13101,11 +13160,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await toolbar
           .getByRole('button', { name: '收藏', exact: true })
           .waitFor();
-        const contentLocator = f.panel
-          .locator('[data-document-id]:visible')
-          .getByRole('heading', { name: '上传的文件', exact: true });
-        await contentLocator.waitFor();
-        const content = (await contentLocator.elementHandle())!;
+        const expectReaderRetained = await retainedPdfReader(f);
         for (const [index, desired] of [true, false].entries()) {
           const button = toolbar.getByRole('button', {
             name: desired ? '收藏' : '取消收藏',
@@ -13125,7 +13180,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await f.panel
             .getByRole('button', { name: '关闭工作台', exact: true })
             .click();
-          expect(await content.evaluate((node) => node.isConnected)).toBe(true);
+          await expectReaderRetained();
           if (completeBeforeReopen) {
             release();
             await expect
@@ -13146,9 +13201,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                 }),
             (async () => {
               await entry.click();
-              expect(await content.evaluate((node) => node.isConnected)).toBe(
-                true,
-              );
+              await expectReaderRetained();
               await f.panel
                 .getByRole('tab')
                 .filter({ hasText: file.fileName })
@@ -13199,7 +13252,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             ).length,
           ).toBeGreaterThan(reads);
           expect(f.state.favoriteWrites).toHaveLength(index + 1);
-          expect(await content.evaluate((node) => node.isConnected)).toBe(true);
+          await expectReaderRetained(true);
         }
         expect(f.state.favoriteWrites.map((write) => write.favorite)).toEqual([
           true,
@@ -13222,10 +13275,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       let release = () => {};
       try {
         const file = catalogFile(9584, {
-          fileName: '详情收藏失败恢复.md',
+          fileName: '详情收藏失败恢复.pdf',
           category: 'artifact',
         });
         f.state.workbenchFiles.push(file);
+        f.state.filePreview = deliverablePdf();
         const input = f.page.getByRole('textbox', { name: /给 .* 的消息/ });
         await input.fill('收藏失败保留草稿');
         const entry = f.page
@@ -13239,11 +13293,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const toolbar = f.panel.locator(
           'header[aria-label="文件操作"]:visible',
         );
-        const contentLocator = f.panel
-          .locator('[data-document-id]:visible')
-          .getByRole('heading', { name: '上传的文件', exact: true });
-        await contentLocator.waitFor();
-        const content = (await contentLocator.elementHandle())!;
+        const expectReaderRetained = await retainedPdfReader(f);
         const failure = f.panel.getByRole('alert').filter({
           hasText: '成果服务暂不可用，请重试。',
         });
@@ -13264,7 +13314,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await f.panel
             .getByRole('button', { name: '关闭工作台', exact: true })
             .click();
-          expect(await content.evaluate((node) => node.isConnected)).toBe(true);
+          await expectReaderRetained();
           const [metadata] = await Promise.all([
             f.page.waitForResponse((response) => {
               const url = new URL(response.url());
@@ -13303,7 +13353,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             f.state.favoriteIds.has(`${user}/${workspace}/${file.objectId}`),
           ).toBe(!desired);
           expect(f.state.favoriteWrites).toHaveLength(index * 2 + 1);
-          expect(await content.evaluate((node) => node.isConnected)).toBe(true);
+          await expectReaderRetained(true);
           await f.panel
             .getByRole('button', { name: '关闭工作台', exact: true })
             .click();
@@ -13330,7 +13380,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           ).toBe(desired);
           expect(f.state.favoriteWrites).toHaveLength(index * 2 + 2);
           expect(await failure.count()).toBe(0);
-          expect(await content.evaluate((node) => node.isConnected)).toBe(true);
+          await expectReaderRetained(true);
         }
         expect(f.state.favoriteWrites.map((write) => write.favorite)).toEqual([
           true,
@@ -13359,6 +13409,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       it(`MET247 metadata failure preserves the native file, fonts and reader state until manual recovery at ${width}px ${theme}`, async () => {
         const f = await fixture({ width, appearance: theme });
         let release = () => {};
+        let readerStage = 'mount';
+        const readerObservations: unknown[] = [];
+        let inspectReader: ((phase: string) => Promise<void>) | undefined;
         try {
           await f.page.setViewportSize({
             width,
@@ -13392,16 +13445,98 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           const frame = f.panel.locator('[data-document-zoom-frame]:visible');
           const scroll = frame.locator('[data-document-zoom-scrollport]');
           const box = (await frame.boundingBox())!;
+          const observedFrame = await frame.elementHandle();
+          if (!observedFrame) throw Error('The reader frame must be present.');
+          inspectReader = async (phase) => {
+            const detail = await observedFrame.evaluate((node) => {
+              const bounds = (element: Element | null) => {
+                if (!element) return null;
+                const css = getComputedStyle(element);
+                return {
+                  rect: element.getBoundingClientRect().toJSON(),
+                  opacity: css.opacity,
+                  pointerEvents: css.pointerEvents,
+                  transform: css.transform,
+                  overflow: css.overflow,
+                  minHeight: css.minHeight,
+                  maxHeight: css.maxHeight,
+                  clientHeight: element.clientHeight,
+                  scrollHeight: element.scrollHeight,
+                  scrollTop: element.scrollTop,
+                };
+              };
+              const hit = (x: number, y: number) => {
+                const chain: Array<{
+                  tag: string;
+                  className: string | null;
+                  label: string | null;
+                  pointerEvents: string;
+                }> = [];
+                let element = document.elementFromPoint(x, y);
+                for (
+                  let n = 0;
+                  element && n < 6;
+                  n++, element = element.parentElement
+                )
+                  chain.push({
+                    tag: element.tagName,
+                    className: element.getAttribute('class'),
+                    label: element.getAttribute('aria-label'),
+                    pointerEvents: getComputedStyle(element).pointerEvents,
+                  });
+                return { x, y, chain };
+              };
+              const rect = node.getBoundingClientRect();
+              const controls = node.querySelector(
+                '[data-document-zoom-controls]',
+              );
+              const button = node.querySelector('[aria-label="选择缩放比例"]');
+              const buttonRect = button?.getBoundingClientRect();
+              return {
+                viewport: { width: innerWidth, height: innerHeight },
+                mouse: {
+                  hoverNone: matchMedia('(hover: none)').matches,
+                  coarse: matchMedia('(pointer: coarse)').matches,
+                },
+                frame: bounds(node),
+                wrapper: bounds(node.parentElement),
+                preview: bounds(node.parentElement?.parentElement ?? null),
+                controls: bounds(controls),
+                controlsVisible: controls?.getAttribute(
+                  'data-document-zoom-visible',
+                ),
+                button: bounds(button),
+                moveHit: hit(
+                  rect.x + rect.width / 2,
+                  rect.y + rect.height - 20,
+                ),
+                buttonHit: buttonRect
+                  ? hit(
+                      buttonRect.x + buttonRect.width / 2,
+                      buttonRect.y + buttonRect.height / 2,
+                    )
+                  : null,
+              };
+            });
+            readerObservations.push({ phase, detail });
+          };
+          readerStage = 'pointer-move';
+          await inspectReader('before-pointer-move');
           await f.page.mouse.move(
             box.x + box.width / 2,
             box.y + box.height - 20,
           );
+          await inspectReader('after-pointer-move');
+          readerStage = 'zoom-button-click';
+          await inspectReader('before-zoom-click');
           await frame
             .getByRole('button', { name: '选择缩放比例', exact: true })
             .click();
+          readerStage = 'zoom-menu-select';
           await f.page
             .getByRole('menuitem', { name: '150%', exact: true })
             .click();
+          readerStage = 'reader-state';
           await expect
             .poll(() => frame.getAttribute('data-document-zoom-mode'))
             .toBe('fixed');
@@ -13423,6 +13558,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           const reads = f.state.deliverableRequests.filter(
             (request) => request.objectId === file.objectId,
           ).length;
+          readerStage = 'favorite-write';
           f.state.favoriteDelay = new Promise<void>((done) => {
             release = done;
           });
@@ -13443,6 +13579,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await fonts.waitFor();
           f.state.deliverablesStatus = 500;
           release();
+          readerStage = 'metadata-failure';
           const failure = f.panel
             .locator('footer:visible')
             .getByRole('alert')
@@ -13496,6 +13633,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             });
           }
           f.state.deliverablesStatus = 200;
+          readerStage = 'manual-recovery';
           await failure
             .getByRole('button', { name: '重新加载', exact: true })
             .click();
@@ -13532,6 +13670,20 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           expect(f.state.favoriteWrites).toHaveLength(1);
           expect(await input.inputValue()).toBe('元数据失败不清草稿');
           expect(f.state.messageInputs).toEqual([]);
+        } catch (error) {
+          await inspectReader?.('failure').catch((captureError: unknown) => {
+            readerObservations.push({ captureError: String(captureError) });
+          });
+          console.error(
+            'MET247 metadata reader failure',
+            JSON.stringify({
+              width,
+              theme,
+              stage: readerStage,
+              observations: readerObservations,
+            }),
+          );
+          throw error;
         } finally {
           release();
           await f.close();
@@ -14021,19 +14173,20 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         f.state.fileDelay = new Promise<void>((done) => {
           release = done;
         });
-        const [oldRequest] = await Promise.all([
-          f.page.waitForRequest((request) => {
-            const url = new URL(request.url());
-            return (
-              url.pathname === '/api/v1/workbench/files' &&
-              url.searchParams.get('objectId') === file.objectId
-            );
-          }),
-          f.page
-            .locator('header')
-            .getByRole('button', { name: '交付成果', exact: true })
-            .click(),
-        ]);
+        const linkRequests: Request[] = [];
+        const observeRequest = (request: Request) => {
+          const url = new URL(request.url());
+          if (
+            url.pathname === '/api/v1/workbench/files' &&
+            url.searchParams.get('objectId') === file.objectId
+          )
+            linkRequests.push(request);
+        };
+        f.page.on('request', observeRequest);
+        await f.page
+          .locator('header')
+          .getByRole('button', { name: '交付成果', exact: true })
+          .click();
         await expect
           .poll(
             () =>
@@ -14042,17 +14195,50 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               ).length,
           )
           .toBeGreaterThan(objectReads);
-        const oldRead = f.state.deliverableRequests.findLast(
-          (request) => request.objectId === file.objectId,
-        )!;
-        const oldNode = (await f.panel
-          .getByRole('region', { name: '交付成果', exact: true })
-          .elementHandle())!;
+        const directory = f.panel.getByRole('region', {
+          name: '交付成果',
+          exact: true,
+        });
+        await directory.waitFor();
+        const pending = () =>
+          linkRequests.filter((request) => {
+            const record = f.state.deliverableRequestObjects.get(request);
+            return (
+              record &&
+              request.failure() === null &&
+              !f.responses.has(request) &&
+              !f.state.deliverableSettled.has(record)
+            );
+          });
+        // Reopening briefly activates the retained detail before the module
+        // effect selects files. Bind the one live directory read, not that
+        // legitimately cancelled metadata read or an unrelated last record.
+        await expect.poll(() => pending().length).toBe(1);
+        const [oldRequest] = pending();
+        if (!oldRequest) throw Error('One live file-link request is required.');
+        const oldRead = f.state.deliverableRequestObjects.get(oldRequest);
+        if (!oldRead) throw Error('The live request must reach this fixture.');
+        f.page.off('request', observeRequest);
+        const oldNode = (await directory.elementHandle())!;
         expect(await oldNode.evaluate((node) => node.isConnected)).toBe(true);
         expect(oldRequest.failure()).toBeNull();
         expect(f.responses.has(oldRequest)).toBe(false);
         expect(f.state.deliverableSettled.has(oldRead)).toBe(false);
-        f.evidence.mark('old-file-link-pending-before-identity');
+        f.evidence.mark('old-file-link-pending-before-identity', {
+          selected: linkRequests.indexOf(oldRequest),
+          requests: linkRequests.map((request, index) => {
+            const record = f.state.deliverableRequestObjects.get(request);
+            return {
+              index,
+              recordIndex: record
+                ? f.state.deliverableRequests.indexOf(record)
+                : -1,
+              failure: request.failure(),
+              response: f.responses.has(request),
+              settled: record ? f.state.deliverableSettled.has(record) : false,
+            };
+          }),
+        });
         const workspaceReads = f.state.workspaceReads;
         f.state.viewer = id(999);
         f.state.fileDelay = null;

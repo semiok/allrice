@@ -300,6 +300,7 @@ suite(
         expect(employeeFiles.files.map((file) => file.objectId)).toEqual([
           uploads[0],
         ]);
+        expect(employeeFiles.files[0]!.fileName).toBe('跨员工上传.txt');
         expect(
           new Set(
             employeeFiles.files[0]!.sources.map(
@@ -320,7 +321,7 @@ suite(
           owner.workspaceId,
         );
         const names = [];
-        for (const requested of ['本人上传-0.txt', '本人上传-51.txt'])
+        for (const requested of ['跨员工上传.txt', '本人上传-51.txt'])
           names.push(
             await allocateWorkbenchFileName(
               tx,
@@ -336,7 +337,7 @@ suite(
         return names;
       });
       expect(acrossEmployees).toEqual([
-        '本人上传-0（2）.txt',
+        '跨员工上传（2）.txt',
         '本人上传-51（2）.txt',
       ]);
       const legacy = await readWorkbenchFileCatalog(owner, {
