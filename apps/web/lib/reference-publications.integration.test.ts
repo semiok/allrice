@@ -2723,6 +2723,30 @@ suite(
         source.scope.sessionId,
       ]);
       await finish(imported);
+      // Freeze S→T→U→S through real admissions and terminal commits. The
+      // Session back-reference must retain only its exact predecessor Runs.
+      const relayed: Awaited<ReturnType<typeof runtimeRun>>[] = [];
+      let upstream = source.scope.sessionId;
+      for (const destination of [
+        undefined,
+        undefined,
+        source.scope.sessionId,
+      ]) {
+        const relay = await runtimeRun(s, [], destination, [upstream]),
+          relayWorker = await lease(relay);
+        await assertEmployeeContentContext(
+          relay.scope,
+          relay.runtime.generationId,
+          relayWorker,
+        );
+        await completeJob({
+          ...relayWorker,
+          result: { answer: 'RELAYED_FROZEN_REFERENCE', citations: [] },
+        });
+        relayed.push(relay);
+        upstream = relay.scope.sessionId;
+      }
+      expect(upstream).toBe(source.scope.sessionId);
       await change(s.owner, published.sourceId, 'audience', 1, {
         scope: 'personal',
         departmentIds: [],
@@ -2762,7 +2786,14 @@ suite(
       ).toBe(false);
       const newPublication = await httpUpload(s.owner);
       expect(newPublication.sourceId).not.toBe(published.sourceId);
-      for (const run of [source, imported]) {
+      for (const run of relayed)
+        expect(
+          await hasRevokedReferencePublicationHistory(
+            s.owner,
+            run.scope.sessionId,
+          ),
+        ).toBe(true);
+      for (const run of [source, imported, ...relayed]) {
         await expect(
           assertEmployeeContentContext(run.scope, run.runtime.generationId),
         ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });

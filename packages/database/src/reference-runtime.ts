@@ -141,6 +141,9 @@ export async function referencePublicationDependencyRuns(
   includeUserRuns = false,
 ) {
   if (messageIds && !messageIds.length) return [];
+  // A full Session seed already contains every own Run as true. Its local
+  // conversation only returns to that seed; true also covers false's edges.
+  // Exact-message and external conversation traversal must stay unchanged.
   const runs = await sql<{ run_id: string }[]>`
     with recursive dependencies(run_id,include_reads) as (
       select er.run_id,${messageIds ? sql`er.assistant_message_id in ${sql([...messageIds])}` : sql`true`} from allrice_employee_runs er
@@ -152,7 +155,16 @@ export async function referencePublicationDependencyRuns(
       select related.run_id,related.include_reads from dependencies d
       join allrice_employee_runs er_current on er_current.run_id=d.run_id
       cross join lateral (
-        select e.run_id,(e.assistant_message_id::text=message->>'id') as include_reads from jsonb_array_elements(case when jsonb_typeof(er_current.prompt_snapshot->'conversation')='array'
+        select e.run_id,(e.assistant_message_id::text=message->>'id') as include_reads from jsonb_array_elements(case
+          ${
+            messageIds === undefined
+              ? sql`when er_current.organization_id=${context.organizationId} and er_current.workspace_id=${context.workspaceId}
+                  and er_current.owner_id=${context.actor.id} and er_current.session_id=${sessionId}
+                  and er_current.error_code is distinct from 'STEER_CONSUMED'
+                then '[]'::jsonb`
+              : sql``
+          }
+          when jsonb_typeof(er_current.prompt_snapshot->'conversation')='array'
           then er_current.prompt_snapshot->'conversation' else '[]'::jsonb end) message
         join allrice_employee_runs e on e.session_id=er_current.session_id
           and e.content_generation_id=er_current.content_generation_id
