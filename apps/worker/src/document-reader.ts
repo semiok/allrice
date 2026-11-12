@@ -1,5 +1,4 @@
 import ExcelJS from 'exceljs';
-import JSZip from 'jszip';
 import mammoth from 'mammoth';
 import {
   PdfReadError,
@@ -8,9 +7,10 @@ import {
 } from '@allrice/office-runtime/pdf-reader';
 
 import { HandlerError } from './errors.js';
+import { OfficePackage, elements, ns } from './office/package.js';
 
-const maximumDocumentBytes = 20 * 1024 * 1024;
-const defaultMaximumCharacters = 120_000;
+export const maximumDocumentBytes = 20 * 1024 * 1024;
+export const defaultMaximumCharacters = 120_000;
 const absoluteMaximumCharacters = 300_000;
 
 export interface ParsedDocument extends Partial<
@@ -19,7 +19,12 @@ export interface ParsedDocument extends Partial<
   kind: 'text' | 'pdf' | 'docx' | 'xlsx' | 'pptx';
   text: string;
   truncated: boolean;
-  units: { label: string; text: string; pageNumber?: number }[];
+  units: {
+    label: string;
+    text: string;
+    pageNumber?: number;
+    sheetName?: string;
+  }[];
   warnings: string[];
 }
 
@@ -32,18 +37,6 @@ function normalizeText(value: string) {
     .trim();
 }
 
-function decodeXml(value: string) {
-  return value
-    .replace(/<a:br\s*\/>/g, '\n')
-    .replace(/<a:tab\s*\/>/g, '\t')
-    .replace(/<[^>]+>/g, '')
-    .replaceAll('&lt;', '<')
-    .replaceAll('&gt;', '>')
-    .replaceAll('&quot;', '"')
-    .replaceAll('&apos;', "'")
-    .replaceAll('&amp;', '&');
-}
-
 function limitDocument(
   kind: ParsedDocument['kind'],
   units: ParsedDocument['units'],
@@ -54,15 +47,19 @@ function limitDocument(
     Math.max(Math.trunc(maximumCharacters), 1_000),
     absoluteMaximumCharacters,
   );
-  const joined = units
-    .map((unit) => `## ${unit.label}\n\n${normalizeText(unit.text)}`)
+  const normalizedUnits = units.map((unit) => ({
+    ...unit,
+    text: normalizeText(unit.text),
+  }));
+  const joined = normalizedUnits
+    .map((unit) => `## ${unit.label}\n\n${unit.text}`)
     .join('\n\n');
   const truncated = joined.length > boundedMaximum;
   return {
     kind,
     text: truncated ? joined.slice(0, boundedMaximum) : joined,
     truncated,
-    units,
+    units: normalizedUnits,
     warnings: [
       ...warnings,
       ...(truncated
@@ -122,29 +119,29 @@ async function parseXlsx(bytes: Buffer, maximumCharacters: number) {
           .join('\t'),
       );
     });
-    units.push({ label: `工作表：${worksheet.name}`, text: rows.join('\n') });
+    units.push({
+      label: `工作表：${worksheet.name}`,
+      sheetName: worksheet.name,
+      text: rows.join('\n'),
+    });
   });
   return limitDocument('xlsx', units, maximumCharacters);
 }
 
 async function parsePptx(bytes: Buffer, maximumCharacters: number) {
-  const archive = await JSZip.loadAsync(bytes);
-  const slidePaths = Object.keys(archive.files)
-    .filter((path) => /^ppt\/slides\/slide\d+\.xml$/.test(path))
-    .sort((left, right) => {
-      const leftIndex = Number(left.match(/slide(\d+)\.xml$/)?.[1] ?? 0);
-      const rightIndex = Number(right.match(/slide(\d+)\.xml$/)?.[1] ?? 0);
-      return leftIndex - rightIndex;
+  // Reuse the Office reader's relationship order and namespace-aware XML.
+  const pkg = await OfficePackage.open(bytes, 'pptx', { readOnly: true });
+  const units: ParsedDocument['units'] = [];
+  for (const part of await pkg.orderedParts()) {
+    const doc = await pkg.xml(part.path);
+    units.push({
+      label: `第 ${part.index} 页`,
+      pageNumber: part.index,
+      text: elements(doc, ns.a, 't')
+        .map((element) => element.textContent)
+        .join('\n'),
     });
-  const units = await Promise.all(
-    slidePaths.map(async (path, index) => {
-      const xml = await archive.file(path)!.async('string');
-      const runs = [...xml.matchAll(/<a:t>([\s\S]*?)<\/a:t>/g)].map((match) =>
-        decodeXml(match[1] ?? ''),
-      );
-      return { label: `第 ${index + 1} 页`, text: runs.join('\n') };
-    }),
-  );
+  }
   return limitDocument('pptx', units, maximumCharacters);
 }
 

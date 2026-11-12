@@ -2,9 +2,11 @@ import { readFileSync } from 'node:fs';
 import { Document, Packer, Paragraph } from 'docx';
 import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
+import PptxGenJS from 'pptxgenjs';
 import { describe, expect, it } from 'vitest';
 
 import { parseDocument } from './document-reader.js';
+import { OfficePackage } from './office/package.js';
 
 const pdfFixtures = new URL('../../../tests/fixtures/pdf/', import.meta.url);
 const readPdfFixture = (name: string) =>
@@ -40,17 +42,13 @@ describe('parseDocument', () => {
   });
 
   it('parses PPTX slide text in slide order', async () => {
-    const archive = new JSZip();
-    archive.file(
-      'ppt/slides/slide2.xml',
-      '<p:sld><a:t>第二页</a:t><a:t>结论</a:t></p:sld>',
-    );
-    archive.file(
-      'ppt/slides/slide1.xml',
-      '<p:sld><a:t>第一页</a:t><a:t>目标</a:t></p:sld>',
-    );
+    const presentation = new PptxGenJS();
+    presentation.addSlide().addText('第一页\n目标');
+    presentation.addSlide().addText('第二页\n结论');
     const parsed = await parseDocument({
-      bytes: await archive.generateAsync({ type: 'nodebuffer' }),
+      bytes: Buffer.from(
+        (await presentation.write({ outputType: 'nodebuffer' })) as Buffer,
+      ),
       mediaType:
         'application/vnd.openxmlformats-officedocument.presentationml.presentation',
       fileName: 'plan.pptx',
@@ -60,6 +58,98 @@ describe('parseDocument', () => {
       '第一页\n目标',
       '第二页\n结论',
     ]);
+    expect(parsed.units.map((unit) => unit.pageNumber)).toEqual([1, 2]);
+  });
+
+  it('uses presentation relationship order and namespace-aware XML text', async () => {
+    const presentation = new PptxGenJS();
+    presentation.addSlide().addText('文件一');
+    presentation.addSlide().addText('文件二');
+    const archive = await JSZip.loadAsync(
+      (await presentation.write({ outputType: 'nodebuffer' })) as Buffer,
+    );
+    const path = 'ppt/presentation.xml';
+    const xml = await archive.file(path)!.async('string');
+    const slides = [...xml.matchAll(/<p:sldId\b[^>]*\/>/g)].map(
+      (match) => match[0],
+    );
+    expect(slides).toHaveLength(2);
+    archive.file(
+      path,
+      xml
+        .replace(slides[0]!, '__SECOND__')
+        .replace(slides[1]!, slides[0]!)
+        .replace('__SECOND__', slides[1]!),
+    );
+    const slide = 'ppt/slides/slide2.xml';
+    archive.file(
+      slide,
+      (await archive.file(slide)!.async('string'))
+        .replaceAll('xmlns:a=', 'xmlns:equivalent=')
+        .replaceAll('<a:', '<equivalent:')
+        .replaceAll('</a:', '</equivalent:')
+        .replaceAll('<equivalent:t>', '<equivalent:t xml:space="preserve">'),
+    );
+    const parsed = await parseDocument({
+      bytes: await archive.generateAsync({ type: 'nodebuffer' }),
+      mediaType:
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      fileName: 'reordered.pptx',
+    });
+    expect(parsed.units.map((unit) => unit.text)).toEqual(['文件二', '文件一']);
+    expect(parsed.units.map((unit) => unit.pageNumber)).toEqual([1, 2]);
+  });
+
+  it('rejects a malformed PPTX instead of extracting one surviving slide as the whole presentation', async () => {
+    const archive = new JSZip();
+    archive.file('ppt/slides/slide1.xml', '<p:sld><a:t>局部正文</a:t></p:sld>');
+    await expect(
+      parseDocument({
+        bytes: await archive.generateAsync({ type: 'nodebuffer' }),
+        mediaType:
+          'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        fileName: 'broken.pptx',
+      }),
+    ).rejects.toMatchObject({ code: 'OFFICE_DOCUMENT_INVALID' });
+  });
+
+  it('reads a signed-package PPTX without weakening the default edit guard', async () => {
+    const presentation = new PptxGenJS();
+    presentation.addSlide().addText('签名包仍可读取');
+    const archive = await JSZip.loadAsync(
+      (await presentation.write({ outputType: 'nodebuffer' })) as Buffer,
+    );
+    // Parsing never verifies or edits a digital signature. This fixture marks
+    // the signed-package shape recognized by the existing edit guard.
+    archive.file(
+      '_xmlsignatures/sig1.xml',
+      '<Signature xmlns="http://www.w3.org/2000/09/xmldsig#"/>',
+    );
+    const bytes = await archive.generateAsync({ type: 'nodebuffer' });
+    const parsed = await parseDocument({
+      bytes,
+      mediaType:
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      fileName: 'signed.pptx',
+    });
+    expect(parsed.text).toContain('签名包仍可读取');
+    const readOnly = await OfficePackage.open(bytes, 'pptx', {
+      readOnly: true,
+    });
+    await expect(readOnly.finish()).rejects.toMatchObject({
+      code: 'OFFICE_DOCUMENT_INVALID',
+    });
+    await expect(OfficePackage.open(bytes, 'pptx')).rejects.toMatchObject({
+      code: 'OFFICE_DOCUMENT_INVALID',
+    });
+    archive.file('ppt/vbaProject.bin', 'macro');
+    await expect(
+      OfficePackage.open(
+        await archive.generateAsync({ type: 'nodebuffer' }),
+        'pptx',
+        { readOnly: true },
+      ),
+    ).rejects.toMatchObject({ code: 'OFFICE_DOCUMENT_INVALID' });
   });
 
   it('delegates selected PDF pages to the shared reader without reading adjacent pages', async () => {
