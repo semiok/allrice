@@ -169,10 +169,16 @@ suite(
           values(${actorId},${`${actorId}@example.test`},'Window fixture','not-login')`;
         const [row] = await fixture.db<{ id: string }[]>`
           insert into allrice_run_feedback(organization_id,workspace_id,run_id,message_id,actor_id,helpful,category,updated_at)
-          values(${sample.org},${sample.workspace},${sample.run},${sample.assistant},${actorId},false,'service-stability',${entry.at}::timestamptz)
+          values(${sample.org},${sample.workspace},${sample.run},${sample.assistant},${actorId},false,'service-stability',${entry.at}::text::timestamptz)
           returning id`;
         if (entry.included) expected.push(row!.id);
       }
+      const stored = await fixture.db<{ at: string }[]>`
+        select to_char(updated_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as at
+        from allrice_run_feedback where run_id=${sample.run} order by updated_at`;
+      expect(stored.map((row) => row.at)).toEqual(
+        cases.map((entry) => entry.at).sort(),
+      );
       // Freeze only the clock expression; all bounds/filtering execute in PostgreSQL.
       const diagnostics = new Proxy(fixture.db, {
         apply(target, receiver, args) {

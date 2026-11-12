@@ -75,25 +75,27 @@ async function records(
   end: string,
   id?: string,
 ) {
+  // Bind timestamp bounds as text: postgres.js serializes timestamptz parameters
+  // through JS Date, which would discard the database clock's microseconds.
   const rows =
     kind === 'run'
       ? await sql`select 'run' kind,r.id,r.id run_id,j.id job_id,r.organization_id,r.workspace_id,r.state status,r.error_code,r.error_message,
         exists(select 1 from allrice_employee_runs er where er.run_id=r.id and er.organization_id=r.organization_id and er.workspace_id=r.workspace_id) is_chat_run,
         r.updated_at observed_at from allrice_runs r left join allrice_jobs j on j.run_id=r.id
         where (${id ?? null}::uuid is null or r.id=${id ?? null}::uuid)
-          and (${start}::timestamptz is null or r.updated_at>=${start}::timestamptz) and r.updated_at<=${end}::timestamptz
+          and (${start}::text::timestamptz is null or r.updated_at>=${start}::text::timestamptz) and r.updated_at<=${end}::text::timestamptz
         order by r.updated_at desc,r.id limit 20`
       : kind === 'operation'
         ? await sql`select 'operation' kind,o.id,o.run_id,j.id job_id,o.organization_id,o.workspace_id,
           o.snapshot->>'status' status,o.snapshot->'binding'->>'action' action,o.updated_at observed_at
           from allrice_runtime_operations o left join allrice_jobs j on j.run_id=o.run_id
           where (${id ?? null}::uuid is null or o.id=${id ?? null}::uuid)
-            and (${start}::timestamptz is null or o.updated_at>=${start}::timestamptz) and o.updated_at<=${end}::timestamptz
+            and (${start}::text::timestamptz is null or o.updated_at>=${start}::text::timestamptz) and o.updated_at<=${end}::text::timestamptz
           order by o.updated_at desc,o.id limit 20`
         : await sql`select 'feedback' kind,f.id,f.run_id,j.id job_id,f.organization_id,f.workspace_id,f.review_status status,
           f.category,f.updated_at observed_at from allrice_run_feedback f left join allrice_jobs j on j.run_id=f.run_id
           where (${id ?? null}::uuid is null or f.id=${id ?? null}::uuid)
-            and (${start}::timestamptz is null or f.updated_at>=${start}::timestamptz) and f.updated_at<=${end}::timestamptz
+            and (${start}::text::timestamptz is null or f.updated_at>=${start}::text::timestamptz) and f.updated_at<=${end}::text::timestamptz
           order by f.updated_at desc,f.id limit 20`;
   const result = rows.map(record);
   if (kind !== 'run') return result;
