@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, expect, it, onTestFailed, vi } from 'vitest';
+import { createFailureEvidence } from '../../../scripts/test-failure-evidence.mjs';
 import {
   managedNodePayloadForPlatform,
   managedPythonPayloadForPlatform,
@@ -27,7 +28,12 @@ import type { Readable } from 'node:stream';
 const roots: string[] = [],
   extraChildren: ChildProcess[] = [];
 const fixturePids = new Map<number, string>();
-afterEach(async () => {
+let stopEvidence: ReturnType<typeof createFailureEvidence> | undefined;
+afterEach(async ({ task }) => {
+  const evidence = stopEvidence;
+  stopEvidence = undefined;
+  if (task.result?.state === 'fail')
+    await evidence?.capture(task.result.errors);
   vi.restoreAllMocks();
   vi.resetAllMocks();
   for (const child of extraChildren.splice(0)) {
@@ -216,10 +222,54 @@ it.each([
 ])(
   'does not treat successful stop CLI exit as VM proof: %s',
   async (_name, status) => {
-    const f = await fixture({ status });
+    let f: Awaited<ReturnType<typeof fixture>>;
+    const evidence =
+      _name === 'other profile'
+        ? (stopEvidence = createFailureEvidence({
+            file: import.meta.url,
+            test: `does not treat successful stop CLI exit as VM proof: ${_name}`,
+            collect: async () => ({
+              status,
+              rows: f ? await f.observed() : undefined,
+              steps: f?.steps,
+              started: f && Reflect.get(f.instance, 'started'),
+            }),
+          }))
+        : undefined;
+    if (evidence) {
+      onTestFailed(async ({ task }) => {
+        await evidence.capture(task.result?.errors);
+      });
+      const run = ownedProcess.runOwnedStopProcess;
+      vi.spyOn(ownedProcess, 'runOwnedStopProcess').mockImplementation(
+        (binary, args, options) => {
+          evidence.mark('owned-command-started', {
+            binary,
+            args,
+            timeoutMs: options.timeoutMs,
+          });
+          const pending = run(binary, args, options);
+          void pending.then(
+            (result) => evidence.mark('owned-command-exited', result),
+            (error: unknown) => evidence.mark('owned-command-rejected', error),
+          );
+          return pending;
+        },
+      );
+    }
+    f = await fixture({ status });
+    if (evidence) {
+      f.instance.onPreparationStep = (event) => {
+        f.steps.push(event);
+        evidence.mark('preparation', event);
+      };
+      evidence.mark('fixture-ready');
+    }
+    evidence?.mark('stop-requested');
     await expect(f.instance.stop()).rejects.toMatchObject({
       code: 'STOP_NOT_CONFIRMED',
     });
+    evidence?.mark('stop-rejected-as-expected');
     expect(Reflect.get(f.instance, 'started')).toBe(true);
     expect((await f.observed()).map((row) => row.command)).toEqual([
       'stop',

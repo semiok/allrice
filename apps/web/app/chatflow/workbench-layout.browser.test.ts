@@ -3,7 +3,16 @@ import { dirname, join } from 'node:path';
 import { createServer, type Server } from 'node:http';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  onTestFailed,
+} from 'vitest';
+import { createFailureEvidence } from '../../../../scripts/test-failure-evidence.mjs';
 import { officePreview } from '@allrice/office-runtime';
 import type { CloudOperationView } from '@allrice/database';
 import type {
@@ -350,6 +359,14 @@ function navigationHistory(count: number, paragraphs = 90): Message[] {
 
 suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   let browser: Browser, server: Server, origin: string;
+  let unreadEvidence: ReturnType<typeof createFailureEvidence> | undefined;
+  afterEach(async ({ task }) => {
+    const evidence = unreadEvidence;
+    unreadEvidence = undefined;
+    if (task.result?.state === 'fail')
+      await evidence?.capture(task.result.errors);
+    evidence?.dispose();
+  });
   const downloadFixtures = new Map<
     string,
     { fileName: string; body: string }
@@ -477,6 +494,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       appearance?: Appearance;
       // Another browser of the same account shares these saved preferences.
       preferences?: Record<string, UserPreferences>;
+      failureEvidence?: ReturnType<typeof createFailureEvidence>;
     } = {},
   ) {
     const serverTheme =
@@ -488,6 +506,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       isMobile: options.touch,
     });
     const page = await context.newPage();
+    options.failureEvidence?.observePage(page);
     page.setDefaultTimeout(5000);
     // Loading the development bundle can outlast interaction waits under CI load.
     page.setDefaultNavigationTimeout(15_000);
@@ -941,10 +960,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       }
       if (path === '/api/v1/workbench/updates') {
         state.updateReads++;
-        return answer({
+        const payload = {
           fileIds: workbenchFiles().map((file) => file.objectId),
           experienceIds: state.workbenchExperienceKeys,
+        };
+        options.failureEvidence?.mark('updates-route-received', {
+          updateReads: state.updateReads,
+          fileIds: payload.fileIds,
+          experienceIds: [...payload.experienceIds],
         });
+        return answer(payload);
       }
       if (path === '/api/v1/workbench/files') {
         state.workbenchReads++;
@@ -2393,6 +2418,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       async close() {
         releaseStartup();
         finishStream();
+        if (
+          options.failureEvidence &&
+          (errors.length || writes.length || unexpected.length)
+        )
+          await options.failureEvidence.capture({ errors, writes, unexpected });
         await context.close();
         expect(errors).toEqual([]);
         expect(writes).toEqual([]);
@@ -2629,9 +2659,56 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(await dialog.getByText(name, { exact: true }).count()).toBe(0);
   }
   it('MET198 file unread numbers remain scoped while retired experience keys never become memory badges', async () => {
-    const f = await fixture({ employeeDetails: true });
+    let f: Awaited<ReturnType<typeof fixture>>;
+    const evidence: ReturnType<typeof createFailureEvidence> = (unreadEvidence =
+      createFailureEvidence({
+        file: import.meta.url,
+        test: 'MET198 file unread numbers remain scoped while retired experience keys never become memory badges',
+        collect: async () => {
+          const snapshot = {
+            updateReads: f?.state.updateReads,
+            workbenchReads: f?.state.workbenchReads,
+            files: f?.state.files,
+            experienceKeys: f?.state.workbenchExperienceKeys,
+            errors: f?.errors,
+            writes: f?.writes,
+            unexpected: f?.unexpected,
+          };
+          evidence.mark('failure-fixture-state', snapshot);
+          return {
+            fixture: snapshot,
+            browserBaseline:
+              f &&
+              (await f.page.evaluate(() => ({
+                localStorage: Object.fromEntries(
+                  Object.keys(localStorage).map((key) => [
+                    key,
+                    localStorage.getItem(key),
+                  ]),
+                ),
+                headerButtons: Array.from(
+                  document.querySelectorAll('main > section header button'),
+                ).map((button) => ({
+                  text: button.textContent,
+                  label: button.getAttribute('aria-label'),
+                  pressed: button.getAttribute('aria-pressed'),
+                  visible: button.getClientRects().length > 0,
+                })),
+              }))),
+          };
+        },
+      }));
+    onTestFailed(async ({ task }) => {
+      await evidence.capture(task.result?.errors);
+    });
+    evidence.mark('fixture-started');
+    f = await fixture({ employeeDetails: true, failureEvidence: evidence });
     try {
+      evidence.mark('baseline-request-count-wait-started');
       await expect.poll(() => f.state.updateReads).toBe(1);
+      evidence.mark('baseline-request-count-observed', {
+        updateReads: f.state.updateReads,
+      });
       f.state.files.push({
         id: id(9901),
         fileName: '新增文件.txt',
@@ -2643,13 +2720,20 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         deliverableVersion: null,
       });
       f.state.workbenchExperienceKeys.push(id(9910) + '/1');
+      evidence.mark('fixture-files-mutated', {
+        fileId: id(9901),
+        experienceKey: id(9910) + '/1',
+      });
       await f.page.evaluate(() =>
         window.dispatchEvent(new Event('allrice:workbench-files-changed')),
       );
+      evidence.mark('files-changed-dispatched');
       const header = f.page.locator('main > section header');
+      evidence.mark('file-unread-badge-wait-started');
       await header
         .getByRole('button', { name: '工作区文件，1 项新增', exact: true })
         .waitFor();
+      evidence.mark('file-unread-badge-visible');
       expect(
         await header.getByRole('button', { name: /记忆，.*项新增/ }).count(),
       ).toBe(0);
@@ -2657,6 +2741,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page
         .getByRole('region', { name: '个人记忆', exact: true })
         .waitFor();
+      evidence.mark('memory-visible');
       expect(
         await header
           .getByRole('button', { name: '工作区文件，1 项新增', exact: true })
@@ -2670,6 +2755,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .waitFor();
       expect(f.state.experienceReads).toBe(0);
       expect(f.writes).toEqual([]);
+    } catch (error) {
+      await evidence.capture(error);
+      throw error;
     } finally {
       await f.close();
     }
