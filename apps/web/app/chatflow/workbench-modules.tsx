@@ -20,7 +20,7 @@ export type WorkbenchModule = 'files' | 'experience' | 'workflow';
 export const moduleLabels = {
   files: '工作区文件',
   experience: '记忆',
-  workflow: '工作场景',
+  workflow: '能力',
 };
 export function WorkbenchIcon({
   kind,

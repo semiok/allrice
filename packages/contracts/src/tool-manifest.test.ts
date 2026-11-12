@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   allRiceToolManifest,
+  employeeCustomizationToolsForInstance,
   withEmployeeCustomizationTools,
 } from './tool-manifest.ts';
 
@@ -162,13 +163,20 @@ it('ignores published intrinsic grants and gives general instances only private 
     ['storage:read', 'storage:write'],
     'custom',
   );
-  expect(custom).toContain('workspace.employee.method.save_candidate');
-  expect(custom).toContain('workspace.employee.method.restore_candidate');
-  for (const stage of ['test', 'test_status', 'prepare_activation', 'activate'])
+  expect(custom).toContain('workspace.brand_content.read');
+  for (const stage of [
+    'inspect',
+    'save_candidate',
+    'restore_candidate',
+    'test',
+    'test_status',
+    'prepare_activation',
+    'activate',
+  ])
     expect(custom).not.toContain(`workspace.employee.method.${stage}`);
 });
 
-it('adds exactly three owner methods for verified Rice without brand or legacy activation grants', () => {
+it('keeps retired text methods out of verified Rice grants without mutating declarations', () => {
   const original = withEmployeeCustomizationTools(
     [],
     ['storage:read', 'storage:write'],
@@ -180,20 +188,62 @@ it('adds exactly three owner methods for verified Rice without brand or legacy a
     'general',
     true,
   );
-  expect(rice.filter((name) => !original.includes(name))).toEqual([
-    'workspace.employee.method.inspect',
-    'workspace.employee.method.save_candidate',
-    'workspace.employee.method.restore_candidate',
-  ]);
+  expect(rice).toEqual(original);
   expect(
     withEmployeeCustomizationTools([], ['storage:read'], 'general', true),
-  ).toEqual(['workspace.employee.method.inspect']);
+  ).toEqual([]);
   expect(rice).not.toContain('workspace.brand_content.read');
   for (const suffix of [
+    'inspect',
+    'save_candidate',
+    'restore_candidate',
     'test',
     'test_status',
     'prepare_activation',
     'activate',
   ])
     expect(rice).not.toContain(`workspace.employee.method.${suffix}`);
+});
+
+it.each([
+  ['custom', false],
+  ['general', false],
+  ['general', true],
+  [undefined, false],
+] as const)(
+  'does not admit retired declared tools for %s (Rice=%s)',
+  (kind, rice) => {
+    const retired = ['inspect', 'save_candidate', 'restore_candidate'].map(
+      (action) => `workspace.employee.method.${action}`,
+    );
+    const declared = ['workspace.file.read', ...retired];
+    const before = [...declared];
+    const names = withEmployeeCustomizationTools(
+      declared,
+      ['storage:read', 'storage:write'],
+      kind,
+      rice,
+    );
+    expect(names).toContain('workspace.file.read');
+    for (const name of retired) expect(names).not.toContain(name);
+    expect(declared).toEqual(before);
+  },
+);
+
+it('retains canonical wire metadata and old instance eligibility for frozen grants', () => {
+  for (const action of ['inspect', 'save_candidate', 'restore_candidate']) {
+    const name = `workspace.employee.method.${action}`;
+    expect(
+      allRiceToolManifest.find((tool) => tool.canonicalName === name),
+    ).toMatchObject({
+      dshWireName: `workspace_employee_method_${action}`,
+      transport: 'dsh_broker_native',
+    });
+    for (const kind of ['custom', 'general'] as const)
+      expect(
+        employeeCustomizationToolsForInstance(kind, true).map(
+          (tool) => tool.name,
+        ),
+      ).toContain(name);
+  }
 });

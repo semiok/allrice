@@ -11,6 +11,7 @@ import {
   EmployeeDetailsSchema,
   EmployeeInstanceProfileSchema,
   EmployeeInstanceSchema,
+  EmployeeSkillCatalogSchema,
   EmployeeMemoryPageSchema,
   PersonalSceneSkillCatalogSchema,
   UpdateEmployeeInstanceInputSchema,
@@ -348,6 +349,27 @@ suite('U1 Rice full persona from the real employee entry', () => {
             }),
           );
         }
+      }
+      const skillCatalog = path.match(
+        /^\/api\/v1\/employee-instances\/([^/]+)\/skills$/,
+      );
+      if (skillCatalog && request.method() === 'GET') {
+        const instance = instances.find((item) => item.id === skillCatalog[1]);
+        expect(instance).toBeDefined();
+        expect(instance!.ownerId).toBe(id(5));
+        expect([...url.searchParams.keys()]).toEqual(['workspaceId']);
+        expect(url.searchParams.get('workspaceId')).toBe(id(4));
+        expect(request.headers()['x-allrice-workspace-id']).toBe(id(4));
+        return route.fulfill(
+          json(
+            EmployeeSkillCatalogSchema.parse({
+              instanceId: instance!.id,
+              canInstall: true,
+              platformSkills: [],
+              personalSkills: [],
+            }),
+          ),
+        );
       }
       if (request.method() === 'GET' && path.endsWith('/scene-skills'))
         return route.fulfill(

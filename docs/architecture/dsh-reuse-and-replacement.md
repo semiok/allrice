@@ -383,6 +383,18 @@ Allrice 的公开事件不含原生推理正文，因此不伪造 ReasoningRow �
 
 ### allrice-jsonrpc-lifecycle-v1
 
+MET-223 B2 removes `workspace.employee.method.inspect`, `save_candidate` and
+`restore_candidate` from new Run grants, including declared dependencies and
+Rice/custom/general/delegated selections. The default capability-only directory
+also omits them. Existing canonical/wire metadata and explicit frozen-grant
+adapters remain for authorized historical reads or original receipts; new text
+writes/restoration/activation are rejected at the existing database boundaries.
+No snapshot, bundle or native history is rebuilt. The same `employee-customization`
+Skill ID now publishes version 3.0.0 without retired tool dependencies; the kernel
+uses frozen `personalScenes` eligibility and DSH's public Skill list/get/tool
+loading. Tool registration still selects only the requested native names; no
+second registry, discovery tool, state machine or new persistence is introduced.
+
 MET-246 F2 uses public `defineTool` and Agent-local `tools.register` for
 `workspace.file.read` only on an ordinary human root admitted by the existing
 database source gate. Internal/scheduled callers and older pinned artifacts

@@ -40,6 +40,7 @@ import {
 import { getWorkAutomation, updateWorkAutomation } from './work-automation.ts';
 import {
   calendarControlIdentity,
+  calendarWriterIdentity,
   type NativeCalendarWrite,
 } from './native-schedule-calendar-state.ts';
 import {
@@ -63,6 +64,7 @@ import {
 } from './automation-manual.ts';
 import { getAutomationCatalogTask } from './automation-catalog.ts';
 import * as client from './core/client.ts';
+import * as controlSql from './native-schedule-control-sql.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -76,6 +78,8 @@ suite(
     let root: string;
     let store: ReturnType<typeof createNativeRecurringSqlStore>,
       writer: NativeOnceWriter;
+    let readyRequest: NativeCalendarWrite | null = null;
+    let boundedObservationInstalled = false;
     const reference = {
       artifactId: `sha256:${'b'.repeat(64)}`,
       profileId: 'allrice-recurring-control-v1',
@@ -103,6 +107,8 @@ suite(
     });
     const calendar = () => store.calendar!;
     beforeEach(async () => {
+      readyRequest = null;
+      boundedObservationInstalled = false;
       vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '1');
       vi.stubEnv('ALLRICE_NATIVE_CALENDAR_ENABLED', '1');
       vi.stubEnv('ALLRICE_EXPERIENCE_REVIEW_ENABLED', '0');
@@ -147,6 +153,47 @@ suite(
       values(${versionId},${f.organizationId},${f.workspaceId},${f.employeeId},2,${manifest.name},${manifest.provider.model},${manifest.systemPrompt},${f.db.json(manifest.capabilities)},${employeeManifestChecksum(manifest)},${f.db.json(manifest)},${f.db.json(manifest.provider)})`;
       await f.db`update allrice_employee_assignments set employee_version_id=${versionId} where id=${f.assignmentId}`;
       await initializeNativeRecurringPartition(reference);
+      const createCommonStore = controlSql.createNativeScheduleControlSqlStore;
+      const observingFactory: typeof createCommonStore = (options) => {
+        const common = createCommonStore(options);
+        const bounded = common.bounded;
+        common.bounded = (work, repeatable) => {
+          const context = readyRequest;
+          const promise = bounded(work, repeatable);
+          if (context) {
+            void promise.catch((cause: unknown) => {
+              try {
+                console.error(
+                  'MET251_MONTHLY_BOUNDED_REJECTED',
+                  JSON.stringify({
+                    action: context.mutation.action,
+                    writeId: context.writeId,
+                    errorClass:
+                      cause instanceof Error
+                        ? cause.constructor.name
+                        : typeof cause,
+                    code:
+                      cause && typeof cause === 'object' && 'code' in cause
+                        ? String(cause.code)
+                        : null,
+                    message:
+                      cause instanceof Error ? cause.message : String(cause),
+                  }),
+                );
+              } catch {
+                // Observation must never replace the original rejection.
+              }
+            });
+          }
+          return promise;
+        };
+        boundedObservationInstalled = true;
+        return common;
+      };
+      vi.spyOn(
+        controlSql,
+        'createNativeScheduleControlSqlStore',
+      ).mockImplementation(observingFactory);
       store = createNativeRecurringSqlStore({
         db: f.db,
         partitionId: 'allrice-recurring-v1',
@@ -172,9 +219,13 @@ suite(
       try {
         await f?.close();
       } finally {
-        if (root) await rm(root, { recursive: true, force: true });
-        vi.restoreAllMocks();
-        vi.unstubAllEnvs();
+        try {
+          if (root) await rm(root, { recursive: true, force: true });
+        } finally {
+          readyRequest = null;
+          vi.restoreAllMocks();
+          vi.unstubAllEnvs();
+        }
       }
     }, 30000);
     async function session() {
@@ -217,22 +268,56 @@ suite(
     async function readyParent(id: string) {
       const state = await calendar().loadCalendarState(writer);
       const parent = state.controls.find((r) => r.control.automationId === id)!;
-      if (parent.control.sessionState === 'reserved')
+      if (parent.control.sessionState === 'reserved') {
         for (const [action, expectedControlVersion] of [
           ['session_initializing', parent.version],
           ['session_ready', parent.version + 1],
-        ] as const)
-          expect(
-            await store.commitMutation(
-              writer,
-              write({
-                kind: 'calendar',
-                action,
-                controlId: parent.control.controlId,
-                expectedControlVersion,
+        ] as const) {
+          const request = write({
+            kind: 'calendar',
+            action,
+            controlId: parent.control.controlId,
+            expectedControlVersion,
+          });
+          let outcome: Awaited<ReturnType<typeof store.commitMutation>>;
+          readyRequest = request;
+          try {
+            outcome = await store.commitMutation(writer, request);
+          } finally {
+            readyRequest = null;
+          }
+          if (outcome !== 'committed') {
+            // Read only after rejection: no new write, renewal or retry.
+            const evidence = await Promise.allSettled([
+              store.readExactCommit(writer, request),
+              f.db`select clock_timestamp() database_now,
+                p.partition_id,p.owner_id,p.epoch::text epoch,p.token_digest,
+                p.expires_at,p.closed,p.activation,p.reference,
+                c.control_id,c.snapshot_version::text control_version,
+                c.snapshot->'control' control
+                from allrice_native_once_partitions p
+                left join allrice_native_recurring_controls c
+                  on c.partition_id=p.partition_id and c.control_id=${parent.control.controlId}
+                where p.partition_id=${writer.partitionId}`,
+            ]);
+            console.error(
+              'MET251_MONTHLY_READY_REJECTED',
+              JSON.stringify({
+                request,
+                boundedObservationInstalled,
+                writer: calendarWriterIdentity(writer),
+                before: parent,
+                evidence: evidence.map((item) =>
+                  item.status === 'fulfilled'
+                    ? item
+                    : { status: item.status, error: String(item.reason) },
+                ),
               }),
-            ),
-          ).toBe('committed');
+            );
+          }
+          expect(outcome).toBe('committed');
+        }
+      }
     }
     /** Component-only backend put/receipt. Actual public create/delivery/delete
      * and normal Host drain are a separately executed parent-owned acceptance. */

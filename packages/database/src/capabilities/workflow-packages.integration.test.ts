@@ -11,7 +11,6 @@ import {
   RegisterWorkflowPackageInputSchema,
   WorkflowDefinitionSchema,
   type EmployeeContentMutation,
-  type EmployeeContentReceipt,
   type RequestContext,
   type WorkflowPackage,
   type WorkflowPackageManifest,
@@ -36,10 +35,8 @@ import {
   createEmployeeInstance,
   ensureGeneralEmployeeInstance,
 } from '../employees/employee-instances.ts';
-import {
-  getEffectiveEmployeeContent,
-  mutateEmployeeContent,
-} from '../employees/employee-content.ts';
+import { getEffectiveEmployeeContent } from '../employees/employee-content.ts';
+import { seedHistoricalEmployeeContent } from '../employees/employee-method-history.fixture.ts';
 import { resolveEmployeeContentSource } from '../employees/employee-content-sources.ts';
 import { manageEmployeeAssignments } from '../employees/employeehub.ts';
 import { authorizeFixturePlatformAdministrator } from '../platform-authority.fixture.ts';
@@ -211,8 +208,7 @@ suite(
         target: { kind: 'instance', instanceId: s.instance.id },
         requestId: randomUUID(),
         expectedRevision: s.contentRevision,
-        changeSummary:
-          'Publish synthetic exact methods through current content transactions',
+        changeSummary: 'Retained pre-retirement exact method fixture',
         operation: 'save_draft',
         textEdits: [commonEdit, sceneEdit],
         manifest: {
@@ -241,32 +237,11 @@ suite(
           declaredConflicts: [],
         },
       };
-      function next(
-        receipt: EmployeeContentReceipt,
-        operation: 'validate' | 'activate',
-      ): EmployeeContentMutation {
-        return {
-          workspaceId: input.workspaceId,
-          setId: input.setId,
-          ownership: input.ownership,
-          target: input.target,
-          requestId: randomUUID(),
-          expectedRevision: receipt.revision,
-          changeSummary: operation,
-          operation,
-          candidateRevisionId: receipt.candidate.id,
-          candidateDigest: receipt.candidate.digest,
-        };
-      }
-      const draft = await mutateEmployeeContent(s.owner.context, input);
-      const checked = await mutateEmployeeContent(
+      const active = await seedHistoricalEmployeeContent(
+        fixture.db,
         s.owner.context,
-        next(draft, 'validate'),
-      );
-      expect(checked.validation?.valid).toBe(true);
-      const active = await mutateEmployeeContent(
-        s.owner.context,
-        next(checked, 'activate'),
+        input,
+        { active: true },
       );
       s.contentRevision = active.revision;
       const current = await getEffectiveEmployeeContent(
