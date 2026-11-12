@@ -7,16 +7,20 @@
   --memory-active: #2e9657;
   --memory-pending: #d29b26;
   --memory-danger: rgb(185, 28, 28);
+  --memory-warning-bg: #fcf5e7;
+  --memory-warning-ink: #805512;
 }
 :global(body[data-ds-dark-theme]) .panel,
 :global(body[data-ds-dark-theme]) .dialog {
-  --memory-field: #222429;
-  --memory-focus: #81aaff;
+  --memory-field: rgb(53, 54, 56);
+  --memory-focus: rgb(183, 200, 254);
   --memory-avatar-bg: #263951;
   --memory-avatar-ink: #a0c0f7;
   --memory-active: #6ab78b;
   --memory-pending: #ddae4e;
-  --memory-danger: #ed8b8b;
+  --memory-danger: rgb(254, 202, 202);
+  --memory-warning-bg: #30291c;
+  --memory-warning-ink: #dec28e;
 }
 .panel {
   display: flex;
@@ -193,8 +197,8 @@
   margin: 16px 16px 0;
   padding: 10px 12px;
   border-radius: 8px;
-  background: var(--ar-warning-soft);
-  color: var(--ar-warning-text);
+  background: var(--memory-warning-bg);
+  color: var(--memory-warning-ink);
   font-size: 12px;
   line-height: 20px;
 }
