@@ -2289,7 +2289,9 @@ suite(
         ...worker,
         result: { answer: 'CURRENT_AUTHORITY_RECHECKED', citations: [] },
       });
-      await f.db`update allrice_storage_objects set retention_until=clock_timestamp()-interval '1 second' where id=${retained.id}`;
+      // Model an aged fixture so expiry follows creation even when the real
+      // operations above finish in under one second.
+      await f.db`update allrice_storage_objects set created_at=clock_timestamp()-interval '1 day',retention_until=clock_timestamp()-interval '1 second' where id=${retained.id}`;
       await expect(
         assertEmployeeContentContext(
           current.scope,
@@ -2337,7 +2339,8 @@ suite(
         early.scope.sessionId,
         [early.sent.assistantMessage.id],
       );
-      await f.db`update allrice_sessions set expires_at=clock_timestamp()-interval '1 second' where id=${s.finance.sessionId!}`;
+      // Authentication sessions enforce the same expiry-after-creation rule.
+      await f.db`update allrice_sessions set created_at=clock_timestamp()-interval '1 day',expires_at=clock_timestamp()-interval '1 second' where id=${s.finance.sessionId!}`;
       await expect(
         assertEmployeeContentReferenceMessages(
           s.finance,
