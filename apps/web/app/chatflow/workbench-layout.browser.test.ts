@@ -7857,7 +7857,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             identityPadding: getComputedStyle(identity).padding,
             identityBackground: getComputedStyle(identity).backgroundColor,
             personaPadding: getComputedStyle(identity.parentElement!).padding,
-            personaBorder: getComputedStyle(identity.parentElement!).borderTopWidth,
+            personaBorder: getComputedStyle(identity.parentElement!)
+              .borderTopWidth,
           };
         });
         expect(createLayout.titleSize).toBe('20px');
@@ -7896,9 +7897,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         );
         await nameInput.fill(employeeName);
         await picker.getByRole('radio', { name: '珊瑚红' }).check();
-        await picker.getByRole('button', { name: '确认创建', exact: true }).click();
+        await picker
+          .getByRole('button', { name: '确认创建', exact: true })
+          .click();
         await picker.getByRole('alert').waitFor();
-        await picker.getByRole('button', { name: '确认创建', exact: true }).click();
+        await picker
+          .getByRole('button', { name: '确认创建', exact: true })
+          .click();
         await expect.poll(() => picker.count()).toBe(0);
         await expect
           .poll(() =>
@@ -7942,317 +7947,473 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     ['mobile', 390, 844],
   ] as const)
     for (const appearance of ['light', 'dark'] as const)
-      it(
-        `MET249 approved create-employee states mount Chatflow at ${width}px ${appearance}`,
-        async ({ task }) => {
-          const f = await fixture({
-            width,
-            touch: device === 'mobile',
-            employeeCount: 2,
-            employeeHistory: true,
-            employeeHistoryCount: 3,
-            officeHistoryCount: 0,
-            appearance,
+      it(`MET249 approved create-employee states mount Chatflow at ${width}px ${appearance}`, async ({
+        task,
+      }) => {
+        const f = await fixture({
+          width,
+          touch: device === 'mobile',
+          employeeCount: 2,
+          employeeHistory: true,
+          employeeHistoryCount: 3,
+          officeHistoryCount: 0,
+          appearance,
+        });
+        const evidence = resolve('.local/met249-create-employee');
+        const screenshots = join(evidence, 'screenshots');
+        const captures: Array<Record<string, unknown>> = [];
+        const creationRequests: Array<
+          ReturnType<typeof CreateEmployeeInstanceInputSchema.parse>
+        > = [];
+        const sessionCreates: unknown[] = [];
+        let completed = false;
+        let firstFailure: unknown;
+        const tree = () =>
+          f.page.getByRole('tree', { name: '员工与工作', exact: true });
+        const group = (name: string) =>
+          tree().getByRole('region', { name, exact: true });
+        const pending = () =>
+          tree().getByRole('treeitem').filter({ hasText: '新会话' });
+        const sidebar = async () => {
+          const expand = f.page.getByRole('button', {
+            name: '展开侧边栏',
+            exact: true,
           });
-          const evidence = resolve('.local/met249-create-employee');
-          const screenshots = join(evidence, 'screenshots');
-          const captures: Array<Record<string, unknown>> = [];
-          const creationRequests: Array<
-            ReturnType<typeof CreateEmployeeInstanceInputSchema.parse>
-          > = [];
-          const sessionCreates: unknown[] = [];
-          let completed = false;
-          let firstFailure: unknown;
-          const tree = () =>
-            f.page.getByRole('tree', { name: '员工与工作', exact: true });
-          const group = (name: string) =>
-            tree().getByRole('region', { name, exact: true });
-          const pending = () =>
-            tree().getByRole('treeitem').filter({ hasText: '新会话' });
-          const sidebar = async () => {
-            const expand = f.page.getByRole('button', {
-              name: '展开侧边栏',
-              exact: true,
-            });
-            if (await expand.isVisible()) await expand.click();
-            await expect
-              .poll(() =>
-                f.page.locator('#chat-sidebar').evaluate((node) =>
+          if (await expand.isVisible()) await expand.click();
+          await expect
+            .poll(() =>
+              f.page
+                .locator('#chat-sidebar')
+                .evaluate((node) =>
                   Math.round(node.getBoundingClientRect().left),
                 ),
-              )
-              .toBe(0);
-          };
-          const capture = async (
-            state: string,
-            suffix = '',
-            details: Record<string, unknown> = {},
-          ) => {
-            await f.page.evaluate(() => document.fonts.ready);
-            expect(
-              await f.page.evaluate(
-                () => document.documentElement.scrollWidth <= innerWidth,
-              ),
-            ).toBe(true);
-            const file = `${device}-${appearance}-${state}${suffix}.png`;
-            const bytes = await f.page.screenshot({
-              path: join(screenshots, file),
-              animations: 'disabled',
+            )
+            .toBe(0);
+        };
+        const capture = async (
+          state: string,
+          suffix = '',
+          details: Record<string, unknown> = {},
+        ) => {
+          await f.page.evaluate(() => document.fonts.ready);
+          expect(
+            await f.page.evaluate(
+              () => document.documentElement.scrollWidth <= innerWidth,
+            ),
+          ).toBe(true);
+          const file = `${device}-${appearance}-${state}${suffix}.png`;
+          const bytes = await f.page.screenshot({
+            path: join(screenshots, file),
+            animations: 'disabled',
+          });
+          captures.push({
+            runRelativePath: `.local/met249-create-employee/screenshots/${file}`,
+            sourceInstanceId: task.id,
+            sourceInstanceName: task.name,
+            viewportWidth: width,
+            viewportHeight: height,
+            host: 'ChatFlowClient',
+            theme: appearance,
+            state,
+            sha256: createHash('sha256').update(bytes).digest('hex'),
+            bytes: bytes.length,
+            ...details,
+          });
+        };
+        const scrollForm = async (dialog: Locator, bottom: boolean) => {
+          const dimensions = await dialog.evaluate((root, bottom) => {
+            const candidates = [root, ...root.querySelectorAll('*')].filter(
+              (node) =>
+                node instanceof HTMLElement &&
+                node.scrollHeight > node.clientHeight + 1 &&
+                ['auto', 'scroll'].includes(getComputedStyle(node).overflowY),
+            ) as HTMLElement[];
+            const target = candidates.sort(
+              (a, b) => b.clientHeight - a.clientHeight,
+            )[0];
+            if (!target) return null;
+            target.scrollTop = bottom ? target.scrollHeight : 0;
+            return {
+              scrollHeight: target.scrollHeight,
+              clientHeight: target.clientHeight,
+              scrollTop: target.scrollTop,
+            };
+          }, bottom);
+          expect(
+            dimensions,
+            'creation content uses its own scroll surface',
+          ).not.toBeNull();
+          if (bottom) expect(dimensions!.scrollTop).toBeGreaterThan(0);
+          else expect(dimensions!.scrollTop).toBe(0);
+          const footer = dialog.locator('footer');
+          const box = (await footer.boundingBox())!;
+          expect(box.y).toBeGreaterThanOrEqual(0);
+          expect(box.y + box.height).toBeLessThanOrEqual(height);
+          return dimensions;
+        };
+        try {
+          await mkdir(screenshots, { recursive: true });
+          await f.page.setViewportSize({ width, height });
+          await f.page.emulateMedia({ reducedMotion: 'reduce' });
+          // The supported employee deep link opens a blank view while the
+          // real sidebar still loads the saved-session count and previews.
+          await f.page.goto(`${origin}/?employee=${id(9)}&theme=1`);
+          await f.page
+            .getByRole('textbox', { name: '给 Rice 的消息', exact: true })
+            .waitFor();
+          await expect
+            .poll(() => f.page.locator('html').getAttribute('data-theme'))
+            .toBe(appearance);
+          await f.page.route('**/api/v1/employee-instances', async (route) => {
+            if (route.request().method() !== 'POST') return route.fallback();
+            const body = CreateEmployeeInstanceInputSchema.parse(
+              route.request().postDataJSON(),
+            );
+            expect(route.request().headers()['x-allrice-workspace-id']).toBe(
+              workspace,
+            );
+            expect(route.request().headers()['x-allrice-organization-id']).toBe(
+              org,
+            );
+            creationRequests.push(body);
+            const instance = EmployeeInstanceSchema.parse({
+              id: id(8100),
+              assignmentId: body.assignmentId,
+              organizationId: org,
+              workspaceId: workspace,
+              ownerId: user,
+              kind: 'custom',
+              revision: 1,
+              profile: body.profile,
+              creationSource: {
+                kind: 'tenant_version',
+                employeeVersionId: id(8),
+              },
+              source: { kind: 'tenant_version', employeeVersionId: id(8) },
+              createdAt: now,
+              updatedAt: now,
+              archivedAt: null,
             });
-            captures.push({
-              runRelativePath: `.local/met249-create-employee/screenshots/${file}`,
-              sourceInstanceId: task.id,
-              sourceInstanceName: task.name,
-              viewportWidth: width,
-              viewportHeight: height,
-              host: 'ChatFlowClient',
-              theme: appearance,
-              state,
-              sha256: createHash('sha256').update(bytes).digest('hex'),
-              bytes: bytes.length,
-              ...details,
+            f.state.createdEmployeeInstances = [instance];
+            await route.fulfill({ status: 201, json: { instance } });
+          });
+          await f.page.route('**/api/v1/sessions', async (route) => {
+            if (route.request().method() !== 'POST') return route.fallback();
+            sessionCreates.push(route.request().postDataJSON());
+            await route.fulfill({
+              status: 500,
+              json: { error: 'No session may be created before a message' },
             });
-          };
-          const scrollForm = async (dialog: Locator, bottom: boolean) => {
-            const dimensions = await dialog.evaluate((root, bottom) => {
-              const candidates = [root, ...root.querySelectorAll('*')].filter(
-                (node) =>
-                  node instanceof HTMLElement &&
-                  node.scrollHeight > node.clientHeight + 1 &&
-                  ['auto', 'scroll'].includes(getComputedStyle(node).overflowY),
-              ) as HTMLElement[];
-              const target = candidates.sort(
-                (a, b) => b.clientHeight - a.clientHeight,
-              )[0];
-              if (!target) return null;
-              target.scrollTop = bottom ? target.scrollHeight : 0;
-              return {
-                scrollHeight: target.scrollHeight,
-                clientHeight: target.clientHeight,
-                scrollTop: target.scrollTop,
-              };
-            }, bottom);
-            expect(dimensions, 'creation content uses its own scroll surface').not.toBeNull();
-            if (bottom) expect(dimensions!.scrollTop).toBeGreaterThan(0);
-            else expect(dimensions!.scrollTop).toBe(0);
-            const footer = dialog.locator('footer');
-            const box = (await footer.boundingBox())!;
-            expect(box.y).toBeGreaterThanOrEqual(0);
-            expect(box.y + box.height).toBeLessThanOrEqual(height);
-            return dimensions;
-          };
-          try {
-            await mkdir(screenshots, { recursive: true });
-            await f.page.setViewportSize({ width, height });
-            await f.page.emulateMedia({ reducedMotion: 'reduce' });
-            // The supported employee deep link opens a blank view while the
-            // real sidebar still loads the saved-session count and previews.
-            await f.page.goto(`${origin}/?employee=${id(9)}&theme=1`);
+          });
+          await sidebar();
+          expect(await tree().getByText('默认', { exact: true }).count()).toBe(
+            0,
+          );
+          expect(
+            await tree().getByText('研究助理', { exact: false }).count(),
+          ).toBe(0);
+          await group('Rice').getByText('3 个工作', { exact: true }).waitFor();
+          const riceRow = tree().locator(`[data-row-key="workspace:${id(7)}"]`);
+          if ((await riceRow.getAttribute('aria-expanded')) === 'true')
+            await riceRow.click();
+          await f.page.mouse.move(width - 1, 1);
+          await capture('normal');
+
+          const plus = group('Rice').getByRole('button', {
+            name: '和 Rice 开新会话',
+            exact: true,
+          });
+          if (device === 'mobile') await plus.focus();
+          else await plus.hover();
+          await f.page
+            .getByRole('tooltip')
+            .filter({ hasText: '和 Rice 开新会话' })
+            .waitFor();
+          await capture('hover');
+          if (device === 'mobile') await plus.tap();
+          else await plus.press('Enter');
+          await f.page
+            .getByRole('textbox', { name: '给 Rice 的消息', exact: true })
+            .waitFor();
+          await f.page
+            .getByRole('heading', { name: '和Rice开始新的工作', exact: true })
+            .waitFor();
+          expect(new URL(f.page.url()).searchParams.get('session')).toBeNull();
+          if (device === 'mobile')
             await f.page
-              .getByRole('textbox', { name: '给 Rice 的消息', exact: true })
+              .getByRole('button', { name: '展开侧边栏', exact: true })
               .waitFor();
-            await expect
-              .poll(() =>
-                f.page.locator('html').getAttribute('data-theme'),
-              )
-              .toBe(appearance);
-            await f.page.route('**/api/v1/employee-instances', async (route) => {
-              if (route.request().method() !== 'POST') return route.fallback();
-              const body = CreateEmployeeInstanceInputSchema.parse(
-                route.request().postDataJSON(),
-              );
-              expect(route.request().headers()['x-allrice-workspace-id']).toBe(workspace);
-              expect(route.request().headers()['x-allrice-organization-id']).toBe(org);
-              creationRequests.push(body);
-              const instance = EmployeeInstanceSchema.parse({
-                id: id(8100),
-                assignmentId: body.assignmentId,
-                organizationId: org,
-                workspaceId: workspace,
-                ownerId: user,
-                kind: 'custom',
-                revision: 1,
-                profile: body.profile,
-                creationSource: { kind: 'tenant_version', employeeVersionId: id(8) },
-                source: { kind: 'tenant_version', employeeVersionId: id(8) },
-                createdAt: now,
-                updatedAt: now,
-                archivedAt: null,
-              });
-              f.state.createdEmployeeInstances = [instance];
-              await route.fulfill({ status: 201, json: { instance } });
-            });
-            await f.page.route('**/api/v1/sessions', async (route) => {
-              if (route.request().method() !== 'POST') return route.fallback();
-              sessionCreates.push(route.request().postDataJSON());
-              await route.fulfill({ status: 500, json: { error: 'No session may be created before a message' } });
-            });
-            await sidebar();
-            expect(await tree().getByText('默认', { exact: true }).count()).toBe(0);
-            expect(await tree().getByText('研究助理', { exact: false }).count()).toBe(0);
-            await group('Rice').getByText('3 个工作', { exact: true }).waitFor();
-            const riceRow = tree().locator(`[data-row-key="workspace:${id(7)}"]`);
-            if ((await riceRow.getAttribute('aria-expanded')) === 'true') await riceRow.click();
-            await f.page.mouse.move(width - 1, 1);
-            await capture('normal');
+          await f.page.mouse.move(width - 1, 1);
+          await f.page
+            .getByRole('tooltip')
+            .filter({ hasText: '和 Rice 开新会话' })
+            .waitFor({ state: 'hidden' });
+          await capture('blank');
+          await sidebar();
+          expect(await pending().count()).toBe(1);
+          expect(await pending().getAttribute('aria-selected')).toBe('true');
+          expect(await pending().getAttribute('data-row-key')).toBeNull();
+          expect(
+            await group('Rice').getByText('3 个工作', { exact: true }).count(),
+          ).toBe(1);
+          expect(sessionCreates).toEqual([]);
+          if (device === 'mobile')
+            await capture('blank', '-sidebar', { sidebar: 'open' });
+          await group('Rice')
+            .getByRole('treeitem')
+            .filter({ hasText: '历史工作 1' })
+            .click();
+          await sidebar();
+          expect(await pending().count()).toBe(0);
+          expect(
+            await group('Rice').getByText('3 个工作', { exact: true }).count(),
+          ).toBe(1);
+          expect(new URL(f.page.url()).searchParams.get('session')).toBe(
+            id(600),
+          );
+          const emptyRow = tree().locator(
+            `[data-row-key="workspace:${id(17)}"]`,
+          );
+          if ((await emptyRow.getAttribute('aria-expanded')) !== 'true')
+            await emptyRow.click();
+          await group('Office 文档助手')
+            .getByText('点卡片上的加号开始', { exact: true })
+            .waitFor();
+          await capture('empty-employee');
 
-            const plus = group('Rice').getByRole('button', { name: '和 Rice 开新会话', exact: true });
-            if (device === 'mobile') await plus.focus();
-            else await plus.hover();
-            await f.page.getByRole('tooltip').filter({ hasText: '和 Rice 开新会话' }).waitFor();
-            await capture('hover');
-            if (device === 'mobile') await plus.tap();
-            else await plus.press('Enter');
-            await f.page.getByRole('textbox', { name: '给 Rice 的消息', exact: true }).waitFor();
-            await f.page.getByRole('heading', { name: '和Rice开始新的工作', exact: true }).waitFor();
-            expect(new URL(f.page.url()).searchParams.get('session')).toBeNull();
-            if (device === 'mobile')
-              await f.page.getByRole('button', { name: '展开侧边栏', exact: true }).waitFor();
-            await f.page.mouse.move(width - 1, 1);
-            await f.page.getByRole('tooltip').filter({ hasText: '和 Rice 开新会话' }).waitFor({ state: 'hidden' });
-            await capture('blank');
-            await sidebar();
-            expect(await pending().count()).toBe(1);
-            expect(await pending().getAttribute('aria-selected')).toBe('true');
-            expect(await pending().getAttribute('data-row-key')).toBeNull();
-            expect(await group('Rice').getByText('3 个工作', { exact: true }).count()).toBe(1);
-            expect(sessionCreates).toEqual([]);
-            if (device === 'mobile') await capture('blank', '-sidebar', { sidebar: 'open' });
-            await group('Rice').getByRole('treeitem').filter({ hasText: '历史工作 1' }).click();
-            await sidebar();
-            expect(await pending().count()).toBe(0);
-            expect(await group('Rice').getByText('3 个工作', { exact: true }).count()).toBe(1);
-            expect(new URL(f.page.url()).searchParams.get('session')).toBe(id(600));
-            const emptyRow = tree().locator(`[data-row-key="workspace:${id(17)}"]`);
-            if ((await emptyRow.getAttribute('aria-expanded')) !== 'true') await emptyRow.click();
-            await group('Office 文档助手').getByText('点卡片上的加号开始', { exact: true }).waitFor();
-            await capture('empty-employee');
-
-            const createTrigger = f.page.getByRole('button', { name: '创建员工', exact: true });
-            await createTrigger.click();
-            const dialog = f.page.getByRole('dialog', { name: '创建一位 AI 员工', exact: true });
-            const name = dialog.getByRole('textbox', { name: '员工名字', exact: true });
-            const mission = dialog.getByRole('textbox', { name: '使命', exact: true });
-            const workStyle = dialog.getByRole('textbox', { name: '工作方式', exact: true });
-            const create = dialog.getByRole('button', { name: '确认创建', exact: true });
-            await name.waitFor();
-            expect(await f.page.getByRole('dialog', { name: '选择 AI 员工' }).count()).toBe(0);
-            expect(await name.inputValue()).toBe('');
-            expect(await create.isDisabled()).toBe(true);
-            expect(await mission.inputValue()).toBe('理解目标，推进工作，交付清晰、可用的结果。');
-            expect(await workStyle.inputValue()).toBe('先确认目标和资料，再分步执行；信息不足时及时说明，交付时列出待确认事项。');
-            expect(await name.getAttribute('required')).not.toBeNull();
-            expect(await mission.getAttribute('required')).not.toBeNull();
-            expect(await workStyle.getAttribute('required')).toBeNull();
-            expect(await name.getAttribute('maxlength')).toBe('120');
-            expect(await mission.getAttribute('maxlength')).toBe('500');
-            expect(await workStyle.getAttribute('maxlength')).toBe('1000');
-            expect(await dialog.getByRole('radio').count()).toBe(10);
-            for (const { label } of Object.values(employeeColorPalette))
-              expect(await dialog.getByRole('radio', { name: label, exact: true }).count()).toBe(1);
-            expect(await dialog.getByRole('radio', { name: '科技蓝', exact: true }).isChecked()).toBe(true);
-            expect(await dialog.getByRole('combobox', { name: '表达偏好', exact: true }).inputValue()).toBe('structured');
-            expect(await dialog.locator('input[type="file"]').count()).toBe(0);
-            const parts = ['人设', '技能 Skills', '工作场景 Workflow', '插件 Plugins', '记忆 Memory'];
-            const numberPaints: unknown[] = [];
-            for (const [index, title] of parts.entries()) {
-              const heading = dialog.getByRole('heading', { name: title, exact: true });
-              const number = heading.locator('..').getByText(String(index + 1), { exact: true });
-              numberPaints.push(await number.evaluate((node) => {
+          const createTrigger = f.page.getByRole('button', {
+            name: '创建员工',
+            exact: true,
+          });
+          await createTrigger.click();
+          const dialog = f.page.getByRole('dialog', {
+            name: '创建一位 AI 员工',
+            exact: true,
+          });
+          const name = dialog.getByRole('textbox', {
+            name: '员工名字',
+            exact: true,
+          });
+          const mission = dialog.getByRole('textbox', {
+            name: '使命',
+            exact: true,
+          });
+          const workStyle = dialog.getByRole('textbox', {
+            name: '工作方式',
+            exact: true,
+          });
+          const create = dialog.getByRole('button', {
+            name: '确认创建',
+            exact: true,
+          });
+          await name.waitFor();
+          expect(
+            await f.page.getByRole('dialog', { name: '选择 AI 员工' }).count(),
+          ).toBe(0);
+          expect(await name.inputValue()).toBe('');
+          expect(await create.isDisabled()).toBe(true);
+          expect(await mission.inputValue()).toBe(
+            '理解目标，推进工作，交付清晰、可用的结果。',
+          );
+          expect(await workStyle.inputValue()).toBe(
+            '先确认目标和资料，再分步执行；信息不足时及时说明，交付时列出待确认事项。',
+          );
+          expect(await name.getAttribute('required')).not.toBeNull();
+          expect(await mission.getAttribute('required')).not.toBeNull();
+          expect(await workStyle.getAttribute('required')).toBeNull();
+          expect(await name.getAttribute('maxlength')).toBe('120');
+          expect(await mission.getAttribute('maxlength')).toBe('500');
+          expect(await workStyle.getAttribute('maxlength')).toBe('1000');
+          expect(await dialog.getByRole('radio').count()).toBe(10);
+          for (const { label } of Object.values(employeeColorPalette))
+            expect(
+              await dialog
+                .getByRole('radio', { name: label, exact: true })
+                .count(),
+            ).toBe(1);
+          expect(
+            await dialog
+              .getByRole('radio', { name: '科技蓝', exact: true })
+              .isChecked(),
+          ).toBe(true);
+          expect(
+            await dialog
+              .getByRole('combobox', { name: '表达偏好', exact: true })
+              .inputValue(),
+          ).toBe('structured');
+          expect(await dialog.locator('input[type="file"]').count()).toBe(0);
+          const parts = [
+            '人设',
+            '技能 Skills',
+            '工作场景 Workflow',
+            '插件 Plugins',
+            '记忆 Memory',
+          ];
+          const numberPaints: unknown[] = [];
+          for (const [index, title] of parts.entries()) {
+            const heading = dialog.getByRole('heading', {
+              name: title,
+              exact: true,
+            });
+            const number = heading
+              .locator('..')
+              .getByText(String(index + 1), { exact: true });
+            numberPaints.push(
+              await number.evaluate((node) => {
                 const css = getComputedStyle(node);
-                return { background: css.backgroundColor, color: css.color, width: css.width, height: css.height, radius: css.borderRadius };
-              }));
-              if (index > 0) {
-                const section = heading.locator('..').locator('..');
-                expect(await section.locator('button, input, textarea, select').count()).toBe(0);
-              }
+                return {
+                  background: css.backgroundColor,
+                  color: css.color,
+                  width: css.width,
+                  height: css.height,
+                  radius: css.borderRadius,
+                };
+              }),
+            );
+            if (index > 0) {
+              const section = heading.locator('..').locator('..');
+              expect(
+                await section
+                  .locator('button, input, textarea, select')
+                  .count(),
+              ).toBe(0);
             }
-            expect(new Set(numberPaints.map((paint) => JSON.stringify(paint))).size).toBe(1);
-            if (appearance === 'dark') expect(numberPaints[0]).toMatchObject({ background: 'rgb(255, 255, 255)' });
-            await capture('create-empty');
-            const emptyScroll = await scrollForm(dialog, true);
-            await capture('create-empty', '-bottom', { scroll: 'bottom', ...emptyScroll });
-            await scrollForm(dialog, false);
-            await name.fill('财务专员');
-            expect(await create.isEnabled()).toBe(true);
-            await capture('create-filled');
-            const filledScroll = await scrollForm(dialog, true);
-            await capture('create-filled', '-bottom', { scroll: 'bottom', ...filledScroll });
-            await f.page.keyboard.press('Escape');
-            await dialog.waitFor({ state: 'detached' });
-            expect(await createTrigger.evaluate((node) => node === document.activeElement)).toBe(true);
-            await createTrigger.click();
-            await name.fill('财务专员');
-            await mission.fill('   ');
-            expect(await create.isDisabled()).toBe(true);
-            await mission.fill('理解目标，推进工作，交付清晰、可用的结果。');
-            await workStyle.fill('   ');
-            expect(await create.isEnabled()).toBe(true);
-            await create.click();
-            await dialog.waitFor({ state: 'detached' });
-            const input = f.page.getByRole('textbox', { name: '给 财务专员 的消息', exact: true });
-            await input.waitFor();
-            await f.page.getByRole('heading', { name: '财务专员已创建，开始第一项工作吧', exact: true }).waitFor();
-            await f.page.getByText('技能、工作场景可以在“详情”里添加', { exact: true }).waitFor();
-            expect(await input.inputValue()).toBe('');
-            expect(new URL(f.page.url()).searchParams.get('session')).toBeNull();
-            expect(creationRequests).toHaveLength(1);
-            expect(creationRequests[0]).toMatchObject({ workspaceId: workspace, assignmentId: id(7), profile: { name: '财务专员', mission: '理解目标，推进工作，交付清晰、可用的结果。', expressionStyle: 'structured' } });
-            expect(creationRequests[0]!.profile).not.toHaveProperty('workStyle');
-            expect(creationRequests[0]).not.toHaveProperty('ownerId');
-            expect(sessionCreates).toEqual([]);
-            await f.page.mouse.move(width - 1, 1);
-            await capture('created');
-            await sidebar();
-            const created = group('财务专员');
-            await created.getByText('0 个工作', { exact: true }).waitFor();
-            expect(await created.getByRole('treeitem').filter({ hasText: '新会话' }).count()).toBe(1);
-            expect(await pending().count()).toBe(1);
-            if (device === 'mobile') await capture('created', '-sidebar', { sidebar: 'open' });
-            expect(captures).toHaveLength(device === 'mobile' ? 11 : 9);
-            expect(f.state.messageInputs).toEqual([]);
-            expect(f.errors).toEqual([]);
-            completed = true;
-          } catch (error) {
-            firstFailure = error;
-            await f.page.screenshot({ path: join(evidence, `FIRST-FAILURE-${device}-${appearance}.png`) }).catch(() => {});
-            throw error;
-          } finally {
-            const cleanupErrors: unknown[] = [];
-            try {
-              await writeFile(
-                join(evidence, `CAPTURES-${device}-${appearance}.json`),
-                `${JSON.stringify({
+          }
+          expect(
+            new Set(numberPaints.map((paint) => JSON.stringify(paint))).size,
+          ).toBe(1);
+          if (appearance === 'dark')
+            expect(numberPaints[0]).toMatchObject({
+              background: 'rgb(255, 255, 255)',
+            });
+          await capture('create-empty');
+          const emptyScroll = await scrollForm(dialog, true);
+          await capture('create-empty', '-bottom', {
+            scroll: 'bottom',
+            ...emptyScroll,
+          });
+          await scrollForm(dialog, false);
+          await name.fill('财务专员');
+          expect(await create.isEnabled()).toBe(true);
+          await capture('create-filled');
+          const filledScroll = await scrollForm(dialog, true);
+          await capture('create-filled', '-bottom', {
+            scroll: 'bottom',
+            ...filledScroll,
+          });
+          await f.page.keyboard.press('Escape');
+          await dialog.waitFor({ state: 'detached' });
+          expect(
+            await createTrigger.evaluate(
+              (node) => node === document.activeElement,
+            ),
+          ).toBe(true);
+          await createTrigger.click();
+          await name.fill('财务专员');
+          await mission.fill('   ');
+          expect(await create.isDisabled()).toBe(true);
+          await mission.fill('理解目标，推进工作，交付清晰、可用的结果。');
+          await workStyle.fill('   ');
+          expect(await create.isEnabled()).toBe(true);
+          await create.click();
+          await dialog.waitFor({ state: 'detached' });
+          const input = f.page.getByRole('textbox', {
+            name: '给 财务专员 的消息',
+            exact: true,
+          });
+          await input.waitFor();
+          await f.page
+            .getByRole('heading', {
+              name: '财务专员已创建，开始第一项工作吧',
+              exact: true,
+            })
+            .waitFor();
+          await f.page
+            .getByText('技能、工作场景可以在“详情”里添加', { exact: true })
+            .waitFor();
+          expect(await input.inputValue()).toBe('');
+          expect(new URL(f.page.url()).searchParams.get('session')).toBeNull();
+          expect(creationRequests).toHaveLength(1);
+          expect(creationRequests[0]).toMatchObject({
+            workspaceId: workspace,
+            assignmentId: id(7),
+            profile: {
+              name: '财务专员',
+              mission: '理解目标，推进工作，交付清晰、可用的结果。',
+              expressionStyle: 'structured',
+            },
+          });
+          expect(creationRequests[0]!.profile).not.toHaveProperty('workStyle');
+          expect(creationRequests[0]).not.toHaveProperty('ownerId');
+          expect(sessionCreates).toEqual([]);
+          await f.page.mouse.move(width - 1, 1);
+          await capture('created');
+          await sidebar();
+          const created = group('财务专员');
+          await created.getByText('0 个工作', { exact: true }).waitFor();
+          expect(
+            await created
+              .getByRole('treeitem')
+              .filter({ hasText: '新会话' })
+              .count(),
+          ).toBe(1);
+          expect(await pending().count()).toBe(1);
+          if (device === 'mobile')
+            await capture('created', '-sidebar', { sidebar: 'open' });
+          expect(captures).toHaveLength(device === 'mobile' ? 11 : 9);
+          expect(f.state.messageInputs).toEqual([]);
+          expect(f.errors).toEqual([]);
+          completed = true;
+        } catch (error) {
+          firstFailure = error;
+          await f.page
+            .screenshot({
+              path: join(evidence, `FIRST-FAILURE-${device}-${appearance}.png`),
+            })
+            .catch(() => {});
+          throw error;
+        } finally {
+          const cleanupErrors: unknown[] = [];
+          try {
+            await writeFile(
+              join(evidence, `CAPTURES-${device}-${appearance}.json`),
+              `${JSON.stringify(
+                {
                   completed,
                   sourceInstanceId: task.id,
                   sourceInstanceName: task.name,
-                  approvedPreviewSHA256: '476ac7ba9073996833b8361d5fe33b409b77ee171e8005e4441ac15a00d40392',
+                  approvedPreviewSHA256:
+                    '476ac7ba9073996833b8361d5fe33b409b77ee171e8005e4441ac15a00d40392',
                   host: 'ChatFlowClient',
                   captures,
                   creationRequests,
                   sessionCreates,
                   errors: f.errors,
-                  firstFailure: firstFailure instanceof Error ? firstFailure.stack : firstFailure,
-                }, null, 2)}\n`,
-              );
-            } catch (error) {
-              cleanupErrors.push(error);
-            }
-            try {
-              await f.close();
-            } catch (error) {
-              cleanupErrors.push(error);
-            }
-            if (cleanupErrors.length)
-              throw new AggregateError(
-                completed ? cleanupErrors : [firstFailure, ...cleanupErrors],
-                'Create-employee evidence or fixture cleanup failed.',
-                firstFailure === undefined ? undefined : { cause: firstFailure },
-              );
+                  firstFailure:
+                    firstFailure instanceof Error
+                      ? firstFailure.stack
+                      : firstFailure,
+                },
+                null,
+                2,
+              )}\n`,
+            );
+          } catch (error) {
+            cleanupErrors.push(error);
           }
-        },
-        30_000,
-      );
+          try {
+            await f.close();
+          } catch (error) {
+            cleanupErrors.push(error);
+          }
+          if (cleanupErrors.length)
+            throw new AggregateError(
+              completed ? cleanupErrors : [firstFailure, ...cleanupErrors],
+              'Create-employee evidence or fixture cleanup failed.',
+              firstFailure === undefined ? undefined : { cause: firstFailure },
+            );
+        }
+      }, 30_000);
 
   it.each([1440, 390])(
     'employee details use the approved root shell and keep close visible after long persona scrolling at %ipx',
@@ -8417,7 +8578,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .click();
       await startEmployeeWork(f.page);
       expect(
-        await f.page.locator('main > section').getAttribute('data-employee-accent'),
+        await f.page
+          .locator('main > section')
+          .getAttribute('data-employee-accent'),
       ).toBe('violet');
       const rice = f.page
         .getByRole('tree', { name: '员工与工作', exact: true })
@@ -9340,9 +9503,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .click();
       const create = f.page.getByRole('dialog', { name: '创建一位 AI 员工' });
       await create.waitFor();
-      const nameInput = create.getByRole('textbox', { name: '员工名字', exact: true });
+      const nameInput = create.getByRole('textbox', {
+        name: '员工名字',
+        exact: true,
+      });
       await expect
-        .poll(() => nameInput.evaluate((element) => element === document.activeElement))
+        .poll(() =>
+          nameInput.evaluate((element) => element === document.activeElement),
+        )
         .toBe(true);
       if (globalThis.process.env.ALLRICE_EMPLOYEE_SCREENSHOT)
         await f.page.screenshot({
@@ -9448,9 +9616,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByRole('button', { name: '创建员工', exact: true })
           .click();
         if (employeeCount)
-          await f.page.getByRole('dialog', { name: '创建一位 AI 员工' }).waitFor();
+          await f.page
+            .getByRole('dialog', { name: '创建一位 AI 员工' })
+            .waitFor();
         expect(
-          await f.page.getByRole('dialog', { name: '创建一位 AI 员工' }).count(),
+          await f.page
+            .getByRole('dialog', { name: '创建一位 AI 员工' })
+            .count(),
         ).toBe(employeeCount ? 1 : 0);
         if (!employeeCount)
           expect(

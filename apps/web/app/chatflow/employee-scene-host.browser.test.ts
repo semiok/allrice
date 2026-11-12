@@ -3892,7 +3892,10 @@ suite('U1 mounted employee Workflow host', () => {
         .getByRole('button', { name: '和 流程哥 开新会话', exact: true })
         .click();
       expect(
-        await employeePage(f.page, { name: '选择 AI 员工', exact: true }).count(),
+        await employeePage(f.page, {
+          name: '选择 AI 员工',
+          exact: true,
+        }).count(),
       ).toBe(0);
       await f.page
         .getByRole('textbox', { name: '给 流程哥 的消息', exact: true })

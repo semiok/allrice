@@ -54,10 +54,25 @@ export function createEmployeeProfile(values: EmployeeProfileFormValues) {
 }
 
 const creationParts = [
-  ['2', '技能 Skills', '它会的本事，干活时自己判断要不要用。', '自带基础技能，可再添加'],
-  ['3', '工作场景 Workflow', '安装一个 Workflow，它就能按固定流程干活。', '一开始没有，可添加'],
+  [
+    '2',
+    '技能 Skills',
+    '它会的本事，干活时自己判断要不要用。',
+    '自带基础技能，可再添加',
+  ],
+  [
+    '3',
+    '工作场景 Workflow',
+    '安装一个 Workflow，它就能按固定流程干活。',
+    '一开始没有，可添加',
+  ],
   ['4', '插件 Plugins', '带有独立界面的工具，点击打开新页面。', '一开始没有'],
-  ['5', '记忆 Memory', '工作中它提出想记住的内容，你确认后生效。', '一开始是空的，最多 100 条'],
+  [
+    '5',
+    '记忆 Memory',
+    '工作中它提出想记住的内容，你确认后生效。',
+    '一开始是空的，最多 100 条',
+  ],
 ] as const;
 
 /** Full-form access comes from the current owner projection, never the saved
@@ -245,121 +260,139 @@ export function EmployeeProfileForm({
         }
       }}
     >
-      <fieldset className={`${css.fields} ${mode === 'create' ? createCss.scroll : ''}`} disabled={locked}>
+      <fieldset
+        className={`${css.fields} ${mode === 'create' ? createCss.scroll : ''}`}
+        disabled={locked}
+      >
         {mode === 'create' && (
           <p className={createCss.intro}>
             一个员工由人设、技能、工作场景、插件、记忆五部分组成。现在先定人设，其他四项创建后在“详情”里随时添加。
           </p>
         )}
         <div className={mode === 'create' ? createCss.persona : undefined}>
-        {mode === 'create' && (
-          <div className={createCss.heading}>
-            <span className={createCss.number}>1</span>
-            <h3>人设</h3>
-            <span className={createCss.caption}>它是谁、怎么干活、怎么说话</span>
-          </div>
-        )}
-        <section className={css.identity} aria-label="员工基本信息">
-          <div className={css.nameRow}>
-            <span
-              className={css.avatar}
-              style={employeeAccentStyle(name, values.accentColor)}
-              aria-hidden="true"
-            >
-              {Array.from(name)[0] || '员'}
-            </span>
-            <div className={css.nameField}>
-              <label htmlFor={`${id}-name`}>
-                {mode === 'edit' ? '名字' : '员工名字'}
-                {mode === 'create' && <span className={createCss.required} aria-hidden="true"> *</span>}
+          {mode === 'create' && (
+            <div className={createCss.heading}>
+              <span className={createCss.number}>1</span>
+              <h3>人设</h3>
+              <span className={createCss.caption}>
+                它是谁、怎么干活、怎么说话
+              </span>
+            </div>
+          )}
+          <section className={css.identity} aria-label="员工基本信息">
+            <div className={css.nameRow}>
+              <span
+                className={css.avatar}
+                style={employeeAccentStyle(name, values.accentColor)}
+                aria-hidden="true"
+              >
+                {Array.from(name)[0] || '员'}
+              </span>
+              <div className={css.nameField}>
+                <label htmlFor={`${id}-name`}>
+                  {mode === 'edit' ? '名字' : '员工名字'}
+                  {mode === 'create' && (
+                    <span className={createCss.required} aria-hidden="true">
+                      {' '}
+                      *
+                    </span>
+                  )}
+                </label>
+                <input
+                  id={`${id}-name`}
+                  data-employee-name
+                  value={values.name}
+                  maxLength={120}
+                  required
+                  autoComplete="off"
+                  placeholder={
+                    mode === 'create'
+                      ? '例如： 文案专家、财务专员、商务分析师'
+                      : undefined
+                  }
+                  onChange={(event) => update('name', event.target.value)}
+                />
+              </div>
+            </div>
+            <fieldset className={css.colors}>
+              <legend>头像颜色</legend>
+              <div className={css.palette}>
+                {(
+                  Object.keys(employeeColorPalette) as EmployeePaletteColor[]
+                ).map((color) => (
+                  <label key={color} className={css.colorChoice}>
+                    <input
+                      type="radio"
+                      name={`${id}-color`}
+                      value={color}
+                      checked={values.accentColor === color}
+                      onChange={() => update('accentColor', color)}
+                    />
+                    <span
+                      className={css.swatch}
+                      style={{
+                        backgroundColor: employeeColorPalette[color].value,
+                      }}
+                      aria-hidden="true"
+                    >
+                      {values.accentColor === color ? '✓' : ''}
+                    </span>
+                    <span>{employeeColorPalette[color].label}</span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          </section>
+          <div className={css.settings}>
+            <div className={css.field}>
+              <label htmlFor={`${id}-mission`}>
+                使命
+                {mode === 'create' && (
+                  <span className={createCss.required} aria-hidden="true">
+                    {' '}
+                    *
+                  </span>
+                )}
               </label>
-              <input
-                id={`${id}-name`}
-                data-employee-name
-                value={values.name}
-                maxLength={120}
+              <textarea
+                id={`${id}-mission`}
+                value={values.mission}
+                rows={2}
+                maxLength={500}
                 required
-                autoComplete="off"
-                placeholder={
-                  mode === 'create'
-                    ? '例如： 文案专家、财务专员、商务分析师'
-                    : undefined
-                }
-                onChange={(event) => update('name', event.target.value)}
+                onChange={(event) => update('mission', event.target.value)}
               />
             </div>
-          </div>
-          <fieldset className={css.colors}>
-            <legend>头像颜色</legend>
-            <div className={css.palette}>
-              {(
-                Object.keys(employeeColorPalette) as EmployeePaletteColor[]
-              ).map((color) => (
-                <label key={color} className={css.colorChoice}>
-                  <input
-                    type="radio"
-                    name={`${id}-color`}
-                    value={color}
-                    checked={values.accentColor === color}
-                    onChange={() => update('accentColor', color)}
-                  />
-                  <span
-                    className={css.swatch}
-                    style={{
-                      backgroundColor: employeeColorPalette[color].value,
-                    }}
-                    aria-hidden="true"
-                  >
-                    {values.accentColor === color ? '✓' : ''}
-                  </span>
-                  <span>{employeeColorPalette[color].label}</span>
-                </label>
-              ))}
+            <div className={css.field}>
+              <label htmlFor={`${id}-work-style`}>工作方式</label>
+              <textarea
+                id={`${id}-work-style`}
+                value={values.workStyle}
+                rows={2}
+                maxLength={1_000}
+                required={mode === 'edit'}
+                onChange={(event) => update('workStyle', event.target.value)}
+              />
             </div>
-          </fieldset>
-        </section>
-        <div className={css.settings}>
-          <div className={css.field}>
-            <label htmlFor={`${id}-mission`}>使命{mode === 'create' && <span className={createCss.required} aria-hidden="true"> *</span>}</label>
-            <textarea
-              id={`${id}-mission`}
-              value={values.mission}
-              rows={2}
-              maxLength={500}
-              required
-              onChange={(event) => update('mission', event.target.value)}
-            />
+            <div className={css.field}>
+              <label htmlFor={`${id}-expression-style`}>表达偏好</label>
+              <select
+                id={`${id}-expression-style`}
+                value={values.expressionStyle}
+                onChange={(event) =>
+                  update(
+                    'expressionStyle',
+                    event.target
+                      .value as EmployeeProfileFormValues['expressionStyle'],
+                  )
+                }
+              >
+                <option value="concise">简洁，结论优先</option>
+                <option value="structured">结构清晰，分步说明</option>
+                <option value="exploratory">比较方案与取舍</option>
+              </select>
+            </div>
           </div>
-          <div className={css.field}>
-            <label htmlFor={`${id}-work-style`}>工作方式</label>
-            <textarea
-              id={`${id}-work-style`}
-              value={values.workStyle}
-              rows={2}
-              maxLength={1_000}
-              required={mode === 'edit'}
-              onChange={(event) => update('workStyle', event.target.value)}
-            />
-          </div>
-          <div className={css.field}>
-            <label htmlFor={`${id}-expression-style`}>表达偏好</label>
-            <select
-              id={`${id}-expression-style`}
-              value={values.expressionStyle}
-              onChange={(event) =>
-                update(
-                  'expressionStyle',
-                  event.target
-                    .value as EmployeeProfileFormValues['expressionStyle'],
-                )
-              }
-            >
-              <option value="concise">简洁，结论优先</option>
-              <option value="structured">结构清晰，分步说明</option>
-              <option value="exploratory">比较方案与取舍</option>
-            </select>
-          </div>
-        </div>
         </div>
         {mode === 'create' && (
           <>
@@ -381,7 +414,9 @@ export function EmployeeProfileForm({
       </fieldset>
       {error || submitError ? <p role="alert">{error || submitError}</p> : null}
       <footer className={css.actions}>
-        {mode === 'create' && <p className={createCss.help}>名字和使命填好后才能创建</p>}
+        {mode === 'create' && (
+          <p className={createCss.help}>名字和使命填好后才能创建</p>
+        )}
         {mode === 'edit' && reset && canResetEmployeePersona(reset.profile) && (
           <button
             type="button"

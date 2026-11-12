@@ -127,9 +127,15 @@ export function EmployeeSidebar({
     ? sessionEmployeeKey(activeSession)
     : undefined;
   useEffect(() => {
-    const target = onlyEmployeeInstanceId ?? activeGroup ?? pendingEmployeeAssignmentId;
+    const target =
+      onlyEmployeeInstanceId ?? activeGroup ?? pendingEmployeeAssignmentId;
     if (target) setExpansion((current) => ({ ...current, [target]: true }));
-  }, [activeId, activeGroup, onlyEmployeeInstanceId, pendingEmployeeAssignmentId]);
+  }, [
+    activeId,
+    activeGroup,
+    onlyEmployeeInstanceId,
+    pendingEmployeeAssignmentId,
+  ]);
   useEffect(() => {
     if (!key) return;
     try {
@@ -276,10 +282,13 @@ export function EmployeeSidebar({
                 >
                   <strong>{group.label}</strong>
                   {onNewSession && employee && (
-                    <button type="button" onClick={() => {
-                      setRail(null);
-                      onNewSession(group.key);
-                    }}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRail(null);
+                        onNewSession(group.key);
+                      }}
+                    >
                       和 {group.label} 开新会话
                     </button>
                   )}
@@ -316,7 +325,11 @@ export function EmployeeSidebar({
               className={css.employeeCard}
               data-accent={accent}
               style={employeeAccentStyle(group.label, color)}
-              data-active={group.containsCurrent || (!activeId && pendingEmployeeAssignmentId === group.key) || undefined}
+              data-active={
+                group.containsCurrent ||
+                (!activeId && pendingEmployeeAssignmentId === group.key) ||
+                undefined
+              }
             >
               <div className={css.header}>
                 <ProjectRowItem
@@ -349,13 +362,20 @@ export function EmployeeSidebar({
                   t={employeeTranslate}
                 />
                 {onNewSession && employee && (
-                  <Tooltip label={`和 ${group.label} 开新会话`} side="bottom" align="end">
+                  <Tooltip
+                    label={`和 ${group.label} 开新会话`}
+                    side="bottom"
+                    align="end"
+                  >
                     <button
                       type="button"
                       className={css.newChat}
                       aria-label={`和 ${group.label} 开新会话`}
                       onClick={() => {
-                        setExpansion((current) => ({ ...current, [group.key]: true }));
+                        setExpansion((current) => ({
+                          ...current,
+                          [group.key]: true,
+                        }));
                         onNewSession(group.key);
                       }}
                     >
@@ -384,7 +404,11 @@ export function EmployeeSidebar({
                 className={css.sessions}
               >
                 {!activeId && pendingEmployeeAssignmentId === group.key && (
-                  <div className={css.draftSession} role="treeitem" aria-selected="true">
+                  <div
+                    className={css.draftSession}
+                    role="treeitem"
+                    aria-selected="true"
+                  >
                     新会话
                   </div>
                 )}
@@ -435,9 +459,10 @@ export function EmployeeSidebar({
                     }}
                   />
                 ))}
-                {group.sessionCount === 0 && (activeId || pendingEmployeeAssignmentId !== group.key) && (
-                  <span className={css.empty}>点卡片上的加号开始</span>
-                )}
+                {group.sessionCount === 0 &&
+                  (activeId || pendingEmployeeAssignmentId !== group.key) && (
+                    <span className={css.empty}>点卡片上的加号开始</span>
+                  )}
                 {needsPreview && !pagination?.error && (
                   <span role="status" className={css.empty}>
                     正在加载会话…

@@ -1607,7 +1607,9 @@ export function ChatFlowClient({
     selectSession(null);
     setHistory(null);
     setPendingEmployeeAssignmentId(assignmentId);
-    setCreatedEmployee(created ? { scope: settingsScope, id: created.id } : null);
+    setCreatedEmployee(
+      created ? { scope: settingsScope, id: created.id } : null,
+    );
     setDraft('');
     setSessionReferences([]);
     setReferenceSelections([]);
@@ -2569,7 +2571,9 @@ export function ChatFlowClient({
         collapsed={sidebarCollapsed}
         overlay={layout.compact && !sidebarCollapsed}
         onCollapsedChange={setSidebarCollapsed}
-        pendingEmployeeAssignmentId={automationsOpen ? null : pendingEmployeeAssignmentId}
+        pendingEmployeeAssignmentId={
+          automationsOpen ? null : pendingEmployeeAssignmentId
+        }
         onCreateEmployee={() => {
           if (!confirmSessionNavigation()) return;
           if (workspace.employees.length > 0) setEmployeeCreateOpen(true);

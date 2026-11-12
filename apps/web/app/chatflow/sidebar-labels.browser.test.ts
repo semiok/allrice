@@ -181,7 +181,9 @@ suite('sidebar, create-employee dialog and workbench badge labels', () => {
       it(`reads the sidebar and badge at ${at}`, () =>
         measure(`${at} sidebar`, width, async (page) => {
           await page.goto(`${origin}/?theme=${theme}`);
-          expect(await tree(page).getByText('默认', { exact: true }).count()).toBe(0);
+          expect(
+            await tree(page).getByText('默认', { exact: true }).count(),
+          ).toBe(0);
           const label = tree(page).getByText('3 个工作', { exact: true });
           await readable('saved work count', label);
           await readable(
@@ -229,7 +231,10 @@ suite('sidebar, create-employee dialog and workbench badge labels', () => {
           const dialog = page.getByRole('dialog', { name: '创建一位 AI 员工' });
           await readable(
             'dialog title',
-            dialog.getByRole('heading', { name: '创建一位 AI 员工', exact: true }),
+            dialog.getByRole('heading', {
+              name: '创建一位 AI 员工',
+              exact: true,
+            }),
           );
           await readable(
             'creation guidance',
@@ -242,8 +247,15 @@ suite('sidebar, create-employee dialog and workbench badge labels', () => {
             'required fields guidance',
             dialog.getByText('名字和使命填好后才能创建', { exact: true }),
           );
-          expect(await dialog.getByText('默认', { exact: true }).count()).toBe(0);
-          for (const name of ['技能 Skills', '工作场景 Workflow', '插件 Plugins', '记忆 Memory'])
+          expect(await dialog.getByText('默认', { exact: true }).count()).toBe(
+            0,
+          );
+          for (const name of [
+            '技能 Skills',
+            '工作场景 Workflow',
+            '插件 Plugins',
+            '记忆 Memory',
+          ])
             await readable(
               `${name} description heading`,
               dialog.getByRole('heading', { name, exact: true }),
