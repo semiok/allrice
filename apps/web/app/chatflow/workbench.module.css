@@ -16,7 +16,8 @@
       [data-office-font-warning] button,
       [data-terminal-workbench] button,
       [data-terminal-guide] button,
-      [data-native-subagent-id] button
+      [data-native-subagent-id] button,
+      [data-employee-capabilities] button
     )
   ),
 .entry {
@@ -28,14 +29,15 @@
   color: inherit;
   background: var(--dsw-alias-bg-base, #fff);
 }
-.panel button:disabled {
+.panel button:disabled:not(:where([data-employee-capabilities] button)) {
   opacity: 0.55;
   cursor: not-allowed;
 }
-.panel button:focus-visible,
-.panel input:focus-visible,
-.panel textarea:focus-visible,
-.panel select:focus-visible,
+.panel button:focus-visible:not(:where([data-employee-capabilities] button)),
+.panel input:focus-visible:not(:where([data-employee-capabilities] input)),
+.panel
+  textarea:focus-visible:not(:where([data-employee-capabilities] textarea)),
+.panel select:focus-visible:not(:where([data-employee-capabilities] select)),
 .entry:focus-visible {
   outline: 2px solid #4678e9;
   outline-offset: 2px;
@@ -78,9 +80,9 @@
 .row input {
   max-width: 80px;
 }
-.panel select,
-.panel textarea,
-.panel input {
+.panel select:not(:where([data-employee-capabilities] select)),
+.panel textarea:not(:where([data-employee-capabilities] textarea)),
+.panel input:not(:where([data-employee-capabilities] input)) {
   font: inherit;
   color: inherit;
   background: var(--dsw-alias-bg-base, #fff);

@@ -17,6 +17,7 @@ import {
 import moduleUi from './workbench-modules.module.css';
 import { GUIDE_KIND, pageAddress } from './dsh-upstream/dock/contract/seed';
 import { dockLabels, useNativeDock } from './use-native-dock';
+import { useCapabilityEscape } from './use-capability-escape';
 import { WorkspaceFileTree } from './workspace-file-tree';
 import { WorkspaceFilePreview } from './workspace-file-preview';
 import {
@@ -244,6 +245,10 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
   function close() {
     props.onClose(visibleMemoryId);
   }
+  const capabilityKeyboard = activeTab?.kind === 'workflow';
+  // Native DOM ownership excludes a confirmation portal. Inline pages consume
+  // their own back action before this surrounding capability pane can close.
+  useCapabilityEscape(panel, props.open && capabilityKeyboard, close);
   terminalClose.current = (id) => {
     const tab = dock.surface.layout.tabs[id];
     if (terminalIdentity && tab?.kind === 'terminal')
@@ -337,7 +342,7 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
   useEffect(() => {
     const request = props.moduleRequest;
     if (
-      (!props.desktop && !memoryRequest) ||
+      (!props.desktop && !memoryRequest && request?.kind !== 'workflow') ||
       !request ||
       request.revision === lastModuleRequest.current
     )
@@ -489,11 +494,13 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
             ? '工作台'
             : activeTab?.kind === 'nativeSubagent'
               ? '子智能体'
-              : personalMemoryView
-                ? '记忆'
-                : props.taskRequest
-                  ? '任务与交付成果'
-                  : '交付成果'
+              : activeTab?.kind === 'workflow'
+                ? '能力'
+                : personalMemoryView
+                  ? '记忆'
+                  : props.taskRequest
+                    ? '任务与交付成果'
+                    : '交付成果'
         }
         aria-modal={fullscreen ? true : undefined}
         data-fullscreen={fullscreen || undefined}
@@ -515,6 +522,7 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
           )
             return;
           if (event.key === 'Escape') {
+            if (capabilityKeyboard) return;
             event.stopPropagation();
             close();
           }
@@ -744,6 +752,7 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                 }}
               />
             ) : (props.desktop ||
+                tab.kind === 'workflow' ||
                 !!personalMemoryTarget(tab.kind, tab.contentId)) &&
               ['files', 'experience', 'workflow'].includes(tab.kind) ? (
               props.renderModule?.(

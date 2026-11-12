@@ -66,6 +66,7 @@ import {
 } from './employee-instance-policy.ts';
 import { assertPersonalSceneNames } from './personal-scene-names.ts';
 import { validateSceneSkillPackage } from './employee-scene-skill-package.ts';
+import { assertEmployeeContentRetirement } from './employee-content-retirement.ts';
 export { EmployeeContentError } from './employee-content-model.ts';
 
 // HTTP callers provide a login Session; Worker callers provide current Run
@@ -869,6 +870,15 @@ export async function mutateEmployeeContentInTransaction(
     throw new EmployeeContentError('version_conflict');
   if (options.buildInput)
     input = EmployeeContentMutationSchema.parse(await options.buildInput(row));
+  let active = await readRevision(tx, row?.active_revision_id ?? null);
+  if (input.operation === 'save_draft')
+    await assertEmployeeContentRetirement(
+      context.organizationId,
+      active?.manifest ?? emptyManifest,
+      input.manifest,
+      input.textEdits,
+      tx,
+    );
   if (!row) {
     if (input.operation !== 'save_draft')
       throw new DataAccessError('not_found');
@@ -886,7 +896,6 @@ export async function mutateEmployeeContentInTransaction(
   const next = row.revision + 1;
   let candidate: ContentRevisionRow,
     validation: EmployeeContentValidation | null = null;
-  let active = await readRevision(tx, row.active_revision_id);
   const validateNames = async (manifest: EmployeeContentManifest) => {
     if (input.ownership.scope !== 'personal' || !target.instanceId) return;
     const instance = await getEmployeeInstance(context, target.instanceId, tx);
@@ -912,6 +921,13 @@ export async function mutateEmployeeContentInTransaction(
           where set_id=${row.id} and revision_id=${source.id} and invalidated_at is not null`;
       if (invalidated) throw new EmployeeContentError('source_changed');
       manifest = source.manifest;
+      await assertEmployeeContentRetirement(
+        context.organizationId,
+        active?.manifest ?? emptyManifest,
+        manifest,
+        [],
+        tx,
+      );
     }
     await validateNames(manifest);
     const id = randomUUID(),
@@ -991,6 +1007,13 @@ export async function mutateEmployeeContentInTransaction(
     )
       throw new EmployeeContentError('version_conflict');
     candidate = saved;
+    await assertEmployeeContentRetirement(
+      context.organizationId,
+      active?.manifest ?? emptyManifest,
+      candidate.manifest,
+      [],
+      tx,
+    );
     await validateNames(candidate.manifest);
     const result = await assemble(
       context,

@@ -814,6 +814,14 @@ export function riceToolDefinitionsForCapabilities(
   return riceToolDefinitions.filter(
     (definition) =>
       (!allowed || allowed.has(definition.name)) &&
+      // Compatibility adapters require an explicit frozen grant. Broad
+      // capability access must not reintroduce retired text methods.
+      (![
+        'workspace.employee.method.inspect',
+        'workspace.employee.method.save_candidate',
+        'workspace.employee.method.restore_candidate',
+      ].includes(definition.name) ||
+        allowed?.has(definition.name)) &&
       (definition.name !== 'automation.create' ||
         (allowed?.has(definition.name) &&
           (process.env.ALLRICE_NATIVE_ONCE_ENABLED === '1' ||

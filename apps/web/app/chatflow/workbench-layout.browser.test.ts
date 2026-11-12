@@ -10,6 +10,7 @@ import type {
   Browser,
   Page,
   Locator,
+  Request,
 } from '../../../worker/node_modules/playwright-core/index.js';
 import {
   CompanyAssetSchema,
@@ -26,6 +27,7 @@ import {
   type ReferenceRevision,
   EmployeeInstanceSchema,
   EmployeeInstanceProfileSchema,
+  EmployeeSkillCatalogSchema,
   EmployeeMemoryPageSchema,
   PersonalSceneSkillCatalogSchema,
   EmployeeSceneSkillCatalogSchema,
@@ -715,6 +717,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       employeeInstanceDelay: null as Promise<void> | null,
       employeeInstanceStatus: 200,
       employeeInstanceArchived: false,
+      employeeHistoryDelay: null as Promise<void> | null,
+      employeeHistoryStatus: 200,
       experienceReads: 0,
       experienceDelay: null as Promise<void> | null,
       experienceStatus: 200,
@@ -1577,6 +1581,45 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           }),
         );
       }
+      const skillCatalogTarget = path.match(
+        /^\/api\/v1\/employee-instances\/([^/]+)\/skills$/,
+      );
+      if (skillCatalogTarget && route.request().method() === 'GET') {
+        const instanceId = skillCatalogTarget[1]!;
+        expect([
+          id(7),
+          id(17),
+          id(99),
+          ...(options.brandContent ? [id(8100)] : []),
+          ...state.createdEmployeeInstances.map((instance) => instance.id),
+        ]).toContain(instanceId);
+        expect([...url.searchParams.keys()]).toEqual(['workspaceId']);
+        expect(url.searchParams.get('workspaceId')).toBe(state.workspace);
+        expect(route.request().headers()['x-allrice-workspace-id']).toBe(
+          state.workspace,
+        );
+        if (state.viewer !== user)
+          return answer({ error: { message: 'No access' } }, 403);
+        if (options.employeeDetails && state.employeeDetailStatus !== 200)
+          return answer(
+            { error: { message: 'No access' } },
+            state.employeeDetailStatus,
+          );
+        if (instanceId === id(7) && state.employeeInstanceArchived) {
+          const response = employeeHubErrorResponse(
+            new EmployeeInstanceError('instance_archived'),
+          );
+          return answer(await response.json(), response.status);
+        }
+        return answer(
+          EmployeeSkillCatalogSchema.parse({
+            instanceId,
+            canInstall: true,
+            platformSkills: [],
+            personalSkills: [],
+          }),
+        );
+      }
       const sceneCatalogTarget = path.match(
         /^\/api\/v1\/employee-instances\/([^/]+)\/scene-skills$/,
       );
@@ -1689,7 +1732,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         (path === '/api/v1/employee-instances' ||
           /^\/api\/v1\/employee-instances\/[a-f0-9-]{36}$/.test(path))
       ) {
-        if (path !== '/api/v1/employee-instances') {
+        if (path === '/api/v1/employee-instances') {
+          if (state.employeeHistoryDelay) await state.employeeHistoryDelay;
+          if (state.employeeHistoryStatus !== 200)
+            return answer(
+              { error: { message: 'No access' } },
+              state.employeeHistoryStatus,
+            );
+        } else {
           if (state.employeeInstanceDelay) await state.employeeInstanceDelay;
           if (state.employeeInstanceStatus !== 200)
             return answer(
@@ -3662,15 +3712,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         confirmations++;
         await dialog.accept();
       });
-      await f.page
-        .getByRole('button', { name: '工作场景', exact: true })
-        .click();
-      const dialog = f.page.getByRole('dialog', {
-        name: '工作场景 Workflow',
+      await f.page.getByRole('button', { name: '能力', exact: true }).click();
+      const dialog = f.page.getByRole('region', {
+        name: '内容同事 · 能力',
         exact: true,
       });
       await dialog
-        .getByRole('heading', { name: '还没有工作场景', exact: true })
+        .getByRole('heading', { name: '还没有场景', exact: true })
         .waitFor();
       expect(
         await f.page
@@ -3689,7 +3737,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   }, 30000);
 
-  it('MET194 hides the scene directory on employee switch and ignores the prior employee delayed catalog', async () => {
+  it('MET194 hides the prior employee capability body on employee switch and ignores its delayed catalog', async () => {
     const f = await fixture({
       brandContent: { kind: 'custom', registered: true },
     });
@@ -3699,16 +3747,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .locator('[data-row-key="workspace:' + id(7) + '"]')
         .press('ArrowRight');
       const entry = f.page.getByRole('button', {
-        name: '工作场景',
+        name: '能力',
         exact: true,
       });
       await entry.click();
-      const dialog = f.page.getByRole('dialog', {
-        name: '工作场景 Workflow',
+      const dialog = f.page.getByRole('region', {
+        name: '内容同事 · 能力',
         exact: true,
       });
       await dialog
-        .getByRole('heading', { name: '还没有工作场景', exact: true })
+        .getByRole('heading', { name: '还没有场景', exact: true })
         .waitFor();
       await f.page
         .getByRole('treeitem', { name: /^研究任务 B/ })
@@ -3719,8 +3767,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         release = done;
       });
       await f.page.getByRole('treeitem', { name: /^研究任务 A/ }).click();
-      await expect.poll(() => entry.getAttribute('aria-pressed')).toBe('false');
-      expect(await dialog.count()).toBe(0);
       await entry.click();
       await expect
         .poll(() => f.state.sceneCatalogReads.length)
@@ -3732,10 +3778,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       release();
       f.state.sceneCatalogDelay = null;
       await entry.click();
-      await dialog
-        .getByRole('heading', { name: '还没有工作场景', exact: true })
+      const current = f.page.getByRole('region', {
+        name: 'Rice · 能力',
+        exact: true,
+      });
+      await current
+        .getByRole('heading', { name: '还没有场景', exact: true })
         .waitFor();
-      expect(await dialog.textContent()).not.toContain('内容同事');
+      expect(await dialog.count()).toBe(0);
+      expect(await current.textContent()).not.toContain('内容同事');
       expect(f.state.sceneCatalogReads.at(-1)!.instanceId).toBe(id(7));
       expect(f.state.brandContentCatalogReads).toEqual([]);
       expect(f.state.brandContentBoardReads).toBe(0);
@@ -3753,30 +3804,39 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     });
     try {
       const entry = f.page.getByRole('button', {
-        name: '工作场景',
+        name: '能力',
         exact: true,
       });
       await entry.click();
-      const dialog = f.page.getByRole('dialog', {
-        name: '工作场景 Workflow',
+      const dialog = f.page.getByRole('region', {
+        name: '内容同事 · 能力',
         exact: true,
       });
       await dialog
-        .getByRole('heading', { name: '还没有工作场景', exact: true })
+        .getByRole('heading', { name: '还没有场景', exact: true })
         .waitFor();
       f.state.viewer = id(50);
       f.finishRun();
-      await expect.poll(() => dialog.count()).toBe(0);
+      await expect
+        .poll(() =>
+          dialog
+            .getByRole('heading', { name: '还没有场景', exact: true })
+            .count(),
+        )
+        .toBe(0);
       await entry.click();
-      await dialog.getByRole('alert').waitFor();
+      await dialog
+        .getByRole('region', { name: '工作场景 Workflow', exact: true })
+        .getByRole('alert')
+        .waitFor();
       expect(
         await dialog
-          .getByRole('heading', { name: '还没有工作场景', exact: true })
+          .getByRole('heading', { name: '还没有场景', exact: true })
           .count(),
       ).toBe(0);
       expect(
         await dialog
-          .getByRole('button', { name: '新建场景', exact: true })
+          .getByRole('button', { name: '添加场景', exact: true })
           .count(),
       ).toBe(0);
       expect(f.state.sceneCatalogReads.some((r) => r.viewerId === id(50))).toBe(
@@ -3975,6 +4035,28 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                   ? archivedError
                   : { error: { message: 'Current content unavailable' } },
             }),
+        );
+        await f.page.route(
+          `**/api/v1/employee-instances/${historicalId}/skills?*`,
+          (route) => {
+            const request = route.request();
+            if (request.method() !== 'GET') return route.fallback();
+            const url = new URL(request.url());
+            expect(url.pathname).toBe(
+              `/api/v1/employee-instances/${historicalId}/skills`,
+            );
+            expect([...url.searchParams.keys()]).toEqual(['workspaceId']);
+            expect(url.searchParams.get('workspaceId')).toBe(workspace);
+            expect(request.headers()['x-allrice-workspace-id']).toBe(workspace);
+            expect(historical.ownerId).toBe(f.state.viewer);
+            return route.fulfill({
+              status: currentStatus,
+              json:
+                currentStatus === 409
+                  ? archivedError
+                  : { error: { message: 'Current content unavailable' } },
+            });
+          },
         );
         await f.page.route(
           `**/api/v1/employee-instances/${historicalId}/scene-skills/reads?*`,
@@ -6212,8 +6294,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       }
     },
   );
-  it.each(['active', 'archived', 'denied'] as const)(
-    'keeps an open reference draft through a delayed lifecycle read and gates writes for %s',
+  it.each([
+    'active',
+    'archived',
+    'denied',
+    'history-denied',
+    'history-unavailable',
+  ] as const)(
+    'keeps an open reference draft editable during lifecycle refresh until archive or access denial is confirmed: %s',
     async (outcome) => {
       const f = await fixture({ artifacts: true });
       let release = () => {};
@@ -6252,10 +6340,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const save = dialog.getByRole('button', { name: '保存', exact: true });
         const purpose = dialog.getByLabel('参考资料用途', { exact: true });
         await expect.poll(() => save.isEnabled()).toBe(true);
-        await purpose.fill('父刷新期间保留的参考用途');
+        const draft = '父刷新期间保留的参考用途';
+        await purpose.fill(draft);
         f.state.employeeInstanceDelay = new Promise<void>((done) => {
           release = done;
         });
+        const historyOutcome =
+          outcome === 'history-denied' || outcome === 'history-unavailable';
+        if (historyOutcome)
+          f.state.employeeHistoryDelay = f.state.employeeInstanceDelay;
         const selectedPath = `/api/v1/employee-instances/${id(7)}`;
         const isSelected = (url: string) =>
           new URL(url).pathname === selectedPath;
@@ -6265,14 +6358,30 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
         await began;
         expect(await dialog.count()).toBe(1);
-        expect(await purpose.inputValue()).toBe('父刷新期间保留的参考用途');
-        expect(await purpose.isDisabled()).toBe(true);
-        expect(await save.isDisabled()).toBe(true);
-        await save.dispatchEvent('click');
+        expect(await purpose.inputValue()).toBe(draft);
+        expect(await purpose.isEditable()).toBe(true);
+        expect(await save.isEnabled()).toBe(true);
+        const editedDraft = `${draft}，继续编辑`;
+        await purpose.fill(editedDraft);
+        expect(await purpose.inputValue()).toBe(editedDraft);
         expect(saved).toEqual([]);
 
         f.state.employeeInstanceArchived = outcome === 'archived';
-        f.state.employeeInstanceStatus = outcome === 'denied' ? 403 : 200;
+        f.state.employeeInstanceStatus =
+          outcome === 'denied' ? 403 : outcome === 'history-denied' ? 503 : 200;
+        f.state.employeeHistoryStatus =
+          outcome === 'history-denied'
+            ? 403
+            : outcome === 'history-unavailable'
+              ? 503
+              : 200;
+        const listCompleted = historyOutcome
+          ? f.page.waitForResponse(
+              (response) =>
+                new URL(response.url()).pathname ===
+                '/api/v1/employee-instances',
+            )
+          : undefined;
         const completed = f.page.waitForResponse(
           (response) =>
             response.request().method() === 'GET' && isSelected(response.url()),
@@ -6280,15 +6389,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         release();
         f.state.employeeInstanceDelay = null;
         await completed;
-        if (outcome === 'active') {
+        if (listCompleted) await listCompleted;
+        f.state.employeeHistoryDelay = null;
+        if (outcome === 'active' || outcome === 'history-unavailable') {
           await expect.poll(() => save.isEnabled()).toBe(true);
-          expect(await purpose.inputValue()).toBe('父刷新期间保留的参考用途');
+          expect(await purpose.inputValue()).toBe(editedDraft);
           await save.click();
           await dialog.getByRole('status').waitFor();
           expect(saved).toEqual([
             expect.objectContaining({
               artifactVersionId: f.state.items[0]!.id,
-              purpose: '父刷新期间保留的参考用途',
+              purpose: editedDraft,
             }),
           ]);
         } else {
@@ -6296,24 +6407,222 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .getByText(
               outcome === 'archived'
                 ? 'AI 员工已归档，可以查看历史；恢复后才能继续工作。'
-                : '没有权限，如需使用请联系管理员',
+                : outcome === 'denied'
+                  ? '没有权限，如需使用请联系管理员'
+                  : '归档列表读取失败，请重试。',
               { exact: true },
             )
             .waitFor();
           expect(await dialog.count()).toBe(1);
-          expect(await purpose.inputValue()).toBe('父刷新期间保留的参考用途');
+          expect(await purpose.inputValue()).toBe(editedDraft);
+          expect(await purpose.isDisabled()).toBe(true);
           expect(await save.isDisabled()).toBe(true);
           await save.dispatchEvent('click');
           expect(saved).toEqual([]);
+          if (outcome === 'history-denied') {
+            f.state.employeeInstanceStatus = 200;
+            f.state.employeeHistoryStatus = 200;
+            await f.page.evaluate(() =>
+              window.dispatchEvent(new Event('focus')),
+            );
+            await expect.poll(() => save.isEnabled()).toBe(true);
+            expect(await purpose.isEditable()).toBe(true);
+            expect(await purpose.inputValue()).toBe(editedDraft);
+            await save.click();
+            await dialog.getByRole('status').waitFor();
+            expect(saved).toEqual([
+              expect.objectContaining({
+                artifactVersionId: f.state.items[0]!.id,
+                purpose: editedDraft,
+              }),
+            ]);
+          }
         }
         expect(f.errors).toEqual([]);
       } finally {
         release();
         f.state.employeeInstanceDelay = null;
+        f.state.employeeHistoryDelay = null;
         await f.close();
       }
     },
   );
+
+  it('isolates an employee scope denial and aborts its pending reads when workspace identity changes', async () => {
+    const f = await fixture({ running: true });
+    const startedAt = Date.now();
+    const timeline: {
+      ms: number;
+      event: string;
+      url?: string;
+      status?: number;
+      error?: string;
+    }[] = [];
+    let dropped = 0;
+    const trace = (
+      event: string,
+      request?: Request,
+      status?: number,
+      error = request?.failure()?.errorText,
+    ) => {
+      if (timeline.length < 64)
+        timeline.push({
+          ms: Date.now() - startedAt,
+          event,
+          url: request?.url(),
+          status,
+          error,
+        });
+      else dropped++;
+    };
+    const oldWorkspace = f.state.workspace;
+    const paths = [
+      '/api/v1/employee-instances',
+      `/api/v1/employee-instances/${id(7)}`,
+    ];
+    const held: Request[] = [],
+      responses = new Set<Request>(),
+      settled = new Map<Request, string>();
+    let holdOldReads = false,
+      oldRepliesFinished = 0,
+      release = () => {};
+    const oldReplies = new Promise<void>((done) => {
+      release = done;
+    });
+    const relevant = (request: Request) =>
+      request.method() === 'GET' &&
+      paths.includes(new URL(request.url()).pathname);
+    f.page.on('response', (response) => {
+      if (!relevant(response.request())) return;
+      responses.add(response.request());
+      trace('response', response.request(), response.status());
+    });
+    f.page.on('requestfailed', (request) => {
+      if (!relevant(request)) return;
+      settled.set(request, 'failed');
+      trace('requestfailed', request);
+    });
+    f.page.on('requestfinished', (request) => {
+      if (!relevant(request)) return;
+      settled.set(request, 'finished');
+      trace('requestfinished', request);
+    });
+    try {
+      await expect.poll(() => f.state.streamRequests).toBeGreaterThan(0);
+      const input = f.page.getByRole('textbox', { name: /^给 .+ 的消息$/ });
+      await input.waitFor();
+      await f.page.route('**/api/v1/employee-instances**', async (route) => {
+        const request = route.request(),
+          url = new URL(request.url());
+        if (
+          !relevant(request) ||
+          url.searchParams.get('workspaceId') !== oldWorkspace
+        )
+          return route.fallback();
+        const heldOldRead = holdOldReads;
+        if (heldOldRead) {
+          held.push(request);
+          trace('hold-entered', request);
+          await oldReplies;
+        }
+        const status = heldOldRead || url.pathname === paths[0] ? 403 : 503;
+        trace('old-reply', request, status);
+        try {
+          await route.fulfill({
+            status,
+            contentType: 'application/json',
+            body: JSON.stringify({ error: { message: 'No access' } }),
+          });
+        } catch (cause) {
+          if (!heldOldRead) throw cause;
+          trace('cancelled-old-reply', request, status, String(cause));
+        } finally {
+          if (heldOldRead) oldRepliesFinished++;
+        }
+      });
+      await Promise.all([
+        f.page.waitForResponse((response) => {
+          const url = new URL(response.url());
+          return (
+            url.pathname === paths[1] &&
+            url.searchParams.get('workspaceId') === oldWorkspace &&
+            response.status() === 503
+          );
+        }),
+        f.page.evaluate(() => window.dispatchEvent(new Event('focus'))),
+      ]);
+      const denied = f.page.getByText('归档列表读取失败，请重试。', {
+        exact: true,
+      });
+      await denied.waitFor();
+      expect(await input.count()).toBe(0);
+      holdOldReads = true;
+      await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      // An issued request is not yet proof that its route entered the hold.
+      await expect.poll(() => held.length, { timeout: 5000 }).toBe(2);
+      expect(
+        held.map((request) => new URL(request.url()).pathname).sort(),
+      ).toEqual([...paths].sort());
+      for (const request of held) {
+        expect(request.failure()).toBeNull();
+        expect(responses.has(request)).toBe(false);
+        expect(settled.has(request)).toBe(false);
+        trace('pending-before-scope-change', request);
+      }
+      const newReads = Promise.all(
+        paths.map((path) =>
+          f.page.waitForResponse((response) => {
+            const url = new URL(response.url());
+            return (
+              url.pathname === path &&
+              url.searchParams.get('workspaceId') === id(51) &&
+              response.status() === 200
+            );
+          }),
+        ),
+      );
+      f.state.viewer = id(50);
+      f.state.workspace = id(51);
+      trace('scope-change');
+      f.finishRun();
+      await Promise.all([
+        newReads,
+        expect
+          .poll(() => held.map((request) => settled.get(request)), {
+            timeout: 5000,
+          })
+          .toEqual(['failed', 'failed']),
+      ]);
+      for (const request of held) {
+        expect(request.failure()?.errorText).toContain('ERR_ABORTED');
+        expect(await request.response()).toBeNull();
+      }
+      await input.waitFor();
+      expect(await input.isEditable()).toBe(true);
+      trace('new-scope-editable');
+      release();
+      await expect.poll(() => oldRepliesFinished, { timeout: 5000 }).toBe(2);
+      await f.page.evaluate(
+        () =>
+          new Promise<void>((done) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => done())),
+          ),
+      );
+      expect(await input.isEditable()).toBe(true);
+      expect(await denied.count()).toBe(0);
+      expect(f.state.messageInputs).toEqual([]);
+      expect(f.errors).toEqual([]);
+      trace('late-denials-isolated');
+    } finally {
+      release();
+      trace('finally');
+      console.info(
+        'MET249_SCOPE_TRACE',
+        JSON.stringify({ startedAt, dropped, timeline }),
+      );
+      await f.close();
+    }
+  });
 
   it.each([390, 1440])(
     'keeps one reference surface across parent refreshes and fully closes it at %ipx',
@@ -7727,10 +8036,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         let dialog = await openOwnerDetails(f);
         await expectRetiredTabs(dialog);
         await dialog
-          .getByRole('button', { name: '新建场景', exact: true })
+          .getByRole('button', { name: '添加场景', exact: true })
           .click();
         const form = f.page.getByRole('dialog', {
-          name: '新建工作场景',
+          name: '添加场景',
           exact: true,
         });
         await form
@@ -7751,7 +8060,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await dialog.getByRole('button', { name: '关闭', exact: true }).click();
         f.state.employeeDetails.profile.canMaintainPersonal = false;
         dialog = await openOwnerDetails(f);
-        for (const name of ['编辑员工', '新建场景'])
+        for (const name of ['编辑员工', '添加场景'])
           expect(
             await dialog.getByRole('button', { name, exact: true }).count(),
           ).toBe(0);
@@ -8139,7 +8448,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const dialog = await openOwnerDetails(f);
         await expectRetiredTabs(dialog);
         await dialog
-          .getByRole('heading', { name: '还没有工作场景', exact: true })
+          .getByRole('heading', { name: '还没有场景', exact: true })
           .waitFor();
         expect(await dialog.getByRole('combobox').count()).toBe(0);
         expect(

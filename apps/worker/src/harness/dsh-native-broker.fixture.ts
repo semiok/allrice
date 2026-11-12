@@ -1,4 +1,7 @@
-import { readDshToolResult } from '@allrice/contracts';
+import {
+  readDshToolResult,
+  type DshNativeSkillSnapshot,
+} from '@allrice/contracts';
 /** Real pinned DSH child + real JSON-RPC + synthetic loopback provider.
  * Transport contract only; this is not real-model/business acceptance. */
 import { randomUUID } from 'node:crypto';
@@ -20,6 +23,11 @@ export async function nativeBrokerRoundtrip(input: {
   progress?: HarnessExecutionInput['progress'];
   denyBeforeModel?: boolean;
   expectedToolNames?: string[];
+  nativeTools?: string[];
+  nativeSkills?: DshNativeSkillSnapshot[];
+  excludedToolNames?: string[];
+  initialMessagesExclude?: string;
+  expectedBrokerCalls?: number;
   canonicalName: string;
   prompt?: string;
   fileReadRunId?: string;
@@ -47,7 +55,8 @@ export async function nativeBrokerRoundtrip(input: {
   const errors: unknown[] = [];
   const received: unknown[] = [];
   const sentinel = `synthetic-broker-${randomUUID()}`;
-  let expectedModelContent = input.expectedToolError ?? sentinel;
+  let expectedModelContent =
+    input.modelResultIncludes ?? input.expectedToolError ?? sentinel;
   const server = createServer((req, res) => {
     void (async () => {
       const chunks: Buffer[] = [];
@@ -215,7 +224,8 @@ export async function nativeBrokerRoundtrip(input: {
       cwd: root,
       provider: 'openai-compatible',
       model: 'native-contract',
-      nativeTools: [input.canonicalName],
+      nativeTools: input.nativeTools ?? [input.canonicalName],
+      ...(input.nativeSkills ? { nativeSkills: input.nativeSkills } : {}),
       ...(input.personalMethodToolsOnly
         ? { personalMethodToolsOnly: true }
         : {}),
@@ -267,6 +277,17 @@ export async function nativeBrokerRoundtrip(input: {
       expect(tools.map((t) => t.function?.name).toSorted()).toEqual(
         input.expectedToolNames.toSorted(),
       );
+    for (const request of requests) {
+      const names = (request.tools as typeof tools).map(
+        (tool) => tool.function?.name,
+      );
+      for (const name of input.excludedToolNames ?? [])
+        expect(names).not.toContain(name);
+    }
+    if (input.initialMessagesExclude)
+      expect(JSON.stringify(requests[0]!.messages)).not.toContain(
+        input.initialMessagesExclude,
+      );
     input.inspectSchema?.(
       tools.find((tool) => tool.function?.name === input.wireName)!.function!
         .parameters!,
@@ -278,7 +299,7 @@ export async function nativeBrokerRoundtrip(input: {
       expect(JSON.stringify(requests[0]!.messages)).toContain(
         JSON.stringify(input.systemPrompt).slice(1, -1),
       );
-    expect(received).toHaveLength(1);
+    expect(received).toHaveLength(input.expectedBrokerCalls ?? 1);
     if (input.expectedToolError) expect(nativeToolFailures[0]).toBe(true);
     for (const request of requests.slice(1, 2 + (input.retryAfterTool ?? 0)))
       expect(JSON.stringify(request)).toContain(
@@ -296,7 +317,7 @@ export async function nativeBrokerRoundtrip(input: {
       expect(
         JSON.stringify(requests[3 + (input.retryAfterTool ?? 0)]),
       ).toContain(input.invalidResultIncludes);
-    expect(received).toHaveLength(1);
+    expect(received).toHaveLength(input.expectedBrokerCalls ?? 1);
     expect(nativeRetries).toBe(input.retryAfterTool ?? 0);
     expect(errors).toEqual([]);
   } finally {

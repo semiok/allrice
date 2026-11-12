@@ -69,23 +69,28 @@ function methodHandler(
           leaseToken: input.managedBrowserJobLeaseToken,
         },
       });
+      const receiptOnly =
+        action === 'save' || action === 'restore' || action === 'activate';
+      // Original committed metadata is historical evidence, not a fresh save
+      // or an assertion that this revision is the currently effective one.
+      const historical = { ...result } as Record<string, unknown>;
+      if (receiptOnly) delete historical.enabled;
       return {
         modelContent: JSON.stringify(
-          action === 'save' || action === 'restore'
+          receiptOnly
             ? {
-                ...result,
-                enabled: true,
-                status: 'saved',
+                ...historical,
+                receiptOnly: true,
+                historicalReplay: true,
+                status: 'historical_receipt',
                 nextStep:
-                  'personalTextOnly' in result && result.personalTextOnly
-                    ? 'Saved in this employee’s personal text-method history. Inspect can read it; it does not replace or load a personal Workflow package. Packages require the existing exact-file preview and owner confirmation. No background task was started; business behavior has not been tested.'
-                    : 'Saved and effective. Visible in employee details; subsequent independent tasks use this version. This Run keeps its frozen snapshot. No background task was started; business behavior has not been tested.',
+                  'This is the original committed request receipt only. No new text method was saved, restored or activated. It does not assert that the historical revision is currently effective, does not replace or load a personal Workflow package, and grants no source access. Packages use their existing exact-file preview and owner confirmation.',
               }
             : result,
         ),
         summary: {
-          save: '已保存工作场景，已生效',
-          restore: '已恢复工作方法，已生效',
+          save: '已读取历史保存回执',
+          restore: '已读取历史恢复回执',
           inspect: '已读取工作场景内容',
           prepare_activation: '已准备准确版本的启用确认，尚未启用',
           activate: '已读取工作方法启用回执',
@@ -109,6 +114,14 @@ function methodHandler(
             activation_test_coverage:
               '专项测试尚未覆盖本次启用涉及的全部新增或改变的场景。通用要求改变需验证所有当前场景；空场景的通用要求暂不能通过此入口启用。',
           }[error.code],
+        );
+      if (
+        error instanceof EmployeeContentError &&
+        error.code === 'legacy_method_retired'
+      )
+        throw rejected(
+          'EMPLOYEE_METHOD_RETIRED',
+          '旧文字工作方法写入已停用，本次未保存、恢复或启用。已有内容和历史回执保留；个人 Workflow 使用完整包的现有预览确认入口。',
         );
       if (error instanceof EmployeeContentError)
         throw rejected(

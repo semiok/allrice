@@ -246,6 +246,7 @@ suite(
         nativeDelayFull?: boolean;
         nativeClock?: boolean;
         nativeStartup?: boolean;
+        beforeSidebarReady?: (page: Page) => Promise<void>;
         workspaceFiles?: WorkspaceFile[];
         taskSuggestions?: TaskSuggestionDisplay[];
         taskSuggestionsEnabled?: boolean;
@@ -866,8 +867,15 @@ suite(
             ? `${liveOrigin}/chatflow?session=${A}`
             : `${origin}/?session=${A}${options.workbenchOff ? '&workbench=off' : ''}${options.taskSuggestionsEnabled === false ? '&task-suggestions=off' : ''}`,
         );
-        if ((options.width ?? 1440) >= 760)
-          await page.getByRole('treeitem', { name: /^Session B/ }).waitFor();
+        if ((options.width ?? 1440) >= 760) {
+          await options.beforeSidebarReady?.(page);
+          const row = options.nativeParents
+            ? page
+                .locator(`[data-row-key="session:${B}"]`)
+                .getByText('Session B', { exact: true })
+            : page.getByRole('treeitem', { name: /^Session B/ });
+          await row.waitFor();
+        }
         // Sidebar readiness precedes History: uploading into the temporary
         // empty-state composer can race its replacement by the active composer.
         if (options.emptyA) {
@@ -1619,6 +1627,25 @@ suite(
         nativeParents: 3,
         nativeDelayFull: true,
         height: 1800,
+        beforeSidebarReady: async (page) => {
+          const row = page.locator(`[data-row-key="session:${B}"]`);
+          await row.getByText('2 个子智能体运行中', { exact: true }).waitFor();
+          const ax = await row.ariaSnapshot();
+          const oldCount = await page
+            .getByRole('treeitem', { name: /^Session B/ })
+            .count();
+          console.log(
+            'composer-session-b-before-sidebar-ready',
+            JSON.stringify({
+              at: Date.now(),
+              rowKey: await row.getAttribute('data-row-key'),
+              ax,
+              oldCount,
+            }),
+          );
+          expect(ax.split('\n')[0]).toContain('2 个子智能体运行中 Session B');
+          expect(oldCount).toBe(0);
+        },
       });
       try {
         const trigger = f.page.getByRole('button', {

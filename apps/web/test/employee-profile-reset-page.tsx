@@ -1,5 +1,5 @@
 /** Controlled component fixture, not the production employee/reset API path. */
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { EmployeeInstanceProfileSchema } from '@allrice/contracts';
 import {
@@ -29,14 +29,18 @@ function Page() {
   >(null);
   const [events, setEvents] = useState<string[]>([]);
   const editor = useRef<HTMLElement>(null);
+  const returnFocus = useRef(false);
+  useEffect(() => {
+    if (phase !== null || !returnFocus.current) return;
+    returnFocus.current = false;
+    // The editor is no longer inert and the deleted Dialog's passive focus
+    // cleanup has run. This fixture caller owns the final return focus.
+    editor.current?.querySelector<HTMLButtonElement>('button')?.focus();
+  }, [phase]);
   const exit = (event: string) => {
+    returnFocus.current = true;
     setEvents((before) => [...before, event]);
     setPhase(null);
-    // This fixture caller owns the editor and its return focus. Production
-    // details wiring is deliberately absent while unknown-result copy is open.
-    requestAnimationFrame(() => {
-      editor.current?.querySelector<HTMLButtonElement>('button')?.focus();
-    });
   };
   return (
     <>

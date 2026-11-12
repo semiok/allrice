@@ -5,6 +5,20 @@ import { EmployeeContentError } from '../../../../packages/database/src/employee
 import { employeeHubErrorResponse } from './responses';
 
 describe('employee instance content error distinctions', () => {
+  it('reports retired text writes without suggesting a retry or changing the error envelope', async () => {
+    const response = employeeHubErrorResponse(
+      new EmployeeContentError('legacy_method_retired'),
+    );
+    expect(response.status).toBe(409);
+    const body = ApiErrorSchema.parse(await response.json());
+    expect(body.error).toMatchObject({
+      code: 'CONFLICT',
+      retryable: false,
+      message:
+        '旧文字工作方法写入已停用，历史内容与回执保留。个人 Workflow 请使用完整包的预览确认入口。',
+    });
+    expect(body.error.message).not.toContain('重试');
+  });
   it('uses the existing protected-default conflict for instance archival', async () => {
     const response = employeeHubErrorResponse(
       new EmployeeInstanceError('default_protected'),
