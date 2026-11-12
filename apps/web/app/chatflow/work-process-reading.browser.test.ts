@@ -1,6 +1,6 @@
 /** Normal transcript updates in Chrome; synthetic HTTP, no DB/auth/model. */
 import { createRequire } from 'node:module';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -1493,7 +1493,9 @@ suite('reading a receipt while late native trace changes its group', () => {
       saveObservations: () => Promise<void>,
     ) => Promise<void>,
   ) {
-    const directory = '.local/quality/met245-review-repro';
+    const parent = '.local/quality/met245-review-repro';
+    await mkdir(parent, { recursive: true });
+    const directory = await mkdtemp(`${parent}/${name}-`);
     const evidence: Record<string, unknown> = {
       name,
       head: execFileSync('git', ['rev-parse', 'HEAD'], {
@@ -1503,8 +1505,8 @@ suite('reading a receipt while late native trace changes its group', () => {
       pageErrors: [],
     };
     let page: Page | undefined;
+    const errors: unknown[] = [];
     const save = async (suffix: string) => {
-      await mkdir(directory, { recursive: true });
       await writeFile(
         `${directory}/${name}-${suffix}.json`,
         JSON.stringify(evidence, null, 2) + '\n',
@@ -1530,14 +1532,22 @@ suite('reading a receipt while late native trace changes its group', () => {
             ? { message: error.message, stack: error.stack }
             : String(error),
       };
-      throw error;
+      errors.push(error);
     } finally {
       try {
         await save('final');
-      } finally {
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
         await page?.close();
+      } catch (error) {
+        errors.push(error);
       }
     }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1)
+      throw new AggregateError(errors, `${name}: test and cleanup failures`);
   }
   const reviewReadingState = (target: Locator) =>
     target.evaluate((node) => {
