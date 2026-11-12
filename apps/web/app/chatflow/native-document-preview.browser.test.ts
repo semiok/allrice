@@ -532,14 +532,11 @@ suite('DSH native document previews', () => {
       1200,
       (page) => {
         observedPage.current = page;
-        for (const event of [
-          'frameattached',
-          'framenavigated',
-          'framedetached',
-        ] as const)
-          page.on(event, (frame) =>
-            record(event, { frame: frameId(frame), url: frame.url() }),
-          );
+        const recordFrame = (event: string) => (frame: Frame) =>
+          record(event, { frame: frameId(frame), url: frame.url() });
+        page.on('frameattached', recordFrame('frameattached'));
+        page.on('framenavigated', recordFrame('framenavigated'));
+        page.on('framedetached', recordFrame('framedetached'));
         page.on('console', (message) => {
           if (['error', 'warning'].includes(message.type()))
             record('console', {
