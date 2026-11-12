@@ -3355,6 +3355,147 @@ suite(
       });
       await run.finish();
     }, 120000);
+    it.each(['common', 'scene'] as const)(
+      'keeps current %s publication checks while dropping an unread historical pin from new inputs',
+      async (kind) => {
+        const s = await setup(),
+          content = 'budget=1000 spent=300 balance=700',
+          sceneId = randomUUID();
+        const published = await publishReference(
+          s.b,
+          {
+            workspaceId: s.company.workspaceId,
+            requestId: randomUUID(),
+            origin: 'upload',
+            audience: { scope: 'company', departmentIds: [] },
+            fileName: 'unread.txt',
+            purpose: '',
+            mediaType: 'text/plain',
+            contentBase64: Buffer.from(content).toString('base64'),
+          },
+          runtimeFixtureStorage(f.db),
+        );
+        const claim = await claimReferenceProcessing();
+        expect(claim?.revisionId).toBe(published.revisionId);
+        await finishReferenceProcessing(claim!, [
+          { content, start: 0, end: content.length },
+        ]);
+        const ref = await managedRef(s, published);
+        const active = await enable(
+          s,
+          s.draft({
+            manifest: {
+              schemaVersion: 1,
+              declaredConflicts: [],
+              common: kind === 'common' ? [ref] : [],
+              scenes:
+                kind === 'scene'
+                  ? [
+                      {
+                        id: sceneId,
+                        name: 'Budget',
+                        appliesWhen: 'Budget review',
+                        references: [ref],
+                      },
+                    ]
+                  : [],
+            },
+          }),
+        );
+        const first = await runtimeRun(s),
+          worker = await sceneLease(first);
+        await changeReferencePublication(s.b, published.sourceId, {
+          workspaceId: s.company.workspaceId,
+          requestId: randomUUID(),
+          expectedRevision: 1,
+          action: 'audience',
+          audience: { scope: 'personal', departmentIds: [] },
+        });
+        if (kind === 'common') {
+          await expect(
+            assertEmployeeContentContext(
+              first.scope,
+              first.runtime.generationId,
+              worker,
+            ),
+          ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+          await expect(
+            loadEmployeeRuntimeReferences(
+              first.scope,
+              first.runtime.generationId,
+              worker,
+            ),
+          ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+        } else {
+          await assertEmployeeContentContext(
+            first.scope,
+            first.runtime.generationId,
+            worker,
+          );
+          await expect(
+            loadEmployeeRuntimeScene(
+              first.scope,
+              first.runtime.generationId,
+              {
+                sceneId,
+                sceneDigest: first.runtime.scenes.find(
+                  (scene) => scene.id === sceneId,
+                )!.digest,
+              },
+              worker,
+            ),
+          ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+        }
+        expect(
+          (
+            await f.db`select reference_reads,content_scene_state from allrice_employee_runs where run_id=${first.scope.runId}`
+          )[0],
+        ).toMatchObject({
+          reference_reads: [],
+          content_scene_state: null,
+        });
+        await releaseConversationRuntime({
+          ...first.scope,
+          workerId: worker.workerId,
+          outcome: 'idle',
+        });
+        await first.finish();
+        await enable(s, s.draft({ expectedRevision: active.revision }));
+        await changeReferencePublication(s.b, published.sourceId, {
+          workspaceId: s.company.workspaceId,
+          requestId: randomUUID(),
+          expectedRevision: 2,
+          action: 'delete',
+        });
+        const next = await runtimeRun(s, first.scope.sessionId),
+          nextWorker = await sceneLease(next);
+        expect(next.runtime.generationId).toBe(first.runtime.generationId);
+        await assertEmployeeContentContext(
+          next.scope,
+          next.runtime.generationId,
+          nextWorker,
+        );
+        expect(
+          await loadEmployeeRuntimeReferences(
+            next.scope,
+            next.runtime.generationId,
+            nextWorker,
+          ),
+        ).toEqual([]);
+        expect(
+          (
+            await f.db`select invalidated_at from allrice_employee_content_contexts where generation_id=${next.runtime.generationId}`
+          )[0]!.invalidated_at,
+        ).toBeNull();
+        await releaseConversationRuntime({
+          ...next.scope,
+          workerId: nextWorker.workerId,
+          outcome: 'idle',
+        });
+        await next.finish();
+      },
+      120000,
+    );
     it('denies a new legacy restore while retaining authorized immutable history and frozen Runs', async () => {
       const s = await setup(),
         t = text('HISTORICAL_REQUIREMENT_73');

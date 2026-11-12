@@ -548,7 +548,7 @@ async function reserveReferenceFile(
     description: string;
   },
 ) {
-  const description = publication?.description ?? (v.purpose || '参考资料');
+  const description = publication?.description ?? (v.purpose || '企业资料');
   let source: SourceRow,
     revision = 1;
   if (v.sourceId) {

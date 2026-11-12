@@ -49,6 +49,8 @@ import { readFinalDeliveryReferences } from '../../../packages/database/src/fina
 import {
   appendJobEvent,
   completeJob,
+  cancelRun,
+  failJob,
   heartbeatJob,
   finishJobDrain,
 } from '../../../packages/database/src/execution/queue.ts';
@@ -2294,6 +2296,110 @@ suite(
               },
             ),
           ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      },
+      120000,
+    );
+
+    it.each(['canceled', 'failed-read'] as const)(
+      'a %s selection with no actual publication read permits a later ordinary send/prepare/leased guard after deletion',
+      async (ending) => {
+        const s = await setup(),
+          reader = { ...s, owner: s.finance };
+        const published = await httpUpload(s.owner);
+        await ready(published.revisionId);
+        const first = await runtimeRun(reader, [published.revisionId]),
+          worker = await lease(first);
+        let revision = 1;
+        if (ending === 'canceled')
+          await cancelRun(
+            s.finance,
+            s.finance.workspaceId!,
+            first.scope.runId,
+            { reason: 'user_requested' },
+          );
+        else {
+          await change(s.owner, published.sourceId, 'audience', revision++, {
+            scope: 'personal',
+            departmentIds: [],
+          });
+          await expect(
+            loadEmployeeRuntimeReferences(
+              first.scope,
+              first.runtime.generationId,
+              worker,
+            ),
+          ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+        }
+        await failJob({
+          ...worker,
+          code: 'EMPLOYEE_CONTENT_UNAVAILABLE',
+          message: 'Stopped before publication bytes',
+          retryable: false,
+        });
+        expect(
+          (
+            await f.db`select status,reference_reads from allrice_employee_runs where run_id=${first.scope.runId}`
+          )[0],
+        ).toMatchObject({
+          status: ending === 'canceled' ? 'canceled' : 'failed',
+          reference_reads: [],
+        });
+        await change(s.owner, published.sourceId, 'delete', revision);
+        expect(
+          await hasRevokedReferencePublicationHistory(
+            s.finance,
+            first.scope.sessionId,
+          ),
+        ).toBe(false);
+        await expect(
+          runtimeRun(reader, [published.revisionId], first.scope.sessionId),
+        ).rejects.toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
+        const next = await runtimeRun(reader, [], first.scope.sessionId),
+          nextWorker = await lease(next);
+        expect(next.runtime.generationId).toBe(first.runtime.generationId);
+        await assertEmployeeContentContext(
+          next.scope,
+          next.runtime.generationId,
+          nextWorker,
+        );
+        expect(
+          await loadEmployeeRuntimeReferences(
+            next.scope,
+            next.runtime.generationId,
+            nextWorker,
+          ),
+        ).toEqual([]);
+        expect(
+          (
+            await f.db`select invalidated_at from allrice_employee_content_contexts where generation_id=${next.runtime.generationId}`
+          )[0]!.invalidated_at,
+        ).toBeNull();
+        expect(
+          await f.db`select run_id from allrice_employee_runs where session_id=${next.scope.sessionId} and jsonb_array_length(reference_reads)>0`,
+        ).toHaveLength(0);
+        await completeJob({
+          ...nextWorker,
+          result: {
+            answer: 'Ordinary continuation without publication bytes',
+            citations: [],
+          },
+        });
+        const imported = await runtimeRun(reader, [], undefined, [
+            first.scope.sessionId,
+          ]),
+          importedWorker = await lease(imported);
+        await assertEmployeeContentContext(
+          imported.scope,
+          imported.runtime.generationId,
+          importedWorker,
+        );
+        await completeJob({
+          ...importedWorker,
+          result: {
+            answer: 'Visible conversation without a publication dependency',
+            citations: [],
+          },
+        });
       },
       120000,
     );

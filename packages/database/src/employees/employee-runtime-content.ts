@@ -849,10 +849,45 @@ async function generationIsReadable(
       and workspace_id=${scope.workspaceId} and owner_id=${scope.ownerId}
       and invalidated_at is null`;
   if (!generation) return false;
+  // Only the real invocation owns current inputs. Frozen external messages
+  // have no current Run; their publication authority comes from actual reads.
+  const current = scope.runId ? await ownedRun(scope, sql) : null;
   const brandKey =
-    expectedBrandKey === undefined && scope.runId
-      ? brandContextKey((await ownedRun(scope, sql)).brand_workflow)
+    expectedBrandKey === undefined && current
+      ? brandContextKey(current.brand_workflow)
       : expectedBrandKey;
+  if (current) {
+    try {
+      await assertReferenceSelections(
+        reader,
+        current.reference_selections,
+        sql,
+        locked,
+      );
+      if (current.content)
+        await readRuntimeContent(
+          reader,
+          current.content,
+          sql,
+          scope.ownerId,
+          locked,
+          parseSceneState(current.content_scene_state)
+            .reads.filter((r) => !r.personal)
+            .map((r) => r.sceneId),
+        );
+    } catch (error) {
+      if (error instanceof PublicationContentUnavailableError) throw error;
+      if (error instanceof ReferencePublicationRuntimeError)
+        throw new PublicationContentUnavailableError();
+      if (
+        error instanceof EmployeeRuntimeContentError ||
+        error instanceof ZodError ||
+        error instanceof ReferenceRuntimeError
+      )
+        return false;
+      throw error;
+    }
+  }
   const rows = await sql<
     (PersonalProvenance & {
       include_publications: boolean;
@@ -885,10 +920,12 @@ async function generationIsReadable(
         return false;
       await assertPersonalProvenance(reader, row, sql);
       await assertPersonalSceneReads(reader, row, sql, locked);
+      // Pins only describe historical inputs. Publication use is the receipt
+      // loop below; current inputs were checked independently above.
       await assertGenerationReferences(
         reader,
         row.reference_selections,
-        row.include_publications,
+        false,
         sql,
         locked,
       );
@@ -923,7 +960,7 @@ async function generationIsReadable(
           scope.ownerId,
           locked,
           state.reads.filter((r) => !r.personal).map((r) => r.sceneId),
-          row.include_publications,
+          false,
         );
       }
       for (const ref of row.session_references ?? [])
