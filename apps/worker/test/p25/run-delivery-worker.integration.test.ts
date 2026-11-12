@@ -16,10 +16,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import ExcelJS from 'exceljs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import {
-  renderMemoryDetailV2,
-  legacyPersonalMemoryPair,
-} from '@allrice/contracts';
+import { renderMemoryDetailV2 } from '@allrice/contracts';
 import { readRetiredExecutionHistory } from './retired-execution-history.fixture.ts';
 import { freezeEmployeeRunExecutionBinding } from '../../../../packages/database/src/conversation/current-execution-binding.ts';
 import * as DatabaseClient from '../../../../packages/database/src/core/client.ts';
@@ -106,7 +103,10 @@ import {
   promoteManagedEmployeeMemory,
   deleteManagedEmployeeMemory,
 } from '../../../../packages/database/src/workspace/service.ts';
-import { memoryPairDigest } from '../../../../packages/database/src/workspace/employee-memory.ts';
+import {
+  legacyPersonalMemoryPair,
+  memoryPairDigest,
+} from '../../../../packages/database/src/workspace/employee-memory.ts';
 import { mutateCompanyAsset } from '../../../../packages/database/src/company-assets.ts';
 import {
   createRecurringTask,
