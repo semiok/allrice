@@ -19,7 +19,6 @@ import {
 import {
   PersonalSkillPinSchema,
   ExperienceSourceHandleSchema,
-  EmployeeDocumentsSchema,
   isMemoryIndexDocuments,
   RememberPersonalMemoryInputSchema,
 } from '@allrice/contracts/native-runtime';
