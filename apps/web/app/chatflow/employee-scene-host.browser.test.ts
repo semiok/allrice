@@ -235,6 +235,7 @@ suite('U1 mounted employee Workflow host', () => {
       disabled?: boolean;
       coarse?: boolean;
       emptySkills?: boolean;
+      archiveEligible?: boolean;
     } = {},
   ) {
     const width = options.width ?? 1440;
@@ -335,6 +336,7 @@ suite('U1 mounted employee Workflow host', () => {
         ? ['expressionStyle']
         : ['name', 'appearance', 'mission', 'workStyle', 'expressionStyle'];
       data.profile.isDefaultRice = !options.frozen && rice;
+      if (options.archiveEligible) data.profile.canArchive = !rice;
       data.content.employeeId = rice ? id(9 + offset) : id(19 + offset);
       return data;
     }
@@ -1949,6 +1951,43 @@ suite('U1 mounted employee Workflow host', () => {
             .count(),
         ).toBe(1);
         expect(f.state.writes).toEqual([]);
+      });
+    });
+  }
+
+  for (const dark of [false, true]) {
+    it(`MET-251 employee detail polish desktop ${dark ? 'dark' : 'light'}`, async () => {
+      await inFixture({ dark, archiveEligible: true }, async (f) => {
+        await f.page.setViewportSize({ width: 1440, height: 1250 });
+        const employee = await f.openEmployeeDetails('流程哥');
+        await employee
+          .getByRole('button', { name: '写周报', exact: true })
+          .click();
+        const detail = employeePage(f.page, { name: '写周报', exact: true });
+        const remove = detail.getByRole('button', {
+          name: '删除场景',
+          exact: true,
+        });
+        await remove.waitFor();
+        await f.page.mouse.move(1, 1);
+        await f.page.screenshot({
+          path: resolve(evidence, `detail-polish-scene-${dark ? 'dark' : 'light'}.png`),
+          fullPage: true,
+        });
+        const confirm = await deleteConfirmation(f, detail);
+        await confirm.getByRole('button', { name: '删除', exact: true }).click();
+        await employee.waitFor();
+        await employee
+          .getByRole('button', { name: '客户回访', exact: true })
+          .waitFor();
+        expect(await employee.getByRole('button', { name: '写周报', exact: true }).count()).toBe(0);
+        expect(f.state.removeReceipts.size).toBe(1);
+        await employee.getByRole('button', { name: '归档这个员工', exact: true }).waitFor();
+        await f.page.mouse.move(1, 1);
+        await f.page.screenshot({
+          path: resolve(evidence, `detail-polish-employee-${dark ? 'dark' : 'light'}.png`),
+          fullPage: true,
+        });
       });
     });
   }
