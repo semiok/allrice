@@ -92,6 +92,14 @@ export async function workbenchFileAccess(
   const policy = await readWorkbenchFilePolicy(objectId, sql);
   if (!policy) return null;
   const principal = await readContentPrincipal(context, sql, lockForWrite);
+  const [publication] = policy.reference_source_id
+    ? await sql<
+        { status: string }[]
+      >`select status from allrice_knowledge_sources
+        where id=${policy.reference_source_id} and publication_kind is not null
+          and organization_id=${policy.organization_id}
+        ${lockForWrite ? sql`for share` : sql``}`
+    : [];
   const current = lockForWrite
     ? await readWorkbenchFilePolicy(objectId, sql, 'share')
     : policy;
@@ -104,12 +112,32 @@ export async function workbenchFileAccess(
           and archived_at is null order by id
         ${lockForWrite ? sql`for share` : sql``}`
     : [];
+  // Publication policies govern the retained copy only. Tenant maintenance
+  // levels do not grant publisher rights or membership in another department.
+  const publicationOwner = principal?.userId === current.owner_id;
+  const publicationRead =
+    publication?.status === 'active' &&
+    principal?.organizationId === current.organization_id &&
+    (publicationOwner ||
+      current.scope === 'company' ||
+      (current.scope === 'departments' &&
+        principal.departmentId !== null &&
+        departments.some((d) => d.id === principal.departmentId)));
   return {
-    ...evaluateWorkbenchFilePolicy(
-      principal,
-      current,
-      departments.map((d) => d.id),
-    ),
+    ...(publication
+      ? {
+          canRead: !!publicationRead,
+          canMaintain: !!(
+            publicationRead &&
+            publicationOwner &&
+            principal?.writable
+          ),
+        }
+      : evaluateWorkbenchFilePolicy(
+          principal,
+          current,
+          departments.map((d) => d.id),
+        )),
     policy: current,
     departments,
   };

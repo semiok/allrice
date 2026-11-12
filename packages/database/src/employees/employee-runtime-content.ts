@@ -21,6 +21,7 @@ import {
   assertReferenceSelections,
   retrieveReferenceKnowledgeInTransaction,
   ReferenceRuntimeError,
+  hasRevokedReferencePublicationHistory,
 } from '../reference-runtime.ts';
 import {
   EmployeeContentManifestSchema,
@@ -76,6 +77,19 @@ export class EmployeeRuntimeContentError extends Error {
   ) {
     super(message);
   }
+}
+export async function assertEmployeeReferencePublicationHistory(
+  context: ContentIdentity,
+  sessionId: string,
+  sql: ContentSql,
+  lock = false,
+) {
+  if (
+    await hasRevokedReferencePublicationHistory(context, sessionId, sql, lock)
+  )
+    throw new EmployeeRuntimeContentError(
+      '本对话使用的企业资料已撤销或删除，请新建对话。历史记录仍可查看。',
+    );
 }
 const unavailable = () => {
   throw new EmployeeRuntimeContentError();
@@ -708,6 +722,15 @@ async function generationIsReadable(
   locked = false,
   expectedBrandKey?: string | null,
 ) {
+  if (
+    await hasRevokedReferencePublicationHistory(
+      identity(scope),
+      scope.sessionId,
+      sql,
+      locked,
+    )
+  )
+    return false;
   if (visited.has(generationId)) return true;
   if (visited.size >= 128) return false;
   visited.add(generationId);
@@ -898,6 +921,12 @@ export async function assertEmployeeBrandWorkflowContext(scope: RunScope) {
 export async function prepareEmployeeContentContext(scope: RunScope) {
   const result = await withContentLocks(scope, async (tx) => {
     const run = await ownedRun(scope, tx);
+    await assertEmployeeReferencePublicationHistory(
+      identity(scope),
+      scope.sessionId,
+      tx,
+      true,
+    );
     await assertPersonalProvenance(identity(scope), run, tx);
     if (!run.content) {
       if (

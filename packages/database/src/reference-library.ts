@@ -10,12 +10,15 @@ import {
   ReferenceUploadInputSchema,
   UuidSchema,
   MembershipSchema,
+  ReferencePublishInputSchema,
+  ReferencePublicationActionSchema,
   type ContentOwnership,
   type ReferenceRevision,
   type ReferenceUploadInput,
   type StoragePort,
   type RequestContext,
   type StorageObject,
+  type ReferenceAudience,
 } from '@allrice/contracts';
 import {
   assertWorkbenchSession,
@@ -41,6 +44,8 @@ import {
   workbenchReferenceAccess,
   workbenchFileSchemaReady,
   workbenchOriginFileAccess,
+  workbenchFileAccess,
+  type WorkbenchFilePolicy,
 } from './workbench-file-access.ts';
 
 type Sql = ReturnType<typeof getDatabase> | postgres.TransactionSql;
@@ -63,6 +68,9 @@ interface SourceRow {
   ownership: ContentOwnership;
   status: 'active' | 'archived';
   legacy_company_asset_id: string | null;
+  publication_kind: 'file' | 'upload' | null;
+  publication_origin_object_id: string | null;
+  created_by: string;
 }
 interface FileRow {
   id: string;
@@ -177,11 +185,42 @@ export async function referenceSourceAccess(
       : null;
   const [s] = await sql<
     SourceRow[]
-  >`select id,organization_id,workspace_id,ownership,status,legacy_company_asset_id
+  >`select id,organization_id,workspace_id,ownership,status,legacy_company_asset_id,
+      publication_kind,publication_origin_object_id,created_by
     from allrice_knowledge_sources where id=${UuidSchema.parse(sourceId)} and ownership is not null
     ${maintain ? sql`for update` : lockRead ? sql`for share` : sql``}`;
   if (!s) throw new DataAccessError('not_found');
   const ownership = ContentOwnershipSchema.parse(s.ownership);
+  if (s.publication_kind) {
+    const publication = await readPublicationPolicy(
+      s.id,
+      sql,
+      maintain || lockRead,
+    );
+    if (!publication || s.status !== 'active')
+      throw new DataAccessError('not_found');
+    const policyAccess = await workbenchFileAccess(
+      context,
+      publication.object_id,
+      sql,
+      maintain || lockRead,
+    );
+    const access = sharedReader
+      ? sharedReader.publicationAccess(
+          s.organization_id,
+          publicationAudience(publication),
+          policyAccess?.departments.map((d) => d.id) ?? [],
+        )
+      : {
+          canRead: policyAccess?.canRead ?? false,
+          canMaintain: policyAccess?.canMaintain ?? false,
+          readReason: 'allowed' as const,
+          maintenanceReason: 'allowed' as const,
+        };
+    if (!access.canRead || (maintain && !access.canMaintain))
+      throw new DataAccessError('not_found');
+    return { source: s, ownership, access, legacy, publication };
+  }
   const baseAccess = sharedReader
     ? sharedReader.access(ownership)
     : await referenceAccess(context, ownership, sql, maintain, lockRead);
@@ -193,7 +232,20 @@ export async function referenceSourceAccess(
     ownership,
     access: legacy ? { ...access, canMaintain: false } : access,
     legacy,
+    publication: null,
   };
+}
+
+function publicationAudience(policy: WorkbenchFilePolicy): ReferenceAudience {
+  return { scope: policy.scope, departmentIds: policy.department_ids };
+}
+async function readPublicationPolicy(sourceId: string, sql: Sql, lock = false) {
+  const [policy] = await sql<
+    WorkbenchFilePolicy[]
+  >`select p.* from allrice_workbench_file_policies p
+    join allrice_knowledge_revisions r on r.file_object_id=p.object_id and r.knowledge_source_id=p.reference_source_id
+    where p.reference_source_id=${sourceId} ${lock ? sql`for share of p` : sql``}`;
+  return policy ?? null;
 }
 
 export async function listReferenceRevisions(
@@ -208,21 +260,35 @@ export async function listReferenceRevisions(
     throw new DataAccessError('authorization_denied');
   const sources = await sql<
     SourceRow[]
-  >`select s.id,s.organization_id,s.workspace_id,s.ownership,s.status,s.legacy_company_asset_id from allrice_knowledge_sources s
+  >`select s.id,s.organization_id,s.workspace_id,s.ownership,s.status,s.legacy_company_asset_id,
+    s.publication_kind,s.publication_origin_object_id,s.created_by from allrice_knowledge_sources s
     left join allrice_company_assets a on a.id=s.legacy_company_asset_id
     where s.ownership is not null and (s.organization_id=${context.organizationId} or s.ownership->>'scope'='platform')
     and (s.legacy_company_asset_id is null or a.state='published')
     and (${sourceId ?? null}::uuid is null or s.id=${sourceId ?? null}) order by s.updated_at desc,s.id`;
   const result: ReferenceRevision[] = [];
   for (const s of sources) {
+    if (s.publication_kind && s.status !== 'active') continue;
+    const publication = s.publication_kind
+      ? await readPublicationPolicy(s.id, sql)
+      : null;
     const ownership = ContentOwnershipSchema.parse(s.ownership),
-      baseAccess = await referenceAccess(context, ownership, sql),
+      baseAccess = publication
+        ? await workbenchFileAccess(context, publication.object_id, sql)
+        : await referenceAccess(context, ownership, sql),
       boundAccess = !s.legacy_company_asset_id
         ? await workbenchReferenceAccess(context, s.id, sql)
         : null,
       access = boundAccess ? { ...baseAccess, ...boundAccess } : baseAccess;
-    if (!access.canRead || (s.status === 'archived' && !access.canMaintain))
+    if (
+      !access?.canRead ||
+      (s.publication_kind && !publication) ||
+      (s.status === 'archived' && !access.canMaintain)
+    )
       continue;
+    const [publisher] = publication
+      ? await sql`select display_name from allrice_users where id=${s.created_by}`
+      : [];
     if (
       !sourceId &&
       !includeManagedFiles &&
@@ -278,6 +344,17 @@ export async function listReferenceRevisions(
                 sizeBytes: Number(r.size_bytes),
               })),
           createdAt: r.created_at.toISOString(),
+          ...(publication
+            ? {
+                publication: {
+                  origin: s.publication_kind,
+                  publisherId: s.created_by,
+                  publisherName: publisher?.display_name ?? '',
+                  audience: publicationAudience(publication),
+                  audienceRevision: publication.revision,
+                },
+              }
+            : {}),
           ...(s.legacy_company_asset_id
             ? {
                 companyTemplate: {
@@ -287,13 +364,14 @@ export async function listReferenceRevisions(
                 },
               }
             : {}),
-          origin: r.artifact_snapshot
-            ? {
-                fileName: r.artifact_snapshot.fileName,
-                version: r.artifact_snapshot.version,
-                checksum: r.artifact_snapshot.checksum,
-              }
-            : null,
+          origin:
+            !publication && r.artifact_snapshot
+              ? {
+                  fileName: r.artifact_snapshot.fileName,
+                  version: r.artifact_snapshot.version,
+                  checksum: r.artifact_snapshot.checksum,
+                }
+              : null,
         }),
       );
   }
@@ -464,11 +542,14 @@ async function reserveReferenceFile(
   sizeBytes: number,
   requestInput: postgres.JSONValue,
   origin?: ArtifactOrigin,
+  publication?: { kind: 'file' | 'upload'; originObjectId: string | null },
 ) {
   let source: SourceRow,
     revision = 1;
   if (v.sourceId) {
     const found = await referenceSourceAccess(context, v.sourceId, tx, true);
+    if (found.source.publication_kind)
+      throw new ReferenceLibraryError('source_unavailable');
     // Managed snapshots keep their exact origin/version. Publishing different
     // bytes through the legacy uploader would sever that immutable binding.
     if (await workbenchReferenceAccess(context, v.sourceId, tx))
@@ -491,8 +572,8 @@ async function reserveReferenceFile(
     const [created] = await tx<
       SourceRow[]
     >`insert into allrice_knowledge_sources
-        (id,organization_id,workspace_id,slug,name,description,created_by,ownership)
-        values (${id},${context.organizationId},${v.workspaceId},${'reference-' + id},${v.fileName},${v.purpose || '参考资料'},${ownership.scope === 'personal' ? ownership.ownerId : context.actor.id},${tx.json(ownership)}) returning *`;
+        (id,organization_id,workspace_id,slug,name,description,created_by,ownership,publication_kind,publication_origin_object_id)
+        values (${id},${context.organizationId},${v.workspaceId},${'reference-' + id},${v.fileName},${v.purpose || '参考资料'},${ownership.scope === 'personal' ? ownership.ownerId : context.actor.id},${tx.json(ownership)},${publication?.kind ?? null},${publication?.originObjectId ?? null}) returning *`;
     source = created!;
   }
   // Resolve actual current memberships. Platform sessions intentionally omit
@@ -898,6 +979,8 @@ export async function changeReference(
       false,
       v.action === 'retry',
     );
+    if (source.publication_kind && v.action !== 'retry')
+      throw new ReferenceLibraryError('source_unavailable');
     const [prior] =
       await tx`select input from allrice_knowledge_reference_actions where source_id=${source.id} and actor_id=${context.actor.id} and request_id=${v.requestId}`;
     if (prior) {
@@ -960,4 +1043,365 @@ export async function referenceLibraryOptions(
     departmentId: principal.departmentId,
     departments: Array.from(departments),
   };
+}
+
+async function validatePublicationAudience(
+  context: RequestContext,
+  audience: ReferenceAudience,
+  tx: postgres.TransactionSql,
+) {
+  if (audience.scope !== 'departments') return;
+  const rows = await tx`select id from allrice_departments
+    where organization_id=${context.organizationId} and id in ${tx(audience.departmentIds)}
+      and archived_at is null order by id for share`;
+  if (rows.length !== audience.departmentIds.length)
+    throw new DataAccessError('authorization_denied');
+}
+
+/** Publish requires the owner's business file, not a readable shared copy,
+ * reference snapshot, tool log or platform test. No original ACL is inherited. */
+async function requirePublicationFile(
+  context: RequestContext,
+  objectId: string,
+  tx: postgres.TransactionSql,
+) {
+  const { readWorkbenchFile } = await import('./workbench-files.ts');
+  const file = await readWorkbenchFile(context, objectId, tx);
+  if (
+    file.object.ownerId !== context.actor.id ||
+    file.object.organizationId !== context.organizationId ||
+    file.object.workspaceId !== context.workspaceId ||
+    file.row.source_id ||
+    file.row.legacy_company_asset_id
+  )
+    throw new ReferenceLibraryError('source_unavailable');
+  if (file.row.artifact_id) {
+    await requireReferenceArtifact(tx, context, file.row.artifact_id);
+  } else {
+    const [upload] = await tx`select o.id from allrice_storage_objects o
+      where o.id=${objectId} and o.owner_id=${context.actor.id} and o.category='uploads'
+        and exists(select 1 from allrice_file_references f
+          join allrice_chat_sessions s on s.id=f.session_id and s.owner_id=f.owner_id
+          where f.object_id=o.id and f.owner_id=${context.actor.id}
+            and f.organization_id=${context.organizationId} and f.workspace_id=${context.workspaceId})
+      for share of o`;
+    if (!upload) throw new ReferenceLibraryError('source_unavailable');
+  }
+  return file;
+}
+
+/** The only new publication command for both uploads and exact owned files.
+ * Transactions reserve/recheck identity; all storage I/O remains outside locks. */
+export async function publishReference(
+  contextInput: RequestContext,
+  input: unknown,
+  storage: StoragePort,
+) {
+  const v = ReferencePublishInputSchema.parse(input);
+  const context = scoped(contextInput, v.workspaceId);
+  let bytes: Buffer | undefined;
+  if (v.origin === 'upload') {
+    if (
+      !/^[A-Za-z0-9+/]*={0,2}$/.test(v.contentBase64) ||
+      v.contentBase64.length % 4
+    )
+      throw new ReferenceLibraryError('invalid_content');
+    bytes = Buffer.from(v.contentBase64, 'base64');
+    if (!bytes.length || bytes.length > 50 * 1024 * 1024)
+      throw new ReferenceLibraryError('invalid_content');
+  }
+  let requestInput: postgres.JSONValue;
+  if (v.origin === 'upload') {
+    const { contentBase64, ...metadata } = v;
+    requestInput = {
+      ...metadata,
+      checksum:
+        'sha256:' +
+        createHash('sha256')
+          .update(Buffer.from(contentBase64, 'base64'))
+          .digest('hex'),
+      sizeBytes: bytes!.length,
+    };
+  } else requestInput = v;
+  type PublicationFile = Awaited<ReturnType<typeof requirePublicationFile>>;
+  async function reserve(original?: PublicationFile) {
+    return getDatabase().begin(async (tx) => {
+      await lockWorkspaceStorageQuota(
+        tx,
+        context.organizationId,
+        v.workspaceId,
+      );
+      const principal = await readContentPrincipal(context, tx, true);
+      if (!principal?.writable)
+        throw new DataAccessError('authorization_denied');
+      await lockReferenceRequest(tx, context, v.requestId);
+      const operation = v.origin === 'file' ? 'artifact' : 'upload';
+      const prior = await findReferenceRequest(
+        tx,
+        context,
+        v.requestId,
+        operation,
+        requestInput,
+      );
+      if (v.origin === 'file')
+        await tx`select pg_advisory_xact_lock(hashtextextended(${context.organizationId + ':publication:' + context.actor.id + ':' + v.objectId},0))`;
+      const [canonical] =
+        !prior && v.origin === 'file'
+          ? await tx`select r.id from allrice_knowledge_sources s
+        join allrice_knowledge_revisions r on r.knowledge_source_id=s.id
+        where s.organization_id=${context.organizationId} and s.workspace_id=${v.workspaceId}
+          and s.created_by=${context.actor.id} and s.publication_origin_object_id=${v.objectId}
+          and s.publication_kind='file' and s.status='active'`
+          : [];
+      const savedId = prior ?? canonical?.id;
+      if (savedId) {
+        const [saved] =
+          await tx`select r.id,r.knowledge_source_id,r.file_object_id,r.description,
+          s.status,s.created_by,s.publication_kind from allrice_knowledge_revisions r
+          join allrice_knowledge_sources s on s.id=r.knowledge_source_id
+          where r.id=${savedId} and s.organization_id=${context.organizationId} and s.workspace_id=${v.workspaceId}
+            and s.created_by=${context.actor.id} and s.publication_kind is not null for share of s`;
+        if (!saved) throw new ReferenceLibraryError('request_conflict');
+        const policy = await readPublicationPolicy(
+          saved.knowledge_source_id,
+          tx,
+          true,
+        );
+        if (!policy) throw new ReferenceLibraryError('source_unavailable');
+        if (
+          !prior &&
+          (saved.description !== (v.purpose || '参考资料') ||
+            !isDeepStrictEqual(publicationAudience(policy), v.audience))
+        )
+          throw new ReferenceLibraryError('request_conflict');
+        if (!prior)
+          await recordReferenceRequest(
+            tx,
+            context,
+            v.requestId,
+            operation,
+            requestInput,
+            saved.id,
+          );
+        // A receipt replay is not another publication. Even after revoke it
+        // returns the original IDs without reading bytes or restoring access.
+        if (saved.status !== 'active')
+          return {
+            reservation: {
+              sourceId: saved.knowledge_source_id as string,
+              revisionId: saved.id as string,
+              object: null,
+              alreadyReady: true,
+            },
+            file: null,
+          };
+        const reservation = await readReferenceReservation(
+          tx,
+          context,
+          saved.id,
+        );
+        if (reservation.alreadyReady || v.origin === 'upload' || !original)
+          return { reservation, file: null };
+        const file = await requirePublicationFile(context, v.objectId, tx);
+        if (
+          file.object.checksum !== reservation.object.checksum ||
+          file.object.checksum !== original.object.checksum ||
+          file.object.sizeBytes !== bytes?.length
+        )
+          throw new ReferenceLibraryError('source_unavailable');
+        return { reservation, file };
+      }
+      await validatePublicationAudience(context, v.audience, tx);
+      const file =
+        v.origin === 'file'
+          ? await requirePublicationFile(context, v.objectId, tx)
+          : null;
+      if (file && !original) return { reservation: null, file };
+      if (
+        file &&
+        (!original ||
+          file.object.checksum !== original.object.checksum ||
+          file.object.id !== original.object.id ||
+          file.object.sizeBytes !== bytes?.length)
+      )
+        throw new ReferenceLibraryError('source_unavailable');
+      if (!bytes) throw new ReferenceLibraryError('invalid_content');
+      const fileName =
+        v.origin === 'upload' ? v.fileName : file!.row.file_name.slice(0, 160);
+      const mediaType =
+        v.origin === 'upload' ? v.mediaType : file!.object.mediaType;
+      const checksum =
+        `sha256:${createHash('sha256').update(bytes).digest('hex')}` as StorageObject['checksum'];
+      const reservation = await reserveReferenceFile(
+        tx,
+        context,
+        {
+          workspaceId: v.workspaceId,
+          requestId: v.requestId,
+          scope: 'personal',
+          fileName,
+          purpose: v.purpose,
+          mediaType,
+        },
+        {
+          scope: 'personal',
+          organizationId: context.organizationId,
+          ownerId: context.actor.id,
+        },
+        checksum,
+        bytes.length,
+        requestInput,
+        undefined,
+        {
+          kind: v.origin,
+          originObjectId: v.origin === 'file' ? v.objectId : null,
+        },
+      );
+      await tx`insert into allrice_workbench_file_policies
+        (object_id,organization_id,workspace_id,owner_id,file_name,scope,department_ids,reference_source_id,reference_enabled)
+        values(${reservation.object.id},${context.organizationId},${v.workspaceId},${context.actor.id},${fileName},
+          ${v.audience.scope},${v.audience.departmentIds},${reservation.sourceId},true)`;
+      await recordReferenceRequest(
+        tx,
+        context,
+        v.requestId,
+        operation,
+        requestInput,
+        reservation.revisionId,
+      );
+      return { reservation, file };
+    });
+  }
+  let prepared = await reserve();
+  if (!prepared.reservation?.alreadyReady) {
+    if (v.origin === 'file') {
+      // An ambiguous put acknowledgement may have left a complete immutable
+      // copy. Verify that copy and finish its original reservation, even if
+      // the independent original has since disappeared. No new bytes/ACL are
+      // taken from the original on this recovery path.
+      if (
+        prepared.reservation?.object &&
+        (await storage.exists(prepared.reservation.object))
+      ) {
+        await readArtifactBytes(
+          storage,
+          prepared.reservation.object,
+          50 * 1024 * 1024,
+        );
+        await completeReferenceUpload(
+          context,
+          v.workspaceId,
+          prepared.reservation.revisionId,
+        );
+        return {
+          sourceId: prepared.reservation.sourceId,
+          revisionId: prepared.reservation.revisionId,
+        };
+      }
+      const original =
+        prepared.file ??
+        (await getDatabase().begin(async (tx) => {
+          const principal = await readContentPrincipal(context, tx, true);
+          if (!principal?.writable)
+            throw new DataAccessError('authorization_denied');
+          return requirePublicationFile(context, v.objectId, tx);
+        }));
+      bytes = await readArtifactBytes(
+        storage,
+        original.object,
+        50 * 1024 * 1024,
+      );
+      prepared = await reserve(original);
+    }
+    if (!prepared.reservation)
+      throw new Error('Publication reservation missing');
+    if (!prepared.reservation.alreadyReady && prepared.reservation.object) {
+      await storage.put(
+        prepared.reservation.object,
+        new Blob([new Uint8Array(bytes!)]).stream(),
+      );
+      await completeReferenceUpload(
+        context,
+        v.workspaceId,
+        prepared.reservation.revisionId,
+      );
+    }
+  }
+  if (!prepared.reservation) throw new Error('Publication reservation missing');
+  return {
+    sourceId: prepared.reservation.sourceId,
+    revisionId: prepared.reservation.revisionId,
+  };
+}
+
+export async function changeReferencePublication(
+  contextInput: RequestContext,
+  sourceId: string,
+  input: unknown,
+) {
+  const v = ReferencePublicationActionSchema.parse(input);
+  const context = scoped(contextInput, v.workspaceId);
+  return getDatabase().begin(async (tx) => {
+    const principal = await readContentPrincipal(context, tx, true);
+    if (!principal?.writable) throw new DataAccessError('authorization_denied');
+    const [source] = await tx<
+      SourceRow[]
+    >`select * from allrice_knowledge_sources
+      where id=${UuidSchema.parse(sourceId)} and organization_id=${context.organizationId}
+        and created_by=${context.actor.id}
+        and publication_kind is not null for update`;
+    if (!source) throw new DataAccessError('not_found');
+    const [prior] =
+      await tx`select input from allrice_knowledge_reference_actions
+      where source_id=${source.id} and actor_id=${context.actor.id} and request_id=${v.requestId}`;
+    if (prior) {
+      if (!isDeepStrictEqual(prior.input, v))
+        throw new ReferenceLibraryError('request_conflict');
+      return { sourceId: source.id };
+    }
+    if (source.status !== 'active') throw new DataAccessError('not_found');
+    const policy = await readPublicationPolicy(source.id, tx);
+    if (!policy || policy.revision !== v.expectedRevision)
+      throw new ReferenceLibraryError('version_conflict');
+    if (v.action === 'audience') {
+      await validatePublicationAudience(context, v.audience, tx);
+      await tx`update allrice_workbench_file_policies
+        set scope=${v.audience.scope},department_ids=${v.audience.departmentIds},revision=revision+1,updated_at=clock_timestamp()
+        where object_id=${policy.object_id}`;
+      await tx`update allrice_knowledge_sources set updated_at=clock_timestamp() where id=${source.id}`;
+    } else {
+      if ((v.action === 'delete') !== (source.publication_kind === 'upload'))
+        throw new ReferenceLibraryError('source_unavailable');
+      await tx`update allrice_knowledge_sources set status='archived',updated_at=clock_timestamp() where id=${source.id}`;
+      await tx`update allrice_storage_access_grants set revoked_at=clock_timestamp()
+        where object_id=${policy.object_id} and revoked_at is null`;
+    }
+    await tx`insert into allrice_knowledge_reference_actions(source_id,actor_id,request_id,input)
+      values(${source.id},${context.actor.id},${v.requestId},${tx.json(v)})`;
+    await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,request_id)
+      values(${context.organizationId},${source.workspace_id},${context.actor.id},${'knowledge.publication.' + v.action},
+        'knowledge_source',${source.id},'allowed','current_publication_owner',${context.requestId})`;
+    return { sourceId: source.id };
+  });
+}
+
+export async function referencePublicationOptions(
+  context: RequestContext,
+  workspaceId: string,
+) {
+  const options = await referenceLibraryOptions(context, workspaceId);
+  const departments =
+    await getDatabase()`select id,name from allrice_departments
+    where organization_id=${context.organizationId} and archived_at is null order by name,id`;
+  return { ...options, departments: Array.from(departments) };
+}
+
+export async function listReferencePublications(
+  context: RequestContext,
+  workspaceId: string,
+  sourceId?: string,
+) {
+  return (await listReferenceRevisions(context, workspaceId, sourceId)).filter(
+    (reference) => reference.publication && reference.status === 'active',
+  );
 }

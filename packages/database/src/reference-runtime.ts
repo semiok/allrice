@@ -8,6 +8,7 @@ import {
   UuidSchema,
   type ReferenceSelection,
   type KnowledgeRetrievalResult,
+  type ContentOwnership,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
 import { DataAccessError } from './data.ts';
@@ -41,15 +42,16 @@ export async function readReferenceSelection(
       await sql`select knowledge_source_id from allrice_knowledge_revisions
       where id=${UuidSchema.parse(revisionId)} and file_object_id is not null and status='published'`;
     if (!locator) throw new ReferenceRuntimeError();
-    const { source, ownership, legacy } = await referenceSourceAccess(
-      context,
-      locator.knowledge_source_id,
-      sql,
-      false,
-      lock,
-      false,
-      sharedReader,
-    );
+    const { source, ownership, legacy, publication, access } =
+      await referenceSourceAccess(
+        context,
+        locator.knowledge_source_id,
+        sql,
+        false,
+        lock,
+        false,
+        sharedReader,
+      );
     if (source.status !== 'active') throw new ReferenceRuntimeError();
     if (legacy) await assertLegacyReferenceRevision(sql, revisionId, legacy.id);
     const [r] =
@@ -77,11 +79,101 @@ export async function readReferenceSelection(
       objectId: o.id as string,
       organizationId: r.organization_id as string,
       workspaceId: r.workspace_id as string,
+      publication,
+      access,
     };
   } catch (error) {
     if (error instanceof DataAccessError) throw new ReferenceRuntimeError();
     throw error;
   }
+}
+
+/** Current audience is deliberately outside the immutable selection. Changing
+ * scope must not change a digest/pin or invalidate readers who kept access. */
+export function canReferencePublicationScope(
+  target: ContentOwnership,
+  publication: NonNullable<
+    Awaited<ReturnType<typeof readReferenceSelection>>['publication']
+  >,
+) {
+  if (
+    target.scope === 'platform' ||
+    target.organizationId !== publication.organization_id
+  )
+    return false;
+  if (publication.scope === 'company') return true;
+  if (target.scope === 'personal')
+    return (
+      publication.scope !== 'personal' ||
+      publication.owner_id === target.ownerId
+    );
+  return (
+    target.scope === 'department' &&
+    publication.scope === 'departments' &&
+    publication.department_ids.includes(target.departmentId)
+  );
+}
+
+/** Only actual excerpt receipts create the permanent Q8 dependency. The source
+ * lock orders reads/revocation; no application timestamp or current ACL loss is
+ * interpreted as a permanent revocation. Retired generations remain covered. */
+export async function hasRevokedReferencePublicationHistory(
+  context: ContentIdentity,
+  sessionId: string,
+  sql: Sql = getDatabase(),
+  lock = false,
+) {
+  const sources = await sql<{ id: string; status: string; revoked: boolean }[]>`
+    with recursive dependencies(run_id) as (
+      select er.run_id from allrice_employee_runs er
+      where er.organization_id=${context.organizationId} and er.workspace_id=${context.workspaceId}
+        and er.owner_id=${context.actor.id} and er.session_id=${UuidSchema.parse(sessionId)}
+        and er.error_code is distinct from 'STEER_CONSUMED'
+      union
+      select related.run_id from dependencies d
+      join allrice_employee_runs er_current on er_current.run_id=d.run_id
+      cross join lateral (
+        select e.run_id from allrice_employee_runs e
+        where er_current.content_generation_id is not null and e.content_generation_id=er_current.content_generation_id
+          and e.organization_id=er_current.organization_id and e.workspace_id=er_current.workspace_id
+          and e.session_id=er_current.session_id and e.owner_id=er_current.owner_id
+          and e.error_code is distinct from 'STEER_CONSUMED'
+        union
+        select e.run_id from jsonb_array_elements(case when jsonb_typeof(er_current.prompt_snapshot->'sessionReferences')='array'
+          then er_current.prompt_snapshot->'sessionReferences' else '[]'::jsonb end) ref
+        cross join lateral jsonb_array_elements(case when jsonb_typeof(ref->'messages')='array'
+          then ref->'messages' else '[]'::jsonb end) message
+        join allrice_employee_runs e on e.session_id::text=ref->>'sessionId'
+          and (e.user_message_id::text=message->>'id' or e.assistant_message_id::text=message->>'id')
+          and e.organization_id=er_current.organization_id and e.workspace_id=er_current.workspace_id
+          and e.error_code is distinct from 'STEER_CONSUMED'
+      ) related
+    )
+    select s.id,s.status,exists(select 1 from allrice_knowledge_reference_actions a
+      where a.source_id=s.id and a.input->>'action' in ('revoke','delete')) as revoked
+    from allrice_knowledge_sources s
+    where s.organization_id=${context.organizationId} and s.publication_kind is not null
+      and s.id in (
+        select r.knowledge_source_id from dependencies dependency
+        join allrice_employee_runs er on er.run_id=dependency.run_id
+        cross join lateral jsonb_array_elements(coalesce(er.reference_reads,'[]'::jsonb)) receipt
+        join allrice_knowledge_revisions r on r.id::text=receipt->'citation'->'reference'->>'revisionId'
+          and r.knowledge_source_id::text=receipt->'citation'->'reference'->>'sourceId'
+          and r.checksum=receipt->'citation'->'reference'->>'digest'
+        join allrice_storage_objects retained on retained.id=r.file_object_id
+          and retained.checksum=receipt->'citation'->'reference'->>'checksum'
+      ) order by s.id ${lock ? sql`for share of s` : sql``}`;
+  // Re-read the append-only action after any wait on the source row. This also
+  // covers a revoke that committed while the locking statement was waiting.
+  for (const source of sources) {
+    if (source.status !== 'archived') continue;
+    const [action] = source.revoked
+      ? [true]
+      : await sql`select source_id from allrice_knowledge_reference_actions
+      where source_id=${source.id} and input->>'action' in ('revoke','delete') limit 1`;
+    if (action) return true;
+  }
+  return false;
 }
 
 export async function captureReferenceSelections(

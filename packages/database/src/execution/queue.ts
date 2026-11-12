@@ -1162,6 +1162,16 @@ async function enqueueRunInTransaction(
       );
     }
   }
+  if (options.employeeBinding) {
+    const { assertEmployeeReferencePublicationHistory } =
+      await import('../employees/employee-runtime-content.ts');
+    await assertEmployeeReferencePublicationHistory(
+      instanceIdentity,
+      options.employeeBinding.sessionId,
+      transaction,
+      true,
+    );
+  }
   if (options.employeeBinding?.promptSnapshot.referenceSelections) {
     // Final admission rechecks authority after the message transaction. Pins
     // cannot sneak through a department move or a source withdrawal.
@@ -3120,6 +3130,36 @@ export async function appendJobEvent(input: {
           await recordTaskQuestion(transaction, job.run_id, input.payload);
           await recordNativeQuestions(transaction, job.run_id, input.payload);
           await refreshTaskClock(transaction, job.run_id);
+        }
+        if (
+          input.type === 'assistant.text.delta' ||
+          input.type === 'assistant.text.completed'
+        ) {
+          // This is the existing display-ledger commit, after its root/Job
+          // locks. Resolve the real employee session; event JSON supplies no
+          // authority. A publication writer never takes a root/Job lock, so
+          // source SHARE orders visible text against withdrawal without a
+          // source -> Job lock cycle. Usage and native drain facts stay open.
+          const [employee] = await transaction<{ session_id: string }[]>`
+            select er.session_id from allrice_employee_runs er
+            join allrice_chat_sessions s on s.id=er.session_id
+              and s.organization_id=er.organization_id and s.workspace_id=er.workspace_id and s.owner_id=er.owner_id
+            where er.run_id=${job.run_id} and er.organization_id=${job.organization_id}
+              and er.workspace_id=${job.workspace_id} and er.owner_id=${job.owner_id}`;
+          if (employee) {
+            const { assertEmployeeReferencePublicationHistory } =
+              await import('../employees/employee-runtime-content.ts');
+            await assertEmployeeReferencePublicationHistory(
+              {
+                actor: { type: 'user', id: job.owner_id },
+                organizationId: job.organization_id,
+                workspaceId: job.workspace_id,
+              },
+              employee.session_id,
+              transaction,
+              true,
+            );
+          }
         }
         const event = await appendEvent(transaction, {
           organizationId: job.organization_id,
