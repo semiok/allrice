@@ -1468,14 +1468,14 @@ suite(
                 status: response.status(),
               }),
             );
-            for (const event of ['requestfinished', 'requestfailed'] as const)
-              page.on(event, (request) =>
-                mark(event, {
-                  id: requests.get(request),
-                  url: request.url(),
-                  failure: request.failure(),
-                }),
-              );
+            const recordRequest = (event: string) => (request: Request) =>
+              mark(event, {
+                id: requests.get(request),
+                url: request.url(),
+                failure: request.failure(),
+              });
+            page.on('requestfinished', recordRequest('requestfinished'));
+            page.on('requestfailed', recordRequest('requestfailed'));
           },
         });
         try {
