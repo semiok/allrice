@@ -29,10 +29,10 @@ import {
 import {
   createChatSession,
   getEmployeeWorkspace,
-  sendChatMessage,
 } from '../workspace/service.ts';
 import { createEmployeeInstance } from '../employees/employee-instances.ts';
-import { saveEmployeeMethodFromChat } from '../employees/employee-method-chat.ts';
+import { prepareEmployeeRunBinding } from '../employees/employeehub.ts';
+import { seedHistoricalEmployeeContent } from '../employees/employee-method-history.fixture.ts';
 import { getEmployeeContentSet } from '../employees/employee-content.ts';
 import { prepareEmployeeContentContext } from '../employees/employee-runtime-content.ts';
 import {
@@ -55,6 +55,7 @@ import {
   nativeBindingWaiter,
 } from '../native-session-binding.fixture.ts';
 import { newNativeGeneration } from './current-execution-binding.ts';
+import { freezeChatRunExecutionBinding } from './native-session-binding.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -67,7 +68,6 @@ suite(
     let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     const artifactA = 'sha256:' + 'a'.repeat(64);
     const artifactB = 'sha256:' + 'b'.repeat(64);
-    const currentMethodTools = toolSelection.withEmployeeCustomizationTools;
     const approve = (artifact = artifactA) => {
       // Synthetic SQL authority only; these are not measured runnable artifacts.
       // MET-221: the release primary is the only birth input.
@@ -89,25 +89,6 @@ suite(
       );
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
       vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
-      // The consumer under test is the existing historical draft/test API. Match
-      // its already-existing integration fixture, retaining capability/kind checks.
-      // New product chat flows no longer expose these legacy test/activation tools.
-      vi.spyOn(
-        toolSelection,
-        'withEmployeeCustomizationTools',
-      ).mockImplementation((names, capabilities, kind) => [
-        ...currentMethodTools(names, capabilities, kind),
-        ...(kind === 'custom'
-          ? toolSelection
-              .employeeCustomizationToolsForInstance(kind)
-              .filter((tool) => capabilities.includes(tool.capability))
-              .map((tool) => tool.name)
-              .filter(
-                (name) =>
-                  !currentMethodTools(names, capabilities, kind).includes(name),
-              )
-          : []),
-      ]);
     }, 120000);
 
     afterEach(() => approve());
@@ -201,7 +182,10 @@ suite(
       return { admin, owner, other, source, instance, published: published! };
     }
 
-    async function methodRun(
+    /** A pre-retirement authorization Run: old grants exist on first INSERT.
+     * No selector is mocked and no frozen Run is upgraded after admission. The
+     * actual test issuer, queue claim/binding and retry paths stay under test. */
+    async function historicalMethodRun(
       f: Awaited<ReturnType<typeof setup>>,
       text: string,
     ) {
@@ -210,65 +194,204 @@ suite(
         employeeInstanceId: f.instance.id,
         title: 'Synthetic method authorization',
       });
-      const sent = await sendChatMessage(
-        f.owner.context,
-        f.owner.workspaceId,
-        session.id,
-        { text, clientMessageId: randomUUID() },
-      );
+      const userMessageId = randomUUID(),
+        assistantMessageId = randomUUID();
+      const runId = randomUUID(),
+        jobId = randomUUID(),
+        policyId = randomUUID();
       const workerId = randomUUID(),
         leaseToken = randomUUID();
-      const [job] =
-        await fixture.db`update allrice_jobs set status='claimed',worker_id=${workerId},
-      lease_token=${leaseToken},claimed_at=clock_timestamp(),heartbeat_at=clock_timestamp(),
-      lease_expires_at=clock_timestamp()+interval '5 minutes'
-      where run_id=${sent.run.id} returning id`;
-      const execution = await startClaimedJob(workerId, job!.id, leaseToken);
+      await fixture.db.begin(async (tx) => {
+        await tx`select id from allrice_users where id=${f.owner.user.id} for no key update`;
+        await tx`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content,status,client_message_id)
+          values(${userMessageId},${f.owner.organizationId},${f.owner.workspaceId},${session.id},${f.owner.user.id},'user',
+            ${tx.json({ text, citations: [] })},'completed',${randomUUID()})`;
+        await tx`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content,status,reply_to_id)
+          values(${assistantMessageId},${f.owner.organizationId},${f.owner.workspaceId},${session.id},${f.owner.user.id},'assistant',
+            '{"text":"Synthetic historical response","citations":[]}','pending',${userMessageId})`;
+        const [target] = await tx<
+          { employee_assignment_id: string; employee_version_id: string }[]
+        >`
+          select employee_assignment_id,employee_version_id from allrice_chat_sessions where id=${session.id}`;
+        const binding = await prepareEmployeeRunBinding(
+          {
+            context: f.owner.context,
+            workspaceId: f.owner.workspaceId,
+            assignmentId: target!.employee_assignment_id,
+            employeeVersionId: target!.employee_version_id,
+            sessionId: session.id,
+            userMessageId,
+            assistantMessageId,
+            promptSnapshot: {
+              systemPrompt: '',
+              conversation: [],
+              memories: [],
+              userRequest: text,
+            },
+          },
+          tx,
+        );
+        const snapshot = binding.executionSnapshot;
+        expect(snapshot.instance?.kind).toBe('custom');
+        const oldTools = toolSelection
+          .employeeCustomizationToolsForInstance('custom')
+          .filter((tool) =>
+            snapshot.capabilitySnapshot.grantedCapabilities.includes(
+              tool.capability,
+            ),
+          )
+          .map((tool) => tool.name);
+        const frozen = toolSelection.EmployeeExecutionSnapshotSchema.parse({
+          ...snapshot,
+          capabilitySnapshot: {
+            ...snapshot.capabilitySnapshot,
+            bindings: {
+              ...snapshot.capabilitySnapshot.bindings,
+              toolNames: [
+                ...new Set([
+                  ...snapshot.capabilitySnapshot.bindings.toolNames,
+                  ...oldTools,
+                ]),
+              ],
+            },
+          },
+          tenantContext: {
+            organizationId: f.owner.organizationId,
+            workspaceId: f.owner.workspaceId,
+            actorId: f.owner.user.id,
+            policySnapshotId: policyId,
+          },
+          createdAt: new Date().toISOString(),
+        });
+        expect(frozen.capabilitySnapshot.bindings.toolNames).toContain(
+          'workspace.employee.method.test',
+        );
+        // Reuse the existing policy version allocation lock; retries create a
+        // distinct historical authorization Run for the same owner.
+        const [policy] = await tx<{ version: number }[]>`
+          select coalesce(max(version),0)::int+1 version from allrice_policy_snapshots
+          where organization_id=${f.owner.organizationId} and subject_id=${f.owner.user.id}`;
+        await tx`insert into allrice_policy_snapshots(id,organization_id,subject_id,version,payload,expires_at)
+          values(${policyId},${f.owner.organizationId},${f.owner.user.id},${policy!.version},${tx.json(
+            {
+              memberships: f.owner.context.memberships,
+              grants: [
+                {
+                  resourceType: 'job',
+                  action: 'job:execute',
+                  workspaceId: f.owner.workspaceId,
+                },
+                ...['storage_object', 'memory', 'chat_session'].map(
+                  (resourceType) => ({
+                    resourceType,
+                    action: 'resource:read',
+                    workspaceId: f.owner.workspaceId,
+                  }),
+                ),
+              ],
+            },
+          )},clock_timestamp()+interval '1 hour')`;
+        const input = {
+          employeeAssignmentId: binding.employeeAssignmentId,
+          employeeVersionId: binding.employeeVersionId,
+          sessionId: session.id,
+          userMessageId,
+          assistantMessageId,
+        };
+        await tx`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,policy_snapshot_id,execution_spec,input)
+          values(${runId},${f.owner.organizationId},${f.owner.workspaceId},${f.owner.user.id},'queued',${policyId},
+            ${tx.json({ schemaVersion: 1, handler: 'allrice.employee.run', employeeVersionId: binding.employeeVersionId, provider: 'codex' })},${tx.json(input)})`;
+        await tx`insert into allrice_jobs(id,organization_id,workspace_id,owner_id,run_id,status,idempotency_key,timeout_at,payload,worker_id,lease_token,claimed_at,heartbeat_at,lease_expires_at)
+          values(${jobId},${f.owner.organizationId},${f.owner.workspaceId},${f.owner.user.id},${runId},'claimed',${randomUUID()},clock_timestamp()+interval '1 hour',
+            ${tx.json({ schemaVersion: 1, type: 'allrice.employee.run', input })},${workerId},${leaseToken},clock_timestamp(),clock_timestamp(),clock_timestamp()+interval '5 minutes')`;
+        const native = await freezeChatRunExecutionBinding(tx, {
+          organizationId: f.owner.organizationId,
+          workspaceId: f.owner.workspaceId,
+          ownerId: f.owner.user.id,
+          sessionId: session.id,
+          runId,
+          employeeVersionId: binding.employeeVersionId,
+          executionSnapshot: frozen,
+        });
+        await tx`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,session_id,
+          user_message_id,assistant_message_id,provider_snapshot,prompt_snapshot,skill_bindings,native_skills,execution_snapshot,native_execution_binding)
+          values(${runId},${f.owner.organizationId},${f.owner.workspaceId},${f.owner.user.id},${binding.employeeAssignmentId},${binding.employeeVersionId},${session.id},
+            ${userMessageId},${assistantMessageId},${tx.json(binding.providerSnapshot)},${tx.json(binding.promptSnapshot)},${tx.json(binding.skillBindings)},
+            ${tx.json(binding.nativeSkills)},${tx.json(JSON.parse(JSON.stringify(frozen)))},${native ? tx.json(native) : null})`;
+      });
+      const execution = await startClaimedJob(workerId, jobId, leaseToken);
       if (!execution) throw Error('method authorizing chat did not start');
-      const [row] = await fixture.db`select user_message_id,execution_snapshot
-      from allrice_employee_runs where run_id=${sent.run.id}`;
+      const [row] = await fixture.db`select execution_snapshot
+      from allrice_employee_runs where run_id=${runId}`;
       const runtime = await prepareEmployeeContentContext({
         organizationId: f.owner.organizationId,
         workspaceId: f.owner.workspaceId,
         ownerId: f.owner.user.id,
         sessionId: session.id,
-        runId: sent.run.id,
+        runId,
       });
       expect(runtime).not.toBeNull();
       return {
         context: execution.context,
         sessionId: session.id,
-        userMessageId: row!.user_message_id as string,
+        userMessageId,
         worker: { attempt: execution.job.attempt, leaseToken },
         callId: randomUUID(),
         frozen: row!.execution_snapshot,
         // Same SQL-only chat completion as the source integration fixture. No
         // model/native dispatch or usage is fabricated by this authorizing chat.
         finish: async () => {
-          await fixture.db`update allrice_jobs set status='succeeded',completed_at=now() where run_id=${sent.run.id}`;
-          await fixture.db`update allrice_runs set state='succeeded',completed_at=now() where id=${sent.run.id}`;
-          await fixture.db`update allrice_employee_runs set status='succeeded',completed_at=now() where run_id=${sent.run.id}`;
+          await fixture.db`update allrice_jobs set status='succeeded',completed_at=now() where run_id=${runId}`;
+          await fixture.db`update allrice_runs set state='succeeded',completed_at=now() where id=${runId}`;
+          await fixture.db`update allrice_employee_runs set status='succeeded',completed_at=now() where run_id=${runId}`;
         },
       };
     }
 
     async function candidate() {
       const f = await setup();
-      const editing = await methodRun(
-        f,
-        '请保存我的工作场景候选：金额汇总，保留原始数据。',
-      );
-      const saved = await saveEmployeeMethodFromChat({
-        ...editing,
-        arguments: {
+      const contentId = randomUUID();
+      const saved = await seedHistoricalEmployeeContent(
+        fixture.db,
+        f.owner.context,
+        {
+          workspaceId: f.owner.workspaceId,
+          setId: randomUUID(),
+          requestId: randomUUID(),
           expectedRevision: 0,
-          section: 'scene',
-          scene: { name: '金额汇总', appliesWhen: '固定合成数据' },
-          procedure: '只将整数分相加',
-          changeSummary: 'B2a 原始来源与重试边界样例',
+          ownership: {
+            scope: 'personal',
+            organizationId: f.owner.organizationId,
+            ownerId: f.owner.context.actor.id,
+          },
+          target: { kind: 'instance', instanceId: f.instance.id },
+          operation: 'save_draft',
+          changeSummary: 'Pre-retirement B2a candidate fixture',
+          manifest: {
+            schemaVersion: 1,
+            common: [],
+            declaredConflicts: [],
+            scenes: [
+              {
+                id: randomUUID(),
+                name: '金额汇总',
+                appliesWhen: '固定合成数据',
+                references: [{ sourceKind: 'draft_text', contentId }],
+              },
+            ],
+          },
+          textEdits: [
+            {
+              contentId,
+              revisionId: randomUUID(),
+              expectedRevision: 0,
+              kind: 'procedure',
+              title: '金额汇总',
+              body: '只将整数分相加',
+            },
+          ],
         },
-      });
-      await editing.finish();
+      );
       const content = await getEmployeeContentSet(f.owner.context, saved.setId);
       const args = {
         expectedRevision: saved.revision,
@@ -277,7 +400,10 @@ suite(
         sceneId: content.set.candidate!.manifest.scenes[0]!.id,
         caseId: 'cny-total-v1',
       };
-      const testing = await methodRun(f, '请测试我的工作场景候选：金额汇总。');
+      const testing = await historicalMethodRun(
+        f,
+        '请测试我的工作场景候选：金额汇总。',
+      );
       return { f, saved, args, testing };
     }
 
@@ -642,7 +768,7 @@ suite(
         (await getEmployeeMethodTest(x.f.owner.context, parent.id))
           .validationStatus,
       ).toBe('not_verified');
-      const ordinary = await methodRun(
+      const ordinary = await historicalMethodRun(
         x.f,
         '请测试我的工作场景候选：金额汇总。',
       );
@@ -664,7 +790,10 @@ suite(
       await ordinary.finish();
 
       approve(artifactB);
-      const retrying = await methodRun(x.f, `请重试测试 ${parent.id}。`);
+      const retrying = await historicalMethodRun(
+        x.f,
+        `请重试测试 ${parent.id}。`,
+      );
       expect(retrying.sessionId).not.toBe(x.testing.sessionId);
       const args = { ...x.args, retryOfTestId: parent.id };
       const retried = await Promise.all(

@@ -20,15 +20,17 @@ import {
 } from './employee-kernel.js';
 
 it.each([
-  ['custom', true, true],
-  ['custom', false, false],
-  ['general', true, false],
+  ['custom', true, false, true],
+  ['custom', true, true, true],
+  ['custom', false, true, false],
+  ['general', false, true, false],
 ] as const)(
-  'routes Workflow authoring only for the eligible instance (%s, method tool=%s)',
-  (kind, hasMethodTool, expected) => {
+  'routes Workflow authoring from frozen personalScenes (%s, personalScenes=%s, old method=%s)',
+  (kind, personalScenes, hasMethodTool, expected) => {
     const snapshot = {
       schemaVersion: 2,
       instance: { kind, revision: 1, profile: {} },
+      content: personalScenes ? { personalScenes: true } : undefined,
       capabilitySnapshot: {
         bindings: {
           toolNames: hasMethodTool ? ['workspace.employee.method.inspect'] : [],
@@ -41,10 +43,10 @@ it.each([
     expect(text).toContain('native skill tool before taking actions');
     expect(text).toContain('only to their creator and this employee instance');
     expect(text).toContain('exact preview/confirmation in employee details');
-    expect(text).toContain('are not the personal package write path');
+    expect(text).toContain('retired text-method tools cannot save or restore');
     expect(text).toContain('real human source checks still apply');
     expect(text).toContain('only from a successful receipt');
-    expect(text).toContain('Existing background content targets');
+    expect(text).not.toContain('retain their own authorized maintenance path');
     expect(text).not.toContain('First inspect(view=candidate)');
     expect(text).not.toContain('Do not ask for separate testing');
   },
@@ -512,6 +514,7 @@ it('E3 projects the frozen basic Rice name/style and allows personal Skills and 
         isDefaultRice: true,
       },
     },
+    content: { personalScenes: true },
     instance: {
       kind: 'general',
       source: { kind: 'platform', employeeVersionId: 'version' },
@@ -544,11 +547,15 @@ it('E3 projects the frozen basic Rice name/style and allows personal Skills and 
   );
   expect(text).toContain('workspace_personal_skill_install');
   expect(text).toContain('workspace_personal_skill_version');
+  expect(text).toContain('employee-customization Skill');
+  expect(text).toContain('Legacy text methods no longer accept new edits');
+  expect(text).not.toContain('three method tools');
   expect(text).not.toContain('DO_NOT_INJECT');
   expect(JSON.stringify(snapshot)).toBe(frozen);
   if (snapshot?.schemaVersion !== 2) throw Error('fixture');
   const professional = {
     ...snapshot,
+    content: undefined,
     employee: { ...snapshot.employee, key: 'professional' },
   };
   const other = employeeInstanceInstructions(professional).join('\n');

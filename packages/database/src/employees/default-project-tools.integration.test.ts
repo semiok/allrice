@@ -127,8 +127,13 @@ suite('default Rice project tool admission', () => {
       expect(names.includes('workspace.project')).toBe(kind === 'custom');
       // Workflow installation/authoring does not depend on workspace.project.
       expect(names).toContain('workspace.skill.read');
-      expect(names).toContain('workspace.employee.method.inspect');
-      expect(names).toContain('workspace.employee.method.save_candidate');
+      expect(
+        names.filter((name) => name.startsWith('workspace.employee.method.')),
+      ).toEqual([]);
+      expect(
+        resolved.nativeSkills.find((s) => s.name === 'employee-customization')
+          ?.requiredToolRefs,
+      ).toEqual([]);
       expect(snapshot.employee.definition).toEqual(before!.manifest);
       // Keep reviewed bytes frozen; the existing adapter omits Skills whose
       // requiredToolRefs are not in the frozen authorized tools.

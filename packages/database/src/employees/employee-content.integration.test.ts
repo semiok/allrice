@@ -78,6 +78,7 @@ import {
 } from '../company-assets.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
 import { sceneSkillFixture } from './employee-scene-skills.fixture.ts';
+import { seedHistoricalEmployeeContent } from './employee-method-history.fixture.ts';
 import {
   listPersonalSceneSkills,
   getPersonalSceneSkill,
@@ -1597,7 +1598,8 @@ suite(
         );
         const firstPin = parsePersonalSceneContentRef(first.contentRef);
         const edit = text('UNENABLED_DRAFT_ONLY');
-        const pending = await mutateEmployeeContent(
+        const pending = await seedHistoricalEmployeeContent(
+          f.db,
           s.a,
           s.draft({
             setId: firstPin.setId,
@@ -1874,15 +1876,17 @@ suite(
             body: 'Plain replacement without a package.',
           },
         ];
-        const saved = await mutateEmployeeContent(s.a, plain.input);
-        const checked = await mutateEmployeeContent(
+        await expect(
+          mutateEmployeeContent(s.a, plain.input),
+        ).rejects.toMatchObject({ code: 'legacy_method_retired' });
+        // Retain an actual historical plain replacement; the retired product
+        // writer must not be used to manufacture this reader fixture.
+        const checked = await seedHistoricalEmployeeContent(
+          f.db,
           s.a,
-          action(plain.input, saved, 'validate'),
+          plain.input,
+          { active: true, invalidatePrevious: true },
         );
-        await mutateEmployeeContent(s.a, {
-          ...action(plain.input, checked, 'activate'),
-          invalidatePrevious: true,
-        } as EmployeeContentMutation);
         expect(
           (await listEmployeeSceneSkills(s.a, s.instance.id)).skills,
         ).toEqual([]);
@@ -2022,34 +2026,19 @@ suite(
             ],
           },
         };
-        const draft = await mutateEmployeeContent(s.a, reused),
-          checked = await mutateEmployeeContent(
-            s.a,
-            action(reused, draft, 'validate'),
-          );
-        expect(checked.validation?.valid).toBe(false);
-        expect(checked.validation?.issues).toContainEqual(
-          expect.objectContaining({
-            code: 'source_changed',
-            contentId: p.edit.contentId,
-          }),
-        );
-        await expect(
-          mutateEmployeeContent(s.a, action(reused, checked, 'activate')),
-        ).rejects.toThrow();
+        await expect(mutateEmployeeContent(s.a, reused)).rejects.toMatchObject({
+          code: 'legacy_method_retired',
+        });
         expect(
           (await listEmployeeSceneSkills(s.a, s.instance.id)).skills.map(
             (entry) => entry.pin,
           ),
         ).toEqual([published.pin]);
-        await expect(
-          getEmployeeSceneSkill(s.a, s.instance.id, p.pin(draft)),
-        ).rejects.toThrow('not_found');
         // Reusing the same immutable package is valid when its source stays declared.
         const corrected = {
           ...reused,
           requestId: randomUUID(),
-          expectedRevision: checked.revision,
+          expectedRevision: receipt.revision,
           manifest: { ...reused.manifest, scenes: [published.scene] },
         };
         const next = await enable(s, corrected);
@@ -2167,6 +2156,14 @@ suite(
         body,
       };
     }
+    function packagedText(title = 'Complete synthetic Workflow') {
+      return {
+        ...text(),
+        kind: 'procedure' as const,
+        title,
+        ...sceneSkillFixture(),
+      };
+    }
     function action(
       input: EmployeeContentMutation,
       receipt: EmployeeContentReceipt,
@@ -2186,6 +2183,15 @@ suite(
       };
     }
     async function enable(s: Setup, input: EmployeeContentMutation) {
+      // Legacy reader/ACL/history cases use explicit pre-retirement snapshots.
+      // Legal package and non-text mutations still exercise the real writer.
+      if (
+        input.operation === 'save_draft' &&
+        input.textEdits.some((edit) => !('skillPackage' in edit))
+      )
+        return seedHistoricalEmployeeContent(f.db, s.a, input, {
+          active: true,
+        });
       const saved = await mutateEmployeeContent(s.a, input),
         check = await mutateEmployeeContent(
           s.a,
@@ -3096,7 +3102,7 @@ suite(
       );
       return { s, ids };
     }
-    it('restores an immutable historical manifest as a new candidate, with current validation and unchanged frozen Runs', async () => {
+    it('denies a new legacy restore while retaining authorized immutable history and frozen Runs', async () => {
       const s = await setup(),
         t = text('HISTORICAL_REQUIREMENT_73');
       const first = s.draft({
@@ -3123,32 +3129,13 @@ suite(
         expectedRevision: changed.revision,
         sourceRevisionId: original.candidate.id,
       };
-      const restored = await mutateEmployeeContent(s.a, input);
-      expect(restored.candidate.id).not.toBe(original.candidate.id);
-      expect(restored.candidate.digest).toBe(original.candidate.digest);
-      expect(restored.active).toEqual(changed.active);
-      expect(restored.validation).toBeNull();
-      expect(await mutateEmployeeContent(s.a, input)).toEqual(restored);
-      await expect(
-        mutateEmployeeContent(s.a, action(input, restored, 'activate')),
-      ).rejects.toMatchObject({ code: 'validation_required' });
-      const validated = await mutateEmployeeContent(
-        s.a,
-        action(input, restored, 'validate'),
-      );
-      expect(validated.validation?.valid).toBe(true);
-      const active = await mutateEmployeeContent(
-        s.a,
-        action(input, validated, 'activate'),
-      );
-      expect(active.active).toEqual(restored.candidate);
-      expect(
-        (await getEmployeeContentSet(s.a, s.base.setId)).set.active
-          ?.restoredFromRevisionId,
-      ).toBe(original.candidate.id);
+      const before = await getEmployeeContentSet(s.a, s.base.setId);
+      await expect(mutateEmployeeContent(s.a, input)).rejects.toMatchObject({
+        code: 'legacy_method_retired',
+      });
+      expect(await getEmployeeContentSet(s.a, s.base.setId)).toEqual(before);
       const history = await getEmployeeContentHistory(s.a, s.base.setId);
       expect(history.revisions.map((r) => r.id)).toEqual([
-        restored.candidate.id,
         changed.candidate.id,
         original.candidate.id,
       ]);
@@ -3157,7 +3144,7 @@ suite(
           await getEmployeeContentHistory(
             s.a,
             s.base.setId,
-            history.revisions[1]!.number,
+            history.revisions[0]!.number,
           )
         ).revisions.map((r) => r.id),
       ).toEqual([original.candidate.id]);
@@ -3612,13 +3599,8 @@ suite(
               declaredConflicts: [],
             },
           });
-        const saved = await mutateEmployeeContent(s.a, input),
-          checked = await mutateEmployeeContent(
-            s.a,
-            action(input, saved, 'validate'),
-          );
-        return mutateEmployeeContent(s.a, {
-          ...action(input, checked, 'activate'),
+        return seedHistoricalEmployeeContent(f.db, s.a, input, {
+          active: true,
           invalidatePrevious: correction,
         });
       }
@@ -3987,11 +3969,11 @@ suite(
         first.sent.assistantMessage.id,
       );
     }, 120000);
-    it('saves two scenes with a shared rule and distinct native Knowledge; activates the exact immutable candidate', async () => {
+    it('saves two scenes with a complete shared package and distinct native Knowledge; activates the exact immutable candidate', async () => {
       const s = await setup(),
         k1 = await knowledge(s, 'Weekly sources'),
         k2 = await knowledge(s, 'Monthly sources'),
-        rule = text();
+        rule = packagedText();
       const input = s.draft({
         textEdits: [rule],
         manifest: {
@@ -4251,7 +4233,7 @@ suite(
       await expect(
         mutateEmployeeContent(s.a, { ...input, changeSummary: 'different' }),
       ).rejects.toMatchObject({ code: 'request_conflict' });
-      const edits = [text('First'), text('Second')];
+      const edits = [packagedText('First'), packagedText('Second')];
       const updates = edits.map((t) => ({
         ...input,
         requestId: randomUUID(),
@@ -4451,9 +4433,9 @@ suite(
             },
           }),
         ),
-      ).rejects.toMatchObject({ code: 'not_found' });
-      // Both old and new immutable publications still exist. A lower reference
-      // to an old version must conflict with the new inherited version.
+      ).rejects.toMatchObject({ code: 'legacy_method_retired' });
+      // Both immutable publications remain readable. A new lower binding to
+      // either legacy text revision is retired before a draft can be written.
       const oldRef: EmployeeContentReference = {
         sourceKind: 'requirement',
         contentId: rule.contentId,
@@ -4469,19 +4451,12 @@ suite(
         expectedRevision: ownState.set.revision,
         manifest: { ...own.manifest, common: [oldRef] },
       });
-      const pending = await mutateEmployeeContent(s.a, conflicting),
-        check = await mutateEmployeeContent(
-          s.a,
-          action(conflicting, pending, 'validate'),
-        );
-      expect(
-        check.validation?.issues.some(
-          (x) => x.code === 'mandatory_rule_conflict',
-        ),
-      ).toBe(true);
       await expect(
-        mutateEmployeeContent(s.a, action(conflicting, check, 'activate')),
-      ).rejects.toMatchObject({ code: 'validation_required' });
+        mutateEmployeeContent(s.a, conflicting),
+      ).rejects.toMatchObject({ code: 'legacy_method_retired' });
+      expect((await getEmployeeContentSet(s.a, own.setId)).set.revision).toBe(
+        ownState.set.revision,
+      );
     });
     it('shared source drafts stay hidden from ordinary readers and user-only or employee-only Knowledge cannot be promoted', async () => {
       const s = await setup(),
@@ -4495,7 +4470,7 @@ suite(
         target: { kind: 'employee', employeeId: s.employeeId },
       });
       const active = await enable(s, company),
-        rule = text('Unpublished company draft');
+        rule = packagedText('Unpublished company draft');
       const next = {
         ...company,
         requestId: randomUUID(),
@@ -4585,9 +4560,9 @@ suite(
       ).rejects.toMatchObject({ code: 'authorization_denied' });
       await expect(getEmployeeContentSet(s.a, own.setId)).rejects.toThrow();
     });
-    it('a failed activation never publishes staged text and declared conflicts remain blocking', async () => {
+    it('a failed activation never publishes a staged package and declared conflicts remain blocking', async () => {
       const s = await setup(),
-        rule = text(),
+        rule = packagedText(),
         k = await knowledge(s, 'Temporarily available');
       const input = s.draft({
         textEdits: [rule],
@@ -4806,7 +4781,328 @@ suite(
       await expect(getEmployeeDetails(s.a, s.instance.id)).rejects.toThrow();
     });
 
-    it('HTTP save→validate→activate→effective details preserves DTOs, source checks and browser write boundaries', async () => {
+    it('retires raw HTTP/text mutations, preserves original receipts and allows authorized removal of old pins', async () => {
+      const path = '../../../../apps/web/app/api/v1/employee-content/route.ts';
+      const { POST } = (await import(path)) as {
+        POST(request: Request): Promise<Response>;
+      };
+      const s = await setup();
+      browser.context = s.a;
+      const post = (body: unknown) =>
+        POST(
+          new Request('https://allrice.test/api/v1/employee-content', {
+            method: 'POST',
+            headers: {
+              origin: 'https://allrice.test',
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify(body),
+          }),
+        );
+      const snapshot = () => f.db`select
+        (select count(*)::int from allrice_employee_content_sets where organization_id=${s.company.organizationId}) sets,
+        (select count(*)::int from allrice_employee_content_revisions r join allrice_employee_content_sets c on c.id=r.set_id where c.organization_id=${s.company.organizationId}) revisions,
+        (select count(*)::int from allrice_employee_content_requests where organization_id=${s.company.organizationId}) requests,
+        (select count(*)::int from allrice_company_assets where organization_id=${s.company.organizationId}) assets,
+        (select count(*)::int from allrice_employee_content_publications p join allrice_employee_content_sets c on c.id=p.set_id where c.organization_id=${s.company.organizationId}) publications`;
+      for (const kind of ['requirement', 'procedure'] as const) {
+        const edit = { ...text('No newly written legacy bytes'), kind };
+        const input = s.draft({
+          setId: randomUUID(),
+          textEdits: [edit],
+          manifest: {
+            schemaVersion: 1,
+            common: [{ sourceKind: 'draft_text', contentId: edit.contentId }],
+            scenes: [],
+            declaredConflicts: [],
+          },
+        });
+        const before = await snapshot();
+        const rejected = await post(input);
+        expect(rejected.status).toBe(409);
+        expect((await rejected.json()).error).toMatchObject({
+          code: 'CONFLICT',
+          retryable: false,
+        });
+        await expect(mutateEmployeeContent(s.a, input)).rejects.toMatchObject({
+          code: 'legacy_method_retired',
+        });
+        expect(await snapshot()).toEqual(before);
+      }
+      const old = text('Retained pre-retirement source');
+      const original = s.draft({
+        textEdits: [old],
+        manifest: {
+          schemaVersion: 1,
+          common: [{ sourceKind: 'draft_text', contentId: old.contentId }],
+          scenes: [],
+          declaredConflicts: [],
+        },
+      });
+      const committed = await seedHistoricalEmployeeContent(
+        f.db,
+        s.a,
+        original,
+        { active: true },
+      );
+      const retained = await getEmployeeContentSet(s.a, original.setId);
+      const before = await snapshot();
+      // A lost acknowledgement reads the original metadata even after a source
+      // is withdrawn; it does not fetch its bytes or re-execute its old write.
+      await f.db`update allrice_company_assets set state='withdrawn' where id=${old.contentId}`;
+      expect(await mutateEmployeeContent(s.a, original)).toEqual(committed);
+      expect((await (await post(original)).json()).receipt).toEqual(committed);
+      await expect(
+        mutateEmployeeContent(s.a, {
+          ...original,
+          changeSummary: 'different payload',
+        }),
+      ).rejects.toMatchObject({ code: 'request_conflict' });
+      await expect(mutateEmployeeContent(s.b, original)).rejects.toMatchObject({
+        code: 'authorization_denied',
+      });
+      for (const operation of ['validate', 'activate'] as const)
+        await expect(
+          mutateEmployeeContent(s.a, action(original, committed, operation)),
+        ).rejects.toMatchObject({ code: 'legacy_method_retired' });
+      await expect(
+        mutateEmployeeContent(s.a, {
+          ...s.base,
+          requestId: randomUUID(),
+          expectedRevision: committed.revision,
+          operation: 'restore_draft',
+          sourceRevisionId: committed.candidate.id,
+        }),
+      ).rejects.toMatchObject({ code: 'legacy_method_retired' });
+      await expect(
+        mutateEmployeeContent(s.a, {
+          ...original,
+          setId: randomUUID(),
+          requestId: randomUUID(),
+          expectedRevision: 0,
+          textEdits: [],
+          manifest: retained.set.active!.manifest,
+        }),
+      ).rejects.toMatchObject({ code: 'legacy_method_retired' });
+      expect(await snapshot()).toEqual(before);
+      const removal = s.draft({ expectedRevision: committed.revision });
+      const removed = await enable(s, removal);
+      expect(removed.active).not.toBeNull();
+      expect(
+        (await getEmployeeContentSet(s.a, original.setId)).set.active!.manifest
+          .common,
+      ).toEqual([]);
+      const [source] =
+        await f.db`select state from allrice_company_assets where id=${old.contentId}`;
+      expect(source!.state).toBe('withdrawn');
+      browser.context = null;
+    });
+
+    it('updates exact Knowledge pins and unlinks an archived source through the real generic mutator without changing legacy common or immutable history', async () => {
+      const s = await setup(),
+        old = text('UNCHANGED_HISTORICAL_COMMON');
+      const historical = await seedHistoricalEmployeeContent(
+        f.db,
+        s.a,
+        s.draft({
+          textEdits: [old],
+          manifest: {
+            schemaVersion: 1,
+            common: [{ sourceKind: 'draft_text', contentId: old.contentId }],
+            scenes: [],
+            declaredConflicts: [],
+          },
+        }),
+        { active: true },
+      );
+      const retained = (await getEmployeeContentSet(s.a, s.base.setId)).set
+        .active!.manifest;
+      const oldSource =
+        await f.db`select revision,published_revision_id,state from allrice_company_assets where id=${old.contentId}`;
+      const v1 = await readyReference(s, 'KNOWLEDGE_EXACT_V1', 'personal');
+      const pin1 = await managedRef(s, v1);
+      async function publish(
+        revision: number,
+        refs: EmployeeContentReference[],
+      ) {
+        return enable(
+          s,
+          s.draft({
+            expectedRevision: revision,
+            manifest: { ...retained, common: [...retained.common, ...refs] },
+          }),
+        );
+      }
+      const first = await publish(historical.revision, [pin1]);
+      const v2 = await readyReference(s, 'KNOWLEDGE_EXACT_V2', 'personal', {
+        sourceId: v1.sourceId,
+        revision: 1,
+      });
+      const pin2 = await managedRef(s, v2);
+      expect(pin2.contentId).toBe(pin1.contentId);
+      expect(pin2.revisionId).not.toBe(pin1.revisionId);
+      const second = await publish(first.revision, [pin2]);
+      const frozen =
+        await f.db`select id,manifest,digest from allrice_employee_content_revisions where id in ${f.db([first.candidate.id, second.candidate.id])} order by id`;
+      expect(
+        frozen.find((row) => row.id === first.candidate.id)!.manifest.common,
+      ).toEqual([...retained.common, pin1]);
+      expect(
+        frozen.find((row) => row.id === second.candidate.id)!.manifest.common,
+      ).toEqual([...retained.common, pin2]);
+      await archiveReference(s, v1.sourceId, 2);
+      expect(
+        (await getEmployeeContentSet(s.a, s.base.setId)).sources.find(
+          (source) => source.reference.contentId === pin2.contentId,
+        ),
+      ).toMatchObject({ available: false });
+      const removed = await publish(second.revision, []);
+      expect(
+        (await getEmployeeContentSet(s.a, s.base.setId)).set.active!.manifest,
+      ).toEqual(retained);
+      expect(removed.active!.id).not.toBe(second.active!.id);
+      expect(
+        await f.db`select id,manifest,digest from allrice_employee_content_revisions where id in ${f.db([first.candidate.id, second.candidate.id])} order by id`,
+      ).toEqual(frozen);
+      expect(
+        await f.db`select revision,published_revision_id,state from allrice_company_assets where id=${old.contentId}`,
+      ).toEqual(oldSource);
+      await expect(
+        f.db`update allrice_employee_content_revisions set manifest='{}'::jsonb where id=${first.candidate.id}`,
+      ).rejects.toThrow('immutable');
+      await expect(
+        getEmployeeContentHistory(s.b, s.base.setId),
+      ).rejects.toMatchObject({ code: 'not_found' });
+    });
+
+    it('keeps company-rule publication and exact binding updates outside text retirement', async () => {
+      const s = await setup(),
+        assetId = randomUUID();
+      const mutateRule = (input: unknown) =>
+        mutateCompanyAsset(
+          admin,
+          s.company.organizationId,
+          input,
+          runtimeFixtureStorage(f.db),
+          true,
+        );
+      async function publishRule(body: string, expectedRevision: number) {
+        const draft = await mutateRule({
+          operation: 'save',
+          assetId,
+          expectedRevision,
+          content: {
+            kind: 'rule',
+            title: 'Synthetic company rule',
+            body,
+            category: 'Synthetic',
+            appliesToEmployeeIds: [],
+            taskKeywords: [],
+            slots: [],
+          },
+        });
+        return mutateRule({
+          operation: 'publish',
+          assetId,
+          expectedRevision: draft.revision,
+        });
+      }
+      const firstRule = await publishRule('COMPANY_RULE_V1', 0);
+      const pin = (asset: typeof firstRule): EmployeeContentReference => ({
+        sourceKind: 'company_rule',
+        contentId: asset.id,
+        revisionId: asset.latest.id,
+        digest: asset.latest.digest,
+      });
+      const draft = (revision: number, refs: EmployeeContentReference[]) =>
+        s.draft({
+          expectedRevision: revision,
+          manifest: {
+            schemaVersion: 1,
+            common: refs,
+            scenes: [],
+            declaredConflicts: [],
+          },
+        });
+      const first = await enable(s, draft(0, [pin(firstRule)]));
+      const secondRule = await publishRule(
+        'COMPANY_RULE_V2',
+        firstRule.revision,
+      );
+      const second = await enable(s, draft(first.revision, [pin(secondRule)]));
+      const old =
+        await f.db`select manifest,digest from allrice_employee_content_revisions where id=${first.candidate.id}`;
+      expect(old[0]!.manifest.common).toEqual([pin(firstRule)]);
+      await mutateRule({
+        operation: 'withdraw',
+        assetId,
+        expectedRevision: secondRule.revision,
+      });
+      const removed = await enable(s, draft(second.revision, []));
+      expect(removed.active).not.toBeNull();
+      expect(
+        (await getEmployeeContentSet(s.a, s.base.setId)).set.active!.manifest
+          .common,
+      ).toEqual([]);
+      expect(
+        await f.db`select manifest,digest from allrice_employee_content_revisions where id=${first.candidate.id}`,
+      ).toEqual(old);
+    });
+
+    it('does not admit a malformed stored package through raw references, restore or activation', async () => {
+      const s = await setup(),
+        edit = packagedText();
+      edit.skillPackage.bundle.checksum = runtimePolicyDigest(
+        'malformed historical bundle',
+      );
+      const input = s.draft({
+        textEdits: [edit],
+        manifest: {
+          schemaVersion: 1,
+          common: [],
+          declaredConflicts: [],
+          scenes: [
+            {
+              id: randomUUID(),
+              name: 'Malformed old package',
+              appliesWhen: 'Synthetic only',
+              references: [
+                { sourceKind: 'draft_text', contentId: edit.contentId },
+              ],
+            },
+          ],
+        },
+      });
+      const historical = await seedHistoricalEmployeeContent(f.db, s.a, input);
+      const stored = await getEmployeeContentSet(s.a, input.setId);
+      for (const operation of ['validate', 'activate'] as const)
+        await expect(
+          mutateEmployeeContent(s.a, action(input, historical, operation)),
+        ).rejects.toMatchObject({ code: 'legacy_method_retired' });
+      await expect(
+        mutateEmployeeContent(s.a, {
+          ...s.base,
+          requestId: randomUUID(),
+          expectedRevision: historical.revision,
+          operation: 'restore_draft',
+          sourceRevisionId: historical.candidate.id,
+        }),
+      ).rejects.toMatchObject({ code: 'legacy_method_retired' });
+      await expect(
+        mutateEmployeeContent(s.a, {
+          ...input,
+          requestId: randomUUID(),
+          expectedRevision: historical.revision,
+          textEdits: [],
+          manifest: stored.set.candidate!.manifest,
+        }),
+      ).rejects.toMatchObject({ code: 'legacy_method_retired' });
+      expect((await getEmployeeContentSet(s.a, input.setId)).set.revision).toBe(
+        historical.revision,
+      );
+    });
+
+    it('HTTP package save→validate→activate→effective details preserves DTOs, source checks and browser write boundaries', async () => {
       // Load the Next entrypoints at runtime; the database's NodeNext typecheck
       // must not pull the Web bundler's extensionless imports into its project.
       const writePath =
@@ -4823,7 +5119,7 @@ suite(
         ) => Promise<Response>;
       };
       const s = await setup(),
-        rule = text('HTTP-visible exact content'),
+        rule = packagedText('HTTP-visible exact content'),
         input = s.draft({
           textEdits: [rule],
           manifest: {

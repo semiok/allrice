@@ -177,6 +177,11 @@
   background: var(--ar-surface);
 }
 
+.error {
+  margin-top: 20px;
+  color: var(--ar-danger-text);
+}
+
 .detailHeader {
   display: flex;
   flex: none;

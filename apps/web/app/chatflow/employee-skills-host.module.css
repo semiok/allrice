@@ -13,6 +13,9 @@
 .dialog.small {
   width: min(408px, 100%);
 }
+.dialog.detailDialog {
+  width: min(848px, 100%);
+}
 
 .page {
   display: flex;

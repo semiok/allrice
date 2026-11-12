@@ -101,6 +101,7 @@ export function EmployeeSkillSourceForm({
   onChange,
   onRead,
   onBack,
+  parentBackLabel = '返回员工详情',
 }: {
   operation: 'install' | 'update';
   name?: string;
@@ -110,6 +111,7 @@ export function EmployeeSkillSourceForm({
   onChange: (draft: EmployeeSkillSourceDraft) => void;
   onRead: () => void;
   onBack: () => void;
+  parentBackLabel?: string;
 }) {
   const id = useId();
   const fileInput = useRef<HTMLInputElement>(null);
@@ -118,7 +120,7 @@ export function EmployeeSkillSourceForm({
   return (
     <EmployeeSkillPage
       title={operation === 'update' ? `更新“${name ?? '未提供'}”` : '添加技能'}
-      backLabel={operation === 'update' ? '返回技能详情' : '返回员工详情'}
+      backLabel={operation === 'update' ? '返回技能详情' : parentBackLabel}
       onBack={onBack}
       footer={
         <>

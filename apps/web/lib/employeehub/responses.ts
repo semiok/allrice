@@ -48,13 +48,15 @@ export function employeeHubErrorResponse(error: unknown) {
           ? 'VERSION_CONFLICT'
           : 'CONFLICT',
       message:
-        error.code === 'validation_required'
-          ? '请先校验当前草稿，再启用。'
-          : error.code === 'validation_failed'
-            ? '草稿存在不可用来源或冲突，请查看校验结果。'
-            : error.code === 'source_changed'
-              ? '内容来源或继承版本已变化，请重新校验。'
-              : '内容版本或请求标识已变化，请读取最新版本后重试。',
+        error.code === 'legacy_method_retired'
+          ? '旧文字工作方法写入已停用，历史内容与回执保留。个人 Workflow 请使用完整包的预览确认入口。'
+          : error.code === 'validation_required'
+            ? '请先校验当前草稿，再启用。'
+            : error.code === 'validation_failed'
+              ? '草稿存在不可用来源或冲突，请查看校验结果。'
+              : error.code === 'source_changed'
+                ? '内容来源或继承版本已变化，请重新校验。'
+                : '内容版本或请求标识已变化，请读取最新版本后重试。',
       retryable: false,
     });
   if (

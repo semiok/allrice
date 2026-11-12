@@ -1,8 +1,10 @@
+import console from 'node:console';
 import { randomUUID } from 'node:crypto';
 import { symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
+import { withEmployeeCustomizationTools } from '@allrice/contracts';
 import { gate, hold, host, text } from './fixture.mjs';
 
 const runId = 'b5834c57-e579-4794-a4b2-e9b94e5dd4bd';
@@ -10,6 +12,40 @@ const bridge = async (method) => {
   if (method !== 'allrice/run-authorize') throw Error(method);
   return { allowed: true };
 };
+
+it('new Rice root and actual spawned child omit retired method schemas while retaining granted web fetch', async () => {
+  const retired = ['inspect', 'save_candidate', 'restore_candidate'];
+  const nativeTools = withEmployeeCustomizationTools(
+    [
+      'web.fetch',
+      ...retired.map((action) => `workspace.employee.method.${action}`),
+    ],
+    ['storage:read', 'storage:write', 'network:outbound'],
+    'general',
+    true,
+  );
+  const h = await host({ runId, nativeTools, bridge });
+  await h.prompt('请核对公开资料，并把来源检查交给子任务。');
+  await h.wait();
+  const child = await h.spawn(h.root, '检查公开资料来源');
+  await child.result;
+  await h.wait();
+  expect(child.childId).not.toBe(h.root.id);
+  const schemas = [];
+  for (const id of [h.root.id, child.childId]) {
+    const request = h.calls.find((call) => call.sessionId === id);
+    expect(request).toBeDefined();
+    const names = request.tools.map((tool) => tool.name).sort();
+    expect(names).toContain('web_fetch');
+    for (const action of retired)
+      expect(names).not.toContain(`workspace_employee_method_${action}`);
+    schemas.push({ sessionId: id, names });
+  }
+  console.log(
+    'LEGACY_METHOD_RETIREMENT_NATIVE_SCHEMAS',
+    JSON.stringify({ nativeTools, schemas }),
+  );
+});
 
 it('profile writes reach the Broker only from the actual live root, never a child sharing its Run', async () => {
   const calls = [],

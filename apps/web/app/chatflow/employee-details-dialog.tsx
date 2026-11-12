@@ -1,6 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import {
   EmployeeDetailsSchema,
   EmployeeInstanceSchema,
@@ -14,6 +20,11 @@ import {
 import { DshDialog } from './dsh-upstream/Dialog';
 import { EmployeeMemoryEntry } from './employee-memory-entry';
 import { EmployeeSceneList } from './employee-scene-dialog';
+import {
+  EmployeeSkillLayerDialog,
+  useEmployeeSkillsHostView,
+  type EmployeeSkillLayer,
+} from './employee-skills-host';
 import type {
   EmployeeSceneCatalogController,
   SceneCatalogEntry,
@@ -68,6 +79,9 @@ interface EmployeeDetailsDialogProps {
   reuseSceneSnapshot?: boolean;
   onOpenScene?: (entry: SceneCatalogEntry) => void;
   onCreateScene?: () => void;
+  capabilitiesContent?: ReactNode;
+  capabilitiesLayer?: EmployeeSkillLayer | null;
+  capabilitiesOwner?: boolean;
 }
 
 export function EmployeeDetailsDialog(props: EmployeeDetailsDialogProps) {
@@ -91,6 +105,7 @@ function EmployeeDetailsReader(
     fileWrites: PersonalSceneFileWriteStore;
   },
 ) {
+  const skills = useEmployeeSkillsHostView();
   const [attempt, setAttempt] = useState(0);
   const [result, setResult] = useState<{
     attempt: number;
@@ -121,7 +136,8 @@ function EmployeeDetailsReader(
     props.reuseSceneSnapshot ||
     (result?.attempt === attempt && result.sceneReadDone);
   const data = sceneCatalog
-    ? sceneReady
+    ? sceneReady &&
+      sceneCatalog.details?.profile.instanceId === props.instanceId
       ? sceneCatalog.details
       : undefined
     : result?.attempt === attempt
@@ -454,7 +470,12 @@ function EmployeeDetailsReader(
         headers={props.headers}
       />
     ) : null;
-  return (
+  const capabilitiesLayer = props.capabilitiesOwner
+    ? skills?.layer
+    : props.capabilitiesLayer;
+  return capabilitiesLayer ? (
+    <EmployeeSkillLayerDialog layer={capabilitiesLayer} />
+  ) : (
     <DshDialog
       ariaLabel={
         editor
@@ -552,7 +573,8 @@ function EmployeeDetailsReader(
             }
             view={props.organizationView ? 'shared' : 'personal'}
             sceneContent={
-              sceneCatalog && props.onOpenScene && props.onCreateScene ? (
+              props.capabilitiesContent ??
+              (sceneCatalog && props.onOpenScene && props.onCreateScene ? (
                 <EmployeeSceneList
                   controller={sceneCatalog}
                   employeeName={data.profile.name}
@@ -560,7 +582,7 @@ function EmployeeDetailsReader(
                   onChoose={props.onOpenScene}
                   onCreate={props.onCreateScene}
                 />
-              ) : undefined
+              ) : undefined)
             }
             memoryEntry={
               !props.organizationView &&

@@ -311,21 +311,17 @@
       "id": "bf08fedb-c962-466f-a42f-36a397174cec",
       "name": "employee-customization",
       "contentFile": "skills/employee-customization/SKILL.md",
-      "version": "2.1.0",
-      "checksum": "sha256:e7303d4d75673e575b4cd3d35ae27c0721a0e1017fe672a15491989557770e4a",
+      "version": "3.0.0",
+      "checksum": "sha256:905ab5eabcf30ba235abf1cd0d55923c50a018d1d57e792b74a5c214a0f0a400",
       "source": "allrice",
-      "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/employee-customization?content-sha256=e7303d4d75673e575b4cd3d35ae27c0721a0e1017fe672a15491989557770e4a",
+      "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/employee-customization?content-sha256=905ab5eabcf30ba235abf1cd0d55923c50a018d1d57e792b74a5c214a0f0a400",
       "license": "Apache-2.0",
       "reviewStatus": "reviewed",
-      "reviewedByLabel": "MET-227 S1 personal package and legacy target instructions",
+      "reviewedByLabel": "MET-223 B2 Workflow authoring and legacy method retirement",
       "createdByLabel": "MET-181 PR2",
       "modelInvocable": true,
       "userInvocable": true,
-      "requiredToolRefs": [
-        "workspace.employee.method.inspect",
-        "workspace.employee.method.save_candidate",
-        "workspace.employee.method.restore_candidate"
-      ],
+      "requiredToolRefs": [],
       "enabled": true
     },
     {

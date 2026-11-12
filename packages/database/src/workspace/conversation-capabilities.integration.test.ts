@@ -180,7 +180,11 @@ suite(
         const result = await x.send(session.id);
         expect(result.tools).not.toContain('workspace.project');
         expect(result.tools).toContain('workspace.skill.read');
-        expect(result.tools).toContain('workspace.employee.method.inspect');
+        expect(
+          result.tools.filter((name) =>
+            name.startsWith('workspace.employee.method.'),
+          ),
+        ).toEqual([]);
         const skill = result.resolved.nativeSkills.find(
           (s) => s.id === x.project.id,
         )!;
