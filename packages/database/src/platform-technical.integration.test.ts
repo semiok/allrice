@@ -151,6 +151,100 @@ suite(
         /SECRET|SYNTHETIC-ONLY|Reconciliation rule/,
       );
     });
+    it('keeps database microseconds in the shared diagnostics window and excludes rows outside it', async () => {
+      const sample = await createExperienceFixture(fixture.db);
+      const end = '2030-01-02T12:00:00.123900Z';
+      const start = '2030-01-01T12:00:00.123900Z';
+      const cases = [
+        { at: '2030-01-02T12:00:00.123800Z', included: true },
+        { at: end, included: true },
+        { at: '2030-01-02T12:00:00.123901Z', included: false },
+        { at: start, included: true },
+        { at: '2030-01-01T12:00:00.123899Z', included: false },
+      ];
+      const expected: string[] = [];
+      for (const entry of cases) {
+        const actorId = randomUUID();
+        await fixture.db`insert into allrice_users(id,email,display_name,password_hash)
+          values(${actorId},${`${actorId}@example.test`},'Window fixture','not-login')`;
+        const [row] = await fixture.db<{ id: string }[]>`
+          insert into allrice_run_feedback(organization_id,workspace_id,run_id,message_id,actor_id,helpful,category,updated_at)
+          values(${sample.org},${sample.workspace},${sample.run},${sample.assistant},${actorId},false,'service-stability',${entry.at}::text::timestamptz)
+          returning id`;
+        if (entry.included) expected.push(row!.id);
+      }
+      const stored = await fixture.db<{ at: string }[]>`
+        select to_char(updated_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as at
+        from allrice_run_feedback where run_id=${sample.run} order by updated_at`;
+      expect(stored.map((row) => row.at)).toEqual(
+        cases.map((entry) => entry.at).sort(),
+      );
+      // Freeze only the clock expression; all bounds/filtering execute in PostgreSQL.
+      const diagnostics = new Proxy(fixture.db, {
+        apply(target, receiver, args) {
+          if (
+            Array.isArray(args[0]) &&
+            args[0].length === 1 &&
+            args[0][0].includes('select clock_timestamp() as captured_at')
+          )
+            return target.unsafe(
+              args[0][0].replace('clock_timestamp()', `'${end}'::timestamptz`),
+            );
+          return Reflect.apply(target, receiver, args);
+        },
+      });
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2030-01-02T12:00:00.123Z'));
+      try {
+        const facts = await readPlatformTechnicalDiagnostics(admin, {
+          database: fixture.db,
+          diagnostics,
+          environment: 'test',
+        });
+        expect(facts.feedback.value!.map((row) => row.id).sort()).toEqual(
+          expected.sort(),
+        );
+        expect(facts.capturedAt).toBe(end);
+        for (const source of [facts.runs, facts.operations, facts.feedback])
+          expect(source.evidence).toMatchObject({
+            windowStart: start,
+            windowEnd: end,
+            sampledAt: end,
+            freshness: 'fresh',
+          });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+    it('keeps independent pressure facts when the database window cannot be sampled', async () => {
+      const diagnostics = new Proxy(fixture.db, {
+        apply(target, receiver, args) {
+          if (
+            Array.isArray(args[0]) &&
+            args[0].join('').includes('select clock_timestamp() as captured_at')
+          )
+            throw Error('PRIVATE-clock-source-error');
+          return Reflect.apply(target, receiver, args);
+        },
+      });
+      const facts = await readPlatformTechnicalDiagnostics(admin, {
+        database: fixture.db,
+        diagnostics,
+        environment: 'test',
+      });
+      expect(facts.pressure.evidence.freshness).toBe('fresh');
+      expect(facts.pressure.value).not.toBeNull();
+      for (const source of [facts.runs, facts.operations, facts.feedback])
+        expect(source).toMatchObject({
+          value: null,
+          evidence: {
+            freshness: 'unknown',
+            sampledAt: null,
+            unavailableReason: 'collection_failed',
+          },
+        });
+      expect(JSON.stringify(facts)).not.toContain('PRIVATE-clock-source-error');
+    });
     it('ignores retired assistant diagnostics without copying private error bodies', async () => {
       const callId = randomUUID();
       const model = {
