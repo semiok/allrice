@@ -1489,7 +1489,9 @@ suite('U1 mounted employee Workflow host', () => {
           await source
             .getByRole('tab', { name: 'GitHub 链接', exact: true })
             .waitFor();
-          await source.getByRole('button', { name: '取消', exact: true }).click();
+          await source
+            .getByRole('button', { name: '取消', exact: true })
+            .click();
           await root
             .getByRole('heading', { name: '插件 Plugins', exact: true })
             .waitFor();
