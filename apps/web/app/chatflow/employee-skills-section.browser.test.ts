@@ -39,6 +39,13 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
     );
     server = createServer((request, response) => {
       const path = new URL(request.url!, 'http://localhost').pathname;
+      if (path === '/plugin-fixture') {
+        response.setHeader('content-type', 'text/html');
+        response.end(
+          '<!doctype html><html><head><meta charset="utf-8"><title>受控插件页面</title></head><body><h1>Rice · 品牌内容</h1><p>本地组件跳转夹具，非插件业务或后台。</p></body></html>',
+        );
+        return;
+      }
       const asset = assets.get(path);
       response.setHeader(
         'content-type',
@@ -76,7 +83,11 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
     if (server) await new Promise<void>((done) => server.close(() => done()));
   });
 
-  async function fixture(width = 1440, theme: 'light' | 'dark' = 'light') {
+  async function fixture(
+    width = 1440,
+    theme: 'light' | 'dark' = 'light',
+    plugins = false,
+  ) {
     const context = await browser.newContext({
       viewport: { width, height: width === 390 ? 844 : 1000 },
       isMobile: width === 390,
@@ -92,9 +103,14 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
       requests.push(route.request().method() + ' ' + route.request().url());
       await route.abort();
     });
-    await page.goto(`${origin}/chatflow?theme=${theme}`);
+    await page.goto(
+      `${origin}/chatflow?theme=${theme}${plugins ? '&plugins=1' : ''}`,
+    );
     await page
-      .getByRole('heading', { name: '技能 Skills', exact: true })
+      .getByRole('heading', {
+        name: plugins ? '插件 Plugins' : '技能 Skills',
+        exact: true,
+      })
       .waitFor();
     return {
       page,
@@ -188,6 +204,298 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
     return { ...(await sample()), stableSamples };
   }
 
+  async function primaryPaint(action: Locator) {
+    return action.evaluate((node) => {
+      const style = getComputedStyle(node);
+      return Object.fromEntries(
+        [
+          'color',
+          'backgroundColor',
+          'font',
+          'borderRadius',
+          'borderWidth',
+          'minHeight',
+          'padding',
+          'opacity',
+          'outlineColor',
+          'outlineStyle',
+          'outlineWidth',
+        ].map((key) => [key, style[key as keyof CSSStyleDeclaration]]),
+      );
+    });
+  }
+
+  for (const width of [1440, 390, 320]) {
+    for (const theme of ['light', 'dark'] as const) {
+      it(`MET-251 v9 controlled plugin presentation shares actions and compact empties in both hosts at ${width} ${theme}`, async () => {
+        let phase = 'fixture',
+          activeHost = 'setup';
+        const observation = () => ({ width, theme, host: activeHost, phase });
+        const mark = (next: string) => {
+          phase = next;
+          console.info('MET251_PLUGIN_PHASE', JSON.stringify(observation()));
+        };
+        mark('fixture-open');
+        const f = await fixture(width, theme, true);
+        const onPage = (popup: Page) =>
+          console.info(
+            'MET251_PLUGIN_PAGE',
+            JSON.stringify({ ...observation(), url: popup.url() }),
+          );
+        f.page.context().on('page', onPage);
+        try {
+          for (const host of ['sidebar', 'employee']) {
+            activeHost = host;
+            mark('host-select');
+            await f.page
+              .getByLabel('插件展示宿主', { exact: true })
+              .selectOption(host);
+            const root = f.page.getByRole('region', {
+              name: host === 'sidebar' ? '受控能力侧栏' : '受控员工详情',
+              exact: true,
+            });
+            const open = root.getByRole('link', {
+              name: '打开 品牌内容，在新标签页打开',
+              exact: true,
+            });
+            const start = f.page.getByRole('button', {
+              name: '开始工作',
+              exact: true,
+            });
+            await open.waitFor();
+            const row = open.locator('..').locator('..');
+            const geometry = await row.evaluate((node) => {
+              const style = getComputedStyle(node);
+              const title = node
+                .querySelector('strong')!
+                .getBoundingClientRect();
+              const description = node
+                .querySelector('p')!
+                .getBoundingClientRect();
+              return {
+                height: node.getBoundingClientRect().height,
+                padding: style.padding,
+                titleX: title.x,
+                descriptionX: description.x,
+              };
+            });
+            expect(geometry.height).toBeGreaterThanOrEqual(64);
+            expect(geometry.padding).toBe('10px 14px');
+            expect(geometry.titleX).toBe(geometry.descriptionX);
+            expect(
+              await row.locator('strong').locator('..').locator('svg').count(),
+            ).toBe(0);
+            expect(
+              await root
+                .getByRole('button', { name: '详情', exact: true })
+                .locator('svg')
+                .count(),
+            ).toBe(1);
+            const workflowTitle = root
+              .getByRole('button', { name: '写周报', exact: true })
+              .locator('strong');
+            expect(geometry.titleX).toBe(
+              (await workflowTitle.boundingBox())!.x,
+            );
+            expect(await primaryPaint(open)).toEqual(await primaryPaint(start));
+            for (const pressed of [false, true]) {
+              mark(pressed ? 'primary-pressed' : 'primary-hover');
+              await open.hover();
+              if (pressed) await f.page.mouse.down();
+              const pluginPaint = await primaryPaint(open);
+              if (pressed) {
+                await f.page.mouse.move(0, 0);
+                await f.page.mouse.up();
+              }
+              await start.hover();
+              if (pressed) await f.page.mouse.down();
+              expect(pluginPaint).toEqual(await primaryPaint(start));
+              if (pressed) {
+                await f.page.mouse.move(0, 0);
+                await f.page.mouse.up();
+              }
+            }
+            mark('primary-focus');
+            await f.page.mouse.move(0, 0);
+            await f.page.keyboard.press('Tab');
+            await open.focus();
+            expect(
+              await open.evaluate((node) => node.matches(':focus-visible')),
+            ).toBe(true);
+            const pluginFocus = await primaryPaint(open);
+            await start.focus();
+            expect(
+              await start.evaluate((node) => node.matches(':focus-visible')),
+            ).toBe(true);
+            expect(pluginFocus).toEqual(await primaryPaint(start));
+            await start.blur();
+            expect(
+              f.page
+                .context()
+                .pages()
+                .filter((page) => page !== f.page)
+                .map((page) => page.url()),
+            ).toEqual([]);
+            if (width !== 320)
+              await f.page.screenshot({
+                path: resolve(
+                  evidence,
+                  `controlled-plugin-list-${host}-${width}-${theme}.png`,
+                ),
+                fullPage: true,
+              });
+            mark('popup-open');
+            const [popup] = await Promise.all([
+              f.page.context().waitForEvent('page'),
+              open.click(),
+            ]);
+            mark('popup-heading');
+            await popup
+              .getByRole('heading', { name: 'Rice · 品牌内容', exact: true })
+              .waitFor();
+            expect(popup.url()).toBe(`${origin}/plugin-fixture?employee=Rice`);
+            expect(await open.getAttribute('target')).toBe('_blank');
+            expect(await open.getAttribute('rel')).toContain('noopener');
+            await popup.close();
+            mark('detail-open');
+            await root
+              .getByRole('button', { name: '详情', exact: true })
+              .click();
+            const detailOpen = root.getByRole('link', {
+              name: '打开插件 品牌内容，在新标签页打开',
+              exact: true,
+            });
+            await detailOpen.waitFor();
+            expect(
+              await root
+                .getByRole('heading', { name: '品牌内容', exact: true })
+                .count(),
+            ).toBe(1);
+            expect(
+              await root.getByText('v1.0.0', { exact: true }).count(),
+            ).toBe(1);
+            expect(
+              await root
+                .getByText('按品牌规范准备内容', { exact: true })
+                .count(),
+            ).toBe(1);
+            for (const title of ['插件介绍', '使用说明'])
+              await root
+                .getByRole('heading', { name: title, exact: true })
+                .waitFor();
+            for (const meta of ['版本', '来源', '当前员工'])
+              expect(await root.getByText(meta, { exact: true }).count()).toBe(
+                0,
+              );
+            await root
+              .getByText('点击「打开插件」，在新页面使用。', { exact: true })
+              .waitFor();
+            expect(await primaryPaint(detailOpen)).toEqual(
+              await primaryPaint(start),
+            );
+            expect(
+              await root.evaluate(
+                (node) =>
+                  node.scrollWidth <= node.clientWidth &&
+                  document.documentElement.scrollWidth <= innerWidth,
+              ),
+            ).toBe(true);
+            if (width !== 320)
+              await f.page.screenshot({
+                path: resolve(
+                  evidence,
+                  `controlled-plugin-detail-${host}-${width}-${theme}.png`,
+                ),
+                fullPage: true,
+              });
+            mark('disabled');
+            await f.page.getByLabel('禁用打开', { exact: true }).check();
+            const disabled = root.getByRole('button', {
+              name: '打开插件',
+              exact: true,
+            });
+            expect(await disabled.isDisabled()).toBe(true);
+            expect(await root.getByRole('link').count()).toBe(0);
+            expect(await primaryPaint(disabled)).toEqual(
+              await primaryPaint(start),
+            );
+            expect(
+              await root
+                .getByRole('button', { name: '从此员工移除', exact: true })
+                .isDisabled(),
+            ).toBe(true);
+            await f.page.getByLabel('禁用打开', { exact: true }).uncheck();
+            mark('remove-empty');
+            await root
+              .getByRole('button', { name: '从此员工移除', exact: true })
+              .click();
+            expect(
+              await f.page
+                .getByLabel('插件展示回调', { exact: true })
+                .innerText(),
+            ).toBe(host === 'sidebar' ? '1' : '2');
+            await root
+              .getByRole('button', {
+                name: host === 'sidebar' ? '返回能力列表' : '返回员工详情',
+                exact: true,
+              })
+              .click();
+            await f.page.getByLabel('空态', { exact: true }).check();
+            const pluginEmpty = root
+              .getByRole('heading', { name: '还没有插件', exact: true })
+              .locator('..');
+            const sceneEmpty = root
+              .getByRole('heading', { name: '还没有场景', exact: true })
+              .locator('..');
+            const emptyPaint = (node: HTMLElement | SVGElement) => {
+              const style = getComputedStyle(node),
+                box = node.getBoundingClientRect();
+              return {
+                height: box.height,
+                width: box.width,
+                background: style.backgroundColor,
+                border: style.border,
+                padding: style.padding,
+              };
+            };
+            const pluginEmptyPaint = await pluginEmpty.evaluate(emptyPaint);
+            expect(pluginEmptyPaint).toEqual(
+              await sceneEmpty.evaluate(emptyPaint),
+            );
+            expect(pluginEmptyPaint.height).toBe(74);
+            expect(await pluginEmpty.locator('p').count()).toBe(0);
+            if (width !== 320)
+              await f.page.screenshot({
+                path: resolve(
+                  evidence,
+                  `controlled-plugin-empty-${host}-${width}-${theme}.png`,
+                ),
+                fullPage: true,
+              });
+            await f.page.getByLabel('空态', { exact: true }).uncheck();
+          }
+          mark('complete');
+        } catch (error) {
+          console.error(
+            'MET251_PLUGIN_FAILURE',
+            JSON.stringify({
+              ...observation(),
+              message: String(error),
+              pages: f.page
+                .context()
+                .pages()
+                .map((page) => page.url()),
+            }),
+          );
+          throw error;
+        } finally {
+          f.page.context().off('page', onPage);
+          await f.close();
+        }
+      });
+    }
+  }
+
   for (const width of [1440, 390]) {
     for (const theme of ['light', 'dark'] as const) {
       it(`renders the two groups and read-only detail at ${width}px ${theme}`, async () => {
@@ -198,6 +506,7 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
           expect(await region.getByText('基础技能 · 11').count()).toBe(1);
           const typography = await region
             .getByRole('button', { name: '翻译校对', exact: true })
+            .locator('strong')
             .evaluate((node) => {
               const style = getComputedStyle(node);
               return {
@@ -398,7 +707,9 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
       await region
         .getByRole('button', { name: '添加技能', exact: true })
         .click();
-      await region.getByRole('button', { name: '卸载', exact: true }).click();
+      expect(
+        await region.getByRole('button', { name: '卸载', exact: true }).count(),
+      ).toBe(0);
       await region
         .getByRole('button', { name: '翻译校对', exact: true })
         .click();
@@ -413,7 +724,6 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
       const result = await events(f.page);
       expect(result.map((event) => event.action)).toEqual([
         'add',
-        'uninstall',
         'update',
         'uninstall',
       ]);

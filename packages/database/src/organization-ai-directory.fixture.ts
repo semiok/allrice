@@ -25,6 +25,7 @@ import {
   listEmployeeInstances,
 } from './employees/employee-instances.ts';
 import { mutateEmployeeContent } from './employees/employee-content.ts';
+import { seedHistoricalEmployeeContent } from './employees/employee-method-history.fixture.ts';
 import {
   prepareReferenceUpload,
   completeReferenceUpload,
@@ -204,22 +205,9 @@ export async function createOrganizationAiDirectoryFixture(
           },
         ],
       };
-    let receipt = await mutateEmployeeContent(owner, input);
-    for (const operation of ['validate', 'activate'] as const) {
-      receipt = await mutateEmployeeContent(owner, {
-        operation,
-        workspaceId,
-        setId: input.setId,
-        ownership: input.ownership,
-        target: input.target,
-        requestId: randomUUID(),
-        expectedRevision: receipt.revision,
-        changeSummary: marker,
-        candidateRevisionId: receipt.candidate.id,
-        candidateDigest: receipt.candidate.digest,
-      });
-      if (!receipt.validation?.valid) throw Error('fixture_content_validation');
-    }
+    const receipt = await seedHistoricalEmployeeContent(db, owner, input, {
+      active: true,
+    });
     return { input, receipt };
   };
   const companyContent = await publish('company', '公司共享场景', [

@@ -24,6 +24,19 @@ import {
 
 describe('AllRice worker tool manifest contract', () => {
   afterEach(() => vi.unstubAllEnvs());
+  it('omits retired methods from the default schema while retaining explicit historical adapters', () => {
+    const names = ['inspect', 'save_candidate', 'restore_candidate'].map(
+      (action) => `workspace.employee.method.${action}`,
+    );
+    const capabilities = ['storage:read', 'storage:write'] as const;
+    for (const tool of riceToolDefinitionsForCapabilities([...capabilities]))
+      expect(names).not.toContain(tool.name);
+    expect(
+      riceToolDefinitionsForCapabilities([...capabilities], names).map(
+        (tool) => tool.name,
+      ),
+    ).toEqual(names);
+  });
   it('keeps native and Broker method descriptions on legacy targets, not personal package confirmation', async () => {
     const { employeeMethodNativeTools } = await import(
       pathToFileURL(

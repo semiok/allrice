@@ -44,6 +44,7 @@ import {
   readPersonalSceneSkillInTransaction,
 } from './personal-scene-skills.ts';
 import { mutateEmployeeContent } from './employee-content.ts';
+import { seedHistoricalEmployeeContent } from './employee-method-history.fixture.ts';
 import { inspectPersonalSceneSkill } from './personal-scene-reads.ts';
 import { skillBundleChecksum, skillBytesChecksum } from '../skill-bundles.ts';
 import { runtimePolicyDigest } from '../runtime-policy-digest.ts';
@@ -791,31 +792,19 @@ suite(
         target: { kind: 'instance' as const, instanceId: s.instance.id },
         changeSummary: '增加附加方法',
       };
-      let revision = await mutateEmployeeContent(s.owner, {
-        ...target,
-        requestId: randomUUID(),
-        expectedRevision: 1,
-        operation: 'save_draft',
-        manifest,
-        textEdits: [plain],
-      });
-      revision = await mutateEmployeeContent(s.owner, {
-        ...target,
-        requestId: randomUUID(),
-        expectedRevision: revision.revision,
-        operation: 'validate',
-        candidateRevisionId: revision.candidate.id,
-        candidateDigest: revision.candidate.digest,
-      });
-      expect(revision.validation?.valid).toBe(true);
-      const active = await mutateEmployeeContent(s.owner, {
-        ...target,
-        requestId: randomUUID(),
-        expectedRevision: revision.revision,
-        operation: 'activate',
-        candidateRevisionId: revision.candidate.id,
-        candidateDigest: revision.candidate.digest,
-      });
+      const active = await seedHistoricalEmployeeContent(
+        f.db,
+        s.owner,
+        {
+          ...target,
+          requestId: randomUUID(),
+          expectedRevision: 1,
+          operation: 'save_draft',
+          manifest,
+          textEdits: [plain],
+        },
+        { active: true },
+      );
       const mixedRef = personalSceneContentRef({
         ...pin,
         revisionId: active.active!.id,

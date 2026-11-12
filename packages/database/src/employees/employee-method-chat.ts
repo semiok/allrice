@@ -651,7 +651,7 @@ export async function enterMethodChat<T>(
   ) => Promise<T>,
   options: { reserveStorage?: boolean } = {},
 ) {
-  const { scope } = employeeChatIdentity(input);
+  const { scope, requestId } = employeeChatIdentity(input);
   return employeeAccessTransaction(getDatabase(), async (tx) => {
     if (tool === 'workspace.employee.method.activate')
       await lockNativeQuestionMode(tx);
@@ -683,7 +683,20 @@ export async function enterMethodChat<T>(
       tool === 'workspace.employee.method.restore_candidate'
     )
       await assertRicePersonalMethodCall(input, instance, tool, tx);
-    if (retire) {
+    const retiredWrite =
+      tool === 'workspace.employee.method.save_candidate' ||
+      tool === 'workspace.employee.method.restore_candidate';
+    if (retiredWrite) {
+      // Only an already committed request may reach its original digest/CAS
+      // replay below. A frozen write grant cannot create a new text edit, and
+      // a rejected call must not retire a context or mark it as authoring.
+      const [receipt] =
+        await tx`select request_id from allrice_employee_content_requests
+        where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
+          and actor_id=${scope.actor.id} and request_id=${requestId}`;
+      if (!receipt) throw new EmployeeContentError('legacy_method_retired');
+    }
+    if (retire && !retiredWrite) {
       await tx`select run_id from allrice_employee_runs where run_id=${input.context.runId} for update nowait`;
       await tx`update allrice_employee_runs set method_authoring=true where run_id=${input.context.runId}`;
       const rows = await tx`update allrice_employee_content_contexts c
@@ -702,15 +715,6 @@ export async function enterMethodChat<T>(
 export async function inspectEmployeeMethodFromChat(input: EmployeeChatCall) {
   const args = EmployeeMethodInspectSchema.parse(input.arguments);
   const { scope } = employeeChatIdentity(input);
-  // Candidate body resolution can fail independently; the first transaction's
-  // retirement must survive that failure as well.
-  if (args.view !== 'effective')
-    await enterMethodChat(
-      input,
-      'workspace.employee.method.inspect',
-      true,
-      async () => undefined,
-    );
   return enterMethodChat(
     input,
     'workspace.employee.method.inspect',
@@ -895,7 +899,7 @@ export async function restoreEmployeeMethodFromChat(input: EmployeeChatCall) {
   return restoreEmployeeMethod(input, false);
 }
 
-/** Current chat flow: a successful restore is immediately effective. */
+/** Retained identity/digest path for an original committed immediate-restore receipt. */
 export async function restoreEmployeeMethodAndPublishFromChat(
   input: EmployeeChatCall,
 ) {
@@ -1022,7 +1026,7 @@ export async function saveEmployeeMethodFromChat(input: EmployeeChatCall) {
   return saveEmployeeMethod(input, false);
 }
 
-/** Current chat flow: save, source checks and publication commit atomically. */
+/** Retained identity/digest path for an original committed immediate-save receipt. */
 export async function saveEmployeeMethodAndPublishFromChat(
   input: EmployeeChatCall,
 ) {

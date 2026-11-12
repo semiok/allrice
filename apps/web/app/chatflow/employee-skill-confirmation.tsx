@@ -163,11 +163,13 @@ export function EmployeeSkillSuccess({
   result,
   unchanged,
   onDone,
+  parentBackLabel = '返回员工详情',
 }: {
   preview: PersonalSkillPreviewResponse;
   result: PersonalSkillConfirmResponse;
   unchanged: { title: string; message: string };
   onDone: () => void;
+  parentBackLabel?: string;
 }) {
   const update = result.receipt.operation === 'update';
   return (
@@ -179,7 +181,7 @@ export function EmployeeSkillSuccess({
             ? '更新完成'
             : '添加完成'
       }
-      backLabel={update ? '返回技能详情' : '返回员工详情'}
+      backLabel={update ? '返回技能详情' : parentBackLabel}
       onBack={onDone}
       footer={
         <Button type="button" variant="primary" onClick={onDone}>

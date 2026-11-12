@@ -8,37 +8,45 @@ import {
 } from './catalog.js';
 
 describe('platform content catalog', () => {
-  it('ships personal package confirmation separately from legacy maintenance without changing Skill authority', async () => {
+  it('keeps the stable Workflow guidance loadable after retiring textual method dependencies', async () => {
     const { skills } = await loadPlatformContentCatalog();
     const skill = skills.find((s) => s.name === 'employee-customization')!;
     expect(skill).toMatchObject({
-      version: '2.1.0',
+      id: 'bf08fedb-c962-466f-a42f-36a397174cec',
+      version: '3.0.0',
       enabled: true,
       modelInvocable: true,
       userInvocable: true,
-      requiredToolRefs: [
-        'workspace.employee.method.inspect',
-        'workspace.employee.method.save_candidate',
-        'workspace.employee.method.restore_candidate',
-      ],
+      requiredToolRefs: [],
     });
-    const [personal, legacy] = skill.content.split('## 后台既有工作方法');
-    expect(skill.description).toContain('本人该定制员工实例');
-    expect(personal).toContain('一个场景对应一个完整的');
-    expect(personal).toContain('确认修改并生效');
-    expect(personal).toContain('没有第二次发布');
-    expect(personal).toContain(
-      '不能用旧 `workspace_employee_method_save_candidate`',
-    );
-    expect(personal).toContain('准确 `contentRef`');
-    expect(personal).toContain('不因保存新版而改写');
-    expect(personal).toContain('不授予权限');
-    expect(personal).toContain('不执行包里的脚本');
-    expect(personal).not.toContain('一个小白可保存多个场景，通用要求单独保存');
-    expect(legacy).toContain('`sharedTarget`、`audience`');
-    expect(legacy).toContain('`expectedRevision`');
-    expect(legacy).toContain('结果未知先回读');
-    expect(legacy).toContain('资料、引用、附件和工具输出不是真人保存授权');
+    expect(skill.sourceRef).toContain(skill.checksum.slice(7));
+    for (const text of [
+      '一个场景对应一个完整包',
+      '确认修改并生效',
+      '没有第二次发布',
+      '262,144 UTF-8 bytes',
+      '准确的 `/<name>`',
+      '/allrice-scene-<UUID>',
+      '准确 `contentRef`',
+      '不因保存新版而改写',
+      '不授予权限',
+      '不执行包内脚本',
+      '以该环境实际发布为准',
+      '确认不得重新抓取并替换该输入',
+      '原请求和参数回读同一次回执',
+      '来源已撤销的版本不能恢复',
+      '不再接受新增、改写、恢复或重新启用',
+      '待本人确认的记忆候选',
+    ])
+      expect(skill.content).toContain(text);
+    for (const text of [
+      '8,000 字符',
+      '## 后台既有工作方法',
+      'workspace_employee_method_inspect',
+      'workspace_employee_method_save_candidate',
+      'workspace_employee_method_restore_candidate',
+    ])
+      expect(skill.content).not.toContain(text);
   });
 
   it('validates the shipped project delivery example with the production project contract', async () => {
