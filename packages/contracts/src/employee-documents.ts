@@ -8,11 +8,12 @@ const utf8Bytes = (text: string) => new TextEncoder().encode(text).byteLength;
 const boundedText = (maximum: number) =>
   z.string().refine((text) => utf8Bytes(text) <= maximum);
 export const employeeMemoryIndexMaximumInitialBytes = 18_303;
+export const EmployeePersonaDocumentSchema = boundedText(16384);
 
 /** Generated database views, never editable files or permission assertions. */
 export const EmployeeDocumentsV1Schema = z
   .object({
-    persona: boundedText(16384).optional(),
+    persona: EmployeePersonaDocumentSchema.optional(),
     user: boundedText(2048),
     memory: boundedText(6000),
   })
@@ -20,6 +21,7 @@ export const EmployeeDocumentsV1Schema = z
 export const EmployeeDocumentsV2Schema = z
   .object({
     schemaVersion: z.literal(2),
+    persona: EmployeePersonaDocumentSchema.optional(),
     user: boundedText(2048),
     memory: boundedText(employeeMemoryIndexMaximumInitialBytes),
   })
@@ -208,7 +210,7 @@ export function renderEmployeePersonaDocument(
             : 'frozen_platform_definition',
   });
   const expression = effective.identity.expressionStyle;
-  return EmployeeDocumentsSchema.shape.persona.unwrap().parse(
+  return EmployeePersonaDocumentSchema.parse(
     '# 人设\n' +
       JSON.stringify({
         document: 'PERSONA.md',
