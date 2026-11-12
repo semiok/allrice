@@ -28,6 +28,7 @@ import {
   getEmployeeWorkspace,
   inspectCompanyDeliverable,
   createTraceableMemory,
+  createPersonalEmployeeMemory,
   correctPersonalEmployeeMemory,
 } from '@allrice/database';
 import {
@@ -1273,6 +1274,16 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
         content: excerpt,
         sourceType: 'user',
       });
+      const pair = {
+        summary: '月报可以发送',
+        details: '只可发送脱敏汇总；原始客户名单不得外发。'.repeat(4),
+      };
+      const pairedMemory = await createPersonalEmployeeMemory(owner, {
+        workspaceId: owner.workspaceId!,
+        instanceId: memoryAssignment!.id,
+        idempotencyKey: randomUUID(),
+        ...pair,
+      });
       const [before] = await fixture.db<
         { runs: number }[]
       >`select count(*)::int as runs from allrice_runs where organization_id=${a.target.organizationId}`;
@@ -1325,6 +1336,17 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
           (source) => source.id === memory.id,
         )!;
         expect(chosen).toMatchObject({ revision: 1, content: excerpt });
+        const pairIndex = sources.sources.findIndex(
+          (source) => source.id === pairedMemory.id,
+        );
+        const complete = `${pair.summary}\n${pair.details}`;
+        expect(sources.sources[pairIndex]!.content).toBe(complete);
+        await editor
+          .getByRole('option', {
+            name: `摘录 ${pairIndex + 1}：${complete.slice(0, 70)}`,
+            exact: true,
+          })
+          .waitFor({ state: 'attached' });
         await editor
           .getByLabel('可选记忆摘录', { exact: true })
           .selectOption(chosen.revisionId);
