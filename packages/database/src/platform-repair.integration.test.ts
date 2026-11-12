@@ -1,6 +1,7 @@
 /** Real isolated PostgreSQL/Employee Run authority. Physical and paid-model checks are separate. */
 import { randomUUID, createHash } from 'node:crypto';
 import {
+  constants,
   readFileSync,
   writeFileSync,
   mkdtempSync,
@@ -9,8 +10,8 @@ import {
   realpathSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
+import { cp, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { gzipSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
@@ -109,26 +110,46 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
     catalogRoot: string,
     baseline: RepositoryBaseline;
   let model: Awaited<ReturnType<typeof p24Fixture>>;
-  let manifestPath: string, previousManifest: Buffer | undefined;
+  let nativeRoot: string | undefined;
   const testHarnessExecArgv = process.execArgv;
   beforeAll(async () => {
     const repository = await realpath(resolve(import.meta.dirname, '../../..'));
     const artifact = await measureDshNativeArtifact(repository, undefined, {
       schemaVersion: 2,
     });
-    manifestPath = join(repository, nativeArtifactPath);
-    previousManifest = await readFile(manifestPath).catch(
-      (error: NodeJS.ErrnoException) => {
-        if (error.code !== 'ENOENT') throw error;
-        return undefined;
-      },
-    );
-    await mkdir(join(repository, '.local'), { recursive: true });
+    nativeRoot = await mkdtemp(join(tmpdir(), 'allrice-repair-native-'));
+    nativeRoot = await realpath(nativeRoot);
+    const root = nativeRoot;
+    // Copy installation bytes and relative aliases, never the repository's
+    // shared .local manifest, .git or an alias back to its directory tree.
+    const installationPaths = new Set([
+      'package.json',
+      'pnpm-lock.yaml',
+      'pnpm-workspace.yaml',
+      'node_modules',
+      'apps/worker/package.json',
+      'apps/worker/dsh',
+      'apps/worker/node_modules',
+      ...artifact.content.packages
+        .map(({ path }) => path)
+        .filter((path) => !path.startsWith('node_modules/')),
+    ]);
+    for (const path of installationPaths) {
+      const target = join(root, path);
+      await mkdir(dirname(target), { recursive: true });
+      await cp(join(repository, path), target, {
+        recursive: true,
+        verbatimSymlinks: true,
+        mode: constants.COPYFILE_FICLONE,
+      });
+    }
+    const manifestPath = join(root, nativeArtifactPath);
+    await mkdir(dirname(manifestPath), { recursive: true });
     await writeFile(manifestPath, JSON.stringify(artifact));
     process.execArgv = [];
     vi.stubEnv('NODE_OPTIONS', '');
     await installDshNativeArtifact({
-      root: repository,
+      root,
       expectedId: artifact.artifactId,
     });
     vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', artifact.artifactId);
@@ -256,10 +277,7 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
       await model?.close();
       await fixture?.close();
     } finally {
-      if (manifestPath) {
-        if (previousManifest) await writeFile(manifestPath, previousManifest);
-        else await rm(manifestPath, { force: true });
-      }
+      if (nativeRoot) await rm(nativeRoot, { recursive: true, force: true });
       process.execArgv = testHarnessExecArgv;
       vi.restoreAllMocks();
       vi.unstubAllEnvs();
