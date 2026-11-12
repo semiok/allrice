@@ -13105,22 +13105,34 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       node.style.getPropertyValue('--document-zoom'),
     );
     const previewReads = f.state.workbenchPreviewReads;
-    return async (visible = false) => {
+    return async (visible: boolean | 'tab-hidden' = false) => {
       expect(await original.evaluate((node) => node.isConnected)).toBe(true);
       expect(
         await original.evaluate((node) =>
           node.style.getPropertyValue('--document-zoom'),
         ),
       ).toBe(zoom);
-      expect(
-        await original.evaluate(
-          (node) =>
-            node.querySelector<HTMLElement>('[data-document-zoom-scrollport]')
-              ?.scrollTop,
-        ),
-      ).toBe(top);
+      if (visible === 'tab-hidden')
+        expect(
+          await original.evaluate((node) => {
+            const host = node.closest('[data-dockkit-host]');
+            return {
+              hidden: host?.hasAttribute('hidden'),
+              display: host ? getComputedStyle(host).display : null,
+              boxes: node.getClientRects().length,
+            };
+          }),
+        ).toEqual({ hidden: true, display: 'none', boxes: 0 });
+      else
+        expect(
+          await original.evaluate(
+            (node) =>
+              node.querySelector<HTMLElement>('[data-document-zoom-scrollport]')
+                ?.scrollTop,
+          ),
+        ).toBe(top);
       expect(f.state.workbenchPreviewReads).toBe(previewReads);
-      if (visible)
+      if (visible === true)
         expect(
           await frame.evaluate((node, prior) => node === prior, original),
         ).toBe(true);
@@ -13201,7 +13213,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                 }),
             (async () => {
               await entry.click();
-              await expectReaderRetained();
+              await expectReaderRetained('tab-hidden');
               await f.panel
                 .getByRole('tab')
                 .filter({ hasText: file.fileName })
