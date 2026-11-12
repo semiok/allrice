@@ -41,6 +41,11 @@ import {
   createNativeOnceControlSource,
   createNativeOnceWorkerService,
 } from '../../src/native-schedule-once-loader.ts';
+import type { NativeScheduleOnceStore } from '../../src/native-schedule-once.ts';
+import {
+  createNativeOnceWorkerRuntime,
+  type NativeOnceWorkerDatabasePorts,
+} from '../../src/native-schedule-once-runtime.ts';
 import {
   createCoalescedTick,
   startQueueWakeups,
@@ -50,6 +55,97 @@ const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
     : describe.skip;
+type ObservedStore = Pick<
+  NativeScheduleOnceStore,
+  'commitMutation' | 'readExactCommit'
+>;
+function writeError(
+  error: unknown,
+  seen = new Set<object>(),
+  depth = 0,
+): unknown {
+  if (!error || typeof error !== 'object') return error;
+  if (seen.has(error)) return { circular: true };
+  if (depth === 8) return { truncated: true };
+  seen.add(error);
+  const value = error as {
+    name?: string;
+    message?: string;
+    code?: string;
+    stack?: string;
+    cause?: unknown;
+  };
+  return {
+    name: value.name,
+    message: value.message,
+    code: value.code,
+    stack: value.stack,
+    cause: writeError(value.cause, seen, depth + 1),
+  };
+}
+function observeControlWrites(
+  store: ObservedStore,
+  evidence: Pick<ReturnType<typeof createFailureEvidence>, 'mark'>,
+): ObservedStore {
+  const observe =
+    <Result>(
+      operation: keyof ObservedStore,
+      run: (
+        ...args: Parameters<ObservedStore['commitMutation']>
+      ) => Promise<Result>,
+    ) =>
+    (...args: Parameters<ObservedStore['commitMutation']>) => {
+      const [writer, write] = args;
+      const mark = (
+        phase: string,
+        outcome: { result?: unknown; error?: unknown } = {},
+      ) => {
+        try {
+          evidence.mark(phase, {
+            operation,
+            writer: {
+              partitionId: writer.partitionId,
+              ownerId: writer.ownerId,
+              epoch: writer.epoch,
+            },
+            writeId: write.writeId,
+            digest: write.digest,
+            controlId:
+              'controlId' in write.mutation
+                ? write.mutation.controlId
+                : undefined,
+            mutation: structuredClone(write.mutation),
+            ...('error' in outcome
+              ? { error: writeError(outcome.error) }
+              : outcome),
+          });
+        } catch {
+          /* Observation must not change a write or reject its then callback. */
+        }
+      };
+      mark('native-write-start');
+      try {
+        const pending = run(...args);
+        void pending.then(
+          (result) => mark('native-write-result', { result }),
+          (error: unknown) => mark('native-write-error', { error }),
+        );
+        return pending;
+      } catch (error) {
+        mark('native-write-error', { error });
+        throw error;
+      }
+    };
+  return {
+    commitMutation: observe('commitMutation', store.commitMutation.bind(store)),
+    // The real SQL store may return unknown after catching an internal error;
+    // only this exact result is visible here, not that hidden error's SQLSTATE.
+    readExactCommit: observe(
+      'readExactCommit',
+      store.readExactCommit.bind(store),
+    ),
+  };
+}
 const deferred = () => {
   let resolve!: () => void;
   const promise = new Promise<void>((done) => {
@@ -381,28 +477,55 @@ suite(
           () => !stopping,
         );
         const makeService = () =>
-          createNativeOnceWorkerService({
-            workerId,
-            source: (mode === 'recurring'
-              ? state.recurringSource
-              : state.source)!,
-            readMaintenance: async () => null,
-            ...(mode === 'poll-only'
-              ? {}
-              : {
-                  onDelivery: () => {
-                    callbacks++;
-                    evidence.mark('on-delivery', {
-                      callbacks,
-                      status: service.status(),
-                    });
-                    delivered.resolve();
-                    if (mode === 'throwing-callback')
-                      throw new Error('injected wake failure');
-                    automation.request();
-                  },
-                }),
-          });
+          createNativeOnceWorkerService(
+            {
+              workerId,
+              source: (mode === 'recurring'
+                ? state.recurringSource
+                : state.source)!,
+              readMaintenance: async () => null,
+              ...(mode === 'poll-only'
+                ? {}
+                : {
+                    onDelivery: () => {
+                      callbacks++;
+                      evidence.mark('on-delivery', {
+                        callbacks,
+                        status: service.status(),
+                      });
+                      delivered.resolve();
+                      if (mode === 'throwing-callback')
+                        throw new Error('injected wake failure');
+                      automation.request();
+                    },
+                  }),
+            },
+            {
+              createRuntime: (options) =>
+                createNativeOnceWorkerRuntime(
+                  options,
+                  options.reference.profileId === 'allrice-once-control-v1'
+                    ? {
+                        loadDatabase: async () => {
+                          const module: unknown =
+                            await import('@allrice/database');
+                          const db = module as NativeOnceWorkerDatabasePorts;
+                          return {
+                            ...db,
+                            createNativeOnceSqlStore(input) {
+                              const store = db.createNativeOnceSqlStore(input);
+                              return {
+                                ...store,
+                                ...observeControlWrites(store, evidence),
+                              };
+                            },
+                          };
+                        },
+                      }
+                    : undefined,
+                ),
+            },
+          );
         let service = makeService();
         const queue = createCoalescedTick(
           async () => {
@@ -659,3 +782,70 @@ suite(
     );
   },
 );
+
+it('observing native control writes preserves promises, parameters, results and original cause errors', async () => {
+  const args: Parameters<ObservedStore['commitMutation']> = [
+    { partitionId: 'once', ownerId: 'worker', epoch: 1, token: 'test-token' },
+    {
+      writeId: 'write',
+      digest: 'digest',
+      mutation: { kind: 'session_ready', controlId: 'control' },
+    },
+  ];
+  const committed = Promise.resolve<'committed' | 'rejected'>('committed');
+  const exact = Promise.resolve<'committed' | 'absent' | 'unknown'>('unknown');
+  const store = {
+    commitMutation: vi
+      .fn<ObservedStore['commitMutation']>()
+      .mockReturnValue(committed),
+    readExactCommit: vi
+      .fn<ObservedStore['readExactCommit']>()
+      .mockReturnValue(exact),
+  };
+  const events: { phase: string; details: unknown }[] = [];
+  const observed = observeControlWrites(store, {
+    mark: (phase, details) => {
+      events.push({ phase, details });
+    },
+  });
+  expect(observed.commitMutation(...args)).toBe(committed);
+  expect(await committed).toBe('committed');
+  expect(store.commitMutation.mock.calls[0]![0]).toBe(args[0]);
+  expect(store.commitMutation.mock.calls[0]![1]).toBe(args[1]);
+  expect(observed.readExactCommit(...args)).toBe(exact);
+  expect(await exact).toBe('unknown');
+  expect(events.at(-1)).toMatchObject({
+    phase: 'native-write-result',
+    details: { operation: 'readExactCommit', result: 'unknown' },
+  });
+  expect(store.readExactCommit.mock.calls[0]![0]).toBe(args[0]);
+  expect(store.readExactCommit.mock.calls[0]![1]).toBe(args[1]);
+  const cause = Object.assign(new Error('lock unavailable'), { code: '55P03' });
+  const original = new Error('commit failed', { cause });
+  const rejected = Promise.reject(original);
+  store.commitMutation.mockReturnValueOnce(rejected);
+  const failure = observed.commitMutation(...args);
+  expect(failure).toBe(rejected);
+  await expect(failure).rejects.toBe(original);
+  expect(events.at(-1)).toMatchObject({
+    phase: 'native-write-error',
+    details: {
+      operation: 'commitMutation',
+      writeId: 'write',
+      controlId: 'control',
+      mutation: args[1].mutation,
+      error: {
+        name: 'Error',
+        message: 'commit failed',
+        cause: { name: 'Error', message: 'lock unavailable', code: '55P03' },
+      },
+    },
+  });
+  const brokenDiagnostics = observeControlWrites(store, {
+    mark: () => {
+      throw new Error('diagnostic failure');
+    },
+  });
+  expect(brokenDiagnostics.readExactCommit(...args)).toBe(exact);
+  expect(await exact).toBe('unknown');
+});
