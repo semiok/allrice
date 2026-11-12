@@ -19,7 +19,7 @@ import {
 import { LocalStorageAdapter } from '@allrice/storage';
 import { Document, Packer, Paragraph } from 'docx';
 import ExcelJS from 'exceljs';
-import type * as PptxGenJSModule from 'pptxgenjs';
+import type PptxGenJSModule from 'pptxgenjs';
 import PDFDocument from 'pdfkit';
 import { processNextReference } from './reference-processing.js';
 import { readKnowledgeText } from './knowledge.js';

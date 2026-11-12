@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import { Document, Packer, Paragraph } from 'docx';
 import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
-import type * as PptxGenJSModule from 'pptxgenjs';
+import type PptxGenJSModule from 'pptxgenjs';
 import { describe, expect, it } from 'vitest';
 
 import { parseDocument } from './document-reader.js';
