@@ -7975,6 +7975,24 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           tree().getByRole('region', { name, exact: true });
         const pending = () =>
           tree().getByRole('treeitem').filter({ hasText: '新会话' });
+        const expectPendingTime = async () => {
+          const label = pending().getByText('新会话', { exact: true });
+          const time = pending().getByText('现在', { exact: true });
+          await time.waitFor();
+          const [labelBox, timeBox, rowBox] = await Promise.all([
+            label.boundingBox(),
+            time.boundingBox(),
+            pending().boundingBox(),
+          ]);
+          expect(labelBox).not.toBeNull();
+          expect(timeBox).not.toBeNull();
+          expect(rowBox).not.toBeNull();
+          expect(timeBox!.x).toBeGreaterThan(labelBox!.x + labelBox!.width);
+          expect(timeBox!.x + timeBox!.width).toBeLessThanOrEqual(
+            rowBox!.x + rowBox!.width,
+          );
+          expect(timeBox!.y).toBe(labelBox!.y);
+        };
         const sidebar = async () => {
           const expand = f.page.getByRole('button', {
             name: '展开侧边栏',
@@ -8184,6 +8202,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           expect(await pending().count()).toBe(1);
           expect(await pending().getAttribute('aria-selected')).toBe('true');
           expect(await pending().getAttribute('data-row-key')).toBeNull();
+          await expectPendingTime();
           expect(
             await group('Rice').getByText('3 个工作', { exact: true }).count(),
           ).toBe(1);
@@ -8389,6 +8408,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               .count(),
           ).toBe(1);
           expect(await pending().count()).toBe(1);
+          await expectPendingTime();
           if (device === 'mobile')
             await capture('created', '-sidebar', { sidebar: 'open' });
           expect(captures).toHaveLength(device === 'mobile' ? 11 : 9);

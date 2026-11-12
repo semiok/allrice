@@ -409,7 +409,8 @@ export function EmployeeSidebar({
                     role="treeitem"
                     aria-selected="true"
                   >
-                    新会话
+                    <span>新会话</span>
+                    <span className={css.draftTime}>现在</span>
                   </div>
                 )}
                 {rows.map((node) => (
