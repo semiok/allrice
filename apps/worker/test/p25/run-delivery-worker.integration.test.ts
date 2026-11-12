@@ -3451,7 +3451,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         expect(memories).toHaveLength(1);
         const trust = 'derived';
         expect(memories[0]).toMatchObject({
-          content,
+          content: '看数据时先看表格再看文字说明\n完整说明：月结前不得外发。',
           summary: content,
           details: '完整说明：月结前不得外发。',
           employee_id: f.identity.employee,
