@@ -18,6 +18,7 @@ import {
   repairProductPath,
   repairProfileId,
   repositorySourceLimits,
+  repositorySourceTmpfsMiB,
   RepositoryExecutionProofSchema,
 } from '@allrice/database/technical-contracts';
 import {
@@ -105,7 +106,7 @@ suite('registered full AllRice source through existing runsc backend', () => {
           baselineId: source.baseline.id,
           candidateChecksum: candidate.checksum,
           inputLimit: repositorySourceLimits.archiveBytes,
-          tmpfsMiB: 64,
+          tmpfsMiB: repositorySourceTmpfsMiB,
         });
         const attemptId = randomUUID();
         try {
@@ -297,7 +298,7 @@ console.log('REPOSITORY_NATIVE_ISOLATION '+JSON.stringify({...report,timeout:{si
           baselineId: source.baseline.id,
           candidateChecksum: repositoryCandidate(0, []).checksum,
           inputLimit: repositorySourceLimits.archiveBytes,
-          tmpfsMiB: 64,
+          tmpfsMiB: repositorySourceTmpfsMiB,
         }),
         attemptId = randomUUID();
       try {
@@ -404,7 +405,7 @@ console.log('REPOSITORY_NATIVE_ISOLATION '+JSON.stringify({...report,timeout:{si
           baselineId: source.baseline.id,
           candidateChecksum: candidate.checksum,
           inputLimit: repositorySourceLimits.archiveBytes,
-          tmpfsMiB: 64,
+          tmpfsMiB: repositorySourceTmpfsMiB,
         }),
         backend = new CloudRunnerBackend(),
         attemptId = randomUUID();

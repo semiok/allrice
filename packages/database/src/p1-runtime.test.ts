@@ -333,6 +333,25 @@ describe('MET-98 execution governance', () => {
         completedAt: '2026-08-31T00:00:01.000Z',
       }).status,
     ).toBe('succeeded');
+    const identity = ManagedBrowserTaskSchema.pick({
+      nativeCallId: true,
+      jobAttempt: true,
+    });
+    expect(identity.parse({})).toEqual({});
+    expect(
+      identity.parse({ nativeCallId: 'native-browser-call', jobAttempt: 2 }),
+    ).toEqual({ nativeCallId: 'native-browser-call', jobAttempt: 2 });
+    expect(identity.parse({ nativeCallId: null })).toEqual({
+      nativeCallId: null,
+    });
+    for (const invalid of [
+      { nativeCallId: 7 },
+      { nativeCallId: '' },
+      { jobAttempt: 0 },
+      { jobAttempt: 1.5 },
+      { jobAttempt: '2' },
+    ])
+      expect(identity.safeParse(invalid).success).toBe(false);
     expect(
       ExternalActionSchema.parse({
         id: ids.action,

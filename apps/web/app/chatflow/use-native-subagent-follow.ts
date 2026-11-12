@@ -16,6 +16,7 @@ export function useNativeSubagentFollow(
   revision: string,
 ) {
   const child = summary?.descendants.find((entry) => entry.id === childId);
+  const parentId = child?.parentId;
   const enabled =
     summary?.root.source === 'live' &&
     child?.kind === 'child' &&
@@ -97,7 +98,8 @@ export function useNativeSubagentFollow(
                 );
                 if (
                   child?.kind !== 'child' ||
-                  child.observation.source !== 'live'
+                  child.observation.source !== 'live' ||
+                  child.parentId !== parentId
                 ) {
                   snapshot = null;
                   publish(event.summary);

@@ -65,6 +65,7 @@ import type { ExecutionDiagnosticEvent } from '@allrice/database';
 import {
   RepositoryExecutionProofSchema,
   isCompiledRepositoryExecution,
+  matchesRepositoryExecutionIsolation,
   compiledRepairLimits,
   compiledRepairProfileId,
   CompiledVerificationTimeoutSchema,
@@ -179,7 +180,7 @@ export type CloudRunResult = {
     readOnlyRoot: true;
     network: 'none';
     compilerUid?: 1002;
-    tmpfsMiB?: 128;
+    tmpfsMiB?: 64 | 128;
     inputLimit?: 23000000;
     dependencyChecksum?: string;
     timeoutMs?: number;
@@ -1053,6 +1054,15 @@ export class CloudRunnerBackend {
     const compiled =
       c.Config.Labels['xyz.bplabs.allrice.repository.profile'] ===
       compiledRepairProfileId;
+    const sourceTmpfs =
+      c.Config.Labels['xyz.bplabs.allrice.repository.source-tmpfs-mib'];
+    const tmpfsMiB = compiled
+      ? 128
+      : sourceTmpfs === undefined
+        ? 64
+        : sourceTmpfs === '128'
+          ? 128
+          : undefined;
     if (
       c.Config.User !== '0:0' ||
       c.Config.Image !== cloudToolchainImageV1 ||
@@ -1080,9 +1090,12 @@ export class CloudRunnerBackend {
       !/^sha256:[a-f0-9]{64}$/.test(commandDigest ?? '') ||
       !c.HostConfig.Tmpfs?.['/tmp']?.includes('noexec') ||
       !c.HostConfig.Tmpfs?.['/tmp']?.includes('nosuid') ||
-      !c.HostConfig.Tmpfs?.['/tmp']?.includes(
-        compiled ? 'size=128m' : 'size=64m',
-      ) ||
+      tmpfsMiB === undefined ||
+      JSON.stringify(
+        c.HostConfig.Tmpfs?.['/tmp']
+          ?.split(',')
+          .filter((option) => option.startsWith('size=')),
+      ) !== JSON.stringify([`size=${tmpfsMiB}m`]) ||
       (compiled &&
         (c.HostConfig.Memory !== compiledRepairLimits.memoryMiB * 1024 ** 2 ||
           c.HostConfig.MemorySwap !==
@@ -1105,10 +1118,10 @@ export class CloudRunnerBackend {
       capabilities,
       readOnlyRoot: true,
       network: 'none',
+      tmpfsMiB,
       ...(compiled
         ? {
             compilerUid: 1002 as const,
-            tmpfsMiB: 128 as const,
             inputLimit: 23000000 as const,
             timeoutMs: Number(
               c.Config.Labels['xyz.bplabs.allrice.repository.timeout'],
@@ -2391,6 +2404,13 @@ export class CloudRunnerBackend {
                   'xyz.bplabs.allrice.cloud.kind': 'repository',
                   'xyz.bplabs.allrice.repository.command':
                     options.repositoryExecution.commandDigest,
+                  ...(!isCompiledRepositoryExecution(
+                    options.repositoryExecution,
+                  ) && options.repositoryExecution.tmpfsMiB === 128
+                    ? {
+                        'xyz.bplabs.allrice.repository.source-tmpfs-mib': '128',
+                      }
+                    : {}),
                   ...(isCompiledRepositoryExecution(options.repositoryExecution)
                     ? {
                         'xyz.bplabs.allrice.repository.profile':
@@ -2852,6 +2872,14 @@ export class CloudRunnerBackend {
         startedAt,
         reason,
       );
+      if (
+        options.repositoryExecution &&
+        !matchesRepositoryExecutionIsolation(
+          options.repositoryExecution,
+          result.repositoryIsolation,
+        )
+      )
+        throw new CloudRunnerError('REPOSITORY_ISOLATION_CHANGED');
       const cause = physicalFailure.signal.reason;
       if (cause instanceof CloudRunnerError) {
         result.errorCode = cause.message;

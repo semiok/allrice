@@ -206,6 +206,10 @@ function mapBrowserTask(row: BrowserTaskRow): ManagedBrowserTask {
     organizationId: row.organization_id,
     workspaceId: row.workspace_id,
     runId: row.run_id,
+    nativeCallId: row.tool_call_id.startsWith('legacy:')
+      ? null
+      : row.tool_call_id,
+    jobAttempt: row.job_attempt,
     targetId: row.target_id,
     status: row.status,
     startUrl: row.start_url,

@@ -1,6 +1,7 @@
 'use client';
 import {
   DockLayout,
+  type PaneId,
   type TabId,
   activeDockPaneId,
   dockPaneIds,
@@ -48,6 +49,7 @@ import {
   type CSSProperties,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from 'react';
@@ -153,6 +155,9 @@ type Props = {
     kind?: 'scheduleTask' | 'sessionSchedules';
   };
   renderTask?: (taskId: string, active: boolean) => ReactNode;
+  subagentRequest?: { id: string; title: string; revision: number };
+  refineSubagent?: (id: string) => string | undefined;
+  renderSubagent?: (id: string, active: boolean) => ReactNode;
   renderSessionTasks?: (sessionId: string, active: boolean) => ReactNode;
   onBrowseFiles?: () => void;
   sessionId: string | null;
@@ -396,6 +401,66 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
     lastTaskRequest.current = request.revision;
     dock.open(request.kind ?? 'scheduleTask', request.id, request.title);
   });
+  const lastSubagentRequest = useRef(0);
+  useLayoutEffect(() => {
+    const before = dock.surface.layout;
+    const replacements = Object.values(before.tabs).flatMap((tab) => {
+      const id =
+        tab.kind === 'nativeSubagent' && props.refineSubagent?.(tab.contentId);
+      return id && id !== tab.contentId ? [{ tab, id }] : [];
+    });
+    if (!replacements.length) return;
+    const replaced = new Map<TabId, TabId>();
+    const relocatedFloats = new Set<TabId>();
+    for (const { tab, id } of replacements) {
+      const current = dock.getLayout();
+      if (!current.tabs[tab.id]) continue;
+      const pane = findTabPane(current, tab.id);
+      const held = findContentTab(current, id, 'nativeSubagent');
+      let settled: TabId | undefined;
+      // The native callback is synchronous, before the open commits. Restore
+      // placement only after open returns, never from inside that callback.
+      dock.open('nativeSubagent', id, tab.title, undefined, tab.id, (next) => {
+        settled = next;
+      });
+      if (settled === undefined) continue;
+      replaced.set(tab.id, settled);
+      if (pane.host === 'float' && held === undefined) {
+        if (findTabPane(dock.getLayout(), settled).host === 'dock')
+          dock.intents.floatTab(settled, pane.rect);
+        relocatedFloats.add(tab.id);
+      }
+    }
+    const restorePane = (id: PaneId) => {
+      const pane = before.nodes[id];
+      if (pane?.kind !== 'pane' || !pane.activeTabId) return;
+      const tab = replaced.get(pane.activeTabId) ?? pane.activeTabId;
+      const current = dock.getLayout();
+      if (
+        current.tabs[tab] &&
+        (findTabPane(current, tab).id === id ||
+          relocatedFloats.has(pane.activeTabId))
+      )
+        dock.intents.focusTab(tab);
+    };
+    for (const pane of Object.values(before.nodes))
+      if (pane.kind === 'pane' && pane.host === 'dock') restorePane(pane.id);
+    // Focus raises floats; replay bottom-to-top before restoring global focus.
+    for (const id of before.floats) restorePane(id);
+    const active = before.nodes[before.activePaneId];
+    if (active?.kind === 'pane' && active.activeTabId) {
+      const tab = replaced.get(active.activeTabId) ?? active.activeTabId;
+      if (dock.getLayout().tabs[tab]) dock.intents.focusTab(tab);
+    } else if (dock.getLayout().nodes[before.activePaneId]?.kind === 'pane')
+      dock.intents.focusPane(before.activePaneId);
+    dock.setExpanded(before.expanded);
+  });
+  useEffect(() => {
+    const request = props.subagentRequest;
+    if (!request || lastSubagentRequest.current === request.revision) return;
+    lastSubagentRequest.current = request.revision;
+    dock.open('nativeSubagent', request.id, request.title);
+  });
   const lastFilesRequest = useRef(0);
   useEffect(() => {
     if (!props.filesRequest || lastFilesRequest.current === props.filesRequest)
@@ -427,16 +492,24 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
         aria-label={
           props.desktop
             ? '工作台'
-            : activeTab?.kind === 'workflow'
-              ? '能力'
-              : personalMemoryView
-                ? '记忆'
-                : props.taskRequest
-                  ? '任务与交付成果'
-                  : '交付成果'
+            : activeTab?.kind === 'nativeSubagent'
+              ? '子智能体'
+              : activeTab?.kind === 'workflow'
+                ? '能力'
+                : personalMemoryView
+                  ? '记忆'
+                  : props.taskRequest
+                    ? '任务与交付成果'
+                    : '交付成果'
         }
         aria-modal={fullscreen ? true : undefined}
         data-fullscreen={fullscreen || undefined}
+        data-subagent-back={
+          (props.open &&
+            props.narrow &&
+            activeTab?.kind === 'nativeSubagent') ||
+          undefined
+        }
         onKeyDown={(event) => {
           if (
             event.defaultPrevented ||
@@ -475,6 +548,28 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
           }
         }}
       >
+        {props.open && props.narrow && activeTab?.kind === 'nativeSubagent' && (
+          <button
+            type="button"
+            className={styles.subagentBack}
+            aria-label="返回主对话"
+            onClick={close}
+          >
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <path d="m14 6-6 6 6 6" />
+            </svg>
+          </button>
+        )}
         <DockLayout
           state={dock.surface.layout}
           intents={{
@@ -497,7 +592,12 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
           renderTabTitle={
             props.desktop
               ? (tab) => (
-                  <span className={moduleUi.dockTitle}>
+                  <span
+                    className={moduleUi.dockTitle}
+                    data-native-subagent-tab={
+                      tab.kind === 'nativeSubagent' || undefined
+                    }
+                  >
                     {['files', 'experience', 'workflow'].includes(tab.kind) ? (
                       <span className={moduleUi[tab.kind]}>
                         <WorkbenchIcon
@@ -505,6 +605,8 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                           size={17}
                         />
                       </span>
+                    ) : tab.kind === 'nativeSubagent' ? (
+                      <WorkbenchIcon kind="subagent" size={17} />
                     ) : ['scheduleTask', 'sessionSchedules'].includes(
                         tab.kind,
                       ) ? (
@@ -528,7 +630,14 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                     </span>
                   </span>
                 )
-              : (tab) => (tab.kind === GUIDE_KIND ? '交付成果' : tab.title)
+              : (tab) =>
+                  tab.kind === 'nativeSubagent' ? (
+                    <span data-native-subagent-tab>{tab.title}</span>
+                  ) : tab.kind === GUIDE_KIND ? (
+                    '交付成果'
+                  ) : (
+                    tab.title
+                  )
           }
           canSplit={
             !props.narrow && dockPaneIds(dock.surface.layout).length < 2
@@ -580,6 +689,13 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                   );
                 }}
               />
+            ) : tab.kind === 'nativeSubagent' ? (
+              props.renderSubagent?.(
+                tab.contentId,
+                props.open &&
+                  findTabPane(dock.surface.layout, tab.id).activeTabId ===
+                    tab.id,
+              )
             ) : tab.kind === 'sessionSchedules' ? (
               props.renderSessionTasks?.(
                 tab.contentId,

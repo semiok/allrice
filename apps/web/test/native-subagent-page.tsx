@@ -20,6 +20,12 @@ import {
 } from '../app/chatflow/workbench-modules';
 import { applyTheme } from '../lib/theme/theme';
 import { nativeSubagentControlRoot } from '../app/chatflow/native-subagent-controls';
+import { NativeSubagentWorkbench } from '../app/chatflow/native-subagent-workbench';
+import { WorkProcess } from '../app/chatflow/work-process';
+import type {
+  NativeSubagentReference,
+  NativeSubagentViewScope,
+} from '../lib/chatflow/native-subagent-view';
 import { presentationPolicyFor } from '../app/chatflow/dsh-upstream/presentation/presentation-policy';
 import {
   nativeSubagentReadyKey,
@@ -81,6 +87,16 @@ const headers = {
   'x-allrice-organization-id': 'org',
   'x-allrice-workspace-id': 'workspace',
 };
+declare global {
+  interface Window {
+    nativeSubagentViewFixture: {
+      reference: NativeSubagentReference | null;
+      active: (value: boolean) => void;
+      scope: (patch: Partial<NativeSubagentViewScope>) => void;
+      close: () => void;
+    };
+  }
+}
 // Direct regression surface for the retained component; never part of the product directory.
 function DetailFixture(
   props: Omit<
@@ -122,6 +138,14 @@ function DetailFixture(
 function Page() {
   const [activeId, setActiveId] = useState('parent-a');
   const query = new URLSearchParams(location.search);
+  const childView = query.has('workbench');
+  const [reference, setReference] = useState<NativeSubagentReference | null>(
+    null,
+  );
+  const [childActive, setChildActive] = useState(true);
+  const [scopePatch, setScopePatch] = useState<
+    Partial<NativeSubagentViewScope>
+  >({});
   const icons = query.has('icons');
   const [selected, setSelected] = useState<WorkbenchModule | null>(null);
   const controls = query.has('controls');
@@ -154,6 +178,23 @@ function Page() {
     return stream.deactivate;
   }, [stream, rootEvents, rootRunId]);
   const nativeReadyKey = nativeSubagentReadyKey(runViews[rootRunId]);
+  const childScope: NativeSubagentViewScope = {
+    organizationId: headers['x-allrice-organization-id'],
+    workspaceId: headers['x-allrice-workspace-id'],
+    sessionId: activeId,
+    viewerId: workspace.viewerId ?? null,
+    ownerId,
+    rootRunId,
+    generation: 1,
+    bindingRevision: `initial/${nativeReadyKey}`,
+    ...scopePatch,
+  };
+  window.nativeSubagentViewFixture = {
+    reference,
+    active: setChildActive,
+    scope: setScopePatch,
+    close: () => setReference(null),
+  };
   const observation = useNativeSubagents(
     'workspace',
     headers,
@@ -220,6 +261,15 @@ function Page() {
                     : undefined
                 }
                 presentation={presentation}
+                scope={childView ? childScope : undefined}
+                onOpen={
+                  childView
+                    ? (next) => {
+                        setReference(next);
+                        setChildActive(true);
+                      }
+                    : undefined
+                }
               />
               <WorkbenchEntries
                 counts={{ files: 33, experience: 1, workflow: 0 }}
@@ -234,7 +284,39 @@ function Page() {
           </div>
         </header>
         {query.has('focus') && <FocusDialogFixture />}
-        {(controls || query.has('details')) && (
+        {childView && query.has('compare') && (
+          <WorkProcess
+            label="主过程布局对照（测试）"
+            items={[
+              {
+                id: 'tool:comparison',
+                kind: 'tool',
+                status: 'failed',
+                sequence: 1,
+                title: '读取记录',
+                toolName: 'local.fs.read',
+                detail: '授权可读的核对记录。'.repeat(12),
+              },
+            ]}
+            running={false}
+            streaming={false}
+            failed={false}
+            canceled={false}
+            collapseTiming="next-input"
+            onRetry={() => {}}
+          />
+        )}
+        {childView && reference && (
+          <NativeSubagentWorkbench
+            scope={childScope}
+            reference={reference}
+            active={childActive}
+            observation={observation}
+            headers={headers}
+            presentation={presentation}
+          />
+        )}
+        {!childView && (controls || query.has('details')) && (
           <DetailFixture
             key={activeId}
             workspaceId="workspace"
@@ -251,7 +333,7 @@ function Page() {
             presentation={presentation}
           />
         )}
-        {icons && (
+        {icons && !childView && (
           <section aria-label="图标工作台">
             <WorkbenchStart
               experience

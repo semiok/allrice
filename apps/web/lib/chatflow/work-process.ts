@@ -36,7 +36,9 @@ const toolLabels: Record<string, string> = {
   ask_user_question: '等待你的回答',
 };
 
-export function toolActivityLabel(name: string, search = false) {
+const genericToolLabel = '执行工具操作';
+
+function resolvedToolActivityLabel(name: string, search = false) {
   if (toolLabels[name]) return toolLabels[name];
   if (search) return '搜索资料';
   if (name.startsWith('market.')) return '查询市场数据';
@@ -45,7 +47,11 @@ export function toolActivityLabel(name: string, search = false) {
   if (name.startsWith('workspace.memory.')) return '整理工作记忆';
   if (name.startsWith('local.process.')) return '管理本地任务';
   if (name.startsWith('local.service.')) return '管理本地服务';
-  return '执行工具操作';
+  return undefined;
+}
+
+export function toolActivityLabel(name: string, search = false) {
+  return resolvedToolActivityLabel(name, search) ?? genericToolLabel;
 }
 
 export type WorkProcessCategory =
@@ -70,6 +76,10 @@ export interface WorkProcessStep {
   category: WorkProcessCategory;
   label: string;
   description: string;
+  title: string;
+  input?: string;
+  result?: string;
+  elapsedMs?: number;
   status: NativeExperienceItem['status'];
   error?: string;
 }
@@ -122,6 +132,13 @@ export function summarizeWorkProcess(items: NativeExperienceItem[]) {
     )
     .map((item) => {
       const [category, label] = classification(item);
+      const isTool = !item.modelWait && ['tool', 'search'].includes(item.kind);
+      const toolLabel = isTool
+        ? resolvedToolActivityLabel(
+            item.toolName ?? item.title,
+            item.kind === 'search',
+          )
+        : undefined;
       const fallback = item.modelWait
         ? (readableSummary(item.title) ?? '等待模型响应')
         : item.kind === 'think'
@@ -130,15 +147,32 @@ export function summarizeWorkProcess(items: NativeExperienceItem[]) {
             ? (readableSummary(item.title) ?? '整理会话记录')
             : item.kind === 'todo'
               ? '更新工作计划'
-              : toolActivityLabel(
-                  item.toolName ?? item.title,
-                  item.kind === 'search',
-                );
+              : (toolLabel ?? genericToolLabel);
+      const input =
+        item.kind !== 'think'
+          ? readableSummary(item.activityDetail)
+          : undefined;
+      const result =
+        item.kind !== 'think' ? readableSummary(item.detail) : undefined;
+      const started = item.startedAt ? Date.parse(item.startedAt) : NaN;
+      const finished = item.finishedAt ? Date.parse(item.finishedAt) : NaN;
       return {
         id: item.id,
         category,
         label,
         status: item.status,
+        title:
+          item.toolName === 'ask_user_question'
+            ? '提问'
+            : (input ??
+              (isTool ? (toolLabel ?? item.toolName ?? fallback) : fallback)),
+        ...(input ? { input } : {}),
+        ...(result ? { result } : {}),
+        ...(Number.isFinite(started) &&
+        Number.isFinite(finished) &&
+        finished >= started
+          ? { elapsedMs: finished - started }
+          : {}),
         // Reasoning events expose lifecycle only. Do not infer or quote private thoughts.
         description:
           item.kind === 'think'

@@ -15,10 +15,15 @@ import {
 } from '@allrice/contracts';
 import type { CloudOperationView } from '@allrice/database';
 import styles from './cloud-operation-panel.module.css';
-import { TechnicalDetails } from './technical-details';
+import {
+  InlineProcessFields,
+  type WorkProcessMaterial,
+  type WorkProcessMaterialFeed,
+} from './work-process-material';
 import {
   WorkProcessDisclosureScope,
   useProcessDisclosure,
+  useProcessMaterialReveal,
 } from './work-process-reading-state';
 import {
   approvalState,
@@ -163,7 +168,12 @@ function McpApprovalDetails({
             '没有参数'
           )}
           {details.moreFields > 0 && (
-            <p>另有 {details.moreFields} 项，可在「技术详情」查看全部。</p>
+            <pre
+              aria-label="发送的完整参数"
+              data-process-content="approval-arguments"
+            >
+              {JSON.stringify(proposal.arguments, null, 2)}
+            </pre>
           )}
         </dd>
       </div>
@@ -172,6 +182,71 @@ function McpApprovalDetails({
 }
 
 type Decision = 'approved' | 'rejected' | 'cancel';
+
+export function cloudOperationMaterial(
+  op: CloudOperationView,
+): WorkProcessMaterial {
+  const { kind, ...input } = op.proposal;
+  return {
+    source: 'cloud',
+    id: op.snapshot.binding.attempt.operationId,
+    runId: op.snapshot.binding.task.runId,
+    nativeCallId: op.nativeCallId,
+    createdAt: op.createdAt,
+    binding: op.snapshot.binding,
+    title:
+      op.proposal.kind === 'mcp'
+        ? op.proposal.tool
+        : kind === 'project'
+          ? '云端项目'
+          : '云端计算',
+    status: cloudOperationDisplayStatus(op),
+    failed: op.snapshot.status === 'failed',
+    fields: [
+      {
+        label: '位置',
+        value:
+          op.proposal.kind === 'mcp'
+            ? serviceHost(op.proposal.endpoint)
+            : '云端计算',
+      },
+      {
+        label: '输入',
+        value: (
+          <pre data-process-content="input">
+            {JSON.stringify(input, null, 2)}
+          </pre>
+        ),
+      },
+      {
+        label: '结果',
+        value: (
+          <InlineProcessFields
+            rows={[
+              ['操作编号', op.snapshot.binding.attempt.operationId],
+              ['状态记录', op.snapshot.status],
+              ['返回代码', op.result?.code ?? '无'],
+            ]}
+          >
+            {op.approval?.response && (
+              <p>
+                {op.approval.response.decision === 'approved'
+                  ? '你已允许这一步'
+                  : '你已拒绝这一步'}
+                {op.approval.revokedAt ? '，之后已撤回' : ''}
+              </p>
+            )}
+            <pre data-process-content="result">
+              {op.result
+                ? op.result.output || '没有返回内容。'
+                : '还没有返回内容。'}
+            </pre>
+          </InlineProcessFields>
+        ),
+      },
+    ],
+  };
+}
 
 /** A later success is context, not a rewrite of this call's failure receipt. */
 export function laterSuccessfulMcpCall(
@@ -297,6 +372,7 @@ export function CloudOperationCard({
   laterSuccessId,
   onAct,
   projectServiceContext,
+  interactionOnly = false,
 }: {
   op: CloudOperationView;
   projectServiceContext?: {
@@ -309,7 +385,9 @@ export function CloudOperationCard({
   runActive?: boolean;
   laterSuccessId?: string;
   onAct: (op: CloudOperationView, decision: Decision) => void;
+  interactionOnly?: boolean;
 }) {
+  const [, revealMaterial] = useProcessMaterialReveal();
   const request = op.approval?.request,
     proposal = op.proposal;
   const mcpUnavailable =
@@ -404,7 +482,19 @@ export function CloudOperationCard({
         <p className={styles.notice}>
           之后再试的一次已经完成，这次的记录仍保留。
           <a
-            href={`#operation-${laterSuccessId}`}
+            href={
+              interactionOnly
+                ? `#process-material-cloud-${laterSuccessId}`
+                : `#operation-${laterSuccessId}`
+            }
+            onClick={
+              interactionOnly
+                ? (event) => {
+                    event.preventDefault();
+                    revealMaterial(`cloud:${laterSuccessId}`);
+                  }
+                : undefined
+            }
             data-process-control="later-success"
           >
             查看完成的那次
@@ -490,7 +580,7 @@ export function CloudOperationCard({
         {nextStep && <p>{nextStep}</p>}
         {decisionReceipt}
         {plannedOutputs}
-        <TechnicalDetails
+        <InlineProcessFields
           rows={[
             ['操作编号', op.snapshot.binding.attempt.operationId],
             ['状态记录', op.snapshot.status],
@@ -502,7 +592,7 @@ export function CloudOperationCard({
               ? op.result.output || '没有返回内容。'
               : '还没有返回内容。'}
           </pre>
-        </TechnicalDetails>
+        </InlineProcessFields>
       </>
     ),
   };
@@ -538,7 +628,7 @@ export function CloudOperationCard({
                 ['操作类别', mcpRiskLabel(proposal.risk)],
               ]}
             />
-            <TechnicalDetails
+            <InlineProcessFields
               rows={[
                 ['连接地址', proposal.endpoint],
                 ['工具名', <code key="tool">{proposal.tool}</code>],
@@ -560,11 +650,11 @@ export function CloudOperationCard({
                 ['发送内容', `${argumentCount} 项`],
               ]}
             />
-            <TechnicalDetails>
+            <InlineProcessFields>
               <pre aria-label="发送的原始参数" data-process-content="arguments">
                 {JSON.stringify(proposal.arguments, null, 2)}
               </pre>
-            </TechnicalDetails>
+            </InlineProcessFields>
           </>
         ),
       },
@@ -646,7 +736,7 @@ export function CloudOperationCard({
                 />
                 <p>运行你保存的项目副本，不会访问你的电脑。</p>
                 {networkScope}
-                <TechnicalDetails
+                <InlineProcessFields
                   rows={[
                     ['执行程序', proposal.executable],
                     ['工作目录', proposal.path],
@@ -663,7 +753,7 @@ export function CloudOperationCard({
                       2,
                     )}
                   </pre>
-                </TechnicalDetails>
+                </InlineProcessFields>
               </>
             ),
           }
@@ -701,14 +791,14 @@ export function CloudOperationCard({
                     ))}
                   </ul>
                 )}
-                <TechnicalDetails>
+                <InlineProcessFields>
                   <pre
                     aria-label="云端待执行脚本"
                     data-process-content="script"
                   >
                     {proposal.script}
                   </pre>
-                </TechnicalDetails>
+                </InlineProcessFields>
               </>
             ),
           },
@@ -723,7 +813,7 @@ export function CloudOperationCard({
                 <DetailFields
                   rows={[['文件数量', `${proposal.files.length} 个`]]}
                 />
-                <TechnicalDetails
+                <InlineProcessFields
                   rows={[
                     [
                       '版本摘要',
@@ -743,7 +833,7 @@ export function CloudOperationCard({
                       2,
                     )}
                   </pre>
-                </TechnicalDetails>
+                </InlineProcessFields>
               </>
             ),
           }
@@ -759,7 +849,7 @@ export function CloudOperationCard({
                     <li key={file.objectId}>{file.path}</li>
                   ))}
                 </ul>
-                <TechnicalDetails
+                <InlineProcessFields
                   rows={proposal.inputs.map((file) => [
                     file.path,
                     `文件编号 ${file.objectId}；校验值 ${file.checksum}`,
@@ -802,17 +892,30 @@ export function CloudOperationCard({
                 准备、安装和运行共用同一个时限；有进展时会自动延长，任务剩余时间不够时会提前停止。
               </p>
             )}
-            <TechnicalDetails rows={resourceLimitRows(limits)} />
+            <InlineProcessFields rows={resourceLimitRows(limits)} />
           </>
         ),
       },
       resultSection,
     ];
   }
+  if (
+    interactionOnly &&
+    terminal &&
+    !op.projectService &&
+    op.enabled &&
+    !mcpUnavailable &&
+    !failure &&
+    !laterSuccessId &&
+    !networkFailure &&
+    !resolutionFailure
+  )
+    return null;
   return (
     <article
       className={styles.card}
       id={`operation-${op.snapshot.binding.attempt.operationId}`}
+      data-process-operation={op.snapshot.binding.attempt.operationId}
       data-status={op.snapshot.status}
     >
       {op.projectService && projectServiceContext && (
@@ -885,34 +988,53 @@ export function CloudOperationCard({
               {cloudOperationCompactStatus(op)}
             </span>
           </Tooltip>
-          {detailsToggle}
+          {!interactionOnly && detailsToggle}
           {stopButton}
         </div>
       </header>
       {!isMcp && notices}
-      <div id={detailsId} hidden={!detailsOpen}>
-        <WorkProcessDisclosureScope id={`details:${!!pending}`}>
-          <OperationDetails
-            key={`${op.snapshot.binding.attempt.operationId}-${!!pending}`}
-            sections={sections}
-            initialSection={
-              pending ? (isMcp ? 'arguments' : 'execution') : null
-            }
-          />
-        </WorkProcessDisclosureScope>
-        {isMcp && (
-          <div className={styles.receiptNotes}>
-            {notices}
-            {receiptNotes}
-          </div>
-        )}
-      </div>
+      {isMcp && interactionOnly && (
+        <div className={styles.receiptNotes}>
+          {notices}
+          {receiptNotes}
+        </div>
+      )}
+      {!interactionOnly && (
+        <div id={detailsId} hidden={!detailsOpen}>
+          <WorkProcessDisclosureScope id={`details:${!!pending}`}>
+            <OperationDetails
+              key={`${op.snapshot.binding.attempt.operationId}-${!!pending}`}
+              sections={sections}
+              initialSection={
+                pending ? (isMcp ? 'arguments' : 'execution') : null
+              }
+            />
+          </WorkProcessDisclosureScope>
+          {isMcp && (
+            <div className={styles.receiptNotes}>
+              {notices}
+              {receiptNotes}
+            </div>
+          )}
+        </div>
+      )}
       {pending && (
         <div className={styles.approvalReview}>
           <p>{approvalSummary(proposal)}</p>
           {proposal.kind === 'mcp' && (
             <McpApprovalDetails proposal={proposal} />
           )}
+          {interactionOnly &&
+            sections
+              .filter((section) => section.key !== 'result')
+              .map((section) => (
+                <div
+                  key={section.key}
+                  data-process-content={`approval:${section.key}`}
+                >
+                  {section.content}
+                </div>
+              ))}
           {plannedOutputs}
           <div className={styles.actions}>
             <Button
@@ -957,11 +1079,13 @@ export function CloudOperationPanel({
   workspaceId: string;
   tenantHeaders: Record<string, string>;
   runActive: boolean;
-  children?: (feed: {
-    operations: CloudOperationView[];
-    renderOperation: (operationId: string) => ReactNode;
-    feedback: ReactNode;
-  }) => ReactNode;
+  children?: (
+    feed: WorkProcessMaterialFeed & {
+      operations: CloudOperationView[];
+      renderOperation: (operationId: string) => ReactNode;
+      feedback: ReactNode;
+    },
+  ) => ReactNode;
 }) {
   const [operations, setOperations] = useState<CloudOperationView[]>([]),
     [loadError, setLoadError] = useState(''),
@@ -1117,31 +1241,46 @@ export function CloudOperationPanel({
       )}
     </>
   );
-  const renderOperation = (operationId: string) => {
+  const renderOperation = (operationId: string, interactionOnly = false) => {
     const op = operations.find(
       (op) => op.snapshot.binding.attempt.operationId === operationId,
     );
     return op ? (
-      <CloudOperationCard
-        projectServiceContext={{
-          workspaceId,
-          tenantHeaders,
-          onChanged: () => setRevision((value) => value + 1),
-        }}
-        key={op.snapshot.binding.attempt.operationId}
-        op={op}
-        runActive={runActive}
-        laterSuccessId={laterSuccessfulMcpCall(op, operations)}
-        busy={busy}
-        cancelPending={
-          pendingDecision === 'cancel' ||
-          (cancellationRunId === runId && op.snapshot.status !== 'unknown')
-        }
-        onAct={(operation, decision) => void act(operation, decision)}
-      />
+      <WorkProcessDisclosureScope
+        key={operationId}
+        id={`${runId}:${operationId}`}
+      >
+        <CloudOperationCard
+          projectServiceContext={{
+            workspaceId,
+            tenantHeaders,
+            onChanged: () => setRevision((value) => value + 1),
+          }}
+          key={op.snapshot.binding.attempt.operationId}
+          op={op}
+          interactionOnly={interactionOnly}
+          runActive={runActive}
+          laterSuccessId={laterSuccessfulMcpCall(op, operations)}
+          busy={busy}
+          cancelPending={
+            pendingDecision === 'cancel' ||
+            (cancellationRunId === runId && op.snapshot.status !== 'unknown')
+          }
+          onAct={(operation, decision) => void act(operation, decision)}
+        />
+      </WorkProcessDisclosureScope>
     ) : null;
   };
-  if (children) return children({ operations, renderOperation, feedback });
+  if (children)
+    return children({
+      operations,
+      renderOperation,
+      feedback,
+      history: operations.map(cloudOperationMaterial),
+      interaction: operations.map((op) =>
+        renderOperation(op.snapshot.binding.attempt.operationId, true),
+      ),
+    });
   if (!operations.length && !loadError && !actionError && !readFeedback)
     return null;
   return (

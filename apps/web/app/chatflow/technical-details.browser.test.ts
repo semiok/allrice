@@ -7,9 +7,12 @@ import type {
   Page,
 } from '../../../worker/node_modules/playwright-core/index.js';
 import {
+  cloudOperations,
   forgedNote,
   ids,
+  longReviewValue,
   longText,
+  partnerArguments,
 } from '../../test/technical-details-fixtures';
 
 const suite =
@@ -17,35 +20,29 @@ const suite =
     ? describe.sequential
     : describe.skip;
 
-// Words an ordinary employee must not meet outside the technical details.
-const engineering = [
-  '{',
-  '}',
-  '待核实',
-  '核实',
-  '回执',
-  '落盘',
-  'Bridge',
-  'MCP',
-  'mcp__',
-  'schema',
-  'sha256',
-  'SHA',
-  'checksum',
-  'digest',
-  'Diff',
-  '毫核',
-  '字节',
+// The same authorized records remain readable after removing the extra row.
+const authorizedRecords = [
+  'mcp__app__send_message',
+  'https://api.example-crm.com/mcp',
+  '"channel": "sales"',
+  'sha256:',
+  '"checksum"',
+  '"sourceDigest"',
+  '"objectId"',
+  '"manager": "pnpm"',
+  '/usr/local/bin/node',
+  'build.mjs',
   'EXECUTION_FAILED',
-  'BRIDGE_',
+  'MCP_REMOTE_ERROR_EFFECTS_UNKNOWN',
+  'BRIDGE_RESULT_TIMEOUT',
+  'WRITE_CONFLICT',
   'waiting_user',
   'succeeded',
-  'dispatched',
   'unknown',
 ];
 const uuid = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-/i;
 
-suite('technical details stay behind a collapsed row', () => {
+suite('authorized operation records stay readable inline', () => {
   let browser: Browser, server: Server, origin: string;
   beforeAll(async () => {
     const require = createRequire(import.meta.url);
@@ -203,19 +200,28 @@ suite('technical details stay behind a collapsed row', () => {
                 .innerText(),
             ).toBe(label);
           const text = await readEverything(page);
-          for (const word of engineering) expect(text).not.toContain(word);
-          expect(text).not.toMatch(uuid);
+          for (const record of authorizedRecords)
+            expect(text).toContain(record);
+          expect(text).toContain(ids.mcpOperation);
           expect(text).toContain('还没有收到电脑的处理结果');
           expect(text).toContain('修改文件');
           expect(text).toContain('应用回复了错误');
           expect(text).toContain(
             '这一步未完成。可以在对话里让 AI 员工换个方式再试',
           );
-          // Technical details exist everywhere but none opened by itself.
-          const rows = page.getByRole('button', { name: '技术详情' });
-          expect(await rows.count()).toBeGreaterThan(4);
-          for (const row of await rows.all())
-            expect(await row.getAttribute('aria-expanded')).toBe('false');
+          // Only the covered panels lose their duplicate technical entry.
+          for (const scope of [
+            'cloud',
+            'cloud-running',
+            'changeset',
+            'changeset-done',
+          ])
+            expect(
+              await page
+                .locator(`[data-case="${scope}"]`)
+                .getByRole('button', { name: '技术详情', exact: true })
+                .count(),
+            ).toBe(0);
           expect(await overflow(page)).toBe(false);
           // Every piece of text reads at 4.5:1 or better on its background,
           // including the stop control of a running task while hovered.
@@ -282,11 +288,22 @@ suite('technical details stay behind a collapsed row', () => {
         'notify',
         'recipients 第 1 项 · email',
         'note',
+        ...Array.from(
+          { length: 45 },
+          (_, index) => `review · field_${String(index + 1).padStart(2, '0')}`,
+        ),
       ]);
       expect(Object.fromEntries(partner).note).toBe(forgedNote);
       for (const id of [ids.mcpOperation, ids.partnerOperation])
         expect(
-          await card(page, id).getByLabel('这次要做的事').innerText(),
+          (
+            await card(page, id)
+              .getByLabel('这次要做的事')
+              .locator(
+                ':scope > div > dd:not(:has([data-process-content="approval-arguments"])), [aria-label="参数"]',
+              )
+              .allInnerTexts()
+          ).join('\n'),
         ).not.toMatch(/[{}]/);
       // A long value is clipped, and 展开全文 shows the real text.
       const text = () =>
@@ -309,12 +326,39 @@ suite('technical details stay behind a collapsed row', () => {
     }
   });
 
-  it('keeps raw records in the technical details', async () => {
+  it('keeps all sixty authorized MCP leaves and long values readable before approval', async () => {
+    const page = await open(390, 'light');
+    try {
+      const pending = card(page, ids.partnerOperation);
+      const complete = pending.getByLabel('发送的完整参数', { exact: true });
+      expect(await complete.count()).toBe(1);
+      expect(await complete.isVisible()).toBe(true);
+      const args = JSON.parse(await complete.innerText());
+      expect(args).toEqual(partnerArguments);
+      expect(Object.keys(args.review)).toHaveLength(55);
+      for (let number = 46; number <= 55; number++)
+        expect(args.review[`field_${number}`]).toBe(
+          partnerArguments.review[`field_${number}`],
+        );
+      expect(args.review.field_55).toBe(longReviewValue);
+      expect(await pending.locator('[data-forged-review]').count()).toBe(0);
+      expect(
+        await pending
+          .getByRole('button', { name: '允许对外发送内容' })
+          .isEnabled(),
+      ).toBe(true);
+      expect(await page.evaluate(() => window.detailsApprovals)).toEqual([]);
+      expect(await overflow(page)).toBe(false);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('keeps authorized raw records inline without a duplicate technical entry', async () => {
     const page = await open(390, 'light');
     try {
       const pending = card(page, ids.mcpOperation);
-      expect(await pending.innerText()).not.toContain('"channel"');
-      await pending.getByRole('button', { name: '技术详情' }).click();
+      expect(await pending.getByLabel('发送的原始参数').isVisible()).toBe(true);
       expect(await pending.innerText()).toContain('"channel": "sales"');
       for (const [operation, raw] of [
         [ids.projectOperation, 'EXECUTION_FAILED'],
@@ -323,25 +367,24 @@ suite('technical details stay behind a collapsed row', () => {
         const each = card(page, operation);
         await each.getByRole('button', { name: '查看详情' }).click();
         await each.getByRole('button', { name: '执行结果' }).click();
-        expect(await each.innerText()).not.toContain(raw);
-        await each.getByRole('button', { name: '技术详情' }).click();
         expect(await each.innerText()).toContain(raw);
+        expect(
+          await each.locator('[data-process-content="result"]').count(),
+        ).toBe(1);
       }
       expect(await card(page, ids.projectOperation).innerText()).toContain(
         'Cannot find module',
       );
       const done = page.locator('[data-case="changeset-done"]');
-      expect(await done.innerText()).not.toContain('WRITE_CONFLICT');
-      await done.getByRole('button', { name: '技术详情' }).click();
       const doneText = await done.innerText();
       expect(doneText).toContain('BRIDGE_RESULT_TIMEOUT');
       expect(doneText).toContain('WRITE_CONFLICT');
       expect(doneText).toContain('sha256:');
-      for (const row of await page
-        .getByRole('button', { name: '技术详情' })
-        .all())
-        if ((await row.getAttribute('aria-expanded')) === 'false')
-          await row.click();
+      expect(
+        await done
+          .getByRole('button', { name: '技术详情', exact: true })
+          .count(),
+      ).toBe(0);
       expect(await overflow(page)).toBe(false);
     } finally {
       await page.close();
@@ -370,6 +413,29 @@ suite('technical details stay behind a collapsed row', () => {
       const [first, second] = await page.evaluate(
         () => window.detailsApprovals,
       );
+      const original = cloudOperations([]).find(
+        (operation) =>
+          operation.snapshot.binding.attempt.operationId ===
+          ids.partnerOperation,
+      )!.approval!.request;
+      expect(first!.url).toBe(
+        `/api/v1/runtime/approvals/${ids.partnerApproval}`,
+      );
+      expect(first!.body).toEqual({
+        contractVersion: 1,
+        direction: 'response',
+        kind: 'action_approval',
+        requestId: original.requestId,
+        version: original.version,
+        requestDigest: original.requestDigest,
+        task: original.task,
+        responseId: expect.stringMatching(uuid),
+        respondedBy: original.respondentId,
+        respondedAt: expect.any(String),
+        approvalId: original.approvalId,
+        decision: 'approved',
+      });
+      expect(second!.body).toEqual(first!.body);
       expect(second!.body.responseId).toBe(first!.body.responseId);
       expect(second!.body.decision).toBe('approved');
     } finally {

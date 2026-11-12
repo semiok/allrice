@@ -14,11 +14,22 @@ import {
 
 type Choice = boolean | string | null | undefined;
 type Choices = Map<string, Choice>;
-const ReadingContext = createContext<{
+type ReadingStore = {
   scope: string[];
   values: Choices;
   setValues: Dispatch<SetStateAction<Choices>>;
-} | null>(null);
+};
+const ReadingContext = createContext<ReadingStore | null>(null);
+const QuestionReadingContext = createContext<ReadingStore | null>(null);
+
+/** Questions may move from a user message into their late-restored native
+ * process. Their exact answer identity keeps the same mounted-transcript store. */
+export function useQuestionDisclosureOpen(keys: readonly string[]) {
+  const context = useContext(QuestionReadingContext);
+  return keys.some(
+    (key) => context?.values.get(JSON.stringify([key])) === true,
+  );
+}
 
 export function WorkProcessDisclosureScope({
   id,
@@ -41,14 +52,21 @@ export function WorkProcessDisclosureScope({
 export function useProcessDisclosure<T extends Choice>(
   key: string | string[],
   initial: T,
+  sharedQuestion = false,
+  preserveAliases = false,
 ) {
-  const context = useContext(ReadingContext);
+  const localContext = useContext(ReadingContext);
+  const questionContext = useContext(QuestionReadingContext);
+  const context = (sharedQuestion && questionContext) || localContext;
   const local = useState(initial);
   const keys = (Array.isArray(key) ? key : [key]).map((id) =>
     JSON.stringify([...(context?.scope ?? []), id]),
   );
   const current = (values: Choices) => {
-    const id = keys.find((id) => values.get(id) === true) ?? keys[0]!;
+    const id =
+      keys.find((id) => values.get(id) === true) ??
+      (preserveAliases ? keys.find((id) => values.has(id)) : undefined) ??
+      keys[0]!;
     return values.has(id) ? (values.get(id) as T) : initial;
   };
   const value = context ? current(context.values) : local[0];
@@ -66,7 +84,9 @@ export function useProcessDisclosure<T extends Choice>(
     if (
       Array.isArray(key) &&
       context &&
-      value === true &&
+      (preserveAliases
+        ? keys.some((id) => context.values.has(id))
+        : value === true) &&
       keys.some((id) => !context.values.has(id))
     )
       setValue(value, true);
@@ -74,9 +94,40 @@ export function useProcessDisclosure<T extends Choice>(
   return [value, setValue] as const;
 }
 
-const inView = (node: HTMLElement) =>
-  node.getBoundingClientRect().bottom > 0 &&
-  node.getBoundingClientRect().top < innerHeight;
+/** A per-run view action, independent of an approval field's disclosure scope. */
+export function useProcessMaterialReveal() {
+  const context = useContext(ReadingContext);
+  const key = JSON.stringify(['material-reveal']);
+  const value = context?.values.get(key);
+  return [
+    typeof value === 'string' ? value : undefined,
+    (target: string | undefined) =>
+      context?.setValues((values) => new Map(values).set(key, target)),
+  ] as const;
+}
+
+function inView(node: HTMLElement, rect?: DOMRect) {
+  let top = 0,
+    bottom = innerHeight;
+  for (
+    let parent = rect ? node : node.parentElement;
+    parent;
+    parent = parent.parentElement
+  ) {
+    if (
+      parent === document.scrollingElement ||
+      !['auto', 'scroll', 'hidden', 'clip'].includes(
+        getComputedStyle(parent).overflowY,
+      )
+    )
+      continue;
+    const box = parent.getBoundingClientRect();
+    top = Math.max(top, box.top + parent.clientTop);
+    bottom = Math.min(bottom, box.top + parent.clientTop + parent.clientHeight);
+  }
+  const box = rect ?? node.getBoundingClientRect();
+  return bottom > top && box.bottom > top && box.top < bottom;
+}
 const visible = (node: HTMLElement) => node.getClientRects().length > 0;
 function keyOf(node: HTMLElement, attribute: string) {
   const operation = node.closest<HTMLElement>('[data-process-operation]');
@@ -105,7 +156,9 @@ function textPoint(node: Node, offset: number) {
     key: keyOf(block, 'data-process-content'),
     inView: inView(block),
     text: block.textContent,
+    appendOnly: block.hasAttribute('data-process-append'),
     offset: range.toString().length,
+    atTextStart: node.nodeType === Node.TEXT_NODE && offset === 0,
   };
 }
 function restoredPoint(
@@ -113,14 +166,109 @@ function restoredPoint(
   point: NonNullable<ReturnType<typeof textPoint>>,
 ) {
   const block = locate(root, 'data-process-content', point.key);
-  if (!block || block.textContent !== point.text) return;
+  if (
+    !block ||
+    (block.textContent !== point.text &&
+      !(
+        point.appendOnly &&
+        block.hasAttribute('data-process-append') &&
+        point.text &&
+        block.textContent?.startsWith(point.text)
+      ))
+  )
+    return;
   const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
   let offset = point.offset;
   for (let text = walker.nextNode(); text; text = walker.nextNode()) {
-    if (offset <= text.textContent!.length)
+    if (
+      offset < text.textContent!.length ||
+      (offset === text.textContent!.length && !point.atTextStart)
+    )
       return { block, node: text, offset };
     offset -= text.textContent!.length;
   }
+}
+
+/** A visible reading position is independent of an older focus or selection. */
+function processPositions(root: HTMLElement, readingBody?: HTMLElement) {
+  return [
+    ...root.querySelectorAll<HTMLElement>('[data-process-scrollport]'),
+  ].flatMap((body) => {
+    const marker = [
+      ...body.querySelectorAll<HTMLElement>(
+        '[data-process-control],[data-process-content]',
+      ),
+    ].find(
+      (node) =>
+        node.closest('[data-process-scrollport]') === body &&
+        !node.querySelector('[data-process-content]') &&
+        inView(node.closest<HTMLElement>('[data-disclosure-row]') ?? node),
+    );
+    if (!marker) return [];
+    const node = marker.closest<HTMLElement>('[data-disclosure-row]') ?? marker;
+    const attribute = marker.hasAttribute('data-process-control')
+      ? 'data-process-control'
+      : 'data-process-content';
+    const top = node.getBoundingClientRect().top;
+    return [
+      {
+        attribute,
+        key: keyOf(marker, attribute),
+        top,
+        innerTop: top - body.getBoundingClientRect().top,
+        currentReading: body === readingBody,
+        scrolled: body.scrollTop > 0,
+      },
+    ];
+  });
+}
+
+function restoreProcessPositions(
+  root: HTMLElement,
+  positions: ReturnType<typeof processPositions>,
+) {
+  let positioned = false;
+  const restored = new Set<HTMLElement>();
+  for (const item of positions) {
+    const marker = locate(root, item.attribute, item.key);
+    const target =
+      marker?.closest<HTMLElement>('[data-disclosure-row]') ?? marker;
+    const body = target?.closest<HTMLElement>('[data-process-scrollport]');
+    if (!target || !body || !visible(body) || restored.has(body)) continue;
+    // Keep the visible reading target before an older inner scroll position
+    // when their groups merge into the same body.
+    if (
+      positions.some(
+        (other) =>
+          ((other.currentReading && !item.currentReading) ||
+            (other.currentReading === item.currentReading &&
+              other.scrolled &&
+              !item.scrolled)) &&
+          locate(root, other.attribute, other.key)?.closest(
+            '[data-process-scrollport]',
+          ) === body,
+      )
+    )
+      continue;
+    body.scrollTop +=
+      target.getBoundingClientRect().top -
+      body.getBoundingClientRect().top -
+      item.innerTop;
+    if (!positioned)
+      for (
+        let parent = body.parentElement;
+        parent;
+        parent = parent.parentElement
+      )
+        if (
+          parent === document.scrollingElement ||
+          ['auto', 'scroll'].includes(getComputedStyle(parent).overflowY)
+        )
+          parent.scrollTop += target.getBoundingClientRect().top - item.top;
+    positioned = true;
+    restored.add(body);
+  }
+  return positioned;
 }
 
 function takeReadingSnapshot(root: HTMLElement) {
@@ -140,6 +288,48 @@ function takeReadingSnapshot(root: HTMLElement) {
     selection?.focusNode && root.contains(selection.focusNode)
       ? textPoint(selection.focusNode, selection.focusOffset)
       : undefined;
+  const bodyFor = (node: HTMLElement | null | undefined) => {
+    const body = node?.closest<HTMLElement>('[data-process-scrollport]');
+    return node && body && root.contains(body) && inView(node)
+      ? body
+      : undefined;
+  };
+  const selectionBodies = [selection?.anchorNode, selection?.focusNode].map(
+    (node, index) => {
+      const element = node instanceof HTMLElement ? node : node?.parentElement;
+      const body = bodyFor(element);
+      if (!node || !element || !body || !selection) return;
+      const point = document.createRange();
+      point.setStart(
+        node,
+        index === 0 ? selection.anchorOffset : selection.focusOffset,
+      );
+      point.collapse(true);
+      return [...point.getClientRects()].some(
+        (box) => box.height > 0 && inView(element, box),
+      )
+        ? body
+        : undefined;
+    },
+  );
+  const selectionBody =
+    selection &&
+    !selection.isCollapsed &&
+    selectionBodies[0] === selectionBodies[1]
+      ? selectionBodies[0]
+      : undefined;
+  const readingBody =
+    selection &&
+    !selection.isCollapsed &&
+    inside?.contains(selection.anchorNode) &&
+    inside.contains(selection.focusNode)
+      ? selection.rangeCount > 0 &&
+        [...selection.getRangeAt(0).getClientRects()].some(
+          (box) => box.width > 0 && box.height > 0 && inView(inside, box),
+        )
+        ? bodyFor(inside)
+        : undefined
+      : (bodyFor(inside) ?? selectionBody);
   const scroll = [
     ...root.querySelectorAll<HTMLElement>('[data-process-content]'),
   ]
@@ -154,10 +344,15 @@ function takeReadingSnapshot(root: HTMLElement) {
     }));
   return {
     active,
+    link:
+      inside?.tagName === 'A'
+        ? { href: inside.getAttribute('href'), text: inside.textContent }
+        : undefined,
     control: marker ? keyOf(marker, 'data-process-control') : null,
     content: inside && textPoint(inside, 0),
     inView: !!inside && inView(inside),
     scroll,
+    positions: processPositions(root, readingBody),
     selection:
       selection && !selection.isCollapsed && anchor && focus
         ? { anchor, focus, text: selection.toString() }
@@ -167,7 +362,11 @@ function takeReadingSnapshot(root: HTMLElement) {
 
 /** One synchronous React commit, never an event cache or an async restore. */
 export class WorkProcessReadingState extends Component<
-  { root: RefObject<HTMLElement | null>; children: ReactNode },
+  {
+    root: RefObject<HTMLElement | null>;
+    children: ReactNode;
+    shareQuestions?: boolean;
+  },
   { values: Choices },
   ReturnType<typeof takeReadingSnapshot>
 > {
@@ -181,9 +380,11 @@ export class WorkProcessReadingState extends Component<
     saved: ReturnType<typeof takeReadingSnapshot>,
   ) {
     const root = this.props.root.current!;
+    const stableFocus =
+      document.activeElement === document.body ||
+      document.activeElement === saved.active;
     const untouchedFocus =
-      (document.activeElement === document.body ||
-        document.activeElement === saved.active) &&
+      stableFocus &&
       (saved.active === document.body || !!(saved.control ?? saved.content));
     let reading: HTMLElement | undefined;
     for (const item of saved.scroll) {
@@ -198,8 +399,18 @@ export class WorkProcessReadingState extends Component<
       const marker =
         locate(root, 'data-process-content', saved.content?.key ?? null) ??
         locate(root, 'data-process-control', saved.control);
+      const links =
+        saved.link && marker
+          ? [...marker.querySelectorAll<HTMLAnchorElement>('a[href]')].filter(
+              (link) =>
+                link.getAttribute('href') === saved.link!.href &&
+                link.textContent === saved.link!.text,
+            )
+          : [];
       const target =
-        marker?.closest<HTMLElement>('[data-disclosure-row]') ?? marker;
+        links.length === 1
+          ? links[0]
+          : (marker?.closest<HTMLElement>('[data-disclosure-row]') ?? marker);
       if (target && !target.matches(':disabled,[aria-disabled="true"]')) {
         target.focus({ preventScroll: true });
         if (saved.inView) reading ??= target;
@@ -211,7 +422,8 @@ export class WorkProcessReadingState extends Component<
       saved.selection &&
       selection &&
       (!saved.selection.anchor.block.isConnected ||
-        !saved.selection.focus.block.isConnected)
+        !saved.selection.focus.block.isConnected ||
+        selection.toString() !== saved.selection.text)
     ) {
       const anchor = restoredPoint(root, saved.selection.anchor);
       const focus = restoredPoint(root, saved.selection.focus);
@@ -227,26 +439,34 @@ export class WorkProcessReadingState extends Component<
         else if (saved.selection.focus.inView) reading = focus.block;
       }
     }
-    if (untouchedFocus)
+    const positioned =
+      stableFocus && restoreProcessPositions(root, saved.positions);
+    if (untouchedFocus && !positioned)
       reading?.scrollIntoView({
         block: 'nearest',
         inline: 'nearest',
       });
   }
   override render() {
-    return (
-      <ReadingContext.Provider
-        value={{
-          scope: [],
-          values: this.state.values,
-          setValues: (next) =>
-            this.setState((state) => ({
-              values: typeof next === 'function' ? next(state.values) : next,
-            })),
-        }}
-      >
+    const value: ReadingStore = {
+      scope: [],
+      values: this.state.values,
+      setValues: (next) =>
+        this.setState((state) => ({
+          values: typeof next === 'function' ? next(state.values) : next,
+        })),
+    };
+    const content = (
+      <ReadingContext.Provider value={value}>
         {this.props.children}
       </ReadingContext.Provider>
+    );
+    return this.props.shareQuestions ? (
+      <QuestionReadingContext.Provider value={value}>
+        {content}
+      </QuestionReadingContext.Provider>
+    ) : (
+      content
     );
   }
 }
