@@ -75,25 +75,27 @@ async function records(
   end: string,
   id?: string,
 ) {
+  // Bind timestamp bounds as text: postgres.js serializes timestamptz parameters
+  // through JS Date, which would discard the database clock's microseconds.
   const rows =
     kind === 'run'
       ? await sql`select 'run' kind,r.id,r.id run_id,j.id job_id,r.organization_id,r.workspace_id,r.state status,r.error_code,r.error_message,
         exists(select 1 from allrice_employee_runs er where er.run_id=r.id and er.organization_id=r.organization_id and er.workspace_id=r.workspace_id) is_chat_run,
         r.updated_at observed_at from allrice_runs r left join allrice_jobs j on j.run_id=r.id
         where (${id ?? null}::uuid is null or r.id=${id ?? null}::uuid)
-          and (${start}::timestamptz is null or r.updated_at>=${start}::timestamptz) and r.updated_at<=${end}::timestamptz
+          and (${start}::text::timestamptz is null or r.updated_at>=${start}::text::timestamptz) and r.updated_at<=${end}::text::timestamptz
         order by r.updated_at desc,r.id limit 20`
       : kind === 'operation'
         ? await sql`select 'operation' kind,o.id,o.run_id,j.id job_id,o.organization_id,o.workspace_id,
           o.snapshot->>'status' status,o.snapshot->'binding'->>'action' action,o.updated_at observed_at
           from allrice_runtime_operations o left join allrice_jobs j on j.run_id=o.run_id
           where (${id ?? null}::uuid is null or o.id=${id ?? null}::uuid)
-            and (${start}::timestamptz is null or o.updated_at>=${start}::timestamptz) and o.updated_at<=${end}::timestamptz
+            and (${start}::text::timestamptz is null or o.updated_at>=${start}::text::timestamptz) and o.updated_at<=${end}::text::timestamptz
           order by o.updated_at desc,o.id limit 20`
         : await sql`select 'feedback' kind,f.id,f.run_id,j.id job_id,f.organization_id,f.workspace_id,f.review_status status,
           f.category,f.updated_at observed_at from allrice_run_feedback f left join allrice_jobs j on j.run_id=f.run_id
           where (${id ?? null}::uuid is null or f.id=${id ?? null}::uuid)
-            and (${start}::timestamptz is null or f.updated_at>=${start}::timestamptz) and f.updated_at<=${end}::timestamptz
+            and (${start}::text::timestamptz is null or f.updated_at>=${start}::text::timestamptz) and f.updated_at<=${end}::text::timestamptz
           order by f.updated_at desc,f.id limit 20`;
   const result = rows.map(record);
   if (kind !== 'run') return result;
@@ -153,8 +155,25 @@ export async function readPlatformTechnicalDiagnostics(
 ): Promise<TechnicalDiagnostics> {
   await requirePlatformAdmin(context, options.database);
   const environment = options.environment ?? technicalEnvironment();
-  const capturedAt = new Date().toISOString();
-  const start = new Date(Date.now() - 86400_000).toISOString();
+  let window: { start: string; end: string } | null = null;
+  try {
+    const sql = options.diagnostics ?? getDiagnosticsDatabase();
+    const [sample] = await sql<{ start: string; end: string }[]>`
+      select to_char(captured_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "end",
+        to_char((captured_at - interval '24 hours') at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as start
+      from (select clock_timestamp() as captured_at) clock
+    `;
+    window = sample ?? null;
+  } catch {
+    // Independent sources remain readable if the diagnostic clock is unavailable.
+  }
+  // Keep the database's microseconds in both SQL bounds and their evidence.
+  const capturedAt = window?.end ?? new Date().toISOString();
+  const start = window?.start ?? new Date(Date.now() - 86400_000).toISOString();
+  const readRecords = (kind: TechnicalRecord['kind'], sql: Database) => {
+    if (!window) throw Error('Diagnostic window unavailable');
+    return records(kind, sql, window.start, window.end);
+  };
   const evidence = (
     source: TechnicalEvidence['source'],
     windowStart: string | null = null,
@@ -209,17 +228,9 @@ export async function readPlatformTechnicalDiagnostics(
         })),
       };
     }),
-    collect('runs', (sql) => records('run', sql, start, capturedAt), start),
-    collect(
-      'operations',
-      (sql) => records('operation', sql, start, capturedAt),
-      start,
-    ),
-    collect(
-      'feedback',
-      (sql) => records('feedback', sql, start, capturedAt),
-      start,
-    ),
+    collect('runs', (sql) => readRecords('run', sql), start),
+    collect('operations', (sql) => readRecords('operation', sql), start),
+    collect('feedback', (sql) => readRecords('feedback', sql), start),
   ]);
   if (inventory.value) {
     const latest = inventory.value.workers[0];
