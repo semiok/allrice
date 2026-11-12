@@ -212,7 +212,9 @@ export function WorkspaceFilePreview(props: {
     return () => controller.abort();
   }, [base, query, props.tenantHeaders, attempt]);
   return (
-    <div className={reader.reader}>
+    <div
+      className={`${reader.reader} ${props.deliverable ? detail.deliveryDetail : ''}`}
+    >
       {props.deliverable && (
         <button type="button" className={detail.back} onClick={props.onBack}>
           ‹ 交付成果

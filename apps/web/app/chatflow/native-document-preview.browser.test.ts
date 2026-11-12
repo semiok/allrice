@@ -2,7 +2,14 @@ import { createRequire } from 'node:module';
 import { createServer, type Server } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  onTestFailed,
+} from 'vitest';
 import type {
   Browser,
   Page,
@@ -322,7 +329,81 @@ suite('DSH native document previews', () => {
       }
     },
   );
+  it.each([1440, 390])(
+    'renders a stored tool search response and its exact source text at %ipx',
+    async (width) => {
+      const objectId = '00000000-0000-4000-8000-000000000110';
+      const name = `tool-result-web-search-${objectId}.txt`;
+      const text = JSON.stringify({
+        provider: 'fixture',
+        query: '官方公告',
+        output:
+          '[查看官方公告](https://example.com/news)\n\n已经发布的公告摘录。\n\nRevenue $100 and price $25.',
+      });
+      const item = {
+        name,
+        preview: { kind: 'text', mediaType: 'text/plain', text },
+        toolResult: true,
+      };
+      const { page, errors } = await mount([item], width);
+      try {
+        const body = page.getByRole('region', {
+          name: '文件正文',
+          exact: true,
+        });
+        await body.getByText('已经发布的公告摘录。', { exact: true }).waitFor();
+        expect(
+          await body
+            .getByRole('link', { name: '查看官方公告', exact: true })
+            .getAttribute('href'),
+        ).toBe('https://example.com/news');
+        expect(await body.getByText(/"provider"/).count()).toBe(0);
+        await body
+          .getByText('Revenue $100 and price $25.', { exact: true })
+          .waitFor();
+        expect(await body.locator('.katex').count()).toBe(0);
+        await page.evaluate(
+          (value) =>
+            Reflect.get(
+              window,
+              'setPreviewItems',
+            )([{ ...value, source: true }]),
+          item,
+        );
+        const source = page.getByRole('region', {
+          name: '源文本',
+          exact: true,
+        });
+        await expect
+          .poll(() => source.innerText())
+          .toContain('"provider": "fixture"');
+        expect(await source.innerText()).toContain(
+          'Revenue $100 and price $25.',
+        );
+        expect(
+          await page
+            .getByRole('link', { name: '下载', exact: true })
+            .getAttribute('href'),
+        ).toContain(objectId);
+        expect(errors).toEqual([]);
+      } finally {
+        await page.close();
+      }
+    },
+  );
   it('uses native static HTML sanitization and an opaque iframe for interaction', async () => {
+    let stage = 'mount',
+      cleanupStage = 'not-started',
+      observedPage: Page | undefined,
+      lastReadyState: string | undefined;
+    onTestFailed(() => {
+      console.error('Native HTML failure stage', {
+        stage,
+        cleanupStage,
+        lastReadyState,
+        frames: observedPage?.frames().map((frame) => frame.url()),
+      });
+    });
     const html =
       "<h1>原生网页预览</h1><button onclick=\"document.querySelector('h1').textContent='交互成功'\">点击测试</button><script>try { parent.previewEscaped=true } catch {}</script>";
     const { page, errors } = await mount([
@@ -333,30 +414,37 @@ suite('DSH native document previews', () => {
         interactive: true,
       },
     ]);
+    observedPage = page;
     try {
+      stage = 'static-heading';
       await page
         .frameLocator('section[aria-label="static.html"] iframe')
         .getByRole('heading')
         .waitFor();
       // The packed frame replaces its document; wait until loading finishes before clicking.
+      stage = 'interactive-ready';
       await expect
         .poll(
           () =>
             page
               .frameLocator('section[aria-label="interactive.html"] iframe')
               .locator('body')
-              .evaluate((node) => node.ownerDocument.readyState),
+              .evaluate((node) => node.ownerDocument.readyState)
+              .then((value) => (lastReadyState = value)),
           { timeout: 5000 },
         )
         .toBe('complete');
+      stage = 'interactive-click';
       await page
         .frameLocator('section[aria-label="interactive.html"] iframe')
         .getByRole('button')
         .click();
+      stage = 'interactive-heading';
       await page
         .frameLocator('section[aria-label="interactive.html"] iframe')
         .getByRole('heading', { name: '交互成功' })
         .waitFor();
+      stage = 'sanitization-assertions';
       expect(
         await page
           .frameLocator('section[aria-label="static.html"] iframe')
@@ -367,8 +455,11 @@ suite('DSH native document previews', () => {
         await page.evaluate(() => Reflect.get(window, 'previewEscaped')),
       ).toBeUndefined();
       expect(errors).toEqual([]);
+      stage = 'complete';
     } finally {
+      cleanupStage = 'page-close';
       await page.close();
+      cleanupStage = 'complete';
     }
   }, 30_000);
   it('allows a private project to export CSV while keeping its parent origin isolated', async () => {

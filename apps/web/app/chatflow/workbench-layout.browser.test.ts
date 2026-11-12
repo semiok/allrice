@@ -741,6 +741,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       deliverablesStatus: 200,
       filePreviewStatus: 200,
       deliverableRequests: [] as Record<string, string>[],
+      deliverableSettled: new Set<Record<string, string>>(),
       updateReads: 0,
       workbenchFiles: [] as WorkbenchFile[],
       workbenchReferenceUses: [] as string[],
@@ -1031,12 +1032,20 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         url.searchParams.get('view') === 'deliverables'
       ) {
         state.workbenchReads++;
-        state.deliverableRequests.push(Object.fromEntries(url.searchParams));
+        const request = Object.fromEntries(url.searchParams);
+        state.deliverableRequests.push(request);
+        const reply = async (data: unknown, status = 200) => {
+          try {
+            return await answer(data, status);
+          } finally {
+            state.deliverableSettled.add(request);
+          }
+        };
         const owner = state.viewer,
-          scope = state.workspace;
-        if (state.fileDelay) await state.fileDelay;
+          scope = state.workspace,
+          delay = state.fileDelay;
         if (state.deliverablesStatus !== 200)
-          return answer({}, state.deliverablesStatus);
+          return reply({}, state.deliverablesStatus);
         const files = workbenchFiles(true)
           .filter(
             (file) =>
@@ -1086,11 +1095,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             (!url.searchParams.get('query') ||
               file.fileName.includes(url.searchParams.get('query')!)),
         );
+        if (delay) await delay;
         if (
           url.searchParams.has('objectId') &&
           (!filtered.length || owner !== user || scope !== workspace)
         )
-          return answer({}, 404);
+          return reply({}, 404);
         const start = url.searchParams.get('cursor')
           ? filtered.findIndex(
               (file) => file.objectId === url.searchParams.get('cursor'),
@@ -1098,7 +1108,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           : 0;
         const page = filtered.slice(start, start + 50);
         // Capture the response under its original authenticated fixture identity.
-        return answer({
+        return reply({
           files: owner === user && scope === workspace ? page : [],
           employees: [
             ...new Map(
@@ -5454,13 +5464,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   }, 20_000);
 
   it.each([1440, 390])(
-    'tool search records stay in process files and render readable output with original source links at %ipx',
+    'tool search intermediate records stay out of all personal delivery categories at %ipx',
     async (width) => {
       const raw = artifact(10);
       raw.version.fileName = `tool-result-web-search-${raw.object.id}.txt`;
       raw.version.changeSummary = `Tool result web.search; Run ${run}; call call-1`;
       raw.provenance.kind = 'legacy_deliverable';
-      raw.provenance.runId = null;
       const f = await fixture({
         width,
         initialArtifacts: [raw],
@@ -5478,31 +5487,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         ],
       });
       try {
-        f.state.filePreview = {
-          kind: 'text',
-          mediaType: 'text/plain',
-          text: JSON.stringify({
-            provider: 'fixture',
-            query: '官方公告',
-            output:
-              '[查看官方公告](https://example.com/news)\n\n已经发布的公告摘录。\n\nRevenue $100 and price $25.',
-          }),
-        };
-        f.state.artifactTexts[raw.id] =
-          f.state.filePreview.kind === 'text' ? f.state.filePreview.text : '';
-        f.state.messages = [
-          {
-            id: id(20),
-            role: 'assistant',
-            runId: raw.provenance.runId,
-            status: 'completed',
-            content: {
-              text: `[读取工具记录](/api/v1/files/${raw.object.id}/download)`,
-            },
-            createdAt: now,
-          },
-        ];
-        await f.page.reload();
         await f.page
           .locator('header')
           .getByRole('button', { name: '交付成果', exact: true })
@@ -5511,40 +5495,20 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           name: '交付成果',
           exact: true,
         });
-        await directory.getByText('还没有交付成果', { exact: true }).waitFor();
-        expect(await directory.locator('article').count()).toBe(0);
-        await f.panel
-          .getByRole('button', { name: '关闭工作台', exact: true })
-          .click();
-        await f.page
-          .getByRole('link', { name: '读取工具记录', exact: true })
-          .click();
-        await f.panel
-          .getByText('已经发布的公告摘录。', { exact: true })
-          .waitFor();
-        expect(
-          await f.panel
-            .getByRole('link', { name: '查看官方公告', exact: true })
-            .getAttribute('href'),
-        ).toBe('https://example.com/news');
-        expect(await f.panel.getByText(/"provider"/).count()).toBe(0);
-        await f.panel
-          .getByText('Revenue $100 and price $25.', { exact: true })
-          .waitFor();
-        expect(await f.panel.locator('.katex').count()).toBe(0);
-        await f.fileAction('查看源文本');
-        await expect
-          .poll(() =>
-            f.panel
-              .getByRole('region', { name: '源文本', exact: true })
-              .innerText(),
-          )
-          .toContain('provider');
-        expect(
-          await f.panel
-            .getByRole('link', { name: '下载', exact: true })
-            .getAttribute('href'),
-        ).toContain(raw.object.id);
+        for (const category of ['全部', '员工交付', '我的上传']) {
+          await directory
+            .getByRole('button', { name: category, exact: true })
+            .click();
+          await directory
+            .getByText('还没有交付成果', { exact: true })
+            .waitFor();
+          expect(await directory.locator('article').count()).toBe(0);
+          expect(
+            await directory
+              .getByText(raw.version.fileName, { exact: true })
+              .count(),
+          ).toBe(0);
+        }
       } finally {
         await f.close();
       }
@@ -6228,7 +6192,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           ? '请汇总这一周的工作回顾'
           : '保留原有草稿';
         await input.fill(recommended ? '请整理本周周报' : finalDraft);
-        await openQuickDirectory();
+        if (recommended) await openQuickDirectory();
+        else {
+          await f.page
+            .getByRole('button', { name: '添加文件', exact: true })
+            .click();
+          await f.page
+            .getByRole('menuitem', { name: '参考资料', exact: true })
+            .click();
+        }
         if (!recommended)
           await f.page
             .getByRole('dialog', { name: '参考资料', exact: true })
@@ -11285,6 +11257,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           });
         };
         try {
+          await f.page.setViewportSize({
+            width,
+            height: width === 1440 ? 1000 : 844,
+          });
           const business = catalogFile(9500, {
             fileName: '选题说明.md',
             category: 'artifact',
@@ -11466,6 +11442,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           expect(
             await f.panel.locator('dl:visible dt').allTextContents(),
           ).toEqual(['员工交付', '来自对话']);
+          const previewHeight = (await f.panel
+            .locator('[class*="deliveryPreview"]:visible')
+            .boundingBox())!.height;
+          expect(previewHeight).toBeGreaterThanOrEqual(
+            width === 1440 ? 190 : 170,
+          );
+          expect(previewHeight).toBeLessThanOrEqual(width === 1440 ? 260 : 220);
           await capture('artifact-detail');
           expect(
             await toolbar
@@ -11509,10 +11492,21 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           });
           await warning.waitFor();
           await f.panel
+            .locator(`[data-document-id="${fontFile.objectId}"]:visible`)
             .getByText('Delivery original preview', { exact: true })
             .waitFor({ timeout: 15000 });
           await capture('artifact-font-warning');
+          const warningColor = await warning.evaluate(
+            (node) => getComputedStyle(node).color,
+          );
+          await warning.hover();
+          expect(
+            await warning.evaluate((node) => getComputedStyle(node).color),
+          ).toBe(warningColor);
           await warning.click();
+          expect(
+            await warning.evaluate((node) => getComputedStyle(node).color),
+          ).toBe(warningColor);
           const fonts = f.page.getByRole('dialog', {
             name: '缺失的字体',
             exact: true,
@@ -11550,7 +11544,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           expect(await fonts.count()).toBe(0);
           await warning.click();
           await fonts.waitFor();
-          await f.page.locator('main > section header h1').click();
+          await toolbar.getByText(fontFile.fileName, { exact: true }).click();
           expect(await fonts.count()).toBe(0);
           await f.panel
             .getByRole('button', { name: '‹ 交付成果', exact: true })
@@ -11585,6 +11579,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .getByRole('button', { name: noFontsFile.fileName, exact: true })
             .click();
           await f.panel
+            .locator(`[data-document-id="${noFontsFile.objectId}"]:visible`)
             .getByText('Delivery original preview', { exact: true })
             .waitFor();
           expect(
@@ -11669,11 +11664,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     const f = await fixture({
       width: 390,
       employeeDetails: true,
-      brandContent: { kind: 'custom', registered: true },
     });
     try {
       const input = f.page.getByRole('textbox', {
-        name: '给 内容同事 的消息',
+        name: '给 Rice 的消息',
         exact: true,
       });
       await input.fill('手机入口切换期间保留草稿');
@@ -11704,7 +11698,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await details.waitFor({ state: 'hidden' });
       await header.getByRole('button', { name: '能力', exact: true }).click();
       await f.page
-        .getByRole('region', { name: '内容同事 · 能力', exact: true })
+        .getByRole('region', { name: 'Rice · 能力', exact: true })
         .getByRole('heading', { name: '还没有场景', exact: true })
         .waitFor();
       expect(await input.inputValue()).toBe('手机入口切换期间保留草稿');
@@ -11716,7 +11710,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   });
 
   it('MET247 keyset pages survive category, employee and search round trips and reject a late old-owner title', async () => {
-    const f = await fixture({ employeeCount: 2 });
+    const f = await fixture({ employeeCount: 2, running: true });
     let release = () => {};
     try {
       for (let n = 0; n < 55; n++)
@@ -11781,14 +11775,22 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await expect
         .poll(() => f.state.deliverableRequests.at(-1)?.query)
         .toBe('资料');
+      const oldRead = f.state.deliverableRequests.at(-1)!;
       const workspaceReads = f.state.workspaceReads;
       f.state.viewer = id(999);
       f.state.workspace = id(998);
-      await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      f.state.fileDelay = null;
+      f.finishRun();
       await expect
         .poll(() => f.state.workspaceReads)
         .toBeGreaterThan(workspaceReads);
+      await f.panel
+        .getByRole('heading', { name: '还没有交付成果', exact: true })
+        .waitFor();
       release();
+      await expect
+        .poll(() => f.state.deliverableSettled.has(oldRead))
+        .toBe(true);
       await expect
         .poll(() => f.page.getByText('资料-9600.txt', { exact: true }).count())
         .toBe(0);
@@ -11804,7 +11806,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   it.each([1440, 390])(
     'MET247 an application file link resolves my object before showing its title and clears a late old-account detail at %ipx',
     async (width) => {
-      const f = await fixture({ width });
+      const f = await fixture({ width, running: true });
       let release = () => {};
       try {
         const file = catalogFile(9590, { fileName: '本人链接原件.txt' });
@@ -11832,14 +11834,21 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               ).length,
           )
           .toBeGreaterThan(1);
+        const oldRead = f.state.deliverableRequests.findLast(
+          (request) => request.objectId === file.objectId,
+        )!;
         const workspaceReads = f.state.workspaceReads;
         f.state.viewer = id(999);
-        await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+        f.state.fileDelay = null;
+        f.finishRun();
         await expect
           .poll(() => f.state.workspaceReads)
           .toBeGreaterThan(workspaceReads);
-        release();
         await f.panel.getByText('无权访问', { exact: true }).waitFor();
+        release();
+        await expect
+          .poll(() => f.state.deliverableSettled.has(oldRead))
+          .toBe(true);
         expect(
           await f.page.getByText(file.fileName, { exact: true }).count(),
         ).toBe(0);
@@ -12613,9 +12622,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
         expect(
           await f.panel
+            .locator('header[aria-label="文件操作"]')
             .getByRole('link', { name: '下载', exact: true })
             .getAttribute('href'),
-        ).toContain(path);
+        ).toContain(
+          `/api/v1/workbench/files/${artifact(10).object.id}/download`,
+        );
         expect(f.page.context().pages()).toHaveLength(pageCount);
         expect(new URL(f.page.url()).pathname).toBe('/');
         expect(
@@ -13800,6 +13812,24 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         artifacts: true,
         running: true,
         streamingOutput,
+        initialMessages: [
+          {
+            id: id(9000),
+            role: 'assistant',
+            runId: null,
+            status: 'completed',
+            content: { text: report },
+            createdAt: now,
+          },
+          {
+            id: id(20),
+            role: 'assistant',
+            runId: run,
+            status: 'pending',
+            content: { text: '' },
+            createdAt: now,
+          },
+        ],
       });
       try {
         await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
@@ -13832,6 +13862,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await f.page.screenshot({ path: '/tmp/met147-desktop.png' });
         // Complete the current synthetic turn through the real stream/history
         // entrance; a successful immutable preview has no refresh action.
+        f.state.messages![1] = {
+          ...f.state.messages![1]!,
+          status: 'completed',
+          content: { text: report },
+        };
         f.finishRun();
         await composer.focus();
         await expect
@@ -14298,9 +14333,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await f.panel.evaluate((e) => e.contains(document.activeElement)),
       ).toBe(true);
       await f.page.keyboard.press('Escape');
-      expect(await f.entry.evaluate((e) => e === document.activeElement)).toBe(
-        true,
-      );
+      await expect
+        .poll(() => f.entry.evaluate((e) => e === document.activeElement))
+        .toBe(true);
       expect(await f.panel.count()).toBe(0);
       await f.page.setViewportSize({ width: 1440, height: 950 });
       await f.panel.waitFor();

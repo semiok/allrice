@@ -269,8 +269,8 @@ suite(
       await fixture.db`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest,provider_snapshot)
         select ${versionId},organization_id,workspace_id,${employeeId},1,'Second Fixture',model,system_prompt,capabilities,config_checksum,manifest,provider_snapshot
         from allrice_employee_versions where id=(select employee_version_id from allrice_chat_sessions where id=${synthetic.task.chatSessionId})`;
-      await fixture.db`insert into allrice_employee_assignments(id,organization_id,workspace_id,employee_id,employee_version_id,user_id)
-        values(${assignmentId},${owner.organizationId},${owner.workspaceId},${employeeId},${versionId},${owner.actor.id})`;
+      await fixture.db`insert into allrice_employee_assignments(id,organization_id,workspace_id,employee_id,employee_version_id,user_id,is_default)
+        values(${assignmentId},${owner.organizationId},${owner.workspaceId},${employeeId},${versionId},${owner.actor.id},false)`;
       await fixture.db`insert into allrice_chat_sessions(id,organization_id,workspace_id,owner_id,title,employee_assignment_id,employee_version_id)
         values(${sessionId},${owner.organizationId},${owner.workspaceId},${owner.actor.id},'Second employee work',${assignmentId},${versionId})`;
       const { linkFileToSession } = await import('./workspace/service.ts');
@@ -360,10 +360,22 @@ suite(
         workspaceId: synthetic.context.workspaceId!,
       };
       await fixture.db`insert into allrice_organization_people(organization_id,user_id,display_name,content_maintenance_level) values (${owner.organizationId},${owner.actor.id},'Owner','personal')`;
-      const intermediate = await synthetic.artifact(synthetic.task.runId);
-      await fixture.db`update allrice_workbench_artifacts set kind='command_output' where version_id=${intermediate.artifactId}`;
-      const snapshot = await synthetic.artifact(synthetic.task.runId);
-      await fixture.db`update allrice_workbench_artifacts set provenance=jsonb_set(provenance,'{kind}','"project_snapshot"') where version_id=${snapshot.artifactId}`;
+      await synthetic.artifact(
+        synthetic.task.runId,
+        'Command output',
+        owner.actor.id,
+        {
+          kind: 'command_output',
+        },
+      );
+      await synthetic.artifact(
+        synthetic.task.runId,
+        'Project snapshot',
+        owner.actor.id,
+        {
+          provenanceKind: 'project_snapshot',
+        },
+      );
       const loose = randomUUID();
       await createStorageMetadata(owner, {
         id: loose,

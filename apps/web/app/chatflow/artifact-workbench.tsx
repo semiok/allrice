@@ -373,6 +373,14 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
   const previousRequest = useRef(0);
   function openArtifact(id: string, paneId?: Parameters<typeof dock.open>[3]) {
     const artifact = props.artifacts.find((item) => item.id === id);
+    const existingFile =
+      props.personalDeliverables && artifact && isDeliverableDocument(artifact)
+        ? findContentTab(dock.surface.layout, artifact.object.id, 'managedFile')
+        : undefined;
+    if (existingFile) {
+      dock.intents.focusTab(existingFile);
+      return;
+    }
     dock.open(
       'artifact',
       id,
@@ -390,7 +398,16 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
       previousSelection.current === undefined &&
       !props.selectionRequest &&
       Object.values(dock.surface.layout.tabs).some(
-        (tab) => tab.kind === 'artifact' && tab.contentId === props.selectedId,
+        (tab) =>
+          (tab.kind === 'artifact' && tab.contentId === props.selectedId) ||
+          (props.personalDeliverables &&
+            tab.kind === 'managedFile' &&
+            props.artifacts.some(
+              (item) =>
+                item.id === props.selectedId &&
+                item.object.id === tab.contentId &&
+                isDeliverableDocument(item),
+            )),
       );
     previousSelection.current = props.selectedId;
     previousRequest.current = props.selectionRequest ?? 0;
@@ -841,6 +858,14 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
   );
 });
 
+function isDeliverableDocument(file: WorkbenchArtifact) {
+  return (
+    ['document', 'file'].includes(file.kind) &&
+    file.provenance.kind !== 'project_snapshot' &&
+    !isToolResultExport(file.version)
+  );
+}
+
 function ArtifactTabBody(
   props: Props & {
     active: boolean;
@@ -850,13 +875,7 @@ function ArtifactTabBody(
 ) {
   const artifactId = props.selectedId;
   const file = props.artifacts.find((item) => item.id === artifactId);
-  if (
-    props.personalDeliverables &&
-    file &&
-    ['document', 'file'].includes(file.kind) &&
-    file.provenance.kind !== 'project_snapshot' &&
-    !isToolResultExport(file.version)
-  )
+  if (props.personalDeliverables && file && isDeliverableDocument(file))
     return (
       <div className={reader.reader}>
         {props.noticeId && props.noticeId !== artifactId ? (

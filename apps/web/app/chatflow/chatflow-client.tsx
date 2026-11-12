@@ -586,6 +586,11 @@ export function ChatFlowClient({
     layout.show();
   };
   const workbenchEntry = useRef<HTMLButtonElement>(null);
+  const workbenchFocusScope = useRef({
+    scope: fileScope,
+    open: workbenchRequested,
+  });
+  workbenchFocusScope.current = { scope: fileScope, open: workbenchRequested };
   const [activeModule, setActiveModule] = useState<{
     scope: string;
     kind: WorkbenchModule | 'schedule' | null;
@@ -621,9 +626,16 @@ export function ChatFlowClient({
         reuseDetailsSceneSnapshot.current = false;
         setDetailsAssignmentId(memoryInstanceId);
         setEmployeeDetailsOpen(true);
-      } else workbenchEntry.current?.focus();
+      } else {
+        const closingScope = fileScope;
+        requestAnimationFrame(() => {
+          const current = workbenchFocusScope.current;
+          if (current.scope === closingScope && !current.open)
+            workbenchEntry.current?.focus();
+        });
+      }
     },
-    [closeWorkbench],
+    [closeWorkbench, fileScope],
   );
   const sessionAutomations = useSessionAutomations({
     enabled: workbenchEnabled && !!workspace,
@@ -3082,13 +3094,11 @@ export function ChatFlowClient({
                     )
                   }
                   onOpen={(file) => {
-                    const plan = workbench.artifacts.find(
-                      (item) =>
-                        item.object.id === file.objectId &&
-                        item.kind === 'plan',
+                    const artifact = workbench.artifacts.find(
+                      (item) => item.object.id === file.objectId,
                     );
-                    if (plan) {
-                      showWorkbench(plan.id);
+                    if (artifact) {
+                      showWorkbench(artifact.id);
                       return;
                     }
                     workbench.show(undefined, true);
