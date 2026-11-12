@@ -255,7 +255,7 @@
   cursor: pointer;
 }
 .newChat:hover {
-  background: var(--allrice-session-selected);
+  background: var(--ar-surface-hover);
   color: var(--dsw-alias-label-primary);
 }
 .newChat:focus-visible,
