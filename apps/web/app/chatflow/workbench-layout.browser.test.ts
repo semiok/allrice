@@ -8126,20 +8126,26 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             name: '和 Rice 开新会话',
             exact: true,
           });
+          const newChatTooltip = f.page
+            .getByRole('tooltip')
+            .filter({ hasText: '和 Rice 开新会话' });
+          await plus.hover();
+          await newChatTooltip.waitFor();
+          expect(await plus.evaluate((node) => node.matches(':hover'))).toBe(
+            true,
+          );
+          await capture('hover');
           if (device === 'mobile') {
+            await f.page.mouse.move(width - 1, 1);
+            await newChatTooltip.waitFor({ state: 'hidden' });
             await riceRow.focus();
             await f.page.keyboard.press('Tab');
             expect(
               await plus.evaluate((node) => node === document.activeElement),
             ).toBe(true);
-          } else await plus.hover();
-          await f.page
-            .getByRole('tooltip')
-            .filter({ hasText: '和 Rice 开新会话' })
-            .waitFor();
-          await capture('hover');
-          if (device === 'mobile') await plus.tap();
-          else await plus.press('Enter');
+            await newChatTooltip.waitFor();
+            await plus.tap();
+          } else await plus.press('Enter');
           await f.page
             .getByRole('textbox', { name: '给 Rice 的消息', exact: true })
             .waitFor();
