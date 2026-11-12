@@ -28,7 +28,7 @@ import {
 
 // Read only the existing normalized root-event envelope. Extra display slots
 // (label/summary/etc.) are never copied into the API response.
-const useEnvelope = z.object({
+export const personalSceneUseEnvelopeSchema = z.object({
   source: z.literal('dsh'),
   sourceEventType: z.literal('allrice/scene-use'),
   presentation: z.literal('context'),
@@ -189,7 +189,9 @@ export async function listPersonalSceneReads(
         ];
       });
       for (const event of events.filter((item) => item.run_id === row.run_id)) {
-        const parsedEvent = useEnvelope.safeParse(event.payload);
+        const parsedEvent = personalSceneUseEnvelopeSchema.safeParse(
+          event.payload,
+        );
         if (!parsedEvent.success)
           throw new EmployeeContentError('source_changed');
         const envelope = parsedEvent.data,

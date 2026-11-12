@@ -396,24 +396,7 @@ export const baseline: readonly BaselineEntry[] = [
       String.raw`match(RegExp(/^(?:请\s*|麻烦(?:你)?\s*)?(?:(?:帮我|为我)\s*)?(每(?:隔)?\s*)?([0-9零〇一二两三四五六七八九十百千万]+)\s*(分钟|小时|天)(之后|以后|后)?\s*(?:提醒(?:我|我们)?(?:一次|一下)?|(?:循环|重复)(?:提醒)?)?[。！!]*$/u))`,
     ],
   },
-  {
-    file: 'packages/database/src/experience-feedback.ts',
-    owner: 'classifyExperienceFeedback',
-    kind: 'reject',
-    use: '判断一条用户消息算不算对经验的直接反馈或纠正；不算就不作为采纳证据（10-23 时 Dev 上 168 条被判不算）',
-    sites: [
-      String.raw`/(?:翻译|转述|复述|举例|假设|示例|引用|translate|quote|example)/iu`,
-      String.raw`/(?:以后|今后|长期|永久|默认|从现在起|记住|保存为|仅本次|只[在对]?这次|这次就|暂时|临时|from now on|by default|remember|this time only)/iu`,
-      String.raw`/(?:不要|不需要|不用|不必|无需|请勿|别|不再)[^。！？；\n]{0,80}(?:记录|学习|记忆|沉淀|记下|保存|留存|存储)|不(?:记录|学习|记忆|沉淀|记下|保存|留存|存储)/u`,
-      String.raw`/(?:这次|本次|这一次|当前)[^。！？；\n]{0,20}(?:只|仅)|(?:只|仅)[^。！？；\n]{0,20}(?:这次|本次|这一次|这一单|这一份)/u`,
-      String.raw`/\b(?:do not|don't|never|no need to)\s+(?:need to\s+)?(?:save|store|record|retain|learn|remember)\b|\b(?:only|just)\s+(?:this|the current)\b|\b(?:this|the current)\s+(?:time|task|report)\s+only\b/iu`,
-      String.raw`test(/^(?:反馈[：:，,\s]*)?(?:(?:你)?(?:刚才|上次|刚刚|上一轮)|这(?:份|个|次)(?:报告|表格|结果|分析|交付|计算)|上一(?:份|个|次)(?:报告|表格|结果|分析|交付|计算))/u)`,
-      String.raw`test(/(?:不对|有误|错误|漏[了掉算列]?|算错|重复(?:计算|统计|记录)|口径不(?:对|一致)|应当|应该|需要改|少[了算]|多算)/u)`,
-      String.raw`/^(?:反馈[：:，,\s]*|(?:我)?(?:已|已经)(?:核对|复核|验证|检查)[，,：:\s]*)/u`,
-      String.raw`/(?:正确|有误|不对|一致|不一致|漏|算错|通过|保留|清晰|方便|难以)/u`,
-      String.raw`/^(?:your (?:last|previous) (?:report|result|calculation)|the (?:last|previous) (?:report|result|calculation))\b/iu`,
-    ],
-  },
+
   {
     file: 'packages/database/src/experience-runtime.ts',
     owner: 'targetMatches',

@@ -35,6 +35,7 @@ import {
   listenForReadyJobs,
   probeReadyJobs,
   recoverPlatformQualityOccurrences,
+  collectPendingMemorySources,
   pingDatabase,
   queueSummary,
   recoverCodexAuthorizationFlows,
@@ -650,6 +651,7 @@ async function runAutomationTick() {
       await processFolderTriggerEvents(Math.max(1, concurrency));
       const limit = Math.max(1, concurrency);
 
+      await collectPendingMemorySources({ limit });
       const recovered = await recoverPlatformQualityOccurrences(limit);
       if (recovered > 0) {
         console.info('[M6] recovered quality occurrences', {

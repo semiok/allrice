@@ -1562,6 +1562,7 @@ suite(
           const [row] = await f.db`
             select j.status,j.worker_id,j.lease_token,j.lease_expires_at,j.drain_deadline_at,
               j.last_error_code,j.completed_at,r.state as run_state,e.status as employee_status,
+              e.experience_capture_state,e.experience_capture_reason,
               m.status as message_status,c.finished_at,c.result_digest,c.outcome,
               t.phase as clock_phase,t.changed_at as clock_changed_at
             from allrice_jobs j join allrice_runs r on r.id=j.run_id
@@ -1607,8 +1608,10 @@ suite(
         try {
           // This actual waiting SQL occurs after the original lease check.
           // Its blocker PID proves the interleaving, without a mocked result.
-          // The retired experience-capture UPDATE no longer intervenes; the
-          // worker now waits at the message row explicitly locked above.
+          // The new provenance-marker UPDATE checks the employee Run's message
+          // references and waits behind the locked assistant row. This remains
+          // after the original lease check; assert its rollback with the rest
+          // of the terminal transaction, including the new capture marker.
           let waiting: { query: string; now: Date } | undefined;
           await expect
             .poll(
@@ -1625,7 +1628,7 @@ suite(
               query: expect.stringContaining(
                 ending === 'progress finish'
                   ? 'from allrice_task_calls'
-                  : 'update allrice_messages',
+                  : 'update allrice_employee_runs set experience_capture_state',
               ),
             });
           // Read DB time independently while the late statement is blocked.
