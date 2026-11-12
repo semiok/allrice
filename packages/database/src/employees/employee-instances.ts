@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import type postgres from 'postgres';
 import {
   CreateEmployeeInstanceInputSchema,
@@ -11,17 +12,37 @@ import {
   EmployeeProfileChatInputSchema,
   ExecutionContextSchema,
   EmployeeInstanceProfileSchema,
+  EmployeeManifestSchema,
+  EmployeeDefinitionSchema,
+  EmployeePersonaPinSchema,
+  EmployeePersonaVersionSourceSchema,
+  PlatformEmployeeDefinitionSchema,
+  PlatformEmployeeRuntimeProfileSchema,
   UuidSchema,
   type EmployeeInstance,
   type EmployeeInstanceSnapshot,
   type RequestContext,
   type ExecutionContext,
   type EmployeeInstanceProfile,
+  type EmployeePersonaPin,
+  type EmployeePersonaTask,
+  type EmployeePersonaSourceMaterial,
 } from '@allrice/contracts';
 import { getDatabase } from '../core/client.ts';
 import { DataAccessError } from '../data.ts';
 import { readContentPrincipal } from '../content-maintenance.ts';
 import { isBaseRiceInstance } from './employee-instance-policy.ts';
+import { employeeManifestChecksum } from './employee-config.ts';
+import { runtimePolicyDigest } from '../runtime-policy-digest.ts';
+import { frozenPackageSkills } from '../skill-bundles.ts';
+import {
+  runtimePackageChecksum,
+  runtimePackageSystemPrompt,
+  employeePersonaManifestMaterial,
+  employeePersonaPlatformSystemPrompt,
+  readEmployeePersonaAdmissionPreparation,
+  withEmployeePersonaAdmissionPreparation,
+} from '../platform-employees/runtime-package.ts';
 import {
   cancelEmployeeAccessRuns,
   employeeAccessTransaction,
@@ -85,6 +106,563 @@ export async function readEmployeeVersionPublication(
       and r.status = 'published'
   `;
   return publication;
+}
+
+/** A tenant version can attest explicit null-package materials or a signed
+ * schema-3 package. Neither invents a platform publication. */
+export async function readEmployeeTenantPersonaVersion(
+  scope: {
+    organizationId: string;
+    workspaceId: string;
+    employeeId: string;
+    versionId: string;
+    role?: 'basis' | 'engine';
+    expectedSource?: EmployeeInstanceSnapshot['source'];
+    forRunInput?: boolean;
+  },
+  sql: Sql,
+): Promise<
+  | {
+      source: {
+        kind: 'tenant_version';
+        employeeVersionId: string;
+        configChecksum: string;
+        manifestDigest: string;
+      };
+      material: EmployeePersonaSourceMaterial;
+      manifest: ReturnType<typeof EmployeeDefinitionSchema.parse>;
+    }
+  | undefined
+> {
+  const [row] = await sql<
+    { manifest: unknown; config_checksum: string; mapping_id: string | null }[]
+  >`select v.manifest,v.config_checksum,p.employee_version_id mapping_id
+    from allrice_employee_versions v
+    left join allrice_employee_version_sources p on p.employee_version_id=v.id
+    where v.id=${scope.versionId} and v.organization_id=${scope.organizationId}
+      and v.workspace_id=${scope.workspaceId} and v.employee_id=${scope.employeeId}`;
+  return parseEmployeeTenantPersonaVersion(scope, row);
+}
+
+function assertPersonaSourcePresence(
+  scope: { forRunInput?: boolean; role?: 'basis' | 'engine' },
+  row: { manifest: unknown; mapping_id: string | null },
+) {
+  const raw = row.manifest;
+  if (raw === null || typeof raw !== 'object') return false;
+  const rawPackage = 'runtimePackage' in raw ? raw.runtimePackage : undefined;
+  const hasPackageMaterial =
+    rawPackage !== null &&
+    typeof rawPackage === 'object' &&
+    'schemaVersion' in rawPackage &&
+    rawPackage.schemaVersion === 3;
+  if (!('personaSource' in raw) && !hasPackageMaterial) {
+    // Read-only absence never recovers policy from composite text. New input
+    // retires only the approved raw old-package/null/v1-basis shapes.
+    if (
+      scope.forRunInput &&
+      rawPackage !== null &&
+      typeof rawPackage === 'object' &&
+      'schemaVersion' in rawPackage &&
+      (rawPackage.schemaVersion === 1 || rawPackage.schemaVersion === 2)
+    )
+      throw Error('employee_persona_source_unavailable', {
+        cause: 'legacy_runtime_package_platform_policy_missing',
+      });
+    if (
+      scope.forRunInput &&
+      row.mapping_id === null &&
+      'schemaVersion' in raw &&
+      ((raw.schemaVersion === 2 && rawPackage === null) ||
+        (raw.schemaVersion === 1 && scope.role === 'basis'))
+    )
+      throw Error('employee_persona_source_unavailable', {
+        cause:
+          raw.schemaVersion === 1
+            ? 'legacy_v1_basis_persona_source_missing'
+            : 'legacy_null_package_persona_source_missing',
+      });
+    return false;
+  }
+  return true;
+}
+
+function parseEmployeeTenantPersonaVersion(
+  scope: {
+    organizationId: string;
+    workspaceId: string;
+    employeeId: string;
+    versionId: string;
+    role?: 'basis' | 'engine';
+    expectedSource?: EmployeeInstanceSnapshot['source'];
+    forRunInput?: boolean;
+  },
+  row:
+    | { manifest: unknown; config_checksum: string; mapping_id: string | null }
+    | undefined,
+) {
+  if (!row) throw Error('employee_persona_source_unavailable');
+  if (!assertPersonaSourcePresence(scope, row)) return undefined;
+  const raw = row.manifest;
+  const manifest = EmployeeDefinitionSchema.parse(raw);
+  const pkg = manifest.runtimePackage;
+  if (
+    row.mapping_id !== null ||
+    (pkg !== null && pkg.schemaVersion !== 3) ||
+    (scope.expectedSource &&
+      (scope.expectedSource.kind !== 'tenant_version' ||
+        scope.expectedSource.employeeVersionId !== scope.versionId))
+  )
+    throw Error('employee_persona_source_mapping_invalid');
+  if (pkg) frozenPackageSkills(pkg);
+  if (
+    (pkg?.checksum ?? employeeManifestChecksum(manifest)) !==
+    row.config_checksum
+  )
+    throw Error('CURRENT_EXECUTION_SOURCE_CHECKSUM_MISMATCH');
+  const material = employeePersonaManifestMaterial(manifest);
+  if (!material) throw Error('employee_persona_source_unavailable');
+  return {
+    source: {
+      kind: 'tenant_version' as const,
+      employeeVersionId: scope.versionId,
+      configChecksum: row.config_checksum,
+      manifestDigest: runtimePolicyDigest(manifest),
+    },
+    material,
+    manifest,
+  };
+}
+
+/** Only actual raw absence is unmigrated. A default basis is read from its
+ * independent publication, not subjected to engine/materializer eligibility.
+ * The engine separately proves the original package/policy relationship. */
+type PersonaSourceScope = {
+  organizationId: string;
+  workspaceId: string;
+  employeeId: string;
+  versionId: string;
+  role: 'basis' | 'engine';
+  expectedSource?: EmployeeInstanceSnapshot['source'];
+  forRunInput?: boolean;
+};
+type PersonaSourceRow = {
+  manifest: unknown;
+  config_checksum: string;
+  mapping_id: string | null;
+  mapping_organization_id: string | null;
+  mapping_workspace_id: string | null;
+  mapping_employee_id: string | null;
+  template_id: string | null;
+  template_revision_id: string | null;
+  revision_employee_id: string | null;
+  revision: number | null;
+  revision_status: string | null;
+  definition: unknown;
+  definition_checksum: string | null;
+  runtime_profile: unknown;
+  platform_key: string | null;
+};
+type PreparedPersona = {
+  scope: PersonaSourceScope;
+  row: PersonaSourceRow;
+  projection: { error: unknown } | { value: void };
+  values: Record<
+    'basis' | 'engine',
+    | { value: ReturnType<typeof parseEmployeePersonaVersion> }
+    | { error: unknown }
+  >;
+};
+type PersonaProjectionInput = {
+  employeeVersionId: string;
+  configChecksum: string;
+  manifest: unknown;
+};
+export type EmployeePersonaAdmissionPreparation = {
+  sources: Map<string, PreparedPersona>;
+  used: Map<string, PersonaSourceScope>;
+  projections: Map<string, PersonaSourceScope>;
+  assertProjection: (input: PersonaProjectionInput) => void;
+};
+const personaSourceKey = (s: PersonaSourceScope) =>
+  `${s.organizationId}:${s.workspaceId}:${s.employeeId}:${s.versionId}`;
+
+async function readPersonaSourceRow(scope: PersonaSourceScope, sql: Sql) {
+  const [row] = await sql<
+    PersonaSourceRow[]
+  >`select v.manifest,v.config_checksum,
+    p.employee_version_id mapping_id,p.organization_id mapping_organization_id,
+    p.workspace_id mapping_workspace_id,p.employee_id mapping_employee_id,
+    p.platform_employee_id template_id,p.platform_revision_id template_revision_id,
+    r.employee_id revision_employee_id,r.revision,r.status revision_status,
+    r.definition,r.checksum definition_checksum,r.runtime_profile,pe.employee_key platform_key
+    from allrice_employee_versions v
+    left join allrice_employee_version_sources p on p.employee_version_id=v.id
+    left join allrice_platform_employee_revisions r on r.id=p.platform_revision_id
+    left join allrice_platform_employees pe on pe.id=r.employee_id
+    where v.id=${scope.versionId} and v.organization_id=${scope.organizationId}
+      and v.workspace_id=${scope.workspaceId} and v.employee_id=${scope.employeeId}`;
+  return row;
+}
+
+function freezePersonaSource<T>(value: T): T {
+  if (value && typeof value === 'object') {
+    for (const child of Object.values(value)) freezePersonaSource(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+/** Parsing and signature/resource verification happen before begin takes any
+ * admission locks. Failures are deferred until the original authority gates. */
+export async function employeePersonaAdmission<T>(
+  sql: ReturnType<typeof getDatabase>,
+  target:
+    | {
+        automationId: string;
+        ownerId?: string;
+        organizationId?: string;
+        workspaceId?: string;
+      }
+    | {
+        organizationId: string;
+        workspaceId: string;
+        employeeId: string;
+        versionIds: string[];
+      }
+    | {
+        assignmentId: string;
+        organizationId: string;
+        workspaceId?: string;
+        ownerId: string;
+      }
+    | undefined,
+  operation: (tx: Tx) => Promise<T>,
+) {
+  const scopes =
+    target &&
+    'automationId' in target &&
+    UuidSchema.safeParse(target.automationId).success
+      ? await sql<
+          {
+            organization_id: string;
+            workspace_id: string;
+            employee_id: string;
+            version_id: string;
+          }[]
+        >`
+        select distinct v.organization_id,v.workspace_id,v.employee_id,v.id version_id
+        from allrice_automations p
+        join allrice_employee_assignments a on a.id=p.employee_assignment_id
+          and a.organization_id=p.organization_id and a.workspace_id=p.workspace_id and a.user_id=p.owner_id
+        join allrice_chat_sessions c on c.id=p.session_id and c.owner_id=p.owner_id
+          and c.organization_id=p.organization_id and c.workspace_id=p.workspace_id
+        join allrice_employee_versions v on v.employee_id=a.employee_id
+          and v.organization_id=a.organization_id and v.workspace_id=a.workspace_id
+          and v.id in (a.employee_version_id,c.employee_version_id)
+        where p.id=${target.automationId}
+          and (${target.ownerId ?? null}::uuid is null or p.owner_id=${target.ownerId ?? null})
+          and (${target.organizationId ?? null}::uuid is null or p.organization_id=${target.organizationId ?? null})
+          and (${target.workspaceId ?? null}::uuid is null or p.workspace_id=${target.workspaceId ?? null})
+          and p.brand_content_binding is null
+          and p.quality_binding is null and p.experience_binding is null`
+      : target && 'versionIds' in target
+        ? [...new Set(target.versionIds)].map((versionId) => ({
+            organization_id: target.organizationId,
+            workspace_id: target.workspaceId,
+            employee_id: target.employeeId,
+            version_id: versionId,
+          }))
+        : target &&
+            'assignmentId' in target &&
+            UuidSchema.safeParse(target.assignmentId).success
+          ? await sql<
+              {
+                organization_id: string;
+                workspace_id: string;
+                employee_id: string;
+                version_id: string;
+              }[]
+            >`select a.organization_id,a.workspace_id,a.employee_id,a.employee_version_id version_id
+              from allrice_employee_assignments a where a.id=${target.assignmentId}
+                and a.organization_id=${target.organizationId} and a.user_id=${target.ownerId}
+                and (${target.workspaceId ?? null}::uuid is null or a.workspace_id=${target.workspaceId ?? null})`
+          : [];
+  const prepared = new Map<string, PreparedPersona>();
+  for (const s of scopes) {
+    const scope: PersonaSourceScope = {
+      organizationId: s.organization_id,
+      workspaceId: s.workspace_id,
+      employeeId: s.employee_id,
+      versionId: s.version_id,
+      role: 'engine',
+    };
+    const row = await readPersonaSourceRow(scope, sql);
+    if (!row) continue;
+    const values = {} as PreparedPersona['values'];
+    for (const role of ['basis', 'engine'] as const) {
+      try {
+        values[role] = {
+          value: freezePersonaSource(
+            parseEmployeePersonaVersion({ ...scope, role }, row),
+          ),
+        };
+      } catch (error) {
+        values[role] = { error };
+      }
+    }
+    let projection: PreparedPersona['projection'];
+    try {
+      employeePersonaManifestMaterial(
+        EmployeeDefinitionSchema.parse(row.manifest),
+      );
+      projection = { value: undefined };
+    } catch (error) {
+      projection = { error };
+    }
+    prepared.set(personaSourceKey(scope), { scope, row, values, projection });
+  }
+  return sql.begin(async (tx) => {
+    const used = new Map<string, PersonaSourceScope>();
+    const projections = new Map<string, PersonaSourceScope>();
+    return withEmployeePersonaAdmissionPreparation(
+      tx,
+      {
+        sources: prepared,
+        used,
+        projections,
+        assertProjection: (input) =>
+          assertPreparedEmployeePersonaProjection(input, prepared, projections),
+      },
+      async () => {
+        const result = await operation(tx);
+        // The real outer owner validates after its last write/wait, including
+        // occurrence/automation bindings after enqueue returns.
+        const checked = new Set<string>();
+        for (const scope of used.values()) {
+          await readEmployeePersonaVersion(scope, tx);
+          checked.add(personaSourceKey(scope));
+        }
+        // Current execution binding also serves legacy/no-PERSONA callers. Its
+        // projection proof adds raw OCC, never an extra engine eligibility gate.
+        for (const [key, scope] of projections) {
+          if (checked.has(key)) continue;
+          const row = await readPersonaSourceRow(scope, tx);
+          if (!isDeepStrictEqual(row, prepared.get(key)?.row))
+            throw new EmployeeInstanceError('instance_conflict');
+        }
+        return result;
+      },
+    );
+  });
+}
+
+/** Consume only the projection prepared for this actual admission transaction.
+ * The original current-binding validator still owns all baseline checks. */
+function assertPreparedEmployeePersonaProjection(
+  input: PersonaProjectionInput,
+  sources: Map<string, PreparedPersona>,
+  projections: Map<string, PersonaSourceScope>,
+) {
+  for (const [key, prior] of sources) {
+    if (prior.scope.versionId !== input.employeeVersionId) continue;
+    if (
+      prior.row.config_checksum !== input.configChecksum ||
+      !isDeepStrictEqual(prior.row.manifest, input.manifest)
+    )
+      throw new EmployeeInstanceError('instance_conflict');
+    projections.set(key, prior.scope);
+    if ('error' in prior.projection) throw prior.projection.error;
+    return;
+  }
+  throw new EmployeeInstanceError('instance_conflict');
+}
+
+export async function readEmployeePersonaVersion(
+  scope: PersonaSourceScope,
+  sql: Sql,
+) {
+  const row = await readPersonaSourceRow(scope, sql);
+  const preparation = readEmployeePersonaAdmissionPreparation(sql as Tx);
+  if (!preparation) return parseEmployeePersonaVersion(scope, row);
+  if (!row) throw Error('employee_persona_source_unavailable');
+  // This exact raw classification deliberately stays in the original short
+  // transaction, after current authority, and keeps the three approved causes.
+  if (row.mapping_id === null) {
+    if (scope.expectedSource?.kind === 'platform')
+      throw Error('employee_persona_source_unavailable');
+    assertPersonaSourcePresence(scope, row);
+  }
+  const key = personaSourceKey(scope);
+  const prior = preparation.sources.get(key);
+  if (!prior || !isDeepStrictEqual(row, prior.row))
+    throw new EmployeeInstanceError('instance_conflict');
+  preparation.used.set(
+    `${key}:${scope.role}:${scope.forRunInput === true}`,
+    scope,
+  );
+  const outcome = prior.values[scope.role];
+  if ('error' in outcome) throw outcome.error;
+  const value = outcome.value;
+  if (scope.expectedSource) {
+    if (row.mapping_id === null && scope.expectedSource.kind === 'platform')
+      throw Error('employee_persona_source_unavailable');
+    if (value && 'kind' in value.source) {
+      if (
+        scope.expectedSource.kind !== 'tenant_version' ||
+        scope.expectedSource.employeeVersionId !== scope.versionId
+      )
+        throw Error('employee_persona_source_mapping_invalid');
+    } else if (
+      value &&
+      (scope.expectedSource.kind !== 'platform' ||
+        scope.expectedSource.employeeVersionId !== scope.versionId ||
+        scope.expectedSource.templateId !== row.template_id ||
+        scope.expectedSource.templateRevisionId !== row.template_revision_id ||
+        scope.expectedSource.templateRevision !== row.revision ||
+        scope.expectedSource.templateChecksum !== row.definition_checksum)
+    )
+      throw Error('employee_persona_source_mapping_changed');
+  }
+  return value;
+}
+
+function parseEmployeePersonaVersion(
+  scope: PersonaSourceScope,
+  row: PersonaSourceRow | undefined,
+) {
+  if (!row) throw Error('employee_persona_source_unavailable');
+  if (row.mapping_id === null) {
+    if (scope.expectedSource?.kind === 'platform')
+      throw Error('employee_persona_source_unavailable');
+    return parseEmployeeTenantPersonaVersion(scope, row);
+  }
+  if (
+    row.mapping_organization_id !== scope.organizationId ||
+    row.mapping_workspace_id !== scope.workspaceId ||
+    row.mapping_employee_id !== scope.employeeId ||
+    row.revision_employee_id !== row.template_id ||
+    row.revision_status !== 'published' ||
+    !row.platform_key
+  )
+    throw Error('employee_persona_source_mapping_invalid');
+  const definition = PlatformEmployeeDefinitionSchema.parse(row.definition);
+  if (runtimePackageChecksum(definition) !== row.definition_checksum)
+    throw Error('employee_persona_source_definition_checksum_mismatch');
+  if (
+    scope.expectedSource &&
+    (scope.expectedSource.kind !== 'platform' ||
+      scope.expectedSource.employeeVersionId !== scope.versionId ||
+      scope.expectedSource.templateId !== row.template_id ||
+      scope.expectedSource.templateRevisionId !== row.template_revision_id ||
+      scope.expectedSource.templateRevision !== row.revision ||
+      scope.expectedSource.templateChecksum !== row.definition_checksum)
+  )
+    throw Error('employee_persona_source_mapping_changed');
+  const evidence = {
+    employeeVersionId: scope.versionId,
+    configChecksum: row.config_checksum,
+    templateId: row.template_id,
+    templateRevisionId: row.template_revision_id,
+    templateRevision: row.revision,
+    templateChecksum: row.definition_checksum,
+  };
+  const material = {
+    foundation: {
+      name: definition.name,
+      description: definition.description,
+      appearance: definition.appearance,
+      identity: definition.identity,
+    },
+    platformPolicy: definition.systemPrompt,
+  };
+  if (scope.role === 'basis') {
+    // The config checksum is the original version's stored identity, not an
+    // assertion that v1 has a package or that a default is executable. The
+    // independent, checksum-verified publication supplies every default field.
+    const manifest = EmployeeManifestSchema.parse(row.manifest);
+    return {
+      source: EmployeePersonaVersionSourceSchema.parse({
+        ...evidence,
+        manifestDigest: runtimePolicyDigest(manifest),
+      }),
+      definition,
+      material,
+      manifest,
+      platformKey: row.platform_key,
+    };
+  }
+  const manifest = EmployeeDefinitionSchema.parse(row.manifest);
+  const pkg = manifest.runtimePackage;
+  if (pkg) {
+    // Existing signature/resources, never a current-generation test on basis.
+    frozenPackageSkills(pkg);
+    if (pkg.checksum !== row.config_checksum)
+      throw Error('CURRENT_EXECUTION_SOURCE_CHECKSUM_MISMATCH');
+    if (pkg.schemaVersion === 3) {
+      employeePersonaManifestMaterial(manifest);
+      if (
+        runtimePolicyDigest(pkg.foundation) !==
+          runtimePolicyDigest(material.foundation) ||
+        pkg.platformPolicy !== material.platformPolicy
+      )
+        throw Error('employee_persona_source_projection_mismatch');
+    }
+  } else if (employeeManifestChecksum(manifest) !== row.config_checksum) {
+    throw Error('CURRENT_EXECUTION_SOURCE_CHECKSUM_MISMATCH');
+  }
+  // The real materializer requires a package and copies this exact package
+  // from the published revision. A hypothetical null+mapping is not proof.
+  const publication = PlatformEmployeeRuntimeProfileSchema.pick({
+    runtimePackage: true,
+  })
+    .strip()
+    .parse(row.runtime_profile);
+  if (
+    !pkg ||
+    !publication.runtimePackage ||
+    publication.runtimePackage.checksum !== pkg.checksum ||
+    runtimePolicyDigest(publication.runtimePackage) !== runtimePolicyDigest(pkg)
+  )
+    throw Error('employee_persona_source_package_mismatch');
+  const identity = {
+    role: definition.identity.role,
+    mission: definition.identity.mission,
+    workStyle: definition.identity.workStyle,
+    behaviorRules: definition.identity.behaviorRules,
+    safetyBoundaries: definition.identity.safetyBoundaries,
+  };
+  if (
+    manifest.name !== definition.name ||
+    manifest.description !== definition.description ||
+    runtimePolicyDigest(manifest.appearance) !==
+      runtimePolicyDigest(definition.appearance) ||
+    runtimePolicyDigest(manifest.identity) !== runtimePolicyDigest(identity) ||
+    manifest.partnerProfile.communicationStyle !==
+      definition.identity.expressionStyle ||
+    manifest.partnerProfile.outputLanguage !==
+      definition.identity.outputLanguage ||
+    (manifest.systemPrompt !==
+      employeePersonaPlatformSystemPrompt(definition) &&
+      (pkg.schemaVersion === 3 ||
+        manifest.systemPrompt !==
+          runtimePackageSystemPrompt({
+            platformPolicy: definition.systemPrompt,
+            runtimePackage: pkg,
+          })))
+  )
+    throw Error('employee_persona_source_projection_mismatch');
+  return {
+    source: EmployeePersonaVersionSourceSchema.parse({
+      ...evidence,
+      manifestDigest: runtimePolicyDigest(manifest),
+      packageChecksum: pkg.checksum,
+    }),
+    definition,
+    material,
+    manifest,
+    platformKey: row.platform_key,
+  };
 }
 
 export class EmployeeInstanceError extends Error {
@@ -730,6 +1308,8 @@ export async function assertEmployeeInstanceAdmission(
   context: Identity,
   sessionId: string,
   snapshotInput: EmployeeInstanceSnapshot,
+  personaInput?: EmployeePersonaPin,
+  taskProducer?: EmployeePersonaTask,
 ) {
   const snapshot = EmployeeInstanceSnapshotSchema.parse(snapshotInput);
   if (
@@ -739,7 +1319,12 @@ export async function assertEmployeeInstanceAdmission(
   )
     throw new DataAccessError('authorization_denied');
   await authority(context, tx, 'update_user');
-  await assignment(context, snapshot.assignmentId, tx, true);
+  const currentAssignment = await assignment(
+    context,
+    snapshot.assignmentId,
+    tx,
+    true,
+  );
   await tx`select id from allrice_employee_instances where id=${snapshot.id} for share`;
   const instance = await sessionEmployeeInstance(
     context,
@@ -756,6 +1341,65 @@ export async function assertEmployeeInstanceAdmission(
     JSON.stringify(currentSnapshot) !== JSON.stringify(snapshot)
   )
     throw new EmployeeInstanceError('instance_conflict');
+  if (personaInput !== undefined) {
+    const pin = EmployeePersonaPinSchema.parse(personaInput);
+    if (
+      pin.source.task &&
+      (!taskProducer ||
+        runtimePolicyDigest(pin.source.task) !==
+          runtimePolicyDigest(taskProducer))
+    )
+      throw Error('employee_persona_snapshot_invalid');
+    if (
+      pin.source.instanceId !== snapshot.id ||
+      pin.source.assignmentId !== snapshot.assignmentId ||
+      pin.source.profileRevision !== snapshot.revision ||
+      pin.source.ownerId !== snapshot.ownerId ||
+      pin.source.organizationId !== context.organizationId ||
+      pin.source.workspaceId !== context.workspaceId ||
+      pin.source.employeeId !== currentAssignment.employee_id ||
+      pin.source.engine.employeeVersionId !== snapshot.source.employeeVersionId
+    )
+      throw Error('employee_persona_snapshot_invalid');
+    const scope = {
+      organizationId: snapshot.organizationId,
+      workspaceId: snapshot.workspaceId,
+      employeeId: currentAssignment.employee_id,
+    };
+    const basis = pin.source.task
+      ? undefined
+      : await readEmployeePersonaVersion(
+          {
+            ...scope,
+            role: 'basis',
+            versionId: currentAssignment.employee_version_id,
+          },
+          tx,
+        );
+    const engine = await readEmployeePersonaVersion(
+      {
+        ...scope,
+        role: 'engine',
+        versionId: snapshot.source.employeeVersionId,
+      },
+      tx,
+    );
+    if (
+      !engine ||
+      (!pin.source.task && !basis) ||
+      runtimePolicyDigest(pin.source.task ? engine.source : basis!.source) !==
+        runtimePolicyDigest(pin.source.basis) ||
+      runtimePolicyDigest(engine.source) !==
+        runtimePolicyDigest(pin.source.engine)
+    )
+      throw new EmployeeInstanceError('instance_conflict');
+    const eligibility =
+      snapshot.kind === 'custom' || (await isBaseRiceInstance(snapshot, tx))
+        ? 'full_identity'
+        : 'expression_only';
+    if (pin.source.profileEligibility !== eligibility)
+      throw Error('employee_persona_snapshot_invalid');
+  }
   const [session] =
     await tx`select id from allrice_chat_sessions where id=${sessionId}
     and organization_id=${context.organizationId} and workspace_id=${context.workspaceId} and owner_id=${actorId(context)}

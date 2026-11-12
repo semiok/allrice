@@ -1,4 +1,8 @@
-import { EmployeeDocumentsSchema } from './employee-documents.ts';
+import {
+  EmployeeDocumentsSchema,
+  EmployeePersonaPinSchema,
+} from './employee-documents.ts';
+import { EmployeePersonaFoundationSchema } from './employee-persona-foundation.ts';
 import { SessionReferenceSnapshotsSchema } from './session-reference.ts';
 import { ReferenceSelectionsSchema } from './reference-library.ts';
 import { CompanyRunSnapshotSchema } from './company-assets.ts';
@@ -388,7 +392,39 @@ export type EmployeeUserProfilePolicy = z.infer<
   typeof EmployeeUserProfilePolicySchema
 >;
 
-export const EmployeeRuntimePackageSchema = z
+const runtimeManifestSourceSchema = z
+  .object({
+    source: z.literal('allrice-published-runtime'),
+    harness: z.literal('dsh'),
+    distributionGeneration: z.string().trim().min(1).max(240),
+    provider: z.string().trim().min(1).max(120),
+    model: z.string().trim().min(1).max(200),
+    toolNames: z.array(z.string().trim().min(1).max(160)).max(64),
+    deniedCapabilities: z.array(SkillCapabilitySchema).max(16),
+    skillGovernance: z
+      .array(
+        z
+          .object({
+            id: UuidSchema,
+            name: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+            source: z.enum(['allrice', 'dsh-migrated']),
+            sourceRef: z.string().trim().min(1).max(1_000),
+            version: z.string().trim().min(1).max(120),
+            license: z.string().trim().min(1).max(120),
+            reviewStatus: z.literal('reviewed'),
+            reviewedByLabel: z.string().trim().min(1).max(240),
+            reviewedAt: z.string().datetime(),
+            checksum: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+          })
+          .strict(),
+      )
+      .max(64),
+  })
+  .strict();
+
+// Preserve the legacy parser's field order: it restores the publisher's
+// signed payload after JSONB storage, including nested governance fields.
+const legacyRuntimePackageSchema = z
   .object({
     schemaVersion: z.union([z.literal(1), z.literal(2)]),
     packageVersion: z.string().trim().min(1).max(240),
@@ -403,33 +439,8 @@ export const EmployeeRuntimePackageSchema = z
       })
       .strict(),
     skills: z.array(DshNativeSkillSnapshotSchema).max(64),
-    runtimeManifest: z
-      .object({
-        source: z.literal('allrice-published-runtime'),
-        harness: z.literal('dsh'),
-        distributionGeneration: z.string().trim().min(1).max(240),
-        provider: z.string().trim().min(1).max(120),
-        model: z.string().trim().min(1).max(200),
-        toolNames: z.array(z.string().trim().min(1).max(160)).max(64),
-        deniedCapabilities: z.array(SkillCapabilitySchema).max(16),
-        skillGovernance: z
-          .array(
-            z
-              .object({
-                id: UuidSchema,
-                name: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
-                source: z.enum(['allrice', 'dsh-migrated']),
-                sourceRef: z.string().trim().min(1).max(1_000),
-                version: z.string().trim().min(1).max(120),
-                license: z.string().trim().min(1).max(120),
-                reviewStatus: z.literal('reviewed'),
-                reviewedByLabel: z.string().trim().min(1).max(240),
-                reviewedAt: z.string().datetime(),
-                checksum: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-              })
-              .strict(),
-          )
-          .max(64),
+    runtimeManifest: runtimeManifestSourceSchema
+      .extend({
         instructionPrecedence: z.tuple([
           z.literal('platform-hard-policy'),
           z.literal('identity'),
@@ -444,6 +455,37 @@ export const EmployeeRuntimePackageSchema = z
       .strict(),
   })
   .strict();
+
+/** Explicit producer-owned materials. Absence on an old manifest is not a
+ * request to reconstruct policy from its composite system prompt. */
+export const EmployeePersonaSourceMaterialSchema = z
+  .object({
+    foundation: EmployeePersonaFoundationSchema,
+    platformPolicy: z.string().trim().min(1).max(20_000),
+  })
+  .strict();
+export type EmployeePersonaSourceMaterial = z.infer<
+  typeof EmployeePersonaSourceMaterialSchema
+>;
+
+const personaRuntimePackageSchema = z
+  .object({
+    schemaVersion: z.literal(3),
+    packageVersion: z.string().trim().min(1).max(240),
+    checksum: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    capabilityFingerprint: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    ...EmployeePersonaSourceMaterialSchema.shape,
+    skills: z.array(DshNativeSkillSnapshotSchema).max(64),
+    runtimeManifest: runtimeManifestSourceSchema,
+  })
+  .strict();
+
+// Historical 1/2 assets retain their strict, ordered checksum reader. New
+// packages carry independent materials rather than legacy instruction files.
+export const EmployeeRuntimePackageSchema = z.union([
+  legacyRuntimePackageSchema,
+  personaRuntimePackageSchema,
+]);
 export type EmployeeRuntimePackage = z.infer<
   typeof EmployeeRuntimePackageSchema
 >;
@@ -487,6 +529,9 @@ export const EmployeeDefinitionSchema = z
     }),
     runtimePackage: EmployeeRuntimePackageSchema.nullable().default(null),
     partnerProfile: PartnerProfileSchema.default(DefaultPartnerProfile),
+    // New definition-only producers freeze these in the same immutable
+    // manifest/checksum. Never supply a default for historical manifests.
+    personaSource: EmployeePersonaSourceMaterialSchema.optional(),
   })
   .strict()
   .superRefine((definition, context) => {
@@ -722,6 +767,9 @@ export const EmployeeExecutionSnapshotV2Schema =
     schemaVersion: z.literal(2),
     // No default: old Run JSON remains unchanged.
     instance: EmployeeInstanceSnapshotSchema.optional(),
+    // No default or legacy backfill. The two independently verified sources
+    // and exact document/policy digests are frozen in the existing binding.
+    persona: EmployeePersonaPinSchema.optional(),
     workflowInvocation: BrandContentWorkflowInvocationSchema.optional(),
     baseSkillCatalog: EmployeeBaseSkillCatalogSchema.optional(),
     content: EmployeeRuntimeContentSchema.optional(),

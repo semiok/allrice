@@ -77,6 +77,7 @@ import {
   type ChatMessageSchema,
   type ChatSessionSchema,
   type EmployeeAssignmentSchema,
+  type EmployeePersonaTask,
   type ImageMediaType,
   type RequestContext,
   type ExecutionContext,
@@ -575,11 +576,23 @@ export async function createAssignedChatSession(
   options: { sessionId?: string; freezeAccountCapabilities?: true } = {},
   transaction?: TransactionSql,
 ): Promise<z.infer<typeof ChatSessionSchema>> {
-  if (!transaction)
-    return getDatabase().begin((tx) =>
-      createAssignedChatSession(context, input, options, tx),
-    );
   const parsed = CreateChatSessionInputSchema.parse(input);
+  if (!transaction) {
+    const { employeePersonaAdmission } =
+      await import('../employees/employee-instances.ts');
+    return employeePersonaAdmission(
+      getDatabase(),
+      parsed.employeeAssignmentId && context.actor.type === 'user'
+        ? {
+            assignmentId: parsed.employeeAssignmentId,
+            organizationId: context.organizationId,
+            workspaceId: parsed.workspaceId ?? context.workspaceId,
+            ownerId: context.actor.id,
+          }
+        : undefined,
+      (tx) => createAssignedChatSession(context, parsed, options, tx),
+    );
+  }
   if (!parsed.employeeAssignmentId)
     throw new DataAccessError('authorization_denied');
   const sql = transaction ?? getDatabase();
@@ -644,17 +657,20 @@ export async function createAssignedChatSession(
   const [existing] =
     await sql`select id from allrice_chat_sessions where id=${fixedSessionId}`;
   const origin = !existing
-    ? newCurrentEmployeeChatOrigin({
-        organizationId: context.organizationId,
-        workspaceId,
-        ownerId: requireUser(context),
-        sessionId: fixedSessionId,
-        source: {
-          employeeVersionId,
-          configChecksum: versions[0].config_checksum,
-          manifest: versions[0].manifest,
+    ? newCurrentEmployeeChatOrigin(
+        {
+          organizationId: context.organizationId,
+          workspaceId,
+          ownerId: requireUser(context),
+          sessionId: fixedSessionId,
+          source: {
+            employeeVersionId,
+            configChecksum: versions[0].config_checksum,
+            manifest: versions[0].manifest,
+          },
         },
-      })
+        transaction,
+      )
     : null;
   // Both entrypoints also serve scheduled/platform work; only the ordinary
   // authenticated session route opts in. Idempotent retries do not reread config.
@@ -1879,6 +1895,7 @@ async function prepareChatRunBinding(
   runContext: ChatRunContext,
   database: ChatRunDatabase,
   employeeDocuments = false,
+  task?: Pick<EmployeePersonaTask, 'kind' | 'id'>,
 ) {
   const {
     context,
@@ -1909,6 +1926,15 @@ async function prepareChatRunBinding(
     {
       context,
       employeeDocuments,
+      ...(task
+        ? {
+            taskPersona: {
+              ...task,
+              sessionId: session.id,
+              userMessageId: result.userMessage.id,
+            },
+          }
+        : {}),
       workspaceId,
       assignmentId: session.employee_assignment_id,
       employeeVersionId: effectiveEmployeeVersionId,
@@ -2049,6 +2075,10 @@ async function prepareNativeScheduledChatRunInTransaction(
     context,
     reservation,
     kind === 'once' ? 'native_once_occurrence' : 'native_recurring_occurrence',
+    {
+      kind: kind === 'once' ? 'native_once' : 'native_recurring',
+      id: occurrenceId,
+    },
     (submission, options) =>
       enqueue(transaction, context, occurrenceId, submission, options),
   );
@@ -2074,6 +2104,7 @@ export async function prepareManualAutomationChatRunInTransaction(
     context,
     reservation,
     'automation_manual_request',
+    { kind: 'automation_manual', id: manualRunId },
     (submission, options) =>
       queue.enqueueManualAutomationRunInTransaction(
         transaction,
@@ -2098,6 +2129,7 @@ async function prepareAutomationChatRunInTransaction(
     prompt: string;
   },
   reason: string,
+  task: Pick<EmployeePersonaTask, 'kind' | 'id'>,
   enqueue: (
     submission: PreparedAutomationChatInput['submission'],
     options: PreparedAutomationChatInput['enqueueOptions'],
@@ -2142,6 +2174,8 @@ async function prepareAutomationChatRunInTransaction(
     preparation,
     runContext,
     database,
+    false,
+    task,
   );
   const { submission, enqueueOptions } = await prepareChatRunInput(
     preparation,
@@ -2275,6 +2309,9 @@ export async function sendChatMessage(
       runContext,
       database,
       !options.folderEventId,
+      options.folderEventId
+        ? { kind: 'folder_event', id: options.folderEventId }
+        : undefined,
     );
     const { enqueueRun, getRun } = await import('../execution/queue.ts');
     const { submission, enqueueOptions } = await prepareChatRunInput(

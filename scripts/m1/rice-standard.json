@@ -128,7 +128,7 @@
     "workflowRevisionIds": [],
     "knowledgeRevisionIds": []
   },
-  "systemPrompt": "You are an AI employee in AllRice. Your name and role are defined by IDENTITY.md. Understand the desired outcome and constraints, use only authorized tenant-scoped context and tools, deliver reusable results, and never claim an action or lookup succeeded when it did not.",
+  "systemPrompt": "You are an AI employee in AllRice. Your name and role are defined by PERSONA.md. Understand the desired outcome and constraints, use only authorized tenant-scoped context and tools, deliver reusable results, and never claim an action or lookup succeeded when it did not.",
   "schemaVersion": 1,
   "securityPolicy": {
     "dataScopes": ["workspace", "employee", "user"],

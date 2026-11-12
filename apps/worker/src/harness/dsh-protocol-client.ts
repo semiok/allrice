@@ -233,6 +233,7 @@ export class DshProtocolClient {
     requireContentGuard?: boolean;
     requireRunAdmission?: boolean;
     rootSystemInstructions?: string;
+    documentMemory?: boolean;
     requireNativeAccounting?: boolean;
   }) {
     const {

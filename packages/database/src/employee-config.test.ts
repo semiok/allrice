@@ -60,7 +60,14 @@ describe('Rice employee manifest', () => {
       proactivePolicy: 'ask',
       approvalPolicy: 'confirm_external',
     });
-    expect(manifest.systemPrompt).toContain('产品经理工作伙伴');
+    if (manifest.schemaVersion !== 2) throw Error('expected v2');
+    expect(manifest.personaSource?.foundation.identity.role).toBe(
+      '产品经理工作伙伴',
+    );
+    expect(manifest.systemPrompt).not.toContain('产品经理工作伙伴');
+    expect(manifest.systemPrompt).toContain(
+      'Ask before proposing any proactive follow-up',
+    );
     expect(manifest.systemPrompt).toContain('external communication');
   });
 
@@ -102,7 +109,12 @@ describe('Rice employee manifest', () => {
     expect(manifest.schemaVersion).toBe(2);
     if (manifest.schemaVersion === 2) {
       expect(manifest.identity.workStyle).toContain('事实');
-      expect(manifest.systemPrompt).toContain('事实和判断分开表达');
+      expect(manifest.personaSource?.foundation.identity.workStyle).toBe(
+        '事实和判断分开表达。',
+      );
+      expect(manifest.systemPrompt).not.toContain('事实和判断分开表达');
+      expect(manifest.systemPrompt).toContain('保留来源。');
+      expect(manifest.systemPrompt).toContain('不得读取其他工作区。');
       expect(manifest.capabilityBindings.toolNames).toEqual([
         'workspace.file.read',
       ]);

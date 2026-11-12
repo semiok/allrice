@@ -73,6 +73,9 @@ export interface FinalDeliveryReplyOrigin {
 export interface HarnessExecutionInput {
   /** Worker-checked ordinary human root only. Selects transport, not file ACL. */
   nativeFileRead?: boolean;
+  /** Existing document-memory ledger plus database-checked human source.
+   * Selects tool descriptions only; never grants memory access or authority. */
+  documentMemory?: boolean;
   /** Restricts only three existing method schemas. Derived from the server's
    * frozen Rice identity; never grants a tool or accepts model/browser identity. */
   personalMethodToolsOnly?: true;

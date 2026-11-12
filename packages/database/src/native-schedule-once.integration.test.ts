@@ -13,8 +13,14 @@ import {
 } from 'vitest';
 import type { TransactionSql } from 'postgres';
 import * as client from './core/client.ts';
+import * as personaRuntime from './platform-employees/runtime-package.ts';
+import * as personaDigest from './runtime-policy-digest.ts';
 import { getDatabase } from './core/client.ts';
-import type { RuntimeActionBinding } from '@allrice/contracts';
+import {
+  EmployeeDocumentsSchema,
+  EmployeePersonaPinSchema,
+  type RuntimeActionBinding,
+} from '@allrice/contracts';
 import { authorizeFixturePlatformAdministrator } from './platform-authority.fixture.ts';
 import {
   createRuntimePolicyAdmission,
@@ -294,6 +300,251 @@ suite(
       });
       return { control, write };
     }
+    it.each(['native_once', 'automation_manual', 'session_birth'] as const)(
+      'prepares PERSONA source material before the real %s admission transaction',
+      async (kind) => {
+        const t = await task(
+          undefined,
+          '请在原会话整理本周工作，保持原任务资格。',
+        );
+        if (kind === 'native_once') await receipt(t.task.id);
+        const db = getDatabase(),
+          begin = db.begin.bind(db);
+        const material = personaRuntime.employeePersonaManifestMaterial;
+        let active = false;
+        let beginCalls = 0;
+        let birthId: string | undefined;
+        const phases: { active: boolean; beginCalls: number }[] = [];
+        const digestPhases: typeof phases = [];
+        const source = vi
+          .spyOn(personaRuntime, 'employeePersonaManifestMaterial')
+          .mockImplementation((...args) => {
+            phases.push({ active, beginCalls });
+            return Reflect.apply(material, personaRuntime, args);
+          });
+        const digest = personaDigest.runtimePolicyDigest;
+        const fullSource = vi
+          .spyOn(personaDigest, 'runtimePolicyDigest')
+          .mockImplementation((value) => {
+            // Complete definitions, not baseline native-root/package payloads
+            // or the allowed final persona/pin/string digests.
+            if (
+              value &&
+              typeof value === 'object' &&
+              'schemaVersion' in value &&
+              value.schemaVersion === 2 &&
+              'key' in value &&
+              'systemPrompt' in value &&
+              'runtimePolicy' in value &&
+              'runtimePackage' in value
+            )
+              digestPhases.push({ active, beginCalls });
+            return digest(value);
+          });
+        const wrap = vi.spyOn(db, 'begin').mockImplementation((async (
+          ...args: unknown[]
+        ) => {
+          beginCalls++;
+          const operation = args.pop() as (
+            tx: TransactionSql,
+          ) => Promise<unknown>;
+          return Reflect.apply(begin, db, [
+            ...args,
+            async (tx: TransactionSql) => {
+              active = true;
+              try {
+                return await operation(tx);
+              } finally {
+                active = false;
+              }
+            },
+          ]);
+        }) as typeof db.begin);
+        try {
+          if (kind === 'session_birth')
+            birthId = (
+              await createChatSession(
+                f.context,
+                {
+                  workspaceId: f.workspaceId,
+                  employeeAssignmentId: f.assignmentId,
+                  title: 'Ordinary HTTP session birth',
+                },
+                { freezeAccountCapabilities: true },
+              )
+            ).id;
+          else if (kind === 'native_once')
+            expect(await dispatchNextNativeOnceOccurrence(randomUUID())).toBe(
+              true,
+            );
+          else {
+            const [automation] = await db<{ revision: number }[]>`
+              select revision from allrice_automations where id=${t.task.id}
+                and organization_id=${f.organizationId} and workspace_id=${f.workspaceId}
+                and owner_id=${f.ownerId}`;
+            if (!automation) throw Error('fixture_automation_missing');
+            expect(
+              (
+                await runManualAutomation(f.context, f.workspaceId, t.task.id, {
+                  requestId: randomUUID(),
+                  expectedRevision: automation.revision,
+                })
+              ).run.id,
+            ).toBeTruthy();
+          }
+        } finally {
+          wrap.mockRestore();
+          source.mockRestore();
+          fullSource.mockRestore();
+        }
+        // Observe both real entry transactions; an untouched fixture pool must
+        // never make inactive=false look like a successful boundary proof.
+        expect(beginCalls).toBe(kind === 'session_birth' ? 1 : 2);
+        expect(phases.length).toBeGreaterThan(0);
+        expect(
+          phases.every(
+            (phase) =>
+              !phase.active &&
+              phase.beginCalls === (kind === 'native_once' ? 1 : 0),
+          ),
+        ).toBe(true);
+        expect(digestPhases.length).toBeGreaterThan(0);
+        expect(
+          digestPhases.every(
+            (phase) =>
+              !phase.active &&
+              phase.beginCalls === (kind === 'native_once' ? 1 : 0),
+          ),
+        ).toBe(true);
+        if (kind === 'session_birth') {
+          const [birth] =
+            await db`select native_root_origin from allrice_chat_sessions
+            where id=${birthId!} and organization_id=${f.organizationId}
+              and workspace_id=${f.workspaceId} and owner_id=${f.ownerId}`;
+          expect(birth!.native_root_origin.birthSource.employeeVersionId).toBe(
+            f.employeeVersionId,
+          );
+          return;
+        }
+        const [run] =
+          await db`select ar.id,ar.native_once_occurrence_id,er.session_id,er.user_message_id,
+          er.execution_snapshot->'persona' persona from allrice_automation_runs ar
+          join allrice_employee_runs er on er.run_id=ar.run_id where ar.automation_id=${t.task.id}`;
+        const pin = EmployeePersonaPinSchema.parse(run!.persona);
+        expect(pin.source.task).toEqual({
+          kind,
+          id: kind === 'native_once' ? run!.native_once_occurrence_id : run!.id,
+          sessionId: run!.session_id,
+          userMessageId: run!.user_message_id,
+        });
+        expect(pin.source.engine.employeeVersionId).toBe(f.employeeVersionId);
+      },
+    );
+    it('rejects a switch to an unprepared source version after preparation despite the same stored checksum, with zero new business rows', async () => {
+      const t = await task(undefined, '请核对来源，再在原会话交回结果。');
+      const native = await receipt(t.task.id);
+      const [original] =
+        await f.db`select v.manifest,v.config_checksum,a.employee_version_id
+        from allrice_employee_assignments a join allrice_employee_versions v on v.id=a.employee_version_id
+        where a.id=${f.assignmentId}`;
+      expect(original!.employee_version_id).toBe(f.employeeVersionId);
+      const versionId = randomUUID(),
+        workerId = randomUUID();
+      onTestFinished(async () => {
+        await f.db`update allrice_employee_assignments set employee_version_id=${f.employeeVersionId}
+          where id=${f.assignmentId}`;
+        await cancelOnceTask(f.context, t.sessionId, t.task.id);
+      });
+      // Same first-INSERT corruption pattern as the PERSONA source fixtures.
+      // Published versions/triggers stay intact; this extra owned version lives
+      // only until fixture.close. Reserve a version away from later v2/v3/v4 tests.
+      await f.db`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,
+        version,name,description,model,system_prompt,capabilities,config_checksum,manifest,
+        provider_snapshot,skill_version_ids)
+        select ${versionId},organization_id,workspace_id,employee_id,version+100,name,description,
+          model,system_prompt,capabilities,config_checksum,
+          jsonb_set(manifest,'{description}',to_jsonb('different raw source with the same stored checksum'::text)),
+          provider_snapshot,skill_version_ids from allrice_employee_versions where id=${f.employeeVersionId}`;
+      const [unprepared] =
+        await f.db`select manifest,config_checksum from allrice_employee_versions where id=${versionId}`;
+      expect(unprepared!.config_checksum).toBe(original!.config_checksum);
+      expect(unprepared!.manifest).not.toEqual(original!.manifest);
+      const [savedReceipt] =
+        await f.db`select occurrence_id,payload,payload_digest,outbox_epoch
+        from allrice_native_once_occurrences where automation_id=${t.task.id}`;
+      const before = await counts();
+      const db = getDatabase(),
+        begin = db.begin.bind(db);
+      let calls = 0,
+        prepared = false,
+        injected = false;
+      const material = personaRuntime.employeePersonaManifestMaterial;
+      const source = vi
+        .spyOn(personaRuntime, 'employeePersonaManifestMaterial')
+        .mockImplementation((...args) => {
+          const value = Reflect.apply(material, personaRuntime, args);
+          if (calls === 1) prepared = true;
+          return value;
+        });
+      const wrap = vi.spyOn(db, 'begin').mockImplementation((async (
+        ...args: unknown[]
+      ) => {
+        // The production pool's claim committed, then preparation consumed A.
+        // Switch the real assignment before its original business begin uses B.
+        if (++calls === 2) {
+          expect(prepared).toBe(true);
+          const [current] =
+            await f.db`select employee_version_id from allrice_employee_assignments where id=${f.assignmentId}`;
+          expect(current!.employee_version_id).toBe(f.employeeVersionId);
+          const [changed] =
+            await f.db`update allrice_employee_assignments set employee_version_id=${versionId}
+            where id=${f.assignmentId} returning employee_version_id`;
+          expect(changed!.employee_version_id).toBe(versionId);
+          injected = true;
+        }
+        return Reflect.apply(begin, db, args);
+      }) as typeof db.begin);
+      try {
+        await expect(
+          dispatchNextNativeOnceOccurrence(workerId),
+        ).rejects.toMatchObject({ code: 'instance_conflict' });
+      } finally {
+        wrap.mockRestore();
+        source.mockRestore();
+      }
+      expect(calls).toBe(2);
+      expect(prepared).toBe(true);
+      expect(injected).toBe(true);
+      expect(await counts()).toEqual(before);
+      const [receiptAfter] =
+        await f.db`select occurrence_id,payload,payload_digest,outbox_state,
+        outbox_reason,outbox_owner_id,outbox_epoch,business_binding
+        from allrice_native_once_occurrences where automation_id=${t.task.id}`;
+      expect(receiptAfter).toMatchObject({
+        occurrence_id: savedReceipt!.occurrence_id,
+        payload: savedReceipt!.payload,
+        payload_digest: savedReceipt!.payload_digest,
+        outbox_state: 'pending',
+        outbox_reason: null,
+        outbox_owner_id: workerId,
+        business_binding: null,
+      });
+      expect(Number(receiptAfter!.outbox_epoch)).toBe(
+        Number(savedReceipt!.outbox_epoch) + 1,
+      );
+      expect(await store.readExactCommit(writer, native.write)).toBe(
+        'committed',
+      );
+      const [unchanged] =
+        await f.db`select manifest,config_checksum from allrice_employee_versions where id=${f.employeeVersionId}`;
+      expect(unchanged).toEqual({
+        manifest: original!.manifest,
+        config_checksum: original!.config_checksum,
+      });
+      const [current] =
+        await f.db`select employee_version_id from allrice_employee_assignments where id=${f.assignmentId}`;
+      expect(current!.employee_version_id).toBe(versionId);
+    });
     it('freezes the session owner preferences when a scheduled occurrence queues its run', async () => {
       const before = await getUserPreferences(f.context);
       onTestFinished(async () => {
@@ -322,9 +573,52 @@ suite(
           where ar.automation_id=${t.task.id}`;
         return row;
       };
+      const [frozen] = await f.db`
+        select ar.native_once_occurrence_id occurrence_id, er.session_id,
+          er.user_message_id, er.execution_snapshot->'persona' persona
+        from allrice_automation_runs ar
+        join allrice_employee_runs er on er.run_id=ar.run_id
+        where ar.automation_id=${t.task.id}`;
+      expect(frozen).toBeDefined();
+      expect(frozen!.session_id).toBe(t.sessionId);
+      const pin = EmployeePersonaPinSchema.parse(frozen!.persona);
+      expect(pin.source).toMatchObject({
+        kind: 'employee_run',
+        organizationId: f.organizationId,
+        workspaceId: f.workspaceId,
+        employeeId: f.employeeId,
+        assignmentId: f.assignmentId,
+        ownerId: f.context.actor.id,
+        profileEligibility: 'expression_only',
+        engine: { employeeVersionId: f.employeeVersionId },
+        task: {
+          kind: 'native_once',
+          id: frozen!.occurrence_id,
+          sessionId: t.sessionId,
+          userMessageId: frozen!.user_message_id,
+        },
+      });
+      expect(pin.source.basis).toEqual(pin.source.engine);
+      const documents = EmployeeDocumentsSchema.parse(
+        (await snapshot())!.documents,
+      );
+      expect(documents.persona?.startsWith('# 人设\n')).toBe(true);
+      const persona = JSON.parse(documents.persona!.slice('# 人设\n'.length));
+      expect(persona.source).toEqual(pin.source);
+      expect(persona.name.source).toBe('frozen_task_engine');
+      expect(pin.personaDigest).toBe(runtimePolicyDigest(documents.persona));
+      // Task documents reuse existing organizational facts; recall stays separate.
+      expect(documents.user.startsWith('# USER.md\n')).toBe(true);
+      expect(
+        JSON.parse(documents.user.slice('# USER.md\n'.length)).facts,
+      ).toEqual({
+        companyName: 'P27 isolated',
+        displayName: 'P27 isolated',
+      });
+      expect(documents.memory).toBe('');
       const expected = {
         owner_id: f.context.actor.id,
-        documents: null,
+        documents,
         preferences: {
           version: 1,
           questionWait: { mode: 'timed', seconds: 300 },

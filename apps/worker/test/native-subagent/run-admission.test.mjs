@@ -63,6 +63,12 @@ it('profile writes reach the Broker only from the actual live root, never a chil
   const h = await host({
     runId,
     nativeTools: ['workspace.employee.profile.update'],
+    rootSystemInstructions: 'ROOT_STABLE',
+    employeeDocuments: {
+      persona: 'SAME_EMPLOYEE_PERSONA',
+      user: 'ROOT_USER_ONLY',
+      memory: 'ROOT_MEMORY_ONLY',
+    },
     bridge: async (method, params) => {
       if (method === 'allrice/run-authorize') return { allowed: true };
       if (method !== 'allrice/tool-call') throw Error(method);
@@ -105,6 +111,9 @@ it('profile writes reach the Broker only from the actual live root, never a chil
   ]);
   expect(childResults).toHaveLength(1);
   expect(childResults[0]).toContain('EMPLOYEE_PROFILE_ROOT_REQUIRED');
+  expect(childResults[0]).toContain('SAME_EMPLOYEE_PERSONA');
+  expect(childResults[0]).not.toContain('ROOT_USER_ONLY');
+  expect(childResults[0]).not.toContain('ROOT_MEMORY_ONLY');
 });
 
 it('PR3a observes actual child and grandchild identity before model admission', async () => {
@@ -151,7 +160,12 @@ it('PR3a observes actual child and grandchild identity before model admission', 
 });
 
 it('PR3a rejects outside and symlink cwd before a child model request', async () => {
-  const h = await host({ runId, bridge });
+  const h = await host({
+    runId,
+    bridge,
+    rootSystemInstructions: 'ROOT_STABLE',
+    employeeDocuments: { persona: 'ADMITTED_PERSONA', user: '', memory: '' },
+  });
   await symlink('/', join(h.directory, 'outside'));
   for (const cwd of ['/', join(h.directory, 'outside')]) {
     await expect(
@@ -164,7 +178,12 @@ it('PR3a rejects outside and symlink cwd before a child model request', async ()
 });
 
 it('PR3a no active Run blocks native wakeups and wrong-Run inputs', async () => {
-  const h = await host({ runId, bridge });
+  const h = await host({
+    runId,
+    bridge,
+    rootSystemInstructions: 'ROOT_STABLE',
+    employeeDocuments: { persona: 'ADMITTED_PERSONA', user: '', memory: '' },
+  });
   await h.server.handleRequest('run/end', { sessionId: h.root.id, runId });
   h.root.steer(
     createUserMessage({ content: text('迟到唤醒'), source: { kind: 'user' } }),
@@ -181,6 +200,71 @@ it('PR3a no active Run blocks native wakeups and wrong-Run inputs', async () => 
     }),
   ).rejects.toThrow('RUN_NOT_ACTIVE');
 });
+
+it('run/begin rejects invalid documents and foreign roots before admitting or exposing a stale document binding', async () => {
+  const h = await host({
+    runId,
+    bridge,
+    rootSystemInstructions: 'ROOT_STABLE',
+    employeeDocuments: { persona: 'OLD_PERSONA', user: '', memory: '' },
+  });
+  await h.server.handleRequest('run/end', { runId });
+  const notices = h.notices.length;
+  await expect(
+    h.server.handleRequest('run/begin', {
+      sessionId: h.root.id,
+      runId,
+      employeeDocuments: { persona: '人'.repeat(5500), user: '', memory: '' },
+    }),
+  ).rejects.toThrow();
+  expect(h.notices).toHaveLength(notices);
+  await expect(h.prompt('无效快照不可开始任务')).rejects.toThrow(
+    'RUN_NOT_ACTIVE',
+  );
+  await expect(
+    h.server.handleRequest('run/begin', {
+      sessionId: 'foreign-root',
+      runId,
+      employeeDocuments: { persona: 'FOREIGN_PERSONA', user: '', memory: '' },
+    }),
+  ).rejects.toThrow('HOST_SINGLE_ROOT_REQUIRED');
+  await expect(h.prompt('外来根不可建立绑定')).rejects.toThrow(
+    'RUN_NOT_ACTIVE',
+  );
+  expect(h.calls).toHaveLength(0);
+  await h.server.handleRequest('run/begin', {
+    sessionId: h.root.id,
+    runId,
+    employeeDocuments: { persona: 'CURRENT_PERSONA', user: '', memory: '' },
+  });
+  const child = await h.spawn();
+  await child.result;
+  await h.wait();
+  const request = h.calls.find((r) => r.sessionId === child.childId);
+  expect(JSON.stringify(request.messages)).toContain('CURRENT_PERSONA');
+  expect(JSON.stringify(request.messages)).not.toContain('OLD_PERSONA');
+  expect(JSON.stringify(request.messages)).not.toContain('FOREIGN_PERSONA');
+}, 30000);
+
+it('run/begin rejects a missing document provider without leaving an active Run', async () => {
+  const h = await host({ runId, bridge });
+  await h.server.handleRequest('run/end', { runId });
+  await expect(
+    h.server.handleRequest('run/begin', {
+      sessionId: h.root.id,
+      runId,
+      employeeDocuments: { persona: 'UNBOUND_PERSONA', user: '', memory: '' },
+    }),
+  ).rejects.toThrow('EMPLOYEE_DOCUMENT_PROVIDER_REQUIRED');
+  await expect(h.prompt('缺少 provider 不可开始任务')).rejects.toThrow(
+    'RUN_NOT_ACTIVE',
+  );
+  expect(h.calls).toHaveLength(0);
+  await h.server.handleRequest('run/begin', { sessionId: h.root.id, runId });
+  await h.prompt('原有非文档任务继续可用');
+  await h.wait();
+  expect(h.calls).toHaveLength(1);
+}, 30000);
 
 it('PR3a Run steer crosses native turns, records actual adoption, and closes at wait', async () => {
   const childEntered = gate(),

@@ -9,10 +9,13 @@ import {
   realpathSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { gzipSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
+  EmployeeKernelRequestSchema,
+  EmployeePromptSnapshotSchema,
   PlatformEmployeeDefinitionSchema,
   type RequestContext,
   cloudPlatform,
@@ -33,12 +36,28 @@ import {
   listPlatformRepairTasks,
   readPlatformRepairSource,
   applyPlatformRepairCandidate,
+  platformRepairInstructions,
 } from './platform-repair.ts';
+import { resolveEmployeeExecution } from './employees/employeehub.ts';
+import { readEmployeeChatSourceKind } from './employees/employee-chat-authority.ts';
+import * as modelPool from './providers/model-pool.ts';
+import * as harnessRouter from '../../../apps/worker/src/harness/router.js';
+import { DshHarnessAdapter } from '../../../apps/worker/src/harness/dsh-adapter.js';
+import {
+  measureDshNativeArtifact,
+  installDshNativeArtifact,
+  nativeArtifactPath,
+} from '../../../apps/worker/src/harness/dsh-native-artifact.js';
+import { p24Fixture } from '../../../apps/worker/test/p24/fixture.js';
+import { executeEmployeeRun } from '../../../apps/worker/src/jobs/employee-run.js';
+import type * as RepairWorker from '../../../apps/worker/src/jobs/platform-repair.js';
+import { prepareExecutionIsolation } from '../../../apps/worker/src/isolation.js';
 import { getPlatformRepairExecution } from './platform-repair-authority.ts';
 import {
   claimNextJob,
   startClaimedJob,
   completeJob,
+  failJob,
 } from './execution/queue.ts';
 import {
   repositoryDigest,
@@ -58,6 +77,22 @@ import {
   repairAssertionCases,
   repairHarnessChecksum,
 } from './platform-repair-profile.ts';
+// Keep the real task, source, queue, lease and Worker. Only the physical repair
+// backend is replaced; this input test must not launch cloud verification.
+vi.mock(
+  '../../../apps/worker/src/jobs/platform-repair.js',
+  async (original) => ({
+    ...(await original<typeof RepairWorker>()),
+    createPlatformRepairController: vi.fn(async () => ({
+      onToolCall: async () => {
+        throw Error('INPUT_TEST_NO_REPAIR_TOOL');
+      },
+      finish: async () => {
+        throw Error('INPUT_TEST_NO_REPAIR_FINISH');
+      },
+    })),
+  }),
+);
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
@@ -69,12 +104,40 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
     adminEmail: string,
     catalogRoot: string,
     baseline: RepositoryBaseline;
+  let model: Awaited<ReturnType<typeof p24Fixture>>;
+  let manifestPath: string, previousManifest: Buffer | undefined;
+  const testHarnessExecArgv = process.execArgv;
   beforeAll(async () => {
-    // Explicit SQL-only issuer for current-generation technical roots; not
-    // approval/installation of any native runtime artifact.
-    vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
-    vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
+    const repository = await realpath(resolve(import.meta.dirname, '../../..'));
+    const artifact = await measureDshNativeArtifact(repository, undefined, {
+      schemaVersion: 2,
+    });
+    manifestPath = join(repository, nativeArtifactPath);
+    previousManifest = await readFile(manifestPath).catch(
+      (error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT') throw error;
+        return undefined;
+      },
+    );
+    await mkdir(join(repository, '.local'), { recursive: true });
+    await writeFile(manifestPath, JSON.stringify(artifact));
+    process.execArgv = [];
+    vi.stubEnv('NODE_OPTIONS', '');
+    await installDshNativeArtifact({
+      root: repository,
+      expectedId: artifact.artifactId,
+    });
+    vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', artifact.artifactId);
+    vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', artifact.artifactId);
     fixture = await createRuntimeFixtureDatabase();
+    vi.stubEnv('ALLRICE_STORAGE_ROOT', fixture.storageRoot);
+    vi.stubEnv(
+      'ALLRICE_DSH_PLATFORM_HOME',
+      join(fixture.storageRoot, 'synthetic-platform-home'),
+    );
+    model = await p24Fixture(async () => ({
+      text: '仅核对冻结人设，不调用修复工具。',
+    }));
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
     company = await createExperienceFixture(fixture.db);
     const account = await ensureBootstrapPortalPrincipal({
@@ -113,6 +176,10 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
       await fixture.db`select r.* from allrice_platform_employee_revisions r join allrice_platform_employees e on e.current_published_revision_id=r.id where e.employee_key='rice'`;
     const definition = PlatformEmployeeDefinitionSchema.parse({
       ...r!.definition,
+      identity: {
+        ...r!.definition.identity,
+        mission: 'FIXED_PERSONA_LITERAL {{missing}}',
+      },
       capabilities: {
         ...r!.definition.capabilities,
         nativeSkillIds: [],
@@ -181,10 +248,19 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
   }, 120000);
 
   afterAll(async () => {
-    vi.restoreAllMocks();
-    vi.unstubAllEnvs();
-    await fixture?.close();
-    if (catalogRoot) rmSync(catalogRoot, { recursive: true, force: true });
+    try {
+      await model?.close();
+      await fixture?.close();
+    } finally {
+      if (manifestPath) {
+        if (previousManifest) await writeFile(manifestPath, previousManifest);
+        else await rm(manifestPath, { force: true });
+      }
+      process.execArgv = testHarnessExecArgv;
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+      if (catalogRoot) rmSync(catalogRoot, { recursive: true, force: true });
+    }
   });
   const submit = (requestId = randomUUID()) =>
     createPlatformRepairTask(admin, { requestId, baselineId: baseline.id });
@@ -321,6 +397,147 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
     await startClaimedJob(workerId, job!.id, lease.leaseToken);
     return lease;
   }
+  it('fresh fixed repair freezes real source through Worker and native Host to the HTTP provider', async () => {
+    const originalFreeze = modelPool.freezeSessionModelSnapshot;
+    const freeze = vi
+      .spyOn(modelPool, 'freezeSessionModelSnapshot')
+      .mockImplementation(async (...args) => ({
+        ...(await originalFreeze(...args)),
+        provider: 'openai-compatible',
+        authMode: 'api_key',
+        model: 'p24-synthetic',
+        reasoningEffort: 'low',
+        credentialReference: 'test:synthetic',
+        baseUrl: model.baseUrl,
+      }));
+    const task = await submit().finally(() => freeze.mockRestore());
+    const [stored] =
+      await fixture.db`select * from allrice_employee_runs where run_id=${task.runId}`;
+    const prompt = EmployeePromptSnapshotSchema.parse(stored!.prompt_snapshot);
+    const scope = {
+      runId: task.runId,
+      organizationId: stored!.organization_id as string,
+      workspaceId: stored!.workspace_id as string,
+      ownerId: stored!.owner_id as string,
+    };
+    const resolved = await resolveEmployeeExecution(scope);
+    expect(resolved.executionSnapshot?.schemaVersion).toBe(2);
+    expect(resolved.executionSnapshot).toHaveProperty(
+      'persona.source.kind',
+      'employee_run',
+    );
+    expect(prompt.employeeDocuments).toEqual({
+      persona: expect.any(String),
+      user: '',
+      memory: '',
+    });
+    expect(prompt.memories).toEqual([]);
+    const workerId = randomUUID(),
+      job = await claimNextJob(workerId, 60000);
+    expect(job?.id).toBe(task.jobId);
+    const lease = {
+      workerId,
+      jobId: job!.id,
+      leaseToken: job!.lease!.token,
+      leaseMs: 60000,
+    };
+    const execution = await startClaimedJob(
+      workerId,
+      job!.id,
+      lease.leaseToken,
+    );
+    expect(
+      await readEmployeeChatSourceKind({
+        context: execution!.context,
+        userMessageId: stored!.user_message_id as string,
+      }),
+    ).toBe('internal');
+    const isolation = await prepareExecutionIsolation({
+      root: fixture.storageRoot,
+      ...scope,
+      jobId: job!.id,
+      attempt: job!.attempt,
+    });
+    const adapter = new DshHarnessAdapter({
+      runtimeRoot: join(fixture.storageRoot, 'fixed-repair-native'),
+      credentialResolver: {
+        resolve: async () => ({ apiKey: 'synthetic-only' }),
+      },
+      requestTimeoutMs: 15000,
+    });
+    const router = vi
+      .spyOn(harnessRouter, 'getHarnessRouter')
+      .mockReturnValue(new harnessRouter.HarnessRouter([adapter]));
+    const actualExecute = adapter.execute.bind(adapter);
+    const execute = vi
+      .spyOn(adapter, 'execute')
+      .mockImplementation(async (input) => {
+        const kernel = EmployeeKernelRequestSchema.parse(input.kernel);
+        expect(kernel.employeeDocuments).toEqual(prompt.employeeDocuments);
+        expect(kernel.rootSystemInstructions).toBe(kernel.systemInstructions);
+        expect(input.tools.map((tool) => tool.name)).toEqual([
+          'platform.repository.repair',
+        ]);
+        expect(input.nativeSkills).toEqual([]);
+        expect(input.nativeSubagents).toBeUndefined();
+        expect(input.nativeRunAuthority).toBeUndefined();
+        return actualExecute(input);
+      });
+    try {
+      await expect(
+        executeEmployeeRun({
+          execution: execution!,
+          isolation,
+          workflowLease: lease,
+          signal: new AbortController().signal,
+          onHarnessEvent: async () => {},
+        }),
+      ).rejects.toThrow('INPUT_TEST_NO_REPAIR_FINISH');
+      expect(execute).toHaveBeenCalledOnce();
+      expect(model.requests).toHaveLength(1);
+      const request = model.requests[0]!;
+      const content = (role: string) =>
+        request.messages
+          .filter((m) => m.role === role)
+          .map((m) =>
+            typeof m.content === 'string'
+              ? m.content
+              : Array.isArray(m.content)
+                ? m.content.map((p) => p.text ?? '').join('\n')
+                : '',
+          )
+          .join('\n');
+      expect(content('user')).toContain(prompt.employeeDocuments!.persona!);
+      expect(content('user')).toContain('FIXED_PERSONA_LITERAL {{missing}}');
+      expect(content('system')).toContain(platformRepairInstructions);
+      expect(content('system')).toContain(prompt.systemPrompt);
+      expect(content('system')).not.toContain('FIXED_PERSONA_LITERAL');
+      // The restricted profile retains these native DSH control tools.
+      expect(request.tools?.map((tool) => tool.function.name)).toEqual([
+        'ask_user_question',
+        'platform_repository_repair',
+        'skill',
+        'todo_write',
+      ]);
+      expect(
+        request.messages.some(
+          (m) => m.role === 'assistant' || m.role === 'tool',
+        ),
+      ).toBe(false);
+    } finally {
+      execute.mockRestore();
+      router.mockRestore();
+      await adapter.close();
+      await isolation.cleanup();
+      await cancelPlatformRepairTask(admin, task.id);
+      await failJob({
+        ...lease,
+        code: 'INPUT_FIXTURE_COMPLETE',
+        message: 'Synthetic HTTP input observed; no physical repair executed',
+        retryable: false,
+      });
+    }
+  }, 60000);
   it('maintenance repair stays outside final-delivery eligibility with the Workbench enabled', async () => {
     const previous = process.env.ALLRICE_WORKBENCH_ENABLED;
     vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');

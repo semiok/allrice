@@ -1,7 +1,9 @@
+import { employeePersonaAdmission } from '../employees/employee-instances.ts';
 import {
   modelFailureText,
   personalWorkflowHistoryFailureText,
   type ModelFailure,
+  type EmployeePersonaTask,
 } from '@allrice/contracts';
 import { readTerminalModelFailure } from './model-failures.ts';
 import {
@@ -440,7 +442,7 @@ type EnqueueOptions = {
   changesetAction?: ChangesetActionInput;
 };
 type RunAdmission =
-  | { kind: 'browser'; context: RequestContext }
+  | { kind: 'browser'; context: RequestContext; manualRunId?: string }
   | {
       kind: 'native_once' | 'native_recurring';
       context: ResourcePrincipal;
@@ -827,21 +829,42 @@ async function enqueueRunCore(
     timeoutAt,
   } = parsed;
   const sql = getDatabase();
-  const result = await sql.begin((transaction) =>
-    enqueueRunInTransaction(
-      admission,
-      {
-        submission,
-        options,
-        ownerId,
-        workspaceId,
-        taskPolicy,
-        instanceIdentity,
-        availableAt,
-        timeoutAt,
-      },
-      transaction,
-    ),
+  const frozen = options.employeeBinding?.executionSnapshot;
+  const personaTarget =
+    frozen && options.employeeBinding
+      ? {
+          organizationId: context.organizationId,
+          workspaceId,
+          employeeId: frozen.employee.id,
+          versionIds: [
+            options.employeeBinding.employeeVersionId,
+            ...(frozen.schemaVersion === 2 && frozen.persona
+              ? [
+                  frozen.persona.source.basis.employeeVersionId,
+                  frozen.persona.source.engine.employeeVersionId,
+                ]
+              : []),
+          ],
+        }
+      : undefined;
+  const result = await employeePersonaAdmission(
+    sql,
+    personaTarget,
+    (transaction) =>
+      enqueueRunInTransaction(
+        admission,
+        {
+          submission,
+          options,
+          ownerId,
+          workspaceId,
+          taskPolicy,
+          instanceIdentity,
+          availableAt,
+          timeoutAt,
+        },
+        transaction,
+      ),
   );
   const row =
     admission.kind !== 'browser'
@@ -887,7 +910,7 @@ export async function enqueueManualAutomationRunInTransaction(
     options.employeeBinding,
     options.conversationDelivery.clientUserMessageId,
   );
-  const admission: RunAdmission = { kind: 'browser', context };
+  const admission: RunAdmission = { kind: 'browser', context, manualRunId };
   const parsed = await prepareEnqueueRun(
     admission,
     input,
@@ -1153,6 +1176,26 @@ async function enqueueRunInTransaction(
     if (!options.employeeBinding.executionSnapshot.content)
       throw new QueueError('policy_denied');
   }
+  // These locators come only from the existing, already-verified producer
+  // admission. A copied persona marker in a browser binding is not proof.
+  const employeeBinding = options.employeeBinding;
+  let taskProducer: EmployeePersonaTask | undefined =
+    employeeBinding &&
+    (admission.kind === 'native_once' || admission.kind === 'native_recurring')
+      ? {
+          kind: admission.kind,
+          id: admission.occurrenceId,
+          sessionId: employeeBinding.sessionId,
+          userMessageId: employeeBinding.userMessageId,
+        }
+      : employeeBinding && admission.kind === 'browser' && admission.manualRunId
+        ? {
+            kind: 'automation_manual',
+            id: admission.manualRunId,
+            sessionId: employeeBinding.sessionId,
+            userMessageId: employeeBinding.userMessageId,
+          }
+        : undefined;
   if (options.folderEventId) {
     const { assertFolderTriggerMessage } =
       await import('../folder-triggers.ts');
@@ -1170,6 +1213,12 @@ async function enqueueRunInTransaction(
       options.conversationDelivery.clientUserMessageId,
       attachments.map((a) => a.object_id),
     );
+    taskProducer = {
+      kind: 'folder_event',
+      id: options.folderEventId,
+      sessionId: binding.sessionId,
+      userMessageId: binding.userMessageId,
+    };
   }
   if (options.employeeBinding) {
     if (options.employeeBinding.executionSnapshot.instance) {
@@ -1188,6 +1237,8 @@ async function enqueueRunInTransaction(
         instanceIdentity,
         options.employeeBinding.sessionId,
         snapshot,
+        options.employeeBinding.executionSnapshot.persona,
+        taskProducer,
       );
     }
     if (admission.kind === 'maintenance_repair') {
@@ -1600,6 +1651,42 @@ async function enqueueRunInTransaction(
       },
       createdAt: new Date().toISOString(),
     });
+    const rawDocuments =
+      options.employeeBinding.promptSnapshot.employeeDocuments;
+    const hasPersonaDocument =
+      rawDocuments &&
+      typeof rawDocuments === 'object' &&
+      'persona' in rawDocuments &&
+      rawDocuments.persona !== undefined &&
+      rawDocuments.persona !== '';
+    if (
+      hasPersonaDocument ||
+      (executionSnapshot.schemaVersion === 2 && executionSnapshot.persona)
+    ) {
+      if (executionSnapshot.schemaVersion !== 2 || !executionSnapshot.persona)
+        throw Error('employee_persona_snapshot_invalid');
+      const { assertFrozenEmployeePersona } =
+        await import('../employees/employee-documents.ts');
+      const { EmployeePromptSnapshotSchema } =
+        await import('@allrice/contracts');
+      await assertFrozenEmployeePersona(
+        transaction,
+        executionSnapshot,
+        EmployeePromptSnapshotSchema.parse(
+          options.employeeBinding.promptSnapshot,
+        ),
+        {
+          organizationId: context.organizationId,
+          workspaceId,
+          ownerId,
+          assignmentId: options.employeeBinding.employeeAssignmentId,
+          employeeVersionId: options.employeeBinding.employeeVersionId,
+          sessionId: options.employeeBinding.sessionId,
+          userMessageId: options.employeeBinding.userMessageId,
+        },
+        { phase: 'enqueue', task: taskProducer },
+      );
+    }
     const nativeExecutionBinding = await freezeChatRunExecutionBinding(
       transaction,
       {

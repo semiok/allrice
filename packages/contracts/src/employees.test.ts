@@ -1,14 +1,182 @@
 import { randomUUID } from 'node:crypto';
 
 import { describe, expect, it } from 'vitest';
+import { EmployeePersonaPinSchema } from './employee-documents.ts';
 
 import {
   EmployeeDefinitionSchema,
   EmployeeExecutionSnapshotSchema,
   EmployeeManifestSchema,
   EmployeeInstanceProfileSchema,
+  EmployeeRuntimePackageSchema,
+  EmployeePersonaSourceMaterialSchema,
   PublishEmployeeVersionInputSchema,
 } from './employees.js';
+
+describe('runtime package PERSONA source format', () => {
+  const foundation = {
+    name: 'Rice',
+    description: 'Synthetic platform source',
+    appearance: { avatarType: 'initials', avatarValue: 'R' },
+    identity: {
+      role: 'Research partner',
+      mission: 'Check the original evidence',
+      workStyle: 'Explain the result',
+      behaviorRules: ['Do not invent results'],
+      safetyBoundaries: ['Use authorized data only'],
+      expressionStyle: 'structured',
+      outputLanguage: 'zh-CN',
+    },
+  };
+  const package3 = {
+    schemaVersion: 3,
+    packageVersion: 'rice:r1',
+    checksum: `sha256:${'a'.repeat(64)}`,
+    capabilityFingerprint: `sha256:${'b'.repeat(64)}`,
+    foundation,
+    platformPolicy: 'Platform-owned policy remains separate.',
+    skills: [],
+    runtimeManifest: {
+      source: 'allrice-published-runtime',
+      harness: 'dsh',
+      distributionGeneration: 'synthetic-generation',
+      provider: 'openai-codex',
+      model: 'synthetic',
+      toolNames: [],
+      deniedCapabilities: [],
+      skillGovernance: [],
+    },
+  };
+
+  it('uses the same explicit source shape for new tenant manifests without accepting personal data', () => {
+    const material = {
+      foundation,
+      platformPolicy: package3.platformPolicy,
+    };
+    expect(EmployeePersonaSourceMaterialSchema.parse(material)).toEqual(
+      material,
+    );
+    for (const invalid of [null, {}, { ...material, profile: {} }])
+      expect(
+        EmployeePersonaSourceMaterialSchema.safeParse(invalid).success,
+      ).toBe(false);
+  });
+
+  it('reads complete platform identity and hard-policy sources without legacy files or personal data', () => {
+    const before = JSON.stringify(package3);
+    expect(EmployeeRuntimePackageSchema.parse(package3)).toEqual(package3);
+    expect(JSON.stringify(package3)).toBe(before);
+    for (const extra of [
+      { files: { agentsMd: '', identityMd: '', soulMd: '', userMd: '' } },
+      { persona: '# PERSONA.md' },
+      { profile: {} },
+      { user: '# USER.md' },
+      { memory: '# MEMORY.md' },
+      {
+        runtimeManifest: {
+          ...package3.runtimeManifest,
+          instructionPrecedence: [],
+        },
+      },
+    ]) {
+      expect(
+        EmployeeRuntimePackageSchema.safeParse({ ...package3, ...extra })
+          .success,
+      ).toBe(false);
+    }
+  });
+
+  it('requires every platform identity source and keeps the exact three expression modes', () => {
+    for (const expressionStyle of ['concise', 'structured', 'exploratory']) {
+      expect(
+        EmployeeRuntimePackageSchema.parse({
+          ...package3,
+          foundation: {
+            ...foundation,
+            identity: { ...foundation.identity, expressionStyle },
+          },
+        }),
+      ).toMatchObject({ foundation: { identity: { expressionStyle } } });
+    }
+    for (const field of ['name', 'description', 'appearance', 'identity']) {
+      const missing = { ...foundation } as Record<string, unknown>;
+      delete missing[field];
+      expect(
+        EmployeeRuntimePackageSchema.safeParse({
+          ...package3,
+          foundation: missing,
+        }).success,
+      ).toBe(false);
+    }
+    for (const field of Object.keys(foundation.identity)) {
+      const identity = { ...foundation.identity } as Record<string, unknown>;
+      delete identity[field];
+      expect(
+        EmployeeRuntimePackageSchema.safeParse({
+          ...package3,
+          foundation: { ...foundation, identity },
+        }).success,
+      ).toBe(false);
+    }
+    expect(
+      EmployeeRuntimePackageSchema.safeParse({
+        ...package3,
+        foundation: {
+          ...foundation,
+          identity: {
+            ...foundation.identity,
+            expressionStyle: 'arbitrary free text',
+          },
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it.each([1, 2])(
+    'keeps schema %s legacy-only and never fills new fields',
+    (schemaVersion) => {
+      const legacy = {
+        schemaVersion,
+        packageVersion: package3.packageVersion,
+        checksum: package3.checksum,
+        capabilityFingerprint: package3.capabilityFingerprint,
+        files: {
+          agentsMd: 'agents',
+          identityMd: 'identity',
+          soulMd: 'soul',
+          userMd: 'user',
+        },
+        skills: [],
+        runtimeManifest: {
+          ...package3.runtimeManifest,
+          instructionPrecedence: [
+            'platform-hard-policy',
+            'identity',
+            'behavior',
+            'work-rules',
+            'tenant-user-context',
+            'runtime-authorization',
+            'user-request',
+            'skill-details',
+          ],
+        },
+      };
+      expect(JSON.stringify(EmployeeRuntimePackageSchema.parse(legacy))).toBe(
+        JSON.stringify(legacy),
+      );
+      expect(
+        EmployeeRuntimePackageSchema.safeParse({ ...legacy, foundation })
+          .success,
+      ).toBe(false);
+      expect(
+        EmployeeRuntimePackageSchema.safeParse({
+          ...legacy,
+          platformPolicy: package3.platformPolicy,
+        }).success,
+      ).toBe(false);
+    },
+  );
+});
 
 describe('EmployeeHub contracts', () => {
   it('accepts a Codex-backed Rice manifest with exact SkillVersion IDs', () => {
@@ -211,6 +379,7 @@ describe('EmployeeHub contracts', () => {
       },
     });
     expect(definition.schemaVersion).toBe(2);
+    expect(definition).not.toHaveProperty('personaSource');
     expect(definition.capabilityBindings.skillVersionIds).toEqual([
       skillVersionId,
     ]);
@@ -393,6 +562,16 @@ describe('EmployeeHub contracts', () => {
       expect(snapshot.capabilitySnapshot.knowledge).toEqual([]);
     }
     expect(snapshot).not.toHaveProperty('nativePreferences');
+    expect(snapshot).not.toHaveProperty('persona');
+    const originalBytes = JSON.stringify(snapshot);
+    expect(
+      JSON.stringify(EmployeeExecutionSnapshotSchema.parse(snapshot)),
+    ).toBe(originalBytes);
+    for (const persona of [null, {}, { schemaVersion: 1, source: null }])
+      expect(
+        EmployeeExecutionSnapshotSchema.safeParse({ ...snapshot, persona })
+          .success,
+      ).toBe(false);
     expect(snapshot).not.toHaveProperty('subagentMode');
     const nativePreferences = {
       version: 1,
@@ -471,6 +650,75 @@ describe('EmployeeHub contracts', () => {
       expect(() => parse(fields)).toThrow();
     }
   });
+});
+
+describe('normal Run PERSONA pin contract', () => {
+  const digest = `sha256:${'a'.repeat(64)}`;
+  const version = () => ({
+    employeeVersionId: randomUUID(),
+    configChecksum: digest,
+    manifestDigest: digest,
+    templateId: randomUUID(),
+    templateRevisionId: randomUUID(),
+    templateRevision: 1,
+    templateChecksum: digest,
+    packageChecksum: digest,
+  });
+  const pin = () => ({
+    schemaVersion: 1,
+    source: {
+      kind: 'employee_run',
+      organizationId: randomUUID(),
+      workspaceId: randomUUID(),
+      employeeId: randomUUID(),
+      assignmentId: randomUUID(),
+      instanceId: randomUUID(),
+      ownerId: randomUUID(),
+      profileRevision: 3,
+      profileEligibility: 'full_identity',
+      basis: version(),
+      engine: version(),
+    },
+    personaDigest: digest,
+    systemDigest: digest,
+  });
+  it('keeps independently frozen default and engine versions distinct', () => {
+    const value = pin();
+    expect(value.source.basis.employeeVersionId).not.toBe(
+      value.source.engine.employeeVersionId,
+    );
+    expect(EmployeePersonaPinSchema.parse(value)).toEqual(value);
+    expect(
+      EmployeePersonaPinSchema.optional().parse(undefined),
+    ).toBeUndefined();
+  });
+  it('does not invent a package for the default basis or remove the actual engine package proof', () => {
+    const value = pin();
+    if ('kind' in value.source.basis || 'kind' in value.source.engine)
+      throw Error('expected published source fixture');
+    const { packageChecksum: basisPackage, ...basis } = value.source.basis;
+    expect(basisPackage).toBe(digest);
+    const source = { ...value.source, basis };
+    expect(
+      EmployeePersonaPinSchema.parse({ ...value, source }).source.basis,
+    ).not.toHaveProperty('packageChecksum');
+    const { packageChecksum: enginePackage, ...engine } = value.source.engine;
+    expect(enginePackage).toBe(digest);
+    expect(
+      EmployeePersonaPinSchema.safeParse({
+        ...value,
+        source: { ...source, engine },
+      }).success,
+    ).toBe(false);
+  });
+  it.each(['source', 'personaDigest', 'systemDigest'] as const)(
+    'rejects invalid-present %s instead of treating the pin as legacy absence',
+    (key) => {
+      expect(
+        EmployeePersonaPinSchema.safeParse({ ...pin(), [key]: null }).success,
+      ).toBe(false);
+    },
+  );
 });
 
 describe('sparse personal appearance', () => {

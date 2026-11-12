@@ -555,7 +555,7 @@ export default async function seed(resources: DeliveryResources) {
     text: answer,
   }));
   const cohorts: DeliveryCohort[] = [];
-  async function publishedSubject() {
+  async function publishedSubject(retired: boolean) {
     const { db } = resources;
     const { createEmployeeAdministrationFixture } =
       await import('../../../../packages/database/src/employee-administration.fixture.ts');
@@ -566,30 +566,37 @@ export default async function seed(resources: DeliveryResources) {
     const { setRuntimePolicyControls } =
       await import('../../../../packages/database/src/runtime-policy.ts');
     const source = await createEmployeeAdministrationFixture(db);
-    // Old tools and a reviewed bundle are actually compiled/published by the
-    // predecessor. No post-upgrade source or birth identity is manufactured.
-    const bundle = structuredClone(source.a);
-    bundle.version = '1.0.1';
-    bundle.dependencies.push({ kind: 'tool', name: 'assistant.delegate' });
-    const { checksum: unused, ...payload } = bundle;
-    void unused;
-    bundle.checksum = skillBundleChecksum(payload);
-    await source.catalog(bundle);
-    await db`update allrice_platform_dsh_skills set required_tool_refs=${db.json(['workspace.skill.read', 'assistant.delegate'])} where id=${source.skillId}`;
+    // Every continued employee starts with an independent old publication.
+    // The old compiler, not candidate code, issues its original package/source.
+    if (retired) {
+      const bundle = structuredClone(source.a);
+      bundle.version = '1.0.1';
+      bundle.dependencies.push({ kind: 'tool', name: 'assistant.delegate' });
+      const { checksum: unused, ...payload } = bundle;
+      void unused;
+      bundle.checksum = skillBundleChecksum(payload);
+      await source.catalog(bundle);
+      await db`update allrice_platform_dsh_skills set required_tool_refs=${db.json(['workspace.skill.read', 'assistant.delegate'])} where id=${source.skillId}`;
+    }
     const definition = {
       ...source.definition,
       capabilities: {
         ...source.definition.capabilities,
-        toolNames: [
-          'workspace.skill.read',
-          'workspace.document.read',
-          'workspace.export.create',
-          ...retiredTools,
-        ],
+        nativeSkillIds: retired
+          ? source.definition.capabilities.nativeSkillIds
+          : [],
+        toolNames: retired
+          ? [
+              'workspace.skill.read',
+              'workspace.document.read',
+              'workspace.export.create',
+              ...retiredTools,
+            ]
+          : ['workspace.export.create', 'workspace.document.read'],
       },
       securityPolicy: {
         ...source.definition.securityPolicy,
-        bridgeAccess: 'read_write' as const,
+        bridgeAccess: retired ? ('read_write' as const) : ('none' as const),
       },
     };
     await savePlatformEmployeeDraft(source.employeeId, { definition });
@@ -628,12 +635,23 @@ export default async function seed(resources: DeliveryResources) {
     });
     const [version] =
       await db`select * from allrice_employee_versions where id=${subject.employeeVersionId}`;
-    expect(version!.manifest.capabilityBindings.toolNames).toEqual(
-      expect.arrayContaining(retiredTools),
+    expect(version!.manifest.runtimePackage.schemaVersion).toBe(
+      retired ? 2 : 1,
     );
-    expect(
-      version!.manifest.runtimePackage.skills[0].bundle.dependencies,
-    ).toContainEqual({ kind: 'tool', name: 'assistant.delegate' });
+    if (retired) {
+      expect(version!.manifest.capabilityBindings.toolNames).toEqual(
+        expect.arrayContaining(retiredTools),
+      );
+      expect(
+        version!.manifest.runtimePackage.skills[0].bundle.dependencies,
+      ).toContainEqual({ kind: 'tool', name: 'assistant.delegate' });
+    } else {
+      expect(version!.manifest.capabilityBindings.toolNames).toEqual([
+        'workspace.export.create',
+        'workspace.document.read',
+      ]);
+      expect(version!.manifest.runtimePackage.skills).toEqual([]);
+    }
     return {
       ...subject,
       sessionId: chat.id,
@@ -652,10 +670,7 @@ export default async function seed(resources: DeliveryResources) {
       'previously-enabled',
       'retired-source',
     ] as const) {
-      const subject =
-        kind === 'retired-source'
-          ? await publishedSubject()
-          : await harness.createSubject();
+      const subject = await publishedSubject(kind === 'retired-source');
       // Persist non-default native choices through the real before API. The
       // old assistants switch must neither replace nor reset these choices.
       await updateUserPreferences(subject.context, {

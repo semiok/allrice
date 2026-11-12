@@ -73,6 +73,7 @@ export function installRunAdmission(host) {
     if (agent.session.header.origin !== 'subagent') return;
     identity(agent);
     await checkDirectory(agent, signal);
+    host.employeeDocuments?.bindChild(agent, current().record.agent);
   });
   ctx.on(
     'agent/request',
@@ -131,7 +132,7 @@ export function installRunAdmission(host) {
     { prepend: true },
   );
   return {
-    async begin({ sessionId, runId }) {
+    async begin({ sessionId, runId, employeeDocuments }) {
       if (binding || typeof runId !== 'string' || !runId)
         throw Error('RUN_ALREADY_BOUND');
       const record = await host.ensureRoot(sessionId);
@@ -149,6 +150,8 @@ export function installRunAdmission(host) {
       for (const agent of ctx.agents.list()) {
         if (agent !== record.agent) announce(agent);
       }
+      // No await between publishing the binding and updating resident readers.
+      host.employeeDocuments?.bind(sessionId, employeeDocuments);
       return { bound: true };
     },
     end(runId) {

@@ -2,6 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 
 import type { ContextCheckpoint } from '@allrice/contracts';
+import {
+  EmployeeExecutionSnapshotV2Schema,
+  EmployeePersonaPinSchema,
+} from '@allrice/contracts';
+import {
+  employeeManifest,
+  employeeManifestChecksum,
+  runtimePolicyDigest,
+} from '@allrice/database';
 
 import {
   assembleEmployeeKernel,
@@ -67,6 +76,47 @@ it('projects only the frozen name and bounded expression preference, without exe
   expect(text).toContain('expectedRevision=3');
   expect(text).not.toContain('DO_NOT_INJECT');
   expect(employeeInstanceInstructions(null)).toEqual([]);
+  if (snapshot?.schemaVersion !== 2)
+    throw Error('expected v2 formatting fixture');
+  const digest = `sha256:${'a'.repeat(64)}`;
+  const version = {
+    employeeVersionId: randomUUID(),
+    configChecksum: digest,
+    manifestDigest: digest,
+    templateId: randomUUID(),
+    templateRevisionId: randomUUID(),
+    templateRevision: 1,
+    templateChecksum: digest,
+    packageChecksum: digest,
+  };
+  // Formatting-only fixture; the actual source/queue/kernel chain is covered
+  // by employee-persona-freeze.integration.test.ts with real SQL admission.
+  snapshot.persona = EmployeePersonaPinSchema.parse({
+    schemaVersion: 1,
+    source: {
+      kind: 'employee_run',
+      organizationId: randomUUID(),
+      workspaceId: randomUUID(),
+      employeeId: randomUUID(),
+      assignmentId: randomUUID(),
+      instanceId: randomUUID(),
+      ownerId: randomUUID(),
+      profileRevision: 3,
+      profileEligibility: 'full_identity',
+      basis: version,
+      engine: version,
+    },
+    personaDigest: digest,
+    systemDigest: digest,
+  });
+  const nativePersona = employeeInstanceInstructions(snapshot).join('\n');
+  expect(nativePersona).not.toContain('"小禾"');
+  expect(nativePersona).not.toContain('Keep answers concise');
+  expect(nativePersona).not.toContain('DO_NOT_INJECT');
+  expect(nativePersona).toContain('expectedRevision=3');
+  expect(nativePersona).toContain(
+    'Confirm persistence only from a successful tool receipt',
+  );
 });
 
 it('assembles each frozen common rule once and rejects conflicting implicit versions before a model call', () => {
@@ -177,6 +227,120 @@ it('replaces only root facts and memories while preserving knowledge and the chi
   expect(current.employeeDocuments).toEqual(
     input.resolved.promptSnapshot.employeeDocuments,
   );
+  // Task provenance was independently checked at enqueue/resolve. It changes
+  // the carrier in both kernel scopes, not the original authority or tool set.
+  const digest = `sha256:${'a'.repeat(64)}`;
+  const definition = employeeManifest({
+    key: 'task-kernel-fixture',
+    name: 'Synthetic task engine',
+    description: 'Frozen task kernel fixture',
+    toolNames: [],
+  });
+  if (definition.schemaVersion !== 2) throw Error('expected v2 task engine');
+  const checksum = employeeManifestChecksum(definition),
+    employeeId = randomUUID(),
+    organizationId = randomUUID(),
+    workspaceId = randomUUID(),
+    ownerId = randomUUID(),
+    at = '2026-10-01T00:00:00.000Z';
+  const version = {
+    employeeVersionId: input.employeeVersionId,
+    kind: 'tenant_version',
+    configChecksum: checksum,
+    manifestDigest: runtimePolicyDigest(definition),
+  };
+  input.resolved.executionSnapshot = EmployeeExecutionSnapshotV2Schema.parse({
+    schemaVersion: 2,
+    employee: {
+      id: employeeId,
+      key: definition.key,
+      versionId: input.employeeVersionId,
+      revision: 1,
+      definitionChecksum: checksum,
+      definition,
+    },
+    assignment: {
+      id: input.employeeAssignmentId,
+      userId: ownerId,
+      assignedBy: null,
+      assignedAt: at,
+    },
+    runtimePolicy: definition.runtimePolicy,
+    capabilitySnapshot: {
+      declaredCapabilities: definition.capabilities,
+      grantedCapabilities: input.resolved.grantedCapabilities,
+      bindings: definition.capabilityBindings,
+      skillBindings: [],
+      agentSkills: [],
+      workflows: [],
+      knowledge: [],
+      resolvedForActorId: ownerId,
+    },
+    tenantContext: {
+      organizationId,
+      workspaceId,
+      actorId: ownerId,
+      policySnapshotId: randomUUID(),
+    },
+    userProfile: { schemaVersion: 1, displayName: null, preferences: {} },
+    createdAt: at,
+    persona: EmployeePersonaPinSchema.parse({
+      schemaVersion: 1,
+      personaDigest: digest,
+      systemDigest: digest,
+      source: {
+        kind: 'employee_run',
+        organizationId,
+        workspaceId,
+        employeeId,
+        assignmentId: input.employeeAssignmentId,
+        instanceId: randomUUID(),
+        ownerId,
+        profileRevision: 1,
+        profileEligibility: 'expression_only',
+        basis: version,
+        engine: version,
+        task: {
+          kind: 'automation_manual',
+          id: randomUUID(),
+          sessionId: input.sessionId,
+          userMessageId: input.userMessageId,
+        },
+      },
+    }),
+  });
+  input.resolved.promptSnapshot.employeeDocuments.persona =
+    'TASK_LITERAL {{missing}}';
+  input.commonContent![0]!.reference.contentId =
+    input.resolved.promptSnapshot.memories[0]!.id;
+  input.commonContent![0]!.body =
+    input.resolved.promptSnapshot.memories[0]!.content;
+  input.commonContent!.push({
+    ...input.commonContent![0]!,
+    reference: {
+      ...input.commonContent![0]!.reference,
+      contentId: randomUUID(),
+    },
+    body: 'EXISTING_LEGAL_TASK_METHOD',
+  });
+  const task = assembleEmployeeKernel(input);
+  expect(task.systemInstructions).toBe(task.rootSystemInstructions);
+  expect(task.systemInstructions).toContain('frozen actual task engine');
+  expect(task.systemInstructions).toContain('EXISTING_LEGAL_TASK_METHOD');
+  expect(task.systemInstructions).toContain(
+    'original memory eligibility and byte budget',
+  );
+  expect(task.systemInstructions).not.toContain('facts or confirmed memories');
+  for (const literal of [
+    'ORG_FACT',
+    'LEGACY_RECALLED_MEMORY',
+    'OLD_COMMON_MEMORY',
+    'TASK_LITERAL',
+  ])
+    expect(task.systemInstructions).not.toContain(literal);
+  expect(task.employeeDocuments?.persona).toBe('TASK_LITERAL {{missing}}');
+  expect(task.authorizedMemoryContext).toBe('');
+  expect(task.grantedCapabilities).toEqual(current.grantedCapabilities);
 });
 
 it('bootstraps authorized messages and memories without consuming a retired automatic summary', () => {

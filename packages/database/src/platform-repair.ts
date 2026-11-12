@@ -260,6 +260,7 @@ export async function createPlatformRepairTask(
         values(${id},${internalContext.organizationId},${internalContext.workspaceId!},${sessionId},${owner},${role},${tx.json(content)},'private',${role === 'user' ? request.requestId : null},${status}) on conflict(id) do nothing`;
   });
   const binding = await prepareEmployeeRunBinding({
+    employeeDocuments: 'persona_only',
     context: internalContext,
     workspaceId: internalContext.workspaceId!,
     assignmentId: employee.assignmentId,

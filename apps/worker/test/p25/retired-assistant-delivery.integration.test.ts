@@ -338,7 +338,7 @@ suite(
           '继续之前的月报，整理本月数据并把文件下载链接给我。',
         );
         try {
-          if (cohort.publication) {
+          if (kind === 'retired-source') {
             const [current] =
               await h.db`select employee_version_id from allrice_employee_assignments where id=${cohort.assignmentId}`;
             expect(task.snapshot.employee.versionId).toBe(
@@ -355,6 +355,10 @@ suite(
                 (name: string) => retiredTools.includes(name),
               ),
             ).toBe(false);
+          } else {
+            expect(task.snapshot.employee.versionId).toBe(
+              cohort.employeeVersionId,
+            );
           }
           expect(task.snapshot.finalDeliveryPolicy).toEqual({
             version: 1,

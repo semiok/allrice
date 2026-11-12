@@ -11,9 +11,11 @@ import {
   isBaseRiceInstanceDefinition,
   modelProviderRuntimeSupported,
   EmployeeKernelRequestSchema,
+  renderMemoryContext,
   RouteDecisionSchema,
   type HarnessEvent,
   type HarnessExecutionSnapshot,
+  type EmployeeKernelRequest,
   type RouteDecision,
 } from '@allrice/contracts';
 
@@ -150,6 +152,35 @@ import {
 
 function providerName(snapshot: HarnessExecutionSnapshot) {
   return snapshot.provider === 'codex' ? 'openai-codex' : snapshot.route;
+}
+
+/** Shared first-call estimate input before and after routing; no usage allowance. */
+export function employeeRunModelInput(
+  kernel: Pick<
+    EmployeeKernelRequest,
+    | 'systemInstructions'
+    | 'rootSystemInstructions'
+    | 'employeeDocuments'
+    | 'mcpToolCatalog'
+    | 'bootstrapConversation'
+    | 'authorizedMemoryContext'
+    | 'userRequest'
+  >,
+) {
+  return [
+    kernel.rootSystemInstructions ?? kernel.systemInstructions,
+    ...(kernel.employeeDocuments?.persona
+      ? [kernel.employeeDocuments.persona]
+      : []),
+    kernel.employeeDocuments?.user ?? '',
+    kernel.employeeDocuments?.memory ?? '',
+    ...(kernel.mcpToolCatalog?.length
+      ? [mcpCatalogAdmissionInstructions(kernel.mcpToolCatalog)]
+      : []),
+    kernel.bootstrapConversation,
+    kernel.authorizedMemoryContext,
+    kernel.userRequest,
+  ].join('\n');
 }
 
 function objectInput(input: unknown): Record<string, unknown> {
@@ -310,15 +341,41 @@ export async function executeEmployeeRun({
     input.sessionId,
     execution.context.runId,
   );
-  if (!repairTask && !repositoryReviewTask && !changesetRun)
-    await admitEmployeeDocuments({
-      context: execution.context,
-      userMessageId,
-      documents: !!resolved.promptSnapshot.employeeDocuments,
-    });
+  // Resolution keeps historical records readable and verifies every present pin.
+  // Only model execution requires a frozen PERSONA; deterministic paths retain
+  // their original dispatch above/below and never synthesize one for an old Run.
+  if (
+    !changesetRun &&
+    (resolved.executionSnapshot?.schemaVersion !== 2 ||
+      !resolved.executionSnapshot.persona ||
+      !resolved.promptSnapshot.employeeDocuments?.persona)
+  )
+    throw new HandlerError(
+      'EMPLOYEE_PERSONA_REQUIRED',
+      '旧任务没有有效冻结的人设，不能恢复模型执行。请在原对话发送新消息开启新任务。',
+      false,
+    );
+  const personaTask =
+    resolved.executionSnapshot?.schemaVersion === 2
+      ? resolved.executionSnapshot.persona?.source.task
+      : undefined;
+  // Preserve every pre-existing document-memory branch (including deterministic
+  // changesets and identity-only repair/review). A task PERSONA carrier never
+  // opts into that ledger mode or proves human authority.
+  const documentMemory =
+    !personaTask && !!resolved.promptSnapshot.employeeDocuments;
+  const documentSource =
+    !repairTask && !repositoryReviewTask && !changesetRun
+      ? await admitEmployeeDocuments({
+          context: execution.context,
+          userMessageId,
+          documents: !!resolved.promptSnapshot.employeeDocuments,
+          personaTask,
+        })
+      : undefined;
   let contentRuntime: Awaited<ReturnType<typeof prepareEmployeeContentContext>>;
   try {
-    const experience = resolved.promptSnapshot.employeeDocuments
+    const experience = documentMemory
       ? { memories: [], receipt: null }
       : await prepareRunExperiences(contentScope, {
           ...workflowLease,
@@ -434,6 +491,7 @@ export async function executeEmployeeRun({
                   .filter(
                     (source) =>
                       !employeeDocuments ||
+                      !!personaTask ||
                       source.reference.sourceKind !== 'experience',
                   )
                   .map(({ reference, ownership, title, body }) => ({
@@ -607,7 +665,7 @@ export async function executeEmployeeRun({
     resolved.promptSnapshot.memories,
   );
   if (
-    resolved.promptSnapshot.employeeDocuments &&
+    documentMemory &&
     eligibleMemories.length !== resolved.promptSnapshot.memories.length
   )
     throw new HandlerError(
@@ -625,8 +683,17 @@ export async function executeEmployeeRun({
       worker: { ...workflowLease, attempt: execution.job.attempt },
     },
     resolved.promptSnapshot.memories,
-    resolved.promptSnapshot.employeeDocuments?.memory,
+    documentMemory
+      ? resolved.promptSnapshot.employeeDocuments?.memory
+      : undefined,
   );
+  if (personaTask && resolved.promptSnapshot.employeeDocuments)
+    resolved.promptSnapshot.employeeDocuments = {
+      ...resolved.promptSnapshot.employeeDocuments,
+      // Same selected items and renderer as the original internal input. The
+      // ledger already charged these complete literal bytes; no new pins/spend.
+      memory: renderMemoryContext(resolved.promptSnapshot.memories),
+    };
   const kernelInput = {
     employeeAssignmentId: input.employeeAssignmentId,
     employeeVersionId: input.employeeVersionId,
@@ -641,23 +708,35 @@ export async function executeEmployeeRun({
     workAutomation: workAutomation.settings,
   };
   const assembledKernel = assembleEmployeeKernel(kernelInput);
+  const internalInstructions = repositoryReviewTask
+    ? platformRepositoryReviewInstructions
+    : repairTask?.frozen.version === 2
+      ? platformMaintenanceRepairInstructions
+      : platformRepairInstructions;
+  const internalSystemInstructions =
+    assembledKernel.systemInstructions + '\n\n' + internalInstructions;
+  const internalPersona =
+    resolved.executionSnapshot?.schemaVersion === 2 &&
+    resolved.executionSnapshot.persona
+      ? assembledKernel.employeeDocuments?.persona
+      : undefined;
   const kernel =
     repairTask || repositoryReviewTask
       ? EmployeeKernelRequestSchema.parse({
           ...assembledKernel,
-          systemInstructions:
-            assembledKernel.systemInstructions +
-            '\n\n' +
-            (repositoryReviewTask
-              ? platformRepositoryReviewInstructions
-              : repairTask?.frozen.version === 2
-                ? platformMaintenanceRepairInstructions
-                : platformRepairInstructions),
+          systemInstructions: internalSystemInstructions,
           bootstrapConversation: '',
           bootstrapContext: undefined,
           authorizedMemoryContext: '',
-          employeeDocuments: undefined,
-          rootSystemInstructions: undefined,
+          // Both scopes keep the original non-identity instructions/facts.
+          // Only an already-verified pin migrates; historical absence remains
+          // on the original cleared path and never becomes human eligibility.
+          employeeDocuments: internalPersona
+            ? { persona: internalPersona, user: '', memory: '' }
+            : undefined,
+          rootSystemInstructions: internalPersona
+            ? internalSystemInstructions
+            : undefined,
           skillVersionIds: [],
           imageAttachments: [],
         })
@@ -1154,17 +1233,7 @@ export async function executeEmployeeRun({
             ...modelBudgetScope,
             limits: frozenModelSnapshot.runLimits,
             estimatedInputTokens: estimateConversationTokens(
-              [
-                kernel.rootSystemInstructions ?? kernel.systemInstructions,
-                kernel.employeeDocuments?.user ?? '',
-                kernel.employeeDocuments?.memory ?? '',
-                ...(kernel.mcpToolCatalog?.length
-                  ? [mcpCatalogAdmissionInstructions(kernel.mcpToolCatalog)]
-                  : []),
-                kernel.bootstrapConversation,
-                kernel.authorizedMemoryContext,
-                kernel.userRequest,
-              ].join('\n'),
+              employeeRunModelInput(kernel),
             ),
           }),
           requestedRuntimeMs: executionSnapshot.runtimePolicy.timeoutMs,
@@ -1331,18 +1400,7 @@ export async function executeEmployeeRun({
       );
     if (runLimits) {
       const estimatedInputTokens = estimateConversationTokens(
-        [
-          routedKernel.rootSystemInstructions ??
-            routedKernel.systemInstructions,
-          routedKernel.employeeDocuments?.user ?? '',
-          routedKernel.employeeDocuments?.memory ?? '',
-          ...(routedKernel.mcpToolCatalog?.length
-            ? [mcpCatalogAdmissionInstructions(routedKernel.mcpToolCatalog)]
-            : []),
-          routedKernel.bootstrapConversation,
-          routedKernel.authorizedMemoryContext,
-          routedKernel.userRequest,
-        ].join('\n'),
+        employeeRunModelInput(routedKernel),
       );
       assertInitialModelInputBudget({
         ...modelBudgetScope,
@@ -1536,6 +1594,7 @@ export async function executeEmployeeRun({
     const result: HarnessExecutionResult = await adapter
       .execute({
         nativeFileRead,
+        documentMemory: documentMemory && documentSource === 'human',
         nativeQuestionMode,
         nativeSubagents:
           !repairTask &&
@@ -1595,7 +1654,7 @@ export async function executeEmployeeRun({
                     generation,
                   },
                 });
-                if (routedKernel.employeeDocuments) {
+                if (documentMemory && routedKernel.employeeDocuments) {
                   await admitEmployeeDocuments({
                     context: execution.context,
                     userMessageId,

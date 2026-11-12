@@ -46,7 +46,10 @@ vi.mock('@allrice/database', async (original) => {
             promptSnapshot: {
               ...resolved.promptSnapshot,
               memories: status.frozenDocument.memories,
-              employeeDocuments: status.frozenDocument.employeeDocuments,
+              employeeDocuments: {
+                ...resolved.promptSnapshot.employeeDocuments,
+                ...status.frozenDocument.employeeDocuments,
+              },
             },
           }
         : resolved;

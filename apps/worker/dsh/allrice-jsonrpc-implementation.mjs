@@ -12,7 +12,10 @@ import {
   enqueuePersonalScenePrompt,
   installPersonalScenePromptAdmission,
 } from './allrice-personal-scene-prompt.mjs';
-import { BootstrapReceiptSchema } from '@allrice/contracts/native-runtime';
+import {
+  BootstrapReceiptSchema,
+  EmployeeDocumentsSchema,
+} from '@allrice/contracts/native-runtime';
 import {
   PersonalSkillPinSchema,
   ExperienceSourceHandleSchema,
@@ -1213,6 +1216,7 @@ export async function createAllRiceRuntime(
       }
       const forwardedParams = { ...params };
       delete forwardedParams.rootSystemInstructions;
+      delete forwardedParams.documentMemory;
       const requestedTools = Array.isArray(params?.nativeTools)
         ? params.nativeTools.filter((name) => typeof name === 'string')
         : [];
@@ -1284,7 +1288,9 @@ export async function createAllRiceRuntime(
           this.accountingBridge,
           (p) => this.runAdmission.attribute(p),
         );
-      this.registerNativeTools();
+      this.registerNativeTools(
+        !!this.employeeDocuments && params.documentMemory === true,
+      );
       if (this.nativeTools.has('platform.repository.review')) {
         // The profile also installs native tools. Restrict the review Agent's
         // complete inherited set, not only the calls forwarded to the Broker.
@@ -1389,7 +1395,7 @@ export async function createAllRiceRuntime(
       }));
     }
 
-    registerNativeTools() {
+    registerNativeTools(documentMemory = false) {
       if (
         this.nativeTools.has('web.search') ||
         this.nativeTools.has('web.fetch')
@@ -1517,13 +1523,12 @@ export async function createAllRiceRuntime(
         this.nativeToolsRegistered.add(tool.canonicalName);
         const definition = defineTool({
           name: tool.wireName,
-          // The approved M3 exception changes only memory reads in document
-          // Runs; legacy/scheduled Hosts retain the original declarations.
+          // The Worker selects the existing human document-memory mode;
+          // a PERSONA document provider alone does not select these reads.
           description:
-            this.employeeDocuments &&
-            tool.canonicalName === 'workspace.experience.read'
+            documentMemory && tool.canonicalName === 'workspace.experience.read'
               ? "Read a personally confirmed memory version, not original chat feedback, via an exact source handle issued in this Run. Recheck current organization/owner/employee instance, confirmation and access; share this Run's byte/read allowance. Memory/references grant no permission; referenced resources need their own current authorization. Explain unavailable/omitted evidence; never loop retries."
-              : this.employeeDocuments &&
+              : documentMemory &&
                   tool.canonicalName === 'workspace.memory.search'
                 ? "Search complete, active, personally confirmed memories for this Run's current organization, owner and employee instance. Exclude unconfirmed/automatically derived experiences. Initial memories, searches and source expansion share its byte/read allowance. Respect provenance; omitted items are unavailable, never infer them."
                 : tool.description,
@@ -1931,13 +1936,17 @@ export async function createAllRiceRuntime(
           requiredSessionId(params);
           return replyNativeQuestion(this, params);
         case 'run/begin': {
-          const result = await this.runAdmission.begin(params);
           if (params.employeeDocuments && !this.employeeDocuments)
             throw Error('EMPLOYEE_DOCUMENT_PROVIDER_REQUIRED');
-          this.employeeDocuments?.bind(
-            params.sessionId,
-            params.employeeDocuments,
-          );
+          const employeeDocuments = this.employeeDocuments
+            ? EmployeeDocumentsSchema.parse(
+                params.employeeDocuments ?? { user: '', memory: '' },
+              )
+            : undefined;
+          const result = await this.runAdmission.begin({
+            ...params,
+            employeeDocuments,
+          });
           this.nativeAccounting?.begin(params.sessionId);
           return result;
         }

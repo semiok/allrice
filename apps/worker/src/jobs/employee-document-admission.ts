@@ -1,4 +1,4 @@
-import type { ExecutionContext } from '@allrice/contracts';
+import type { ExecutionContext, EmployeePersonaTask } from '@allrice/contracts';
 import { readEmployeeChatSourceKind } from '@allrice/database';
 import { HandlerError } from '../errors.js';
 
@@ -9,9 +9,17 @@ export async function admitEmployeeDocuments(input: {
   context: ExecutionContext;
   userMessageId: string;
   documents: boolean;
+  personaTask?: EmployeePersonaTask;
 }) {
   const kind = await readEmployeeChatSourceKind(input);
-  if (input.documents ? kind === 'human' : kind === 'internal') return kind;
+  if (
+    input.personaTask
+      ? input.documents && kind === 'internal'
+      : input.documents
+        ? kind === 'human'
+        : kind === 'internal'
+  )
+    return kind;
   throw new HandlerError(
     'MEMORY_CONTEXT_UNAVAILABLE',
     input.documents

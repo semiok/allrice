@@ -457,6 +457,8 @@ function currentExecutionRequest(
   if (manifest.schemaVersion !== 2)
     throw Error('Expected current fixture definition');
   if (variant !== 'definition') {
+    const material = manifest.personaSource;
+    if (!material) throw Error('Expected independent fixture policy');
     const { harness: ignored, ...modelPolicy } = manifest.runtimePolicy;
     void ignored;
     const definition = PlatformEmployeeDefinitionSchema.parse({
@@ -470,7 +472,7 @@ function currentExecutionRequest(
         expressionStyle: 'structured',
         outputLanguage: 'zh-CN',
       },
-      systemPrompt: manifest.systemPrompt,
+      systemPrompt: material.platformPolicy,
       modelPolicy,
       capabilities: {
         nativeSkillIds: [],
@@ -793,6 +795,29 @@ it.each([false, true])(
       state: 'exited',
       stdioClosed: true,
     });
+  },
+);
+
+it.each([false, true])(
+  'separates document-memory descriptions in both directions and reuses the same mode, first=%s',
+  async (documentFirst) => {
+    const { runtimes, value } = currentExecutionRequest('current');
+    value.input.documentMemory = documentFirst ? true : undefined;
+    const first = await runtimes.acquire(value);
+    expect(first.runtime.fingerprintParts.documentMemory).toBe(
+      createHash('sha256').update(String(documentFirst)).digest('hex'),
+    );
+    value.input.documentMemory = !documentFirst;
+    const second = await runtimes.acquire(value);
+    expect(second.runtime).not.toBe(first.runtime);
+    expect(second.runtime.fingerprintParts.documentMemory).toBe(
+      createHash('sha256').update(String(!documentFirst)).digest('hex'),
+    );
+    expect(first.runtime.client.processState()).toMatchObject({
+      state: 'exited',
+      stdioClosed: true,
+    });
+    expect((await runtimes.acquire(value)).runtime).toBe(second.runtime);
   },
 );
 

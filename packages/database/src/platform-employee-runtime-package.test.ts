@@ -21,7 +21,7 @@ import {
   platformEmployeeTestCanFinalize,
   platformEmployeeTestExecutionTerminalState,
   platformEmployeeTestTimeoutAt,
-  runtimePackageSystemPrompt,
+  employeePersonaPlatformSystemPrompt,
   validatePlatformEmployeeTestExecutionSnapshot,
 } from './platform-employees.js';
 
@@ -133,12 +133,9 @@ it('keeps task display metadata out of runtime package/checksum and system promp
   expect(
     buildEmployeeRuntimePackage({ revision: 7, definition: edited, skills }),
   ).toEqual(original);
-  expect(
-    runtimePackageSystemPrompt({
-      platformPolicy: edited.systemPrompt,
-      runtimePackage: original,
-    }),
-  ).not.toContain('unique-display-marker');
+  expect(employeePersonaPlatformSystemPrompt(edited)).not.toContain(
+    'unique-display-marker',
+  );
   expect(PlatformEmployeeDefinitionSchema.parse(definition)).toEqual(
     definition,
   );
@@ -573,10 +570,7 @@ function validFrozenExecutionSnapshot() {
     timeoutMs: definition.modelPolicy.timeoutMs,
     credentialReference: definition.modelPolicy.credentialReference,
     baseUrl: definition.modelPolicy.baseUrl,
-    systemPrompt: runtimePackageSystemPrompt({
-      platformPolicy: definition.systemPrompt,
-      runtimePackage,
-    }),
+    systemPrompt: employeePersonaPlatformSystemPrompt(definition),
     nativeSkillIds: validSkills.map((skill) => skill.id),
     nativeSkillChecksums: validSkills.map((skill) => skill.checksum),
     toolNames: definition.capabilities.toolNames,
@@ -626,22 +620,22 @@ describe('platform employee runtime package', () => {
       definition: { ...office, name: '文档小助理' },
       skills,
     });
-    expect(first.files.identityMd).toContain('- 名称：Office 文档助手');
-    expect(first.files.identityMd).toContain('- 身份：文档助手');
-    expect(first.files.identityMd).toContain(office.identity.mission);
-    expect(first.files.identityMd).not.toContain('Rice');
-    expect(renamed.files.identityMd).toContain('- 名称：文档小助理');
-    expect(renamed.files.identityMd).not.toContain('Office 文档助手');
+    if (first.schemaVersion !== 3 || renamed.schemaVersion !== 3)
+      throw Error('expected_persona_package');
+    expect(first.foundation.name).toBe('Office 文档助手');
+    expect(first.foundation.identity.role).toBe('文档助手');
+    expect(first.foundation.identity.mission).toBe(office.identity.mission);
+    expect(renamed.foundation.name).toBe('文档小助理');
     expect(renamed.checksum).not.toBe(first.checksum);
-    expect(first.files.identityMd).toContain('- 名称：Office 文档助手');
+    expect(first.foundation.name).toBe('Office 文档助手');
   });
-  it('keeps v1 resource-free package identities readable after JSONB reordering', () => {
+  it('keeps schema-3 resource-free package identities readable after JSONB reordering', () => {
     const pkg = buildEmployeeRuntimePackage({
       revision: 7,
       definition,
       skills,
     });
-    expect(pkg.schemaVersion).toBe(1);
+    expect(pkg.schemaVersion).toBe(3);
     const bytes = JSON.stringify(pkg);
     expect(frozenPackageSkills(jsonbLikeRoundTrip(pkg))).toEqual(pkg.skills);
     expect(JSON.stringify(pkg)).toBe(bytes);
@@ -814,18 +808,34 @@ describe('platform employee runtime package', () => {
       model: 'gpt-5.6-luna',
       toolNames: ['web.search'],
     });
-    expect(first.files.agentsMd).toContain('自主选择最匹配的 Skill');
-    expect(first.files.agentsMd).toContain('web-research');
-    expect(first.files.agentsMd).toContain('自主路由规则');
-    expect(first.files.agentsMd).toContain(
-      '有网页链接直接 web_fetch，没有来源再 web_search',
-    );
-    expect(first.files.agentsMd).toContain('用户不需要点名 Skill');
-    expect(first.files.identityMd).toContain('通用工作伙伴');
-    expect(first.files.soulMd).toContain('不编造执行结果');
-    expect(first.files.soulMd).toContain('本次运行注入的成员设置为准');
-    expect(first.files.soulMd).not.toContain('操作确认策略：');
-    expect(first.files.userMd).toContain('动态注入');
+    if (first.schemaVersion !== 3) throw Error('expected_persona_package');
+    expect(first.foundation).toEqual({
+      name: definition.name,
+      description: definition.description,
+      appearance: definition.appearance,
+      identity: definition.identity,
+    });
+    expect(first.platformPolicy).toBe(definition.systemPrompt);
+    expect(first).not.toHaveProperty('files');
+    expect(first.runtimeManifest).not.toHaveProperty('instructionPrecedence');
+    const clean = employeePersonaPlatformSystemPrompt(definition);
+    for (const legacy of [
+      '# IDENTITY.md',
+      '# SOUL.md',
+      '# USER.md',
+      '# AGENTS.md',
+      '自主路由规则',
+      '已发布 Skill 目录',
+      '单个明确操作',
+      '缺少的是发布',
+      'references/',
+      '已有连接器可完成时优先连接器',
+      '当前用户明确要求记住',
+    ])
+      expect(clean).not.toContain(legacy);
+    expect(clean).toContain(definition.identity.behaviorRules[0]);
+    expect(clean).toContain('本次运行注入的成员设置为准');
+    expect(first.skills[0]?.requiredToolRefs).toEqual(['web.search']);
     expect(first.skills[0]?.content).toContain('交叉核验');
     expect(first.runtimeManifest.skillGovernance[0]).toMatchObject({
       name: 'web-research',
@@ -863,10 +873,7 @@ describe('platform employee runtime package', () => {
       definition,
       skills,
     });
-    const systemPrompt = runtimePackageSystemPrompt({
-      platformPolicy: definition.systemPrompt,
-      runtimePackage,
-    });
+    const systemPrompt = employeePersonaPlatformSystemPrompt(definition);
     const manifest = employeeManifest({
       key: 'default-assistant',
       name: definition.name,

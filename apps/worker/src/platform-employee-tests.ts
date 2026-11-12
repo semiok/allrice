@@ -11,6 +11,8 @@ import {
   EmployeeKernelRequestSchema,
   InternalKernelRequestSchema,
   ExecutionContextSchema,
+  EmployeePersonaDocumentSourceSchema,
+  renderEmployeePersonaDocument,
   type HarnessEvent,
   type SkillCapability,
   type PlatformEmployeeTestRunOutput,
@@ -22,6 +24,8 @@ import {
   experienceValidationStillCurrent,
   methodFileExecutionUnverified,
   freezeRouteSubscriptionSnapshot,
+  employeePersonaPlatformSystemPrompt,
+  runtimePackageChecksum,
 } from '@allrice/database';
 
 import { HandlerError } from './errors.js';
@@ -205,6 +209,38 @@ export async function executeNextPlatformEmployeeTest(input: {
     }
     await checkCandidate();
     signal.throwIfAborted();
+    // Both EmployeeKernel consumers use the verified frozen definition. Method
+    // instructions keep their system priority; experience keeps its own path.
+    const platformPersona = !experience
+      ? {
+          systemInstructions: [
+            employeePersonaPlatformSystemPrompt(test.definition),
+            method?.instructions,
+          ]
+            .filter(Boolean)
+            .join('\n\n'),
+          employeeDocuments: {
+            persona: renderEmployeePersonaDocument(
+              {
+                name: test.definition.name,
+                description: test.definition.description,
+                appearance: test.definition.appearance,
+                identity: test.definition.identity,
+              },
+              EmployeePersonaDocumentSourceSchema.parse({
+                kind: method ? 'method_candidate' : 'platform_preview',
+                testId: test.id,
+                platformEmployeeId: test.employeeId,
+                platformRevisionId: test.revisionId,
+                definitionChecksum: runtimePackageChecksum(test.definition),
+                packageChecksum: test.runtimeProfile.runtimePackage?.checksum,
+              }),
+            ),
+            user: '',
+            memory: '',
+          },
+        }
+      : undefined;
     meter.dispatched = true;
     const result = await adapter.execute({
       nativeBinding: createJobNativeBinding({
@@ -253,12 +289,9 @@ export async function executeNextPlatformEmployeeTest(input: {
             sessionId: ids.sessionId,
             userMessageId: ids.userMessageId,
             assistantMessageId: ids.assistantMessageId,
-            systemInstructions: [
-              test.runtimeProfile.systemPrompt,
-              method?.instructions,
-            ]
-              .filter(Boolean)
-              .join('\n\n'),
+            systemInstructions: platformPersona?.systemInstructions,
+            rootSystemInstructions: platformPersona?.systemInstructions,
+            employeeDocuments: platformPersona?.employeeDocuments,
             userRequest: test.input.prompt,
             bootstrapConversation: '',
             authorizedMemoryContext: '',

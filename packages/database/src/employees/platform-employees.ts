@@ -58,6 +58,7 @@ import {
   UuidSchema,
   employeeModelPolicyProblem,
   employeeToolConfigurationErrors,
+  type EmployeeRuntimePackage,
   type PlatformEmployeeDefinition,
   type PlatformEmployeeTestRunOutput,
   type RequestContext,
@@ -80,16 +81,17 @@ import {
 import { normalizeDraftPlatformPolicy } from '../platform-employees/identity.ts';
 import {
   buildEmployeeRuntimePackage,
+  employeePersonaPlatformSystemPrompt,
   platformEmployeeTestCanFinalize,
   platformEmployeeTestExecutionTerminalState,
   platformEmployeeTestTimeoutAt,
   runtimePackageChecksum as checksum,
-  runtimePackageSystemPrompt,
   validatePlatformEmployeeTestExecutionSnapshot,
 } from '../platform-employees/runtime-package.ts';
 
 export {
   buildEmployeeRuntimePackage,
+  employeePersonaPlatformSystemPrompt,
   platformEmployeeTestCanFinalize,
   platformEmployeeTestExecutionTerminalState,
   platformEmployeeTestTimeoutAt,
@@ -1589,10 +1591,7 @@ export async function compilePlatformEmployee(
           timeoutMs: definition.modelPolicy.timeoutMs,
           credentialReference: definition.modelPolicy.credentialReference,
           baseUrl: definition.modelPolicy.baseUrl,
-          systemPrompt: runtimePackageSystemPrompt({
-            platformPolicy: definition.systemPrompt,
-            runtimePackage,
-          }),
+          systemPrompt: employeePersonaPlatformSystemPrompt(definition),
           nativeSkillIds: skills.map((skill) => skill.id),
           nativeSkillChecksums: skills.map((skill) => skill.checksum),
           toolNames: definition.capabilities.toolNames,
@@ -1626,7 +1625,7 @@ function materializedEmployeeKey(platformKey: string) {
 
 function tenantManifest(
   definition: PlatformEmployeeDefinition,
-  runtimePackage: ReturnType<typeof buildEmployeeRuntimePackage>,
+  runtimePackage: EmployeeRuntimePackage,
 ) {
   return employeeManifest({
     key: materializedEmployeeKey(definition.key),
@@ -1672,10 +1671,7 @@ function tenantManifest(
     },
     toolNames: definition.capabilities.toolNames,
     connectorRefs: definition.capabilities.connectorRefs,
-    systemPromptOverride: runtimePackageSystemPrompt({
-      platformPolicy: definition.systemPrompt,
-      runtimePackage,
-    }),
+    systemPromptOverride: employeePersonaPlatformSystemPrompt(definition),
     runtimePackage,
   });
 }

@@ -717,16 +717,6 @@ export const baseline: readonly BaselineEntry[] = [
     ],
   },
   {
-    file: 'packages/database/src/platform-employees/identity.ts',
-    owner: 'normalizeDraftPlatformPolicy',
-    kind: 'own-text',
-    use: '认出旧版平台员工的固定英文身份说明，换成当前写法',
-    sites: [
-      String.raw`=== "You are Rice, the default AI employee in AllRice."`,
-      String.raw`startsWith("You are Rice, the default AI employee in AllRice.")`,
-    ],
-  },
-  {
     file: 'packages/database/src/platform-repair-compiled-profile.ts',
     owner: 'compiledRepositoryHarness',
     kind: 'own-text',

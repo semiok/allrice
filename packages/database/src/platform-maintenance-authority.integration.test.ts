@@ -22,7 +22,8 @@ import {
   realpathSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { gzipSync } from 'node:zlib';
 import { updateMaintenanceGithubBot } from './platform-maintenance-github.ts';
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
@@ -83,6 +84,7 @@ import {
   claimNextJob,
   startClaimedJob,
   heartbeatJob,
+  failJob,
 } from './execution/queue.ts';
 import { getPlatformRepairExecution } from './platform-repair-authority.ts';
 import {
@@ -92,6 +94,44 @@ import {
 } from './platform-repair.ts';
 import { defaultMaintenancePolicy } from './platform-maintenance-contracts.ts';
 import { createTaskProgressRuntime } from './task-progress.ts';
+import {
+  EmployeeKernelRequestSchema,
+  EmployeePromptSnapshotSchema,
+} from '@allrice/contracts';
+import { resolveEmployeeExecution } from './employees/employeehub.ts';
+import {
+  readEmployeeChatSourceKind,
+  assertEmployeeChatHumanSource,
+} from './employees/employee-chat-authority.ts';
+import { platformMaintenanceRepairInstructions } from './platform-repair.ts';
+import * as modelPool from './providers/model-pool.ts';
+import * as harnessRouter from '../../../apps/worker/src/harness/router.js';
+import { DshHarnessAdapter } from '../../../apps/worker/src/harness/dsh-adapter.js';
+import {
+  measureDshNativeArtifact,
+  installDshNativeArtifact,
+  nativeArtifactPath,
+} from '../../../apps/worker/src/harness/dsh-native-artifact.js';
+import { p24Fixture } from '../../../apps/worker/test/p24/fixture.js';
+import { executeEmployeeRun } from '../../../apps/worker/src/jobs/employee-run.js';
+import type * as RepairWorker from '../../../apps/worker/src/jobs/platform-repair.js';
+import { prepareExecutionIsolation } from '../../../apps/worker/src/isolation.js';
+// Source/grant/queue/Worker remain real. The physical verification backend is
+// outside this input test; no cloud process or paid model may be started.
+vi.mock(
+  '../../../apps/worker/src/jobs/platform-repair.js',
+  async (original) => ({
+    ...(await original<typeof RepairWorker>()),
+    createPlatformRepairController: vi.fn(async () => ({
+      onToolCall: async () => {
+        throw Error('INPUT_TEST_NO_REPAIR_TOOL');
+      },
+      finish: async () => {
+        throw Error('INPUT_TEST_NO_REPAIR_FINISH');
+      },
+    })),
+  }),
+);
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
@@ -104,12 +144,40 @@ suite('immutable report-bound maintenance authority', () => {
     root: string,
     baseline: RepositoryBaseline,
     proof: MaintenanceDiagnosisProof;
+  let model: Awaited<ReturnType<typeof p24Fixture>>;
+  let manifestPath: string, previousManifest: Buffer | undefined;
+  const testHarnessExecArgv = process.execArgv;
   beforeAll(async () => {
-    // Explicit SQL-only issuer for current-generation technical roots; not
-    // approval/installation of any native runtime artifact.
-    vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
-    vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
+    const repository = await realpath(resolve(import.meta.dirname, '../../..'));
+    const artifact = await measureDshNativeArtifact(repository, undefined, {
+      schemaVersion: 2,
+    });
+    manifestPath = join(repository, nativeArtifactPath);
+    previousManifest = await readFile(manifestPath).catch(
+      (error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT') throw error;
+        return undefined;
+      },
+    );
+    await mkdir(join(repository, '.local'), { recursive: true });
+    await writeFile(manifestPath, JSON.stringify(artifact));
+    process.execArgv = [];
+    vi.stubEnv('NODE_OPTIONS', '');
+    await installDshNativeArtifact({
+      root: repository,
+      expectedId: artifact.artifactId,
+    });
+    vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', artifact.artifactId);
+    vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', artifact.artifactId);
     fixture = await createRuntimeFixtureDatabase();
+    vi.stubEnv('ALLRICE_STORAGE_ROOT', fixture.storageRoot);
+    vi.stubEnv(
+      'ALLRICE_DSH_PLATFORM_HOME',
+      join(fixture.storageRoot, 'synthetic-platform-home'),
+    );
+    model = await p24Fixture(async () => ({
+      text: '仅核对冻结人设，不调用修复工具。',
+    }));
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
     async function principal(email: string) {
       const p = await ensureBootstrapPortalPrincipal({
@@ -285,10 +353,19 @@ suite('immutable report-bound maintenance authority', () => {
     };
   }, 120000);
   afterAll(async () => {
-    vi.restoreAllMocks();
-    vi.unstubAllEnvs();
-    await fixture?.close();
-    if (root) rmSync(root, { recursive: true, force: true });
+    try {
+      await model?.close();
+      await fixture?.close();
+    } finally {
+      if (manifestPath) {
+        if (previousManifest) await writeFile(manifestPath, previousManifest);
+        else await rm(manifestPath, { force: true });
+      }
+      process.execArgv = testHarnessExecArgv;
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+      if (root) rmSync(root, { recursive: true, force: true });
+    }
   });
   const install = (owner = admin) =>
     registerMaintenanceDeployment(owner, {
@@ -332,10 +409,10 @@ suite('immutable report-bound maintenance authority', () => {
     );
     return receipt;
   }
-  async function diagnosed(owner = admin) {
+  async function diagnosed(owner = admin, diagnosisProof = proof) {
     const installation = await install(owner),
       receipt = await report(installation),
-      d = await recordMaintenanceDiagnosis(receipt.reportId, proof);
+      d = await recordMaintenanceDiagnosis(receipt.reportId, diagnosisProof);
     return {
       installation,
       receipt,
@@ -375,7 +452,9 @@ suite('immutable report-bound maintenance authority', () => {
       getMaintenanceReportAuthority(ordinary, r.reportId),
     ).rejects.toThrow();
   });
-  it('creates one real Employee Run from persisted authority without fabricating a browser login; manifest, budgets and revocation survive DB round trips', async () => {
+  async function exerciseMaintenanceAuthority(
+    mode: 'authority' | 'native-input',
+  ) {
     const company = await createExperienceFixture(fixture.db);
     const untouched =
       await fixture.db`select * from allrice_memberships where organization_id=${company.org} order by id`;
@@ -394,6 +473,10 @@ suite('immutable report-bound maintenance authority', () => {
       await fixture.db`select r.* from allrice_platform_employee_revisions r join allrice_platform_employees e on e.current_published_revision_id=r.id where e.employee_key='rice'`;
     const definition = PlatformEmployeeDefinitionSchema.parse({
       ...r!.definition,
+      identity: {
+        ...r!.definition.identity,
+        mission: 'MAINTENANCE_PERSONA_LITERAL {{missing}}',
+      },
       capabilities: {
         ...r!.definition.capabilities,
         nativeSkillIds: [],
@@ -417,7 +500,20 @@ suite('immutable report-bound maintenance authority', () => {
     } finally {
       vi.stubEnv('ALLRICE_ENV', priorEnvironment);
     }
-    const a = await diagnosed(),
+    const a = await diagnosed(
+        admin,
+        mode === 'native-input'
+          ? {
+              ...proof,
+              probeResults: proof.probeResults.map((result, index) =>
+                index === 1
+                  ? result
+                  : { ...result, secretAbsent: true, passed: true },
+              ),
+              failedAssertions: [proof.failedAssertions[1]!],
+            }
+          : proof,
+      ),
       g = await createMaintenanceGrant(admin, a.request);
     // Force the old issuer/deployment inversion: transaction A already owns
     // issuer UPDATE, B must block there before taking deployment SHARE.
@@ -456,10 +552,25 @@ suite('immutable report-bound maintenance authority', () => {
     });
     const locks = await Promise.allSettled([lockOwner, lockWaiter]);
     expect(locks.map((x) => x.status)).toEqual(['fulfilled', 'fulfilled']);
+    const originalFreeze = modelPool.freezeSessionModelSnapshot;
+    const freeze =
+      mode === 'native-input'
+        ? vi
+            .spyOn(modelPool, 'freezeSessionModelSnapshot')
+            .mockImplementation(async (...args) => ({
+              ...(await originalFreeze(...args)),
+              provider: 'openai-compatible',
+              authMode: 'api_key',
+              model: 'p24-synthetic',
+              reasoningEffort: 'low',
+              credentialReference: 'test:synthetic',
+              baseUrl: model.baseUrl,
+            }))
+        : undefined;
     const concurrent = await Promise.all([
       startMaintenanceRepairGrant(g.id),
       startMaintenanceRepairGrant(g.id),
-    ]);
+    ]).finally(() => freeze?.mockRestore());
     const started = concurrent[0]!;
     expect(concurrent.map((x) => x.repairTaskId)).toEqual([
       started.repairTaskId,
@@ -470,7 +581,7 @@ suite('immutable report-bound maintenance authority', () => {
       started.repairTaskId,
     );
     const [q] =
-      await fixture.db`select q.*,j.timeout_at,e.execution_snapshot from allrice_platform_repair_tasks q join allrice_jobs j on j.id=q.job_id join allrice_employee_runs e on e.run_id=q.run_id where q.id=${started.repairTaskId!}`;
+      await fixture.db`select q.*,j.timeout_at,e.execution_snapshot,e.prompt_snapshot from allrice_platform_repair_tasks q join allrice_jobs j on j.id=q.job_id join allrice_employee_runs e on e.run_id=q.run_id where q.id=${started.repairTaskId!}`;
     expect(q!.frozen.version).toBe(2);
     expect(q!.frozen).not.toHaveProperty('loginSessionId');
     expect(q!.frozen).not.toHaveProperty('loginAuthenticatedAt');
@@ -493,6 +604,132 @@ suite('immutable report-bound maintenance authority', () => {
     const claimed = await startClaimedJob(workerId, job!.id, lease.leaseToken);
     const execution = await getPlatformRepairExecution(lease);
     expect(execution.frozen.version).toBe(2);
+    const scope = {
+      runId: q!.run_id as string,
+      organizationId: claimed!.context.organizationId,
+      workspaceId: claimed!.context.workspaceId!,
+      ownerId: admin.actor.id,
+    };
+    const prompt = EmployeePromptSnapshotSchema.parse(q!.prompt_snapshot);
+    const resolved = await resolveEmployeeExecution(scope);
+    expect(resolved.executionSnapshot).toHaveProperty(
+      'persona.source.kind',
+      'employee_run',
+    );
+    expect(prompt.employeeDocuments).toEqual({
+      persona: expect.any(String),
+      user: '',
+      memory: '',
+    });
+    expect(prompt.memories).toEqual([]);
+    expect(
+      await readEmployeeChatSourceKind({
+        context: claimed!.context,
+        userMessageId: execution.frozen.userMessageId,
+      }),
+    ).toBe('internal');
+    await expect(
+      assertEmployeeChatHumanSource({
+        context: claimed!.context,
+        userMessageId: execution.frozen.userMessageId,
+      }),
+    ).rejects.toThrow('authorization_denied');
+    if (mode === 'native-input') {
+      const isolation = await prepareExecutionIsolation({
+        root: fixture.storageRoot,
+        ...scope,
+        jobId: job!.id,
+        attempt: job!.attempt,
+      });
+      const adapter = new DshHarnessAdapter({
+        runtimeRoot: join(fixture.storageRoot, 'maintenance-repair-native'),
+        credentialResolver: {
+          resolve: async () => ({ apiKey: 'synthetic-only' }),
+        },
+        requestTimeoutMs: 15000,
+      });
+      const router = vi
+        .spyOn(harnessRouter, 'getHarnessRouter')
+        .mockReturnValue(new harnessRouter.HarnessRouter([adapter]));
+      const actualExecute = adapter.execute.bind(adapter);
+      const observed = vi
+        .spyOn(adapter, 'execute')
+        .mockImplementation(async (input) => {
+          const kernel = EmployeeKernelRequestSchema.parse(input.kernel);
+          expect(kernel.employeeDocuments).toEqual(prompt.employeeDocuments);
+          expect(kernel.rootSystemInstructions).toBe(kernel.systemInstructions);
+          expect(input.tools.map((tool) => tool.name)).toEqual([
+            'platform.repository.repair',
+          ]);
+          expect(input.nativeSkills).toEqual([]);
+          expect(input.nativeSubagents).toBeUndefined();
+          expect(input.nativeRunAuthority).toBeUndefined();
+          expect(
+            input.executionEnvironment.ALLRICE_MAINTENANCE_OUTPUT_TOKENS,
+          ).toBe(String(defaultMaintenancePolicy.maxOutputTokens));
+          return actualExecute(input);
+        });
+      try {
+        await expect(
+          executeEmployeeRun({
+            execution: claimed!,
+            isolation,
+            workflowLease: { ...lease, leaseMs: 60000 },
+            signal: new AbortController().signal,
+            onHarnessEvent: async () => {},
+          }),
+        ).rejects.toThrow('INPUT_TEST_NO_REPAIR_FINISH');
+        expect(observed).toHaveBeenCalledOnce();
+        expect(model.requests).toHaveLength(1);
+        const request = model.requests[0]!;
+        const content = (role: string) =>
+          request.messages
+            .filter((m) => m.role === role)
+            .map((m) =>
+              typeof m.content === 'string'
+                ? m.content
+                : Array.isArray(m.content)
+                  ? m.content.map((p) => p.text ?? '').join('\n')
+                  : '',
+            )
+            .join('\n');
+        expect(content('user')).toContain(prompt.employeeDocuments!.persona!);
+        expect(content('user')).toContain(
+          'MAINTENANCE_PERSONA_LITERAL {{missing}}',
+        );
+        expect(content('system')).toContain(
+          platformMaintenanceRepairInstructions,
+        );
+        expect(content('system')).toContain(prompt.systemPrompt);
+        expect(content('system')).not.toContain('MAINTENANCE_PERSONA_LITERAL');
+        // The restricted profile retains these native DSH control tools.
+        expect(request.tools?.map((tool) => tool.function.name)).toEqual([
+          'ask_user_question',
+          'platform_repository_repair',
+          'skill',
+          'todo_write',
+        ]);
+        expect(
+          request.messages.some(
+            (m) => m.role === 'assistant' || m.role === 'tool',
+          ),
+        ).toBe(false);
+      } finally {
+        observed.mockRestore();
+        router.mockRestore();
+        await adapter.close();
+        await isolation.cleanup();
+        await revokeMaintenanceGrant(admin, g.id);
+        await cancelPlatformRepairTask(admin, q!.id);
+        await failJob({
+          ...lease,
+          code: 'INPUT_FIXTURE_COMPLETE',
+          message: 'Synthetic HTTP input observed; no physical repair executed',
+          retryable: false,
+        });
+      }
+      return;
+    }
     const progress = createTaskProgressRuntime(
       { context: claimed!.context, worker: lease },
       fixture.db,
@@ -688,7 +925,24 @@ suite('immutable report-bound maintenance authority', () => {
     expect(
       await fixture.db`select * from allrice_memberships where organization_id=${company.org} order by id`,
     ).toEqual(untouched);
-  });
+    // The fixture's handler and every late receipt have now returned.
+    await failJob({
+      ...lease,
+      code: 'AUTHORITY_FIXTURE_COMPLETE',
+      message: 'Synthetic authority receipts settled; no physical repair',
+      retryable: false,
+    });
+    const [finished] =
+      await fixture.db`select status from allrice_jobs where id=${lease.jobId}`;
+    expect(finished!.status).toBe('canceled');
+  }
+  it('creates one real Employee Run from persisted authority without fabricating a browser login; manifest, budgets and revocation survive DB round trips', () =>
+    exerciseMaintenanceAuthority('authority'));
+  it(
+    'fresh maintenance repair freezes real source through Worker and native Host to the HTTP provider',
+    () => exerciseMaintenanceAuthority('native-input'),
+    60000,
+  );
   it('manual report-only authorization is immutable, idempotent and deduplicated across installations', async () => {
     const jobsBefore = (
       await fixture.db`select count(*)::int n from allrice_jobs`

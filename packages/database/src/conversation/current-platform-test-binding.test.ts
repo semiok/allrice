@@ -1,19 +1,24 @@
+import { legacyRuntimePackageFixture as buildEmployeeRuntimePackage } from '../platform-employees/legacy-runtime-package.fixture.ts';
 const oldGeneration = 'dsh-0.1.5-rc.3-a4c74a9' as const;
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   localCommandToolchainImageV1,
+  EmployeeRuntimePackageSchema,
   PlatformEmployeeDefinitionSchema,
   PlatformEmployeeRuntimeProfileSchema,
-  type EmployeeRuntimePackage,
   type PlatformEmployeeDefinition,
 } from '@allrice/contracts';
 import {
-  buildEmployeeRuntimePackage,
+  employeePersonaPlatformSystemPrompt,
   runtimePackageChecksum,
   runtimePackageSystemPrompt,
 } from '../platform-employees/runtime-package.ts';
 import { skillBundleChecksum, skillBytesChecksum } from '../skill-bundles.ts';
+import {
+  personaRuntimePackageChecksum,
+  type PersonaRuntimePackagePayload,
+} from '../platform-employees/runtime-package-signature.ts';
 import {
   nativeRootDigest,
   newNativeGeneration,
@@ -25,6 +30,9 @@ import {
   freezePlatformTestExecutionBinding,
   newCurrentPlatformTestOrigin,
   PlatformTestExecutionBindingSchema,
+  PlatformTestExecutionSourceSchema,
+  PlatformTestExecutionPolicySchema,
+  platformTestSourceFamily,
   validatePlatformTestExecutionSource,
   type PlatformTestExecutionBindingInput,
   type PlatformTestExecutionScope,
@@ -90,7 +98,7 @@ function definition(): PlatformEmployeeDefinition {
 }
 // Fixture-only publisher resealing permits deliberate, signed-but-incompatible
 // inputs. Production validation still uses the real shared publisher helpers.
-function reseal(pkg: EmployeeRuntimePackage) {
+function reseal(pkg: ReturnType<typeof buildEmployeeRuntimePackage>) {
   const p = pkg.runtimeManifest;
   pkg.capabilityFingerprint = runtimePackageChecksum({
     distributionGeneration: p.distributionGeneration,
@@ -230,6 +238,7 @@ function profile(s: PlatformTestExecutionSourceInput) {
 function resealSource(s: PlatformTestExecutionSourceInput) {
   const p = profile(s),
     pkg = p.runtimePackage!;
+  if (pkg.schemaVersion === 3) throw Error('fixture_legacy_package_required');
   reseal(pkg);
   s.packageChecksum = pkg.checksum;
   s.nativeSkills = pkg.skills;
@@ -628,5 +637,110 @@ describe('independent test birth and immutable readback', () => {
         input,
       ),
     ).toThrow('CURRENT_PLATFORM_TEST_EXECUTION_BINDING_MISMATCH');
+  });
+});
+
+describe('PERSONA platform provenance readiness', () => {
+  it.each(['plain', 'bundled'] as const)(
+    'preserves the original %s platform source-policy digest contract',
+    (format) => {
+      const frozen = validatePlatformTestExecutionSource(
+        source(newNativeGeneration, format),
+      );
+      const version = format === 'plain' ? 1 : 2;
+      expect(frozen.sourcePolicy.digest).toBe(
+        nativeRootDigest({
+          family: 'allrice_declarative_platform_test_v1',
+          variant:
+            version === 1
+              ? 'current_platform_package_v1'
+              : 'current_platform_package_v2',
+          definitionSchema: 1,
+          packageSchema: version,
+          declaredGeneration: newNativeGeneration,
+          executionGeneration: newNativeGeneration,
+          profileId: 'restricted',
+          validation:
+            'original-platform-snapshot-known-tools-reviewed-frozen-bundles-v1',
+        }),
+      );
+    },
+  );
+
+  it('recognizes schema-3 source policy and issues previews only from the matching clean compiler', () => {
+    const s = source(newNativeGeneration, 'bundled');
+    const old = validatePlatformTestExecutionSource(s);
+    const sourceIdentity = PlatformTestExecutionSourceSchema.parse({
+      ...old.source,
+      packageSchema: 3,
+    });
+    const policy = PlatformTestExecutionPolicySchema.parse({
+      family: platformTestSourceFamily,
+      variant: 'current_platform_package_v3',
+      digest: nativeRootDigest({
+        family: platformTestSourceFamily,
+        variant: 'current_platform_package_v3',
+        definitionSchema: 1,
+        packageSchema: 3,
+        declaredGeneration: newNativeGeneration,
+        executionGeneration: newNativeGeneration,
+        profileId: 'restricted',
+        validation:
+          'original-platform-snapshot-known-tools-reviewed-frozen-bundles-v1',
+      }),
+    });
+    expect(sourceIdentity.packageSchema).toBe(3);
+    expect(
+      PlatformTestExecutionPolicySchema.safeParse({
+        ...policy,
+        digest: old.sourcePolicy.digest,
+      }).success,
+    ).toBe(false);
+    const origin = newCurrentPlatformTestOrigin({ scope: scope(), source: s });
+    expect(
+      CurrentPlatformTestOriginSchema.safeParse({
+        ...origin,
+        birthSource: sourceIdentity,
+        sourcePolicy: old.sourcePolicy,
+      }).success,
+    ).toBe(false);
+
+    const definition = PlatformEmployeeDefinitionSchema.parse(s.definition);
+    const p = profile(s);
+    const legacy = p.runtimePackage!;
+    if (legacy.schemaVersion === 3)
+      throw Error('fixture_legacy_package_required');
+    const { instructionPrecedence, ...runtimeManifest } =
+      legacy.runtimeManifest;
+    void instructionPrecedence;
+    const payload = {
+      schemaVersion: 3,
+      packageVersion: legacy.packageVersion,
+      capabilityFingerprint: legacy.capabilityFingerprint,
+      foundation: {
+        name: definition.name,
+        description: definition.description,
+        appearance: definition.appearance,
+        identity: definition.identity,
+      },
+      platformPolicy: definition.systemPrompt,
+      skills: legacy.skills,
+      runtimeManifest,
+    } satisfies PersonaRuntimePackagePayload;
+    p.runtimePackage = EmployeeRuntimePackageSchema.parse({
+      ...payload,
+      checksum: personaRuntimePackageChecksum(payload),
+    });
+    s.packageChecksum = p.runtimePackage.checksum;
+    p.systemPrompt = employeePersonaPlatformSystemPrompt(definition);
+    expect(validatePlatformTestExecutionSource(s).source.packageSchema).toBe(3);
+    expect(
+      newCurrentPlatformTestOrigin({ scope: scope(), source: s }).birthSource
+        .packageSchema,
+    ).toBe(3);
+    p.systemPrompt += '\nsubstituted policy';
+    expect(() => validatePlatformTestExecutionSource(s)).toThrow(
+      'platform_employee_test_runtime_snapshot_mismatch',
+    );
   });
 });

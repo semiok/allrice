@@ -95,6 +95,7 @@ suite('MET-210 real Worker continuation', () => {
       (${userMessageId},${f.organizationId},${f.workspaceId},${prior.sessionId},${f.ownerId},'user',${f.db.json({ text: prompt, citations: [] })}),
       (${assistantMessageId},${f.organizationId},${f.workspaceId},${prior.sessionId},${f.ownerId},'assistant','{"text":"","citations":[]}')`;
     const binding = await prepareEmployeeRunBinding({
+      employeeDocuments: true,
       context: f.context,
       workspaceId: f.workspaceId,
       assignmentId: f.assignmentId,

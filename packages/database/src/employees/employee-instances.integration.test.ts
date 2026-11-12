@@ -6528,12 +6528,21 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     ).toEqual({});
   });
 
+  function personaDocument(text: string | undefined) {
+    expect(text?.startsWith('# 人设\n')).toBe(true);
+    expect(Buffer.byteLength(text!, 'utf8')).toBeLessThanOrEqual(16384);
+    return JSON.parse(text!.slice('# 人设\n'.length));
+  }
   it('U1 Rice full persona reaches owner details, workspace and the next kernel without changing frozen history or grants', async () => {
     const f = await setup(true, true),
       id = f.assignment.id;
     const before = await profileRun(f, id, 'Synthetic baseline');
     const oldRows =
       await fixture.db`select execution_snapshot,prompt_snapshot from allrice_employee_runs where run_id=${before.context.runId}`;
+    expect(
+      personaDocument(oldRows[0]!.prompt_snapshot.employeeDocuments.persona)
+        .name,
+    ).toEqual({ value: 'Platform assistant', source: 'platform_default' });
     const profile = {
       name: '本人 Rice',
       description: 'Personal description',
@@ -6569,6 +6578,9 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     );
     expect(response.status).toBe(200);
     expect((await response.json()).instance.profile).toEqual(profile);
+    const [current] =
+      await fixture.db`select profile from allrice_employee_instances where id=${id}`;
+    expect(current!.profile).toEqual(profile);
     const details = (await getEmployeeDetails(f.a.context, id)).profile;
     expect(details).toMatchObject({
       name: profile.name,
@@ -6593,17 +6605,38 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         ?.profile,
     ).toEqual(profile);
     const next = await profileRun(f, id, 'Synthetic next task');
+    expect(next.frozen.instance.profile).toEqual(profile);
     const resolved = await resolveEmployeeExecution({
       organizationId: f.a.organizationId,
       workspaceId: f.a.workspaceId,
       ownerId: f.a.user.id,
       runId: next.context.runId,
     });
-    expect(resolved.promptSnapshot.personalIdentity).toEqual({
-      role: profile.role,
-      mission: profile.mission,
-      workStyle: profile.workStyle,
+    const persona = personaDocument(
+      resolved.promptSnapshot.employeeDocuments?.persona,
+    );
+    for (const [field, value] of Object.entries(profile)) {
+      if (field === 'appearance') continue;
+      expect(persona[field]).toMatchObject({
+        value,
+        source: 'personal_override',
+      });
+    }
+    for (const [field, value] of Object.entries(profile.appearance)) {
+      expect(persona.appearance[field]).toEqual({
+        value,
+        source: 'personal_override',
+      });
+    }
+    expect(persona.source).toMatchObject({
+      kind: 'employee_run',
+      ownerId: f.a.user.id,
+      instanceId: id,
+      profileRevision: 2,
+      profileEligibility: 'full_identity',
     });
+    expect(persona.source).toEqual(next.frozen.persona.source);
+    expect(resolved.promptSnapshot).not.toHaveProperty('personalIdentity');
     const kernel = assembleEmployeeKernel({
       employeeAssignmentId: id,
       employeeVersionId: next.frozen.employee.versionId,
@@ -6612,7 +6645,11 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       assistantMessageId: randomUUID(),
       resolved,
     });
-    expect(resolved.promptSnapshot.employeeDocuments).toBeDefined();
+    const [stored] =
+      await fixture.db`select prompt_snapshot from allrice_employee_runs where run_id=${next.context.runId}`;
+    expect(stored!.prompt_snapshot.employeeDocuments).toEqual(
+      resolved.promptSnapshot.employeeDocuments,
+    );
     expect(kernel.employeeDocuments).toEqual(
       resolved.promptSnapshot.employeeDocuments,
     );
@@ -6620,11 +6657,13 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       kernel.systemInstructions,
       kernel.rootSystemInstructions,
     ]) {
-      expect(instructions).toContain(
-        JSON.stringify(resolved.promptSnapshot.personalIdentity),
+      expect(instructions).toContain(f.source.definition.systemPrompt);
+      expect(instructions).toContain('cannot override platform policy');
+      expect(instructions).not.toContain(profile.name);
+      expect(instructions).not.toContain(profile.mission);
+      expect(instructions).not.toContain(
+        'Explicit personal identity preferences',
       );
-      expect(instructions).toContain('do not change platform safety');
-      expect(instructions).toContain(profile.name);
     }
     expect(next.frozen.capabilitySnapshot).toEqual(
       before.frozen.capabilitySnapshot,
@@ -6992,6 +7031,27 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         ),
       ).toEqual([]);
       const resolved = await resolveEmployeeExecution(run.scope);
+      expect(resolved.promptSnapshot.employeeDocuments).toEqual({
+        persona: expect.any(String),
+        user: expect.any(String),
+        memory: expect.any(String),
+      });
+      if (rice) {
+        const details = (await getEmployeeDetails(f.a.context, id)).profile;
+        const persona = personaDocument(
+          resolved.promptSnapshot.employeeDocuments?.persona,
+        );
+        expect(persona.name).toEqual({
+          value: details.name,
+          source: 'platform_default',
+        });
+        expect(persona.source).toMatchObject({
+          ownerId: f.a.user.id,
+          instanceId: id,
+          profileRevision: 1,
+          profileEligibility: 'full_identity',
+        });
+      }
       const kernel = assembleEmployeeKernel({
         employeeAssignmentId: run.frozen.assignment.id,
         employeeVersionId: run.frozen.employee.versionId,

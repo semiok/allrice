@@ -1,13 +1,15 @@
+import { syntheticLegacyRuntimePackage } from '../platform-employees/legacy-runtime-package.fixture.ts';
+import { personaRuntimePackageChecksum } from '../platform-employees/runtime-package-signature.ts';
 import { randomUUID } from 'node:crypto';
 import {
   localCommandToolchainImageV1,
   PlatformEmployeeDefinitionSchema,
   PlatformEmployeeRuntimeProfileSchema,
-  type EmployeeRuntimePackage,
   type PlatformEmployeeDefinition,
 } from '@allrice/contracts';
 import {
   buildEmployeeRuntimePackage,
+  employeePersonaPlatformSystemPrompt,
   runtimePackageChecksum,
   runtimePackageSystemPrompt,
 } from '../platform-employees/runtime-package.ts';
@@ -70,7 +72,7 @@ function definition(): PlatformEmployeeDefinition {
 }
 // Fixture-only publisher resealing permits deliberate, signed-but-incompatible
 // inputs. Production validation still uses the real shared publisher helpers.
-function reseal(pkg: EmployeeRuntimePackage) {
+function reseal(pkg: ReturnType<typeof buildEmployeeRuntimePackage>) {
   const p = pkg.runtimeManifest;
   pkg.capabilityFingerprint = runtimePackageChecksum({
     distributionGeneration: p.distributionGeneration,
@@ -85,6 +87,10 @@ function reseal(pkg: EmployeeRuntimePackage) {
     })),
     deniedCapabilities: [...p.deniedCapabilities].sort(),
   });
+  if (pkg.schemaVersion === 3) {
+    pkg.checksum = personaRuntimePackageChecksum(pkg);
+    return;
+  }
   pkg.checksum = runtimePackageChecksum({
     schemaVersion: pkg.schemaVersion,
     packageVersion: pkg.packageVersion,
@@ -103,6 +109,7 @@ export function source(
   generation: typeof newNativeGeneration = newNativeGeneration,
   format: 'empty' | 'plain' | 'bundled' = 'plain',
   purpose: PlatformTestPurpose = 'platform_preview',
+  packageFormat: 'legacy' | 'persona' = 'legacy',
 ): PlatformTestExecutionSourceInput {
   const d = definition();
   const content = '# Fixture skill\nRead the reviewed resource only.\n';
@@ -159,11 +166,15 @@ export function source(
           },
         ];
   d.capabilities.nativeSkillIds = skills.map((s) => s.id);
-  const pkg = buildEmployeeRuntimePackage({
+  const current = buildEmployeeRuntimePackage({
     revision: 7,
     definition: d,
     skills,
   });
+  const pkg =
+    packageFormat === 'legacy'
+      ? syntheticLegacyRuntimePackage(current)
+      : current;
   if (generation !== newNativeGeneration) {
     pkg.runtimeManifest.distributionGeneration = generation;
     reseal(pkg);
@@ -179,10 +190,13 @@ export function source(
     timeoutMs: d.modelPolicy.timeoutMs,
     credentialReference: d.modelPolicy.credentialReference,
     baseUrl: d.modelPolicy.baseUrl,
-    systemPrompt: runtimePackageSystemPrompt({
-      platformPolicy: d.systemPrompt,
-      runtimePackage: pkg,
-    }),
+    systemPrompt:
+      pkg.schemaVersion === 3
+        ? employeePersonaPlatformSystemPrompt(d)
+        : runtimePackageSystemPrompt({
+            platformPolicy: d.systemPrompt,
+            runtimePackage: pkg,
+          }),
     nativeSkillIds: pkg.skills.map((s) => s.id),
     nativeSkillChecksums: pkg.skills.map((s) => s.checksum),
     toolNames: d.capabilities.toolNames,
