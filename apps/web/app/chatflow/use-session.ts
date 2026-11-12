@@ -567,6 +567,7 @@ export function useSession({ setError }: UseSessionOptions) {
       });
     },
     newSessionEmployee,
+    pendingEmployeeAssignmentId,
     updateSession,
     setPendingEmployeeAssignmentId,
     activeId,

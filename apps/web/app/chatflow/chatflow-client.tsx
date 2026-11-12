@@ -124,7 +124,7 @@ import {
 import { inputRetry } from '../../lib/chatflow/input-retry';
 import { isSendReceipt } from './send-receipt';
 import { ChatSidebar } from './chat-sidebar';
-import { EmployeePickerDialog } from './employee-picker-dialog';
+import { EmployeeCreateDialog } from './employee-create-dialog';
 import {
   employeeAccent,
   employeeAccentStyle,
@@ -309,6 +309,7 @@ export function ChatFlowClient({
     createSession,
     registerEmployeeInstance,
     newSessionEmployee,
+    pendingEmployeeAssignmentId,
     setPendingEmployeeAssignmentId,
     history,
     historyStale,
@@ -486,7 +487,7 @@ export function ChatFlowClient({
       // Restricted browsers may deny History writes; the modal still opens.
     }
   }, [settingsScope, workspace?.workspaceId]);
-  const [employeePickerOpen, setEmployeePickerOpen] = useState(false);
+  const [employeeCreateOpen, setEmployeeCreateOpen] = useState(false);
   const [detailsAssignmentId, setDetailsAssignmentId] = useState<string | null>(
     null,
   );
@@ -516,13 +517,14 @@ export function ChatFlowClient({
       setAutomationNavigation(null);
       if (sessionId !== null && captureSelection().sessionId === sessionId)
         return;
+      if (sessionId !== null) setPendingEmployeeAssignmentId(null);
       setActiveId(sessionId, sessionId === null);
       setSubmission(null);
       setBusy(false);
       setQuestionBusy(false);
       setError('');
     },
-    [captureSelection, setActiveId],
+    [captureSelection, setActiveId, setPendingEmployeeAssignmentId],
   );
 
   const layout = useWorkbenchLayout({
@@ -1606,7 +1608,7 @@ export function ChatFlowClient({
     setCompanyReferences([]);
     setReferencePickerOpen(false);
     clearPendingAttachments();
-    setEmployeePickerOpen(false);
+    setEmployeeCreateOpen(false);
     requestAnimationFrame(() => composerInput.current?.focus());
   }
 
@@ -2421,8 +2423,8 @@ export function ChatFlowClient({
           </div>
         </div>
       ) : null}
-      {employeePickerOpen && (
-        <EmployeePickerDialog
+      {employeeCreateOpen && (
+        <EmployeeCreateDialog
           key={settingsScope}
           workspace={{
             ...workspace,
@@ -2438,8 +2440,7 @@ export function ChatFlowClient({
                 : {}),
             })),
           }}
-          onClose={() => setEmployeePickerOpen(false)}
-          onSelect={startEmployeeSession}
+          onClose={() => setEmployeeCreateOpen(false)}
           onCreated={(instance) => startEmployeeSession(instance.id, instance)}
           headers={tenantHeaders}
         />
@@ -2556,13 +2557,15 @@ export function ChatFlowClient({
         collapsed={sidebarCollapsed}
         overlay={layout.compact && !sidebarCollapsed}
         onCollapsedChange={setSidebarCollapsed}
+        pendingEmployeeAssignmentId={automationsOpen ? null : pendingEmployeeAssignmentId}
+        onCreateEmployee={() => {
+          if (!confirmSessionNavigation()) return;
+          if (workspace.employees.length > 0) setEmployeeCreateOpen(true);
+          else setError('当前没有可用员工，请先派驻员工。');
+        }}
         onNewSession={(assignmentId) => {
           if (!confirmSessionNavigation()) return;
-          setAutomationNavigation(null);
-          if (assignmentId) startEmployeeSession(assignmentId);
-          else if (employeeChoices(workspace).length > 0)
-            setEmployeePickerOpen(true);
-          else setError('当前没有可用员工，请先派驻员工。');
+          startEmployeeSession(assignmentId);
         }}
         onOpenEmployeeDetails={(assignmentId) => {
           setSceneRequest(null);
@@ -2634,7 +2637,7 @@ export function ChatFlowClient({
               if (!confirmSessionNavigation()) return;
               if (activeEmployee)
                 startEmployeeSession(employeeChoiceId(activeEmployee));
-              else setEmployeePickerOpen(true);
+              else setEmployeeCreateOpen(true);
               setAutomationNavigation({ scope: settingsScope, view: 'create' });
             }}
           />

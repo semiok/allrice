@@ -93,11 +93,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.defaultLabel {
-  color: var(--dsw-alias-label-secondary);
-  font-size: 11px;
-  font-weight: 400;
-}
 .expandIcon {
   flex: none;
   color: var(--dsw-alias-label-tertiary);
@@ -132,30 +127,6 @@
   font-size: 12px;
   font-weight: 400;
   line-height: 18px;
-}
-@container employee-card (max-width: 240px) {
-  .info {
-    position: absolute;
-    right: 2px;
-    bottom: 1px;
-    min-height: 28px;
-    height: 28px;
-    padding: 4px;
-    line-height: 18px;
-  }
-  .meta {
-    padding-right: 44px;
-  }
-  .employeeRole {
-    display: none;
-  }
-  @media (hover: none) {
-    .header > :first-child {
-      height: 76px;
-      align-items: flex-start;
-      padding-top: 8px;
-    }
-  }
 }
 .more {
   border: 0;
@@ -269,127 +240,45 @@
     pointer-events: auto;
   }
 }
-.picker {
-  display: grid;
-  gap: 10px;
-  padding: 3px;
-  margin: -3px;
-}
-.pickerCard {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  min-width: 0;
-  width: 100%;
-  padding: 18px;
-  border: 0;
-  border-radius: 16px;
-  background: var(--allrice-employee-bg);
-  color: var(--dsw-alias-label-primary);
-  text-align: left;
-  cursor: pointer;
-  font: inherit;
-  transition: background-color 140ms ease;
-}
-.pickerCard:hover {
-  background: var(--allrice-sidebar-hover);
-}
-.pickerCard:active {
-  background: var(--allrice-session-selected);
-}
-.pickerInitial {
+
+.newChat {
   display: grid;
   place-items: center;
-  flex: 0 0 40px;
-  height: 40px;
-  border-radius: 12px;
-  background: var(--employee-start);
-  color: var(--employee-avatar-foreground);
-  font-size: 20px;
-  font-weight: 600;
-}
-.pickerCopy {
-  display: grid;
-  flex: 1;
-  min-width: 0;
-  gap: 5px;
-}
-.pickerHeading {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-}
-.pickerBadge {
-  color: var(--dsw-alias-label-secondary);
-  font-size: 11px;
-  line-height: 18px;
-}
-.pickerName {
-  font-size: 16px;
-  font-weight: 600;
-  line-height: 24px;
-  overflow-wrap: anywhere;
-}
-.pickerDescription {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow: hidden;
-  color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
-  line-height: 19px;
-  overflow-wrap: anywhere;
-}
-.pickerAction {
-  display: inline-flex;
-  align-items: center;
   flex: none;
-  gap: 4px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
   color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
+  cursor: pointer;
 }
-.pickerAction > span {
-  opacity: 0;
+.newChat:hover {
+  background: var(--allrice-sidebar-hover);
+  color: var(--dsw-alias-label-primary);
 }
-.pickerCard:hover .pickerAction > span,
-.pickerCard:focus-visible .pickerAction > span {
-  opacity: 1;
-}
-.pickerShortcuts {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.pickerShortcuts kbd {
-  padding: 0 5px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 4px;
-  font: inherit;
-}
-.pickerCard:focus-visible {
-  outline: 2px solid #4678e9;
+.newChat:focus-visible,
+.info:focus-visible {
+  outline: 2px solid var(--ar-focus-ring);
   outline-offset: 2px;
 }
-.avatar:focus-visible {
-  outline: 2px solid #4678e9;
-  outline-offset: -2px;
+.employeeCard[data-active] {
+  background: var(--allrice-session-selected);
 }
-@media (max-width: 560px) {
-  .pickerCard {
-    gap: 12px;
-    padding: 16px 14px;
-  }
-  .pickerAction > span,
-  .pickerShortcuts {
-    display: none;
-  }
+.draftSession {
+  min-height: 34px;
+  margin-bottom: 2px;
+  padding: 7px 12px;
+  border-radius: 8px;
+  color: var(--dsw-alias-label-primary);
+  font-size: 12px;
+  line-height: 20px;
+  font-weight: 500;
 }
-@media (prefers-reduced-motion: reduce) {
-  .pickerCard,
-  .employeeCard,
-  .info,
-  .sessions [role='treeitem'] {
-    transition: none;
+@media (pointer: coarse) {
+  .newChat {
+    width: 32px;
+    height: 36px;
   }
 }
