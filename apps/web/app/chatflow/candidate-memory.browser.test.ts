@@ -780,6 +780,59 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     ).toHaveLength(1);
   });
 
+  it('keeps the existing chat card complete after a real V2 edit while the v2 sidebar still lists only its summary', async () => {
+    const pending = await remember('真实候选来源：月报条件请本人确认');
+    const row = await detail(pending.id);
+    const pair = {
+      summary: '月报可以外发',
+      details: '  只发脱敏汇总\n原始名单不得外发  ',
+    };
+    const response = await api(
+      '/' + pending.id,
+      write(
+        {
+          ...exact(row),
+          ...pair,
+          reason: '本人确认并保存完整条件',
+        },
+        'PATCH',
+      ),
+    );
+    expect(response.status).toBe(200);
+    const edited = EmployeeMemoryWriteResponseSchema.parse(
+      await response.json(),
+    ).memory;
+    const chat = await open('chat');
+    try {
+      const current = card(chat.page, pending.id);
+      await current.waitFor();
+      expect(await current.locator('p').first().textContent()).toBe(
+        `${pair.summary}\n${pair.details}`,
+      );
+      const manager = await open(
+        'management',
+        'light',
+        1280,
+        identity.assignment,
+      );
+      try {
+        const listed = card(manager.page, pending.id);
+        await listed.getByText(pair.summary, { exact: true }).waitFor();
+        expect(await listed.textContent()).not.toContain('原始名单不得外发');
+        await listed.locator('button').first().click();
+        await manager.page
+          .getByRole('dialog')
+          .getByText(pair.details, { exact: true })
+          .waitFor();
+        expect((await detail(pending.id)).pairDigest).toBe(edited.pairDigest);
+      } finally {
+        await manager.close();
+      }
+    } finally {
+      await chat.close();
+    }
+  });
+
   it.each([
     ['light', 1440],
     ['dark', 390],
