@@ -282,3 +282,8 @@
     height: 36px;
   }
 }
+
+.avatar:focus-visible {
+  outline: 2px solid #4678e9;
+  outline-offset: -2px;
+}

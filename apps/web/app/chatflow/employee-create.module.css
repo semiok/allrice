@@ -201,3 +201,8 @@
     flex-wrap: nowrap;
   }
 }
+
+:global(html[data-theme='dark']) .number {
+  background: #fff;
+  color: rgb(15 17 21);
+}

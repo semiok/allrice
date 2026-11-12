@@ -760,25 +760,25 @@ suite('U1 Rice full persona from the real employee entry', () => {
     await tree.screenshot({
       path: resolve(appearanceEvidence, `${filename}-sidebar.png`),
     });
-    await f.page
-      .getByRole('button', { name: '开始新的工作', exact: true })
+    await tree
+      .getByRole('button', { name: `和 ${name} 开新会话`, exact: true })
       .click();
-    const picker = f.page.getByRole('dialog', {
-      name: '选择 AI 员工',
-      exact: true,
-    });
-    const choice = picker.getByRole('button').filter({
-      has: f.page.getByText(name, { exact: true }),
-    });
+    await f.page
+      .getByRole('textbox', { name: `给 ${name} 的消息`, exact: true })
+      .waitFor();
+    const conversation = f.page.locator('main > section[data-employee-accent]');
+    expect(await conversation.getAttribute('data-employee-accent')).toBe(color);
     expect(
-      await read(choice.locator(':scope > span[aria-hidden="true"]').first()),
-    ).toEqual(detailPaint);
-    await paint(picker);
-    await picker.screenshot({
-      path: resolve(appearanceEvidence, `${filename}-picker.png`),
+      await conversation.evaluate((node) =>
+        getComputedStyle(node).getPropertyValue('--employee-start').trim(),
+      ),
+    ).toBe(detailPaint.accent);
+    expect(
+      await f.page.getByRole('dialog', { name: '选择 AI 员工' }).count(),
+    ).toBe(0);
+    await f.page.screenshot({
+      path: resolve(appearanceEvidence, `${filename}-new-session.png`),
     });
-    await picker.getByRole('button', { name: '关闭', exact: true }).click();
-    await picker.waitFor({ state: 'detached' });
     await f.openDetails(name);
   }
 

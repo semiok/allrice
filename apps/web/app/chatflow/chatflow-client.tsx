@@ -488,6 +488,10 @@ export function ChatFlowClient({
     }
   }, [settingsScope, workspace?.workspaceId]);
   const [employeeCreateOpen, setEmployeeCreateOpen] = useState(false);
+  const [createdEmployee, setCreatedEmployee] = useState<{
+    scope: string;
+    id: string;
+  } | null>(null);
   const [detailsAssignmentId, setDetailsAssignmentId] = useState<string | null>(
     null,
   );
@@ -517,6 +521,7 @@ export function ChatFlowClient({
       setAutomationNavigation(null);
       if (sessionId !== null && captureSelection().sessionId === sessionId)
         return;
+      setCreatedEmployee(null);
       if (sessionId !== null) setPendingEmployeeAssignmentId(null);
       setActiveId(sessionId, sessionId === null);
       setSubmission(null);
@@ -1602,6 +1607,7 @@ export function ChatFlowClient({
     selectSession(null);
     setHistory(null);
     setPendingEmployeeAssignmentId(assignmentId);
+    setCreatedEmployee(created ? { scope: settingsScope, id: created.id } : null);
     setDraft('');
     setSessionReferences([]);
     setReferenceSelections([]);
@@ -1983,6 +1989,12 @@ export function ChatFlowClient({
     !transcriptMessages.length &&
     !hasQueuedMessages &&
     Object.keys(runViews).length === 0;
+  const pendingEmployeeConversation =
+    !activeId && !!pendingEmployeeAssignmentId && !automationCreate;
+  const newlyCreatedEmployeeConversation =
+    pendingEmployeeConversation &&
+    createdEmployee?.scope === settingsScope &&
+    createdEmployee.id === pendingEmployeeAssignmentId;
   const recoverableRunView = [...activeRunMessages]
     .reverse()
     .map((message) => runViews[message.runId!])
@@ -2868,13 +2880,23 @@ export function ChatFlowClient({
                       <span className={styles.heroMark} aria-hidden="true">
                         {Array.from(activeEmployeeName)[0]}
                       </span>
-                      <h1>与 {activeEmployeeName} 工作</h1>
-                      <p>
-                        {employeeIntroduction(
-                          activeEmployee,
-                          activeEmployeeProfile,
-                        )}
-                      </p>
+                      <h1>
+                        {newlyCreatedEmployeeConversation
+                          ? `${activeEmployeeName}已创建，开始第一项工作吧`
+                          : pendingEmployeeConversation
+                            ? `和${activeEmployeeName}开始新的工作`
+                            : `与 ${activeEmployeeName} 工作`}
+                      </h1>
+                      {newlyCreatedEmployeeConversation ? (
+                        <p>技能、工作场景可以在“详情”里添加</p>
+                      ) : !pendingEmployeeConversation ? (
+                        <p>
+                          {employeeIntroduction(
+                            activeEmployee,
+                            activeEmployeeProfile,
+                          )}
+                        </p>
+                      ) : null}
                     </div>
                     {renderComposer(true)}
                   </div>
