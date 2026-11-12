@@ -1399,27 +1399,132 @@ suite(
     });
 
     it('MET-214 waits for the first native binding before reading a new session directory', async () => {
+      let stage = 'fixture',
+        dropped = 0,
+        samples = 0,
+        workspaceSamples = 0;
+      const observations: unknown[] = [],
+        snapshots: unknown[] = [];
+      const mark = (phase: string, detail: unknown = null) => {
+        if (observations.length < 64)
+          observations.push({ at: Date.now(), phase, detail });
+        else dropped++;
+      };
+      const sample = (page: Page, reason: string) => {
+        if (samples === 4) return;
+        const id = ++samples,
+          startedAt = Date.now();
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        mark('dom-sample-start', { id, reason });
+        void Promise.race([
+          Promise.resolve().then(() =>
+            page.evaluate(() => ({
+              url: location.href,
+              heading: document.querySelector('h1')?.textContent,
+              selected: Array.from(
+                document.querySelectorAll(
+                  '[data-row-key^="session:"][aria-selected="true"]',
+                ),
+                (row) => row.getAttribute('data-row-key'),
+              ),
+              stop: !!document.querySelector('button[aria-label="停止生成"]'),
+              browserAt: Date.now(),
+            })),
+          ),
+          new Promise((resolve) => {
+            timer = setTimeout(() => resolve({ timedOut: true }), 2000);
+          }),
+        ])
+          .then(
+            (detail) =>
+              snapshots.push({ id, reason, startedAt, at: Date.now(), detail }),
+            (error) =>
+              snapshots.push({
+                id,
+                reason,
+                startedAt,
+                at: Date.now(),
+                error: String(error),
+              }),
+          )
+          .finally(() => clearTimeout(timer));
+      };
       const f = await fixture({
         nativeParents: 3,
         running: true,
         nativeStartup: true,
         nativeClock: true,
+        nativeStartupObserve: mark,
+        nativeStartupPage: (page) => {
+          const requests = new Map<Request, number>();
+          page.on('request', (request) => {
+            if (!request.url().includes('/api/v1/') || requests.size === 64)
+              return;
+            requests.set(request, requests.size + 1);
+            mark('browser-request', {
+              id: requests.get(request),
+              url: request.url(),
+            });
+            if (request.url().includes(`/sessions/${A}/subagents?`))
+              sample(page, 'A-subagents-request');
+          });
+          page.on('response', (response) => {
+            const id = requests.get(response.request());
+            if (!id) return;
+            mark('browser-response', {
+              id,
+              url: response.url(),
+              status: response.status(),
+            });
+            if (
+              new URL(response.url()).pathname === '/api/v1/workspace' &&
+              workspaceSamples++ < 2
+            )
+              sample(page, 'workspace-response');
+          });
+          const finished = (phase: string) => (request: Request) => {
+            const id = requests.get(request);
+            if (id)
+              mark(phase, {
+                id,
+                url: request.url(),
+                failure: request.failure(),
+              });
+          };
+          page.on('requestfinished', finished('requestfinished'));
+          page.on('requestfailed', finished('requestfailed'));
+        },
       });
       try {
         const activeReads = () =>
           f.reads.filter((url) =>
             url.startsWith(`/api/v1/sessions/${A}/subagents?`),
           );
+        const step = (phase: string) => {
+          stage = phase;
+          mark(phase, {
+            streams: f.native.startupStreams(),
+            reads: activeReads(),
+          });
+        };
+        step('fixture-return');
         await f.page
           .getByRole('button', { name: '停止生成', exact: true })
           .waitFor();
+        step('clock-before');
         await f.page.clock.runFor(6_000);
+        step('clock-after');
+        step('directory-click-before');
         await f.page
           .getByRole('button', { name: '子智能体', exact: true })
           .click();
+        step('directory-click-after');
         await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+        step('focus-after');
         expect(activeReads()).toEqual([]);
+        step('allow-ready-before');
         f.native.allowReady();
+        step('allow-ready-after');
         await f.page
           .getByRole('button', {
             name: '1 个子智能体 · 1 个运行中',
@@ -1428,6 +1533,21 @@ suite(
           .waitFor();
         await expect.poll(f.native.fullRequests).toBe(1);
         expect(f.errors).toEqual([]);
+      } catch (error) {
+        console.error(
+          'MET214 initial binding failure',
+          JSON.stringify({
+            stage,
+            observations,
+            dropped,
+            samples,
+            snapshots,
+            streams: f.native.startupStreams(),
+            reads: f.reads,
+            errors: f.errors,
+          }),
+        );
+        throw error;
       } finally {
         await f.close();
       }
