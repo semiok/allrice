@@ -420,13 +420,31 @@ suite('DSH native document previews', () => {
       if (!frameIds.has(frame)) frameIds.set(frame, frameIds.size + 1);
       return frameIds.get(frame);
     };
+    const observe = async <T>(phase: string, read: Promise<T> | undefined) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          read,
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(
+              () => reject(Error('Observation exceeded 2000ms')),
+              2000,
+            );
+          }),
+        ]);
+      } catch (error) {
+        snapshots.push({ phase, readError: String(error) });
+      } finally {
+        clearTimeout(timer);
+      }
+    };
     const inspect = async (phase: string, failure = false) => {
       try {
         const iframe = await observedPage.current
           ?.locator('section[aria-label="interactive.html"] iframe')
           .elementHandle();
         const frame = await iframe?.contentFrame();
-        if (!frame) return snapshots.push({ phase, frame: null });
+        if (!frame) return { phase, frame: null };
         const value = await frame.evaluate(
           ({ priorDocument, priorButton, failure }) => {
             const button = document.querySelector('button');
@@ -446,23 +464,27 @@ suite('DSH native document previews', () => {
           { priorDocument, priorButton, failure },
         );
         const { html, ...detail } = value;
-        snapshots.push({
+        return {
           phase,
           frame: frameId(frame),
           ...detail,
           sandbox: await iframe?.getAttribute('sandbox'),
           htmlBytes: Buffer.byteLength(html),
           htmlSHA256: createHash('sha256').update(html).digest('hex'),
-        });
+        };
       } catch (error) {
-        snapshots.push({ phase, readError: String(error) });
+        return { phase, readError: String(error) };
       }
+    };
+    const snapshot = async (phase: string, failure = false) => {
+      const value = await observe(phase, inspect(phase, failure));
+      if (value) snapshots.push(value);
     };
     const evidence = createFailureEvidence({
       file: import.meta.url,
       test: 'native static HTML sanitization and opaque iframe interaction',
       collect: async () => {
-        await inspect('failure', true);
+        await snapshot('failure', true);
         return {
           stage,
           cleanupStage,
@@ -473,6 +495,17 @@ suite('DSH native document previews', () => {
         };
       },
     });
+    const capture = (errors: unknown) => {
+      evidence.mark('cached-html-observations', {
+        stage,
+        cleanupStage,
+        lastReadyState,
+        events,
+        dropped,
+        snapshots,
+      });
+      return evidence.capture(errors);
+    };
     onTestFailed(async ({ task }) => {
       console.error('Native HTML failure stage', {
         stage,
@@ -480,7 +513,7 @@ suite('DSH native document previews', () => {
         lastReadyState,
         frames: observedPage.current?.frames().map((frame) => frame.url()),
       });
-      await evidence.capture(task.result?.errors);
+      await capture(task.result?.errors);
     });
     const html =
       "<h1>原生网页预览</h1><button onclick=\"document.querySelector('h1').textContent='交互成功'\">点击测试</button><script>try { parent.previewEscaped=true } catch {}</script>";
@@ -538,14 +571,16 @@ suite('DSH native document previews', () => {
         )
         .toBe('complete');
       stage = 'interactive-click';
-      priorButton = await page
+      const buttonRead = page
         .frameLocator('section[aria-label="interactive.html"] iframe')
         .getByRole('button')
         .elementHandle();
-      priorDocument = priorButton
-        ? await priorButton.evaluateHandle((node) => node.ownerDocument)
-        : null;
-      await priorButton?.evaluate((button) => {
+      priorButton = (await observe('button-handle', buttonRead)) ?? null;
+      const documentRead = priorButton?.evaluateHandle(
+        (node) => node.ownerDocument,
+      );
+      priorDocument = (await observe('owner-document', documentRead)) ?? null;
+      const listeners = priorButton?.evaluate((button) => {
         const doc = button.ownerDocument,
           events: unknown[] = [];
         Reflect.set(doc, 'htmlClickEvidence', events);
@@ -576,12 +611,13 @@ suite('DSH native document previews', () => {
           passive: true,
         });
       });
-      await inspect('before-click');
+      await observe('event-listeners', listeners);
+      await snapshot('before-click');
       await page
         .frameLocator('section[aria-label="interactive.html"] iframe')
         .getByRole('button')
         .click();
-      await inspect('after-click');
+      await snapshot('after-click');
       stage = 'interactive-heading';
       await page
         .frameLocator('section[aria-label="interactive.html"] iframe')
@@ -600,7 +636,7 @@ suite('DSH native document previews', () => {
       expect(errors).toEqual([]);
       stage = 'complete';
     } catch (error) {
-      await evidence.capture([error]);
+      await capture([error]);
       throw error;
     } finally {
       cleanupStage = 'page-close';

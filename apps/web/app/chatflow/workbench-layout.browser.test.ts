@@ -14706,9 +14706,24 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           artifacts: closed,
           streamingOutput,
         });
+        const evidence = createFailureEvidence({
+          file: import.meta.url,
+          test: `SSE delivery focus streaming=${streamingOutput} closed=${closed}`,
+          collect: () =>
+            f.page.evaluate(() => ({
+              url: location.href,
+              active: document.activeElement?.outerHTML.slice(0, 500),
+              originalConnected: Reflect.get(window, 'sseOriginalComposer')
+                ?.isConnected,
+              sameComposer:
+                Reflect.get(window, 'sseOriginalComposer') ===
+                document.querySelector('textarea'),
+              events: Reflect.get(window, 'sseFocusEvents'),
+            })),
+        });
         try {
           await expect.poll(() => f.state.streamRequests).toBeGreaterThan(0);
-          await f.page.evaluate(() => {
+          const focusObservation = f.page.evaluate(() => {
             Reflect.set(
               window,
               'sseOriginalComposer',
@@ -14724,6 +14739,20 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                   );
               });
           });
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          await Promise.race([
+            focusObservation,
+            new Promise<void>((resolve) => {
+              timer = setTimeout(() => {
+                evidence.mark('focus-observer-timeout', { timeoutMs: 2000 });
+                resolve();
+              }, 2000);
+            }),
+          ])
+            .catch((error) =>
+              evidence.mark('focus-observer-error', String(error)),
+            )
+            .finally(() => clearTimeout(timer));
           if (closed) {
             await f.panel.waitFor();
             await f.page
@@ -14767,25 +14796,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           }
           await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
         } catch (error) {
-          console.error(
-            'SSE delivery focus failure',
-            JSON.stringify({
-              streamingOutput,
-              closed,
-              url: f.page.url(),
-              focus: await f.page
-                .evaluate(() => ({
-                  active: document.activeElement?.outerHTML.slice(0, 500),
-                  originalConnected: Reflect.get(window, 'sseOriginalComposer')
-                    ?.isConnected,
-                  sameComposer:
-                    Reflect.get(window, 'sseOriginalComposer') ===
-                    document.querySelector('textarea'),
-                  events: Reflect.get(window, 'sseFocusEvents'),
-                }))
-                .catch(String),
-            }),
-          );
+          await evidence.capture([error]);
           throw error;
         } finally {
           await f.close();
