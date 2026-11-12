@@ -14,6 +14,12 @@ import { cloudStableId } from './cloud-execution.ts';
 import { revokeRuntimeActionApproval } from './runtime-policy.ts';
 import { listCloudRuntimeOperations } from './cloud-operation-view.ts';
 import { executeRiceTool } from '../../../apps/worker/src/tool-broker.js';
+import { exportReconciliation } from '../../../apps/worker/src/tool-broker/handlers/reconciliation.js';
+import { getWorkbenchArtifact, readArtifactBytes } from './artifact-review.ts';
+import { readWorkbenchDeliverables } from './workbench-files.ts';
+import { authenticateSession, createSession } from './identity.ts';
+import { UuidSchema } from '@allrice/contracts';
+import { z } from 'zod';
 import { resolveCloudToolArguments } from '../../../apps/worker/src/tool-broker/handlers/cloud-frozen-script.js';
 import {
   getToolBrokerFile,
@@ -307,6 +313,149 @@ suite('P15 real PostgreSQL governance and SaaS gVisor delivery', () => {
       vi.stubEnv('ALLRICE_CLOUD_COMMAND_OUTPUT_BYTES', output);
     }
   });
+  it('the real reconciliation handler returns the persisted collision name and exact call replay with a saved synthetic cloud result', async () => {
+    const f = await fixture({ workbench: true, reconciliationOnly: true });
+    const report = {
+      schemaVersion: 1,
+      currency: 'CNY',
+      rows: [
+        {
+          invoice_id: 'invoice-1',
+          invoice_cents: 30,
+          paid_cents: 30,
+          difference_cents: 0,
+          status: 'matched',
+        },
+      ],
+      issues: [],
+      totals: {
+        invoice_rows: 1,
+        payment_rows: 1,
+        invoice_cents: 30,
+        valid_payment_cents: 30,
+        allocated_payment_cents: 30,
+        unallocated_payment_cents: 0,
+        difference_cents: 0,
+      },
+    };
+    class SavedReportBackend extends CloudRunnerBackend {
+      executions = 0;
+      override async inspect() {
+        return null;
+      }
+      override async cleanup() {}
+      override async execute(): ReturnType<CloudRunnerBackend['execute']> {
+        this.executions++;
+        return {
+          containerId: '2'.repeat(64),
+          exitCode: 0,
+          stopped: true,
+          reason: 'completed',
+          output: 'synthetic saved report',
+          elapsedMs: 1,
+          artifacts: [
+            {
+              path: 'reconciliation.json',
+              contentBase64: Buffer.from(JSON.stringify(report)).toString(
+                'base64',
+              ),
+            },
+          ],
+        };
+      }
+    }
+    const fake = new SavedReportBackend();
+    const operation = await f.create('reconciliation-source', {
+      script: '/* synthetic saved cloud result, no physical execution */',
+      inputs: f.args.inputs,
+      outputs: [
+        {
+          path: 'reconciliation.json',
+          fileName: 'reconciliation.json',
+          format: 'json',
+        },
+      ],
+    });
+    await f.approve(operation);
+    const computed = await runCloudCommandOperation(operation, {
+      storage: f.storage,
+      backend: fake,
+      database: db,
+    });
+    expect(computed.status).toBe('succeeded');
+    expect(fake.executions).toBe(1);
+    const args = {
+        artifactId: computed.artifacts[0]!.versionId,
+        fileName: '对账.xlsx',
+      },
+      originalArgs = structuredClone(args);
+    const invoke = (callId: string, argumentsInput = args) =>
+      exportReconciliation({
+        input: {
+          context: f.execution,
+          capabilities: ['storage:read', 'storage:write'],
+          storageRoot,
+          sessionId: f.session,
+          call: {
+            id: callId,
+            name: 'workspace.reconciliation.export',
+            arguments: argumentsInput,
+          },
+        },
+        arguments: argumentsInput,
+      });
+    const parse = (body: string) =>
+      z
+        .object({
+          artifactId: UuidSchema,
+          objectId: UuidSchema,
+          fileName: z.string(),
+          downloadUrl: z.string(),
+        })
+        .parse(JSON.parse(body));
+    const first = parse((await invoke('first-reconciliation')).modelContent),
+      firstArtifact = await getWorkbenchArtifact(
+        f.context,
+        f.session,
+        first.artifactId,
+      ),
+      originalBytes = await readArtifactBytes(f.storage, firstArtifact.object);
+    const secondResult = await invoke('second-reconciliation'),
+      second = parse(secondResult.modelContent);
+    expect(first.fileName).toBe('对账.xlsx');
+    expect(second.fileName).toBe('对账（2）.xlsx');
+    expect(second.objectId).not.toBe(first.objectId);
+    expect(
+      new URL(second.downloadUrl, 'https://allrice.test').searchParams.get(
+        'name',
+      ),
+    ).toBe(second.fileName);
+    expect(await invoke('second-reconciliation')).toEqual(secondResult);
+    await expect(
+      invoke('second-reconciliation', { ...args, fileName: '变更.xlsx' }),
+    ).rejects.toThrow('idempotency_conflict');
+    expect(args).toEqual(originalArgs);
+    expect(await readArtifactBytes(f.storage, firstArtifact.object)).toEqual(
+      originalBytes,
+    );
+    const login = {
+      ...(await authenticateSession((await createSession(f.user)).token))!,
+      workspaceId: f.workspace,
+    };
+    const directory = await readWorkbenchDeliverables(login, {
+      workspaceId: f.workspace,
+      objectId: second.objectId,
+    });
+    expect(directory.files[0]!.fileName).toBe(second.fileName);
+    const source = await getWorkbenchArtifact(
+      f.context,
+      f.session,
+      args.artifactId,
+    );
+    expect((await readArtifactBytes(f.storage, source.object)).toString()).toBe(
+      JSON.stringify(report),
+    );
+  }, 30000);
   it('preserves both exact runtime endpoints through Broker normalization and rejects outside them before freezing', async () => {
     const f = await fixture();
     for (const [index, limits] of [

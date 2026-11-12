@@ -8,14 +8,15 @@ export const runtime = 'nodejs';
 
 function downloadName(request: Request) {
   const raw = new URL(request.url).searchParams.get('name') ?? 'allrice-export';
-  const sanitized = [...raw]
-    .map((character) =>
+  let sanitized = '';
+  for (const character of raw) {
+    const safe =
       character === '\\' || character === '/' || character.charCodeAt(0) < 32
         ? '-'
-        : character,
-    )
-    .join('')
-    .slice(0, 160);
+        : character;
+    if (sanitized.length + safe.length > 255) break;
+    sanitized += safe;
+  }
   return sanitized || 'allrice-export';
 }
 

@@ -13066,6 +13066,332 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     30000,
   );
 
+  it.each([1440, 390])(
+    'MET247 retained file details reconcile both accepted favorite directions after hiding at %ipx',
+    async (width) => {
+      const f = await fixture({ width });
+      let release = () => {};
+      try {
+        const file = catalogFile(9582, {
+          fileName: '详情收藏对账.md',
+          category: 'artifact',
+        });
+        f.state.workbenchFiles.push(file);
+        const input = f.page.getByRole('textbox', { name: /给 .* 的消息/ });
+        await input.fill('详情隐藏期间保留草稿');
+        const entry = f.page
+          .locator('header')
+          .getByRole('button', { name: '交付成果', exact: true });
+        await entry.click();
+        await f.panel
+          .getByRole('region', { name: '交付成果', exact: true })
+          .getByRole('button', { name: file.fileName, exact: true })
+          .click();
+        const toolbar = f.panel.locator(
+          'header[aria-label="文件操作"]:visible',
+        );
+        await toolbar
+          .getByRole('button', { name: '收藏', exact: true })
+          .waitFor();
+        const contentLocator = f.panel
+          .locator('[data-document-id]:visible')
+          .getByRole('heading', { name: '上传的文件', exact: true });
+        await contentLocator.waitFor();
+        const content = (await contentLocator.elementHandle())!;
+        for (const [index, desired] of [true, false].entries()) {
+          const button = toolbar.getByRole('button', {
+            name: desired ? '收藏' : '取消收藏',
+            exact: true,
+          });
+          f.state.favoriteDelay = new Promise<void>((done) => {
+            release = done;
+          });
+          await button.click();
+          await expect
+            .poll(() => f.state.favoriteWrites.length)
+            .toBe(index + 1);
+          expect(await button.isDisabled()).toBe(true);
+          const reads = f.state.deliverableRequests.filter(
+            (request) => request.objectId === file.objectId,
+          ).length;
+          await f.panel
+            .getByRole('button', { name: '关闭工作台', exact: true })
+            .click();
+          expect(await content.evaluate((node) => node.isConnected)).toBe(true);
+          release();
+          await expect
+            .poll(() => f.state.favoriteSettled.has(index))
+            .toBe(true);
+          expect(
+            f.state.favoriteIds.has(`${user}/${workspace}/${file.objectId}`),
+          ).toBe(desired);
+          f.state.favoriteDelay = null;
+          await entry.click();
+          expect(await content.evaluate((node) => node.isConnected)).toBe(true);
+          await f.panel
+            .getByRole('tab')
+            .filter({ hasText: file.fileName })
+            .click();
+          const reconciled = toolbar.getByRole('button', {
+            name: desired ? '取消收藏' : '收藏',
+            exact: true,
+          });
+          await reconciled.waitFor();
+          expect(await reconciled.isEnabled()).toBe(true);
+          expect(await reconciled.getAttribute('aria-pressed')).toBe(
+            String(desired),
+          );
+          expect(
+            f.state.deliverableRequests.filter(
+              (request) => request.objectId === file.objectId,
+            ).length,
+          ).toBeGreaterThan(reads);
+          expect(f.state.favoriteWrites).toHaveLength(index + 1);
+          expect(await content.evaluate((node) => node.isConnected)).toBe(true);
+        }
+        expect(f.state.favoriteWrites.map((write) => write.favorite)).toEqual([
+          true,
+          false,
+        ]);
+        expect(await input.inputValue()).toBe('详情隐藏期间保留草稿');
+        expect(f.state.messageInputs).toEqual([]);
+      } finally {
+        release();
+        await f.close();
+      }
+    },
+    30000,
+  );
+
+  for (const theme of ['light', 'dark'] as const)
+    for (const width of [1440, 390]) {
+      it(`MET247 metadata failure preserves the native file, fonts and reader state until manual recovery at ${width}px ${theme}`, async () => {
+        const f = await fixture({ width, appearance: theme });
+        let release = () => {};
+        try {
+          await f.page.setViewportSize({
+            width,
+            height: width === 1440 ? 1000 : 844,
+          });
+          const file = catalogFile(9583, {
+            fileName: '收藏元数据恢复.docx',
+            category: 'artifact',
+          });
+          f.state.workbenchFiles.push(file);
+          f.state.filePreview = deliverablePdf([
+            'Noto Sans CJK SC',
+            'Aptos Display Semibold',
+          ]);
+          const input = f.page.getByRole('textbox', { name: /给 .* 的消息/ });
+          await input.fill('元数据失败不清草稿');
+          await f.page
+            .locator('header')
+            .getByRole('button', { name: '交付成果', exact: true })
+            .click();
+          await f.panel
+            .getByRole('region', { name: '交付成果', exact: true })
+            .getByRole('button', { name: file.fileName, exact: true })
+            .click();
+          const toolbar = f.panel.locator(
+            'header[aria-label="文件操作"]:visible',
+          );
+          await f.panel
+            .getByText('Delivery original preview', { exact: true })
+            .waitFor({ timeout: 15000 });
+          const frame = f.panel.locator('[data-document-zoom-frame]:visible');
+          const scroll = frame.locator('[data-document-zoom-scrollport]');
+          const box = (await frame.boundingBox())!;
+          await f.page.mouse.move(
+            box.x + box.width / 2,
+            box.y + box.height - 20,
+          );
+          await frame
+            .getByRole('button', { name: '选择缩放比例', exact: true })
+            .click();
+          await f.page
+            .getByRole('menuitem', { name: '150%', exact: true })
+            .click();
+          await expect
+            .poll(() => frame.getAttribute('data-document-zoom-mode'))
+            .toBe('fixed');
+          await expect
+            .poll(() =>
+              scroll.evaluate((node) => node.scrollHeight > node.clientHeight),
+            )
+            .toBe(true);
+          const top = await scroll.evaluate((node) => {
+            node.scrollTop = 80;
+            return node.scrollTop;
+          });
+          expect(top).toBeGreaterThan(0);
+          const original = (await frame.elementHandle())!;
+          const zoom = await frame.evaluate((node) =>
+            node.style.getPropertyValue('--document-zoom'),
+          );
+          const previewReads = f.state.workbenchPreviewReads;
+          const reads = f.state.deliverableRequests.filter(
+            (request) => request.objectId === file.objectId,
+          ).length;
+          f.state.favoriteDelay = new Promise<void>((done) => {
+            release = done;
+          });
+          await toolbar
+            .getByRole('button', { name: '收藏', exact: true })
+            .click();
+          await expect.poll(() => f.state.favoriteWrites.length).toBe(1);
+          await toolbar
+            .getByRole('button', {
+              name: '缺失 2 种字体，点击查看',
+              exact: true,
+            })
+            .click();
+          const fonts = f.page.getByRole('dialog', {
+            name: '缺失的字体',
+            exact: true,
+          });
+          await fonts.waitFor();
+          f.state.deliverablesStatus = 500;
+          release();
+          const failure = f.panel
+            .locator('footer:visible')
+            .getByRole('alert')
+            .filter({ hasText: '预览加载失败' });
+          await failure
+            .getByRole('button', { name: '重新加载', exact: true })
+            .waitFor();
+          expect(
+            f.state.favoriteIds.has(`${user}/${workspace}/${file.objectId}`),
+          ).toBe(true);
+          expect(await original.evaluate((node) => node.isConnected)).toBe(
+            true,
+          );
+          expect(await fonts.isVisible()).toBe(true);
+          expect(await scroll.evaluate((node) => node.scrollTop)).toBe(top);
+          expect(
+            await frame.evaluate((node) =>
+              node.style.getPropertyValue('--document-zoom'),
+            ),
+          ).toBe(zoom);
+          expect(f.state.workbenchPreviewReads).toBe(previewReads);
+          expect(
+            f.state.deliverableRequests.filter(
+              (request) => request.objectId === file.objectId,
+            ),
+          ).toHaveLength(reads + 1);
+          expect(
+            await toolbar
+              .getByRole('button', { name: '收藏', exact: true })
+              .isEnabled(),
+          ).toBe(true);
+          const failureBox = (await failure.boundingBox())!;
+          const failedPreviewBox = (await frame.boundingBox())!;
+          expect(failureBox.y).toBeGreaterThanOrEqual(
+            failedPreviewBox.y + failedPreviewBox.height,
+          );
+          expect(failureBox.y + failureBox.height).toBeLessThanOrEqual(
+            width === 1440 ? 1000 : 844,
+          );
+          const reviewDir = process.env.ALLRICE_DELIVERABLES_REVIEW_DIR;
+          if (reviewDir) {
+            await (
+              await import('node:fs/promises')
+            ).mkdir(reviewDir, { recursive: true });
+            await f.page.screenshot({
+              path: join(
+                reviewDir,
+                `${width}-${theme}-artifact-metadata-error.png`,
+              ),
+              animations: 'disabled',
+            });
+          }
+          f.state.deliverablesStatus = 200;
+          await failure
+            .getByRole('button', { name: '重新加载', exact: true })
+            .click();
+          await toolbar
+            .getByRole('button', { name: '取消收藏', exact: true })
+            .waitFor();
+          expect(await failure.count()).toBe(0);
+          expect(await original.evaluate((node) => node.isConnected)).toBe(
+            true,
+          );
+          expect(await scroll.evaluate((node) => node.scrollTop)).toBe(top);
+          expect(
+            await frame.evaluate((node) =>
+              node.style.getPropertyValue('--document-zoom'),
+            ),
+          ).toBe(zoom);
+          expect(f.state.workbenchPreviewReads).toBe(previewReads);
+          expect(
+            f.state.deliverableRequests.filter(
+              (request) => request.objectId === file.objectId,
+            ),
+          ).toHaveLength(reads + 2);
+          await toolbar
+            .getByRole('button', {
+              name: '缺失 2 种字体，点击查看',
+              exact: true,
+            })
+            .click();
+          await fonts.waitFor();
+          expect(await fonts.getByRole('listitem').allTextContents()).toEqual([
+            'Noto Sans CJK SC',
+            'Aptos Display Semibold',
+          ]);
+          expect(f.state.favoriteWrites).toHaveLength(1);
+          expect(await input.inputValue()).toBe('元数据失败不清草稿');
+          expect(f.state.messageInputs).toEqual([]);
+        } finally {
+          release();
+          await f.close();
+        }
+      }, 30000);
+    }
+
+  it.each([401, 403, 404, 200])(
+    'MET247 metadata denial or an invisible object clears an already loaded preview (%i)',
+    async (status) => {
+      const f = await fixture();
+      try {
+        const file = catalogFile(9584, {
+          fileName: '撤权后的原件.md',
+          category: 'artifact',
+        });
+        f.state.workbenchFiles.push(file);
+        await f.page
+          .locator('header')
+          .getByRole('button', { name: '交付成果', exact: true })
+          .click();
+        await f.panel
+          .getByRole('region', { name: '交付成果', exact: true })
+          .getByRole('button', { name: file.fileName, exact: true })
+          .click();
+        const content = f.panel
+          .locator('[data-document-id]:visible')
+          .getByRole('heading', { name: '上传的文件', exact: true });
+        await content.waitFor();
+        const original = (await content.elementHandle())!;
+        f.state.deliverablesStatus = status;
+        if (status === 200) f.state.workbenchFiles = [];
+        await f.page.evaluate(() =>
+          window.dispatchEvent(new Event('allrice:workbench-files-changed')),
+        );
+        await f.panel.getByText('无权访问', { exact: true }).waitFor();
+        expect(await original.evaluate((node) => node.isConnected)).toBe(false);
+        expect(
+          await f.panel
+            .locator('header[aria-label="文件操作"]:visible')
+            .count(),
+        ).toBe(0);
+        expect(f.state.favoriteWrites).toEqual([]);
+        expect(f.state.messageInputs).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+    30000,
+  );
+
   for (const theme of ['light', 'dark'] as const)
     for (const width of [1440, 390]) {
       it(`MET247 three separate same-name objects keep their final download names at ${width}px ${theme}`, async () => {

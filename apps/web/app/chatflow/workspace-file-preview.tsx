@@ -70,10 +70,11 @@ export function WorkbenchDeliverablePreview(props: {
       window.removeEventListener('allrice:workbench-files-changed', changed);
   }, []);
   useEffect(() => {
-    if (
-      !props.active ||
-      (loaded.current?.key === key && loaded.current.attempt === attempt)
-    )
+    if (!props.active) {
+      loaded.current = null;
+      return;
+    }
+    if (loaded.current?.key === key && loaded.current.attempt === attempt)
       return;
     const abort = new AbortController();
     setSnapshot((prior) => (prior?.key === key ? prior : null));
@@ -107,13 +108,12 @@ export function WorkbenchDeliverablePreview(props: {
         }
       })
       .catch((error) => {
-        if (!abort.signal.aborted)
-          setFailure({
-            key,
-            denied: [401, 403, 404].includes(
-              (error as { status?: number }).status ?? 0,
-            ),
-          });
+        if (abort.signal.aborted) return;
+        const denied = [401, 403, 404].includes(
+          (error as { status?: number }).status ?? 0,
+        );
+        if (denied) setSnapshot(null);
+        setFailure({ key, denied });
       });
     return () => abort.abort();
   }, [
@@ -124,7 +124,7 @@ export function WorkbenchDeliverablePreview(props: {
     props.active,
     attempt,
   ]);
-  if (failure?.key === key)
+  if (failure?.key === key && (failure.denied || snapshot?.key !== key))
     return failure.denied ? (
       <p className={detail.empty}>无权访问</p>
     ) : (
@@ -149,6 +149,8 @@ export function WorkbenchDeliverablePreview(props: {
         unified
         deliverable={snapshot.file}
         quotable={snapshot.quotable}
+        metadataError={failure?.key === key}
+        onReloadMetadata={() => setAttempt((n) => n + 1)}
       />
     </div>
   );
@@ -166,6 +168,8 @@ export function WorkspaceFilePreview(props: {
   deliverable?: WorkbenchDeliverable;
   employeeColors?: Record<string, EmployeeAccentColor | undefined>;
   quotable?: boolean;
+  metadataError?: boolean;
+  onReloadMetadata?: () => void;
   onBack?: () => void;
   onSource?: (sessionId: string) => void;
   fileActions?: Pick<
@@ -464,16 +468,31 @@ export function WorkspaceFilePreview(props: {
           </div>
           {(reference.error ||
             favorite.error ||
+            props.metadataError ||
             reference.notice ||
             copyNotice) && (
             <p
-              role={reference.error || favorite.error ? 'alert' : 'status'}
+              role={
+                reference.error || favorite.error || props.metadataError
+                  ? 'alert'
+                  : 'status'
+              }
               className={detail.notice}
             >
               {reference.error ||
                 favorite.error ||
+                (props.metadataError ? '预览加载失败' : '') ||
                 reference.notice ||
                 copyNotice}
+              {props.metadataError && (
+                <button
+                  type="button"
+                  className={detail.sourceLink}
+                  onClick={props.onReloadMetadata}
+                >
+                  重新加载
+                </button>
+              )}
             </p>
           )}
           {reference.pending && (

@@ -185,7 +185,7 @@ suite(
       >`select object_id,series_id from allrice_deliverable_versions where id=${first.artifactId}`;
       await fixture.db`update allrice_deliverable_versions set series_id=${v1!.series_id},version=2,parent_version_id=${first.artifactId} where id=${second.artifactId}`;
       await fixture.db`update allrice_storage_objects set created_at='2020-01-01T00:00:00Z' where id in (select object_id from allrice_deliverable_versions where id in (${first.artifactId},${second.artifactId}))`;
-      const uploads = [];
+      const uploads: string[] = [];
       for (let n = 0; n < 52; n++) {
         const file = await uploadWorkbenchFile(
           owner,
@@ -429,7 +429,12 @@ suite(
         storage(),
       );
       await fixture.db`update allrice_organization_people set content_maintenance_level='personal' where organization_id=${t.a.organizationId} and user_id=${t.a.actor.id}`;
-      expect(file.fileName).toBe(duplicate.fileName);
+      const [stored, duplicateStored] = await Promise.all(
+        [file, duplicate].map(({ objectId }) =>
+          readWorkbenchFile(t.a, objectId),
+        ),
+      );
+      expect(stored.row.file_name).toBe(duplicateStored.row.file_name);
       const names = await fixture.db.begin(async (tx) => {
         await lockWorkspaceStorageQuota(
           tx,
@@ -446,7 +451,7 @@ suite(
                 ownerId: current.actor.id,
               },
               randomUUID(),
-              file.fileName,
+              stored.row.file_name,
             ),
           ),
         );

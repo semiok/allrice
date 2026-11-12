@@ -23,18 +23,19 @@ export async function GET(
       await stream.cancel();
       throw error;
     }
-    const name =
-      [...file.row.file_name]
-        .map((character) =>
-          character === '\\' ||
-          character === '/' ||
-          character.charCodeAt(0) < 32 ||
-          character.charCodeAt(0) === 127
-            ? '-'
-            : character,
-        )
-        .join('')
-        .slice(0, 160) || 'allrice-file';
+    let sanitized = '';
+    for (const character of file.row.file_name) {
+      const safe =
+        character === '\\' ||
+        character === '/' ||
+        character.charCodeAt(0) < 32 ||
+        character.charCodeAt(0) === 127
+          ? '-'
+          : character;
+      if (sanitized.length + safe.length > 255) break;
+      sanitized += safe;
+    }
+    const name = sanitized || 'allrice-file';
     return new Response(stream, {
       headers: {
         ...workbenchFileHeaders,
