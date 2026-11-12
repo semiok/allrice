@@ -1,4 +1,5 @@
 /* global AbortController */
+import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
