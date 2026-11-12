@@ -16,6 +16,7 @@ import type {
 } from '@allrice/contracts';
 import {
   ManagedBrowserTaskSchema,
+  RuntimeLocalCommandResultSchema,
   WorkbenchArtifactSchema,
 } from '@allrice/contracts';
 import type { CloudOperationView } from '@allrice/database';
@@ -46,6 +47,8 @@ const memoryScenario = new URLSearchParams(location.search).has('memory');
 const processScenario = new URLSearchParams(location.search).has('process');
 const cardsScenario = new URLSearchParams(location.search).has('cards');
 const regression = new URLSearchParams(location.search).get('regression');
+const reviewCommand = regression === 'review-command';
+const reviewCreate = regression === 'review-create';
 const timelineCards = regression === 'order' || regression === 'late-open';
 const tick = (seconds: number) =>
   new Date(Date.parse(at) + seconds * 1000).toISOString();
@@ -219,9 +222,46 @@ const scopedLocal = <
       : null,
   };
 };
-const cardsCommands = operations
-  .slice(0, 1)
-  .map((value) => scopedLocal(value, 'cards-command'));
+const cardsCommands = operations.slice(0, 1).map((value) =>
+  scopedLocal(
+    reviewCommand || reviewCreate
+      ? {
+          ...value,
+          snapshot: { ...value.snapshot, status: 'succeeded' },
+          approval: null,
+          evidence: {
+            summary: '命令已运行完毕，退出码 0。',
+            output: RuntimeLocalCommandResultSchema.parse({
+              backend: 'local-vm-container-v1',
+              containerId: 'c'.repeat(64),
+              imageDigest: `sha256:${'5'.repeat(64)}`,
+              stopped: true,
+              exitCode: 0,
+              reason: 'exited',
+              stdout: reviewCommand
+                ? Array.from(
+                    { length: 160 },
+                    (_, i) =>
+                      `stdout ${String(i).padStart(3, '0')}: output text`,
+                  ).join('\n')
+                : '命令的真实材料',
+              stderr: reviewCommand
+                ? Array.from(
+                    { length: 160 },
+                    (_, i) =>
+                      `stderr ${String(i).padStart(3, '0')}: output text`,
+                  ).join('\n')
+                : '',
+              truncated: false,
+              workCopy: 'local_isolated_copy',
+              sourceDirectoryModified: false,
+            }),
+          },
+        }
+      : value,
+    'cards-command',
+  ),
+);
 const cardsMcp = mcpOperations
   .slice(0, 1)
   .map((value) => scopedLocal(value, 'cards-local-mcp'));
@@ -467,13 +507,19 @@ function eventsFor(runId: string): ChatFlowEventEnvelope[] {
       ['cards-browser', 'local.browser.workspace'],
       ['cards-command', 'local.process.execute'],
       ['cards-local-mcp', 'local.mcp.call'],
+      ...(reviewCreate
+        ? [
+            ['review-create-empty', 'subagent'],
+            ['review-create-failed', 'subagent_fork'],
+          ]
+        : []),
       ...retryCloud.map((op) => [op.nativeCallId, 'cloud_mcp_call']),
     ];
     for (const [index, [toolCallId, name]] of calls.entries()) {
       if (
-        regression?.startsWith('late-') &&
         stage === 'initial' &&
-        toolCallId === 'cards-pair'
+        ((regression?.startsWith('late-') && toolCallId === 'cards-pair') ||
+          (reviewCommand && toolCallId === 'cards-command'))
       )
         continue;
       const start = timelineCards
@@ -482,10 +528,17 @@ function eventsFor(runId: string): ChatFlowEventEnvelope[] {
       add('tool.started', { toolCallId, name }, start);
       const failed =
         (regression === 'late-closed' && toolCallId === 'cards-pair') ||
+        toolCallId === 'review-create-failed' ||
         toolCallId === 'cards-retry-0';
       add(
         failed ? 'tool.failed' : 'tool.completed',
-        { toolCallId, name },
+        {
+          toolCallId,
+          name,
+          ...(toolCallId === 'review-create-failed'
+            ? { summary: '授权读取被拒绝' }
+            : {}),
+        },
         start,
       );
       if (timelineCards && index === 0) {
@@ -747,7 +800,13 @@ function Fixture() {
         <ChatTranscript
           atBottom
           streamingOutput
-          transcriptView={cardsScenario ? 'detailed' : 'standard'}
+          transcriptView={
+            reviewCreate && new URLSearchParams(location.search).has('verbose')
+              ? 'verbose'
+              : cardsScenario
+                ? 'detailed'
+                : 'standard'
+          }
           localCommandsEnabled={enabled}
           localMcpEnabled={enabled}
           artifacts={cardsScenario ? cardsArtifacts : []}
@@ -792,6 +851,11 @@ function Fixture() {
           onRecoverRun={() => {}}
           onScrollToBottom={() => {}}
         />
+      )}
+      {(reviewCommand || reviewCreate) && (
+        <label>
+          后方编辑位置 <input aria-label="后方编辑位置" />
+        </label>
       )}
       {selected && (
         <ArtifactWorkbench

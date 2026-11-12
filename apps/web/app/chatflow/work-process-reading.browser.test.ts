@@ -1459,8 +1459,10 @@ suite('reading a receipt while late native trace changes its group', () => {
     theme: string,
     scenario = '',
     expandSteps = true,
+    observePage?: (page: Page) => void,
   ) {
     const page = await browser.newPage({ viewport: { width, height: 900 } });
+    observePage?.(page);
     await page.goto(`${origin}/?cards&theme=${theme}${scenario}`);
     await page.getByLabel('发送的完整参数', { exact: true }).waitFor();
     for (const process of await processOf(page).all())
@@ -1482,6 +1484,403 @@ suite('reading a receipt while late native trace changes its group', () => {
         ),
       await second.elementHandle(),
     );
+  async function reviewRepro(
+    name: string,
+    scenario: string,
+    run: (
+      page: Page,
+      evidence: Record<string, unknown>,
+      saveObservations: () => Promise<void>,
+    ) => Promise<void>,
+  ) {
+    const directory = '.local/quality/met245-review-repro';
+    const evidence: Record<string, unknown> = {
+      name,
+      head: execFileSync('git', ['rev-parse', 'HEAD'], {
+        encoding: 'utf8',
+      }).trim(),
+      phase: 'opening-real-reading-fixture',
+      pageErrors: [],
+    };
+    let page: Page | undefined;
+    const save = async (suffix: string) => {
+      await mkdir(directory, { recursive: true });
+      await writeFile(
+        `${directory}/${name}-${suffix}.json`,
+        JSON.stringify(evidence, null, 2) + '\n',
+        { flag: 'wx' },
+      );
+    };
+    try {
+      page = await openCards(390, 'light', scenario, false, (opened) => {
+        page = opened;
+        opened.setDefaultTimeout(8000);
+        opened.on('pageerror', (error) =>
+          (evidence.pageErrors as string[]).push(error.message),
+        );
+      });
+      await run(page, evidence, () => save('observations'));
+      evidence.phase = 'assertions-completed';
+    } catch (error) {
+      evidence.failure = {
+        at: Date.now(),
+        phase: evidence.phase,
+        error:
+          error instanceof Error
+            ? { message: error.message, stack: error.stack }
+            : String(error),
+      };
+      throw error;
+    } finally {
+      try {
+        await save('final');
+      } finally {
+        await page?.close();
+      }
+    }
+  }
+  const reviewReadingState = (target: Locator) =>
+    target.evaluate((node) => {
+      const active = document.activeElement as HTMLElement | null;
+      const selection = document.getSelection()!;
+      const box = node.getBoundingClientRect();
+      return {
+        node: {
+          tag: node.tagName,
+          label: node.getAttribute('aria-label'),
+          contentIdentity: node.getAttribute('data-process-content'),
+          step: node.closest('[data-step-id]')?.getAttribute('data-step-id'),
+          material: node
+            .closest('[data-process-material]')
+            ?.getAttribute('data-process-material'),
+          connected: node.isConnected,
+        },
+        scrollTop: node.scrollTop,
+        clientHeight: node.clientHeight,
+        scrollHeight: node.scrollHeight,
+        focused: active === node,
+        active: {
+          tag: active?.tagName,
+          label: active?.getAttribute('aria-label'),
+          contentIdentity: active?.getAttribute('data-process-content'),
+        },
+        selection: {
+          text: selection.toString(),
+          anchor: selection.anchorOffset,
+          focus: selection.focusOffset,
+          backward: selection.anchorOffset > selection.focusOffset,
+          inside:
+            node.contains(selection.anchorNode) &&
+            node.contains(selection.focusNode),
+        },
+        windowY: scrollY,
+        top: box.top,
+        bottom: box.bottom,
+      };
+    });
+  const reviewCommand = (page: Page) => cardsMaterial(page, 'command', id(70));
+  async function beginReviewCommand(page: Page, stream: 'stdout' | 'stderr') {
+    const old = page.locator(`[data-step-id="operation:command:${id(70)}"]`);
+    await old.waitFor();
+    await stepToggle(old).click();
+    const target = reviewCommand(page).locator(`pre[aria-label="${stream}"]`);
+    await target.waitFor();
+    return { old, target, handle: await target.elementHandle() };
+  }
+  it.each([
+    ['stdout', 'forward'],
+    ['stdout', 'backward'],
+    ['stderr', 'forward'],
+    ['stderr', 'backward'],
+  ] as const)(
+    'review repro keeps final %s keyboard reading and %s selection after exact late attribution',
+    async (stream, direction) => {
+      await reviewRepro(
+        `${stream}-${direction}`,
+        '&regression=review-command',
+        async (page, evidence, save) => {
+          const { old, target, handle } = await beginReviewCommand(
+            page,
+            stream,
+          );
+          evidence.phase = 'native-tab-to-final-stream';
+          const predecessor =
+            stream === 'stdout'
+              ? reviewCommand(page).locator(
+                  'pre[data-process-content="result"]',
+                )
+              : reviewCommand(page).locator('pre[aria-label="stdout"]');
+          await predecessor.focus();
+          await page.keyboard.press('Tab');
+          evidence.tab = await reviewReadingState(target);
+          // Set only the scroll precondition, without the platform-dependent
+          // End key that failed before attribution. Tab and the real
+          // selection key below still exercise keyboard reading; restoration
+          // must preserve this exact position without fixture intervention.
+          await target.evaluate((node) => {
+            node.scrollTop = node.scrollHeight;
+          });
+          await page.waitForFunction(
+            (node) =>
+              node!.scrollHeight - node!.clientHeight - node!.scrollTop < 2,
+            handle,
+          );
+          evidence.bottom = await reviewReadingState(target);
+          await target.evaluate((node) => {
+            node.scrollTop = Math.floor(
+              (node.scrollHeight - node.clientHeight) / 2,
+            );
+          });
+          await page.waitForFunction(
+            (node) =>
+              node!.scrollTop > 0 &&
+              node!.scrollTop < node!.scrollHeight - node!.clientHeight - 20,
+            handle,
+          );
+          await target.evaluate(
+            (node) =>
+              new Promise<void>((resolve) => {
+                let previous = node.scrollTop,
+                  stableFrames = 0;
+                const frame = () => {
+                  stableFrames =
+                    node.scrollTop === previous ? stableFrames + 1 : 0;
+                  previous = node.scrollTop;
+                  if (stableFrames === 3) resolve();
+                  else requestAnimationFrame(frame);
+                };
+                requestAnimationFrame(frame);
+              }),
+          );
+          await target.evaluate((node, backward) => {
+            const box = node.getBoundingClientRect();
+            const point = document.caretRangeFromPoint(
+              box.left + 24,
+              box.top + 60,
+            )!;
+            if (!point || !node.contains(point.startContainer))
+              throw Error('No visible stream text point');
+            const text = point.startContainer;
+            const start = point.startOffset;
+            const end = Math.min(start + 8, text.textContent!.length);
+            document
+              .getSelection()!
+              .setBaseAndExtent(
+                text,
+                backward ? end : start,
+                text,
+                backward ? start : end,
+              );
+          }, direction === 'backward');
+          await page.keyboard.press(
+            direction === 'backward' ? 'Shift+ArrowLeft' : 'Shift+ArrowRight',
+          );
+          evidence.before = await reviewReadingState(target);
+          evidence.phase = 'exact-command-attribution';
+          await update(page, 'prefix');
+          const native = page.locator('[data-step-id="tool:cards-command"]');
+          await native.waitFor();
+          evidence.after = await reviewReadingState(target);
+          evidence.attribution = {
+            oldStepCount: await old.count(),
+            materialInExactCall: await native
+              .locator(reviewCommand(page))
+              .count(),
+            oldNodeConnected: await handle!.evaluate(
+              (node) => node.isConnected,
+            ),
+            sameNode: await target.evaluate(
+              (node, before) => node === before,
+              handle,
+            ),
+          };
+          evidence.writes = await page.evaluate(() => window.readingWrites);
+          evidence.phase = 'observed-before-preservation-assertions';
+          await save();
+          const before = evidence.before as Awaited<
+            ReturnType<typeof reviewReadingState>
+          >;
+          const after = evidence.after as typeof before;
+          expect((evidence.tab as typeof before).focused).toBe(true);
+          expect(before.focused).toBe(true);
+          expect(before.scrollTop).toBeGreaterThan(0);
+          expect(before.selection.inside).toBe(true);
+          expect(before.selection.text.length).toBeGreaterThan(0);
+          expect(before.selection.backward).toBe(direction === 'backward');
+          expect(evidence.attribution).toEqual({
+            oldStepCount: 0,
+            materialInExactCall: 1,
+            oldNodeConnected: false,
+            sameNode: false,
+          });
+          expect(after.scrollTop).toBe(before.scrollTop);
+          expect(after.focused).toBe(true);
+          expect(after.selection).toEqual(before.selection);
+          expect(evidence.writes).toEqual([]);
+          expect(evidence.pageErrors).toEqual([]);
+        },
+      );
+    },
+  );
+  it('review repro keeps the later reader after leaving the old final command selection', async () => {
+    await reviewRepro(
+      'later-reader',
+      '&regression=review-command',
+      async (page, evidence, save) => {
+        const { old, target, handle } = await beginReviewCommand(
+          page,
+          'stdout',
+        );
+        await target.evaluate((node) => {
+          node.scrollTop = 650;
+          document
+            .getSelection()!
+            .setBaseAndExtent(node.firstChild!, 1000, node.firstChild!, 1030);
+        });
+        const later = page.getByRole('textbox', {
+          name: '后方编辑位置',
+          exact: true,
+        });
+        await later.focus();
+        await page.keyboard.type('继续编辑');
+        evidence.before = {
+          stream: await reviewReadingState(target),
+          later: await reviewReadingState(later),
+          value: await later.inputValue(),
+        };
+        evidence.phase = 'exact-attribution-after-later-reader';
+        await update(page, 'prefix');
+        const native = page.locator('[data-step-id="tool:cards-command"]');
+        await native.waitFor();
+        evidence.after = {
+          stream: await reviewReadingState(target),
+          later: await reviewReadingState(later),
+          value: await later.inputValue(),
+        };
+        evidence.attribution = {
+          oldStepCount: await old.count(),
+          materialInExactCall: await native
+            .locator(reviewCommand(page))
+            .count(),
+          oldNodeConnected: await handle!.evaluate((node) => node.isConnected),
+        };
+        evidence.writes = await page.evaluate(() => window.readingWrites);
+        evidence.phase = 'observed-before-later-reader-assertions';
+        await save();
+        const before = evidence.before as {
+          stream: Awaited<ReturnType<typeof reviewReadingState>>;
+          later: Awaited<ReturnType<typeof reviewReadingState>>;
+          value: string;
+        };
+        const after = evidence.after as typeof before;
+        expect(evidence.attribution).toEqual({
+          oldStepCount: 0,
+          materialInExactCall: 1,
+          oldNodeConnected: false,
+        });
+        expect(after.later.focused).toBe(true);
+        expect(before.stream.scrollTop).toBeGreaterThan(0);
+        expect(after.stream.scrollTop).toBe(before.stream.scrollTop);
+        expect(after.later.windowY).toBeCloseTo(before.later.windowY, 0);
+        expect(after.later.top).toBeCloseTo(before.later.top, 0);
+        expect(after.value).toBe(before.value);
+        await page.keyboard.type('，保持后方');
+        expect(await later.inputValue()).toBe('继续编辑，保持后方');
+        expect(evidence.writes).toEqual([]);
+        expect(evidence.pageErrors).toEqual([]);
+      },
+    );
+  });
+  it.each(['detailed', 'verbose'] as const)(
+    'review repro keeps successful creation without material nonexpandable in %s mode',
+    async (view) => {
+      await reviewRepro(
+        `empty-create-${view}`,
+        `&regression=review-create${view === 'verbose' ? '&verbose' : ''}`,
+        async (page, evidence, save) => {
+          const empty = page.locator(
+            '[data-step-id="tool:review-create-empty"]',
+          );
+          const failed = page.locator(
+            '[data-step-id="tool:review-create-failed"]',
+          );
+          const positive = page.locator('[data-step-id="tool:cards-command"]');
+          const detailState = async (step: Locator) => ({
+            reading: await reviewReadingState(step),
+            expanded: await stepToggle(step).getAttribute('aria-expanded'),
+            buttons: await step.getByRole('button').count(),
+            visibleDetails: await step
+              .locator('[data-process-content$=":details"]:visible')
+              .count(),
+          });
+          await empty.waitFor();
+          evidence.before = {
+            empty: await detailState(empty),
+            failed: await detailState(failed),
+            positive: await detailState(positive),
+          };
+          evidence.phase = 'real-create-and-positive-controls';
+          await stepToggle(failed).focus();
+          if (
+            (await stepToggle(failed).getAttribute('aria-expanded')) === 'true'
+          )
+            await page.keyboard.press('Enter');
+          await page.keyboard.press('Enter');
+          if (
+            (await stepToggle(positive).getAttribute('aria-expanded')) !==
+            'true'
+          )
+            await stepToggle(positive).click();
+          await stepToggle(empty).click();
+          evidence.after = {
+            empty: await detailState(empty),
+            failed: await detailState(failed),
+            positive: await detailState(positive),
+          };
+          evidence.positive = {
+            failureVisible: await failed
+              .getByText('授权读取被拒绝', { exact: true })
+              .isVisible(),
+            materialVisible: await reviewCommand(page).isVisible(),
+            finalStdout: await reviewCommand(page)
+              .locator('pre[aria-label="stdout"]')
+              .innerText(),
+          };
+          evidence.attribution = {
+            expectedMigration: false,
+            emptyStep: await empty.getAttribute('data-step-id'),
+            materialInExactCall: await positive
+              .locator(reviewCommand(page))
+              .count(),
+          };
+          evidence.writes = await page.evaluate(() => window.readingWrites);
+          evidence.phase = 'observed-before-empty-disclosure-assertions';
+          await save();
+          const before = evidence.before as {
+            empty: Awaited<ReturnType<typeof detailState>>;
+          };
+          const after = evidence.after as typeof before;
+          expect(evidence.positive).toEqual({
+            failureVisible: true,
+            materialVisible: true,
+            finalStdout: '命令的真实材料',
+          });
+          expect(evidence.attribution).toEqual({
+            expectedMigration: false,
+            emptyStep: 'tool:review-create-empty',
+            materialInExactCall: 1,
+          });
+          expect(before.empty.expanded).toBeNull();
+          expect(after.empty.expanded).toBeNull();
+          expect(after.empty.buttons).toBe(0);
+          expect(before.empty.visibleDetails).toBe(0);
+          expect(after.empty.visibleDetails).toBe(0);
+          expect(evidence.writes).toEqual([]);
+          expect(evidence.pageErrors).toEqual([]);
+        },
+      );
+    },
+  );
   it.each(['open', 'closed'] as const)(
     'keeps a manual %s receipt choice and reading after exact late call attribution',
     async (choice) => {

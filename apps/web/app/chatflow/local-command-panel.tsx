@@ -113,8 +113,14 @@ export function localCommandMaterial(op: Operation): WorkProcessMaterial {
             )}
             {result.success ? (
               <>
-                <pre aria-label="stdout">{result.data.stdout}</pre>
-                <pre aria-label="stderr" className={styles.stderr}>
+                <pre aria-label="stdout" data-process-content="stdout">
+                  {result.data.stdout}
+                </pre>
+                <pre
+                  aria-label="stderr"
+                  data-process-content="stderr"
+                  className={styles.stderr}
+                >
                   {result.data.stderr}
                 </pre>
               </>

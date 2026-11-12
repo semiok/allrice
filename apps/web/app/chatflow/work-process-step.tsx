@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useLayoutEffect, type ReactNode } from 'react';
+import { Children, Fragment, useLayoutEffect, type ReactNode } from 'react';
 import { DisclosureRow } from '@deepseek-ai/dsh-client-ui-primitives';
 import { useProcessDisclosure } from './work-process-reading-state';
 import styles from './dsh-saas.module.css';
@@ -43,11 +43,12 @@ export function WorkProcessStepView({
     sharedQuestion,
     disclosureIds.length > 0,
   );
-  const open = reveal || manualOpen;
+  const expandable =
+    details.length > 0 || Children.toArray(children).length > 0;
+  const open = expandable && (reveal || manualOpen);
   useLayoutEffect(() => {
     if (reveal && !manualOpen) setOpen(true);
   });
-  const expandable = details.length > 0 || !!children;
   const tenths = elapsedMs !== undefined ? Math.round(elapsedMs / 100) : 0;
   const elapsed =
     elapsedMs !== undefined && Number.isFinite(elapsedMs) && elapsedMs >= 0
