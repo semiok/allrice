@@ -48,6 +48,7 @@ import {
   measureDshNativeArtifact,
   installDshNativeArtifact,
   nativeArtifactPath,
+  currentDshNativeLaunch,
 } from '../../../apps/worker/src/harness/dsh-native-artifact.js';
 import { p24Fixture } from '../../../apps/worker/test/p24/fixture.js';
 import { executeEmployeeRun } from '../../../apps/worker/src/jobs/employee-run.js';
@@ -671,7 +672,11 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
       jobId: job!.id,
       attempt: job!.attempt,
     });
+    const launch = currentDshNativeLaunch('restricted');
     const adapter = new DshHarnessAdapter({
+      runtimeCommand: launch.command,
+      runtimeArgs: launch.args,
+      cordisConfig: launch.profile,
       runtimeRoot: join(fixture.storageRoot, 'fixed-repair-native'),
       credentialResolver: {
         resolve: async () => ({ apiKey: 'synthetic-only' }),
