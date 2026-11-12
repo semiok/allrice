@@ -394,14 +394,14 @@ suite('DSH native document previews', () => {
   it('uses native static HTML sanitization and an opaque iframe for interaction', async () => {
     let stage = 'mount',
       cleanupStage = 'not-started',
-      observedPage: Page | undefined,
       lastReadyState: string | undefined;
+    const observedPage: { current?: Page } = {};
     onTestFailed(() => {
       console.error('Native HTML failure stage', {
         stage,
         cleanupStage,
         lastReadyState,
-        frames: observedPage?.frames().map((frame) => frame.url()),
+        frames: observedPage.current?.frames().map((frame) => frame.url()),
       });
     });
     const html =
@@ -414,7 +414,7 @@ suite('DSH native document previews', () => {
         interactive: true,
       },
     ]);
-    observedPage = page;
+    observedPage.current = page;
     try {
       stage = 'static-heading';
       await page
