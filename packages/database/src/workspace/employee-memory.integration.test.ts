@@ -189,16 +189,7 @@ suite(
       expect(initial.initial.bytes).toBe(initialMemoryContextBytes(selected));
       expect(initial.initial).not.toHaveProperty('documentDigest');
       expect(initial).not.toHaveProperty('confirmedPins');
-      const edited = await correctWorkspaceMemory(
-        f.context,
-        f.workspace,
-        kept.id,
-        {
-          ...exact(kept),
-          content: '下个任务的新正文',
-          reason: '本人更新',
-        },
-      );
+      const edited = await editActive(f, kept, '下个任务的新正文', '本人更新');
       const resumed = await prepareRunMemoryContext(
         auth,
         await filterEmployeeMethodMemories(scope, frozen),

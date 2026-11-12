@@ -32,11 +32,19 @@ const suite =
     ? describe.sequential
     : describe.skip;
 const migration = await readFile(
-  new URL('../migrations/0235_employee_memory_pairs.sql', import.meta.url),
+  new URL('../migrations/0236_employee_memory_pairs.sql', import.meta.url),
   'utf8',
 );
+async function personaCompatibility(db: ReturnType<typeof postgres>) {
+  return db`select
+    pg_get_functiondef('allrice_native_session_version_compatible(jsonb,jsonb)'::regprocedure) definition,
+    allrice_native_session_version_compatible(
+      '{"schemaVersion":2,"contextKind":"chat","sourcePolicy":{"family":"allrice_declarative_employee_v1"},"distributionGeneration":"dsh-0.2.1-rc.2-687f282"}'::jsonb,
+      '{"schemaVersion":2,"runtimePolicy":{"harness":"dsh"},"runtimePackage":{"schemaVersion":3,"runtimeManifest":{"distributionGeneration":"dsh-0.2.1-rc.2-687f282"}}}'::jsonb
+    ) schema3`;
+}
 suite(
-  '0235: isolated old data, atomic refusal and forward-compatible recovery',
+  '0236: isolated old data, atomic refusal and forward-compatible recovery',
   () => {
     let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let runtimeDb: ReturnType<typeof postgres> | undefined;
@@ -47,6 +55,7 @@ suite(
     let before: Record<string, unknown>[];
     let frozen: Awaited<ReturnType<typeof freezeEmployeeDocuments>>;
     let runState: unknown;
+    let compatibility: Awaited<ReturnType<typeof personaCompatibility>>;
     const original = '🧑'.repeat(39) + '\n原始条件：月结前不得外发。';
     async function seed(tx: TransactionSql, content: string, archived = false) {
       const id = randomUUID();
@@ -64,9 +73,11 @@ suite(
     beforeAll(async () => {
       fixture = await createRuntimeFixtureDatabase({
         ownSchemaOnly: true,
-        throughMigration: '0234_native_recurring_pause.sql',
+        throughMigration: '0235_persona_runtime_package_compatibility.sql',
       });
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
+      compatibility = await personaCompatibility(fixture.db);
+      expect(compatibility[0]!.schema3).toBe(true);
       f = await createRunAuthorityFixture(fixture.db, {
         toolNames: ['workspace.memory.search', 'workspace.experience.read'],
         allowedTools: ['workspace.memory.search', 'workspace.experience.read'],
@@ -166,6 +177,7 @@ suite(
         const [columns] =
           await fixture.db`select count(*)::int count from pg_attribute where attrelid='allrice_memories'::regclass and attname in ('summary','details') and not attisdropped`;
         expect(columns!.count).toBe(0);
+        expect(await personaCompatibility(fixture.db)).toEqual(compatibility);
         expect(
           await fixture.db`select id,to_jsonb(m) as memory,
       (select to_jsonb(r) from allrice_memory_revisions r where memory_id=m.id and revision=1) as revision
@@ -182,6 +194,7 @@ suite(
       const [rawBefore] =
         await fixture.db`select to_jsonb(er) value from allrice_experience_reviews er where memory_id=${rawId}`;
       await fixture.db.begin((tx) => tx.unsafe(migration));
+      expect(await personaCompatibility(fixture.db)).toEqual(compatibility);
       const rows = await fixture.db<
         { value: Record<string, unknown> & { id: string; content: string } }[]
       >`select to_jsonb(m) value from allrice_memories m order by id`;
@@ -224,6 +237,14 @@ suite(
         await fixture.db`select metadata from allrice_audit_events where action='memory.migrate_pair' and resource_id=${longId}`;
       expect(migrated!.metadata.pairDigest).toBe(
         memoryPairDigest(legacyPersonalMemoryPair(original)),
+      );
+      expect(migrated!.metadata.migration).toBe(
+        '0236_employee_memory_pairs.sql',
+      );
+      const [systemRevision] =
+        await fixture.db`select reason from allrice_memory_revisions where memory_id=${longId} and revision=2`;
+      expect(systemRevision!.reason).toBe(
+        'system:0236_employee_memory_pairs from revision 1',
       );
       const [counts] = await fixture.db`select
       (select count(*)::int from allrice_memory_revisions where memory_id=any(${[shortId, longId, archivedId]}::uuid[])) revisions,

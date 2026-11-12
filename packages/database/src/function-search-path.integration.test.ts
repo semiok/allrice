@@ -145,6 +145,18 @@ suite('0225 function search_path and standard backup restore', () => {
         const migrationNames = (await readdir(migrations))
           .filter((name) => name.endsWith('.sql'))
           .sort();
+        expect(
+          migrationNames.indexOf(
+            '0235_persona_runtime_package_compatibility.sql',
+          ),
+        ).toBeGreaterThanOrEqual(0);
+        expect(
+          migrationNames.indexOf('0236_employee_memory_pairs.sql'),
+        ).toBeGreaterThan(
+          migrationNames.indexOf(
+            '0235_persona_runtime_package_compatibility.sql',
+          ),
+        );
         await source.db.begin(async (tx) => {
           for (const name of migrationNames.filter(
             (name) => name < migrationName,
@@ -294,6 +306,10 @@ suite('0225 function search_path and standard backup restore', () => {
             await tx.unsafe(await readFile(new URL(name, migrations), 'utf8'));
         });
         assertSearchPaths(await functionCatalog(source.db, 'public'), 'public');
+        const compatibility = (await functionCatalog(source.db, 'public')).find(
+          (row) => row.proname === 'allrice_native_session_version_compatible',
+        )!;
+        expect(compatibility.prosrc).toContain("in ('1','2','3')");
 
         await source.db.unsafe(
           'create table restore_memory_pairs (summary text, details text)',
@@ -342,6 +358,21 @@ suite('0225 function search_path and standard backup restore', () => {
           await functionCatalog(restored.db, 'public'),
           'public',
         );
+        const restoredCompatibility = (
+          await functionCatalog(restored.db, 'public')
+        ).find(
+          (row) => row.proname === 'allrice_native_session_version_compatible',
+        )!;
+        expect(restoredCompatibility.prosrc).toBe(compatibility.prosrc);
+        expect(restoredCompatibility.proconfig).toEqual(
+          compatibility.proconfig,
+        );
+        expect(
+          await restored.db`select allrice_native_session_version_compatible(
+          '{"schemaVersion":2,"contextKind":"chat","sourcePolicy":{"family":"allrice_declarative_employee_v1"},"distributionGeneration":"dsh-0.2.1-rc.2-687f282"}'::jsonb,
+          '{"schemaVersion":2,"runtimePolicy":{"harness":"dsh"},"runtimePackage":{"schemaVersion":3,"runtimeManifest":{"distributionGeneration":"dsh-0.2.1-rc.2-687f282"}}}'::jsonb
+        ) compatible`,
+        ).toEqual([{ compatible: true }]);
         for (const table of [
           'restore_controls',
           'restore_versions',

@@ -150,11 +150,11 @@ begin
         lifecycle_state,memory_class,confidence,expires_at,reason,changed_by)
     values(saved.organization_id,saved.workspace_id,saved.id,saved.revision,saved.content,saved.summary,saved.details,
       saved.trust_level,saved.lifecycle_state,saved.memory_class,saved.confidence,saved.expires_at,
-      'system:0235_employee_memory_pairs from revision '||original.revision,saved.owner_id);
+      'system:0236_employee_memory_pairs from revision '||original.revision,saved.owner_id);
     insert into allrice_audit_events
       (organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata)
     values(saved.organization_id,saved.workspace_id,null,'memory.migrate_pair','memory',saved.id,'recorded',
-      'system_backfill',jsonb_build_object('migration','0235_employee_memory_pairs.sql',
+      'system_backfill',jsonb_build_object('migration','0236_employee_memory_pairs.sql',
         'previousRevision',original.revision,'revision',saved.revision,
         'pairDigest',allrice_native_control_document_digest(jsonb_build_object(
           'version',2,'summary',saved.summary,'details',saved.details)),
@@ -165,7 +165,7 @@ begin
     encode(sha256(convert_to(to_jsonb(m)::text,'UTF8')),'hex'),',' order by id),''),'UTF8')),'hex')
     into after_digest from allrice_memories m;
   raise notice 'employee_memory_pair_backfill %',jsonb_build_object(
-    'migration','0235_employee_memory_pairs.sql','migrated',migrated,
+    'migration','0236_employee_memory_pairs.sql','migrated',migrated,
     'beforeDigest','sha256:'||before_digest,'afterDigest','sha256:'||after_digest);
 end
 $$;
