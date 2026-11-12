@@ -13,3 +13,13 @@ export function createFailureEvidence(options: {
   collect?: () => unknown | Promise<unknown>;
   root?: string;
 }): FailureEvidence;
+
+export interface FailureCleanup {
+  check(): void;
+  own(close: () => unknown | Promise<unknown>): {
+    late?: Promise<never>;
+    replace(close: () => unknown | Promise<unknown>): void;
+  };
+  finish(result?: { state?: string; errors?: unknown }): Promise<void>;
+}
+export function createFailureCleanup(evidence: FailureEvidence): FailureCleanup;

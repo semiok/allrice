@@ -192,3 +192,58 @@ export function createFailureEvidence({ file, test, collect, root } = {}) {
     },
   };
 }
+
+/** Keep test resources local even when an acquisition outlives the test timeout. */
+export function createFailureCleanup(evidence) {
+  const cleanups = [];
+  let ended = false,
+    finishing;
+  const check = () => {
+    if (ended) throw Error('TEST_RESOURCE_SCOPE_ENDED');
+  };
+  return {
+    check,
+    own(close) {
+      let closed = false;
+      const dispose = async () => {
+        if (closed) return;
+        closed = true;
+        await close();
+      };
+      const owner = {
+        replace(next) {
+          check();
+          close = next;
+        },
+      };
+      if (ended)
+        owner.late = dispose().then(() => {
+          throw Error('TEST_RESOURCE_SCOPE_ENDED');
+        });
+      else cleanups.push(dispose);
+      return owner;
+    },
+    finish(result) {
+      ended = true;
+      return (finishing ??= (async () => {
+        const errors = [];
+        try {
+          if (result?.state === 'fail') await evidence.capture(result.errors);
+        } finally {
+          try {
+            for (const close of cleanups.reverse()) {
+              try {
+                await close();
+              } catch (error) {
+                errors.push(error);
+              }
+            }
+          } finally {
+            evidence.dispose();
+          }
+        }
+        if (errors.length) throw errors[0];
+      })());
+    },
+  };
+}

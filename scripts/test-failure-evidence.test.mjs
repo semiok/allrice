@@ -179,7 +179,7 @@ it('does not replace an assertion when the artifact directory cannot be written'
   );
 });
 
-it('preserves a real assertion during slow afterEach capture, captures overall timeouts before cleanup, and leaves passing cases without artifacts', async () => {
+it('preserves assertions and timeouts, isolates late resources from the next case, and leaves passing cases without artifacts', async () => {
   const root = await directory(),
     artifacts = join(root, 'artifacts');
   await symlink(resolve('node_modules'), join(root, 'node_modules'), 'dir');
@@ -190,31 +190,68 @@ it('preserves a real assertion during slow afterEach capture, captures overall t
   await writeFile(
     join(root, 'scenario.test.mjs'),
     `
-import {afterEach,beforeEach,expect,it} from 'vitest';
+import {afterEach,beforeEach,expect,it,onTestFinished} from 'vitest';
 import {setTimeout as delay} from 'node:timers/promises';
-import {createFailureEvidence} from ${JSON.stringify(fileURLToPath(new URL('./test-failure-evidence.mjs', import.meta.url)))};
-let evidence, closed;
+import {createFailureCleanup,createFailureEvidence} from ${JSON.stringify(fileURLToPath(new URL('./test-failure-evidence.mjs', import.meta.url)))};
+const scopes=new WeakMap(), closes=[];
+let releaseLate, lateBrowser, lateFixture, lateContinued=false;
 beforeEach(({task}) => {
-  closed=false;
-  evidence=createFailureEvidence({file:import.meta.url,test:task.name,root:${JSON.stringify(artifacts)},collect:async()=>{
+  const state={closed:false};
+  state.evidence=createFailureEvidence({file:import.meta.url,test:task.name,root:${JSON.stringify(artifacts)},collect:async()=>{
     if(task.name==='original assertion') {
       const started=performance.now();
       await delay(80);
-      return {closed,captureElapsedMs:performance.now()-started};
+      return {closed:state.closed,captureElapsedMs:performance.now()-started};
     }
-    return {closed};
+    return {closed:state.closed};
   }});
+  state.cleanup=createFailureCleanup(state.evidence);
+  scopes.set(task,state);
 });
 afterEach(async ({task}) => {
+  const state=scopes.get(task);
   try {
-    if(task.result?.state==='fail') await evidence.capture(task.result.errors);
+    await state.cleanup.finish(task.result);
   } finally {
-    closed=true;
+    state.closed=true;
   }
 });
-it('passing observation',()=>{evidence.mark('passed');});
-it('overall timeout',()=>{evidence.mark('pending');return new Promise(()=>{});},30);
+it('passing observation',({task})=>{
+  const state=scopes.get(task), calls=[];
+  const owner=state.cleanup.own(()=>calls.push('raw context'));
+  owner.replace(()=>calls.push('full fixture'));
+  onTestFinished(()=>{expect(calls).toEqual(['full fixture']);});
+  state.evidence.mark('passed');
+});
+it('overall timeout',({task})=>{scopes.get(task).evidence.mark('pending');return new Promise(()=>{});},30);
 it('original assertion',()=>{expect(1,'original assertion must survive capture').toBe(2);},30);
+it('late resource timeout',async({task})=>{
+  const cleanup=scopes.get(task).cleanup;
+  const partial=cleanup.own(()=>closes.push('old context'));
+  const pending=new Promise(resolve=>{releaseLate=resolve;});
+  lateBrowser=(async()=>{
+    await pending;
+    const owner=cleanup.own(()=>closes.push('old browser'));
+    if(owner.late) await owner.late;
+    lateContinued=true;
+  })();
+  lateFixture=(async()=>{
+    await pending;
+    cleanup.check();
+    partial.replace(()=>closes.push('wrong old fixture'));
+    lateContinued=true;
+  })();
+  await Promise.all([lateBrowser,lateFixture]);
+},30);
+it('next case owns its resources',async({task})=>{
+  scopes.get(task).cleanup.own(()=>closes.push('next browser'));
+  const ended=Promise.allSettled([lateBrowser,lateFixture]);
+  releaseLate();
+  expect((await ended).map(item=>item.reason.message)).toEqual(['TEST_RESOURCE_SCOPE_ENDED','TEST_RESOURCE_SCOPE_ENDED']);
+  expect(lateContinued).toBe(false);
+  expect(closes).toEqual(['old context','old browser']);
+  onTestFinished(()=>{expect(closes).toEqual(['old context','old browser','next browser']);});
+});
 `,
   );
   const env = { ...process.env, ALLRICE_CI_COLLECTION_BATCH: '' };
@@ -237,7 +274,7 @@ it('original assertion',()=>{expect(1,'original assertion must survive capture')
   ).catch((error) => error);
   expect(result.code).toBe(1);
   const report = JSON.parse(await readFile(join(root, 'report.json'), 'utf8'));
-  expect(report).toMatchObject({ numPassedTests: 1, numFailedTests: 2 });
+  expect(report).toMatchObject({ numPassedTests: 2, numFailedTests: 3 });
   const assertion = report.testResults
     .flatMap((file) => file.assertionResults)
     .find((test) => test.title === 'original assertion');
@@ -246,7 +283,7 @@ it('original assertion',()=>{expect(1,'original assertion must survive capture')
   );
   expect(assertion.failureMessages.join('\n')).not.toContain('Test timed out');
   const entries = await readdir(artifacts);
-  expect(entries).toHaveLength(2);
+  expect(entries).toHaveLength(3);
   const saved = await Promise.all(
     entries.map(async (entry) =>
       JSON.parse(

@@ -12,7 +12,10 @@ import {
   it,
   onTestFailed,
 } from 'vitest';
-import { createFailureEvidence } from '../../../../scripts/test-failure-evidence.mjs';
+import {
+  createFailureCleanup,
+  createFailureEvidence,
+} from '../../../../scripts/test-failure-evidence.mjs';
 import { officePreview } from '@allrice/office-runtime';
 import type { CloudOperationView } from '@allrice/database';
 import type {
@@ -359,23 +362,14 @@ function navigationHistory(count: number, paragraphs = 90): Message[] {
 
 suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   let browser: Browser, server: Server, origin: string;
-  let unreadEvidence: ReturnType<typeof createFailureEvidence> | undefined;
-  let unreadCleanup: (() => Promise<void>) | undefined;
+  const unreadCleanups = new WeakMap<
+    object,
+    ReturnType<typeof createFailureCleanup>
+  >();
   afterEach(async ({ task }) => {
-    const evidence = unreadEvidence;
-    const cleanup = unreadCleanup;
-    unreadEvidence = undefined;
-    unreadCleanup = undefined;
-    try {
-      if (task.result?.state === 'fail')
-        await evidence?.capture(task.result.errors);
-    } finally {
-      try {
-        if (cleanup) await cleanup();
-      } finally {
-        evidence?.dispose();
-      }
-    }
+    const cleanup = unreadCleanups.get(task);
+    unreadCleanups.delete(task);
+    if (cleanup) await cleanup.finish(task.result);
   });
   const downloadFixtures = new Map<
     string,
@@ -505,6 +499,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       // Another browser of the same account shares these saved preferences.
       preferences?: Record<string, UserPreferences>;
       failureEvidence?: ReturnType<typeof createFailureEvidence>;
+      failureCleanup?: ReturnType<typeof createFailureCleanup>;
     } = {},
   ) {
     const serverTheme =
@@ -515,7 +510,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       hasTouch: options.touch,
       isMobile: options.touch,
     });
+    const contextOwner = options.failureCleanup?.own(() => context.close());
+    if (contextOwner?.late) await contextOwner.late;
     const page = await context.newPage();
+    options.failureCleanup?.check();
     options.failureEvidence?.observePage(page);
     page.setDefaultTimeout(5000);
     // Loading the development bundle can outlast interaction waits under CI load.
@@ -787,6 +785,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     let finishStream!: () => void;
     const streamGate = new Promise<void>((done) => {
       finishStream = done;
+    });
+    contextOwner?.replace(async () => {
+      releaseStartup();
+      finishStream();
+      await context.close();
     });
     page.on('pageerror', (e) => errors.push(e.stack ?? e.message));
     if (options.controlledStream)
@@ -2321,9 +2324,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           });
         },
       );
+    options.failureCleanup?.check();
     await page.goto(
       `${origin}/?session=${options.noSession ? '' : A}${serverTheme ? '&theme=1' : ''}${options.disabled ? '&disabled=1' : ''}${options.taskSuggestions ? '&task-suggestions=1' : ''}${options.localMcp ? '&local-mcp=1' : ''}${options.settingsEntry ? `&settings=${options.settingsEntry}` : ''}`,
     );
+    options.failureCleanup?.check();
     await (
       options.startup
         ? page.getByRole('region', { name: '进入工作区', exact: true })
@@ -2338,6 +2343,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         );
         throw error;
       });
+    options.failureCleanup?.check();
     const panel = page.locator('#artifact-workbench:not([aria-hidden="true"])');
     // Dock refresh can hide a retained tab between resolving a role locator
     // and clicking. Resolve the currently visible menu throughout the action.
@@ -2348,7 +2354,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       (options.width ?? 1440) > 760
         ? page.getByRole('button', { name: /^(?:展开|收起)工作台$/ })
         : page.getByRole('button', { name: /▤ 交付成果/ });
-    return {
+    const result = {
       context,
       page,
       state,
@@ -2434,6 +2440,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(unexpected).toEqual([]);
       },
     };
+    contextOwner?.replace(async () => {
+      if (errors.length || writes.length || unexpected.length)
+        await options.failureEvidence?.capture({ errors, writes, unexpected });
+      await result.close();
+    });
+    return result;
   }
 
   it('MET198 desktop start replaces itself with a module, plus follows native guide rules, and terminal stays in Start', async () => {
@@ -2663,9 +2675,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     ])
       expect(await dialog.getByText(name, { exact: true }).count()).toBe(0);
   }
-  it('MET198 file unread numbers remain scoped while retired experience keys never become memory badges', async () => {
+  it('MET198 file unread numbers remain scoped while retired experience keys never become memory badges', async ({
+    task,
+  }) => {
     const observation: { fixture?: Awaited<ReturnType<typeof fixture>> } = {};
-    const evidence: ReturnType<typeof createFailureEvidence> = (unreadEvidence =
+    const evidence: ReturnType<typeof createFailureEvidence> =
       createFailureEvidence({
         file: import.meta.url,
         test: 'MET198 file unread numbers remain scoped while retired experience keys never become memory badges',
@@ -2703,7 +2717,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               }))),
           };
         },
-      }));
+      });
+    const cleanup = createFailureCleanup(evidence);
+    unreadCleanups.set(task, cleanup);
     onTestFailed(async ({ task }) => {
       await evidence.capture(task.result?.errors);
     });
@@ -2711,17 +2727,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     const f = await fixture({
       employeeDetails: true,
       failureEvidence: evidence,
+      failureCleanup: cleanup,
     });
+    cleanup.check();
     observation.fixture = f;
-    unreadCleanup = async () => {
-      if (f.errors.length || f.writes.length || f.unexpected.length)
-        await evidence.capture({
-          errors: f.errors,
-          writes: f.writes,
-          unexpected: f.unexpected,
-        });
-      await f.close();
-    };
     evidence.mark('baseline-request-count-wait-started');
     await expect.poll(() => f.state.updateReads).toBe(1);
     evidence.mark('baseline-request-count-observed', {

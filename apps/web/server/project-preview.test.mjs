@@ -9,13 +9,15 @@ import { setTimeout } from 'node:timers';
 import { URL } from 'node:url';
 import { readFile } from 'node:fs/promises';
 import { afterEach, describe, expect, it, onTestFailed, vi } from 'vitest';
-import { createFailureEvidence } from '../../../scripts/test-failure-evidence.mjs';
+import {
+  createFailureCleanup,
+  createFailureEvidence,
+} from '../../../scripts/test-failure-evidence.mjs';
 import WebSocket from 'ws';
 import { createProjectPreviewGateway } from './project-preview.mjs';
 
 const cleanups = [];
-let previewEvidence;
-let previewCleanup;
+const previewCleanups = new WeakMap();
 // Gateway timer bindings use the controlled clock; HTTP I/O stays real.
 vi.mock('node:timers', async (load) => ({
   ...(await load()),
@@ -23,21 +25,13 @@ vi.mock('node:timers', async (load) => ({
   clearTimeout: (...args) => globalThis.clearTimeout(...args),
 }));
 afterEach(async ({ task }) => {
-  const evidence = previewEvidence;
-  const cleanup = previewCleanup;
-  previewEvidence = undefined;
-  previewCleanup = undefined;
+  const cleanup = previewCleanups.get(task);
+  previewCleanups.delete(task);
   try {
-    if (task.result?.state === 'fail')
-      await evidence?.capture(task.result.errors);
+    if (cleanup) await cleanup.finish(task.result);
   } finally {
-    try {
-      if (cleanup) await cleanup();
-    } finally {
-      evidence?.dispose();
-      for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
-      vi.useRealTimers();
-    }
+    for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+    vi.useRealTimers();
   }
 });
 async function until(predicate) {
@@ -51,6 +45,7 @@ async function fixture({
   browserOrigins = false,
   browserContent = '<div id="source">fixture-preview</div>',
   failureEvidence,
+  failureCleanup,
 } = {}) {
   const id = randomUUID(),
     token = 'opaque-session-ticket';
@@ -91,6 +86,11 @@ async function fixture({
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
+  const serverOwner = failureCleanup?.own(async () => {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  });
+  if (serverOwner?.late) await serverOwner.late;
   const port = server.address().port,
     suffix = `${browserOrigins ? 'preview.allrice.test' : 'preview.localhost'}:${port}`,
     host = `rice-preview-${id}.${suffix}`,
@@ -145,15 +145,18 @@ async function fixture({
       },
     },
   });
+  const gatewayOwner = failureCleanup?.own(() => gateway.close());
+  if (gatewayOwner?.late) await gatewayOwner.late;
   server.on(
     'upgrade',
     (req, socket, head) => void gateway.upgrade(req, socket, head),
   );
-  cleanups.push(async () => {
-    await gateway.close();
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
-  });
+  if (!failureCleanup)
+    cleanups.push(async () => {
+      await gateway.close();
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    });
   const send = (method) => {
     const req = request({
       hostname: '127.0.0.1',
@@ -315,13 +318,15 @@ describe('private preview live transfer authority', () => {
 
   it.skipIf(process.env.ALLRICE_RUN_BROWSER_INTEGRATION !== '1')(
     'downloads a project CSV through the real gateway CSP without exposing its parent origin',
-    async () => {
+    async ({ task }) => {
       let f;
-      const evidence = (previewEvidence = createFailureEvidence({
+      const evidence = createFailureEvidence({
         file: import.meta.url,
         test: 'downloads a project CSV through the real gateway CSP without exposing its parent origin',
         collect: () => ({ host: f?.host, mainOrigin: f?.mainOrigin }),
-      }));
+      });
+      const cleanup = createFailureCleanup(evidence);
+      previewCleanups.set(task, cleanup);
       onTestFailed(async ({ task }) => {
         await evidence.capture(task.result?.errors);
       });
@@ -329,8 +334,10 @@ describe('private preview live transfer authority', () => {
       f = await fixture({
         browserOrigins: true,
         failureEvidence: evidence,
+        failureCleanup: cleanup,
         browserContent: `<button>Export CSV</button><script>document.querySelector('button').addEventListener('click', () => { const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([${JSON.stringify('id,amount\n002,55.00\n')}],{type:'text/csv'}));a.download='diff.csv';a.click();URL.revokeObjectURL(a.href) });try { parent.previewEscaped=true } catch {}</script>`,
       });
+      cleanup.check();
       const { chromium } = createRequire(
         new URL('../../worker/package.json', import.meta.url),
       )('playwright-core');
@@ -345,10 +352,12 @@ describe('private preview live transfer authority', () => {
           '--host-resolver-rules=MAP *.allrice.test 127.0.0.1',
         ],
       });
+      const browserOwner = cleanup.own(() => browser.close());
+      if (browserOwner.late) await browserOwner.late;
       evidence.mark('browser-launched');
-      previewCleanup = () => browser.close();
       const page = await browser.newPage(),
         errors = [];
+      cleanup.check();
       evidence.observePage(page);
       page.on('pageerror', (error) => errors.push(error.message));
       evidence.mark('navigation-started', { origin: f.mainOrigin });
@@ -382,9 +391,9 @@ describe('private preview live transfer authority', () => {
   );
   it.skipIf(process.env.ALLRICE_RUN_BROWSER_INTEGRATION !== '1')(
     'embeds the authenticated preview in employee and admin origins while rejecting another same-site frame and revoked access',
-    async () => {
+    async ({ task }) => {
       let f;
-      const evidence = (previewEvidence = createFailureEvidence({
+      const evidence = createFailureEvidence({
         file: import.meta.url,
         test: 'embeds the authenticated preview in employee and admin origins while rejecting another same-site frame and revoked access',
         collect: () => ({
@@ -392,12 +401,19 @@ describe('private preview live transfer authority', () => {
           mainOrigin: f?.mainOrigin,
           adminOrigin: f?.adminOrigin,
         }),
-      }));
+      });
+      const cleanup = createFailureCleanup(evidence);
+      previewCleanups.set(task, cleanup);
       onTestFailed(async ({ task }) => {
         await evidence.capture(task.result?.errors);
       });
       evidence.mark('fixture-started');
-      f = await fixture({ browserOrigins: true, failureEvidence: evidence });
+      f = await fixture({
+        browserOrigins: true,
+        failureEvidence: evidence,
+        failureCleanup: cleanup,
+      });
+      cleanup.check();
       const { chromium } = createRequire(
         new URL('../../worker/package.json', import.meta.url),
       )('playwright-core');
@@ -412,9 +428,11 @@ describe('private preview live transfer authority', () => {
           '--host-resolver-rules=MAP *.allrice.test 127.0.0.1',
         ],
       });
+      const browserOwner = cleanup.own(() => browser.close());
+      if (browserOwner.late) await browserOwner.late;
       evidence.mark('browser-launched');
-      previewCleanup = () => browser.close();
       const page = await browser.newPage();
+      cleanup.check();
       evidence.observePage(page);
       for (const origin of [f.mainOrigin, f.adminOrigin]) {
         evidence.mark('allowed-origin-navigation-started', { origin });
