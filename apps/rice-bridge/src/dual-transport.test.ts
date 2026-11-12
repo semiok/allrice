@@ -255,6 +255,7 @@ it('routes typed terminal frames over the authenticated socket and fences old se
   }[] = [];
   let disconnected = false;
   const f = await fixture({
+    keepConnected: true,
     onTerminal: (frame, send) => {
       callbacks.push({ frame, send });
     },
@@ -304,7 +305,6 @@ it('routes typed terminal frames over the authenticated socket and fences old se
   expect(disconnected).toBe(true);
   for (let i = 0; i < 100 && f.connections < 2; i++) {
     await new Promise((resolve) => setTimeout(resolve, 2));
-    await f.request();
   }
   expect(f.connections).toBe(2);
   expect(
@@ -324,6 +324,8 @@ it('routes typed terminal frames over the authenticated socket and fences old se
       id: open.id,
     }),
   ).toBe(true);
+  expect(await f.request()).toEqual({ ok: true, channel: 'ws' });
+  expect(f.calls).toHaveLength(2);
   expect(f.calls.every((call) => call.channel === 'ws')).toBe(true);
 });
 
