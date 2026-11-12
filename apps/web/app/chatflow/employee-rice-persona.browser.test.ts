@@ -52,6 +52,7 @@ function gate() {
 suite('U1 Rice full persona from the real employee entry', () => {
   let browser: Browser, server: Server, origin: string;
   const evidence = resolve('.local/met249-u1-rice-persona');
+  const appearanceEvidence = resolve('.local/met249-a15-evidence');
   beforeAll(async () => {
     const require = createRequire(import.meta.url);
     const { build } = createRequire(require.resolve('tsx'))('esbuild');
@@ -101,6 +102,7 @@ suite('U1 Rice full persona from the real employee entry', () => {
           : chromium.executablePath()),
     });
     await mkdir(evidence, { recursive: true });
+    await mkdir(appearanceEvidence, { recursive: true });
     console.info(`Rice persona evidence: ${evidence}`);
   }, 60_000);
   afterAll(async () => {
@@ -118,6 +120,7 @@ suite('U1 Rice full persona from the real employee entry', () => {
       entry?: 'default' | 'assignment';
       fields?: 'full' | 'missing' | 'style' | 'visible-only';
       maintain?: boolean;
+      appearance?: EmployeeInstance['profile']['appearance'];
     } = {},
   ) {
     const width = options.width ?? 1440;
@@ -177,6 +180,7 @@ suite('U1 Rice full persona from the real employee entry', () => {
           description: '保留未由表单修改的个人简介',
           role: '保留未由表单修改的个人角色',
           expressionStyle: 'concise',
+          ...(options.appearance ? { appearance: options.appearance } : {}),
         },
         source: detail.profile.source,
         creationSource: detail.profile.source,
@@ -702,6 +706,74 @@ suite('U1 Rice full persona from the real employee entry', () => {
       .toBe(true);
   }
 
+  async function compareNavigationAppearance(
+    f: Awaited<ReturnType<typeof fixture>>,
+    name: string,
+    color: 'violet' | 'teal',
+    filename: string,
+  ) {
+    const read = (avatar: Locator) =>
+      avatar.evaluate((node) => {
+        const css = getComputedStyle(node);
+        return {
+          accent: css.getPropertyValue('--employee-start').trim(),
+          background: css.backgroundColor,
+          text: node.textContent,
+        };
+      });
+    const detail = f.page.getByRole('dialog', {
+      name: `${name}员工详情`,
+      exact: true,
+    });
+    const card = detail.getByRole('region', {
+      name: '基础与人设',
+      exact: true,
+    });
+    const detailPaint = await read(
+      card.locator(':scope > div > span[aria-hidden="true"]').first(),
+    );
+    expect(detailPaint.accent).toBe(employeeColorPalette[color].value);
+    expect(detailPaint.background).toBe(
+      color === 'violet' ? 'rgb(139, 92, 246)' : 'rgb(6, 182, 212)',
+    );
+    expect(detailPaint.text).toBe(Array.from(name)[0]);
+    await paint(detail);
+    await detail.screenshot({
+      path: resolve(appearanceEvidence, `${filename}-details.png`),
+    });
+    await detail.getByRole('button', { name: '关闭', exact: true }).click();
+    await detail.waitFor({ state: 'detached' });
+    const tree = f.page.getByRole('tree', { name: '员工与工作', exact: true });
+    const sidebarAvatar = tree
+      .getByRole('region', { name, exact: true })
+      .locator('[role="treeitem"] > span > span')
+      .first();
+    expect(await read(sidebarAvatar)).toEqual(detailPaint);
+    await tree.screenshot({
+      path: resolve(appearanceEvidence, `${filename}-sidebar.png`),
+    });
+    await f.page
+      .getByRole('button', { name: '开始新的工作', exact: true })
+      .click();
+    const picker = f.page.getByRole('dialog', {
+      name: '选择 AI 员工',
+      exact: true,
+    });
+    const choice = picker.getByRole('button').filter({
+      has: f.page.getByText(name, { exact: true }),
+    });
+    expect(
+      await read(choice.locator(':scope > span[aria-hidden="true"]').first()),
+    ).toEqual(detailPaint);
+    await paint(picker);
+    await picker.screenshot({
+      path: resolve(appearanceEvidence, `${filename}-picker.png`),
+    });
+    await picker.getByRole('button', { name: '关闭', exact: true }).click();
+    await picker.waitFor({ state: 'detached' });
+    await f.openDetails(name);
+  }
+
   it.each([
     { width: 1440, dark: false, entry: 'default' as const },
     { width: 390, dark: false, entry: 'default' as const },
@@ -1153,12 +1225,12 @@ suite('U1 Rice full persona from the real employee entry', () => {
       const index = kind === 'general' ? 0 : 1;
       const name = kind === 'general' ? 'Rice' : '流程哥';
       for (const personalAvatarValue of [false, true]) {
-        const f = await fixture();
+        const f = await fixture({
+          appearance: personalAvatarValue
+            ? { avatarValue: '/personal-avatar.png' }
+            : undefined,
+        });
         await f.run(async () => {
-          if (personalAvatarValue)
-            f.state.instances[index]!.profile.appearance = {
-              avatarValue: '/personal-avatar.png',
-            };
           const before = structuredClone(f.state.instances[index]!);
           const detail = () =>
             f.page.getByRole('dialog', {
@@ -1166,6 +1238,13 @@ suite('U1 Rice full persona from the real employee entry', () => {
               exact: true,
             });
           await f.openDetails(name);
+          const screenshotName = `${kind}-${personalAvatarValue ? 'personal-avatar' : 'default'}`;
+          await compareNavigationAppearance(
+            f,
+            name,
+            'violet',
+            `${screenshotName}-inherited-color`,
+          );
           let editor = await f.openEditor();
           expect(
             await editor
@@ -1247,6 +1326,12 @@ suite('U1 Rice full persona from the real employee entry', () => {
             f.state.instances[index]!.profile.appearance,
           ).not.toHaveProperty('avatarType');
           expect(f.state.instances[index]!.revision).toBe(before.revision + 2);
+          await compareNavigationAppearance(
+            f,
+            name,
+            'teal',
+            `${screenshotName}-edited-color`,
+          );
         });
       }
     },

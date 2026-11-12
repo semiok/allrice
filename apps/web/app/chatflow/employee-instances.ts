@@ -45,7 +45,12 @@ export function employeeChoices(workspace: Workspace): Employee[] {
                       ? { description: instance.profile.description }
                       : {}),
                     ...(instance.profile.appearance
-                      ? { appearance: instance.profile.appearance }
+                      ? {
+                          appearance: {
+                            ...employee.currentVersion.manifest.appearance,
+                            ...instance.profile.appearance,
+                          },
+                        }
                       : {}),
                   },
                 },
@@ -83,7 +88,9 @@ export function employeeChoiceProfile(
     ...base,
     name: personal.name ?? base.name,
     description: personal.description ?? base.description,
-    appearance: personal.appearance ?? base.appearance,
+    appearance: personal.appearance
+      ? { ...base.appearance, ...personal.appearance }
+      : base.appearance,
     identity: {
       ...base.identity,
       role: personal.role ?? base.identity.role,
