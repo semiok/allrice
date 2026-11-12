@@ -2667,7 +2667,9 @@ export function ChatFlowClient({
                 className={`${conversationUi.header} ${styles.conversationHeader}`}
               >
                 <div className={conversationUi.titleRow}>
-                  <div className={conversationUi.titleCluster}>
+                  <div
+                    className={`${conversationUi.titleCluster} ${styles.conversationTitle}`}
+                  >
                     <div className={conversationUi.crumbs}>
                       <h1>{activeSession?.title ?? '新的工作'}</h1>
                     </div>

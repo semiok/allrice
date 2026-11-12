@@ -22,7 +22,6 @@
   background-color: var(--employee-start);
 }
 .employeeCard {
-  container: employee-card / inline-size;
   --dsw-alias-interactive-bg-hover: transparent;
   margin-bottom: 6px;
   border-radius: 13px;
@@ -61,7 +60,9 @@
 .header > :first-child {
   flex: 1;
   min-width: 0;
-  height: 62px;
+  min-height: 62px;
+  height: auto;
+  padding-block: 8px;
   padding-inline: 8px;
   gap: 11px;
 }
@@ -87,8 +88,9 @@
 }
 .employeeName {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* Let identity grow while the existing flex row centers both actions. */
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 .expandIcon {
   flex: none;
@@ -290,65 +292,13 @@
 }
 @media (pointer: coarse) {
   .newChat {
-    width: 32px;
-    height: 36px;
+    width: 44px;
+    height: 44px;
   }
-}
 
-/* The existing 240px rail leaves too little space for identity and both
-   actions side by side. Keep the name above the count and its actions. */
-@container employee-card (max-width: 220px) {
-  .header {
-    --employee-plus-space: 0px;
-    --employee-detail-space: 0px;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
-  }
-  .header:has(.newChat) {
-    --employee-plus-space: 28px;
-  }
-  .header:has(.info) {
-    --employee-detail-space: 46px;
-  }
-  .header > :first-child {
-    grid-area: 1 / 1 / 2 / 4;
-  }
-  .header [role='treeitem'] > span:has(> .meta) {
-    gap: 8px;
-  }
-  .meta {
-    margin-inline-end: calc(
-      var(--employee-plus-space) + var(--employee-detail-space)
-    );
-  }
-  .newChat,
   .info {
-    grid-row: 1;
-    align-self: end;
-    margin-bottom: 2px;
-  }
-  .newChat {
-    grid-column: 2;
-  }
-  .info {
-    grid-column: 3;
-    min-height: 28px;
-    padding-block: 4px;
-  }
-  @media (pointer: coarse) {
-    .header:has(.newChat) {
-      --employee-plus-space: 32px;
-    }
-    .header > :first-child {
-      height: 86px;
-    }
-    .header [role='treeitem'] > span:has(> .meta) {
-      gap: 16px;
-    }
-    .newChat,
-    .info {
-      min-height: 44px;
-    }
+    min-width: 44px;
+    min-height: 44px;
   }
 }
 

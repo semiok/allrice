@@ -328,6 +328,21 @@ header.conversationHeader::after {
   white-space: nowrap;
 }
 
+@media (max-width: 700px) {
+  .conversationHeader .conversationTitle {
+    flex: 1 0 5em;
+    min-width: 5em;
+  }
+
+  .conversationHeader .conversationTitle + .conversationActions {
+    flex: 0 1 auto;
+  }
+
+  .conversationTitle h1 {
+    max-width: 100%;
+  }
+}
+
 .conversationBody {
   min-height: 0;
 }

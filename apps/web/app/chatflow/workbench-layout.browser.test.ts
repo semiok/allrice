@@ -8001,7 +8001,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             ),
             'a four-character employee name remains readable in the sidebar',
           ).toBe(true);
+          expect(
+            await createdName.evaluate(
+              (node) => node.scrollHeight <= node.clientHeight,
+            ),
+          ).toBe(true);
           const nameBox = (await createdName.boundingBox())!;
+          const headerBox = (await created
+            .getByRole('treeitem')
+            .first()
+            .locator('..')
+            .boundingBox())!;
           const count = created.getByText('0 个工作', { exact: true });
           expect(
             await count.evaluate(
@@ -8021,6 +8031,19 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             actionBoxes[1]!.x,
           );
           for (const action of actionBoxes) {
+            expect(
+              Math.abs(
+                action.y +
+                  action.height / 2 -
+                  (headerBox.y + headerBox.height / 2),
+              ),
+              'employee actions stay vertically centered at the card right',
+            ).toBeLessThanOrEqual(1);
+            expect(action.x).toBeGreaterThanOrEqual(nameBox.x + nameBox.width);
+            if (device === 'mobile') {
+              expect(action.width).toBeGreaterThanOrEqual(44);
+              expect(action.height).toBeGreaterThanOrEqual(44);
+            }
             for (const text of [nameBox, countBox]) {
               const overlaps =
                 text.x < action.x + action.width &&
@@ -8033,6 +8056,56 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             }
           }
           return actionBoxes;
+        };
+        const expectMobileHeader = async () => {
+          const title = f.page.locator('header h1');
+          expect(await title.textContent()).toBe('新的工作');
+          expect(
+            await title.evaluate((node) => {
+              const range = document.createRange();
+              range.selectNodeContents(node);
+              const text = range.getBoundingClientRect();
+              const box = node.getBoundingClientRect();
+              return (
+                text.width > 0 &&
+                text.left >= box.left &&
+                text.right <= box.right
+              );
+            }),
+            'the complete conversation title remains readable beside the tools',
+          ).toBe(true);
+          const archive = f.page.getByRole('button', {
+            name: '查看归档',
+            exact: true,
+          });
+          const actions = archive.locator('..');
+          const bounds = (await actions.boundingBox())!;
+          expect(bounds.width).toBeGreaterThan(0);
+          expect(
+            await actions.evaluate(
+              (node) => node.scrollWidth > node.clientWidth,
+            ),
+          ).toBe(true);
+          for (const label of [
+            '查看归档',
+            '子智能体',
+            '参考资料',
+            '能力',
+            '工作区文件',
+          ]) {
+            const button = actions.getByRole('button', {
+              name: label,
+              exact: true,
+            });
+            await button.focus();
+            await button.click({ trial: true });
+            const box = (await button.boundingBox())!;
+            expect(box.x).toBeGreaterThanOrEqual(bounds.x - 1);
+            expect(box.x + box.width).toBeLessThanOrEqual(
+              bounds.x + bounds.width + 1,
+            );
+          }
+          await archive.focus();
         };
         const sidebar = async () => {
           const expand = f.page.getByRole('button', {
@@ -8111,6 +8184,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           expect(box.y).toBeGreaterThanOrEqual(0);
           expect(box.y + box.height).toBeLessThanOrEqual(height);
           expect(box.y).toBeGreaterThanOrEqual(dimensions!.bottom - 1);
+          const dialogBox = (await dialog.boundingBox())!;
+          expect(
+            Math.abs(box.y + box.height - (dialogBox.y + dialogBox.height)),
+            'the creation footer reaches the dialog bottom without a form margin',
+          ).toBeLessThanOrEqual(1);
           return dimensions;
         };
         try {
@@ -8179,6 +8257,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           if ((await riceRow.getAttribute('aria-expanded')) === 'true')
             await riceRow.click();
           await riceRow.focus();
+          for (const name of ['Office 文档助手', 'Rice', '旧员工（已撤回）'])
+            expect(
+              await group(name)
+                .getByText(name, { exact: true })
+                .evaluate(
+                  (node) =>
+                    node.scrollWidth <= node.clientWidth &&
+                    node.scrollHeight <= node.clientHeight,
+                ),
+              `${name} remains complete in the employee card`,
+            ).toBe(true);
           expect(
             await riceRow
               .getByText('Rice', { exact: true })
@@ -8388,6 +8477,24 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             expect(numberPaints[0]).toMatchObject({
               background: 'rgb(255, 255, 255)',
             });
+          expect(
+            await dialog.getByText('员', { exact: true }).evaluate((node) => {
+              const css = getComputedStyle(node);
+              return [
+                css.color,
+                css.fontWeight,
+                css.fontSize,
+                css.width,
+                css.height,
+              ];
+            }),
+          ).toEqual([
+            'rgb(9, 13, 22)',
+            '600',
+            device === 'mobile' ? '18px' : '20px',
+            device === 'mobile' ? '40px' : '44px',
+            device === 'mobile' ? '40px' : '44px',
+          ]);
           await capture('create-empty');
           const emptyScroll = await scrollForm(dialog, true);
           await capture('create-empty', '-bottom', {
@@ -8448,6 +8555,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           expect(creationRequests[0]!.profile).not.toHaveProperty('workStyle');
           expect(creationRequests[0]).not.toHaveProperty('ownerId');
           expect(sessionCreates).toEqual([]);
+          if (device === 'mobile') {
+            await expectMobileHeader();
+            await input.focus();
+          }
           await f.page.mouse.move(width - 1, 1);
           await capture('created');
           await sidebar();
@@ -8475,8 +8586,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               ),
             ).toBe(true);
             const touchActions = await expectCreatedIdentity(created);
-            for (const action of touchActions)
+            for (const action of touchActions) {
+              expect(action.width).toBeGreaterThanOrEqual(44);
               expect(action.height).toBeGreaterThanOrEqual(44);
+            }
+            await f.page
+              .getByRole('button', { name: '收起侧边栏', exact: true })
+              .click();
+            await expectMobileHeader();
             await f.page.setViewportSize({ width, height });
           }
           expect(f.state.messageInputs).toEqual([]);

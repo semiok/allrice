@@ -510,7 +510,13 @@
 
 /* Approved MET-249 creation form. Edit-mode validation and presentation stay scoped. */
 .createForm {
+  margin: 0;
   font: var(--ar-font-body);
+  -webkit-font-smoothing: antialiased;
+}
+.createForm > div {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ar-border-strong) transparent;
 }
 .createForm .identity {
   padding: 0;
@@ -528,6 +534,9 @@
   height: 44px;
   margin-top: 24px;
   border-radius: var(--ar-radius-md);
+  color: var(--employee-foreground);
+  font-size: 20px;
+  font-weight: 600;
 }
 .createForm .nameField label,
 .createForm .field label,
@@ -616,6 +625,11 @@
   outline-offset: 3px;
 }
 @media (max-width: 700px) {
+  .createForm .avatar {
+    width: 40px;
+    height: 40px;
+    font-size: 18px;
+  }
   .createForm .palette {
     grid-template-columns: repeat(5, minmax(0, 1fr));
   }
@@ -637,5 +651,13 @@
   }
   .createForm .actions button[type='button'] {
     margin-left: auto;
+  }
+}
+@media (max-width: 480px) {
+  .createForm .nameRow {
+    gap: 10px;
+  }
+  .createForm .colorChoice {
+    font-size: 11px;
   }
 }
