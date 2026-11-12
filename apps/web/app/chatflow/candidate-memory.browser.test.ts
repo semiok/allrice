@@ -501,7 +501,11 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
   async function capture(page: Page, name: string) {
     await page.waitForLoadState('networkidle');
     const path = resolve(screenshots, name + '.png');
-    await page.screenshot({ path, fullPage: true });
+    await page.screenshot({
+      path,
+      fullPage: true,
+      animations: 'disabled',
+    });
     console.info('CANDIDATE_MEMORY_SCREENSHOT ' + path);
   }
   async function noOverflow(page: Page) {
