@@ -8401,6 +8401,44 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await sidebar();
           const created = group('财务专员');
           await created.getByText('0 个工作', { exact: true }).waitFor();
+          const createdName = created.getByText('财务专员', { exact: true });
+          expect(
+            await createdName.evaluate(
+              (node) => node.scrollWidth <= node.clientWidth,
+            ),
+            'a four-character employee name remains readable in the sidebar',
+          ).toBe(true);
+          const nameBox = (await createdName.boundingBox())!;
+          const count = created.getByText('0 个工作', { exact: true });
+          expect(
+            await count.evaluate(
+              (node) =>
+                node.parentElement!.scrollWidth <=
+                node.parentElement!.clientWidth,
+            ),
+          ).toBe(true);
+          const countBox = (await count.boundingBox())!;
+          const actionBoxes = await Promise.all(
+            [
+              created.getByRole('button', { name: '和 财务专员 开新会话' }),
+              created.getByRole('button', { name: '查看财务专员详情' }),
+            ].map(async (button) => (await button.boundingBox())!),
+          );
+          expect(actionBoxes[0]!.x + actionBoxes[0]!.width).toBeLessThanOrEqual(
+            actionBoxes[1]!.x,
+          );
+          for (const action of actionBoxes) {
+            for (const text of [nameBox, countBox]) {
+              const overlaps =
+                text.x < action.x + action.width &&
+                text.x + text.width > action.x &&
+                text.y < action.y + action.height &&
+                text.y + text.height > action.y;
+              expect(overlaps, 'employee actions do not cover identity').toBe(
+                false,
+              );
+            }
+          }
           expect(
             await created
               .getByRole('treeitem')

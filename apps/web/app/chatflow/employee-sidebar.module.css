@@ -295,6 +295,63 @@
   }
 }
 
+/* The existing 240px rail leaves too little space for identity and both
+   actions side by side. Keep the name above the count and its actions. */
+@container employee-card (max-width: 220px) {
+  .header {
+    --employee-plus-space: 0px;
+    --employee-detail-space: 0px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+  .header:has(.newChat) {
+    --employee-plus-space: 28px;
+  }
+  .header:has(.info) {
+    --employee-detail-space: 46px;
+  }
+  .header > :first-child {
+    grid-area: 1 / 1 / 2 / 4;
+  }
+  .header [role='treeitem'] > span:has(> .meta) {
+    gap: 8px;
+  }
+  .meta {
+    margin-inline-end: calc(
+      var(--employee-plus-space) + var(--employee-detail-space)
+    );
+  }
+  .newChat,
+  .info {
+    grid-row: 1;
+    align-self: end;
+    margin-bottom: 2px;
+  }
+  .newChat {
+    grid-column: 2;
+  }
+  .info {
+    grid-column: 3;
+    min-height: 28px;
+    padding-block: 4px;
+  }
+  @media (pointer: coarse) {
+    .header:has(.newChat) {
+      --employee-plus-space: 32px;
+    }
+    .header > :first-child {
+      height: 86px;
+    }
+    .header [role='treeitem'] > span:has(> .meta) {
+      gap: 16px;
+    }
+    .newChat,
+    .info {
+      min-height: 44px;
+    }
+  }
+}
+
 .avatar:focus-visible {
   outline: 2px solid #4678e9;
   outline-offset: -2px;
