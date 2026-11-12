@@ -19,10 +19,19 @@ export * from './platform-repair-compiled-contracts.ts';
 export const repositorySourceLimits = Object.freeze({
   files: 4096,
   fileBytes: 2_000_000,
+  totalBytes: 64_000_000,
+  archiveBytes: 12_000_000,
+  jsonBytes: 96_000_000,
+});
+// Historical operations retain their original frozen command bytes.
+export const legacyRepositorySourceLimits = Object.freeze({
+  files: 4096,
+  fileBytes: 2_000_000,
   totalBytes: 40_000_000,
   archiveBytes: 12_000_000,
   jsonBytes: 60_000_000,
 });
+export const repositorySourceTmpfsMiB = 128;
 export const maintenanceCompiledProfileId =
   'allrice.maintenance.compiled.v1' as const;
 export const repairProfileId = 'allrice.output-redaction.v1' as const;
@@ -171,7 +180,7 @@ export const RepositoryExecutionProofSchema = z.discriminatedUnion('version', [
     version: z.literal(1),
     profileId: z.literal(repairProfileId),
     inputLimit: z.literal(repositorySourceLimits.archiveBytes),
-    tmpfsMiB: z.literal(64),
+    tmpfsMiB: z.union([z.literal(64), z.literal(repositorySourceTmpfsMiB)]),
   }).strict(),
   RepositoryExecutionProofFields.extend({
     version: z.literal(2),
@@ -199,6 +208,20 @@ export const RepositoryExecutionProofSchema = z.discriminatedUnion('version', [
 export type RepositoryExecutionProof = z.infer<
   typeof RepositoryExecutionProofSchema
 >;
+
+export function matchesRepositoryExecutionIsolation(
+  proof: RepositoryExecutionProof,
+  observed: { commandDigest: string; tmpfsMiB?: number } | undefined,
+) {
+  if (observed?.commandDigest !== proof.commandDigest) return false;
+  // The original source-only collector required an actual 64m mount but did
+  // not include its size in the durable receipt. Only that frozen proof keeps
+  // the old guarantee; new 128m and compiled receipts must state their size.
+  const tmpfsMiB =
+    observed.tmpfsMiB ??
+    (proof.version === 1 && proof.tmpfsMiB === 64 ? 64 : undefined);
+  return tmpfsMiB === proof.tmpfsMiB;
+}
 
 export function isCompiledRepositoryExecution(
   proof: RepositoryExecutionProof | undefined,

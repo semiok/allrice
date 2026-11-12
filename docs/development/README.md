@@ -65,10 +65,13 @@ node scripts/acceptance/platform/repository-ci.mjs capture --output=.local/repos
 ```
 
 The complete tracked tree is retained. The private repository source profile
-allows at most 4,096 files, 2,000,000 bytes per file and 40,000,000 total source
-bytes; expanded JSON is bounded at 60,000,000 bytes and gzip archives remain
+allows at most 4,096 files, 2,000,000 bytes per file and 64,000,000 total source
+bytes; expanded JSON is bounded at 96,000,000 bytes and gzip archives remain
 bounded at 12,000,000 bytes. CI and product limits have a shared regression
 check. These limits do not change ordinary project, Bridge or cloud wire limits.
+New source-only repository operations use a private 128 MiB tmpfs. Historical
+64 MiB proofs retain the original 40 MB source / 60 MB JSON command and recovery
+identity; their frozen payload and digests are not rewritten.
 
 ## Default database: Docker Compose
 
