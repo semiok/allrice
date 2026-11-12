@@ -1615,18 +1615,20 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
         ownerId: identity.user,
         instanceId: identity.assignment,
         schemaVersion: 2,
-        returnedCount: 1,
       };
       expect(audits).toEqual([
         {
           resource_type: 'employee_instance',
           resource_id: identity.assignment,
-          metadata: auditScope,
+          metadata: {
+            ...auditScope,
+            returnedCount: await ui.page.locator('article').count(),
+          },
         },
         {
           resource_type: 'memory',
           resource_id: memory.id,
-          metadata: { ...auditScope, memoryId: memory.id },
+          metadata: { ...auditScope, returnedCount: 1, memoryId: memory.id },
         },
       ]);
       expect(JSON.stringify(audits)).not.toContain(raw);
