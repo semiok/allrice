@@ -7968,6 +7968,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const sessionCreates: unknown[] = [];
         let completed = false;
         let firstFailure: unknown;
+        const cleanupErrors: unknown[] = [];
         const tree = () =>
           f.page.getByRole('tree', { name: '员工与工作', exact: true });
         const group = (name: string) =>
@@ -8371,9 +8372,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               path: join(evidence, `FIRST-FAILURE-${device}-${appearance}.png`),
             })
             .catch(() => {});
-          throw error;
         } finally {
-          const cleanupErrors: unknown[] = [];
           try {
             await writeFile(
               join(evidence, `CAPTURES-${device}-${appearance}.json`),
@@ -8406,13 +8405,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           } catch (error) {
             cleanupErrors.push(error);
           }
-          if (cleanupErrors.length)
-            throw new AggregateError(
-              completed ? cleanupErrors : [firstFailure, ...cleanupErrors],
-              'Create-employee evidence or fixture cleanup failed.',
-              firstFailure === undefined ? undefined : { cause: firstFailure },
-            );
         }
+        if (cleanupErrors.length)
+          throw new AggregateError(
+            completed ? cleanupErrors : [firstFailure, ...cleanupErrors],
+            'Create-employee evidence or fixture cleanup failed.',
+            firstFailure === undefined ? undefined : { cause: firstFailure },
+          );
+        if (!completed) throw firstFailure;
       }, 30_000);
 
   it.each([1440, 390])(
