@@ -16996,7 +16996,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         (_, i) => `较长的安全原文 ${i}`,
       ).join('\n');
       f.state.textPageLines = 400;
-      f.state.items.unshift(artifact(12));
+      const paged = artifact(12);
+      paged.provenance.kind = 'project_snapshot';
+      f.state.items.unshift(paged);
       await f.reloadList();
       const body = f.panel.getByRole('region', {
         name: '文件正文',
