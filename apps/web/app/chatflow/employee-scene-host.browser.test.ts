@@ -18,7 +18,8 @@ import {
   defaultWorkAutomation,
   EmployeeInstanceSchema,
   EmployeeSkillCatalogSchema,
-  EmployeeMemoryPageSchema,
+  EmployeeMemoryListQuerySchema,
+  EmployeeMemoryListSchema,
   EmployeeSceneSkillCatalogSchema,
   EmployeeSceneSkillSummarySchema,
   EmployeePublishedSceneSkillSchema,
@@ -913,7 +914,10 @@ suite('U1 mounted employee Workflow host', () => {
         }
       }
       if (path === '/api/v1/memories/manage' && method === 'GET') {
-        const target = url.searchParams.get('instanceId');
+        const query = EmployeeMemoryListQuerySchema.parse(
+          Object.fromEntries(url.searchParams),
+        );
+        const target = query.instanceId;
         expect([id(7), id(17), id(107), id(117)]).toContain(target);
         const targetScope = employeeScope(target!);
         if (
@@ -925,24 +929,13 @@ suite('U1 mounted employee Workflow host', () => {
           return route.fulfill(problem(403, 'AUTHORIZATION_DENIED'));
         return route.fulfill(
           json(
-            EmployeeMemoryPageSchema.parse({
-              organizationId: id(3),
+            EmployeeMemoryListSchema.parse({
+              schemaVersion: 2,
               workspaceId: employeeScope(target!).workspaceId,
-              ownerId: employeeScope(target!).viewerId,
               instanceId: target,
-              state: url.searchParams.get('state'),
-              total: 0,
-              memories: [],
-              nextCursor: null,
-              budget: {
-                mode: 'capacity_preview',
-                maxBytes: 6000,
-                maxItems: 20,
-                usedBytes: 0,
-                eligibleCount: 0,
-                omittedCount: 0,
-                selectedIds: [],
-              },
+              counts: { active: 0, pending: 0, maxActive: 100 },
+              active: [],
+              pending: [],
             }),
           ),
         );

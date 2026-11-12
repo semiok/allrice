@@ -562,7 +562,12 @@ suite('MET251 v10 memory sidebar presentation', () => {
         .getByRole('dialog', { name: '确认删除这条记忆？' })
         .waitFor();
       await assertFooter();
-      expect(await f.operations()).toEqual([]);
+      const operations = await f.operations();
+      expect(operations).toEqual([
+        { action: 'read', payload: 'a1' },
+        { action: 'read', payload: 'a1' },
+      ]);
+      expect(operations.filter(({ action }) => action !== 'read')).toEqual([]);
     } finally {
       await f.close();
     }

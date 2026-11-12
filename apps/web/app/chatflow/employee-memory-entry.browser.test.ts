@@ -10,6 +10,8 @@ import {
   EmployeeInstanceSchema,
   EmployeeSkillCatalogSchema,
   EmployeeSceneSkillCatalogSchema,
+  EmployeeMemoryListQuerySchema,
+  EmployeeMemoryDetailResponseSchema,
   type EmployeeMemoryListSchema,
   type EmployeeMemoryRecord,
 } from '@allrice/contracts';
@@ -47,6 +49,8 @@ function detailsFor(instanceId: string) {
   detail.profile.name = instanceId === id(7) ? 'Rice' : '流程哥';
   return detail;
 }
+const memoryIdFor = (instanceId: string, value: number) =>
+  id(value + (instanceId === id(7) ? 0 : 10_000));
 function memoryPage(
   instanceId: string,
   active: number,
@@ -54,7 +58,7 @@ function memoryPage(
   saved?: { summary: string; details: string | null },
 ): z.infer<typeof EmployeeMemoryListSchema> {
   const row = (n: number, state: 'active' | 'pending') => ({
-    id: id(1000 + n + (state === 'pending' ? 100 : 0)),
+    id: memoryIdFor(instanceId, 1000 + n + (state === 'pending' ? 100 : 0)),
     summary: `测试记忆 ${n}`,
     hasDetails: false,
     state,
@@ -67,7 +71,7 @@ function memoryPage(
   if (saved)
     rows.unshift({
       ...row(90, 'active'),
-      id: id(90),
+      id: memoryIdFor(instanceId, 90),
       summary: saved.summary,
       hasDetails: saved.details !== null,
       pairDigest: `sha256:${'b'.repeat(64)}`,
@@ -172,6 +176,14 @@ suite('U1 employee details personal-memory entry', () => {
       appearance: options.dark ? ('dark' as const) : ('light' as const),
     };
     const countGate = gate();
+    // Fixed authenticated identity from this page's scopeId and /workspace;
+    // neither the detail query nor the memory ID selects a viewer.
+    const memoryViewer = { workspaceId: id(4), viewerId: id(5) };
+    const memoryTargets = [7, 17].map((n) => ({
+      instanceId: id(n),
+      workspaceId: id(4),
+      ownerId: id(5),
+    }));
     const state = {
       reads: [] as Array<{
         path: string;
@@ -242,6 +254,53 @@ suite('U1 employee details personal-memory entry', () => {
           ),
         );
       }
+      const memoryRead = path.match(/^\/api\/v1\/memories\/([^/]+)$/);
+      if (memoryRead && request.method() === 'GET') {
+        const query = EmployeeMemoryListQuerySchema.parse(
+          Object.fromEntries(url.searchParams),
+        );
+        const target = memoryTargets.find(
+          (item) =>
+            item.instanceId === query.instanceId &&
+            item.workspaceId === query.workspaceId &&
+            item.ownerId === memoryViewer.viewerId,
+        );
+        const workspaceHeader = request.headers()['x-allrice-workspace-id'];
+        if (
+          !target ||
+          query.workspaceId !== memoryViewer.workspaceId ||
+          (workspaceHeader !== undefined &&
+            workspaceHeader !== memoryViewer.workspaceId) ||
+          options.shared ||
+          state.denyMemory ||
+          state.failCounts
+        )
+          return route.fulfill(json({ error: 'unavailable' }, 403));
+        const page = memoryPage(
+          target.instanceId,
+          options.zero ? 0 : target.instanceId === id(7) ? 6 : 65,
+          options.zero ? 0 : 1,
+          state.savedPairs[target.instanceId],
+        );
+        const row = [...page.active, ...page.pending].find(
+          (item) => item.id === memoryRead[1],
+        );
+        if (!row)
+          return route.fulfill(json({ error: 'fixture_unhandled', path }, 404));
+        return route.fulfill(
+          json(
+            EmployeeMemoryDetailResponseSchema.parse({
+              schemaVersion: 2,
+              memory: {
+                ...row,
+                details: row.hasDetails
+                  ? state.savedPairs[target.instanceId]!.details
+                  : null,
+              },
+            }),
+          ),
+        );
+      }
       if (path === '/api/v1/experiences')
         return route.fulfill(
           json({
@@ -291,7 +350,7 @@ suite('U1 employee details personal-memory entry', () => {
           return route.fulfill(json({}, 503));
         }
         const memory: EmployeeMemoryRecord = {
-          id: id(90),
+          id: memoryIdFor(body.instanceId, 90),
           summary: body.summary,
           details: body.details,
           hasDetails: body.details !== null,
