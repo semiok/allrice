@@ -13074,7 +13074,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   async function retainedPdfReader(f: Awaited<ReturnType<typeof fixture>>) {
     await f.panel
       .getByText('Delivery original preview', { exact: true })
-      .waitFor({ timeout: 15000 });
+      .waitFor();
     const frame = f.panel.locator('[data-document-zoom-frame]:visible');
     const zoomButton = frame.getByRole('button', {
       name: '选择缩放比例',
