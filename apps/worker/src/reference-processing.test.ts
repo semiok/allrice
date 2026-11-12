@@ -19,6 +19,7 @@ import {
 import { LocalStorageAdapter } from '@allrice/storage';
 import { Document, Packer, Paragraph } from 'docx';
 import ExcelJS from 'exceljs';
+import type * as PptxGenJSModule from 'pptxgenjs';
 import PDFDocument from 'pdfkit';
 import { processNextReference } from './reference-processing.js';
 import { readKnowledgeText } from './knowledge.js';
@@ -26,7 +27,7 @@ import * as documentReader from './document-reader.js';
 import { createOffice } from './office/create.js';
 import JSZip from 'jszip';
 
-const PptxGenJS: typeof import('pptxgenjs').default = createRequire(
+const PptxGenJS: typeof PptxGenJSModule.default = createRequire(
   import.meta.url,
 )('pptxgenjs');
 

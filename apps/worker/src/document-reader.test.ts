@@ -3,12 +3,13 @@ import { createRequire } from 'node:module';
 import { Document, Packer, Paragraph } from 'docx';
 import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
+import type * as PptxGenJSModule from 'pptxgenjs';
 import { describe, expect, it } from 'vitest';
 
 import { parseDocument } from './document-reader.js';
 import { OfficePackage } from './office/package.js';
 
-const PptxGenJS: typeof import('pptxgenjs').default = createRequire(
+const PptxGenJS: typeof PptxGenJSModule.default = createRequire(
   import.meta.url,
 )('pptxgenjs');
 const pdfFixtures = new URL('../../../tests/fixtures/pdf/', import.meta.url);
