@@ -3,14 +3,17 @@ import { EmployeeInstanceSchema } from '@allrice/contracts';
 import type { History, Session, Workspace } from './chatflow-types';
 
 // Exercises the actual hook's async control flow, not a DOM/React renderer.
-// State is retained between explicit renders; effects are deliberately not run.
+// State is retained between explicit renders; effects run only when opted in.
 const hooks = vi.hoisted(() => {
   let slots: unknown[] = [];
   let cursor = 0;
+  type Effect = () => void | (() => void);
+  let effects: Effect[] | null = null;
   return {
     reset() {
       slots = [];
       cursor = 0;
+      effects = null;
     },
     render() {
       cursor = 0;
@@ -41,7 +44,17 @@ const hooks = vi.hoisted(() => {
     useCallback<T>(callback: T) {
       return callback;
     },
-    useEffect() {},
+    captureEffects() {
+      effects = [];
+    },
+    takeEffects() {
+      const captured = effects ?? [];
+      effects = null;
+      return captured;
+    },
+    useEffect(effect: Effect) {
+      effects?.push(effect);
+    },
   };
 });
 vi.mock('react', () => hooks);
@@ -137,6 +150,114 @@ describe('P26 History selection async control flow (synthetic fetch, explicit ho
   });
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  const settleEffects = () =>
+    new Promise<void>((resolve) => setImmediate(resolve));
+  const capabilities = {
+    schemaVersion: 1,
+    roles: ['member'],
+    actions: [],
+    surfaces: ['chatflow'],
+    features: { chatFlowV3: true, nativeHarnessEvents: true },
+  };
+  it.each(['old-first', 'new-first', 'old-error'])(
+    'cancels only the discarded initial effect with %s responses',
+    async (order) => {
+      hooks.captureEffects();
+      render();
+      const effects = hooks.takeEffects();
+      const cleanup = effects.map((effect) => effect());
+      const obsoleteSignal = requests[0]!.init?.signal;
+      expect(obsoleteSignal).toBe(requests[1]!.init?.signal);
+      for (const close of cleanup) if (typeof close === 'function') close();
+      for (const effect of effects) effect();
+      expect(obsoleteSignal?.aborted).toBe(true);
+      expect(requests[2]!.init?.signal?.aborted).toBe(false);
+      expect(requests[2]!.init?.signal).toBe(requests[3]!.init?.signal);
+      expect(requests[2]!.init?.signal).not.toBe(obsoleteSignal);
+      for (const batch of order === 'new-first' ? [2, 0] : [0, 2]) {
+        if (batch === 0 && order === 'old-error')
+          requests[batch]!.result.reject(Error('discarded bootstrap'));
+        else
+          requests[batch]!.result.resolve(
+            Response.json({
+              workspace: batch
+                ? workspace
+                : { ...workspace, workspaceId: 'old' },
+            }),
+          );
+        requests[batch + 1]!.result.resolve(
+          Response.json({ capabilities: batch ? capabilities : {} }),
+        );
+        await settleEffects();
+        if (batch === 0 && order !== 'new-first') {
+          expect(render().workspace).toBeNull();
+          expect(render().manifest).toBeNull();
+          expect(render().activeId).toBeNull();
+        }
+      }
+      expect(render().workspace).toEqual(workspace);
+      expect(render().manifest).toEqual(capabilities);
+      expect(render().activeId).toBe('A');
+      expect(requests).toHaveLength(4);
+      expect(setError).not.toHaveBeenCalled();
+    },
+  );
+  it.each(['response', 'body'])(
+    'does not publish a cancelled initial deep-link %s',
+    async (boundary) => {
+      const id = '11111111-1111-4111-8111-111111111111';
+      window.location.search = `?session=${id}`;
+      hooks.captureEffects();
+      render();
+      const effects = hooks.takeEffects();
+      const cleanup = effects.map((effect) => effect());
+      requests[0]!.result.resolve(Response.json({ workspace }));
+      requests[1]!.result.resolve(Response.json({ capabilities: {} }));
+      await settleEffects();
+      expect(requests[2]!.url).toContain(
+        `/sessions/${id}?workspaceId=workspace`,
+      );
+      expect(requests[2]!.init?.signal).toBe(requests[0]!.init?.signal);
+      const body = deferred<string>();
+      if (boundary === 'body') {
+        const response = new Response();
+        vi.spyOn(response, 'text').mockReturnValue(body.promise);
+        requests[2]!.result.resolve(response);
+        await settleEffects();
+      }
+      for (const close of cleanup) if (typeof close === 'function') close();
+      expect(requests[2]!.init?.signal?.aborted).toBe(true);
+      window.location.search = '';
+      for (const effect of effects) effect();
+      requests[3]!.result.resolve(Response.json({ workspace }));
+      requests[4]!.result.resolve(Response.json({ capabilities: {} }));
+      await settleEffects();
+      if (boundary === 'body')
+        body.resolve(JSON.stringify({ history: history(id) }));
+      else requests[2]!.result.resolve(Response.json({ history: history(id) }));
+      await settleEffects();
+      expect(render().workspace).toEqual(workspace);
+      expect(render().activeId).toBe('A');
+      expect(render().history).toBeNull();
+      render().setActiveId(id);
+      expect(render().history).toBeNull(); // No late deep-link cache entry.
+      expect(requests).toHaveLength(5);
+      expect(setError).not.toHaveBeenCalled();
+    },
+  );
+  it('keeps a current initial effect failure visible', async () => {
+    hooks.captureEffects();
+    render();
+    for (const effect of hooks.takeEffects()) effect();
+    requests[0]!.result.reject(Error('current bootstrap failure'));
+    requests[1]!.result.resolve(Response.json({ capabilities: {} }));
+    await settleEffects();
+    expect(setError).toHaveBeenCalledExactlyOnceWith(
+      'current bootstrap failure',
+    );
+    expect(render().workspace).toBeNull();
   });
 
   it.each(['default', 'employee-url'])(
@@ -426,10 +547,13 @@ describe('P26 History selection async control flow (synthetic fetch, explicit ho
     state.setHistory(null);
     requests[0]!.result.resolve(Response.json({ history: history('A') }));
     await oldHistory;
-    requests[1]!.result.resolve(Response.json({ workspace }));
+    const refreshed = { ...workspace, sessions: [session('C')] };
+    requests[1]!.result.resolve(Response.json({ workspace: refreshed }));
     await Promise.resolve();
-    requests[2]!.result.resolve(Response.json({ capabilities: {} }));
+    requests[2]!.result.resolve(Response.json({ capabilities }));
     await oldWorkspace;
+    expect(render().workspace).toEqual(refreshed);
+    expect(render().manifest).toEqual(capabilities);
     expect(render().activeId).toBeNull();
     expect(render().history).toBeNull();
   });
