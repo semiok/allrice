@@ -303,7 +303,10 @@ export function WorkspaceFilePreview(props: {
         className={`${reader.content} ${hasNativeViewport(preview) && !source ? reader.officeContent : ''} ${props.deliverable ? detail.deliveryPreview : ''}`}
       >
         {error ? (
-          <p className={styles.error} role="alert">
+          <p
+            className={props.deliverable ? detail.previewError : styles.error}
+            role="alert"
+          >
             {props.deliverable ? '预览加载失败' : error}
             {props.deliverable && (
               <button type="button" onClick={() => setAttempt((n) => n + 1)}>

@@ -11302,6 +11302,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await directory
             .getByRole('button', { name: upload.fileName, exact: true })
             .waitFor();
+          if (width === 390) {
+            const filterBox = (await employee.boundingBox())!;
+            const searchBox = (await directory
+              .getByRole('searchbox', { name: '查找文件' })
+              .locator('..')
+              .boundingBox())!;
+            expect(Math.abs(filterBox.y - searchBox.y)).toBeLessThan(1);
+          }
           await capture('deliverables');
           await directory
             .getByRole('button', { name: '员工交付', exact: true })
@@ -11430,6 +11438,30 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .getByRole('alert')
             .filter({ hasText: '预览加载失败' })
             .waitFor();
+          const errorStyle = await f.panel
+            .getByRole('alert')
+            .evaluate((node) => {
+              const reader = node.parentElement!.parentElement!;
+              const button = node.querySelector('button')!;
+              const box = node.getBoundingClientRect();
+              const action = button.getBoundingClientRect();
+              return {
+                layout: getComputedStyle(node).display,
+                align: getComputedStyle(node).textAlign,
+                color: getComputedStyle(node).color,
+                label: getComputedStyle(reader.querySelector('dl dt')!).color,
+                button: getComputedStyle(button).color,
+                body: getComputedStyle(reader.querySelector('dl dd')!).color,
+                offset: Math.abs(
+                  action.x + action.width / 2 - box.x - box.width / 2,
+                ),
+              };
+            });
+          expect(errorStyle.layout).toBe('grid');
+          expect(errorStyle.align).toBe('center');
+          expect(errorStyle.color).toBe(errorStyle.label);
+          expect(errorStyle.button).toBe(errorStyle.body);
+          expect(errorStyle.offset).toBeLessThan(1);
           await capture('preview-error');
           f.state.filePreviewStatus = 200;
           await f.panel
@@ -11709,9 +11741,59 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
+  async function deliverableScopeFixture(
+    options: Parameters<typeof fixture>[0],
+    test: string,
+  ) {
+    const observation: { current?: Awaited<ReturnType<typeof fixture>> } = {};
+    const evidence = createFailureEvidence({
+      file: import.meta.url,
+      test,
+      collect: () => ({
+        viewer: observation.current?.state.viewer,
+        workspace: observation.current?.state.workspace,
+        workspaceReads: observation.current?.state.workspaceReads,
+        deliverableRequests: observation.current?.state.deliverableRequests,
+        settled: [...(observation.current?.state.deliverableSettled ?? [])],
+      }),
+    });
+    const f = await fixture({
+      ...options,
+      employeeDetails: true,
+      failureEvidence: evidence,
+    });
+    observation.current = f;
+    const responses = new Set<Request>();
+    f.page.on('response', (response) => responses.add(response.request()));
+    return { ...f, evidence, responses };
+  }
+  async function holdWorkspaceRefresh(
+    f: Awaited<ReturnType<typeof deliverableScopeFixture>>,
+  ) {
+    const hold: { request?: Request; release: () => void } = {
+      release: () => {},
+    };
+    const gate = new Promise<void>((done) => {
+      hold.release = done;
+    });
+    await f.page.route(
+      (url) => url.pathname === '/api/v1/workspace',
+      async (route) => {
+        hold.request = route.request();
+        f.evidence.mark('workspace-refresh-held');
+        await gate;
+        await route.fallback();
+      },
+    );
+    return hold;
+  }
   it('MET247 keyset pages survive category, employee and search round trips and reject a late old-owner title', async () => {
-    const f = await fixture({ employeeCount: 2, running: true });
+    const f = await deliverableScopeFixture(
+      { employeeCount: 2 },
+      'MET247 keyset scope',
+    );
     let release = () => {};
+    let refresh: Awaited<ReturnType<typeof holdWorkspaceRefresh>> | undefined;
     try {
       for (let n = 0; n < 55; n++)
         f.state.workbenchFiles.push(catalogFile(9600 + n));
@@ -11771,19 +11853,48 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       f.state.fileDelay = new Promise<void>((done) => {
         release = done;
       });
-      await directory.getByRole('searchbox', { name: '查找文件' }).fill('资料');
+      const [oldRequest] = await Promise.all([
+        f.page.waitForRequest((request) => {
+          const url = new URL(request.url());
+          return (
+            url.pathname === '/api/v1/workbench/files' &&
+            url.searchParams.get('query') === '资料'
+          );
+        }),
+        directory.getByRole('searchbox', { name: '查找文件' }).fill('资料'),
+      ]);
       await expect
         .poll(() => f.state.deliverableRequests.at(-1)?.query)
         .toBe('资料');
       const oldRead = f.state.deliverableRequests.at(-1)!;
+      const oldNode = (await directory.elementHandle())!;
+      refresh = await holdWorkspaceRefresh(f);
+      const details = await openOwnerDetails(f);
+      await expect.poll(() => !!refresh?.request).toBe(true);
+      await details.getByRole('button', { name: '关闭', exact: true }).click();
+      expect(await oldNode.evaluate((node) => node.isConnected)).toBe(true);
+      expect(oldRequest.failure()).toBeNull();
+      expect(f.responses.has(oldRequest)).toBe(false);
+      expect(f.state.deliverableSettled.has(oldRead)).toBe(false);
+      f.evidence.mark('old-directory-pending-before-identity');
       const workspaceReads = f.state.workspaceReads;
       f.state.viewer = id(999);
       f.state.workspace = id(998);
       f.state.fileDelay = null;
-      f.finishRun();
+      refresh.release();
       await expect
         .poll(() => f.state.workspaceReads)
         .toBeGreaterThan(workspaceReads);
+      await expect
+        .poll(() => oldNode.evaluate((node) => node.isConnected))
+        .toBe(false);
+      expect(
+        await f.page.getByText('资料-9600.txt', { exact: true }).count(),
+      ).toBe(0);
+      await f.page
+        .locator('header')
+        .getByRole('button', { name: '交付成果', exact: true })
+        .click();
       await f.panel
         .getByRole('heading', { name: '还没有交付成果', exact: true })
         .waitFor();
@@ -11797,17 +11908,26 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(
         await f.page.locator('header[aria-label="文件操作"]').count(),
       ).toBe(0);
+    } catch (error) {
+      await f.evidence.capture(error);
+      throw error;
     } finally {
+      refresh?.release();
       release();
       await f.close();
+      f.evidence.dispose();
     }
   }, 30000);
 
   it.each([1440, 390])(
     'MET247 an application file link resolves my object before showing its title and clears a late old-account detail at %ipx',
     async (width) => {
-      const f = await fixture({ width, running: true });
+      const f = await deliverableScopeFixture(
+        { width },
+        `MET247 file link scope ${width}`,
+      );
       let release = () => {};
+      let refresh: Awaited<ReturnType<typeof holdWorkspaceRefresh>> | undefined;
       try {
         const file = catalogFile(9590, { fileName: '本人链接原件.txt' });
         f.state.workbenchFiles.push(file);
@@ -11822,10 +11942,38 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             (request) => request.objectId === file.objectId,
           ),
         ).toBe(true);
+        await f.panel
+          .getByRole('button', { name: '关闭工作台', exact: true })
+          .click();
+        refresh = await holdWorkspaceRefresh(f);
+        const details = await openOwnerDetails(f);
+        await expect.poll(() => !!refresh?.request).toBe(true);
+        await details
+          .getByRole('button', { name: '关闭', exact: true })
+          .click();
+        if (width === 390)
+          await f.page
+            .getByRole('button', { name: '收起侧边栏', exact: true })
+            .click();
+        const objectReads = f.state.deliverableRequests.filter(
+          (request) => request.objectId === file.objectId,
+        ).length;
         f.state.fileDelay = new Promise<void>((done) => {
           release = done;
         });
-        await f.page.reload();
+        const [oldRequest] = await Promise.all([
+          f.page.waitForRequest((request) => {
+            const url = new URL(request.url());
+            return (
+              url.pathname === '/api/v1/workbench/files' &&
+              url.searchParams.get('objectId') === file.objectId
+            );
+          }),
+          f.page
+            .locator('header')
+            .getByRole('button', { name: '交付成果', exact: true })
+            .click(),
+        ]);
         await expect
           .poll(
             () =>
@@ -11833,17 +11981,28 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                 (request) => request.objectId === file.objectId,
               ).length,
           )
-          .toBeGreaterThan(1);
+          .toBeGreaterThan(objectReads);
         const oldRead = f.state.deliverableRequests.findLast(
           (request) => request.objectId === file.objectId,
         )!;
+        const oldNode = (await f.panel
+          .getByRole('region', { name: '交付成果', exact: true })
+          .elementHandle())!;
+        expect(await oldNode.evaluate((node) => node.isConnected)).toBe(true);
+        expect(oldRequest.failure()).toBeNull();
+        expect(f.responses.has(oldRequest)).toBe(false);
+        expect(f.state.deliverableSettled.has(oldRead)).toBe(false);
+        f.evidence.mark('old-file-link-pending-before-identity');
         const workspaceReads = f.state.workspaceReads;
         f.state.viewer = id(999);
         f.state.fileDelay = null;
-        f.finishRun();
+        refresh.release();
         await expect
           .poll(() => f.state.workspaceReads)
           .toBeGreaterThan(workspaceReads);
+        await expect
+          .poll(() => oldNode.evaluate((node) => node.isConnected))
+          .toBe(false);
         await f.panel.getByText('无权访问', { exact: true }).waitFor();
         release();
         await expect
@@ -11858,9 +12017,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .count(),
         ).toBe(0);
         expect(f.state.workbenchReferenceUses).toEqual([]);
+      } catch (error) {
+        await f.evidence.capture(error);
+        throw error;
       } finally {
+        refresh?.release();
         release();
         await f.close();
+        f.evidence.dispose();
       }
     },
     30000,
