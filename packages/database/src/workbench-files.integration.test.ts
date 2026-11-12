@@ -434,6 +434,8 @@ suite(
           readWorkbenchFile(t.a, objectId),
         ),
       );
+      if (!stored || !duplicateStored)
+        throw Error('Both uploaded originals must remain readable.');
       expect(stored.row.file_name).toBe(duplicateStored.row.file_name);
       const names = await fixture.db.begin(async (tx) => {
         await lockWorkspaceStorageQuota(
