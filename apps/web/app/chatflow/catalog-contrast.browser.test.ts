@@ -240,39 +240,16 @@ suite('muted words stay readable in both themes', { timeout: 60_000 }, () => {
       page.getByRole('searchbox', { name: '查找文件' }),
       '::placeholder',
     );
-    for (const tab of ['交付成果', '参考资料'])
+    for (const tab of ['员工交付', '我的上传'])
       await readable(
         `L09 未选中分类 ${tab}`,
         page.getByRole('button', { name: tab, exact: true }),
       );
     await readable('L09 文件信息', row.locator('small'));
-    await readable('L09 仅自己', row.getByText('仅自己', { exact: true }));
-    await page.getByRole('button', { name: '上传', exact: true }).click();
-    const dialog = page.getByRole('dialog', { name: '上传文件' });
-    for (const words of [
-      '文档、图片、表格与其他工作文件',
-      '仅你自己可见。',
-      '在后续工作中按需查找使用。',
-      '共享这份文件，不公开原聊天。',
-    ])
-      await readable(`上传说明 ${words}`, dialog.getByText(words));
-    await dialog.locator('input[type="file"]').setInputFiles({
-      name: '会议纪要.txt',
-      mimeType: 'text/plain',
-      buffer: Buffer.from('纪要'),
-    });
-    await readable(
-      '上传按钮',
-      dialog.getByRole('button', { name: '上传文件' }),
-    );
-    await dialog.getByRole('button', { name: '取消' }).click();
     await page
       .getByRole('searchbox', { name: '查找文件' })
       .fill('不存在的文件');
-    await readable(
-      '空结果',
-      page.getByText('没有找到匹配的文件。', { exact: true }),
-    );
+    await readable('空结果', page.getByText('未找到相关文件', { exact: true }));
   }
 
   async function save(page: Page, open: Open, readable: Readable) {

@@ -1542,7 +1542,7 @@ suite(
           0,
         );
         expect(
-          await f.page.getByRole('button', { name: /^工作区文件/ }).isVisible(),
+          await f.page.getByRole('button', { name: /^交付成果/ }).isVisible(),
         ).toBe(true);
         const reads = f.reads.length;
         await trigger.hover();
@@ -3365,7 +3365,7 @@ suite(
             .click();
           if (width > 760) {
             await f.page
-              .getByRole('region', { name: '工作区文件', exact: true })
+              .getByRole('region', { name: '交付成果', exact: true })
               .getByRole('button', {
                 name: `文件选项 ${reference.fileName}`,
                 exact: true,

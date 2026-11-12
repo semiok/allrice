@@ -24,6 +24,21 @@
 .identity > svg {
   flex: none;
 }
+.deliveryToolbar {
+  padding: 8px 20px;
+  border-bottom: 0;
+}
+.deliveryToolbar .identity {
+  flex-basis: 100%;
+}
+.deliveryToolbar .name {
+  font-size: 17px;
+  font-weight: 600;
+}
+.deliveryToolbar .controls {
+  margin-left: 0;
+  justify-content: flex-start;
+}
 .name {
   flex: 1;
   min-width: 0;

@@ -18,7 +18,10 @@ import { GUIDE_KIND, pageAddress } from './dsh-upstream/dock/contract/seed';
 import { dockLabels, useNativeDock } from './use-native-dock';
 import { useCapabilityEscape } from './use-capability-escape';
 import { WorkspaceFileTree } from './workspace-file-tree';
-import { WorkspaceFilePreview } from './workspace-file-preview';
+import {
+  WorkspaceFilePreview,
+  WorkbenchDeliverablePreview,
+} from './workspace-file-preview';
 import {
   WorkbenchStart,
   WorkbenchIcon,
@@ -34,7 +37,11 @@ import {
 import { DocumentToolbar } from './document-reader';
 import { SaveArtifactReference } from './save-artifact-reference';
 import { WorkbenchFileToolbarActions } from './workbench-file-toolbar-actions';
-import type { ReferenceRevision } from '@allrice/contracts';
+import { clearWorkbenchFileLink } from './workbench-file-link';
+import type {
+  ReferenceRevision,
+  EmployeeAccentColor,
+} from '@allrice/contracts';
 import reader from './document-reader.module.css';
 import { isToolResultExport } from '../../lib/chatflow/document-reader-model';
 import { ChangesetPanel } from './changeset-panel';
@@ -118,6 +125,9 @@ function personalMemoryTarget(kind: string, contentId: string) {
 }
 
 type Props = {
+  personalDeliverables?: boolean;
+  employeeColors?: Record<string, EmployeeAccentColor | undefined>;
+  onOpenSourceSession?: (sessionId: string) => void;
   desktop?: boolean;
   terminalIdentity?: { organizationId: string; ownerId: string };
   onOpenComputerSettings?: () => void;
@@ -401,7 +411,7 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
     if (!props.filesRequest || lastFilesRequest.current === props.filesRequest)
       return;
     lastFilesRequest.current = props.filesRequest;
-    dock.open('files', pageAddress('files'), '工作区文件');
+    dock.open('files', pageAddress('files'), '交付成果');
   });
   return (
     <>
@@ -636,6 +646,7 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                 }}
               />
             ) : (props.desktop ||
+                tab.kind === 'files' ||
                 tab.kind === 'workflow' ||
                 !!personalMemoryTarget(tab.kind, tab.contentId)) &&
               ['files', 'experience', 'workflow'].includes(tab.kind) ? (
@@ -695,6 +706,39 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                     );
                 }}
               />
+            ) : props.personalDeliverables && tab.kind === 'managedFile' ? (
+              <WorkbenchDeliverablePreview
+                scope={props.dockScope}
+                objectId={tab.contentId}
+                workspaceId={props.workspaceId}
+                tenantHeaders={props.tenantHeaders}
+                employeeColors={props.employeeColors}
+                active={
+                  props.open &&
+                  findTabPane(dock.surface.layout, tab.id).activeTabId ===
+                    tab.id
+                }
+                onBack={() => {
+                  clearWorkbenchFileLink();
+                  dock.open(
+                    'files',
+                    pageAddress('files'),
+                    moduleLabels.files,
+                    findTabPane(dock.surface.layout, tab.id).id,
+                  );
+                }}
+                onSource={props.onOpenSourceSession}
+                fileActions={
+                  props.onUseFileReference
+                    ? {
+                        sessionId: props.sessionId,
+                        readOnly: props.readOnly,
+                        onUse: props.onUseFileReference,
+                        onTemplate: props.onTemplateFile,
+                      }
+                    : undefined
+                }
+              />
             ) : tab.kind === 'file' || tab.kind === 'managedFile' ? (
               <WorkspaceFilePreview
                 fileActions={
@@ -743,7 +787,7 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                   dock.open(
                     'files',
                     pageAddress('files'),
-                    '工作区文件',
+                    '交付成果',
                     findTabPane(dock.surface.layout, tab.id).id,
                   );
                 }}
@@ -802,6 +846,52 @@ function ArtifactTabBody(
   },
 ) {
   const artifactId = props.selectedId;
+  const file = props.artifacts.find((item) => item.id === artifactId);
+  if (
+    props.personalDeliverables &&
+    file &&
+    ['document', 'plan', 'file'].includes(file.kind) &&
+    file.provenance.kind !== 'project_snapshot' &&
+    !isToolResultExport(file.version)
+  )
+    return (
+      <div className={reader.reader}>
+        {props.noticeId && props.noticeId !== artifactId ? (
+          <p className={styles.notice} role="status">
+            新成果已就绪。
+            <button
+              type="button"
+              onClick={() => props.onSelect(props.noticeId!)}
+            >
+              查看新成果
+            </button>
+          </p>
+        ) : null}
+        <WorkbenchDeliverablePreview
+          scope={props.dockScope}
+          objectId={file.object.id}
+          workspaceId={props.workspaceId}
+          tenantHeaders={props.tenantHeaders}
+          active={props.active}
+          employeeColors={props.employeeColors}
+          onBack={() => {
+            clearWorkbenchFileLink();
+            props.onFiles();
+          }}
+          onSource={props.onOpenSourceSession}
+          fileActions={
+            props.onUseFileReference
+              ? {
+                  sessionId: props.sessionId,
+                  readOnly: props.readOnly,
+                  onUse: props.onUseFileReference,
+                  onTemplate: props.onTemplateFile,
+                }
+              : undefined
+          }
+        />
+      </div>
+    );
   if (artifactId && props.sessionId)
     return (
       <div className={reader.reader}>
@@ -837,7 +927,7 @@ function ArtifactTabBody(
     <div className={styles.body}>
       <div className={styles.row}>
         <button type="button" onClick={props.onFiles}>
-          工作区文件
+          交付成果
         </button>
         <button
           type="button"

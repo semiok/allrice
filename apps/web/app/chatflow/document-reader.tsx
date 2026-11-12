@@ -30,7 +30,9 @@ export function DocumentToolbar(props: {
   onAction: (id: string) => void;
   children?: ReactNode;
   quickActions?: ReactNode;
+  trailingActions?: ReactNode;
   missingFonts?: readonly string[];
+  delivery?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const refresh = props.actions.find(
@@ -44,11 +46,11 @@ export function DocumentToolbar(props: {
   const hasMenuActions = menuActions.some((action) => 'label' in action);
   return (
     <header
-      className={`${native.header} ${styles.toolbar}`}
+      className={`${native.header} ${styles.toolbar} ${props.delivery ? styles.deliveryToolbar : ''}`}
       aria-label="文件操作"
     >
       <div className={styles.identity}>
-        <FileTypeIcon path={props.title} size={20} />
+        <FileTypeIcon path={props.title} size={props.delivery ? 28 : 20} />
         <PathLabel path={props.title} className={styles.name} />
       </div>
       <div className={styles.controls}>
@@ -92,6 +94,7 @@ export function DocumentToolbar(props: {
             <IconDownloadOutlineRegular size={20} />
           </a>
         </Tooltip>
+        {props.trailingActions}
         {hasMenuActions && (
           <Menu
             open={open}

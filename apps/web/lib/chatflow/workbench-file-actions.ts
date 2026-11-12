@@ -1,5 +1,9 @@
 import { z } from 'zod';
-import { WorkbenchFileCatalogSchema, UuidSchema } from '@allrice/contracts';
+import {
+  WorkbenchFileCatalogSchema,
+  WorkbenchDeliverablesCatalogSchema,
+  UuidSchema,
+} from '@allrice/contracts';
 
 /** Web-only action projection. Missing availability fails closed on old responses. */
 export const WorkbenchFileActionsCatalogSchema =
@@ -8,4 +12,11 @@ export const WorkbenchFileActionsCatalogSchema =
   });
 export type WorkbenchFileActionsCatalog = z.infer<
   typeof WorkbenchFileActionsCatalogSchema
+>;
+export const WorkbenchDeliverablesActionsCatalogSchema =
+  WorkbenchDeliverablesCatalogSchema.extend({
+    quotableFileIds: z.array(UuidSchema).default([]),
+  });
+export type WorkbenchDeliverablesActionsCatalog = z.infer<
+  typeof WorkbenchDeliverablesActionsCatalogSchema
 >;

@@ -12,13 +12,14 @@ import {
   IconClockOutlineRegular,
   IconPanelLeftOutlineRegular,
   IconChevronRightOutlineRegular,
+  Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import { z } from 'zod';
 import { workbenchJson } from '../../lib/chatflow/workbench-model';
 import css from './workbench-modules.module.css';
 export type WorkbenchModule = 'files' | 'experience' | 'workflow';
 export const moduleLabels = {
-  files: '工作区文件',
+  files: '交付成果',
   experience: '记忆',
   workflow: '能力',
 };
@@ -115,25 +116,25 @@ export function WorkbenchEntries(props: {
           ...(props.workflow ? ['workflow'] : []),
         ] as WorkbenchModule[]
       ).map((kind) => (
-        <button
-          type="button"
-          key={kind}
-          className={`${css.entry} ${css[kind]}`}
-          aria-pressed={props.open && props.selected === kind}
-          title={moduleLabels[kind]}
-          aria-label={`${moduleLabels[kind]}${props.counts[kind] ? `，${props.counts[kind]} 项新增` : ''}`}
-          onClick={() => props.onOpen(kind)}
-        >
-          <WorkbenchIcon kind={kind} />
-          {props.counts[kind] > 0 && (
-            <span
-              className={`${css.badge} ${css.neutralBadge}`}
-              aria-hidden="true"
-            >
-              {props.counts[kind] > 99 ? '99+' : props.counts[kind]}
-            </span>
-          )}
-        </button>
+        <Tooltip key={kind} label={moduleLabels[kind]} side="bottom" portal>
+          <button
+            type="button"
+            className={`${css.entry} ${css[kind]}`}
+            aria-pressed={props.open && props.selected === kind}
+            aria-label={`${moduleLabels[kind]}${props.counts[kind] ? `，${props.counts[kind]} 项新增` : ''}`}
+            onClick={() => props.onOpen(kind)}
+          >
+            <WorkbenchIcon kind={kind} />
+            {props.counts[kind] > 0 && (
+              <span
+                className={`${css.badge} ${css.neutralBadge}`}
+                aria-hidden="true"
+              >
+                {props.counts[kind] > 99 ? '99+' : props.counts[kind]}
+              </span>
+            )}
+          </button>
+        </Tooltip>
       ))}
       {props.schedule && (
         <button
@@ -196,7 +197,7 @@ export function WorkbenchStart(props: {
               <strong>{moduleLabels[kind]}</strong>
               <small>
                 {kind === 'files'
-                  ? '文件、交付成果与参考资料'
+                  ? '员工交付的文件和你在对话中上传的文件'
                   : kind === 'experience'
                     ? '记忆'
                     : '打开这位员工的业务工作台'}

@@ -72,6 +72,34 @@ export const WorkbenchFileCatalogSchema = z.object({
 });
 export type WorkbenchFileCatalog = z.infer<typeof WorkbenchFileCatalogSchema>;
 
+/** Owner-only display projection. These IDs locate existing resources; they
+ * never grant access to a conversation or its original bytes. */
+export const WorkbenchDeliverableSourceSchema = z.object({
+  sessionId: UuidSchema,
+  sessionTitle: z.string(),
+  employeeAssignmentId: UuidSchema,
+  employeeInstanceId: UuidSchema,
+  employeeName: z.string(),
+});
+export const WorkbenchDeliverableSchema = WorkbenchFileSchema.extend({
+  origin: z.enum(['business-deliverable', 'user-upload']),
+  sources: z.array(WorkbenchDeliverableSourceSchema),
+});
+export type WorkbenchDeliverable = z.infer<typeof WorkbenchDeliverableSchema>;
+export const WorkbenchDeliverablesCatalogSchema = z.object({
+  files: z.array(WorkbenchDeliverableSchema),
+  employees: z.array(z.object({ id: UuidSchema, name: z.string() })),
+  nextCursor: UuidSchema.nullable(),
+});
+export const WorkbenchDeliverablesFilterSchema = z.object({
+  workspaceId: UuidSchema,
+  employeeInstanceId: UuidSchema.optional(),
+  category: z.enum(['all', 'artifact', 'upload']).default('all'),
+  query: z.string().max(200).default(''),
+  cursor: UuidSchema.optional(),
+  objectId: UuidSchema.optional(),
+});
+
 export const WorkbenchFileUploadSchema = z
   .object({
     workspaceId: UuidSchema,
