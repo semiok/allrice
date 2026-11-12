@@ -17,12 +17,15 @@ export async function listLocalMcpOperations(
   const rows = await database<
     {
       id: string;
+      native_call_id: string | null;
       snapshot: unknown;
       bridge_payload: unknown;
       approval_id: string | null;
       name: string | null;
     }[]
-  >`select o.id,o.snapshot,o.bridge_payload,a.id as approval_id,d.name from allrice_runtime_operations o
+  >`select o.id,oc.native_call_id,o.snapshot,o.bridge_payload,a.id as approval_id,d.name from allrice_runtime_operations o
+    left join allrice_task_operation_calls oc
+      on oc.operation_id=o.id and oc.run_id=o.root_run_id and oc.agent_id=o.run_id
     left join allrice_approval_requests a on a.resource_type='runtime_operation' and a.resource_id=o.id and a.organization_id=o.organization_id and a.workspace_id=o.workspace_id and a.actor_id=${context.actor.id}
     left join allrice_bridge_devices d on d.id=o.device_id and d.organization_id=o.organization_id and d.workspace_id=o.workspace_id
     where o.run_id=${runId} and o.organization_id=${context.organizationId} and o.workspace_id=${context.workspaceId} and o.bridge_payload->>'capability' in ('local.mcp.discover','local.mcp.call') order by o.created_at limit 64`;
@@ -32,6 +35,7 @@ export async function listLocalMcpOperations(
         { evidence: unknown }[]
       >`select payload->'evidence' as evidence from allrice_runtime_operation_receipts where operation_id=${row.id} and disposition='applied' and payload->'signal'->>'type' in ('operation.outcome','operation.stopped','operation.uncertain') order by received_at desc limit 1`;
       return {
+        nativeCallId: row.native_call_id,
         snapshot: RuntimeOperationSnapshotSchema.parse(row.snapshot),
         payload: RuntimeLocalMcpPayloadSchema.parse(row.bridge_payload),
         deviceName: row.name ?? 'AllRice 助手',

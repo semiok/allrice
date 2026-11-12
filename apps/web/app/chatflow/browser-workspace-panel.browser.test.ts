@@ -12,7 +12,7 @@ const suite =
     ? describe.sequential
     : describe.skip;
 
-// Words an ordinary employee must not meet outside the technical section.
+// Readable summaries keep their existing wording; authorized raw fields are inline.
 const engineering = [
   '{',
   'Run',
@@ -118,8 +118,13 @@ suite('browser panel for ordinary employees', () => {
           await expand(page, '手动操作页面');
           // Flex rows render as separate lines; read them as sentences.
           const text = (await visibleText(page)).replace(/\s*\n\s*/g, '');
-          for (const word of engineering) expect(text).not.toContain(word);
-          expect(text).not.toContain('preview.allrice.invalid');
+          const summary = (
+            await panel(page)
+              .locator('header, article > p, [id$="-summary"]')
+              .allInnerTexts()
+          ).join('\n');
+          for (const word of engineering) expect(summary).not.toContain(word);
+          expect(summary).not.toContain('preview.allrice.invalid');
           for (const line of [
             '浏览器已关闭',
             '当前页面：飞书智能伙伴',
@@ -152,10 +157,7 @@ suite('browser panel for ordinary employees', () => {
             const root = document.querySelector(
               'section[aria-label="浏览器"]',
             )!;
-            const title = [...root.querySelectorAll('*')].find(
-              (node) =>
-                node.childElementCount === 0 && node.textContent === '技术详情',
-            )!;
+            const field = root.querySelector('dl dd')!;
             return {
               overflow:
                 document.documentElement.scrollWidth >
@@ -163,7 +165,7 @@ suite('browser panel for ordinary employees', () => {
               card: getComputedStyle(root.querySelector('article')!)
                 .backgroundColor,
               text: getComputedStyle(root).color,
-              disclosure: getComputedStyle(title).color,
+              field: getComputedStyle(field).color,
             };
           });
           expect(layout).toEqual(
@@ -172,17 +174,21 @@ suite('browser panel for ordinary employees', () => {
                   overflow: false,
                   card: 'rgb(35, 35, 36)',
                   text: 'rgb(249, 250, 251)',
-                  disclosure: 'rgb(207, 211, 214)',
+                  field: 'rgb(207, 211, 214)',
                 }
               : {
                   overflow: false,
                   card: 'rgb(255, 255, 255)',
                   text: 'rgb(15, 17, 21)',
-                  disclosure: 'rgb(97, 102, 107)',
+                  field: 'rgb(97, 102, 107)',
                 },
           );
-          // Technical detail, once opened, must not widen the page either.
-          await expand(page, '技术详情');
+          // Authorized fields are already inline, without a second entry.
+          expect(
+            await panel(page)
+              .getByRole('button', { name: '技术详情', exact: true })
+              .count(),
+          ).toBe(0);
           expect(
             await page.evaluate(
               () =>
@@ -195,11 +201,25 @@ suite('browser panel for ordinary employees', () => {
         }
       });
 
-  it('keeps raw actions and receipts in the collapsed technical section', async () => {
+  it('keeps authorized raw actions and receipts inline for the exact operation', async () => {
     const page = await open(1440, 'light');
     try {
-      expect(await visibleText(page)).not.toContain('"navigate"');
-      await page.getByRole('button', { name: '技术详情' }).first().click();
+      const operation = panel(page).locator(
+        '[data-process-operation="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]',
+      );
+      const input = operation.locator('[data-process-content="input"]');
+      const result = operation.locator('[data-process-content="result"]');
+      expect(await operation.count()).toBe(1);
+      expect(await input.isVisible()).toBe(true);
+      expect(await result.isVisible()).toBe(true);
+      expect(JSON.parse(await input.innerText())).toEqual({
+        type: 'navigate',
+        url: 'https://www.feishu.cn/product/ai',
+      });
+      expect(JSON.parse(await result.innerText())).toEqual({
+        status: 200,
+        receipt: { digest: 'x' },
+      });
       const text = await visibleText(page);
       expect(text).toContain('"navigate"');
       expect(text).toContain('"receipt"');

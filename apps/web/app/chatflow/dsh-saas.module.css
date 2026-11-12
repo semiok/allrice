@@ -1837,6 +1837,19 @@ div.composerAttachmentMenu,
   gap: 8px 12px;
   margin: 0;
 }
+.processStepDetails pre {
+  max-height: 240px;
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  border-radius: 8px;
+  background: color-mix(in srgb, currentColor 6%, transparent);
+  font-family: var(--ds-font-family-code);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .processDetailGrid dt {
   color: var(--ar-text-secondary);
   font: var(--ar-font-caption);

@@ -7,6 +7,10 @@ import {
   projectNativeExperience,
   type NativeExperienceItem,
 } from '../../lib/chatflow/native-experience';
+import {
+  ProcessMaterialFields,
+  type WorkProcessMaterial,
+} from './work-process-material';
 import { workProcessPresentation } from '../../lib/chatflow/work-process-presentation';
 
 const items: NativeExperienceItem[] = [
@@ -186,6 +190,113 @@ describe('native process display surface', () => {
       expect(unbound).not.toContain('个智能体');
     },
   );
+  it('places every authorized operation in one native step without replacing its lifecycle', () => {
+    const materials: WorkProcessMaterial[] = ['first', 'second'].map((id) => ({
+      source: 'cloud',
+      id,
+      runId: 'run',
+      title: '云端计算',
+      status: id === 'first' ? '远端未成功' : '远端已完成',
+      failed: id === 'first',
+      elapsedMs: 100000,
+      fields: [
+        {
+          label: '结果',
+          value: (
+            <pre data-process-content="result">{`${id}: <script>raw</script>`}</pre>
+          ),
+        },
+      ],
+    }));
+    const native: NativeExperienceItem[] = [
+      {
+        ...items[0]!,
+        status: 'completed',
+        operations: materials,
+        detail: '与远端输出不同的调用回执',
+        startedAt: '2026-11-11T00:00:00Z',
+        finishedAt: '2026-11-11T00:00:02Z',
+      },
+    ];
+    const html = render({
+      items: native,
+      parts: undefined,
+      transcriptView: 'verbose',
+      renderMaterial: (reference) => (
+        <ProcessMaterialFields
+          material={materials.find((material) => material.id === reference.id)!}
+        />
+      ),
+    });
+    const step = html.slice(
+      html.indexOf('data-step-id="tool:read"'),
+      html.indexOf('</li>'),
+    );
+    expect(html.match(/data-step-id="tool:read"/g)).toHaveLength(1);
+    for (const id of ['first', 'second']) {
+      expect(step).toContain(`data-process-material="cloud:${id}"`);
+      expect(
+        html.match(new RegExp(`data-process-material="cloud:${id}"`, 'g')),
+      ).toHaveLength(1);
+      expect(step).toContain(
+        `data-process-control="step:operation:cloud:${id}"`,
+      );
+      expect(
+        html.match(new RegExp(`id="process-material-cloud-${id}"`, 'g')),
+      ).toHaveLength(1);
+    }
+    expect(step).toContain('data-status="已完成"');
+    expect(step).toContain('2秒');
+    expect(step).not.toContain('100秒');
+    expect(step).toContain('远端未成功');
+    expect(step).toContain('&lt;script&gt;raw&lt;/script&gt;');
+    expect(step).not.toContain('<script>');
+    expect(step).not.toContain('批准');
+    expect(step).not.toContain('云端计算');
+    expect(step).toContain('与远端输出不同的调用回执');
+    const failed = render({
+      items: [{ ...native[0]!, status: 'failed', detail: '原生独有失败原因' }],
+      parts: undefined,
+      transcriptView: 'verbose',
+      renderMaterial: (reference) => (
+        <ProcessMaterialFields
+          material={materials.find((material) => material.id === reference.id)!}
+        />
+      ),
+    });
+    expect(failed).toContain('原因：</strong>原生独有失败原因');
+  });
+
+  it('keeps an unassigned task concrete and omits duration when no trusted time exists', () => {
+    const material: WorkProcessMaterial = {
+      source: 'managed-browser',
+      id: 'task',
+      runId: 'run',
+      title: 'example.test',
+      status: '浏览中',
+      fields: [],
+    };
+    const html = render({
+      items: [
+        {
+          id: 'operation:managed-browser:task',
+          kind: 'tool',
+          status: 'info',
+          title: material.title,
+          sequence: 1,
+          operations: [material],
+        },
+      ],
+      parts: undefined,
+      transcriptView: 'verbose',
+      renderMaterial: () => <ProcessMaterialFields material={material} />,
+    });
+    expect(html).toContain('example.test');
+    expect(html).toContain('浏览中');
+    expect(html).toContain('data-step-id="operation:managed-browser:task"');
+    expect(html).not.toContain('0秒');
+  });
+
   it('uses an action title for memory without claiming the memory was confirmed', () => {
     const memory: NativeExperienceItem[] = [
       {
@@ -342,6 +453,55 @@ describe('native process display surface', () => {
     expect(html).toContain('检查入口文件');
     expect(html).not.toContain('正在读取文件');
   });
+  it.each([
+    ['tool', 'tool:call', 'started', true, '运行中'],
+    ['tool', 'tool:call', 'updated', true, '运行中'],
+    ['search', 'tool:call', 'started', true, '运行中'],
+    ['think', 'think:closed', 'started', true, '结果未确认'],
+    ['compaction', 'compaction:closed', 'updated', true, '结果未确认'],
+    ['todo', 'plan:closed', 'updated', true, '结果未确认'],
+    ['tool', 'tool:call', 'started', false, '结果未确认'],
+    ['tool', 'tool:call', 'completed', true, '已完成'],
+    ['tool', 'tool:call', 'completed', false, '已完成'],
+    ['tool', 'tool:call', 'failed', true, '未成功'],
+  ] as const)(
+    'keeps %s %s status %s with running=%s in a closed process group',
+    (kind, id, status, running, expected) => {
+      const row: NativeExperienceItem = {
+        ...items[0]!,
+        id,
+        kind,
+        status,
+        toolName:
+          kind === 'tool'
+            ? 'read'
+            : kind === 'search'
+              ? 'web.search'
+              : undefined,
+      };
+      const html = render({
+        items: [row],
+        running,
+        transcriptView: 'detailed',
+        parts: [
+          {
+            kind: 'steps',
+            id: 'closed-group',
+            sequence: 1,
+            items: [row],
+            closed: true,
+          },
+          {
+            kind: 'reply',
+            id: 'later-reply',
+            sequence: 2,
+            text: '继续核对，工具结果尚未到达。',
+          },
+        ],
+      });
+      expect(html).toContain(`data-status="${expected}"`);
+    },
+  );
   it('does not call an unfinished plan complete or leave a settled question waiting', () => {
     const html = render({
       parts: undefined,

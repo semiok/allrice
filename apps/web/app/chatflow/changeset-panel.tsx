@@ -15,7 +15,7 @@ import {
   changesetTitle,
   fileChangeLabel,
 } from '../../lib/chatflow/changeset-presenter';
-import { TechnicalDetails } from './technical-details';
+import { InlineProcessFields } from './work-process-material';
 import styles from './local-command-panel.module.css';
 
 /** Identities, checksums and codes kept for troubleshooting only. */
@@ -360,7 +360,7 @@ export function ChangesetPanel({
                 恢复成改动前的样子
               </button>
             ) : null}
-            <TechnicalDetails rows={technicalRows(item)} />
+            <InlineProcessFields rows={technicalRows(item)} />
           </article>
         );
       })}
