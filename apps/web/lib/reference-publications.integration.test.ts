@@ -416,6 +416,33 @@ suite(
           s.owner,
           upload(s.owner, { scope, departmentIds: [] }),
         );
+        await ready(published.revisionId);
+        expect(
+          (
+            await f.db.begin((tx) =>
+              captureReferenceSelections(s.owner, [published.revisionId], tx),
+            )
+          ).map((pin) => pin.revisionId),
+        ).toEqual([published.revisionId]);
+        await expect(
+          f.db.begin((tx) =>
+            captureReferenceSelections(
+              foreign.owner,
+              [published.revisionId],
+              tx,
+            ),
+          ),
+        ).rejects.toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
+        if (scope === 'personal')
+          await expect(
+            f.db.begin((tx) =>
+              captureReferenceSelections(
+                s.maintainer,
+                [published.revisionId],
+                tx,
+              ),
+            ),
+          ).rejects.toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
         if (scope === 'company')
           expect((await file(s.finance, published.revisionId)).sourceId).toBe(
             published.sourceId,
@@ -736,23 +763,55 @@ suite(
         publishReference(owner, interruptedInput, lostAcknowledgement),
       ).rejects.toThrow('SYNTHETIC_REFERENCE_PUT_ACK_LOST');
       const [interrupted] =
-        await f.db`select r.id,s.id as source_id,o.state from allrice_knowledge_save_requests request
+        await f.db`select r.id,s.id as source_id,o.id as object_id,o.state from allrice_knowledge_save_requests request
         join allrice_knowledge_revisions r on r.id=request.revision_id
         join allrice_knowledge_sources s on s.id=r.knowledge_source_id
         join allrice_storage_objects o on o.id=r.file_object_id where request.request_id=${interruptedInput.requestId}`;
       expect(interrupted!.state).toBe('pending');
-      await f.db`update allrice_storage_objects set state='deleted',deleted_at=clock_timestamp() where id=${original.object.id}`;
+      const recoveryReads: string[] = [],
+        recoveryChecks: string[] = [];
+      let recoveryPuts = 0;
+      const recoveryStorage: StoragePort = {
+        get: async (object) => {
+          recoveryReads.push(object.id);
+          if (object.id === original.object.id)
+            throw Error('SYNTHETIC_ORIGINAL_IO_UNAVAILABLE');
+          return underlying.get(object);
+        },
+        exists: async (object) => {
+          recoveryChecks.push(object.id);
+          if (object.id === original.object.id)
+            throw Error('SYNTHETIC_ORIGINAL_IO_UNAVAILABLE');
+          return underlying.exists(object);
+        },
+        put: async () => {
+          recoveryPuts++;
+          throw Error('Recovery must not rewrite the acknowledged copy');
+        },
+        delete: underlying.delete.bind(underlying),
+      };
       const recovered = await publishReference(
         owner,
         interruptedInput,
-        underlying,
+        recoveryStorage,
       );
+      expect(recoveryReads).toEqual([interrupted!.object_id]);
+      expect(recoveryChecks).toEqual([interrupted!.object_id]);
+      expect(recoveryPuts).toBe(0);
       expect(recovered).toEqual({
         sourceId: interrupted!.source_id,
         revisionId: interrupted!.id,
       });
       expect((await file(owner, recovered.revisionId)).object.checksum).toBe(
         original.object.checksum,
+      );
+      expect(
+        (
+          await f.db`select state,immutable,deleted_at from allrice_storage_objects where id=${original.object.id}`
+        )[0],
+      ).toMatchObject({ state: 'ready', immutable: true, deleted_at: null });
+      expect(await readArtifactBytes(underlying, original.object)).toEqual(
+        await readArtifactBytes(underlying, retained.object),
       );
     }, 120000);
 
@@ -2109,11 +2168,33 @@ suite(
       const [growth] =
         await f.db`select count(*)::int n from allrice_employee_runs where content_generation_id=${early.runtime.generationId}`;
       expect(growth!.n).toBe(129);
-      // The actual own-generation limit retains its old sticky invalidation;
-      // exact discovery above is tested before that independent legacy barrier.
+      // Discovery rejects the own graph before any invalidation operation.
+      // The frozen import still depends only on its exact early predecessors.
+      const contexts =
+        await f.db`select invalidated_at from allrice_employee_content_contexts where generation_id in ${f.db([early.runtime.generationId, frozen.runtime.generationId])}`;
+      expect(contexts).toHaveLength(2);
+      expect(contexts.every((context) => context.invalidated_at === null)).toBe(
+        true,
+      );
       await expect(
-        assertEmployeeContentContext(frozen.scope, frozen.runtime.generationId),
+        assertEmployeeContentContext(early.scope, early.runtime.generationId),
       ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      await assertEmployeeContentContext(
+        frozen.scope,
+        frozen.runtime.generationId,
+      );
+      const continued = await runtimeRun(s, [], frozen.scope.sessionId),
+        continuedWorker = await lease(continued);
+      expect(continued.runtime.generationId).toBe(frozen.runtime.generationId);
+      await assertEmployeeContentContext(
+        continued.scope,
+        continued.runtime.generationId,
+        continuedWorker,
+      );
+      await completeJob({
+        ...continuedWorker,
+        result: { answer: 'EARLY_GRAPH_REMAINS_SMALL', citations: [] },
+      });
     }, 240000);
 
     it.each([false, true])(
@@ -2236,8 +2317,8 @@ suite(
             ),
           ).toBe(true);
         if (rotate) {
-          // Correct the author's former, unapproved legacy-after-invalidation
-          // allowance. The original legacy contract predates publication Q8.
+          // Legacy invalidation rejects this frozen Run and its old messages.
+          // An unbound new Run may still start with the old history excluded.
           await expect(
             assertEmployeeContentContext(
               frozen.scope,
@@ -2278,11 +2359,67 @@ suite(
         ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
         if (rotate)
           await expect(
-            runtimeRun(s, [], frozen.scope.sessionId),
+            prepareEmployeeContentContext(frozen.scope),
           ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
-        else {
-          const continued = await runtimeRun(s, [], frozen.scope.sessionId);
-          await finish(continued);
+        const continued = await runtimeRun(s, [], frozen.scope.sessionId),
+          continuedWorker = await lease(continued);
+        if (rotate) {
+          expect(continued.runtime.generationId).not.toBe(
+            frozen.runtime.generationId,
+          );
+          expect(continued.runtime.historyFromMessageId).toBe(
+            continued.sent.userMessage.id,
+          );
+          for (const message of [
+            frozen.sent.userMessage,
+            frozen.sent.assistantMessage,
+          ])
+            expect(continued.runtime.allowedMessageIds).not.toContain(
+              message.id,
+            );
+          expect(
+            (
+              await f.db`select invalidated_at from allrice_employee_content_contexts where generation_id=${frozen.runtime.generationId}`
+            )[0]!.invalidated_at,
+          ).not.toBeNull();
+        } else {
+          expect(continued.runtime.generationId).toBe(
+            frozen.runtime.generationId,
+          );
+        }
+        await assertEmployeeContentContext(
+          continued.scope,
+          continued.runtime.generationId,
+          continuedWorker,
+        );
+        expect(
+          await loadEmployeeRuntimeReferences(
+            continued.scope,
+            continued.runtime.generationId,
+            continuedWorker,
+          ),
+        ).toEqual([]);
+        await completeJob({
+          ...continuedWorker,
+          result: {
+            answer: 'FRESH_RUN_WITH_AUTHORIZED_HISTORY',
+            citations: [],
+          },
+        });
+        if (rotate) {
+          await expect(
+            assertEmployeeContentContext(
+              frozen.scope,
+              frozen.runtime.generationId,
+            ),
+          ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+          await expect(
+            assertEmployeeContentReferenceMessages(
+              s.owner,
+              frozen.scope.sessionId,
+              [frozen.sent.assistantMessage.id],
+            ),
+          ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
         }
         if (derived)
           await expect(
@@ -2342,7 +2479,7 @@ suite(
           )[0],
         ).toMatchObject({
           status: ending === 'canceled' ? 'canceled' : 'failed',
-          reference_reads: [],
+          reference_reads: null,
         });
         await change(s.owner, published.sourceId, 'delete', revision);
         expect(

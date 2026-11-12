@@ -46,7 +46,8 @@ export async function readReferenceSelection(
       await sql`select r.knowledge_source_id,s.publication_kind from allrice_knowledge_revisions r
       join allrice_knowledge_sources s on s.id=r.knowledge_source_id
       where r.id=${UuidSchema.parse(revisionId)} and r.file_object_id is not null and r.status='published'
-        and s.organization_id=${context.organizationId}`;
+        and (s.organization_id=${context.organizationId}
+          or (s.publication_kind is null and s.ownership->>'scope'='platform'))`;
     if (!locator) throw new ReferenceRuntimeError();
     publicationSource = !!locator.publication_kind;
     const { source, ownership, legacy, publication, access } =

@@ -3451,7 +3451,7 @@ suite(
             await f.db`select reference_reads,content_scene_state from allrice_employee_runs where run_id=${first.scope.runId}`
           )[0],
         ).toMatchObject({
-          reference_reads: [],
+          reference_reads: null,
           content_scene_state: null,
         });
         await releaseConversationRuntime({

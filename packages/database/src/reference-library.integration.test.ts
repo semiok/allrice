@@ -238,6 +238,13 @@ suite(
       const selected = await f.db.begin((tx) =>
         captureReferenceSelections(reader, [p.revisionId], tx),
       );
+      expect(selected.map((pin) => pin.revisionId)).toEqual([p.revisionId]);
+      const foreign = await setup();
+      await expect(
+        f.db.begin((tx) =>
+          captureReferenceSelections(foreign.reader, [p.revisionId], tx),
+        ),
+      ).rejects.toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
       const retrieved = await retrieveSelectedReferenceKnowledge({
         context: reader,
         selections: selected,
