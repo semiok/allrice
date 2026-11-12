@@ -16,7 +16,7 @@ const suite =
 
 suite('U1 S1 standalone employee Skill display candidate', () => {
   let browser: Browser, server: Server, origin: string;
-  const evidence = resolve('.local/met249-u1-skills-s1');
+  const evidence = resolve('.local/met251-plugin-empty-presentation');
   beforeAll(async () => {
     const require = createRequire(import.meta.url);
     const { build } = createRequire(require.resolve('tsx'))('esbuild');
@@ -263,6 +263,52 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
               exact: true,
             });
             await open.waitFor();
+            const add = root.getByRole('button', {
+              name: '添加插件',
+              exact: true,
+            });
+            expect(await add.getAttribute('type')).toBe('button');
+            expect(await add.locator('svg').count()).toBe(1);
+            expect(await add.locator('svg').getAttribute('aria-hidden')).toBe(
+              'true',
+            );
+            expect(await add.locator('svg').getAttribute('viewBox')).toBe(
+              '0 0 24 24',
+            );
+            expect(await add.locator('svg path').getAttribute('d')).toBe(
+              'M12 5v14M5 12h14',
+            );
+            expect(
+              await add.evaluate((node) => {
+                const style = getComputedStyle(node);
+                return {
+                  minHeight: style.minHeight,
+                  padding: style.padding,
+                  borderRadius: style.borderRadius,
+                  fontSize: style.fontSize,
+                  lineHeight: style.lineHeight,
+                  fontWeight: style.fontWeight,
+                };
+              }),
+            ).toEqual({
+              minHeight: width < 700 ? '36px' : '32px',
+              padding: width < 700 ? '8px 10px' : '6px 10px',
+              borderRadius: '8px',
+              fontSize: '12px',
+              lineHeight: '18px',
+              fontWeight: '500',
+            });
+            await add.click();
+            expect(
+              await f.page
+                .getByLabel('插件添加回调', { exact: true })
+                .innerText(),
+            ).toBe(host === 'sidebar' ? '1' : '2');
+            await f.page
+              .getByLabel('提供添加操作', { exact: true })
+              .uncheck();
+            expect(await add.count()).toBe(0);
+            await f.page.getByLabel('提供添加操作', { exact: true }).check();
             const row = open.locator('..').locator('..');
             const geometry = await row.evaluate((node) => {
               const style = getComputedStyle(node);

@@ -16,6 +16,8 @@ export function EmployeePluginPresentationFixture() {
   const [empty, setEmpty] = useState(false);
   const [disabled, setDisabled] = useState(false);
   const [removed, setRemoved] = useState(0);
+  const [canAdd, setCanAdd] = useState(true);
+  const [added, setAdded] = useState(0);
   const backLabel = host === 'sidebar' ? '返回能力列表' : '返回员工详情';
   const plugin = {
     id: 'controlled-plugin',
@@ -51,6 +53,14 @@ export function EmployeePluginPresentationFixture() {
           />
           禁用打开
         </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={canAdd}
+            onChange={(event) => setCanAdd(event.target.checked)}
+          />
+          提供添加操作
+        </label>
       </aside>
       <article
         className={css.card}
@@ -77,7 +87,9 @@ export function EmployeePluginPresentationFixture() {
                 headingId="controlled-plugins"
                 plugins={empty ? [] : [plugin]}
                 onDetails={() => setDetail(true)}
-                onAdd={() => {}}
+                onAdd={
+                  canAdd ? () => setAdded((count) => count + 1) : undefined
+                }
               />
               <div style={{ marginTop: 28 }} aria-label="受控工作场景参照">
                 {empty ? (
@@ -118,6 +130,9 @@ export function EmployeePluginPresentationFixture() {
       </article>
       <output className={css.events} aria-label="插件展示回调">
         {removed}
+      </output>
+      <output className={css.events} aria-label="插件添加回调">
+        {added}
       </output>
     </main>
   );
