@@ -83,9 +83,11 @@ suite(
   () => {
     let root: string;
     let measured: Awaited<ReturnType<typeof measureDshNativeArtifact>>;
+    let predecessor: { test: string; finished: Promise<void> } | undefined;
     const localState = (task: TestContext['task']) => {
       const state: {
         f?: Awaited<ReturnType<typeof createP27CodexWorkerFixture>>;
+        fixtureStarted?: boolean;
         stateRoot?: string;
         recurringRoot?: string;
         source?: ReturnType<typeof createNativeOnceControlSource>;
@@ -98,42 +100,49 @@ suite(
         file: import.meta.url,
         test: task.name,
         collect: async () => {
+          const tables: Record<string, unknown> = Object.fromEntries(
+            [
+              'allrice_native_once_partitions',
+              'allrice_native_once_close_proofs',
+              'allrice_native_once_controls',
+              'allrice_native_once_occurrences',
+              'allrice_native_once_journal',
+              'allrice_native_recurring_controls',
+              'allrice_native_recurring_occurrences',
+              'allrice_native_recurring_journal',
+              'allrice_automation_runs',
+              'allrice_runs',
+              'allrice_jobs',
+              'allrice_run_events',
+            ].map((table) => [table, { state: 'pending' }]),
+          );
           const snapshot = {
             schema: state.f?.schema,
             stateRoot: state.stateRoot,
             recurringRoot: state.recurringRoot,
             runtime: state.observe?.(),
+            tables,
           };
+          // This reference is serialized at the existing capture deadline even
+          // when a slow table prevents collect() from returning its details.
           evidence.mark('failure-state', snapshot);
           const f = state.f;
-          return {
-            ...snapshot,
-            tables:
-              f &&
-              Object.fromEntries(
-                await Promise.all(
-                  [
-                    'allrice_native_once_partitions',
-                    'allrice_native_once_close_proofs',
-                    'allrice_native_once_controls',
-                    'allrice_native_once_occurrences',
-                    'allrice_native_once_journal',
-                    'allrice_native_recurring_controls',
-                    'allrice_native_recurring_occurrences',
-                    'allrice_native_recurring_journal',
-                    'allrice_automation_runs',
-                    'allrice_runs',
-                    'allrice_jobs',
-                    'allrice_run_events',
-                  ].map(async (table) => [
-                    table,
-                    await f.db`select * from ${f.db(table)}`.catch(
-                      (error: unknown) => ({ error }),
-                    ),
-                  ]),
-                ),
-              ),
-          };
+          if (f)
+            await Promise.all(
+              Object.keys(tables).map(async (table) => {
+                try {
+                  const rows = await f.db`select * from ${f.db(table)}`;
+                  tables[table] = {
+                    state: 'complete',
+                    rowCount: rows.length,
+                    rows,
+                  };
+                } catch (error) {
+                  tables[table] = { state: 'error', error };
+                }
+              }),
+            );
+          return snapshot;
         },
       });
       const capture = async (errors: unknown) =>
@@ -216,7 +225,20 @@ suite(
         await local.saveClose();
       });
       const { state, evidence, cleanup, own } = local;
+      const previous = predecessor;
+      if (previous) {
+        evidence.mark('predecessor-cleanup', { test: previous.test });
+        try {
+          await previous.finished;
+        } catch (error) {
+          throw new Error(`Reminder cleanup unconfirmed: ${previous.test}`, {
+            cause: error,
+          });
+        }
+        cleanup.check();
+      }
       evidence.mark('fixture-start');
+      state.fixtureStarted = true;
       const pending = createP27CodexWorkerFixture({
         allowCiDatabase: true,
         personalProfile: 'writable',
@@ -292,15 +314,19 @@ suite(
     afterEach(async ({ task }) => {
       const local = locals.get(task);
       if (!local) return;
+      const finished = local.cleanup.finish(task.result);
+      // A case blocked before acquisition must not replace an unfinished owner.
+      if (local.state.fixtureStarted)
+        predecessor = { test: task.name, finished };
       try {
-        await local.cleanup.finish(task.result);
+        await finished;
       } finally {
         await local.saveClose();
       }
     }, 30_000);
     afterAll(() => vi.unstubAllEnvs(), 30_000);
 
-    it.each([
+    it.for([
       'poll-only',
       'delivery',
       'busy-tick',
@@ -385,15 +411,15 @@ suite(
                 const job = await claimNextJob(workerId, 300_000);
                 if (!job) return;
                 if (stopping) return;
-                evidence.mark('queue-claim', {
-                  jobId: job.id,
-                  runId: job.runId,
-                });
-                await startClaimedJob(workerId, job.id, job.lease!.token);
-                evidence.mark('queue-start', {
-                  jobId: job.id,
-                  runId: job.runId,
-                });
+                const claim = { jobId: job.id, runId: null as string | null };
+                evidence.mark('queue-claim', claim);
+                const execution = await startClaimedJob(
+                  workerId,
+                  job.id,
+                  job.lease!.token,
+                );
+                claim.runId = execution?.context.runId ?? null;
+                evidence.mark('queue-start', { ...claim });
                 if (stopping) return;
               }
             } catch (error) {
