@@ -651,7 +651,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expectedTurnId?: string;
         expectedGeneration?: number;
       }>,
-      messageInputs: [] as Array<{ text: string; attachmentIds: string[] }>,
+      messageInputs: [] as Array<{
+        text: string;
+        attachmentIds: string[];
+        referenceRevisionIds?: string[];
+      }>,
       connections: [] as McpConnection[],
       connectionReads: 0,
       connectionError: false,
