@@ -1112,9 +1112,11 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       await card(ui.page, pending.id)
         .getByRole('button', { name: '重新读取记忆', exact: true })
         .click();
-      await card(ui.page, pending.id)
-        .getByText('月报使用本人校订的账单', { exact: true })
-        .waitFor();
+      await expect
+        .poll(() =>
+          card(ui.page, pending.id).locator('p').first().textContent(),
+        )
+        .toBe('月报使用本人校订的账单\n  原始附件仍须保留  ');
       expect(
         await f.db.unsafe(
           "select id from allrice_audit_events where resource_id=$1 and action='memory.promote'",
@@ -1600,10 +1602,33 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       ).toBe(0);
       expect(await ui.page.locator('a[href]').count()).toBe(0);
       const audits = await f.db.unsafe(
-        "select metadata from allrice_audit_events where action='employee_memory.admin_read' and actor_id=$1 and resource_id=$2",
-        [identity.user, identity.assignment],
+        "select resource_type,resource_id,metadata from allrice_audit_events where action='employee_memory.admin_read' and organization_id=$1 and workspace_id=$2 and actor_id=$3 and resource_id in ($4,$5) order by resource_type,resource_id",
+        [
+          identity.org,
+          identity.workspace,
+          identity.user,
+          identity.assignment,
+          memory.id,
+        ],
       );
-      expect(audits.length).toBeGreaterThanOrEqual(2);
+      const auditScope = {
+        ownerId: identity.user,
+        instanceId: identity.assignment,
+        schemaVersion: 2,
+        returnedCount: 1,
+      };
+      expect(audits).toEqual([
+        {
+          resource_type: 'employee_instance',
+          resource_id: identity.assignment,
+          metadata: auditScope,
+        },
+        {
+          resource_type: 'memory',
+          resource_id: memory.id,
+          metadata: { ...auditScope, memoryId: memory.id },
+        },
+      ]);
       expect(JSON.stringify(audits)).not.toContain(raw);
       await noOverflow(ui.page);
       await capture(ui.page, 'v10-admin-read-only');
