@@ -3,7 +3,7 @@
   max-height: calc(100dvh - 48px);
   border: 0;
   border-radius: var(--ar-radius-panel);
-  background: var(--dsw-specific-input-major);
+  background: var(--ar-surface);
   color: var(--ar-text);
   box-shadow: var(--dsw-elevation-prominent);
 }

@@ -8119,6 +8119,21 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           const riceRow = tree().locator(`[data-row-key="workspace:${id(7)}"]`);
           if ((await riceRow.getAttribute('aria-expanded')) === 'true')
             await riceRow.click();
+          await riceRow.focus();
+          expect(
+            await riceRow
+              .getByText('Rice', { exact: true })
+              .evaluate((node) => node.scrollWidth <= node.clientWidth),
+          ).toBe(true);
+          expect(
+            await riceRow
+              .getByText('3 个工作', { exact: true })
+              .evaluate(
+                (node) =>
+                  node.parentElement!.scrollWidth <=
+                  node.parentElement!.clientWidth,
+              ),
+          ).toBe(true);
           await f.page.mouse.move(width - 1, 1);
           await capture('normal');
 

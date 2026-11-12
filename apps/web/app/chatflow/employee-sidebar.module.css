@@ -77,9 +77,6 @@
 .header [role='treeitem'] > span:has(> .initial) + span {
   display: none;
 }
-.header [role='treeitem'] > span:last-child:empty {
-  display: none;
-}
 .employeeTitle {
   display: flex;
   align-items: center;
@@ -239,6 +236,11 @@
     opacity: 1;
     pointer-events: auto;
   }
+}
+/* An employee row has no native trailing actions; focus must not restore
+   an empty flex item and its gap beside the separate employee buttons. */
+.header [role='treeitem'] > span:last-child:empty {
+  display: none;
 }
 
 .newChat {
