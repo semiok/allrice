@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -18,13 +19,16 @@ import {
 import { LocalStorageAdapter } from '@allrice/storage';
 import { Document, Packer, Paragraph } from 'docx';
 import ExcelJS from 'exceljs';
-import PptxGenJS from 'pptxgenjs';
 import PDFDocument from 'pdfkit';
 import { processNextReference } from './reference-processing.js';
 import { readKnowledgeText } from './knowledge.js';
 import * as documentReader from './document-reader.js';
 import { createOffice } from './office/create.js';
 import JSZip from 'jszip';
+
+const PptxGenJS: typeof import('pptxgenjs').default = createRequire(
+  import.meta.url,
+)('pptxgenjs');
 
 vi.mock('@allrice/database', async (original) => ({
   ...(await original<typeof Database>()),
@@ -466,7 +470,7 @@ it.each(['complete', 'missing', 'sparse'] as const)(
         ],
       }),
     );
-    let bytes = out.bytes;
+    let bytes: Buffer = out.bytes;
     if (cache !== 'complete') {
       const zip = await JSZip.loadAsync(bytes);
       const charts = zip.file(/^ppt\/charts\/chart\d+\.xml$/);
