@@ -346,7 +346,9 @@ suite(
       await deleteWorkspaceMemory(context, f.workspace, created.id, {
         instanceId: f.assignment,
         expectedRevision: edited.revision,
-        contentDigest: memoryContentDigest(edited.summary),
+        contentDigest: memoryContentDigest(
+          `${edited.summary}\n${edited.details}`,
+        ),
         idempotencyKey: randomUUID(),
       });
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);

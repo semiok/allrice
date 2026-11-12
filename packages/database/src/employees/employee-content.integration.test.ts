@@ -58,7 +58,9 @@ import {
   getEmployeeWorkspace,
   createChatSession,
   sendChatMessage,
+  createPersonalEmployeeMemory,
 } from '../workspace/service.ts';
+import { resolveEmployeeContentSource } from './employee-content-sources.ts';
 import {
   createEmployeeInstance,
   updateEmployeeInstance,
@@ -5575,6 +5577,56 @@ suite(
       expect((await read()).status).toBe(404);
       browser.context = null;
       expect((await read()).status).toBe(401);
+    });
+    it('resolves a real V2 memory source only with the digest of its complete compatibility body', async () => {
+      const s = await setup();
+      const pair = {
+        summary: '可以发送月报',
+        details: '  仅发脱敏汇总\n不得附客户名单  ',
+      };
+      const memory = await createPersonalEmployeeMemory(s.a, {
+        workspaceId: s.company.workspaceId,
+        instanceId: s.instance.id,
+        idempotencyKey: randomUUID(),
+        ...pair,
+      });
+      const [revision] = await f.db<
+        { id: string }[]
+      >`select id from allrice_memory_revisions where memory_id=${memory.id} and revision=${memory.revision}`;
+      const body = `${pair.summary}\n${pair.details}`;
+      const identity = {
+        memoryId: memory.id,
+        revisionId: revision!.id,
+        revision: memory.revision,
+      };
+      const ref: EmployeeContentReference = {
+        sourceKind: 'experience',
+        contentId: memory.id,
+        revisionId: revision!.id,
+        digest: runtimePolicyDigest({ ...identity, content: body }),
+      };
+      const resolve = (reference: EmployeeContentReference) =>
+        resolveEmployeeContentSource({
+          context: s.a,
+          employeeId: s.employeeId,
+          instanceId: s.instance.id,
+          ownership: s.base.ownership,
+          ref: reference,
+          sql: f.db,
+          lock: false,
+          allowDraft: false,
+        });
+      expect((await resolve(ref)).dto).toMatchObject({
+        reference: ref,
+        available: true,
+        body,
+      });
+      const incomplete = await resolve({
+        ...ref,
+        digest: runtimePolicyDigest({ ...identity, content: pair.summary }),
+      });
+      expect(incomplete.dto.available).toBe(false);
+      expect(incomplete.dto).not.toHaveProperty('body');
     });
     it('existing workflow bindings and current confirmed memories remain independent authority boundaries', async () => {
       const s = await setup(),

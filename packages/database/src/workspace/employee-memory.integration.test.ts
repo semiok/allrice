@@ -19,6 +19,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   renderMemoryContext,
   initialMemoryContextBytes,
+  memoryContextBytes,
   type ExecutionContext,
 } from '@allrice/contracts';
 import * as client from '../core/client.ts';
@@ -37,6 +38,7 @@ import { searchToolBrokerMemories } from '../execution/tool-broker.ts';
 import { recallRagChunks } from '../data.ts';
 import {
   createTraceableMemory,
+  createPersonalEmployeeMemory,
   correctWorkspaceMemory,
   correctPersonalEmployeeMemory,
   promoteWorkspaceMemory,
@@ -358,6 +360,192 @@ suite(
           await fixture.db`select memory_context_state s from allrice_employee_runs where run_id=${f.rootRunId}`
         )[0]!.s,
       ).toEqual(spent!.s);
+    });
+    it('reads complete new V2 pairs through V1 current/search/source while retaining an issued revision after a V2 edit', async () => {
+      const f = await setup();
+      const pair = {
+        summary: '月报可以外发',
+        details: '  只发脱敏汇总\r\n客户名单不得外发 {{missing}}  ',
+      };
+      const first = await createPersonalEmployeeMemory(f.context, {
+        workspaceId: f.workspace,
+        instanceId: f.assignment,
+        idempotencyKey: randomUUID(),
+        ...pair,
+      });
+      const original = `${pair.summary}\n${pair.details}`;
+      const scope = { ...f.scope, sessionId: f.session };
+      const [job] =
+        await fixture.db`select attempt from allrice_jobs where id=${f.worker.jobId}`;
+      const auth = {
+        scope,
+        worker: { ...f.worker, attempt: Number(job!.attempt) },
+      };
+      const document = await freezeEmployeeDocuments(
+        fixture.db,
+        { ...scope, instanceId: f.assignment },
+        {},
+        true,
+      );
+      expect(document.memories).toContainEqual(
+        expect.objectContaining({ id: first.id, content: original }),
+      );
+      await fixture.db`update allrice_employee_runs set status='running',memory_context_state='{"schemaVersion":1,"pending":true}' where run_id=${f.rootRunId}`;
+      await prepareRunMemoryContext(
+        auth,
+        document.memories,
+        document.employeeDocuments.memory,
+      );
+      const state = async () =>
+        (
+          await fixture.db`select memory_context_state s from allrice_employee_runs where run_id=${f.rootRunId}`
+        )[0]!.s;
+      const initial = await state();
+      const pin = initial.confirmedPins.find(
+        (p: { id: string }) => p.id === first.id,
+      );
+      expect(pin.contentDigest).toBe(runtimePolicyDigest(original));
+      const search = await readToolBrokerMemoryContext(
+        f.execution,
+        '客户名单不得外发',
+        20,
+        auth,
+      );
+      expect(search.items).toContainEqual(
+        expect.objectContaining({
+          id: first.id,
+          revision: 1,
+          content: original,
+          sourceHandle: pin.handle,
+        }),
+      );
+      const [oldRevision] =
+        await fixture.db`select * from allrice_memory_revisions where memory_id=${first.id} and revision=1`;
+      const [receipt] =
+        await fixture.db`select * from allrice_employee_memory_operations where memory_id=${first.id}`;
+      const next = {
+        summary: '月报继续按条件外发',
+        details: '  新规定：仅发审计汇总\n禁止附原始订单  ',
+      };
+      await correctPersonalEmployeeMemory(f.context, f.workspace, first.id, {
+        instanceId: f.assignment,
+        expectedRevision: first.revision,
+        pairDigest: first.pairDigest,
+        idempotencyKey: randomUUID(),
+        ...next,
+        reason: '本人更新详细条件',
+      });
+      expect(
+        (
+          await fixture.db`select * from allrice_memory_revisions where memory_id=${first.id} and revision=1`
+        )[0],
+      ).toEqual(oldRevision);
+      expect(
+        (
+          await fixture.db`select * from allrice_employee_memory_operations where memory_id=${first.id} and operation_key=${receipt!.operation_key}`
+        )[0],
+      ).toEqual(receipt);
+      expect(
+        await searchWorkspaceMemories(f.context, {
+          workspaceId: f.workspace,
+          instanceId: f.assignment,
+          query: '禁止附原始订单',
+        }),
+      ).toContainEqual(
+        expect.objectContaining({
+          id: first.id,
+          content: `${next.summary}\n${next.details}`,
+        }),
+      );
+      const source = await readRunExperienceSource(auth, pin.handle);
+      expect(source.items).toContainEqual(
+        expect.objectContaining({
+          handle: pin.handle,
+          pin,
+          memory: { id: first.id, revision: 1, content: original },
+        }),
+      );
+      const pinnedSearch = await readToolBrokerMemoryContext(
+        f.execution,
+        '客户名单不得外发',
+        20,
+        auth,
+      );
+      expect(pinnedSearch.items).toContainEqual(
+        expect.objectContaining({
+          id: first.id,
+          revision: 1,
+          content: original,
+          sourceHandle: pin.handle,
+        }),
+      );
+      const spent = await state();
+      expect(spent.confirmedPins).toEqual(initial.confirmedPins);
+      expect(spent.initial).toEqual(initial.initial);
+      expect(spent.limits).toEqual(initial.limits);
+      expect(spent.limits).toMatchObject({
+        maximumResponseBytes: 8000,
+        maximumRunBytes: 24000,
+        maximumToolReads: 12,
+      });
+      expect(spent.toolReads).toBe(3);
+      expect(spent.spentBytes).toBe(
+        initial.spentBytes +
+          memoryContextBytes(search) +
+          memoryContextBytes(pinnedSearch) +
+          memoryContextBytes(source),
+      );
+    });
+    it('omits an oversized complete V2 pair from V1 initial and search budgets instead of returning its summary as full content', async () => {
+      const f = await setup();
+      const pair = { summary: '超预算边界', details: '🧑'.repeat(2000) };
+      const memory = await createPersonalEmployeeMemory(f.context, {
+        workspaceId: f.workspace,
+        instanceId: f.assignment,
+        idempotencyKey: randomUUID(),
+        ...pair,
+      });
+      const scope = { ...f.scope, sessionId: f.session };
+      const [job] =
+        await fixture.db`select attempt from allrice_jobs where id=${f.worker.jobId}`;
+      const auth = {
+        scope,
+        worker: { ...f.worker, attempt: Number(job!.attempt) },
+      };
+      const document = await freezeEmployeeDocuments(
+        fixture.db,
+        { ...scope, instanceId: f.assignment },
+        {},
+        true,
+      );
+      expect(document.memories).toEqual([]);
+      await fixture.db`update allrice_employee_runs set status='running',memory_context_state='{"schemaVersion":1,"pending":true}' where run_id=${f.rootRunId}`;
+      await prepareRunMemoryContext(
+        auth,
+        document.memories,
+        document.employeeDocuments.memory,
+      );
+      const result = await readToolBrokerMemoryContext(
+        f.execution,
+        pair.summary,
+        20,
+        auth,
+      );
+      expect(result).toMatchObject({ items: [], omittedItems: 1 });
+      expect(JSON.stringify(result)).not.toContain(pair.summary);
+      const [stored] =
+        await fixture.db`select memory_context_state s from allrice_employee_runs where run_id=${f.rootRunId}`;
+      expect(stored!.s.initial.ids).not.toContain(memory.id);
+      expect(stored!.s.confirmedPins).toEqual([]);
+      expect(stored!.s.limits).toMatchObject({
+        maximumResponseBytes: 8000,
+        maximumRunBytes: 24000,
+        maximumToolReads: 12,
+      });
+      expect(stored!.s.spentBytes).toBe(
+        stored!.s.initial.bytes + memoryContextBytes(result),
+      );
+      expect(stored!.s.toolReads).toBe(1);
     });
     it('admits current human documents, rejects old or unknown ordinary snapshots, and preserves proven internal producers', async () => {
       const f = await setup();

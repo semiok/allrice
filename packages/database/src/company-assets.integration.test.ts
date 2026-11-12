@@ -488,6 +488,11 @@ suite(
         await listCompanyRuleSources(admin, a.context.organizationId, f.db)
       ).sources.find((s) => s.id === memory.id)!;
       expect(chosen.revision).toBe(1);
+      const editedPair = {
+        summary: 'Current memory changed after selection',
+        details:
+          '  Only publish redacted totals.\r\nNever attach customer identities.  ',
+      };
       await correctPersonalEmployeeMemory(
         owner,
         owner.workspaceId!,
@@ -499,8 +504,7 @@ suite(
             legacyPersonalMemoryPair(memory.content),
           ),
           idempotencyKey: randomUUID(),
-          summary: 'Current memory changed after selection',
-          details: null,
+          ...editedPair,
           reason: 'Correction for revision provenance',
         },
       );
@@ -509,6 +513,10 @@ suite(
       ).sources.find((s) => s.id === memory.id)!;
       expect(current.revision).toBe(2);
       expect(current.revisionId).not.toBe(chosen.revisionId);
+      expect(current.content).toBe(
+        `${editedPair.summary}\n${editedPair.details}`,
+      );
+      expect(chosen.content).toBe(memory.content);
       const authored = content('rule', {
         body: 'Edited final company rule; not claimed to be the original memory bytes.',
         sourceMemoryId: memory.id,

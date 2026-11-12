@@ -107,7 +107,7 @@ suite(
       expect(a).not.toHaveProperty('content');
       const saved = await snapshot(a.id);
       expect(saved.memory).toMatchObject({
-        content: input.summary,
+        content: `${input.summary}\n${input.details}`,
         summary: input.summary,
         details: input.details,
         expires_at: null,
@@ -115,9 +115,14 @@ suite(
       });
       expect(saved.revisions).toHaveLength(1);
       expect(saved.revisions[0]).toMatchObject({
+        content: `${input.summary}\n${input.details}`,
         summary: input.summary,
         details: input.details,
       });
+      expect(saved.chunks).toHaveLength(1);
+      expect(saved.chunks[0].content).toBe(
+        `${input.summary}\n${input.details}`,
+      );
       expect(saved.receipts).toHaveLength(1);
       expect(
         saved.audit.filter(
@@ -166,6 +171,9 @@ suite(
           details,
         });
         const before = await snapshot(m.id);
+        expect(before.memory.content).toBe(
+          details === null ? m.summary : `${m.summary}\n${details}`,
+        );
         ports.context.mockResolvedValue(f.context);
         const response = await PATCH(
           new Request(
@@ -179,7 +187,7 @@ suite(
               body: JSON.stringify({
                 instanceId: m.instanceId,
                 expectedRevision: m.revision,
-                contentDigest: memoryContentDigest(m.summary),
+                contentDigest: memoryContentDigest(before.memory.content),
                 idempotencyKey: randomUUID(),
                 content: '日报按财务新模板',
                 reason: '本人修改',
@@ -224,6 +232,13 @@ suite(
       );
       expect(edited.revision).toBe(2);
       expect(edited.pairDigest).not.toBe(m.pairDigest);
+      const afterEdit = await snapshot(m.id);
+      expect(afterEdit.memory.content).toBe(
+        `${update.summary}\n${update.details}`,
+      );
+      expect(afterEdit.revisions[0]).toEqual(before.revisions[0]);
+      expect(afterEdit.revisions[1].content).toBe(afterEdit.memory.content);
+      expect(afterEdit.chunks[0].content).toBe(afterEdit.memory.content);
       expect(
         await correctPersonalEmployeeMemory(
           f.context,
@@ -250,6 +265,10 @@ suite(
         },
       );
       expect(cleared).toMatchObject({ revision: 3, details: null });
+      const afterClear = await snapshot(m.id);
+      expect(afterClear.memory.content).toBe(cleared.summary);
+      expect(afterClear.revisions[2].content).toBe(cleared.summary);
+      expect(afterClear.chunks[0].content).toBe(cleared.summary);
       await expect(
         correctPersonalEmployeeMemory(f.context, f.workspace, m.id, update),
       ).rejects.toThrow('employee_memory_conflict');

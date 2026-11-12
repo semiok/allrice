@@ -9,7 +9,7 @@
 - `pairDigest` 复用现有 canonical JSON SHA-256，输入为 `{version:2,summary,details}`。当前行、递增 revision、原幂等回执表和审计在同一事务中提交。
 - 迁移不改旧 `content`、旧 revision、raw review、pin metadata、归档身份及原 `updated_at`/`captured_at`。短正文完整作为 summary；长正文前 40 code point 作为 summary，**完整原文**作为 details。普通未归档行的未来 expiry 清 NULL；已过期行先拒绝，不复活。
 - 旧完整 content 创建/一次 legacy 修改保留原 content 输入语义，且不扩旧调用方的校验、权限和确认权。新写同时保存 pair；以后新的旧单字段修改返回 409 `employee_memory_contract_changed`，包括 details=NULL、当前 revision/contentDigest 均匹配的情况。合法同请求的当前回执先按原合同重放。
-- 显式 v2 创建/active 编辑使用 summary 作为 content 兼容投影。存储函数未接 HTTP；v2 编辑要求显式 details/string 或 NULL，未实现 pending CRUD。既有 pending promote 合同保留。消费者/全文预算尚未切换，不能借 content 投影把 PR1 当作上线组合。
+- 显式 v2 今后新建/编辑的 content 兼容正文为 summary + 单个 LF + 完整 details；details=NULL 时仅 summary。原 pair、40/2000 字符限制、索引/编号读取不变；不改迁移、旧 row/revision/回执/pin/handle/digest/已耗预算。旧完整正文消费者自然读取全部条件，仍按 V1 原 6000/8000/24000/12 预算处理整条，不发放 V2 资格。普通 remember 模型回执保留原摘要；旧聊天卡和公司素材 picker 的原70字摘录自然可见详情，不改 UI 布局或权限，V2 侧栏保持摘要/详情各自合同。PR1 不可单独部署，必须与完整消费者组合验证。
 
 发布负责人将来申请迁移前，使用正式停写/快照工具保存数据库、Run/DSH 状态目录、配置和执行包，记录应用 SHA、完整迁移名集合、时间及存储高水位。只读状态命令为 `~/allrice-dev/bin/deploy-dev --status`。实际部署/恢复必须另外取得对应授权。
 
