@@ -734,6 +734,7 @@ export function ChatFlowClient({
       : undefined;
   const dismissWorkbench = useCallback(
     (memoryInstanceId?: string) => {
+      const closingFocus = document.activeElement;
       closeWorkbench();
       if (memoryInstanceId) {
         setSceneRequest(null);
@@ -746,7 +747,17 @@ export function ChatFlowClient({
         const closingScope = fileScope;
         requestAnimationFrame(() => {
           const current = workbenchFocusScope.current;
-          if (current.scope === closingScope && !current.open)
+          const focused = document.activeElement;
+          const closingFocusInactive =
+            closingFocus &&
+            (!closingFocus.isConnected ||
+              closingFocus.closest('#artifact-workbench[inert]'));
+          if (
+            current.scope === closingScope &&
+            !current.open &&
+            (focused === closingFocus ||
+              (focused === document.body && closingFocusInactive))
+          )
             workbenchEntry.current?.focus();
         });
       }
