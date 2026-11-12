@@ -38,13 +38,14 @@ import {
 } from './data.ts';
 import { markFinalDeliveryRootLocked } from './final-delivery-commit.ts';
 import { readFinalDeliveryReferences } from './final-delivery-references.ts';
-import { appendJobEvent } from './execution/queue.ts';
+import { appendJobEvent, completeJob } from './execution/queue.ts';
 import {
   publishReference,
   changeReferencePublication,
   listReferencePublications,
   getReferenceFile,
   prepareReferenceUpload,
+  completeReferenceUpload,
   changeReference,
 } from './reference-library.ts';
 import {
@@ -859,121 +860,565 @@ suite(
       await finish(consumer);
     }, 120000);
 
-    it('Q8: real concurrent withdrawal seals batched visible text while native drain and usage receipts remain writable', async () => {
-      const s = await setup(),
-        published = await httpUpload(s.owner);
-      await ready(published.revisionId);
-      const run = await runtimeRun(s, [published.revisionId]),
-        worker = await lease(run);
-      expect(
-        await loadEmployeeRuntimeReferences(
-          run.scope,
-          run.runtime.generationId,
-          worker,
-        ),
-      ).toHaveLength(1);
-      await appendJobEvent({
-        ...worker,
-        type: 'assistant.text.delta',
-        payload: { source: 'dsh', text: 'VISIBLE_BEFORE_WITHDRAWAL' },
-      });
-      function gate<T>() {
-        let resolve!: (value: T) => void;
-        const promise = new Promise<T>((done) => {
-          resolve = done;
-        });
-        return { promise, resolve };
-      }
-      const locked = gate<number>(),
-        release = gate<void>();
-      const holder = f.db.begin(async (tx) => {
-        await tx`select id from allrice_knowledge_sources where id=${published.sourceId} for share`;
-        const [pid] = await tx`select pg_backend_pid() id`;
-        locked.resolve(pid!.id);
-        await release.promise;
-      });
-      const holderPid = await locked.promise;
-      const withdrawing = change(s.owner, published.sourceId, 'delete').then(
-        (result) => ({ result }),
-        (error: unknown) => ({ error }),
-      );
-      let writing: Promise<unknown> | undefined;
-      try {
-        await expect
-          .poll(
-            async () =>
-              (
-                await f.db`select count(*)::int n from pg_stat_activity
-          where ${holderPid}::int=any(pg_blocking_pids(pid))`
-              )[0]!.n,
-            { timeout: 5000 },
-          )
-          .toBeGreaterThan(0);
-        writing = appendJobEvent({
+    it.each(['delete', 'audience'] as const)(
+      'Q8: real concurrent %s seals batched visible text while native drain and usage receipts remain writable',
+      async (action) => {
+        const s = await setup(),
+          published = await httpUpload(s.owner);
+        await ready(published.revisionId);
+        const run = await runtimeRun({ ...s, owner: s.finance }, [
+            published.revisionId,
+          ]),
+          worker = await lease(run);
+        expect(
+          await loadEmployeeRuntimeReferences(
+            run.scope,
+            run.runtime.generationId,
+            worker,
+          ),
+        ).toHaveLength(1);
+        await appendJobEvent({
           ...worker,
           type: 'assistant.text.delta',
-          payload: { source: 'dsh', text: 'VISIBLE_AFTER_WITHDRAWAL' },
-        }).then(
+          payload: { source: 'dsh', text: 'VISIBLE_BEFORE_WITHDRAWAL' },
+        });
+        function gate<T>() {
+          let resolve!: (value: T) => void;
+          const promise = new Promise<T>((done) => {
+            resolve = done;
+          });
+          return { promise, resolve };
+        }
+        const locked = gate<number>(),
+          release = gate<void>();
+        const holder = f.db.begin(async (tx) => {
+          await tx`select id from allrice_knowledge_sources where id=${published.sourceId} for share`;
+          const [pid] = await tx`select pg_backend_pid() id`;
+          locked.resolve(pid!.id);
+          await release.promise;
+        });
+        const holderPid = await locked.promise;
+        const withdrawing = change(
+          s.owner,
+          published.sourceId,
+          action,
+          1,
+          action === 'audience'
+            ? { scope: 'personal', departmentIds: [] }
+            : undefined,
+        ).then(
           (result) => ({ result }),
           (error: unknown) => ({ error }),
         );
-        // Observe the real publication gate waiting behind the queued writer,
-        // rather than assuming a sleep establishes PostgreSQL lock order.
-        await expect
-          .poll(
-            async () =>
-              (
-                await f.db`select count(*)::int n from pg_stat_activity
+        let writing: Promise<unknown> | undefined;
+        try {
+          await expect
+            .poll(
+              async () =>
+                (
+                  await f.db`select count(*)::int n from pg_stat_activity
+          where ${holderPid}::int=any(pg_blocking_pids(pid))`
+                )[0]!.n,
+              { timeout: 5000 },
+            )
+            .toBeGreaterThan(0);
+          writing = appendJobEvent({
+            ...worker,
+            type: 'assistant.text.delta',
+            payload: { source: 'dsh', text: 'VISIBLE_AFTER_WITHDRAWAL' },
+          }).then(
+            (result) => ({ result }),
+            (error: unknown) => ({ error }),
+          );
+          // Observe the real publication gate waiting behind the queued writer,
+          // rather than assuming a sleep establishes PostgreSQL lock order.
+          await expect
+            .poll(
+              async () =>
+                (
+                  await f.db`select count(*)::int n from pg_stat_activity
           where application_name=current_setting('application_name') and wait_event_type='Lock'
-            and query like '%with recursive dependencies%'`
-              )[0]!.n,
-            { timeout: 5000 },
-          )
-          .toBeGreaterThan(0);
-      } finally {
-        release.resolve();
-        await holder;
-      }
-      expect(await withdrawing).toEqual({
-        result: { sourceId: published.sourceId },
-      });
-      expect(await writing).toMatchObject({
-        error: { code: 'EMPLOYEE_CONTENT_UNAVAILABLE' },
-      });
-      await expect(
-        appendJobEvent({
+            and query like '%select s.id,s.status%' and query like '%for share%'`
+                )[0]!.n,
+              { timeout: 5000 },
+            )
+            .toBeGreaterThan(0);
+        } finally {
+          release.resolve();
+          await holder;
+        }
+        expect(await withdrawing).toEqual({
+          result: { sourceId: published.sourceId },
+        });
+        expect(await writing).toMatchObject({
+          error: { code: 'EMPLOYEE_CONTENT_UNAVAILABLE' },
+        });
+        await expect(
+          appendJobEvent({
+            ...worker,
+            type: 'assistant.text.completed',
+            payload: { source: 'dsh', text: 'COMPLETED_AFTER_WITHDRAWAL' },
+          }),
+        ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+        expect(
+          await f.db`select id from allrice_run_events where run_id=${run.scope.runId}
+        and payload->>'text' in ('VISIBLE_AFTER_WITHDRAWAL','COMPLETED_AFTER_WITHDRAWAL')`,
+        ).toHaveLength(0);
+        await appendJobEvent({
+          ...worker,
+          type: 'usage.updated',
+          payload: {
+            source: 'dsh',
+            usage: { inputTokens: 11, cachedInputTokens: 0, outputTokens: 7 },
+          },
+        });
+        await appendJobEvent({
+          ...worker,
+          type: 'harness.native',
+          payload: {
+            source: 'dsh',
+            nativeType: 'session/stopped',
+            nativePayload: {},
+          },
+        });
+        expect(
+          await f.db`select id from allrice_run_events where run_id=${run.scope.runId}
+        and event_type in ('usage.updated','harness.native')`,
+        ).toHaveLength(2);
+        await finish(run, worker);
+      },
+      120000,
+    );
+
+    it.each(['audience', 'department', 'membership'] as const)(
+      'current %s loss seals real in-flight delta/completed without permanently marking an audience withdrawal',
+      async (loss) => {
+        const s = await setup(),
+          published = await httpUpload(
+            s.owner,
+            upload(s.owner, {
+              scope: 'departments',
+              departmentIds: [s.departments[1]!.id, s.departments[2]!.id],
+            }),
+          );
+        await ready(published.revisionId);
+        const removed = await runtimeRun({ ...s, owner: s.finance }, [
+            published.revisionId,
+          ]),
+          retained = await runtimeRun({ ...s, owner: s.operations }, [
+            published.revisionId,
+          ]),
+          removedWorker = await lease(removed),
+          retainedWorker = await lease(retained);
+        for (const [run, worker] of [
+          [removed, removedWorker],
+          [retained, retainedWorker],
+        ] as const)
+          expect(
+            await loadEmployeeRuntimeReferences(
+              run.scope,
+              run.runtime.generationId,
+              worker,
+            ),
+          ).toHaveLength(1);
+        if (loss === 'audience')
+          await change(s.owner, published.sourceId, 'audience', 1, {
+            scope: 'departments',
+            departmentIds: [s.departments[2]!.id],
+          });
+        else if (loss === 'department')
+          await f.db`update allrice_departments set archived_at=clock_timestamp() where id=${s.departments[1]!.id}`;
+        else
+          await f.db`update allrice_memberships set active=false where organization_id=${s.owner.organizationId} and user_id=${s.finance.actor.id}`;
+        for (const type of [
+          'assistant.text.delta',
+          'assistant.text.completed',
+        ] as const) {
+          await expect(
+            appendJobEvent({
+              ...removedWorker,
+              type,
+              payload: { text: 'DENIED_CURRENT_BODY' },
+            }),
+          ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+          await appendJobEvent({
+            ...retainedWorker,
+            type,
+            payload: { text: 'RETAINED_CURRENT_BODY' },
+          });
+        }
+        expect(
+          await f.db`select id from allrice_run_events where run_id=${removed.scope.runId} and payload->>'text'='DENIED_CURRENT_BODY'`,
+        ).toHaveLength(0);
+        expect(
+          await f.db`select id from allrice_run_events where run_id=${retained.scope.runId} and payload->>'text'='RETAINED_CURRENT_BODY'`,
+        ).toHaveLength(2);
+        expect(
+          await hasRevokedReferencePublicationHistory(
+            s.finance,
+            removed.scope.sessionId,
+          ),
+        ).toBe(false);
+        const [generation] =
+          await f.db`select invalidated_at from allrice_employee_content_contexts where generation_id=${removed.runtime.generationId}`;
+        expect(generation!.invalidated_at).toBeNull();
+        await appendJobEvent({
+          ...removedWorker,
+          type: 'usage.updated',
+          payload: { usage: { inputTokens: 9, outputTokens: 3 } },
+        });
+        await appendJobEvent({
+          ...removedWorker,
+          type: 'harness.native',
+          payload: { nativeType: 'session/stopped', nativePayload: {} },
+        });
+        // Recovering current authority is not a new permanent Q8 policy. This
+        // direct commit did not mutate generation or a revoke/delete ledger.
+        if (loss === 'audience')
+          await change(s.owner, published.sourceId, 'audience', 2, {
+            scope: 'company',
+            departmentIds: [],
+          });
+        else if (loss === 'department')
+          await f.db`update allrice_departments set archived_at=null where id=${s.departments[1]!.id}`;
+        else
+          await f.db`update allrice_memberships set active=true where organization_id=${s.owner.organizationId} and user_id=${s.finance.actor.id}`;
+        await appendJobEvent({
+          ...removedWorker,
+          type: 'assistant.text.delta',
+          payload: { text: 'CURRENT_ACCESS_RECOVERED' },
+        });
+        await finish(removed, removedWorker);
+        await finish(retained, retainedWorker);
+      },
+      120000,
+    );
+
+    it.each(['unpublished', 'same', 'different', 'audience'] as const)(
+      'real completeJob after withdrawal closes receipts and keeps only exact previously public body/citations (%s)',
+      async (previous) => {
+        const s = await setup(),
+          published = await httpUpload(s.owner);
+        await ready(published.revisionId);
+        const reader = previous === 'audience' ? s.finance : s.owner;
+        const run = await runtimeRun({ ...s, owner: reader }, [
+            published.revisionId,
+          ]),
+          worker = await lease(run);
+        expect(
+          await loadEmployeeRuntimeReferences(
+            run.scope,
+            run.runtime.generationId,
+            worker,
+          ),
+        ).toHaveLength(1);
+        const [job] =
+          await f.db`select attempt from allrice_jobs where id=${worker.jobId}`;
+        const publicText = 'ALREADY_PUBLIC_EXACT_BODY',
+          publicCitation = {
+            type: 'file',
+            id: randomUUID(),
+            label: 'ALREADY_PUBLIC_EXACT_CITATION',
+          };
+        // An arbitrary completed marker, wrong message/attempt, tool-call body
+        // or delta fragment must not authorize this terminal's new output.
+        await appendJobEvent({
           ...worker,
           type: 'assistant.text.completed',
-          payload: { source: 'dsh', text: 'COMPLETED_AFTER_WITHDRAWAL' },
-        }),
-      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
-      expect(
-        await f.db`select id from allrice_run_events where run_id=${run.scope.runId}
-        and payload->>'text' in ('VISIBLE_AFTER_WITHDRAWAL','COMPLETED_AFTER_WITHDRAWAL')`,
-      ).toHaveLength(0);
-      await appendJobEvent({
-        ...worker,
-        type: 'usage.updated',
-        payload: {
-          source: 'dsh',
-          usage: { inputTokens: 11, cachedInputTokens: 0, outputTokens: 7 },
-        },
-      });
-      await appendJobEvent({
-        ...worker,
-        type: 'harness.native',
-        payload: {
-          source: 'dsh',
-          nativeType: 'session/stopped',
-          nativePayload: {},
-        },
-      });
-      expect(
-        await f.db`select id from allrice_run_events where run_id=${run.scope.runId}
-        and event_type in ('usage.updated','harness.native')`,
-      ).toHaveLength(2);
-      await finish(run, worker);
-    }, 120000);
+          payload: {
+            messageId: run.sent.assistantMessage.id,
+            attempt: job!.attempt - 1,
+            text: 'WRONG_ATTEMPT_BODY',
+          },
+        });
+        await appendJobEvent({
+          ...worker,
+          type: 'assistant.text.completed',
+          payload: {
+            messageId: randomUUID(),
+            attempt: job!.attempt,
+            text: 'WRONG_MESSAGE_BODY',
+          },
+        });
+        await appendJobEvent({
+          ...worker,
+          type: 'assistant.text.delta',
+          payload: {
+            messageId: run.sent.assistantMessage.id,
+            attempt: job!.attempt,
+            text: 'ONLY_DELTA_FRAGMENT',
+          },
+        });
+        if (previous !== 'unpublished')
+          await appendJobEvent({
+            ...worker,
+            type: 'assistant.text.completed',
+            payload: {
+              messageId: run.sent.assistantMessage.id,
+              attempt: job!.attempt,
+              text: publicText,
+              citations: [publicCitation],
+              nativePayload: { interrupted: false, contentTypes: ['text'] },
+            },
+          });
+        await change(
+          s.owner,
+          published.sourceId,
+          previous === 'audience' ? 'audience' : 'delete',
+          1,
+          previous === 'audience'
+            ? { scope: 'personal', departmentIds: [] }
+            : undefined,
+        );
+        await appendJobEvent({
+          ...worker,
+          type: 'usage.updated',
+          payload: {
+            source: 'dsh',
+            usage: { inputTokens: 11, outputTokens: 7, cachedInputTokens: 0 },
+          },
+        });
+        await appendJobEvent({
+          ...worker,
+          type: 'harness.native',
+          payload: {
+            source: 'dsh',
+            nativeType: 'session/stopped',
+            nativePayload: {},
+          },
+        });
+        await completeJob({
+          ...worker,
+          result: {
+            answer:
+              previous === 'same' ? publicText : 'UNPUBLISHED_NEW_FINAL_BODY',
+            citations: [
+              publicCitation,
+              {
+                type: 'file',
+                id: randomUUID(),
+                label: 'UNPUBLISHED_NEW_FINAL_CITATION',
+              },
+            ],
+            privateExtra: 'UNPUBLISHED_EXTRA_RESULT',
+          },
+        });
+        const [closed] =
+          await f.db`select j.status,j.worker_id,j.lease_token,j.completed_at,r.state,r.result,
+          e.status employee_status,m.content,m.status message_status
+          from allrice_jobs j join allrice_runs r on r.id=j.run_id
+          join allrice_employee_runs e on e.run_id=r.id join allrice_messages m on m.id=e.assistant_message_id
+          where j.id=${worker.jobId}`;
+        expect(closed).toMatchObject({
+          status: 'failed',
+          worker_id: null,
+          lease_token: null,
+          state: 'failed',
+          employee_status: 'failed',
+          message_status: 'failed',
+        });
+        expect(closed!.completed_at).not.toBeNull();
+        if (previous === 'unpublished') {
+          expect(closed!.result).toBeNull();
+          expect(closed!.content.citations).toEqual([]);
+          expect(closed!.content.text).not.toContain('ONLY_DELTA_FRAGMENT');
+          expect(closed!.content.text).not.toContain('WRONG_');
+        } else {
+          expect(closed!.content).toEqual({
+            text: publicText,
+            citations: [publicCitation],
+          });
+          expect(closed!.result).toEqual({
+            answer: publicText,
+            citations: [publicCitation],
+          });
+        }
+        expect(JSON.stringify(closed)).not.toContain('UNPUBLISHED_');
+        const terminal =
+          await f.db`select payload from allrice_run_events where run_id=${run.scope.runId} and event_type='run.failed'`;
+        expect(terminal).toHaveLength(1);
+        expect(JSON.stringify(terminal)).not.toContain('UNPUBLISHED_');
+        expect(
+          await f.db`select id from allrice_run_events where run_id=${run.scope.runId} and event_type in ('usage.updated','harness.native')`,
+        ).toHaveLength(2);
+        const [runtime] =
+          await f.db`select state,active_run_id from allrice_conversation_runtimes where session_id=${run.scope.sessionId}`;
+        expect(runtime!.state).not.toBe('running');
+        expect(runtime!.active_run_id).toBeNull();
+        if (previous !== 'unpublished')
+          expect(
+            (
+              await getChatSessionHistory(
+                reader,
+                reader.workspaceId!,
+                run.scope.sessionId,
+              )
+            ).messages.some((m) => m.content.text === publicText),
+          ).toBe(true);
+      },
+      120000,
+    );
+
+    it.each([false, true])(
+      'frozen early external messages do not inherit future publication reads (later generation=%s)',
+      async (rotate) => {
+        const s = await setup(),
+          published = await httpUpload(s.owner);
+        await ready(published.revisionId);
+        const early = await runtimeRun(s),
+          earlyWorker = await lease(early);
+        await completeJob({
+          ...earlyWorker,
+          result: { answer: 'EARLY_CLEAN_ANSWER', citations: [] },
+        });
+        const frozen = await runtimeRun(s, [], undefined, [
+            early.scope.sessionId,
+          ]),
+          frozenWorker = await lease(frozen);
+        await completeJob({
+          ...frozenWorker,
+          result: { answer: 'FROZEN_EARLY_ANSWER', citations: [] },
+        });
+        if (rotate) {
+          const body = Buffer.from('LEGACY_ROTATION_SOURCE');
+          const old = await prepareReferenceUpload(s.owner, {
+            workspaceId: s.owner.workspaceId,
+            requestId: randomUUID(),
+            scope: 'personal',
+            fileName: 'legacy.txt',
+            purpose: '',
+            mediaType: 'text/plain',
+            contentBase64: body.toString('base64'),
+          });
+          await browser.storage!.put(
+            old.object,
+            new Blob([new Uint8Array(body)]).stream(),
+          );
+          await completeReferenceUpload(
+            s.owner,
+            s.owner.workspaceId!,
+            old.revisionId,
+          );
+          await ready(old.revisionId);
+          const legacy = await runtimeRun(
+              s,
+              [old.revisionId],
+              early.scope.sessionId,
+            ),
+            legacyWorker = await lease(legacy);
+          expect(legacy.runtime.generationId).toBe(early.runtime.generationId);
+          expect(
+            await loadEmployeeRuntimeReferences(
+              legacy.scope,
+              legacy.runtime.generationId,
+              legacyWorker,
+            ),
+          ).toHaveLength(1);
+          await completeJob({
+            ...legacyWorker,
+            result: { answer: 'LATER_LEGACY_ANSWER', citations: [] },
+          });
+          await changeReference(s.owner, old.sourceId, {
+            workspaceId: s.owner.workspaceId,
+            requestId: randomUUID(),
+            expectedRevision: 1,
+            action: 'archive',
+          });
+        }
+        const later = await runtimeRun(
+            s,
+            [published.revisionId],
+            early.scope.sessionId,
+          ),
+          laterWorker = await lease(later);
+        if (rotate)
+          expect(later.runtime.generationId).not.toBe(
+            early.runtime.generationId,
+          );
+        else
+          expect(later.runtime.generationId).toBe(early.runtime.generationId);
+        expect(
+          await loadEmployeeRuntimeReferences(
+            later.scope,
+            later.runtime.generationId,
+            laterWorker,
+          ),
+        ).toHaveLength(1);
+        await completeJob({
+          ...laterWorker,
+          result: { answer: 'LATER_PROTECTED_ANSWER', citations: [] },
+        });
+        const inherited = await runtimeRun(s, [], early.scope.sessionId),
+          inheritedWorker = await lease(inherited);
+        expect(inherited.runtime.generationId).toBe(later.runtime.generationId);
+        await completeJob({
+          ...inheritedWorker,
+          result: { answer: 'LATER_INHERITED_ANSWER', citations: [] },
+        });
+        const derived = rotate
+          ? null
+          : await runtimeRun(s, [], undefined, [early.scope.sessionId]);
+        if (derived) await finish(derived);
+        await change(s.owner, published.sourceId, 'delete');
+        // Invalidate the source's current native generation through its real
+        // entrypoint first; that global lifecycle fact cannot poison the old
+        // exact frozen message, but the actual later answer remains protected.
+        await expect(
+          assertEmployeeContentContext(later.scope, later.runtime.generationId),
+        ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+        expect(
+          await hasRevokedReferencePublicationHistory(
+            s.owner,
+            frozen.scope.sessionId,
+          ),
+        ).toBe(false);
+        if (derived)
+          expect(
+            await hasRevokedReferencePublicationHistory(
+              s.owner,
+              derived.scope.sessionId,
+            ),
+          ).toBe(true);
+        await assertEmployeeContentContext(
+          frozen.scope,
+          frozen.runtime.generationId,
+        );
+        await assertEmployeeContentReferenceMessages(
+          s.owner,
+          early.scope.sessionId,
+          [early.sent.assistantMessage.id],
+        );
+        await expect(
+          assertEmployeeContentReferenceMessages(
+            s.owner,
+            early.scope.sessionId,
+            [later.sent.assistantMessage.id],
+          ),
+        ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+        await expect(
+          assertEmployeeContentReferenceMessages(
+            s.owner,
+            early.scope.sessionId,
+            [inherited.sent.assistantMessage.id],
+          ),
+        ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+        const continued = await runtimeRun(s, [], frozen.scope.sessionId);
+        await finish(continued);
+        if (derived)
+          await expect(
+            sendChatMessage(
+              s.owner,
+              s.owner.workspaceId!,
+              derived.scope.sessionId,
+              {
+                clientMessageId: randomUUID(),
+                text: '继续保护的后期回答',
+              },
+            ),
+          ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      },
+      120000,
+    );
 
     it('Q8: actual read receipts block dispatch, cold recovery, continuation and imported generations permanently after delete; selecting a draft alone does not', async () => {
       const s = await setup(),

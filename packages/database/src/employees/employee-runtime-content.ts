@@ -22,6 +22,7 @@ import {
   retrieveReferenceKnowledgeInTransaction,
   ReferenceRuntimeError,
   hasRevokedReferencePublicationHistory,
+  referencePublicationDependencyRuns,
 } from '../reference-runtime.ts';
 import {
   EmployeeContentManifestSchema,
@@ -721,6 +722,7 @@ async function generationIsReadable(
   visited = new Set<string>(),
   locked = false,
   expectedBrandKey?: string | null,
+  referencedMessageIds?: string[],
 ) {
   if (
     await hasRevokedReferencePublicationHistory(
@@ -728,16 +730,32 @@ async function generationIsReadable(
       scope.sessionId,
       sql,
       locked,
+      referencedMessageIds,
     )
   )
     return false;
-  if (visited.has(generationId)) return true;
+  const visitKey = referencedMessageIds
+    ? `${generationId}:${[...referencedMessageIds].sort().join(',')}`
+    : generationId;
+  if (visited.has(visitKey)) return true;
   if (visited.size >= 128) return false;
-  visited.add(generationId);
+  visited.add(visitKey);
+  const dependencies = referencedMessageIds
+    ? await referencePublicationDependencyRuns(
+        identity(scope),
+        scope.sessionId,
+        sql,
+        referencedMessageIds,
+      )
+    : null;
   const [generation] =
     await sql`select generation_id from allrice_employee_content_contexts
     where generation_id=${generationId} and session_id=${scope.sessionId} and organization_id=${scope.organizationId}
-      and workspace_id=${scope.workspaceId} and owner_id=${scope.ownerId} and invalidated_at is null`;
+      and workspace_id=${scope.workspaceId} and owner_id=${scope.ownerId}
+      and (invalidated_at is null or ${referencedMessageIds !== undefined})`;
+  // A native context invalidated by a later Run is no proof about an earlier
+  // frozen message. External imports revalidate every exact predecessor below;
+  // own native reuse still requires the original non-invalidated generation.
   if (!generation) return false;
   const brandKey =
     expectedBrandKey === undefined && scope.runId
@@ -756,7 +774,8 @@ async function generationIsReadable(
     select distinct execution_snapshot->'workflowInvocation' brand_workflow,experience_reads,execution_snapshot ? 'personalSkills' as has_personal_skills,execution_snapshot->'instance'->>'id' as personal_instance_id,(select jsonb_agg(jsonb_build_object('id',n->'id','personal',n->'personal')) from jsonb_array_elements(native_skills) n where n ? 'personal') as native_personal_pins,execution_snapshot->'personalSkills' as personal_skills,execution_snapshot->'content' as content,content_scene_state,reference_reads,prompt_snapshot->'sessionReferences' as session_references,prompt_snapshot->'referenceSelections' as reference_selections
     from allrice_employee_runs where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
       and session_id=${scope.sessionId} and owner_id=${scope.ownerId} and content_generation_id=${generationId}
-      and error_code is distinct from 'STEER_CONSUMED' limit 129`;
+      and error_code is distinct from 'STEER_CONSUMED'
+      ${dependencies ? (dependencies.length ? sql`and run_id in ${sql(dependencies)}` : sql`and false`) : sql``} limit 129`;
   // Bounded provenance; rotate before losing old dependencies. Never silently
   // truncate them while reusing a native summary derived from those sources.
   if (rows.length > 128) return false;
@@ -884,6 +903,7 @@ export async function assertEmployeeContentReferenceMessages(
         visited,
         locked,
         expectedBrandKey,
+        messageIds,
       ))
     )
       return unavailable();

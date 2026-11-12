@@ -2100,6 +2100,77 @@ export async function claimNextJob(
   return row ? mapJob(row) : null;
 }
 
+/** Narrow visible-publication gate. The leased Job is the authority for the
+ * employee owner/session; event or completion JSON cannot supply that scope. */
+async function employeeReferencePublicationAccess(
+  transaction: TransactionSql,
+  job: JobRow,
+) {
+  const [employee] = await transaction<
+    { session_id: string; assistant_message_id: string }[]
+  >`
+    select er.session_id,er.assistant_message_id from allrice_employee_runs er
+    join allrice_chat_sessions s on s.id=er.session_id
+      and s.organization_id=er.organization_id and s.workspace_id=er.workspace_id and s.owner_id=er.owner_id
+    where er.run_id=${job.run_id} and er.organization_id=${job.organization_id}
+      and er.workspace_id=${job.workspace_id} and er.owner_id=${job.owner_id}`;
+  if (!employee) return null;
+  const { readReferencePublicationHistoryAccess } =
+    await import('../reference-runtime.ts');
+  return {
+    employee,
+    ...(await readReferencePublicationHistoryAccess(
+      {
+        actor: { type: 'user', id: job.owner_id },
+        organizationId: job.organization_id,
+        workspaceId: job.workspace_id,
+      },
+      employee.session_id,
+      transaction,
+      true,
+    )),
+  };
+}
+
+/** Only this Run/attempt/message's already committed complete public body can
+ * survive an authorization loss. A delta, old attempt or arbitrary completed
+ * marker is never proof that a different terminal answer/citation was public. */
+async function committedEmployeeReply(
+  transaction: TransactionSql,
+  job: JobRow,
+  messageId: string,
+) {
+  const [reply] = await transaction<{ payload: Record<string, unknown> }[]>`
+    select payload from allrice_run_events
+    where run_id=${job.run_id} and organization_id=${job.organization_id}
+      and workspace_id=${job.workspace_id}
+      and event_type in ('assistant.text.delta','assistant.text.completed')
+      and payload->>'messageId'=${messageId}
+      and payload->>'attempt'=${String(job.attempt)}
+      and (event_type='assistant.text.completed' or
+        (payload->>'sourceEventType'='assistant/message' and payload->>'textMode'='replace'))
+    order by sequence desc limit 1`;
+  const native = reply?.payload.nativePayload as
+    { contentTypes?: unknown; interrupted?: unknown } | undefined;
+  if (
+    typeof reply?.payload.text !== 'string' ||
+    !reply.payload.text.trim() ||
+    native?.interrupted === true ||
+    (Array.isArray(native?.contentTypes) &&
+      native.contentTypes.includes('tool-call'))
+  )
+    return null;
+  return {
+    text: reply.payload.text,
+    citations: Array.isArray(reply.payload.citations)
+      ? reply.payload.citations.flatMap((citation) => {
+          const parsed = ChatCitationSchema.safeParse(citation);
+          return parsed.success ? [parsed.data] : [];
+        })
+      : [],
+  };
+}
+
 async function transitionTerminal(
   transaction: TransactionSql,
   job: JobRow,
@@ -2115,6 +2186,53 @@ async function transitionTerminal(
     payload: Record<string, unknown>;
   },
 ) {
+  const publication = await employeeReferencePublicationAccess(
+    transaction,
+    job,
+  );
+  const publicationBlocked =
+    publication !== null && publication.used && !publication.canRead;
+  const published =
+    publication && publicationBlocked
+      ? await committedEmployeeReply(
+          transaction,
+          job,
+          publication.employee.assistant_message_id,
+        )
+      : null;
+  if (publicationBlocked) {
+    // This is a terminal receipt, not another model dispatch. Seal any new
+    // output while still releasing the Job/runtime and keeping usage/native
+    // close facts. Never throw and roll those independent facts back.
+    const code = input.code ?? 'EMPLOYEE_CONTENT_UNAVAILABLE';
+    input = {
+      ...input,
+      ...(input.runStatus === 'succeeded'
+        ? ({
+            jobStatus: 'failed',
+            runStatus: 'failed',
+            eventType: 'run.failed',
+          } as const)
+        : {}),
+      code,
+      message:
+        input.message ??
+        '本次执行使用的企业资料已不可用，请重新选择资料或新建对话。',
+      result: published
+        ? { answer: published.text, citations: published.citations }
+        : undefined,
+      payload: {
+        code,
+        ...(typeof input.payload.drainDisposition === 'string'
+          ? { drainDisposition: input.payload.drainDisposition }
+          : {}),
+        ...(typeof input.payload.reason === 'string'
+          ? { reason: input.payload.reason }
+          : {}),
+      },
+      skipExperienceCapture: true,
+    };
+  }
   await settleManagedBrowserTasksForJobAttempt(transaction, job, {
     status: input.jobStatus === 'canceled' ? 'canceled' : 'failed',
     errorCode:
@@ -2221,33 +2339,20 @@ async function transitionTerminal(
     // Native DSH may already have delivered a complete message before the
     // final operation/accounting check fails. Keep that reply without changing
     // the failed Run status. Never recover a delta fragment or an older attempt.
-    const [reply] =
-      input.runStatus === 'failed'
-        ? await transaction<{ payload: Record<string, unknown> }[]>`
-            select payload from allrice_run_events
-            where run_id=${job.run_id} and organization_id=${job.organization_id}
-              and workspace_id=${job.workspace_id}
-              and event_type in ('assistant.text.delta','assistant.text.completed')
-              and payload->>'messageId'=${employeeRun.assistant_message_id}
-              and payload->>'attempt'=${String(job.attempt)}
-              and (event_type='assistant.text.completed' or
-                (payload->>'sourceEventType'='assistant/message' and payload->>'textMode'='replace'))
-            order by sequence desc limit 1`
-        : [];
-    const native = reply?.payload.nativePayload as
-      { contentTypes?: unknown; interrupted?: unknown } | undefined;
-    const retainedReply =
-      typeof reply?.payload.text === 'string' &&
-      reply.payload.text.trim() &&
-      native?.interrupted !== true &&
-      !(
-        Array.isArray(native?.contentTypes) &&
-        native.contentTypes.includes('tool-call')
-      )
-        ? reply.payload.text
+    const retainedReply = publicationBlocked
+      ? (published?.text ?? null)
+      : input.runStatus === 'failed'
+        ? ((
+            await committedEmployeeReply(
+              transaction,
+              job,
+              employeeRun.assistant_message_id,
+            )
+          )?.text ?? null)
         : null;
-    const text =
-      input.runStatus === 'succeeded' && typeof result.answer === 'string'
+    const text = publicationBlocked
+      ? (published?.text ?? failureText)
+      : input.runStatus === 'succeeded' && typeof result.answer === 'string'
         ? result.answer
         : input.runStatus === 'canceled'
           ? 'Rice 的这次执行已取消。'
@@ -2264,7 +2369,9 @@ async function transitionTerminal(
       set content = ${transaction.json(
         toJsonValue({
           text,
-          citations,
+          citations: publicationBlocked
+            ? (published?.citations ?? [])
+            : citations,
           ...(input.modelFailure
             ? { modelFailureCategory: input.modelFailure.category }
             : {}),
@@ -3135,30 +3242,18 @@ export async function appendJobEvent(input: {
           input.type === 'assistant.text.delta' ||
           input.type === 'assistant.text.completed'
         ) {
-          // This is the existing display-ledger commit, after its root/Job
-          // locks. Resolve the real employee session; event JSON supplies no
-          // authority. A publication writer never takes a root/Job lock, so
-          // source SHARE orders visible text against withdrawal without a
-          // source -> Job lock cycle. Usage and native drain facts stay open.
-          const [employee] = await transaction<{ session_id: string }[]>`
-            select er.session_id from allrice_employee_runs er
-            join allrice_chat_sessions s on s.id=er.session_id
-              and s.organization_id=er.organization_id and s.workspace_id=er.workspace_id and s.owner_id=er.owner_id
-            where er.run_id=${job.run_id} and er.organization_id=${job.organization_id}
-              and er.workspace_id=${job.workspace_id} and er.owner_id=${job.owner_id}`;
-          if (employee) {
-            const { assertEmployeeReferencePublicationHistory } =
+          // Only identity/source/policy locks follow the existing root/Job
+          // prefix. No full runtime/generation gate or new lifecycle state.
+          // Current scope/member loss stops this commit without permanently
+          // invalidating history; usage/native drain facts bypass this branch.
+          const publication = await employeeReferencePublicationAccess(
+            transaction,
+            job,
+          );
+          if (publication && !publication.canRead) {
+            const { EmployeeRuntimeContentError } =
               await import('../employees/employee-runtime-content.ts');
-            await assertEmployeeReferencePublicationHistory(
-              {
-                actor: { type: 'user', id: job.owner_id },
-                organizationId: job.organization_id,
-                workspaceId: job.workspace_id,
-              },
-              employee.session_id,
-              transaction,
-              true,
-            );
+            throw new EmployeeRuntimeContentError();
           }
         }
         const event = await appendEvent(transaction, {
@@ -3472,6 +3567,25 @@ export async function completeJob(input: {
       (job.payload as { type?: string }).type === experienceConsolidationJobType
         ? await completeExperienceConsolidation(transaction, job, input.result)
         : input.result;
+    // Take the exact current publication locks before validating success.
+    // Lost authority takes the existing failure terminal, never weakens or
+    // skips a proof for a Run that is actually committed as succeeded.
+    const publication = await employeeReferencePublicationAccess(
+      transaction,
+      job,
+    );
+    if (publication && !publication.canRead) {
+      await transitionTerminal(transaction, job, {
+        jobStatus: 'failed',
+        runStatus: 'failed',
+        eventType: 'run.failed',
+        code: 'EMPLOYEE_CONTENT_UNAVAILABLE',
+        message: '本次执行使用的企业资料已不可用，请重新选择资料或新建对话。',
+        result,
+        payload: { code: 'EMPLOYEE_CONTENT_UNAVAILABLE' },
+      });
+      return;
+    }
     const deliveryCheck = guard
       ? await guard.assertCurrent(transaction, job, result)
       : undefined;

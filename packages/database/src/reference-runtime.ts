@@ -18,6 +18,7 @@ import {
 } from './content-maintenance.ts';
 import { referenceSourceAccess } from './reference-library.ts';
 import { assertLegacyReferenceRevision } from './reference-company-templates.ts';
+import { workbenchFileAccess } from './workbench-file-access.ts';
 import { embedKnowledgeText } from './memory/knowledge-retrieval.ts';
 
 type Sql = ReturnType<typeof getDatabase> | postgres.TransactionSql;
@@ -114,30 +115,34 @@ export function canReferencePublicationScope(
   );
 }
 
-/** Only actual excerpt receipts create the permanent Q8 dependency. The source
- * lock orders reads/revocation; no application timestamp or current ACL loss is
- * interpreted as a permanent revocation. Retired generations remain covered. */
-export async function hasRevokedReferencePublicationHistory(
+/** Follow exact frozen inputs, never all Runs that happen to share a native
+ * generation today. A prior Run's frozen conversation links carry its actual
+ * predecessor dependencies without admitting a source Session's future Runs. */
+export async function referencePublicationDependencyRuns(
   context: ContentIdentity,
   sessionId: string,
-  sql: Sql = getDatabase(),
-  lock = false,
+  sql: Sql,
+  messageIds?: readonly string[],
 ) {
-  const sources = await sql<{ id: string; status: string; revoked: boolean }[]>`
+  if (messageIds && !messageIds.length) return [];
+  const runs = await sql<{ run_id: string }[]>`
     with recursive dependencies(run_id) as (
       select er.run_id from allrice_employee_runs er
       where er.organization_id=${context.organizationId} and er.workspace_id=${context.workspaceId}
         and er.owner_id=${context.actor.id} and er.session_id=${UuidSchema.parse(sessionId)}
         and er.error_code is distinct from 'STEER_CONSUMED'
+        ${messageIds ? sql`and (er.user_message_id in ${sql([...messageIds])} or er.assistant_message_id in ${sql([...messageIds])})` : sql``}
       union
       select related.run_id from dependencies d
       join allrice_employee_runs er_current on er_current.run_id=d.run_id
       cross join lateral (
-        select e.run_id from allrice_employee_runs e
-        where er_current.content_generation_id is not null and e.content_generation_id=er_current.content_generation_id
+        select e.run_id from jsonb_array_elements(case when jsonb_typeof(er_current.prompt_snapshot->'conversation')='array'
+          then er_current.prompt_snapshot->'conversation' else '[]'::jsonb end) message
+        join allrice_employee_runs e on e.session_id=er_current.session_id
+          and e.content_generation_id=er_current.content_generation_id
+          and (e.user_message_id::text=message->>'id' or e.assistant_message_id::text=message->>'id')
           and e.organization_id=er_current.organization_id and e.workspace_id=er_current.workspace_id
-          and e.session_id=er_current.session_id and e.owner_id=er_current.owner_id
-          and e.error_code is distinct from 'STEER_CONSUMED'
+          and e.owner_id=er_current.owner_id and e.error_code is distinct from 'STEER_CONSUMED'
         union
         select e.run_id from jsonb_array_elements(case when jsonb_typeof(er_current.prompt_snapshot->'sessionReferences')='array'
           then er_current.prompt_snapshot->'sessionReferences' else '[]'::jsonb end) ref
@@ -148,32 +153,104 @@ export async function hasRevokedReferencePublicationHistory(
           and e.organization_id=er_current.organization_id and e.workspace_id=er_current.workspace_id
           and e.error_code is distinct from 'STEER_CONSUMED'
       ) related
-    )
-    select s.id,s.status,exists(select 1 from allrice_knowledge_reference_actions a
-      where a.source_id=s.id and a.input->>'action' in ('revoke','delete')) as revoked
-    from allrice_knowledge_sources s
-    where s.organization_id=${context.organizationId} and s.publication_kind is not null
-      and s.id in (
-        select r.knowledge_source_id from dependencies dependency
-        join allrice_employee_runs er on er.run_id=dependency.run_id
-        cross join lateral jsonb_array_elements(coalesce(er.reference_reads,'[]'::jsonb)) receipt
-        join allrice_knowledge_revisions r on r.id::text=receipt->'citation'->'reference'->>'revisionId'
-          and r.knowledge_source_id::text=receipt->'citation'->'reference'->>'sourceId'
-          and r.checksum=receipt->'citation'->'reference'->>'digest'
-        join allrice_storage_objects retained on retained.id=r.file_object_id
-          and retained.checksum=receipt->'citation'->'reference'->>'checksum'
-      ) order by s.id ${lock ? sql`for share of s` : sql``}`;
-  // Re-read the append-only action after any wait on the source row. This also
-  // covers a revoke that committed while the locking statement was waiting.
+    ) select run_id from dependencies order by run_id`;
+  return runs.map((r) => r.run_id);
+}
+
+async function publicationHistoryAccess(
+  context: ContentIdentity,
+  sessionId: string,
+  sql: Sql,
+  lock: boolean,
+  currentAccess: boolean,
+  messageIds?: readonly string[],
+) {
+  const runs = await referencePublicationDependencyRuns(
+    context,
+    sessionId,
+    sql,
+    messageIds,
+  );
+  if (!runs.length) return { used: false, canRead: true, revoked: false };
+  const used = await sql<{ id: string }[]>`
+    select distinct s.id from allrice_employee_runs er
+    cross join lateral jsonb_array_elements(coalesce(er.reference_reads,'[]'::jsonb)) receipt
+    join allrice_knowledge_revisions r on r.id::text=receipt->'citation'->'reference'->>'revisionId'
+      and r.knowledge_source_id::text=receipt->'citation'->'reference'->>'sourceId'
+      and r.checksum=receipt->'citation'->'reference'->>'digest'
+    join allrice_storage_objects retained on retained.id=r.file_object_id
+      and retained.checksum=receipt->'citation'->'reference'->>'checksum'
+    join allrice_knowledge_sources s on s.id=r.knowledge_source_id
+      and s.organization_id=${context.organizationId} and s.publication_kind is not null
+    where er.run_id in ${sql(runs)} order by s.id`;
+  if (!used.length) return { used: false, canRead: true, revoked: false };
+  // Only the narrow identity/source/policy gates run under the queue's existing
+  // root/Job prefix. No Session, generation, runtime or background locks follow.
+  // Identity precedes sources, matching publication/authority writers.
+  const principal = currentAccess
+    ? await readContentPrincipal(context, sql, lock)
+    : null;
+  const sources = await sql<{ id: string; status: string }[]>`
+    select s.id,s.status from allrice_knowledge_sources s
+    where s.id in ${sql(used.map((s) => s.id))}
+    order by s.id ${lock ? sql`for share of s` : sql``}`;
+  let canRead =
+      sources.length === used.length && (!currentAccess || principal !== null),
+    revoked = false;
   for (const source of sources) {
-    if (source.status !== 'archived') continue;
-    const [action] = source.revoked
-      ? [true]
-      : await sql`select source_id from allrice_knowledge_reference_actions
-      where source_id=${source.id} and input->>'action' in ('revoke','delete') limit 1`;
-    if (action) return true;
+    if (source.status !== 'active') canRead = false;
+    if (source.status === 'archived') {
+      // Re-read after the source lock wait, not an action subquery evaluated
+      // using the statement snapshot that preceded the withdrawal commit.
+      const [action] =
+        await sql`select source_id from allrice_knowledge_reference_actions
+        where source_id=${source.id} and input->>'action' in ('revoke','delete') limit 1`;
+      revoked ||= !!action;
+    }
+    if (currentAccess && canRead) {
+      const [policy] = await sql<{ object_id: string }[]>`
+        select p.object_id from allrice_workbench_file_policies p
+        join allrice_knowledge_revisions r on r.file_object_id=p.object_id and r.knowledge_source_id=p.reference_source_id
+        where p.reference_source_id=${source.id}`;
+      canRead =
+        !!policy &&
+        !!(await workbenchFileAccess(context, policy.object_id, sql, lock))
+          ?.canRead;
+    }
   }
-  return false;
+  return { used: true, canRead, revoked };
+}
+
+/** Current loss stops only this visible commit. It never writes permanent
+ * invalidation or turns an audience edit into a revoke/delete fact. */
+export function readReferencePublicationHistoryAccess(
+  context: ContentIdentity,
+  sessionId: string,
+  sql: Sql,
+  lock = false,
+) {
+  return publicationHistoryAccess(context, sessionId, sql, lock, true);
+}
+
+/** Own Session history is permanent Q8; external frozen message checks pass
+ * exact message IDs so future Runs cannot be added retroactively. */
+export async function hasRevokedReferencePublicationHistory(
+  context: ContentIdentity,
+  sessionId: string,
+  sql: Sql = getDatabase(),
+  lock = false,
+  messageIds?: readonly string[],
+) {
+  return (
+    await publicationHistoryAccess(
+      context,
+      sessionId,
+      sql,
+      lock,
+      false,
+      messageIds,
+    )
+  ).revoked;
 }
 
 export async function captureReferenceSelections(
