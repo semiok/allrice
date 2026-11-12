@@ -4,6 +4,43 @@ import type { ReactNode, Ref } from 'react';
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives';
 import css from './employee-capability-presentation.module.css';
 
+export function EmployeeCapabilityAddButton({
+  children,
+  disabled,
+  onClick,
+}: {
+  children: ReactNode;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      className={css.add}
+      disabled={disabled}
+      icon={
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.75"
+          strokeLinecap="round"
+          aria-hidden="true"
+        >
+          <path d="M12 5v14M5 12h14" />
+        </svg>
+      }
+      onClick={onClick}
+    >
+      {children}
+    </Button>
+  );
+}
+
 export function EmployeeCapabilityRow({
   name,
   description,
@@ -230,8 +267,8 @@ export function EmployeeCapabilityDanger({
   );
 }
 
-/** Display seam only. No employee plugin catalog/binding or URL is fabricated.
- * The production host must not mount this until a real authorized catalog exists. */
+/** Display seam only. Production hosts currently mount the approved empty view.
+ * Populated entries and actions require a real authorized catalog and callbacks. */
 export function EmployeePluginSection({
   headingId,
   plugins,
@@ -245,7 +282,7 @@ export function EmployeePluginSection({
     description: string;
     href: string;
   }>;
-  onDetails: (id: string) => void;
+  onDetails?: (id: string) => void;
   onAdd?: () => void;
 }) {
   return (
@@ -260,9 +297,9 @@ export function EmployeePluginSection({
         description="带有独立界面的工具，点击打开新页面。"
         action={
           onAdd && (
-            <Button type="button" variant="outline" size="sm" onClick={onAdd}>
+            <EmployeeCapabilityAddButton onClick={onAdd}>
               添加插件
-            </Button>
+            </EmployeeCapabilityAddButton>
           )
         }
       />
@@ -283,18 +320,20 @@ export function EmployeePluginSection({
                 >
                   打开
                 </EmployeePluginOpenLink>
-                <button type="button" onClick={() => onDetails(plugin.id)}>
-                  详情
-                  <svg
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.75"
-                    aria-hidden="true"
-                  >
-                    <path d="m9 5 7 7-7 7" />
-                  </svg>
-                </button>
+                {onDetails && (
+                  <button type="button" onClick={() => onDetails(plugin.id)}>
+                    详情
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.75"
+                      aria-hidden="true"
+                    >
+                      <path d="m9 5 7 7-7 7" />
+                    </svg>
+                  </button>
+                )}
               </div>
             </div>
           ))}

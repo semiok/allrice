@@ -4,6 +4,7 @@ import { useId } from 'react';
 import type { EmployeeSkillCatalog } from '@allrice/contracts';
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives';
 import {
+  EmployeeCapabilityAddButton,
   EmployeeCapabilityDanger,
   EmployeeCapabilityDetailsHeader,
   EmployeeCapabilityHeading,
@@ -62,30 +63,9 @@ export function EmployeeSkillsSection({
         action={
           catalog?.canInstall &&
           onAdd && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className={css.add}
-              disabled={disabled}
-              icon={
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.75"
-                  strokeLinecap="round"
-                  aria-hidden="true"
-                >
-                  <path d="M12 5v14M5 12h14" />
-                </svg>
-              }
-              onClick={onAdd}
-            >
+            <EmployeeCapabilityAddButton disabled={disabled} onClick={onAdd}>
               添加技能
-            </Button>
+            </EmployeeCapabilityAddButton>
           )
         }
       />

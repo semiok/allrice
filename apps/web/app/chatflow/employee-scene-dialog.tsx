@@ -20,6 +20,7 @@ import {
 } from './use-employee-scene-catalog';
 import css from './employee-scene-dialog.module.css';
 import {
+  EmployeeCapabilityAddButton,
   EmployeeCapabilityDanger,
   EmployeeCapabilityDetailsHeader,
   EmployeeCapabilityEmpty,
@@ -236,13 +237,12 @@ export function EmployeeSceneList(props: {
   const heading = useId();
   const writable = catalog.canMaintain && !catalog.loading && !catalog.error;
   const create = (
-    <Button
-      variant="outline"
+    <EmployeeCapabilityAddButton
       disabled={catalog.busy || catalog.uncertain}
       onClick={props.onCreate}
     >
       添加场景
-    </Button>
+    </EmployeeCapabilityAddButton>
   );
   return (
     <section
