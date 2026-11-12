@@ -1,7 +1,14 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { open, rename, rm } from 'node:fs/promises';
+import {
+  TransformStream,
+  type ReadableStream,
+  type ReadableStreamDefaultReader,
+} from 'node:stream/web';
 import { setTimeout as delay } from 'node:timers/promises';
+import { transferableAbortController } from 'node:util';
+import { Worker } from 'node:worker_threads';
 import { RuntimeCommandError as LocalCommandError } from './errors.js';
 type Asset = {
   fileName: string;
@@ -62,6 +69,146 @@ const redirectHosts = new Set([
   'download.docker.com',
   'raw.githubusercontent.com',
 ]);
+type AssetResponse = {
+  status: number;
+  headers: Headers;
+  body: ReadableStream<Uint8Array> | null;
+  close: () => Promise<void>;
+};
+// Each native fetch owns an isolated Node environment, including its default
+// startup proxy configuration. Only metadata and the native stream cross it.
+const assetFetchWorker = new URL(
+  `data:text/javascript,${encodeURIComponent(`
+import { parentPort, workerData } from 'node:worker_threads';
+parentPort.once('message', () => parentPort.close());
+try {
+  const response = await fetch(workerData.url, {
+    redirect: 'manual',
+    headers: workerData.headers,
+    signal: workerData.signal,
+  });
+  const body = response.body;
+  parentPort.postMessage(
+    { status: response.status, headers: [...response.headers], body },
+    body ? [body] : [],
+  );
+  if (!body) parentPort.close();
+} catch (error) {
+  parentPort.postMessage(error);
+  parentPort.close();
+}
+`)}`,
+);
+async function requestAsset(
+  url: URL,
+  headers: Record<string, string>,
+  signal: AbortSignal,
+): Promise<AssetResponse> {
+  signal.throwIfAborted();
+  const owned = transferableAbortController();
+  const worker = new Worker(assetFetchWorker, {
+    workerData: { url: url.href, headers, signal: owned.signal },
+    transferList: [owned.signal],
+  });
+  let eof = false;
+  let source: AssetResponse['body'] = null;
+  let body: AssetResponse['body'] = null;
+  let piping: Promise<void> | undefined;
+  let closing: Promise<void> | undefined;
+  let rejectHeaders!: (error: unknown) => void;
+  const fail = (error: Error) => {
+    owned.abort(error);
+    rejectHeaders(error);
+  };
+  const exited = new Promise<void>((resolve) =>
+    worker.once('exit', () => {
+      if (!eof && !owned.signal.aborted)
+        fail(new TypeError('Runtime asset worker exited before EOF'));
+      resolve();
+    }),
+  );
+  const abort = () => {
+    if (eof) return;
+    // Keep the caller's possibly non-cloneable reason in this thread.
+    owned.abort(new Error('Runtime asset request canceled'));
+    rejectHeaders(signal.reason);
+  };
+  const close = () =>
+    (closing ??= (async () => {
+      if (!eof) {
+        owned.abort(new Error('Runtime asset request released'));
+        if (body && !body.locked) await body.cancel().catch(() => undefined);
+        // Native cancellation closes the receiving stream port before its
+        // producer is terminated, including a read already waiting for data.
+        await piping?.catch(() => undefined);
+        if (source && !source.locked)
+          await source.cancel().catch(() => undefined);
+        await worker.terminate();
+      }
+      await exited;
+      await piping?.catch(() => undefined);
+      if (!eof && source && !source.locked)
+        await source.cancel().catch(() => undefined);
+      signal.removeEventListener('abort', abort);
+    })());
+  const response = new Promise<AssetResponse>((resolve, reject) => {
+    rejectHeaders = reject;
+    worker.once('error', fail);
+    worker.once(
+      'message',
+      (
+        message:
+          | Error
+          | {
+              status: number;
+              headers: [string, string][];
+              body: ReadableStream<Uint8Array> | null;
+            },
+      ) => {
+        try {
+          if (message instanceof Error) return fail(message);
+          source = message.body;
+          if (owned.signal.aborted) {
+            piping = message.body?.cancel();
+            return reject(signal.aborted ? signal.reason : owned.signal.reason);
+          }
+          const headers = new Headers(message.headers);
+          if (message.body) {
+            const stream = new TransformStream<Uint8Array, Uint8Array>({
+              flush() {
+                eof = true;
+                worker.postMessage('release');
+              },
+            });
+            body = stream.readable;
+            piping = message.body.pipeTo(stream.writable, {
+              signal: owned.signal,
+            });
+            void piping.catch(() => undefined);
+          } else eof = true;
+          resolve({ status: message.status, headers, body, close });
+        } catch (error) {
+          if (!(message instanceof Error) && !message.body?.locked)
+            piping = message.body?.cancel();
+          fail(
+            error instanceof Error
+              ? error
+              : new TypeError('Runtime asset response unavailable'),
+          );
+        }
+      },
+    );
+  });
+  signal.addEventListener('abort', abort, { once: true });
+  if (signal.aborted) abort();
+  try {
+    return await response;
+  } catch (error) {
+    await close();
+    if (signal.aborted) throw signal.reason;
+    throw error;
+  }
+}
 async function fetchAsset(
   asset: Asset,
   offset: number,
@@ -70,18 +217,18 @@ async function fetchAsset(
 ) {
   let url = new URL(asset.url);
   for (let i = 0; i < 5; i++) {
-    const response = await fetch(url, {
-      redirect: 'manual',
-      signal,
-      headers: {
+    const response = await requestAsset(
+      url,
+      {
         'Accept-Encoding': 'identity',
         ...(offset
           ? { Range: `bytes=${offset}-`, ...(etag ? { 'If-Range': etag } : {}) }
           : {}),
       },
-    });
+      signal,
+    );
     if (response.status < 300 || response.status > 399) return response;
-    await response.body?.cancel();
+    await response.close();
     const location = response.headers.get('location');
     const next = location ? new URL(location, url) : null;
     if (
@@ -190,6 +337,7 @@ export async function downloadManagedRuntimeAsset(
         await file.truncate(0);
       for (let attempt = 1; attempt <= 3; attempt++) {
         budget.throwIfAborted();
+        let response: AssetResponse | undefined;
         let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
         const requestAbort = new AbortController();
         const requestSignal = AbortSignal.any([budget, requestAbort.signal]);
@@ -211,7 +359,7 @@ export async function downloadManagedRuntimeAsset(
           let offset = (await file.stat()).size;
           resumed = offset > 0;
           resetIdle();
-          const response = await fetchAsset(asset, offset, etag, requestSignal);
+          response = await fetchAsset(asset, offset, etag, requestSignal);
           if (!response.body)
             throw new LocalCommandError('RUNTIME_DOWNLOAD_UNAVAILABLE');
           reader = response.body.getReader();
@@ -362,6 +510,7 @@ export async function downloadManagedRuntimeAsset(
           requestAbort.abort();
           await reader?.cancel().catch(() => undefined);
           reader?.releaseLock();
+          await response?.close();
         }
         await delay(attempt * 250, undefined, { signal: budget });
       }

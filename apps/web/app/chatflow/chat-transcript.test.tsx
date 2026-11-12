@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ChatTranscript } from './chat-transcript';
 import type { Message } from './chatflow-types';
+import type { WorkProcessMaterialFeed } from './work-process-material';
 import type {
   ChatFlowEventEnvelope,
   InteractionStatus,
@@ -28,14 +29,21 @@ function render(
   shownMessages = messages,
   runTimings?: InteractionStatus['runTimings'],
   overrides: Partial<ComponentProps<typeof ChatTranscript>> = {},
+  cloudFeed: Partial<WorkProcessMaterialFeed> = {},
 ) {
-  panels.local.mockReturnValue(null);
+  panels.local.mockImplementation(
+    ({ children }) =>
+      children?.({ history: [], interaction: null, feedback: null }) ?? null,
+  );
   panels.cloud.mockImplementation(
     ({ children }) =>
       children?.({
         operations: [],
         renderOperation: () => null,
+        history: [],
+        interaction: null,
         feedback: null,
+        ...cloudFeed,
       }) ?? null,
   );
   return renderToStaticMarkup(
@@ -58,6 +66,42 @@ function render(
   );
 }
 describe('historical transcript capability gating', () => {
+  it('renders the first material selected by source and id without borrowing a duplicate body', () => {
+    const first = {
+      source: 'cloud' as const,
+      id: 'same',
+      runId: 'run-0',
+      title: '第一份历史材料',
+      status: '已完成',
+      fields: [{ label: '结果', value: 'FIRST_BODY' }],
+    };
+    const html = render(
+      false,
+      [messages[0]!],
+      undefined,
+      { transcriptView: 'verbose' },
+      {
+        history: [
+          first,
+          { ...first, fields: [{ label: '结果', value: 'DUPLICATE_BODY' }] },
+          {
+            ...first,
+            source: 'mcp',
+            fields: [{ label: '结果', value: 'OTHER_SOURCE_BODY' }],
+          },
+        ],
+        interaction: <button>唯一当前审批</button>,
+      },
+    );
+    expect(html.match(/data-process-material="cloud:same"/g)).toHaveLength(1);
+    expect(html.match(/data-process-material="mcp:same"/g)).toHaveLength(1);
+    expect(html).toContain('FIRST_BODY');
+    expect(html).toContain('OTHER_SOURCE_BODY');
+    expect(html).not.toContain('DUPLICATE_BODY');
+    expect(html.match(/唯一当前审批/g)).toHaveLength(1);
+    expect(html).toContain('An existing answer');
+  });
+
   it('folds an actual scheduled wake without presenting internal instructions as human prose', () => {
     const text = '这项周期任务本期已经到期，请现在执行原始要求中的工作。';
     const wake: Message = {
@@ -673,10 +717,12 @@ describe('historical transcript capability gating', () => {
   });
 
   it.each([undefined, false])(
-    'never mounts a local request panel while disabled (%s)',
+    'keeps local request reading disabled in the stable controller chain (%s)',
     (enabled) => {
       expect(render(enabled)).toContain('An existing answer');
-      expect(panels.local).not.toHaveBeenCalled();
+      expect(panels.local).toHaveBeenCalledTimes(20);
+      for (const [props] of panels.local.mock.calls)
+        expect(props).toMatchObject({ enabled: false });
       // Cloud history stays readable when new execution is OFF.
       expect(panels.cloud).toHaveBeenCalledTimes(20);
     },
@@ -688,6 +734,7 @@ describe('historical transcript capability gating', () => {
     expect(panels.local.mock.calls[0]![0]).toMatchObject({
       runId: 'run-0',
       runActive: false,
+      enabled: true,
     });
   });
 });

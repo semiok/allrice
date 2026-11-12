@@ -96,8 +96,7 @@
   font-weight: 600;
 }
 .close:focus-visible,
-.tabs button:focus-visible,
-.archiveAction:focus-visible {
+.tabs button:focus-visible {
   outline: 2px solid var(--dsw-alias-label-primary);
   outline-offset: 2px;
 }
@@ -200,24 +199,6 @@
   flex-basis: 100%;
   margin: 0;
 }
-.archiveZone {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 4px 24px 20px;
-  padding-top: 20px;
-  border-top: 1px solid var(--dsw-alias-border-l2);
-}
-.archiveAction {
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--ar-danger-text);
-  font: inherit;
-  font-size: 12px;
-  line-height: 18px;
-  cursor: pointer;
-}
 .mobileEntry {
   display: grid;
   place-items: center;
@@ -305,8 +286,5 @@
   }
   .readOnly > button {
     margin-left: auto;
-  }
-  .archiveAction {
-    min-height: 44px;
   }
 }

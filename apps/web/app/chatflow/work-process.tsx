@@ -1,13 +1,27 @@
 'use client';
 
-import { Children, useEffect, useState, useRef, type ReactNode } from 'react';
+import {
+  Children,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useState,
+  useRef,
+  type ReactNode,
+} from 'react';
 import {
   WorkProcessReadingState,
   WorkProcessDisclosureScope,
   useProcessDisclosure,
+  useProcessMaterialReveal,
+  useQuestionDisclosureOpen,
 } from './work-process-reading-state';
 import { AssistantMarkdown } from './assistant-markdown';
-import type { WorkProgressPart } from '../../lib/chatflow/work-progress';
+import {
+  workProcessReferenceKey,
+  type WorkProgressPart,
+  type WorkProcessReference,
+} from '../../lib/chatflow/work-progress';
 import {
   DisclosureRow,
   IconThinkOutlineRegular,
@@ -31,6 +45,10 @@ import type {
 } from '@allrice/contracts';
 import type { NativeExperienceItem } from '../../lib/chatflow/native-experience';
 import {
+  nativeSubagentCallKind,
+  nativeSubagentDirectoryCall,
+} from '../../lib/chatflow/native-subagent-view';
+import {
   summarizeWorkProcess,
   workProcessTitle,
   type WorkProcessCategory,
@@ -39,12 +57,21 @@ import {
 import { IconThinkOutline14 } from './dsh-upstream/ProgressIcons';
 import reasoning from './dsh-upstream/ReasoningRow.module.css';
 import { RunElapsedTime } from './run-timing';
+import { WorkProcessStepView } from './work-process-step';
+import {
+  UserQuestionReceipt,
+  questionReceiptDisclosureId,
+  userQuestionReceiptState,
+} from './user-question-receipt';
+import type { WorkProcessQuestion } from '../../lib/chatflow/work-process-questions';
 import styles from './dsh-saas.module.css';
+import subagentStyles from './native-subagent-directory.module.css';
 import { presentationPolicyFor } from './dsh-upstream/presentation/presentation-policy';
 import type { ChatPresentationPolicy } from '@deepseek-ai/dsh-client-ui-chat/client';
 import {
   workProcessDisplayState,
   workProcessPresentation,
+  sameWorkProcessAnswer,
   type WorkProcessDisclosure,
   type WorkProcessPresentation,
 } from '../../lib/chatflow/work-process-presentation';
@@ -66,7 +93,6 @@ const stepIcons: Record<WorkProcessCategory, ReactNode> = {
   plan: <IconPlanOutlineRegular />,
   tool: <IconCordisPluginOutlineRegular />,
 };
-const noop = () => {};
 
 /** A live reasoning lifecycle adds no detail beyond the current phase header. */
 function onlyLiveThinking(steps: WorkProcessStep[], running: boolean) {
@@ -84,6 +110,7 @@ function onlyLiveThinking(steps: WorkProcessStep[], running: boolean) {
 /** DSH's native disclosure/Think chrome over Allrice's public event summary. */
 export function WorkProcess({
   items,
+  questions = [],
   parts,
   timing,
   running,
@@ -97,13 +124,17 @@ export function WorkProcess({
   artifacts,
   accessibleFiles,
   onOpenArtifact,
-  renderOperation,
+  onOpenSubagents,
+  subagentCount,
+  renderMaterial,
+  sharedReadingState = false,
   transcriptView = 'detailed',
   collapseTiming = 'completion',
   presentation,
   label = '工作过程',
 }: {
   items: NativeExperienceItem[];
+  questions?: readonly WorkProcessQuestion[];
   parts?: WorkProgressPart[];
   timing?: TaskRuntimeTiming;
   running: boolean;
@@ -117,23 +148,68 @@ export function WorkProcess({
   artifacts?: readonly WorkbenchArtifact[];
   accessibleFiles?: readonly { id: string; fileName: string }[];
   onOpenArtifact?: (id: string) => void;
+  onOpenSubagents?: (origin: { runId: string; callId: string }) => void;
+  subagentCount?: number;
   label?: string;
-  renderOperation?: (operationId: string) => ReactNode;
+  renderMaterial?: (reference: WorkProcessReference) => ReactNode;
+  sharedReadingState?: boolean;
   transcriptView?: UserPreferences['transcriptView'];
   collapseTiming?: UserPreferences['collapseTiming'];
   presentation?: WorkProcessPresentation;
 }) {
-  const root = useRef<HTMLElement>(null);
+  const root = useRef<HTMLDivElement>(null);
+  const processId = useId();
   const [disclosure, setDisclosure] = useState<WorkProcessDisclosure>();
   const [settledOnMount] = useState(!running);
+  const [materialReveal, setMaterialReveal] = useProcessMaterialReveal();
+  const revealingMaterial =
+    materialReveal &&
+    items.some((item) =>
+      item.operations?.some(
+        (ref) => workProcessReferenceKey(ref) === materialReveal,
+      ),
+    )
+      ? materialReveal
+      : undefined;
   const policy = presentationPolicyFor(transcriptView, collapseTiming);
   const currentPresentation =
     presentation ?? workProcessPresentation([], parts, undefined, false);
-  const withReadingState = (content: ReactNode) => (
-    <WorkProcessReadingState key={currentPresentation.runId} root={root}>
-      {content}
-    </WorkProcessReadingState>
-  );
+  const withReadingState = (content: ReactNode) => {
+    const frame = (
+      <div
+        ref={root}
+        className={styles.processBlock}
+        data-process-region={currentPresentation.runId}
+      >
+        {content}
+      </div>
+    );
+    return sharedReadingState ? (
+      frame
+    ) : (
+      <WorkProcessReadingState key={currentPresentation.runId} root={root}>
+        {frame}
+      </WorkProcessReadingState>
+    );
+  };
+  useLayoutEffect(() => {
+    if (!revealingMaterial) return;
+    if (
+      !disclosure?.open ||
+      !sameWorkProcessAnswer(disclosure.presentation, currentPresentation)
+    )
+      setDisclosure({ presentation: currentPresentation, open: true });
+    const target = root.current?.querySelector<HTMLElement>(
+      `[data-process-material="${CSS.escape(revealingMaterial)}"]`,
+    );
+    if (!target?.getClientRects().length) return;
+    target
+      .closest('[data-step-id]')
+      ?.querySelector<HTMLElement>('[data-disclosure-row]')
+      ?.focus({ preventScroll: true });
+    target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    setMaterialReveal(undefined);
+  });
   useEffect(() => {
     // A history answer can be expanded before its trace arrives. Bind that
     // choice once to the restored identity, so a later retry still resets it.
@@ -143,32 +219,84 @@ export function WorkProcess({
       currentPresentation.identityKnown &&
       disclosure.presentation.runId === currentPresentation.runId
     )
-      setDisclosure({ ...disclosure, presentation: currentPresentation });
+      setDisclosure((current) =>
+        current === disclosure
+          ? { ...disclosure, presentation: currentPresentation }
+          : current,
+      );
   }, [disclosure, currentPresentation]);
   const process = summarizeWorkProcess(items);
+  const directoryCall = nativeSubagentDirectoryCall(items);
+  const directoryLink =
+    onOpenSubagents && directoryCall && currentPresentation.identityKnown ? (
+      <button
+        type="button"
+        className={subagentStyles.processLink}
+        onClick={() =>
+          onOpenSubagents({
+            runId: currentPresentation.runId,
+            callId: directoryCall.id.slice(5),
+          })
+        }
+      >
+        <IconCordisPluginOutlineRegular />
+        查看子智能体
+        {Number.isSafeInteger(subagentCount) && subagentCount! >= 0
+          ? ` · ${subagentCount} 个智能体`
+          : ''}
+        <span aria-hidden>›</span>
+      </button>
+    ) : null;
+  const processItems = (entries: NativeExperienceItem[]) =>
+    directoryLink
+      ? entries.filter(
+          (item) =>
+            !(
+              item.kind === 'tool' &&
+              item.toolName === 'list_agents' &&
+              item.status === 'completed'
+            ),
+        )
+      : entries;
   const microStatus = running && (!streaming || !!parts);
   const waiting = timing?.phase === 'waiting';
-  const title = microStatus
-    ? waiting
-      ? timing?.resourceWaiting
-        ? '等待计算资源…'
-        : '等待处理…'
-      : process.active === '正在重新连接模型'
-        ? '正在重新连接模型…'
-        : process.active === '等待模型响应'
-          ? '等待模型响应…'
-          : process.active === '正在整理上下文'
-            ? '正在整理对话…'
-            : process.active
-              ? '执行中…'
-              : streaming
-                ? '回复中…'
-                : '思考中…'
-    : failed
-      ? (failureTitle ?? '未完成')
-      : canceled
-        ? '已停止'
-        : '工作过程';
+  const acceptingAnswers = running && !failed && !canceled;
+  const waitingQuestion =
+    acceptingAnswers &&
+    questions.some((question) => question.pending && !question.answer);
+  const submittedQuestion =
+    acceptingAnswers &&
+    questions.some(
+      (question) =>
+        question.pending &&
+        question.answer &&
+        userQuestionReceiptState(question.answer.status).state !== 'confirmed',
+    );
+  const title = waitingQuestion
+    ? '等待回答'
+    : submittedQuestion
+      ? '回答已提交'
+      : microStatus
+        ? waiting
+          ? timing?.resourceWaiting
+            ? '等待计算资源…'
+            : '等待处理…'
+          : process.active === '正在重新连接模型'
+            ? '正在重新连接模型…'
+            : process.active === '等待模型响应'
+              ? '等待模型响应…'
+              : process.active === '正在整理上下文'
+                ? '正在整理对话…'
+                : process.active
+                  ? '执行中…'
+                  : streaming
+                    ? '回复中…'
+                    : '思考中…'
+        : failed
+          ? (failureTitle ?? '未完成')
+          : canceled
+            ? '已停止'
+            : '工作过程';
   const expandable = Boolean(
     (process.steps.length && !onlyLiveThinking(process.steps, running)) ||
     Children.toArray(children).length ||
@@ -182,6 +310,36 @@ export function WorkProcess({
       )
     : undefined;
   const history = parts?.filter((part) => part.id !== final?.id);
+  const questionKeys = questions.flatMap((question) =>
+    question.answer
+      ? [
+          `step:${questionReceiptDisclosureId(question.request.questionId, question.answer.id)}`,
+        ]
+      : [],
+  );
+  const previousQuestions = useRef({
+    runId: currentPresentation.runId,
+    keys: questionKeys,
+  });
+  // Exact question/answer ownership can arrive with the final reply identity.
+  const migratedKeys =
+    previousQuestions.current.runId === currentPresentation.runId
+      ? questionKeys.filter(
+          (key) => !previousQuestions.current.keys.includes(key),
+        )
+      : [];
+  const readingQuestion = useQuestionDisclosureOpen(questionKeys);
+  const revealingQuestion = useQuestionDisclosureOpen(migratedKeys);
+  useLayoutEffect(() => {
+    // Only a committed ownership move invalidates an older closed choice.
+    previousQuestions.current = {
+      runId: currentPresentation.runId,
+      keys: questionKeys,
+    };
+    if (revealingQuestion)
+      setDisclosure({ presentation: currentPresentation, open: true });
+  });
+  const revealingQuestions = revealingQuestion ? migratedKeys : [];
   const display = workProcessDisplayState({
     policy,
     presentation: currentPresentation,
@@ -189,7 +347,13 @@ export function WorkProcess({
     failed,
     canceled,
     hasHistory: parts ? Boolean(history?.length || expandable) : expandable,
-    disclosure,
+    disclosure:
+      (revealingQuestion || revealingMaterial
+        ? { presentation: currentPresentation, open: true }
+        : disclosure) ??
+      (readingQuestion
+        ? { presentation: currentPresentation, open: true }
+        : undefined),
   });
   const toggle = () =>
     setDisclosure({ presentation: currentPresentation, open: !display.open });
@@ -197,7 +361,7 @@ export function WorkProcess({
     !expandable &&
     !failureTitle &&
     !parts?.length &&
-    !items.some((item) => item.operationId && renderOperation) &&
+    !items.some((item) => item.operations?.length && renderMaterial) &&
     !timing &&
     !microStatus &&
     traceStatus !== 'loading'
@@ -222,16 +386,36 @@ export function WorkProcess({
           summarizeWorkProcess(part.items).steps,
           running && !part.closed,
         ) ||
-        part.items.some((item) => item.operationId && renderOperation),
+        part.items.some((item) => item.operations?.length && renderMaterial),
     );
-    const renderPart = (part: WorkProgressPart) =>
+    const partId = (index: number) => `${processId}-part-${index}`;
+    const historyIds = visibleParts.flatMap((part, index) =>
+      part.id === final?.id ? [] : [partId(index)],
+    );
+    const retryId = traceStatus === 'failed' ? `${processId}-retry` : undefined;
+    const childrenId = Children.toArray(children).length
+      ? `${processId}-children`
+      : undefined;
+    const directoryId = directoryLink ? `${processId}-subagents` : undefined;
+    const ownedIds = [...historyIds, retryId, childrenId, directoryId]
+      .filter(Boolean)
+      .join(' ');
+    const hasVisibleHistory =
+      (showHistory &&
+        Boolean(historyIds.length || childrenId || directoryId)) ||
+      !!retryId;
+    const renderPart = (part: WorkProgressPart, index: number) =>
       part.kind === 'reply' ? (
         <div
           key={
             settledOnMount && part.id === final?.id ? 'final-reply' : part.id
           }
-          className={styles.processReply}
+          id={partId(index)}
+          className={`${styles.processPart} ${styles.processReply}`}
+          data-process-member={part.id !== final?.id || undefined}
           data-work-reply={part.id}
+          data-process-content={`reply:${part.id}`}
+          data-process-append
           hidden={!showHistory && part.id !== final?.id}
         >
           <AssistantMarkdown
@@ -243,22 +427,34 @@ export function WorkProcess({
           />
         </div>
       ) : (
-        <div key={part.id} hidden={!showHistory}>
+        <div
+          key={part.id}
+          id={partId(index)}
+          className={styles.processPart}
+          data-process-member
+          hidden={!showHistory}
+        >
           <WorkProcessGroup
-            items={part.items}
-            renderOperation={renderOperation}
+            items={processItems(part.items)}
+            questions={questions}
+            revealingQuestions={revealingQuestions}
+            renderMaterial={renderMaterial}
             running={running && !part.closed}
+            runActive={running}
             grouped={display.groupSteps}
             policy={policy}
             answerGeneration={currentPresentation.answerGeneration}
           />
         </div>
       );
-    return withReadingState(
+    // Keep every part in one keyed parent, including a reply that later becomes
+    // history or the final answer. ARIA ownership follows only real history.
+    return withReadingState([
       <section
-        ref={root}
-        className={styles.workProcess}
+        key="process-header"
+        className={`${styles.workProcess} ${hasVisibleHistory ? styles.processExpanded : ''}`}
         aria-label={label}
+        aria-owns={ownedIds || undefined}
         data-transcript-view={policy.mode}
         data-process-open={display.open}
       >
@@ -299,31 +495,53 @@ export function WorkProcess({
             </>
           }
         />
-        {visibleParts.length ||
-        traceStatus === 'failed' ||
-        Children.toArray(children).length ? (
-          <div className={styles.processFlow}>
-            {visibleParts.map(renderPart)}
-            {traceStatus === 'failed' ? (
-              <button
-                className={styles.nativeTraceRetry}
-                type="button"
-                onClick={onRetry}
-              >
-                过程加载失败，点击重试
-              </button>
-            ) : null}
-            {Children.toArray(children).length ? (
-              <div hidden={!showHistory}>{children}</div>
-            ) : null}
-          </div>
-        ) : null}
       </section>,
-    );
+      ...visibleParts.flatMap((part, index) =>
+        part.id === final?.id ? [] : [renderPart(part, index)],
+      ),
+      retryId ? (
+        <div
+          key="trace-retry"
+          id={retryId}
+          className={styles.processPart}
+          data-process-member
+        >
+          <button
+            className={styles.nativeTraceRetry}
+            type="button"
+            onClick={onRetry}
+          >
+            过程加载失败，点击重试
+          </button>
+        </div>
+      ) : null,
+      childrenId ? (
+        <div
+          key="process-children"
+          id={childrenId}
+          className={styles.processPart}
+          data-process-member
+          hidden={!showHistory}
+        >
+          {children}
+        </div>
+      ) : null,
+      directoryId ? (
+        <div
+          key="subagent-directory"
+          id={directoryId}
+          className={styles.processPart}
+          data-process-member
+          hidden={!showHistory}
+        >
+          {directoryLink}
+        </div>
+      ) : null,
+      final ? renderPart(final, visibleParts.indexOf(final)) : null,
+    ]);
   }
   return withReadingState(
     <section
-      ref={root}
       className={`${reasoning.root} ${styles.workProcess}`}
       aria-label={label}
       data-transcript-view={policy.mode}
@@ -372,8 +590,11 @@ export function WorkProcess({
         <div className={styles.processDetails}>
           <NativeStepsGroup
             key={currentPresentation.answerGeneration}
-            items={items}
+            items={processItems(items)}
+            questions={questions}
+            revealingQuestions={revealingQuestions}
             running={running}
+            renderMaterial={renderMaterial}
             grouped={display.groupSteps}
             policy={policy}
           />
@@ -388,24 +609,8 @@ export function WorkProcess({
           ) : null}
         </div>
         {children}
+        {directoryLink}
       </div>
-      {renderOperation && (
-        <div className={styles.processReceipts}>
-          {items
-            .filter((item) => item.operationId)
-            .map((item) => (
-              <div
-                className={styles.operationReceipt}
-                key={item.id}
-                data-process-operation={item.operationId}
-              >
-                <WorkProcessDisclosureScope id={item.operationId!}>
-                  {renderOperation(item.operationId!)}
-                </WorkProcessDisclosureScope>
-              </div>
-            ))}
-        </div>
-      )}
     </section>,
   );
 }
@@ -415,66 +620,129 @@ export function WorkProcess({
  */
 function WorkProcessGroup({
   items,
+  questions,
+  revealingQuestions,
   running,
-  renderOperation,
+  runActive,
+  renderMaterial,
   grouped,
   policy,
   answerGeneration,
 }: {
   items: NativeExperienceItem[];
+  questions: readonly WorkProcessQuestion[];
+  revealingQuestions: readonly string[];
   running: boolean;
-  renderOperation?: (operationId: string) => ReactNode;
+  runActive: boolean;
+  renderMaterial?: (reference: WorkProcessReference) => ReactNode;
   grouped: boolean;
   policy: ChatPresentationPolicy;
   answerGeneration: string;
 }) {
-  // Receipts supplement the native summary; they must not replace its steps.
-  // Keep both at this process boundary, before any later assistant reply.
+  // Authorized materials belong to the original native step, never a second card.
   return (
     <div className={styles.processReceipts}>
       <NativeStepsGroup
         key={answerGeneration}
         items={items}
+        questions={questions}
+        revealingQuestions={revealingQuestions}
         running={running}
+        runActive={runActive}
+        renderMaterial={renderMaterial}
         grouped={grouped}
         policy={policy}
       />
-      {renderOperation &&
-        items
-          .filter((item) => item.operationId)
-          .map((item) => (
-            <div
-              className={styles.operationReceipt}
-              key={item.id}
-              data-process-operation={item.operationId}
-            >
-              <WorkProcessDisclosureScope id={item.operationId!}>
-                {renderOperation(item.operationId!)}
-              </WorkProcessDisclosureScope>
-            </div>
-          ))}
     </div>
   );
 }
 
 function NativeStepsGroup({
   items,
+  questions,
+  revealingQuestions,
   running,
+  runActive = running,
+  renderMaterial,
   grouped,
   policy,
 }: {
   items: NativeExperienceItem[];
+  questions: readonly WorkProcessQuestion[];
+  revealingQuestions: readonly string[];
   running: boolean;
+  runActive?: boolean;
+  renderMaterial?: (reference: WorkProcessReference) => ReactNode;
   grouped: boolean;
   policy: ChatPresentationPolicy;
 }) {
-  const [open, setOpen] = useProcessDisclosure<boolean>(
-    items.map((item) => `group:${item.id}`),
-    false,
+  const aliases = items.flatMap(
+    (item) =>
+      item.operations?.map(
+        (ref) => `operation:${workProcessReferenceKey(ref)}`,
+      ) ?? [],
   );
+  const keys = [...new Set([...items.map((item) => item.id), ...aliases])].map(
+    (id) => `group:${id}`,
+  );
+  const [manual, setOpen] = useProcessDisclosure<boolean | undefined>(
+    keys,
+    undefined,
+    false,
+    aliases.length > 0,
+  );
+  const [materialReveal] = useProcessMaterialReveal();
+  const revealingMaterial = aliases.includes(`operation:${materialReveal}`);
+  const questionKeys = questions.flatMap((question) =>
+    question.answer &&
+    items.some((item) => item.id === `tool:${question.callId}`)
+      ? [
+          `step:${questionReceiptDisclosureId(question.request.questionId, question.answer.id)}`,
+        ]
+      : [],
+  );
+  const readingQuestion = useQuestionDisclosureOpen(questionKeys);
+  const revealingQuestion = useQuestionDisclosureOpen(
+    questionKeys.filter((key) => revealingQuestions.includes(key)),
+  );
+  const open =
+    revealingMaterial || revealingQuestion || (manual ?? readingQuestion);
+  useLayoutEffect(() => {
+    if ((revealingMaterial || revealingQuestion) && manual !== true)
+      setOpen(true);
+  });
   const { steps } = summarizeWorkProcess(items);
   if (!steps.length || onlyLiveThinking(steps, running)) return null;
-  if (!grouped) return <WorkProcessSteps items={items} running={running} />;
+  // The approved default process already has its turn disclosure. Show its
+  // concrete steps directly; saved compact/standard grouping stays native.
+  if (policy.mode === 'detailed')
+    return (
+      <section
+        aria-label="工作步骤"
+        className={styles.processDetails}
+        data-process-scrollport
+      >
+        <WorkProcessSteps
+          items={items}
+          questions={questions}
+          running={running}
+          runActive={runActive}
+          renderMaterial={renderMaterial}
+          policy={policy}
+        />
+      </section>
+    );
+  if (!grouped || steps.every((step) => step.category === 'question'))
+    return (
+      <WorkProcessSteps
+        items={items}
+        questions={questions}
+        running={running}
+        runActive={runActive}
+        renderMaterial={renderMaterial}
+        policy={policy}
+      />
+    );
   const live = [...steps]
     .reverse()
     .find((step) => ['started', 'updated'].includes(step.status));
@@ -499,8 +767,8 @@ function NativeStepsGroup({
         titleClassName={styles.processTitle}
         collapsedContent={
           <>
-            {items.map((item) => (
-              <span key={item.id} data-process-control={`group:${item.id}`} />
+            {keys.map((key) => (
+              <span key={key} data-process-control={key} />
             ))}
             {!open && preview ? (
               <>
@@ -511,8 +779,15 @@ function NativeStepsGroup({
           </>
         }
       >
-        <div className={styles.processDetails}>
-          <WorkProcessSteps items={items} running={running} />
+        <div className={styles.processDetails} data-process-scrollport>
+          <WorkProcessSteps
+            items={items}
+            questions={questions}
+            running={running}
+            runActive={runActive}
+            renderMaterial={renderMaterial}
+            policy={policy}
+          />
         </div>
       </DisclosureRow>
     </section>
@@ -521,62 +796,156 @@ function NativeStepsGroup({
 
 function WorkProcessSteps({
   items,
+  questions,
   running,
+  runActive,
+  renderMaterial,
+  policy,
 }: {
   items: NativeExperienceItem[];
+  questions: readonly WorkProcessQuestion[];
   running: boolean;
+  runActive: boolean;
+  renderMaterial?: (reference: WorkProcessReference) => ReactNode;
+  policy: ChatPresentationPolicy;
 }) {
+  const [materialReveal] = useProcessMaterialReveal();
   const { steps } = summarizeWorkProcess(items);
   if (!steps.length) return null;
   return (
     <ul className={styles.processSteps} aria-label="工作步骤">
       {steps.map((step) => {
-        const pending =
-          ['started', 'updated'].includes(step.status) &&
-          step.category !== 'plan';
+        const subagentCallKind = nativeSubagentCallKind(
+          items.find((item) => item.id === step.id && item.kind === 'tool')
+            ?.toolName,
+        );
+        const item = items.find((item) => item.id === step.id);
+        const operations = item?.operations ?? [];
+        const stepRunning =
+          item &&
+          (item.kind === 'tool' || item.kind === 'search') &&
+          item.id.startsWith('tool:')
+            ? runActive
+            : running;
+        const materialized = !!renderMaterial && operations.length > 0;
+        const unassigned = step.id.startsWith('operation:')
+          ? operations[0]
+          : undefined;
+        const question = questions.find(
+          (question) => step.id === `tool:${question.callId}`,
+        );
+        const active = ['started', 'updated'].includes(step.status);
+        const pending = active && step.category !== 'plan';
         const status =
-          step.status === 'failed'
-            ? `未成功${step.error ? `：${step.error}` : ''}`
-            : step.status === 'info'
-              ? '等待处理'
-              : pending && !running
-                ? '结果未确认'
-                : undefined;
+          unassigned?.status ??
+          (step.status === 'failed'
+            ? '未成功'
+            : stepRunning && question?.pending && !question.answer
+              ? '等待回答'
+              : question?.answered
+                ? '已回答'
+                : step.status === 'info'
+                  ? '结果未确认'
+                  : step.status === 'completed'
+                    ? '已完成'
+                    : active && !stepRunning
+                      ? '结果未确认'
+                      : active
+                        ? '运行中'
+                        : '结果未确认');
         return (
           <li
             key={step.id}
             data-category={step.category}
             data-failed={step.status === 'failed' || undefined}
           >
-            <DisclosureRow
-              icon={
-                <span
-                  className={
-                    pending && running ? styles.processPulse : undefined
-                  }
-                  aria-hidden
-                >
-                  {stepIcons[step.category]}
-                </span>
-              }
-              title={step.label}
-              open={false}
-              expandable={false}
-              onToggle={noop}
-              rowClassName={styles.processStepRow}
-              titleClassName={styles.processStepLabel}
-              collapsedContent={
-                <>
-                  <span className={reasoning.separator} aria-hidden />
-                  <span className={styles.processStepDescription}>
-                    {step.description}
+            {question?.answer ? (
+              <UserQuestionReceipt
+                messageId={question.answer.id}
+                answer={question.answer.answer}
+                text={question.answer.text}
+                createdAt={question.answer.createdAt}
+                status={question.answer.status}
+                questions={question.request.questions}
+              />
+            ) : (
+              <WorkProcessStepView
+                id={step.id}
+                disclosureIds={operations.map(
+                  (ref) => `operation:${workProcessReferenceKey(ref)}`,
+                )}
+                reveal={operations.some(
+                  (ref) => workProcessReferenceKey(ref) === materialReveal,
+                )}
+                icon={
+                  <span
+                    className={
+                      pending && stepRunning ? styles.processPulse : undefined
+                    }
+                    aria-hidden
+                  >
+                    {stepIcons[step.category]}
                   </span>
-                </>
-              }
-            />
-            {status ? (
-              <small className={styles.processStepStatus}>{status}</small>
-            ) : null}
+                }
+                title={
+                  question
+                    ? `提问 · ${question.request.questions[0]?.question ?? step.title}`
+                    : subagentCallKind === 'create'
+                      ? `创建子智能体${step.input ? ` · ${step.input}` : ''}`
+                      : subagentCallKind === 'directory'
+                        ? '查看子智能体'
+                        : (unassigned?.title ?? step.title)
+                }
+                status={status}
+                elapsedMs={unassigned ? unassigned.elapsedMs : step.elapsedMs}
+                running={pending && stepRunning}
+                failed={step.status === 'failed'}
+                initialOpen={
+                  policy.mode === 'verbose' || step.status === 'failed'
+                }
+                details={
+                  question
+                    ? question.request.questions.map((item) => ({
+                        label: '问题',
+                        value: item.question,
+                      }))
+                    : materialized ||
+                        (subagentCallKind === 'create' &&
+                          step.status === 'completed')
+                      ? []
+                      : [
+                          ...(step.input
+                            ? [{ label: '输入', value: step.input }]
+                            : []),
+                          ...(step.result
+                            ? [
+                                {
+                                  label:
+                                    step.status === 'failed' ? '原因' : '结果',
+                                  value: step.result,
+                                },
+                              ]
+                            : []),
+                        ]
+                }
+              >
+                {materialized && step.result && (
+                  <p data-process-content={`step:${step.id}:receipt`}>
+                    {step.status === 'failed' && <strong>原因：</strong>}
+                    {step.result}
+                  </p>
+                )}
+                {renderMaterial &&
+                  operations.map((reference) => (
+                    <WorkProcessDisclosureScope
+                      key={workProcessReferenceKey(reference)}
+                      id={workProcessReferenceKey(reference)}
+                    >
+                      {renderMaterial(reference)}
+                    </WorkProcessDisclosureScope>
+                  ))}
+              </WorkProcessStepView>
+            )}
           </li>
         );
       })}

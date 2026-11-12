@@ -628,6 +628,7 @@ export type BrowserWorkspaceView = {
   profile: BrowserProfile;
   available: boolean;
   operations: {
+    nativeCallId?: string | null;
     snapshot: ReturnType<typeof RuntimeOperationSnapshotSchema.parse>;
     command: BrowserCommand;
     approval: RuntimeActionApprovalSnapshot | null;
@@ -668,13 +669,16 @@ export async function listBrowserWorkspaces(
     }
     const ops = await db<
       {
+        native_call_id: string | null;
         snapshot: unknown;
         payload: unknown;
         result: unknown;
         approval_id: string | null;
       }[]
-    >`select o.snapshot,i.payload,i.result,a.id as approval_id from allrice_browser_operation_inputs i
+    >`select oc.native_call_id,o.snapshot,i.payload,i.result,a.id as approval_id from allrice_browser_operation_inputs i
       join allrice_runtime_operations o on o.id=i.operation_id left join allrice_approval_requests a on a.resource_type='runtime_operation' and a.resource_id=o.id
+      left join allrice_task_operation_calls oc
+        on oc.operation_id=o.id and oc.run_id=o.root_run_id and oc.agent_id=o.run_id
       where i.browser_workspace_id=${w.id} order by i.created_at limit 100`;
     const operations: BrowserWorkspaceView['operations'] = [];
     for (const op of ops) {
@@ -690,6 +694,7 @@ export async function listBrowserWorkspaces(
         /* projection is not authority */
       }
       operations.push({
+        nativeCallId: op.native_call_id,
         snapshot,
         command,
         approval: op.approval_id

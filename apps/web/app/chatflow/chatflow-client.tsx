@@ -4,6 +4,16 @@ import {
   EmptyNativeSubagentDirectory,
   NativeSubagentDirectory,
 } from './native-subagent-directory';
+import { NativeSubagentWorkbench } from './native-subagent-workbench';
+import {
+  nativeSubagentReferencedEntry,
+  nativeSubagentReferenceFromTabId,
+  nativeSubagentRefineGeneration,
+  nativeSubagentScopeKey,
+  nativeSubagentTabId,
+  type NativeSubagentReference,
+  type NativeSubagentViewScope,
+} from '../../lib/chatflow/native-subagent-view';
 import {
   nativeSubagentReadyKey,
   useNativeSubagents,
@@ -526,6 +536,116 @@ export function ChatFlowClient({
   const fileScope = `${workspace?.viewerId}/${workspace?.workspaceId}/${activeId ?? 'draft'}`;
   const currentFilesRequest =
     filesRequest.scope === fileScope ? filesRequest.revision : 0;
+  const {
+    loadRunTrace,
+    recoverRun,
+    resetRunState,
+    runTraces,
+    runViews,
+    streamRun,
+  } = useRunStream({
+    activeId,
+    history,
+    loadHistory,
+    loadWorkspace,
+    setError,
+    tenantHeaders,
+    workspace,
+  });
+  const nativeRootRunId =
+    history?.session.id === activeId
+      ? (history.messages.findLast((message) => message.runId)?.runId ?? null)
+      : null;
+  const nativeReadyKey = nativeSubagentReadyKey(
+    runViews[nativeRootRunId ?? ''],
+  );
+  const nativeRootEvents =
+    runViews[nativeRootRunId ?? '']?.events ??
+    runTraces[nativeRootRunId ?? '']?.events ??
+    [];
+  const nativeSession =
+    archive.sessions.find((session) => session.id === activeId) ??
+    (history?.session.id === activeId ? history.session : undefined);
+  const nativeBindingRevision = `${settingsScope}/${nativeSession?.ownerId}/${nativeSession?.employeeAssignmentId}/${nativeSession?.employeeInstanceId}/${nativeSession?.employeeVersionId}/${nativeReadyKey}`;
+  const subagentScope: NativeSubagentViewScope | null =
+    workspace && activeId
+      ? {
+          organizationId: workspace.organizationId,
+          workspaceId: workspace.workspaceId,
+          sessionId: activeId,
+          viewerId: workspace.viewerId ?? null,
+          ownerId: nativeSession?.ownerId ?? null,
+          rootRunId: nativeRootRunId,
+          generation:
+            nativeRootEvents.findLast(
+              (event) => event.runId === nativeRootRunId,
+            )?.generation ?? null,
+          bindingRevision: nativeBindingRevision,
+        }
+      : null;
+  const nativeReadable =
+    !!workspace &&
+    !!activeId &&
+    (!nativeSession?.ownerId || nativeSession.ownerId === workspace.viewerId);
+  // A new session waits for native-ready; settled history can read cold.
+  const nativeQueryReady =
+    history?.session.id === activeId &&
+    (nativeReadyKey ||
+      history.messages.some(
+        (message) =>
+          message.role === 'assistant' &&
+          message.runId &&
+          message.status !== 'pending',
+      ));
+  // The active header includes durable children; background rows stay live-only.
+  const nativeObservation = useNativeSubagents(
+    workspace?.workspaceId ?? '',
+    tenantHeaders,
+    nativeReadable && nativeQueryReady
+      ? { [activeId!]: nativeBindingRevision }
+      : {},
+    false,
+  );
+  const activeNativeReads = nativeReadable
+    ? nativeObservation.reads
+    : activeId
+      ? { [activeId]: 'error' as const }
+      : {};
+  const subagentSummary = activeId ? activeNativeReads[activeId] : null;
+  function refineSubagentReference(reference: NativeSubagentReference) {
+    return subagentScope && subagentSummary && subagentSummary !== 'error'
+      ? nativeSubagentRefineGeneration(
+          subagentScope,
+          reference,
+          subagentSummary,
+        )
+      : null;
+  }
+  const [subagentRequest, setSubagentRequest] = useState<{
+    reference: NativeSubagentReference;
+    title: string;
+    revision: number;
+  } | null>(null);
+  const refinedSubagentReference = subagentRequest
+    ? refineSubagentReference(subagentRequest.reference)
+    : null;
+  const currentSubagentRequest =
+    refinedSubagentReference && subagentRequest
+      ? { ...subagentRequest, reference: refinedSubagentReference }
+      : subagentScope &&
+          subagentRequest &&
+          nativeSubagentScopeKey(subagentScope) ===
+            nativeSubagentScopeKey(subagentRequest.reference)
+        ? subagentRequest
+        : undefined;
+  useLayoutEffect(() => {
+    if (refinedSubagentReference && currentSubagentRequest)
+      setSubagentRequest(currentSubagentRequest);
+  }, [refinedSubagentReference, currentSubagentRequest]);
+  const [subagentDirectoryRequest, setSubagentDirectoryRequest] = useState<{
+    id: number;
+    scopeKey: string;
+  }>();
   const [moduleRequest, setModuleRequest] = useState<{
     scope: string;
     kind: WorkbenchModule | 'guide' | 'reference';
@@ -543,10 +663,6 @@ export function ChatFlowClient({
     entry?: SceneCatalogEntry;
     create?: boolean;
     returning?: boolean;
-  } | null>(null);
-  const [sceneNotice, setSceneNotice] = useState<{
-    key: string;
-    message: string;
   } | null>(null);
   const skillWrites = useRef<EmployeeSkillWriteStore>(new Map());
   const skillNavigation = useRef<{ navigateHome: () => void } | null>(null);
@@ -569,6 +685,7 @@ export function ChatFlowClient({
     (workbenchEnabled ||
       !!currentAutomationRequest ||
       !!currentMemoryRequest ||
+      !!currentSubagentRequest ||
       !!currentCapabilityRequest) &&
     layout.open;
   const openAutomationTask = (
@@ -613,7 +730,6 @@ export function ChatFlowClient({
     (memoryInstanceId?: string) => {
       closeWorkbench();
       if (memoryInstanceId) {
-        setSceneNotice(null);
         setSceneRequest(null);
         skillNavigation.current?.navigateHome();
         setSkillHostOrigin('employee');
@@ -670,7 +786,6 @@ export function ChatFlowClient({
   ) => {
     if (kind === 'workflow') {
       if (!workspace?.viewerId || !activeEmployee?.instanceId) return;
-      setSceneNotice(null);
       setSceneRequest(null);
       setSkillHostOrigin('top');
     }
@@ -703,6 +818,7 @@ export function ChatFlowClient({
   );
   const hasWorkbenchContent =
     !!currentMemoryRequest ||
+    !!currentSubagentRequest ||
     !!currentCapabilityRequest ||
     (!layout.compact && !!currentModuleRequest) ||
     !!currentAutomationRequest ||
@@ -740,23 +856,6 @@ export function ChatFlowClient({
     )
       void workbench.reload();
   }, [workbenchEnabled, artifactRevision, workbench.reload, workbench.scope]);
-
-  const {
-    loadRunTrace,
-    recoverRun,
-    resetRunState,
-    runTraces,
-    runViews,
-    streamRun,
-  } = useRunStream({
-    activeId,
-    history,
-    loadHistory,
-    loadWorkspace,
-    setError,
-    tenantHeaders,
-    workspace,
-  });
 
   useEffect(() => {
     followTranscript.current = true;
@@ -1466,30 +1565,6 @@ export function ChatFlowClient({
     requestAnimationFrame(() => composerInput.current?.focus());
   }
 
-  const nativeReadyKey =
-    history?.session.id === activeId
-      ? nativeSubagentReadyKey(
-          runViews[history.messages.findLast((m) => m.runId)?.runId ?? ''],
-        )
-      : '';
-  const nativeSession =
-    archive.sessions.find((session) => session.id === activeId) ??
-    (history?.session.id === activeId ? history.session : undefined);
-  const nativeReadable =
-    !!workspace &&
-    !!activeId &&
-    (!nativeSession?.ownerId || nativeSession.ownerId === workspace.viewerId);
-  // A new SaaS session exists before its first native binding. Wait for the
-  // existing native-ready event; settled history still reads on a cold page.
-  const nativeQueryReady =
-    history?.session.id === activeId &&
-    (nativeReadyKey ||
-      history.messages.some(
-        (message) =>
-          message.role === 'assistant' &&
-          message.runId &&
-          message.status !== 'pending',
-      ));
   const {
     pending: pendingNativeSessions,
     admitted: recordNativeAdmission,
@@ -1501,22 +1576,35 @@ export function ChatFlowClient({
     history,
     nativeReadyKey,
   );
-  // The active header includes durable children; background rows stay live-only.
-  const nativeObservation = useNativeSubagents(
-    workspace?.workspaceId ?? '',
-    tenantHeaders,
-    nativeReadable && nativeQueryReady
-      ? {
-          [activeId!]: `${settingsScope}/${nativeSession?.ownerId}/${nativeSession?.employeeAssignmentId}/${nativeSession?.employeeInstanceId}/${nativeSession?.employeeVersionId}/${nativeReadyKey}`,
-        }
-      : {},
-    false,
-  );
-  const activeNativeReads = nativeReadable
-    ? nativeObservation.reads
-    : activeId
-      ? { [activeId]: 'error' as const }
-      : {};
+  function openSubagentDirectory(origin?: { runId: string; callId: string }) {
+    if (
+      !subagentScope ||
+      !nativeReadable ||
+      (origin &&
+        !history?.messages.some((message) => message.runId === origin.runId))
+    )
+      return;
+    setSubagentDirectoryRequest((previous) => ({
+      id: (previous?.id ?? 0) + 1,
+      scopeKey: nativeSubagentScopeKey(subagentScope),
+    }));
+  }
+  function openSubagent(reference: NativeSubagentReference) {
+    if (!subagentScope || !subagentSummary || subagentSummary === 'error')
+      return;
+    const entry = nativeSubagentReferencedEntry(
+      subagentScope,
+      reference,
+      subagentSummary,
+    );
+    if (!entry) return;
+    setSubagentRequest((previous) => ({
+      reference,
+      title: entry.kind === 'child' ? (entry.label ?? entry.id) : entry.id,
+      revision: (previous?.revision ?? 0) + 1,
+    }));
+    layout.show();
+  }
 
   const activeSession = history?.session
     ? {
@@ -1557,30 +1645,17 @@ export function ChatFlowClient({
     instanceId: sceneTarget ?? undefined,
     headers: tenantHeaders,
   });
-  const sceneHostVisible =
-    employeeDetailsOpen ||
-    currentSceneRequest?.origin === 'employee' ||
-    (workbenchOpen &&
-      activeModule?.scope === fileScope &&
-      activeModule.kind === 'workflow');
-  // Short-lived presentation feedback; the catalog keeps its independent
-  // authoritative receipt/uncertain identity across these UI transitions.
-  useEffect(() => {
-    setSceneNotice(null);
-  }, [sceneCatalog.key, sceneHostVisible, sceneCatalog.accessUnavailable]);
   const sceneGuard = useRef({
     key: sceneCatalog.key,
     busy,
     unavailable: sceneCatalog.accessUnavailable,
     request: currentSceneRequest,
-    visible: sceneHostVisible,
   });
   sceneGuard.current = {
     key: sceneCatalog.key,
     busy,
     unavailable: sceneCatalog.accessUnavailable,
     request: currentSceneRequest,
-    visible: sceneHostVisible,
   };
   const sceneOpen = Boolean(
     currentSceneRequest && !currentSceneRequest.returning,
@@ -1635,7 +1710,6 @@ export function ChatFlowClient({
       sceneTarget !== activeEmployee.instanceId
     )
       return;
-    setSceneNotice(null);
     setSceneRequest((previous) => ({
       scope: settingsScope,
       instanceId: activeEmployee.instanceId!,
@@ -1651,7 +1725,6 @@ export function ChatFlowClient({
       sceneCatalog.accessUnavailable
     )
       return;
-    setSceneNotice(null);
     setSceneRequest((previous) => ({
       scope: settingsScope,
       instanceId: detailsAssignmentId,
@@ -2213,7 +2286,6 @@ export function ChatFlowClient({
   const capabilitySections = (origin: 'top' | 'employee') => (
     <EmployeeCapabilitiesSections
       onSkillNavigate={() => {
-        setSceneNotice(null);
         setSkillHostOrigin(origin);
       }}
     >
@@ -2224,13 +2296,6 @@ export function ChatFlowClient({
       <EmployeeSceneList
         controller={sceneCatalog}
         employeeName={capabilityEmployeeName}
-        notice={
-          sceneNotice?.key === sceneCatalog.key &&
-          sceneHostVisible &&
-          !sceneCatalog.accessUnavailable
-            ? sceneNotice.message
-            : undefined
-        }
         embedded
         onChoose={
           origin === 'employee' ? openEmployeeScene : openCapabilityScene
@@ -2251,17 +2316,6 @@ export function ChatFlowClient({
       onClose={() => setSceneRequest(null)}
       onStart={prepareSceneWork}
       onDeliveries={showSceneDeliveries}
-      onRemoved={(name) => {
-        if (
-          sceneGuard.current.key === sceneCatalog.key &&
-          sceneGuard.current.visible &&
-          !sceneGuard.current.unavailable
-        )
-          setSceneNotice({
-            key: sceneCatalog.key,
-            message: `已删除“${name}”`,
-          });
-      }}
       initial={
         currentSceneRequest?.entry
           ? { page: 'detail', entry: currentSceneRequest.entry }
@@ -2470,7 +2524,6 @@ export function ChatFlowClient({
           else setError('当前没有可用员工，请先派驻员工。');
         }}
         onOpenEmployeeDetails={(assignmentId) => {
-          setSceneNotice(null);
           setSceneRequest(null);
           skillNavigation.current?.navigateHome();
           setSkillHostOrigin('employee');
@@ -2582,6 +2635,10 @@ export function ChatFlowClient({
                           ...nativeObservation,
                           reads: activeNativeReads,
                         }}
+                        scope={subagentScope ?? undefined}
+                        onOpen={openSubagent}
+                        openRequest={subagentDirectoryRequest}
+                        employeeName={activeEmployeeName}
                         viewerId={workspace.viewerId}
                         canControl={
                           !!workspace.viewerId &&
@@ -2874,6 +2931,17 @@ export function ChatFlowClient({
                         workspaceId={workspace.workspaceId}
                         artifacts={workbench.artifacts}
                         onOpenArtifact={showWorkbench}
+                        onOpenSubagents={
+                          nativeReadable ? openSubagentDirectory : undefined
+                        }
+                        subagentCount={
+                          subagentSummary && subagentSummary !== 'error'
+                            ? subagentSummary.descendants.filter(
+                                (entry) =>
+                                  entry.parentId === subagentSummary.rootId,
+                              ).length
+                            : undefined
+                        }
                       />
                     </InputStatusContext.Provider>
                   </MessageFeedbackProvider>
@@ -2960,6 +3028,7 @@ export function ChatFlowClient({
       {(workbenchEnabled ||
         currentAutomationRequest ||
         currentMemoryRequest ||
+        currentSubagentRequest ||
         currentCapabilityRequest) &&
       hasWorkbenchContent ? (
         <ArtifactWorkbench
@@ -3091,6 +3160,37 @@ export function ChatFlowClient({
           onUseFileReference={useWorkbenchReference}
           onTemplateFile={viewWorkbenchTemplate}
           taskRequest={currentAutomationRequest}
+          refineSubagent={(id) => {
+            const reference = nativeSubagentReferenceFromTabId(id);
+            const refined = reference && refineSubagentReference(reference);
+            return refined ? nativeSubagentTabId(refined) : undefined;
+          }}
+          subagentRequest={
+            currentSubagentRequest
+              ? {
+                  id: nativeSubagentTabId(currentSubagentRequest.reference),
+                  title: currentSubagentRequest.title,
+                  revision: currentSubagentRequest.revision,
+                }
+              : undefined
+          }
+          renderSubagent={(id, active) => {
+            const reference = nativeSubagentReferenceFromTabId(id);
+            return reference && subagentScope ? (
+              <NativeSubagentWorkbench
+                scope={subagentScope}
+                reference={reference}
+                active={active}
+                observation={{ ...nativeObservation, reads: activeNativeReads }}
+                headers={tenantHeaders}
+                presentation={presentationPolicyFor(
+                  preferences.value.transcriptView,
+                  preferences.value.collapseTiming,
+                )}
+                employeeName={activeEmployeeName}
+              />
+            ) : null;
+          }}
           renderSessionTasks={(sessionId, active) =>
             active ? (
               <AutomationTaskList
@@ -3206,7 +3306,6 @@ export function ChatFlowClient({
                 !selection.current()
               )
                 return;
-              setSceneNotice(null);
               setSceneRequest(null);
               skillNavigation.current?.navigateHome();
               setSkillHostOrigin('employee');
@@ -3252,7 +3351,6 @@ export function ChatFlowClient({
           setEmployeeDetailsOpen(false);
         }}
         onClose={() => {
-          setSceneNotice(null);
           setEmployeeDetailsOpen(false);
         }}
         open={employeeDetailsOpen}

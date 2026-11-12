@@ -1,8 +1,16 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { ComponentProps } from 'react';
+import type { ChatFlowEventEnvelope } from '@allrice/contracts';
 import { WorkProcess } from './work-process';
-import type { NativeExperienceItem } from '../../lib/chatflow/native-experience';
+import {
+  projectNativeExperience,
+  type NativeExperienceItem,
+} from '../../lib/chatflow/native-experience';
+import {
+  ProcessMaterialFields,
+  type WorkProcessMaterial,
+} from './work-process-material';
 import { workProcessPresentation } from '../../lib/chatflow/work-process-presentation';
 
 const items: NativeExperienceItem[] = [
@@ -47,6 +55,248 @@ const render = (overrides: Partial<ComponentProps<typeof WorkProcess>> = {}) =>
   );
 
 describe('native process display surface', () => {
+  it('projects each native create/list failure receipt and its safe reason into the process', () => {
+    const events: ChatFlowEventEnvelope[] = [
+      'subagent',
+      'subagent_fork',
+      'list_agents',
+      'list_agents',
+    ].map((name, index): ChatFlowEventEnvelope => ({
+      schemaVersion: 3,
+      eventId: `failure-${index}`,
+      organizationId: 'organization',
+      workspaceId: 'workspace',
+      conversationId: 'session',
+      runId: 'run',
+      generation: 0,
+      cursor: `run:${index + 1}`,
+      sequence: index + 1,
+      harness: 'dsh',
+      type: 'tool.failed',
+      occurredAt: '2026-11-10T00:00:00.000Z',
+      sourceEvent: null,
+      payload: {
+        name,
+        toolCallId: `failure-${index}`,
+        summary: `授权读取被拒绝 ${index + 1}`,
+      },
+    }));
+    const calls = projectNativeExperience(events);
+    expect(calls.map((call) => call.status)).toEqual(Array(4).fill('failed'));
+    const html = render({
+      items: calls,
+      parts: undefined,
+      transcriptView: 'verbose',
+    });
+    for (let index = 0; index < events.length; index++) {
+      expect(
+        html.match(new RegExp(`data-step-id="tool:failure-${index}"`, 'g')),
+      ).toHaveLength(1);
+      expect(html).toContain(`授权读取被拒绝 ${index + 1}`);
+    }
+  });
+  it.each([false, true])(
+    'keeps each failed create/list fact and unknown outcome with parts=%s',
+    (withParts) => {
+      const calls: NativeExperienceItem[] = [
+        {
+          id: 'tool:create',
+          toolName: 'subagent',
+          status: 'completed',
+          activityDetail: '独立复核合计',
+        },
+        {
+          id: 'tool:create-failed',
+          toolName: 'subagent_fork',
+          status: 'failed',
+          detail: '授权读取被拒绝',
+        },
+        {
+          id: 'tool:list-failed',
+          toolName: 'list_agents',
+          status: 'failed',
+          detail: '读取服务暂不可用',
+        },
+        { id: 'tool:create-unknown', toolName: 'subagent', status: 'info' },
+        {
+          id: 'tool:list-completed',
+          toolName: 'list_agents',
+          status: 'completed',
+        },
+        { id: 'tool:message', toolName: 'send_message', status: 'completed' },
+      ].map((call, sequence) => ({
+        kind: 'tool',
+        title: call.toolName,
+        sequence,
+        ...call,
+      })) as NativeExperienceItem[];
+      const processParts = withParts
+        ? [
+            {
+              kind: 'steps' as const,
+              id: 'native-calls',
+              sequence: 1,
+              items: calls,
+            },
+            parts[2]!,
+          ]
+        : undefined;
+      const presentation = {
+        ...workProcessPresentation([], processParts, 'native-run', false),
+        identityKnown: true,
+      };
+      const html = render({
+        items: calls,
+        parts: processParts,
+        presentation,
+        transcriptView: 'verbose',
+        onOpenSubagents: () => {},
+        subagentCount: 2,
+      });
+      for (const id of [
+        'create',
+        'create-failed',
+        'list-failed',
+        'create-unknown',
+        'message',
+      ])
+        expect(
+          html.match(new RegExp(`data-step-id="tool:${id}"`, 'g')),
+        ).toHaveLength(1);
+      expect(html).toContain('创建子智能体 · 独立复核合计');
+      expect(html).toContain('授权读取被拒绝');
+      expect(html).toContain('读取服务暂不可用');
+      expect(html).toContain('结果未确认');
+      expect(html).toContain('send_message');
+      expect(html).not.toContain('data-step-id="tool:list-completed"');
+      expect(html).toContain('2 个智能体');
+      expect(html).not.toContain('childId');
+      if (withParts) {
+        const directoryId = html.match(/id="([^"]+-subagents)"/)![1]!;
+        expect(html.match(/aria-owns="([^"]+)"/)![1]!.split(' ')).toContain(
+          directoryId,
+        );
+        expect(html.indexOf(`id="${directoryId}"`)).toBeLessThan(
+          html.indexOf('data-work-reply="final-reply"'),
+        );
+      }
+      const unbound = render({
+        items: calls,
+        parts: undefined,
+        presentation: { ...presentation, identityKnown: false },
+        onOpenSubagents: () => {},
+      });
+      expect(unbound).toContain('data-step-id="tool:list-completed"');
+      expect(unbound).not.toContain('个智能体');
+    },
+  );
+  it('places every authorized operation in one native step without replacing its lifecycle', () => {
+    const materials: WorkProcessMaterial[] = ['first', 'second'].map((id) => ({
+      source: 'cloud',
+      id,
+      runId: 'run',
+      title: '云端计算',
+      status: id === 'first' ? '远端未成功' : '远端已完成',
+      failed: id === 'first',
+      elapsedMs: 100000,
+      fields: [
+        {
+          label: '结果',
+          value: (
+            <pre data-process-content="result">{`${id}: <script>raw</script>`}</pre>
+          ),
+        },
+      ],
+    }));
+    const native: NativeExperienceItem[] = [
+      {
+        ...items[0]!,
+        status: 'completed',
+        operations: materials,
+        detail: '与远端输出不同的调用回执',
+        startedAt: '2026-11-11T00:00:00Z',
+        finishedAt: '2026-11-11T00:00:02Z',
+      },
+    ];
+    const html = render({
+      items: native,
+      parts: undefined,
+      transcriptView: 'verbose',
+      renderMaterial: (reference) => (
+        <ProcessMaterialFields
+          material={materials.find((material) => material.id === reference.id)!}
+        />
+      ),
+    });
+    const step = html.slice(
+      html.indexOf('data-step-id="tool:read"'),
+      html.indexOf('</li>'),
+    );
+    expect(html.match(/data-step-id="tool:read"/g)).toHaveLength(1);
+    for (const id of ['first', 'second']) {
+      expect(step).toContain(`data-process-material="cloud:${id}"`);
+      expect(
+        html.match(new RegExp(`data-process-material="cloud:${id}"`, 'g')),
+      ).toHaveLength(1);
+      expect(step).toContain(
+        `data-process-control="step:operation:cloud:${id}"`,
+      );
+      expect(
+        html.match(new RegExp(`id="process-material-cloud-${id}"`, 'g')),
+      ).toHaveLength(1);
+    }
+    expect(step).toContain('data-status="已完成"');
+    expect(step).toContain('2秒');
+    expect(step).not.toContain('100秒');
+    expect(step).toContain('远端未成功');
+    expect(step).toContain('&lt;script&gt;raw&lt;/script&gt;');
+    expect(step).not.toContain('<script>');
+    expect(step).not.toContain('批准');
+    expect(step).not.toContain('云端计算');
+    expect(step).toContain('与远端输出不同的调用回执');
+    const failed = render({
+      items: [{ ...native[0]!, status: 'failed', detail: '原生独有失败原因' }],
+      parts: undefined,
+      transcriptView: 'verbose',
+      renderMaterial: (reference) => (
+        <ProcessMaterialFields
+          material={materials.find((material) => material.id === reference.id)!}
+        />
+      ),
+    });
+    expect(failed).toContain('原因：</strong>原生独有失败原因');
+  });
+
+  it('keeps an unassigned task concrete and omits duration when no trusted time exists', () => {
+    const material: WorkProcessMaterial = {
+      source: 'managed-browser',
+      id: 'task',
+      runId: 'run',
+      title: 'example.test',
+      status: '浏览中',
+      fields: [],
+    };
+    const html = render({
+      items: [
+        {
+          id: 'operation:managed-browser:task',
+          kind: 'tool',
+          status: 'info',
+          title: material.title,
+          sequence: 1,
+          operations: [material],
+        },
+      ],
+      parts: undefined,
+      transcriptView: 'verbose',
+      renderMaterial: () => <ProcessMaterialFields material={material} />,
+    });
+    expect(html).toContain('example.test');
+    expect(html).toContain('浏览中');
+    expect(html).toContain('data-step-id="operation:managed-browser:task"');
+    expect(html).not.toContain('0秒');
+  });
+
   it('uses an action title for memory without claiming the memory was confirmed', () => {
     const memory: NativeExperienceItem[] = [
       {
@@ -59,11 +309,12 @@ describe('native process display surface', () => {
       },
     ];
     const html = render({ items: memory, parts: undefined });
-    expect(html).toContain('已调用工具');
+    expect(html).toContain('整理工作记忆');
+    expect(html).not.toContain('已调用工具');
     expect(html).not.toContain('记忆 · 1 项');
     expect(
-      render({ items: memory, parts: undefined, transcriptView: 'verbose' }),
-    ).toContain('整理工作记忆');
+      render({ items: memory, parts: undefined, transcriptView: 'standard' }),
+    ).toContain('已调用工具');
     expect(html).not.toContain('已记住');
   });
 
@@ -111,12 +362,80 @@ describe('native process display surface', () => {
   });
 
   it('retains the accepted final answer outside completed process folding', () => {
-    const html = render();
+    const html = render({
+      traceStatus: 'failed',
+      children: <p>继续读取的历史说明</p>,
+    });
     expect(html).toContain('data-process-open="false"');
-    expect(html).toMatch(/data-work-reply="progress" hidden=""/);
-    expect(html).toMatch(/data-work-reply="final-reply">/);
+    expect(html).toMatch(/data-work-reply="progress"[^>]* hidden=""/);
+    expect(html).toMatch(/data-work-reply="final-reply"[^>]*>/);
+    expect(html).not.toMatch(/data-work-reply="final-reply"[^>]* hidden/);
     expect(html).toContain('最终交付');
+    expect(html.match(/data-work-reply="final-reply"/g)).toHaveLength(1);
+    expect(html.lastIndexOf('</section>')).toBeLessThan(
+      html.indexOf('data-work-reply="final-reply"'),
+    );
+    const region = html.match(/<section[^>]*aria-label="工作过程"[^>]*>/)![0];
+    const owned = region.match(/aria-owns="([^"]+)"/)![1]!.split(' ');
+    const members = [
+      ...html.matchAll(/<div[^>]*data-process-member="true"[^>]*>/g),
+    ];
+    const memberIds = members.map(([tag]) => tag.match(/ id="([^"]+)"/)![1]!);
+    expect(owned).toEqual(memberIds);
+    expect(new Set(owned).size).toBe(4);
+    expect(members[0]![0]).toContain('data-work-reply="progress"');
+    expect(html).toContain('过程加载失败，点击重试');
+    expect(html).toContain('继续读取的历史说明');
+    const finalTag = html.match(
+      /<div[^>]*data-work-reply="final-reply"[^>]*>/,
+    )![0];
+    expect(finalTag).not.toContain('data-process-member');
+    expect(owned).not.toContain(finalTag.match(/ id="([^"]+)"/)![1]);
+    for (const id of owned) {
+      expect(html.split(`id="${id}"`)).toHaveLength(2);
+      expect(html.indexOf(`id="${id}"`)).toBeLessThan(
+        html.indexOf('data-work-reply="final-reply"'),
+      );
+    }
+    expect(html.indexOf(`id="${owned[1]}"`)).toBeLessThan(
+      html.indexOf('data-step-id="tool:read"'),
+    );
   });
+  it.each([
+    [200, '0.2秒'],
+    [800, '0.8秒'],
+    [1300, '1.3秒'],
+    [61200, '1分 1.2秒'],
+  ] as const)(
+    'keeps the safe activity and recorded %ims beside its outcome as %s',
+    (elapsed, duration) => {
+      const html = render({
+        parts: undefined,
+        transcriptView: 'verbose',
+        items: [
+          {
+            ...items[0]!,
+            status: 'completed',
+            startedAt: '2026-11-10T00:00:00Z',
+            finishedAt: new Date(
+              Date.parse('2026-11-10T00:00:00Z') + elapsed,
+            ).toISOString(),
+            detail: '入口文件已经读取',
+          },
+        ],
+      });
+      expect(html).toContain('检查入口文件');
+      expect(html).toContain(`已完成 · ${duration}`);
+      expect(html).toContain('data-step-id="tool:read"');
+      expect(html).not.toContain('过程加载失败');
+      const unknownTime = render({
+        parts: undefined,
+        transcriptView: 'verbose',
+        items: [{ ...items[0]!, status: 'completed' }],
+      });
+      expect(unknownTime).not.toContain('已完成 · 0秒');
+    },
+  );
   it('shows actual live details in standard while compact keeps only activity labels', () => {
     const compact = render({ running: true, transcriptView: 'compact' });
     const standard = render({ running: true, transcriptView: 'standard' });
@@ -130,10 +449,137 @@ describe('native process display surface', () => {
   it('keeps verbose history fully visible without a step-group control', () => {
     const html = render({ transcriptView: 'verbose' });
     expect(html).toContain('data-process-open="true"');
-    expect(html).not.toMatch(/data-work-reply="progress" hidden/);
+    expect(html).not.toMatch(/data-work-reply="progress"[^>]* hidden/);
     expect(html).toContain('检查入口文件');
     expect(html).not.toContain('正在读取文件');
   });
+  it.each([
+    ['tool', 'tool:call', 'started', true, '运行中'],
+    ['tool', 'tool:call', 'updated', true, '运行中'],
+    ['search', 'tool:call', 'started', true, '运行中'],
+    ['think', 'think:closed', 'started', true, '结果未确认'],
+    ['compaction', 'compaction:closed', 'updated', true, '结果未确认'],
+    ['todo', 'plan:closed', 'updated', true, '结果未确认'],
+    ['tool', 'tool:call', 'started', false, '结果未确认'],
+    ['tool', 'tool:call', 'completed', true, '已完成'],
+    ['tool', 'tool:call', 'completed', false, '已完成'],
+    ['tool', 'tool:call', 'failed', true, '未成功'],
+  ] as const)(
+    'keeps %s %s status %s with running=%s in a closed process group',
+    (kind, id, status, running, expected) => {
+      const row: NativeExperienceItem = {
+        ...items[0]!,
+        id,
+        kind,
+        status,
+        toolName:
+          kind === 'tool'
+            ? 'read'
+            : kind === 'search'
+              ? 'web.search'
+              : undefined,
+      };
+      const html = render({
+        items: [row],
+        running,
+        transcriptView: 'detailed',
+        parts: [
+          {
+            kind: 'steps',
+            id: 'closed-group',
+            sequence: 1,
+            items: [row],
+            closed: true,
+          },
+          {
+            kind: 'reply',
+            id: 'later-reply',
+            sequence: 2,
+            text: '继续核对，工具结果尚未到达。',
+          },
+        ],
+      });
+      expect(html).toContain(`data-status="${expected}"`);
+    },
+  );
+  it('does not call an unfinished plan complete or leave a settled question waiting', () => {
+    const html = render({
+      parts: undefined,
+      transcriptView: 'verbose',
+      items: [
+        { ...items[0]!, id: 'plan', kind: 'todo', status: 'updated' },
+        {
+          ...items[0]!,
+          id: 'question',
+          toolName: 'ask_user_question',
+          activityDetail: undefined,
+          status: 'completed',
+        },
+      ],
+    });
+    expect(html).toContain('data-status="结果未确认"');
+    expect(html).toContain('提问');
+    expect(html).not.toContain('等待你的回答');
+    expect(html.match(/data-status="已完成"/g)).toHaveLength(1);
+  });
+  it.each([
+    [true, false, false, '等待回答'],
+    [false, false, false, '工作过程'],
+    [false, true, false, '未完成'],
+    [false, false, true, '已停止'],
+  ] as const)(
+    'limits an old pending question to the current run state (%s/%s/%s)',
+    (running, failed, canceled, title) => {
+      for (const submitted of [false, true]) {
+        const html = render({
+          running,
+          failed,
+          canceled,
+          parts: undefined,
+          transcriptView: 'verbose',
+          items: [
+            { ...items[0]!, id: 'tool:ask', toolName: 'ask_user_question' },
+          ],
+          questions: [
+            {
+              callId: 'ask',
+              pending: true,
+              answered: false,
+              request: {
+                questionId: 'native:ask',
+                nativeSessionId: 'native',
+                callId: 'ask',
+                durable: true,
+                questions: [
+                  { id: 'sort', question: '按什么排序？', multiSelect: false },
+                ],
+              },
+              answer: submitted
+                ? {
+                    id: 'answer',
+                    text: '排序：跳过',
+                    createdAt: '2026-11-10T00:00:00Z',
+                    status: 'pending',
+                    answer: {
+                      questionId: 'native:ask',
+                      answers: [{ id: 'sort', selected: [] }],
+                    },
+                  }
+                : undefined,
+            },
+          ],
+        });
+        expect(html).toContain(
+          `>${running && submitted ? '回答已提交' : title}<`,
+        );
+        if (!running) {
+          expect(html).not.toContain('等待回答');
+          expect(html).not.toContain('回答已提交');
+          expect(html).not.toContain('Rice 已收到你的回答');
+        }
+      }
+    },
+  );
   it.each(['failed', 'canceled'] as const)(
     'keeps a %s process visible',
     (state) => {

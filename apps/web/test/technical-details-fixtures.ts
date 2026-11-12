@@ -64,6 +64,21 @@ const request = (
 /** A value that tries to look like a second field on its own line. */
 export const forgedNote = '第一行\nchannel：伪装的字段';
 export const longText = `报价单已更新，请合作方在周五前确认。${'包括折扣、交付日期和付款方式的说明。'.repeat(8)}`;
+export const longReviewValue = `${longText.repeat(4)}\nchannel：仍是同一参数\n<b data-forged-review>不得作为 HTML</b>`;
+/** Five original leaves plus 55 review leaves; the final ten exceed the preview. */
+export const partnerArguments = {
+  channel: 'partner-ext',
+  text: longText,
+  notify: true,
+  recipients: [{ email: 'buyer@partner.example' }],
+  note: forgedNote,
+  review: Object.fromEntries(
+    Array.from({ length: 55 }, (_, index) => [
+      `field_${String(index + 1).padStart(2, '0')}`,
+      index === 54 ? longReviewValue : `审查值 ${index + 1}`,
+    ]),
+  ),
+};
 
 const limits = {
   timeoutMs: 30_000,
@@ -129,13 +144,7 @@ export function cloudOperations(answered: string[]) {
     appCall(
       ids.partnerOperation,
       ids.partnerApproval,
-      {
-        channel: 'partner-ext',
-        text: longText,
-        notify: true,
-        recipients: [{ email: 'buyer@partner.example' }],
-        note: forgedNote,
-      },
+      partnerArguments,
       decided(ids.partnerApproval),
     ),
     appCall(

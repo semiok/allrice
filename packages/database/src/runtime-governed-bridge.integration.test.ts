@@ -5027,12 +5027,57 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
     const without = await commandFixture([]);
     await expect(without.create('new-call')).rejects.toThrow();
   });
+  it('P05 reads exact call identity without losing unmapped history or changing the 32-row limit', async () => {
+    const f = await commandFixture(),
+      other = await commandFixture();
+    await database`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy)
+      select id,organization_id,workspace_id,'{"version":1,"timeoutMs":300000,"sources":[]}'::jsonb from allrice_runs where id in (${f.run},${other.run})`;
+    const first = await f.create('same-tool-first'),
+      second = await f.create('same-tool-second'),
+      missing = await f.create('missing-call');
+    const secondId = second.snapshot.binding.attempt.operationId,
+      missingId = missing.snapshot.binding.attempt.operationId;
+    const read = () => listLocalCommandOperations(f.context, f.run, database);
+    expect((await read()).map((op) => op.nativeCallId)).toEqual([
+      'same-tool-first',
+      'same-tool-second',
+      'missing-call',
+    ]);
+    await database`delete from allrice_task_operation_calls where operation_id=${missingId}`;
+    for (const [root, agent] of [
+      [other.run, f.run],
+      [f.run, other.run],
+    ]) {
+      await database`update allrice_task_operation_calls set run_id=${root!},agent_id=${agent!} where operation_id=${secondId}`;
+      expect(
+        (await read()).map((op) => [
+          op.snapshot.binding.attempt.operationId,
+          op.nativeCallId,
+        ]),
+      ).toEqual([
+        [first.snapshot.binding.attempt.operationId, 'same-tool-first'],
+        [secondId, null],
+        [missingId, null],
+      ]);
+    }
+    for (let i = 3; i < 33; i++) await f.create(`history-${i}`);
+    expect(
+      await database`select id from allrice_runtime_operations where run_id=${f.run}`,
+    ).toHaveLength(33);
+    expect(await read()).toHaveLength(32);
+  });
   it('P05 isolates browser reads and cancel intent by owner, tenant and membership', async () => {
     const f = await commandFixture();
+    await database`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy)
+      select id,organization_id,workspace_id,'{"version":1,"timeoutMs":300000,"sources":[]}'::jsonb from allrice_runs where id=${f.run}`;
     await f.create();
     expect(
       await listLocalCommandOperations(f.context, f.run, database),
     ).toHaveLength(1);
+    expect(
+      (await listLocalCommandOperations(f.context, f.run, database))[0]!
+        .nativeCallId,
+    ).toBe('p05-call');
     for (const context of [
       { ...f.context, actor: { type: 'user' as const, id: randomUUID() } },
       { ...f.context, organizationId: randomUUID() },

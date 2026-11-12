@@ -4,8 +4,11 @@ import {
   memo,
   useState,
   useEffect,
+  useContext,
+  useRef,
   type RefObject,
   type CSSProperties,
+  type ReactNode,
 } from 'react';
 import {
   nativeExecutionFailureText,
@@ -18,6 +21,7 @@ import {
 import {
   isReplyStreaming,
   projectWorkProgress,
+  workProcessReferenceKey,
   type WorkProgressPart,
 } from '../../lib/chatflow/work-progress';
 import { summarizeWorkProcess } from '../../lib/chatflow/work-process';
@@ -44,10 +48,21 @@ import { LocalCommandPanel } from './local-command-panel';
 import { LocalMcpPanel } from './local-mcp-panel';
 import { hasLocalMcpEvents } from '../../lib/chatflow/local-mcp-task-presenter';
 import { CloudOperationPanel } from './cloud-operation-panel';
+import {
+  ProcessMaterialFields,
+  type WorkProcessMaterial,
+  type WorkProcessMaterialFeed,
+} from './work-process-material';
 import { ArtifactSummaryCards } from './artifact-workbench';
 import { SteeredWorkProcess } from './steered-work-process';
 import { type ReferenceDraft } from './reference-chips';
-import { TranscriptUserMessage } from './transcript-user-message';
+import {
+  InputStatusContext,
+  TranscriptUserMessage,
+} from './transcript-user-message';
+import { workProcessQuestions } from '../../lib/chatflow/work-process-questions';
+import { mergeChatFlowEvents } from '../../lib/chatflow/run-event-buffer';
+import { WorkProcessReadingState } from './work-process-reading-state';
 import { AutomationRunTaskCards } from './automation-run-task-cards';
 import { AssistantMessageActions } from './message-feedback';
 import { isMessageRunActive } from './run-view';
@@ -87,8 +102,113 @@ interface ChatTranscriptProps {
   onScrollToBottom: () => void;
   artifacts?: WorkbenchArtifact[];
   onOpenArtifact?: (id: string) => void;
+  onOpenSubagents?: (origin: { runId: string; callId: string }) => void;
+  subagentCount?: number;
   onOpenAutomation?: (id: string) => void;
   onResolveArtifactLink?: (href: string, runId: string) => Promise<boolean>;
+}
+
+/** A fixed parent chain preserves the reader when an original feature gate opens. */
+function ProcessMaterialPanels({
+  runId,
+  workspaceId,
+  tenantHeaders,
+  runActive,
+  employeeName,
+  refreshKey,
+  managedBrowserEnabled,
+  browserEnabled,
+  localCommandsEnabled,
+  localMcpEnabled,
+  onServiceChanged,
+  children,
+}: {
+  runId: string;
+  workspaceId: string;
+  tenantHeaders: Record<string, string>;
+  runActive: boolean;
+  employeeName: string;
+  refreshKey: number;
+  managedBrowserEnabled: boolean;
+  browserEnabled: boolean;
+  localCommandsEnabled: boolean;
+  localMcpEnabled: boolean;
+  onServiceChanged: () => void;
+  children: (feed: WorkProcessMaterialFeed) => ReactNode;
+}) {
+  const root = useRef<HTMLDivElement>(null);
+  const render = (feed: WorkProcessMaterialFeed) => (
+    <WorkProcessReadingState root={root}>
+      <div ref={root} style={{ display: 'contents' }}>
+        {children(feed)}
+      </div>
+    </WorkProcessReadingState>
+  );
+  const common = { runId, workspaceId, tenantHeaders, runActive };
+  return (
+    <CloudOperationPanel {...common}>
+      {(cloud) => (
+        <ManagedBrowserTaskPanel
+          {...common}
+          enabled={!!runId && managedBrowserEnabled}
+        >
+          {(managed) => (
+            <BrowserWorkspacePanel
+              {...common}
+              employeeName={employeeName}
+              refreshKey={refreshKey}
+              enabled={!!runId && browserEnabled}
+            >
+              {(browser) => (
+                <LocalCommandPanel
+                  {...common}
+                  onServiceChanged={onServiceChanged}
+                  enabled={!!runId && localCommandsEnabled}
+                >
+                  {(command) => (
+                    <LocalMcpPanel
+                      {...common}
+                      enabled={!!runId && localMcpEnabled}
+                    >
+                      {(mcp) =>
+                        render({
+                          history: [
+                            ...cloud.history,
+                            ...managed.history,
+                            ...browser.history,
+                            ...command.history,
+                            ...mcp.history,
+                          ],
+                          interaction: (
+                            <>
+                              {cloud.interaction}
+                              {managed.interaction}
+                              {browser.interaction}
+                              {command.interaction}
+                              {mcp.interaction}
+                            </>
+                          ),
+                          feedback: (
+                            <>
+                              {cloud.feedback}
+                              {managed.feedback}
+                              {browser.feedback}
+                              {command.feedback}
+                              {mcp.feedback}
+                            </>
+                          ),
+                        })
+                      }
+                    </LocalMcpPanel>
+                  )}
+                </LocalCommandPanel>
+              )}
+            </BrowserWorkspacePanel>
+          )}
+        </ManagedBrowserTaskPanel>
+      )}
+    </CloudOperationPanel>
+  );
 }
 
 export const ChatTranscript = memo(function ChatTranscript({
@@ -118,9 +238,12 @@ export const ChatTranscript = memo(function ChatTranscript({
   onScrollToBottom,
   artifacts = [],
   onOpenArtifact,
+  onOpenSubagents,
+  subagentCount,
   onOpenAutomation,
   onResolveArtifactLink,
 }: ChatTranscriptProps) {
+  const inputStatus = useContext(InputStatusContext);
   const [downloadFiles, setDownloadFiles] = useState<{
     workspaceId: string;
     files: WorkspaceFile[];
@@ -192,6 +315,35 @@ export const ChatTranscript = memo(function ChatTranscript({
       assistantRuns.has(m.steering.runId),
   );
   const embedded = new Set(adopted.map((m) => m.id));
+  const eventsForMessage = (message: Message) => {
+    const view = runViews[message.runId ?? ''];
+    const trace = runTraces[message.runId ?? ''];
+    return !isMessageRunActive(message, view) && trace?.status === 'loaded'
+      ? mergeChatFlowEvents(trace.events, view?.events ?? [])
+      : (view?.events ?? trace?.events ?? []);
+  };
+  const questions = workProcessQuestions(
+    messages
+      .filter((message) => message.role === 'assistant')
+      .map((message) => ({
+        id: message.id,
+        events: eventsForMessage(message),
+      })),
+    messages.flatMap((message) =>
+      message.role === 'user' &&
+      message.content.interaction?.type === 'user_question_answer'
+        ? [
+            {
+              id: message.id,
+              answer: message.content.interaction.answer,
+              text: message.content.text,
+              createdAt: message.createdAt,
+              status: inputStatus.get(message.id) ?? message.answerStatus,
+            },
+          ]
+        : [],
+    ),
+  );
   // Queued drafts and in-turn answers/steering are not a new exchange.
   const followedByInput = new Set<string>();
   let laterInput = false;
@@ -207,7 +359,16 @@ export const ChatTranscript = memo(function ChatTranscript({
     )
       laterInput = true;
   }
-  return (
+  const withReadingState = (content: ReactNode) => (
+    <WorkProcessReadingState
+      key={memoryScope ?? workspaceId}
+      root={transcriptColumn}
+      shareQuestions
+    >
+      {content}
+    </WorkProcessReadingState>
+  );
+  return withReadingState(
     <div
       className={chatUi.root}
       data-conversation-typography
@@ -217,12 +378,14 @@ export const ChatTranscript = memo(function ChatTranscript({
         <div className={chatUi.column} ref={transcriptColumn}>
           {messages
             .filter((message) => !embedded.has(message.id))
+            .filter((message) => !questions.embeddedAnswerIds.has(message.id))
             .filter(
               (message) =>
                 message.role !== 'assistant' ||
                 message.status !== 'completed' ||
                 message.content.text.length > 0 ||
                 !!memoryRevisionForRun(message.runId) ||
+                !!questions.byOwner.get(message.id)?.length ||
                 adopted.some(
                   (input) => input.steering?.runId === message.runId,
                 ),
@@ -237,7 +400,7 @@ export const ChatTranscript = memo(function ChatTranscript({
               const timing = message.runId
                 ? timingByRun.get(message.runId)
                 : undefined;
-              const traceEvents = messageRun?.events ?? trace?.events ?? [];
+              const traceEvents = eventsForMessage(message);
               const memoryRevision = memoryRevisionForRun(message.runId);
               const messageIsRunning = isMessageRunActive(message, messageRun);
               const streamedText = messageRun
@@ -313,20 +476,51 @@ export const ChatTranscript = memo(function ChatTranscript({
                           <i aria-hidden="true" />
                           <span>{employeeName}</span>
                         </div>
-                        <CloudOperationPanel
+                        <ProcessMaterialPanels
+                          key={`${workspaceId}:${message.runId ?? message.id}`}
                           runId={message.runId ?? ''}
                           workspaceId={workspaceId}
                           tenantHeaders={tenantHeaders}
                           runActive={messageIsRunning}
+                          employeeName={employeeName}
+                          refreshKey={
+                            browserRevisions[message.runId ?? ''] ?? 0
+                          }
+                          managedBrowserEnabled={hasManagedBrowserEvents(
+                            traceEvents,
+                          )}
+                          browserEnabled={hasBrowserWorkspaceEvents(
+                            traceEvents,
+                          )}
+                          localCommandsEnabled={localCommandsEnabled}
+                          localMcpEnabled={
+                            localMcpEnabled && hasLocalMcpEvents(traceEvents)
+                          }
+                          onServiceChanged={() =>
+                            setBrowserRevisions((previous) => ({
+                              ...previous,
+                              [message.runId!]:
+                                (previous[message.runId!] ?? 0) + 1,
+                            }))
+                          }
                         >
-                          {({ operations, renderOperation, feedback }) => {
+                          {({ history, interaction, feedback }) => {
                             const timeline = projectWorkProgress(
                               traceEvents,
                               fallbackText,
                               messageIsRunning,
                               streamingOutput,
-                              operations,
+                              history,
                             );
+                            const materials = new Map<
+                              string,
+                              WorkProcessMaterial
+                            >();
+                            for (const material of history) {
+                              const key = workProcessReferenceKey(material);
+                              if (!materials.has(key))
+                                materials.set(key, material);
+                            }
                             // History text arrives before the native event trace.
                             // Keep a settled streaming reply in the same process
                             // frame while its steps and timing are being restored.
@@ -386,10 +580,34 @@ export const ChatTranscript = memo(function ChatTranscript({
                                   employeeName={employeeName}
                                   accessibleFiles={accessibleFiles}
                                   items={timeline.items}
+                                  sharedReadingState
+                                  questions={questions.byOwner.get(message.id)}
                                   parts={processParts}
-                                  renderOperation={renderOperation}
+                                  renderMaterial={(reference) => {
+                                    const material = materials.get(
+                                      workProcessReferenceKey(reference),
+                                    );
+                                    return material ? (
+                                      <ProcessMaterialFields
+                                        material={material}
+                                        artifacts={linkedArtifacts.filter(
+                                          (artifact) =>
+                                            artifact.provenance.runId ===
+                                              reference.runId &&
+                                            artifact.provenance.operationId !==
+                                              null &&
+                                            artifact.provenance.operationId ===
+                                              reference.id,
+                                        )}
+                                      />
+                                    ) : null;
+                                  }}
                                   artifacts={linkedArtifacts}
                                   onOpenArtifact={onOpenArtifact}
+                                  onOpenSubagents={
+                                    message.runId ? onOpenSubagents : undefined
+                                  }
+                                  subagentCount={subagentCount}
                                   timing={timing}
                                   running={messageIsRunning}
                                   streaming={
@@ -470,54 +688,7 @@ export const ChatTranscript = memo(function ChatTranscript({
                                     本轮已结束。{applicationFailure.detail}
                                   </p>
                                 )}
-                                {message.runId &&
-                                hasManagedBrowserEvents(traceEvents) ? (
-                                  <ManagedBrowserTaskPanel
-                                    runActive={messageIsRunning}
-                                    runId={message.runId}
-                                    tenantHeaders={tenantHeaders}
-                                    workspaceId={workspaceId}
-                                  />
-                                ) : null}
-                                {message.runId &&
-                                  hasBrowserWorkspaceEvents(traceEvents) && (
-                                    <BrowserWorkspacePanel
-                                      refreshKey={
-                                        browserRevisions[message.runId] ?? 0
-                                      }
-                                      runId={message.runId}
-                                      workspaceId={workspaceId}
-                                      tenantHeaders={tenantHeaders}
-                                      runActive={messageIsRunning}
-                                      employeeName={employeeName}
-                                    />
-                                  )}
-
-                                {localCommandsEnabled && message.runId && (
-                                  <LocalCommandPanel
-                                    onServiceChanged={() =>
-                                      setBrowserRevisions((previous) => ({
-                                        ...previous,
-                                        [message.runId!]:
-                                          (previous[message.runId!] ?? 0) + 1,
-                                      }))
-                                    }
-                                    runId={message.runId}
-                                    workspaceId={workspaceId}
-                                    tenantHeaders={tenantHeaders}
-                                    runActive={messageIsRunning}
-                                  />
-                                )}
-                                {localMcpEnabled &&
-                                  message.runId &&
-                                  hasLocalMcpEvents(traceEvents) && (
-                                    <LocalMcpPanel
-                                      runId={message.runId}
-                                      workspaceId={workspaceId}
-                                      tenantHeaders={tenantHeaders}
-                                      runActive={messageIsRunning}
-                                    />
-                                  )}
+                                {interaction}
                                 {responseText && !processParts ? (
                                   <div
                                     className={`${assistantUi.body} ${styles.assistantCopy}`}
@@ -556,7 +727,7 @@ export const ChatTranscript = memo(function ChatTranscript({
                               </>
                             );
                           }}
-                        </CloudOperationPanel>
+                        </ProcessMaterialPanels>
                         {message.runId && memoryRevision && (
                           <MemoryPanel
                             key={`${memoryScope}/${workspaceId}/${message.runId}`}
@@ -619,6 +790,6 @@ export const ChatTranscript = memo(function ChatTranscript({
           </div>
         ) : null}
       </div>
-    </div>
+    </div>,
   );
 });

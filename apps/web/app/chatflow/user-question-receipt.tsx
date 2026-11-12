@@ -1,9 +1,12 @@
+'use client';
+
 import type {
   InteractionStatus,
   UserQuestionAnswerSubmission,
+  UserQuestionItem,
 } from '@allrice/contracts';
-
-import { formatTime } from './chatflow-utils';
+import { IconQuestionOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives';
+import { WorkProcessStepView } from './work-process-step';
 import styles from './dsh-saas.module.css';
 
 interface ReceiptValue {
@@ -90,52 +93,74 @@ export function userQuestionReceiptState(status: InputStatus | undefined) {
     : { state: 'submitted', mark: '•', title: '已提交', note: '' };
 }
 
+export const questionReceiptDisclosureId = (
+  questionId: string,
+  messageId?: string,
+) => `question:${JSON.stringify([questionId, messageId])}`;
+
 export function UserQuestionReceipt(props: {
   answer: UserQuestionAnswerSubmission;
   createdAt: string;
   text: string;
   status?: InputStatus;
+  questions?: readonly UserQuestionItem[];
+  messageId?: string;
 }) {
   const rows = projectUserQuestionReceipt(props.text, props.answer);
   const state = userQuestionReceiptState(props.status);
   return (
-    <div className={styles.confirmationRow}>
-      <article
-        aria-label="用户确认结果"
-        className={styles.confirmationCard}
-        data-state={state.state}
+    <article
+      aria-label="用户确认结果"
+      className={styles.processQuestionReceipt}
+      data-state={state.state}
+      data-question-id={props.answer.questionId}
+      data-process-region={questionReceiptDisclosureId(
+        props.answer.questionId,
+        props.messageId,
+      )}
+    >
+      <WorkProcessStepView
+        id={questionReceiptDisclosureId(
+          props.answer.questionId,
+          props.messageId,
+        )}
+        sharedQuestion
+        icon={<IconQuestionOutlineRegular />}
+        title={
+          state.state === 'confirmed'
+            ? `提问 · ${rows.length}/${props.questions?.length ?? rows.length} 已回答`
+            : `提问 · ${state.title}`
+        }
+        failed={state.state === 'rejected'}
+        details={rows.flatMap((row) => [
+          {
+            label: '问题',
+            value:
+              props.questions?.find((question) => question.id === row.id)
+                ?.question ?? row.title,
+          },
+          {
+            label: '回答',
+            value: row.skipped ? (
+              <span className={styles.confirmationSkipped}>已跳过</span>
+            ) : (
+              row.values.map((value, index) => (
+                <span
+                  className={styles.confirmationValue}
+                  key={`${value.label}-${index}`}
+                >
+                  {value.label}
+                  {value.recommended ? <em>推荐</em> : null}
+                </span>
+              ))
+            ),
+          },
+        ])}
       >
-        <header>
-          <i aria-hidden="true">{state.mark}</i>
-          <div>
-            <strong>{state.title}</strong>
-            {state.note ? <span>{state.note}</span> : null}
-          </div>
-          <time>{formatTime(props.createdAt)}</time>
-        </header>
-        <dl>
-          {rows.map((row) => (
-            <div key={row.id}>
-              <dt>{row.title}</dt>
-              <dd>
-                {row.skipped ? (
-                  <span className={styles.confirmationSkipped}>已跳过</span>
-                ) : (
-                  row.values.map((value, index) => (
-                    <span
-                      className={styles.confirmationValue}
-                      key={`${value.label}-${index}`}
-                    >
-                      {value.label}
-                      {value.recommended ? <em>推荐</em> : null}
-                    </span>
-                  ))
-                )}
-              </dd>
-            </div>
-          ))}
-        </dl>
-      </article>
-    </div>
+        {state.note ? (
+          <p className={styles.processQuestionNote}>{state.note}</p>
+        ) : null}
+      </WorkProcessStepView>
+    </article>
   );
 }
