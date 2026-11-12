@@ -304,7 +304,7 @@ suite(
         lifecycle_state: 'durable',
         trust_level: 'user_confirmed',
         expires_at: null,
-        content: summary,
+        content: `${summary}\n${details}`,
         summary,
         details,
       });
@@ -989,7 +989,11 @@ suite(
       expect(
         MemoryRevisionSchema.array().parse((await history.json()).revisions),
       ).toMatchObject([
-        { memoryId: row.id, revision: 1, content: row.summary },
+        {
+          memoryId: row.id,
+          revision: 1,
+          content: `${row.summary}\n${row.details}`,
+        },
       ]);
       const before = await snapshot(row.id);
       const deleted = await remove(
@@ -1006,7 +1010,7 @@ suite(
       expect(saved.revisions).toHaveLength(before.revisions.length + 1);
       expect(saved.revisions.slice(0, -1)).toEqual(before.revisions);
       expect(saved.revisions[1]).toMatchObject({
-        content: row.summary,
+        content: `${row.summary}\n${row.details}`,
         summary: row.summary,
         details: row.details,
         revision: 2,
@@ -1520,7 +1524,7 @@ suite(
         request(f, 'POST', undefined, {
           instanceId: f.assignment,
           expectedRevision: row.revision,
-          contentDigest: memoryContentDigest(row.summary),
+          contentDigest: memoryContentDigest(before.memory.content),
           idempotencyKey: randomUUID(),
           pinned: false,
         }),
