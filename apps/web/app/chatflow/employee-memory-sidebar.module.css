@@ -1,3 +1,23 @@
+.panel,
+.dialog {
+  --memory-field: rgb(245, 246, 247);
+  --memory-focus: rgb(65, 118, 230);
+  --memory-avatar-bg: #e5f0ff;
+  --memory-avatar-ink: #1e40af;
+  --memory-active: #2e9657;
+  --memory-pending: #d29b26;
+  --memory-danger: rgb(185, 28, 28);
+}
+:global(body[data-ds-dark-theme]) .panel,
+:global(body[data-ds-dark-theme]) .dialog {
+  --memory-field: #222429;
+  --memory-focus: #81aaff;
+  --memory-avatar-bg: #263951;
+  --memory-avatar-ink: #a0c0f7;
+  --memory-active: #6ab78b;
+  --memory-pending: #ddae4e;
+  --memory-danger: #ed8b8b;
+}
 .panel {
   display: flex;
   flex-direction: column;
@@ -24,8 +44,8 @@
   width: 28px;
   height: 28px;
   border-radius: 8px;
-  background: var(--ar-surface-active);
-  color: var(--ar-text);
+  background: var(--memory-avatar-bg);
+  color: var(--memory-avatar-ink);
   font-size: 13px;
   font-weight: 600;
 }
@@ -112,10 +132,10 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--ar-success);
+  background: var(--memory-active);
 }
 .pending {
-  background: var(--ar-warning);
+  background: var(--memory-pending);
 }
 .summary {
   flex: 1;
@@ -316,7 +336,7 @@
 }
 .deleteAction {
   margin-right: auto;
-  color: var(--ar-danger) !important;
+  color: var(--memory-danger) !important;
 }
 .deleteDialog {
   width: min(440px, 100%) !important;
@@ -329,8 +349,7 @@
   line-height: 24px;
 }
 .deleteConfirm {
-  color: var(--ar-danger) !important;
-  border-color: var(--ar-danger) !important;
+  color: var(--memory-danger) !important;
 }
 .field {
   display: grid;
@@ -355,11 +374,17 @@
   width: 100%;
   border: 1px solid var(--ar-border);
   border-radius: 8px;
-  background: var(--ar-surface-raised);
+  background: var(--memory-field);
   padding: 10px 12px;
   color: inherit;
-  font: inherit;
-  line-height: 22px;
+  font: var(--ar-font-body);
+}
+.field input:focus,
+.field textarea:focus {
+  border-color: var(--memory-focus);
+  outline: 2px solid var(--memory-focus);
+  outline-offset: 2px;
+  background: var(--ar-surface);
 }
 .field textarea {
   min-height: 144px;
@@ -375,8 +400,6 @@
 .panel .confirm:focus-visible,
 .panel .remove:focus-visible,
 .close:focus-visible,
-.field input:focus-visible,
-.field textarea:focus-visible,
 .message button:focus-visible {
   outline: 2px solid var(--ar-focus-ring);
   outline-offset: 2px;
@@ -405,7 +428,12 @@
     gap: 9px;
   }
   .dialog {
+    width: min(552px, calc(100vw - 28px)) !important;
+    flex-shrink: 0;
     border-radius: 20px !important;
+  }
+  .deleteDialog {
+    width: min(440px, calc(100vw - 28px)) !important;
   }
   .dialogHeader {
     padding: 18px 20px 12px;

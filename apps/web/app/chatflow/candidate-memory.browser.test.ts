@@ -498,8 +498,23 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
   }
   const card = (page: Page, id: string) =>
     page.locator(`[data-memory-id="${id}"]`);
-  async function capture(page: Page, name: string) {
+  async function capture(
+    page: Page,
+    name: string,
+    loadedDetails?: string | null,
+  ) {
     await page.waitForLoadState('networkidle');
+    if (loadedDetails !== undefined) {
+      const dialog = page.getByRole('dialog');
+      await dialog.getByRole('status').waitFor({ state: 'hidden' });
+      await dialog
+        .getByText(loadedDetails || '没有详细说明', { exact: true })
+        .waitFor();
+      await dialog
+        .getByRole('button', { name: '修改', exact: true })
+        .and(page.locator(':enabled'))
+        .waitFor();
+    }
     const path = resolve(screenshots, name + '.png');
     await page.screenshot({
       path,
@@ -1769,7 +1784,11 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       const ui = await open('management', theme, width, instanceId);
       const shot = async (state: string) => {
         await noOverflow(ui.page);
-        await capture(ui.page, 'v10-' + state + '-' + width + '-' + theme);
+        await capture(
+          ui.page,
+          'v10-' + state + '-' + width + '-' + theme,
+          state === 'pending' || state === 'full-pending' ? null : undefined,
+        );
       };
       const manager = ui.page.getByRole('region', {
         name: '个人记忆',
