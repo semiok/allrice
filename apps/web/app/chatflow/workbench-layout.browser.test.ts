@@ -8146,9 +8146,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .filter({ hasText: '和 Rice 开新会话' });
           await plus.hover();
           await newChatTooltip.waitFor();
-          expect(await plus.evaluate((node) => node.matches(':hover'))).toBe(
-            true,
-          );
+          // This fixture has no doctype. Qualify :hover so quirks mode does
+          // not restrict the selector to links (WHATWG Quirks Mode 4.1).
+          expect(
+            await plus.evaluate((node) => node.matches('button:hover')),
+          ).toBe(true);
           await capture('hover');
           if (device === 'mobile') {
             await f.page.mouse.move(width - 1, 1);
