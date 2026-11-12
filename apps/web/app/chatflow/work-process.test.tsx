@@ -1,8 +1,12 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { ComponentProps } from 'react';
+import type { ChatFlowEventEnvelope } from '@allrice/contracts';
 import { WorkProcess } from './work-process';
-import type { NativeExperienceItem } from '../../lib/chatflow/native-experience';
+import {
+  projectNativeExperience,
+  type NativeExperienceItem,
+} from '../../lib/chatflow/native-experience';
 import { workProcessPresentation } from '../../lib/chatflow/work-process-presentation';
 
 const items: NativeExperienceItem[] = [
@@ -47,6 +51,141 @@ const render = (overrides: Partial<ComponentProps<typeof WorkProcess>> = {}) =>
   );
 
 describe('native process display surface', () => {
+  it('projects each native create/list failure receipt and its safe reason into the process', () => {
+    const events: ChatFlowEventEnvelope[] = [
+      'subagent',
+      'subagent_fork',
+      'list_agents',
+      'list_agents',
+    ].map((name, index): ChatFlowEventEnvelope => ({
+      schemaVersion: 3,
+      eventId: `failure-${index}`,
+      organizationId: 'organization',
+      workspaceId: 'workspace',
+      conversationId: 'session',
+      runId: 'run',
+      generation: 0,
+      cursor: `run:${index + 1}`,
+      sequence: index + 1,
+      harness: 'dsh',
+      type: 'tool.failed',
+      occurredAt: '2026-11-10T00:00:00.000Z',
+      sourceEvent: null,
+      payload: {
+        name,
+        toolCallId: `failure-${index}`,
+        summary: `授权读取被拒绝 ${index + 1}`,
+      },
+    }));
+    const calls = projectNativeExperience(events);
+    expect(calls.map((call) => call.status)).toEqual(Array(4).fill('failed'));
+    const html = render({
+      items: calls,
+      parts: undefined,
+      transcriptView: 'verbose',
+    });
+    for (let index = 0; index < events.length; index++) {
+      expect(
+        html.match(new RegExp(`data-step-id="tool:failure-${index}"`, 'g')),
+      ).toHaveLength(1);
+      expect(html).toContain(`授权读取被拒绝 ${index + 1}`);
+    }
+  });
+  it.each([false, true])(
+    'keeps each failed create/list fact and unknown outcome with parts=%s',
+    (withParts) => {
+      const calls: NativeExperienceItem[] = [
+        {
+          id: 'tool:create',
+          toolName: 'subagent',
+          status: 'completed',
+          activityDetail: '独立复核合计',
+        },
+        {
+          id: 'tool:create-failed',
+          toolName: 'subagent_fork',
+          status: 'failed',
+          detail: '授权读取被拒绝',
+        },
+        {
+          id: 'tool:list-failed',
+          toolName: 'list_agents',
+          status: 'failed',
+          detail: '读取服务暂不可用',
+        },
+        { id: 'tool:create-unknown', toolName: 'subagent', status: 'info' },
+        {
+          id: 'tool:list-completed',
+          toolName: 'list_agents',
+          status: 'completed',
+        },
+        { id: 'tool:message', toolName: 'send_message', status: 'completed' },
+      ].map((call, sequence) => ({
+        kind: 'tool',
+        title: call.toolName,
+        sequence,
+        ...call,
+      })) as NativeExperienceItem[];
+      const processParts = withParts
+        ? [
+            {
+              kind: 'steps' as const,
+              id: 'native-calls',
+              sequence: 1,
+              items: calls,
+            },
+            parts[2]!,
+          ]
+        : undefined;
+      const presentation = {
+        ...workProcessPresentation([], processParts, 'native-run', false),
+        identityKnown: true,
+      };
+      const html = render({
+        items: calls,
+        parts: processParts,
+        presentation,
+        transcriptView: 'verbose',
+        onOpenSubagents: () => {},
+        subagentCount: 2,
+      });
+      for (const id of [
+        'create',
+        'create-failed',
+        'list-failed',
+        'create-unknown',
+        'message',
+      ])
+        expect(
+          html.match(new RegExp(`data-step-id="tool:${id}"`, 'g')),
+        ).toHaveLength(1);
+      expect(html).toContain('创建子智能体 · 独立复核合计');
+      expect(html).toContain('授权读取被拒绝');
+      expect(html).toContain('读取服务暂不可用');
+      expect(html).toContain('结果未确认');
+      expect(html).toContain('send_message');
+      expect(html).not.toContain('data-step-id="tool:list-completed"');
+      expect(html).toContain('2 个智能体');
+      expect(html).not.toContain('childId');
+      if (withParts) {
+        const directoryId = html.match(/id="([^"]+-subagents)"/)![1]!;
+        expect(html.match(/aria-owns="([^"]+)"/)![1]!.split(' ')).toContain(
+          directoryId,
+        );
+        expect(html.indexOf(`id="${directoryId}"`)).toBeLessThan(
+          html.indexOf('data-work-reply="final-reply"'),
+        );
+      }
+      const unbound = render({
+        items: calls,
+        parts: undefined,
+        presentation: { ...presentation, identityKnown: false },
+        onOpenSubagents: () => {},
+      });
+      expect(unbound).toContain('data-step-id="tool:list-completed"');
+      expect(unbound).not.toContain('个智能体');
+    },
+  );
   it('uses an action title for memory without claiming the memory was confirmed', () => {
     const memory: NativeExperienceItem[] = [
       {

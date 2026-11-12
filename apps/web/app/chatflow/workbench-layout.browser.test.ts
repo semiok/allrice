@@ -1,4 +1,4 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { createServer, type Server } from 'node:http';
 import { createRequire } from 'node:module';
@@ -60,7 +60,9 @@ import {
   type EmployeeAccentColor,
   type AutomationCatalogTask,
   type Appearance,
+  type NativeSubagentSummary,
 } from '@allrice/contracts';
+import { NativeSubagentFixtureFeed } from '../../test/native-subagent-fixture-feed';
 import { appearanceScript, themeScript } from '../../lib/theme/theme-script';
 import type { ArtifactPreview } from '../../lib/chatflow/workbench-model';
 import type {
@@ -114,6 +116,56 @@ const now = '2026-09-20T00:00:00.000Z';
 const report =
   '# COIN / MSTR / CRCL · 合成研究报告\n\n| 标的 | 说明 |\n| --- | --- |\n| COIN | 测试数据，非投资建议 |\n\n' +
   '多步研究结果与引用说明。'.repeat(100);
+
+function nativeChildSummary(): NativeSubagentSummary {
+  return {
+    rootId: 'native-root',
+    root: { source: 'live', cursor: 8 },
+    descendants: ['child-a', 'child-b'].map((childId, index) => ({
+      kind: 'child',
+      id: childId,
+      parentId: 'native-root',
+      depth: 1,
+      mode: 'continuable',
+      label: '同名复核',
+      task: `${childId} 自己的任务`,
+      lastReply: `${childId} 获授权的回复`,
+      running: index === 0,
+      activity: index === 0 ? 'running' : 'inactive',
+      observation: { source: 'live', cursor: 8 },
+      timing: { settledMs: 1000, lastTurnCompleted: true },
+      usage: {
+        uncachedInputTokens: 1,
+        cacheReadTokens: 2,
+        cacheWriteTokens: 3,
+        outputTokens: 4,
+      },
+    })),
+  };
+}
+function nativeChildCalls(): ChatFlowEventEnvelope[] {
+  return ['subagent', 'list_agents'].flatMap((name, index) =>
+    ['started', 'completed'].map((status, offset): ChatFlowEventEnvelope => {
+      const sequence = index * 2 + offset + 1;
+      return {
+        schemaVersion: 3,
+        eventId: id(7100 + sequence),
+        organizationId: org,
+        workspaceId: workspace,
+        conversationId: A,
+        runId: run,
+        generation: 0,
+        cursor: `${run}:${sequence}`,
+        sequence,
+        harness: 'dsh',
+        type: status === 'started' ? 'tool.started' : 'tool.completed',
+        occurredAt: now,
+        sourceEvent: null,
+        payload: { name, toolCallId: `native-${index}` },
+      };
+    }),
+  );
+}
 
 function brandContentPackage() {
   return WorkflowPackageSchema.parse({
@@ -371,6 +423,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     unreadCleanups.delete(task);
     if (cleanup) await cleanup.finish(task.result);
   });
+  const subagentFeed = new NativeSubagentFixtureFeed();
+  const nativeDocuments = new Map<string, () => string>();
   const downloadFixtures = new Map<
     string,
     { fileName: string; body: string }
@@ -405,6 +459,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       f.path.endsWith('.css'),
     ).contents;
     server = createServer((request, response) => {
+      if (subagentFeed.handle(request, response)) return;
       const download = downloadFixtures.get(request.url!);
       if (download) {
         response.writeHead(200, {
@@ -415,6 +470,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         return;
       }
       const path = new URL(request.url!, 'http://localhost').pathname;
+      const nativeDocument =
+        path === '/'
+          ? nativeDocuments.get(
+              request.headers.cookie?.match(
+                /(?:^|; )native-subagent-fixture=([^;]+)/,
+              )?.[1] ?? '',
+            )
+          : undefined;
       response.writeHead(200, {
         'content-type':
           path === '/app.js'
@@ -428,7 +491,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           ? js
           : path === '/app.css'
             ? css
-            : '<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/app.css"></head><body style="margin:0"><div id="root"></div><script src="/app.js"></script></body></html>',
+            : (nativeDocument?.() ??
+              '<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/app.css"></head><body style="margin:0"><div id="root"></div><script src="/app.js"></script></body></html>'),
       );
     });
     await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
@@ -436,6 +500,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     if (!address || typeof address === 'string')
       throw Error('No loopback address');
     origin = `http://127.0.0.1:${address.port}`;
+    subagentFeed.attach(server);
     const { chromium } = createRequire(
       resolve(root, 'apps/worker/package.json'),
     )('playwright-core');
@@ -450,6 +515,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   }, 60_000);
   afterAll(async () => {
     await browser?.close();
+    await subagentFeed.close();
     server?.closeAllConnections();
     if (server) await new Promise<void>((done) => server.close(() => done()));
   }, 30_000);
@@ -481,6 +547,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       initialArtifacts?: ReturnType<typeof artifact>[];
       initialFiles?: WorkspaceFile[];
       initialMessages?: Message[];
+      nativeSubagents?: NativeSubagentSummary;
+      nativeEvents?: ChatFlowEventEnvelope[];
+      eventsDelay?: Promise<void>;
       disabled?: boolean;
       taskSuggestions?: boolean;
       localMcp?: boolean;
@@ -728,8 +797,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       reply: report,
       messageStatus: options.running ? 'pending' : 'completed',
       streamRequests: 0,
-      events: [] as ChatFlowEventEnvelope[],
-      eventsDelay: null as Promise<void> | null,
+      events: options.nativeEvents ?? ([] as ChatFlowEventEnvelope[]),
+      nativeSubagents: options.nativeSubagents ?? null,
+      eventsDelay: options.eventsDelay ?? (null as Promise<void> | null),
       streamEvents: null as ChatFlowEventEnvelope[] | null,
       employeeName: 'Rice',
       runTimings: [] as NonNullable<InteractionStatus['runTimings']>,
@@ -737,6 +807,19 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       inputs: [] as InteractionStatus['inputs'],
       delay: null as null | Promise<void>,
     };
+    const nativeFixture = options.nativeSubagents
+      ? subagentFeed.register({
+          summary: (sessionId) =>
+            sessionId === A
+              ? state.nativeSubagents
+              : {
+                  rootId: sessionId,
+                  root: { source: 'live', cursor: -1 },
+                  descendants: [],
+                },
+        })
+      : undefined;
+    if (nativeFixture) await subagentFeed.bindPage(page, origin, nativeFixture);
     const archivedHistory = Array.from(
       { length: options.archiveCount ?? 0 },
       (_, n) => ({
@@ -1971,16 +2054,21 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         /^\/api\/v1\/sessions\/([a-f0-9-]{36})\/subagents$/,
       )?.[1];
       if (subagentSession && route.request().method() === 'GET') {
+        if (nativeFixture && url.searchParams.get('follow') === 'true')
+          return route.continue();
         // No native children in this fixture. Explicitly allow this scoped read;
         // unknown routes and every write keep their existing assertions.
         if (url.searchParams.get('workspaceId') !== state.workspace)
           return answer({ error: { code: 'authorization_denied' } }, 403);
         return answer({
-          summary: {
-            rootId: subagentSession,
-            root: { source: 'live', cursor: -1 },
-            descendants: [],
-          },
+          summary:
+            nativeFixture && subagentSession === A
+              ? state.nativeSubagents
+              : {
+                  rootId: subagentSession,
+                  root: { source: 'live', cursor: -1 },
+                  descendants: [],
+                },
         });
       }
       const nextStepsSession = path.match(
@@ -2310,20 +2398,25 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       unexpected.push(path);
       return answer({}, 404);
     });
-    if (serverTheme)
-      await page.route(
-        (url) => url.origin === origin && url.pathname === '/',
-        (route) => {
-          const saved = state.preferences[state.viewer]?.appearance;
-          // What the page looked like right after the theme scripts, before
-          // the app loads and hydrates.
-          const firstPaint = `window.firstPaint={theme:document.documentElement.getAttribute('data-theme'),dark:document.body.hasAttribute('data-ds-dark-theme')}`;
-          return route.fulfill({
-            contentType: 'text/html',
-            body: `<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/app.css"></head><body style="margin:0"><script>${themeScript}</script><script>${appearanceScript({ choice: saved ?? null, viewer: state.viewer })}</script><script>${firstPaint}</script><div id="root"></div><script src="/app.js"></script></body></html>`,
-          });
-        },
-      );
+    if (serverTheme) {
+      const document = () => {
+        const saved = state.preferences[state.viewer]?.appearance;
+        // What the page looked like right after the theme scripts, before
+        // the app loads and hydrates.
+        const firstPaint = `window.firstPaint={theme:document.documentElement.getAttribute('data-theme'),dark:document.body.hasAttribute('data-ds-dark-theme')}`;
+        return `<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/app.css"></head><body style="margin:0"><script>${themeScript}</script><script>${appearanceScript({ choice: saved ?? null, viewer: state.viewer })}</script><script>${firstPaint}</script><div id="root"></div><script src="/app.js"></script></body></html>`;
+      };
+      if (nativeFixture) nativeDocuments.set(nativeFixture, document);
+      else
+        await page.route(
+          (url) => url.origin === origin && url.pathname === '/',
+          (route) =>
+            route.fulfill({
+              contentType: 'text/html',
+              body: document(),
+            }),
+        );
+    }
     options.failureCleanup?.check();
     await page.goto(
       `${origin}/?session=${options.noSession ? '' : A}${serverTheme ? '&theme=1' : ''}${options.disabled ? '&disabled=1' : ''}${options.taskSuggestions ? '&task-suggestions=1' : ''}${options.localMcp ? '&local-mcp=1' : ''}${options.settingsEntry ? `&settings=${options.settingsEntry}` : ''}`,
@@ -2361,6 +2454,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       errors,
       writes,
       unexpected,
+      nativeFixture,
       panel,
       entry,
       releaseStream: finishStream,
@@ -2435,6 +2529,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         releaseStartup();
         finishStream();
         await context.close();
+        if (nativeFixture) nativeDocuments.delete(nativeFixture);
         expect(errors).toEqual([]);
         expect(writes).toEqual([]);
         expect(unexpected).toEqual([]);
@@ -2447,6 +2542,728 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     });
     return result;
   }
+
+  async function openNativeChild(
+    f: Awaited<ReturnType<typeof fixture>>,
+    childId = 'child-a',
+  ) {
+    await f.page.getByRole('button', { name: /2 个子智能体/ }).click();
+    await f.page
+      .locator(`[data-child="${childId}"]`)
+      .getByRole('button', { name: /在工作台打开/ })
+      .click();
+    const view = f.panel.locator(`[data-native-subagent-id="${childId}"]`);
+    await view.getByLabel('交给子智能体的任务').waitFor();
+    return view;
+  }
+
+  async function settleWorkbenchMotion(f: Awaited<ReturnType<typeof fixture>>) {
+    await f.panel.evaluate(async (panel) => {
+      await Promise.all(
+        panel.getAnimations().map((animation) => animation.finished),
+      );
+    });
+  }
+
+  it('opens native child tabs from the same directory with no artifacts, isolates same names and stops inactive reads', async () => {
+    const f = await fixture({
+      disabled: true,
+      nativeSubagents: nativeChildSummary(),
+      nativeEvents: nativeChildCalls(),
+    });
+    const connections = () =>
+      [...subagentFeed.connections].filter(
+        (connection) =>
+          connection.fixture === f.nativeFixture && connection.childId,
+      );
+    try {
+      await f.page
+        .locator('[data-step-id="tool:native-0"]')
+        .waitFor({ state: 'attached' });
+      const process = f.page.locator('section[aria-label="工作过程"]').first();
+      if ((await process.getAttribute('data-process-open')) === 'false')
+        await process.getByRole('button').first().click();
+      await f.page
+        .getByRole('button', { name: /^查看子智能体 · 2 个智能体/ })
+        .click();
+      await f.page.getByRole('tree', { name: '子智能体目录' }).waitFor();
+      expect(
+        await f.page.getByRole('tree', { name: '子智能体目录' }).count(),
+      ).toBe(1);
+      await f.page
+        .locator('[data-child="child-a"]')
+        .getByRole('button', { name: /在工作台打开/ })
+        .click();
+      const first = f.panel.locator('[data-native-subagent-id="child-a"]');
+      await expect
+        .poll(() => first.innerText())
+        .toContain('child-a 获授权的回复');
+      expect(f.state.items).toEqual([]);
+      await expect
+        .poll(() => connections().map((connection) => connection.childId))
+        .toEqual(['child-a']);
+      const childTabs = f.panel.locator(
+        '[role="tab"]:has([data-native-subagent-tab])',
+      );
+      expect(await childTabs.count()).toBe(1);
+      await openNativeChild(f);
+      expect(await childTabs.count()).toBe(1);
+      await openNativeChild(f, 'child-b');
+      expect(await childTabs.count()).toBe(2);
+      await expect
+        .poll(() => connections().map((connection) => connection.childId))
+        .toEqual(['child-b']);
+      expect(await first.count()).toBe(0);
+      await childTabs.first().click();
+      await expect
+        .poll(() => connections().map((connection) => connection.childId))
+        .toEqual(['child-a']);
+      await childTabs
+        .first()
+        .getByRole('button', { name: '关闭标签', exact: true })
+        .click();
+      await expect
+        .poll(() =>
+          connections().some((connection) => connection.childId === 'child-a'),
+        )
+        .toBe(false);
+      await childTabs.first().click();
+      await expect
+        .poll(() => connections().map((connection) => connection.childId))
+        .toEqual(['child-b']);
+      const guide = f.panel.getByRole('tab').filter({ hasText: '开始' });
+      if (await guide.count()) await guide.click();
+      else
+        await f.panel
+          .getByRole('button', { name: '新建标签页', exact: true })
+          .click();
+      await expect.poll(() => connections().length).toBe(0);
+      await childTabs.first().click();
+      await expect.poll(() => connections().length).toBe(1);
+      await f.panel
+        .getByRole('button', { name: '关闭工作台', exact: true })
+        .click();
+      await expect.poll(() => connections().length).toBe(0);
+      await openNativeChild(f, 'child-b');
+      expect(await childTabs.count()).toBe(1);
+      const read = f.state.nativeSubagents!;
+      read.descendants = read.descendants.map((entry) =>
+        entry.id === 'child-b'
+          ? {
+              kind: 'diagnostic',
+              id: entry.id,
+              parentId: entry.parentId,
+              depth: entry.depth,
+              reason: 'identity_mismatch',
+            }
+          : entry,
+      );
+      subagentFeed.push(
+        f.nativeFixture!,
+        { type: 'directory', summary: read },
+        null,
+        A,
+      );
+      await expect.poll(() => f.panel.innerText()).toContain('身份校验未通过');
+      await expect.poll(() => connections().length).toBe(0);
+      expect(await f.panel.innerText()).not.toContain('child-b 自己的任务');
+      await f.page.getByText('研究任务 B', { exact: true }).first().click();
+      await expect
+        .poll(() => f.page.locator('[data-native-subagent-id]').count())
+        .toBe(0);
+      expect(await f.page.locator('[data-child]').count()).toBe(0);
+      expect(f.writes).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it.each([false, true])(
+    'fills a cold history generation without changing Dock placement or background reads, floating=%s',
+    async (floating) => {
+      let releaseTrace!: () => void;
+      const eventsDelay = new Promise<void>((resolve) => {
+        releaseTrace = resolve;
+      });
+      const f = await fixture({
+        disabled: true,
+        nativeSubagents: nativeChildSummary(),
+        nativeEvents: nativeChildCalls(),
+        eventsDelay,
+      });
+      const connections = () =>
+        [...subagentFeed.connections].filter(
+          (connection) =>
+            connection.fixture === f.nativeFixture && connection.childId,
+        );
+      const tabs = f.panel.locator(
+        '[role="tab"]:has([data-native-subagent-tab])',
+      );
+      try {
+        await openNativeChild(f);
+        await openNativeChild(f, 'child-b');
+        const float = async (tab: Locator, x: number, y: number) => {
+          await settleWorkbenchMotion(f);
+          const box = (await tab.boundingBox())!;
+          await f.page.mouse.move(box.x + 12, box.y + box.height / 2);
+          await f.page.mouse.down();
+          await f.page.mouse.move(x, y, { steps: 10 });
+          await f.page.mouse.up();
+        };
+        const dockPane = f.panel.locator(
+          '[data-dockkit-pane]:not([data-dockkit-float]):has([data-dockkit-strip])',
+        );
+        const guide = dockPane
+          .getByRole('tab')
+          .filter({ hasText: /^(开始|交付成果)/ });
+        const showGuide = async () => {
+          expect(await dockPane.count()).toBe(1);
+          if (!(await guide.count()))
+            await dockPane.locator('[data-dockkit-add-tab]').click();
+          await guide.click();
+          return guide;
+        };
+        if (floating) {
+          await float(tabs.last(), 120, 160);
+          await expect
+            .poll(() => f.panel.locator('[data-dockkit-float-grip]').count())
+            .toBe(1);
+          await float(await showGuide(), 280, 260);
+          await expect
+            .poll(() => f.panel.locator('[data-dockkit-float-grip]').count())
+            .toBe(2);
+          await showGuide();
+        } else {
+          await f.panel
+            .getByRole('button', { name: '全屏查看', exact: true })
+            .click();
+          await f.panel
+            .getByRole('button', { name: '并排查看', exact: true })
+            .click();
+          await expect
+            .poll(() => f.panel.locator('[data-dockkit-strip]').count())
+            .toBe(2);
+        }
+        expect(connections()).toEqual([]);
+        expect(
+          subagentFeed.calls.filter(
+            (call) => call.fixture === f.nativeFixture && call.childId,
+          ),
+        ).toEqual([]);
+        const backgroundReads = subagentFeed.calls.filter(
+          (call) =>
+            call.fixture === f.nativeFixture && call.childId === 'child-a',
+        ).length;
+        const placement = () =>
+          f.panel.evaluate((panel) => ({
+            panes: Object.fromEntries(
+              [...panel.querySelectorAll<HTMLElement>('[data-dockkit-pane]')]
+                .filter((pane) => pane.querySelector('[data-dockkit-strip]'))
+                .map((pane) => {
+                  const box = pane.getBoundingClientRect();
+                  return [
+                    pane.dataset.dockkitPane!,
+                    {
+                      column: pane.dataset.dockkitColumn,
+                      rect: [box.x, box.y, box.width, box.height],
+                      active: pane.querySelector(
+                        '[role="tab"][aria-selected="true"]',
+                      )?.textContent,
+                      global: pane.hasAttribute('data-dockkit-pane-active'),
+                    },
+                  ] as const;
+                }),
+            ),
+            floats: [
+              ...panel.querySelectorAll<HTMLElement>('[data-dockkit-float]'),
+            ]
+              .filter((pane) => pane.querySelector('[data-dockkit-float-grip]'))
+              .map((pane) => ({
+                title: pane.querySelector('[data-dockkit-float-grip]')
+                  ?.textContent,
+                rect: [
+                  pane.style.left,
+                  pane.style.top,
+                  pane.style.width,
+                  pane.style.height,
+                ],
+                z: pane.style.zIndex || pane.parentElement?.style.order || '',
+                global: pane.hasAttribute('data-dockkit-float-active'),
+              }))
+              .sort((left, right) => Number(left.z) - Number(right.z)),
+          }));
+        const before = await placement();
+        await f.page.evaluate(() => {
+          const panel = document.querySelector('#artifact-workbench')!;
+          new MutationObserver(() => {
+            if (
+              !panel.isConnected ||
+              panel.getAttribute('aria-hidden') === 'true'
+            )
+              document.documentElement.dataset.subagentPanelLost = 'true';
+          }).observe(panel.parentElement!, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['aria-hidden'],
+          });
+        });
+        releaseTrace();
+        await f.page
+          .locator('[data-step-id="tool:native-0"]')
+          .waitFor({ state: 'attached' });
+        await expect.poll(placement).toEqual(before);
+        await expect
+          .poll(() =>
+            f.panel.locator('[data-native-subagent-id="child-b"]').innerText(),
+          )
+          .toContain('child-b 获授权的回复');
+        expect(
+          await f.panel.locator('[data-native-subagent-id="child-a"]').count(),
+        ).toBe(0);
+        expect(
+          await f.page.evaluate(
+            () => document.documentElement.dataset.subagentPanelLost,
+          ),
+        ).toBeUndefined();
+        expect(
+          subagentFeed.calls.filter(
+            (call) =>
+              call.fixture === f.nativeFixture && call.childId === 'child-a',
+          ),
+        ).toHaveLength(backgroundReads);
+        expect(await tabs.count()).toBe(floating ? 1 : 2);
+        await expect
+          .poll(() => connections().map((connection) => connection.childId))
+          .toEqual(['child-b']);
+        if (!floating)
+          await f.panel
+            .getByRole('button', { name: '退出全屏', exact: true })
+            .click();
+        await openNativeChild(f, 'child-b');
+        expect(await tabs.count()).toBe(floating ? 1 : 2);
+        expect(await f.panel.locator('[data-dockkit-float-grip]').count()).toBe(
+          floating ? 2 : 0,
+        );
+      } finally {
+        releaseTrace();
+        await f.close();
+      }
+    },
+  );
+
+  it('keeps delayed prepared history summary-only after its identity becomes canonical', async () => {
+    let releaseTrace!: () => void;
+    const eventsDelay = new Promise<void>((resolve) => {
+      releaseTrace = resolve;
+    });
+    const value = nativeChildSummary();
+    value.root.source = 'prepared';
+    value.descendants = value.descendants.map((entry) =>
+      entry.kind === 'child'
+        ? {
+            ...entry,
+            running: null,
+            observation: { source: 'prepared', cursor: 8 },
+          }
+        : entry,
+    );
+    const f = await fixture({
+      disabled: true,
+      nativeSubagents: value,
+      nativeEvents: nativeChildCalls(),
+      eventsDelay,
+    });
+    try {
+      const view = await openNativeChild(f);
+      expect(await view.innerText()).toContain('child-a 获授权的回复');
+      expect(await view.getByText('状态未知', { exact: true }).count()).toBe(1);
+      releaseTrace();
+      await f.page
+        .locator('[data-step-id="tool:native-0"]')
+        .waitFor({ state: 'attached' });
+      await openNativeChild(f);
+      expect(await f.panel.locator('[data-native-subagent-tab]').count()).toBe(
+        1,
+      );
+      expect(
+        subagentFeed.calls.filter(
+          (call) => call.fixture === f.nativeFixture && call.childId,
+        ),
+      ).toEqual([]);
+    } finally {
+      releaseTrace();
+      await f.close();
+    }
+  });
+
+  it.each([false, true])(
+    'keeps a persisted canonical float when a cold summary merges, background=%s',
+    async (background) => {
+      const f = await fixture({
+        disabled: true,
+        nativeSubagents: nativeChildSummary(),
+        nativeEvents: nativeChildCalls(),
+      });
+      const connections = () =>
+        [...subagentFeed.connections].filter(
+          (connection) =>
+            connection.fixture === f.nativeFixture && connection.childId,
+        );
+      let releaseTrace = () => {};
+      const float = async (tab: Locator, x: number, y: number) => {
+        await settleWorkbenchMotion(f);
+        const box = (await tab.boundingBox())!;
+        await f.page.mouse.move(box.x + 12, box.y + box.height / 2);
+        await f.page.mouse.down();
+        await f.page.mouse.move(x, y, { steps: 10 });
+        await f.page.mouse.up();
+      };
+      try {
+        await f.page
+          .locator('[data-step-id="tool:native-0"]')
+          .waitFor({ state: 'attached' });
+        await openNativeChild(f);
+        const tab = f.panel.locator(
+          '[role="tab"]:has([data-native-subagent-tab])',
+        );
+        const canonicalId = (await tab.getAttribute('data-dockkit-tab'))!;
+        await float(tab, 120, 160);
+        const canonical = f.panel.locator(
+          `[data-dockkit-content="${canonicalId}"][data-dockkit-float]`,
+        );
+        await canonical.waitFor();
+        const paneId = await canonical.getAttribute('data-dockkit-float');
+        const rect = () =>
+          canonical.evaluate((node) => [
+            node.style.left,
+            node.style.top,
+            node.style.width,
+            node.style.height,
+          ]);
+        const beforeRect = await rect();
+        f.state.eventsDelay = new Promise<void>((resolve) => {
+          releaseTrace = resolve;
+        });
+        await f.page.reload();
+        await f.page.getByRole('textbox', { name: /^给 .+ 的消息$/ }).waitFor();
+        await expect.poll(() => connections().length).toBe(0);
+        const reads = subagentFeed.calls.filter(
+          (call) => call.fixture === f.nativeFixture && call.childId,
+        ).length;
+        await openNativeChild(f);
+        await float(
+          f.panel.locator('[role="tab"]:has([data-native-subagent-tab])'),
+          280,
+          260,
+        );
+        await expect
+          .poll(() => f.panel.locator('[data-dockkit-float-grip]').count())
+          .toBe(2);
+        if (background)
+          await f.panel
+            .locator('[data-dockkit-pane]:has([data-dockkit-strip])')
+            .getByRole('tab')
+            .filter({ hasText: /^(开始|交付成果)/ })
+            .click();
+        const selection = () =>
+          f.panel
+            .locator(
+              '[data-dockkit-pane][data-dockkit-pane-active],[data-dockkit-float][data-dockkit-float-active]',
+            )
+            .evaluateAll((nodes) =>
+              nodes.map(
+                (node) =>
+                  node.getAttribute('data-dockkit-float') ??
+                  node.getAttribute('data-dockkit-pane'),
+              ),
+            );
+        const beforeSelection = await selection();
+        expect(connections()).toEqual([]);
+        expect(
+          subagentFeed.calls.filter(
+            (call) => call.fixture === f.nativeFixture && call.childId,
+          ),
+        ).toHaveLength(reads);
+        releaseTrace();
+        await f.page
+          .locator('[data-step-id="tool:native-0"]')
+          .waitFor({ state: 'attached' });
+        await expect
+          .poll(() => f.panel.locator('[data-native-subagent-tab]').count())
+          .toBe(1);
+        expect(await canonical.getAttribute('data-dockkit-float')).toBe(paneId);
+        expect(await rect()).toEqual(beforeRect);
+        expect(await selection()).toEqual(
+          background ? beforeSelection : [paneId],
+        );
+        expect(await f.panel.locator('[data-dockkit-float-grip]').count()).toBe(
+          1,
+        );
+        await expect
+          .poll(() => connections().map((connection) => connection.childId))
+          .toEqual(['child-a']);
+        const connection = connections()[0]!;
+        const knownReads = subagentFeed.calls.filter(
+          (call) => call.fixture === f.nativeFixture && call.childId,
+        ).length;
+        const prepared = f.state.nativeSubagents!;
+        prepared.descendants = prepared.descendants.map((entry) =>
+          entry.kind === 'child'
+            ? {
+                ...entry,
+                running: null,
+                observation: { source: 'prepared', cursor: 9 },
+                lastReply: '当前canonical摘要',
+              }
+            : entry,
+        );
+        subagentFeed.push(
+          f.nativeFixture!,
+          { type: 'directory', summary: prepared },
+          null,
+          A,
+        );
+        await expect
+          .poll(() => canonical.innerText())
+          .toContain('当前canonical摘要');
+        expect(subagentFeed.connections.has(connection)).toBe(true);
+        expect(
+          subagentFeed.calls.filter(
+            (call) => call.fixture === f.nativeFixture && call.childId,
+          ),
+        ).toHaveLength(knownReads);
+        expect(await rect()).toEqual(beforeRect);
+        expect(f.writes).toEqual([]);
+      } finally {
+        releaseTrace();
+        await f.close();
+      }
+    },
+  );
+
+  it('invalidates a known generation when the same Run emits a new native generation', async () => {
+    const f = await fixture({
+      disabled: true,
+      running: true,
+      controlledStream: true,
+      nativeSubagents: nativeChildSummary(),
+    });
+    const emit = (event: ChatFlowEventEnvelope) =>
+      f.page.evaluate(
+        (body) =>
+          window.dispatchEvent(
+            new CustomEvent('allrice-test-stream', { detail: body }),
+          ),
+        `data: ${JSON.stringify(event)}\n\n`,
+      );
+    try {
+      await f.page.waitForFunction(
+        () => document.documentElement.dataset.streamReady === 'true',
+      );
+      await emit({
+        ...nativeChildCalls()[0]!,
+        type: 'harness.native',
+        payload: {},
+        sourceEvent: {
+          id: 'native-ready',
+          type: 'request/header',
+          occurredAt: now,
+          payload: {},
+        },
+      });
+      await openNativeChild(f);
+      await expect
+        .poll(
+          () =>
+            [...subagentFeed.connections].filter(
+              (connection) =>
+                connection.fixture === f.nativeFixture && connection.childId,
+            ).length,
+        )
+        .toBe(1);
+      await emit({ ...nativeChildCalls()[1]!, generation: 1 });
+      await expect
+        .poll(() => f.page.locator('[data-native-subagent-id]').count())
+        .toBe(0);
+      await expect
+        .poll(
+          () =>
+            [...subagentFeed.connections].filter(
+              (connection) =>
+                connection.fixture === f.nativeFixture && connection.childId,
+            ).length,
+        )
+        .toBe(0);
+    } finally {
+      await f.close();
+    }
+  });
+
+  for (const width of [1440, 1160, 1024, 390, 320])
+    for (const appearance of ['light', 'dark'] as const)
+      it(`shows the real read-only native Dock tab and return target at ${width}px ${appearance}`, async () => {
+        const f = await fixture({
+          width,
+          appearance,
+          touch: width <= 760,
+          disabled: true,
+          nativeSubagents: nativeChildSummary(),
+          nativeEvents: nativeChildCalls(),
+        });
+        try {
+          const view = await openNativeChild(f);
+          await settleWorkbenchMotion(f);
+          expect(await view.locator('input,textarea,footer').count()).toBe(0);
+          expect(
+            await view
+              .getByRole('button', { name: /停止|发送|Queue|Steer|来源/ })
+              .count(),
+          ).toBe(0);
+          expect(await view.innerText()).not.toContain('tokens');
+          const back = f.panel.getByRole('button', {
+            name: '返回主对话',
+            exact: true,
+          });
+          expect(await back.count()).toBe(width <= 1100 ? 1 : 0);
+          const close = f.panel.locator(
+            '[role="tab"]:has([data-native-subagent-tab]) [data-dockkit-tab-close]',
+          );
+          const strip = (await f.panel
+            .locator('[data-dockkit-strip]')
+            .boundingBox())!;
+          expect(strip.height).toBe(56);
+          const closeBox = await close.boundingBox();
+          expect(closeBox!.width).toBeGreaterThanOrEqual(
+            width <= 760 ? 44 : 32,
+          );
+          expect(closeBox!.height).toBeGreaterThanOrEqual(
+            width <= 760 ? 44 : 32,
+          );
+          expect(
+            Math.abs(
+              closeBox!.y + closeBox!.height / 2 - (strip.y + strip.height / 2),
+            ),
+          ).toBeLessThanOrEqual(1);
+          if (width <= 1100) {
+            const target = await back.boundingBox();
+            expect(target!.width).toBe(44);
+            expect(target!.height).toBe(44);
+            expect(target!.x).toBeGreaterThanOrEqual(strip.x);
+            expect(target!.x + target!.width).toBeLessThanOrEqual(strip.x + 56);
+            expect(target!.y).toBeGreaterThanOrEqual(strip.y);
+            expect(target!.y + target!.height).toBeLessThanOrEqual(
+              strip.y + strip.height,
+            );
+            expect(
+              await back.evaluate((button) => {
+                const box = button.getBoundingClientRect();
+                return [box.y + box.height / 2, box.bottom - 1].every((y) => {
+                  const hit = document.elementFromPoint(
+                    box.x + box.width / 2,
+                    y,
+                  );
+                  return hit === button || button.contains(hit);
+                });
+              }),
+            ).toBe(true);
+          }
+          await mkdir(
+            '.local/integration-collection/met245-process-b-screenshots',
+            { recursive: true },
+          );
+          await f.page.screenshot({
+            path: `.local/integration-collection/met245-process-b-screenshots/host-${width}-${appearance}.png`,
+          });
+          if (width <= 1100) {
+            await expect
+              .poll(
+                () =>
+                  [...subagentFeed.connections].filter(
+                    (connection) =>
+                      connection.fixture === f.nativeFixture &&
+                      connection.childId,
+                  ).length,
+              )
+              .toBe(1);
+            const target = (await back.boundingBox())!;
+            if (width <= 760)
+              await f.page.touchscreen.tap(
+                target.x + target.width / 2,
+                target.y + target.height - 1,
+              );
+            else
+              await f.page.mouse.click(
+                target.x + target.width / 2,
+                target.y + target.height - 1,
+              );
+            await expect
+              .poll(
+                () =>
+                  [...subagentFeed.connections].filter(
+                    (connection) =>
+                      connection.fixture === f.nativeFixture &&
+                      connection.childId,
+                  ).length,
+              )
+              .toBe(0);
+            await openNativeChild(f);
+            await settleWorkbenchMotion(f);
+            expect(
+              await f.panel
+                .locator('[role="tab"]:has([data-native-subagent-tab])')
+                .count(),
+            ).toBe(1);
+          }
+          if (width > 760) await close.hover();
+          expect(
+            await close.evaluate((button) => {
+              const box = button.getBoundingClientRect();
+              const target = document.elementFromPoint(
+                box.x + box.width / 2,
+                box.bottom - 1,
+              );
+              return target === button || button.contains(target);
+            }),
+          ).toBe(true);
+          const edge = (await close.boundingBox())!;
+          if (width <= 760)
+            await f.page.touchscreen.tap(
+              edge.x + edge.width / 2,
+              edge.y + edge.height - 1,
+            );
+          else
+            await f.page.mouse.click(
+              edge.x + edge.width / 2,
+              edge.y + edge.height - 1,
+            );
+          expect(await close.count()).toBe(0);
+          await expect
+            .poll(
+              () =>
+                [...subagentFeed.connections].filter(
+                  (connection) =>
+                    connection.fixture === f.nativeFixture &&
+                    connection.childId,
+                ).length,
+            )
+            .toBe(0);
+          expect(f.writes).toEqual([]);
+        } catch (error) {
+          const path = `.local/integration-collection/met245-process-b-screenshots/host-failure-${width}-${appearance}`;
+          await mkdir(dirname(path), { recursive: true })
+            .then(async () => {
+              await writeFile(`${path}.html`, await f.page.content());
+              await f.page.screenshot({ path: `${path}.png` });
+            })
+            .catch((captureError) =>
+              console.error('NATIVE_HOST_CAPTURE_FAILED', captureError),
+            );
+          throw error;
+        } finally {
+          await f.close();
+        }
+      });
 
   it('MET198 desktop start replaces itself with a module, plus follows native guide rules, and terminal stays in Start', async () => {
     const f = await fixture({ employeeDetails: true });

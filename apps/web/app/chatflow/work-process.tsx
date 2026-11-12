@@ -40,6 +40,10 @@ import type {
 } from '@allrice/contracts';
 import type { NativeExperienceItem } from '../../lib/chatflow/native-experience';
 import {
+  nativeSubagentCallKind,
+  nativeSubagentDirectoryCall,
+} from '../../lib/chatflow/native-subagent-view';
+import {
   summarizeWorkProcess,
   workProcessTitle,
   type WorkProcessCategory,
@@ -56,6 +60,7 @@ import {
 } from './user-question-receipt';
 import type { WorkProcessQuestion } from '../../lib/chatflow/work-process-questions';
 import styles from './dsh-saas.module.css';
+import subagentStyles from './native-subagent-directory.module.css';
 import { presentationPolicyFor } from './dsh-upstream/presentation/presentation-policy';
 import type { ChatPresentationPolicy } from '@deepseek-ai/dsh-client-ui-chat/client';
 import {
@@ -113,6 +118,8 @@ export function WorkProcess({
   artifacts,
   accessibleFiles,
   onOpenArtifact,
+  onOpenSubagents,
+  subagentCount,
   renderOperation,
   transcriptView = 'detailed',
   collapseTiming = 'completion',
@@ -134,6 +141,8 @@ export function WorkProcess({
   artifacts?: readonly WorkbenchArtifact[];
   accessibleFiles?: readonly { id: string; fileName: string }[];
   onOpenArtifact?: (id: string) => void;
+  onOpenSubagents?: (origin: { runId: string; callId: string }) => void;
+  subagentCount?: number;
   label?: string;
   renderOperation?: (operationId: string) => ReactNode;
   transcriptView?: UserPreferences['transcriptView'];
@@ -174,6 +183,38 @@ export function WorkProcess({
       );
   }, [disclosure, currentPresentation]);
   const process = summarizeWorkProcess(items);
+  const directoryCall = nativeSubagentDirectoryCall(items);
+  const directoryLink =
+    onOpenSubagents && directoryCall && currentPresentation.identityKnown ? (
+      <button
+        type="button"
+        className={subagentStyles.processLink}
+        onClick={() =>
+          onOpenSubagents({
+            runId: currentPresentation.runId,
+            callId: directoryCall.id.slice(5),
+          })
+        }
+      >
+        <IconCordisPluginOutlineRegular />
+        查看子智能体
+        {Number.isSafeInteger(subagentCount) && subagentCount! >= 0
+          ? ` · ${subagentCount} 个智能体`
+          : ''}
+        <span aria-hidden>›</span>
+      </button>
+    ) : null;
+  const processItems = (entries: NativeExperienceItem[]) =>
+    directoryLink
+      ? entries.filter(
+          (item) =>
+            !(
+              item.kind === 'tool' &&
+              item.toolName === 'list_agents' &&
+              item.status === 'completed'
+            ),
+        )
+      : entries;
   const microStatus = running && (!streaming || !!parts);
   const waiting = timing?.phase === 'waiting';
   const acceptingAnswers = running && !failed && !canceled;
@@ -312,11 +353,14 @@ export function WorkProcess({
     const childrenId = Children.toArray(children).length
       ? `${processId}-children`
       : undefined;
-    const ownedIds = [...historyIds, retryId, childrenId]
+    const directoryId = directoryLink ? `${processId}-subagents` : undefined;
+    const ownedIds = [...historyIds, retryId, childrenId, directoryId]
       .filter(Boolean)
       .join(' ');
     const hasVisibleHistory =
-      (showHistory && Boolean(historyIds.length || childrenId)) || !!retryId;
+      (showHistory &&
+        Boolean(historyIds.length || childrenId || directoryId)) ||
+      !!retryId;
     const renderPart = (part: WorkProgressPart, index: number) =>
       part.kind === 'reply' ? (
         <div
@@ -348,7 +392,7 @@ export function WorkProcess({
           hidden={!showHistory}
         >
           <WorkProcessGroup
-            items={part.items}
+            items={processItems(part.items)}
             questions={questions}
             revealingQuestions={revealingQuestions}
             renderOperation={renderOperation}
@@ -438,6 +482,17 @@ export function WorkProcess({
           {children}
         </div>
       ) : null,
+      directoryId ? (
+        <div
+          key="subagent-directory"
+          id={directoryId}
+          className={styles.processPart}
+          data-process-member
+          hidden={!showHistory}
+        >
+          {directoryLink}
+        </div>
+      ) : null,
       final ? renderPart(final, visibleParts.indexOf(final)) : null,
     ]);
   }
@@ -491,7 +546,7 @@ export function WorkProcess({
         <div className={styles.processDetails}>
           <NativeStepsGroup
             key={currentPresentation.answerGeneration}
-            items={items}
+            items={processItems(items)}
             questions={questions}
             revealingQuestions={revealingQuestions}
             running={running}
@@ -509,6 +564,7 @@ export function WorkProcess({
           ) : null}
         </div>
         {children}
+        {directoryLink}
       </div>
       {renderOperation && (
         <div className={styles.processReceipts}>
@@ -708,6 +764,10 @@ function WorkProcessSteps({
   return (
     <ul className={styles.processSteps} aria-label="工作步骤">
       {steps.map((step) => {
+        const subagentCallKind = nativeSubagentCallKind(
+          items.find((item) => item.id === step.id && item.kind === 'tool')
+            ?.toolName,
+        );
         const question = questions.find(
           (question) => step.id === `tool:${question.callId}`,
         );
@@ -760,7 +820,11 @@ function WorkProcessSteps({
                 title={
                   question
                     ? `提问 · ${question.request.questions[0]?.question ?? step.title}`
-                    : step.title
+                    : subagentCallKind === 'create'
+                      ? `创建子智能体${step.input ? ` · ${step.input}` : ''}`
+                      : subagentCallKind === 'directory'
+                        ? '查看子智能体'
+                        : step.title
                 }
                 status={status}
                 elapsedMs={step.elapsedMs}
@@ -775,20 +839,23 @@ function WorkProcessSteps({
                         label: '问题',
                         value: item.question,
                       }))
-                    : [
-                        ...(step.input
-                          ? [{ label: '输入', value: step.input }]
-                          : []),
-                        ...(step.result
-                          ? [
-                              {
-                                label:
-                                  step.status === 'failed' ? '原因' : '结果',
-                                value: step.result,
-                              },
-                            ]
-                          : []),
-                      ]
+                    : subagentCallKind === 'create' &&
+                        step.status === 'completed'
+                      ? []
+                      : [
+                          ...(step.input
+                            ? [{ label: '输入', value: step.input }]
+                            : []),
+                          ...(step.result
+                            ? [
+                                {
+                                  label:
+                                    step.status === 'failed' ? '原因' : '结果',
+                                  value: step.result,
+                                },
+                              ]
+                            : []),
+                        ]
                 }
               />
             )}
