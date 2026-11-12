@@ -363,7 +363,7 @@ suite(
       await synthetic.artifact(
         synthetic.task.runId,
         'Command output',
-        owner.actor.id,
+        undefined,
         {
           kind: 'command_output',
         },
@@ -371,7 +371,7 @@ suite(
       await synthetic.artifact(
         synthetic.task.runId,
         'Project snapshot',
-        owner.actor.id,
+        undefined,
         {
           provenanceKind: 'project_snapshot',
         },
