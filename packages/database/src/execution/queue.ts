@@ -3185,6 +3185,90 @@ export async function heartbeatJob(
   });
 }
 
+/** Classify the normalized producer, never its words or a claimed ACL. Native
+ * display is not necessarily a receipt: todo, question and tool views carry
+ * model-derived text. Unclassified native displays do not gain a bypass. */
+function referencePublicationEventKind(type: RunEventType, payload: unknown) {
+  if (type === 'assistant.text.delta' || type === 'assistant.text.completed')
+    return 'content';
+  if (['tool.started', 'tool.completed', 'tool.failed'].includes(type))
+    return 'tool';
+  if (type !== 'harness.native') return 'receipt';
+  const event = payload as {
+    sourceEventType?: string;
+    nativeType?: string;
+    nativePayload?: unknown;
+  } | null;
+  const nativeType = event?.sourceEventType ?? event?.nativeType;
+  if (nativeType === 'session/user-question') return 'question';
+  if (nativeType === 'session/user-questions') {
+    const view = event?.nativePayload as
+      { questions?: { active?: unknown[]; settled?: unknown[] } } | undefined;
+    // An actual empty native view closes membership without new question or
+    // answer text. Do not manufacture this view when suppressing a question.
+    if (
+      Array.isArray(view?.questions?.active) &&
+      view.questions.active.length === 0 &&
+      Array.isArray(view.questions.settled) &&
+      view.questions.settled.length === 0
+    )
+      return 'receipt';
+    return 'question';
+  }
+  return [
+    'session/user-question-answered',
+    'session/projection',
+    'session/stopped',
+    'assistant/attempt',
+    'request/context',
+    'request/header',
+    'llm/retry',
+    'llm/retry-started',
+    'compaction/start',
+    'compaction/end',
+    'compaction/summary',
+    'compaction/prune',
+    'allrice/model-wait',
+    'allrice/model-stream',
+    'allrice/runtime-preparation',
+  ].includes(nativeType ?? '')
+    ? 'receipt'
+    : 'content';
+}
+
+/** Preserve only this already-observed call's status/identity, not its name,
+ * query, activityDetail or either copy of a dynamic summary. This display
+ * receipt never proves execution, native usage, or physical closure. */
+function referencePublicationToolReceipt(type: RunEventType, payload: unknown) {
+  const input = payload as Record<string, unknown> | null;
+  const receipt: Record<string, unknown> = {};
+  for (const key of [
+    'source',
+    'generation',
+    'threadId',
+    'turnId',
+    'conversationId',
+    'messageId',
+    'attempt',
+    'order',
+    'sourceEventId',
+    'sourceEventType',
+    'sourceOccurredAt',
+    'toolCallId',
+    'itemCount',
+  ]) {
+    const value = input?.[key];
+    if (typeof value === 'string' || typeof value === 'number')
+      receipt[key] = value;
+  }
+  const status = type.slice('tool.'.length);
+  return {
+    ...receipt,
+    status,
+    nativePayload: { presentation: 'tool', status },
+  };
+}
+
 export async function appendJobEvent(input: {
   workerId: string;
   jobId: string;
@@ -3217,7 +3301,7 @@ export async function appendJobEvent(input: {
           await transaction`set local statement_timeout='10s'`;
           await lockNativeQuestionMode(transaction);
         }
-        const job = await lockedLeasedJob(
+        let job = await lockedLeasedJob(
           transaction,
           workerId,
           jobId,
@@ -3226,45 +3310,70 @@ export async function appendJobEvent(input: {
           'running',
           lockWaitMs,
         );
+        let payload = input.payload;
+        const kind = referencePublicationEventKind(input.type, payload);
+        if (kind !== 'receipt') {
+          // Only identity/source/policy locks follow root/clock/Job. This must
+          // precede every question projection, including method activation.
+          const publication = await employeeReferencePublicationAccess(
+            transaction,
+            job,
+          );
+          if (publication && !publication.canRead) {
+            if (kind === 'question') {
+              // onEvent returns void: suppressing a card alone leaves DSH
+              // waiting. Stop only this exact Run through its existing port;
+              // current audience loss never writes permanent invalidation.
+              await requestEmployeeAccessCancellationTransaction(
+                transaction,
+                job.run_id,
+                'EMPLOYEE_CONTENT_UNAVAILABLE',
+                {
+                  actorId: null,
+                  requestId: null,
+                  actorLabel: 'reference_publication_current_authority',
+                },
+              );
+              // The first stop can shorten this lease to its fixed drain.
+              // Recheck that frozen row, not the earlier admission snapshot.
+              const [frozen] = await transaction<JobRow[]>`
+                select * from allrice_jobs where id=${job.id} for update`;
+              if (
+                !frozen ||
+                frozen.worker_id !== workerId ||
+                frozen.lease_token !== leaseToken ||
+                frozen.attempt !== job.attempt ||
+                frozen.status !== 'running'
+              )
+                throw new QueueError('lease_lost');
+              job = frozen;
+            }
+            await assertLockedLeaseCurrent(transaction, job);
+            // Resolving the ordinary unpublished result keeps the real
+            // batcher alive for usage, native accounting and close receipts.
+            // Database/lease errors still reject honestly.
+            if (kind !== 'tool') return null;
+            payload = referencePublicationToolReceipt(input.type, payload);
+          }
+        }
         if (input.type === 'harness.native') {
           const { recordEmployeeMethodActivationQuestion } =
             await import('../employees/employee-method-activation-question.ts');
           await recordEmployeeMethodActivationQuestion(
             transaction,
             job,
-            input.payload,
+            payload,
           );
-          await recordTaskQuestion(transaction, job.run_id, input.payload);
-          await recordNativeQuestions(transaction, job.run_id, input.payload);
+          await recordTaskQuestion(transaction, job.run_id, payload);
+          await recordNativeQuestions(transaction, job.run_id, payload);
           await refreshTaskClock(transaction, job.run_id);
-        }
-        if (
-          input.type === 'assistant.text.delta' ||
-          input.type === 'assistant.text.completed'
-        ) {
-          // Only identity/source/policy locks follow the existing root/Job
-          // prefix. No full runtime/generation gate or new lifecycle state.
-          // Current scope/member loss stops this commit without permanently
-          // invalidating history; usage/native drain facts bypass this branch.
-          const publication = await employeeReferencePublicationAccess(
-            transaction,
-            job,
-          );
-          if (publication && !publication.canRead) {
-            // An explicit unpublished result keeps the real harness batcher
-            // alive for already-started usage/native projections. Independent
-            // accounting/physical-close authority is unchanged. Database
-            // errors and lease/drain expiry still reject normally.
-            await assertLockedLeaseCurrent(transaction, job);
-            return null;
-          }
         }
         const event = await appendEvent(transaction, {
           organizationId: job.organization_id,
           workspaceId: job.workspace_id,
           runId: job.run_id,
           type: input.type,
-          payload: input.payload,
+          payload,
         });
         // A lock wait past the lease or drain window must not still commit.
         await assertLockedLeaseCurrent(transaction, job);

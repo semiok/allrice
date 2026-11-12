@@ -1,10 +1,15 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type {
+  HarnessEvent,
   ReferenceAudience,
   RequestContext,
   StoragePort,
   SignedAccessGrant,
+} from '@allrice/contracts';
+import {
+  methodActivationQuestionPrefix,
+  UserQuestionRequestSchema,
 } from '@allrice/contracts';
 import * as client from './core/client.ts';
 import {
@@ -38,9 +43,19 @@ import {
 } from './data.ts';
 import { markFinalDeliveryRootLocked } from './final-delivery-commit.ts';
 import { readFinalDeliveryReferences } from './final-delivery-references.ts';
-import { appendJobEvent, completeJob } from './execution/queue.ts';
+import {
+  appendJobEvent,
+  completeJob,
+  heartbeatJob,
+  finishJobDrain,
+} from './execution/queue.ts';
+import { createRuntimeOperationLedger } from './runtime-ledger/ledger.ts';
 import { HarnessEventBatcher } from '../../../apps/worker/src/harness/delta-batcher.ts';
 import { normalizeHarnessRunEvent } from '../../../apps/worker/src/harness/runtime-contract.ts';
+import {
+  nativeEventView,
+  nativeContextView,
+} from '../../../apps/worker/src/harness/dsh/event-projector.ts';
 import {
   publishReference,
   changeReferencePublication,
@@ -1118,6 +1133,392 @@ suite(
       expect(
         await f.db`select id from allrice_run_events where run_id=${run.scope.runId} and event_type in ('usage.updated','harness.native')`,
       ).toHaveLength(2);
+    }, 120000);
+
+    it.each([
+      'delete',
+      'audience',
+      'department',
+      'membership',
+      'unread',
+      'readable',
+    ] as const)(
+      'real native display pipeline preserves facts and stops only an inaccessible question (%s)',
+      async (loss) => {
+        const s = await setup(),
+          published = await httpUpload(
+            s.owner,
+            upload(s.owner, {
+              scope: 'departments',
+              departmentIds: [s.departments[1]!.id],
+            }),
+          );
+        await ready(published.revisionId);
+        const run = await runtimeRun({ ...s, owner: s.finance }, [
+            published.revisionId,
+          ]),
+          worker = await lease(run);
+        if (loss !== 'unread')
+          expect(
+            await loadEmployeeRuntimeReferences(
+              run.scope,
+              run.runtime.generationId,
+              worker,
+            ),
+          ).toHaveLength(1);
+        await createRuntimeOperationLedger({
+          database: f.db,
+          admission: async () => {
+            throw Error('unused admission');
+          },
+        }).createRoot({
+          task: {
+            scope: {
+              organizationId: run.scope.organizationId,
+              workspaceId: run.scope.workspaceId,
+              projectId: null,
+            },
+            runId: run.scope.runId,
+            rootRunId: run.scope.runId,
+            parentRunId: null,
+            chatSessionId: run.scope.sessionId,
+            frozenConfiguration: {
+              employeeVersionId: null,
+              digest: `sha256:${'c'.repeat(64)}`,
+            },
+          },
+          deadlineAt: new Date(Date.now() + 600000).toISOString(),
+          budgets: [
+            {
+              metric: 'model_calls',
+              unit: 'calls',
+              capacity: 12,
+              currency: null,
+              source: {
+                kind: 'worker',
+                sourceId: 'publication-native-fixture',
+              },
+            },
+          ],
+        });
+        let order = 0;
+        const envelope = {
+          schemaVersion: 1 as const,
+          harness: 'dsh' as const,
+          generation: 1,
+          attempt: 1,
+          threadId: `dsh-${run.scope.sessionId}`,
+          turnId: 'native-turn',
+          sessionId: run.scope.sessionId,
+          messageId: run.sent.assistantMessage.id,
+        };
+        const outcomes: unknown[] = [];
+        const batcher = new HarnessEventBatcher(async (event) => {
+          outcomes.push(
+            await appendJobEvent({
+              ...worker,
+              ...normalizeHarnessRunEvent(event),
+            }),
+          );
+        });
+        const emit = async (event: HarnessEvent) => batcher.accept(event);
+        const todo = (content: string) =>
+          nativeEventView({
+            type: 'todo/write',
+            seq: ++order,
+            data: { todos: [{ id: 'plan', content, status: 'pending' }] },
+          })!;
+        await emit({ ...envelope, ...todo('ALREADY_PUBLIC_PLAN'), order });
+        if (loss === 'delete' || loss === 'unread')
+          await change(s.owner, published.sourceId, 'delete');
+        else if (loss === 'audience')
+          await change(s.owner, published.sourceId, 'audience', 1, {
+            scope: 'personal',
+            departmentIds: [],
+          });
+        else if (loss === 'department')
+          await f.db`update allrice_departments set archived_at=clock_timestamp() where id=${s.departments[1]!.id}`;
+        else if (loss === 'membership')
+          await f.db`update allrice_memberships set active=false where organization_id=${s.owner.organizationId} and user_id=${s.finance.actor.id}`;
+        const denied = loss !== 'unread' && loss !== 'readable';
+        try {
+          await emit({ ...envelope, ...todo('NEW_NATIVE_BODY'), order });
+          for (const type of [
+            'tool.started',
+            'tool.completed',
+            'tool.failed',
+          ] as const)
+            await emit({
+              ...envelope,
+              order: ++order,
+              type,
+              source: 'harness',
+              toolCallId: 'native-call',
+              name: 'NEW_NATIVE_BODY',
+              label: 'NEW_NATIVE_BODY',
+              summary: 'NEW_NATIVE_BODY',
+              sourceEventId: `tool-${order}`,
+              sourceEventType: 'tool/call',
+              sourceOccurredAt: new Date().toISOString(),
+              sourcePayload: {
+                query: 'NEW_NATIVE_BODY',
+                activityDetail: 'NEW_NATIVE_BODY',
+                summary: 'NEW_NATIVE_BODY',
+                skillName: 'NEW_NATIVE_BODY',
+              },
+            });
+          const question = UserQuestionRequestSchema.parse({
+            questionId: 'native-question',
+            questions: [
+              {
+                // A rejected activation question must never reach the writer that
+                // requires its authentic activation receipt. Normal questions do.
+                id: denied
+                  ? methodActivationQuestionPrefix + randomUUID()
+                  : 'choice',
+                question: 'NEW_NATIVE_BODY',
+                detail: 'NEW_NATIVE_BODY',
+                header: 'NEW_NATIVE_BODY',
+                options: [
+                  { label: 'NEW_NATIVE_BODY', description: 'NEW_NATIVE_BODY' },
+                ],
+              },
+            ],
+          });
+          await emit({
+            ...envelope,
+            order: ++order,
+            type: 'native.event',
+            presentation: 'context',
+            status: 'started',
+            label: 'Rice 需要你确认',
+            summary: 'NEW_NATIVE_BODY',
+            sourceEventType: 'session/user-question',
+            sourcePayload: question,
+          });
+          const [first] =
+            await f.db`select cancel_requested_at,drain_deadline_at,lease_expires_at from allrice_jobs where id=${worker.jobId}`;
+          await emit({
+            ...envelope,
+            order: ++order,
+            type: 'native.event',
+            presentation: 'context',
+            status: 'completed',
+            label: '问题状态已更新',
+            sourceEventType: 'session/user-questions',
+            sourcePayload: {
+              sessionId: envelope.threadId,
+              sequence: order,
+              questions: {
+                active: [
+                  {
+                    callId: 'native-question',
+                    state: 'open',
+                    questions: question.questions,
+                  },
+                ],
+                settled: [
+                  {
+                    callId: 'prior',
+                    answers: [{ id: 'choice', selected: ['NEW_NATIVE_BODY'] }],
+                  },
+                ],
+              },
+            },
+          });
+          await emit({
+            ...envelope,
+            order: ++order,
+            type: 'usage.updated',
+            inputTokens: 13,
+            cachedInputTokens: 2,
+            outputTokens: 7,
+          });
+          await emit({
+            ...envelope,
+            ...nativeContextView({
+              contextPressure: { contextWindow: 10000, pressureTokens: 200 },
+            })!,
+            order: ++order,
+          });
+          await batcher.flush();
+          const events =
+              await f.db`select event_type,payload from allrice_run_events where run_id=${run.scope.runId} order by sequence`,
+            steps =
+              await f.db`select event_type,payload from allrice_employee_run_steps where run_id=${run.scope.runId} order by sequence`;
+          expect(JSON.stringify(events)).toContain('ALREADY_PUBLIC_PLAN');
+          for (const rows of [events, steps]) {
+            expect(JSON.stringify(rows).includes('NEW_NATIVE_BODY')).toBe(
+              !denied,
+            );
+            expect(
+              rows.filter((r) => r.event_type === 'usage.updated'),
+            ).toHaveLength(1);
+            expect(
+              rows.filter(
+                (r) => r.payload.sourceEventType === 'session/projection',
+              ),
+            ).toHaveLength(1);
+            expect(
+              rows.filter((r) => String(r.event_type).startsWith('tool.')),
+            ).toHaveLength(3);
+          }
+          const [last] =
+            await f.db`select cancel_reason,cancel_requested_at,drain_deadline_at,lease_expires_at from allrice_jobs where id=${worker.jobId}`;
+          if (denied) {
+            expect(outcomes.slice(1, 2)).toEqual([null]);
+            expect(outcomes.slice(5, 7)).toEqual([null, null]);
+            expect(last).toMatchObject({
+              cancel_reason: 'EMPLOYEE_CONTENT_UNAVAILABLE',
+              cancel_requested_at: first!.cancel_requested_at,
+              drain_deadline_at: first!.drain_deadline_at,
+              lease_expires_at: first!.lease_expires_at,
+            });
+            expect(first!.cancel_requested_at).not.toBeNull();
+            expect(first!.lease_expires_at <= first!.drain_deadline_at).toBe(
+              true,
+            );
+            for (const rows of [
+              await f.db`select * from allrice_task_questions where run_id=${run.scope.runId}`,
+              await f.db`select * from allrice_native_questions where source_run_id=${run.scope.runId}`,
+              await f.db`select * from allrice_native_question_waits where run_id=${run.scope.runId}`,
+              await f.db`select * from allrice_employee_method_activations where source_run_id=${run.scope.runId}`,
+            ])
+              expect(rows).toHaveLength(0);
+            const [root] =
+              await f.db`select cancel_request_id from allrice_runtime_roots where root_run_id=${run.scope.runId}`;
+            expect(root!.cancel_request_id).not.toBeNull();
+            expect(
+              await f.db`select id from allrice_audit_events where resource_id=${run.scope.runId} and action='run.cancel.request' and actor_id is null and reason='EMPLOYEE_CONTENT_UNAVAILABLE'`,
+            ).not.toHaveLength(0);
+            expect(
+              await heartbeatJob(
+                worker.workerId,
+                worker.jobId,
+                worker.leaseToken,
+                30000,
+              ),
+            ).toMatchObject({ active: false, canceled: true, draining: true });
+            await finishJobDrain(worker);
+            const [closed] =
+              await f.db`select j.status,c.state from allrice_jobs j join allrice_conversation_runtimes c on c.active_run_id=j.run_id where j.id=${worker.jobId}`;
+            // release clears active_run_id; a remaining running owner is wrong.
+            expect(closed).toBeUndefined();
+            expect(
+              (
+                await f.db`select status from allrice_jobs where id=${worker.jobId}`
+              )[0]!.status,
+            ).toBe('canceled');
+            expect(
+              await hasRevokedReferencePublicationHistory(
+                s.finance,
+                run.scope.sessionId,
+              ),
+            ).toBe(loss === 'delete');
+            expect(
+              (
+                await f.db`select invalidated_at from allrice_employee_content_contexts where generation_id=${run.runtime.generationId}`
+              )[0]!.invalidated_at,
+            ).toBeNull();
+          } else {
+            expect(last!.cancel_requested_at).toBeNull();
+            expect(outcomes.every((o) => o !== null)).toBe(true);
+            expect(
+              await f.db`select question_id from allrice_task_questions where run_id=${run.scope.runId} and pending`,
+            ).toEqual([{ question_id: 'native-question' }]);
+            await finish(run, worker);
+          }
+        } finally {
+          await batcher.close();
+        }
+      },
+      120000,
+    );
+
+    it('an actual native question waits behind the withdrawal writer, then cancels without any text projection', async () => {
+      const s = await setup(),
+        published = await httpUpload(s.owner);
+      await ready(published.revisionId);
+      const run = await runtimeRun(s, [published.revisionId]),
+        worker = await lease(run);
+      await loadEmployeeRuntimeReferences(
+        run.scope,
+        run.runtime.generationId,
+        worker,
+      );
+      const lock = await f.db.reserve();
+      let writing: Promise<unknown> | undefined,
+        withdrawing: Promise<unknown> | undefined;
+      try {
+        await lock`begin`;
+        await lock`select id from allrice_knowledge_sources where id=${published.sourceId} for share`;
+        const [held] = await lock`select pg_backend_pid() pid`;
+        withdrawing = change(s.owner, published.sourceId, 'delete');
+        await expect
+          .poll(
+            async () =>
+              (
+                await f.db`select count(*)::int n from pg_stat_activity where ${held!.pid}::int=any(pg_blocking_pids(pid))`
+              )[0]!.n,
+            { timeout: 5000 },
+          )
+          .toBeGreaterThan(0);
+        const batcher = new HarnessEventBatcher(async (event) => {
+          expect(
+            await appendJobEvent({
+              ...worker,
+              ...normalizeHarnessRunEvent(event),
+            }),
+          ).toBeNull();
+        });
+        writing = batcher
+          .accept({
+            schemaVersion: 1,
+            harness: 'dsh',
+            generation: 1,
+            attempt: 1,
+            order: 1,
+            threadId: `dsh-${run.scope.sessionId}`,
+            turnId: 'native-turn',
+            sessionId: run.scope.sessionId,
+            messageId: run.sent.assistantMessage.id,
+            type: 'native.event',
+            sourceEventType: 'session/user-question',
+            presentation: 'context',
+            status: 'started',
+            label: 'Rice 需要你确认',
+            sourcePayload: UserQuestionRequestSchema.parse({
+              questionId: 'in-flight',
+              questions: [{ id: 'choice', question: 'IN_FLIGHT_NATIVE_BODY' }],
+            }),
+          })
+          .finally(() => batcher.close());
+        await expect
+          .poll(
+            async () =>
+              (
+                await f.db`select count(*)::int n from pg_stat_activity where wait_event_type='Lock' and query like '%select s.id,s.status%' and query like '%for share%'`
+              )[0]!.n,
+            { timeout: 5000 },
+          )
+          .toBeGreaterThan(0);
+      } finally {
+        await lock`rollback`;
+        lock.release();
+        await Promise.all([withdrawing, writing]);
+      }
+      expect(
+        await f.db`select payload from allrice_run_events where run_id=${run.scope.runId} and event_type='harness.native'`,
+      ).toHaveLength(0);
+      expect(
+        await f.db`select * from allrice_task_questions where run_id=${run.scope.runId}`,
+      ).toHaveLength(0);
+      expect(
+        (
+          await f.db`select cancel_reason from allrice_jobs where id=${worker.jobId}`
+        )[0]!.cancel_reason,
+      ).toBe('EMPLOYEE_CONTENT_UNAVAILABLE');
+      await finishJobDrain(worker);
     }, 120000);
 
     it.each(['audience', 'department', 'membership'] as const)(
