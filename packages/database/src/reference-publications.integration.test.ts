@@ -39,6 +39,8 @@ import {
 import { markFinalDeliveryRootLocked } from './final-delivery-commit.ts';
 import { readFinalDeliveryReferences } from './final-delivery-references.ts';
 import { appendJobEvent, completeJob } from './execution/queue.ts';
+import { HarnessEventBatcher } from '../../../apps/worker/src/harness/delta-batcher.ts';
+import { normalizeHarnessRunEvent } from '../../../apps/worker/src/harness/runtime-contract.ts';
 import {
   publishReference,
   changeReferencePublication,
@@ -759,7 +761,7 @@ suite(
         leaseToken: randomUUID(),
       };
       const [job] =
-        await f.db`update allrice_jobs set status='running',worker_id=${worker.workerId},lease_token=${worker.leaseToken},
+        await f.db`update allrice_jobs set status='running',attempt=attempt+1,worker_id=${worker.workerId},lease_token=${worker.leaseToken},
       claimed_at=clock_timestamp(),heartbeat_at=clock_timestamp(),lease_expires_at=clock_timestamp()+interval '10 minutes'
       where run_id=${run.scope.runId} returning id`;
       worker.jobId = job!.id;
@@ -950,16 +952,14 @@ suite(
         expect(await withdrawing).toEqual({
           result: { sourceId: published.sourceId },
         });
-        expect(await writing).toMatchObject({
-          error: { code: 'EMPLOYEE_CONTENT_UNAVAILABLE' },
-        });
+        expect(await writing).toEqual({ result: null });
         await expect(
           appendJobEvent({
             ...worker,
             type: 'assistant.text.completed',
             payload: { source: 'dsh', text: 'COMPLETED_AFTER_WITHDRAWAL' },
           }),
-        ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+        ).resolves.toBeNull();
         expect(
           await f.db`select id from allrice_run_events where run_id=${run.scope.runId}
         and payload->>'text' in ('VISIBLE_AFTER_WITHDRAWAL','COMPLETED_AFTER_WITHDRAWAL')`,
@@ -989,6 +989,136 @@ suite(
       },
       120000,
     );
+
+    it('actual batcher and normalizer keep usage/native projections after unpublished delta/replace/completed', async () => {
+      const s = await setup(),
+        published = await httpUpload(s.owner);
+      await ready(published.revisionId);
+      const run = await runtimeRun(s, [published.revisionId]),
+        worker = await lease(run);
+      expect(
+        await loadEmployeeRuntimeReferences(
+          run.scope,
+          run.runtime.generationId,
+          worker,
+        ),
+      ).toHaveLength(1);
+      await change(s.owner, published.sourceId, 'delete');
+      const [job] =
+        await f.db`select attempt from allrice_jobs where id=${worker.jobId}`;
+      const envelope = {
+        schemaVersion: 1 as const,
+        harness: 'dsh' as const,
+        generation: 1,
+        attempt: job!.attempt as number,
+        threadId: 'synthetic-native',
+        turnId: 'synthetic-turn',
+        sessionId: run.scope.sessionId,
+        messageId: run.sent.assistantMessage.id,
+      };
+      const outcomes: unknown[] = [];
+      // Exactly the job-runner/smoke wiring: await the write, discard its
+      // publication result; a real rejection must still poison the batcher.
+      const batcher = new HarnessEventBatcher(async (event) => {
+        outcomes.push(
+          await appendJobEvent({
+            ...worker,
+            ...normalizeHarnessRunEvent(event),
+          }),
+        );
+      });
+      try {
+        await batcher.accept({
+          ...envelope,
+          order: 1,
+          type: 'assistant.delta',
+          text: 'DENIED_BATCH_DELTA',
+        });
+        await batcher.accept({
+          ...envelope,
+          order: 2,
+          type: 'assistant.delta',
+          textMode: 'replace',
+          text: 'DENIED_BATCH_REPLACE',
+        });
+        await batcher.accept({
+          ...envelope,
+          order: 3,
+          type: 'assistant.completed',
+          text: 'DENIED_BATCH_COMPLETED',
+        });
+        await batcher.accept({
+          ...envelope,
+          order: 4,
+          type: 'usage.updated',
+          inputTokens: 13,
+          cachedInputTokens: 2,
+          outputTokens: 7,
+        });
+        await batcher.accept({
+          ...envelope,
+          order: 5,
+          type: 'native.event',
+          sourceEventType: 'session/stopped',
+          presentation: 'lifecycle',
+          status: 'completed',
+          label: 'Native stopped',
+          sourcePayload: { synthetic: true },
+        });
+      } finally {
+        await batcher.close();
+      }
+      expect(outcomes.slice(0, 3)).toEqual([null, null, null]);
+      expect(outcomes.slice(3)).toHaveLength(2);
+      expect(
+        await f.db`select id from allrice_run_events where run_id=${run.scope.runId} and payload->>'text' like 'DENIED_BATCH_%'`,
+      ).toHaveLength(0);
+      const projections =
+        await f.db`select event_type,payload from allrice_run_events where run_id=${run.scope.runId}
+        and event_type in ('usage.updated','harness.native') order by sequence`;
+      expect(projections).toMatchObject([
+        {
+          event_type: 'usage.updated',
+          payload: {
+            usage: { inputTokens: 13, cachedInputTokens: 2, outputTokens: 7 },
+          },
+        },
+        {
+          event_type: 'harness.native',
+          payload: { sourceEventType: 'session/stopped' },
+        },
+      ]);
+      await expect(
+        assertEmployeeContentContext(
+          run.scope,
+          run.runtime.generationId,
+          worker,
+        ),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      await completeJob({
+        ...worker,
+        result: {
+          answer: 'DENIED_BATCH_FINAL',
+          citations: [
+            { type: 'file', id: randomUUID(), label: 'DENIED_BATCH_CITATION' },
+          ],
+        },
+      });
+      const [closed] =
+        await f.db`select j.status,j.worker_id,r.state,r.result,m.content
+        from allrice_jobs j join allrice_runs r on r.id=j.run_id join allrice_employee_runs e on e.run_id=r.id
+        join allrice_messages m on m.id=e.assistant_message_id where j.id=${worker.jobId}`;
+      expect(closed).toMatchObject({
+        status: 'failed',
+        worker_id: null,
+        state: 'failed',
+        result: null,
+      });
+      expect(JSON.stringify(closed)).not.toContain('DENIED_BATCH_');
+      expect(
+        await f.db`select id from allrice_run_events where run_id=${run.scope.runId} and event_type in ('usage.updated','harness.native')`,
+      ).toHaveLength(2);
+    }, 120000);
 
     it.each(['audience', 'department', 'membership'] as const)(
       'current %s loss seals real in-flight delta/completed without permanently marking an audience withdrawal',
@@ -1040,7 +1170,7 @@ suite(
               type,
               payload: { text: 'DENIED_CURRENT_BODY' },
             }),
-          ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+          ).resolves.toBeNull();
           await appendJobEvent({
             ...retainedWorker,
             type,
@@ -1258,6 +1388,183 @@ suite(
       },
       120000,
     );
+
+    it.each([false, true])(
+      "in-flight frozen user text never acquires that Run's later reads (with prior=%s)",
+      async (withPrior) => {
+        const s = await setup(),
+          published = await httpUpload(s.owner);
+        await ready(published.revisionId);
+        const priorPublication = withPrior ? await httpUpload(s.owner) : null;
+        let sourceSessionId: string | undefined;
+        if (priorPublication) {
+          await ready(priorPublication.revisionId);
+          const prior = await runtimeRun(s, [priorPublication.revisionId]),
+            worker = await lease(prior);
+          expect(
+            await loadEmployeeRuntimeReferences(
+              prior.scope,
+              prior.runtime.generationId,
+              worker,
+            ),
+          ).toHaveLength(1);
+          await completeJob({
+            ...worker,
+            result: { answer: 'EARLIER_LEGAL_DERIVED_TEXT', citations: [] },
+          });
+          sourceSessionId = prior.scope.sessionId;
+        }
+        const source = await runtimeRun(
+          s,
+          [published.revisionId],
+          sourceSessionId,
+        );
+        const frozen = await runtimeRun(s, [], undefined, [
+            source.scope.sessionId,
+          ]),
+          frozenWorker = await lease(frozen);
+        const [snapshot] =
+          await f.db`select prompt_snapshot->'sessionReferences' as refs from allrice_employee_runs where run_id=${frozen.scope.runId}`;
+        const frozenIds = snapshot!.refs[0].messages.map(
+          (m: { id: string }) => m.id,
+        );
+        expect(frozenIds).toContain(source.sent.userMessage.id);
+        expect(frozenIds).not.toContain(source.sent.assistantMessage.id);
+        await completeJob({
+          ...frozenWorker,
+          result: { answer: 'FROZEN_USER_ORIGINAL', citations: [] },
+        });
+        const worker = await lease(source);
+        expect(
+          await loadEmployeeRuntimeReferences(
+            source.scope,
+            source.runtime.generationId,
+            worker,
+          ),
+        ).toHaveLength(1);
+        await completeJob({
+          ...worker,
+          result: { answer: 'LATER_PRIVATE_DERIVED_TEXT', citations: [] },
+        });
+        const importer = await runtimeRun(s, [], undefined, [
+          source.scope.sessionId,
+        ]);
+        await finish(importer);
+        await change(s.owner, published.sourceId, 'delete');
+        await expect(
+          assertEmployeeContentContext(
+            source.scope,
+            source.runtime.generationId,
+          ),
+        ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+        expect(
+          await hasRevokedReferencePublicationHistory(
+            s.owner,
+            frozen.scope.sessionId,
+          ),
+        ).toBe(false);
+        expect(
+          await hasRevokedReferencePublicationHistory(
+            s.owner,
+            importer.scope.sessionId,
+          ),
+        ).toBe(true);
+        await assertEmployeeContentContext(
+          frozen.scope,
+          frozen.runtime.generationId,
+        );
+        const continued = await runtimeRun(s, [], frozen.scope.sessionId);
+        await finish(continued);
+        await expect(
+          prepareEmployeeContentContext(importer.scope),
+        ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+        if (priorPublication) {
+          await change(s.owner, priorPublication.sourceId, 'delete');
+          expect(
+            await hasRevokedReferencePublicationHistory(
+              s.owner,
+              frozen.scope.sessionId,
+            ),
+          ).toBe(true);
+          await expect(
+            assertEmployeeContentContext(
+              frozen.scope,
+              frozen.runtime.generationId,
+            ),
+          ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+        }
+      },
+      120000,
+    );
+
+    it('exact early graph stays small after real future growth reaches 129; the actual own-generation limit still rejects', async () => {
+      // First execution budget: 240s for 128 real send/prepare admissions,
+      // 127 load/lease/terminal cycles, and the boundary/early-import checks.
+      // Grow from 1 to 129 distinct rows without fabricated ER/read receipts;
+      // keep the production 128 limit and every existing test deadline.
+      const s = await setup(),
+        published = await httpUpload(s.owner);
+      await ready(published.revisionId);
+      const early = await runtimeRun(s),
+        earlyWorker = await lease(early);
+      await completeJob({
+        ...earlyWorker,
+        result: { answer: 'EARLY_SMALL_GRAPH', citations: [] },
+      });
+      const frozen = await runtimeRun(s, [], undefined, [
+          early.scope.sessionId,
+        ]),
+        frozenWorker = await lease(frozen);
+      await completeJob({
+        ...frozenWorker,
+        result: { answer: 'FROZEN_SMALL_GRAPH', citations: [] },
+      });
+      for (let index = 0; index < 128; index++) {
+        const sent = await sendChatMessage(
+          s.owner,
+          s.owner.workspaceId!,
+          early.scope.sessionId,
+          {
+            clientMessageId: randomUUID(),
+            text: '实际后续资料读取',
+            referenceRevisionIds: [published.revisionId],
+            deliveryMode: 'follow_up',
+          },
+        );
+        const scope = { ...early.scope, runId: sent.run.id };
+        const runtime = await prepareEmployeeContentContext(scope);
+        expect(runtime!.generationId).toBe(early.runtime.generationId);
+        if (index === 127) {
+          await expect(
+            assertEmployeeContentContext(scope, runtime!.generationId),
+          ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+          await finish({ ...early, scope, sent, runtime: runtime! });
+          break;
+        }
+        const run = { ...early, scope, sent, runtime: runtime! },
+          worker = await lease(run);
+        expect(
+          await loadEmployeeRuntimeReferences(
+            scope,
+            runtime!.generationId,
+            worker,
+          ),
+        ).toHaveLength(1);
+        await completeJob({
+          ...worker,
+          result: { answer: 'LATER_GRAPH_DERIVED', citations: [] },
+        });
+      }
+      const [growth] =
+        await f.db`select count(*)::int n from allrice_employee_runs where content_generation_id=${early.runtime.generationId}`;
+      expect(growth!.n).toBe(129);
+      await assertEmployeeContentContext(
+        frozen.scope,
+        frozen.runtime.generationId,
+      );
+      const continued = await runtimeRun(s, [], frozen.scope.sessionId);
+      await finish(continued);
+    }, 240000);
 
     it.each([false, true])(
       'frozen early external messages do not inherit future publication reads (later generation=%s)',

@@ -3251,9 +3251,12 @@ export async function appendJobEvent(input: {
             job,
           );
           if (publication && !publication.canRead) {
-            const { EmployeeRuntimeContentError } =
-              await import('../employees/employee-runtime-content.ts');
-            throw new EmployeeRuntimeContentError();
+            // An explicit unpublished result keeps the real harness batcher
+            // alive for already-started usage/native projections. Independent
+            // accounting/physical-close authority is unchanged. Database
+            // errors and lease/drain expiry still reject normally.
+            await assertLockedLeaseCurrent(transaction, job);
+            return null;
           }
         }
         const event = await appendEvent(transaction, {

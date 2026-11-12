@@ -117,7 +117,9 @@ export function canReferencePublicationScope(
 
 /** Follow exact frozen inputs, never all Runs that happen to share a native
  * generation today. A prior Run's frozen conversation links carry its actual
- * predecessor dependencies without admitting a source Session's future Runs. */
+ * predecessor dependencies without admitting a source Session's future Runs.
+ * User text follows its frozen predecessors, not that Run's later reads or
+ * model-only session-reference inputs. Roles come from exact message identity. */
 export async function referencePublicationDependencyRuns(
   context: ContentIdentity,
   sessionId: string,
@@ -126,17 +128,17 @@ export async function referencePublicationDependencyRuns(
 ) {
   if (messageIds && !messageIds.length) return [];
   const runs = await sql<{ run_id: string }[]>`
-    with recursive dependencies(run_id) as (
-      select er.run_id from allrice_employee_runs er
+    with recursive dependencies(run_id,include_reads) as (
+      select er.run_id,${messageIds ? sql`er.assistant_message_id in ${sql([...messageIds])}` : sql`true`} from allrice_employee_runs er
       where er.organization_id=${context.organizationId} and er.workspace_id=${context.workspaceId}
         and er.owner_id=${context.actor.id} and er.session_id=${UuidSchema.parse(sessionId)}
         and er.error_code is distinct from 'STEER_CONSUMED'
         ${messageIds ? sql`and (er.user_message_id in ${sql([...messageIds])} or er.assistant_message_id in ${sql([...messageIds])})` : sql``}
       union
-      select related.run_id from dependencies d
+      select related.run_id,related.include_reads from dependencies d
       join allrice_employee_runs er_current on er_current.run_id=d.run_id
       cross join lateral (
-        select e.run_id from jsonb_array_elements(case when jsonb_typeof(er_current.prompt_snapshot->'conversation')='array'
+        select e.run_id,(e.assistant_message_id::text=message->>'id') as include_reads from jsonb_array_elements(case when jsonb_typeof(er_current.prompt_snapshot->'conversation')='array'
           then er_current.prompt_snapshot->'conversation' else '[]'::jsonb end) message
         join allrice_employee_runs e on e.session_id=er_current.session_id
           and e.content_generation_id=er_current.content_generation_id
@@ -144,7 +146,7 @@ export async function referencePublicationDependencyRuns(
           and e.organization_id=er_current.organization_id and e.workspace_id=er_current.workspace_id
           and e.owner_id=er_current.owner_id and e.error_code is distinct from 'STEER_CONSUMED'
         union
-        select e.run_id from jsonb_array_elements(case when jsonb_typeof(er_current.prompt_snapshot->'sessionReferences')='array'
+        select e.run_id,(e.assistant_message_id::text=message->>'id') as include_reads from jsonb_array_elements(case when jsonb_typeof(er_current.prompt_snapshot->'sessionReferences')='array'
           then er_current.prompt_snapshot->'sessionReferences' else '[]'::jsonb end) ref
         cross join lateral jsonb_array_elements(case when jsonb_typeof(ref->'messages')='array'
           then ref->'messages' else '[]'::jsonb end) message
@@ -152,8 +154,9 @@ export async function referencePublicationDependencyRuns(
           and (e.user_message_id::text=message->>'id' or e.assistant_message_id::text=message->>'id')
           and e.organization_id=er_current.organization_id and e.workspace_id=er_current.workspace_id
           and e.error_code is distinct from 'STEER_CONSUMED'
+        where d.include_reads
       ) related
-    ) select run_id from dependencies order by run_id`;
+    ) select distinct run_id from dependencies where include_reads order by run_id`;
   return runs.map((r) => r.run_id);
 }
 

@@ -581,7 +581,13 @@ async function contentGraph(scope: RunScope, sql: ContentSql) {
   const [root] = run.content_generation_id
     ? await sql`select generation_id from allrice_employee_content_contexts where generation_id=${run.content_generation_id}`
     : await sql`select generation_id from allrice_employee_content_contexts where session_id=${scope.sessionId} and invalidated_at is null and retired_at is null`;
-  const pending = new Set<string>(root ? [root.generation_id] : []);
+  // null is this invocation's own full native generation. External entries
+  // contain only the exact frozen predecessor Runs, never future generation
+  // members. Discovery, locks and checksum share this same bounded scope.
+  const pending = new Map<string, Set<string> | null>(
+    root ? [[root.generation_id, null]] : [],
+  );
+  const discovered = new Map<string, string>();
   const owners = new Set([scope.ownerId]),
     instances = new Set<string>(),
     sessions = new Set([scope.sessionId]),
@@ -611,17 +617,47 @@ async function contentGraph(scope: RunScope, sql: ContentSql) {
       const ids = ref.messages.map((m) => m.id);
       for (const id of ids) messages.add(id);
       if (!ids.length) continue;
-      const refs = await sql<{ content_generation_id: string | null }[]>`
-        select distinct er.content_generation_id from allrice_messages m
-        join allrice_employee_runs er on er.session_id=m.session_id and (er.user_message_id=m.id or er.assistant_message_id=m.id)
-        where m.session_id=${ref.sessionId} and m.id in ${sql(ids)} and er.organization_id=${scope.organizationId} and er.workspace_id=${scope.workspaceId}`;
-      for (const ref of refs)
-        if (ref.content_generation_id) pending.add(ref.content_generation_id);
+      const [source] = await sql<{ owner_id: string }[]>`
+        select owner_id from allrice_chat_sessions where id=${ref.sessionId}
+          and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}`;
+      if (!source) return unavailable();
+      const dependencies = await referencePublicationDependencyRuns(
+        { ...identity(scope), actor: { type: 'user', id: source.owner_id } },
+        ref.sessionId,
+        sql,
+        ids,
+      );
+      if (!dependencies.length) continue;
+      const refs = await sql<
+        { run_id: string; content_generation_id: string | null }[]
+      >`
+        select run_id,content_generation_id from allrice_employee_runs
+        where run_id in ${sql(dependencies)} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}`;
+      for (const dependency of refs) {
+        if (!dependency.content_generation_id) continue;
+        const id = dependency.content_generation_id;
+        if (pending.has(id) && pending.get(id) === null) continue;
+        const runs = pending.get(id) ?? new Set<string>();
+        runs.add(dependency.run_id);
+        pending.set(id, runs);
+      }
     }
   };
   await add(run);
-  for (const id of pending) {
-    if (nodes.size >= 128) return unavailable();
+  for (;;) {
+    // A later branch may add another exact predecessor to an already seen
+    // generation. Re-discover that union, retaining stable sorted lock sets.
+    const next = [...pending].find(
+      ([id, runs]) =>
+        discovered.get(id) !== (runs ? [...runs].sort().join(',') : 'own'),
+    );
+    if (!next) break;
+    const [id, dependencies] = next;
+    if (!nodes.has(id) && nodes.size >= 128) return unavailable();
+    discovered.set(
+      id,
+      dependencies ? [...dependencies].sort().join(',') : 'own',
+    );
     const [context] =
       await sql`select generation_id,owner_id,session_id from allrice_employee_content_contexts
       where generation_id=${id} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}`;
@@ -641,10 +677,12 @@ async function contentGraph(scope: RunScope, sql: ContentSql) {
     >`
       select distinct execution_snapshot->'workflowInvocation' brand_workflow,experience_reads,execution_snapshot ? 'personalSkills' as has_personal_skills,execution_snapshot->'instance'->>'id' as personal_instance_id,(select jsonb_agg(jsonb_build_object('id',n->'id','personal',n->'personal')) from jsonb_array_elements(native_skills) n where n ? 'personal') as native_personal_pins,execution_snapshot->'personalSkills' as personal_skills,execution_snapshot->'content' as content,content_scene_state,reference_reads,prompt_snapshot->'sessionReferences' as session_references,prompt_snapshot->'referenceSelections' as reference_selections
       from allrice_employee_runs where content_generation_id=${id} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
-        and error_code is distinct from 'STEER_CONSUMED' limit 129`;
+        and error_code is distinct from 'STEER_CONSUMED'
+        ${dependencies ? sql`and run_id in ${sql([...dependencies])}` : sql``} limit 129`;
     if (rows.length > 128) return unavailable();
     nodes.set(id, {
       context,
+      runs: dependencies ? [...dependencies].sort() : null,
       references: rows.map(runtimePolicyDigest).sort(),
     });
     for (const row of rows) await add(row);
