@@ -1029,104 +1029,12 @@ div.composerAttachmentMenu,
   line-height: 14px;
 }
 
-.confirmationRow {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.confirmationCard {
-  width: min(525px, 82%);
-  overflow: hidden;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 16px;
-  background: var(--dsw-specific-input-major);
-  box-shadow: 0 4px 16px rgb(32 69 140 / 7%);
-}
-
-.confirmationCard > header {
-  display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 9px;
-  padding: 11px 13px;
-  border-bottom: 1px solid var(--dsw-alias-border-l2);
-  background: var(--dsw-specific-sidebar-nav-item-active-accent);
-}
-
-.confirmationCard > header > i {
-  display: grid;
-  width: 24px;
-  height: 24px;
-  place-items: center;
-  border-radius: 8px;
-  background: var(--dsw-alias-button-info-fill);
-  color: var(--employee-foreground, #fff);
-  font-size: 13px;
-  font-style: normal;
-  font-weight: 800;
-}
-
-.confirmationCard[data-state='rejected'] > header > i {
-  background: var(--dsw-alias-state-error-primary);
-}
-
-.confirmationCard[data-state='unknown'] > header > i,
-.confirmationCard[data-state='submitted'] > header > i {
-  background: var(--dsw-alias-state-idle-primary);
-}
-
-.confirmationCard > header > div {
-  display: flex;
+.processQuestionReceipt {
   min-width: 0;
-  flex-direction: column;
 }
-
-.confirmationCard > header strong {
-  color: var(--dsw-alias-label-primary);
-  font-size: 13px;
-  line-height: 18px;
-}
-
-.confirmationCard > header span,
-.confirmationCard > header time {
-  color: var(--dsw-alias-label-secondary);
-  font-size: 10px;
-  line-height: 15px;
-}
-
-.confirmationCard > header time {
-  align-self: start;
-  white-space: nowrap;
-}
-
-.confirmationCard dl {
-  margin: 0;
-  padding: 5px 13px;
-}
-
-.confirmationCard dl > div {
-  display: grid;
-  grid-template-columns: minmax(86px, 0.42fr) minmax(0, 1fr);
-  gap: 12px;
-  padding: 9px 0;
-}
-
-.confirmationCard dl > div + div {
-  border-top: 1px solid var(--dsw-alias-border-l2);
-}
-
-.confirmationCard dt {
-  color: var(--dsw-alias-label-secondary);
-  font-size: 11px;
-  line-height: 22px;
-}
-
-.confirmationCard dd {
-  display: flex;
-  min-width: 0;
-  flex-wrap: wrap;
-  gap: 5px;
-  margin: 0;
+.processQuestionNote {
+  color: var(--ar-text-secondary);
+  font: var(--ar-font-caption);
 }
 
 .confirmationValue,
@@ -1137,10 +1045,10 @@ div.composerAttachmentMenu,
   gap: 6px;
   border-radius: 8px;
   padding: 3px 8px;
+  margin: 0 4px 4px 0;
   color: var(--dsw-alias-label-primary);
   background: var(--dsw-alias-interactive-bg-hover);
-  font-size: 12px;
-  line-height: 16px;
+  font: var(--ar-font-body);
   overflow-wrap: anywhere;
 }
 
@@ -1150,7 +1058,7 @@ div.composerAttachmentMenu,
   padding: 1px 4px;
   color: var(--dsw-alias-state-business-primary);
   background: var(--dsw-specific-sidebar-nav-item-active-accent);
-  font-size: 9px;
+  font-size: 12px;
   font-style: normal;
   font-weight: 700;
   line-height: 14px;
@@ -1780,12 +1688,18 @@ div.composerAttachmentMenu,
 }
 
 /* Allrice public-event adapter over native DSH disclosure chrome. */
+.processBlock {
+  min-width: 0;
+}
 .workProcess {
   margin: 4px 0 8px;
   min-width: 0;
 }
+.processExpanded {
+  margin-bottom: 12px;
+}
 
-.workProcess .processHeader {
+.processBlock .processHeader {
   height: 24px;
   min-height: 24px;
   align-items: baseline;
@@ -1795,18 +1709,18 @@ div.composerAttachmentMenu,
 .processSeparator {
   align-self: center;
 }
-.workProcess .processTitle {
+.processBlock .processTitle {
   color: var(--dsw-alias-label-secondary);
   font-size: 13px;
   font-weight: 500;
   line-height: 24px;
 }
-.workProcess .processSummary {
+.processBlock .processSummary {
   font-size: 13px;
   font-weight: 400;
   line-height: 24px;
 }
-.workProcess [data-disclosure-row]:focus-visible {
+.processBlock [data-disclosure-row]:focus-visible {
   outline: 2px solid var(--dsw-alias-state-business-primary);
   outline-offset: 2px;
   border-radius: 4px;
@@ -1839,20 +1753,48 @@ div.composerAttachmentMenu,
 .processSteps li {
   padding: 4px 0;
 }
-.processSteps .processStepRow {
-  min-height: 28px;
+.processStep {
+  min-width: 0;
+  container: work-process-step / inline-size;
+}
+.processStep [data-disclosure-row]:focus-visible {
+  outline: 2px solid var(--ar-link);
+  outline-offset: 2px;
+  border-radius: var(--ar-radius-sm);
+}
+.processStep [data-disclosure-header] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+}
+.processStep .processStepRow {
+  min-height: 42px;
   height: auto;
-  align-items: center;
+  align-items: flex-start;
+  padding: 10px 0;
 }
 .processStepRow > :first-child {
-  align-self: center;
+  align-self: flex-start;
+  margin-top: 3px;
+  margin-right: 8px;
+  width: 16px;
+  height: 16px;
+}
+.processStepContent {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+.processStepText {
+  display: block;
+  min-width: 0;
 }
 .processStepLabel {
-  flex: none;
-  color: var(--dsw-alias-label-secondary);
-  font-size: 13px;
-  font-weight: 400;
-  line-height: 22px;
+  min-width: 0;
+  color: var(--ar-text);
+  font: var(--ar-font-body);
+  overflow-wrap: anywhere;
 }
 .processStepDescription {
   color: var(--dsw-alias-label-secondary);
@@ -1862,14 +1804,81 @@ div.composerAttachmentMenu,
   overflow-wrap: anywhere;
 }
 .processStepStatus {
-  display: block;
-  padding-left: 22px;
-  color: var(--dsw-alias-label-secondary);
-  font-size: 13px;
+  padding-top: 10px;
+  color: var(--ar-text-secondary);
+  font: var(--ar-font-caption);
+  line-height: 22px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.processStep[data-failed] .processStepStatus {
+  color: var(--ar-danger-text);
+}
+.processStep[data-running] .processStepStatus {
+  color: var(--ar-link);
+}
+.processStep[data-status='已完成'] .processStepStatus,
+.processStep[data-status='已回答'] .processStepStatus {
+  color: var(--ar-success-text);
+}
+.processStepDetails {
+  container: work-process-detail / inline-size;
+  margin: 0 0 12px 24px;
+  padding: 12px 16px;
+  min-width: 0;
+  border-radius: var(--ar-radius-md);
+  background: var(--ar-surface-subtle);
+  color: var(--ar-text);
+  font: var(--ar-font-body);
+}
+.processDetailGrid {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  gap: 8px 12px;
+  margin: 0;
+}
+.processStepDetails pre {
+  max-height: 240px;
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  border-radius: 8px;
+  background: color-mix(in srgb, currentColor 6%, transparent);
+  font-family: var(--ds-font-family-code);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.processDetailGrid dt {
+  color: var(--ar-text-secondary);
+  font: var(--ar-font-caption);
   line-height: 22px;
 }
-.processSteps [data-failed] .processStepStatus {
-  color: var(--ar-danger-text);
+.processDetailGrid dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+@container work-process-detail (max-width: 180px) {
+  .processDetailGrid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+  .processDetailGrid dd:not(:last-child) {
+    margin-bottom: 8px;
+  }
+}
+@container work-process-step (max-width: 420px) {
+  .processStep [data-disclosure-header] {
+    gap: 6px;
+  }
+  .processStepDetails {
+    padding: 12px;
+  }
+  .processStepRow > :first-child {
+    margin-right: 6px;
+  }
 }
 .processPulse {
   display: inline-flex;
@@ -1933,11 +1942,18 @@ div.composerAttachmentMenu,
 .operationReceipt:empty {
   display: none;
 }
-.processFlow {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  margin-top: 12px;
+.processPart {
+  min-width: 0;
+}
+.processPart[data-process-member] {
+  margin-bottom: 8px;
+}
+.processPart:not([hidden]) ~ .processPart:not([hidden]) {
+  margin-top: 16px;
+}
+.processPart:not([hidden])
+  ~ .processPart:not([data-process-member]):not([hidden]) {
+  margin-top: 8px;
 }
 
 .contextCompacting {

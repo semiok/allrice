@@ -1,13 +1,16 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import {
-  Button,
-  Menu,
-  StateDot,
-  Tooltip,
-} from '@deepseek-ai/dsh-client-ui-primitives';
+import { Button, Menu, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives';
 import type { NativeSubagentSummary } from '@allrice/contracts';
+import {
+  nativeSubagentElapsedMs,
+  nativeSubagentEntryState,
+  nativeSubagentReference,
+  nativeSubagentScopeKey,
+  type NativeSubagentReference,
+  type NativeSubagentViewScope,
+} from '../../lib/chatflow/native-subagent-view';
 import { AssistantMarkdown } from './assistant-markdown';
 import type { useNativeSubagents } from './use-native-subagents';
 import { useNativeSubagentFollow } from './use-native-subagent-follow';
@@ -24,13 +27,6 @@ import css from './native-subagent-directory.module.css';
 
 type Entry = NativeSubagentSummary['descendants'][number];
 type Child = Extract<Entry, { kind: 'child' }>;
-const diagnostic = {
-  corrupt: '记录损坏',
-  unavailable: '暂时无法读取',
-  unsupported: '暂不支持此类型',
-  identity_mismatch: '身份校验未通过',
-  parent_unverified: '父子关系未确认',
-};
 const activity = (child: Child) =>
   child.running === true
     ? '运行中'
@@ -39,14 +35,6 @@ const activity = (child: Child) =>
       : child.timing.lastTurnCompleted
         ? '上次回合已完成'
         : '未运行';
-const catalogActivity = (child: Child) =>
-  child.running === true
-    ? '运行中'
-    : child.running === null
-      ? '状态未知'
-      : child.timing.lastTurnCompleted === undefined
-        ? '未运行'
-        : '已结束';
 function elapsed(child: Child, now = child.timing.active?.through) {
   const { active, settledMs } = child.timing;
   const seconds = Math.floor(
@@ -63,42 +51,28 @@ function metrics(child: Child) {
 }
 
 export function EmptyNativeSubagentDirectory() {
-  const [open, setOpen] = useState<'preview' | 'pinned' | false>(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  useEffect(() => () => clearTimeout(timer.current), []);
+  const [open, setOpen] = useState(false);
   return (
     <Menu
       portal
       align="end"
       autoFocus={false}
-      open={!!open}
-      closeOnPointerLeave={open === 'preview'}
-      onClose={() => {
-        clearTimeout(timer.current);
-        setOpen(false);
-      }}
+      open={open}
+      onClose={() => setOpen(false)}
       listClassName={css.catalog}
       anchor={
         <Button
           size="sm"
           className={`${actions.iconButton} ${css.trigger}`}
-          aria-expanded={!!open}
+          aria-expanded={open}
           aria-haspopup="tree"
           aria-label="子智能体"
-          onMouseEnter={() => {
-            if (!open)
-              timer.current = setTimeout(() => setOpen('preview'), 150);
-          }}
-          onMouseLeave={() => clearTimeout(timer.current)}
-          onClick={() => {
-            clearTimeout(timer.current);
-            setOpen((value) => (value === 'pinned' ? false : 'pinned'));
-          }}
+          onClick={() => setOpen(!open)}
           onKeyDown={(event) => {
-            if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key))
-              return;
-            event.preventDefault();
-            setOpen((value) => value || 'preview');
+            if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+              event.preventDefault();
+              setOpen(true);
+            }
           }}
         >
           <WorkbenchIcon kind="subagent" />
@@ -120,19 +94,31 @@ type NativeSubagentDirectoryProps = {
   controlRoot?: ReturnType<typeof nativeSubagentControlRoot>;
   canControl?: boolean;
   viewerId?: string | null;
+  scope?: NativeSubagentViewScope;
+  onOpen?: (reference: NativeSubagentReference) => void;
+  openRequest?: { id: number; scopeKey: string };
+  employeeName?: string;
 };
 export function NativeSubagentDirectory({
+  workspaceId,
   sessionId,
   observation,
+  scope,
+  onOpen,
+  openRequest,
+  employeeName,
 }: NativeSubagentDirectoryProps) {
-  const [open, setOpen] = useState(false),
-    [pinned, setPinned] = useState(false);
+  const scopeKey = scope
+    ? nativeSubagentScopeKey(scope)
+    : JSON.stringify([workspaceId, sessionId]);
+  const [openedScope, setOpenedScope] = useState<string | null>(null);
+  const open = openedScope === scopeKey;
   const openRef = useRef(false);
   const { reads, refresh } = observation;
   const showCatalog = (nextOpen: boolean) => {
     if (nextOpen && !openRef.current) refresh();
     openRef.current = nextOpen;
-    setOpen(nextOpen);
+    setOpenedScope(nextOpen ? scopeKey : null);
   };
   const read = reads[sessionId];
   const summary = read && read !== 'error' ? read : null;
@@ -140,19 +126,24 @@ export function NativeSubagentDirectory({
   const catalog = useRef<HTMLDivElement>(null),
     trigger = useRef<HTMLButtonElement>(null);
   const pendingFocus = useRef(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const close = () => {
-    clearTimeout(timer.current);
-    showCatalog(false);
-    setPinned(false);
-  };
-  useEffect(() => () => clearTimeout(timer.current), []);
+  const close = () => showCatalog(false);
+  useEffect(() => {
+    setOpenedScope(null);
+    openRef.current = false;
+    setExpanded(new Set());
+  }, [scopeKey]);
+  const requestId =
+    openRequest?.scopeKey === scopeKey ? openRequest.id : undefined;
+  useEffect(() => {
+    if (requestId !== undefined) {
+      pendingFocus.current = true;
+      showCatalog(true);
+    }
+  }, [requestId, scopeKey]);
   useEffect(() => {
     if (!open) pendingFocus.current = false;
     else if (summary && pendingFocus.current) {
-      const first = catalog.current?.querySelector<HTMLElement>(
-        '[data-child]:not([aria-disabled="true"])',
-      );
+      const first = catalog.current?.querySelector<HTMLElement>('[data-child]');
       if (first) {
         pendingFocus.current = false;
         first.focus();
@@ -165,9 +156,13 @@ export function NativeSubagentDirectory({
   const [now, setNow] = useState(Date.now);
   const ticking =
     open &&
-    summary?.descendants.some(
+    summary?.root.source === 'live' &&
+    summary.descendants.some(
       (entry) =>
-        entry.kind === 'child' && entry.running === true && entry.timing.active,
+        entry.kind === 'child' &&
+        entry.observation.source === 'live' &&
+        entry.running === true &&
+        entry.timing.active,
     );
   useEffect(() => {
     if (!ticking) return;
@@ -182,7 +177,19 @@ export function NativeSubagentDirectory({
       else next.add(id);
       return next;
     });
-  const rows = (parentId: string) =>
+  const openEntry = (entry: Entry) => {
+    if (
+      !scope ||
+      scope.workspaceId !== workspaceId ||
+      scope.sessionId !== sessionId ||
+      !summary ||
+      !onOpen
+    )
+      return;
+    onOpen(nativeSubagentReference(scope, summary, entry));
+    close();
+  };
+  const rows = (parentId: string): ReactNode =>
     summary?.descendants
       .filter((entry) => entry.parentId === parentId)
       .map((entry) => {
@@ -191,77 +198,83 @@ export function NativeSubagentDirectory({
         );
         const label =
           entry.kind === 'child' ? (entry.label ?? entry.id) : entry.id;
-        const status =
-          entry.kind === 'diagnostic'
-            ? diagnostic[entry.reason]
-            : catalogActivity(entry);
-        const abnormal =
-          entry.kind === 'child' &&
-          entry.running === false &&
-          entry.timing.lastTurnCompleted === false;
+        const status = nativeSubagentEntryState(summary, entry);
+        const duration =
+          entry.kind === 'child'
+            ? nativeSubagentElapsedMs(summary, entry, now)
+            : undefined;
+        const usage = entry.kind === 'child' ? Object.values(entry.usage) : [];
+        const tokens =
+          usage.length === 4 &&
+          usage.every((value) => Number.isFinite(value) && value >= 0)
+            ? `${usage.reduce((a, b) => a + b, 0).toLocaleString()} tokens`
+            : '—';
         return (
           <li
             role="treeitem"
             key={entry.id}
             aria-expanded={branch ? expanded.has(entry.id) : undefined}
-            tabIndex={entry.kind === 'child' ? 0 : undefined}
+            tabIndex={0}
             data-child={entry.id}
             data-parent={parentId}
             aria-label={`${label}摘要`}
-            aria-description={abnormal ? '未正常结束' : undefined}
-            aria-disabled={entry.kind === 'diagnostic' || undefined}
+            onKeyDown={(event) => {
+              if (
+                event.target === event.currentTarget &&
+                ['Enter', ' '].includes(event.key)
+              ) {
+                event.preventDefault();
+                openEntry(entry);
+              }
+            }}
           >
             <div className={css.row}>
-              {branch && (
+              {branch ? (
                 <Button
                   size="sm"
+                  className={css.branch}
                   aria-label={`${expanded.has(entry.id) ? '收起' : '展开'}${label}`}
+                  aria-expanded={expanded.has(entry.id)}
                   onClick={() => toggle(entry.id)}
                 >
                   {expanded.has(entry.id) ? '▾' : '▸'}
                 </Button>
+              ) : (
+                <span className={css.branchSpacer} aria-hidden />
               )}
-              <div className={css.entry}>
-                <span className={css.label}>{label}</span>
-                <small className={css.metadata}>
-                  <span className={css.status}>
-                    {entry.kind === 'child' && entry.running !== null ? (
-                      <StateDot
-                        size={8}
-                        state={
-                          entry.running
-                            ? 'ongoing'
-                            : entry.timing.lastTurnCompleted
-                              ? 'done'
-                              : 'idle'
-                        }
-                      />
-                    ) : (
-                      <span
-                        className={css.unobserved}
-                        aria-label="活动状态未观测"
-                      />
-                    )}
-                    <span>{status}</span>
-                    {abnormal && (
-                      <Tooltip label="未正常结束" side="top" portal>
-                        <span
-                          className={css.abnormal}
-                          role="img"
-                          aria-label="未正常结束"
-                        >
-                          !
-                        </span>
-                      </Tooltip>
-                    )}
-                  </span>
-                  {entry.kind === 'child' && (
-                    <span className={css.duration}>
-                      {elapsed(entry, entry.running === true ? now : undefined)}
-                    </span>
+              <button
+                type="button"
+                className={css.entry}
+                data-state={status.state}
+                onClick={() => openEntry(entry)}
+                aria-label={`${label}，${status.text}，${entry.kind === 'diagnostic' ? '查看读取说明' : '在工作台打开'}`}
+              >
+                <span className={css.stateDot} aria-hidden />
+                <span className={css.copy}>
+                  <span className={css.label}>{label}</span>
+                  {entry.kind === 'child' && entry.task && (
+                    <span className={css.task}>{entry.task}</span>
                   )}
-                </small>
-              </div>
+                  <span className={css.status}>{status.text}</span>
+                </span>
+                <Tooltip
+                  label="累计用量可能包含继承历史；用时来自已读取记录"
+                  side="top"
+                  portal
+                >
+                  <span className={css.metadata}>
+                    {tokens}
+                    <span className={css.duration}>
+                      {duration === undefined
+                        ? '—'
+                        : `${Math.floor(duration / 1000)}秒`}
+                    </span>
+                  </span>
+                </Tooltip>
+                <span className={css.entryArrow} aria-hidden>
+                  ›
+                </span>
+              </button>
             </div>
             {branch && expanded.has(entry.id) && (
               <ul role="group">{rows(entry.id)}</ul>
@@ -270,148 +283,146 @@ export function NativeSubagentDirectory({
         );
       });
   const running = direct.filter(
-    (entry) => entry.kind === 'child' && entry.running === true,
+    (entry) =>
+      entry.kind === 'child' &&
+      summary?.root.source === 'live' &&
+      entry.observation.source === 'live' &&
+      entry.running === true,
   ).length;
   return (
-    <>
-      <div
-        onBlurCapture={() => {
-          pendingFocus.current = false;
-        }}
-        onMouseEnter={() => {
-          clearTimeout(timer.current);
-          timer.current = setTimeout(() => showCatalog(true), 150);
-        }}
-        onMouseLeave={() => {
-          clearTimeout(timer.current);
-          if (!pinned)
-            timer.current = setTimeout(() => showCatalog(false), 120);
-        }}
-        onKeyDown={(event) => {
-          if (event.key === 'Escape') {
-            close();
-            trigger.current?.focus();
-            return;
-          }
-          const buttons = [
-            ...(catalog.current?.querySelectorAll<HTMLElement>(
-              '[data-child]:not([aria-disabled="true"])',
-            ) ?? []),
-          ];
-          const at = buttons.indexOf(event.target as HTMLElement);
-          const target =
-            at < 0
+    <div
+      onBlurCapture={() => {
+        pendingFocus.current = false;
+      }}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') {
+          close();
+          trigger.current?.focus();
+          return;
+        }
+        const buttons = [
+          ...(catalog.current?.querySelectorAll<HTMLElement>('[data-child]') ??
+            []),
+        ];
+        const current = (event.target as HTMLElement).closest<HTMLElement>(
+          '[data-child]',
+        );
+        const at = current ? buttons.indexOf(current) : -1;
+        const target =
+          at < 0
+            ? 0
+            : event.key === 'Home'
               ? 0
-              : event.key === 'Home'
-                ? 0
-                : event.key === 'End'
-                  ? buttons.length - 1
-                  : at + (event.key === 'ArrowUp' ? -1 : 1);
-          if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
-            event.preventDefault();
-            pendingFocus.current = at < 0 && !buttons.length;
-            showCatalog(true);
-            requestAnimationFrame(() =>
-              catalog.current
-                ?.querySelectorAll<HTMLElement>(
-                  '[data-child]:not([aria-disabled="true"])',
-                )
-                .item(target)
-                ?.focus(),
-            );
-          }
-          if (at >= 0 && ['ArrowRight', 'ArrowLeft'].includes(event.key)) {
-            event.preventDefault();
-            const id = buttons[at]!.dataset.child!;
-            if (event.key === 'ArrowRight' && expanded.has(id))
-              buttons[at + 1]?.focus();
-            else if (
-              summary?.descendants.some((entry) => entry.parentId === id) &&
-              (event.key === 'ArrowRight') !== expanded.has(id)
-            )
-              toggle(id);
-            else if (event.key === 'ArrowLeft')
-              buttons
-                .find(
-                  (button) =>
-                    button.dataset.child === buttons[at]!.dataset.parent,
-                )
-                ?.focus();
-          }
-        }}
+              : event.key === 'End'
+                ? buttons.length - 1
+                : at + (event.key === 'ArrowUp' ? -1 : 1);
+        if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+          event.preventDefault();
+          pendingFocus.current = at < 0 && !buttons.length;
+          showCatalog(true);
+          requestAnimationFrame(() =>
+            catalog.current
+              ?.querySelectorAll<HTMLElement>('[data-child]')
+              .item(target)
+              ?.focus(),
+          );
+        }
+        if (at >= 0 && ['ArrowRight', 'ArrowLeft'].includes(event.key)) {
+          event.preventDefault();
+          const id = buttons[at]!.dataset.child!;
+          if (event.key === 'ArrowRight' && expanded.has(id))
+            buttons[at + 1]?.focus();
+          else if (
+            summary?.descendants.some((entry) => entry.parentId === id) &&
+            (event.key === 'ArrowRight') !== expanded.has(id)
+          )
+            toggle(id);
+          else if (event.key === 'ArrowLeft')
+            buttons
+              .find(
+                (button) =>
+                  button.dataset.child === buttons[at]!.dataset.parent,
+              )
+              ?.focus();
+        }
+      }}
+    >
+      <Menu
+        portal
+        align="end"
+        autoFocus={false}
+        open={open}
+        onClose={close}
+        listClassName={css.catalog}
+        anchor={
+          <Button
+            ref={trigger}
+            size="sm"
+            className={`${actions.iconButton} ${css.trigger}`}
+            aria-expanded={open}
+            aria-haspopup="tree"
+            aria-label={
+              read === 'error'
+                ? '子智能体读取失败'
+                : summary
+                  ? `${direct.length} 个子智能体${running ? ` · ${running} 个运行中` : ''}`
+                  : '子智能体'
+            }
+            onClick={() => showCatalog(!open)}
+          >
+            <WorkbenchIcon kind="subagent" />
+            {(read === 'error' || running > 0) && (
+              <span
+                className={`${actions.badge} ${read === 'error' ? css.errorBadge : css.runningBadge}`}
+                aria-hidden
+              >
+                {read === 'error' ? '!' : running}
+              </span>
+            )}
+          </Button>
+        }
       >
-        <Menu
-          portal
-          align="end"
-          autoFocus={false}
-          open={open}
-          onClose={close}
-          listClassName={css.catalog}
-          anchor={
-            <Button
-              ref={trigger}
-              size="sm"
-              className={`${actions.iconButton} ${css.trigger}`}
-              aria-expanded={open}
-              aria-haspopup="tree"
-              aria-label={
-                read === 'error'
-                  ? '子智能体读取失败'
-                  : summary
-                    ? `${direct.length} 个子智能体${running ? ` · ${running} 个运行中` : ''}`
-                    : '子智能体'
-              }
-              onClick={() => {
-                clearTimeout(timer.current);
-                setPinned(!pinned);
-                showCatalog(!pinned);
-              }}
-            >
-              <WorkbenchIcon kind="subagent" />
-              {(read === 'error' || running > 0) && (
-                <span
-                  className={`${actions.badge} ${read === 'error' ? css.errorBadge : css.runningBadge}`}
-                  aria-hidden="true"
-                >
-                  {read === 'error' ? '!' : running}
-                </span>
-              )}
-            </Button>
-          }
-        >
-          <div ref={catalog}>
-            <h2 className={css.title}>子智能体</h2>
-            {read === undefined ? (
-              <div className={css.loading}>
-                <p className={css.message} role="status">
-                  正在读取子智能体摘要…
-                </p>
-                <div className={css.skeleton} aria-hidden="true">
-                  <span />
-                  <span />
-                </div>
-              </div>
-            ) : read === null ? (
-              <p className={css.message} role="status">
-                当前活动状态未知，请重新读取摘要。
-              </p>
-            ) : read === 'error' ? (
-              <p className={css.message} role="alert">
-                {observation.disconnected?.[sessionId]
-                  ? '实时观察已断开，重试。'
-                  : '暂时读不到子智能体目录。'}
-              </p>
-            ) : summary && !direct.length ? (
-              <p className={`${css.message} ${css.empty}`}>暂无子智能体</p>
-            ) : (
-              <ul role="tree" aria-label="子智能体目录">
-                {summary && rows(summary.rootId)}
-              </ul>
+        <div ref={catalog}>
+          <div className={css.catalogHead}>
+            <h2 className={css.title}>
+              {employeeName ? `${employeeName} · 子智能体` : '子智能体'}
+            </h2>
+            {summary && (
+              <span className={css.message}>
+                {direct.length} 个{running ? ` · ${running} 个运行中` : ''}
+              </span>
             )}
           </div>
-        </Menu>
-      </div>
-    </>
+          {read === undefined ? (
+            <div className={css.loading}>
+              <p className={css.message} role="status">
+                正在读取子智能体摘要…
+              </p>
+              <div className={css.skeleton} aria-hidden>
+                <span />
+                <span />
+              </div>
+            </div>
+          ) : read === null ? (
+            <p className={css.message} role="status">
+              当前活动状态未知，请重新读取摘要。
+            </p>
+          ) : read === 'error' ? (
+            <p className={css.message} role="alert">
+              {observation.disconnected?.[sessionId]
+                ? '实时观察已断开，重试。'
+                : '暂时读不到子智能体目录。'}
+            </p>
+          ) : summary && !direct.length ? (
+            <p className={`${css.message} ${css.empty}`}>暂无子智能体</p>
+          ) : (
+            <ul role="tree" aria-label="子智能体目录">
+              {summary && rows(summary.rootId)}
+            </ul>
+          )}
+        </div>
+      </Menu>
+    </div>
   );
 }
 

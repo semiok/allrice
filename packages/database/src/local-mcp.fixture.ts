@@ -288,7 +288,7 @@ export async function createLocalMcpFixture(
     const create = (
       capability:
         'local.mcp.discover' | 'local.mcp.call' = 'local.mcp.discover',
-      callId = randomUUID(),
+      callId: string = randomUUID(),
       args: unknown = capability === 'local.mcp.call'
         ? {
             connectionId: connection.id,

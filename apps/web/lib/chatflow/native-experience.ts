@@ -1,4 +1,25 @@
-import type { ChatFlowEventEnvelope } from '@allrice/contracts';
+import type {
+  ChatFlowEventEnvelope,
+  RuntimeOperationSnapshot,
+} from '@allrice/contracts';
+
+/** Already-authorized display facts; never an approval or execution authority. */
+export interface WorkProcessReference {
+  source: 'cloud' | 'command' | 'mcp' | 'browser' | 'managed-browser';
+  id: string;
+  runId: string;
+  nativeCallId?: string | null;
+  parentOperationId?: string;
+  jobAttempt?: number;
+  binding?: RuntimeOperationSnapshot['binding'];
+  organizationId?: string;
+  workspaceId?: string;
+  createdAt?: string;
+  title: string;
+  status: string;
+  failed?: boolean;
+  elapsedMs?: number;
+}
 
 export type NativeExperienceKind =
   'context' | 'think' | 'search' | 'tool' | 'todo' | 'compaction' | 'lifecycle';
@@ -14,7 +35,7 @@ export interface NativeExperienceItem {
   sequence: number;
   lastSequence?: number;
   toolName?: string;
-  operationId?: string;
+  operations?: readonly WorkProcessReference[];
   startedAt?: string;
   finishedAt?: string;
 }

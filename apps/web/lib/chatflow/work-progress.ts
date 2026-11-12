@@ -1,5 +1,4 @@
 import type { ChatFlowEventEnvelope } from '@allrice/contracts';
-import type { CloudOperationView } from '@allrice/database';
 import { nativeProcessGroups } from './native-process-groups';
 import {
   assistantReplies,
@@ -8,7 +7,67 @@ import {
 import {
   projectNativeExperience,
   type NativeExperienceItem,
+  type WorkProcessReference,
 } from './native-experience';
+export type { WorkProcessReference } from './native-experience';
+
+export function workProcessReferenceKey(reference: WorkProcessReference) {
+  return `${reference.source}:${reference.id}`;
+}
+
+function nativeCallId(event: ChatFlowEventEnvelope) {
+  const value = event.type.startsWith('tool.')
+    ? event.payload.toolCallId
+    : event.type === 'harness.native' &&
+        ['tool', 'search'].includes(String(event.payload.presentation))
+      ? event.sourceEvent?.payload.callId
+      : undefined;
+  return typeof value === 'string' && value ? value : undefined;
+}
+
+function matchesReference(
+  reference: WorkProcessReference,
+  event: ChatFlowEventEnvelope,
+) {
+  if (reference.runId !== event.runId || event.payload.internalTask)
+    return false;
+  const binding = reference.binding;
+  const scope = binding?.task?.scope ?? reference;
+  if (
+    scope.organizationId !== event.organizationId ||
+    scope.workspaceId !== event.workspaceId ||
+    (reference.organizationId &&
+      reference.organizationId !== event.organizationId) ||
+    (reference.workspaceId && reference.workspaceId !== event.workspaceId)
+  )
+    return false;
+  if (
+    reference.source === 'managed-browser' ||
+    reference.jobAttempt !== undefined
+  ) {
+    const attempt = reference.jobAttempt;
+    if (
+      typeof attempt !== 'number' ||
+      !Number.isInteger(attempt) ||
+      attempt < 1 ||
+      attempt !== event.payload.attempt
+    )
+      return false;
+  }
+  if (!binding) return reference.source === 'managed-browser';
+  if (!binding.task || !binding.attempt) return false;
+  const generation = event.payload.generation;
+  return (
+    binding.task.runId === event.runId &&
+    binding.task.rootRunId === event.runId &&
+    binding.attempt.operationId === reference.id &&
+    typeof generation === 'number' &&
+    Number.isInteger(generation) &&
+    generation >= 0 &&
+    binding.attempt.generation === generation &&
+    (event.generation === null || event.generation === generation)
+  );
+}
 
 export type WorkProgressPart =
   | {
@@ -78,18 +137,36 @@ export function projectWorkProgress(
   fallback: string,
   running: boolean,
   streamingOutput = true,
-  operations: readonly CloudOperationView[] = [],
+  operations: readonly WorkProcessReference[] = [],
 ) {
   const current = currentWorkProgressEvents(events);
   const replies = assistantReplies(current);
   const items = projectNativeExperience(current);
+  const seen = new Set<string>();
   for (const op of operations) {
-    const operationId = op.snapshot.binding.attempt.operationId;
-    const item = op.nativeCallId
-      ? items.find((item) => item.id === `tool:${op.nativeCallId}`)
-      : undefined;
+    const key = workProcessReferenceKey(op);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const call = op.nativeCallId;
+    const candidates =
+      call && !call.startsWith('legacy:') && !op.parentOperationId
+        ? current.filter((event) => nativeCallId(event) === call)
+        : [];
+    const starts = candidates.filter(
+      (event) =>
+        event.type === 'tool.started' || event.payload.status === 'started',
+    );
+    // Canonical and historical views can share one actual native source event.
+    // Distinct starts with the same call ID do not prove a single call.
+    const item =
+      candidates.length &&
+      candidates.every((event) => matchesReference(op, event)) &&
+      new Set(starts.map((event) => event.sourceEvent?.id ?? event.eventId))
+        .size <= 1
+        ? items.find((item) => item.id === `tool:${call}`)
+        : undefined;
     if (item) {
-      item.operationId = operationId;
+      item.operations = [...(item.operations ?? []), op];
       continue;
     }
     // History can arrive after receipts. Keep every receipt visible without
@@ -99,24 +176,17 @@ export function projectWorkProgress(
       (event) => Date.parse(event.occurredAt) >= createdAt,
     );
     items.push({
-      id: op.nativeCallId
-        ? `tool:${op.nativeCallId}`
-        : `operation:${operationId}`,
-      operationId,
+      id: `operation:${key}`,
+      operations: [op],
       kind: 'tool',
-      toolName: op.snapshot.binding.action,
-      title: op.proposal.kind === 'mcp' ? op.proposal.tool : '云端计算',
+      toolName: op.binding?.action,
+      title: op.title,
       sequence: next
         ? next.sequence - 0.5
         : !Number.isFinite(createdAt) && replies.length
           ? replies.at(-1)!.sequence - 0.5
           : (current.at(-1)?.sequence ?? 0) + 0.5,
-      status:
-        op.snapshot.status === 'succeeded'
-          ? 'completed'
-          : op.snapshot.status === 'failed'
-            ? 'failed'
-            : 'info',
+      status: op.failed ? 'failed' : 'info',
     });
   }
   const completed = current
