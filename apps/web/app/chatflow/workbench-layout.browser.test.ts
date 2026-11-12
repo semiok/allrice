@@ -27,6 +27,7 @@ import {
   type ReferenceRevision,
   EmployeeInstanceSchema,
   EmployeeInstanceProfileSchema,
+  EmployeeSkillCatalogSchema,
   EmployeeMemoryPageSchema,
   PersonalSceneSkillCatalogSchema,
   EmployeeSceneSkillCatalogSchema,
@@ -1497,6 +1498,45 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           }),
         );
       }
+      const skillCatalogTarget = path.match(
+        /^\/api\/v1\/employee-instances\/([^/]+)\/skills$/,
+      );
+      if (skillCatalogTarget && route.request().method() === 'GET') {
+        const instanceId = skillCatalogTarget[1]!;
+        expect([
+          id(7),
+          id(17),
+          id(99),
+          ...(options.brandContent ? [id(8100)] : []),
+          ...state.createdEmployeeInstances.map((instance) => instance.id),
+        ]).toContain(instanceId);
+        expect([...url.searchParams.keys()]).toEqual(['workspaceId']);
+        expect(url.searchParams.get('workspaceId')).toBe(state.workspace);
+        expect(route.request().headers()['x-allrice-workspace-id']).toBe(
+          state.workspace,
+        );
+        if (state.viewer !== user)
+          return answer({ error: { message: 'No access' } }, 403);
+        if (options.employeeDetails && state.employeeDetailStatus !== 200)
+          return answer(
+            { error: { message: 'No access' } },
+            state.employeeDetailStatus,
+          );
+        if (instanceId === id(7) && state.employeeInstanceArchived) {
+          const response = employeeHubErrorResponse(
+            new EmployeeInstanceError('instance_archived'),
+          );
+          return answer(await response.json(), response.status);
+        }
+        return answer(
+          EmployeeSkillCatalogSchema.parse({
+            instanceId,
+            canInstall: true,
+            platformSkills: [],
+            personalSkills: [],
+          }),
+        );
+      }
       const sceneCatalogTarget = path.match(
         /^\/api\/v1\/employee-instances\/([^/]+)\/scene-skills$/,
       );
@@ -2855,15 +2895,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         confirmations++;
         await dialog.accept();
       });
-      await f.page
-        .getByRole('button', { name: '工作场景', exact: true })
-        .click();
-      const dialog = f.page.getByRole('dialog', {
-        name: '工作场景 Workflow',
+      await f.page.getByRole('button', { name: '能力', exact: true }).click();
+      const dialog = f.page.getByRole('region', {
+        name: '内容同事 · 能力',
         exact: true,
       });
       await dialog
-        .getByRole('heading', { name: '还没有工作场景', exact: true })
+        .getByRole('heading', { name: '还没有场景', exact: true })
         .waitFor();
       expect(
         await f.page
@@ -2882,7 +2920,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   }, 30000);
 
-  it('MET194 hides the scene directory on employee switch and ignores the prior employee delayed catalog', async () => {
+  it('MET194 hides the prior employee capability body on employee switch and ignores its delayed catalog', async () => {
     const f = await fixture({
       brandContent: { kind: 'custom', registered: true },
     });
@@ -2892,16 +2930,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .locator('[data-row-key="workspace:' + id(7) + '"]')
         .press('ArrowRight');
       const entry = f.page.getByRole('button', {
-        name: '工作场景',
+        name: '能力',
         exact: true,
       });
       await entry.click();
-      const dialog = f.page.getByRole('dialog', {
-        name: '工作场景 Workflow',
+      const dialog = f.page.getByRole('region', {
+        name: '内容同事 · 能力',
         exact: true,
       });
       await dialog
-        .getByRole('heading', { name: '还没有工作场景', exact: true })
+        .getByRole('heading', { name: '还没有场景', exact: true })
         .waitFor();
       await f.page
         .getByRole('treeitem', { name: /^研究任务 B/ })
@@ -2912,8 +2950,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         release = done;
       });
       await f.page.getByRole('treeitem', { name: /^研究任务 A/ }).click();
-      await expect.poll(() => entry.getAttribute('aria-pressed')).toBe('false');
-      expect(await dialog.count()).toBe(0);
       await entry.click();
       await expect
         .poll(() => f.state.sceneCatalogReads.length)
@@ -2925,10 +2961,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       release();
       f.state.sceneCatalogDelay = null;
       await entry.click();
-      await dialog
-        .getByRole('heading', { name: '还没有工作场景', exact: true })
+      const current = f.page.getByRole('region', {
+        name: 'Rice · 能力',
+        exact: true,
+      });
+      await current
+        .getByRole('heading', { name: '还没有场景', exact: true })
         .waitFor();
-      expect(await dialog.textContent()).not.toContain('内容同事');
+      expect(await dialog.count()).toBe(0);
+      expect(await current.textContent()).not.toContain('内容同事');
       expect(f.state.sceneCatalogReads.at(-1)!.instanceId).toBe(id(7));
       expect(f.state.brandContentCatalogReads).toEqual([]);
       expect(f.state.brandContentBoardReads).toBe(0);
@@ -2946,30 +2987,39 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     });
     try {
       const entry = f.page.getByRole('button', {
-        name: '工作场景',
+        name: '能力',
         exact: true,
       });
       await entry.click();
-      const dialog = f.page.getByRole('dialog', {
-        name: '工作场景 Workflow',
+      const dialog = f.page.getByRole('region', {
+        name: '内容同事 · 能力',
         exact: true,
       });
       await dialog
-        .getByRole('heading', { name: '还没有工作场景', exact: true })
+        .getByRole('heading', { name: '还没有场景', exact: true })
         .waitFor();
       f.state.viewer = id(50);
       f.finishRun();
-      await expect.poll(() => dialog.count()).toBe(0);
+      await expect
+        .poll(() =>
+          dialog
+            .getByRole('heading', { name: '还没有场景', exact: true })
+            .count(),
+        )
+        .toBe(0);
       await entry.click();
-      await dialog.getByRole('alert').waitFor();
+      await dialog
+        .getByRole('region', { name: '工作场景 Workflow', exact: true })
+        .getByRole('alert')
+        .waitFor();
       expect(
         await dialog
-          .getByRole('heading', { name: '还没有工作场景', exact: true })
+          .getByRole('heading', { name: '还没有场景', exact: true })
           .count(),
       ).toBe(0);
       expect(
         await dialog
-          .getByRole('button', { name: '新建场景', exact: true })
+          .getByRole('button', { name: '添加场景', exact: true })
           .count(),
       ).toBe(0);
       expect(f.state.sceneCatalogReads.some((r) => r.viewerId === id(50))).toBe(
@@ -3168,6 +3218,28 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                   ? archivedError
                   : { error: { message: 'Current content unavailable' } },
             }),
+        );
+        await f.page.route(
+          `**/api/v1/employee-instances/${historicalId}/skills?*`,
+          (route) => {
+            const request = route.request();
+            if (request.method() !== 'GET') return route.fallback();
+            const url = new URL(request.url());
+            expect(url.pathname).toBe(
+              `/api/v1/employee-instances/${historicalId}/skills`,
+            );
+            expect([...url.searchParams.keys()]).toEqual(['workspaceId']);
+            expect(url.searchParams.get('workspaceId')).toBe(workspace);
+            expect(request.headers()['x-allrice-workspace-id']).toBe(workspace);
+            expect(historical.ownerId).toBe(f.state.viewer);
+            return route.fulfill({
+              status: currentStatus,
+              json:
+                currentStatus === 409
+                  ? archivedError
+                  : { error: { message: 'Current content unavailable' } },
+            });
+          },
         );
         await f.page.route(
           `**/api/v1/employee-instances/${historicalId}/scene-skills/reads?*`,
@@ -7144,10 +7216,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         let dialog = await openOwnerDetails(f);
         await expectRetiredTabs(dialog);
         await dialog
-          .getByRole('button', { name: '新建场景', exact: true })
+          .getByRole('button', { name: '添加场景', exact: true })
           .click();
         const form = f.page.getByRole('dialog', {
-          name: '新建工作场景',
+          name: '添加场景',
           exact: true,
         });
         await form
@@ -7168,7 +7240,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await dialog.getByRole('button', { name: '关闭', exact: true }).click();
         f.state.employeeDetails.profile.canMaintainPersonal = false;
         dialog = await openOwnerDetails(f);
-        for (const name of ['编辑员工', '新建场景'])
+        for (const name of ['编辑员工', '添加场景'])
           expect(
             await dialog.getByRole('button', { name, exact: true }).count(),
           ).toBe(0);
@@ -7556,7 +7628,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const dialog = await openOwnerDetails(f);
         await expectRetiredTabs(dialog);
         await dialog
-          .getByRole('heading', { name: '还没有工作场景', exact: true })
+          .getByRole('heading', { name: '还没有场景', exact: true })
           .waitFor();
         expect(await dialog.getByRole('combobox').count()).toBe(0);
         expect(

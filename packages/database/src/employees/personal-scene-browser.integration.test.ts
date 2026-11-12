@@ -699,7 +699,7 @@ suite('browser exact Workflow source confirmation', () => {
     expect(ApiErrorSchema.parse(await mismatch.json()).error).toMatchObject({
       code: 'VERSION_CONFLICT',
       retryable: false,
-      message: `这是另一个 Workflow（renamed），不能更新到“${p.item.frontmatter.metadata.displayName}”。要安装它，请新建场景。`,
+      message: `这是另一个 Workflow（renamed），不能更新到“${p.item.frontmatter.metadata.displayName}”。要安装它，请添加场景。`,
     });
     const stale = await preview(
       s.owner.context,

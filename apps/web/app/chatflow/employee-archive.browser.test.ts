@@ -10,6 +10,7 @@ import {
   EmployeeDetailsSchema,
   EmployeeInstanceLifecycleInputSchema,
   EmployeeInstanceSchema,
+  EmployeeSkillCatalogSchema,
   PersonalSceneSkillCatalogSchema,
   employeeColorPalette,
 } from '@allrice/contracts';
@@ -317,6 +318,40 @@ suite('U1 employee archive lifecycle', () => {
       const request = route.request(),
         url = new URL(request.url()),
         path = url.pathname;
+      const skillCatalog = path.match(
+        /^\/api\/v1\/employee-instances\/([^/]+)\/skills$/,
+      );
+      if (skillCatalog && request.method() === 'GET' && !options.shared) {
+        const current = state.instances.find(
+          (row) => row.id === skillCatalog[1],
+        );
+        expect(current).toBeDefined();
+        expect(current!.ownerId).toBe(id(5));
+        expect([...url.searchParams.keys()]).toEqual(['workspaceId']);
+        expect(url.searchParams.get('workspaceId')).toBe(id(4));
+        expect(request.headers()['x-allrice-workspace-id']).toBe(id(4));
+        return route.fulfill(
+          current!.archivedAt
+            ? json(
+                {
+                  error: {
+                    code: 'EMPLOYEE_INSTANCE_ARCHIVED',
+                    message:
+                      'AI 员工已归档，可以查看历史；恢复后才能继续工作。',
+                  },
+                },
+                409,
+              )
+            : json(
+                EmployeeSkillCatalogSchema.parse({
+                  instanceId: current!.id,
+                  canInstall: true,
+                  platformSkills: [],
+                  personalSkills: [],
+                }),
+              ),
+        );
+      }
       const single =
         /^\/api\/v1\/employee-instances\/([a-f0-9-]{36})(?:\/(lifecycle|content|scene-skills))?$/.exec(
           path,

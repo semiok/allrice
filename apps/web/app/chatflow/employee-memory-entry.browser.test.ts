@@ -8,6 +8,7 @@ import {
   defaultUserPreferences,
   defaultWorkAutomation,
   EmployeeInstanceSchema,
+  EmployeeSkillCatalogSchema,
   EmployeeSceneSkillCatalogSchema,
   type EmployeeMemoryPage,
 } from '@allrice/contracts';
@@ -329,6 +330,31 @@ suite('U1 employee details personal-memory entry', () => {
             ),
             nextBeforeId: null,
           }),
+        );
+      }
+      const skillCatalog = path.match(
+        /^\/api\/v1\/employee-instances\/([^/]+)\/skills$/,
+      );
+      if (
+        skillCatalog &&
+        request.method() === 'GET' &&
+        !options.host &&
+        !options.shared
+      ) {
+        const target = skillCatalog[1]!;
+        expect([id(7), id(17)]).toContain(target);
+        expect([...url.searchParams.keys()]).toEqual(['workspaceId']);
+        expect(url.searchParams.get('workspaceId')).toBe(id(4));
+        expect(request.headers()['x-allrice-workspace-id']).toBe(id(4));
+        return route.fulfill(
+          json(
+            EmployeeSkillCatalogSchema.parse({
+              instanceId: target,
+              canInstall: true,
+              platformSkills: [],
+              personalSkills: [],
+            }),
+          ),
         );
       }
       const instanceRead = path.match(
