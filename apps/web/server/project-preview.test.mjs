@@ -8,20 +8,31 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { setTimeout } from 'node:timers';
 import { URL } from 'node:url';
 import { readFile } from 'node:fs/promises';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFailed, vi } from 'vitest';
+import {
+  createFailureCleanup,
+  createFailureEvidence,
+} from '../../../scripts/test-failure-evidence.mjs';
 import WebSocket from 'ws';
 import { createProjectPreviewGateway } from './project-preview.mjs';
 
 const cleanups = [];
+const previewCleanups = new WeakMap();
 // Gateway timer bindings use the controlled clock; HTTP I/O stays real.
 vi.mock('node:timers', async (load) => ({
   ...(await load()),
   setTimeout: (...args) => globalThis.setTimeout(...args),
   clearTimeout: (...args) => globalThis.clearTimeout(...args),
 }));
-afterEach(async () => {
-  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
-  vi.useRealTimers();
+afterEach(async ({ task }) => {
+  const cleanup = previewCleanups.get(task);
+  previewCleanups.delete(task);
+  try {
+    if (cleanup) await cleanup.finish(task.result);
+  } finally {
+    for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+    vi.useRealTimers();
+  }
 });
 async function until(predicate) {
   const deadline = Date.now() + 3000;
@@ -33,6 +44,8 @@ async function until(predicate) {
 async function fixture({
   browserOrigins = false,
   browserContent = '<div id="source">fixture-preview</div>',
+  failureEvidence,
+  failureCleanup,
 } = {}) {
   const id = randomUUID(),
     token = 'opaque-session-ticket';
@@ -56,6 +69,11 @@ async function fixture({
       hardDeadlineAt: new Date(Date.now() + 120000).toISOString(),
     };
   const server = createServer((req, res) => {
+    failureEvidence?.mark('gateway-request', {
+      method: req.method,
+      url: req.url,
+      host: req.headers.host,
+    });
     if (
       browserOrigins &&
       /^(employee|admin|foreign)\.allrice\.test:/.test(req.headers.host ?? '')
@@ -68,6 +86,11 @@ async function fixture({
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
+  const serverOwner = failureCleanup?.own(async () => {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  });
+  if (serverOwner?.late) await serverOwner.late;
   const port = server.address().port,
     suffix = `${browserOrigins ? 'preview.allrice.test' : 'preview.localhost'}:${port}`,
     host = `rice-preview-${id}.${suffix}`,
@@ -83,12 +106,18 @@ async function fixture({
     adminOrigin,
     secure: false,
     resolveAccess: async (serviceId, key) => {
+      failureEvidence?.mark('gateway-access-check', {
+        allowed,
+        serviceMatches: serviceId === id,
+        ticketMatches: key === token,
+      });
       if (!allowed || serviceId !== id || key !== token) throw Error('revoked');
       return { ...target };
     },
     transport: {
       openPreview: async (options) => {
         opened = options;
+        failureEvidence?.mark('gateway-preview-opened');
         if (browserOrigins)
           setTimeout(() => {
             void (async () => {
@@ -116,15 +145,18 @@ async function fixture({
       },
     },
   });
+  const gatewayOwner = failureCleanup?.own(() => gateway.close());
+  if (gatewayOwner?.late) await gatewayOwner.late;
   server.on(
     'upgrade',
     (req, socket, head) => void gateway.upgrade(req, socket, head),
   );
-  cleanups.push(async () => {
-    await gateway.close();
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
-  });
+  if (!failureCleanup)
+    cleanups.push(async () => {
+      await gateway.close();
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    });
   const send = (method) => {
     const req = request({
       hostname: '127.0.0.1',
@@ -286,14 +318,30 @@ describe('private preview live transfer authority', () => {
 
   it.skipIf(process.env.ALLRICE_RUN_BROWSER_INTEGRATION !== '1')(
     'downloads a project CSV through the real gateway CSP without exposing its parent origin',
-    async () => {
-      const f = await fixture({
+    async ({ task }) => {
+      let f;
+      const evidence = createFailureEvidence({
+        file: import.meta.url,
+        test: 'downloads a project CSV through the real gateway CSP without exposing its parent origin',
+        collect: () => ({ host: f?.host, mainOrigin: f?.mainOrigin }),
+      });
+      const cleanup = createFailureCleanup(evidence);
+      previewCleanups.set(task, cleanup);
+      onTestFailed(async ({ task }) => {
+        await evidence.capture(task.result?.errors);
+      });
+      evidence.mark('fixture-started');
+      f = await fixture({
         browserOrigins: true,
+        failureEvidence: evidence,
+        failureCleanup: cleanup,
         browserContent: `<button>Export CSV</button><script>document.querySelector('button').addEventListener('click', () => { const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([${JSON.stringify('id,amount\n002,55.00\n')}],{type:'text/csv'}));a.download='diff.csv';a.click();URL.revokeObjectURL(a.href) });try { parent.previewEscaped=true } catch {}</script>`,
       });
+      cleanup.check();
       const { chromium } = createRequire(
         new URL('../../worker/package.json', import.meta.url),
       )('playwright-core');
+      evidence.mark('browser-launch-started');
       const browser = await chromium.launch({
         headless: true,
         ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
@@ -304,42 +352,72 @@ describe('private preview live transfer authority', () => {
           '--host-resolver-rules=MAP *.allrice.test 127.0.0.1',
         ],
       });
-      try {
-        const page = await browser.newPage(),
-          errors = [];
-        page.on('pageerror', (error) => errors.push(error.message));
-        await page.goto(f.mainOrigin, { waitUntil: 'load' });
-        const frame = page.frameLocator('iframe');
-        await frame
-          .getByRole('button', { name: 'Export CSV', exact: true })
-          .waitFor();
-        const pending = page.waitForEvent('download', { timeout: 5000 });
-        await frame
-          .getByRole('button', { name: 'Export CSV', exact: true })
-          .click();
-        const download = await pending;
-        expect(await download.failure()).toBeNull();
-        expect(download.suggestedFilename()).toBe('diff.csv');
-        expect(await readFile(await download.path(), 'utf8')).toBe(
-          'id,amount\n002,55.00\n',
-        );
-        expect(
-          await page.evaluate(() => Reflect.get(globalThis, 'previewEscaped')),
-        ).toBeUndefined();
-        expect(errors).toEqual([]);
-      } finally {
-        await browser.close();
-      }
+      const browserOwner = cleanup.own(() => browser.close());
+      if (browserOwner.late) await browserOwner.late;
+      evidence.mark('browser-launched');
+      const page = await browser.newPage(),
+        errors = [];
+      cleanup.check();
+      evidence.observePage(page);
+      page.on('pageerror', (error) => errors.push(error.message));
+      evidence.mark('navigation-started', { origin: f.mainOrigin });
+      await page.goto(f.mainOrigin, { waitUntil: 'load' });
+      evidence.mark('parent-loaded');
+      const frame = page.frameLocator('iframe');
+      await frame
+        .getByRole('button', { name: 'Export CSV', exact: true })
+        .waitFor();
+      evidence.mark('csv-button-visible');
+      const pending = page.waitForEvent('download', { timeout: 5000 });
+      evidence.mark('csv-click-started');
+      await frame
+        .getByRole('button', { name: 'Export CSV', exact: true })
+        .click();
+      const download = await pending;
+      evidence.mark('download-received', {
+        filename: download.suggestedFilename(),
+      });
+      expect(await download.failure()).toBeNull();
+      expect(download.suggestedFilename()).toBe('diff.csv');
+      expect(await readFile(await download.path(), 'utf8')).toBe(
+        'id,amount\n002,55.00\n',
+      );
+      expect(
+        await page.evaluate(() => Reflect.get(globalThis, 'previewEscaped')),
+      ).toBeUndefined();
+      expect(errors).toEqual([]);
     },
     20000,
   );
   it.skipIf(process.env.ALLRICE_RUN_BROWSER_INTEGRATION !== '1')(
     'embeds the authenticated preview in employee and admin origins while rejecting another same-site frame and revoked access',
-    async () => {
-      const f = await fixture({ browserOrigins: true });
+    async ({ task }) => {
+      let f;
+      const evidence = createFailureEvidence({
+        file: import.meta.url,
+        test: 'embeds the authenticated preview in employee and admin origins while rejecting another same-site frame and revoked access',
+        collect: () => ({
+          host: f?.host,
+          mainOrigin: f?.mainOrigin,
+          adminOrigin: f?.adminOrigin,
+        }),
+      });
+      const cleanup = createFailureCleanup(evidence);
+      previewCleanups.set(task, cleanup);
+      onTestFailed(async ({ task }) => {
+        await evidence.capture(task.result?.errors);
+      });
+      evidence.mark('fixture-started');
+      f = await fixture({
+        browserOrigins: true,
+        failureEvidence: evidence,
+        failureCleanup: cleanup,
+      });
+      cleanup.check();
       const { chromium } = createRequire(
         new URL('../../worker/package.json', import.meta.url),
       )('playwright-core');
+      evidence.mark('browser-launch-started');
       const browser = await chromium.launch({
         headless: true,
         ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
@@ -350,47 +428,55 @@ describe('private preview live transfer authority', () => {
           '--host-resolver-rules=MAP *.allrice.test 127.0.0.1',
         ],
       });
-      try {
-        const page = await browser.newPage();
-        for (const origin of [f.mainOrigin, f.adminOrigin]) {
-          await page.goto(origin, { waitUntil: 'domcontentloaded' });
-          await page
-            .frameLocator('iframe')
-            .getByText('fixture-preview', { exact: true })
-            .waitFor();
-        }
-        const response = page.waitForResponse(
-          (r) => r.url() === `http://${f.host}/` && r.status() === 200,
-        );
-        await page.goto(`http://foreign.allrice.test:${f.port}`, {
-          waitUntil: 'domcontentloaded',
-        });
-        const csp = (await response).headers()['content-security-policy'];
-        expect(csp).toContain(
-          `frame-ancestors ${f.mainOrigin} ${f.adminOrigin};`,
-        );
-        expect(csp).not.toContain('foreign.allrice.test');
-        await expect(
-          page
-            .frameLocator('iframe')
-            .getByText('fixture-preview', { exact: true })
-            .waitFor({ timeout: 1000 }),
-        ).rejects.toThrow();
-        f.revoke();
-        const denied = page.waitForResponse(
-          (r) => new URL(r.url()).host === f.host && r.status() === 403,
-        );
-        await page.goto(f.adminOrigin, { waitUntil: 'domcontentloaded' });
-        expect((await denied).status()).toBe(403);
+      const browserOwner = cleanup.own(() => browser.close());
+      if (browserOwner.late) await browserOwner.late;
+      evidence.mark('browser-launched');
+      const page = await browser.newPage();
+      cleanup.check();
+      evidence.observePage(page);
+      for (const origin of [f.mainOrigin, f.adminOrigin]) {
+        evidence.mark('allowed-origin-navigation-started', { origin });
+        await page.goto(origin, { waitUntil: 'domcontentloaded' });
         await page
           .frameLocator('iframe')
-          .getByText('预览已停止或授权已失效，请回到 AllRice 刷新状态。', {
-            exact: true,
-          })
+          .getByText('fixture-preview', { exact: true })
           .waitFor();
-      } finally {
-        await browser.close();
+        evidence.mark('allowed-origin-frame-visible', { origin });
       }
+      const response = page.waitForResponse(
+        (r) => r.url() === `http://${f.host}/` && r.status() === 200,
+      );
+      evidence.mark('foreign-origin-navigation-started');
+      await page.goto(`http://foreign.allrice.test:${f.port}`, {
+        waitUntil: 'domcontentloaded',
+      });
+      const csp = (await response).headers()['content-security-policy'];
+      expect(csp).toContain(
+        `frame-ancestors ${f.mainOrigin} ${f.adminOrigin};`,
+      );
+      expect(csp).not.toContain('foreign.allrice.test');
+      evidence.mark('foreign-frame-block-wait-started', { csp });
+      await expect(
+        page
+          .frameLocator('iframe')
+          .getByText('fixture-preview', { exact: true })
+          .waitFor({ timeout: 1000 }),
+      ).rejects.toThrow();
+      evidence.mark('foreign-frame-blocked-as-expected');
+      f.revoke();
+      evidence.mark('access-revoked');
+      const denied = page.waitForResponse(
+        (r) => new URL(r.url()).host === f.host && r.status() === 403,
+      );
+      await page.goto(f.adminOrigin, { waitUntil: 'domcontentloaded' });
+      expect((await denied).status()).toBe(403);
+      await page
+        .frameLocator('iframe')
+        .getByText('预览已停止或授权已失效，请回到 AllRice 刷新状态。', {
+          exact: true,
+        })
+        .waitFor();
+      evidence.mark('revoked-frame-message-visible');
     },
     30000,
   );

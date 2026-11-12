@@ -2,7 +2,16 @@ import { randomUUID } from 'node:crypto';
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFailed,
+  vi,
+} from 'vitest';
+import { createFailureEvidence } from '../../../scripts/test-failure-evidence.mjs';
 import type { MonthlyScheduleRule } from '@allrice/contracts';
 import { createP27CodexWorkerFixture } from '../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
 import {
@@ -80,6 +89,7 @@ suite(
       writer: NativeOnceWriter;
     let readyRequest: NativeCalendarWrite | null = null;
     let boundedObservationInstalled = false;
+    let monthlyEvidence: ReturnType<typeof createFailureEvidence>;
     const reference = {
       artifactId: `sha256:${'b'.repeat(64)}`,
       profileId: 'allrice-recurring-control-v1',
@@ -106,9 +116,19 @@ suite(
       mutation,
     });
     const calendar = () => store.calendar!;
-    beforeEach(async () => {
+    beforeEach(async ({ task }) => {
       readyRequest = null;
       boundedObservationInstalled = false;
+      monthlyEvidence = createFailureEvidence({
+        file: import.meta.url,
+        test: task.name,
+        collect: () => ({ readyRequest, boundedObservationInstalled }),
+      });
+      const evidence = monthlyEvidence;
+      onTestFailed(async ({ task }) => {
+        await evidence.capture(task.result?.errors);
+      });
+      monthlyEvidence.mark('fixture-started');
       vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '1');
       vi.stubEnv('ALLRICE_NATIVE_CALENDAR_ENABLED', '1');
       vi.stubEnv('ALLRICE_EXPERIENCE_REVIEW_ENABLED', '0');
@@ -163,6 +183,11 @@ suite(
           if (context) {
             void promise.catch((cause: unknown) => {
               try {
+                evidence.mark('bounded-rejected', {
+                  action: context.mutation.action,
+                  writeId: context.writeId,
+                  cause,
+                });
                 console.error(
                   'MET251_MONTHLY_BOUNDED_REJECTED',
                   JSON.stringify({
@@ -214,8 +239,11 @@ suite(
         proveClosed: async () => null,
       });
       writer = (await store.acquireWriter())!.writer;
+      monthlyEvidence.mark('writer-acquired', calendarWriterIdentity(writer));
     }, 120000);
-    afterEach(async () => {
+    afterEach(async ({ task }) => {
+      if (task.result?.state === 'fail')
+        await monthlyEvidence?.capture(task.result.errors);
       try {
         await f?.close();
       } finally {
@@ -266,8 +294,11 @@ suite(
       return row!;
     }
     async function readyParent(id: string) {
+      const failureEvidence = monthlyEvidence;
+      failureEvidence.mark('ready-parent-loading', { id });
       const state = await calendar().loadCalendarState(writer);
       const parent = state.controls.find((r) => r.control.automationId === id)!;
+      failureEvidence.mark('ready-parent-loaded', { id, parent });
       if (parent.control.sessionState === 'reserved') {
         for (const [action, expectedControlVersion] of [
           ['session_initializing', parent.version],
@@ -281,13 +312,16 @@ suite(
           });
           let outcome: Awaited<ReturnType<typeof store.commitMutation>>;
           readyRequest = request;
+          failureEvidence.mark('ready-commit-started', { request });
           try {
             outcome = await store.commitMutation(writer, request);
           } finally {
             readyRequest = null;
           }
+          failureEvidence.mark('ready-commit-returned', { action, outcome });
           if (outcome !== 'committed') {
             // Read only after rejection: no new write, renewal or retry.
+            failureEvidence.mark('ready-rejection-snapshot-started');
             const evidence = await Promise.allSettled([
               store.readExactCommit(writer, request),
               f.db`select clock_timestamp() database_now,
@@ -300,20 +334,22 @@ suite(
                   on c.partition_id=p.partition_id and c.control_id=${parent.control.controlId}
                 where p.partition_id=${writer.partitionId}`,
             ]);
+            const diagnostic = {
+              request,
+              boundedObservationInstalled,
+              writer: calendarWriterIdentity(writer),
+              before: parent,
+              evidence: evidence.map((item) =>
+                item.status === 'fulfilled'
+                  ? item
+                  : { status: item.status, error: String(item.reason) },
+              ),
+            };
             console.error(
               'MET251_MONTHLY_READY_REJECTED',
-              JSON.stringify({
-                request,
-                boundedObservationInstalled,
-                writer: calendarWriterIdentity(writer),
-                before: parent,
-                evidence: evidence.map((item) =>
-                  item.status === 'fulfilled'
-                    ? item
-                    : { status: item.status, error: String(item.reason) },
-                ),
-              }),
+              JSON.stringify(diagnostic),
             );
+            failureEvidence.mark('ready-rejection-snapshot', diagnostic);
           }
           expect(outcome).toBe('committed');
         }
