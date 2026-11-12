@@ -469,17 +469,31 @@ it.each(['complete', 'missing', 'sparse'] as const)(
     let bytes = out.bytes;
     if (cache !== 'complete') {
       const zip = await JSZip.loadAsync(bytes);
-      const path = 'ppt/charts/chart1.xml';
-      const xml = await zip.file(path)!.async('string');
+      const charts = zip.file(/^ppt\/charts\/chart\d+\.xml$/);
+      expect(charts).toHaveLength(1);
+      const chart = charts[0];
+      if (!chart) throw new Error('Expected the unique native chart fixture');
+      const xml = await chart.async('string');
       expect(xml).toContain('<c:numCache>');
-      zip.file(
-        path,
-        xml.replace(/<c:numCache>[\s\S]*?<\/c:numCache>/g, (value) =>
+      const changed = xml.replace(
+        /<c:numCache>[\s\S]*?<\/c:numCache>/g,
+        (value) =>
           cache === 'missing'
             ? ''
             : value.replace(/<c:pt idx="1">[\s\S]*?<\/c:pt>/, ''),
-        ),
       );
+      expect(changed).not.toBe(xml);
+      const changedCaches =
+        changed.match(/<c:numCache>[\s\S]*?<\/c:numCache>/g) ?? [];
+      if (cache === 'missing') expect(changedCaches).toHaveLength(0);
+      else {
+        expect(changedCaches.length).toBeGreaterThan(0);
+        for (const value of changedCaches) {
+          expect(value).toContain('<c:ptCount val="2"/>');
+          expect(value).not.toContain('<c:pt idx="1">');
+        }
+      }
+      zip.file(chart.name, changed);
       bytes = await zip.generateAsync({ type: 'nodebuffer' });
     }
     const { root, claim } = await fixture(bytes, out.mediaType, 'chart.pptx');

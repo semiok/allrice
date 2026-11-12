@@ -81,7 +81,7 @@ suite(
     }, 30000);
 
     async function upload(
-      bytes = Buffer.from('开始正文\n最终中文尾部：总额九千元。'),
+      bytes: Buffer = Buffer.from('开始正文\n最终中文尾部：总额九千元。'),
       mediaType = 'text/plain',
       fileName = '完整资料.txt',
     ) {
