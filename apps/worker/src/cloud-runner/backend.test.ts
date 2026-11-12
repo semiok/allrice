@@ -134,6 +134,39 @@ describe('P15 cloud contract fail-closed', () => {
       commandDigest: digest,
     });
     expect(result.repositoryIsolation?.compilerUid).toBeUndefined();
+    expect(result.repositoryIsolation?.tmpfsMiB).toBe(64);
+    container.HostConfig.Tmpfs['/tmp'] =
+      'rw,nosuid,nodev,noexec,size=128m,mode=1777';
+    await expect(
+      new HistoricalContainer().collect(
+        attempt,
+        command('historical typed command'),
+        Date.now(),
+      ),
+    ).rejects.toThrow('REPOSITORY_ISOLATION_CHANGED');
+    Object.assign(container.Config.Labels, {
+      'xyz.bplabs.allrice.repository.source-tmpfs-mib': '128',
+    });
+    expect(
+      (
+        await new HistoricalContainer().collect(
+          attempt,
+          command('historical typed command'),
+          Date.now(),
+        )
+      ).repositoryIsolation?.tmpfsMiB,
+    ).toBe(128);
+    for (const size of ['64m', '128m0', '128m,size=128m']) {
+      container.HostConfig.Tmpfs['/tmp'] =
+        `rw,nosuid,nodev,noexec,size=${size},mode=1777`;
+      await expect(
+        new HistoricalContainer().collect(
+          attempt,
+          command('historical typed command'),
+          Date.now(),
+        ),
+      ).rejects.toThrow('REPOSITORY_ISOLATION_CHANGED');
+    }
   });
   it('recognizes watchdog deadline stops from Docker time without guessing or overriding cancellation/unknown', async () => {
     const deadline = Date.now() + 5000;

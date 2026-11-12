@@ -6,7 +6,9 @@ import {
   CreateRepairTaskSchema,
   RepositoryBaselineSchema,
   RepositoryExecutionProofSchema,
+  matchesRepositoryExecutionIsolation,
   repairProfileId,
+  repairProductPath,
 } from './platform-repair-contracts.ts';
 import { compiledRepairProfileId } from './platform-repair-compiled-contracts.ts';
 import {
@@ -24,6 +26,9 @@ import {
 } from './platform-repair-profile.ts';
 
 import { compiledDependencyFixture as dependencyFixture } from './platform-repair-compiled.fixture.ts';
+import { MaintenanceRepairPlanSchema } from './platform-maintenance-authority-contracts.ts';
+import { maintenanceVerificationHarnessChecksum } from './platform-maintenance-profile.ts';
+import { technicalDigest } from './platform-technical-tasks.ts';
 
 describe('finite compiled repository verification boundaries', () => {
   it('binds both original dependency configuration and all frozen bytes, including the separate generated plan', () => {
@@ -126,9 +131,45 @@ describe('finite compiled repository verification boundaries', () => {
       tmpfsMiB: 64,
     };
     expect(RepositoryExecutionProofSchema.parse(v1)).toEqual(v1);
+    const historical = RepositoryExecutionProofSchema.parse(v1);
+    const current = RepositoryExecutionProofSchema.parse({
+      ...v1,
+      tmpfsMiB: 128,
+    });
+    const legacyReceipt = { commandDigest: common.commandDigest };
+    expect(matchesRepositoryExecutionIsolation(historical, legacyReceipt)).toBe(
+      true,
+    );
+    expect(matchesRepositoryExecutionIsolation(current, legacyReceipt)).toBe(
+      false,
+    );
+    for (const proof of [historical, current]) {
+      expect(
+        matchesRepositoryExecutionIsolation(proof, {
+          ...legacyReceipt,
+          tmpfsMiB: proof.tmpfsMiB,
+        }),
+      ).toBe(true);
+      expect(
+        matchesRepositoryExecutionIsolation(proof, {
+          ...legacyReceipt,
+          tmpfsMiB: proof.tmpfsMiB === 64 ? 128 : 64,
+        }),
+      ).toBe(false);
+      expect(
+        matchesRepositoryExecutionIsolation(proof, {
+          ...legacyReceipt,
+          tmpfsMiB: proof.tmpfsMiB,
+          commandDigest: repositoryDigest('other command'),
+        }),
+      ).toBe(false);
+    }
     expect(
       RepositoryExecutionProofSchema.safeParse({ ...v1, tmpfsMiB: 128 })
         .success,
+    ).toBe(true);
+    expect(
+      RepositoryExecutionProofSchema.safeParse({ ...v1, tmpfsMiB: 96 }).success,
     ).toBe(false);
     const v2 = {
       ...common,
@@ -187,6 +228,65 @@ describe('finite compiled repository verification boundaries', () => {
         object: { id: randomUUID(), checksum: f.descriptor.bundleChecksum },
       },
     });
+    const maintenancePlan = MaintenanceRepairPlanSchema.parse({
+      version: 1,
+      specId: 'command-output.credentials.v2',
+      fixtureDigest: repositoryDigest('fixture'),
+      harnessChecksum: maintenanceVerificationHarnessChecksum,
+      approvedFiles: [
+        {
+          path: repairProductPath,
+          mode: '100644',
+          beforeChecksum: repositoryDigest('original'),
+          maxBytes: 50000,
+        },
+      ],
+      dependencyBundleChecksum: f.descriptor.bundleChecksum,
+      dependencyMaterialDigest: f.descriptor.materialDigest,
+      dependencyPlanDigest: f.descriptor.planDigest,
+      packages: ['@allrice/contracts', '@allrice/project-runtime'],
+      compilerVersion: '5.9.3',
+      nodeVersion: 'v22.23.2',
+      timeoutMs: 300000,
+      network: 'none',
+      candidateUid: 1001,
+      compilerUid: 1002,
+      memoryMiB: 768,
+      compilerHeapMiB: 384,
+    });
+    const compiledInput = {
+      ...input,
+      compiled: {
+        descriptor: f.descriptor,
+        object: {
+          id: compiled.inputs[1]!.objectId,
+          checksum: f.descriptor.bundleChecksum,
+        },
+      },
+    };
+    for (const buildInput of [
+      input,
+      compiledInput,
+      {
+        ...compiledInput,
+        maintenance: {
+          verificationPlan: maintenancePlan,
+          verificationPlanDigest: technicalDigest(maintenancePlan),
+        },
+      },
+    ]) {
+      const current = repositoryVerificationCommand(buildInput);
+      const historical = repositoryVerificationCommand({
+        ...buildInput,
+        legacySourceLimits: true,
+      });
+      const originalScript = current.script.replace(
+        '"totalBytes":64000000,"archiveBytes":12000000,"jsonBytes":96000000',
+        '"totalBytes":40000000,"archiveBytes":12000000,"jsonBytes":60000000',
+      );
+      expect(originalScript).not.toBe(current.script);
+      expect(historical).toEqual({ ...current, script: originalScript });
+    }
     for (const c of [old, compiled])
       execFileSync(process.execPath, ['--input-type=module', '--check'], {
         input: c.script,
