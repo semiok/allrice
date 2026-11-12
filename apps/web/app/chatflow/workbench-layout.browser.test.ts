@@ -8038,6 +8038,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               scrollHeight: target.scrollHeight,
               clientHeight: target.clientHeight,
               scrollTop: target.scrollTop,
+              bottom: target.getBoundingClientRect().bottom,
             };
           }, bottom);
           expect(
@@ -8050,6 +8051,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           const box = (await footer.boundingBox())!;
           expect(box.y).toBeGreaterThanOrEqual(0);
           expect(box.y + box.height).toBeLessThanOrEqual(height);
+          expect(box.y).toBeGreaterThanOrEqual(dimensions!.bottom - 1);
           return dimensions;
         };
         try {
@@ -8124,8 +8126,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             name: '和 Rice 开新会话',
             exact: true,
           });
-          if (device === 'mobile') await plus.focus();
-          else await plus.hover();
+          if (device === 'mobile') {
+            await riceRow.focus();
+            await f.page.keyboard.press('Tab');
+            expect(
+              await plus.evaluate((node) => node === document.activeElement),
+            ).toBe(true);
+          } else await plus.hover();
           await f.page
             .getByRole('tooltip')
             .filter({ hasText: '和 Rice 开新会话' })
@@ -8788,18 +8795,22 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const row = f.page.locator(`[data-row-key="workspace:${employeeId}"]`);
         const letter = row.getByText(initial, { exact: true });
         const card = row.locator('..').locator('..');
+        const active = employeeId === id(7);
+        expect(await card.getAttribute('data-active')).toBe(
+          active ? 'true' : null,
+        );
         await f.page.mouse.move(1000, 900);
         await expect.poll(() => letter.isVisible()).toBe(true);
         const before = await letter.boundingBox();
         await expect
           .poll(() => card.evaluate((e) => getComputedStyle(e).backgroundColor))
-          .toBe('rgb(240, 242, 245)');
+          .toBe(active ? 'rgb(225, 230, 237)' : 'rgb(240, 242, 245)');
         await row.hover();
         expect(await letter.isVisible()).toBe(true);
         expect(await letter.boundingBox()).toEqual(before);
         await expect
           .poll(() => card.evaluate((e) => getComputedStyle(e).backgroundColor))
-          .toBe('rgb(233, 236, 241)');
+          .toBe(active ? 'rgb(225, 230, 237)' : 'rgb(233, 236, 241)');
         expect(await card.evaluate((e) => getComputedStyle(e).boxShadow)).toBe(
           'none',
         );

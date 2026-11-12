@@ -1,6 +1,6 @@
 'use client';
 
-import { useId, useRef, useState } from 'react';
+import { useId, useRef, useState, type ReactNode } from 'react';
 import {
   EmployeeInstanceProfileSchema,
   employeeColorPalette,
@@ -193,6 +193,28 @@ interface EmployeeProfileFormProps {
   onCancel: () => void;
 }
 
+/** Keep disabled-fieldset semantics inside an ordinary creation scroll box. */
+function ProfileFields({
+  mode,
+  disabled,
+  children,
+}: {
+  mode: 'create' | 'edit';
+  disabled: boolean;
+  children: ReactNode;
+}) {
+  const fields = (
+    <fieldset className={css.fields} disabled={disabled}>
+      {children}
+    </fieldset>
+  );
+  return mode === 'create' ? (
+    <div className={createCss.scroll}>{fields}</div>
+  ) : (
+    fields
+  );
+}
+
 /** Shared presentation for create/edit. Mount with a new key when the target or
  * saved revision changes; local drafts must not leak to a different employee. */
 export function EmployeeProfileForm({
@@ -260,10 +282,7 @@ export function EmployeeProfileForm({
         }
       }}
     >
-      <fieldset
-        className={`${css.fields} ${mode === 'create' ? createCss.scroll : ''}`}
-        disabled={locked}
-      >
+      <ProfileFields mode={mode} disabled={locked}>
         {mode === 'create' && (
           <p className={createCss.intro}>
             一个员工由人设、技能、工作场景、插件、记忆五部分组成。现在先定人设，其他四项创建后在“详情”里随时添加。
@@ -411,7 +430,7 @@ export function EmployeeProfileForm({
             </div>
           </>
         )}
-      </fieldset>
+      </ProfileFields>
       {error || submitError ? <p role="alert">{error || submitError}</p> : null}
       <footer className={css.actions}>
         {mode === 'create' && (
