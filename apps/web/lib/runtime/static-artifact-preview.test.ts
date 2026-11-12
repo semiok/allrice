@@ -80,15 +80,32 @@ describe('native preview dispatch', () => {
       expect(ports.office).not.toHaveBeenCalled();
     },
   );
+  it.each(['docx', 'pptx'])(
+    'marks failed %s conversion as retryable without changing its download reason',
+    async (extension) => {
+      ports.office.mockRejectedValueOnce(
+        new Error('synthetic converter failure'),
+      );
+      expect(
+        await readStaticArtifactPreview(file(`office.${extension}`)),
+      ).toEqual({
+        kind: 'download_only',
+        reason: '文档转换暂不可用，请重试预览或下载查看。',
+        retryable: true,
+      });
+    },
+  );
   it.each([
     ['large.png', 32 * 1024 * 1024 + 1],
     ['large.pdf', 32 * 1024 * 1024 + 1],
     ['large.xlsx', 16 * 1024 * 1024 + 1],
     ['large.docx', 50 * 1024 * 1024 + 1],
   ] as const)('rejects oversized %s before storage IO', async (name, size) => {
-    expect(await readStaticArtifactPreview(file(name, size))).toMatchObject({
+    const preview = await readStaticArtifactPreview(file(name, size));
+    expect(preview).toMatchObject({
       kind: 'download_only',
     });
+    expect(preview).not.toHaveProperty('retryable');
     expect(ports.read).not.toHaveBeenCalled();
     expect(ports.office).not.toHaveBeenCalled();
   });
@@ -119,9 +136,11 @@ describe('native preview dispatch', () => {
   it.each(['zip', 'mp4', 'avif'])(
     'keeps unsupported binary %s out of the text reader',
     async (extension) => {
-      expect(
-        await readStaticArtifactPreview(file(`file.${extension}`)),
-      ).toMatchObject({ kind: 'download_only' });
+      const preview = await readStaticArtifactPreview(
+        file(`file.${extension}`),
+      );
+      expect(preview).toMatchObject({ kind: 'download_only' });
+      expect(preview).not.toHaveProperty('retryable');
       expect(ports.storage.get).not.toHaveBeenCalled();
     },
   );

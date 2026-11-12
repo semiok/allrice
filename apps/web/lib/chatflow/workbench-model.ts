@@ -46,7 +46,7 @@ export type ArtifactPreview =
       mediaType: PreviewImageMediaType;
       base64: string;
     }
-  | { kind: 'download_only'; reason: string };
+  | { kind: 'download_only'; reason: string; retryable?: boolean };
 export type ArtifactCursor = { createdAt: string; id: string };
 export function artifactExecutionLabels(execution: RuntimeExecutionScope) {
   return {
@@ -204,7 +204,11 @@ export function parseArtifactPreview(input: unknown): ArtifactPreview {
     typeof v.reason === 'string' &&
     v.reason.length < 1000
   )
-    return { kind: 'download_only', reason: v.reason };
+    return {
+      kind: 'download_only',
+      reason: v.reason,
+      ...(v.retryable === true ? { retryable: true } : {}),
+    };
   throw Error('预览格式无效');
 }
 /** Browser observation records are kept for reference, not shown unasked. */

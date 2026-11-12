@@ -5963,15 +5963,25 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   });
 
   it.each([390, 1440])(
-    'keeps one reference surface across parent refreshes and fully closes it at %ipx',
+    'keeps one shared reference surface across parent refreshes, closes it and quotes the exact revision at %ipx',
     async (width) => {
       const f = await fixture({ width });
       try {
+        const shared = {
+          ...fileReference(
+            8440,
+            catalogFile(8442, { fileName: '公司参考口径.txt' }),
+          ),
+          ownership: { scope: 'company' as const, organizationId: org },
+          canMaintain: false,
+        };
+        const input = f.page.getByRole('textbox', { name: /给 .* 的消息/ });
+        await input.fill('参考资料打开期间保留这段草稿');
         await f.page.route('**/api/v1/references?*', (route) =>
           route.fulfill({
             contentType: 'application/json',
             body: JSON.stringify({
-              references: [],
+              references: [shared],
               options: {
                 workspaceId: workspace,
                 platformMaintainer: false,
@@ -5983,13 +5993,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             }),
           }),
         );
-        const dialog =
-          width > 760
-            ? f.panel.getByRole('region', { name: '交付成果', exact: true })
-            : f.page.getByRole('dialog', {
-                name: '参考资料',
-                exact: true,
-              });
+        const dialog = f.page.getByRole('dialog', {
+          name: '参考资料',
+          exact: true,
+        });
         for (let cycle = 0; cycle < 2; cycle++) {
           await f.page
             .getByRole('button', { name: '添加文件', exact: true })
@@ -5997,17 +6004,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await f.page
             .getByRole('menuitem', { name: '参考资料', exact: true })
             .click();
-          if (width > 760) {
-            await dialog
-              .getByRole('searchbox', { name: '查找文件', exact: true })
-              .waitFor();
-            expect(
-              await dialog
-                .getByRole('button', { name: '参考资料', exact: true })
-                .getAttribute('aria-pressed'),
-            ).toBe('true');
-          } else
-            await dialog.getByText('上传参考资料', { exact: true }).waitFor();
+          await dialog
+            .getByRole('textbox', { name: '查找参考资料', exact: true })
+            .waitFor();
+          await dialog
+            .getByRole('button', { name: shared.fileName, exact: true })
+            .waitFor();
           // The regular quota refresh rerenders ChatFlowClient while its
           // reference portal and the company-template sibling stay mounted.
           for (let refresh = 0; refresh < 3; refresh++) {
@@ -6023,19 +6025,37 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             );
             expect(await dialog.count()).toBe(1);
           }
-          if (width > 760)
-            await f.panel
-              .getByRole('button', { name: '关闭工作台', exact: true })
-              .click();
-          else
-            await dialog
-              .getByRole('button', { name: '关闭', exact: true })
-              .click();
+          await dialog
+            .getByRole('button', { name: '关闭', exact: true })
+            .click();
           await expect.poll(() => dialog.count()).toBe(0);
           expect(
             await f.page.evaluate(() => document.body.style.overflow),
           ).not.toBe('hidden');
         }
+        await f.page
+          .getByRole('button', { name: '添加文件', exact: true })
+          .click();
+        await f.page
+          .getByRole('menuitem', { name: '参考资料', exact: true })
+          .click();
+        await dialog
+          .getByRole('button', { name: '引用 v1', exact: true })
+          .click();
+        await dialog.waitFor({ state: 'hidden' });
+        await f.page
+          .getByRole('button', {
+            name: `移除资料 ${shared.fileName} v1`,
+            exact: true,
+          })
+          .waitFor();
+        expect(await input.inputValue()).toBe('参考资料打开期间保留这段草稿');
+        expect(f.state.messageInputs).toEqual([]);
+        await input.press('Enter');
+        await expect.poll(() => f.state.messageInputs.length).toBe(1);
+        expect(f.state.messageInputs[0]!.referenceRevisionIds).toEqual([
+          shared.revisionId,
+        ]);
         expect(f.errors).toEqual([]);
       } finally {
         await f.close();
@@ -11456,15 +11476,28 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             category: 'artifact',
           });
           f.state.workbenchFiles.push(fontFile);
-          f.state.filePreview = deliverablePdf([
-            'Noto Sans CJK SC',
-            'Aptos Display Semibold',
-          ]);
+          f.state.filePreview = {
+            kind: 'download_only',
+            reason: '文档转换暂不可用，请重试预览或下载查看。',
+            retryable: true,
+          };
           await f.page.evaluate(() =>
             window.dispatchEvent(new Event('allrice:workbench-files-changed')),
           );
           await directory
             .getByRole('button', { name: fontFile.fileName, exact: true })
+            .click();
+          await f.panel
+            .getByText('文档转换暂不可用，请重试预览或下载查看。', {
+              exact: true,
+            })
+            .waitFor();
+          f.state.filePreview = deliverablePdf([
+            'Noto Sans CJK SC',
+            'Aptos Display Semibold',
+          ]);
+          await f.panel
+            .getByRole('button', { name: '重新加载', exact: true })
             .click();
           const warning = toolbar.getByRole('button', {
             name: '缺失 2 种字体，点击查看',
@@ -11583,6 +11616,24 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               .waitFor();
           await capture('file-types');
           f.state.filePreview = {
+            kind: 'download_only',
+            reason: '此文件格式暂不支持预览，请下载查看。',
+          };
+          await directory
+            .getByRole('button', { name: '附件.bin', exact: true })
+            .click();
+          await f.panel
+            .getByText('此文件格式暂不支持预览，请下载查看。', { exact: true })
+            .waitFor();
+          expect(
+            await f.panel
+              .getByRole('button', { name: '重新加载', exact: true })
+              .count(),
+          ).toBe(0);
+          await f.panel
+            .getByRole('button', { name: '‹ 交付成果', exact: true })
+            .click();
+          f.state.filePreview = {
             kind: 'text',
             mediaType: 'text/markdown',
             text: '# 上传的文件',
@@ -11610,8 +11661,52 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       }, 30000);
     }
 
-  it('MET247 keyset pages use one directory request each and a late old-owner response never reveals its title', async () => {
-    const f = await fixture();
+  it('MET247 mobile deliverables, personal memory and capabilities icons open their real panels', async () => {
+    const f = await fixture({
+      width: 390,
+      employeeDetails: true,
+      brandContent: { kind: 'custom', registered: true },
+    });
+    try {
+      const input = f.page.getByRole('textbox', {
+        name: '给 内容同事 的消息',
+        exact: true,
+      });
+      await input.fill('手机入口切换期间保留草稿');
+      const header = f.page.locator('header');
+      await header
+        .getByRole('button', { name: '交付成果', exact: true })
+        .click();
+      await f.panel
+        .getByRole('region', { name: '交付成果', exact: true })
+        .getByRole('heading', { name: '还没有交付成果', exact: true })
+        .waitFor();
+      await f.panel
+        .getByRole('button', { name: '关闭工作台', exact: true })
+        .click();
+      await header.getByRole('button', { name: '记忆', exact: true }).click();
+      await f.panel
+        .getByRole('region', { name: '个人记忆', exact: true })
+        .waitFor();
+      await f.panel.getByText('全部 · 共 0 条', { exact: true }).waitFor();
+      await f.panel
+        .getByRole('button', { name: '关闭工作台', exact: true })
+        .click();
+      await header.getByRole('button', { name: '能力', exact: true }).click();
+      await f.page
+        .getByRole('region', { name: '内容同事 · 能力', exact: true })
+        .getByRole('heading', { name: '还没有场景', exact: true })
+        .waitFor();
+      expect(await input.inputValue()).toBe('手机入口切换期间保留草稿');
+      expect(f.state.messageInputs).toEqual([]);
+      expect(f.errors).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('MET247 keyset pages survive category, employee and search round trips and reject a late old-owner title', async () => {
+    const f = await fixture({ employeeCount: 2 });
     let release = () => {};
     try {
       for (let n = 0; n < 55; n++)
@@ -11632,6 +11727,43 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(
         f.state.deliverableRequests.filter((request) => request.cursor),
       ).toHaveLength(1);
+      const employee = directory.getByRole('combobox', { name: '按员工筛选' });
+      const search = directory.getByRole('searchbox', { name: '查找文件' });
+      const roundTrips = [
+        async () => {
+          await directory
+            .getByRole('button', { name: '员工交付', exact: true })
+            .click();
+          await directory
+            .getByText('还没有交付成果', { exact: true })
+            .waitFor();
+          await directory
+            .getByRole('button', { name: '全部', exact: true })
+            .click();
+        },
+        async () => {
+          await employee.selectOption(id(17));
+          await directory
+            .getByText('还没有交付成果', { exact: true })
+            .waitFor();
+          await employee.selectOption(id(7));
+        },
+        async () => {
+          await search.fill('资料-9600');
+          await expect.poll(() => directory.locator('article').count()).toBe(1);
+          await search.fill('');
+        },
+      ];
+      for (const roundTrip of roundTrips) {
+        await roundTrip();
+        await expect.poll(() => directory.locator('article').count()).toBe(50);
+        await directory.locator(`[data-file-id="${id(9600)}"]`).waitFor();
+        expect(f.state.deliverableRequests.at(-1)?.cursor).toBeUndefined();
+        await directory
+          .locator('[aria-busy]')
+          .evaluate((node) => (node.scrollTop = node.scrollHeight));
+        await expect.poll(() => directory.locator('article').count()).toBe(55);
+      }
       f.state.fileDelay = new Promise<void>((done) => {
         release = done;
       });
@@ -11659,55 +11791,61 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   }, 30000);
 
-  it('MET247 an application file link resolves my object before showing its title and clears a late old-account detail', async () => {
-    const f = await fixture();
-    let release = () => {};
-    try {
-      const file = catalogFile(9590, { fileName: '本人链接原件.txt' });
-      f.state.workbenchFiles.push(file);
-      const link = `${origin}/?session=${A}&file=${file.objectId}&workspaceId=${workspace}`;
-      await f.page.goto(link);
-      await f.panel
-        .locator('header[aria-label="文件操作"]')
-        .getByText(file.fileName, { exact: true })
-        .waitFor();
-      expect(
-        f.state.deliverableRequests.some(
-          (request) => request.objectId === file.objectId,
-        ),
-      ).toBe(true);
-      f.state.fileDelay = new Promise<void>((done) => {
-        release = done;
-      });
-      await f.page.reload();
-      await expect
-        .poll(
-          () =>
-            f.state.deliverableRequests.filter(
-              (request) => request.objectId === file.objectId,
-            ).length,
-        )
-        .toBeGreaterThan(1);
-      const workspaceReads = f.state.workspaceReads;
-      f.state.viewer = id(999);
-      await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
-      await expect
-        .poll(() => f.state.workspaceReads)
-        .toBeGreaterThan(workspaceReads);
-      release();
-      await f.panel.getByText('无权访问', { exact: true }).waitFor();
-      expect(
-        await f.page.getByText(file.fileName, { exact: true }).count(),
-      ).toBe(0);
-      expect(
-        await f.panel.getByRole('link', { name: '下载', exact: true }).count(),
-      ).toBe(0);
-      expect(f.state.workbenchReferenceUses).toEqual([]);
-    } finally {
-      release();
-      await f.close();
-    }
-  }, 30000);
+  it.each([1440, 390])(
+    'MET247 an application file link resolves my object before showing its title and clears a late old-account detail at %ipx',
+    async (width) => {
+      const f = await fixture({ width });
+      let release = () => {};
+      try {
+        const file = catalogFile(9590, { fileName: '本人链接原件.txt' });
+        f.state.workbenchFiles.push(file);
+        const link = `${origin}/?session=${A}&file=${file.objectId}&workspaceId=${workspace}`;
+        await f.page.goto(link);
+        await f.panel
+          .locator('header[aria-label="文件操作"]')
+          .getByText(file.fileName, { exact: true })
+          .waitFor();
+        expect(
+          f.state.deliverableRequests.some(
+            (request) => request.objectId === file.objectId,
+          ),
+        ).toBe(true);
+        f.state.fileDelay = new Promise<void>((done) => {
+          release = done;
+        });
+        await f.page.reload();
+        await expect
+          .poll(
+            () =>
+              f.state.deliverableRequests.filter(
+                (request) => request.objectId === file.objectId,
+              ).length,
+          )
+          .toBeGreaterThan(1);
+        const workspaceReads = f.state.workspaceReads;
+        f.state.viewer = id(999);
+        await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+        await expect
+          .poll(() => f.state.workspaceReads)
+          .toBeGreaterThan(workspaceReads);
+        release();
+        await f.panel.getByText('无权访问', { exact: true }).waitFor();
+        expect(
+          await f.page.getByText(file.fileName, { exact: true }).count(),
+        ).toBe(0);
+        expect(
+          await f.panel
+            .getByRole('link', { name: '下载', exact: true })
+            .count(),
+        ).toBe(0);
+        expect(f.state.workbenchReferenceUses).toEqual([]);
+      } finally {
+        release();
+        await f.close();
+      }
+    },
+    30000,
+  );
 
   it('MET160 keeps the chosen files tab when an artifact list arrives late, and honors explicit reopening', async () => {
     const f = await fixture();
@@ -14311,8 +14449,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   }, 30_000);
 
-  it('clears recovered review refresh errors without removing the loaded preview', async () => {
-    const f = await fixture({ technicalArtifacts: true, artifacts: true });
+  it('keeps model-proposal plan review, recovers refresh errors and sends the exact plan confirmation', async () => {
+    const f = await fixture({ artifacts: true });
     try {
       f.state.items[0]!.kind = 'plan';
       await f.page.reload();
@@ -14322,14 +14460,46 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .click();
       const heading = f.panel.getByRole('heading', { name: /COIN/ });
       await heading.waitFor();
+      const plan = f.state.items[0]!;
+      expect(plan.provenance.kind).toBe('model_proposal');
+      const approve = f.panel.getByRole('button', {
+        name: '认可本版计划，继续',
+        exact: true,
+      });
+      await approve.waitFor();
+      expect(await approve.isEnabled()).toBe(true);
       f.state.detailStatus = 503;
       await f.panel.getByRole('alert').waitFor({ timeout: 10000 });
       expect(await heading.isVisible()).toBe(true);
+      expect(await approve.isEnabled()).toBe(false);
       f.state.detailStatus = 200;
       await expect
         .poll(() => f.panel.getByRole('alert').count(), { timeout: 10000 })
         .toBe(0);
       expect(await heading.isVisible()).toBe(true);
+      await f.page
+        .locator('header')
+        .getByRole('button', { name: '交付成果', exact: true })
+        .click();
+      await f.panel
+        .getByRole('region', { name: '交付成果', exact: true })
+        .getByRole('button', { name: plan.version.fileName, exact: true })
+        .click();
+      await approve.click();
+      await expect.poll(() => f.state.messageInputs.length).toBe(1);
+      expect(f.state.messageInputs[0]).toMatchObject({
+        text: '认可本版计划并继续',
+        deliveryMode: 'follow_up',
+        attachmentIds: [],
+        reviewContinuation: {
+          kind: 'plan_review',
+          artifactId: plan.id,
+          checksum: plan.object.checksum,
+        },
+      });
+      await f.panel
+        .getByRole('button', { name: '计划确认已发送', exact: true })
+        .waitFor();
     } finally {
       await f.close();
     }

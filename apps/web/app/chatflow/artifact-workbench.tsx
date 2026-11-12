@@ -347,7 +347,10 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
   useEffect(() => {
     const request = props.moduleRequest;
     if (
-      (!props.desktop && !memoryRequest && request?.kind !== 'workflow') ||
+      (!props.desktop &&
+        !memoryRequest &&
+        request?.kind !== 'workflow' &&
+        !(props.personalDeliverables && request?.kind === 'files')) ||
       !request ||
       request.revision === lastModuleRequest.current
     )
@@ -850,7 +853,7 @@ function ArtifactTabBody(
   if (
     props.personalDeliverables &&
     file &&
-    ['document', 'plan', 'file'].includes(file.kind) &&
+    ['document', 'file'].includes(file.kind) &&
     file.provenance.kind !== 'project_snapshot' &&
     !isToolResultExport(file.version)
   )

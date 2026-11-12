@@ -30,7 +30,6 @@ import {
 } from '../../lib/chatflow/workbench-file-actions';
 import { DshDialog } from './dsh-upstream/Dialog';
 import { WorkbenchIcon } from './workbench-modules';
-import { WorkbenchFileIcon } from './workbench-file-icon';
 import { useWorkbenchFileReference } from './use-workbench-file-reference';
 import { copyWorkbenchFileLink } from './workbench-file-link';
 import css from './workbench-files-panel.module.css';
@@ -110,6 +109,7 @@ export function WorkbenchFilesPanel(props: {
   });
   const request = params.toString(),
     key = `${props.ownerKey}/${request}`;
+  if (page && page.key !== key) setPage(null);
   const cursor = page?.key === key ? page.cursor : null;
   const catalog = snapshot?.key === key ? snapshot.value : null;
   const loading = status.key === key && status.loading;

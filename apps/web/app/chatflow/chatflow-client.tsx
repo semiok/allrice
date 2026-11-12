@@ -2164,10 +2164,6 @@ export function ChatFlowClient({
         )
       }
       onOpenReferenceLibrary={() => {
-        if (!layout.compact && workbenchEnabled) {
-          requestWorkbenchModule('files', { category: 'reference' });
-          return;
-        }
         setRecommendedTemplates(false);
         setReferenceToView(null);
         setReferenceLibraryOpen(true);
@@ -2650,6 +2646,18 @@ export function ChatFlowClient({
                         }
                         onSchedule={openSessionTasks}
                         onOpen={(kind) => {
+                          if (
+                            layout.compact &&
+                            kind === 'experience' &&
+                            activeEmployee?.instanceId
+                          ) {
+                            requestWorkbenchModule('experience', {
+                              id: activeEmployee.instanceId,
+                              title: '记忆',
+                              view: 'personal-memory',
+                            });
+                            return;
+                          }
                           if (kind === 'workflow')
                             skillNavigation.current?.navigateHome();
                           requestWorkbenchModule(kind);
@@ -3074,6 +3082,15 @@ export function ChatFlowClient({
                     )
                   }
                   onOpen={(file) => {
+                    const plan = workbench.artifacts.find(
+                      (item) =>
+                        item.object.id === file.objectId &&
+                        item.kind === 'plan',
+                    );
+                    if (plan) {
+                      showWorkbench(plan.id);
+                      return;
+                    }
                     workbench.show(undefined, true);
                     onOpenFile(file.objectId, file.fileName);
                   }}

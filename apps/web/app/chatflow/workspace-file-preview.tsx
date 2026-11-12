@@ -310,16 +310,25 @@ export function WorkspaceFilePreview(props: {
             )}
           </p>
         ) : preview ? (
-          <NativeDocumentPreview
-            active={props.active}
-            preview={preview}
-            fileName={props.title}
-            pageUrl={`${base}/preview${query}`}
-            headers={props.tenantHeaders}
-            source={source}
-            interactive={interactive}
-            toolResult={toolResult}
-          />
+          <>
+            <NativeDocumentPreview
+              active={props.active}
+              preview={preview}
+              fileName={props.title}
+              pageUrl={`${base}/preview${query}`}
+              headers={props.tenantHeaders}
+              source={source}
+              interactive={interactive}
+              toolResult={toolResult}
+            />
+            {props.deliverable &&
+              preview.kind === 'download_only' &&
+              preview.retryable === true && (
+                <button type="button" onClick={() => setAttempt((n) => n + 1)}>
+                  重新加载
+                </button>
+              )}
+          </>
         ) : (
           <p role="status">正在加载文件预览…</p>
         )}

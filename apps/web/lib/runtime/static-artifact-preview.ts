@@ -68,7 +68,10 @@ export async function readStaticArtifactPreview(
     } catch (error) {
       if (options.signal?.aborted) throw error;
       reportPreviewFailure('office-conversion', error, object.id);
-      return download('文档转换暂不可用，请重试预览或下载查看。');
+      return {
+        ...download('文档转换暂不可用，请重试预览或下载查看。'),
+        retryable: true,
+      };
     }
   }
   if (!options.source && ['xlsx', 'xls', 'csv', 'tsv'].includes(extension)) {
