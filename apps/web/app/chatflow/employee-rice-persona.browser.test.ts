@@ -12,7 +12,8 @@ import {
   EmployeeInstanceProfileSchema,
   EmployeeInstanceSchema,
   EmployeeSkillCatalogSchema,
-  EmployeeMemoryPageSchema,
+  EmployeeMemoryListQuerySchema,
+  EmployeeMemoryListSchema,
   PersonalSceneSkillCatalogSchema,
   UpdateEmployeeInstanceInputSchema,
   UserMonthlyQuotaSchema,
@@ -381,22 +382,29 @@ suite('U1 Rice full persona from the real employee entry', () => {
             }),
           ),
         );
-      if (request.method() === 'GET' && path === '/api/v1/memories/manage')
+      if (request.method() === 'GET' && path === '/api/v1/memories/manage') {
+        const query = EmployeeMemoryListQuerySchema.parse(
+          Object.fromEntries(url.searchParams),
+        );
+        const instance = instances.find((item) => item.id === query.instanceId);
+        expect(instance).toBeDefined();
+        expect(instance!.ownerId).toBe(id(5));
+        expect(instance!.workspaceId).toBe(id(4));
+        expect(query.workspaceId).toBe(id(4));
+        expect(request.headers()['x-allrice-workspace-id']).toBe(id(4));
         return route.fulfill(
           json(
-            EmployeeMemoryPageSchema.parse({
-              organizationId: id(3),
+            EmployeeMemoryListSchema.parse({
+              schemaVersion: 2,
               workspaceId: id(4),
-              ownerId: id(5),
-              instanceId: url.searchParams.get('instanceId'),
-              state: url.searchParams.get('state'),
-              total: 0,
-              memories: [],
-              nextCursor: null,
-              budget: null,
+              instanceId: instance!.id,
+              counts: { active: 0, pending: 0, maxActive: 100 },
+              active: [],
+              pending: [],
             }),
           ),
         );
+      }
       if (path === '/api/v1/workspace')
         return route.fulfill(
           json({
