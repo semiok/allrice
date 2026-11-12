@@ -668,7 +668,7 @@ suite('DSH native document previews', () => {
         });
       });
       await observe('event-listeners', listeners);
-      await observe(
+      void observe(
         'root-event-listeners',
         page.evaluate(() => {
           const events: unknown[] = [];

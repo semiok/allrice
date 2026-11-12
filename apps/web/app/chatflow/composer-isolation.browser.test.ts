@@ -4490,11 +4490,13 @@ suite(
         await f.page
           .getByRole('menuitem', { name: '从工作区添加', exact: true })
           .waitFor();
-        expect(
-          await f.page
-            .getByRole('button', { name: '添加文件', exact: true })
-            .evaluate((element) => document.activeElement === element),
-        ).toBe(true);
+        await expect
+          .poll(() =>
+            f.page
+              .getByRole('button', { name: '添加文件', exact: true })
+              .evaluate((element) => document.activeElement === element),
+          )
+          .toBe(true);
         await f.page.keyboard.press('Escape');
         await selectSuggestion(f.page, task.title, 1440, false);
         await dialog
