@@ -8,6 +8,7 @@ import {
   UuidSchema,
   type ReferenceSelection,
   type KnowledgeRetrievalResult,
+  type ContentOwnership,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
 import { DataAccessError } from './data.ts';
@@ -17,6 +18,7 @@ import {
 } from './content-maintenance.ts';
 import { referenceSourceAccess } from './reference-library.ts';
 import { assertLegacyReferenceRevision } from './reference-company-templates.ts';
+import { workbenchFileAccess } from './workbench-file-access.ts';
 import { embedKnowledgeText } from './memory/knowledge-retrieval.ts';
 
 type Sql = ReturnType<typeof getDatabase> | postgres.TransactionSql;
@@ -26,6 +28,8 @@ export class ReferenceRuntimeError extends Error {
     super('所选资料尚未就绪、已撤回或访问权限已变化，请重新选择资料。');
   }
 }
+/** Internal source identity, not another wire error or persisted lifecycle. */
+export class ReferencePublicationRuntimeError extends ReferenceRuntimeError {}
 
 /** The immutable revision is a pin, never an authorization token. A reader
  * needs no maintenance privilege and never inherits the uploader's authority. */
@@ -36,20 +40,26 @@ export async function readReferenceSelection(
   lock: boolean,
   sharedReader?: OrganizationSharedReader,
 ) {
+  let publicationSource = false;
   try {
     const [locator] =
-      await sql`select knowledge_source_id from allrice_knowledge_revisions
-      where id=${UuidSchema.parse(revisionId)} and file_object_id is not null and status='published'`;
+      await sql`select r.knowledge_source_id,s.publication_kind from allrice_knowledge_revisions r
+      join allrice_knowledge_sources s on s.id=r.knowledge_source_id
+      where r.id=${UuidSchema.parse(revisionId)} and r.file_object_id is not null and r.status='published'
+        and (s.organization_id=${context.organizationId}
+          or (s.publication_kind is null and s.ownership->>'scope'='platform'))`;
     if (!locator) throw new ReferenceRuntimeError();
-    const { source, ownership, legacy } = await referenceSourceAccess(
-      context,
-      locator.knowledge_source_id,
-      sql,
-      false,
-      lock,
-      false,
-      sharedReader,
-    );
+    publicationSource = !!locator.publication_kind;
+    const { source, ownership, legacy, publication, access } =
+      await referenceSourceAccess(
+        context,
+        locator.knowledge_source_id,
+        sql,
+        false,
+        lock,
+        false,
+        sharedReader,
+      );
     if (source.status !== 'active') throw new ReferenceRuntimeError();
     if (legacy) await assertLegacyReferenceRevision(sql, revisionId, legacy.id);
     const [r] =
@@ -77,11 +87,191 @@ export async function readReferenceSelection(
       objectId: o.id as string,
       organizationId: r.organization_id as string,
       workspaceId: r.workspace_id as string,
+      publication,
+      access,
     };
   } catch (error) {
+    if (
+      publicationSource &&
+      (error instanceof DataAccessError ||
+        error instanceof ReferenceRuntimeError)
+    )
+      throw new ReferencePublicationRuntimeError();
     if (error instanceof DataAccessError) throw new ReferenceRuntimeError();
     throw error;
   }
+}
+
+/** Current audience is deliberately outside the immutable selection. Changing
+ * scope must not change a digest/pin or invalidate readers who kept access. */
+export function canReferencePublicationScope(
+  target: ContentOwnership,
+  publication: NonNullable<
+    Awaited<ReturnType<typeof readReferenceSelection>>['publication']
+  >,
+) {
+  if (
+    target.scope === 'platform' ||
+    target.organizationId !== publication.organization_id
+  )
+    return false;
+  if (publication.scope === 'company') return true;
+  if (target.scope === 'personal')
+    return (
+      publication.scope !== 'personal' ||
+      publication.owner_id === target.ownerId
+    );
+  return (
+    target.scope === 'department' &&
+    publication.scope === 'departments' &&
+    publication.department_ids.includes(target.departmentId)
+  );
+}
+
+/** Follow exact frozen inputs, never all Runs that happen to share a native
+ * generation today. A prior Run's frozen conversation links carry its actual
+ * predecessor dependencies without admitting a source Session's future Runs.
+ * User text follows its frozen predecessors, not that Run's later reads or
+ * model-only session-reference inputs. Roles come from exact message identity. */
+export async function referencePublicationDependencyRuns(
+  context: ContentIdentity,
+  sessionId: string,
+  sql: Sql,
+  messageIds?: readonly string[],
+  includeUserRuns = false,
+) {
+  if (messageIds && !messageIds.length) return [];
+  const runs = await sql<{ run_id: string }[]>`
+    with recursive dependencies(run_id,include_reads) as (
+      select er.run_id,${messageIds ? sql`er.assistant_message_id in ${sql([...messageIds])}` : sql`true`} from allrice_employee_runs er
+      where er.organization_id=${context.organizationId} and er.workspace_id=${context.workspaceId}
+        and er.owner_id=${context.actor.id} and er.session_id=${UuidSchema.parse(sessionId)}
+        and er.error_code is distinct from 'STEER_CONSUMED'
+        ${messageIds ? sql`and (er.user_message_id in ${sql([...messageIds])} or er.assistant_message_id in ${sql([...messageIds])})` : sql``}
+      union
+      select related.run_id,related.include_reads from dependencies d
+      join allrice_employee_runs er_current on er_current.run_id=d.run_id
+      cross join lateral (
+        select e.run_id,(e.assistant_message_id::text=message->>'id') as include_reads from jsonb_array_elements(case when jsonb_typeof(er_current.prompt_snapshot->'conversation')='array'
+          then er_current.prompt_snapshot->'conversation' else '[]'::jsonb end) message
+        join allrice_employee_runs e on e.session_id=er_current.session_id
+          and e.content_generation_id=er_current.content_generation_id
+          and (e.user_message_id::text=message->>'id' or e.assistant_message_id::text=message->>'id')
+          and e.organization_id=er_current.organization_id and e.workspace_id=er_current.workspace_id
+          and e.owner_id=er_current.owner_id and e.error_code is distinct from 'STEER_CONSUMED'
+        union
+        select e.run_id,(e.assistant_message_id::text=message->>'id') as include_reads from jsonb_array_elements(case when jsonb_typeof(er_current.prompt_snapshot->'sessionReferences')='array'
+          then er_current.prompt_snapshot->'sessionReferences' else '[]'::jsonb end) ref
+        cross join lateral jsonb_array_elements(case when jsonb_typeof(ref->'messages')='array'
+          then ref->'messages' else '[]'::jsonb end) message
+        join allrice_employee_runs e on e.session_id::text=ref->>'sessionId'
+          and (e.user_message_id::text=message->>'id' or e.assistant_message_id::text=message->>'id')
+          and e.organization_id=er_current.organization_id and e.workspace_id=er_current.workspace_id
+          and e.error_code is distinct from 'STEER_CONSUMED'
+        where d.include_reads
+      ) related
+    ) select distinct run_id from dependencies where ${includeUserRuns ? sql`true` : sql`include_reads`} order by run_id`;
+  return runs.map((r) => r.run_id);
+}
+
+async function publicationHistoryAccess(
+  context: ContentIdentity,
+  sessionId: string,
+  sql: Sql,
+  lock: boolean,
+  currentAccess: boolean,
+  messageIds?: readonly string[],
+) {
+  const runs = await referencePublicationDependencyRuns(
+    context,
+    sessionId,
+    sql,
+    messageIds,
+  );
+  if (!runs.length) return { used: false, canRead: true, revoked: false };
+  const [read] = await sql`select 1 from allrice_employee_runs er
+    cross join lateral jsonb_array_elements(coalesce(er.reference_reads,'[]'::jsonb)) receipt
+    where er.run_id in ${sql(runs)} limit 1`;
+  if (!read) return { used: false, canRead: true, revoked: false };
+  const used = await sql<{ id: string }[]>`
+    select distinct s.id from allrice_employee_runs er
+    cross join lateral jsonb_array_elements(coalesce(er.reference_reads,'[]'::jsonb)) receipt
+    join allrice_knowledge_revisions r on r.id::text=receipt->'citation'->'reference'->>'revisionId'
+      and r.knowledge_source_id::text=receipt->'citation'->'reference'->>'sourceId'
+      and r.checksum=receipt->'citation'->'reference'->>'digest'
+    join allrice_storage_objects retained on retained.id=r.file_object_id
+      and retained.checksum=receipt->'citation'->'reference'->>'checksum'
+    join allrice_knowledge_sources s on s.id=r.knowledge_source_id
+      and s.organization_id=${context.organizationId} and s.publication_kind is not null
+    where er.run_id in ${sql(runs)} order by s.id`;
+  if (!used.length) return { used: false, canRead: true, revoked: false };
+  // Only the narrow identity/source/policy gates run under the queue's existing
+  // root/Job prefix. No Session, generation, runtime or background locks follow.
+  // Identity precedes sources, matching publication/authority writers.
+  const principal = currentAccess
+    ? await readContentPrincipal(context, sql, lock)
+    : null;
+  const sources = await sql<{ id: string; status: string }[]>`
+    select s.id,s.status from allrice_knowledge_sources s
+    where s.id in ${sql(used.map((s) => s.id))}
+    order by s.id ${lock ? sql`for share of s` : sql``}`;
+  let canRead =
+      sources.length === used.length && (!currentAccess || principal !== null),
+    revoked = false;
+  for (const source of sources) {
+    if (source.status !== 'active') canRead = false;
+    if (source.status === 'archived') {
+      // Re-read after the source lock wait, not an action subquery evaluated
+      // using the statement snapshot that preceded the withdrawal commit.
+      const [action] =
+        await sql`select source_id from allrice_knowledge_reference_actions
+        where source_id=${source.id} and input->>'action' in ('revoke','delete') limit 1`;
+      revoked ||= !!action;
+    }
+    if (currentAccess && canRead) {
+      const [policy] = await sql<{ object_id: string }[]>`
+        select p.object_id from allrice_workbench_file_policies p
+        join allrice_knowledge_revisions r on r.file_object_id=p.object_id and r.knowledge_source_id=p.reference_source_id
+        where p.reference_source_id=${source.id}`;
+      canRead =
+        !!policy &&
+        !!(await workbenchFileAccess(context, policy.object_id, sql, lock))
+          ?.canRead;
+    }
+  }
+  return { used: true, canRead, revoked };
+}
+
+/** Current loss stops only this visible commit. It never writes permanent
+ * invalidation or turns an audience edit into a revoke/delete fact. */
+export function readReferencePublicationHistoryAccess(
+  context: ContentIdentity,
+  sessionId: string,
+  sql: Sql,
+  lock = false,
+) {
+  return publicationHistoryAccess(context, sessionId, sql, lock, true);
+}
+
+/** Own Session history is permanent Q8; external frozen message checks pass
+ * exact message IDs so future Runs cannot be added retroactively. */
+export async function hasRevokedReferencePublicationHistory(
+  context: ContentIdentity,
+  sessionId: string,
+  sql: Sql = getDatabase(),
+  lock = false,
+  messageIds?: readonly string[],
+) {
+  return (
+    await publicationHistoryAccess(
+      context,
+      sessionId,
+      sql,
+      lock,
+      false,
+      messageIds,
+    )
+  ).revoked;
 }
 
 export async function captureReferenceSelections(
@@ -119,7 +309,9 @@ export async function assertReferenceSelections(
       lock,
     );
     if (!isDeepStrictEqual(current.selection, selection))
-      throw new ReferenceRuntimeError();
+      throw current.publication
+        ? new ReferencePublicationRuntimeError()
+        : new ReferenceRuntimeError();
   }
   return selections;
 }

@@ -17,6 +17,8 @@ import type { OrganizationSharedReader } from '../organization-shared-reader.ts'
 import {
   readReferenceSelection,
   ReferenceRuntimeError,
+  ReferencePublicationRuntimeError,
+  canReferencePublicationScope,
 } from '../reference-runtime.ts';
 import { resolveEffectiveKnowledgeAcl } from '../capabilities/capability-registry.ts';
 import {
@@ -184,7 +186,11 @@ export async function resolveEmployeeContentSource(
       where id=${ref.contentId} and ownership is not null`;
     if (managed) {
       try {
-        const { selection } = await readReferenceSelection(
+        const {
+          selection,
+          publication,
+          access: referenceAccess,
+        } = await readReferenceSelection(
           context,
           ref.revisionId,
           sql,
@@ -194,11 +200,20 @@ export async function resolveEmployeeContentSource(
         if (selection.sourceId !== ref.contentId) return unavailable(ref);
         if (selection.digest !== ref.digest)
           return unavailable(ref, 'source_changed');
-        if (!canReferenceScope(ownership, selection.ownership))
+        if (
+          !(publication
+            ? canReferencePublicationScope(ownership, publication)
+            : canReferenceScope(ownership, selection.ownership))
+        ) {
+          if (publication && input.frozenPublication)
+            throw new ReferencePublicationRuntimeError();
           return unavailable(ref, 'source_scope_mismatch');
-        const access = input.sharedReader
-          ? input.sharedReader.access(selection.ownership)
-          : await getContentAccess(context, selection.ownership, sql, lock);
+        }
+        const access = publication
+          ? referenceAccess
+          : input.sharedReader
+            ? input.sharedReader.access(selection.ownership)
+            : await getContentAccess(context, selection.ownership, sql, lock);
         return {
           dto: {
             reference: ref,
@@ -212,6 +227,11 @@ export async function resolveEmployeeContentSource(
           dependency: { ref, selection },
         };
       } catch (error) {
+        if (
+          input.frozenPublication &&
+          error instanceof ReferencePublicationRuntimeError
+        )
+          throw error;
         if (error instanceof ReferenceRuntimeError) return unavailable(ref);
         throw error;
       }
