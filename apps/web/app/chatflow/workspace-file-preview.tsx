@@ -184,7 +184,7 @@ export function WorkspaceFilePreview(props: {
   const [interactive, setInteractive] = useState(false);
   const [copyNotice, setCopyNotice] = useState('');
   const favorite = useWorkbenchFileFavorite({
-    ownerKey: props.ownerKey ?? '',
+    ownerKey: `${props.ownerKey ?? ''}/${props.objectId}`,
     viewerId: props.viewerId,
     workspaceId: props.workspaceId,
     headers: props.tenantHeaders,

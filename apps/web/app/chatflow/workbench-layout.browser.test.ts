@@ -826,6 +826,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       deliverableSettled: new Set<Record<string, string>>(),
       favoriteIds: new Set<string>(),
       favoriteDelay: null as Promise<void> | null,
+      favoriteStatus: 200,
       favoriteWrites: [] as Array<{
         viewerId: string;
         workspaceId: string;
@@ -1333,12 +1334,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           favorite,
           expected,
         });
-        const delay = state.favoriteDelay;
+        const delay = state.favoriteDelay,
+          status = state.favoriteStatus;
         if (delay) await delay;
-        const key = `${viewerId}/${workspaceId}/${objectId}`;
-        if (favorite) state.favoriteIds.add(key);
-        else state.favoriteIds.delete(key);
         try {
+          if (status !== 200) return await answer({}, status);
+          const key = `${viewerId}/${workspaceId}/${objectId}`;
+          if (favorite) state.favoriteIds.add(key);
+          else state.favoriteIds.delete(key);
           return await answer({ viewerId, objectId, favorite });
         } finally {
           state.favoriteSettled.add(index);
@@ -13066,9 +13069,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     30000,
   );
 
-  it.each([1440, 390])(
-    'MET247 retained file details reconcile both accepted favorite directions after hiding at %ipx',
-    async (width) => {
+  it.each([
+    { width: 1440, completeBeforeReopen: true },
+    { width: 390, completeBeforeReopen: true },
+    { width: 1440, completeBeforeReopen: false },
+    { width: 390, completeBeforeReopen: false },
+  ])(
+    'MET247 retained file details reconcile both favorite directions at $width px, completed before reopen: $completeBeforeReopen',
+    async ({ width, completeBeforeReopen }) => {
       const f = await fixture({ width });
       let release = () => {};
       try {
@@ -13118,20 +13126,61 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .getByRole('button', { name: '关闭工作台', exact: true })
             .click();
           expect(await content.evaluate((node) => node.isConnected)).toBe(true);
-          release();
-          await expect
-            .poll(() => f.state.favoriteSettled.has(index))
-            .toBe(true);
+          if (completeBeforeReopen) {
+            release();
+            await expect
+              .poll(() => f.state.favoriteSettled.has(index))
+              .toBe(true);
+          }
+          const [metadata] = await Promise.all([
+            completeBeforeReopen
+              ? Promise.resolve(null)
+              : f.page.waitForResponse((response) => {
+                  const url = new URL(response.url());
+                  return (
+                    response.request().method() === 'GET' &&
+                    url.pathname === '/api/v1/workbench/files' &&
+                    url.searchParams.get('objectId') === file.objectId &&
+                    response.status() === 200
+                  );
+                }),
+            (async () => {
+              await entry.click();
+              expect(await content.evaluate((node) => node.isConnected)).toBe(
+                true,
+              );
+              await f.panel
+                .getByRole('tab')
+                .filter({ hasText: file.fileName })
+                .click();
+            })(),
+          ]);
+          const reopenedFavorite = completeBeforeReopen ? desired : !desired;
+          if (metadata)
+            expect(await metadata.json()).toMatchObject({
+              files: [{ objectId: file.objectId, favorite: reopenedFavorite }],
+            });
+          const reopened = toolbar.getByRole('button', {
+            name: reopenedFavorite ? '取消收藏' : '收藏',
+            exact: true,
+          });
+          await reopened.waitFor();
+          expect(await reopened.isEnabled()).toBe(true);
+          expect(await reopened.getAttribute('aria-pressed')).toBe(
+            String(reopenedFavorite),
+          );
           expect(
             f.state.favoriteIds.has(`${user}/${workspace}/${file.objectId}`),
-          ).toBe(desired);
+          ).toBe(reopenedFavorite);
+          expect(f.state.favoriteWrites).toHaveLength(index + 1);
+          if (!completeBeforeReopen) {
+            expect(f.state.favoriteSettled.has(index)).toBe(false);
+            release();
+            await expect
+              .poll(() => f.state.favoriteSettled.has(index))
+              .toBe(true);
+          }
           f.state.favoriteDelay = null;
-          await entry.click();
-          expect(await content.evaluate((node) => node.isConnected)).toBe(true);
-          await f.panel
-            .getByRole('tab')
-            .filter({ hasText: file.fileName })
-            .click();
           const reconciled = toolbar.getByRole('button', {
             name: desired ? '取消收藏' : '收藏',
             exact: true,
@@ -13141,6 +13190,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           expect(await reconciled.getAttribute('aria-pressed')).toBe(
             String(desired),
           );
+          expect(
+            f.state.favoriteIds.has(`${user}/${workspace}/${file.objectId}`),
+          ).toBe(desired);
           expect(
             f.state.deliverableRequests.filter(
               (request) => request.objectId === file.objectId,
@@ -13157,6 +13209,145 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(f.state.messageInputs).toEqual([]);
       } finally {
         release();
+        await f.close();
+      }
+    },
+    30000,
+  );
+
+  it.each([1440, 390])(
+    'MET247 retained detail reports a late failed favorite in both directions and recovers only on manual action at %ipx',
+    async (width) => {
+      const f = await fixture({ width });
+      let release = () => {};
+      try {
+        const file = catalogFile(9584, {
+          fileName: '详情收藏失败恢复.md',
+          category: 'artifact',
+        });
+        f.state.workbenchFiles.push(file);
+        const input = f.page.getByRole('textbox', { name: /给 .* 的消息/ });
+        await input.fill('收藏失败保留草稿');
+        const entry = f.page
+          .locator('header')
+          .getByRole('button', { name: '交付成果', exact: true });
+        await entry.click();
+        await f.panel
+          .getByRole('region', { name: '交付成果', exact: true })
+          .getByRole('button', { name: file.fileName, exact: true })
+          .click();
+        const toolbar = f.panel.locator(
+          'header[aria-label="文件操作"]:visible',
+        );
+        const contentLocator = f.panel
+          .locator('[data-document-id]:visible')
+          .getByRole('heading', { name: '上传的文件', exact: true });
+        await contentLocator.waitFor();
+        const content = (await contentLocator.elementHandle())!;
+        const failure = f.panel.getByRole('alert').filter({
+          hasText: '成果服务暂不可用，请重试。',
+        });
+        for (const [index, desired] of [true, false].entries()) {
+          f.state.favoriteStatus = 500;
+          f.state.favoriteDelay = new Promise<void>((done) => {
+            release = done;
+          });
+          const button = toolbar.getByRole('button', {
+            name: desired ? '收藏' : '取消收藏',
+            exact: true,
+          });
+          await button.click();
+          await expect
+            .poll(() => f.state.favoriteWrites.length)
+            .toBe(index * 2 + 1);
+          expect(await button.isDisabled()).toBe(true);
+          await f.panel
+            .getByRole('button', { name: '关闭工作台', exact: true })
+            .click();
+          expect(await content.evaluate((node) => node.isConnected)).toBe(true);
+          const [metadata] = await Promise.all([
+            f.page.waitForResponse((response) => {
+              const url = new URL(response.url());
+              return (
+                response.request().method() === 'GET' &&
+                url.pathname === '/api/v1/workbench/files' &&
+                url.searchParams.get('objectId') === file.objectId &&
+                response.status() === 200
+              );
+            }),
+            (async () => {
+              await entry.click();
+              await f.panel
+                .getByRole('tab')
+                .filter({ hasText: file.fileName })
+                .click();
+            })(),
+          ]);
+          expect(await metadata.json()).toMatchObject({
+            files: [{ objectId: file.objectId, favorite: !desired }],
+          });
+          await button.waitFor();
+          expect(await button.isEnabled()).toBe(true);
+          expect(f.state.favoriteSettled.has(index * 2)).toBe(false);
+          release();
+          await expect
+            .poll(() => f.state.favoriteSettled.has(index * 2))
+            .toBe(true);
+          await failure.waitFor();
+          expect(await failure.innerText()).toBe('成果服务暂不可用，请重试。');
+          expect(await button.isEnabled()).toBe(true);
+          expect(await button.getAttribute('aria-pressed')).toBe(
+            String(!desired),
+          );
+          expect(
+            f.state.favoriteIds.has(`${user}/${workspace}/${file.objectId}`),
+          ).toBe(!desired);
+          expect(f.state.favoriteWrites).toHaveLength(index * 2 + 1);
+          expect(await content.evaluate((node) => node.isConnected)).toBe(true);
+          await f.panel
+            .getByRole('button', { name: '关闭工作台', exact: true })
+            .click();
+          await entry.click();
+          await f.panel
+            .getByRole('tab')
+            .filter({ hasText: file.fileName })
+            .click();
+          await failure.waitFor();
+          f.state.favoriteStatus = 200;
+          f.state.favoriteDelay = null;
+          await button.click();
+          const recovered = toolbar.getByRole('button', {
+            name: desired ? '取消收藏' : '收藏',
+            exact: true,
+          });
+          await recovered.waitFor();
+          expect(await recovered.isEnabled()).toBe(true);
+          expect(await recovered.getAttribute('aria-pressed')).toBe(
+            String(desired),
+          );
+          expect(
+            f.state.favoriteIds.has(`${user}/${workspace}/${file.objectId}`),
+          ).toBe(desired);
+          expect(f.state.favoriteWrites).toHaveLength(index * 2 + 2);
+          expect(await failure.count()).toBe(0);
+          expect(await content.evaluate((node) => node.isConnected)).toBe(true);
+        }
+        expect(f.state.favoriteWrites.map((write) => write.favorite)).toEqual([
+          true,
+          true,
+          false,
+          false,
+        ]);
+        expect(
+          f.state.favoriteWrites.every(
+            (write) => write.expected === user && write.viewerId === user,
+          ),
+        ).toBe(true);
+        expect(await input.inputValue()).toBe('收藏失败保留草稿');
+        expect(f.state.messageInputs).toEqual([]);
+      } finally {
+        release();
+        f.state.favoriteStatus = 200;
         await f.close();
       }
     },

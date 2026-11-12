@@ -21,25 +21,39 @@ export function useWorkbenchFileFavorite(props: {
 }) {
   const key = `${props.ownerKey}/${props.workspaceId}/${props.viewerId ?? ''}`;
   const current = useRef(key);
-  current.current = props.active ? key : '';
-  const request = useRef<AbortController | null>(null);
+  current.current = key;
+  const request = useRef<{
+    key: string;
+    controller: AbortController;
+  } | null>(null);
   const epoch = useRef(0);
   const [state, setState] = useState({ key, using: '', error: '' });
   useEffect(() => {
-    epoch.current++;
-    request.current?.abort();
-    setState({ key, using: '', error: '' });
-    return () => {
-      epoch.current++;
-      request.current?.abort();
-    };
+    const controller =
+      request.current?.key === key && !request.current.controller.signal.aborted
+        ? request.current.controller
+        : new AbortController();
+    request.current = { key, controller };
+    setState((prior) =>
+      prior.key === key ? prior : { key, using: '', error: '' },
+    );
+    return () => controller.abort();
+  }, [key]);
+  useEffect(() => {
+    if (!props.active)
+      setState((prior) =>
+        prior.key === key && prior.using ? { ...prior, using: '' } : prior,
+      );
   }, [key, props.active]);
   async function setFavorite(objectId: string, favorite: boolean) {
     if (!props.active || !props.viewerId) return;
-    request.current?.abort();
-    const controller = new AbortController(),
+    const controller =
+        request.current?.key === key &&
+        !request.current.controller.signal.aborted
+          ? request.current.controller
+          : new AbortController(),
       generation = ++epoch.current;
-    request.current = controller;
+    request.current = { key, controller };
     setState({ key, using: objectId, error: '' });
     try {
       const result = resultSchema.parse(
@@ -53,20 +67,14 @@ export function useWorkbenchFileFavorite(props: {
           },
         ),
       );
-      if (
-        controller.signal.aborted ||
-        current.current !== key ||
-        generation !== epoch.current
-      )
-        return;
+      if (controller.signal.aborted || current.current !== key) return;
       if (
         result.viewerId !== props.viewerId ||
         result.objectId !== objectId ||
         result.favorite !== favorite
       )
         throw Error('操作未完成，请重试。');
-      setState({ key, using: '', error: '' });
-      window.dispatchEvent(new Event('allrice:workbench-files-changed'));
+      if (generation === epoch.current) setState({ key, using: '', error: '' });
     } catch (cause) {
       if (
         !controller.signal.aborted &&
@@ -79,6 +87,11 @@ export function useWorkbenchFileFavorite(props: {
           error:
             cause instanceof Error ? cause.message : '操作未完成，请重试。',
         });
+    } finally {
+      // Hiding a retained panel does not cancel an accepted server write.
+      // Re-read current metadata even when a newer local action owns busy/error.
+      if (!controller.signal.aborted && current.current === key)
+        window.dispatchEvent(new Event('allrice:workbench-files-changed'));
     }
   }
   return {
