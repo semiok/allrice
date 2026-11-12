@@ -1,7 +1,11 @@
 /** Isolated PostgreSQL + real Broker + pinned native protocol; synthetic model only. */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { ExecutionContext } from '@allrice/contracts';
+import {
+  makeObjectKey,
+  type ExecutionContext,
+  type StorageObject,
+} from '@allrice/contracts';
 import * as client from '../../../../packages/database/src/core/client.ts';
 import { createRuntimeFixtureDatabase } from '../../../../packages/database/src/runtime.fixture.ts';
 import { createRunAuthorityFixture } from '../../../../packages/database/src/run-authority.fixture.ts';
@@ -113,6 +117,90 @@ suite('file read ordinary-root source and real ACL refusal', () => {
         nativeCallId: 'call_1',
         errorCode: 'TOOL_FILE_ACCESS_DENIED',
       },
+    });
+  }, 45000);
+  it('读取这份 CSV 并汇总渠道数据: the same native turn corrects file.read to document.read and completes with the original refusal audited', async () => {
+    const f = await setup(),
+      objectId = randomUUID();
+    const content = 'channel,total\nsearch,42\nreferral,18\n';
+    const object: StorageObject = {
+      id: objectId,
+      organizationId: f.org,
+      workspaceId: f.workspace,
+      ownerId: f.user,
+      key: makeObjectKey({
+        organizationId: f.org,
+        workspaceId: f.workspace,
+        ownerId: f.user,
+        category: 'uploads',
+        objectId,
+      }),
+      mediaType: 'text/csv',
+      sizeBytes: Buffer.byteLength(content),
+      checksum: `sha256:${createHash('sha256').update(content).digest('hex')}`,
+      immutable: false,
+      retentionUntil: null,
+      deletedAt: null,
+    };
+    await fixture.db`insert into allrice_storage_objects(id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,visibility,state)
+      values(${objectId},${f.org},${f.workspace},${f.user},${object.key},'uploads',${object.mediaType},${object.sizeBytes},${object.checksum},'private','ready')`;
+    await new LocalStorageAdapter(fixture.storageRoot).put(
+      object,
+      new Blob([content]).stream(),
+    );
+    expect(await admitsRootNativeFileRead(f)).toBe(true);
+    const calls: string[] = [];
+    await nativeBrokerRoundtrip({
+      prompt: '读取这份 CSV 并汇总渠道数据。',
+      fileReadRunId: f.rootRunId,
+      canonicalName: 'workspace.file.read',
+      wireName: 'workspace_file_read',
+      args: { objectId },
+      invalidArgs: { objectId, limit: 4001 },
+      expectedToolError: 'TOOL_FILE_TYPE_UNSUPPORTED',
+      expectedBrokerCalls: 2,
+      followupTool: {
+        canonicalName: 'workspace.document.read',
+        wireName: 'workspace_document_read',
+        args: { objectId },
+        modelResultIncludes: 'search,42',
+      },
+      onToolCall: async (call) => {
+        calls.push(call.name);
+        const result = await executeRiceTool({
+          context: f.context,
+          capabilities: ['storage:read'],
+          storageRoot: fixture.storageRoot,
+          call,
+        });
+        if (call.name === 'workspace.document.read') {
+          expect(JSON.parse(result.modelContent)).toMatchObject({
+            id: objectId,
+            mediaType: 'text/csv',
+            kind: 'text',
+          });
+          expect(result.modelContent).toContain('search,42');
+        }
+        return result;
+      },
+    });
+    expect(calls).toEqual(['workspace.file.read', 'workspace.document.read']);
+    const audit =
+      await fixture.db`select decision,reason,metadata from allrice_audit_events where metadata->>'runId'=${f.rootRunId} and action='tool.execute' order by occurred_at`;
+    expect(audit).toHaveLength(2);
+    expect(audit[0]).toMatchObject({
+      decision: 'denied',
+      reason: 'tool_file_type_unsupported',
+      metadata: {
+        toolName: 'workspace.file.read',
+        nativeCallId: 'call_1',
+        errorCode: 'TOOL_FILE_TYPE_UNSUPPORTED',
+        retryable: false,
+      },
+    });
+    expect(audit[1]).toMatchObject({
+      decision: 'allowed',
+      metadata: { toolName: 'workspace.document.read' },
     });
   }, 45000);
 });

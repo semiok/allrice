@@ -401,12 +401,18 @@ database source gate. Internal/scheduled callers and older pinned artifacts
 retain their prior transport. Public `agent/created` restores the root-local
 declaration after cold recovery; child/fork current tool scopes and approvals
 are unchanged. Fork history is inherited natively, never filtered or rewritten.
-The Broker keeps the same file parameters, tenant ACL and audit. Only an actual
-file ACL rejection can produce an in-process failure receipt bound to the exact
-Run/call/tool; the Worker checks the root identity before handing a fixed safe
-failure to DSH's native tool-result path. All other thrown file-read failures,
-including cancellation and unknown outcomes, use the existing terminal protocol
-failure path. This does not convert other tools or deduplicate XML envelopes;
+The Broker keeps the same file parameters, MIME/size limits, tenant ACL and audit.
+MET-249 CSV smoke follow-up (user 2026-11-12) extends the existing in-process
+Run/call/tool failure receipt from actual file ACL rejection to locally produced
+non-retryable type, size and pagination refusals. A dependency merely throwing
+an equal error code cannot mint this receipt. After a successful refusal audit
+and root/cancellation checks, the existing reply carries the original code and
+safe handler message. Public DSH `HarnessError` and the native tool pipeline
+produce `isError` plus structured error code and continue the same model turn;
+the model may choose an already available reader such as `workspace.document.read`.
+Unknown outcomes, storage/DB errors, failed audit and cancellation still use the
+existing terminal protocol failure path. The protocol client's `fail` path is
+unchanged; there is no read retry, type-based dispatch or broader MIME whitelist. This does not convert other tools or deduplicate XML envelopes;
 multiple legacy envelopes remain fail-closed. There is no new DSH plugin, private
 interface, physical patch, table or child/schedule controller. Coverage lives in
 `dsh-file-read-native.test.ts`, `native-file-read.integration.test.ts`, and the

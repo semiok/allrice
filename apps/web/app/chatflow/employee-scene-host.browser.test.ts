@@ -164,7 +164,7 @@ function employeePage(
 
 suite('U1 mounted employee Workflow host', () => {
   let browser: Browser, server: Server, origin: string;
-  const evidence = resolve('.local/met249-u1-scene-host');
+  const evidence = resolve('.local/met251-plugin-empty-host');
   beforeAll(async () => {
     const require = createRequire(import.meta.url);
     const { build } = createRequire(require.resolve('tsx'))('esbuild');
@@ -1429,19 +1429,81 @@ suite('U1 mounted employee Workflow host', () => {
     });
   }
 
-  it('MET-251 mounts shared Skills without inventing missing plugin contracts in both real hosts', async () => {
+  async function expectPluginEmptyAndAddActions(root: Locator) {
+    expect(
+      await root
+        .getByRole('heading', {
+          name: /^(插件 Plugins|工作场景 Workflow|技能 Skills)$/,
+        })
+        .allTextContents(),
+    ).toEqual(['插件 Plugins', '工作场景 Workflow', '技能 Skills']);
+    const plugins = root.getByRole('region', {
+      name: '插件 Plugins',
+      exact: true,
+    });
+    await plugins
+      .getByRole('heading', { name: '还没有插件', exact: true })
+      .waitFor();
+    expect(await plugins.getByRole('button').count()).toBe(0);
+    expect(await plugins.getByRole('link').count()).toBe(0);
+    expect(
+      await root.getByRole('button', { name: '添加插件', exact: true }).count(),
+    ).toBe(0);
+    for (const name of ['添加场景', '添加技能']) {
+      const add = root.getByRole('button', { name, exact: true });
+      await add.waitFor();
+      expect(await add.getAttribute('type')).toBe('button');
+      expect(await add.isDisabled()).toBe(false);
+      const icon = add.locator('svg');
+      expect(await icon.count()).toBe(1);
+      expect(await icon.getAttribute('aria-hidden')).toBe('true');
+      expect(await icon.getAttribute('viewBox')).toBe('0 0 24 24');
+      expect(await icon.locator('path').getAttribute('d')).toBe(
+        'M12 5v14M5 12h14',
+      );
+    }
+    expect(
+      await capabilityAppearance(
+        root.getByRole('button', { name: '添加场景', exact: true }),
+      ),
+    ).toEqual(
+      await capabilityAppearance(
+        root.getByRole('button', { name: '添加技能', exact: true }),
+      ),
+    );
+  }
+
+  it('MET-251 mounts empty Plugins before Workflow and Skills with working plus actions in both real hosts', async () => {
     await inFixture({}, async (f) => {
+      const exerciseAdds = async (
+        root: Locator,
+        host: 'sidebar' | 'employee',
+      ) => {
+        await expectPluginEmptyAndAddActions(root);
+        for (const name of ['添加场景', '添加技能']) {
+          await root.getByRole('button', { name, exact: true }).click();
+          const source =
+            name === '添加场景'
+              ? employeePage(f.page, { name, exact: true })
+              : skillPage(f, host, name);
+          await source
+            .getByRole('tab', { name: 'GitHub 链接', exact: true })
+            .waitFor();
+          await source
+            .getByRole('button', { name: '取消', exact: true })
+            .click();
+          await root
+            .getByRole('heading', { name: '插件 Plugins', exact: true })
+            .waitFor();
+        }
+      };
       const root = await f.openDirectory();
       expect(
         await root
           .getByRole('heading', { name: '技能 Skills', exact: true })
           .count(),
       ).toBe(1);
-      expect(
-        await root
-          .getByRole('heading', { name: '插件 Plugins', exact: true })
-          .count(),
-      ).toBe(0);
+      await exerciseAdds(root, 'sidebar');
       await root.getByRole('button', { name: '写周报', exact: true }).waitFor();
       await root
         .getByRole('button', { name: '翻译校对', exact: true })
@@ -1455,11 +1517,7 @@ suite('U1 mounted employee Workflow host', () => {
           .getByRole('heading', { name: '技能 Skills', exact: true })
           .count(),
       ).toBe(1);
-      expect(
-        await employee
-          .getByRole('heading', { name: '插件 Plugins', exact: true })
-          .count(),
-      ).toBe(0);
+      await exerciseAdds(employee, 'employee');
       await employee
         .getByRole('button', { name: '写周报', exact: true })
         .waitFor();
@@ -2029,6 +2087,7 @@ suite('U1 mounted employee Workflow host', () => {
         });
         await skill.waitFor();
         await f.page.mouse.move(1, 1);
+        await expectPluginEmptyAndAddActions(root);
         const normal = await capabilityAppearance(workflow);
         expect(await capabilityAppearance(skill)).toEqual(normal);
         expect(normal.borderWidth).toBe('0px 0px 1px');
@@ -2053,12 +2112,6 @@ suite('U1 mounted employee Workflow host', () => {
         expect(
           await root.getByRole('button', { name: '卸载', exact: true }).count(),
         ).toBe(0);
-        // No synthetic plugin catalog, business URL or success is mounted.
-        expect(
-          await root
-            .getByRole('heading', { name: '插件 Plugins', exact: true })
-            .count(),
-        ).toBe(0);
         if (width === 1440) {
           await workflow.hover();
           const hover = await capabilityAppearance(workflow);
@@ -2071,12 +2124,32 @@ suite('U1 mounted employee Workflow host', () => {
           expect(focus.outlineWidth).toBe('2px');
           await skill.focus();
           expect(await capabilityAppearance(skill)).toEqual(focus);
+          const addScene = root.getByRole('button', {
+            name: '添加场景',
+            exact: true,
+          });
+          const addSkill = root.getByRole('button', {
+            name: '添加技能',
+            exact: true,
+          });
+          await addScene.hover();
+          const addHover = await capabilityAppearance(addScene);
+          await addSkill.hover();
+          expect(await capabilityAppearance(addSkill)).toEqual(addHover);
+          await f.page.mouse.move(1, 1);
+          await addScene.focus();
+          const addFocus = await capabilityAppearance(addScene);
+          expect(addFocus.outlineWidth).toBe('2px');
+          await addSkill.focus();
+          expect(await capabilityAppearance(addSkill)).toEqual(addFocus);
         }
-        await skill.scrollIntoViewIfNeeded();
+        await root
+          .getByRole('heading', { name: '插件 Plugins', exact: true })
+          .evaluate((node) => node.scrollIntoView({ block: 'start' }));
         await f.page.screenshot({
           path: resolve(
             evidence,
-            `capabilities-${width}-${dark ? 'dark' : 'light'}-sidebar.png`,
+            `plugin-empty-capabilities-${width}-${dark ? 'dark' : 'light'}-sidebar.png`,
           ),
           fullPage: true,
         });
@@ -2174,6 +2247,7 @@ suite('U1 mounted employee Workflow host', () => {
         });
         await employeeSkill.waitFor();
         await f.page.mouse.move(1, 1);
+        await expectPluginEmptyAndAddActions(employee);
         expect(await capabilityAppearance(employeeSkill)).toEqual(normal);
         expect(
           await employee
@@ -2185,11 +2259,13 @@ suite('U1 mounted employee Workflow host', () => {
             .getByRole('region', { name: '记忆', exact: true })
             .count(),
         ).toBe(1);
-        await employeeSkill.scrollIntoViewIfNeeded();
+        await employee
+          .getByRole('heading', { name: '插件 Plugins', exact: true })
+          .evaluate((node) => node.scrollIntoView({ block: 'start' }));
         await f.page.screenshot({
           path: resolve(
             evidence,
-            `capabilities-${width}-${dark ? 'dark' : 'light'}-employee.png`,
+            `plugin-empty-capabilities-${width}-${dark ? 'dark' : 'light'}-employee.png`,
           ),
           fullPage: true,
         });

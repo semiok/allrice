@@ -38,6 +38,13 @@ export async function nativeBrokerRoundtrip(input: {
   invalidArgs: Record<string, unknown>;
   invalidResultIncludes?: string;
   expectedToolError?: string;
+  /** The same turn corrects a rejected read by selecting another native tool. */
+  followupTool?: {
+    canonicalName: string;
+    wireName: string;
+    args: Record<string, unknown>;
+    modelResultIncludes: string;
+  };
   modelResultIncludes?: string;
   /** Loopback-only transient provider failures after the first tool result. */
   retryAfterTool?: number;
@@ -54,6 +61,7 @@ export async function nativeBrokerRoundtrip(input: {
   const requests: Record<string, unknown>[] = [];
   const errors: unknown[] = [];
   const received: unknown[] = [];
+  const firstTurnRequests = input.followupTool ? 3 : 2;
   const sentinel = `synthetic-broker-${randomUUID()}`;
   let expectedModelContent =
     input.modelResultIncludes ?? input.expectedToolError ?? sentinel;
@@ -74,8 +82,11 @@ export async function nativeBrokerRoundtrip(input: {
         return;
       }
       const index = requestIndex - (requestIndex > 1 ? retries : 0);
-      if (index > 4) throw Error('synthetic provider call budget exceeded');
-      const callsTool = index === 1 || index === 3;
+      if (index > firstTurnRequests + 2)
+        throw Error('synthetic provider call budget exceeded');
+      const followup = input.followupTool && index === 2;
+      const callsTool =
+        index === 1 || followup || index === firstTurnRequests + 1;
       const common = {
         id: `synthetic-${index}`,
         object: 'chat.completion.chunk',
@@ -99,9 +110,15 @@ export async function nativeBrokerRoundtrip(input: {
                           id: `call_${index}`,
                           type: 'function',
                           function: {
-                            name: input.wireName,
+                            name: followup
+                              ? input.followupTool!.wireName
+                              : input.wireName,
                             arguments: JSON.stringify(
-                              index === 1 ? input.args : input.invalidArgs,
+                              followup
+                                ? input.followupTool!.args
+                                : index === 1
+                                  ? input.args
+                                  : input.invalidArgs,
                             ),
                           },
                         },
@@ -168,23 +185,29 @@ export async function nativeBrokerRoundtrip(input: {
   let completed = 0;
   let nativeRetries = 0;
   const nativeToolFailures: boolean[] = [];
+  const nativeToolErrorCodes: (string | undefined)[] = [];
   const failures: Error[] = [];
   client.onFailure((error) => failures.push(error));
   client.subscribe((notice) => {
     const event = notice.params.event as
       | {
           type?: string;
-          data?: { message?: { content?: { isError?: boolean }[] } };
+          data?: {
+            message?: { content?: { isError?: boolean }[] };
+            error?: { code?: string };
+          };
         }
       | undefined;
     if (notice.method === 'session.event' && event?.type === 'turn/end')
       completed++;
     if (notice.method === 'session.event' && event?.type === 'llm/retry')
       nativeRetries++;
-    if (notice.method === 'session.event' && event?.type === 'tool/result')
+    if (notice.method === 'session.event' && event?.type === 'tool/result') {
+      nativeToolErrorCodes.push(event.data?.error?.code);
       nativeToolFailures.push(
         readDshToolResult(event.data?.message)?.isError === true,
       );
+    }
   });
   const inbound = dshInboundToolHandler({
     ...(input.fileReadRunId
@@ -197,20 +220,29 @@ export async function nativeBrokerRoundtrip(input: {
         }
       : {}),
     tools: [
-      {
-        name: input.canonicalName,
+      ...[
+        input.canonicalName,
+        ...(input.followupTool ? [input.followupTool.canonicalName] : []),
+      ].map((name) => ({
+        name,
         description: 'synthetic',
         inputSchema: { type: 'object' },
-      },
+      })),
     ],
     onToolCall: async (call) => {
       received.push(call);
-      expect(call.name).toBe(input.canonicalName);
-      expect(call.arguments).toEqual(input.brokerArgs ?? input.args);
+      const followup = input.followupTool && received.length === 2;
+      expect(call.name).toBe(
+        followup ? input.followupTool!.canonicalName : input.canonicalName,
+      );
+      expect(call.arguments).toEqual(
+        followup ? input.followupTool!.args : (input.brokerArgs ?? input.args),
+      );
       const result = input.onToolCall
         ? await input.onToolCall(call)
         : { modelContent: sentinel, summary: 'synthetic only' };
-      expectedModelContent = input.modelResultIncludes ?? result.modelContent;
+      if (!followup)
+        expectedModelContent = input.modelResultIncludes ?? result.modelContent;
       return result;
     },
   });
@@ -224,7 +256,10 @@ export async function nativeBrokerRoundtrip(input: {
       cwd: root,
       provider: 'openai-compatible',
       model: 'native-contract',
-      nativeTools: input.nativeTools ?? [input.canonicalName],
+      nativeTools: input.nativeTools ?? [
+        input.canonicalName,
+        ...(input.followupTool ? [input.followupTool.canonicalName] : []),
+      ],
       ...(input.nativeSkills ? { nativeSkills: input.nativeSkills } : {}),
       ...(input.personalMethodToolsOnly
         ? { personalMethodToolsOnly: true }
@@ -259,7 +294,7 @@ export async function nativeBrokerRoundtrip(input: {
     }
     await expect
       .poll(() => requests.length, { timeout: input.timeoutMs ?? 15000 })
-      .toBe(2 + (input.retryAfterTool ?? 0));
+      .toBe(firstTurnRequests + (input.retryAfterTool ?? 0));
     await expect
       .poll(() => completed, { timeout: input.timeoutMs ?? 15000 })
       .toBe(1);
@@ -301,6 +336,8 @@ export async function nativeBrokerRoundtrip(input: {
       );
     expect(received).toHaveLength(input.expectedBrokerCalls ?? 1);
     if (input.expectedToolError) expect(nativeToolFailures[0]).toBe(true);
+    if (input.fileReadRunId && input.expectedToolError)
+      expect(nativeToolErrorCodes[0]).toBe(input.expectedToolError);
     for (const request of requests.slice(1, 2 + (input.retryAfterTool ?? 0)))
       expect(JSON.stringify(request)).toContain(
         JSON.stringify(expectedModelContent).slice(1, -1),
@@ -308,14 +345,24 @@ export async function nativeBrokerRoundtrip(input: {
     expect(JSON.stringify(requests[1 + (input.retryAfterTool ?? 0)])).toContain(
       JSON.stringify(expectedModelContent).slice(1, -1),
     );
+    if (input.followupTool) {
+      expect(JSON.stringify(requests[2])).toContain(
+        input.followupTool.modelResultIncludes,
+      );
+      expect(nativeToolFailures).toEqual([true, false]);
+    }
+    expect(failures).toEqual([]);
+    expect(client.processState().state).toBe('running');
     await client.prompt(session, 'Reject invalid arguments before the Broker.');
     await expect
       .poll(() => requests.length, { timeout: 15000 })
-      .toBe(4 + (input.retryAfterTool ?? 0));
+      .toBe(firstTurnRequests + 2 + (input.retryAfterTool ?? 0));
     await expect.poll(() => completed, { timeout: 15000 }).toBe(2);
     if (input.invalidResultIncludes)
       expect(
-        JSON.stringify(requests[3 + (input.retryAfterTool ?? 0)]),
+        JSON.stringify(
+          requests[firstTurnRequests + 1 + (input.retryAfterTool ?? 0)],
+        ),
       ).toContain(input.invalidResultIncludes);
     expect(received).toHaveLength(input.expectedBrokerCalls ?? 1);
     expect(nativeRetries).toBe(input.retryAfterTool ?? 0);

@@ -39,7 +39,7 @@ import {
 import { existsSync, readFileSync } from 'node:fs';
 import { setTimeout, clearTimeout } from 'node:timers';
 import { performance } from 'node:perf_hooks';
-import { createUserMessage } from '@deepseek-ai/dsh-llm';
+import { createUserMessage, HarnessError } from '@deepseek-ai/dsh-llm';
 import {
   prepareSessionReferenceContext,
   installSessionReferenceAdmission,
@@ -1600,13 +1600,20 @@ export async function createAllRiceRuntime(
               if (
                 response.fileReadDenied.callId !== exec.callId ||
                 response.fileReadDenied.nativeSessionId !== exec.agent.id ||
-                response.fileReadDenied.code !== 'TOOL_FILE_ACCESS_DENIED'
+                ![
+                  'TOOL_FILE_ACCESS_DENIED',
+                  'TOOL_FILE_TYPE_UNSUPPORTED',
+                  'TOOL_FILE_TOO_LARGE',
+                  'TOOL_INPUT_INVALID',
+                ].includes(response.fileReadDenied.code) ||
+                typeof response.fileReadDenied.message !== 'string'
               )
                 throw Error('FILE_READ_FAILURE_RECEIPT_INVALID');
               // Public DSH execution turns this confirmed, safe rejection
               // into the native error result bound to the same tool call.
-              throw Error(
-                'TOOL_FILE_ACCESS_DENIED: 没有权限读取该文件；未读取内容。请如实说明权限限制。',
+              throw new HarnessError(
+                `${response.fileReadDenied.code}: ${response.fileReadDenied.message}`,
+                response.fileReadDenied.code,
               );
             }
             if (

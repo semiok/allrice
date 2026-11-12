@@ -31,6 +31,7 @@ import {
   EmployeeCapabilitiesPanel,
   EmployeeCapabilitiesSections,
 } from './employee-capabilities-panel';
+import { EmployeePluginSection } from './employee-capability-presentation';
 import {
   SceneSourceHttpError,
   useEmployeeSceneCatalog,
@@ -2216,6 +2217,10 @@ export function ChatFlowClient({
         setSkillHostOrigin(origin);
       }}
     >
+      <EmployeePluginSection
+        headingId={`employee-plugins-${origin}`}
+        plugins={[]}
+      />
       <EmployeeSceneList
         controller={sceneCatalog}
         employeeName={capabilityEmployeeName}

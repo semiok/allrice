@@ -37,6 +37,13 @@
   line-height: 18px;
   border-radius: 8px;
 }
+.add {
+  font-weight: var(--ar-font-weight-medium);
+}
+.add:focus-visible {
+  outline: var(--ar-focus-ring-width) solid var(--ar-focus-ring);
+  outline-offset: 2px;
+}
 .description {
   margin: 0 0 12px !important;
   color: var(--ar-text-secondary);
@@ -399,6 +406,9 @@
   }
 }
 @media (max-width: 700px) {
+  .add {
+    height: 36px;
+  }
   .heading > button {
     min-height: 36px;
     padding: 8px 10px;

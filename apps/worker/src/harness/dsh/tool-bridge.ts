@@ -241,7 +241,7 @@ export function dshInboundToolHandler(
         input.fileReadRoot.signal.throwIfAborted();
         if (
           !(error instanceof HandlerError) ||
-          error.code !== 'TOOL_FILE_ACCESS_DENIED' ||
+          error.retryable ||
           !isConfirmedToolFailure(error, {
             runId: input.fileReadRoot.runId,
             callId: id,
@@ -251,12 +251,13 @@ export function dshInboundToolHandler(
           throw error;
         return {
           modelContent: '',
-          summary: '没有权限读取该文件；未读取内容。',
+          summary: error.message,
           itemCount: 0,
           fileReadDenied: {
             callId: id,
             nativeSessionId: input.fileReadRoot.nativeSessionId,
-            code: 'TOOL_FILE_ACCESS_DENIED',
+            code: error.code,
+            message: error.message,
           },
         };
       });
