@@ -133,14 +133,24 @@ suite('ordinary pair candidates through native/Worker storage', () => {
         expect(properties).not.toHaveProperty('content');
         expect(properties).not.toHaveProperty('lifecycleState');
       },
-      onToolCall: (call) => f.run(call),
+      async onToolCall(call) {
+        const result = await f.run(call);
+        expect(JSON.parse(result.modelContent)).toMatchObject({
+          content: pair.summary,
+          lifecycleState: 'candidate',
+          requiresConfirmation: true,
+          notice: '已记为候选，确认后才生效',
+        });
+        expect(result.modelContent).not.toContain('月结前不得外发');
+        return result;
+      },
     });
     const rows =
       await fixture.db`select id,summary,details,content,lifecycle_state,trust_level,expires_at,source_type,source_id from allrice_memories where owner_id=${f.user}`;
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       ...pair,
-      content: pair.summary,
+      content: `${pair.summary}\n${pair.details}`,
       lifecycle_state: 'candidate',
       trust_level: 'derived',
       expires_at: null,
@@ -195,6 +205,24 @@ suite('ordinary pair candidates through native/Worker storage', () => {
       b.id,
       f.mutation(1),
     );
+    const frozen = await freezeEmployeeDocuments(
+      fixture.db,
+      {
+        organizationId: f.org,
+        workspaceId: f.workspace,
+        ownerId: f.user,
+        instanceId: f.assignment,
+      },
+      {},
+      false,
+    );
+    expect(frozen.memories).toContainEqual(
+      expect.objectContaining({
+        id: b.id,
+        content: `${pair.summary}\n${pair.details}`,
+      }),
+    );
+    expect(frozen.memories.map((memory) => memory.id)).not.toContain(a.id);
     await deleteManagedEmployeeMemory(
       f.context,
       f.workspace,
@@ -258,6 +286,7 @@ suite('ordinary pair candidates through native/Worker storage', () => {
     };
     const input = { ...identity, ...pair, idempotencyKey: randomUUID() };
     const first = await createCheckpointMemoryCandidate(f.context, input);
+    expect(first.content).toBe(`${pair.summary}\n${pair.details}`);
     expect((await createCheckpointMemoryCandidate(f.context, input)).id).toBe(
       first.id,
     );
