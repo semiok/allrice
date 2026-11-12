@@ -15801,23 +15801,27 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       for (const destination of ['entry', 'composer', 'reopened'] as const) {
         await f.openWorkbench();
         const input = await composer.elementHandle();
-        const entry = await f.entry.elementHandle();
-        if (!input || !entry)
-          throw Error('The live composer and entry are required.');
+        if (!input) throw Error('The live composer is required.');
         const retained = await f.panel
           .getByRole('button', { name: '关闭工作台', exact: true })
           .evaluate(
-            async (button, { input, entry, destination }) => {
-              if (
-                !(button instanceof HTMLButtonElement) ||
-                !(entry instanceof HTMLButtonElement)
-              )
-                throw Error('The native close and entry buttons are required.');
+            async (button, { input, destination }) => {
+              if (!(button instanceof HTMLButtonElement))
+                throw Error('The native close button is required.');
               button.focus();
               button.click();
               // Flush the click's React commit without advancing the RAF.
               await Promise.resolve();
-              if (destination === 'reopened') entry.click();
+              if (destination === 'reopened') {
+                const entry = document.querySelector(
+                  'button[aria-label="展开工作台"]',
+                );
+                if (!(entry instanceof HTMLButtonElement))
+                  throw Error(
+                    'The closed workbench must expose its native opener.',
+                  );
+                entry.click();
+              }
               await Promise.resolve();
               if (destination === 'composer') input.focus();
               const chosen = document.activeElement;
@@ -15828,7 +15832,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                 ),
               );
             },
-            { input, entry, destination },
+            { input, destination },
           );
         if (destination === 'entry')
           expect(
