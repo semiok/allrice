@@ -21,10 +21,13 @@ import {
   RepairVerificationObservationSchema,
   RepositoryCandidateSchema,
   repositorySourceLimits,
+  repositorySourceTmpfsMiB,
   compiledRepairLimits,
   compiledRepairProfileId,
   maintenanceCompiledProfileId,
   isCompiledRepositoryExecution,
+  matchesRepositoryExecutionIsolation,
+  type RepositoryExecutionProof,
 } from './platform-repair-contracts.ts';
 import { repairProfileId } from './platform-repair-contracts.ts';
 import { readPlatformRepairSource } from './platform-repair.ts';
@@ -42,6 +45,31 @@ import type { JobRow } from './queue/row-mappers.ts';
 import type postgres from 'postgres';
 type Db = ReturnType<typeof getDatabase>;
 
+function frozenVerificationCommand(
+  input: Parameters<typeof repositoryVerificationCommand>[0],
+  prior?: { command: unknown; proof: RepositoryExecutionProof },
+) {
+  const build = (legacySourceLimits: boolean) =>
+    CloudCommandSchema.parse({
+      capability: 'cloud.process.execute',
+      arguments: repositoryVerificationCommand({
+        ...input,
+        legacySourceLimits,
+      }),
+      backend: cloudBackendV1,
+      imageDigest: cloudToolchainImageV1,
+      runtime: 'runsc',
+      network: 'none',
+    });
+  if (prior?.proof.version === 1) return build(prior.proof.tmpfsMiB === 64);
+  if (prior) {
+    const original = build(true);
+    if (technicalDigest(prior.command) === technicalDigest(original))
+      return original;
+  }
+  return build(false);
+}
+
 export async function preparePlatformRepairVerification(
   lease: RepairLease,
   context: ExecutionContext,
@@ -57,100 +85,106 @@ export async function preparePlatformRepairVerification(
       !source.task.dependency_object_id)
   )
     throw new QueueError('conflict');
-  const args = repositoryVerificationCommand({
-    baseline: source.source.baseline,
-    candidate: source.candidate,
-    object: {
-      id: source.task.input_object_id,
-      checksum: source.source.baseline.archiveChecksum,
-    },
-    ...(source.task.frozen.version === 2
-      ? {
-          maintenance: {
-            verificationPlan: source.task.frozen.maintenance.verificationPlan,
-            verificationPlanDigest:
-              source.task.frozen.maintenance.verificationPlanDigest,
-          },
-        }
-      : {}),
-    ...(source.task.frozen.verificationMode === 'compiled_packages'
-      ? {
-          compiled: {
-            descriptor: source.task.frozen.baseline.compiledDependencies!,
-            object: {
-              id: source.task.dependency_object_id!,
-              checksum:
-                source.task.frozen.baseline.compiledDependencies!
-                  .bundleChecksum,
-            },
-          },
-        }
-      : {}),
-  });
-  const command = CloudCommandSchema.parse({
-    capability: 'cloud.process.execute',
-    arguments: args,
-    backend: cloudBackendV1,
-    imageDigest: cloudToolchainImageV1,
-    runtime: 'runsc',
-    network: 'none',
-  });
-  const callId = 'repair-verify:' + source.candidate.revision,
-    operationId = cloudStableId(
-      'cloud-command:' + context.runId + ':' + callId,
-    );
-  const proof = RepositoryExecutionProofSchema.parse({
-    version:
-      source.task.frozen.version === 2
-        ? 3
-        : source.task.frozen.verificationMode === 'compiled_packages'
-          ? 2
-          : 1,
-    profileId:
-      source.task.frozen.version === 2
-        ? maintenanceCompiledProfileId
-        : source.task.frozen.verificationMode === 'compiled_packages'
-          ? compiledRepairProfileId
-          : repairProfileId,
-    ...(source.task.frozen.version === 2
-      ? {
-          verificationPlanDigest:
-            source.task.frozen.maintenance.verificationPlanDigest,
-          manifestDigest: technicalDigest(
-            source.task.frozen.maintenance.verificationPlan.approvedFiles,
-          ),
-        }
-      : {}),
-    commandDigest: repositoryDigest(JSON.stringify(command)),
-    baselineId: source.source.baseline.id,
-    candidateChecksum,
-    inputLimit:
-      source.task.frozen.verificationMode === 'compiled_packages'
-        ? compiledRepairLimits.inputBytes
-        : repositorySourceLimits.archiveBytes,
-    tmpfsMiB:
-      source.task.frozen.verificationMode === 'compiled_packages'
-        ? compiledRepairLimits.tmpfsMiB
-        : 64,
-    ...(source.task.frozen.verificationMode === 'compiled_packages'
-      ? {
-          dependencyChecksum:
-            source.task.frozen.baseline.compiledDependencies!.bundleChecksum,
-          planDigest:
-            source.task.frozen.baseline.compiledDependencies!.planDigest,
-          timeoutMs:
-            source.task.frozen.baseline.compiledDependencies!.timeoutMs,
-          memoryMiB:
-            source.task.frozen.baseline.compiledDependencies!.memoryMiB,
-        }
-      : {}),
-  });
   return getDatabase().begin(async (tx) => {
     await assertPlatformRepairLease(tx, lease);
     const [q] =
       await tx`select candidate from allrice_platform_repair_tasks where id=${source.task.id} for update`;
     if (q?.candidate?.checksum !== candidateChecksum)
       throw new QueueError('conflict');
+    const [prior] =
+      await tx`select command,proof from allrice_platform_repair_verifications where task_id=${source.task.id} and revision=${source.candidate.revision}`;
+    const priorProof = prior
+      ? RepositoryExecutionProofSchema.parse(prior.proof)
+      : undefined;
+    const command = frozenVerificationCommand(
+      {
+        baseline: source.source.baseline,
+        candidate: source.candidate,
+        object: {
+          id: source.task.input_object_id!,
+          checksum: source.source.baseline.archiveChecksum,
+        },
+        ...(source.task.frozen.version === 2
+          ? {
+              maintenance: {
+                verificationPlan:
+                  source.task.frozen.maintenance.verificationPlan,
+                verificationPlanDigest:
+                  source.task.frozen.maintenance.verificationPlanDigest,
+              },
+            }
+          : {}),
+        ...(source.task.frozen.verificationMode === 'compiled_packages'
+          ? {
+              compiled: {
+                descriptor: source.task.frozen.baseline.compiledDependencies!,
+                object: {
+                  id: source.task.dependency_object_id!,
+                  checksum:
+                    source.task.frozen.baseline.compiledDependencies!
+                      .bundleChecksum,
+                },
+              },
+            }
+          : {}),
+      },
+      prior && priorProof
+        ? { command: prior.command, proof: priorProof }
+        : undefined,
+    );
+    const args = command.arguments;
+    const callId = 'repair-verify:' + source.candidate.revision,
+      operationId = cloudStableId(
+        'cloud-command:' + context.runId + ':' + callId,
+      );
+    const proof = RepositoryExecutionProofSchema.parse({
+      version:
+        source.task.frozen.version === 2
+          ? 3
+          : source.task.frozen.verificationMode === 'compiled_packages'
+            ? 2
+            : 1,
+      profileId:
+        source.task.frozen.version === 2
+          ? maintenanceCompiledProfileId
+          : source.task.frozen.verificationMode === 'compiled_packages'
+            ? compiledRepairProfileId
+            : repairProfileId,
+      ...(source.task.frozen.version === 2
+        ? {
+            verificationPlanDigest:
+              source.task.frozen.maintenance.verificationPlanDigest,
+            manifestDigest: technicalDigest(
+              source.task.frozen.maintenance.verificationPlan.approvedFiles,
+            ),
+          }
+        : {}),
+      commandDigest: repositoryDigest(JSON.stringify(command)),
+      baselineId: source.source.baseline.id,
+      candidateChecksum,
+      inputLimit:
+        source.task.frozen.verificationMode === 'compiled_packages'
+          ? compiledRepairLimits.inputBytes
+          : repositorySourceLimits.archiveBytes,
+      tmpfsMiB:
+        source.task.frozen.verificationMode === 'compiled_packages'
+          ? compiledRepairLimits.tmpfsMiB
+          : priorProof?.version === 1
+            ? priorProof.tmpfsMiB
+            : repositorySourceTmpfsMiB,
+      ...(source.task.frozen.verificationMode === 'compiled_packages'
+        ? {
+            dependencyChecksum:
+              source.task.frozen.baseline.compiledDependencies!.bundleChecksum,
+            planDigest:
+              source.task.frozen.baseline.compiledDependencies!.planDigest,
+            timeoutMs:
+              source.task.frozen.baseline.compiledDependencies!.timeoutMs,
+            memoryMiB:
+              source.task.frozen.baseline.compiledDependencies!.memoryMiB,
+          }
+        : {}),
+    });
     if (source.candidate.revision > 0) {
       const [before] =
         await tx`select observation from allrice_platform_repair_verifications where task_id=${source.task.id} and revision=0`;
@@ -233,9 +267,9 @@ export async function resolvePlatformRepositoryExecutionProofTx(
     throw new DataAccessError('authorization_denied');
   const candidate = RepositoryCandidateSchema.parse(v.candidate);
   const frozen = RepairFrozenSchema.parse(v.frozen);
-  const expected = CloudCommandSchema.parse({
-    capability: 'cloud.process.execute',
-    arguments: repositoryVerificationCommand({
+  const proof = RepositoryExecutionProofSchema.parse(v.proof);
+  const expected = frozenVerificationCommand(
+    {
       baseline: v.frozen.baseline,
       candidate,
       object: {
@@ -261,13 +295,9 @@ export async function resolvePlatformRepositoryExecutionProofTx(
             },
           }
         : {}),
-    }),
-    backend: cloudBackendV1,
-    imageDigest: cloudToolchainImageV1,
-    runtime: 'runsc',
-    network: 'none',
-  });
-  const proof = RepositoryExecutionProofSchema.parse(v.proof);
+    },
+    { command: v.command, proof },
+  );
   if (
     v.head_candidate?.checksum !== candidate.checksum ||
     technicalDigest(payload) !== technicalDigest(expected) ||
@@ -366,6 +396,15 @@ export async function recordPlatformRepairVerification(
         technicalDigest(['KILL', 'SETGID', 'SETUID']) ||
       v.outcome.repositoryIsolation?.readOnlyRoot !== true ||
       v.outcome.repositoryIsolation?.network !== 'none'
+    )
+      throw new DataAccessError('grant_invalid');
+    const executionProof = RepositoryExecutionProofSchema.parse(v.proof);
+    if (
+      executionProof.commandDigest !== v.command_digest ||
+      !matchesRepositoryExecutionIsolation(
+        executionProof,
+        v.outcome.repositoryIsolation,
+      )
     )
       throw new DataAccessError('grant_invalid');
     const candidate = RepositoryCandidateSchema.parse(v.candidate),

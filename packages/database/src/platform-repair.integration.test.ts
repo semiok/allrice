@@ -77,6 +77,10 @@ import {
   repairAssertionCases,
   repairHarnessChecksum,
 } from './platform-repair-profile.ts';
+import {
+  preparePlatformRepairVerification,
+  resolvePlatformRepositoryExecutionProofTx,
+} from './platform-repair-verification.ts';
 // Keep the real task, source, queue, lease and Worker. Only the physical repair
 // backend is replaced; this input test must not launch cloud verification.
 vi.mock(
@@ -467,6 +471,127 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
       });
     }
   }, 30000);
+  async function assertFrozenCommandRecovery(
+    prepared: Awaited<ReturnType<typeof preparePlatformRepairVerification>>,
+    lease: Parameters<typeof preparePlatformRepairVerification>[0],
+    context: Parameters<typeof preparePlatformRepairVerification>[1],
+  ) {
+    const [prior] =
+      await fixture.db`select * from allrice_platform_repair_verifications where operation_id=${prepared.operationId}`;
+    expect(prior!.proof.tmpfsMiB).toBe(128);
+    const script = prepared.arguments.script.replace(
+      '"totalBytes":64000000,"archiveBytes":12000000,"jsonBytes":96000000',
+      '"totalBytes":40000000,"archiveBytes":12000000,"jsonBytes":60000000',
+    );
+    expect(script).not.toBe(prepared.arguments.script);
+    const command = {
+      ...prepared.command,
+      arguments: { ...prepared.arguments, script },
+    };
+    const proof = {
+      ...prior!.proof,
+      commandDigest: repositoryDigest(JSON.stringify(command)),
+      tmpfsMiB: prior!.proof.version === 1 ? 64 : 128,
+    };
+    const scope = {
+      organizationId: context.organizationId,
+      workspaceId: context.workspaceId,
+      ownerId: context.policySnapshot.subjectId,
+      runId: context.runId,
+      jobId: context.jobId,
+      workerId: lease.workerId,
+      leaseToken: lease.leaseToken,
+      operationId: prepared.operationId,
+    };
+    try {
+      await fixture.db`update allrice_platform_repair_verifications set command=${fixture.db.json(command)},command_digest=${proof.commandDigest},proof=${fixture.db.json(proof)} where operation_id=${prepared.operationId}`;
+      const recovered = await preparePlatformRepairVerification(
+        lease,
+        context,
+        proof.candidateChecksum,
+      );
+      expect(recovered.command).toEqual(command);
+      expect(
+        await fixture.db.begin((tx) =>
+          resolvePlatformRepositoryExecutionProofTx(tx, scope, command),
+        ),
+      ).toEqual(proof);
+      const [unchanged] =
+        await fixture.db`select command,command_digest,proof from allrice_platform_repair_verifications where operation_id=${prepared.operationId}`;
+      expect(unchanged).toEqual({
+        command,
+        command_digest: proof.commandDigest,
+        proof,
+      });
+      const forged = {
+        ...command,
+        arguments: {
+          ...command.arguments,
+          script: command.arguments.script + '\n// not the frozen harness',
+        },
+      };
+      const forgedDigest = repositoryDigest(JSON.stringify(forged));
+      await fixture.db`update allrice_platform_repair_verifications set command=${fixture.db.json(forged)},command_digest=${forgedDigest},proof=${fixture.db.json({ ...proof, commandDigest: forgedDigest })} where operation_id=${prepared.operationId}`;
+      await expect(
+        fixture.db.begin((tx) =>
+          resolvePlatformRepositoryExecutionProofTx(tx, scope, forged),
+        ),
+      ).rejects.toThrow('authorization_denied');
+      await expect(
+        preparePlatformRepairVerification(
+          lease,
+          context,
+          proof.candidateChecksum,
+        ),
+      ).rejects.toThrow('conflict');
+    } finally {
+      await fixture.db`update allrice_platform_repair_verifications set command=${fixture.db.json(prior!.command)},command_digest=${prior!.command_digest},proof=${fixture.db.json(prior!.proof)} where operation_id=${prepared.operationId}`;
+    }
+  }
+  it('retains the exact original source-only command and 64 MiB proof during prepare and recovery without accepting changed frozen bytes', async () => {
+    const q = await submit();
+    const workerId = randomUUID(),
+      job = await claimNextJob(workerId, 60000);
+    expect(job?.id).toBe(q.jobId);
+    const lease = {
+      workerId,
+      jobId: job!.id,
+      leaseToken: job!.lease!.token,
+      attempt: job!.attempt,
+    };
+    const execution = await startClaimedJob(
+      workerId,
+      job!.id,
+      lease.leaseToken,
+    );
+    const task = await getPlatformRepairExecution(lease);
+    const { acquireConversationRuntime } =
+      await import('./conversation/conversation-runtime.ts');
+    await acquireConversationRuntime({
+      organizationId: task.organization_id,
+      workspaceId: task.workspace_id,
+      sessionId: task.session_id,
+      ownerId: task.owner_id,
+      runId: task.run_id,
+      workerId,
+      configChecksum: task.frozen.fingerprint,
+      compactThresholdTokens: 40000,
+    });
+    const { preparePlatformRepairInput } = await import('./platform-repair.ts');
+    const { runtimeFixtureStorage } = await import('./runtime.fixture.ts');
+    await preparePlatformRepairInput(
+      lease,
+      execution!.context,
+      runtimeFixtureStorage(fixture.db),
+    );
+    const prepared = await preparePlatformRepairVerification(
+      lease,
+      execution!.context,
+      q.candidate.checksum,
+    );
+    await assertFrozenCommandRecovery(prepared, lease, execution!.context);
+    await cancelPlatformRepairTask(admin, q.id);
+  });
   it('fresh fixed repair freezes real source through Worker and native Host to the HTTP provider', async () => {
     const originalFreeze = modelPool.freezeSessionModelSnapshot;
     const freeze = vi
@@ -957,6 +1082,7 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
       execution!.context,
       q.candidate.checksum,
     );
+    await assertFrozenCommandRecovery(prepared, lease, execution!.context);
     const [run] =
       await fixture.db`select r.execution_spec,j.timeout_at from allrice_runs r join allrice_jobs j on j.run_id=r.id where r.id=${q.runId}`;
     const { runtimePolicyDigest } = await import('./runtime-policy.ts');
