@@ -179,7 +179,7 @@ it('does not replace an assertion when the artifact directory cannot be written'
   );
 });
 
-it('captures a real Vitest overall timeout in afterEach before cleanup and leaves the passing case without artifacts', async () => {
+it('preserves a real assertion during slow afterEach capture, captures overall timeouts before cleanup, and leaves passing cases without artifacts', async () => {
   const root = await directory(),
     artifacts = join(root, 'artifacts');
   await symlink(resolve('node_modules'), join(root, 'node_modules'), 'dir');
@@ -190,19 +190,31 @@ it('captures a real Vitest overall timeout in afterEach before cleanup and leave
   await writeFile(
     join(root, 'scenario.test.mjs'),
     `
-import {afterEach,beforeEach,it} from 'vitest';
+import {afterEach,beforeEach,expect,it} from 'vitest';
+import {setTimeout as delay} from 'node:timers/promises';
 import {createFailureEvidence} from ${JSON.stringify(fileURLToPath(new URL('./test-failure-evidence.mjs', import.meta.url)))};
 let evidence, closed;
 beforeEach(({task}) => {
   closed=false;
-  evidence=createFailureEvidence({file:import.meta.url,test:task.name,root:${JSON.stringify(artifacts)},collect:()=>({closed})});
+  evidence=createFailureEvidence({file:import.meta.url,test:task.name,root:${JSON.stringify(artifacts)},collect:async()=>{
+    if(task.name==='original assertion') {
+      const started=performance.now();
+      await delay(80);
+      return {closed,captureElapsedMs:performance.now()-started};
+    }
+    return {closed};
+  }});
 });
 afterEach(async ({task}) => {
-  if(task.result?.state==='fail') await evidence.capture(task.result.errors);
-  closed=true;
+  try {
+    if(task.result?.state==='fail') await evidence.capture(task.result.errors);
+  } finally {
+    closed=true;
+  }
 });
 it('passing observation',()=>{evidence.mark('passed');});
 it('overall timeout',()=>{evidence.mark('pending');return new Promise(()=>{});},30);
+it('original assertion',()=>{expect(1,'original assertion must survive capture').toBe(2);},30);
 `,
   );
   const env = { ...process.env, ALLRICE_CI_COLLECTION_BATCH: '' };
@@ -225,13 +237,32 @@ it('overall timeout',()=>{evidence.mark('pending');return new Promise(()=>{});},
   ).catch((error) => error);
   expect(result.code).toBe(1);
   const report = JSON.parse(await readFile(join(root, 'report.json'), 'utf8'));
-  expect(report).toMatchObject({ numPassedTests: 1, numFailedTests: 1 });
-  const entries = await readdir(artifacts);
-  expect(entries).toHaveLength(1);
-  const saved = JSON.parse(
-    await readFile(join(artifacts, entries[0], 'evidence.json'), 'utf8'),
+  expect(report).toMatchObject({ numPassedTests: 1, numFailedTests: 2 });
+  const assertion = report.testResults
+    .flatMap((file) => file.assertionResults)
+    .find((test) => test.title === 'original assertion');
+  expect(assertion.failureMessages.join('\n')).toContain(
+    'original assertion must survive capture',
   );
-  expect(saved.test).toBe('overall timeout');
-  expect(saved.details).toEqual({ closed: false });
-  expect(saved.errors[0].message).toContain('timed out');
+  expect(assertion.failureMessages.join('\n')).not.toContain('Test timed out');
+  const entries = await readdir(artifacts);
+  expect(entries).toHaveLength(2);
+  const saved = await Promise.all(
+    entries.map(async (entry) =>
+      JSON.parse(
+        await readFile(join(artifacts, entry, 'evidence.json'), 'utf8'),
+      ),
+    ),
+  );
+  const timeoutEvidence = saved.find((item) => item.test === 'overall timeout');
+  expect(timeoutEvidence.details).toEqual({ closed: false });
+  expect(timeoutEvidence.errors[0].message).toContain('timed out');
+  const assertionEvidence = saved.find(
+    (item) => item.test === 'original assertion',
+  );
+  expect(assertionEvidence.details.closed).toBe(false);
+  expect(assertionEvidence.details.captureElapsedMs).toBeGreaterThan(30);
+  expect(assertionEvidence.errors[0].message).toContain(
+    'original assertion must survive capture',
+  );
 }, 20000);

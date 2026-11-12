@@ -15,6 +15,7 @@ import { createProjectPreviewGateway } from './project-preview.mjs';
 
 const cleanups = [];
 let previewEvidence;
+let previewCleanup;
 // Gateway timer bindings use the controlled clock; HTTP I/O stays real.
 vi.mock('node:timers', async (load) => ({
   ...(await load()),
@@ -23,12 +24,21 @@ vi.mock('node:timers', async (load) => ({
 }));
 afterEach(async ({ task }) => {
   const evidence = previewEvidence;
+  const cleanup = previewCleanup;
   previewEvidence = undefined;
-  if (task.result?.state === 'fail')
-    await evidence?.capture(task.result.errors);
-  evidence?.dispose();
-  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
-  vi.useRealTimers();
+  previewCleanup = undefined;
+  try {
+    if (task.result?.state === 'fail')
+      await evidence?.capture(task.result.errors);
+  } finally {
+    try {
+      if (cleanup) await cleanup();
+    } finally {
+      evidence?.dispose();
+      for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+      vi.useRealTimers();
+    }
+  }
 });
 async function until(predicate) {
   const deadline = Date.now() + 3000;
@@ -336,43 +346,37 @@ describe('private preview live transfer authority', () => {
         ],
       });
       evidence.mark('browser-launched');
-      try {
-        const page = await browser.newPage(),
-          errors = [];
-        evidence.observePage(page);
-        page.on('pageerror', (error) => errors.push(error.message));
-        evidence.mark('navigation-started', { origin: f.mainOrigin });
-        await page.goto(f.mainOrigin, { waitUntil: 'load' });
-        evidence.mark('parent-loaded');
-        const frame = page.frameLocator('iframe');
-        await frame
-          .getByRole('button', { name: 'Export CSV', exact: true })
-          .waitFor();
-        evidence.mark('csv-button-visible');
-        const pending = page.waitForEvent('download', { timeout: 5000 });
-        evidence.mark('csv-click-started');
-        await frame
-          .getByRole('button', { name: 'Export CSV', exact: true })
-          .click();
-        const download = await pending;
-        evidence.mark('download-received', {
-          filename: download.suggestedFilename(),
-        });
-        expect(await download.failure()).toBeNull();
-        expect(download.suggestedFilename()).toBe('diff.csv');
-        expect(await readFile(await download.path(), 'utf8')).toBe(
-          'id,amount\n002,55.00\n',
-        );
-        expect(
-          await page.evaluate(() => Reflect.get(globalThis, 'previewEscaped')),
-        ).toBeUndefined();
-        expect(errors).toEqual([]);
-      } catch (error) {
-        await evidence.capture(error);
-        throw error;
-      } finally {
-        await browser.close();
-      }
+      previewCleanup = () => browser.close();
+      const page = await browser.newPage(),
+        errors = [];
+      evidence.observePage(page);
+      page.on('pageerror', (error) => errors.push(error.message));
+      evidence.mark('navigation-started', { origin: f.mainOrigin });
+      await page.goto(f.mainOrigin, { waitUntil: 'load' });
+      evidence.mark('parent-loaded');
+      const frame = page.frameLocator('iframe');
+      await frame
+        .getByRole('button', { name: 'Export CSV', exact: true })
+        .waitFor();
+      evidence.mark('csv-button-visible');
+      const pending = page.waitForEvent('download', { timeout: 5000 });
+      evidence.mark('csv-click-started');
+      await frame
+        .getByRole('button', { name: 'Export CSV', exact: true })
+        .click();
+      const download = await pending;
+      evidence.mark('download-received', {
+        filename: download.suggestedFilename(),
+      });
+      expect(await download.failure()).toBeNull();
+      expect(download.suggestedFilename()).toBe('diff.csv');
+      expect(await readFile(await download.path(), 'utf8')).toBe(
+        'id,amount\n002,55.00\n',
+      );
+      expect(
+        await page.evaluate(() => Reflect.get(globalThis, 'previewEscaped')),
+      ).toBeUndefined();
+      expect(errors).toEqual([]);
     },
     20000,
   );
@@ -409,58 +413,52 @@ describe('private preview live transfer authority', () => {
         ],
       });
       evidence.mark('browser-launched');
-      try {
-        const page = await browser.newPage();
-        evidence.observePage(page);
-        for (const origin of [f.mainOrigin, f.adminOrigin]) {
-          evidence.mark('allowed-origin-navigation-started', { origin });
-          await page.goto(origin, { waitUntil: 'domcontentloaded' });
-          await page
-            .frameLocator('iframe')
-            .getByText('fixture-preview', { exact: true })
-            .waitFor();
-          evidence.mark('allowed-origin-frame-visible', { origin });
-        }
-        const response = page.waitForResponse(
-          (r) => r.url() === `http://${f.host}/` && r.status() === 200,
-        );
-        evidence.mark('foreign-origin-navigation-started');
-        await page.goto(`http://foreign.allrice.test:${f.port}`, {
-          waitUntil: 'domcontentloaded',
-        });
-        const csp = (await response).headers()['content-security-policy'];
-        expect(csp).toContain(
-          `frame-ancestors ${f.mainOrigin} ${f.adminOrigin};`,
-        );
-        expect(csp).not.toContain('foreign.allrice.test');
-        evidence.mark('foreign-frame-block-wait-started', { csp });
-        await expect(
-          page
-            .frameLocator('iframe')
-            .getByText('fixture-preview', { exact: true })
-            .waitFor({ timeout: 1000 }),
-        ).rejects.toThrow();
-        evidence.mark('foreign-frame-blocked-as-expected');
-        f.revoke();
-        evidence.mark('access-revoked');
-        const denied = page.waitForResponse(
-          (r) => new URL(r.url()).host === f.host && r.status() === 403,
-        );
-        await page.goto(f.adminOrigin, { waitUntil: 'domcontentloaded' });
-        expect((await denied).status()).toBe(403);
+      previewCleanup = () => browser.close();
+      const page = await browser.newPage();
+      evidence.observePage(page);
+      for (const origin of [f.mainOrigin, f.adminOrigin]) {
+        evidence.mark('allowed-origin-navigation-started', { origin });
+        await page.goto(origin, { waitUntil: 'domcontentloaded' });
         await page
           .frameLocator('iframe')
-          .getByText('预览已停止或授权已失效，请回到 AllRice 刷新状态。', {
-            exact: true,
-          })
+          .getByText('fixture-preview', { exact: true })
           .waitFor();
-        evidence.mark('revoked-frame-message-visible');
-      } catch (error) {
-        await evidence.capture(error);
-        throw error;
-      } finally {
-        await browser.close();
+        evidence.mark('allowed-origin-frame-visible', { origin });
       }
+      const response = page.waitForResponse(
+        (r) => r.url() === `http://${f.host}/` && r.status() === 200,
+      );
+      evidence.mark('foreign-origin-navigation-started');
+      await page.goto(`http://foreign.allrice.test:${f.port}`, {
+        waitUntil: 'domcontentloaded',
+      });
+      const csp = (await response).headers()['content-security-policy'];
+      expect(csp).toContain(
+        `frame-ancestors ${f.mainOrigin} ${f.adminOrigin};`,
+      );
+      expect(csp).not.toContain('foreign.allrice.test');
+      evidence.mark('foreign-frame-block-wait-started', { csp });
+      await expect(
+        page
+          .frameLocator('iframe')
+          .getByText('fixture-preview', { exact: true })
+          .waitFor({ timeout: 1000 }),
+      ).rejects.toThrow();
+      evidence.mark('foreign-frame-blocked-as-expected');
+      f.revoke();
+      evidence.mark('access-revoked');
+      const denied = page.waitForResponse(
+        (r) => new URL(r.url()).host === f.host && r.status() === 403,
+      );
+      await page.goto(f.adminOrigin, { waitUntil: 'domcontentloaded' });
+      expect((await denied).status()).toBe(403);
+      await page
+        .frameLocator('iframe')
+        .getByText('预览已停止或授权已失效，请回到 AllRice 刷新状态。', {
+          exact: true,
+        })
+        .waitFor();
+      evidence.mark('revoked-frame-message-visible');
     },
     30000,
   );

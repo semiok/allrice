@@ -360,12 +360,22 @@ function navigationHistory(count: number, paragraphs = 90): Message[] {
 suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   let browser: Browser, server: Server, origin: string;
   let unreadEvidence: ReturnType<typeof createFailureEvidence> | undefined;
+  let unreadCleanup: (() => Promise<void>) | undefined;
   afterEach(async ({ task }) => {
     const evidence = unreadEvidence;
+    const cleanup = unreadCleanup;
     unreadEvidence = undefined;
-    if (task.result?.state === 'fail')
-      await evidence?.capture(task.result.errors);
-    evidence?.dispose();
+    unreadCleanup = undefined;
+    try {
+      if (task.result?.state === 'fail')
+        await evidence?.capture(task.result.errors);
+    } finally {
+      try {
+        if (cleanup) await cleanup();
+      } finally {
+        evidence?.dispose();
+      }
+    }
   });
   const downloadFixtures = new Map<
     string,
@@ -2418,11 +2428,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       async close() {
         releaseStartup();
         finishStream();
-        if (
-          options.failureEvidence &&
-          (errors.length || writes.length || unexpected.length)
-        )
-          await options.failureEvidence.capture({ errors, writes, unexpected });
         await context.close();
         expect(errors).toEqual([]);
         expect(writes).toEqual([]);
@@ -2659,12 +2664,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(await dialog.getByText(name, { exact: true }).count()).toBe(0);
   }
   it('MET198 file unread numbers remain scoped while retired experience keys never become memory badges', async () => {
-    let f: Awaited<ReturnType<typeof fixture>>;
+    const observation: { fixture?: Awaited<ReturnType<typeof fixture>> } = {};
     const evidence: ReturnType<typeof createFailureEvidence> = (unreadEvidence =
       createFailureEvidence({
         file: import.meta.url,
         test: 'MET198 file unread numbers remain scoped while retired experience keys never become memory badges',
         collect: async () => {
+          const f = observation.fixture;
           const snapshot = {
             updateReads: f?.state.updateReads,
             workbenchReads: f?.state.workbenchReads,
@@ -2702,65 +2708,71 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await evidence.capture(task.result?.errors);
     });
     evidence.mark('fixture-started');
-    f = await fixture({ employeeDetails: true, failureEvidence: evidence });
-    try {
-      evidence.mark('baseline-request-count-wait-started');
-      await expect.poll(() => f.state.updateReads).toBe(1);
-      evidence.mark('baseline-request-count-observed', {
-        updateReads: f.state.updateReads,
-      });
-      f.state.files.push({
-        id: id(9901),
-        fileName: '新增文件.txt',
-        mediaType: 'text/plain',
-        sizeBytes: 12,
-        visibility: 'private',
-        ownedByMe: true,
-        category: 'uploads',
-        deliverableVersion: null,
-      });
-      f.state.workbenchExperienceKeys.push(id(9910) + '/1');
-      evidence.mark('fixture-files-mutated', {
-        fileId: id(9901),
-        experienceKey: id(9910) + '/1',
-      });
-      await f.page.evaluate(() =>
-        window.dispatchEvent(new Event('allrice:workbench-files-changed')),
-      );
-      evidence.mark('files-changed-dispatched');
-      const header = f.page.locator('main > section header');
-      evidence.mark('file-unread-badge-wait-started');
-      await header
-        .getByRole('button', { name: '工作区文件，1 项新增', exact: true })
-        .waitFor();
-      evidence.mark('file-unread-badge-visible');
-      expect(
-        await header.getByRole('button', { name: /记忆，.*项新增/ }).count(),
-      ).toBe(0);
-      await header.getByRole('button', { name: '记忆', exact: true }).click();
-      await f.page
-        .getByRole('region', { name: '个人记忆', exact: true })
-        .waitFor();
-      evidence.mark('memory-visible');
-      expect(
-        await header
-          .getByRole('button', { name: '工作区文件，1 项新增', exact: true })
-          .count(),
-      ).toBe(1);
-      await header
-        .getByRole('button', { name: '工作区文件，1 项新增', exact: true })
-        .click();
-      await header
-        .getByRole('button', { name: '工作区文件', exact: true })
-        .waitFor();
-      expect(f.state.experienceReads).toBe(0);
-      expect(f.writes).toEqual([]);
-    } catch (error) {
-      await evidence.capture(error);
-      throw error;
-    } finally {
+    const f = await fixture({
+      employeeDetails: true,
+      failureEvidence: evidence,
+    });
+    observation.fixture = f;
+    unreadCleanup = async () => {
+      if (f.errors.length || f.writes.length || f.unexpected.length)
+        await evidence.capture({
+          errors: f.errors,
+          writes: f.writes,
+          unexpected: f.unexpected,
+        });
       await f.close();
-    }
+    };
+    evidence.mark('baseline-request-count-wait-started');
+    await expect.poll(() => f.state.updateReads).toBe(1);
+    evidence.mark('baseline-request-count-observed', {
+      updateReads: f.state.updateReads,
+    });
+    f.state.files.push({
+      id: id(9901),
+      fileName: '新增文件.txt',
+      mediaType: 'text/plain',
+      sizeBytes: 12,
+      visibility: 'private',
+      ownedByMe: true,
+      category: 'uploads',
+      deliverableVersion: null,
+    });
+    f.state.workbenchExperienceKeys.push(id(9910) + '/1');
+    evidence.mark('fixture-files-mutated', {
+      fileId: id(9901),
+      experienceKey: id(9910) + '/1',
+    });
+    await f.page.evaluate(() =>
+      window.dispatchEvent(new Event('allrice:workbench-files-changed')),
+    );
+    evidence.mark('files-changed-dispatched');
+    const header = f.page.locator('main > section header');
+    evidence.mark('file-unread-badge-wait-started');
+    await header
+      .getByRole('button', { name: '工作区文件，1 项新增', exact: true })
+      .waitFor();
+    evidence.mark('file-unread-badge-visible');
+    expect(
+      await header.getByRole('button', { name: /记忆，.*项新增/ }).count(),
+    ).toBe(0);
+    await header.getByRole('button', { name: '记忆', exact: true }).click();
+    await f.page
+      .getByRole('region', { name: '个人记忆', exact: true })
+      .waitFor();
+    evidence.mark('memory-visible');
+    expect(
+      await header
+        .getByRole('button', { name: '工作区文件，1 项新增', exact: true })
+        .count(),
+    ).toBe(1);
+    await header
+      .getByRole('button', { name: '工作区文件，1 项新增', exact: true })
+      .click();
+    await header
+      .getByRole('button', { name: '工作区文件', exact: true })
+      .waitFor();
+    expect(f.state.experienceReads).toBe(0);
+    expect(f.writes).toEqual([]);
   }, 30000);
 
   it('compact workbench opens one session schedule in the existing right detail and tracks actual module selection', async () => {

@@ -222,18 +222,21 @@ it.each([
 ])(
   'does not treat successful stop CLI exit as VM proof: %s',
   async (_name, status) => {
-    let f: Awaited<ReturnType<typeof fixture>>;
+    const observation: { fixture?: Awaited<ReturnType<typeof fixture>> } = {};
     const evidence =
       _name === 'other profile'
         ? (stopEvidence = createFailureEvidence({
             file: import.meta.url,
             test: `does not treat successful stop CLI exit as VM proof: ${_name}`,
-            collect: async () => ({
-              status,
-              rows: f ? await f.observed() : undefined,
-              steps: f?.steps,
-              started: f && Reflect.get(f.instance, 'started'),
-            }),
+            collect: async () => {
+              const f = observation.fixture;
+              return {
+                status,
+                rows: f ? await f.observed() : undefined,
+                steps: f?.steps,
+                started: f && Reflect.get(f.instance, 'started'),
+              };
+            },
           }))
         : undefined;
     if (evidence) {
@@ -257,7 +260,8 @@ it.each([
         },
       );
     }
-    f = await fixture({ status });
+    const f = await fixture({ status });
+    observation.fixture = f;
     if (evidence) {
       f.instance.onPreparationStep = (event) => {
         f.steps.push(event);
