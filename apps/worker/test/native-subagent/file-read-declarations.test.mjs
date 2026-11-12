@@ -95,6 +95,7 @@ it.each(['success', 'denied'])(
                 callId: params.toolCallId,
                 nativeSessionId: params.nativeSessionId,
                 code: 'TOOL_FILE_ACCESS_DENIED',
+                message: '没有权限读取该文件；未读取内容。',
               },
             };
       },
