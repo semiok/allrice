@@ -93,6 +93,61 @@ suite(
         ...overrides,
       };
     }
+    it('uses the enterprise label for new empty-purpose saves while preserving stored descriptions, digests and exact receipts', async () => {
+      const { a, owner, input } = await setup();
+      const purpose = async (revisionId: string) =>
+        (await listReferenceRevisions(owner, owner.workspaceId!)).find(
+          (r) => r.revisionId === revisionId,
+        )!.purpose;
+      const preservedInput = { ...input, purpose: '参考资料' };
+      const preserved = await save(owner, preservedInput);
+      const before =
+        await f.db`select description,checksum,request_input from allrice_knowledge_revisions where id=${preserved.revisionId}`;
+      const artifact = await a.createArtifact(
+        a.task.runId,
+        'New default description fixture',
+      );
+      const emptyArtifact = {
+        ...input,
+        requestId: randomUUID(),
+        artifactVersionId: artifact.artifactId,
+        purpose: '',
+      };
+      const saved = await save(owner, emptyArtifact);
+      expect(await purpose(saved.revisionId)).toBe('企业资料');
+      expect(await save(owner, emptyArtifact)).toEqual(saved);
+      const upload = {
+        workspaceId: owner.workspaceId,
+        requestId: randomUUID(),
+        scope: 'company' as const,
+        fileName: 'empty-purpose.txt',
+        purpose: '',
+        mediaType: 'text/plain',
+        contentBase64: Buffer.from('Independent upload').toString('base64'),
+      };
+      const pending = await prepareReferenceUpload(owner, upload);
+      await storage.put(
+        pending.object,
+        new Blob([new Uint8Array(pending.bytes)]).stream(),
+      );
+      await completeReferenceUpload(
+        owner,
+        owner.workspaceId!,
+        pending.revisionId,
+      );
+      expect(await purpose(pending.revisionId)).toBe('企业资料');
+      expect((await prepareReferenceUpload(owner, upload)).revisionId).toBe(
+        pending.revisionId,
+      );
+      expect(await save(owner, preservedInput)).toEqual(preserved);
+      expect(await purpose(preserved.revisionId)).toBe('参考资料');
+      expect(
+        await f.db`select description,checksum,request_input from allrice_knowledge_revisions where id=${preserved.revisionId}`,
+      ).toEqual(before);
+      expect((await file(owner, preserved.revisionId)).object.checksum).toBe(
+        a.artifact.digest,
+      );
+    });
     it('copies exact bytes once under concurrent aliases; does not publish private conversation or link original storage', async () => {
       const { a, owner, reader, input } = await setup();
       const alias = { ...input, requestId: randomUUID() };
