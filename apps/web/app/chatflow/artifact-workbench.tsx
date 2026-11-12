@@ -13,6 +13,7 @@ import {
   FileTypeIcon,
   classifyFileType,
   IconClockOutlineRegular,
+  isBehindModal,
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import moduleUi from './workbench-modules.module.css';
 import { GUIDE_KIND, pageAddress } from './dsh-upstream/dock/contract/seed';
@@ -522,6 +523,9 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
           )
             return;
           if (event.key === 'Escape') {
+            // Portal events bubble through React; the foreground native Modal
+            // owns Escape and handles it at the document bubble listener.
+            if (isBehindModal(event.currentTarget)) return;
             if (capabilityKeyboard) return;
             event.stopPropagation();
             close();
