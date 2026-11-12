@@ -11,28 +11,31 @@ import {
   methodActivationQuestionPrefix,
   UserQuestionRequestSchema,
 } from '@allrice/contracts';
-import * as client from './core/client.ts';
+import * as client from '../../../packages/database/src/core/client.ts';
 import {
   createRuntimeFixtureDatabase,
   runtimeFixtureStorage,
-} from './runtime.fixture.ts';
-import { createEmployeeAdministrationFixture } from './employee-administration.fixture.ts';
-import { tenantValidationFixture } from './tenant-validation.fixture.ts';
+} from '../../../packages/database/src/runtime.fixture.ts';
+import { createEmployeeAdministrationFixture } from '../../../packages/database/src/employee-administration.fixture.ts';
+import { tenantValidationFixture } from '../../../packages/database/src/tenant-validation.fixture.ts';
 import {
   authenticateSession,
   createSession,
   ensureBootstrapPortalPrincipal,
-} from './identity.ts';
+} from '../../../packages/database/src/identity.ts';
 import {
   createManagedOrganization,
   importOrganizationPeople,
-} from './organization-administration.ts';
-import { createOrganizationDepartment } from './organization-departments.ts';
+} from '../../../packages/database/src/organization-administration.ts';
+import { createOrganizationDepartment } from '../../../packages/database/src/organization-departments.ts';
 import {
   listAdminTenantEmployees,
   changeAdminTenantEmployee,
-} from './tenant-employees.ts';
-import { getWorkbenchArtifact, readArtifactBytes } from './artifact-review.ts';
+} from '../../../packages/database/src/tenant-employees.ts';
+import {
+  getWorkbenchArtifact,
+  readArtifactBytes,
+} from '../../../packages/database/src/artifact-review.ts';
 import {
   createStorageMetadata,
   markStorageReady,
@@ -40,16 +43,16 @@ import {
   prepareStorageDelete,
   resolveStorageGrant,
   saveStorageGrant,
-} from './data.ts';
-import { markFinalDeliveryRootLocked } from './final-delivery-commit.ts';
-import { readFinalDeliveryReferences } from './final-delivery-references.ts';
+} from '../../../packages/database/src/data.ts';
+import { markFinalDeliveryRootLocked } from '../../../packages/database/src/final-delivery-commit.ts';
+import { readFinalDeliveryReferences } from '../../../packages/database/src/final-delivery-references.ts';
 import {
   appendJobEvent,
   completeJob,
   heartbeatJob,
   finishJobDrain,
-} from './execution/queue.ts';
-import { createRuntimeOperationLedger } from './runtime-ledger/ledger.ts';
+} from '../../../packages/database/src/execution/queue.ts';
+import { createRuntimeOperationLedger } from '../../../packages/database/src/runtime-ledger/ledger.ts';
 import { HarnessEventBatcher } from '../../../apps/worker/src/harness/delta-batcher.ts';
 import { normalizeHarnessRunEvent } from '../../../apps/worker/src/harness/runtime-contract.ts';
 import {
@@ -64,43 +67,46 @@ import {
   prepareReferenceUpload,
   completeReferenceUpload,
   changeReference,
-} from './reference-library.ts';
+} from '../../../packages/database/src/reference-library.ts';
 import {
   claimReferenceProcessing,
   finishReferenceProcessing,
-} from './reference-processing.ts';
+} from '../../../packages/database/src/reference-processing.ts';
 import {
   assertReferenceSelections,
   captureReferenceSelections,
   hasRevokedReferencePublicationHistory,
-} from './reference-runtime.ts';
-import { readWorkbenchFile, updateWorkbenchFile } from './workbench-files.ts';
+} from '../../../packages/database/src/reference-runtime.ts';
+import {
+  readWorkbenchFile,
+  updateWorkbenchFile,
+} from '../../../packages/database/src/workbench-files.ts';
 import {
   createChatSession,
   getEmployeeWorkspace,
   sendChatMessage,
   getChatSessionHistory,
-} from './workspace/service.ts';
+} from '../../../packages/database/src/workspace/service.ts';
 import {
   acquireConversationRuntime,
   releaseConversationRuntime,
-} from './conversation/conversation-runtime.ts';
+} from '../../../packages/database/src/conversation/conversation-runtime.ts';
 import {
   prepareEmployeeContentContext,
   assertEmployeeContentContext,
   loadEmployeeRuntimeReferences,
   assertEmployeeContentReferenceMessages,
-} from './employees/employee-runtime-content.ts';
-import { resolveEmployeeExecution } from './employees/employeehub.ts';
+} from '../../../packages/database/src/employees/employee-runtime-content.ts';
+import { resolveEmployeeExecution } from '../../../packages/database/src/employees/employeehub.ts';
 
 const browser = vi.hoisted(() => ({
   context: null as RequestContext | null,
   storage: null as StoragePort | null,
 }));
-vi.mock('../../../apps/web/lib/identity/session', () => ({
+vi.mock('./identity/session', () => ({
   getRequestContext: async () => browser.context,
 }));
-vi.mock('../../../apps/web/lib/storage/runtime', () => ({
+vi.mock('./storage/runtime', () => ({
   getStorageAdapter: () => browser.storage!,
 }));
 
@@ -241,6 +247,55 @@ suite(
         action,
         ...(audience ? { audience } : {}),
       });
+
+    async function withdrawalBarrier() {
+      const lock = await f.db.reserve();
+      await lock`begin`;
+      // change already holds the source FOR UPDATE before inserting its action.
+      // This test-only lock leaves ACL reads possible and never enters product code.
+      await lock`lock table allrice_knowledge_reference_actions in share mode`;
+      const [holder] = await lock`select pg_backend_pid() pid`;
+      return {
+        async writer() {
+          let writerPid = 0;
+          await expect
+            .poll(
+              async () => {
+                const [writer] = await f.db`select pid from pg_stat_activity
+              where application_name=current_setting('application_name')
+                and ${holder!.pid}::int=any(pg_blocking_pids(pid))
+                and query like '%insert into allrice_knowledge_reference_actions%'`;
+                writerPid = writer?.pid ?? 0;
+                return writerPid;
+              },
+              { timeout: 5000 },
+            )
+            .toBeGreaterThan(0);
+          return writerPid;
+        },
+        async reader(writerPid: number) {
+          await expect
+            .poll(
+              async () =>
+                (
+                  await f.db`select count(*)::int n from pg_stat_activity
+              where application_name=current_setting('application_name') and wait_event_type='Lock'
+                and ${writerPid}::int=any(pg_blocking_pids(pid))
+                and query like '%select s.id,s.status%' and query like '%for share%'`
+                )[0]!.n,
+              { timeout: 5000 },
+            )
+            .toBeGreaterThan(0);
+        },
+        async release() {
+          try {
+            await lock`rollback`;
+          } finally {
+            lock.release();
+          }
+        },
+      };
+    }
     async function ready(revisionId: string) {
       // Drain exact pending records through the existing real processor API;
       // no schema fixture fabricates ready state or retrieval receipts.
@@ -465,13 +520,82 @@ suite(
       ).rejects.toMatchObject({ code: 'authorization_denied' });
     }, 120000);
 
+    it('compares canonical publication parameters independently of display defaults and preserves exact request receipts after withdrawal', async () => {
+      const a = await tenantValidationFixture(f.db);
+      const owner = {
+        ...(await authenticateSession(
+          (await createSession(a.context.actor.id)).token,
+        ))!,
+        workspaceId: a.task.scope.workspaceId,
+      };
+      const original = await getWorkbenchArtifact(
+        owner,
+        a.task.chatSessionId!,
+        a.artifact.artifactId,
+        f.db,
+      );
+      const input = {
+        workspaceId: owner.workspaceId,
+        requestId: randomUUID(),
+        origin: 'file' as const,
+        objectId: original.object.id,
+        purpose: '',
+        audience: { scope: 'company' as const, departmentIds: [] },
+      };
+      const first = await publishReference(owner, input, browser.storage!);
+      const [saved] =
+        await f.db`select description,request_input from allrice_knowledge_revisions where id=${first.revisionId}`;
+      expect(saved!.description).toBe('企业资料');
+      expect(saved!.request_input.purpose).toBe('');
+      expect(
+        await publishReference(
+          owner,
+          { ...input, requestId: randomUUID(), purpose: '  ' },
+          browser.storage!,
+        ),
+      ).toEqual(first);
+      // An explicit purpose is data, even when its text resembles a UI default.
+      for (const purpose of ['企业资料', '参考资料', 'another purpose']) {
+        await expect(
+          publishReference(
+            owner,
+            { ...input, requestId: randomUUID(), purpose },
+            browser.storage!,
+          ),
+        ).rejects.toMatchObject({ code: 'request_conflict' });
+      }
+      await expect(
+        publishReference(
+          owner,
+          { ...input, purpose: '企业资料' },
+          browser.storage!,
+        ),
+      ).rejects.toMatchObject({ code: 'request_conflict' });
+      await change(owner, first.sourceId, 'revoke');
+      expect(await publishReference(owner, input, browser.storage!)).toEqual(
+        first,
+      );
+      await expect(file(owner, first.revisionId)).rejects.toMatchObject({
+        code: 'not_found',
+      });
+      expect(
+        (
+          await publishReference(
+            owner,
+            { ...input, requestId: randomUUID() },
+            browser.storage!,
+          )
+        ).sourceId,
+      ).not.toBe(first.sourceId);
+    }, 120000);
+
     it('copies an exact owned delivery once, leaves its original intact, and a new explicit publication after revoke has a new source identity', async () => {
       const a = await tenantValidationFixture(f.db);
       const owner = {
         ...(await authenticateSession(
           (await createSession(a.context.actor.id)).token,
         ))!,
-        workspaceId: a.context.workspaceId,
+        workspaceId: a.task.scope.workspaceId,
       };
       const original = await getWorkbenchArtifact(
         owner,
@@ -541,14 +665,34 @@ suite(
       expect(
         await f.db`select source_id from allrice_workbench_reference_bindings where source_id=${one.sourceId}`,
       ).toHaveLength(0);
-      await f.db`update allrice_storage_objects set visibility='private',state='deleted',deleted_at=clock_timestamp() where id=${original.object.id}`;
+      await updateWorkbenchFile(
+        owner,
+        original.object.id,
+        {
+          workspaceId: owner.workspaceId,
+          requestId: randomUUID(),
+          expectedRevision: 1,
+          sharing: { scope: 'personal', departmentIds: [] },
+        },
+        browser.storage!,
+      );
+      await expect(
+        readWorkbenchFile(reader, original.object.id),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      expect((await file(reader, one.revisionId)).object.checksum).toBe(
+        original.object.checksum,
+      );
       expect((await file(owner, one.revisionId)).object.checksum).toBe(
         original.object.checksum,
       );
       expect(await publishReference(owner, input, browser.storage!)).toEqual(
         one,
       );
-      await f.db`update allrice_storage_objects set state='ready',deleted_at=null where id=${original.object.id}`;
+      expect(
+        (
+          await f.db`select state,immutable,deleted_at from allrice_storage_objects where id=${original.object.id}`
+        )[0],
+      ).toMatchObject({ state: 'ready', immutable: true, deleted_at: null });
       await expect(change(owner, one.sourceId, 'delete')).rejects.toMatchObject(
         { code: 'source_unavailable' },
       );
@@ -899,22 +1043,7 @@ suite(
           type: 'assistant.text.delta',
           payload: { source: 'dsh', text: 'VISIBLE_BEFORE_WITHDRAWAL' },
         });
-        function gate<T>() {
-          let resolve!: (value: T) => void;
-          const promise = new Promise<T>((done) => {
-            resolve = done;
-          });
-          return { promise, resolve };
-        }
-        const locked = gate<number>(),
-          release = gate<void>();
-        const holder = f.db.begin(async (tx) => {
-          await tx`select id from allrice_knowledge_sources where id=${published.sourceId} for share`;
-          const [pid] = await tx`select pg_backend_pid() id`;
-          locked.resolve(pid!.id);
-          await release.promise;
-        });
-        const holderPid = await locked.promise;
+        const barrier = await withdrawalBarrier();
         const withdrawing = change(
           s.owner,
           published.sourceId,
@@ -929,16 +1058,7 @@ suite(
         );
         let writing: Promise<unknown> | undefined;
         try {
-          await expect
-            .poll(
-              async () =>
-                (
-                  await f.db`select count(*)::int n from pg_stat_activity
-          where ${holderPid}::int=any(pg_blocking_pids(pid))`
-                )[0]!.n,
-              { timeout: 5000 },
-            )
-            .toBeGreaterThan(0);
+          const writerPid = await barrier.writer();
           writing = appendJobEvent({
             ...worker,
             type: 'assistant.text.delta',
@@ -947,22 +1067,9 @@ suite(
             (result) => ({ result }),
             (error: unknown) => ({ error }),
           );
-          // Observe the real publication gate waiting behind the queued writer,
-          // rather than assuming a sleep establishes PostgreSQL lock order.
-          await expect
-            .poll(
-              async () =>
-                (
-                  await f.db`select count(*)::int n from pg_stat_activity
-          where application_name=current_setting('application_name') and wait_event_type='Lock'
-            and query like '%select s.id,s.status%' and query like '%for share%'`
-                )[0]!.n,
-              { timeout: 5000 },
-            )
-            .toBeGreaterThan(0);
+          await barrier.reader(writerPid);
         } finally {
-          release.resolve();
-          await holder;
+          await barrier.release();
         }
         expect(await withdrawing).toEqual({
           result: { sourceId: published.sourceId },
@@ -978,6 +1085,10 @@ suite(
         expect(
           await f.db`select id from allrice_run_events where run_id=${run.scope.runId}
         and payload->>'text' in ('VISIBLE_AFTER_WITHDRAWAL','COMPLETED_AFTER_WITHDRAWAL')`,
+        ).toHaveLength(0);
+        expect(
+          await f.db`select id from allrice_employee_run_steps where run_id=${run.scope.runId}
+          and payload->>'text' in ('VISIBLE_AFTER_WITHDRAWAL','COMPLETED_AFTER_WITHDRAWAL')`,
         ).toHaveLength(0);
         await appendJobEvent({
           ...worker,
@@ -1446,23 +1557,14 @@ suite(
         run.runtime.generationId,
         worker,
       );
-      const lock = await f.db.reserve();
-      let writing: Promise<unknown> | undefined,
-        withdrawing: Promise<unknown> | undefined;
+      const barrier = await withdrawalBarrier();
+      let writing: Promise<unknown> | undefined;
+      const withdrawing = change(s.owner, published.sourceId, 'delete').then(
+        (result) => ({ result }),
+        (error: unknown) => ({ error }),
+      );
       try {
-        await lock`begin`;
-        await lock`select id from allrice_knowledge_sources where id=${published.sourceId} for share`;
-        const [held] = await lock`select pg_backend_pid() pid`;
-        withdrawing = change(s.owner, published.sourceId, 'delete');
-        await expect
-          .poll(
-            async () =>
-              (
-                await f.db`select count(*)::int n from pg_stat_activity where ${held!.pid}::int=any(pg_blocking_pids(pid))`
-              )[0]!.n,
-            { timeout: 5000 },
-          )
-          .toBeGreaterThan(0);
+        const writerPid = await barrier.writer();
         const batcher = new HarnessEventBatcher(async (event) => {
           expect(
             await appendJobEvent({
@@ -1492,27 +1594,32 @@ suite(
               questions: [{ id: 'choice', question: 'IN_FLIGHT_NATIVE_BODY' }],
             }),
           })
-          .finally(() => batcher.close());
-        await expect
-          .poll(
-            async () =>
-              (
-                await f.db`select count(*)::int n from pg_stat_activity where wait_event_type='Lock' and query like '%select s.id,s.status%' and query like '%for share%'`
-              )[0]!.n,
-            { timeout: 5000 },
-          )
-          .toBeGreaterThan(0);
+          .finally(() => batcher.close())
+          .then(
+            (result) => ({ result }),
+            (error: unknown) => ({ error }),
+          );
+        await barrier.reader(writerPid);
       } finally {
-        await lock`rollback`;
-        lock.release();
-        await Promise.all([withdrawing, writing]);
+        await barrier.release();
       }
+      expect(await withdrawing).toEqual({
+        result: { sourceId: published.sourceId },
+      });
+      expect(await writing).toEqual({ result: undefined });
       expect(
         await f.db`select payload from allrice_run_events where run_id=${run.scope.runId} and event_type='harness.native'`,
       ).toHaveLength(0);
       expect(
         await f.db`select * from allrice_task_questions where run_id=${run.scope.runId}`,
       ).toHaveLength(0);
+      for (const rows of [
+        await f.db`select * from allrice_native_questions where source_run_id=${run.scope.runId}`,
+        await f.db`select * from allrice_native_question_waits where run_id=${run.scope.runId}`,
+        await f.db`select * from allrice_employee_method_activations where source_run_id=${run.scope.runId}`,
+        await f.db`select * from allrice_employee_run_steps where run_id=${run.scope.runId} and payload::text like '%IN_FLIGHT_NATIVE_BODY%'`,
+      ])
+        expect(rows).toHaveLength(0);
       expect(
         (
           await f.db`select cancel_reason from allrice_jobs where id=${worker.jobId}`
@@ -1561,6 +1668,30 @@ suite(
           await f.db`update allrice_departments set archived_at=clock_timestamp() where id=${s.departments[1]!.id}`;
         else
           await f.db`update allrice_memberships set active=false where organization_id=${s.owner.organizationId} and user_id=${s.finance.actor.id}`;
+        // The real model guard and both binding/read entry points must refuse
+        // current loss without committing the old permanent-invalidation path.
+        await expect(
+          assertEmployeeContentContext(
+            removed.scope,
+            removed.runtime.generationId,
+            removedWorker,
+          ),
+        ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+        await expect(
+          loadEmployeeRuntimeReferences(
+            removed.scope,
+            removed.runtime.generationId,
+            removedWorker,
+          ),
+        ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+        await expect(
+          prepareEmployeeContentContext(removed.scope),
+        ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+        await assertEmployeeContentContext(
+          retained.scope,
+          retained.runtime.generationId,
+          retainedWorker,
+        );
         for (const type of [
           'assistant.text.delta',
           'assistant.text.completed',
@@ -1593,6 +1724,9 @@ suite(
         const [generation] =
           await f.db`select invalidated_at from allrice_employee_content_contexts where generation_id=${removed.runtime.generationId}`;
         expect(generation!.invalidated_at).toBeNull();
+        expect(
+          await f.db`select source_id from allrice_knowledge_reference_actions where source_id=${published.sourceId} and input->>'action' in ('revoke','delete')`,
+        ).toHaveLength(0);
         await appendJobEvent({
           ...removedWorker,
           type: 'usage.updated',
@@ -1614,6 +1748,14 @@ suite(
           await f.db`update allrice_departments set archived_at=null where id=${s.departments[1]!.id}`;
         else
           await f.db`update allrice_memberships set active=true where organization_id=${s.owner.organizationId} and user_id=${s.finance.actor.id}`;
+        await assertEmployeeContentContext(
+          removed.scope,
+          removed.runtime.generationId,
+          removedWorker,
+        );
+        expect(
+          (await prepareEmployeeContentContext(removed.scope))!.generationId,
+        ).toBe(removed.runtime.generationId);
         await appendJobEvent({
           ...removedWorker,
           type: 'assistant.text.delta',
@@ -1936,6 +2078,12 @@ suite(
         const runtime = await prepareEmployeeContentContext(scope);
         expect(runtime!.generationId).toBe(early.runtime.generationId);
         if (index === 127) {
+          await assertEmployeeContentContext(
+            frozen.scope,
+            frozen.runtime.generationId,
+          );
+          const continued = await runtimeRun(s, [], frozen.scope.sessionId);
+          await finish(continued);
           await expect(
             assertEmployeeContentContext(scope, runtime!.generationId),
           ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
@@ -1959,12 +2107,11 @@ suite(
       const [growth] =
         await f.db`select count(*)::int n from allrice_employee_runs where content_generation_id=${early.runtime.generationId}`;
       expect(growth!.n).toBe(129);
-      await assertEmployeeContentContext(
-        frozen.scope,
-        frozen.runtime.generationId,
-      );
-      const continued = await runtimeRun(s, [], frozen.scope.sessionId);
-      await finish(continued);
+      // The actual own-generation limit retains its old sticky invalidation;
+      // exact discovery above is tested before that independent legacy barrier.
+      await expect(
+        assertEmployeeContentContext(frozen.scope, frozen.runtime.generationId),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
     }, 240000);
 
     it.each([false, true])(
@@ -2068,9 +2215,8 @@ suite(
           : await runtimeRun(s, [], undefined, [early.scope.sessionId]);
         if (derived) await finish(derived);
         await change(s.owner, published.sourceId, 'delete');
-        // Invalidate the source's current native generation through its real
-        // entrypoint first; that global lifecycle fact cannot poison the old
-        // exact frozen message, but the actual later answer remains protected.
+        // Publication Q8 uses exact read/action facts rather than invalidating
+        // the whole generation. An earlier legacy invalidation still binds.
         await expect(
           assertEmployeeContentContext(later.scope, later.runtime.generationId),
         ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
@@ -2087,15 +2233,33 @@ suite(
               derived.scope.sessionId,
             ),
           ).toBe(true);
-        await assertEmployeeContentContext(
-          frozen.scope,
-          frozen.runtime.generationId,
-        );
-        await assertEmployeeContentReferenceMessages(
-          s.owner,
-          early.scope.sessionId,
-          [early.sent.assistantMessage.id],
-        );
+        if (rotate) {
+          // Correct the author's former, unapproved legacy-after-invalidation
+          // allowance. The original legacy contract predates publication Q8.
+          await expect(
+            assertEmployeeContentContext(
+              frozen.scope,
+              frozen.runtime.generationId,
+            ),
+          ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+          await expect(
+            assertEmployeeContentReferenceMessages(
+              s.owner,
+              early.scope.sessionId,
+              [early.sent.assistantMessage.id],
+            ),
+          ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+        } else {
+          await assertEmployeeContentContext(
+            frozen.scope,
+            frozen.runtime.generationId,
+          );
+          await assertEmployeeContentReferenceMessages(
+            s.owner,
+            early.scope.sessionId,
+            [early.sent.assistantMessage.id],
+          );
+        }
         await expect(
           assertEmployeeContentReferenceMessages(
             s.owner,
@@ -2110,8 +2274,14 @@ suite(
             [inherited.sent.assistantMessage.id],
           ),
         ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
-        const continued = await runtimeRun(s, [], frozen.scope.sessionId);
-        await finish(continued);
+        if (rotate)
+          await expect(
+            runtimeRun(s, [], frozen.scope.sessionId),
+          ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+        else {
+          const continued = await runtimeRun(s, [], frozen.scope.sessionId);
+          await finish(continued);
+        }
         if (derived)
           await expect(
             sendChatMessage(

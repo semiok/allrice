@@ -28,6 +28,8 @@ export class ReferenceRuntimeError extends Error {
     super('所选资料尚未就绪、已撤回或访问权限已变化，请重新选择资料。');
   }
 }
+/** Internal source identity, not another wire error or persisted lifecycle. */
+export class ReferencePublicationRuntimeError extends ReferenceRuntimeError {}
 
 /** The immutable revision is a pin, never an authorization token. A reader
  * needs no maintenance privilege and never inherits the uploader's authority. */
@@ -38,11 +40,15 @@ export async function readReferenceSelection(
   lock: boolean,
   sharedReader?: OrganizationSharedReader,
 ) {
+  let publicationSource = false;
   try {
     const [locator] =
-      await sql`select knowledge_source_id from allrice_knowledge_revisions
-      where id=${UuidSchema.parse(revisionId)} and file_object_id is not null and status='published'`;
+      await sql`select r.knowledge_source_id,s.publication_kind from allrice_knowledge_revisions r
+      join allrice_knowledge_sources s on s.id=r.knowledge_source_id
+      where r.id=${UuidSchema.parse(revisionId)} and r.file_object_id is not null and r.status='published'
+        and s.organization_id=${context.organizationId}`;
     if (!locator) throw new ReferenceRuntimeError();
+    publicationSource = !!locator.publication_kind;
     const { source, ownership, legacy, publication, access } =
       await referenceSourceAccess(
         context,
@@ -84,6 +90,12 @@ export async function readReferenceSelection(
       access,
     };
   } catch (error) {
+    if (
+      publicationSource &&
+      (error instanceof DataAccessError ||
+        error instanceof ReferenceRuntimeError)
+    )
+      throw new ReferencePublicationRuntimeError();
     if (error instanceof DataAccessError) throw new ReferenceRuntimeError();
     throw error;
   }
@@ -125,6 +137,7 @@ export async function referencePublicationDependencyRuns(
   sessionId: string,
   sql: Sql,
   messageIds?: readonly string[],
+  includeUserRuns = false,
 ) {
   if (messageIds && !messageIds.length) return [];
   const runs = await sql<{ run_id: string }[]>`
@@ -156,7 +169,7 @@ export async function referencePublicationDependencyRuns(
           and e.error_code is distinct from 'STEER_CONSUMED'
         where d.include_reads
       ) related
-    ) select distinct run_id from dependencies where include_reads order by run_id`;
+    ) select distinct run_id from dependencies where ${includeUserRuns ? sql`true` : sql`include_reads`} order by run_id`;
   return runs.map((r) => r.run_id);
 }
 
@@ -175,6 +188,10 @@ async function publicationHistoryAccess(
     messageIds,
   );
   if (!runs.length) return { used: false, canRead: true, revoked: false };
+  const [read] = await sql`select 1 from allrice_employee_runs er
+    cross join lateral jsonb_array_elements(coalesce(er.reference_reads,'[]'::jsonb)) receipt
+    where er.run_id in ${sql(runs)} limit 1`;
+  if (!read) return { used: false, canRead: true, revoked: false };
   const used = await sql<{ id: string }[]>`
     select distinct s.id from allrice_employee_runs er
     cross join lateral jsonb_array_elements(coalesce(er.reference_reads,'[]'::jsonb)) receipt
@@ -291,7 +308,9 @@ export async function assertReferenceSelections(
       lock,
     );
     if (!isDeepStrictEqual(current.selection, selection))
-      throw new ReferenceRuntimeError();
+      throw current.publication
+        ? new ReferencePublicationRuntimeError()
+        : new ReferenceRuntimeError();
   }
   return selections;
 }

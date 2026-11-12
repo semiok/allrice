@@ -17,6 +17,7 @@ import type { OrganizationSharedReader } from '../organization-shared-reader.ts'
 import {
   readReferenceSelection,
   ReferenceRuntimeError,
+  ReferencePublicationRuntimeError,
   canReferencePublicationScope,
 } from '../reference-runtime.ts';
 import { resolveEffectiveKnowledgeAcl } from '../capabilities/capability-registry.ts';
@@ -203,8 +204,11 @@ export async function resolveEmployeeContentSource(
           !(publication
             ? canReferencePublicationScope(ownership, publication)
             : canReferenceScope(ownership, selection.ownership))
-        )
+        ) {
+          if (publication && input.frozenPublication)
+            throw new ReferencePublicationRuntimeError();
           return unavailable(ref, 'source_scope_mismatch');
+        }
         const access = publication
           ? referenceAccess
           : input.sharedReader
@@ -223,6 +227,11 @@ export async function resolveEmployeeContentSource(
           dependency: { ref, selection },
         };
       } catch (error) {
+        if (
+          input.frozenPublication &&
+          error instanceof ReferencePublicationRuntimeError
+        )
+          throw error;
         if (error instanceof ReferenceRuntimeError) return unavailable(ref);
         throw error;
       }

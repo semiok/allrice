@@ -21,6 +21,7 @@ import {
   assertReferenceSelections,
   retrieveReferenceKnowledgeInTransaction,
   ReferenceRuntimeError,
+  ReferencePublicationRuntimeError,
   hasRevokedReferencePublicationHistory,
   referencePublicationDependencyRuns,
 } from '../reference-runtime.ts';
@@ -31,6 +32,7 @@ import {
   EmployeeSceneStateSchema,
   ReferenceReadSchema,
   ReferenceReadsSchema,
+  ReferenceSelectionsSchema,
   type ReferenceRead,
   type KnowledgeRetrievalResult,
   type EmployeeRuntimeContent,
@@ -79,6 +81,7 @@ export class EmployeeRuntimeContentError extends Error {
     super(message);
   }
 }
+class PublicationContentUnavailableError extends EmployeeRuntimeContentError {}
 export async function assertEmployeeReferencePublicationHistory(
   context: ContentIdentity,
   sessionId: string,
@@ -135,6 +138,42 @@ export async function readEmployeeRuntimeContent(
   instanceOwnerId?: string,
   lock = false,
   selectedSceneIds: readonly string[] = [],
+) {
+  return readRuntimeContent(
+    context,
+    raw,
+    sql,
+    instanceOwnerId,
+    lock,
+    selectedSceneIds,
+  );
+}
+
+async function isPublicationPin(
+  context: ContentIdentity,
+  sourceId: string,
+  revisionId: string,
+  digest: string,
+  sql: ContentSql,
+) {
+  const [source] = await sql`select s.id from allrice_knowledge_sources s
+    join allrice_knowledge_revisions r on r.knowledge_source_id=s.id
+    where s.id=${sourceId} and r.id=${revisionId} and r.checksum=${digest}
+      and s.organization_id=${context.organizationId}
+      and s.publication_kind is not null`;
+  return !!source;
+}
+
+/** Only frozen-message provenance can omit model-only publication inputs.
+ * The public byte-reading entry point above always checks every source. */
+async function readRuntimeContent(
+  context: ContentIdentity,
+  raw: unknown,
+  sql: ContentSql,
+  instanceOwnerId?: string,
+  lock = false,
+  selectedSceneIds: readonly string[] = [],
+  includePublications = true,
 ) {
   const parsed = EmployeeRuntimeContentSchema.safeParse(raw);
   if (!parsed.success) return unavailable();
@@ -247,6 +286,18 @@ export async function readEmployeeRuntimeContent(
         if (identities.has(identity) && identities.get(identity) !== key)
           return unavailable();
         identities.set(identity, key);
+        if (
+          !includePublications &&
+          ref.sourceKind === 'knowledge' &&
+          (await isPublicationPin(
+            context,
+            ref.contentId,
+            ref.revisionId,
+            ref.digest,
+            sql,
+          ))
+        )
+          continue;
         // Check each layer even for a repeated source; readability by a private
         // owner must not authorize a wider company reference.
         const source = await resolveEmployeeContentSource({
@@ -275,6 +326,8 @@ export async function readEmployeeRuntimeContent(
       return unavailable();
     return { snapshot, scenes, sources: [...sources.values()] };
   } catch (error) {
+    if (error instanceof ReferencePublicationRuntimeError)
+      throw new PublicationContentUnavailableError();
     if (error instanceof EmployeeRuntimeContentError) throw error;
     if (error instanceof DataAccessError || error instanceof ZodError)
       return unavailable();
@@ -626,6 +679,7 @@ async function contentGraph(scope: RunScope, sql: ContentSql) {
         ref.sessionId,
         sql,
         ids,
+        true,
       );
       if (!dependencies.length) continue;
       const refs = await sql<
@@ -761,19 +815,21 @@ async function generationIsReadable(
   locked = false,
   expectedBrandKey?: string | null,
   referencedMessageIds?: string[],
+  publicationRuns?: ReadonlySet<string>,
 ) {
   if (
-    await hasRevokedReferencePublicationHistory(
+    !publicationRuns &&
+    (await hasRevokedReferencePublicationHistory(
       identity(scope),
       scope.sessionId,
       sql,
       locked,
       referencedMessageIds,
-    )
+    ))
   )
-    return false;
+    throw new PublicationContentUnavailableError();
   const visitKey = referencedMessageIds
-    ? `${generationId}:${[...referencedMessageIds].sort().join(',')}`
+    ? `${generationId}:${[...referencedMessageIds].sort().join(',')}:${[...(publicationRuns ?? [])].sort().join(',')}`
     : generationId;
   if (visited.has(visitKey)) return true;
   if (visited.size >= 128) return false;
@@ -784,16 +840,14 @@ async function generationIsReadable(
         scope.sessionId,
         sql,
         referencedMessageIds,
+        true,
       )
     : null;
   const [generation] =
     await sql`select generation_id from allrice_employee_content_contexts
     where generation_id=${generationId} and session_id=${scope.sessionId} and organization_id=${scope.organizationId}
       and workspace_id=${scope.workspaceId} and owner_id=${scope.ownerId}
-      and (invalidated_at is null or ${referencedMessageIds !== undefined})`;
-  // A native context invalidated by a later Run is no proof about an earlier
-  // frozen message. External imports revalidate every exact predecessor below;
-  // own native reuse still requires the original non-invalidated generation.
+      and invalidated_at is null`;
   if (!generation) return false;
   const brandKey =
     expectedBrandKey === undefined && scope.runId
@@ -801,6 +855,7 @@ async function generationIsReadable(
       : expectedBrandKey;
   const rows = await sql<
     (PersonalProvenance & {
+      include_publications: boolean;
       content: unknown;
       content_scene_state: unknown;
       reference_selections: unknown;
@@ -809,7 +864,8 @@ async function generationIsReadable(
         { sessionId: string; messages: { id: string }[] }[] | null;
     })[]
   >`
-    select distinct execution_snapshot->'workflowInvocation' brand_workflow,experience_reads,execution_snapshot ? 'personalSkills' as has_personal_skills,execution_snapshot->'instance'->>'id' as personal_instance_id,(select jsonb_agg(jsonb_build_object('id',n->'id','personal',n->'personal')) from jsonb_array_elements(native_skills) n where n ? 'personal') as native_personal_pins,execution_snapshot->'personalSkills' as personal_skills,execution_snapshot->'content' as content,content_scene_state,reference_reads,prompt_snapshot->'sessionReferences' as session_references,prompt_snapshot->'referenceSelections' as reference_selections
+    select distinct ${publicationRuns ? (publicationRuns.size ? sql`run_id in ${sql([...publicationRuns])}` : sql`false`) : sql`true`} as include_publications,
+      execution_snapshot->'workflowInvocation' brand_workflow,experience_reads,execution_snapshot ? 'personalSkills' as has_personal_skills,execution_snapshot->'instance'->>'id' as personal_instance_id,(select jsonb_agg(jsonb_build_object('id',n->'id','personal',n->'personal')) from jsonb_array_elements(native_skills) n where n ? 'personal') as native_personal_pins,execution_snapshot->'personalSkills' as personal_skills,execution_snapshot->'content' as content,content_scene_state,reference_reads,prompt_snapshot->'sessionReferences' as session_references,prompt_snapshot->'referenceSelections' as reference_selections
     from allrice_employee_runs where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
       and session_id=${scope.sessionId} and owner_id=${scope.ownerId} and content_generation_id=${generationId}
       and error_code is distinct from 'STEER_CONSUMED'
@@ -829,17 +885,19 @@ async function generationIsReadable(
         return false;
       await assertPersonalProvenance(reader, row, sql);
       await assertPersonalSceneReads(reader, row, sql, locked);
-      await assertReferenceSelections(
+      await assertGenerationReferences(
         reader,
         row.reference_selections,
+        row.include_publications,
         sql,
         locked,
       );
       const reads = ReferenceReadsSchema.parse(row.reference_reads ?? []);
       for (const read of reads)
-        await assertReferenceSelections(
+        await assertGenerationReferences(
           reader,
           [read.citation.reference],
+          row.include_publications,
           sql,
           locked,
         );
@@ -858,17 +916,18 @@ async function generationIsReadable(
           )
         )
           return false;
-        await readEmployeeRuntimeContent(
+        await readRuntimeContent(
           reader,
           row.content,
           sql,
           scope.ownerId,
           locked,
           state.reads.filter((r) => !r.personal).map((r) => r.sceneId),
+          row.include_publications,
         );
       }
       for (const ref of row.session_references ?? [])
-        await assertEmployeeContentReferenceMessages(
+        await assertReferenceMessages(
           reader,
           ref.sessionId,
           ref.messages.map((m) => m.id),
@@ -876,8 +935,12 @@ async function generationIsReadable(
           visited,
           locked,
           brandKey,
+          publicationRuns,
         );
     } catch (error) {
+      if (error instanceof PublicationContentUnavailableError) throw error;
+      if (error instanceof ReferencePublicationRuntimeError)
+        throw new PublicationContentUnavailableError();
       if (
         error instanceof ExperienceError ||
         error instanceof PersonalSkillError ||
@@ -892,6 +955,29 @@ async function generationIsReadable(
   return true;
 }
 
+async function assertGenerationReferences(
+  reader: ContentIdentity,
+  raw: unknown,
+  includePublications: boolean,
+  sql: ContentSql,
+  lock: boolean,
+) {
+  for (const selection of ReferenceSelectionsSchema.parse(raw ?? [])) {
+    if (
+      !includePublications &&
+      (await isPublicationPin(
+        reader,
+        selection.sourceId,
+        selection.revisionId,
+        selection.digest,
+        sql,
+      ))
+    )
+      continue;
+    await assertReferenceSelections(reader, [selection], sql, lock);
+  }
+}
+
 /** Session imports retain a reference to their source's provenance instead of
  * laundering an old answer into untracked plaintext in a new generation. */
 export async function assertEmployeeContentReferenceMessages(
@@ -903,6 +989,27 @@ export async function assertEmployeeContentReferenceMessages(
   locked = false,
   expectedBrandKey?: string | null,
 ) {
+  return assertReferenceMessages(
+    reader,
+    sessionId,
+    messageIds,
+    sql,
+    visited,
+    locked,
+    expectedBrandKey,
+  );
+}
+
+async function assertReferenceMessages(
+  reader: ContentIdentity,
+  sessionId: string,
+  messageIds: string[],
+  sql: ContentSql,
+  visited: Set<string>,
+  locked: boolean,
+  expectedBrandKey?: string | null,
+  publicationRuns?: ReadonlySet<string>,
+) {
   if (!messageIds.length) return;
   const [session] = await sql<
     { owner_id: string }[]
@@ -910,6 +1017,30 @@ export async function assertEmployeeContentReferenceMessages(
     where id=${sessionId} and organization_id=${reader.organizationId} and workspace_id=${reader.workspaceId}
       and archived_at is null and (owner_id=${reader.actor.id} or visibility<>'private')`;
   if (!session) return unavailable();
+  if (!publicationRuns) {
+    const owner = {
+      ...reader,
+      actor: { type: 'user' as const, id: session.owner_id },
+    };
+    if (
+      await hasRevokedReferencePublicationHistory(
+        owner,
+        sessionId,
+        sql,
+        locked,
+        messageIds,
+      )
+    )
+      throw new PublicationContentUnavailableError();
+    publicationRuns = new Set(
+      await referencePublicationDependencyRuns(
+        owner,
+        sessionId,
+        sql,
+        messageIds,
+      ),
+    );
+  }
   const messages = await sql<
     { id: string; content_generation_id: string | null }[]
   >`select m.id,er.content_generation_id
@@ -942,6 +1073,7 @@ export async function assertEmployeeContentReferenceMessages(
         locked,
         expectedBrandKey,
         messageIds,
+        publicationRuns,
       ))
     )
       return unavailable();

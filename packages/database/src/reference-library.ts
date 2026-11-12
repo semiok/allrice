@@ -542,8 +542,13 @@ async function reserveReferenceFile(
   sizeBytes: number,
   requestInput: postgres.JSONValue,
   origin?: ArtifactOrigin,
-  publication?: { kind: 'file' | 'upload'; originObjectId: string | null },
+  publication?: {
+    kind: 'file' | 'upload';
+    originObjectId: string | null;
+    description: string;
+  },
 ) {
+  const description = publication?.description ?? (v.purpose || '参考资料');
   let source: SourceRow,
     revision = 1;
   if (v.sourceId) {
@@ -573,7 +578,7 @@ async function reserveReferenceFile(
       SourceRow[]
     >`insert into allrice_knowledge_sources
         (id,organization_id,workspace_id,slug,name,description,created_by,ownership,publication_kind,publication_origin_object_id)
-        values (${id},${context.organizationId},${v.workspaceId},${'reference-' + id},${v.fileName},${v.purpose || '参考资料'},${ownership.scope === 'personal' ? ownership.ownerId : context.actor.id},${tx.json(ownership)},${publication?.kind ?? null},${publication?.originObjectId ?? null}) returning *`;
+        values (${id},${context.organizationId},${v.workspaceId},${'reference-' + id},${v.fileName},${description},${ownership.scope === 'personal' ? ownership.ownerId : context.actor.id},${tx.json(ownership)},${publication?.kind ?? null},${publication?.originObjectId ?? null}) returning *`;
     source = created!;
   }
   // Resolve actual current memberships. Platform sessions intentionally omit
@@ -633,11 +638,11 @@ async function reserveReferenceFile(
     .digest('hex')}`;
   const [r] =
     await tx`insert into allrice_knowledge_revisions (organization_id,workspace_id,knowledge_source_id,revision,name,description,status,definition,checksum,created_by,file_object_id,file_name,request_id,request_input,source_artifact_version_id,source_target_key,artifact_snapshot)
-      values (${source.organization_id},${source.workspace_id},${source.id},${revision},${v.fileName},${v.purpose || '参考资料'},'draft',${tx.json(definition)},${digest},${context.actor.id},${file.object.id},${v.fileName},${v.requestId},${tx.json(requestInput)},${origin?.versionId ?? null},${origin?.targetKey ?? null},${origin ? tx.json(origin.snapshot) : null}) returning id`;
+      values (${source.organization_id},${source.workspace_id},${source.id},${revision},${v.fileName},${description},'draft',${tx.json(definition)},${digest},${context.actor.id},${file.object.id},${v.fileName},${v.requestId},${tx.json(requestInput)},${origin?.versionId ?? null},${origin?.targetKey ?? null},${origin ? tx.json(origin.snapshot) : null}) returning id`;
   if (!r) throw new Error('Reference revision insertion failed');
   await tx`update allrice_knowledge_revisions set status='published',published_at=clock_timestamp() where id=${r.id}`;
   await tx`insert into allrice_knowledge_processing(revision_id) values(${r.id})`;
-  await tx`update allrice_knowledge_sources set name=${v.fileName},description=${v.purpose || '参考资料'},updated_at=clock_timestamp() where id=${source.id}`;
+  await tx`update allrice_knowledge_sources set name=${v.fileName},description=${description},updated_at=clock_timestamp() where id=${source.id}`;
   await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,request_id)
       values (${context.organizationId},${v.workspaceId},${context.actor.id},'knowledge.reference.save','knowledge_revision',${r.id},'allowed','scoped_immutable_file',${context.requestId})`;
   return {
@@ -1098,6 +1103,8 @@ export async function publishReference(
   storage: StoragePort,
 ) {
   const v = ReferencePublishInputSchema.parse(input);
+  const parameters = { purpose: v.purpose, audience: v.audience };
+  const description = parameters.purpose || '企业资料';
   const context = scoped(contextInput, v.workspaceId);
   let bytes: Buffer | undefined;
   if (v.origin === 'upload') {
@@ -1156,7 +1163,7 @@ export async function publishReference(
       const savedId = prior ?? canonical?.id;
       if (savedId) {
         const [saved] =
-          await tx`select r.id,r.knowledge_source_id,r.file_object_id,r.description,
+          await tx`select r.id,r.knowledge_source_id,r.file_object_id,r.request_input,
           s.status,s.created_by,s.publication_kind from allrice_knowledge_revisions r
           join allrice_knowledge_sources s on s.id=r.knowledge_source_id
           where r.id=${savedId} and s.organization_id=${context.organizationId} and s.workspace_id=${v.workspaceId}
@@ -1170,8 +1177,13 @@ export async function publishReference(
         if (!policy) throw new ReferenceLibraryError('source_unavailable');
         if (
           !prior &&
-          (saved.description !== (v.purpose || '参考资料') ||
-            !isDeepStrictEqual(publicationAudience(policy), v.audience))
+          !isDeepStrictEqual(
+            {
+              purpose: saved.request_input?.purpose,
+              audience: publicationAudience(policy),
+            },
+            parameters,
+          )
         )
           throw new ReferenceLibraryError('request_conflict');
         if (!prior)
@@ -1255,6 +1267,7 @@ export async function publishReference(
         {
           kind: v.origin,
           originObjectId: v.origin === 'file' ? v.objectId : null,
+          description,
         },
       );
       await tx`insert into allrice_workbench_file_policies
