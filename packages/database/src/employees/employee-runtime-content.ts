@@ -908,6 +908,10 @@ async function generationIsReadable(
   // Bounded provenance; rotate before losing old dependencies. Never silently
   // truncate them while reusing a native summary derived from those sources.
   if (rows.length > 128) return false;
+  const checkedPublicationReads =
+    locked && reader.sessionId === undefined
+      ? { ownerId: scope.ownerId, pins: new Set<string>() }
+      : undefined;
   for (const row of rows) {
     try {
       // Ordinary referenced notes remain usable, but brand-derived answers
@@ -937,6 +941,7 @@ async function generationIsReadable(
           row.include_publications,
           sql,
           locked,
+          checkedPublicationReads,
         );
       if (row.content) {
         const state = parseSceneState(row.content_scene_state);
@@ -998,6 +1003,7 @@ async function assertGenerationReferences(
   includePublications: boolean,
   sql: ContentSql,
   lock: boolean,
+  checked?: { ownerId: string; pins: Set<string> },
 ) {
   for (const selection of ReferenceSelectionsSchema.parse(raw ?? [])) {
     if (
@@ -1011,7 +1017,35 @@ async function assertGenerationReferences(
       ))
     )
       continue;
+    const key =
+      lock && includePublications && reader.sessionId === undefined && checked
+        ? runtimePolicyDigest({
+            reader: {
+              actor: reader.actor,
+              organizationId: reader.organizationId,
+              workspaceId: reader.workspaceId,
+              sessionId: reader.sessionId ?? null,
+            },
+            ownerId: checked.ownerId,
+            includePublications,
+            selection,
+          })
+        : null;
+    if (key && checked!.pins.has(key)) continue;
     await assertReferenceSelections(reader, [selection], sql, lock);
+    if (key) {
+      // The full assertion already holds these exact source/revision/object
+      // locks. Only a timeless independent publication can reuse this proof;
+      // row locks cannot stop a retention or authentication deadline passing.
+      const [retained] = await sql`select o.id from allrice_knowledge_sources s
+        join allrice_knowledge_revisions r on r.knowledge_source_id=s.id
+        join allrice_storage_objects o on o.id=r.file_object_id
+        where s.id=${selection.sourceId} and r.id=${selection.revisionId}
+          and s.organization_id=${reader.organizationId} and s.publication_kind is not null
+          and r.checksum=${selection.digest} and o.checksum=${selection.checksum}
+          and o.retention_until is null`;
+      if (retained) checked!.pins.add(key);
+    }
   }
 }
 

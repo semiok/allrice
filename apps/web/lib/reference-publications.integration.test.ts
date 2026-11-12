@@ -2123,6 +2123,14 @@ suite(
         ...frozenWorker,
         result: { answer: 'FROZEN_SMALL_GRAPH', citations: [] },
       });
+      const growthStages = { prepared: 0, read: 0, completed: 0 },
+        growthStartedAt = performance.now();
+      const reportGrowth = (phase: string) =>
+        console.info('[MET247:reference-growth]', {
+          phase,
+          ...growthStages,
+          elapsedMs: performance.now() - growthStartedAt,
+        });
       for (let index = 0; index < 128; index++) {
         const sent = await sendChatMessage(
           s.owner,
@@ -2138,7 +2146,10 @@ suite(
         const scope = { ...early.scope, runId: sent.run.id };
         const runtime = await prepareEmployeeContentContext(scope);
         expect(runtime!.generationId).toBe(early.runtime.generationId);
+        growthStages.prepared++;
+        if (index % 16 === 0) reportGrowth('prepared');
         if (index === 127) {
+          reportGrowth('boundary');
           await assertEmployeeContentContext(
             frozen.scope,
             frozen.runtime.generationId,
@@ -2160,11 +2171,20 @@ suite(
             worker,
           ),
         ).toHaveLength(1);
+        growthStages.read++;
         await completeJob({
           ...worker,
           result: { answer: 'LATER_GRAPH_DERIVED', citations: [] },
         });
+        growthStages.completed++;
+        if (index % 16 === 15) reportGrowth('completed');
       }
+      expect(growthStages).toEqual({
+        prepared: 128,
+        read: 127,
+        completed: 127,
+      });
+      reportGrowth('finished');
       const [growth] =
         await f.db`select count(*)::int n from allrice_employee_runs where content_generation_id=${early.runtime.generationId}`;
       expect(growth!.n).toBe(129);
@@ -2196,6 +2216,136 @@ suite(
         result: { answer: 'EARLY_GRAPH_REMAINS_SMALL', citations: [] },
       });
     }, 240000);
+
+    it('rechecks repeated actual pins across authority changes and preserves PG retention and authentication expiry', async () => {
+      const s = await setup(),
+        reader = { ...s, owner: s.finance },
+        a = await httpUpload(s.owner),
+        b = await httpUpload(s.owner);
+      await ready(b.revisionId);
+      const prior: Awaited<ReturnType<typeof runtimeRun>>[] = [];
+      let sessionId: string | undefined;
+      for (const published of [a, a, b]) {
+        const run = await runtimeRun(reader, [published.revisionId], sessionId),
+          worker = await lease(run);
+        if (prior.length)
+          expect(run.runtime.generationId).toBe(prior[0]!.runtime.generationId);
+        sessionId = run.scope.sessionId;
+        expect(
+          (
+            await loadEmployeeRuntimeReferences(
+              run.scope,
+              run.runtime.generationId,
+              worker,
+            )
+          ).map((result) => result.citation.reference?.revisionId),
+        ).toEqual([published.revisionId]);
+        await completeJob({
+          ...worker,
+          result: { answer: 'READ_EXACT_PUBLICATION', citations: [] },
+        });
+        prior.push(run);
+      }
+      const current = await runtimeRun(reader, [a.revisionId], sessionId),
+        worker = await lease(current),
+        retained = (await file(s.owner, b.revisionId)).object;
+      expect(current.runtime.generationId).toBe(prior[0]!.runtime.generationId);
+      await change(s.owner, b.sourceId, 'audience', 1, {
+        scope: 'personal',
+        departmentIds: [],
+      });
+      await expect(
+        assertEmployeeContentContext(
+          current.scope,
+          current.runtime.generationId,
+          worker,
+        ),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      await change(s.owner, b.sourceId, 'audience', 2, {
+        scope: 'company',
+        departmentIds: [],
+      });
+      await assertEmployeeContentContext(
+        current.scope,
+        current.runtime.generationId,
+        worker,
+      );
+      // Finite retention always takes the original PG-clock path, even while
+      // unexpired. Metadata changes here do not mutate immutable file bytes.
+      await f.db`update allrice_storage_objects set retention_until=clock_timestamp()+interval '1 hour' where id=${retained.id}`;
+      await assertEmployeeContentContext(
+        current.scope,
+        current.runtime.generationId,
+        worker,
+      );
+      expect(
+        await loadEmployeeRuntimeReferences(
+          current.scope,
+          current.runtime.generationId,
+          worker,
+        ),
+      ).toHaveLength(1);
+      await completeJob({
+        ...worker,
+        result: { answer: 'CURRENT_AUTHORITY_RECHECKED', citations: [] },
+      });
+      await f.db`update allrice_storage_objects set retention_until=clock_timestamp()-interval '1 second' where id=${retained.id}`;
+      await expect(
+        assertEmployeeContentContext(
+          current.scope,
+          current.runtime.generationId,
+        ),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      expect(
+        (
+          await f.db`select invalidated_at from allrice_employee_content_contexts where generation_id=${current.runtime.generationId}`
+        )[0]!.invalidated_at,
+      ).toBeNull();
+      expect(
+        await hasRevokedReferencePublicationHistory(
+          s.finance,
+          current.scope.sessionId,
+        ),
+      ).toBe(false);
+      await change(s.owner, b.sourceId, 'delete', 3);
+      expect(
+        await hasRevokedReferencePublicationHistory(
+          s.finance,
+          current.scope.sessionId,
+        ),
+      ).toBe(true);
+      await expect(
+        assertEmployeeContentContext(
+          current.scope,
+          current.runtime.generationId,
+        ),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      await expect(
+        sendChatMessage(
+          s.finance,
+          s.finance.workspaceId!,
+          current.scope.sessionId,
+          {
+            clientMessageId: randomUUID(),
+            text: '请继续核对',
+          },
+        ),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      const early = prior[0]!;
+      await assertEmployeeContentReferenceMessages(
+        s.finance,
+        early.scope.sessionId,
+        [early.sent.assistantMessage.id],
+      );
+      await f.db`update allrice_sessions set expires_at=clock_timestamp()-interval '1 second' where id=${s.finance.sessionId!}`;
+      await expect(
+        assertEmployeeContentReferenceMessages(
+          s.finance,
+          early.scope.sessionId,
+          [early.sent.assistantMessage.id],
+        ),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+    }, 120000);
 
     it.each([false, true])(
       'frozen early external messages do not inherit future publication reads (later generation=%s)',
