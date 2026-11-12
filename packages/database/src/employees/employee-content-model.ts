@@ -44,7 +44,8 @@ export class EmployeeContentError extends Error {
       | 'source_changed'
       | 'validation_required'
       | 'workflow_invalid'
-      | 'validation_failed',
+      | 'validation_failed'
+      | 'legacy_method_retired',
   ) {
     super(code);
   }

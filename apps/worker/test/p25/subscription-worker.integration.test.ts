@@ -389,66 +389,54 @@ integration(
                 );
               }
               if (mode === 'personal_method') {
-                const inspectTool = 'workspace.employee.method.inspect',
-                  saveTool = 'workspace.employee.method.save_candidate';
-                expect(input.tools?.map((t) => t.name)).toEqual(
-                  expect.arrayContaining([inspectTool, saveTool]),
-                );
-                expect(input.authorizedToolNames).toEqual(
-                  expect.arrayContaining([inspectTool, saveTool]),
-                );
-                for (const stage of [
-                  'test',
-                  'test_status',
-                  'prepare_activation',
-                  'activate',
+                for (const names of [
+                  input.tools?.map((t) => t.name),
+                  input.authorizedToolNames,
                 ])
-                  expect(input.authorizedToolNames).not.toContain(
-                    `workspace.employee.method.${stage}`,
-                  );
-                const call = (
-                  name: string,
-                  callId: string,
-                  args: Record<string, unknown>,
-                ) =>
-                  input.onToolCall!({
-                    name,
-                    id: callId,
-                    arguments: args,
-                  });
-                expect(
-                  JSON.parse(
-                    String(
-                      (
-                        await call(inspectTool, 'inspect-candidate', {
-                          view: 'candidate',
-                        })
-                      ).modelContent,
+                  expect(
+                    names?.filter((name) =>
+                      name.startsWith('workspace.employee.method.'),
                     ),
-                  ),
-                ).toMatchObject({ revision: 0 });
-                const saved = await call(saveTool, 'save-method', {
-                  expectedRevision: 0,
-                  section: 'scene',
-                  scene: { name: '每周核对', appliesWhen: '每周' },
-                  procedure: '先核对原始数据',
-                  changeSummary: '新增周核对',
-                });
-                const receipt = JSON.parse(String(saved.modelContent));
-                expect(receipt).toMatchObject({
-                  revision: 1,
-                  enabled: true,
-                  status: 'saved',
-                });
-                expect(receipt.active).toEqual(receipt.candidate);
-                const [row] =
+                  ).toEqual([]);
+                const before =
                   await fixture.db`select s.revision,s.candidate_revision_id,s.active_revision_id from allrice_employee_content_sets s
                   join allrice_chat_sessions c on c.employee_instance_id=s.instance_id where c.id=${task.sessionId}`;
-                expect(row).toMatchObject({
-                  revision: 1,
-                  candidate_revision_id: receipt.candidate.id,
-                  active_revision_id: receipt.candidate.id,
-                });
+                for (const [action, args] of [
+                  ['inspect', { view: 'candidate' }],
+                  [
+                    'save_candidate',
+                    {
+                      expectedRevision: 0,
+                      section: 'scene',
+                      scene: { name: '每周核对', appliesWhen: '每周' },
+                      procedure: '先核对原始数据',
+                      changeSummary: '新增周核对',
+                    },
+                  ],
+                  [
+                    'restore_candidate',
+                    {
+                      expectedRevision: 0,
+                      sourceRevisionId: randomUUID(),
+                      changeSummary: '恢复旧方法',
+                    },
+                  ],
+                ] as const) {
+                  await expect(
+                    input.onToolCall!({
+                      name: `workspace.employee.method.${action}`,
+                      id: `ungranted-${action}`,
+                      arguments: args,
+                    }),
+                  ).rejects.toMatchObject({ code: 'EMPLOYEE_METHOD_DENIED' });
+                }
+                const after =
+                  await fixture.db`select s.revision,s.candidate_revision_id,s.active_revision_id from allrice_employee_content_sets s
+                  join allrice_chat_sessions c on c.employee_instance_id=s.instance_id where c.id=${task.sessionId}`;
+                expect(after).toEqual(before);
+                const [run] =
+                  await fixture.db`select method_authoring from allrice_employee_runs where run_id=${task.runId}`;
+                expect(run!.method_authoring).toBe(false);
               }
               if (mode === 'image_generation') {
                 expect(input.tools?.map((t) => t.name)).toEqual(

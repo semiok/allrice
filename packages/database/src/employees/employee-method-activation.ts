@@ -306,15 +306,15 @@ export async function prepareEmployeeMethodActivationFromChat(
   );
 }
 
-/** Native Ask User supplies an immutable adopted-answer proof. validate,
- * activate and consume commit together, with receipt-derived idempotency IDs. */
+/** Only consumed historical receipts remain readable. An unconsumed native
+ * answer can no longer publish text; retained proof code awaits adapter removal. */
 export async function activateEmployeeMethodFromChat(input: EmployeeChatCall) {
   const args = EmployeeMethodActivateSchema.parse(input.arguments);
   const { scope } = employeeChatIdentity(input);
   return enterMethodChat(
     input,
     'workspace.employee.method.activate',
-    true,
+    false,
     async (tx, instance) => {
       const { snapshot: frozen } = await assertEmployeeChatExecution(
         tx,
@@ -340,6 +340,10 @@ export async function activateEmployeeMethodFromChat(input: EmployeeChatCall) {
       );
       if (selection.setId !== prepared.content.setId)
         throw new EmployeeContentError('source_changed');
+      // Historical consumption may be read back; no frozen grant or answer
+      // may publish another legacy candidate after retirement.
+      if (!r.consumed_at)
+        throw new EmployeeContentError('legacy_method_retired');
       if (r.consumed_at) {
         const receipt = EmployeeContentReceiptSchema.parse(r.response);
         const [current] =

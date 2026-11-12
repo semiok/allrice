@@ -47,8 +47,8 @@ export const employeeCustomizationTools = [
   { name: 'workspace.employee.method.activate', capability: 'storage:write' },
 ] as const;
 
-/** Same selection at freeze and execution; baseRice must come from the
- * server-verified published identity, never a model or browser field. */
+/** Historical execution eligibility, including frozen method grants. New Run
+ * admission below removes retired methods. baseRice is server-verified. */
 export function employeeCustomizationToolsForInstance(
   kind?: 'general' | 'custom',
   baseRice = false,
@@ -85,9 +85,12 @@ export function withEmployeeCustomizationTools(
         .filter(
           (tool) =>
             capabilities.includes(tool.capability) &&
-            // Old frozen Runs retain their original grants. New saves take
-            // effect directly, so new Runs do not expose the old draft gates.
+            // Keep frozen grants recognizable without admitting any retired
+            // text method or draft gate to a new Run, even if declared.
             ![
+              'workspace.employee.method.inspect',
+              'workspace.employee.method.save_candidate',
+              'workspace.employee.method.restore_candidate',
               'workspace.employee.method.test',
               'workspace.employee.method.test_status',
               'workspace.employee.method.prepare_activation',
