@@ -229,7 +229,6 @@ export function EmployeeSceneList(props: {
   controller: EmployeeSceneCatalogController;
   employeeName: string;
   embedded?: boolean;
-  notice?: string;
   onChoose: (entry: Entry) => void;
   onCreate: () => void;
 }) {
@@ -249,11 +248,6 @@ export function EmployeeSceneList(props: {
       className={capabilityCss.typography}
       aria-labelledby={props.embedded ? heading : undefined}
     >
-      {props.notice && (
-        <p className={css.caption} role="status">
-          {props.notice}
-        </p>
-      )}
       {props.embedded && (
         <EmployeeCapabilityHeading
           id={heading}
@@ -321,7 +315,6 @@ export function EmployeeSceneDialog(props: {
   onClose: () => void;
   onStart: (scene: SceneSelection) => Promise<void>;
   onDeliveries: () => void;
-  onRemoved?: (name: string) => void;
   initial?: { page: 'detail'; entry: Entry } | { page: 'source' };
   onBackToEmployee?: () => void;
   onBackToList?: () => void;
@@ -558,7 +551,6 @@ export function EmployeeSceneDialog(props: {
   async function remove() {
     if (!removing || busy) return;
     if (await catalog.remove(removing)) {
-      props.onRemoved?.(removing.name);
       setRemoving(undefined);
       if (returnToList) returnToList();
       else setPage('list');
