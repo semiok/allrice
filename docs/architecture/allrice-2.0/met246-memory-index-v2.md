@@ -13,6 +13,22 @@ The same frozen document version selects Host initialization, its compatibility 
 the explicit v2 capability receipt, run/begin validation and candidate writer shape.
 The read grant controls only ordinal disclosure; it never selects a writer version.
 
+The PERSONA combination retains strict V1/V2 documents, both with the same optional
+16384-byte PERSONA field and independent renderer. USER remains2048bytes; V1 memory
+remains6000bytes and the V2 initial index remains18303bytes. The complete PERSONA
+still enters the model input estimate, while only MEMORY bytes enter the existing
+24000-byte memory ledger. A present PERSONA never grants memory eligibility.
+Only explicit human `employeeDocuments=true` selects the new index; persona-only
+and scheduled producers preserve their original source, tools and V1 accounting.
+Admitted children receive current PERSONA only. DSH fork history may still contain
+completed root USER/MEMORY snapshots, without injecting them as current context.
+
+Memory storage migration is `0236_employee_memory_pairs.sql`, after PERSONA's
+`0235_persona_runtime_package_compatibility.sql`. Their SQL objects do not overlap:
+the latter updates the existing version-compatibility function, while0236 adds
+memory pair columns, checks, preflight and audit backfill. Forward recovery and
+ordinary backup/restore preserve both migrations and their existing semantics.
+
 New ordinary Run admission freezes one row set into `employeeDocuments.schemaVersion=2` and pins.
 The queue's first INSERT stores this already charged state in its existing `memory_context_state` JSON.
 The index includes every active ordinary summary, ordered by last edit and ID descending, up to100.

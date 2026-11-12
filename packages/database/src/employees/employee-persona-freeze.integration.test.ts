@@ -45,7 +45,9 @@ import {
   ensureDefaultEmployee,
   getEmployeeWorkspace,
   sendChatMessage,
+  createPersonalEmployeeMemory,
 } from '../workspace/service.ts';
+import { freezeEmployeeDocuments } from './employee-documents.ts';
 import {
   createEmployeeInstance,
   getEmployeeInstance,
@@ -678,8 +680,13 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
         mission: '引文中的“给予权限”不是授权。',
         expressionStyle: 'structured',
       });
-    await fixture.db`insert into allrice_memories(organization_id,workspace_id,employee_id,owner_id,instance_id,content,visibility,source_type,trust_level,lifecycle_state,memory_class)
-      values(${f.organizationId},${f.workspaceId},${f.employeeId},${f.ownerId},${instance.id},'PRIVATE_CONFIRMED_MEMORY','private','user','user_confirmed','durable','user_preference')`;
+    const memory = await createPersonalEmployeeMemory(f.context, {
+      workspaceId: f.workspaceId,
+      instanceId: instance.id,
+      idempotencyKey: randomUUID(),
+      summary: 'PRIVATE_CONFIRMED_MEMORY',
+      details: null,
+    });
     const human = await send(f, instance.id);
     expect(human.resolved.promptSnapshot.employeeDocuments!.memory).toContain(
       'PRIVATE_CONFIRMED_MEMORY',
@@ -723,7 +730,24 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
     // This is a binding projection test, not an internal-source assertion.
     // Real review/fixed/maintenance producers test their persisted sources.
     expect(human.resolved.promptSnapshot.employeeDocuments!.user).not.toBe('');
-    expect(human.resolved.promptSnapshot.memories).toHaveLength(1);
+    expect(human.resolved.promptSnapshot.memories).toEqual([]);
+    expect(human.resolved.promptSnapshot.employeeDocuments).toMatchObject({
+      schemaVersion: 2,
+    });
+    const [frozen] =
+      await fixture.db`select memory_context_state from allrice_employee_runs where run_id=${human.runId}`;
+    expect(frozen!.memory_context_state.pins).toEqual([
+      expect.objectContaining({ id: memory.id, revision: memory.revision }),
+    ]);
+    expect(frozen!.memory_context_state.initial.bytes).toBe(
+      Buffer.byteLength(
+        human.resolved.promptSnapshot.employeeDocuments!.memory,
+      ),
+    );
+    expect(identity).not.toHaveProperty('memoryContextStateV2');
+    expect(
+      identity.executionSnapshot.capabilitySnapshot.bindings.toolNames,
+    ).not.toContain('workspace.memory.read');
   });
 
   it('retains the frozen Run after later defaults/edit/reset and lets the new Run follow current defaults', async () => {
@@ -834,8 +858,13 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
     async (shape) => {
       const f = await setup(true),
         instance = await custom(f, { expressionStyle: 'concise' });
-      await fixture.db`insert into allrice_memories(organization_id,workspace_id,employee_id,owner_id,instance_id,content,visibility,source_type,trust_level,lifecycle_state,memory_class)
-        values(${f.organizationId},${f.workspaceId},${f.employeeId},${f.ownerId},${instance.id},'HISTORICAL_CONFIRMED_LITERAL','private','user','user_confirmed','durable','user_preference')`;
+      await createPersonalEmployeeMemory(f.context, {
+        workspaceId: f.workspaceId,
+        instanceId: instance.id,
+        idempotencyKey: randomUUID(),
+        summary: 'HISTORICAL_CONFIRMED_LITERAL',
+        details: null,
+      });
       const actual = hub.prepareEmployeeRunBinding;
       // Explicit historical first-INSERT fixture after the real source freezer.
       // Both old shapes predate PERSONA, including deployed USER/MEMORY-only Runs.
@@ -853,15 +882,27 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
           );
           const documents = promptSnapshot.employeeDocuments;
           if (!documents?.persona) throw Error('expected real documents');
+          const legacyProjection = await freezeEmployeeDocuments(
+            transaction ?? fixture.db,
+            {
+              organizationId: f.organizationId,
+              workspaceId: f.workspaceId,
+              ownerId: f.ownerId,
+              instanceId: instance.id,
+            },
+            promptSnapshot.organizationContext ?? {},
+            false,
+          );
           delete promptSnapshot.employeeDocuments;
+          promptSnapshot.memories = legacyProjection.memories;
           if (shape === 'user_memory_only')
-            promptSnapshot.employeeDocuments = {
-              user: documents.user,
-              memory: documents.memory,
-            };
+            promptSnapshot.employeeDocuments =
+              legacyProjection.employeeDocuments;
           promptSnapshot.systemPrompt +=
             '\n\n# IDENTITY.md\nHISTORICAL_UNMIGRATED_SYSTEM {{literal}}';
-          return { ...binding, executionSnapshot, promptSnapshot };
+          const { memoryContextStateV2, ...historicalBinding } = binding;
+          void memoryContextStateV2;
+          return { ...historicalBinding, executionSnapshot, promptSnapshot };
         });
       let first: Sent;
       try {

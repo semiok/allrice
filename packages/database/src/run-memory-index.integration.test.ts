@@ -213,6 +213,12 @@ suite(
         await fixture.db`select prompt_snapshot,execution_snapshot,memory_context_state from allrice_employee_runs where run_id=${sent.run.id}`;
       expect(saved!.prompt_snapshot.memories).toEqual([]);
       expect(saved!.prompt_snapshot.employeeDocuments.schemaVersion).toBe(2);
+      const documents = saved!.prompt_snapshot.employeeDocuments;
+      expect(documents.persona).toContain('PERSONA.md');
+      expect(
+        JSON.parse(documents.persona.slice('# 人设\n'.length)).source,
+      ).toEqual(saved!.execution_snapshot.persona.source);
+      expect(Buffer.byteLength(documents.persona)).toBeLessThanOrEqual(16384);
       expect(JSON.stringify(saved!.prompt_snapshot)).not.toContain(
         defaultPair.details,
       );
@@ -227,6 +233,12 @@ suite(
       ]);
       expect(saved!.memory_context_state.spentBytes).toBe(
         Buffer.byteLength(saved!.prompt_snapshot.employeeDocuments.memory),
+      );
+      expect(saved!.memory_context_state.initial.bytes).toBe(
+        Buffer.byteLength(documents.memory),
+      );
+      expect(saved!.memory_context_state.spentBytes).toBeLessThan(
+        Buffer.byteLength(documents.memory + documents.persona),
       );
       expect(
         saved!.execution_snapshot.capabilitySnapshot.bindings.toolNames,

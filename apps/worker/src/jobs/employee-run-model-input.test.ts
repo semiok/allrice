@@ -6,6 +6,10 @@ import {
   modelAdmissionTokenEstimate,
 } from '../model-result-budget.js';
 import { mcpCatalogAdmissionInstructions } from '../harness/dsh/native-tools.js';
+import {
+  EmployeeDocumentsSchema,
+  renderMemoryIndexV2,
+} from '@allrice/contracts';
 
 const legacyKernel = {
   systemInstructions: 'GENERIC_POLICY',
@@ -100,5 +104,49 @@ describe('employee first-call input estimates', () => {
     expect(estimateConversationTokens(routed)).toBeGreaterThan(
       estimateConversationTokens(employeeRunModelInput(legacyKernel)),
     );
+  });
+
+  it('includes the independent maximum PERSONA and full V2 index in the real model input estimate', () => {
+    const memory = renderMemoryIndexV2(
+      Array.from({ length: 100 }, () => ({
+        summary: '🧑'.repeat(40),
+        hasDetails: true,
+      })),
+    );
+    const persona =
+      '# PERSONA.md\n' + 'p'.repeat(16384 - '# PERSONA.md\n'.length);
+    const employeeDocuments = EmployeeDocumentsSchema.parse({
+      schemaVersion: 2,
+      persona,
+      user: 'u'.repeat(2048),
+      memory,
+    });
+    const withoutPersona = employeeRunModelInput({
+      ...legacyKernel,
+      employeeDocuments: { ...employeeDocuments, persona: undefined },
+    });
+    const input = employeeRunModelInput({ ...legacyKernel, employeeDocuments });
+    expect(Buffer.byteLength(memory)).toBe(18303);
+    expect(Buffer.byteLength(persona)).toBe(16384);
+    expect(input).toContain(persona);
+    expect(input).toContain(memory);
+    expect(input).toContain('u'.repeat(2048));
+    expect(estimateConversationTokens(input)).toBeGreaterThan(
+      estimateConversationTokens(withoutPersona),
+    );
+    expect(
+      modelAdmissionTokenEstimate({
+        verifiedSubscription: false,
+        workflow: false,
+        limits: {
+          timeoutMs: 60000,
+          maxInputTokens: 1,
+          maxOutputTokens: 100,
+          maxTotalTokens: 101,
+          maxCostCents: 1,
+        },
+        estimatedInputTokens: estimateConversationTokens(input),
+      }),
+    ).toBe(estimateConversationTokens(input) + 100);
   });
 });

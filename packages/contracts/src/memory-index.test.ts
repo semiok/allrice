@@ -35,7 +35,8 @@ describe('v2 complete memory text and immutable version contracts', () => {
     expect(
       EmployeeDocumentsSchema.parse({
         schemaVersion: 2,
-        user: '',
+        persona: 'p'.repeat(16384),
+        user: 'u'.repeat(2048),
         memory: text,
       }).memory,
     ).toBe(text);
