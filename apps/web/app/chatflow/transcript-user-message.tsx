@@ -36,6 +36,7 @@ export function TranscriptUserMessage({
       {message.role === 'user' &&
       message.content.interaction?.type === 'user_question_answer' ? (
         <UserQuestionReceipt
+          messageId={message.id}
           answer={message.content.interaction.answer}
           createdAt={message.createdAt}
           text={message.content.text}

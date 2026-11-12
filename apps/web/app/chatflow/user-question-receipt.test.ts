@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 
 import {
   projectUserQuestionReceipt,
   userQuestionReceiptState,
+  UserQuestionReceipt,
 } from './user-question-receipt';
 
 describe('user question receipt', () => {
@@ -65,4 +68,24 @@ describe('user question receipt', () => {
       note: '',
     });
   });
+  it.each(['adopted', 'pending', 'unknown', 'rejected', undefined] as const)(
+    'keeps a %s receipt compact and only labels accepted answers as answered',
+    (status) => {
+      const html = renderToStaticMarkup(
+        createElement(UserQuestionReceipt, {
+          answer: {
+            questionId: 'question',
+            answers: [{ id: 'format', selected: [] }],
+          },
+          text: '文件格式：跳过',
+          createdAt: '2026-11-10T00:00:00Z',
+          status,
+        }),
+      );
+      expect(html).toContain('aria-label="用户确认结果"');
+      expect(html).toContain('aria-expanded="false"');
+      expect(html).not.toContain('<dl');
+      expect(html.includes('1/1 已回答')).toBe(status === 'adopted');
+    },
+  );
 });

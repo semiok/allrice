@@ -14,11 +14,22 @@ import {
 
 type Choice = boolean | string | null | undefined;
 type Choices = Map<string, Choice>;
-const ReadingContext = createContext<{
+type ReadingStore = {
   scope: string[];
   values: Choices;
   setValues: Dispatch<SetStateAction<Choices>>;
-} | null>(null);
+};
+const ReadingContext = createContext<ReadingStore | null>(null);
+const QuestionReadingContext = createContext<ReadingStore | null>(null);
+
+/** Questions may move from a user message into their late-restored native
+ * process. Their exact answer identity keeps the same mounted-transcript store. */
+export function useQuestionDisclosureOpen(keys: readonly string[]) {
+  const context = useContext(QuestionReadingContext);
+  return keys.some(
+    (key) => context?.values.get(JSON.stringify([key])) === true,
+  );
+}
 
 export function WorkProcessDisclosureScope({
   id,
@@ -41,8 +52,11 @@ export function WorkProcessDisclosureScope({
 export function useProcessDisclosure<T extends Choice>(
   key: string | string[],
   initial: T,
+  sharedQuestion = false,
 ) {
-  const context = useContext(ReadingContext);
+  const localContext = useContext(ReadingContext);
+  const questionContext = useContext(QuestionReadingContext);
+  const context = (sharedQuestion && questionContext) || localContext;
   const local = useState(initial);
   const keys = (Array.isArray(key) ? key : [key]).map((id) =>
     JSON.stringify([...(context?.scope ?? []), id]),
@@ -105,7 +119,9 @@ function textPoint(node: Node, offset: number) {
     key: keyOf(block, 'data-process-content'),
     inView: inView(block),
     text: block.textContent,
+    appendOnly: block.hasAttribute('data-process-append'),
     offset: range.toString().length,
+    atTextStart: node.nodeType === Node.TEXT_NODE && offset === 0,
   };
 }
 function restoredPoint(
@@ -113,11 +129,24 @@ function restoredPoint(
   point: NonNullable<ReturnType<typeof textPoint>>,
 ) {
   const block = locate(root, 'data-process-content', point.key);
-  if (!block || block.textContent !== point.text) return;
+  if (
+    !block ||
+    (block.textContent !== point.text &&
+      !(
+        point.appendOnly &&
+        block.hasAttribute('data-process-append') &&
+        point.text &&
+        block.textContent?.startsWith(point.text)
+      ))
+  )
+    return;
   const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
   let offset = point.offset;
   for (let text = walker.nextNode(); text; text = walker.nextNode()) {
-    if (offset <= text.textContent!.length)
+    if (
+      offset < text.textContent!.length ||
+      (offset === text.textContent!.length && !point.atTextStart)
+    )
       return { block, node: text, offset };
     offset -= text.textContent!.length;
   }
@@ -154,6 +183,10 @@ function takeReadingSnapshot(root: HTMLElement) {
     }));
   return {
     active,
+    link:
+      inside?.tagName === 'A'
+        ? { href: inside.getAttribute('href'), text: inside.textContent }
+        : undefined,
     control: marker ? keyOf(marker, 'data-process-control') : null,
     content: inside && textPoint(inside, 0),
     inView: !!inside && inView(inside),
@@ -167,7 +200,11 @@ function takeReadingSnapshot(root: HTMLElement) {
 
 /** One synchronous React commit, never an event cache or an async restore. */
 export class WorkProcessReadingState extends Component<
-  { root: RefObject<HTMLElement | null>; children: ReactNode },
+  {
+    root: RefObject<HTMLElement | null>;
+    children: ReactNode;
+    shareQuestions?: boolean;
+  },
   { values: Choices },
   ReturnType<typeof takeReadingSnapshot>
 > {
@@ -198,8 +235,18 @@ export class WorkProcessReadingState extends Component<
       const marker =
         locate(root, 'data-process-content', saved.content?.key ?? null) ??
         locate(root, 'data-process-control', saved.control);
+      const links =
+        saved.link && marker
+          ? [...marker.querySelectorAll<HTMLAnchorElement>('a[href]')].filter(
+              (link) =>
+                link.getAttribute('href') === saved.link!.href &&
+                link.textContent === saved.link!.text,
+            )
+          : [];
       const target =
-        marker?.closest<HTMLElement>('[data-disclosure-row]') ?? marker;
+        links.length === 1
+          ? links[0]
+          : (marker?.closest<HTMLElement>('[data-disclosure-row]') ?? marker);
       if (target && !target.matches(':disabled,[aria-disabled="true"]')) {
         target.focus({ preventScroll: true });
         if (saved.inView) reading ??= target;
@@ -211,7 +258,8 @@ export class WorkProcessReadingState extends Component<
       saved.selection &&
       selection &&
       (!saved.selection.anchor.block.isConnected ||
-        !saved.selection.focus.block.isConnected)
+        !saved.selection.focus.block.isConnected ||
+        selection.toString() !== saved.selection.text)
     ) {
       const anchor = restoredPoint(root, saved.selection.anchor);
       const focus = restoredPoint(root, saved.selection.focus);
@@ -234,19 +282,25 @@ export class WorkProcessReadingState extends Component<
       });
   }
   override render() {
-    return (
-      <ReadingContext.Provider
-        value={{
-          scope: [],
-          values: this.state.values,
-          setValues: (next) =>
-            this.setState((state) => ({
-              values: typeof next === 'function' ? next(state.values) : next,
-            })),
-        }}
-      >
+    const value: ReadingStore = {
+      scope: [],
+      values: this.state.values,
+      setValues: (next) =>
+        this.setState((state) => ({
+          values: typeof next === 'function' ? next(state.values) : next,
+        })),
+    };
+    const content = (
+      <ReadingContext.Provider value={value}>
         {this.props.children}
       </ReadingContext.Provider>
+    );
+    return this.props.shareQuestions ? (
+      <QuestionReadingContext.Provider value={value}>
+        {content}
+      </QuestionReadingContext.Provider>
+    ) : (
+      content
     );
   }
 }

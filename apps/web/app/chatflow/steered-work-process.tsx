@@ -59,6 +59,9 @@ export function SteeredWorkProcess({
       <WorkProcess
         {...props}
         items={segment.items}
+        questions={props.questions?.filter((question) =>
+          segment.items.some((item) => item.id === `tool:${question.callId}`),
+        )}
         parts={segment.parts}
         presentation={{
           ...presentation,

@@ -3449,6 +3449,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         result: null,
       }));
       try {
+        f.state.preferences[user]!.transcriptView = 'standard';
         f.state.messages = navigationHistory(2);
         f.state.messages.at(-1)!.runId = run;
         f.state.messages.at(-1)!.content.text = '核对完成。';
@@ -3493,7 +3494,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByRole('region', { name: '工作过程', exact: true })
           .last();
         const header = process.locator('[data-disclosure-row]').first();
-        const cards = process.locator('[id^="operation-"]');
+        const processBody = process.locator('..');
+        const cards = processBody.locator('[id^="operation-"]');
         const scroll = f.page.locator('[data-conversation-scroll]');
         await cards.first().waitFor({ state: 'attached' });
         expect(await header.getAttribute('aria-expanded')).toBe('false');
@@ -3535,12 +3537,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             after.top,
           );
           expect(
-            (await process.locator('[data-work-reply]').boundingBox())!.y,
+            (await processBody.locator('[data-work-reply]').boundingBox())!.y,
           ).toBeGreaterThan((await cards.last().boundingBox())!.y);
-          const tools = process.getByRole('button', { name: '已调用工具' });
+          expect(await process.locator('[data-work-reply]').count()).toBe(0);
+          const tools = processBody.getByRole('button', { name: '已调用工具' });
           const toolsTop = (await tools.boundingBox())!.y;
           await tools.click();
-          await process.getByRole('list', { name: '工作步骤' }).waitFor();
+          await processBody.getByRole('list', { name: '工作步骤' }).waitFor();
           await settle();
           expect(
             Math.abs((await tools.boundingBox())!.y - toolsTop),
@@ -4351,7 +4354,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         };
         await card
           .locator('header')
-          .getByText('已完成', { exact: true })
+          .getByRole('status', { name: '已完成', exact: true })
           .waitFor();
         expect(await stopping.count()).toBe(0);
         await collapse.click();
@@ -4364,7 +4367,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         };
         await card
           .locator('header')
-          .getByText('未完成', { exact: true })
+          .getByRole('status', { name: '未完成', exact: true })
           .waitFor();
         expect((await card.boundingBox())!.height).toBe(runningHeight);
         await detail.click();
@@ -4383,12 +4386,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         operation.snapshot.status = 'unknown';
         await card
           .locator('header')
-          .getByText('结果待确认', { exact: true })
+          .getByRole('status', { name: '结果待确认', exact: true })
           .waitFor();
         expect(
           await card
             .locator('header')
-            .getByText('未完成', { exact: true })
+            .getByRole('status', { name: '未完成', exact: true })
             .count(),
         ).toBe(0);
         expect(requests).toHaveLength(2);
@@ -8454,24 +8457,62 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           name: '工作过程',
           exact: true,
         });
+        const processBody = process.locator('..');
         const toggle = process.getByRole('button', { name: /^工作过程/ });
         await expect.poll(() => toggle.innerText()).toContain('1 次未成功');
         expect(await toggle.innerText()).toContain('1 次未成功');
         expect(await toggle.getAttribute('aria-expanded')).toBe('false');
-        expect(await process.getByRole('list').count()).toBe(0);
+        expect(await processBody.getByRole('list').count()).toBe(0);
         await toggle.focus();
         await f.page.keyboard.press('Enter');
-        await process
-          .getByRole('region', { name: '工作步骤', exact: true })
-          .getByRole('button')
-          .click();
-        const groups = process.getByRole('list', { name: '工作步骤' });
+        const groups = processBody.getByRole('list', { name: '工作步骤' });
         expect(await groups.getByRole('listitem').count()).toBe(10);
+        expect(
+          await groups
+            .locator('[data-step-id]')
+            .evaluateAll((nodes) =>
+              nodes.map((node) => node.getAttribute('data-step-id')),
+            ),
+        ).toEqual(Array.from({ length: 10 }, (_, i) => `tool:call-${i}`));
+        await groups
+          .locator('[data-step-id="tool:call-0"]')
+          .getByRole('button', { name: '查询实时行情', exact: true })
+          .click();
+        await groups
+          .locator('[data-step-id="tool:call-9"]')
+          .getByRole('button', { name: '生成交付成果', exact: true })
+          .click();
         expect(await groups.innerText()).toContain('已查询第 1 个标的的行情');
         expect(await groups.innerText()).toContain('已生成财报摘要.docx');
-        expect(await groups.getByRole('button').count()).toBe(0);
-        expect(await groups.locator('svg').count()).toBe(10);
-        expect(await groups.innerText()).not.toMatch(/累计|已完成|次操作/);
+        expect(await groups.getByRole('button').count()).toBe(10);
+        expect(
+          await groups.locator('li').evaluateAll((rows) =>
+            rows.map((row) => {
+              const header = row.querySelector('[data-disclosure-row]')!;
+              const leading = header.firstElementChild!;
+              return [
+                row.getAttribute('data-category'),
+                header.querySelectorAll(':scope > [class*="leading"]').length,
+                leading.querySelectorAll('[class*="iconIdle"] svg').length,
+                leading.querySelectorAll('svg[class*="chevronHover"]').length,
+                leading.querySelectorAll(
+                  ':scope > svg:not([class*="chevronHover"])',
+                ).length,
+              ];
+            }),
+          ),
+        ).toEqual(
+          Array.from({ length: 10 }, (_, i) => [
+            i === 9 ? 'write' : 'market',
+            1,
+            [0, 8, 9].includes(i) ? 0 : 1,
+            [0, 8, 9].includes(i) ? 0 : 1,
+            [0, 8, 9].includes(i) ? 1 : 0,
+          ]),
+        );
+        expect(await groups.locator('[data-status="已完成"]').count()).toBe(9);
+        expect(await groups.locator('[data-status="未成功"]').count()).toBe(1);
+        expect(await groups.innerText()).not.toMatch(/累计|次操作/);
         expect(await groups.innerText()).toContain('行情服务超时');
         expect(
           await groups.evaluate(
@@ -9609,9 +9650,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await toggle.click();
       await expect.poll(() => toggle.getAttribute('aria-checked')).toBe('true');
       await settings.getByRole('button', { name: '关闭设置' }).click();
-      await process.getByText('正在核对本次数据。', { exact: true }).waitFor();
+      await process
+        .locator('..')
+        .getByText('正在核对本次数据。', { exact: true })
+        .waitFor();
       await f.page.reload();
-      await process.getByText('正在核对本次数据。', { exact: true }).waitFor();
+      await process
+        .locator('..')
+        .getByText('正在核对本次数据。', { exact: true })
+        .waitFor();
       await openPreferences();
       expect(await toggle.getAttribute('aria-checked')).toBe('true');
       await toggle.click();
@@ -9796,7 +9843,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       const process = f.page
         .locator(`#message-${assistant.id}`)
         .getByRole('region', { name: '工作过程', exact: true });
-      const detail = process.getByText('核对客户名单', { exact: true });
+      const processBody = process.locator('..');
+      const read = processBody
+        .locator('[data-step-id="tool:read"]')
+        .getByRole('button', { name: '读取文件', exact: true });
+      const detail = processBody
+        .locator('[data-step-id="tool:read"]')
+        .getByText('核对客户名单', { exact: true });
+      await read.click();
       await detail.waitFor();
       const settings = f.page.getByRole('dialog', {
         name: '设置',
@@ -9822,26 +9876,31 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       };
       await set('工作步骤展示', 'compact');
       expect(
-        await process
+        await processBody
           .getByRole('region', { name: '工作步骤', exact: true })
           .count(),
       ).toBe(1);
       expect(await detail.isVisible()).toBe(false);
       await set('工作步骤展示', 'standard');
+      const group = processBody.getByRole('button', { name: '正在读取文件' });
+      await group.click();
+      if ((await read.getAttribute('aria-expanded')) !== 'true')
+        await read.click();
       await detail.waitFor();
       expect(
-        await process
+        await processBody
           .getByRole('region', { name: '工作步骤', exact: true })
           .count(),
       ).toBe(1);
       await set('工作步骤展示', 'detailed');
       await detail.waitFor();
       expect(
-        await process
-          .getByRole('region', { name: '工作步骤', exact: true })
-          .count(),
+        await processBody.getByRole('button', { name: '正在读取文件' }).count(),
       ).toBe(0);
       await set('工作步骤展示', 'verbose');
+      expect(
+        await processBody.getByRole('button', { name: '正在读取文件' }).count(),
+      ).toBe(0);
       f.state.events.push(
         event(3, 'tool.completed', {
           toolCallId: 'read',
@@ -9857,16 +9916,20 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       assistant.status = 'completed';
       assistant.content.text = '本次核对完成。';
       await f.page.reload();
-      await process.getByText('本次核对完成。', { exact: true }).waitFor();
-      await process.getByText('我先核对本次资料。', { exact: true }).waitFor();
+      await processBody.getByText('本次核对完成。', { exact: true }).waitFor();
+      await processBody
+        .getByText('我先核对本次资料。', { exact: true })
+        .waitFor();
       await set('工作步骤展示', 'detailed');
       expect(
-        await process
+        await processBody
           .getByText('我先核对本次资料。', { exact: true })
           .isVisible(),
       ).toBe(false);
       await set('工作步骤收起时机', 'next-input');
-      await process.getByText('我先核对本次资料。', { exact: true }).waitFor();
+      await processBody
+        .getByText('我先核对本次资料。', { exact: true })
+        .waitFor();
       // Queue records have not entered the transcript and must not close it.
       f.state.queue.push({
         id: id(14100),
@@ -9876,7 +9939,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         createdAt: now,
       });
       await f.page.reload();
-      await process.getByText('我先核对本次资料。', { exact: true }).waitFor();
+      await processBody
+        .getByText('我先核对本次资料。', { exact: true })
+        .waitFor();
       f.state.messages.push({
         id: id(14102),
         role: 'user',
@@ -9886,9 +9951,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         createdAt: now,
       });
       await f.page.reload();
-      await process.getByText('本次核对完成。', { exact: true }).waitFor();
+      await processBody.getByText('本次核对完成。', { exact: true }).waitFor();
       expect(
-        await process
+        await processBody
           .getByText('我先核对本次资料。', { exact: true })
           .isVisible(),
       ).toBe(false);
@@ -9970,23 +10035,35 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         name: '工作过程',
         exact: true,
       });
-      await process.getByText('入口文件已确认。', { exact: true }).waitFor();
+      const processBody = process.locator('..');
+      await processBody
+        .getByText('入口文件已确认。', { exact: true })
+        .waitFor();
       expect(
         await f.page.getByText('我先检查项目目录。', { exact: true }).count(),
       ).toBe(1);
-      const steps = process.getByRole('region', {
+      const steps = processBody.getByRole('region', {
         name: '工作步骤',
         exact: true,
       });
-      await steps.getByRole('button').click();
-      const text = await process.innerText();
+      const group = steps.getByRole('button', {
+        name: '已读取文件',
+        exact: true,
+      });
+      await group.click();
+      await steps
+        .locator('[data-step-id="tool:read"]')
+        .getByRole('button', { name: '读取文件', exact: true })
+        .click();
+      const text = await processBody.innerText();
+      expect(text.indexOf('已读取入口文件')).toBeGreaterThanOrEqual(0);
       expect(text.indexOf('我先检查项目目录。')).toBeLessThan(
         text.indexOf('已读取入口文件'),
       );
       expect(text.indexOf('已读取入口文件')).toBeLessThan(
         text.indexOf('入口文件已确认。'),
       );
-      expect(await steps.getByRole('button').count()).toBe(1);
+      expect(await group.count()).toBe(1);
       expect(await process.getByText('回复中…', { exact: true }).count()).toBe(
         1,
       );
@@ -10034,20 +10111,22 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page.reload();
       await f.page.getByText('入口文件已确认。', { exact: true }).waitFor();
       expect(
-        await process
+        await processBody
           .getByText('我先检查项目目录。', { exact: true })
           .isVisible(),
       ).toBe(false);
       await process.getByRole('button', { name: /^工作过程/ }).click();
-      await process.getByText('我先检查项目目录。', { exact: true }).waitFor();
-      await steps.getByRole('button').click();
+      await processBody
+        .getByText('我先检查项目目录。', { exact: true })
+        .waitFor();
+      await group.click();
       expect(
-        await process
+        await processBody
           .getByText('我先检查项目目录。', { exact: true })
           .isVisible(),
       ).toBe(true);
       expect(
-        await process
+        await processBody
           .getByText('入口文件已确认。', { exact: true })
           .isVisible(),
       ).toBe(true);
@@ -10055,7 +10134,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await f.page.getByText('入口文件已确认。', { exact: true }).count(),
       ).toBe(1);
       expect(
-        await process.getByRole('list', { name: '工作步骤' }).count(),
+        await processBody.getByRole('list', { name: '工作步骤' }).count(),
       ).toBe(1);
     } finally {
       await f.close();
@@ -10519,6 +10598,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       // Only the running receipt's own status says it is in progress.
       const inProgress = f.page
         .getByRole('region', { name: '工作过程', exact: true })
+        .locator('..')
         .getByText('进行中', { exact: true })
         .filter({ visible: true });
       expect(await inProgress.count()).toBe(1);
@@ -10740,11 +10820,18 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         replyId: 'first',
         text: '我先读取资料。',
       });
+      const preamble = f.page.getByText('我先读取资料。', { exact: true });
+      await preamble.waitFor();
+      const preambleNode = await preamble.elementHandle();
       await push('tool.completed', {
         toolCallId: 'read',
         name: 'read',
         summary: '已读取报告',
       });
+      await f.page.locator('[data-step-id="tool:read"]').waitFor();
+      expect(await preambleNode!.evaluate((node) => node.isConnected)).toBe(
+        true,
+      );
       let text =
         '固定首段。\n\n' +
         Array.from({ length: 24 }, (_, i) => `第 ${i + 1} 段分析。`).join(
