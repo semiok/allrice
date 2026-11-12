@@ -3313,82 +3313,38 @@ suite(
               },
             }),
           );
-          if (width > 760) {
-            await f.page.route('**/api/v1/workbench/files?*', (route) =>
-              route.fulfill({
-                json: {
-                  files: [
-                    {
-                      objectId: childId,
-                      workspaceId: B,
-                      fileName: reference.fileName,
-                      mediaType: reference.mediaType,
-                      sizeBytes: reference.sizeBytes,
-                      checksum: reference.checksum,
-                      createdAt: now,
-                      ownedByMe: false,
-                      canMaintain: false,
-                      revision: 0,
-                      sharing: {
-                        scope: 'company',
-                        departmentIds: [],
-                        departmentNames: [],
-                      },
-                      category: 'reference',
-                      sessionIds: [],
-                      artifact: null,
-                      isReference: true,
-                      reference,
-                    },
-                  ],
-                  quotableFileIds: [childId],
-                  truncated: false,
-                  options: {
-                    writable: false,
-                    maintenanceLevel: 'personal',
-                    departmentId: null,
-                    departments: [],
-                  },
-                },
-              }),
-            );
-            await f.page.route(
-              '**/api/v1/workbench/files/*/reference?*',
-              (route) => route.fulfill({ json: { reference } }),
-            );
-          }
+          const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+          await input.fill('打开共享参考资料期间保留草稿');
           await f.page
             .getByRole('button', { name: '添加文件', exact: true })
             .click();
           await f.page
             .getByRole('menuitem', { name: '参考资料', exact: true })
             .click();
-          if (width > 760) {
-            await f.page
-              .getByRole('region', { name: '交付成果', exact: true })
-              .getByRole('button', {
-                name: `文件选项 ${reference.fileName}`,
-                exact: true,
-              })
-              .click();
-            await f.page
-              .getByRole('menuitem', { name: '引用文件', exact: true })
-              .click();
-          } else
-            await f.page
-              .getByRole('button', { name: '引用 v1', exact: true })
-              .click();
+          const library = f.page.getByRole('dialog', {
+            name: '参考资料',
+            exact: true,
+          });
+          await library
+            .getByRole('button', { name: reference.fileName, exact: true })
+            .waitFor();
+          await library
+            .getByRole('button', { name: '引用 v1', exact: true })
+            .click();
           const chip = f.page.getByRole('button', {
             name: '移除资料 Budget-v1.txt v1',
             exact: true,
           });
           await chip.waitFor();
+          expect(await input.inputValue()).toBe('打开共享参考资料期间保留草稿');
+          expect(f.pending).toHaveLength(0);
           await f.send('核对资料中的预算');
           await f.waitPending(1);
           expect(f.pending[0]!.body.referenceRevisionIds).toEqual([runId]);
           expect(f.pending[0]!.body).not.toHaveProperty('referenceSelections');
           await f.respond(0, false);
           await chip.waitFor();
+          expect(await input.inputValue()).toBe('核对资料中的预算');
           await f.send('核对资料中的预算');
           await f.waitPending(2);
           expect(f.pending[1]!.body).toEqual(f.pending[0]!.body);

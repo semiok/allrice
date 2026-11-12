@@ -11690,8 +11690,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .waitFor();
       await f.panel.getByText('全部 · 共 0 条', { exact: true }).waitFor();
       await f.panel
-        .getByRole('button', { name: '关闭工作台', exact: true })
+        .getByRole('button', { name: '返回员工详情', exact: true })
         .click();
+      const details = f.page.getByRole('dialog', {
+        name: `${f.state.employeeDetails.profile.name}员工详情`,
+        exact: true,
+      });
+      await details.getByRole('button', { name: '关闭', exact: true }).click();
+      await details.waitFor({ state: 'hidden' });
       await header.getByRole('button', { name: '能力', exact: true }).click();
       await f.page
         .getByRole('region', { name: '内容同事 · 能力', exact: true })
