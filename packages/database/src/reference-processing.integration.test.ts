@@ -158,6 +158,79 @@ suite(
       expect(await claimReferenceProcessing(true)).toBeNull();
     });
 
+    it.each([false, true])(
+      'persists exact valid JSON characters for initial processing and old-ready backfill: backfill=%s',
+      async (backfill) => {
+        const text =
+          ' \r\n{ "id":9007199254740993, "tag":"第一次", "tag":"第二次", "tail":"末尾中文" }\r\n ';
+        const saved = await upload(
+          Buffer.from(text),
+          'application/json',
+          '原文.json',
+        );
+        if (backfill) {
+          const claim = (await claimReferenceProcessing())!;
+          await finishReferenceProcessing(claim, [
+            { content: '旧索引', start: 0, end: 3 },
+          ]);
+        }
+        expect(await processNextReference(root)).toBe(true);
+        const [stored] =
+          await f.db`select d.full_text,d.checksum,d.full_text_locations,p.state
+        from allrice_knowledge_documents d join allrice_knowledge_processing p on p.revision_id=d.knowledge_revision_id
+        where d.knowledge_revision_id=${saved.revisionId}`;
+        expect(stored!.full_text).toBe(text);
+        expect(stored!.checksum).toBe(saved.object.checksum);
+        expect(stored!.state).toBe('ready');
+        expect(stored!.full_text_locations.units).toEqual([
+          { label: '正文', start: 0, end: text.length },
+        ]);
+      },
+    );
+
+    it.each([
+      { mediaType: 'application/pdf', fileName: '损坏.pdf' },
+      {
+        mediaType:
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        fileName: '损坏.docx',
+      },
+      {
+        mediaType:
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        fileName: '损坏.xlsx',
+      },
+      {
+        mediaType:
+          'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        fileName: '损坏.pptx',
+      },
+    ])(
+      'retries old approved-format metadata but leaves malformed bytes failed without full text: $fileName',
+      async ({ mediaType, fileName }) => {
+        const saved = await upload(
+          Buffer.from('not a valid binary document'),
+          mediaType,
+          fileName,
+        );
+        await f.db`update allrice_knowledge_processing set state='unsupported',failure='prior unsupported format' where revision_id=${saved.revisionId}`;
+        await action(saved.sourceId, 'retry');
+        expect(await processNextReference(root)).toBe(true);
+        expect(
+          (
+            await f.db`select state from allrice_knowledge_processing where revision_id=${saved.revisionId}`
+          )[0]!.state,
+        ).toBe('failed');
+        expect(
+          await f.db`select id from allrice_knowledge_documents where knowledge_revision_id=${saved.revisionId}`,
+        ).toHaveLength(0);
+        expect(
+          (await getReferenceFile(f.context, f.workspaceId, saved.revisionId))
+            .object.checksum,
+        ).toBe(saved.object.checksum);
+      },
+    );
+
     it('completes real chat and revocation before releasing a paused real parser', async () => {
       const { bytes } = await generateDeliverable({
         format: 'docx',

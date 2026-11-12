@@ -102,7 +102,8 @@ function normalizeText(value: string) {
     .trim();
 }
 
-function hasExtractableText(text: string) {
+/** Shared quality predicate; callers must assess each physical page separately. */
+export function hasExtractablePdfText(text: string) {
   for (const character of text) {
     const code = character.codePointAt(0)!;
     if (
@@ -309,7 +310,7 @@ export async function readPdfDocument(input: {
       : undefined;
     const tablePages = structured?.pages ?? [];
     const pagesWithTables = tablePages.filter((page) => page.tables.length > 0);
-    const quality = rawPages.some((page) => hasExtractableText(page.text))
+    const quality = rawPages.some((page) => hasExtractablePdfText(page.text))
       ? 'digital_text'
       : 'no_extractable_text';
     const warningCodes: PdfWarningCode[] = [];

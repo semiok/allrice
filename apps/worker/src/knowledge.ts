@@ -22,6 +22,7 @@ export async function readKnowledgeText(
   storage: LocalStorageAdapter,
   object: Parameters<LocalStorageAdapter['get']>[0],
   verifyChecksum = false,
+  options: { preserveText?: true } = {},
 ) {
   if (object.sizeBytes > maximumKnowledgeTextBytes) {
     throw new Error('knowledge source file exceeds the indexing limit');
@@ -55,9 +56,13 @@ export async function readKnowledgeText(
   )
     throw new Error('资料文件校验失败');
   const content = verifyChecksum
-    ? new TextDecoder('utf-8', { fatal: true }).decode(data)
+    ? new TextDecoder('utf-8', {
+        fatal: true,
+        ignoreBOM: options.preserveText === true,
+      }).decode(data)
     : data.toString('utf8');
-  if (object.mediaType !== 'application/json') return content;
+  if (options.preserveText || object.mediaType !== 'application/json')
+    return content;
   try {
     return JSON.stringify(JSON.parse(content), null, 2);
   } catch {

@@ -7,7 +7,7 @@ import {
 } from '@allrice/office-runtime/pdf-reader';
 
 import { HandlerError } from './errors.js';
-import { OfficePackage, elements, ns } from './office/package.js';
+import { OfficePackage, children, elements, ns } from './office/package.js';
 
 export const maximumDocumentBytes = 20 * 1024 * 1024;
 export const defaultMaximumCharacters = 120_000;
@@ -132,17 +132,121 @@ async function parsePptx(bytes: Buffer, maximumCharacters: number) {
   // Reuse the Office reader's relationship order and namespace-aware XML.
   const pkg = await OfficePackage.open(bytes, 'pptx', { readOnly: true });
   const units: ParsedDocument['units'] = [];
+  const warnings: string[] = [];
   for (const part of await pkg.orderedParts()) {
     const doc = await pkg.xml(part.path);
+    const text = elements(doc, ns.a, 't').map((element) => element.textContent);
+    const chartNamespace =
+      'http://schemas.openxmlformats.org/drawingml/2006/chart';
+    const extendedChartNamespace =
+      'http://schemas.microsoft.com/office/drawing/2014/chartex';
+    if (
+      elements(doc, ns.a, 'graphicData').some(
+        (node) => node.getAttribute('uri') === extendedChartNamespace,
+      )
+    )
+      incompleteChartText();
+    const charts = elements(doc, chartNamespace, 'chart');
+    if (charts.length) {
+      const links = await pkg.links(part.path);
+      for (const [index, chart] of charts.entries()) {
+        const path = links.get(chart.getAttributeNS(ns.r, 'id') ?? '');
+        if (!path) incompleteChartText();
+        const chartDoc = await pkg.xml(path);
+        // Cached values are source strings, never JS numbers or recalculated
+        // formulas. Missing/sparse caches cannot establish complete chart text.
+        const cacheNames = [
+          'strCache',
+          'numCache',
+          'multiLvlStrCache',
+          'strLit',
+          'numLit',
+        ];
+        for (const [ref, cache] of [
+          ['strRef', 'strCache'],
+          ['numRef', 'numCache'],
+          ['multiLvlStrRef', 'multiLvlStrCache'],
+        ] as const)
+          for (const node of elements(chartDoc, chartNamespace, ref))
+            if (children(node, chartNamespace, cache).length !== 1)
+              incompleteChartText();
+        const caches = cacheNames.flatMap((name) =>
+          elements(chartDoc, chartNamespace, name),
+        );
+        if (!caches.length) incompleteChartText();
+        for (const name of ['cat', 'val', 'xVal', 'yVal', 'bubbleSize'])
+          for (const data of elements(chartDoc, chartNamespace, name))
+            if (
+              !cacheNames.some(
+                (cache) => elements(data, chartNamespace, cache).length,
+              )
+            )
+              incompleteChartText();
+        for (const cache of caches) {
+          const countText = children(
+            cache,
+            chartNamespace,
+            'ptCount',
+          )[0]?.getAttribute('val');
+          const count = Number(countText);
+          if (
+            countText === null ||
+            countText === undefined ||
+            !/^\d+$/.test(countText) ||
+            !Number.isSafeInteger(count)
+          )
+            incompleteChartText();
+          const groups =
+            cache.localName === 'multiLvlStrCache'
+              ? children(cache, chartNamespace, 'lvl')
+              : [cache];
+          if (!groups.length && count) incompleteChartText();
+          for (const group of groups) {
+            const points = children(group, chartNamespace, 'pt');
+            const indexes = points.map((point) =>
+              Number(point.getAttribute('idx')),
+            );
+            if (
+              points.length !== count ||
+              new Set(indexes).size !== count ||
+              points.some(
+                (point) =>
+                  !/^\d+$/.test(point.getAttribute('idx') ?? '') ||
+                  !Number.isSafeInteger(Number(point.getAttribute('idx'))) ||
+                  Number(point.getAttribute('idx')) >= count ||
+                  children(point, chartNamespace, 'v').length !== 1,
+              )
+            )
+              incompleteChartText();
+          }
+        }
+        text.push(
+          `图表 ${index + 1}`,
+          ...elements(chartDoc, ns.a, 't').map((node) => node.textContent),
+          ...elements(chartDoc, chartNamespace, 'v').map(
+            (node) => node.textContent,
+          ),
+        );
+      }
+      warnings.push('图表数值来自文件内的完整缓存，未重新计算公式。');
+    }
     units.push({
       label: `第 ${part.index} 页`,
       pageNumber: part.index,
-      text: elements(doc, ns.a, 't')
-        .map((element) => element.textContent)
-        .join('\n'),
+      text: text.join('\n'),
     });
   }
-  return limitDocument('pptx', units, maximumCharacters);
+  return limitDocument('pptx', units, maximumCharacters, [
+    ...new Set(warnings),
+  ]);
+}
+
+function incompleteChartText(): never {
+  throw new HandlerError(
+    'OFFICE_CHART_TEXT_INCOMPLETE',
+    'PPTX 图表正文缺少完整缓存，当前无法完整提取。',
+    false,
+  );
 }
 
 export async function parseDocument(input: {

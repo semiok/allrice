@@ -4,7 +4,11 @@ import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { makeObjectKey, type StorageObject } from '@allrice/contracts';
+import {
+  makeObjectKey,
+  OfficeCreateSchema,
+  type StorageObject,
+} from '@allrice/contracts';
 import type * as Database from '@allrice/database';
 import {
   claimReferenceProcessing,
@@ -17,6 +21,10 @@ import ExcelJS from 'exceljs';
 import PptxGenJS from 'pptxgenjs';
 import PDFDocument from 'pdfkit';
 import { processNextReference } from './reference-processing.js';
+import { readKnowledgeText } from './knowledge.js';
+import * as documentReader from './document-reader.js';
+import { createOffice } from './office/create.js';
+import JSZip from 'jszip';
 
 vi.mock('@allrice/database', async (original) => ({
   ...(await original<typeof Database>()),
@@ -87,9 +95,9 @@ it.each(['text/plain', 'text/markdown', 'application/json', 'text/csv'])(
       [{ content: text.trim(), start: 0, end: text.trim().length }],
       {
         kind: 'text',
-        text: text.trim(),
+        text,
         warnings: [],
-        units: [{ label: '正文', start: 0, end: text.trim().length }],
+        units: [{ label: '正文', start: 0, end: text.length }],
       },
     );
     expect(failReferenceProcessing).not.toHaveBeenCalled();
@@ -99,6 +107,7 @@ it.each(['text/plain', 'text/markdown', 'application/json', 'text/csv'])(
 it.each([
   { mediaType: 'application/octet-stream', sizeBytes: 20 },
   { mediaType: 'text/csv', sizeBytes: 2_000_001 },
+  { mediaType: 'application/pdf', sizeBytes: 20 * 1024 * 1024 + 1 },
 ])(
   'rejects unsupported/big sources before attempting storage reads: %j',
   async (metadata) => {
@@ -137,6 +146,100 @@ const pdfFixture = (name: string) =>
   readFileSync(
     new URL(`../../../tests/fixtures/pdf/${name}.pdf`, import.meta.url),
   );
+
+it('keeps valid JSON source characters, large integer digits and duplicate fields verbatim', async () => {
+  const text =
+    ' \r\n{ "id":9007199254740993, "tag":"第一次", "tag":"第二次", "tail":"末尾中文" }\r\n ';
+  const { root, claim } = await fixture(
+    Buffer.from(text),
+    'application/json',
+    'verbatim.json',
+  );
+  await processNextReference(root);
+  const fullText = vi.mocked(finishReferenceProcessing).mock.calls[0]![2]!;
+  expect(fullText.text).toBe(text);
+  expect(fullText.units).toEqual([
+    { label: '正文', start: 0, end: text.length },
+  ]);
+  expect(fullText.text).toContain('9007199254740993');
+  expect(fullText.text).toContain('"tag":"第一次", "tag":"第二次"');
+  expect(failReferenceProcessing).not.toHaveBeenCalled();
+  const legacy = await fixture(
+    Buffer.from('{"answer":42}'),
+    'application/json',
+  );
+  expect(
+    await readKnowledgeText(
+      new LocalStorageAdapter(legacy.root),
+      legacy.claim.object,
+      true,
+    ),
+  ).toBe('{\n  "answer": 42\n}');
+  expect(claim.object.checksum).toBe(
+    `sha256:${createHash('sha256').update(text).digest('hex')}`,
+  );
+});
+
+it.each([
+  {
+    quality: 'no_extractable_text' as const,
+    warningCodes: ['PDF_NO_EXTRACTABLE_TEXT' as const],
+    texts: ['\ufffd\u001f'],
+  },
+  {
+    quality: 'digital_text' as const,
+    warningCodes: ['PDF_NO_EXTRACTABLE_TEXT' as const],
+    texts: ['尚存文字'],
+  },
+  {
+    quality: 'digital_text' as const,
+    warningCodes: [],
+    texts: ['有效首页', '\ufffd\u001f\u007f'],
+  },
+])(
+  'rejects native PDF no-text quality and invalid characters per page: %j',
+  async ({ quality, warningCodes, texts }) => {
+    const { root, claim } = await fixture(
+      pdfFixture('01-chinese-multipage-digital'),
+      'application/pdf',
+      'quality.pdf',
+    );
+    // The source/lease/storage path is real. Only the native extraction response
+    // is injected to cover its explicit quality contract for nonempty bad glyphs.
+    const spy = vi
+      .spyOn(documentReader, 'parseDocument')
+      .mockResolvedValueOnce({
+        kind: 'pdf',
+        truncated: false,
+        totalPages: texts.length,
+        requestedPages: texts.map((_, index) => index + 1),
+        nextPages: [],
+        quality,
+        warningCodes,
+        parser: { name: 'pdf-parse', version: '2.4.5' },
+        warnings: warningCodes.map(() => '未提取到可用文字层'),
+        text: texts
+          .map((text, index) => `## 第 ${index + 1} 页\n\n${text}`)
+          .join('\n\n'),
+        units: texts.map((text, index) => ({
+          label: `第 ${index + 1} 页`,
+          text,
+          pageNumber: index + 1,
+        })),
+      });
+    try {
+      await processNextReference(root);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(finishReferenceProcessing).not.toHaveBeenCalled();
+    expect(failReferenceProcessing).toHaveBeenCalledExactlyOnceWith(
+      claim,
+      '部分页面没有可提取文字，尚不可全文检索；当前不执行 OCR。',
+      true,
+    );
+  },
+);
 
 async function longPdf(
   pages: number,
@@ -341,6 +444,60 @@ it('retains the final PPTX slide and its natural page position', async () => {
     '末页中文结论',
   );
 });
+
+it.each(['complete', 'missing', 'sparse'] as const)(
+  'extracts native PPTX chart facts or rejects an incomplete cache without publishing partial text: cache=%s',
+  async (cache) => {
+    const out = await createOffice(
+      OfficeCreateSchema.parse({
+        kind: 'pptx',
+        title: '月报',
+        slides: [
+          {
+            title: '图表页',
+            chart: {
+              type: 'bar',
+              labels: ['九月', '十月'],
+              series: [{ name: '收入', values: [12, 20] }],
+            },
+          },
+        ],
+      }),
+    );
+    let bytes = out.bytes;
+    if (cache !== 'complete') {
+      const zip = await JSZip.loadAsync(bytes);
+      const path = 'ppt/charts/chart1.xml';
+      const xml = await zip.file(path)!.async('string');
+      expect(xml).toContain('<c:numCache>');
+      zip.file(
+        path,
+        xml.replace(/<c:numCache>[\s\S]*?<\/c:numCache>/g, (value) =>
+          cache === 'missing'
+            ? ''
+            : value.replace(/<c:pt idx="1">[\s\S]*?<\/c:pt>/, ''),
+        ),
+      );
+      bytes = await zip.generateAsync({ type: 'nodebuffer' });
+    }
+    const { root, claim } = await fixture(bytes, out.mediaType, 'chart.pptx');
+    await processNextReference(root);
+    if (cache !== 'complete') {
+      expect(finishReferenceProcessing).not.toHaveBeenCalled();
+      expect(failReferenceProcessing).toHaveBeenCalledExactlyOnceWith(
+        claim,
+        '图表正文暂不能完整提取，尚不可全文检索；原文件已保留。',
+        true,
+      );
+    } else {
+      const fullText = vi.mocked(finishReferenceProcessing).mock.calls[0]![2]!;
+      for (const value of ['图表页', '九月', '十月', '收入', '12', '20'])
+        expect(fullText.text).toContain(value);
+      expect(fullText.units.map((unit) => unit.pageNumber)).toEqual([1]);
+      expect(failReferenceProcessing).not.toHaveBeenCalled();
+    }
+  },
+);
 
 it('does not treat an oversized DOCX preview as a complete body', async () => {
   const bytes = await Packer.toBuffer(

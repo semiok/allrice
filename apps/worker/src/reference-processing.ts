@@ -8,7 +8,10 @@ import {
   type ReferenceProcessingClaim,
 } from '@allrice/database';
 import { LocalStorageAdapter } from '@allrice/storage';
-import { PDF_MAXIMUM_RESULT_BYTES } from '@allrice/office-runtime/pdf-reader';
+import {
+  hasExtractablePdfText,
+  PDF_MAXIMUM_RESULT_BYTES,
+} from '@allrice/office-runtime/pdf-reader';
 import { chunkKnowledgeText, readKnowledgeText } from './knowledge.js';
 import { HandlerError } from './errors.js';
 import {
@@ -138,7 +141,11 @@ async function extractDocumentText(
         )
       )
         throw new Error('资料分页提取不完整');
-      if (parsed.units.some((unit) => !unit.text.trim()))
+      if (
+        parsed.quality === 'no_extractable_text' ||
+        parsed.warningCodes?.includes('PDF_NO_EXTRACTABLE_TEXT') ||
+        parsed.units.some((unit) => !hasExtractablePdfText(unit.text))
+      )
         throw new IncompleteReferenceText(
           '部分页面没有可提取文字，尚不可全文检索；当前不执行 OCR。',
         );
@@ -218,10 +225,10 @@ export async function processNextReference(storageRoot: string) {
     const storage = new LocalStorageAdapter(storageRoot);
     let fullText: ReferenceFullText;
     if (textSource) {
-      const text = (await readKnowledgeText(storage, claim.object, true))
-        .replace(/\r\n?/g, '\n')
-        .trim();
-      if (!text) throw new Error('资料没有可检索的文本');
+      const text = await readKnowledgeText(storage, claim.object, true, {
+        preserveText: true,
+      });
+      if (!text.trim()) throw new Error('资料没有可检索的文本');
       fullText = {
         kind: 'text',
         text,
@@ -239,6 +246,17 @@ export async function processNextReference(storageRoot: string) {
   } catch (error) {
     if (error instanceof IncompleteReferenceText) {
       await failReferenceProcessing(claim, error.message, true);
+      return true;
+    }
+    if (
+      error instanceof HandlerError &&
+      error.code === 'OFFICE_CHART_TEXT_INCOMPLETE'
+    ) {
+      await failReferenceProcessing(
+        claim,
+        '图表正文暂不能完整提取，尚不可全文检索；原文件已保留。',
+        true,
+      );
       return true;
     }
     if (
