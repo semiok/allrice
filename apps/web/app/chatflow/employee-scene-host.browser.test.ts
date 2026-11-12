@@ -306,6 +306,7 @@ suite('U1 mounted employee Workflow host', () => {
       loseConfirm: false,
       loseRemove: false,
       failConfirm: false,
+      failRemove: false,
       collections,
       previews,
       confirmReceipts,
@@ -871,6 +872,8 @@ suite('U1 mounted employee Workflow host', () => {
           return route.fulfill(json({ receipt }));
         }
         if (resource.startsWith('scene-skills/') && method === 'DELETE') {
+          if (state.failRemove)
+            return route.fulfill(problem(409, 'VERSION_CONFLICT'));
           const sceneId = resource.split('/')[1]!;
           const input = PersonalSceneRemoveRequestSchema.parse(
             request.postDataJSON(),
@@ -1398,6 +1401,36 @@ suite('U1 mounted employee Workflow host', () => {
     });
     await dialog.waitFor();
     return dialog;
+  }
+
+  async function expectRemovedWithoutNotice(root: Locator) {
+    await root.waitFor();
+    await expect
+      .poll(() =>
+        root.getByRole('button', { name: '写周报', exact: true }).count(),
+      )
+      .toBe(0);
+    expect(
+      await root.getByText('已删除“写周报”', { exact: true }).count(),
+    ).toBe(0);
+  }
+
+  async function dangerSpacing(action: Locator) {
+    return action.evaluate((node) => {
+      const zone = node.parentElement!;
+      const previous = zone.previousElementSibling!;
+      const style = getComputedStyle(zone);
+      return {
+        marginTop: style.marginTop,
+        paddingTop: style.paddingTop,
+        borderTop: style.borderTop,
+        gapAbove:
+          zone.getBoundingClientRect().top -
+          previous.getBoundingClientRect().bottom,
+        textInset:
+          node.getBoundingClientRect().left - zone.getBoundingClientRect().left,
+      };
+    });
   }
 
   async function capabilityAppearance(target: Locator) {
@@ -1970,22 +2003,66 @@ suite('U1 mounted employee Workflow host', () => {
         });
         await remove.waitFor();
         await f.page.mouse.move(1, 1);
+        const referenceAppearance = await capabilityAppearance(remove);
+        const referenceSpacing = await dangerSpacing(remove);
         await f.page.screenshot({
-          path: resolve(evidence, `detail-polish-scene-${dark ? 'dark' : 'light'}.png`),
+          path: resolve(
+            evidence,
+            `detail-polish-scene-${dark ? 'dark' : 'light'}.png`,
+          ),
           fullPage: true,
         });
         const confirm = await deleteConfirmation(f, detail);
-        await confirm.getByRole('button', { name: '删除', exact: true }).click();
-        await employee.waitFor();
+        f.state.failRemove = true;
+        await confirm
+          .getByRole('button', { name: '删除', exact: true })
+          .click();
+        await contains(
+          confirm.getByRole('alert'),
+          '内容或请求已有变化。请重新预览当前目标，再核对差异。',
+        );
+        expect(f.state.removeReceipts.size).toBe(0);
+        expect(f.state.collections.get(id(17))!.skills).toHaveLength(2);
+        f.state.failRemove = false;
+        await confirm
+          .getByRole('button', { name: '重试', exact: true })
+          .click();
+        await expectRemovedWithoutNotice(employee);
         await employee
           .getByRole('button', { name: '客户回访', exact: true })
           .waitFor();
-        expect(await employee.getByRole('button', { name: '写周报', exact: true }).count()).toBe(0);
+        expect(
+          await employee
+            .getByRole('button', { name: '写周报', exact: true })
+            .count(),
+        ).toBe(0);
         expect(f.state.removeReceipts.size).toBe(1);
-        await employee.getByRole('button', { name: '归档这个员工', exact: true }).waitFor();
+        const archive = employee.getByRole('button', {
+          name: '归档这个员工',
+          exact: true,
+        });
+        await archive.waitFor();
         await f.page.mouse.move(1, 1);
+        expect(await capabilityAppearance(archive)).toEqual(
+          referenceAppearance,
+        );
+        expect(await dangerSpacing(archive)).toEqual(referenceSpacing);
+        expect(referenceSpacing).toMatchObject({
+          marginTop: '24px',
+          paddingTop: '20px',
+          gapAbove: 24,
+          textInset: 0,
+        });
+        expect(referenceAppearance).toMatchObject({
+          fontSize: '14px',
+          lineHeight: '20px',
+          fontWeight: '500',
+        });
         await f.page.screenshot({
-          path: resolve(evidence, `detail-polish-employee-${dark ? 'dark' : 'light'}.png`),
+          path: resolve(
+            evidence,
+            `detail-polish-employee-${dark ? 'dark' : 'light'}.png`,
+          ),
           fullPage: true,
         });
       });
@@ -3590,7 +3667,7 @@ suite('U1 mounted employee Workflow host', () => {
       'reopen',
       'employee-switch',
     ] as const) {
-      it(`MET-251 ${origin} consumes a deletion notice before ${navigation} without consuming the receipt`, async () => {
+      it(`MET-251 ${origin} keeps deletion silent through ${navigation} without consuming the receipt`, async () => {
         await inFixture({}, async (f) => {
           const employeeName = origin === 'top' ? 'Rice' : '流程哥';
           const instanceId = origin === 'top' ? id(7) : id(17);
@@ -3610,10 +3687,7 @@ suite('U1 mounted employee Workflow host', () => {
             .getByRole('button', { name: '删除', exact: true })
             .click();
           await parent.waitFor();
-          await contains(
-            parent.getByRole('status').filter({ hasText: '已删除“写周报”' }),
-            '已删除“写周报”',
-          );
+          await expectRemovedWithoutNotice(parent);
           expect(f.state.removeReceipts.size).toBe(1);
           expect([...f.state.removeReceipts.values()][0]!.instanceId).toBe(
             instanceId,
@@ -3679,7 +3753,7 @@ suite('U1 mounted employee Workflow host', () => {
     }
   }
 
-  it('MET-251 closing employee detail consumes its deletion notice while the same employee sidebar stays open', async () => {
+  it('MET-251 closing employee detail keeps deletion silent while the same employee sidebar stays open', async () => {
     await inFixture({}, async (f) => {
       const root = await f.openDirectory();
       const employee = await f.openEmployeeDetails();
@@ -3693,10 +3767,7 @@ suite('U1 mounted employee Workflow host', () => {
       const confirm = await deleteConfirmation(f, detail);
       await confirm.getByRole('button', { name: '删除', exact: true }).click();
       await employee.waitFor();
-      await contains(
-        employee.getByRole('status').filter({ hasText: '已删除“写周报”' }),
-        '已删除“写周报”',
-      );
+      await expectRemovedWithoutNotice(employee);
       await employee.getByRole('button', { name: '关闭', exact: true }).click();
       await root
         .getByRole('button', { name: '客户回访', exact: true })
@@ -3714,15 +3785,12 @@ suite('U1 mounted employee Workflow host', () => {
     });
   });
 
-  it('MET-251 opening the same employee detail consumes a sidebar deletion notice', async () => {
+  it('MET-251 opening the same employee detail keeps a sidebar deletion silent', async () => {
     await inFixture({}, async (f) => {
       const detail = await f.openDetail();
       const confirm = await deleteConfirmation(f, detail);
       await confirm.getByRole('button', { name: '删除', exact: true }).click();
-      await contains(
-        f.directory().getByRole('status').filter({ hasText: '已删除“写周报”' }),
-        '已删除“写周报”',
-      );
+      await expectRemovedWithoutNotice(f.directory());
       const employee = await f.openEmployeeDetails();
       await employee
         .getByRole('button', { name: '客户回访', exact: true })
@@ -3794,10 +3862,7 @@ suite('U1 mounted employee Workflow host', () => {
       pending.release();
       const root = f.directory();
       await root.waitFor();
-      await contains(
-        root.getByRole('status').filter({ hasText: '已删除“写周报”' }),
-        '已删除“写周报”',
-      );
+      await expectRemovedWithoutNotice(root);
       await root.getByRole('button', { name: /客户回访/ }).waitFor();
       expect(await root.getByRole('button', { name: /写周报/ }).count()).toBe(
         0,
@@ -3976,14 +4041,7 @@ suite('U1 mounted employee Workflow host', () => {
             name: '安装完成',
             exact: true,
           }).waitFor();
-        else
-          await contains(
-            f
-              .directory()
-              .getByRole('status')
-              .filter({ hasText: '已删除“写周报”' }),
-            '已删除“写周报”',
-          );
+        else await expectRemovedWithoutNotice(f.directory());
         const writes = f.state.writes.filter((item) =>
           operation === 'confirm'
             ? item.path.endsWith('/confirm')

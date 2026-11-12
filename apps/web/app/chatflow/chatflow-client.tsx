@@ -544,10 +544,6 @@ export function ChatFlowClient({
     create?: boolean;
     returning?: boolean;
   } | null>(null);
-  const [sceneNotice, setSceneNotice] = useState<{
-    key: string;
-    message: string;
-  } | null>(null);
   const skillWrites = useRef<EmployeeSkillWriteStore>(new Map());
   const skillNavigation = useRef<{ navigateHome: () => void } | null>(null);
   const [skillHostOrigin, setSkillHostOrigin] = useState<'top' | 'employee'>(
@@ -613,7 +609,6 @@ export function ChatFlowClient({
     (memoryInstanceId?: string) => {
       closeWorkbench();
       if (memoryInstanceId) {
-        setSceneNotice(null);
         setSceneRequest(null);
         skillNavigation.current?.navigateHome();
         setSkillHostOrigin('employee');
@@ -670,7 +665,6 @@ export function ChatFlowClient({
   ) => {
     if (kind === 'workflow') {
       if (!workspace?.viewerId || !activeEmployee?.instanceId) return;
-      setSceneNotice(null);
       setSceneRequest(null);
       setSkillHostOrigin('top');
     }
@@ -1557,30 +1551,17 @@ export function ChatFlowClient({
     instanceId: sceneTarget ?? undefined,
     headers: tenantHeaders,
   });
-  const sceneHostVisible =
-    employeeDetailsOpen ||
-    currentSceneRequest?.origin === 'employee' ||
-    (workbenchOpen &&
-      activeModule?.scope === fileScope &&
-      activeModule.kind === 'workflow');
-  // Short-lived presentation feedback; the catalog keeps its independent
-  // authoritative receipt/uncertain identity across these UI transitions.
-  useEffect(() => {
-    setSceneNotice(null);
-  }, [sceneCatalog.key, sceneHostVisible, sceneCatalog.accessUnavailable]);
   const sceneGuard = useRef({
     key: sceneCatalog.key,
     busy,
     unavailable: sceneCatalog.accessUnavailable,
     request: currentSceneRequest,
-    visible: sceneHostVisible,
   });
   sceneGuard.current = {
     key: sceneCatalog.key,
     busy,
     unavailable: sceneCatalog.accessUnavailable,
     request: currentSceneRequest,
-    visible: sceneHostVisible,
   };
   const sceneOpen = Boolean(
     currentSceneRequest && !currentSceneRequest.returning,
@@ -1635,7 +1616,6 @@ export function ChatFlowClient({
       sceneTarget !== activeEmployee.instanceId
     )
       return;
-    setSceneNotice(null);
     setSceneRequest((previous) => ({
       scope: settingsScope,
       instanceId: activeEmployee.instanceId!,
@@ -1651,7 +1631,6 @@ export function ChatFlowClient({
       sceneCatalog.accessUnavailable
     )
       return;
-    setSceneNotice(null);
     setSceneRequest((previous) => ({
       scope: settingsScope,
       instanceId: detailsAssignmentId,
@@ -2213,7 +2192,6 @@ export function ChatFlowClient({
   const capabilitySections = (origin: 'top' | 'employee') => (
     <EmployeeCapabilitiesSections
       onSkillNavigate={() => {
-        setSceneNotice(null);
         setSkillHostOrigin(origin);
       }}
     >
@@ -2224,13 +2202,6 @@ export function ChatFlowClient({
       <EmployeeSceneList
         controller={sceneCatalog}
         employeeName={capabilityEmployeeName}
-        notice={
-          sceneNotice?.key === sceneCatalog.key &&
-          sceneHostVisible &&
-          !sceneCatalog.accessUnavailable
-            ? sceneNotice.message
-            : undefined
-        }
         embedded
         onChoose={
           origin === 'employee' ? openEmployeeScene : openCapabilityScene
@@ -2251,17 +2222,6 @@ export function ChatFlowClient({
       onClose={() => setSceneRequest(null)}
       onStart={prepareSceneWork}
       onDeliveries={showSceneDeliveries}
-      onRemoved={(name) => {
-        if (
-          sceneGuard.current.key === sceneCatalog.key &&
-          sceneGuard.current.visible &&
-          !sceneGuard.current.unavailable
-        )
-          setSceneNotice({
-            key: sceneCatalog.key,
-            message: `已删除“${name}”`,
-          });
-      }}
       initial={
         currentSceneRequest?.entry
           ? { page: 'detail', entry: currentSceneRequest.entry }
@@ -2470,7 +2430,6 @@ export function ChatFlowClient({
           else setError('当前没有可用员工，请先派驻员工。');
         }}
         onOpenEmployeeDetails={(assignmentId) => {
-          setSceneNotice(null);
           setSceneRequest(null);
           skillNavigation.current?.navigateHome();
           setSkillHostOrigin('employee');
@@ -3206,7 +3165,6 @@ export function ChatFlowClient({
                 !selection.current()
               )
                 return;
-              setSceneNotice(null);
               setSceneRequest(null);
               skillNavigation.current?.navigateHome();
               setSkillHostOrigin('employee');
@@ -3252,7 +3210,6 @@ export function ChatFlowClient({
           setEmployeeDetailsOpen(false);
         }}
         onClose={() => {
-          setSceneNotice(null);
           setEmployeeDetailsOpen(false);
         }}
         open={employeeDetailsOpen}

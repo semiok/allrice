@@ -60,7 +60,7 @@ import {
   type ArtifactPreview,
 } from '../../lib/chatflow/workbench-model';
 import css from './employee-profile-details.module.css';
-import archiveCss from './employee-archive.module.css';
+import { EmployeeCapabilityDanger } from './employee-capability-presentation';
 
 interface EmployeeDetailsDialogProps {
   open: boolean;
@@ -632,15 +632,11 @@ function EmployeeDetailsReader(
           {!props.organizationView &&
             data.profile.canArchive === true &&
             props.onArchive && (
-              <div className={archiveCss.archiveZone}>
-                <button
-                  type="button"
-                  className={archiveCss.archiveAction}
-                  onClick={() => props.onArchive?.(data.profile)}
-                >
-                  归档这个员工
-                </button>
-              </div>
+              <EmployeeCapabilityDanger
+                onRemove={() => props.onArchive?.(data.profile)}
+              >
+                归档这个员工
+              </EmployeeCapabilityDanger>
             )}
         </>
       )}
