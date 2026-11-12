@@ -15781,6 +15781,58 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       }
     },
   );
+  it('returns close focus only while its original destination is still current', async () => {
+    const f = await fixture({ artifacts: true });
+    try {
+      const composer = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+      await composer.fill('迟到回焦不能覆盖草稿');
+      for (const destination of ['entry', 'composer', 'reopened'] as const) {
+        await f.openWorkbench();
+        const input = await composer.elementHandle();
+        const entry = await f.entry.elementHandle();
+        if (!input || !entry)
+          throw Error('The live composer and entry are required.');
+        const retained = await f.panel
+          .getByRole('button', { name: '关闭工作台', exact: true })
+          .evaluate(
+            async (button, { input, entry, destination }) => {
+              if (
+                !(button instanceof HTMLButtonElement) ||
+                !(entry instanceof HTMLButtonElement)
+              )
+                throw Error('The native close and entry buttons are required.');
+              button.focus();
+              button.click();
+              // Flush the click's React commit without advancing the RAF.
+              await Promise.resolve();
+              if (destination === 'reopened') entry.click();
+              await Promise.resolve();
+              if (destination === 'composer') input.focus();
+              const chosen = document.activeElement;
+              // The original close RAF cannot run until this browser task exits.
+              return new Promise<boolean>((done) =>
+                requestAnimationFrame(() =>
+                  done(document.activeElement === chosen),
+                ),
+              );
+            },
+            { input, entry, destination },
+          );
+        if (destination === 'entry')
+          expect(
+            await f.entry.evaluate((node) => node === document.activeElement),
+          ).toBe(true);
+        else expect(retained).toBe(true);
+        expect(await f.panel.count()).toBe(destination === 'reopened' ? 1 : 0);
+        expect(await composer.inputValue()).toBe('迟到回焦不能覆盖草稿');
+      }
+      expect(f.state.messageInputs).toEqual([]);
+      expect(f.errors).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
+
   it.each([false, true])(
     'automatically presents a newly completed SSE delivery with its full answer, but never reopens a panel the user closed (streaming=%s)',
     { timeout: 20_000 },
@@ -15793,6 +15845,22 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         });
         try {
           await expect.poll(() => f.state.streamRequests).toBeGreaterThan(0);
+          await f.page.evaluate(() => {
+            Reflect.set(
+              window,
+              'sseOriginalComposer',
+              document.querySelector('textarea[aria-label="给 Rice 的消息"]'),
+            );
+            const events: string[] = [];
+            Reflect.set(window, 'sseFocusEvents', events);
+            for (const type of ['focusin', 'focusout'])
+              document.addEventListener(type, (event) => {
+                if (events.length < 16 && event.target instanceof Element)
+                  events.push(
+                    `${type}:${event.target.outerHTML.slice(0, 240)}`,
+                  );
+              });
+          });
           if (closed) {
             await f.panel.waitFor();
             await f.page
@@ -15835,6 +15903,27 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             await f.openWorkbench();
           }
           await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+        } catch (error) {
+          console.error(
+            'SSE delivery focus failure',
+            JSON.stringify({
+              streamingOutput,
+              closed,
+              url: f.page.url(),
+              focus: await f.page
+                .evaluate(() => ({
+                  active: document.activeElement?.outerHTML.slice(0, 500),
+                  originalConnected: Reflect.get(window, 'sseOriginalComposer')
+                    ?.isConnected,
+                  sameComposer:
+                    Reflect.get(window, 'sseOriginalComposer') ===
+                    document.querySelector('textarea'),
+                  events: Reflect.get(window, 'sseFocusEvents'),
+                }))
+                .catch(String),
+            }),
+          );
+          throw error;
         } finally {
           await f.close();
         }

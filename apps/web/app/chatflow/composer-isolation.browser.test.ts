@@ -20,6 +20,7 @@ import type {
   Browser,
   BrowserContext,
   Page,
+  Request,
 } from '../../../worker/node_modules/playwright-core/index.js';
 
 const suite =
@@ -246,6 +247,8 @@ suite(
         nativeDelayFull?: boolean;
         nativeClock?: boolean;
         nativeStartup?: boolean;
+        nativeStartupObserve?: (phase: string, detail: unknown) => void;
+        nativeStartupPage?: (page: Page) => void;
         beforeSidebarReady?: (page: Page) => Promise<void>;
         workspaceFiles?: WorkspaceFile[];
         taskSuggestions?: TaskSuggestionDisplay[];
@@ -331,6 +334,7 @@ suite(
       let nativeDenied = false;
       let nativeBindingPending = options.nativeStartup ?? false;
       let rejectStartupEvents = false;
+      let startupRequestSequence = 0;
       const nativeSource = {
         summary: (id: string) => nativeSummary(id),
         status: 0,
@@ -515,6 +519,19 @@ suite(
           return;
         }
         reads.push(request.url!);
+        const startupRequest = ++startupRequestSequence;
+        options.nativeStartupObserve?.('server-request', {
+          startupRequest,
+          path: request.url,
+          streams: streams.size,
+          nativeBindingPending,
+          rejectStartupEvents,
+          messages: messages[A]?.map(({ role, runId, status }) => ({
+            role,
+            runId,
+            status,
+          })),
+        });
         const subagentSession = path.match(
           /^\/api\/v1\/sessions\/([a-f0-9-]{36})\/subagents$/,
         )?.[1];
@@ -770,6 +787,13 @@ suite(
               `data: ${JSON.stringify({ ...event(), eventId: 'event-2', sequence: 2, cursor: `${runId}:2`, type: 'turn.started', payload: { turnId: 'turn-2' } })}\n\n`,
             );
           streams.add(response);
+          options.nativeStartupObserve?.('stream-open', {
+            startupRequest,
+            path: request.url,
+          });
+          response.on('close', () =>
+            options.nativeStartupObserve?.('stream-close', { startupRequest }),
+          );
           response.on('close', () => streams.delete(response));
           return;
         }
@@ -818,6 +842,7 @@ suite(
           : {}),
       });
       const page: Page = await context.newPage();
+      options.nativeStartupPage?.(page);
       const webSocketUrls: string[] = [];
       // Record browser requests even when the gateway never forwards a GET.
       page.on('websocket', (socket) => webSocketUrls.push(socket.url()));
@@ -1411,11 +1436,47 @@ suite(
     it.each(['ready', 'terminal', 'disconnect'] as const)(
       'MET-214 first binding follows the background session until %s without polling',
       async (outcome) => {
+        let stage = 'fixture',
+          dropped = 0;
+        const observations: unknown[] = [];
+        const mark = (phase: string, detail: unknown = null) => {
+          if (observations.length < 64)
+            observations.push({ at: Date.now(), phase, detail });
+          else dropped++;
+        };
         const f = await fixture({
           nativeParents: 3,
           running: true,
           nativeStartup: true,
           nativeClock: true,
+          nativeStartupObserve: mark,
+          nativeStartupPage: (page) => {
+            const requests = new Map<Request, number>();
+            page.on('request', (request) => {
+              if (!request.url().includes('/api/v1/') || requests.size === 64)
+                return;
+              requests.set(request, requests.size + 1);
+              mark('browser-request', {
+                id: requests.get(request),
+                url: request.url(),
+              });
+            });
+            page.on('response', (response) =>
+              mark('browser-response', {
+                id: requests.get(response.request()),
+                url: response.url(),
+                status: response.status(),
+              }),
+            );
+            for (const event of ['requestfinished', 'requestfailed'] as const)
+              page.on(event, (request) =>
+                mark(event, {
+                  id: requests.get(request),
+                  url: request.url(),
+                  failure: request.failure(),
+                }),
+              );
+          },
         });
         try {
           const reads = () =>
@@ -1425,10 +1486,22 @@ suite(
           await f.page
             .getByRole('button', { name: '停止生成', exact: true })
             .waitFor();
+          stage = 'choose-background';
+          mark(stage, {
+            url: f.page.url(),
+            streams: f.native.startupStreams(),
+          });
           await f.choose(B);
           await expect.poll(f.native.startupStreams).toBe(1);
+          stage = 'clock-before-release';
+          mark(stage, {
+            url: f.page.url(),
+            streams: f.native.startupStreams(),
+          });
           await f.page.clock.runFor(6_000);
           expect(reads()).toEqual([]);
+          stage = `release-${outcome}`;
+          mark(stage, { streams: f.native.startupStreams() });
           if (outcome === 'ready') f.native.allowReady();
           else if (outcome === 'terminal') f.finishRun(A, 'canceled');
           else {
@@ -1463,6 +1536,23 @@ suite(
           ).toBe(0);
           expect(f.writes).toEqual([]);
           expect(f.errors).toEqual([]);
+        } catch (error) {
+          console.error(
+            'MET214 binding failure',
+            JSON.stringify({
+              outcome,
+              stage,
+              observations,
+              dropped,
+              url: f.page.url(),
+              streams: f.native.startupStreams(),
+              nativeRequests: f.native.nativeRequests,
+              reads: f.reads,
+              writes: f.writes,
+              errors: f.errors,
+            }),
+          );
+          throw error;
         } finally {
           await f.close();
         }

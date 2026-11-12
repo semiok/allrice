@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -12,8 +13,12 @@ import {
 } from 'vitest';
 import type {
   Browser,
+  ElementHandle,
+  Frame,
+  JSHandle,
   Page,
 } from '../../../worker/node_modules/playwright-core/index.js';
+import { createFailureEvidence } from '../../../../scripts/test-failure-evidence.mjs';
 import { nativeExcelAssetResponse } from '../../lib/chatflow/native-document-asset';
 const suite =
   process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1'
@@ -159,8 +164,13 @@ suite('DSH native document previews', () => {
     server?.closeAllConnections();
     if (server) await new Promise<void>((done) => server.close(() => done()));
   }, 30_000);
-  async function mount(items: unknown[], width = 1200) {
+  async function mount(
+    items: unknown[],
+    width = 1200,
+    observe?: (page: Page) => void,
+  ) {
     const page = await browser.newPage({ viewport: { width, height: 820 } });
+    observe?.(page);
     const errors: string[] = [];
     page.on('pageerror', (error) => {
       errors.push(error.message);
@@ -396,24 +406,117 @@ suite('DSH native document previews', () => {
       cleanupStage = 'not-started',
       lastReadyState: string | undefined;
     const observedPage: { current?: Page } = {};
-    onTestFailed(() => {
+    const events: unknown[] = [],
+      snapshots: unknown[] = [];
+    const frameIds = new Map<Frame, number>();
+    let dropped = 0,
+      priorDocument: JSHandle<Document> | null = null;
+    let priorButton: ElementHandle<HTMLElement | SVGElement> | null = null;
+    const record = (event: string, detail: unknown) => {
+      if (events.length < 32) events.push({ at: Date.now(), event, detail });
+      else dropped++;
+    };
+    const frameId = (frame: Frame) => {
+      if (!frameIds.has(frame)) frameIds.set(frame, frameIds.size + 1);
+      return frameIds.get(frame);
+    };
+    const inspect = async (phase: string, failure = false) => {
+      try {
+        const iframe = await observedPage.current
+          ?.locator('section[aria-label="interactive.html"] iframe')
+          .elementHandle();
+        const frame = await iframe?.contentFrame();
+        if (!frame) return snapshots.push({ phase, frame: null });
+        const value = await frame.evaluate(
+          ({ priorDocument, priorButton, failure }) => {
+            const button = document.querySelector('button');
+            return {
+              html: document.documentElement.outerHTML,
+              url: document.URL,
+              readyState: document.readyState,
+              sameDocument: priorDocument === document,
+              sameButton: priorButton === button,
+              connected: priorButton?.isConnected,
+              heading: document.querySelector('h1')?.textContent,
+              button: button?.outerHTML,
+              handler: failure ? typeof button?.onclick : undefined,
+              events: Reflect.get(document, 'htmlClickEvidence'),
+            };
+          },
+          { priorDocument, priorButton, failure },
+        );
+        const { html, ...detail } = value;
+        snapshots.push({
+          phase,
+          frame: frameId(frame),
+          ...detail,
+          sandbox: await iframe?.getAttribute('sandbox'),
+          htmlBytes: Buffer.byteLength(html),
+          htmlSHA256: createHash('sha256').update(html).digest('hex'),
+        });
+      } catch (error) {
+        snapshots.push({ phase, readError: String(error) });
+      }
+    };
+    const evidence = createFailureEvidence({
+      file: import.meta.url,
+      test: 'native static HTML sanitization and opaque iframe interaction',
+      collect: async () => {
+        await inspect('failure', true);
+        return {
+          stage,
+          cleanupStage,
+          lastReadyState,
+          events,
+          dropped,
+          snapshots,
+        };
+      },
+    });
+    onTestFailed(async ({ task }) => {
       console.error('Native HTML failure stage', {
         stage,
         cleanupStage,
         lastReadyState,
         frames: observedPage.current?.frames().map((frame) => frame.url()),
       });
+      await evidence.capture(task.result?.errors);
     });
     const html =
       "<h1>原生网页预览</h1><button onclick=\"document.querySelector('h1').textContent='交互成功'\">点击测试</button><script>try { parent.previewEscaped=true } catch {}</script>";
-    const { page, errors } = await mount([
-      { name: 'static.html', preview: { kind: 'html', base64: encode(html) } },
-      {
-        name: 'interactive.html',
-        preview: { kind: 'html', base64: encode(html) },
-        interactive: true,
+    const { page, errors } = await mount(
+      [
+        {
+          name: 'static.html',
+          preview: { kind: 'html', base64: encode(html) },
+        },
+        {
+          name: 'interactive.html',
+          preview: { kind: 'html', base64: encode(html) },
+          interactive: true,
+        },
+      ],
+      1200,
+      (page) => {
+        observedPage.current = page;
+        for (const event of [
+          'frameattached',
+          'framenavigated',
+          'framedetached',
+        ] as const)
+          page.on(event, (frame) =>
+            record(event, { frame: frameId(frame), url: frame.url() }),
+          );
+        page.on('console', (message) => {
+          if (['error', 'warning'].includes(message.type()))
+            record('console', {
+              type: message.type(),
+              text: message.text().slice(0, 1000),
+            });
+        });
+        page.on('pageerror', (error) => record('pageerror', error.message));
       },
-    ]);
+    );
     observedPage.current = page;
     try {
       stage = 'static-heading';
@@ -435,10 +538,50 @@ suite('DSH native document previews', () => {
         )
         .toBe('complete');
       stage = 'interactive-click';
+      priorButton = await page
+        .frameLocator('section[aria-label="interactive.html"] iframe')
+        .getByRole('button')
+        .elementHandle();
+      priorDocument = priorButton
+        ? await priorButton.evaluateHandle((node) => node.ownerDocument)
+        : null;
+      await priorButton?.evaluate((button) => {
+        const doc = button.ownerDocument,
+          events: unknown[] = [];
+        Reflect.set(doc, 'htmlClickEvidence', events);
+        const record = (event: Event, phase: string) => {
+          if (events.length >= 16) return;
+          const target = event.target;
+          events.push({
+            type: event.type,
+            phase,
+            trusted: event.isTrusted,
+            target:
+              target instanceof Element ? target.outerHTML.slice(0, 600) : null,
+            heading: doc.querySelector('h1')?.textContent,
+            url: doc.URL,
+          });
+        };
+        for (const type of [
+          'pointerdown',
+          'pointerup',
+          'click',
+          'securitypolicyviolation',
+        ])
+          doc.addEventListener(type, (event) => record(event, 'capture'), {
+            capture: true,
+            passive: true,
+          });
+        doc.addEventListener('click', (event) => record(event, 'bubble'), {
+          passive: true,
+        });
+      });
+      await inspect('before-click');
       await page
         .frameLocator('section[aria-label="interactive.html"] iframe')
         .getByRole('button')
         .click();
+      await inspect('after-click');
       stage = 'interactive-heading';
       await page
         .frameLocator('section[aria-label="interactive.html"] iframe')
@@ -456,6 +599,9 @@ suite('DSH native document previews', () => {
       ).toBeUndefined();
       expect(errors).toEqual([]);
       stage = 'complete';
+    } catch (error) {
+      await evidence.capture([error]);
+      throw error;
     } finally {
       cleanupStage = 'page-close';
       await page.close();
