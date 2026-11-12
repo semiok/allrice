@@ -304,9 +304,7 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
                 .getByLabel('插件添加回调', { exact: true })
                 .innerText(),
             ).toBe(host === 'sidebar' ? '1' : '2');
-            await f.page
-              .getByLabel('提供添加操作', { exact: true })
-              .uncheck();
+            await f.page.getByLabel('提供添加操作', { exact: true }).uncheck();
             expect(await add.count()).toBe(0);
             await f.page.getByLabel('提供添加操作', { exact: true }).check();
             const row = open.locator('..').locator('..');

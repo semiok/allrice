@@ -63,10 +63,7 @@ export function EmployeeSkillsSection({
         action={
           catalog?.canInstall &&
           onAdd && (
-            <EmployeeCapabilityAddButton
-              disabled={disabled}
-              onClick={onAdd}
-            >
+            <EmployeeCapabilityAddButton disabled={disabled} onClick={onAdd}>
               添加技能
             </EmployeeCapabilityAddButton>
           )
