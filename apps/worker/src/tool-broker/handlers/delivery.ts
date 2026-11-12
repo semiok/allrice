@@ -424,20 +424,20 @@ export async function createControlledWorkspaceExport(
             }
           : {}),
         objectId: artifact.object.id,
-        fileName,
+        fileName: artifact.version.fileName,
         mediaType: artifact.object.mediaType,
         sizeBytes: artifact.object.sizeBytes,
         seriesId: artifact.version.seriesId,
         version: artifact.version.version,
         parentObjectId: artifact.version.parentObjectId,
         changeSummary: artifact.version.changeSummary,
-        downloadUrl: `/api/v1/files/${artifact.object.id}/download?name=${encodeURIComponent(fileName)}`,
+        downloadUrl: `/api/v1/files/${artifact.object.id}/download?name=${encodeURIComponent(artifact.version.fileName)}`,
         versionsUrl: `/api/v1/files/${artifact.object.id}/versions?workspaceId=${encodeURIComponent(input.context.workspaceId!)}`,
       }),
       summary:
         officeCache?.status === 'incomplete'
-          ? `已保留文件 ${fileName} · v${artifact.version.version}；公式缓存检查未完成`
-          : `已生成${kind === 'plan' ? '待审查计划' : kind === 'changeset' ? '待审查文件修改提案' : '交付文件'} ${fileName} · v${artifact.version.version}`,
+          ? `已保留文件 ${artifact.version.fileName} · v${artifact.version.version}；公式缓存检查未完成`
+          : `已生成${kind === 'plan' ? '待审查计划' : kind === 'changeset' ? '待审查文件修改提案' : '交付文件'} ${artifact.version.fileName} · v${artifact.version.version}`,
       itemCount: 1,
     };
   }
@@ -459,7 +459,9 @@ export async function createControlledWorkspaceExport(
     input.signal?.throwIfAborted();
     const registered = await registerToolBrokerExport({
       context: input.context,
-      ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+      ...(input.sessionId
+        ? { sessionId: input.sessionId, namePolicy: 'personal-deliverable' }
+        : {}),
       ...(input.platformTestRunId
         ? { platformTestRunId: input.platformTestRunId }
         : {}),
@@ -480,21 +482,21 @@ export async function createControlledWorkspaceExport(
           ? { officeCache: assessOfficeFormulaCaches(officeResult) }
           : {}),
         objectId: object.id,
-        fileName,
+        fileName: registered.fileName,
         mediaType: object.mediaType,
         sizeBytes: object.sizeBytes,
         seriesId: registered.seriesId,
         version: registered.version,
         parentObjectId: registered.parentObjectId,
         changeSummary: typeof changeSummary === 'string' ? changeSummary : null,
-        downloadUrl: `/api/v1/files/${object.id}/download?name=${encodeURIComponent(fileName)}`,
+        downloadUrl: `/api/v1/files/${object.id}/download?name=${encodeURIComponent(registered.fileName)}`,
         versionsUrl: `/api/v1/files/${object.id}/versions?workspaceId=${encodeURIComponent(input.context.workspaceId!)}`,
       }),
       summary:
         officeType === 'xlsx' &&
         assessOfficeFormulaCaches(officeResult).status === 'incomplete'
-          ? `已保留文件 ${fileName} · v${registered.version}；公式缓存检查未完成`
-          : `已生成交付文件 ${fileName} · v${registered.version}`,
+          ? `已保留文件 ${registered.fileName} · v${registered.version}；公式缓存检查未完成`
+          : `已生成交付文件 ${registered.fileName} · v${registered.version}`,
       itemCount: 1,
     };
   } catch (error) {

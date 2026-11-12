@@ -1,7 +1,8 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { LocalStorageAdapter } from '@allrice/storage';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createP27CodexWorkerFixture } from '../../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
 import { executeRiceTool } from '../../src/tool-broker.js';
@@ -16,6 +17,8 @@ import {
   listImageOperations,
   claimImageOperation,
   admitModelExecution,
+  createToolBrokerExportObject,
+  registerToolBrokerExport,
 } from '@allrice/database';
 import { withFixturePlatformAdministrator } from '../../../../scripts/acceptance/runtime/fixture-platform-authority.ts';
 vi.mock('../../src/codex-image-broker.js', async (importOriginal) => ({
@@ -173,6 +176,26 @@ suite('image execution — isolated PostgreSQL and real file storage', () => {
         name: 'image.generate',
         arguments: { prompt: 'a blue circle', fileName: 'circle.png' },
       };
+      const priorBytes = Buffer.from(png, 'base64'),
+        storage = new LocalStorageAdapter(storageRoot);
+      const prior = {
+        ...createToolBrokerExportObject({
+          context: common.context,
+          mediaType: 'image/png',
+          sizeBytes: priorBytes.length,
+          checksum:
+            'sha256:' + createHash('sha256').update(priorBytes).digest('hex'),
+        }),
+        immutable: true,
+      };
+      await storage.put(prior, new Blob([priorBytes]).stream());
+      await registerToolBrokerExport({
+        context: common.context,
+        sessionId: task.sessionId,
+        fileName: 'circle.png',
+        format: 'png',
+        object: prior,
+      });
       vi.mocked(requestCodexImage).mockImplementation(
         async ({ configuration }) => ({
           imageBase64: png,
@@ -188,11 +211,21 @@ suite('image execution — isolated PostgreSQL and real file storage', () => {
       const result = await executeRiceTool({ ...common, call: generate });
       const generated = JSON.parse(result.modelContent);
       expect(generated).toMatchObject({
+        fileName: 'circle（2）.png',
         mediaType: 'image/png',
         version: 1,
         width: 1,
         height: 1,
       });
+      expect(
+        new URL(generated.downloadUrl, 'https://allrice.test').searchParams.get(
+          'name',
+        ),
+      ).toBe(generated.fileName);
+      expect(result.summary).toContain('circle（2）.png');
+      expect(
+        await new Response(await storage.get(prior)).arrayBuffer(),
+      ).toEqual(Uint8Array.from(priorBytes).buffer);
       expect(result.modelContent).not.toContain(png);
       const repeated = await executeRiceTool({
         ...common,

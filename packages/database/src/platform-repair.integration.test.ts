@@ -397,6 +397,76 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
     await startClaimedJob(workerId, job!.id, lease.leaseToken);
     return lease;
   }
+  it('the production publication lookup recovers a suffixed deterministic object and preserves ambiguous legacy rejection', async () => {
+    const q = await submit(),
+      lease = await start(q),
+      task = await getPlatformRepairExecution(lease);
+    const { readPlatformRepairPublication } = await vi.importActual<
+      typeof RepairWorker
+    >('../../../apps/worker/src/jobs/platform-repair.js');
+    const checksum = repositoryDigest(
+      Buffer.from('Synthetic metadata lookup only'),
+    );
+    const seed = async (objectId: string, fileName: string) => {
+      const id = randomUUID();
+      await fixture.db`insert into allrice_storage_objects(id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,visibility,state,immutable)
+        values(${objectId},${task.organization_id},${task.workspace_id},${task.owner_id},${'fixture/repair/' + objectId},'exports','application/json',3,${checksum},'private','ready',true)`;
+      await fixture.db`insert into allrice_deliverable_versions(id,organization_id,workspace_id,owner_id,object_id,series_id,version,session_id,file_name,format)
+        values(${id},${task.organization_id},${task.workspace_id},${task.owner_id},${objectId},${randomUUID()},1,${task.session_id},${fileName},'json')`;
+      return { id, object_id: objectId, file_name: fileName, size_bytes: '3' };
+    };
+    try {
+      const legacy = await seed(randomUUID(), '仓库候选修订.json');
+      const first = await readPlatformRepairPublication(
+        task,
+        'candidate',
+        checksum,
+      );
+      expect(first.published).toMatchObject({
+        id: legacy.id,
+        file_name: '仓库候选修订.json',
+      });
+      const exact = await seed(first.objectId, '仓库候选修订（2）.json');
+      const recovered = await readPlatformRepairPublication(
+        task,
+        'candidate',
+        checksum,
+      );
+      expect(recovered.published).toMatchObject({
+        id: exact.id,
+        object_id: first.objectId,
+        file_name: '仓库候选修订（2）.json',
+      });
+      expect(
+        await readPlatformRepairPublication(task, 'candidate', checksum),
+      ).toEqual(recovered);
+      expect(
+        (
+          await readPlatformRepairPublication(
+            { ...task, owner_id: randomUUID() },
+            'candidate',
+            checksum,
+          )
+        ).published,
+      ).toBeUndefined();
+      await seed(randomUUID(), '仓库候选修订.json');
+      await expect(
+        readPlatformRepairPublication(task, 'candidate', checksum),
+      ).rejects.toMatchObject({ code: 'REPAIR_ARTIFACT_CONFLICT' });
+      expect(
+        await fixture.db`select file_name from allrice_deliverable_versions where id=${legacy.id}`,
+      ).toEqual([{ file_name: '仓库候选修订.json' }]);
+    } finally {
+      await cancelPlatformRepairTask(admin, q.id);
+      await failJob({
+        ...lease,
+        code: 'FIXTURE_LOOKUP_COMPLETE',
+        message:
+          'Synthetic publication lookup only; no physical controller success',
+        retryable: false,
+      });
+    }
+  }, 30000);
   it('fresh fixed repair freezes real source through Worker and native Host to the HTTP provider', async () => {
     const originalFreeze = modelPool.freezeSessionModelSnapshot;
     const freeze = vi

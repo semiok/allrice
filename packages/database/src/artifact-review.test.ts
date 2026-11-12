@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { StorageObject, StoragePort } from '@allrice/contracts';
 import { readArtifactBytes, parseChangesetBytes } from './artifact-review.ts';
+import { isBusinessDeliverable } from './workbench-file-personal.ts';
 
 const content = Buffer.from('first\nsecond');
 const object: StorageObject = {
@@ -26,6 +27,15 @@ function storage(bytes = content): StoragePort {
   };
 }
 describe('bounded immutable preview content', () => {
+  it('uses the existing structured personal delivery classification for naming', () => {
+    for (const kind of ['document', 'plan', 'file']) {
+      expect(isBusinessDeliverable(kind, 'model_proposal')).toBe(true);
+      expect(isBusinessDeliverable(kind, 'tool_result')).toBe(true);
+      expect(isBusinessDeliverable(kind, 'project_snapshot')).toBe(false);
+    }
+    for (const kind of ['changeset', 'browser_capture', 'command_output'])
+      expect(isBusinessDeliverable(kind, 'tool_result')).toBe(false);
+  });
   afterEach(() => vi.useRealTimers());
   it('verifies byte size and checksum after reading storage', async () => {
     expect(await readArtifactBytes(storage(), object)).toEqual(content);

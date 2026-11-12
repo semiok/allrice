@@ -26,6 +26,7 @@ export const moduleLabels = {
 export function WorkbenchIcon({
   kind,
   size = 20,
+  filled = false,
 }: {
   kind:
     | WorkbenchModule
@@ -35,8 +36,10 @@ export function WorkbenchIcon({
     | 'start'
     | 'schedule'
     | 'subagent'
+    | 'star'
     | 'chevron-right';
   size?: number;
+  filled?: boolean;
 }) {
   if (kind === 'files')
     return <IconFolderOpenOutlineRegular size={size} className={css.glyph} />;
@@ -64,7 +67,12 @@ export function WorkbenchIcon({
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      {kind === 'subagent' ? (
+      {kind === 'star' ? (
+        <path
+          fill={filled ? 'currentColor' : 'none'}
+          d="m12 2.75 2.85 5.78 6.38.93-4.62 4.5 1.09 6.36L12 17.32l-5.7 3 1.09-6.36-4.62-4.5 6.38-.93L12 2.75Z"
+        />
+      ) : kind === 'subagent' ? (
         <>
           <circle cx="8" cy="7" r="2.75" />
           <path d="M3 18v-1.5a5 5 0 0 1 5-5h1a5 5 0 0 1 3.2 1.2M14 4.5a2.75 2.75 0 0 1 0 5.5M15.5 11.5a4.5 4.5 0 0 1 3.5 1.8" />

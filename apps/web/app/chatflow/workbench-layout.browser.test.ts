@@ -824,6 +824,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       filePreviewStatus: 200,
       deliverableRequests: [] as Record<string, string>[],
       deliverableSettled: new Set<Record<string, string>>(),
+      favoriteIds: new Set<string>(),
+      favoriteDelay: null as Promise<void> | null,
+      favoriteWrites: [] as Array<{
+        viewerId: string;
+        workspaceId: string;
+        objectId: string;
+        favorite: boolean;
+        expected: string | null;
+      }>,
+      favoriteSettled: new Set<number>(),
       updateReads: 0,
       workbenchFiles: [] as WorkbenchFile[],
       workbenchReferenceUses: [] as string[],
@@ -1157,6 +1167,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           )
           .map((file): WorkbenchDeliverable => ({
             ...file,
+            favorite: state.favoriteIds.has(
+              `${owner}/${scope}/${file.objectId}`,
+            ),
             origin:
               file.category === 'artifact'
                 ? 'business-deliverable'
@@ -1179,7 +1192,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           (file) =>
             (!url.searchParams.get('objectId') ||
               file.objectId === url.searchParams.get('objectId')) &&
-            (!url.searchParams.get('employeeInstanceId') ||
+            (url.searchParams.get('category') === 'favorite' ||
+              !url.searchParams.get('employeeInstanceId') ||
               file.sources.some(
                 (source) =>
                   source.employeeInstanceId ===
@@ -1187,6 +1201,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               )) &&
             (!url.searchParams.get('category') ||
               url.searchParams.get('category') === 'all' ||
+              (url.searchParams.get('category') === 'favorite' &&
+                file.favorite) ||
               file.category === url.searchParams.get('category')) &&
             (!url.searchParams.get('query') ||
               file.fileName.includes(url.searchParams.get('query')!)),
@@ -1289,6 +1305,44 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             ],
           },
         });
+      }
+      const favoriteTarget = path.match(
+        /^\/api\/v1\/workbench\/files\/([a-f0-9-]{36})\/favorite$/,
+      );
+      if (favoriteTarget && route.request().method() === 'PUT') {
+        const viewerId = state.viewer,
+          workspaceId = state.workspace,
+          objectId = favoriteTarget[1]!,
+          favorite = route.request().postDataJSON().favorite === true,
+          expected =
+            route.request().headers()['x-allrice-expected-viewer-id'] ?? null;
+        if (expected !== null && expected !== viewerId) return answer({}, 409);
+        if (
+          viewerId !== user ||
+          workspaceId !== workspace ||
+          !workbenchFiles().some(
+            (file) => file.objectId === objectId && file.ownedByMe,
+          )
+        )
+          return answer({}, 404);
+        const index = state.favoriteWrites.length;
+        state.favoriteWrites.push({
+          viewerId,
+          workspaceId,
+          objectId,
+          favorite,
+          expected,
+        });
+        const delay = state.favoriteDelay;
+        if (delay) await delay;
+        const key = `${viewerId}/${workspaceId}/${objectId}`;
+        if (favorite) state.favoriteIds.add(key);
+        else state.favoriteIds.delete(key);
+        try {
+          return await answer({ viewerId, objectId, favorite });
+        } finally {
+          state.favoriteSettled.add(index);
+        }
       }
       const workbenchReference = path.match(
         /^\/api\/v1\/workbench\/files\/([a-f0-9-]{36})\/reference$/,
@@ -3588,7 +3642,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByRole('navigation', { name: '文件类型' })
           .getByRole('button')
           .allTextContents(),
-      ).toEqual(['全部', '员工交付', '我的上传']);
+      ).toEqual(['全部', '员工交付', '我的上传', '我的收藏']);
       expect(f.state.workbenchMutations).toEqual([]);
     } finally {
       await f.close();
@@ -12380,6 +12434,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             mediaType: 'image/png',
           });
           f.state.workbenchFiles.push(business, upload, image);
+          f.state.favoriteIds.add(`${user}/${workspace}/${business.objectId}`);
           const input = f.page.getByRole('textbox', { name: /给 .* 的消息/ });
           await input.fill('检查文件期间保留这段草稿');
           await f.page
@@ -12402,7 +12457,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               .getByRole('navigation', { name: '文件类型' })
               .getByRole('button')
               .allTextContents(),
-          ).toEqual(['全部', '员工交付', '我的上传']);
+          ).toEqual(['全部', '员工交付', '我的上传', '我的收藏']);
           await employee.selectOption(id(17));
           await directory
             .getByText('还没有交付成果', { exact: true })
@@ -12445,6 +12500,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           expect(await f.page.getByRole('menuitem').allTextContents()).toEqual([
             '下载',
             '复制链接',
+            '收藏',
           ]);
           await capture('deliverables-menu');
           const menuDownloadPath = `/api/v1/workbench/files/${upload.objectId}/download?workspaceId=${workspace}`;
@@ -12462,6 +12518,68 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             '本人上传的原始文件字节',
           );
           downloadFixtures.delete(menuDownloadPath);
+          await row
+            .getByRole('button', {
+              name: `文件选项 ${upload.fileName}`,
+              exact: true,
+            })
+            .click();
+          await f.page
+            .getByRole('menuitem', { name: '收藏', exact: true })
+            .click();
+          await row.getByLabel('已收藏', { exact: true }).waitFor();
+          const colleague = catalogFile(9503, {
+            fileName: '另一位员工的交付.md',
+            category: 'artifact',
+            sessionIds: [B],
+          });
+          f.state.sessionEdits.set(B, {
+            employeeAssignmentId: id(17),
+            employeeName: 'Office 文档助手',
+          });
+          f.state.workbenchFiles.push(colleague);
+          f.state.favoriteIds.add(`${user}/${workspace}/${colleague.objectId}`);
+          await employee.selectOption(id(7));
+          await directory
+            .getByRole('button', { name: '我的收藏', exact: true })
+            .click();
+          await expect.poll(() => directory.locator('article').count()).toBe(3);
+          expect(await employee.isDisabled()).toBe(true);
+          expect(await employee.inputValue()).toBe('');
+          expect(
+            f.state.deliverableRequests.at(-1)?.employeeInstanceId,
+          ).toBeUndefined();
+          await directory
+            .getByRole('button', { name: colleague.fileName, exact: true })
+            .waitFor();
+          await capture('favorites');
+          const businessRow = directory.locator(
+            `[data-file-id="${business.objectId}"]`,
+          );
+          await businessRow
+            .getByRole('button', {
+              name: `文件选项 ${business.fileName}`,
+              exact: true,
+            })
+            .click();
+          expect(await f.page.getByRole('menuitem').allTextContents()).toEqual([
+            '下载',
+            '复制链接',
+            '取消收藏',
+          ]);
+          await capture('favorites-menu');
+          await f.page
+            .getByRole('menuitem', { name: '取消收藏', exact: true })
+            .click();
+          await expect.poll(() => directory.locator('article').count()).toBe(2);
+          await directory
+            .getByRole('button', { name: '全部', exact: true })
+            .click();
+          expect(await employee.isEnabled()).toBe(true);
+          expect(await employee.inputValue()).toBe(id(7));
+          await row
+            .getByRole('button', { name: upload.fileName, exact: true })
+            .waitFor();
           expect(
             await directory
               .locator(`[data-file-id="${image.objectId}"]`)
@@ -12664,12 +12782,55 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           expect(box!.x).toBeGreaterThanOrEqual(0);
           expect(box!.x + box!.width).toBeLessThanOrEqual(width);
           await capture('artifact-fonts-open');
+          const previewNode = (await f.panel
+            .locator(`[data-document-id="${fontFile.objectId}"]:visible`)
+            .getByText('Delivery original preview', { exact: true })
+            .elementHandle())!;
+          const previewReads = f.state.workbenchPreviewReads;
+          f.state.favoriteIds.add(`${user}/${workspace}/${fontFile.objectId}`);
+          await f.page.evaluate(() =>
+            window.dispatchEvent(new Event('allrice:workbench-files-changed')),
+          );
+          await toolbar
+            .getByRole('button', { name: '取消收藏', exact: true })
+            .waitFor();
+          expect(await previewNode.evaluate((node) => node.isConnected)).toBe(
+            true,
+          );
+          expect(f.state.workbenchPreviewReads).toBe(previewReads);
+          expect(await fonts.isVisible()).toBe(true);
           await fonts
             .getByRole('button', { name: '关闭字体详情', exact: true })
             .click();
           expect(
             await warning.evaluate((node) => document.activeElement === node),
           ).toBe(true);
+          const star = toolbar.getByRole('button', {
+            name: '取消收藏',
+            exact: true,
+          });
+          const favoriteColor = await star.evaluate(
+            (node) => getComputedStyle(node).color,
+          );
+          await star.hover();
+          expect(
+            await star.evaluate((node) => getComputedStyle(node).color),
+          ).toBe(favoriteColor);
+          await f.page
+            .getByRole('tooltip', { name: '取消收藏', exact: true })
+            .waitFor();
+          const filled = await star
+            .locator('svg path')
+            .evaluate((node) => getComputedStyle(node).fill);
+          expect(filled).not.toBe('none');
+          await star.click();
+          await toolbar
+            .getByRole('button', { name: '收藏', exact: true })
+            .waitFor();
+          expect(await previewNode.evaluate((node) => node.isConnected)).toBe(
+            true,
+          );
+          expect(f.state.workbenchPreviewReads).toBe(previewReads);
           await warning.click();
           await fonts.waitFor();
           await f.page.keyboard.press('Escape');
@@ -12801,6 +12962,200 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       }, 30000);
     }
 
+  it.each([1440, 390])(
+    'MET247 a pending favorite can be canceled by hiding and reopened in the same retained module at %ipx',
+    async (width) => {
+      const f = await fixture({ width });
+      let release = () => {};
+      try {
+        const file = catalogFile(9580, {
+          fileName: '挂起收藏.md',
+          category: 'artifact',
+        });
+        f.state.workbenchFiles.push(file);
+        const input = f.page.getByRole('textbox', { name: /给 .* 的消息/ });
+        await input.fill('收藏等待期间保留草稿');
+        const entry = f.page
+          .locator('header')
+          .getByRole('button', { name: '交付成果', exact: true });
+        await entry.click();
+        const directory = f.panel.getByRole('region', {
+          name: '交付成果',
+          exact: true,
+        });
+        await directory
+          .getByRole('button', { name: '员工交付', exact: true })
+          .click();
+        await directory
+          .getByRole('searchbox', { name: '查找文件' })
+          .fill('挂起收藏');
+        const row = directory.locator(`[data-file-id="${file.objectId}"]`);
+        await row.waitFor();
+        f.state.favoriteDelay = new Promise<void>((done) => {
+          release = done;
+        });
+        await row
+          .getByRole('button', {
+            name: `文件选项 ${file.fileName}`,
+            exact: true,
+          })
+          .click();
+        await f.page
+          .getByRole('menuitem', { name: '收藏', exact: true })
+          .click();
+        await expect.poll(() => f.state.favoriteWrites.length).toBe(1);
+        const host = (await f.panel.elementHandle())!;
+        await f.panel
+          .getByRole('button', { name: '关闭工作台', exact: true })
+          .click();
+        expect(await host.evaluate((node) => node.isConnected)).toBe(true);
+        await entry.click();
+        expect(
+          await directory
+            .getByRole('button', { name: '员工交付', exact: true })
+            .getAttribute('aria-pressed'),
+        ).toBe('true');
+        expect(
+          await directory
+            .getByRole('searchbox', { name: '查找文件' })
+            .inputValue(),
+        ).toBe('挂起收藏');
+        await row
+          .getByRole('button', {
+            name: `文件选项 ${file.fileName}`,
+            exact: true,
+          })
+          .click();
+        expect(
+          await f.page
+            .getByRole('menuitem', { name: '收藏', exact: true })
+            .isEnabled(),
+        ).toBe(true);
+        f.state.favoriteDelay = null;
+        await f.page
+          .getByRole('menuitem', { name: '收藏', exact: true })
+          .click();
+        await row.getByLabel('已收藏', { exact: true }).waitFor();
+        release();
+        await expect.poll(() => f.state.favoriteSettled.has(0)).toBe(true);
+        await row
+          .getByRole('button', {
+            name: `文件选项 ${file.fileName}`,
+            exact: true,
+          })
+          .click();
+        await f.page
+          .getByRole('menuitem', { name: '取消收藏', exact: true })
+          .click();
+        await expect
+          .poll(() => row.getByLabel('已收藏', { exact: true }).count())
+          .toBe(0);
+        expect(f.state.favoriteWrites).toHaveLength(3);
+        expect(
+          f.state.favoriteWrites.every(
+            (write) => write.expected === user && write.viewerId === user,
+          ),
+        ).toBe(true);
+        expect(await input.inputValue()).toBe('收藏等待期间保留草稿');
+        expect(f.state.messageInputs).toEqual([]);
+      } finally {
+        release();
+        await f.close();
+      }
+    },
+    30000,
+  );
+
+  for (const theme of ['light', 'dark'] as const)
+    for (const width of [1440, 390]) {
+      it(`MET247 three separate same-name objects keep their final download names at ${width}px ${theme}`, async () => {
+        const f = await fixture({ width, appearance: theme });
+        try {
+          await f.page.setViewportSize({
+            width,
+            height: width === 1440 ? 1000 : 844,
+          });
+          const names = ['同名交付.md', '同名交付（2）.md', '同名交付（3）.md'];
+          const files = names.map((fileName, n) =>
+            catalogFile(9570 + n, { fileName, category: 'artifact' }),
+          );
+          f.state.workbenchFiles.push(...files);
+          await f.page
+            .locator('header')
+            .getByRole('button', { name: '交付成果', exact: true })
+            .click();
+          const directory = f.panel.getByRole('region', {
+            name: '交付成果',
+            exact: true,
+          });
+          await expect.poll(() => directory.locator('article').count()).toBe(3);
+          expect(
+            new Set(
+              await directory
+                .locator('article')
+                .evaluateAll((nodes) =>
+                  nodes.map((node) => node.getAttribute('data-file-id')),
+                ),
+            ).size,
+          ).toBe(3);
+          const reviewDir = process.env.ALLRICE_DELIVERABLES_REVIEW_DIR;
+          if (reviewDir) {
+            await (
+              await import('node:fs/promises')
+            ).mkdir(reviewDir, { recursive: true });
+            await f.page.screenshot({
+              path: join(
+                reviewDir,
+                `${width}-${theme}-deliverables-same-name.png`,
+              ),
+              animations: 'disabled',
+            });
+          }
+          const file = files[2]!;
+          await directory
+            .getByRole('button', { name: file.fileName, exact: true })
+            .click();
+          const toolbar = f.panel.locator(
+            'header[aria-label="文件操作"]:visible',
+          );
+          await toolbar.getByText(file.fileName, { exact: true }).waitFor();
+          const download = toolbar.getByRole('link', {
+            name: '下载',
+            exact: true,
+          });
+          const url = new URL(
+            (await download.getAttribute('href'))!,
+            f.page.url(),
+          );
+          expect(url.searchParams.get('name')).toBe(file.fileName);
+          expect(url.pathname).toContain(file.objectId);
+          const path = url.pathname + url.search;
+          downloadFixtures.set(path, {
+            fileName: file.fileName,
+            body: '第三份独立对象的原始字节',
+          });
+          const pending = f.page.waitForEvent('download');
+          await download.click();
+          const original = await pending;
+          expect(original.suggestedFilename()).toBe(file.fileName);
+          expect(await readFile((await original.path())!, 'utf8')).toBe(
+            '第三份独立对象的原始字节',
+          );
+          downloadFixtures.delete(path);
+          await f.panel
+            .getByRole('button', { name: '‹ 交付成果', exact: true })
+            .click();
+          for (const name of names)
+            await directory
+              .getByRole('button', { name, exact: true })
+              .waitFor();
+          expect(f.state.messageInputs).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      }, 30000);
+    }
+
   it('MET247 mobile deliverables, personal memory and capabilities icons open their real panels', async () => {
     const f = await fixture({
       width: 390,
@@ -12896,6 +13251,85 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     );
     return hold;
   }
+  it('MET247 a late authorized A favorite cannot update the known B workspace or its metadata', async () => {
+    const f = await deliverableScopeFixture({}, 'MET247 favorite scope');
+    let release = () => {};
+    let refresh: Awaited<ReturnType<typeof holdWorkspaceRefresh>> | undefined;
+    try {
+      const file = catalogFile(9581, { fileName: 'A 账号的收藏原件.txt' });
+      f.state.workbenchFiles.push(file);
+      refresh = await holdWorkspaceRefresh(f);
+      const details = await openOwnerDetails(f);
+      await expect.poll(() => !!refresh?.request).toBe(true);
+      await details.getByRole('button', { name: '关闭', exact: true }).click();
+      await f.page
+        .locator('header')
+        .getByRole('button', { name: '交付成果', exact: true })
+        .click();
+      const directory = f.panel.getByRole('region', {
+        name: '交付成果',
+        exact: true,
+      });
+      await directory
+        .getByRole('button', { name: file.fileName, exact: true })
+        .click();
+      const toolbar = f.panel.locator('header[aria-label="文件操作"]:visible');
+      await toolbar
+        .getByRole('button', { name: '收藏', exact: true })
+        .waitFor();
+      const original = (await toolbar.elementHandle())!;
+      f.state.favoriteDelay = new Promise<void>((done) => {
+        release = done;
+      });
+      await toolbar.getByRole('button', { name: '收藏', exact: true }).click();
+      await expect.poll(() => f.state.favoriteWrites.length).toBe(1);
+      expect(await original.evaluate((node) => node.isConnected)).toBe(true);
+      expect(f.state.favoriteIds.size).toBe(0);
+      const workspaceReads = f.state.workspaceReads;
+      f.state.viewer = id(999);
+      f.state.workspace = id(998);
+      refresh.release();
+      await expect
+        .poll(() => f.state.workspaceReads)
+        .toBeGreaterThan(workspaceReads);
+      await expect
+        .poll(() => original.evaluate((node) => node.isConnected))
+        .toBe(false);
+      release();
+      await expect
+        .poll(() =>
+          f.state.favoriteIds.has(`${user}/${workspace}/${file.objectId}`),
+        )
+        .toBe(true);
+      expect([...f.state.favoriteIds]).toEqual([
+        `${user}/${workspace}/${file.objectId}`,
+      ]);
+      expect(
+        await f.page.getByText(file.fileName, { exact: true }).count(),
+      ).toBe(0);
+      expect(
+        await f.page.locator('header[aria-label="文件操作"]').count(),
+      ).toBe(0);
+      expect(f.state.favoriteWrites).toEqual([
+        {
+          viewerId: user,
+          workspaceId: workspace,
+          objectId: file.objectId,
+          favorite: true,
+          expected: user,
+        },
+      ]);
+    } catch (error) {
+      await f.evidence.capture(error);
+      throw error;
+    } finally {
+      refresh?.release();
+      release();
+      await f.close();
+      f.evidence.dispose();
+    }
+  }, 30000);
+
   it('MET247 keyset pages survive category, employee and search round trips and reject a late old-owner title', async () => {
     const f = await deliverableScopeFixture(
       { employeeCount: 2 },

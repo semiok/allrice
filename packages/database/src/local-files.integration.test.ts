@@ -1,5 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { publishLocalFileDerivationArtifacts } from './local-file-deliverables.ts';
+import {
+  createToolBrokerExportObject,
+  registerToolBrokerExport,
+} from './execution/tool-broker.ts';
 import { createServer } from 'node:http';
 import {
   mkdtemp,
@@ -625,6 +629,24 @@ suite(
         category: 'artifacts',
         immutable: true,
       });
+      const previousBytes = Buffer.from('Independent earlier PDF object');
+      const previous = createToolBrokerExportObject({
+        context: f.execution,
+        mediaType: 'application/pdf',
+        sizeBytes: previousBytes.length,
+        checksum: checksum(previousBytes),
+      });
+      await f.storage.put(previous, new Blob([previousBytes]).stream());
+      await registerToolBrokerExport(
+        {
+          context: f.execution,
+          sessionId: f.session,
+          fileName: output.object!.fileName,
+          format: 'pdf',
+          object: previous,
+        },
+        database.db,
+      );
       await complete();
       const published = await publishLocalFileDerivationArtifacts(
         input,
@@ -632,6 +654,11 @@ suite(
         database.db,
       );
       expect(published.objectId).toBe(output.object!.objectId);
+      expect(published.fileName).toBe('提取（2）.pdf');
+      expect(output.object!.fileName).toBe('提取.pdf');
+      expect(await new Response(await f.storage.get(previous)).text()).toBe(
+        'Independent earlier PDF object',
+      );
       expect(
         await publishLocalFileDerivationArtifacts(
           input,

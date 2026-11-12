@@ -6,9 +6,9 @@ import {
   type RequestContext,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
-import type { TransactionSql } from 'postgres';
 import { DataAccessError } from './data.ts';
 import { getManagedOrganization } from './organization-administration.ts';
+import { businessDeliverablePredicate } from './workbench-file-personal.ts';
 
 type Database = ReturnType<typeof getDatabase>;
 
@@ -62,18 +62,7 @@ export function organizationWorkSource(
   `;
 }
 
-/** Explicit business deliveries plus compatible legacy documents. Tool paging,
- * raw command output and browser evidence are not business delivery counts. */
-export function businessDeliverablePredicate(db: Database | TransactionSql) {
-  return db`(
-    (a.version_id is not null and a.kind in ('document','plan','file')
-      and coalesce(a.provenance->>'kind','') <> 'project_snapshot')
-    or (a.version_id is null and not (
-      coalesce(dv.change_summary,'') like 'Tool result %; Run %; call %'
-      and dv.file_name='tool-result-' || replace(replace(split_part(dv.change_summary,';',1),'Tool result ',''),'.','-') || '-' || dv.object_id::text || '.txt'
-    ))
-  )`;
-}
+export { businessDeliverablePredicate } from './workbench-file-personal.ts';
 
 export async function readOrganizationDashboard(
   context: RequestContext,

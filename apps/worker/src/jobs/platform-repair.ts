@@ -41,6 +41,48 @@ export const platformRepairToolDefinition = {
   inputSchema: z.toJSONSchema(RepairToolInputSchema),
 };
 
+/** Read-only receipt lookup after the controller has checked its task/lease.
+ * Preserve old ambiguous-original rejection before recovering the exact object. */
+export async function readPlatformRepairPublication(
+  task: Pick<
+    Awaited<ReturnType<typeof getPlatformRepairExecution>>,
+    'id' | 'organization_id' | 'workspace_id' | 'owner_id' | 'session_id'
+  >,
+  kind: 'candidate' | 'report',
+  checksum: string,
+) {
+  const fileName =
+    kind === 'candidate' ? '仓库候选修订.json' : '仓库修复验证.json';
+  const objectId = cloudStableId(
+    'repair-artifact:' + task.id + ':' + kind + ':' + checksum,
+  );
+  type Published = {
+    id: string;
+    object_id: string;
+    file_name: string;
+    size_bytes: number | string;
+  };
+  const sql = getDatabase();
+  const prior = await sql<
+    Published[]
+  >`select v.id,v.object_id,v.file_name,o.size_bytes from allrice_deliverable_versions v join allrice_storage_objects o on o.id=v.object_id
+    where v.session_id=${task.session_id} and v.owner_id=${task.owner_id} and v.organization_id=${task.organization_id} and v.workspace_id=${task.workspace_id}
+    and v.file_name=${fileName} and o.state='ready' and o.deleted_at is null and o.checksum=${checksum} order by v.id limit 2`;
+  if (prior.length > 1)
+    throw new HandlerError(
+      'REPAIR_ARTIFACT_CONFLICT',
+      '候选文件身份冲突，请核对现有成果。',
+      false,
+    );
+  const [exact] = await sql<
+    Published[]
+  >`select v.id,v.object_id,v.file_name,o.size_bytes from allrice_deliverable_versions v join allrice_storage_objects o on o.id=v.object_id
+    where v.object_id=${objectId} and v.session_id=${task.session_id} and v.owner_id=${task.owner_id}
+    and v.organization_id=${task.organization_id} and v.workspace_id=${task.workspace_id}
+    and o.state='ready' and o.deleted_at is null and o.checksum=${checksum}`;
+  return { objectId, fileName, published: exact ?? prior[0] };
+}
+
 /** A restricted tool controller inside the normal Employee/DSH/budget path.
  * Only its typed source and verification ports differ from an ordinary turn. */
 export async function createPlatformRepairController(
@@ -225,49 +267,36 @@ export async function createPlatformRepairController(
   async function publish(kind: 'candidate' | 'report', document: unknown) {
     const task = await getPlatformRepairExecution(lease),
       bytes = Buffer.from(JSON.stringify(document, null, 2) + '\n'),
-      checksum = 'sha256:' + createHash('sha256').update(bytes).digest('hex'),
-      fileName =
-        kind === 'candidate' ? '仓库候选修订.json' : '仓库修复验证.json';
-    const prior =
-      await getDatabase()`select v.id,v.object_id,o.checksum,o.size_bytes from allrice_deliverable_versions v join allrice_storage_objects o on o.id=v.object_id
-      where v.session_id=${task.session_id} and v.owner_id=${task.owner_id} and v.organization_id=${task.organization_id} and v.workspace_id=${task.workspace_id}
-      and v.file_name=${fileName} and o.state='ready' and o.deleted_at is null and o.checksum=${checksum} order by v.id limit 2`;
-    if (prior.length > 1)
-      throw new HandlerError(
-        'REPAIR_ARTIFACT_CONFLICT',
-        '候选文件身份冲突，请核对现有成果。',
-        false,
-      );
-    if (prior[0])
+      checksum = 'sha256:' + createHash('sha256').update(bytes).digest('hex');
+    const { objectId, fileName, published } =
+      await readPlatformRepairPublication(task, kind, checksum);
+    if (published)
       return {
-        artifactId: prior[0].id,
-        versionId: prior[0].id,
-        objectId: prior[0].object_id,
+        artifactId: published.id,
+        versionId: published.id,
+        objectId: published.object_id,
         checksum,
-        fileName,
-        sizeBytes: Number(prior[0].size_bytes),
+        fileName: published.file_name,
+        sizeBytes: Number(published.size_bytes),
         kind,
       };
-    const objectId = cloudStableId(
-        'repair-artifact:' + task.id + ':' + kind + ':' + checksum,
-      ),
-      object = {
-        ...createToolBrokerExportObject({
-          context: execution.context,
-          mediaType: 'application/json',
-          sizeBytes: bytes.length,
-          checksum,
-        }),
-        id: objectId,
-        immutable: true,
-        key: makeObjectKey({
-          organizationId: task.organization_id,
-          workspaceId: task.workspace_id,
-          ownerId: task.owner_id,
-          category: 'exports',
-          objectId,
-        }),
-      };
+    const object = {
+      ...createToolBrokerExportObject({
+        context: execution.context,
+        mediaType: 'application/json',
+        sizeBytes: bytes.length,
+        checksum,
+      }),
+      id: objectId,
+      immutable: true,
+      key: makeObjectKey({
+        organizationId: task.organization_id,
+        workspaceId: task.workspace_id,
+        ownerId: task.owner_id,
+        category: 'exports',
+        objectId,
+      }),
+    };
     signal.throwIfAborted();
     if (!(await storage.exists(object)))
       await storage.put(object, new Blob([Uint8Array.from(bytes)]).stream());
@@ -282,6 +311,7 @@ export async function createPlatformRepairController(
         {
           context: execution.context,
           sessionId: task.session_id,
+          namePolicy: 'personal-deliverable',
           object,
           fileName,
           format: 'json',
@@ -296,7 +326,7 @@ export async function createPlatformRepairController(
       versionId: registered.id,
       objectId,
       checksum,
-      fileName,
+      fileName: registered.fileName,
       sizeBytes: bytes.length,
       kind,
     };

@@ -84,6 +84,7 @@ export const WorkbenchDeliverableSourceSchema = z.object({
 export const WorkbenchDeliverableSchema = WorkbenchFileSchema.extend({
   origin: z.enum(['business-deliverable', 'user-upload']),
   sources: z.array(WorkbenchDeliverableSourceSchema),
+  favorite: z.boolean(),
 });
 export type WorkbenchDeliverable = z.infer<typeof WorkbenchDeliverableSchema>;
 export const WorkbenchDeliverablesCatalogSchema = z.object({
@@ -94,11 +95,14 @@ export const WorkbenchDeliverablesCatalogSchema = z.object({
 export const WorkbenchDeliverablesFilterSchema = z.object({
   workspaceId: UuidSchema,
   employeeInstanceId: UuidSchema.optional(),
-  category: z.enum(['all', 'artifact', 'upload']).default('all'),
+  category: z.enum(['all', 'artifact', 'upload', 'favorite']).default('all'),
   query: z.string().max(200).default(''),
   cursor: UuidSchema.optional(),
   objectId: UuidSchema.optional(),
 });
+export const WorkbenchFileFavoriteSchema = z
+  .object({ favorite: z.boolean() })
+  .strict();
 
 export const WorkbenchFileUploadSchema = z
   .object({

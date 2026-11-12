@@ -34,7 +34,12 @@ import {
   readLocalPythonInput,
   storeLocalPythonArtifact,
   assertLocalPythonDelegation,
+  publishLocalPythonArtifacts,
 } from './local-python-execution.ts';
+import {
+  createToolBrokerExportObject,
+  registerToolBrokerExport,
+} from './execution/tool-broker.ts';
 import { employeeManifestChecksum } from './employees/employee-config.ts';
 import { waitForLocalAdmission } from '../../../apps/worker/src/tool-broker/handlers/local-admission.ts';
 import * as client from './core/client.ts';
@@ -612,6 +617,195 @@ suite(
         ),
       ).rejects.toMatchObject({ code: 'authorization_denied' });
     });
+
+    it('publishes a stopped canonical Python result with its final name while preserving the frozen original and replay', async () => {
+      const f = await fixture({ canonicalPython: {} });
+      const args = {
+        script: "print('synthetic JSON')",
+        inputs: [
+          {
+            objectId: f.object.id,
+            checksum: f.object.checksum,
+            path: 'input.json',
+          },
+        ],
+        outputs: ['metrics.json', 'metrics-copy.json'].map((path) => ({
+          path,
+          fileName: 'metrics.json',
+          format: 'json',
+        })),
+      };
+      const callId = randomUUID();
+      const selection = await select(f, {
+        arguments: args,
+        callId,
+        toolName: 'python.execute',
+        purpose: 'python_charts',
+        inputs: args.inputs,
+      });
+      const base = payload(f);
+      const p = RuntimeLocalPythonPayloadSchema.parse({
+        ...base,
+        arguments: {
+          ...base.arguments,
+          purpose: 'python_charts',
+          script: args.script,
+          origin: {
+            toolName: 'python.execute',
+            callId,
+            argumentsDigest: runtimePolicyDigest(args),
+          },
+          inputs: [
+            {
+              ...args.inputs[0],
+              sizeBytes: f.object.sizeBytes,
+              mediaType: f.object.mediaType,
+            },
+          ],
+          outputs: args.outputs.map((output) => ({
+            objectId: randomUUID(),
+            ...output,
+            mediaType: 'application/json',
+          })),
+        },
+      });
+      const created = await createLocalPythonOperation(
+        { selection, context: f.execution, payload: p, arguments: args },
+        database.db,
+      );
+      const ledger = createGovernedBridgeOperationLedger(f.device, {
+        database: database.db,
+      });
+      const claim = await ledger.claimNextBridgeOperation({
+        scope: created.snapshot.binding.task.scope,
+        deviceId: f.device.id,
+        leaseMs: 30000,
+        supportsManagedPython: true,
+      });
+      if (!claim) throw Error('canonical Python claim required');
+      const identity = {
+        scope: claim.snapshot.binding.task.scope,
+        operationId: claim.snapshot.binding.attempt.operationId,
+        leaseToken: claim.leaseToken,
+        attempt: claim.snapshot.binding.attempt,
+      };
+      await ledger.startOperation({ ...identity, receiptId: randomUUID() });
+      const bytes = Buffer.from('{"count":42}');
+      const collected = await Promise.all(
+        p.arguments.outputs.map((output) =>
+          storeLocalPythonArtifact({
+            token: f.token,
+            id: identity.operationId,
+            leaseToken: identity.leaseToken,
+            objectId: output.objectId,
+            metadata: {
+              checksum: checksum(bytes),
+              sizeBytes: bytes.length,
+              mediaType: 'application/json',
+              validation: 'utf8',
+            },
+            stream: new Blob([bytes]).stream(),
+            storage: f.storage,
+          }),
+        ),
+      );
+      const result = RuntimeLocalPythonResultSchema.parse({
+        backend: 'local-vm-container-v1',
+        profileVersion: 1,
+        purpose: 'python_charts',
+        containerId: 'b'.repeat(64),
+        imageId: release.imageId,
+        architecture: release.architecture,
+        stopped: true,
+        exitCode: 0,
+        reason: 'exited',
+        stdout: '42',
+        stderr: '',
+        truncated: false,
+        artifacts: collected,
+        workCopy: 'local_isolated_copy',
+        sourceDirectoryModified: false,
+      });
+      await ledger.recordReceipt({
+        ...identity,
+        receiptId: randomUUID(),
+        signal: {
+          type: 'operation.outcome',
+          result: {
+            status: 'succeeded',
+            effects: 'none',
+            evidence: {
+              id: randomUUID(),
+              recordedAt: new Date().toISOString(),
+              digest: runtimePolicyDigest(result),
+            },
+          },
+        },
+        evidence: { output: result },
+      });
+      const priorBytes = Buffer.from('{"count":1}'),
+        prior = createToolBrokerExportObject({
+          context: f.execution,
+          mediaType: 'application/json',
+          sizeBytes: priorBytes.length,
+          checksum: checksum(priorBytes),
+        });
+      await f.storage.put(prior, new Blob([priorBytes]).stream());
+      await registerToolBrokerExport(
+        {
+          context: f.execution,
+          sessionId: f.session,
+          fileName: 'metrics.json',
+          format: 'json',
+          object: prior,
+        },
+        database.db,
+      );
+      const published = await publishLocalPythonArtifacts(
+        { context: f.execution, operationId: identity.operationId },
+        f.storage,
+        database.db,
+      );
+      expect(published.map((file) => file.fileName)).toEqual([
+        'metrics（2）.json',
+        'metrics（3）.json',
+      ]);
+      expect(published[0]).toMatchObject({
+        requestedFileName: 'metrics.json',
+        object: {
+          id: collected[0]!.objectId,
+          checksum: collected[0]!.checksum,
+        },
+      });
+      expect(published[1]).toMatchObject({
+        requestedFileName: 'metrics.json',
+        object: {
+          id: collected[1]!.objectId,
+          checksum: collected[1]!.checksum,
+        },
+      });
+      expect(
+        await publishLocalPythonArtifacts(
+          { context: f.execution, operationId: identity.operationId },
+          f.storage,
+          database.db,
+        ),
+      ).toEqual(published);
+      expect(
+        await new Response(await f.storage.get(published[0]!.object)).text(),
+      ).toBe('{"count":42}');
+      expect(await new Response(await f.storage.get(prior)).text()).toBe(
+        '{"count":1}',
+      );
+      expect(p.arguments.outputs[0]!.fileName).toBe('metrics.json');
+      expect(p.arguments.origin.argumentsDigest).toBe(
+        runtimePolicyDigest(args),
+      );
+      for (const output of collected)
+        expect(
+          await database.db`select id from allrice_deliverable_versions where object_id=${output.objectId}`,
+        ).toHaveLength(1);
+    }, 30000);
 
     it('invalidates grant generations and other owners, and never claims or replays an unknown operation', async () => {
       const f = await fixture(),

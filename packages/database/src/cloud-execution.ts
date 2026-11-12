@@ -1233,7 +1233,7 @@ export async function publishCloudOperationArtifacts(
             live.checksum !== cached.object.checksum ||
             live.run_id !== ctx.runId ||
             live.operation_id !== binding.attempt.operationId ||
-            cached.fileName !== output.fileName
+            cached.fileName !== live.file_name
           )
             throw new RuntimePolicyError('cloud_result_unconfirmed');
         }
@@ -1358,7 +1358,10 @@ export async function publishCloudOperationArtifacts(
                 platformTestRunId: method.b.test_id,
                 methodFileOperationId: binding.attempt.operationId,
               }
-            : { sessionId: binding.task.chatSessionId! }),
+            : {
+                sessionId: binding.task.chatSessionId!,
+                namePolicy: 'personal-deliverable',
+              }),
           fileName: output.fileName,
           ...('parentObjectId' in output && output.parentObjectId
             ? { parentObjectId: output.parentObjectId }
@@ -1394,7 +1397,7 @@ export async function publishCloudOperationArtifacts(
         );
       published.push({
         object,
-        fileName: output.fileName,
+        fileName: version.fileName,
         versionId: version.id,
       });
     }

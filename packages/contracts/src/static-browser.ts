@@ -17,7 +17,7 @@ export const StaticBrowserTargetSchema = StaticBrowserReferenceSchema.extend({
   objectId: UuidSchema,
   sizeBytes: z.number().int().positive().max(staticBrowserMaximumBytes),
   mediaType: z.literal('text/html'),
-  fileName: z.string().min(1).max(120),
+  fileName: z.string().min(1).max(255),
   sourceOperationId: UuidSchema.nullable(),
   sourceSessionId: UuidSchema,
 }).strict();

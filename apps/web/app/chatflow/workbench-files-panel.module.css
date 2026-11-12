@@ -149,6 +149,19 @@
   pointer-events: none;
   color: var(--dsw-alias-label-secondary);
 }
+.scopePicker select:disabled {
+  opacity: 0.5;
+}
+.favorite {
+  display: inline-flex;
+  vertical-align: -2px;
+  margin-right: 5px;
+  color: light-dark(#d29b26, #ddae4e);
+}
+.deliveryDetail .favoriteButton[aria-pressed='true'],
+.deliveryDetail .favoriteButton[aria-pressed='true']:hover {
+  color: light-dark(#d29b26, #ddae4e);
+}
 .search {
   display: flex;
   align-items: center;

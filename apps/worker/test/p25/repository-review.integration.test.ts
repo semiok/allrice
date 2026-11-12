@@ -70,6 +70,10 @@ import { repositoryReviewFixture } from '../../../../packages/database/src/platf
 import { freezeRepositoryPublicationSource } from '../../../../packages/database/src/platform-repository-publication-source.ts';
 import { repositoryFactsDigest } from '../../../../packages/database/src/platform-repository-publication-ledger.ts';
 import { technicalDigest } from '../../../../packages/database/src/platform-technical-tasks.ts';
+import {
+  createToolBrokerExportObject,
+  registerToolBrokerExport,
+} from '../../../../packages/database/src/execution/tool-broker.ts';
 import { updatePlatformRepositoryCredential } from '../../../../packages/database/src/platform-repository-credentials.ts';
 import {
   createPlatformRepositoryReview,
@@ -3111,8 +3115,37 @@ suite(
 
     it('completes independent Job inspect → saved opinion → delivery → canonical completion and private download without assistants', async () => {
       const legacyHistory = await readRetiredExecutionHistory(f.db);
-      const s = await start(await setup()),
-        o = await opinion(s);
+      const s = await start(await setup());
+      const storage = runtimeFixtureStorage(f.db),
+        oldBytes = Buffer.from('Earlier independent repository original');
+      const originals = [];
+      for (const fileName of [
+        'repository-review-material.json',
+        'repository-deliver.json',
+      ]) {
+        const object = createToolBrokerExportObject({
+          context: s.execution.context,
+          mediaType: 'application/json',
+          sizeBytes: oldBytes.length,
+          checksum: repositoryDigest(oldBytes),
+        });
+        await storage.put(object, new Blob([oldBytes]).stream());
+        await registerToolBrokerExport(
+          {
+            context: s.execution.context,
+            sessionId: s.review.sessionId,
+            object,
+            fileName,
+            format: 'json',
+          },
+          f.db,
+        );
+        originals.push(object);
+      }
+      const o = await opinion(s);
+      expect(
+        await f.db`select file_name from allrice_deliverable_versions where id=${o.seed.candidate.artifactId}`,
+      ).toEqual([{ file_name: 'repository-review-material（2）.json' }]);
       await expect(
         s.development({
           action: 'review',
@@ -3122,11 +3155,26 @@ suite(
           summary: 'author opinion',
         }),
       ).rejects.toThrow();
-      const delivered = (await s.development({
+      const deliverRequest = randomUUID();
+      const deliveryInput = {
         action: 'deliver',
         candidate: o.seed.candidate,
         reviewId: o.review.id,
-      })) as { artifact: RepositoryReviewArtifactRef };
+      };
+      const delivered = (await s.development(
+        deliveryInput,
+        deliverRequest,
+      )) as { artifact: RepositoryReviewArtifactRef };
+      expect(await s.development(deliveryInput, deliverRequest)).toEqual(
+        delivered,
+      );
+      expect(
+        await f.db`select file_name from allrice_deliverable_versions where id=${delivered.artifact.artifactId}`,
+      ).toEqual([{ file_name: 'repository-deliver（2）.json' }]);
+      for (const object of originals)
+        expect(await new Response(await storage.get(object)).text()).toBe(
+          oldBytes.toString(),
+        );
       expect(await s.allowed()).toBe(true);
       await recordRepositoryReviewRemote(
         s.lease,

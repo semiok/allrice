@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,7 +15,11 @@ import { revokeRuntimeActionApproval } from './runtime-policy.ts';
 import { listCloudRuntimeOperations } from './cloud-operation-view.ts';
 import { executeRiceTool } from '../../../apps/worker/src/tool-broker.js';
 import { resolveCloudToolArguments } from '../../../apps/worker/src/tool-broker/handlers/cloud-frozen-script.js';
-import { getToolBrokerFile } from './execution/tool-broker.ts';
+import {
+  getToolBrokerFile,
+  createToolBrokerExportObject,
+  registerToolBrokerExport,
+} from './execution/tool-broker.ts';
 import type * as Client from './core/client.ts';
 let db: ReturnType<typeof postgres>,
   admin: ReturnType<typeof postgres>,
@@ -149,6 +153,25 @@ suite('P15 real PostgreSQL governance and SaaS gVisor delivery', () => {
       outputs: [{ path: 'summary.csv', fileName: '汇总.csv', format: 'csv' }],
     };
     const raw = structuredClone(args);
+    const priorBytes = Buffer.from('Existing exact original');
+    const prior = createToolBrokerExportObject({
+      context: f.execution,
+      mediaType: 'text/csv',
+      sizeBytes: priorBytes.length,
+      checksum:
+        'sha256:' + createHash('sha256').update(priorBytes).digest('hex'),
+    });
+    await f.storage.put(prior, new Blob([priorBytes]).stream());
+    await registerToolBrokerExport(
+      {
+        context: f.execution,
+        sessionId: f.session,
+        fileName: '汇总.csv',
+        format: 'text',
+        object: prior,
+      },
+      db,
+    );
     const timeout = process.env.ALLRICE_CLOUD_COMMAND_TIMEOUT_MS;
     const output = process.env.ALLRICE_CLOUD_COMMAND_OUTPUT_BYTES;
     vi.stubEnv('ALLRICE_CLOUD_COMMAND_TIMEOUT_MS', '1500');
@@ -237,6 +260,20 @@ suite('P15 real PostgreSQL governance and SaaS gVisor delivery', () => {
       if ('error' in result) throw result.error;
       const value = JSON.parse(result.value.modelContent);
       expect(value.status).toBe('succeeded');
+      expect(value.artifacts[0].fileName).toBe('汇总（2）.csv');
+      const replay = await executeRiceTool({
+        context: f.execution,
+        capabilities: ['storage:read', 'storage:write'],
+        storageRoot,
+        sessionId: f.session,
+        call: { id: 'summary', name: 'cloud.process.execute', arguments: args },
+      });
+      expect(JSON.parse(replay.modelContent).artifacts).toEqual(
+        value.artifacts,
+      );
+      expect(await new Response(await f.storage.get(prior)).text()).toBe(
+        'Existing exact original',
+      );
       expect(execute).toHaveBeenCalledTimes(1);
       expect(execute.mock.calls[0]![0].arguments.limits).toMatchObject({
         timeoutMs: 1500,

@@ -54,8 +54,8 @@ export const executeLocalFileTool: RiceToolHandler = async ({
             downloads: [
               {
                 objectId: file.objectId,
-                fileName: file.fileName,
-                url: `/api/v1/files/${file.objectId}/download?name=${encodeURIComponent(file.fileName)}`,
+                fileName: publication?.fileName ?? file.fileName,
+                url: `/api/v1/files/${file.objectId}/download?name=${encodeURIComponent(publication?.fileName ?? file.fileName)}`,
               },
             ],
           }
