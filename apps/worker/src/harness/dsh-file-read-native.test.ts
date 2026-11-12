@@ -1,3 +1,5 @@
+import { LocalStorageAdapter } from '@allrice/storage';
+import { afterEach } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { beforeEach, expect, it, vi } from 'vitest';
 import type { RiceToolExecutionInput } from '../tool-broker/types.js';
@@ -16,6 +18,8 @@ import { HandlerError, isConfirmedToolFailure } from '../errors.js';
 import { nativeBrokerRoundtrip } from './dsh-native-broker.fixture.js';
 import { dshInboundToolHandler, parseDshToolCall } from './dsh/tool-bridge.js';
 import { textBlocks } from './dsh/event-projector.js';
+
+afterEach(() => vi.restoreAllMocks());
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -214,4 +218,137 @@ it('the old two-phase/multiple-envelope path remains fail-closed, including othe
       ),
     ).toThrow('more than one AllRice tool envelope');
   }
+});
+
+function fileFixture(
+  input: RiceToolExecutionInput,
+  mediaType = 'text/plain',
+  sizeBytes = 10,
+) {
+  return {
+    object: { id: input.call.arguments.objectId, mediaType, sizeBytes },
+    fileName: 'fixture',
+  };
+}
+function readInbound(input: RiceToolExecutionInput) {
+  return dshInboundToolHandler({
+    tools: [{ name: input.call.name, description: '', inputSchema: {} }],
+    onToolCall: (call) => executeRiceTool({ ...input, call }),
+    fileReadRoot: {
+      nativeSessionId: input.call.nativeSessionId!,
+      runId: input.context.runId,
+      signal: input.signal ?? new AbortController().signal,
+    },
+  });
+}
+function readParams(input: RiceToolExecutionInput) {
+  return {
+    name: input.call.name,
+    nativeSessionId: input.call.nativeSessionId,
+    toolCallId: input.call.id,
+    arguments: input.call.arguments,
+  };
+}
+it.each([
+  ['mime', 'TOOL_FILE_TYPE_UNSUPPORTED'],
+  ['size', 'TOOL_FILE_TOO_LARGE'],
+  ['page', 'TOOL_INPUT_INVALID'],
+  ['utf8', 'TOOL_FILE_TYPE_UNSUPPORTED'],
+  ['binary', 'TOOL_FILE_TYPE_UNSUPPORTED'],
+  ['stream-size', 'TOOL_FILE_TOO_LARGE'],
+])(
+  'returns the locally confirmed %s refusal with its original code and audit',
+  async (kind, code) => {
+    const input = fixture();
+    ports.file.mockResolvedValue(
+      fileFixture(
+        input,
+        kind === 'mime' ? 'text/csv' : 'text/plain',
+        kind === 'size' ? 2_000_001 : 10,
+      ),
+    );
+    if (kind === 'page') input.call.arguments.limit = 4001;
+    const bytes =
+      kind === 'utf8'
+        ? new Uint8Array([0xff])
+        : kind === 'binary'
+          ? new Uint8Array([0])
+          : new Uint8Array(2_000_001);
+    const storage = vi
+      .spyOn(LocalStorageAdapter.prototype, 'get')
+      .mockResolvedValue(new Blob([bytes]).stream());
+    const result = await readInbound(input)(
+      'allrice/tool-call',
+      readParams(input),
+    );
+    expect(result).toMatchObject({
+      fileReadDenied: {
+        code,
+        callId: input.call.id,
+        nativeSessionId: input.call.nativeSessionId,
+        message: expect.any(String),
+      },
+    });
+    expect(ports.audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        decision: 'denied',
+        reason: code!.toLowerCase(),
+        metadata: expect.objectContaining({
+          errorCode: code,
+          retryable: false,
+          nativeCallId: input.call.id,
+        }),
+      }),
+    );
+    expect(storage).toHaveBeenCalledTimes(
+      ['utf8', 'binary', 'stream-size'].includes(kind!) ? 1 : 0,
+    );
+  },
+);
+it.each([
+  'TOOL_FILE_TYPE_UNSUPPORTED',
+  'TOOL_FILE_TOO_LARGE',
+  'TOOL_INPUT_INVALID',
+])(
+  'does not trust an unconfirmed dependency error with code %s',
+  async (code) => {
+    const input = fixture(),
+      error = new HandlerError(code, 'unconfirmed dependency error', false);
+    ports.file.mockRejectedValue(error);
+    await expect(
+      readInbound(input)('allrice/tool-call', readParams(input)),
+    ).rejects.toBe(error);
+  },
+);
+it.each(['audit-failure', 'cancel-during-audit'])(
+  'keeps a confirmed type refusal fatal on %s',
+  async (kind) => {
+    const input = fixture(),
+      controller = new AbortController(),
+      error = Error(kind);
+    input.signal = controller.signal;
+    ports.file.mockResolvedValue(fileFixture(input, 'text/csv'));
+    ports.audit.mockImplementationOnce(async () => {
+      if (kind === 'audit-failure') throw error;
+      controller.abort(error);
+    });
+    await expect(
+      readInbound(input)('allrice/tool-call', readParams(input)),
+    ).rejects.toBe(error);
+  },
+);
+it('a streaming I/O failure is not reclassified as a safe refusal', async () => {
+  const input = fixture(),
+    error = Error('synthetic read I/O failure');
+  ports.file.mockResolvedValue(fileFixture(input));
+  vi.spyOn(LocalStorageAdapter.prototype, 'get').mockResolvedValue(
+    new ReadableStream({
+      start(controller) {
+        controller.error(error);
+      },
+    }),
+  );
+  await expect(
+    readInbound(input)('allrice/tool-call', readParams(input)),
+  ).rejects.toBe(error);
 });

@@ -148,12 +148,12 @@ export async function executeRiceTool(
       },
     }).catch((auditFailure: unknown) => {
       // Only this native continuation contract requires a confirmed denial
-      // audit. An audit outage is unknown/fatal, never the safe ACL result.
+      // audit. An audit outage is unknown/fatal, never a safe refusal result.
       if (
         input.call.name === 'workspace.file.read' &&
         input.call.nativeSessionId &&
         error instanceof HandlerError &&
-        error.code === 'TOOL_FILE_ACCESS_DENIED' &&
+        !error.retryable &&
         isConfirmedToolFailure(error, {
           runId: input.context.runId,
           callId: input.call.id,

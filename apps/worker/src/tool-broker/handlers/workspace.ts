@@ -31,7 +31,7 @@ import {
   memoryLifecycleStateValue,
   stringValue,
 } from '../input-values.js';
-import type { RiceToolHandler } from '../types.js';
+import type { RiceToolExecutionInput, RiceToolHandler } from '../types.js';
 
 const maximumReadableBytes = 2_000_000;
 const readableMediaTypes = new Set([
@@ -54,7 +54,28 @@ function requestContextFromExecution(
   };
 }
 
-async function streamText(stream: ReadableStream<Uint8Array>) {
+// Confirm only refusals produced here, never a matching code thrown by storage
+// or another dependency. Reuse the existing per-invocation failure receipt.
+function fileReadRefusal(
+  input: RiceToolExecutionInput,
+  code: string,
+  message: string,
+) {
+  input.signal?.throwIfAborted();
+  const error = new HandlerError(code, message, false);
+  if (input.call.nativeSessionId)
+    confirmToolFailure(error, {
+      runId: input.context.runId,
+      callId: input.call.id,
+      toolName: input.call.name,
+    });
+  return error;
+}
+
+async function streamText(
+  stream: ReadableStream<Uint8Array>,
+  input: RiceToolExecutionInput,
+) {
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
@@ -64,10 +85,10 @@ async function streamText(stream: ReadableStream<Uint8Array>) {
       if (chunk.done) break;
       size += chunk.value.byteLength;
       if (size > maximumReadableBytes) {
-        throw new HandlerError(
+        throw fileReadRefusal(
+          input,
           'TOOL_FILE_TOO_LARGE',
           '文件超过 2 MB 的分页读取上限',
-          false,
         );
       }
       chunks.push(chunk.value);
@@ -83,10 +104,10 @@ async function streamText(stream: ReadableStream<Uint8Array>) {
     if (content.includes('\u0000')) throw new Error('binary content');
     return content;
   } catch {
-    throw new HandlerError(
+    throw fileReadRefusal(
+      input,
       'TOOL_FILE_TYPE_UNSUPPORTED',
       '文件不是有效的 UTF-8 文本，请使用对应的文档或文件工具。',
-      false,
     );
   }
 }
@@ -127,10 +148,10 @@ export const readWorkspaceFile: RiceToolHandler = async ({
     limit < 1 ||
     limit > 4_000
   ) {
-    throw new HandlerError(
+    throw fileReadRefusal(
+      input,
       'TOOL_INPUT_INVALID',
       '分页 offset/limit 必须是有效整数，limit 最大 4000',
-      false,
     );
   }
   const file = await getToolBrokerFile(
@@ -147,17 +168,11 @@ export const readWorkspaceFile: RiceToolHandler = async ({
       cause.code !== 'authorization_denied'
     )
       throw cause;
-    const error = new HandlerError(
+    throw fileReadRefusal(
+      input,
       'TOOL_FILE_ACCESS_DENIED',
       '没有权限读取该文件；未读取内容。',
-      false,
     );
-    confirmToolFailure(error, {
-      runId: input.context.runId,
-      callId: input.call.id,
-      toolName: input.call.name,
-    });
-    throw error;
   });
   // Extracted private attachments may have a generic MIME. Select only the
   // same supported text extensions, then validate the actual bytes below.
@@ -165,20 +180,21 @@ export const readWorkspaceFile: RiceToolHandler = async ({
     file.object.mediaType === 'application/octet-stream' &&
     /\.(txt|md|json)$/i.test(file.fileName);
   if (!readableMediaTypes.has(file.object.mediaType) && !genericText) {
-    throw new HandlerError(
+    throw fileReadRefusal(
+      input,
       'TOOL_FILE_TYPE_UNSUPPORTED',
       '当前只支持读取 txt、md 和 json 文本文件',
-      false,
     );
   }
   if (file.object.sizeBytes > maximumReadableBytes)
-    throw new HandlerError(
+    throw fileReadRefusal(
+      input,
       'TOOL_FILE_TOO_LARGE',
       '文件超过 2 MB 的分页读取上限',
-      false,
     );
   const content = await streamText(
     await new LocalStorageAdapter(input.storageRoot).get(file.object),
+    input,
   );
   if ('companyReference' in file) {
     if (
