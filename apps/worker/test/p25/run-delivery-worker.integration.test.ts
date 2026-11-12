@@ -102,6 +102,7 @@ import {
   getEmployeeWorkspace,
   deleteWorkspaceMemory,
   createPersonalEmployeeMemory,
+  correctPersonalEmployeeMemory,
   promoteManagedEmployeeMemory,
   deleteManagedEmployeeMemory,
 } from '../../../../packages/database/src/workspace/service.ts';
@@ -1255,6 +1256,169 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         expect(stored!.s.schemaVersion).toBe(1);
         expect(stored!.s.initial).not.toHaveProperty('documentDigest');
         expect(stored!.s).not.toHaveProperty('confirmedPins');
+      } finally {
+        await task.isolation.cleanup();
+      }
+    },
+    90000,
+  );
+
+  it.each([
+    'native_once',
+    'native_recurring',
+    'folder_event',
+    'automation_manual',
+  ] as const)(
+    'V1 %s reads complete newly created and edited V2 pairs without ordinal grants or a new budget',
+    async (kind) => {
+      const bodies: { id: string; content: string }[] = [];
+      const f = await publishedTarget(async (request, index) => {
+        expectMemoryReadDescriptions(request, false);
+        if (index === 1) {
+          const current = JSON.stringify(
+            request.messages
+              .filter(
+                (message) =>
+                  message.role === 'user' &&
+                  JSON.stringify(message.content).includes(
+                    'Current runtime context.',
+                  ),
+              )
+              .at(-1),
+          );
+          for (const body of bodies)
+            expect(current).toContain(
+              JSON.stringify(body.content).slice(1, -1),
+            );
+          return {
+            nativeTool: {
+              name: 'workspace_memory_search',
+              arguments: { query: 'PAIR_CONDITION' },
+            },
+          };
+        }
+        return {
+          text: 'Complete V2 pairs were read using the existing V1 task contract.',
+        };
+      });
+      // Keep this regression's recall pool to the two real V2 write paths;
+      // the preceding producer matrix independently retains its legacy proofs.
+      for (const memory of f.memories)
+        await deleteWorkspaceMemory(
+          f.context,
+          f.identity.workspace,
+          memory.id,
+          {
+            instanceId: f.identity.assignment,
+            expectedRevision: memory.revision,
+            contentDigest: memory.contentDigest,
+            idempotencyKey: randomUUID(),
+          },
+        );
+      const createdPair = {
+        summary: '新建月报可以外发',
+        details: `${f.prompt}\nPAIR_CONDITION_CREATE 只可发送脱敏汇总；原始客户名单不得外发。`,
+      };
+      const created = await createPersonalEmployeeMemory(f.context, {
+        workspaceId: f.identity.workspace,
+        instanceId: f.identity.assignment,
+        idempotencyKey: randomUUID(),
+        ...createdPair,
+      });
+      bodies.push({
+        id: created.id,
+        content: `${createdPair.summary}\n${createdPair.details}`,
+      });
+      const before = await createPersonalEmployeeMemory(f.context, {
+        workspaceId: f.identity.workspace,
+        instanceId: f.identity.assignment,
+        idempotencyKey: randomUUID(),
+        summary: '待更新月报条件',
+        details: '编辑前的条件不得替代当前规定',
+      });
+      const editedPair = {
+        summary: '编辑月报继续按条件外发',
+        details: `${f.prompt}\nPAIR_CONDITION_EDIT 只发审计版；未经确认不得附原始订单。`,
+      };
+      await correctPersonalEmployeeMemory(
+        f.context,
+        f.identity.workspace,
+        before.id,
+        {
+          instanceId: f.identity.assignment,
+          expectedRevision: before.revision,
+          pairDigest: before.pairDigest,
+          idempotencyKey: randomUUID(),
+          ...editedPair,
+          reason: '本人更新条件后再执行任务',
+        },
+      );
+      bodies.push({
+        id: before.id,
+        content: `${editedPair.summary}\n${editedPair.details}`,
+      });
+      f.prompt += '请生成月度报告，遵守 PAIR_CONDITION 的全部条件。';
+      let runId: string;
+      if (kind === 'native_once') runId = await (await oncePlan(f)).dispatch();
+      else if (kind === 'native_recurring') runId = await recurringProducer(f);
+      else if (kind === 'folder_event') runId = (await folderProducer(f)).runId;
+      else
+        runId = (
+          await runManualAutomation(
+            f.context,
+            f.identity.workspace,
+            (await oncePlan(f)).plan.id,
+            {
+              requestId: randomUUID(),
+              expectedRevision: 1,
+            },
+          )
+        ).run.id;
+      const broker = vi.spyOn(ToolBroker, 'executeRiceTool');
+      const task = await claim(f, runId, true);
+      try {
+        await task.run();
+        const reads = await Promise.all(
+          broker.mock.calls.flatMap(([input], index) =>
+            input.call.name === 'workspace.memory.search'
+              ? [
+                  broker.mock.results[index]!.value.then(
+                    (
+                      result: Awaited<
+                        ReturnType<typeof ToolBroker.executeRiceTool>
+                      >,
+                    ) => JSON.parse(result.modelContent),
+                  ),
+                ]
+              : [],
+          ),
+        );
+        expect(reads).toHaveLength(1);
+        for (const body of bodies)
+          expect(reads[0].items).toContainEqual(expect.objectContaining(body));
+        expect(
+          broker.mock.calls.some(
+            ([input]) => input.call.name === 'workspace.memory.read',
+          ),
+        ).toBe(false);
+        const [stored] =
+          await f.db`select memory_context_state s from allrice_employee_runs where run_id=${runId}`;
+        expect(stored!.s.schemaVersion).toBe(1);
+        expect(stored!.s.initial.ids).toEqual(
+          expect.arrayContaining(bodies.map((body) => body.id)),
+        );
+        expect(stored!.s.initial.bytes).toBeLessThanOrEqual(6000);
+        expect(stored!.s.initial).not.toHaveProperty('documentDigest');
+        expect(stored!.s).not.toHaveProperty('confirmedPins');
+        expect(stored!.s.limits).toMatchObject({
+          maximumResponseBytes: 8000,
+          maximumRunBytes: 24000,
+          maximumToolReads: 12,
+        });
+        expect(stored!.s.toolReads).toBe(1);
+        expect(stored!.s.spentBytes).toBe(
+          stored!.s.initial.bytes + memoryContextBytes(reads[0]),
+        );
       } finally {
         await task.isolation.cleanup();
       }
