@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { readSmokeReply } from './smoke-reply.mjs';
+import { startSmokeWork } from './smoke-entry.mjs';
 
 const args = Object.fromEntries(
   process.argv
@@ -121,21 +122,7 @@ async function login() {
   ]);
   await page.waitForLoadState('networkidle').catch(() => {});
 }
-async function newWork() {
-  await page
-    .goto(`${base}/chatflow`, { waitUntil: 'networkidle' })
-    .catch(() => {});
-  await page
-    .getByRole('button', { name: '新的工作', exact: true })
-    .first()
-    .click();
-  await page
-    .getByRole('dialog')
-    .getByText('Rice', { exact: true })
-    .first()
-    .click();
-  await page.waitForTimeout(1500);
-}
+const newWork = () => startSmokeWork(page, base);
 // Send, then wait until the run's stop button has appeared and stayed gone for 3s.
 async function ask(text, timeoutMs) {
   await page.locator('textarea').first().fill(text);

@@ -1,4 +1,4 @@
-// Synthetic ChatTranscript DOM in Chrome; no server, credentials or model Run.
+// Synthetic public controls and ChatTranscript DOM; no credentials or model Run.
 import { createRequire } from 'node:module';
 import {
   afterAll,
@@ -10,6 +10,7 @@ import {
   it,
 } from 'vitest';
 import { readSmokeReply } from './smoke-reply.mjs';
+import { startSmokeWork } from './smoke-entry.mjs';
 
 const suite =
   process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1'
@@ -61,6 +62,46 @@ suite('smoke reply evidence belongs to the requested assistant turn', () => {
     page
       .locator('[data-chat-scroll]')
       .evaluate(readSmokeReply, { prompt, ...extra });
+
+  it.each([false, true])(
+    'starts fresh Rice work through the shared entry (existing session: %s)',
+    async (existing) => {
+      const base = 'https://smoke-entry.invalid';
+      const writes = [];
+      page.on('request', (request) => {
+        if (request.method() !== 'GET') writes.push(request.method());
+      });
+      await page.route(`${base}/**`, (route) =>
+        route.fulfill({
+          contentType: 'text/html',
+          body: `<!doctype html>
+            <button onclick="document.body.dataset.created = 'yes'">创建员工</button>
+            <button aria-label="和 Rice 开新会话" onclick="
+              document.body.dataset.started = 'Rice';
+              history.replaceState({}, '', '/chatflow');
+              const input = document.querySelector('textarea');
+              input.hidden = false;
+              input.value = '';
+            ">＋</button>
+            <textarea aria-label="给 Rice 的消息" ${existing ? '' : 'hidden'}>${existing ? '未发送的旧草稿' : ''}</textarea>
+            <script>
+              if (${existing}) history.replaceState({}, '', '/chatflow?session=old');
+            </script>`,
+        }),
+      );
+      await startSmokeWork(page, base);
+      expect(new URL(page.url()).pathname).toBe('/chatflow');
+      expect(new URL(page.url()).searchParams.get('session')).toBeNull();
+      expect(
+        await page
+          .getByRole('textbox', { name: '给 Rice 的消息', exact: true })
+          .inputValue(),
+      ).toBe('');
+      const state = await page.evaluate(() => ({ ...document.body.dataset }));
+      expect(state).toEqual({ started: 'Rice' });
+      expect(writes).toEqual([]);
+    },
+  );
 
   it('reads the reply despite a later sidebar repeating the prompt', async () => {
     const text = '我是 Rice，可以帮助你整理资料、分析数据并完成日常工作。';
