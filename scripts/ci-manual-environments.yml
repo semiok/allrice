@@ -73,6 +73,7 @@ files:
   browser:
     - apps/web/app/chatflow/brand-content-panel.test.tsx
     - apps/web/server/project-preview.test.mjs
+    - scripts/m1/smoke-reply.browser.test.mjs
   browser+db:
     - apps/web/app/chatflow/candidate-memory.browser.test.ts
     - apps/web/app/chatflow/reference-library.browser.test.ts

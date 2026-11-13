@@ -1,0 +1,253 @@
+// Synthetic ChatTranscript DOM in Chrome; no server, credentials or model Run.
+import { createRequire } from 'node:module';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from 'vitest';
+import { readSmokeReply } from './smoke-reply.mjs';
+
+const suite =
+  process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1'
+    ? describe.sequential
+    : describe.skip;
+const prompt = '冒烟测试 scope：生成一份 Word 文档，直接给我下载。';
+const marker = '冒烟提醒-scope';
+// Existing CSS module keys and DOM attributes from ChatTranscript,
+// TranscriptUserMessage, WorkProcess, AutomationTaskCard and AutomationTrigger.
+const user = (id, text = prompt) =>
+  `<div id="message-${id}"><div data-actions-reveal="hover"><div class="dsh-saas-module__fixture__userBubble">${text}</div></div></div>`;
+const assistant = (id, body, metadata = '') =>
+  `<div id="message-${id}"><div data-actions-reveal="hover"><div class="dsh-saas-module__fixture__assistantIdentity">Rice</div><div data-process-region="run-${id}">${body}</div>${metadata}</div></div>`;
+const final = (text) => `<div data-work-reply="final">${text}</div>`;
+const timing = '<span aria-label="本轮运行时间">用时 8 秒</span>';
+const trigger = (id, extra = '') =>
+  `<div id="message-${id}"><section data-turn-trigger><button>自动化任务</button>${extra}</section><button>查看任务</button></div>`;
+
+suite('smoke reply evidence belongs to the requested assistant turn', () => {
+  let browser, page;
+  beforeAll(async () => {
+    const { chromium } = createRequire(
+      new URL('../../apps/web/package.json', import.meta.url),
+    )('playwright-core');
+    browser = await chromium.launch({
+      headless: true,
+      executablePath:
+        process.env.ALLRICE_TEST_CHROME_EXECUTABLE ??
+        (process.platform === 'darwin'
+          ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+          : chromium.executablePath()),
+    });
+  }, 60_000);
+  beforeEach(async () => {
+    page = await browser.newPage();
+  });
+  afterEach(async () => {
+    await page?.close();
+  });
+  afterAll(async () => {
+    await browser?.close();
+  });
+  async function mount(messages, outside = '') {
+    await page.setContent(
+      `<main><div data-chat-scroll><div>${messages}</div></div>${outside}</main>`,
+    );
+  }
+  const read = (extra = {}) =>
+    page
+      .locator('[data-chat-scroll]')
+      .evaluate(readSmokeReply, { prompt, ...extra });
+
+  it('reads the reply despite a later sidebar repeating the prompt', async () => {
+    const text = '我是 Rice，可以帮助你整理资料、分析数据并完成日常工作。';
+    await mount(
+      user('current') + assistant('answer', final(text), timing),
+      `<aside><h2>详情</h2><p>${prompt}</p><p>sidebar.docx sidebar.png Example Domain</p><button>用时</button></aside>`,
+    );
+    expect(await read()).toEqual({
+      text,
+      links: [],
+      timing: '用时 8 秒',
+      automation: '',
+      delivered: false,
+    });
+  });
+
+  it('does not anchor to a prompt that only appears in a sidebar', async () => {
+    await mount(
+      user('other', '另一个问题') + assistant('old', final('old.docx')),
+      `<aside>${prompt}<p>wrong.png</p></aside>`,
+    );
+    expect((await read()).text).toBe('');
+    expect((await read()).links).toEqual([]);
+  });
+
+  it('does not use old replies, history, tools, artifact cards or toolbar files as the current reply', async () => {
+    await mount(
+      user('old', '旧问题') +
+        assistant(
+          'old-answer',
+          final('<a href="old.docx">old.png</a>'),
+          timing,
+        ) +
+        user('current') +
+        assistant(
+          'pending',
+          '<div data-work-reply="earlier" data-process-member>history.docx history.png</div><div data-process-member><pre>created tool.docx tool.png</pre></div>',
+          timing +
+            '<div class="Deliverables-module__fixture__root"><div data-single="false"><div><button title="current.docx" aria-label="侧栏预览 current.docx"></button><span>current.docx</span></div><div><button title="current.png" aria-label="侧栏预览 current.png"></button><span>current.png</span></div></div></div>',
+        ),
+      `<aside>${prompt}<a href="sidebar.docx">sidebar.png</a></aside><div role="toolbar">toolbar.docx toolbar.png</div>`,
+    );
+    const reply = await read();
+    expect(reply.text).toBe('');
+    expect(reply.links).toEqual([]);
+    expect(/\.(docx|png)/.test([reply.text, ...reply.links].join('\n'))).toBe(
+      false,
+    );
+  });
+
+  it('anchors to the newest exact user bubble and does not cross another user message', async () => {
+    await mount(
+      user('old') +
+        assistant('old-answer', final('old.docx')) +
+        user('current') +
+        assistant('pending', '') +
+        user('later', '另一个问题') +
+        assistant('later-answer', final('later.png')),
+    );
+    expect((await read()).text).toBe('');
+    await mount(
+      user('current') +
+        user('later', '另一个问题') +
+        assistant('later-answer', final('later.docx')),
+    );
+    expect((await read()).text).toBe('');
+  });
+
+  it.each([
+    ['parts streaming/final', final('当前回复正文')],
+    [
+      'non-parts streaming',
+      '<div class="dsh-saas-module__fixture__assistantCopy" data-streaming>当前回复正文</div>',
+    ],
+    [
+      'non-parts settled',
+      '<div class="dsh-saas-module__fixture__assistantCopy">当前回复正文</div>',
+    ],
+  ])('reads the existing %s body shape', async (_, body) => {
+    await mount(user('current') + assistant('answer', body));
+    expect((await read()).text).toBe('当前回复正文');
+  });
+
+  it.each([
+    ['docx', '下载 Word 文档《冒烟测试》'],
+    ['png', '查看/下载柱状图'],
+  ])(
+    'keeps the original .%s assertion through the body link target',
+    async (ext, label) => {
+      const href = `https://allrice.invalid/api/v1/files/00000000-0000-4000-8000-000000000001/download?name=${encodeURIComponent(`冒烟测试.${ext}`)}`;
+      await mount(
+        user('current') +
+          assistant('answer', final(`<a href="${href}">${label}</a>`)),
+      );
+      const reply = await read();
+      expect(reply.text).toBe(label);
+      expect(reply.links).toEqual([href]);
+      expect(
+        (ext === 'docx' ? /\.docx/ : /\.png/).test(
+          [reply.text, ...reply.links].join('\n'),
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it('does not invent a type for a plain file ID or read hidden/history link targets', async () => {
+    const href = '/api/v1/files/00000000-0000-4000-8000-000000000001';
+    await mount(
+      user('current') +
+        assistant(
+          'answer',
+          `<div data-work-reply="old" data-process-member><a href="history.docx">旧结果</a></div>${final(`<a href="${href}">下载文档</a><a hidden href="hidden.png">隐藏</a>`)}`,
+        ),
+    );
+    const reply = await read();
+    expect(reply.text).toBe('下载文档');
+    expect(reply.links).toEqual([href]);
+    expect(/\.(docx|png)/.test([reply.text, ...reply.links].join('\n'))).toBe(
+      false,
+    );
+  });
+
+  it('requires the same assistant timing and keeps body length separate from URLs', async () => {
+    await mount(
+      user('old', '旧问题') +
+        assistant('old-answer', final('旧回复'), timing) +
+        user('current') +
+        assistant(
+          'answer',
+          final(
+            '<a href="https://allrice.invalid/a-very-long-result.docx">用时</a>',
+          ),
+        ),
+      `<aside>${timing}</aside>`,
+    );
+    const reply = await read();
+    expect(reply.timing).toBe('');
+    expect(reply.text.replace(/\s+/g, '').length).toBeLessThanOrEqual(20);
+    await page.locator('#message-answer').evaluate((element, html) => {
+      element.insertAdjacentHTML('beforeend', html);
+    }, timing);
+    expect((await read()).timing).toBe('用时 8 秒');
+  });
+
+  it('reads creation state only from the same assistant task card', async () => {
+    await mount(
+      user('old', '旧问题') +
+        assistant(
+          'old-answer',
+          '',
+          '<div data-tool="schedule_create">一次性 · 待执行</div>',
+        ) +
+        user('current') +
+        assistant('answer', final('已安排提醒。')),
+      '<aside><div data-tool="schedule_create">一次性 · 待执行</div></aside>',
+    );
+    expect((await read()).automation).toBe('');
+    await page.locator('#message-answer').evaluate((element) => {
+      element.insertAdjacentHTML(
+        'beforeend',
+        '<div data-tool="schedule_create">一次性 · 待执行</div>',
+      );
+    });
+    const reply = await read();
+    expect(reply.automation).toBe('一次性 · 待执行');
+    expect(reply.text).toBe('已安排提醒。');
+  });
+
+  it('requires a later task trigger followed by the marker in its assistant body', async () => {
+    await mount(
+      trigger('old-trigger') +
+        assistant('old-reminder', final(marker)) +
+        user('current') +
+        assistant('created', final('已安排提醒。')) +
+        trigger('fired', `<p>${marker}</p>`) +
+        assistant(
+          'delivery',
+          `<div data-process-member>${marker}</div>${final('没有标记的正文')}`,
+        ),
+      `<aside><button>查看任务</button>${marker}</aside>`,
+    );
+    expect((await read({ marker })).delivered).toBe(false);
+    await page
+      .locator('#message-delivery [data-work-reply]')
+      .evaluate((element, text) => {
+        element.textContent = text;
+      }, marker);
+    expect((await read({ marker })).delivered).toBe(true);
+  });
+});
