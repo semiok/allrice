@@ -3749,34 +3749,48 @@ suite(
       preparation: ['files'],
     };
     async function waitForDesktopSidebarLayout(page: Page) {
-      // These clean 1440px fixtures use the approved 320px default. The first
-      // unmeasured frame is 240px, before the native grid transition starts.
+      const hasImportedStorageState = Boolean(
+        process.env.ALLRICE_TEST_DEV_STORAGE_STATE,
+      );
+      // Imported Dev state can retain a width or a collapsed sidebar. Read the
+      // product's public targets without parsing or resetting stored preferences.
       await expect
         .poll(() =>
-          page.locator('main').evaluate((frame) => ({
-            target: frame
-              .querySelector('[role="separator"][aria-controls="chat-sidebar"]')
-              ?.getAttribute('aria-valuenow'),
-            rendered: frame
-              .querySelector('#chat-sidebar')
-              ?.getBoundingClientRect().width,
-            track: parseFloat(getComputedStyle(frame).gridTemplateColumns),
-            gridAnimating: frame.getAnimations().some(
-              (animation) =>
-                animation instanceof CSSTransition &&
-                animation.transitionProperty === 'grid-template-columns' &&
-                (animation.pending ||
-                  (animation.playState !== 'finished' &&
-                    animation.playState !== 'idle')),
-            ),
-          })),
+          page.locator('main').evaluate((frame, importedState) => {
+            if (!(frame instanceof HTMLElement)) return false;
+            const sidebar = frame.querySelector('#chat-sidebar');
+            const splitter = frame.querySelector(
+              '[role="separator"][aria-controls="chat-sidebar"]',
+            );
+            const inline = parseFloat(frame.style.gridTemplateColumns);
+            const target = splitter
+              ? Number(splitter.getAttribute('aria-valuenow'))
+              : inline;
+            // On these 1440px frames, max === min is the unmeasured 240px clamp.
+            const measured = splitter
+              ? Number(splitter.getAttribute('aria-valuemax')) >
+                Number(splitter.getAttribute('aria-valuemin'))
+              : !!sidebar?.querySelector('button[aria-label="展开侧边栏"]');
+            return (
+              target > 0 &&
+              (importedState || target === 320) &&
+              measured &&
+              target === inline &&
+              sidebar?.getBoundingClientRect().width === target &&
+              parseFloat(getComputedStyle(frame).gridTemplateColumns) ===
+                target &&
+              !frame.getAnimations().some(
+                (animation) =>
+                  animation instanceof CSSTransition &&
+                  animation.transitionProperty === 'grid-template-columns' &&
+                  (animation.pending ||
+                    (animation.playState !== 'finished' &&
+                      animation.playState !== 'idle')),
+              )
+            );
+          }, hasImportedStorageState),
         )
-        .toEqual({
-          target: '320',
-          rendered: 320,
-          track: 320,
-          gridAnimating: false,
-        });
+        .toBe(true);
     }
     async function selectSuggestion(
       page: Page,
