@@ -21,6 +21,7 @@ import type { Session, Workspace } from './chatflow-types';
 import type { useSessionArchive } from './use-session-archive';
 import archiveCss from './session-archive.module.css';
 import { EmployeeSidebar } from './employee-sidebar';
+import employeeSidebarCss from './employee-sidebar.module.css';
 import { employeePreferenceKey } from './employee-navigation';
 import type { NativeSubagentRead } from './use-native-subagents';
 import frameUi from './dsh-upstream/AppFrame.module.css';
@@ -291,6 +292,7 @@ export function ChatSidebar({
           </div>
         )}
         <div className={sidebarUi.regionArea}>
+          {!collapsed && <p className={employeeSidebarCss.label}>AI 员工</p>}
           <EmployeeSidebar
             scheduledSessions={scheduledSessions}
             archive={archive}

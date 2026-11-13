@@ -2874,7 +2874,9 @@ export function ChatFlowClient({
               </div>
             ) : isEmptyConversation ? (
               <div className={conversationUi.scrollBody}>
-                <section className={styles.emptyStage}>
+                <section
+                  className={`${styles.emptyStage} ${pendingEmployeeConversation ? styles.pendingEmployeeStage : ''}`}
+                >
                   <div className={styles.heroStack}>
                     {automationCreate && (
                       <p>

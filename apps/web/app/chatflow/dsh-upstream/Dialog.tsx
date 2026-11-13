@@ -16,6 +16,7 @@ interface DshDialogProps {
   backLabel?: string;
   closeDisabled?: boolean;
   showCloseButton?: boolean;
+  closeIcon?: ReactNode;
   className?: string;
   bodyClassName?: string;
   initialFocusSelector?: string;
@@ -31,6 +32,7 @@ export function DshDialog({
   backLabel = '返回',
   closeDisabled = false,
   showCloseButton = true,
+  closeIcon = '×',
   className = '',
   bodyClassName = '',
   initialFocusSelector,
@@ -170,7 +172,7 @@ export function DshDialog({
               type="button"
               disabled={closeDisabled}
             >
-              ×
+              {closeIcon}
             </button>
           ) : null}
         </header>

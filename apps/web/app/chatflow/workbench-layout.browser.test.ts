@@ -8057,6 +8057,40 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           }
           return actionBoxes;
         };
+        const expectCreatedHero = async () => {
+          const heading = f.page.getByRole('heading', {
+            name: '财务专员已创建，开始第一项工作吧',
+            exact: true,
+          });
+          const text = await heading.evaluate((node) => {
+            const range = document.createRange();
+            range.selectNodeContents(node);
+            const box = node.getBoundingClientRect();
+            const rects = [...range.getClientRects()];
+            return {
+              fontSize: getComputedStyle(node).fontSize,
+              complete:
+                rects.length > 0 &&
+                rects.every(
+                  (rect) => rect.left >= box.left && rect.right <= box.right,
+                ),
+              lines: new Set(rects.map((rect) => Math.round(rect.top))).size,
+            };
+          });
+          expect(text.fontSize).toBe(device === 'mobile' ? '20px' : '24px');
+          expect(text.complete, 'the complete success title stays readable').toBe(
+            true,
+          );
+          if (f.page.viewportSize()!.width >= 390) expect(text.lines).toBe(1);
+          const mark = heading.locator('..').locator(':scope > span');
+          expect(
+            await mark.evaluate((node) => {
+              const css = getComputedStyle(node);
+              const box = node.getBoundingClientRect();
+              return [box.width, box.height, css.backgroundColor, css.color];
+            }),
+          ).toEqual([56, 56, 'rgb(59, 130, 246)', 'rgb(9, 13, 22)']);
+        };
         const expectMobileHeader = async () => {
           const title = f.page.locator('header h1');
           expect(await title.textContent()).toBe('新的工作');
@@ -8082,21 +8116,37 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           const bounds = (await actions.boundingBox())!;
           expect(bounds.width).toBeGreaterThan(0);
           expect(
-            await actions.evaluate(
-              (node) => node.scrollWidth > node.clientWidth,
-            ),
-          ).toBe(true);
-          for (const label of [
+            await actions.evaluate((node) => getComputedStyle(node).overflowX),
+          ).toBe('auto');
+          const overflow = await actions.evaluate((node) => {
+            const overflowing = node.scrollWidth > node.clientWidth;
+            node.scrollLeft = node.scrollWidth;
+            const reachedEnd = !overflowing || node.scrollLeft > 0;
+            node.scrollLeft = 0;
+            return { overflowing, reachedEnd };
+          });
+          expect(overflow.reachedEnd).toBe(true);
+          // Main's native icon entries can fit at 390px; the 300px case must
+          // still exercise horizontal overflow without sacrificing the title.
+          if (f.page.viewportSize()!.width === 300)
+            expect(overflow.overflowing).toBe(true);
+          for (const name of [
             '查看归档',
             '子智能体',
-            '参考资料',
+            /^交付成果(?:，\d+ 项新增)?$/,
+            '记忆',
             '能力',
-            '工作区文件',
+            '展开工作台',
           ]) {
-            const button = actions.getByRole('button', {
-              name: label,
-              exact: true,
-            });
+            expect(
+              await actions.getByRole('button', { name, exact: true }).count(),
+            ).toBe(1);
+          }
+          // Check every currently rendered native header control, including
+          // the panel entry, rather than retaining the retired text buttons.
+          const buttons = actions.getByRole('button');
+          expect(await buttons.count()).toBe(6);
+          for (const button of await buttons.all()) {
             await button.focus();
             await button.click({ trial: true });
             const box = (await button.boundingBox())!;
@@ -8559,6 +8609,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             await expectMobileHeader();
             await input.focus();
           }
+          await expectCreatedHero();
           await f.page.mouse.move(width - 1, 1);
           await capture('created');
           await sidebar();
@@ -8594,6 +8645,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               .getByRole('button', { name: '收起侧边栏', exact: true })
               .click();
             await expectMobileHeader();
+            await expectCreatedHero();
             await f.page.setViewportSize({ width, height });
           }
           expect(f.state.messageInputs).toEqual([]);
@@ -17216,6 +17268,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       const width = async () =>
         Math.round((await sidebar.boundingBox())!.width);
       await splitter.waitFor();
+      await expect.poll(width).toBe(320);
       const composer = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
       await composer.fill('侧栏拖动不丢草稿');
       async function dragTo(x: number) {
@@ -17270,9 +17323,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page.keyboard.press('Shift+ArrowRight');
       await expect.poll(width).toBe(340);
       await splitter.dblclick({ position: { x: 4, y: 150 } });
-      await expect.poll(width).toBe(240);
+      await expect.poll(width).toBe(320);
       await splitter.focus();
+      const widenedDefault = Math.min(
+        420,
+        Number(await splitter.getAttribute('aria-valuemax')),
+      );
       await f.page.keyboard.press('Shift+ArrowRight');
+      await expect.poll(width).toBe(widenedDefault);
       await f.page.setViewportSize({ width: 390, height: 844 });
       // matchMedia delivers its change after the viewport command resolves.
       await expect.poll(() => splitter.count()).toBe(0);
@@ -17290,14 +17348,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       ).toBe(true);
       await f.page.screenshot({ path: '/tmp/met160-employee-blue-mobile.png' });
       await f.page.setViewportSize({ width: 1440, height: 950 });
-      await expect.poll(width).toBe(340);
+      await expect.poll(width).toBe(widenedDefault);
       await f.page.screenshot({
         path: '/tmp/met160-employee-blue-desktop.png',
       });
       f.state.viewer = id(50);
       await f.page.reload();
       await splitter.waitFor();
-      await expect.poll(width).toBe(240);
+      await expect.poll(width).toBe(320);
     } finally {
       await f.close();
     }
@@ -17437,13 +17495,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .poll(panelWidth)
         .toBe(
           Math.round((await f.page.locator('main').boundingBox())!.width) -
-            240 -
+            Math.round(
+              (await f.page.locator('#chat-sidebar').boundingBox())!.width,
+            ) -
             340,
         );
       expect(await splitter.getAttribute('aria-valuenow')).toBe(
         String(
           Math.round((await f.page.locator('main').boundingBox())!.width) -
-            240 -
+            Math.round(
+              (await f.page.locator('#chat-sidebar').boundingBox())!.width,
+            ) -
             340,
         ),
       );
@@ -17523,7 +17585,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .toBe(
           String(
             Math.round((await f.page.locator('main').boundingBox())!.width) -
-              240 -
+              Math.round(
+                (await f.page.locator('#chat-sidebar').boundingBox())!.width,
+              ) -
               340,
           ),
         );
@@ -17533,7 +17597,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .toBe(
           String(
             Math.round((await f.page.locator('main').boundingBox())!.width) -
-              240 -
+              Math.round(
+                (await f.page.locator('#chat-sidebar').boundingBox())!.width,
+              ) -
               340,
           ),
         );

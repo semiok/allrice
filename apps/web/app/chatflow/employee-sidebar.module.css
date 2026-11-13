@@ -13,7 +13,15 @@
   scrollbar-gutter: auto;
 }
 .group {
-  margin-bottom: 16px;
+  margin-bottom: 8px;
+}
+.label {
+  flex: none;
+  margin: 0;
+  padding: 0 12px 8px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
 }
 .avatar {
   --employee-start: #3b82f6;
@@ -23,7 +31,7 @@
 }
 .employeeCard {
   --dsw-alias-interactive-bg-hover: transparent;
-  margin-bottom: 6px;
+  margin-bottom: 0;
   border-radius: 13px;
   padding: 5px;
   background: var(--allrice-employee-bg);
@@ -64,7 +72,7 @@
   height: auto;
   padding-block: 8px;
   padding-inline: 8px;
-  gap: 11px;
+  gap: 10px;
 }
 .header > :first-child:hover {
   background: transparent;
@@ -81,8 +89,8 @@
 .employeeTitle {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 15px;
+  gap: 4px;
+  font-size: 14px;
   font-weight: 600;
   line-height: 21px;
 }
@@ -135,7 +143,9 @@
 }
 .sessions {
   --dsw-alias-interactive-bg-hover: var(--allrice-sidebar-hover);
-  padding-left: 8px;
+  display: grid;
+  gap: 2px;
+  padding: 4px 5px 0 46px;
 }
 .sessions [role='treeitem'] {
   transition: background-color 140ms ease;
@@ -157,7 +167,8 @@
   display: block;
   color: var(--dsw-alias-label-secondary);
   font-size: 12px;
-  padding: 8px;
+  padding: 8px 8px 8px 12px;
+  line-height: 20px;
 }
 .more {
   padding: 6px 12px;
@@ -170,8 +181,8 @@
   height: 36px;
   border-radius: 10px;
   background: var(--employee-start);
-  color: var(--employee-avatar-foreground);
-  font-size: 21px;
+  color: var(--employee-foreground);
+  font-size: 18px;
   font-weight: 600;
   line-height: 1;
 }
@@ -189,7 +200,7 @@
   padding: 0;
   border: 1px solid #ffffff14;
   border-radius: 10px;
-  color: var(--employee-avatar-foreground);
+  color: var(--employee-foreground);
   cursor: pointer;
   font: inherit;
   font-weight: 600;
@@ -276,12 +287,11 @@
   justify-content: space-between;
   gap: 8px;
   min-height: 34px;
-  margin-bottom: 2px;
-  padding: 7px 12px;
+  padding: 7px 8px;
   border-radius: 8px;
   color: var(--dsw-alias-label-primary);
   font-size: 12px;
-  line-height: 20px;
+  line-height: 18px;
   font-weight: 500;
 }
 .draftTime {
