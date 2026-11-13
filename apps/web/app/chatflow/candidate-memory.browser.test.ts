@@ -1267,8 +1267,16 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
         .click();
       const response = await rejected;
       expect(response.status()).toBe(409);
-      expect(await response.json()).toEqual({
-        error: 'employee_memory_contract_changed',
+      expect(await response.json()).toMatchObject({
+        error: {
+          code: 'CONFLICT',
+          retryable: false,
+          details: {
+            domain: 'employee_memory',
+            reason: 'contract_changed',
+            requiredSchemaVersion: 2,
+          },
+        },
       });
       await ui.page
         .getByRole('alert')

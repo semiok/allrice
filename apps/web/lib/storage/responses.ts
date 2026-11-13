@@ -3,7 +3,6 @@ import {
   LegacyScheduleRetiredError,
   EmployeeInstanceError,
   EmployeeMemoryConflict,
-  EmployeeMemoryContractChanged,
   EmployeeRuntimeContentError,
   IdentityError,
 } from '@allrice/database';
@@ -18,17 +17,13 @@ import { executionErrorResponse } from '../execution/responses';
 import { employeeHubErrorResponse } from '../employeehub/responses';
 
 export function storageErrorResponse(error: unknown) {
-  if (error instanceof EmployeeMemoryContractChanged)
-    return Response.json(
-      { error: error.code },
-      { status: 409, headers: { 'cache-control': 'private, no-store' } },
-    );
   if (error instanceof EmployeeMemoryConflict) {
     const response = apiProblem({
       status: 409,
       code: 'CONFLICT',
       message: '记忆已变化，请重新读取后再操作。',
       retryable: false,
+      details: error.details,
     });
     response.headers.set('Cache-Control', 'private, no-store');
     return response;

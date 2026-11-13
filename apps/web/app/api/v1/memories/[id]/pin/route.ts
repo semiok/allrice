@@ -1,6 +1,5 @@
 import {
   DataAccessError,
-  EmployeeMemoryCapacityError,
   setPersonalEmployeeMemoryPin,
 } from '@allrice/database';
 import { getRequestContext } from '../../../../../../lib/identity/session';
@@ -27,14 +26,6 @@ export async function POST(
       { headers: { 'cache-control': 'private, no-store' } },
     );
   } catch (error) {
-    if (error instanceof EmployeeMemoryCapacityError)
-      return Response.json(
-        {
-          error: 'memory_capacity',
-          remainingBytes: error.remainingBytes,
-        },
-        { status: 422, headers: { 'cache-control': 'private, no-store' } },
-      );
     return storageErrorResponse(error);
   }
 }

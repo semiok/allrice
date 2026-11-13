@@ -1,5 +1,9 @@
-import { DataAccessError, promoteWorkspaceMemory } from '@allrice/database';
+import {
+  DataAccessError,
+  promoteManagedEmployeeMemory,
+} from '@allrice/database';
 
+import { EmployeeMemoryWriteResponseSchema } from '@allrice/contracts';
 import { getRequestContext } from '../../../../../../lib/identity/session';
 import { sameOriginBrowserWrite } from '../../../../../../lib/identity/request-origin';
 import { storageErrorResponse } from '../../../../../../lib/storage/responses';
@@ -18,22 +22,21 @@ export async function POST(
     const workspaceId = new URL(request.url).searchParams.get('workspaceId');
     if (!workspaceId) throw new DataAccessError('not_found');
     const { id } = await route.params;
-    const memory = await promoteWorkspaceMemory(
+    const { counts, ...memory } = await promoteManagedEmployeeMemory(
       context,
       workspaceId,
       id,
       await request.json(),
     );
     return Response.json(
+      EmployeeMemoryWriteResponseSchema.parse({
+        schemaVersion: 2,
+        memory,
+        counts,
+      }),
       {
-        memory: {
-          ...memory,
-          ownedByMe:
-            context.actor.type === 'user' &&
-            memory.ownerId === context.actor.id,
-        },
+        headers: { 'cache-control': 'private, no-store' },
       },
-      { headers: { 'cache-control': 'private, no-store' } },
     );
   } catch (error) {
     return storageErrorResponse(error);

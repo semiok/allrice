@@ -5,10 +5,20 @@ import {
   CreatePersonalEmployeeMemoryInputSchema,
   CorrectPersonalEmployeeMemoryInputSchema,
   PersonalEmployeeMemorySchema,
+  EmployeeMemoryMutationInputSchema,
+  EmployeeMemoryRowSchema,
+  EmployeeMemoryCountsSchema,
+  PersonalMemoryDetailsSchema,
   WorkspaceMemorySchema as WorkspaceMemoryResponseSchema,
   type PersonalMemoryPair,
 } from '@allrice/contracts';
-import { freezeEmployeeDocuments } from '../employees/employee-documents.ts';
+import {
+  assertEmployeeMemoryAdmission,
+  employeeMemoryCounts,
+  lockEmployeeMemoryOrder,
+  mapEmployeeMemoryRecord,
+  ordinaryMemoryPredicate,
+} from '../employee-memory-management.ts';
 import { isModelFailureCode, modelFailure } from '@allrice/contracts';
 import { requireNativeQuestionAdmission } from '../native-questions.ts';
 import { archivePrivateExperience } from '../experience-runtime.ts';
@@ -43,7 +53,6 @@ import {
   assertMemoryPairRevision,
   EmployeeMemoryConflict,
   EmployeeMemoryContractChanged,
-  EmployeeMemoryCapacityError,
   employeeMemoryScope,
   memoryContentDigest,
   memoryPairDigest,
@@ -51,6 +60,7 @@ import {
   memoryOperation,
   lockMemorySource,
   type EmployeeMemoryIdentity,
+  type EmployeeMemoryScope,
 } from './employee-memory.ts';
 import { memoryPairContent } from './employee-memory-primitives.ts';
 import {
@@ -2664,7 +2674,7 @@ export async function createTraceableMemory(
   );
 }
 
-/** Storage-only v2 seam. It grants neither model tools nor candidate confirmation. */
+/** Pair storage seam; the HTTP adapter below uses the same mutation core. */
 export async function createPersonalEmployeeMemory(
   context: RequestContext,
   input: unknown,
@@ -2687,6 +2697,43 @@ export async function createPersonalEmployeeMemory(
   );
 }
 
+const ManagedMemoryWriteSchema = EmployeeMemoryRowSchema.extend({
+  details: PersonalMemoryDetailsSchema,
+  counts: EmployeeMemoryCountsSchema,
+}).refine((row) => row.hasDetails === (row.details !== null));
+async function mapManagedMemory(
+  row: MemoryRow,
+  tx: TransactionSql,
+  scope: EmployeeMemoryScope,
+) {
+  return {
+    ...mapEmployeeMemoryRecord(row),
+    counts: await employeeMemoryCounts(tx, scope),
+  };
+}
+
+export async function createManagedEmployeeMemory(
+  context: RequestContext,
+  input: unknown,
+) {
+  const pair = CreatePersonalEmployeeMemoryInputSchema.parse(input);
+  const memory = CreateWorkspaceMemoryInputSchema.parse({
+    workspaceId: pair.workspaceId,
+    instanceId: pair.instanceId,
+    idempotencyKey: pair.idempotencyKey,
+    content: pair.summary,
+    sourceType: 'user',
+  });
+  return createEmployeeMemoryRecord(
+    context,
+    memory,
+    undefined,
+    { summary: pair.summary, details: pair.details },
+    mapManagedMemory,
+    ManagedMemoryWriteSchema,
+  );
+}
+
 async function createEmployeeMemoryRecord<
   T extends { id: string; revision: number },
 >(
@@ -2694,7 +2741,11 @@ async function createEmployeeMemoryRecord<
   memory: z.infer<typeof CreateWorkspaceMemoryInputSchema>,
   executionContext: ExecutionContext | undefined,
   pair: PersonalMemoryPair | null,
-  map: (row: MemoryRow) => T,
+  map: (
+    row: MemoryRow,
+    tx: TransactionSql,
+    scope: EmployeeMemoryScope,
+  ) => T | Promise<T>,
   responseSchema: z.ZodType<T>,
 ) {
   const workspaceId = await resolveWorkspaceId(context, memory.workspaceId);
@@ -2760,6 +2811,19 @@ async function createEmployeeMemoryRecord<
     );
     if (memory.employeeId && memory.employeeId !== scope.employeeId)
       throw new DataAccessError('authorization_denied');
+    const lifecycleState = executionContext
+      ? 'candidate'
+      : memory.lifecycleState;
+    const trust =
+      memory.sourceType === 'user' ||
+      (memory.sourceType === 'message' && lifecycleState === 'durable')
+        ? 'user_confirmed'
+        : ['tool', 'connector'].includes(memory.sourceType)
+          ? 'untrusted_external'
+          : 'derived';
+    // Scope -> source -> receipt -> row. Pending production does not take this lock.
+    if (lifecycleState === 'durable' && trust === 'user_confirmed')
+      await lockEmployeeMemoryOrder(tx, scope);
     if (source) {
       const [session] = await tx`select id from allrice_chat_sessions
         where id=${source.session_id} and owner_id=${scope.ownerId} and organization_id=${scope.organizationId}
@@ -2793,18 +2857,6 @@ async function createEmployeeMemoryRecord<
       ? `source:${memory.sourceType}:${memory.sourceId}:${memoryContentDigest(memory.content)}`
       : memory.idempotencyKey;
     if (!key) throw new DataAccessError('authorization_denied');
-    // The existing Worker handler supplies candidate; keep its model-facing
-    // contract unchanged. Browser writes can only be direct user records.
-    const lifecycleState = executionContext
-      ? 'candidate'
-      : memory.lifecycleState;
-    const trust =
-      memory.sourceType === 'user' ||
-      (memory.sourceType === 'message' && lifecycleState === 'durable')
-        ? 'user_confirmed'
-        : ['tool', 'connector'].includes(memory.sourceType)
-          ? 'untrusted_external'
-          : 'derived';
     return memoryOperation(
       tx,
       scope,
@@ -2827,6 +2879,8 @@ async function createEmployeeMemoryRecord<
               and archived_at is not null limit 1`;
           if (discarded) throw new EmployeeMemoryConflict();
         }
+        if (lifecycleState === 'durable' && trust === 'user_confirmed')
+          await assertEmployeeMemoryAdmission(tx, scope);
         const savedPair = pair ?? legacyPersonalMemoryPair(memory.content);
         const content =
           pair === null ? memory.content : memoryPairContent(pair);
@@ -2857,7 +2911,7 @@ async function createEmployeeMemoryRecord<
           },
           tx,
         );
-        return map(row);
+        return map(row, tx, scope);
       },
       responseSchema,
     );
@@ -2887,18 +2941,65 @@ async function insertMemoryRevision(
 
 async function lockPersonalMemory(
   tx: TransactionSql,
-  context: RequestContext,
-  workspaceId: string,
+  scope: EmployeeMemoryScope,
   memoryId: string,
-  instanceId: string,
 ) {
-  const [row] = await tx<MemoryRow[]>`select * from allrice_memories m
-    where m.id=${memoryId} and m.organization_id=${context.organizationId} and m.workspace_id=${workspaceId}
-      and m.owner_id=${requireUser(context)} and m.instance_id=${instanceId} and m.archived_at is null
-      and not exists(select 1 from allrice_experience_reviews e where e.memory_id=m.id)
-    for update`;
+  const [row] = await tx<MemoryRow[]>`select m.* from allrice_memories m
+    where m.id=${memoryId} and ${ordinaryMemoryPredicate(tx, scope)} and m.archived_at is null for update`;
   if (!row) throw new DataAccessError('not_found');
   return row;
+}
+
+async function lockPersonalMemorySource(
+  tx: TransactionSql,
+  scope: EmployeeMemoryScope,
+  memoryId: string,
+) {
+  const [origin] = await tx<
+    { source_type: string; source_id: string | null }[]
+  >`
+    select source_type,source_id from allrice_memories m where m.id=${memoryId} and ${ordinaryMemoryPredicate(tx, scope)}`;
+  if (origin)
+    await lockMemorySource(tx, scope, origin.source_type, origin.source_id);
+}
+
+/** Only the pending-to-active transition rechecks its real, known source. A
+ * different record's deletion is no withdrawal of this record or its resource. */
+async function assertPendingMemorySource(
+  tx: TransactionSql,
+  context: RequestContext,
+  scope: EmployeeMemoryScope,
+  current: MemoryRow,
+) {
+  if (['message', 'checkpoint'].includes(current.source_type)) {
+    const [source] = await tx`select s.id from allrice_chat_sessions s
+      where s.organization_id=${scope.organizationId} and s.workspace_id=${scope.workspaceId}
+        and s.owner_id=${scope.ownerId} and coalesce(s.employee_instance_id,s.employee_assignment_id)=${scope.instanceId}
+        and s.archived_at is null
+        and ((${current.source_type}='message' and exists(select 1 from allrice_messages m
+          where m.id=${current.source_id} and m.organization_id=s.organization_id and m.workspace_id=s.workspace_id and m.owner_id=s.owner_id and m.session_id=s.id))
+          or (${current.source_type}='checkpoint' and exists(select 1 from allrice_context_checkpoints cp
+            where cp.id=${current.source_id} and cp.organization_id=s.organization_id and cp.workspace_id=s.workspace_id and cp.owner_id=s.owner_id and cp.session_id=s.id)))
+      for share of s`;
+    if (!source) throw new DataAccessError('authorization_denied');
+  } else if (current.source_type === 'file') {
+    if (!current.source_id) throw new DataAccessError('not_found');
+    await tx`select id from allrice_storage_objects where id=${current.source_id} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} for share`;
+    const file = await getStoredFile(
+      { ...context, workspaceId: scope.workspaceId },
+      current.source_id,
+      tx,
+    );
+    if (file.object.workspaceId !== scope.workspaceId)
+      throw new DataAccessError('authorization_denied');
+  } else if (
+    (current.source_type === 'user' && current.source_id !== null) ||
+    (['tool', 'connector'].includes(current.source_type) && !current.source_id)
+  ) {
+    throw new DataAccessError('authorization_denied');
+  }
+  // Ordinary tool/connector keep their existing owner-confirmation contract.
+  // Their opaque source UUID is not external-resource authority or a C receipt.
 }
 
 async function rejectGovernedMemoryMutation(
@@ -2931,7 +3032,7 @@ export async function correctWorkspaceMemory(
   );
 }
 
-/** Storage-only editor for current active owner pairs; not pending management CRUD. */
+/** Complete pair editing; saving a pending record also confirms it atomically. */
 export async function correctPersonalEmployeeMemory(
   context: RequestContext,
   workspaceIdInput: string,
@@ -2950,6 +3051,23 @@ export async function correctPersonalEmployeeMemory(
   );
 }
 
+export async function correctManagedEmployeeMemory(
+  context: RequestContext,
+  workspaceId: string,
+  memoryId: string,
+  input: unknown,
+) {
+  await rejectGovernedMemoryMutation(context, workspaceId, memoryId);
+  return correctEmployeeMemoryRecord(
+    context,
+    workspaceId,
+    memoryId,
+    CorrectPersonalEmployeeMemoryInputSchema.parse(input),
+    mapManagedMemory,
+    ManagedMemoryWriteSchema,
+  );
+}
+
 async function correctEmployeeMemoryRecord<
   T extends { id: string; revision: number },
 >(
@@ -2959,7 +3077,11 @@ async function correctEmployeeMemoryRecord<
   correction:
     | z.infer<typeof CorrectMemoryInputSchema>
     | z.infer<typeof CorrectPersonalEmployeeMemoryInputSchema>,
-  map: (row: MemoryRow) => T,
+  map: (
+    row: MemoryRow,
+    tx: TransactionSql,
+    scope: EmployeeMemoryScope,
+  ) => T | Promise<T>,
   responseSchema: z.ZodType<T>,
 ) {
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
@@ -2972,7 +3094,8 @@ async function correctEmployeeMemoryRecord<
       tx,
       true,
     );
-    await tx`select pg_advisory_xact_lock(hashtextextended(${`memory-order:${scope.organizationId}:${scope.ownerId}:${scope.instanceId}`},0))`;
+    await lockEmployeeMemoryOrder(tx, scope);
+    await lockPersonalMemorySource(tx, scope, memoryId);
     return memoryOperation(
       tx,
       scope,
@@ -2984,36 +3107,10 @@ async function correctEmployeeMemoryRecord<
         ...('pairDigest' in correction ? { version: 2 } : {}),
       },
       async () => {
-        const current = await lockPersonalMemory(
-          tx,
-          context,
-          workspaceId,
-          memoryId,
-          scope.instanceId,
-        );
-        if (
-          current.employee_id !== scope.employeeId ||
-          current.visibility !== 'private'
-        )
-          throw new DataAccessError('authorization_denied');
-        const [nonPersonal] = await tx`select 1 where
-          exists(select 1 from allrice_brand_content_experiences b where b.memory_id=${memoryId})
-          or exists(select 1 from allrice_employee_runs origin
-            where origin.organization_id=${scope.organizationId} and origin.workspace_id=${workspaceId} and origin.method_authoring
-              and ((${current.source_type}='message' and ${current.source_id}::uuid in (origin.user_message_id,origin.assistant_message_id))
-                or (${current.source_type}='checkpoint' and exists(select 1 from allrice_context_checkpoints cp
-                  where cp.id=${current.source_id}::uuid and cp.covered_through_message_id in (origin.user_message_id,origin.assistant_message_id)))))`;
-        if (nonPersonal) throw new DataAccessError('authorization_denied');
+        const current = await lockPersonalMemory(tx, scope, memoryId);
         let pair: PersonalMemoryPair;
         if ('pairDigest' in correction) {
           assertMemoryPairRevision(current, correction);
-          // Pending confirmation belongs to the separately gated candidate package.
-          if (
-            current.lifecycle_state !== 'durable' ||
-            current.trust_level !== 'user_confirmed' ||
-            (current.expires_at !== null && current.expires_at <= new Date())
-          )
-            throw new EmployeeMemoryContractChanged();
           pair = { summary: correction.summary, details: correction.details };
         } else {
           // Check after a valid current receipt can replay, before ANY write.
@@ -3023,6 +3120,13 @@ async function correctEmployeeMemoryRecord<
           legacyPersonalMemoryPair(current.content);
           pair = legacyPersonalMemoryPair(correction.content);
         }
+        if (
+          current.lifecycle_state !== 'durable' ||
+          current.trust_level !== 'user_confirmed'
+        ) {
+          await assertPendingMemorySource(tx, context, scope, current);
+          await assertEmployeeMemoryAdmission(tx, scope);
+        }
         const [row] = await tx<MemoryRow[]>`update allrice_memories
         set content=${'content' in correction ? correction.content : memoryPairContent(pair)},summary=${pair.summary},details=${pair.details},revision=revision+1,trust_level='user_confirmed',
           confidence=${'confidence' in correction ? correction.confidence : 1},lifecycle_state='durable',source_label='用户更正',
@@ -3030,8 +3134,6 @@ async function correctEmployeeMemoryRecord<
         -- Check the stored expiry at the write, even if a legacy caller sends NULL.
         where id=${memoryId} and (expires_at is null or expires_at>clock_timestamp()) returning *`;
         if (!row) throw new EmployeeMemoryContractChanged();
-        if (current.metadata?.memoryPinOrder !== undefined)
-          await assertPinnedMemoryCapacity(tx, scope);
         await insertMemoryRevision(tx, context, row, correction.reason);
         await tx`delete from allrice_rag_chunks where memory_id=${memoryId}
         and organization_id=${scope.organizationId} and workspace_id=${workspaceId}`;
@@ -3047,35 +3149,15 @@ async function correctEmployeeMemoryRecord<
           },
           tx,
         );
-        return map(row);
+        return map(row, tx, scope);
       },
       responseSchema,
     );
   });
 }
 
-/** Owner-only ordering preference, using the existing revision/idempotency/audit
- * transaction. No model tool can call this browser management operation. */
-async function assertPinnedMemoryCapacity(
-  tx: TransactionSql,
-  scope: {
-    organizationId: string;
-    workspaceId: string;
-    ownerId: string;
-    instanceId: string;
-  },
-) {
-  const projected = await freezeEmployeeDocuments(tx, scope, {}, true);
-  const pins = await tx<{ id: string }[]>`select m.id from allrice_memories m
-          where ${employeeMemoryReadPredicate(tx, scope)} and m.metadata ? 'memoryPinOrder'`;
-  if (
-    pins.some((pin) => !projected.memories.some((item) => item.id === pin.id))
-  )
-    throw new EmployeeMemoryCapacityError(
-      Math.max(0, 6000 - Buffer.byteLength(projected.employeeDocuments.memory)),
-    );
-}
-
+/** Retired management mutation. Keep current identity/target gates, but never
+ * change historic pin metadata, revisions, receipts or frozen v1 Run data. */
 export async function setPersonalEmployeeMemoryPin(
   context: RequestContext,
   workspaceInput: string,
@@ -3093,59 +3175,8 @@ export async function setPersonalEmployeeMemoryPin(
       tx,
       true,
     );
-    // Serialize ordering for this person's instance, never a tenant-wide UI lock.
-    await tx`select pg_advisory_xact_lock(hashtextextended(${`memory-order:${scope.organizationId}:${scope.ownerId}:${scope.instanceId}`},0))`;
-    return memoryOperation(
-      tx,
-      scope,
-      'correct',
-      preference.idempotencyKey,
-      { operation: 'pin', memoryId, ...preference },
-      async () => {
-        const current = await lockPersonalMemory(
-          tx,
-          context,
-          workspaceId,
-          memoryId,
-          scope.instanceId,
-        );
-        assertMemoryRevision(current, preference);
-        const [eligible] =
-          await tx`select m.id from allrice_memories m where m.id=${memoryId}
-          and ${employeeMemoryReadPredicate(tx, scope)}`;
-        if (!eligible) throw new DataAccessError('authorization_denied');
-        const [order] =
-          await tx`select coalesce(max((metadata->>'memoryPinOrder')::numeric),0)+1 as next
-          from allrice_memories where organization_id=${scope.organizationId} and workspace_id=${workspaceId}
-            and owner_id=${scope.ownerId} and instance_id=${scope.instanceId}
-            and jsonb_typeof(metadata->'memoryPinOrder')='number'`;
-        const [row] = await tx<MemoryRow[]>`update allrice_memories set
-          metadata=case when ${preference.pinned} then jsonb_set(metadata,'{memoryPinOrder}',to_jsonb(${Number(order!.next)}::bigint))
-            else metadata-'memoryPinOrder' end,revision=revision+1,updated_at=clock_timestamp()
-          where id=${memoryId} returning *`;
-        // Pinned entries must all fit intact, including source handles. Reject
-        // atomically; never save an ordering that silently drops a pinned item.
-        if (preference.pinned) await assertPinnedMemoryCapacity(tx, scope);
-        await insertMemoryRevision(
-          tx,
-          context,
-          row!,
-          preference.pinned ? '本人置顶记忆' : '本人取消置顶',
-        );
-        await audit(
-          {
-            context,
-            workspaceId,
-            action: 'memory.order',
-            resourceType: 'memory',
-            resourceId: memoryId,
-            reason: preference.pinned ? 'owner_pin' : 'owner_unpin',
-          },
-          tx,
-        );
-        return mapMemory(row!);
-      },
-    );
+    await lockPersonalMemory(tx, scope, memoryId);
+    throw new EmployeeMemoryContractChanged();
   });
 }
 
@@ -3167,6 +3198,7 @@ export async function listWorkspaceMemoryRevisions(
     const [memory] = await sql`select id from allrice_memories m
     where m.id=${memoryId} and m.organization_id=${context.organizationId} and m.workspace_id=${workspaceId}
       and m.owner_id=${scope.ownerId} and m.instance_id=${scope.instanceId}
+      and m.archived_at is null
       and not exists(select 1 from allrice_experience_reviews e where e.memory_id=m.id)`;
     if (!memory) throw new DataAccessError('not_found');
     const rows = await sql<
@@ -3220,12 +3252,54 @@ export async function listWorkspaceMemoryRevisions(
 
 export async function promoteWorkspaceMemory(
   context: RequestContext,
-  workspaceIdInput: string,
-  memoryIdInput: string,
+  workspaceId: string,
+  memoryId: string,
   input?: unknown,
 ) {
-  await rejectGovernedMemoryMutation(context, workspaceIdInput, memoryIdInput);
-  const expected = MemoryMutationInputSchema.parse(input);
+  await rejectGovernedMemoryMutation(context, workspaceId, memoryId);
+  return promoteEmployeeMemoryRecord(
+    context,
+    workspaceId,
+    memoryId,
+    MemoryMutationInputSchema.parse(input),
+    mapMemory,
+    WorkspaceMemoryResponseSchema,
+  );
+}
+
+export async function promoteManagedEmployeeMemory(
+  context: RequestContext,
+  workspaceId: string,
+  memoryId: string,
+  input: unknown,
+) {
+  await rejectGovernedMemoryMutation(context, workspaceId, memoryId);
+  return promoteEmployeeMemoryRecord(
+    context,
+    workspaceId,
+    memoryId,
+    EmployeeMemoryMutationInputSchema.parse(input),
+    mapManagedMemory,
+    ManagedMemoryWriteSchema,
+  );
+}
+
+async function promoteEmployeeMemoryRecord<
+  T extends { id: string; revision: number },
+>(
+  context: RequestContext,
+  workspaceIdInput: string,
+  memoryIdInput: string,
+  expected:
+    | z.infer<typeof MemoryMutationInputSchema>
+    | z.infer<typeof EmployeeMemoryMutationInputSchema>,
+  map: (
+    row: MemoryRow,
+    tx: TransactionSql,
+    scope: EmployeeMemoryScope,
+  ) => T | Promise<T>,
+  responseSchema: z.ZodType<T>,
+) {
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
   const memoryId = UuidSchema.parse(memoryIdInput);
   return employeeAccessTransaction(getDatabase(), async (tx) => {
@@ -3236,28 +3310,40 @@ export async function promoteWorkspaceMemory(
       tx,
       true,
     );
+    await lockEmployeeMemoryOrder(tx, scope);
+    await lockPersonalMemorySource(tx, scope, memoryId);
     return memoryOperation(
       tx,
       scope,
       'promote',
       expected.idempotencyKey,
-      { memoryId, ...expected },
+      {
+        memoryId,
+        ...expected,
+        ...('pairDigest' in expected ? { version: 2 } : {}),
+      },
       async () => {
-        const current = await lockPersonalMemory(
-          tx,
-          context,
-          workspaceId,
-          memoryId,
-          scope.instanceId,
-        );
-        assertMemoryRevision(current, expected);
-        if (current.lifecycle_state === 'durable') return mapMemory(current);
+        const current = await lockPersonalMemory(tx, scope, memoryId);
+        if ('pairDigest' in expected)
+          assertMemoryPairRevision(current, expected);
+        else assertMemoryRevision(current, expected);
+        const [eligible] =
+          await tx`select id from allrice_memories where id=${memoryId}
+          and (expires_at is null or expires_at>clock_timestamp())`;
+        if (!eligible) throw new EmployeeMemoryContractChanged();
+        if (
+          current.lifecycle_state === 'durable' &&
+          current.trust_level === 'user_confirmed'
+        )
+          return map(current, tx, scope);
+        await assertPendingMemorySource(tx, context, scope, current);
+        await assertEmployeeMemoryAdmission(tx, scope);
         const [row] = await tx<MemoryRow[]>`update allrice_memories
-        set lifecycle_state='durable',revision=revision+1,trust_level='user_confirmed',
-          confidence=greatest(confidence,0.8),source_label=${`${current.source_label} · 用户确认`},
-          last_verified_at=now(),updated_at=now()
-        where id=${memoryId} returning *`;
-        if (!row) throw new Error('memory promotion failed');
+          set lifecycle_state='durable',revision=revision+1,trust_level='user_confirmed',expires_at=null,
+            confidence=greatest(confidence,0.8),source_label=${`${current.source_label} · 用户确认`},
+            last_verified_at=now(),updated_at=now()
+          where id=${memoryId} and (expires_at is null or expires_at>clock_timestamp()) returning *`;
+        if (!row) throw new EmployeeMemoryContractChanged();
         await insertMemoryRevision(
           tx,
           context,
@@ -3275,8 +3361,9 @@ export async function promoteWorkspaceMemory(
           },
           tx,
         );
-        return mapMemory(row);
+        return map(row, tx, scope);
       },
+      responseSchema,
     );
   });
 }
@@ -3328,6 +3415,26 @@ export async function createCheckpointMemoryCandidate(
   });
 }
 
+/** Browser management uses pair CAS. The pre-existing governed raw-source
+ * forget path remains separate and never becomes an ordinary v2 mutation. */
+export async function deleteManagedEmployeeMemory(
+  context: RequestContext,
+  workspaceId: string,
+  memoryId: string,
+  input: unknown,
+) {
+  const [review] =
+    await getDatabase()`select memory_id from allrice_experience_reviews
+    where memory_id=${UuidSchema.parse(memoryId)} and organization_id=${context.organizationId}
+      and workspace_id=${UuidSchema.parse(workspaceId)} and owner_id=${requireUser(context)}`;
+  return deleteWorkspaceMemory(
+    context,
+    workspaceId,
+    memoryId,
+    review ? input : EmployeeMemoryMutationInputSchema.parse(input),
+  );
+}
+
 export async function deleteWorkspaceMemory(
   context: RequestContext,
   workspaceId: string,
@@ -3344,7 +3451,10 @@ export async function deleteWorkspaceMemory(
       and workspace_id=${workspaceId} and owner_id=${requireUser(context)}`;
   if (experience)
     return archiveGovernedWorkspaceMemory(context, workspaceId, memoryId);
-  const expected = MemoryMutationInputSchema.parse(input);
+  const expected =
+    input && typeof input === 'object' && 'pairDigest' in input
+      ? EmployeeMemoryMutationInputSchema.parse(input)
+      : MemoryMutationInputSchema.parse(input);
   await employeeAccessTransaction(getDatabase(), async (tx) => {
     const scope = await employeeMemoryScope(
       context,
@@ -3353,14 +3463,8 @@ export async function deleteWorkspaceMemory(
       tx,
       true,
     );
-    const [origin] = await tx<
-      { source_type: string; source_id: string | null }[]
-    >`
-      select source_type,source_id from allrice_memories
-      where id=${memoryId} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
-        and owner_id=${scope.ownerId} and instance_id=${scope.instanceId}`;
-    if (origin)
-      await lockMemorySource(tx, scope, origin.source_type, origin.source_id);
+    await lockEmployeeMemoryOrder(tx, scope);
+    await lockPersonalMemorySource(tx, scope, memoryId);
     await memoryOperation(
       tx,
       scope,
@@ -3368,14 +3472,10 @@ export async function deleteWorkspaceMemory(
       expected.idempotencyKey,
       { memoryId, ...expected },
       async () => {
-        const current = await lockPersonalMemory(
-          tx,
-          context,
-          workspaceId,
-          memoryId,
-          scope.instanceId,
-        );
-        assertMemoryRevision(current, expected);
+        const current = await lockPersonalMemory(tx, scope, memoryId);
+        if ('pairDigest' in expected)
+          assertMemoryPairRevision(current, expected);
+        else assertMemoryRevision(current, expected);
         const [row] = await tx<MemoryRow[]>`update allrice_memories
         set archived_at=now(),updated_at=now(),revision=revision+1 where id=${memoryId} returning *`;
         if (!row) throw new Error('memory archival failed');
