@@ -34,13 +34,6 @@ const met97Migration = readFileSync(
   ),
   'utf8',
 );
-const met98DeliverableMigration = readFileSync(
-  resolve(
-    repositoryRoot,
-    'packages/database/migrations/0063_met98_deliverable_versions.sql',
-  ),
-  'utf8',
-);
 const met98BrowserMigration = readFileSync(
   resolve(
     repositoryRoot,
@@ -89,10 +82,6 @@ describe('foundational DSH-native Skills', () => {
       requiredTools: ['wechat.article.search', 'wechat.article.read'],
     },
     {
-      name: 'document-analysis',
-      requiredTools: ['workspace.file.list', 'workspace.document.read'],
-    },
-    {
       name: 'market-data',
       requiredTools: ['market.quote', 'market.history'],
     },
@@ -104,10 +93,6 @@ describe('foundational DSH-native Skills', () => {
         'wechat.article.search',
         'wechat.article.read',
       ],
-    },
-    {
-      name: 'structured-deliverable',
-      requiredTools: ['workspace.export.create'],
     },
     {
       name: 'browser-research',
@@ -141,9 +126,7 @@ describe('foundational DSH-native Skills', () => {
               ? met98MemoryMigration
               : name === 'browser-research'
                 ? met98BrowserMigration
-                : name === 'structured-deliverable'
-                  ? met98DeliverableMigration
-                  : met97Migration;
+                : met97Migration;
       expect(seed).toContain(`'${name}'`);
       // Historical migrations remain immutable; content:sync installs the
       // current versioned catalog after those seeds have been applied.
@@ -170,11 +153,6 @@ describe('foundational DSH-native Skills', () => {
         '搜索并读取微信公众号公开文章，核验文章信息并提供可点击的原文来源。',
     },
     {
-      name: 'document-analysis',
-      summary:
-        '读取并分析当前工作区中获准访问的 PDF、Word、Excel、PPT、Markdown、文本和图片，提供可定位、可核验的摘要、提取、对比与问答。',
-    },
-    {
       name: 'market-data',
       summary:
         '查询股票、指数、ETF、汇率、加密货币和商品的结构化公开行情与历史走势，明确数据时间、币种、来源和延迟限制。',
@@ -183,11 +161,6 @@ describe('foundational DSH-native Skills', () => {
       name: 'research-synthesis',
       summary:
         '围绕一个问题协调网页与公众号公开信息，进行多来源检索、时间核对、事实核验、冲突处理，并生成附来源的综合结论。',
-    },
-    {
-      name: 'structured-deliverable',
-      summary:
-        '将已核验的研究、文档或工作区内容整理成结构清晰的报告、方案、清单或可下载文件，同时保留来源、边界和未决事项。',
     },
     {
       name: 'browser-research',
