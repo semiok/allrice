@@ -38,10 +38,7 @@ export {
 export { LocalFileToolArguments } from './local-files.ts';
 export { ExperienceSourceHandleSchema } from './memory-context.ts';
 export { MemoryOrdinalInputSchema } from './memory-index.ts';
-export {
-  NativeOfficeExportSchema,
-  OfficePdfExportSchema,
-} from './office.ts';
+export { NativeOfficeExportSchema, OfficePdfExportSchema } from './office.ts';
 export {
   PersonalSkillInstallInputSchema,
   PersonalSkillPinSchema,

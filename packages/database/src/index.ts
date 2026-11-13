@@ -34,9 +34,7 @@ export {
   assertEmployeeChatHumanSource,
   readEmployeeChatSourceKind,
 } from './employees/employee-chat-authority.ts';
-export {
-  filterEmployeeMethodMemories,
-} from './employees/employee-content-chat.ts';
+export { filterEmployeeMethodMemories } from './employees/employee-content-chat.ts';
 export * from './employees/employee-runtime-content.ts';
 export * from './organization-departments.ts';
 export * from './organization-employee-assignments.ts';
