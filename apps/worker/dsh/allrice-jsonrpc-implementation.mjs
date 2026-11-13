@@ -1818,7 +1818,6 @@ export async function createAllRiceRuntime(
     }
 
     async clearRootQuestion(sessionId, reason) {
-      const record = this.roots.get(sessionId);
       const pending = this.pendingUserQuestions.get(sessionId);
       if (pending) {
         this.pendingUserQuestions.delete(sessionId);

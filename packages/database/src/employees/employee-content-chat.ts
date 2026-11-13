@@ -6,7 +6,7 @@ import { readContentPrincipal } from '../content-maintenance.ts';
 import { memoryInstanceForRun } from '../workspace/employee-memory.ts';
 import { employeeAccessTransaction } from './employee-access-cancellation.ts';
 import {
-  getEmployeeInstance,
+  type getEmployeeInstance,
   resolveEmployeeSessionInstance,
 } from './employee-instances.ts';
 import {
