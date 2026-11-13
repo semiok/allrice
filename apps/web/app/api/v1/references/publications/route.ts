@@ -22,6 +22,7 @@ export async function GET(request: Request) {
     );
     return Response.json(
       {
+        viewerId: context.actor.id,
         references: await listReferencePublications(
           context,
           workspaceId,

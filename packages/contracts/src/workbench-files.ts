@@ -1,7 +1,10 @@
 import { z } from 'zod';
 import { TimestampSchema, UuidSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
-import { ReferenceRevisionSchema } from './reference-library.ts';
+import {
+  ReferenceAudienceSchema,
+  ReferenceRevisionSchema,
+} from './reference-library.ts';
 import { platformFileMaximumBase64Characters } from './storage.ts';
 import { WorkbenchFileSharingSchema } from './file-audience.ts';
 export { WorkbenchFileSharingSchema } from './file-audience.ts';
@@ -70,9 +73,20 @@ export const WorkbenchDeliverableSchema = WorkbenchFileSchema.extend({
   origin: z.enum(['business-deliverable', 'user-upload']),
   sources: z.array(WorkbenchDeliverableSourceSchema),
   favorite: z.boolean(),
+  canPublishReference: z.boolean().optional(),
+  publication: z
+    .object({
+      sourceId: UuidSchema,
+      revisionId: UuidSchema,
+      audience: ReferenceAudienceSchema,
+    })
+    .strict()
+    .nullable()
+    .optional(),
 });
 export type WorkbenchDeliverable = z.infer<typeof WorkbenchDeliverableSchema>;
 export const WorkbenchDeliverablesCatalogSchema = z.object({
+  viewerId: UuidSchema.optional(),
   files: z.array(WorkbenchDeliverableSchema),
   employees: z.array(z.object({ id: UuidSchema, name: z.string() })),
   nextCursor: UuidSchema.nullable(),

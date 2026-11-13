@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type postgres from 'postgres';
+import type { readWorkbenchFile } from './workbench-files.ts';
 import type { OrganizationSharedReader } from './organization-shared-reader.ts';
 import {
   ContentOwnershipSchema,
@@ -10,6 +11,7 @@ import {
   ReferenceUploadInputSchema,
   UuidSchema,
   MembershipSchema,
+  DeliverableVersionSchema,
   ReferencePublishInputSchema,
   ReferencePublicationActionSchema,
   type ContentOwnership,
@@ -21,11 +23,13 @@ import {
   type ReferenceAudience,
 } from '@allrice/contracts';
 import {
+  ArtifactReviewError,
   assertWorkbenchSession,
   readArtifact,
   readArtifactBytes,
 } from './artifact-review.ts';
 import { businessDeliverablePredicate } from './organization-dashboard.ts';
+import { personalWorkbenchOrigins } from './workbench-file-personal.ts';
 import { getDatabase } from './core/client.ts';
 import { isIndexableReferenceSource } from './reference-fulltext.ts';
 import { isPlatformAdmin } from './providers/model-pool.ts';
@@ -49,6 +53,7 @@ import {
 } from './workbench-file-access.ts';
 
 type Sql = ReturnType<typeof getDatabase> | postgres.TransactionSql;
+type PublicationFileFacts = Awaited<ReturnType<typeof readWorkbenchFile>>;
 export class ReferenceLibraryError extends Error {
   constructor(
     public readonly code:
@@ -309,7 +314,15 @@ export async function listReferenceRevisions(
     const rows =
       await sql`select r.id,r.revision,r.file_name,r.description,r.created_at,r.artifact_snapshot,r.checksum as manifest_digest,o.checksum,o.size_bytes,o.media_type,
       r.legacy_company_revision_id,cr.digest as company_digest,
-      p.state,p.failure,o.state as file_state from allrice_knowledge_revisions r join allrice_storage_objects o on o.id=r.file_object_id
+      p.state,p.failure,o.state as file_state,
+      (${s.status === 'active'} and p.state='ready' and o.state='ready' and o.immutable and o.deleted_at is null
+        and (o.retention_until is null or o.retention_until>clock_timestamp()) and exists(
+          select 1 from allrice_knowledge_documents d where d.knowledge_revision_id=r.id and d.active
+            and d.organization_id=r.organization_id and d.workspace_id=r.workspace_id
+            and d.source_ref='file:'||o.id::text and d.checksum=o.checksum
+            and d.full_text is not null and length(d.full_text)>0
+            and d.full_text_locations is not null and d.full_text_metadata is not null)) as full_text_ready
+      from allrice_knowledge_revisions r join allrice_storage_objects o on o.id=r.file_object_id
       join allrice_knowledge_processing p on p.revision_id=r.id
       left join allrice_company_assets a on a.id=r.legacy_company_asset_id
       left join allrice_company_asset_publications cp on cp.asset_id=a.id and cp.revision_id=r.legacy_company_revision_id
@@ -334,6 +347,7 @@ export async function listReferenceRevisions(
           status: s.status,
           processing: r.file_state === 'pending' ? 'uploading' : r.state,
           failure: r.failure,
+          fullTextReady: r.full_text_ready,
           canMaintain:
             !s.legacy_company_asset_id && !boundAccess && access.canMaintain,
           canRetryProcessing:
@@ -795,9 +809,10 @@ export async function completeReferenceUpload(
 /** Same business-delivery boundary as explicit company publication. Owning a
  * tool log, platform test or subassistant output does not make it shareable. */
 async function requireReferenceArtifact(
-  tx: postgres.TransactionSql,
+  tx: Sql,
   context: RequestContext,
   versionId: string,
+  lock = true,
 ) {
   const [candidate] =
     await tx`select session_id from allrice_deliverable_versions
@@ -808,7 +823,7 @@ async function requireReferenceArtifact(
     context,
     candidate.session_id,
     false,
-    'share',
+    lock ? 'share' : false,
   );
   const [valid] = await tx`select dv.id from allrice_deliverable_versions dv
     join allrice_storage_objects o on o.id=dv.object_id and o.organization_id=dv.organization_id and o.workspace_id=dv.workspace_id and o.owner_id=dv.owner_id
@@ -817,7 +832,7 @@ async function requireReferenceArtifact(
       and dv.platform_test_run_id is null and o.state='ready' and o.deleted_at is null and (o.retention_until is null or o.retention_until>clock_timestamp())
       and ${businessDeliverablePredicate(tx)}
       and exists(select 1 from allrice_employee_runs er where er.organization_id=dv.organization_id and er.workspace_id=dv.workspace_id and er.owner_id=dv.owner_id and er.session_id=dv.session_id and (a.run_id is null or a.run_id=er.run_id))
-    for share of dv,o`;
+    ${lock ? tx`for share of dv,o` : tx``}`;
   if (!valid) throw new ReferenceLibraryError('source_unavailable');
   return readArtifact(tx, context, candidate.session_id, versionId);
 }
@@ -1077,10 +1092,12 @@ async function validatePublicationAudience(
 async function requirePublicationFile(
   context: RequestContext,
   objectId: string,
-  tx: postgres.TransactionSql,
+  tx: Sql,
+  lock = true,
+  knownFile?: PublicationFileFacts,
 ) {
   const { readWorkbenchFile } = await import('./workbench-files.ts');
-  const file = await readWorkbenchFile(context, objectId, tx);
+  const file = knownFile ?? (await readWorkbenchFile(context, objectId, tx));
   if (
     file.object.ownerId !== context.actor.id ||
     file.object.organizationId !== context.organizationId ||
@@ -1090,18 +1107,47 @@ async function requirePublicationFile(
   )
     throw new ReferenceLibraryError('source_unavailable');
   if (file.row.artifact_id) {
-    await requireReferenceArtifact(tx, context, file.row.artifact_id);
+    await requireReferenceArtifact(tx, context, file.row.artifact_id, lock);
   } else {
-    const [upload] = await tx`select o.id from allrice_storage_objects o
-      where o.id=${objectId} and o.owner_id=${context.actor.id} and o.category='uploads'
-        and exists(select 1 from allrice_file_references f
-          join allrice_chat_sessions s on s.id=f.session_id and s.owner_id=f.owner_id
-          where f.object_id=o.id and f.owner_id=${context.actor.id}
-            and f.organization_id=${context.organizationId} and f.workspace_id=${context.workspaceId})
-      for share of o`;
+    const [upload] = await tx`with ${personalWorkbenchOrigins(tx, {
+      organizationId: context.organizationId,
+      workspaceId: context.workspaceId!,
+      ownerId: context.actor.id,
+    })} select o.id from allrice_storage_objects o join origins candidate on candidate.id=o.id
+      where o.id=${objectId} and candidate.category='upload' ${lock ? tx`for share of o` : tx``}`;
     if (!upload) throw new ReferenceLibraryError('source_unavailable');
   }
   return file;
+}
+
+/** A display fact only. The directory supplies its live principal and already
+ * authorized file; every publication write still repeats the locked gate. */
+export async function canPublishReferenceFile(
+  context: RequestContext,
+  file: PublicationFileFacts,
+  writable: boolean,
+  sql: Sql = getDatabase(),
+) {
+  if (!writable) return false;
+  try {
+    await requirePublicationFile(context, file.object.id, sql, false, file);
+    return true;
+  } catch (error) {
+    if (
+      (error instanceof ReferenceLibraryError &&
+        error.code === 'source_unavailable') ||
+      (error instanceof DataAccessError &&
+        [
+          'not_found',
+          'authorization_denied',
+          'authentication_required',
+        ].includes(error.code)) ||
+      (error instanceof ArtifactReviewError &&
+        ['artifact_not_found', 'identity_denied'].includes(error.code))
+    )
+      return false;
+    throw error;
+  }
 }
 
 /** The only new publication command for both uploads and exact owned files.
@@ -1248,7 +1294,9 @@ export async function publishReference(
         throw new ReferenceLibraryError('source_unavailable');
       if (!bytes) throw new ReferenceLibraryError('invalid_content');
       const fileName =
-        v.origin === 'upload' ? v.fileName : file!.row.file_name.slice(0, 160);
+        v.origin === 'upload'
+          ? v.fileName
+          : DeliverableVersionSchema.shape.fileName.parse(file!.row.file_name);
       const mediaType =
         v.origin === 'upload' ? v.mediaType : file!.object.mediaType;
       const checksum =
