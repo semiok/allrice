@@ -9,6 +9,8 @@ import {
   IconChevronDownOutlineRegular,
   IconChevronRightOutlineRegular,
   IconClockOutlineRegular,
+  IconPlusOutlineRegular,
+  Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import type { useSessionArchive } from './use-session-archive';
 import type { Session, Workspace } from './chatflow-types';
@@ -34,6 +36,8 @@ export function EmployeeSidebar({
   workspace,
   sessions,
   activeId,
+  pendingEmployeeAssignmentId,
+  onNewSession,
   nativeReadyKey = '',
   pendingNativeSessions,
   nativeReads,
@@ -51,6 +55,8 @@ export function EmployeeSidebar({
   workspace: Workspace;
   sessions: Session[];
   activeId: string | null;
+  pendingEmployeeAssignmentId?: string | null;
+  onNewSession?: (assignmentId: string) => void;
   nativeReadyKey?: string;
   pendingNativeSessions?: ReadonlySet<string>;
   nativeReads?: Record<string, NativeSubagentRead>;
@@ -121,9 +127,15 @@ export function EmployeeSidebar({
     ? sessionEmployeeKey(activeSession)
     : undefined;
   useEffect(() => {
-    const target = onlyEmployeeInstanceId ?? activeGroup;
+    const target =
+      onlyEmployeeInstanceId ?? activeGroup ?? pendingEmployeeAssignmentId;
     if (target) setExpansion((current) => ({ ...current, [target]: true }));
-  }, [activeId, activeGroup, onlyEmployeeInstanceId]);
+  }, [
+    activeId,
+    activeGroup,
+    onlyEmployeeInstanceId,
+    pendingEmployeeAssignmentId,
+  ]);
   useEffect(() => {
     if (!key) return;
     try {
@@ -218,7 +230,6 @@ export function EmployeeSidebar({
       {groups.map((group) => {
         const employee = employeeChoice(workspace, group.key);
         const profile = employeeChoiceProfile(workspace, group.key);
-        const role = profile?.identity.role;
         const color = employee?.currentVersion.manifest.appearance?.accentColor;
         const accent = employeeAccent(group.label, color);
         const history = sessions.filter(
@@ -270,7 +281,17 @@ export function EmployeeSidebar({
                   aria-label={`${group.label}的工作`}
                 >
                   <strong>{group.label}</strong>
-                  <small>{role}</small>
+                  {onNewSession && employee && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRail(null);
+                        onNewSession(group.key);
+                      }}
+                    >
+                      和 {group.label} 开新会话
+                    </button>
+                  )}
                   {history.slice(0, 3).map((session) => (
                     <button
                       type="button"
@@ -304,7 +325,11 @@ export function EmployeeSidebar({
               className={css.employeeCard}
               data-accent={accent}
               style={employeeAccentStyle(group.label, color)}
-              data-active={group.containsCurrent || undefined}
+              data-active={
+                group.containsCurrent ||
+                (!activeId && pendingEmployeeAssignmentId === group.key) ||
+                undefined
+              }
             >
               <div className={css.header}>
                 <ProjectRowItem
@@ -312,9 +337,6 @@ export function EmployeeSidebar({
                   title={
                     <span className={css.employeeTitle}>
                       <span className={css.employeeName}>{group.label}</span>
-                      {employee?.isDefault && (
-                        <span className={css.defaultLabel}>默认</span>
-                      )}
                       <IconChevronDownOutlineRegular
                         className={css.expandIcon}
                         size={12}
@@ -323,9 +345,6 @@ export function EmployeeSidebar({
                   }
                   description={
                     <span className={css.meta}>
-                      {role && (
-                        <span className={css.employeeRole}>{role} · </span>
-                      )}
                       <span>{group.sessionCount} 个工作</span>
                     </span>
                   }
@@ -342,6 +361,28 @@ export function EmployeeSidebar({
                   }
                   t={employeeTranslate}
                 />
+                {onNewSession && employee && (
+                  <Tooltip
+                    label={`和 ${group.label} 开新会话`}
+                    side="bottom"
+                    align="end"
+                  >
+                    <button
+                      type="button"
+                      className={css.newChat}
+                      aria-label={`和 ${group.label} 开新会话`}
+                      onClick={() => {
+                        setExpansion((current) => ({
+                          ...current,
+                          [group.key]: true,
+                        }));
+                        onNewSession(group.key);
+                      }}
+                    >
+                      <IconPlusOutlineRegular size={16} />
+                    </button>
+                  </Tooltip>
+                )}
                 {onDetails && (profile || group.sessionCount > 0) && (
                   <button
                     type="button"
@@ -362,6 +403,16 @@ export function EmployeeSidebar({
                 aria-label={`${group.label}的会话`}
                 className={css.sessions}
               >
+                {!activeId && pendingEmployeeAssignmentId === group.key && (
+                  <div
+                    className={css.draftSession}
+                    role="treeitem"
+                    aria-selected="true"
+                  >
+                    <span>新会话</span>
+                    <span className={css.draftTime}>现在</span>
+                  </div>
+                )}
                 {rows.map((node) => (
                   <SessionNodeItem
                     key={node.id}
@@ -409,9 +460,10 @@ export function EmployeeSidebar({
                     }}
                   />
                 ))}
-                {group.sessionCount === 0 && (
-                  <span className={css.empty}>从顶部「新的工作」开始</span>
-                )}
+                {group.sessionCount === 0 &&
+                  (activeId || pendingEmployeeAssignmentId !== group.key) && (
+                    <span className={css.empty}>点卡片上的加号开始</span>
+                  )}
                 {needsPreview && !pagination?.error && (
                   <span role="status" className={css.empty}>
                     正在加载会话…

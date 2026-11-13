@@ -1,4 +1,5 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { createServer, type Server } from 'node:http';
 import { createRequire } from 'node:module';
@@ -38,7 +39,9 @@ import {
   type WorkbenchDeliverable,
   ReferenceRevisionSchema,
   type ReferenceRevision,
+  CreateEmployeeInstanceInputSchema,
   EmployeeInstanceSchema,
+  employeeColorPalette,
   EmployeeInstanceProfileSchema,
   EmployeeSkillCatalogSchema,
   EmployeeMemoryListSchema,
@@ -98,6 +101,14 @@ async function selectSessionAction(page: Page, row: Locator, name: string) {
   await row.hover();
   await row.getByRole('button', { name: /^会话.*的操作$/ }).click();
   await page.getByRole('menuitem', { name, exact: true }).click();
+}
+
+async function startEmployeeWork(page: Page, name = 'Rice') {
+  const expand = page.getByRole('button', { name: '展开侧边栏', exact: true });
+  if (await expand.isVisible()) await expand.click();
+  await page
+    .getByRole('button', { name: `和 ${name} 开新会话`, exact: true })
+    .click();
 }
 
 async function archiveConversations(page: Page) {
@@ -2634,8 +2645,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const firstPaint = `window.firstPaint={theme:document.documentElement.getAttribute('data-theme'),dark:document.body.hasAttribute('data-ds-dark-theme')}`;
         return `<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/app.css"></head><body style="margin:0"><script>${themeScript}</script><script>${appearanceScript({ choice: saved ?? null, viewer: state.viewer })}</script><script>${firstPaint}</script><div id="root"></div><script src="/app.js"></script></body></html>`;
       };
-      if (nativeFixture) nativeDocuments.set(nativeFixture, document);
-      else
+      if (nativeFixture) {
+        nativeDocuments.set(nativeFixture, document);
+        const documentOwner = options.failureCleanup?.own(() =>
+          nativeDocuments.delete(nativeFixture),
+        );
+        if (documentOwner?.late) await documentOwner.late;
+      } else
         await page.route(
           (url) => url.origin === origin && url.pathname === '/',
           (route) =>
@@ -2653,7 +2669,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     await (
       options.startup
         ? page.getByRole('region', { name: '进入工作区', exact: true })
-        : page.getByRole('textbox', { name: /^给 .+ 的消息$/ })
+        : page
+            .getByRole('textbox', { name: /^给 .+ 的消息$/ })
+            .or(page.getByRole('region', { name: 'AI 员工空态', exact: true }))
+            .first()
     )
       .waitFor()
       .catch(async (error) => {
@@ -5942,7 +5961,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   );
 
   async function openSettings(f: Awaited<ReturnType<typeof fixture>>) {
-    await f.page.getByRole('textbox', { name: /^给 .+ 的消息$/ }).waitFor();
+    await f.page
+      .getByRole('textbox', { name: /^给 .+ 的消息$/ })
+      .or(f.page.getByRole('region', { name: 'AI 员工空态', exact: true }))
+      .first()
+      .waitFor();
     const settings = f.page.getByRole('button', { name: '设置', exact: true });
     if (!(await settings.isVisible()))
       await f.page
@@ -7429,10 +7452,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .getByRole('button', { name: '展开侧边栏', exact: true })
             .click();
         await f.page
-          .getByRole('button', { name: '新的工作', exact: true })
+          .getByRole('button', { name: '创建员工', exact: true })
           .click();
         const picker = f.page.getByRole('dialog', {
-          name: '选择 AI 员工',
+          name: '创建一位 AI 员工',
           exact: true,
         });
         await picker.waitFor();
@@ -7461,7 +7484,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await assertFits(picker);
         if (process.env.ALLRICE_DIALOG_SCREENSHOT)
           await f.page.screenshot({
-            path: `${process.env.ALLRICE_DIALOG_SCREENSHOT}-picker-${width}.png`,
+            path: `${process.env.ALLRICE_DIALOG_SCREENSHOT}-create-${width}.png`,
           });
         await f.page.keyboard.press('Escape');
         expect(await picker.count()).toBe(0);
@@ -7809,17 +7832,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .count(),
         ).toBe(0);
         await f.page
-          .getByRole('button', { name: '新的工作', exact: true })
+          .getByRole('button', { name: '创建员工', exact: true })
           .click();
-        const chooser = f.page.getByRole('dialog', { name: '选择 AI 员工' });
-        expect(await chooser.getByRole('button').nth(1).innerText()).toContain(
-          '创建自己的 AI 员工',
-        );
-        await chooser
-          .getByRole('button', { name: '创建自己的 AI 员工', exact: true })
-          .click();
+        expect(
+          await f.page.getByRole('dialog', { name: '选择 AI 员工' }).count(),
+        ).toBe(0);
         const picker = f.page.getByRole('dialog', {
-          name: '创建自己的 AI 员工',
+          name: '创建一位 AI 员工',
         });
         await picker.getByRole('combobox', { name: '表达偏好' }).waitFor();
         expect(
@@ -7849,19 +7868,22 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             titleWeight: getComputedStyle(header).fontWeight,
             identityPadding: getComputedStyle(identity).padding,
             identityBackground: getComputedStyle(identity).backgroundColor,
+            personaPadding: getComputedStyle(identity.parentElement!).padding,
+            personaBorder: getComputedStyle(identity.parentElement!)
+              .borderTopWidth,
           };
         });
-        expect(createLayout.titleSize).toBe('15px');
-        expect(createLayout.titleLineHeight).toBe('23px');
-        expect(createLayout.titleWeight).toBe('500');
-        expect(createLayout.identityPadding).toBe(
-          width < 600 ? '12px' : '14px',
-        );
-        // Existing light --allrice-employee-bg; the edit-only flat variant
-        // must not remove or recolor the creation form's identity section.
-        expect(createLayout.identityBackground).toBe('rgb(240, 242, 245)');
+        expect(createLayout.titleSize).toBe('20px');
+        expect(createLayout.titleLineHeight).toBe('28px');
+        expect(createLayout.titleWeight).toBe('600');
+        expect(createLayout.identityPadding).toBe('0px');
+        expect(createLayout.identityBackground).toBe('rgba(0, 0, 0, 0)');
+        // The approved create form groups all five fields in one bordered
+        // persona section. The existing edit form retains its own layout.
+        expect(createLayout.personaPadding).toBe(width < 600 ? '14px' : '16px');
+        expect(createLayout.personaBorder).toBe('1px');
         expect(createLayout.width).toBe(
-          width < 600 ? createLayout.rootWidth - 24 : 640,
+          width < 600 ? createLayout.rootWidth : 688,
         );
         expect(createLayout.x - createLayout.rootX).toBe(
           (createLayout.rootWidth - createLayout.width) / 2,
@@ -7887,9 +7909,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         );
         await nameInput.fill(employeeName);
         await picker.getByRole('radio', { name: '珊瑚红' }).check();
-        await picker.getByRole('button', { name: '创建', exact: true }).click();
+        await picker
+          .getByRole('button', { name: '确认创建', exact: true })
+          .click();
         await picker.getByRole('alert').waitFor();
-        await picker.getByRole('button', { name: '创建', exact: true }).click();
+        await picker
+          .getByRole('button', { name: '确认创建', exact: true })
+          .click();
         await expect.poll(() => picker.count()).toBe(0);
         await expect
           .poll(() =>
@@ -7925,6 +7951,1254 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     },
     30_000,
   );
+
+  // Capture the approved seven states from mounted product DOM. The four
+  // native instances retain the 40 preview names and add four desktop seams.
+  for (const [device, width, height] of [
+    ['desktop', 1440, 1000],
+    ['mobile', 390, 844],
+  ] as const)
+    for (const appearance of ['light', 'dark'] as const)
+      it(`MET249 approved create-employee states mount Chatflow at ${width}px ${appearance}`, async ({
+        task,
+      }) => {
+        const f = await fixture({
+          width,
+          touch: device === 'mobile',
+          employeeCount: 2,
+          employeeHistory: true,
+          employeeHistoryCount: 3,
+          officeHistoryCount: 0,
+          appearance,
+        });
+        const evidence = resolve('.local/met249-create-employee');
+        const screenshots = join(evidence, 'screenshots');
+        const captures: Array<Record<string, unknown>> = [];
+        const creationRequests: Array<
+          ReturnType<typeof CreateEmployeeInstanceInputSchema.parse>
+        > = [];
+        const sessionCreates: unknown[] = [];
+        let completed = false;
+        let firstFailure: unknown;
+        const cleanupErrors: unknown[] = [];
+        let seams: Awaited<ReturnType<typeof fixture>> | undefined;
+        let nativeIcon: Awaited<ReturnType<typeof fixture>> | undefined;
+        let nativeCleanup: ReturnType<typeof createFailureCleanup> | undefined;
+        let failurePage: Page | undefined = f.page;
+        const seamWrites: Array<{ method: string; path: string }> = [];
+        const tree = () =>
+          f.page.getByRole('tree', { name: '员工与工作', exact: true });
+        const group = (name: string) =>
+          tree().getByRole('region', { name, exact: true });
+        const pending = () =>
+          tree().getByRole('treeitem').filter({ hasText: '新会话' });
+        const expectPendingTime = async () => {
+          const label = pending().getByText('新会话', { exact: true });
+          const time = pending().getByText('现在', { exact: true });
+          await time.waitFor();
+          const [labelBox, timeBox, rowBox] = await Promise.all([
+            label.boundingBox(),
+            time.boundingBox(),
+            pending().boundingBox(),
+          ]);
+          expect(labelBox).not.toBeNull();
+          expect(timeBox).not.toBeNull();
+          expect(rowBox).not.toBeNull();
+          expect(timeBox!.x).toBeGreaterThan(labelBox!.x + labelBox!.width);
+          expect(timeBox!.x + timeBox!.width).toBeLessThanOrEqual(
+            rowBox!.x + rowBox!.width,
+          );
+          expect(timeBox!.y).toBe(labelBox!.y);
+        };
+        const expectCreatedIdentity = async (created: Locator) => {
+          const createdName = created.getByText('财务专员', { exact: true });
+          expect(
+            await createdName.evaluate(
+              (node) => node.scrollWidth <= node.clientWidth,
+            ),
+            'a four-character employee name remains readable in the sidebar',
+          ).toBe(true);
+          expect(
+            await createdName.evaluate(
+              (node) => node.scrollHeight <= node.clientHeight,
+            ),
+          ).toBe(true);
+          const nameBox = (await createdName.boundingBox())!;
+          const headerBox = (await created
+            .getByRole('treeitem')
+            .first()
+            .locator('..')
+            .boundingBox())!;
+          const count = created.getByText('0 个工作', { exact: true });
+          expect(
+            await count.evaluate(
+              (node) =>
+                node.parentElement!.scrollWidth <=
+                node.parentElement!.clientWidth,
+            ),
+          ).toBe(true);
+          const countBox = (await count.boundingBox())!;
+          const actionBoxes = await Promise.all(
+            [
+              created.getByRole('button', { name: '和 财务专员 开新会话' }),
+              created.getByRole('button', { name: '查看财务专员详情' }),
+            ].map(async (button) => (await button.boundingBox())!),
+          );
+          expect(actionBoxes[0]!.x + actionBoxes[0]!.width).toBeLessThanOrEqual(
+            actionBoxes[1]!.x,
+          );
+          for (const action of actionBoxes) {
+            expect(
+              Math.abs(
+                action.y +
+                  action.height / 2 -
+                  (headerBox.y + headerBox.height / 2),
+              ),
+              'employee actions stay vertically centered at the card right',
+            ).toBeLessThanOrEqual(1);
+            expect(action.x).toBeGreaterThanOrEqual(nameBox.x + nameBox.width);
+            if (device === 'mobile') {
+              expect(action.width).toBeGreaterThanOrEqual(44);
+              expect(action.height).toBeGreaterThanOrEqual(44);
+            }
+            for (const text of [nameBox, countBox]) {
+              const overlaps =
+                text.x < action.x + action.width &&
+                text.x + text.width > action.x &&
+                text.y < action.y + action.height &&
+                text.y + text.height > action.y;
+              expect(overlaps, 'employee actions do not cover identity').toBe(
+                false,
+              );
+            }
+          }
+          return actionBoxes;
+        };
+        const expectCreatedHero = async () => {
+          const heading = f.page.getByRole('heading', {
+            name: '财务专员已创建，开始第一项工作吧',
+            exact: true,
+          });
+          const text = await heading.evaluate((node) => {
+            const range = document.createRange();
+            range.selectNodeContents(node);
+            const box = node.getBoundingClientRect();
+            const rects = [...range.getClientRects()];
+            return {
+              fontSize: getComputedStyle(node).fontSize,
+              complete:
+                rects.length > 0 &&
+                rects.every(
+                  (rect) => rect.left >= box.left && rect.right <= box.right,
+                ),
+              lines: new Set(rects.map((rect) => Math.round(rect.top))).size,
+            };
+          });
+          expect(text.fontSize).toBe(device === 'mobile' ? '20px' : '24px');
+          expect(
+            text.complete,
+            'the complete success title stays readable',
+          ).toBe(true);
+          const viewportWidth = f.page.viewportSize()!.width;
+          if (viewportWidth >= 390)
+            expect(text.lines).toBe(
+              device === 'mobile' && viewportWidth === 390 ? 2 : 1,
+            );
+          const mark = heading.locator('..').locator(':scope > span');
+          expect(
+            await mark.evaluate((node) => {
+              const css = getComputedStyle(node);
+              const box = node.getBoundingClientRect();
+              return [box.width, box.height, css.backgroundColor, css.color];
+            }),
+          ).toEqual([56, 56, 'rgb(59, 130, 246)', 'rgb(9, 13, 22)']);
+        };
+        const expectMobileHeader = async () => {
+          const title = f.page.locator('header h1');
+          expect(await title.textContent()).toBe('新的工作');
+          expect(
+            await title.evaluate((node) => {
+              const range = document.createRange();
+              range.selectNodeContents(node);
+              const text = range.getBoundingClientRect();
+              const box = node.getBoundingClientRect();
+              return (
+                text.width > 0 &&
+                text.left >= box.left &&
+                text.right <= box.right
+              );
+            }),
+            'the complete conversation title remains readable beside the tools',
+          ).toBe(true);
+          const archive = f.page.getByRole('button', {
+            name: '查看归档',
+            exact: true,
+          });
+          const actions = archive.locator('..');
+          const bounds = (await actions.boundingBox())!;
+          expect(bounds.width).toBeGreaterThan(0);
+          expect(
+            await actions.evaluate((node) => getComputedStyle(node).overflowX),
+          ).toBe('auto');
+          const overflow = await actions.evaluate((node) => {
+            const overflowing = node.scrollWidth > node.clientWidth;
+            node.scrollLeft = node.scrollWidth;
+            const reachedEnd = !overflowing || node.scrollLeft > 0;
+            node.scrollLeft = 0;
+            return { overflowing, reachedEnd };
+          });
+          expect(overflow.reachedEnd).toBe(true);
+          // Main's native icon entries can fit at 390px; the 300px case must
+          // still exercise horizontal overflow without sacrificing the title.
+          if (f.page.viewportSize()!.width === 300)
+            expect(overflow.overflowing).toBe(true);
+          for (const name of [
+            '查看归档',
+            '子智能体',
+            /^交付成果(?:，\d+ 项新增)?$/,
+            '记忆',
+            '能力',
+            '展开工作台',
+          ]) {
+            expect(
+              await actions.getByRole('button', { name, exact: true }).count(),
+            ).toBe(1);
+          }
+          // Check every currently rendered native header control, including
+          // the panel entry, rather than retaining the retired text buttons.
+          const buttons = actions.getByRole('button');
+          expect(await buttons.count()).toBe(6);
+          for (const button of await buttons.all()) {
+            await button.focus();
+            await button.click({ trial: true });
+            const box = (await button.boundingBox())!;
+            expect(box.x).toBeGreaterThanOrEqual(bounds.x - 1);
+            expect(box.x + box.width).toBeLessThanOrEqual(
+              bounds.x + bounds.width + 1,
+            );
+          }
+          await archive.focus();
+        };
+        const sidebar = async () => {
+          const expand = f.page.getByRole('button', {
+            name: '展开侧边栏',
+            exact: true,
+          });
+          if (await expand.isVisible()) await expand.click();
+          await expect
+            .poll(() =>
+              f.page
+                .locator('#chat-sidebar')
+                .evaluate((node) =>
+                  Math.round(node.getBoundingClientRect().left),
+                ),
+            )
+            .toBe(0);
+        };
+        const capture = async (
+          state: string,
+          suffix = '',
+          details: Record<string, unknown> = {},
+          page = f.page,
+        ) => {
+          expect(page.viewportSize()).toEqual({ width, height });
+          await expect
+            .poll(() => page.locator('html').getAttribute('data-theme'))
+            .toBe(appearance);
+          expect(
+            await page
+              .locator('body')
+              .evaluate((node) => node.hasAttribute('data-ds-dark-theme')),
+          ).toBe(appearance === 'dark');
+          await page.evaluate(() => document.fonts.ready);
+          expect(
+            await page.evaluate(
+              () => document.documentElement.scrollWidth <= innerWidth,
+            ),
+          ).toBe(true);
+          const file = `${device}-${appearance}-${state}${suffix}.png`;
+          const bytes = await page.screenshot({
+            path: join(screenshots, file),
+            animations: 'disabled',
+          });
+          captures.push({
+            runRelativePath: `.local/met249-create-employee/screenshots/${file}`,
+            sourceInstanceId: task.id,
+            sourceInstanceName: task.name,
+            viewportWidth: width,
+            viewportHeight: height,
+            host: 'ChatFlowClient',
+            theme: appearance,
+            state,
+            sha256: createHash('sha256').update(bytes).digest('hex'),
+            bytes: bytes.length,
+            ...details,
+          });
+        };
+        const expectGlobalEmpty = async (
+          page = f.page,
+          workbenchState: 'closed' | 'open' = 'closed',
+        ) => {
+          const empty = page.getByRole('region', {
+            name: 'AI 员工空态',
+            exact: true,
+          });
+          await empty
+            .getByRole('heading', { name: 'AI 员工', exact: true })
+            .waitFor();
+          await empty
+            .getByText('点卡片上的加号开始', { exact: true })
+            .waitFor();
+          expect(
+            await page.getByRole('textbox', { name: /^给 .+ 的消息$/ }).count(),
+          ).toBe(0);
+          expect(new URL(page.url()).searchParams.get('session')).toBeNull();
+          expect(
+            await page
+              .getByRole('tree', { name: '员工与工作' })
+              .getByRole('treeitem')
+              .filter({ hasText: '新会话' })
+              .count(),
+          ).toBe(0);
+          const header = page.locator('header').filter({
+            has: page.getByRole('heading', { name: 'AI 员工', exact: true }),
+          });
+          expect(
+            await header.evaluate(
+              (node) => node.getBoundingClientRect().height,
+            ),
+          ).toBe(72);
+          expect(
+            await header
+              .getByRole('button', { name: /^交付成果(?:，\d+ 项新增)?$/ })
+              .count(),
+          ).toBe(1);
+          expect(
+            await header
+              .getByRole('button', { name: /^(?:展开|收起)工作台$/ })
+              .count(),
+          ).toBe(workbenchState === 'open' ? 0 : 1);
+          const mark = empty.locator('span[aria-hidden="true"]');
+          expect(
+            await empty
+              .getByRole('heading', { name: 'AI 员工', exact: true })
+              .evaluate((node) => {
+                const css = getComputedStyle(node);
+                return [css.fontSize, css.lineHeight, css.fontWeight];
+              }),
+          ).toEqual(['24px', '32px', '600']);
+          expect(
+            await mark.evaluate((node) => {
+              const box = node.getBoundingClientRect();
+              return [box.width, box.height];
+            }),
+          ).toEqual([56, 56]);
+          expect(await mark.locator('svg').getAttribute('viewBox')).toBe(
+            '0 0 24 24',
+          );
+          expect(await mark.locator('path').getAttribute('d')).toBe(
+            'M8 7V4h8v3M4 12h16m-10 0v3h4v-3',
+          );
+        };
+        const scrollForm = async (dialog: Locator, bottom: boolean) => {
+          const dimensions = await dialog.evaluate((root, bottom) => {
+            const candidates = [root, ...root.querySelectorAll('*')].filter(
+              (node) =>
+                node instanceof HTMLElement &&
+                node.scrollHeight > node.clientHeight + 1 &&
+                ['auto', 'scroll'].includes(getComputedStyle(node).overflowY),
+            ) as HTMLElement[];
+            const target = candidates.sort(
+              (a, b) => b.clientHeight - a.clientHeight,
+            )[0];
+            if (!target) return null;
+            target.scrollTop = bottom ? target.scrollHeight : 0;
+            return {
+              scrollHeight: target.scrollHeight,
+              clientHeight: target.clientHeight,
+              scrollTop: target.scrollTop,
+              bottom: target.getBoundingClientRect().bottom,
+            };
+          }, bottom);
+          expect(
+            dimensions,
+            'creation content uses its own scroll surface',
+          ).not.toBeNull();
+          if (bottom) expect(dimensions!.scrollTop).toBeGreaterThan(0);
+          else expect(dimensions!.scrollTop).toBe(0);
+          const footer = dialog.locator('footer');
+          const box = (await footer.boundingBox())!;
+          expect(box.y).toBeGreaterThanOrEqual(0);
+          expect(box.y + box.height).toBeLessThanOrEqual(height);
+          expect(box.y).toBeGreaterThanOrEqual(dimensions!.bottom - 1);
+          const dialogBox = (await dialog.boundingBox())!;
+          expect(
+            Math.abs(box.y + box.height - (dialogBox.y + dialogBox.height)),
+            'the creation footer reaches the dialog bottom without a form margin',
+          ).toBeLessThanOrEqual(1);
+          return dimensions;
+        };
+        try {
+          await mkdir(screenshots, { recursive: true });
+          await f.page.setViewportSize({ width, height });
+          await f.page.emulateMedia({ reducedMotion: 'reduce' });
+          // The supported employee deep link opens a blank view while the
+          // real sidebar still loads the saved-session count and previews.
+          await f.page.goto(`${origin}/?employee=${id(9)}&theme=1`);
+          if (device === 'desktop') await expectGlobalEmpty();
+          else
+            await f.page
+              .getByRole('textbox', { name: '给 Rice 的消息', exact: true })
+              .waitFor();
+          await expect
+            .poll(() => f.page.locator('html').getAttribute('data-theme'))
+            .toBe(appearance);
+          await f.page.route('**/api/v1/employee-instances', async (route) => {
+            if (route.request().method() !== 'POST') return route.fallback();
+            const body = CreateEmployeeInstanceInputSchema.parse(
+              route.request().postDataJSON(),
+            );
+            expect(route.request().headers()['x-allrice-workspace-id']).toBe(
+              workspace,
+            );
+            expect(route.request().headers()['x-allrice-organization-id']).toBe(
+              org,
+            );
+            creationRequests.push(body);
+            const instance = EmployeeInstanceSchema.parse({
+              id: id(8100),
+              assignmentId: body.assignmentId,
+              organizationId: org,
+              workspaceId: workspace,
+              ownerId: user,
+              kind: 'custom',
+              revision: 1,
+              profile: body.profile,
+              creationSource: {
+                kind: 'tenant_version',
+                employeeVersionId: id(8),
+              },
+              source: { kind: 'tenant_version', employeeVersionId: id(8) },
+              createdAt: now,
+              updatedAt: now,
+              archivedAt: null,
+            });
+            f.state.createdEmployeeInstances = [instance];
+            await route.fulfill({ status: 201, json: { instance } });
+          });
+          await f.page.route('**/api/v1/sessions', async (route) => {
+            if (route.request().method() !== 'POST') return route.fallback();
+            sessionCreates.push(route.request().postDataJSON());
+            await route.fulfill({
+              status: 500,
+              json: { error: 'No session may be created before a message' },
+            });
+          });
+          await sidebar();
+          expect(await tree().getByText('默认', { exact: true }).count()).toBe(
+            0,
+          );
+          expect(
+            await tree().getByText('研究助理', { exact: false }).count(),
+          ).toBe(0);
+          await group('Rice').getByText('3 个工作', { exact: true }).waitFor();
+          const riceRow = tree().locator(`[data-row-key="workspace:${id(7)}"]`);
+          if ((await riceRow.getAttribute('aria-expanded')) === 'true')
+            await riceRow.click();
+          await riceRow.focus();
+          for (const name of ['Office 文档助手', 'Rice', '旧员工（已撤回）'])
+            expect(
+              await group(name)
+                .getByText(name, { exact: true })
+                .evaluate(
+                  (node) =>
+                    node.scrollWidth <= node.clientWidth &&
+                    node.scrollHeight <= node.clientHeight,
+                ),
+              `${name} remains complete in the employee card`,
+            ).toBe(true);
+          expect(
+            await riceRow
+              .getByText('Rice', { exact: true })
+              .evaluate((node) => node.scrollWidth <= node.clientWidth),
+          ).toBe(true);
+          expect(
+            await riceRow
+              .getByText('3 个工作', { exact: true })
+              .evaluate(
+                (node) =>
+                  node.parentElement!.scrollWidth <=
+                  node.parentElement!.clientWidth,
+              ),
+          ).toBe(true);
+          await f.page.mouse.move(width - 1, 1);
+          await capture('normal');
+
+          const emptyRow = tree().locator(
+            `[data-row-key="workspace:${id(17)}"]`,
+          );
+          if (device === 'desktop') {
+            if ((await emptyRow.getAttribute('aria-expanded')) !== 'true')
+              await emptyRow.click();
+            await group('Office 文档助手')
+              .getByText('点卡片上的加号开始', { exact: true })
+              .waitFor();
+            await expectGlobalEmpty();
+            await capture('empty-employee');
+            await emptyRow.click();
+          }
+
+          const plus = group('Rice').getByRole('button', {
+            name: '和 Rice 开新会话',
+            exact: true,
+          });
+          const newChatTooltip = f.page
+            .getByRole('tooltip')
+            .filter({ hasText: '和 Rice 开新会话' });
+          // Match the approved hover state through the existing card control.
+          await riceRow.click();
+          for (let index = 1; index <= 3; index++)
+            await group('Rice')
+              .getByRole('treeitem')
+              .filter({ hasText: `历史工作 ${index}` })
+              .waitFor();
+          await plus.hover();
+          await newChatTooltip.waitFor();
+          // This fixture has no doctype. Qualify :hover so quirks mode does
+          // not restrict the selector to links (WHATWG Quirks Mode 4.1).
+          expect(
+            await plus.evaluate((node) => node.matches('button:hover')),
+          ).toBe(true);
+          await capture('hover');
+          await riceRow.click();
+          await expect
+            .poll(() => riceRow.getAttribute('aria-expanded'))
+            .toBe('false');
+          if (device === 'mobile') {
+            await f.page.mouse.move(width - 1, 1);
+            await newChatTooltip.waitFor({ state: 'hidden' });
+            await riceRow.focus();
+            await f.page.keyboard.press('Tab');
+            expect(
+              await plus.evaluate((node) => node === document.activeElement),
+            ).toBe(true);
+            await newChatTooltip.waitFor();
+            await plus.tap();
+          } else await plus.press('Enter');
+          await f.page
+            .getByRole('textbox', { name: '给 Rice 的消息', exact: true })
+            .waitFor();
+          await f.page
+            .getByRole('heading', { name: '和Rice开始新的工作', exact: true })
+            .waitFor();
+          expect(new URL(f.page.url()).searchParams.get('session')).toBeNull();
+          if (device === 'mobile')
+            await f.page
+              .getByRole('button', { name: '展开侧边栏', exact: true })
+              .waitFor();
+          await f.page.mouse.move(width - 1, 1);
+          await f.page
+            .getByRole('tooltip')
+            .filter({ hasText: '和 Rice 开新会话' })
+            .waitFor({ state: 'hidden' });
+          await capture('blank');
+          await sidebar();
+          expect(await pending().count()).toBe(1);
+          expect(await pending().getAttribute('aria-selected')).toBe('true');
+          expect(await pending().getAttribute('data-row-key')).toBeNull();
+          await expectPendingTime();
+          expect(
+            await group('Rice').getByText('3 个工作', { exact: true }).count(),
+          ).toBe(1);
+          expect(sessionCreates).toEqual([]);
+          if (device === 'mobile')
+            await capture('blank', '-sidebar', { sidebar: 'open' });
+          await group('Rice')
+            .getByRole('treeitem')
+            .filter({ hasText: '历史工作 1' })
+            .click();
+          await sidebar();
+          expect(await pending().count()).toBe(0);
+          expect(
+            await group('Rice').getByText('3 个工作', { exact: true }).count(),
+          ).toBe(1);
+          expect(new URL(f.page.url()).searchParams.get('session')).toBe(
+            id(600),
+          );
+          if ((await emptyRow.getAttribute('aria-expanded')) !== 'true')
+            await emptyRow.click();
+          await group('Office 文档助手')
+            .getByText('点卡片上的加号开始', { exact: true })
+            .waitFor();
+          if (device === 'mobile') await capture('empty-employee');
+
+          const createTrigger = f.page.getByRole('button', {
+            name: '创建员工',
+            exact: true,
+          });
+          await createTrigger.click();
+          const dialog = f.page.getByRole('dialog', {
+            name: '创建一位 AI 员工',
+            exact: true,
+          });
+          const name = dialog.getByRole('textbox', {
+            name: '员工名字',
+            exact: true,
+          });
+          const mission = dialog.getByRole('textbox', {
+            name: '使命',
+            exact: true,
+          });
+          const workStyle = dialog.getByRole('textbox', {
+            name: '工作方式',
+            exact: true,
+          });
+          const create = dialog.getByRole('button', {
+            name: '确认创建',
+            exact: true,
+          });
+          await name.waitFor();
+          expect(
+            await f.page.getByRole('dialog', { name: '选择 AI 员工' }).count(),
+          ).toBe(0);
+          expect(await name.inputValue()).toBe('');
+          expect(await create.isDisabled()).toBe(true);
+          expect(await mission.inputValue()).toBe(
+            '理解目标，推进工作，交付清晰、可用的结果。',
+          );
+          expect(await workStyle.inputValue()).toBe(
+            '先确认目标和资料，再分步执行；信息不足时及时说明，交付时列出待确认事项。',
+          );
+          expect(await name.getAttribute('required')).not.toBeNull();
+          expect(await mission.getAttribute('required')).not.toBeNull();
+          expect(await workStyle.getAttribute('required')).toBeNull();
+          expect(await name.getAttribute('maxlength')).toBe('120');
+          expect(await mission.getAttribute('maxlength')).toBe('500');
+          expect(await workStyle.getAttribute('maxlength')).toBe('1000');
+          expect(await dialog.getByRole('radio').count()).toBe(10);
+          for (const { label } of Object.values(employeeColorPalette))
+            expect(
+              await dialog
+                .getByRole('radio', { name: label, exact: true })
+                .count(),
+            ).toBe(1);
+          expect(
+            await dialog
+              .getByRole('radio', { name: '科技蓝', exact: true })
+              .isChecked(),
+          ).toBe(true);
+          expect(
+            await dialog
+              .getByRole('combobox', { name: '表达偏好', exact: true })
+              .inputValue(),
+          ).toBe('structured');
+          expect(await dialog.locator('input[type="file"]').count()).toBe(0);
+          const parts = [
+            '人设',
+            '技能 Skills',
+            '工作场景 Workflow',
+            '插件 Plugins',
+            '记忆 Memory',
+          ];
+          const numberPaints: unknown[] = [];
+          for (const [index, title] of parts.entries()) {
+            const heading = dialog.getByRole('heading', {
+              name: title,
+              exact: true,
+            });
+            const number = heading
+              .locator('..')
+              .getByText(String(index + 1), { exact: true });
+            numberPaints.push(
+              await number.evaluate((node) => {
+                const css = getComputedStyle(node);
+                return {
+                  background: css.backgroundColor,
+                  color: css.color,
+                  width: css.width,
+                  height: css.height,
+                  radius: css.borderRadius,
+                };
+              }),
+            );
+            if (index > 0) {
+              const section = heading.locator('..').locator('..');
+              expect(
+                await section
+                  .locator('button, input, textarea, select')
+                  .count(),
+              ).toBe(0);
+            }
+          }
+          expect(
+            new Set(numberPaints.map((paint) => JSON.stringify(paint))).size,
+          ).toBe(1);
+          if (appearance === 'dark')
+            expect(numberPaints[0]).toMatchObject({
+              background: 'rgb(255, 255, 255)',
+            });
+          expect(
+            await dialog.getByText('员', { exact: true }).evaluate((node) => {
+              const css = getComputedStyle(node);
+              return [
+                css.color,
+                css.fontWeight,
+                css.fontSize,
+                css.width,
+                css.height,
+              ];
+            }),
+          ).toEqual([
+            'rgb(9, 13, 22)',
+            '600',
+            device === 'mobile' ? '18px' : '20px',
+            device === 'mobile' ? '40px' : '44px',
+            device === 'mobile' ? '40px' : '44px',
+          ]);
+          await capture('create-empty');
+          const emptyScroll = await scrollForm(dialog, true);
+          await capture('create-empty', '-bottom', {
+            scroll: 'bottom',
+            ...emptyScroll,
+          });
+          await scrollForm(dialog, false);
+          await name.fill('财务专员');
+          expect(await create.isEnabled()).toBe(true);
+          await capture('create-filled');
+          const filledScroll = await scrollForm(dialog, true);
+          await capture('create-filled', '-bottom', {
+            scroll: 'bottom',
+            ...filledScroll,
+          });
+          await f.page.keyboard.press('Escape');
+          await dialog.waitFor({ state: 'detached' });
+          expect(
+            await createTrigger.evaluate(
+              (node) => node === document.activeElement,
+            ),
+          ).toBe(true);
+          await createTrigger.click();
+          await name.fill('财务专员');
+          await mission.fill('   ');
+          expect(await create.isDisabled()).toBe(true);
+          await mission.fill('理解目标，推进工作，交付清晰、可用的结果。');
+          await workStyle.fill('   ');
+          expect(await create.isEnabled()).toBe(true);
+          await create.click();
+          await dialog.waitFor({ state: 'detached' });
+          const input = f.page.getByRole('textbox', {
+            name: '给 财务专员 的消息',
+            exact: true,
+          });
+          await input.waitFor();
+          await f.page
+            .getByRole('heading', {
+              name: '财务专员已创建，开始第一项工作吧',
+              exact: true,
+            })
+            .waitFor();
+          await f.page
+            .getByText('技能、工作场景可以在“详情”里添加', { exact: true })
+            .waitFor();
+          expect(await input.inputValue()).toBe('');
+          expect(new URL(f.page.url()).searchParams.get('session')).toBeNull();
+          expect(creationRequests).toHaveLength(1);
+          expect(creationRequests[0]).toMatchObject({
+            workspaceId: workspace,
+            assignmentId: id(7),
+            profile: {
+              name: '财务专员',
+              mission: '理解目标，推进工作，交付清晰、可用的结果。',
+              expressionStyle: 'structured',
+            },
+          });
+          expect(creationRequests[0]!.profile).not.toHaveProperty('workStyle');
+          expect(creationRequests[0]).not.toHaveProperty('ownerId');
+          expect(sessionCreates).toEqual([]);
+          if (device === 'mobile') {
+            await expectMobileHeader();
+            await input.focus();
+          }
+          await expectCreatedHero();
+          await f.page.mouse.move(width - 1, 1);
+          await capture('created');
+          await sidebar();
+          const created = group('财务专员');
+          await created.getByText('0 个工作', { exact: true }).waitFor();
+          await expectCreatedIdentity(created);
+          expect(
+            await created
+              .getByRole('treeitem')
+              .filter({ hasText: '新会话' })
+              .count(),
+          ).toBe(1);
+          expect(await pending().count()).toBe(1);
+          await expectPendingTime();
+          if (device === 'mobile')
+            await capture('created', '-sidebar', { sidebar: 'open' });
+          expect(captures).toHaveLength(device === 'mobile' ? 11 : 9);
+          if (device === 'mobile') {
+            // Also exercise the narrow touch card without changing the
+            // approved 390px screenshot matrix or the existing timeout.
+            await f.page.setViewportSize({ width: 300, height });
+            expect(
+              await f.page.evaluate(
+                () => matchMedia('(pointer: coarse)').matches,
+              ),
+            ).toBe(true);
+            const touchActions = await expectCreatedIdentity(created);
+            for (const action of touchActions) {
+              expect(action.width).toBeGreaterThanOrEqual(44);
+              expect(action.height).toBeGreaterThanOrEqual(44);
+            }
+            await f.page
+              .getByRole('button', { name: '收起侧边栏', exact: true })
+              .click();
+            await expectMobileHeader();
+            await expectCreatedHero();
+            await f.page.setViewportSize({ width, height });
+          }
+          expect(f.state.messageInputs).toEqual([]);
+          expect(f.errors).toEqual([]);
+          if (device === 'desktop') {
+            // Separate product mount: retain the original forty-state journey
+            // and reach both new seams through public links and user actions.
+            seams = await fixture({
+              width,
+              appearance,
+              employeeCount: 2,
+              employeeHistory: true,
+              employeeHistoryCount: 3,
+              officeHistoryCount: 0,
+            });
+            failurePage = seams.page;
+            await seams.page.setViewportSize({ width, height });
+            seams.page.on('request', (request) => {
+              if (request.method() !== 'GET')
+                seamWrites.push({
+                  method: request.method(),
+                  path: new URL(request.url()).pathname,
+                });
+            });
+            const file = catalogFile(9588, {
+              fileName: '无会话参考原件.txt',
+              sessionIds: [],
+            });
+            seams.state.workbenchFiles.push(file);
+            await seams.page.goto(
+              `${origin}/?employee=${id(9)}&file=${file.objectId}&workspaceId=${workspace}&theme=1`,
+            );
+            await seams.panel
+              .locator('header[aria-label="文件操作"]')
+              .getByText(file.fileName, { exact: true })
+              .waitFor();
+            await expectGlobalEmpty(seams.page, 'open');
+            expect(
+              seams.state.deliverableRequests.some(
+                (request) => request.objectId === file.objectId,
+              ),
+            ).toBe(true);
+            expect(seamWrites).toEqual([]);
+            expect(seams.writes).toEqual([]);
+            await capture(
+              'global-file',
+              '',
+              { fileObjectId: file.objectId, activeSessionId: null },
+              seams.page,
+            );
+            // Finish the file-link scenario before exercising list-only
+            // reference actions in the later draft scenarios.
+            await seams.panel
+              .getByRole('button', { name: '‹ 交付成果', exact: true })
+              .click();
+            expect(new URL(seams.page.url()).searchParams.has('file')).toBe(
+              false,
+            );
+            await seams.panel
+              .getByRole('button', { name: '关闭工作台', exact: true })
+              .click();
+            await expectGlobalEmpty(seams.page);
+
+            const input = seams.page.getByRole('textbox', {
+              name: '给 Rice 的消息',
+              exact: true,
+            });
+            const global = seams.page.getByRole('region', {
+              name: 'AI 员工空态',
+              exact: true,
+            });
+            const prepare = async () => {
+              await openCapabilities(seams!);
+              await seams!.page
+                .getByRole('dialog', { name: '设置', exact: true })
+                .getByRole('button', {
+                  name: '准备报告与文件交付任务',
+                  exact: true,
+                })
+                .click();
+              await expect
+                .poll(() => input.inputValue())
+                .toContain('保存为正式交付的 Markdown 文件');
+            };
+            // Text alone keeps the existing draft workspace and focus.
+            await prepare();
+            expect(await global.count()).toBe(0);
+            expect(await input.isEditable()).toBe(true);
+            await expect
+              .poll(() =>
+                input.evaluate((node) => node === document.activeElement),
+              )
+              .toBe(true);
+            await input.fill('   ');
+            expect(await input.inputValue()).toBe('   ');
+            expect(await global.count()).toBe(0);
+            await input.fill('');
+            await expectGlobalEmpty(seams.page);
+
+            const quote = async () => {
+              await seams!.page
+                .locator('header')
+                .getByRole('button', { name: /^交付成果(?:，\d+ 项新增)?$/ })
+                .click();
+              await seams!.panel
+                .getByRole('button', {
+                  name: `引用到对话 ${file.fileName}`,
+                  exact: true,
+                })
+                .click();
+              await seams!.panel
+                .getByRole('button', { name: '关闭工作台', exact: true })
+                .click();
+              await seams!.page
+                .getByRole('button', {
+                  name: `移除资料 ${file.fileName} v1`,
+                  exact: true,
+                })
+                .waitFor();
+            };
+            // A reference alone also keeps the composer; removing the last
+            // item returns to the clean global view without making a Session.
+            await quote();
+            expect(await input.inputValue()).toBe('');
+            expect(await global.count()).toBe(0);
+            await seams.page
+              .getByRole('button', {
+                name: `移除资料 ${file.fileName} v1`,
+                exact: true,
+              })
+              .click();
+            await expectGlobalEmpty(seams.page);
+
+            const transfer = await seams.page.evaluateHandle(() => {
+              const data = new DataTransfer();
+              data.items.add(
+                new File(['Synthetic unsent attachment'], '未发送附件.txt', {
+                  type: 'text/plain',
+                }),
+              );
+              return data;
+            });
+            try {
+              await seams.page
+                .locator('main')
+                .dispatchEvent('drop', { dataTransfer: transfer });
+            } finally {
+              await transfer.dispose();
+            }
+            // Frame drop is a real existing entry even when no composer was
+            // mounted. The attachment alone must make its controls visible.
+            await seams.page
+              .getByRole('group', { name: '待发送附件', exact: true })
+              .getByText('未发送附件.txt', { exact: true })
+              .waitFor();
+            expect(await input.inputValue()).toBe('');
+            expect(await global.count()).toBe(0);
+            expect(
+              await seams.page
+                .getByRole('button', {
+                  name: '移除 未发送附件.txt',
+                  exact: true,
+                })
+                .isEnabled(),
+            ).toBe(true);
+            await quote();
+            await prepare();
+            await seams.page
+              .getByRole('button', {
+                name: `移除资料 ${file.fileName} v1`,
+                exact: true,
+              })
+              .waitFor();
+            await seams.page
+              .getByRole('group', { name: '待发送附件', exact: true })
+              .getByText('未发送附件.txt', { exact: true })
+              .waitFor();
+            expect(
+              new URL(seams.page.url()).searchParams.get('session'),
+            ).toBeNull();
+            expect(
+              await seams.page
+                .getByRole('tree', { name: '员工与工作' })
+                .getByRole('treeitem')
+                .filter({ hasText: '新会话' })
+                .count(),
+            ).toBe(0);
+            expect(seamWrites).toEqual([
+              {
+                method: 'POST',
+                path: `/api/v1/workbench/files/${file.objectId}/reference`,
+              },
+              {
+                method: 'POST',
+                path: `/api/v1/workbench/files/${file.objectId}/reference`,
+              },
+            ]);
+            expect(seams.writes).toEqual([]);
+            expect(seams.state.messageInputs).toEqual([]);
+            expect(seams.state.workbenchReferenceUses).toEqual([
+              file.objectId,
+              file.objectId,
+            ]);
+            expect(seams.errors).toEqual([]);
+            await capture(
+              'global-draft',
+              '',
+              {
+                draft: 'capability-report',
+                referenceObjectId: file.objectId,
+                attachment: '未发送附件.txt',
+                activeSessionId: null,
+              },
+              seams.page,
+            );
+            // A separate existing-session mount opens the real native child
+            // tab without changing the original forty-four-state journey.
+            const nativeEvidence = createFailureEvidence({
+              file: import.meta.url,
+              test: task.name,
+            });
+            nativeCleanup = createFailureCleanup(nativeEvidence);
+            unreadCleanups.set(task, nativeCleanup);
+            onTestFailed(async ({ task }) => {
+              await nativeEvidence.capture(task.result?.errors);
+            });
+            failurePage = undefined;
+            nativeIcon = await fixture({
+              width,
+              appearance,
+              nativeSubagents: nativeChildSummary(),
+              nativeEvents: nativeChildCalls(),
+              scheduledTasks: [recurringTask(9840), recurringTask(9841)],
+              failureEvidence: {
+                ...nativeEvidence,
+                observePage(page) {
+                  failurePage = page;
+                  nativeEvidence.observePage(page);
+                },
+              },
+              failureCleanup: nativeCleanup,
+            });
+            nativeCleanup.check();
+            failurePage = nativeIcon.page;
+            await nativeIcon.page.setViewportSize({ width, height });
+            const scheduleClock = nativeIcon.page
+              .locator('header')
+              .getByRole('button', {
+                name: '当前对话的自动化任务',
+                exact: true,
+              });
+            await scheduleClock.waitFor();
+            const expectScheduleClock = async (scheduleTab: Locator) => {
+              const tabGlyph = scheduleTab.locator('svg').first();
+              const topGlyph = scheduleClock.locator('svg').first();
+              const topColor = await topGlyph.evaluate(
+                (node) => getComputedStyle(node).color,
+              );
+              expect(topColor).toBe(
+                appearance === 'light'
+                  ? 'rgb(87, 148, 148)'
+                  : 'rgb(140, 201, 201)',
+              );
+              expect(
+                await tabGlyph.evaluate((node) => getComputedStyle(node).color),
+              ).toBe(topColor);
+              expect(await tabGlyph.getAttribute('viewBox')).toBe(
+                await topGlyph.getAttribute('viewBox'),
+              );
+              expect(await tabGlyph.innerHTML()).toBe(
+                await topGlyph.innerHTML(),
+              );
+              const tabBox = (await tabGlyph.boundingBox())!;
+              const topBox = (await topGlyph.boundingBox())!;
+              expect([tabBox.width, tabBox.height]).toEqual([17, 17]);
+              expect([topBox.width, topBox.height]).toEqual([20, 20]);
+            };
+            await scheduleClock.click();
+            const sessionSchedules = nativeIcon.panel.getByRole('region', {
+              name: '当前对话的自动化任务',
+              exact: true,
+            });
+            const scheduledTask = sessionSchedules.getByRole('button', {
+              name: /定时工作 9840/,
+            });
+            await scheduledTask.waitFor();
+            await expectScheduleClock(
+              nativeIcon.panel.getByRole('tab', {
+                name: /^当前对话的自动化任务/,
+              }),
+            );
+            await scheduledTask.click();
+            await nativeIcon.panel
+              .getByRole('region', {
+                name: '自动化任务详情：定时工作 9840',
+                exact: true,
+              })
+              .getByRole('textbox', { name: '任务名称', exact: true })
+              .waitFor();
+            await expectScheduleClock(
+              nativeIcon.panel.getByRole('tab', { name: /定时工作 9840/ }),
+            );
+            const child = await openNativeChild(nativeIcon);
+            await nativeIcon.page
+              .getByRole('tree', { name: '子智能体目录', exact: true })
+              .waitFor({ state: 'hidden' });
+            await expect
+              .poll(() => child.innerText())
+              .toContain('child-a 获授权的回复');
+            const tab = nativeIcon.panel.locator(
+              '[role="tab"]:has([data-native-subagent-tab])',
+            );
+            expect(await tab.count()).toBe(1);
+            expect(await tab.getAttribute('aria-selected')).toBe('true');
+            const tabGlyph = tab.locator('[data-native-subagent-tab] > svg');
+            const topGlyph = nativeIcon.page
+              .locator('header')
+              .getByRole('button', { name: /2 个子智能体/ })
+              .locator('svg')
+              .first();
+            const token = await topGlyph.evaluate((node) =>
+              getComputedStyle(node).getPropertyValue('--ar-link').trim(),
+            );
+            const topColor = await topGlyph.evaluate(
+              (node) => getComputedStyle(node).color,
+            );
+            const tabColor = await tabGlyph.evaluate(
+              (node) => getComputedStyle(node).color,
+            );
+            expect(topColor).toBe(token);
+            expect(tabColor).toBe(topColor);
+            expect(await tabGlyph.getAttribute('viewBox')).toBe(
+              await topGlyph.getAttribute('viewBox'),
+            );
+            expect(await tabGlyph.innerHTML()).toBe(await topGlyph.innerHTML());
+            const tabBox = (await tabGlyph.boundingBox())!;
+            const topBox = (await topGlyph.boundingBox())!;
+            expect([tabBox.width, tabBox.height]).toEqual([17, 17]);
+            expect([topBox.width, topBox.height]).toEqual([20, 20]);
+            expect(nativeIcon.state.messageInputs).toEqual([]);
+            expect(nativeIcon.writes).toEqual([]);
+            expect(nativeIcon.errors).toEqual([]);
+            await nativeIcon.page.mouse.move(width - 1, 1);
+            await capture(
+              'subagent-tab',
+              '',
+              {
+                childId: 'child-a',
+                colorToken: '--ar-link',
+                tabIconColor: tabColor,
+                headerIconColor: topColor,
+              },
+              nativeIcon.page,
+            );
+          }
+          expect(captures).toHaveLength(device === 'mobile' ? 11 : 12);
+          completed = true;
+        } catch (error) {
+          firstFailure = error;
+          if (failurePage)
+            await failurePage
+              .screenshot({
+                path: join(
+                  evidence,
+                  `FIRST-FAILURE-${device}-${appearance}.png`,
+                ),
+              })
+              .catch(() => {});
+        } finally {
+          try {
+            await writeFile(
+              join(evidence, `CAPTURES-${device}-${appearance}.json`),
+              `${JSON.stringify(
+                {
+                  completed,
+                  sourceInstanceId: task.id,
+                  sourceInstanceName: task.name,
+                  approvedPreviewSHA256:
+                    '476ac7ba9073996833b8361d5fe33b409b77ee171e8005e4441ac15a00d40392',
+                  host: 'ChatFlowClient',
+                  captures,
+                  creationRequests,
+                  sessionCreates,
+                  errors: f.errors,
+                  globalSeamEvidence: seams
+                    ? {
+                        writes: seamWrites,
+                        unexpectedWrites: seams.writes,
+                        messageInputs: seams.state.messageInputs,
+                        referenceUses: seams.state.workbenchReferenceUses,
+                        errors: seams.errors,
+                      }
+                    : null,
+                  nativeSubagentIconEvidence: nativeIcon
+                    ? {
+                        unexpectedWrites: nativeIcon.writes,
+                        messageInputs: nativeIcon.state.messageInputs,
+                        errors: nativeIcon.errors,
+                      }
+                    : null,
+                  firstFailure:
+                    firstFailure instanceof Error
+                      ? firstFailure.stack
+                      : firstFailure,
+                },
+                null,
+                2,
+              )}\n`,
+            );
+          } catch (error) {
+            cleanupErrors.push(error);
+          }
+          if (nativeCleanup) {
+            try {
+              await nativeCleanup.finish({
+                state: completed ? 'pass' : 'fail',
+                errors: firstFailure,
+              });
+            } catch (error) {
+              cleanupErrors.push(error);
+            }
+          }
+          if (seams) {
+            try {
+              await seams.close();
+            } catch (error) {
+              cleanupErrors.push(error);
+            }
+          }
+          try {
+            await f.close();
+          } catch (error) {
+            cleanupErrors.push(error);
+          }
+        }
+        if (cleanupErrors.length)
+          throw new AggregateError(
+            completed ? cleanupErrors : [firstFailure, ...cleanupErrors],
+            'Create-employee evidence or fixture cleanup failed.',
+            firstFailure === undefined ? undefined : { cause: firstFailure },
+          );
+        if (!completed) throw firstFailure;
+      }, 30_000);
 
   it.each([1440, 390])(
     'employee details use the approved root shell and keep close visible after long persona scrolling at %ipx',
@@ -8087,21 +9361,20 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await details
         .getByRole('button', { name: /^关闭(?:员工详情)?$/, exact: true })
         .click();
-      await f.page
-        .getByRole('button', { name: '新的工作', exact: true })
-        .click();
-      const picker = f.page.getByRole('dialog', {
-        name: '选择 AI 员工',
-        exact: true,
-      });
-      const rice = picker.getByRole('button', { name: /Rice/ });
-      expect(await rice.getAttribute('data-accent')).toBe('violet');
+      await startEmployeeWork(f.page);
+      expect(
+        await f.page
+          .locator('main > section')
+          .getAttribute('data-employee-accent'),
+      ).toBe('violet');
+      const rice = f.page
+        .getByRole('tree', { name: '员工与工作', exact: true })
+        .getByRole('region', { name: 'Rice', exact: true });
       expect(
         await rice
           .getByText('R', { exact: true })
           .evaluate((node) => getComputedStyle(node).backgroundColor),
       ).toBe('rgb(139, 92, 246)');
-      await rice.click();
       await f.page
         .getByRole('button', { name: '收起侧边栏', exact: true })
         .click();
@@ -8157,7 +9430,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await historical.click();
         await sidebar.getByText('已撤回员工的工作', { exact: true }).waitFor();
         const top = sidebar.getByRole('button', {
-          name: '新的工作',
+          name: '创建员工',
           exact: true,
         });
         const settings = sidebar.getByRole('button', {
@@ -8300,18 +9573,22 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const row = f.page.locator(`[data-row-key="workspace:${employeeId}"]`);
         const letter = row.getByText(initial, { exact: true });
         const card = row.locator('..').locator('..');
+        const active = employeeId === id(7);
+        expect(await card.getAttribute('data-active')).toBe(
+          active ? 'true' : null,
+        );
         await f.page.mouse.move(1000, 900);
         await expect.poll(() => letter.isVisible()).toBe(true);
         const before = await letter.boundingBox();
         await expect
           .poll(() => card.evaluate((e) => getComputedStyle(e).backgroundColor))
-          .toBe('rgb(240, 242, 245)');
+          .toBe(active ? 'rgb(225, 230, 237)' : 'rgb(235, 238, 242)');
         await row.hover();
         expect(await letter.isVisible()).toBe(true);
         expect(await letter.boundingBox()).toEqual(before);
         await expect
           .poll(() => card.evaluate((e) => getComputedStyle(e).backgroundColor))
-          .toBe('rgb(233, 236, 241)');
+          .toBe(active ? 'rgb(225, 230, 237)' : 'rgb(233, 236, 241)');
         expect(await card.evaluate((e) => getComputedStyle(e).boxShadow)).toBe(
           'none',
         );
@@ -8977,7 +10254,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
-  it('MET160 employee hierarchy keeps historical ownership, supports direct/new picker and employee rail', async () => {
+  it('MET160 employee hierarchy keeps historical ownership, supports direct creation, employee sessions and rail', async () => {
     const f = await fixture({
       employeeCount: 2,
       employeeHistory: true,
@@ -9011,27 +10288,31 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await f.page.getByRole('region', { name: '旧员工（已撤回）' }).count(),
       ).toBe(1);
       await f.page
-        .getByRole('button', { name: '新的工作', exact: true })
+        .getByRole('button', { name: '创建员工', exact: true })
         .click();
-      const picker = f.page.getByRole('dialog', { name: '选择 AI 员工' });
-      await picker.waitFor();
+      const create = f.page.getByRole('dialog', { name: '创建一位 AI 员工' });
+      await create.waitFor();
+      const nameInput = create.getByRole('textbox', {
+        name: '员工名字',
+        exact: true,
+      });
       await expect
         .poll(() =>
-          picker
-            .locator('[data-create-employee]')
-            .evaluate((element) => element === document.activeElement),
+          nameInput.evaluate((element) => element === document.activeElement),
         )
         .toBe(true);
       if (globalThis.process.env.ALLRICE_EMPLOYEE_SCREENSHOT)
         await f.page.screenshot({
-          path: `${globalThis.process.env.ALLRICE_EMPLOYEE_SCREENSHOT}-picker.png`,
+          path: `${globalThis.process.env.ALLRICE_EMPLOYEE_SCREENSHOT}-create.png`,
         });
       await f.page.keyboard.press('1');
       await f.page.keyboard.press('2');
-      expect(await picker.isVisible()).toBe(true);
-      expect(await picker.getByText('快选', { exact: false }).count()).toBe(0);
-      await picker.getByRole('button', { name: /Office 文档助手/ }).click();
-      expect(await picker.count()).toBe(0);
+      expect(await nameInput.inputValue()).toBe('12');
+      expect(await create.isVisible()).toBe(true);
+      expect(await create.getByText('快选', { exact: false }).count()).toBe(0);
+      await create.getByRole('button', { name: '取消', exact: true }).click();
+      expect(await create.count()).toBe(0);
+      await startEmployeeWork(f.page, 'Office 文档助手');
       expect(
         await f.page
           .getByRole('button', { name: '与 Office 文档助手 工作', exact: true })
@@ -9048,7 +10329,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(
         await f.page
           .getByRole('heading', {
-            name: '与 Office 文档助手 工作',
+            name: '和Office 文档助手开始新的工作',
             exact: true,
           })
           .count(),
@@ -9056,8 +10337,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(
         await f.page
           .getByText('阅读文档并制作报告、表格与演示文稿。', { exact: true })
-          .isVisible(),
-      ).toBe(true);
+          .count(),
+      ).toBe(0);
       expect(
         await f.page
           .locator('[data-employee-accent]')
@@ -9076,11 +10357,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByRole('button', { name: '与 Rice 新建工作', exact: true })
           .count(),
       ).toBe(0);
-      await f.page
-        .getByRole('button', { name: '新的工作', exact: true })
-        .click();
-      await picker.getByRole('button', { name: /Rice/ }).click();
-      expect(await picker.count()).toBe(0);
+      await startEmployeeWork(f.page);
+      expect(
+        await f.page.getByRole('dialog', { name: '选择 AI 员工' }).count(),
+      ).toBe(0);
       expect(
         await f.page
           .getByRole('button', { name: '与 Rice 工作', exact: true })
@@ -9117,17 +10397,25 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.close();
     }
   }, 20_000);
-  it('MET160 zero and single employee new-work entry never uses an invalid assignment', async () => {
+  it('MET160 zero and single employee creation entry never uses an invalid assignment', async () => {
     for (const employeeCount of [0, 1]) {
       const f = await fixture({ employeeCount, noSession: true });
       try {
         await f.page
-          .getByRole('button', { name: '新的工作', exact: true })
+          .getByRole('region', { name: 'AI 员工空态', exact: true })
+          .getByRole('heading', { name: 'AI 员工', exact: true })
+          .waitFor();
+        await f.page
+          .getByRole('button', { name: '创建员工', exact: true })
           .click();
         if (employeeCount)
-          await f.page.getByRole('dialog', { name: '选择 AI 员工' }).waitFor();
+          await f.page
+            .getByRole('dialog', { name: '创建一位 AI 员工' })
+            .waitFor();
         expect(
-          await f.page.getByRole('dialog', { name: '选择 AI 员工' }).count(),
+          await f.page
+            .getByRole('dialog', { name: '创建一位 AI 员工' })
+            .count(),
         ).toBe(employeeCount ? 1 : 0);
         if (!employeeCount)
           expect(
@@ -9143,7 +10431,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               name: employeeCount ? '给 Rice 的消息' : '给 AI 员工 的消息',
             })
             .count(),
-        ).toBe(1);
+        ).toBe(employeeCount ? 0 : 1);
       } finally {
         await f.close();
       }
@@ -15750,13 +17038,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await f.page.getByRole('treeitem', { name: /^研究任务 A/ }).click();
         await f.page.reload();
         await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
-        await f.page
-          .getByRole('button', { name: '新的工作', exact: true })
-          .click();
-        await f.page
-          .getByRole('dialog', { name: '选择 AI 员工' })
-          .locator('[data-default-employee="true"]')
-          .click();
+        await startEmployeeWork(f.page);
         await expect
           .poll(() => new URL(f.page.url()).searchParams.has('session'))
           .toBe(false);
@@ -16489,6 +17771,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       const width = async () =>
         Math.round((await sidebar.boundingBox())!.width);
       await splitter.waitFor();
+      await expect.poll(width).toBe(320);
       const composer = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
       await composer.fill('侧栏拖动不丢草稿');
       async function dragTo(x: number) {
@@ -16543,9 +17826,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page.keyboard.press('Shift+ArrowRight');
       await expect.poll(width).toBe(340);
       await splitter.dblclick({ position: { x: 4, y: 150 } });
-      await expect.poll(width).toBe(240);
+      await expect.poll(width).toBe(320);
       await splitter.focus();
+      const widenedDefault = Math.min(
+        420,
+        Number(await splitter.getAttribute('aria-valuemax')),
+      );
       await f.page.keyboard.press('Shift+ArrowRight');
+      await expect.poll(width).toBe(widenedDefault);
       await f.page.setViewportSize({ width: 390, height: 844 });
       // matchMedia delivers its change after the viewport command resolves.
       await expect.poll(() => splitter.count()).toBe(0);
@@ -16563,14 +17851,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       ).toBe(true);
       await f.page.screenshot({ path: '/tmp/met160-employee-blue-mobile.png' });
       await f.page.setViewportSize({ width: 1440, height: 950 });
-      await expect.poll(width).toBe(340);
+      await expect.poll(width).toBe(widenedDefault);
       await f.page.screenshot({
         path: '/tmp/met160-employee-blue-desktop.png',
       });
       f.state.viewer = id(50);
       await f.page.reload();
       await splitter.waitFor();
-      await expect.poll(width).toBe(240);
+      await expect.poll(width).toBe(320);
     } finally {
       await f.close();
     }
@@ -16710,13 +17998,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .poll(panelWidth)
         .toBe(
           Math.round((await f.page.locator('main').boundingBox())!.width) -
-            240 -
+            Math.round(
+              (await f.page.locator('#chat-sidebar').boundingBox())!.width,
+            ) -
             340,
         );
       expect(await splitter.getAttribute('aria-valuenow')).toBe(
         String(
           Math.round((await f.page.locator('main').boundingBox())!.width) -
-            240 -
+            Math.round(
+              (await f.page.locator('#chat-sidebar').boundingBox())!.width,
+            ) -
             340,
         ),
       );
@@ -16796,7 +18088,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .toBe(
           String(
             Math.round((await f.page.locator('main').boundingBox())!.width) -
-              240 -
+              Math.round(
+                (await f.page.locator('#chat-sidebar').boundingBox())!.width,
+              ) -
               340,
           ),
         );
@@ -16806,7 +18100,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .toBe(
           String(
             Math.round((await f.page.locator('main').boundingBox())!.width) -
-              240 -
+              Math.round(
+                (await f.page.locator('#chat-sidebar').boundingBox())!.width,
+              ) -
               340,
           ),
         );
@@ -17225,9 +18521,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page.getByRole('treeitem', { name: /^研究任务 B/ }).click();
       expect(await f.panel.count()).toBe(0);
       expect(await f.entry.count()).toBe(1);
-      await f.page
-        .getByRole('button', { name: '新的工作', exact: true })
-        .click();
+      await startEmployeeWork(f.page);
       expect(await f.panel.count()).toBe(0);
       expect(await f.entry.count()).toBe(1);
     } finally {
@@ -17458,7 +18752,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         exact: true,
       });
       const newWork = f.page.getByRole('button', {
-        name: '新的工作',
+        name: '创建员工',
         exact: true,
       });
       const archiveBox = await archiveEntry.boundingBox();

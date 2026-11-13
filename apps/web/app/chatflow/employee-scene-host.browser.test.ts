@@ -1154,6 +1154,8 @@ suite('U1 mounted employee Workflow host', () => {
         name: options.frozen ? '给 配发员工 的消息' : '给 Rice 的消息',
         exact: true,
       })
+      .or(page.getByRole('region', { name: 'AI 员工空态', exact: true }))
+      .first()
       .waitFor();
     if (options.session)
       await expect
@@ -2601,6 +2603,9 @@ suite('U1 mounted employee Workflow host', () => {
         instanceRead = gate();
       const original = '当前输入保留';
       await f.page
+        .getByRole('button', { name: '和 Rice 开新会话', exact: true })
+        .click();
+      await f.page
         .getByRole('textbox', { name: '给 Rice 的消息', exact: true })
         .fill(original);
       await f.page.locator('input[type=file][multiple]').setInputFiles({
@@ -3883,14 +3888,20 @@ suite('U1 mounted employee Workflow host', () => {
         .directory()
         .getByRole('button', { name: '关闭工作台', exact: true })
         .click();
-      await f.page
-        .getByRole('button', { name: '开始新的工作', exact: true })
-        .click();
-      const picker = employeePage(f.page, {
-        name: '选择 AI 员工',
+      const expand = f.page.getByRole('button', {
+        name: '展开侧边栏',
         exact: true,
       });
-      await picker.getByRole('button', { name: /流程哥/ }).click();
+      if (await expand.isVisible()) await expand.click();
+      await f.page
+        .getByRole('button', { name: '和 流程哥 开新会话', exact: true })
+        .click();
+      expect(
+        await employeePage(f.page, {
+          name: '选择 AI 员工',
+          exact: true,
+        }).count(),
+      ).toBe(0);
       await f.page
         .getByRole('textbox', { name: '给 流程哥 的消息', exact: true })
         .waitFor();

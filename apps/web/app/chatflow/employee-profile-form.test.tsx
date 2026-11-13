@@ -9,6 +9,7 @@ import {
   EmployeeProfileForm,
   canEditEmployeePersona,
   canResetEmployeePersona,
+  createEmployeeProfile,
   defaultEmployeeProfileFormValues,
   employeeProfileFormFromRaw,
   mergeEmployeeProfileForm,
@@ -134,7 +135,7 @@ describe('shared employee profile form', () => {
       }
       expect(html).toContain('取消');
       expect(html).toContain(
-        mode === 'create' ? '创建</button>' : '保存</button>',
+        mode === 'create' ? '确认创建</button>' : '保存</button>',
       );
       expect(html).toContain('type="submit" disabled=""');
       expect(html).not.toContain('基础员工');
@@ -165,14 +166,11 @@ describe('shared employee profile form', () => {
 
   it('sends all three new-employee persona values with the chosen name and color to the existing contract', () => {
     expect(
-      mergeEmployeeProfileForm(
-        {},
-        {
-          ...defaultEmployeeProfileFormValues,
-          name: '  𠮷野财务助手  ',
-          accentColor: 'green',
-        },
-      ),
+      createEmployeeProfile({
+        ...defaultEmployeeProfileFormValues,
+        name: '  𠮷野财务助手  ',
+        accentColor: 'green',
+      }),
     ).toEqual({
       name: '𠮷野财务助手',
       mission: defaultEmployeeProfileFormValues.mission,
@@ -184,6 +182,39 @@ describe('shared employee profile form', () => {
         accentColor: 'green',
       },
     });
+  });
+
+  it('omits empty work style only for creation and keeps the editor requirement', () => {
+    for (const workStyle of ['', '   ']) {
+      const values = {
+        ...defaultEmployeeProfileFormValues,
+        name: '  财务专员  ',
+        mission: '  核对预算并给出差异  ',
+        workStyle,
+      };
+      const profile = createEmployeeProfile(values);
+      expect(profile).not.toHaveProperty('workStyle');
+      expect(profile).toMatchObject({
+        name: '财务专员',
+        mission: '核对预算并给出差异',
+        expressionStyle: defaultEmployeeProfileFormValues.expressionStyle,
+      });
+      expect(() => mergeEmployeeProfileForm({}, values)).toThrow();
+      for (const mode of ['create', 'edit'] as const) {
+        const html = renderToStaticMarkup(
+          <EmployeeProfileForm
+            mode={mode}
+            initialValue={values}
+            onSubmit={() => {}}
+            onCancel={() => {}}
+          />,
+        );
+        const workStyleTag = html.match(/<textarea[^>]*-work-style[^>]*>/)![0];
+        expect(workStyleTag.includes('required=""')).toBe(mode === 'edit');
+        const submitTag = html.match(/<button[^>]*type="submit"[^>]*>/)![0];
+        expect(submitTag.includes('disabled=""')).toBe(mode === 'edit');
+      }
+    }
   });
 
   it('keeps untouched inherited text out of a general rename patch', () => {

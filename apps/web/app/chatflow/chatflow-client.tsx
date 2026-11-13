@@ -124,7 +124,9 @@ import {
 import { inputRetry } from '../../lib/chatflow/input-retry';
 import { isSendReceipt } from './send-receipt';
 import { ChatSidebar } from './chat-sidebar';
-import { EmployeePickerDialog } from './employee-picker-dialog';
+import { EmployeeCreateDialog } from './employee-create-dialog';
+import { EmployeeGlobalEmpty } from './employee-global-empty';
+import globalEmptyUi from './employee-global-empty.module.css';
 import {
   employeeAccent,
   employeeAccentStyle,
@@ -216,6 +218,11 @@ export function ChatFlowClient({
     draftStore.subscribe,
     draftStore.hasDraft,
     draftStore.hasDraft,
+  );
+  const hasComposerText = useSyncExternalStore(
+    draftStore.subscribe,
+    () => draftStore.getSnapshot().length > 0,
+    () => draftStore.getSnapshot().length > 0,
   );
   const [companyReferences, setCompanyReferences] = useState<
     CompanyDraftReference[]
@@ -309,6 +316,7 @@ export function ChatFlowClient({
     createSession,
     registerEmployeeInstance,
     newSessionEmployee,
+    pendingEmployeeAssignmentId,
     setPendingEmployeeAssignmentId,
     history,
     historyStale,
@@ -486,7 +494,11 @@ export function ChatFlowClient({
       // Restricted browsers may deny History writes; the modal still opens.
     }
   }, [settingsScope, workspace?.workspaceId]);
-  const [employeePickerOpen, setEmployeePickerOpen] = useState(false);
+  const [employeeCreateOpen, setEmployeeCreateOpen] = useState(false);
+  const [createdEmployee, setCreatedEmployee] = useState<{
+    scope: string;
+    id: string;
+  } | null>(null);
   const [detailsAssignmentId, setDetailsAssignmentId] = useState<string | null>(
     null,
   );
@@ -516,13 +528,15 @@ export function ChatFlowClient({
       setAutomationNavigation(null);
       if (sessionId !== null && captureSelection().sessionId === sessionId)
         return;
+      setCreatedEmployee(null);
+      if (sessionId !== null) setPendingEmployeeAssignmentId(null);
       setActiveId(sessionId, sessionId === null);
       setSubmission(null);
       setBusy(false);
       setQuestionBusy(false);
       setError('');
     },
-    [captureSelection, setActiveId],
+    [captureSelection, setActiveId, setPendingEmployeeAssignmentId],
   );
 
   const layout = useWorkbenchLayout({
@@ -1600,13 +1614,16 @@ export function ChatFlowClient({
     selectSession(null);
     setHistory(null);
     setPendingEmployeeAssignmentId(assignmentId);
+    setCreatedEmployee(
+      created ? { scope: settingsScope, id: created.id } : null,
+    );
     setDraft('');
     setSessionReferences([]);
     setReferenceSelections([]);
     setCompanyReferences([]);
     setReferencePickerOpen(false);
     clearPendingAttachments();
-    setEmployeePickerOpen(false);
+    setEmployeeCreateOpen(false);
     requestAnimationFrame(() => composerInput.current?.focus());
   }
 
@@ -1981,6 +1998,25 @@ export function ChatFlowClient({
     !transcriptMessages.length &&
     !hasQueuedMessages &&
     Object.keys(runViews).length === 0;
+  const pendingEmployeeConversation =
+    !activeId && !!pendingEmployeeAssignmentId && !automationCreate;
+  const globalEmployeeEmpty =
+    !layout.compact &&
+    isEmptyConversation &&
+    !activeId &&
+    !pendingEmployeeAssignmentId &&
+    !automationCreate &&
+    !error &&
+    !hasComposerText &&
+    pendingAttachments.length === 0 &&
+    sessionReferences.length === 0 &&
+    referenceSelections.length === 0 &&
+    companyReferences.length === 0 &&
+    !visibleSubmission;
+  const newlyCreatedEmployeeConversation =
+    pendingEmployeeConversation &&
+    createdEmployee?.scope === settingsScope &&
+    createdEmployee.id === pendingEmployeeAssignmentId;
   const recoverableRunView = [...activeRunMessages]
     .reverse()
     .map((message) => runViews[message.runId!])
@@ -2421,8 +2457,8 @@ export function ChatFlowClient({
           </div>
         </div>
       ) : null}
-      {employeePickerOpen && (
-        <EmployeePickerDialog
+      {employeeCreateOpen && (
+        <EmployeeCreateDialog
           key={settingsScope}
           workspace={{
             ...workspace,
@@ -2438,8 +2474,7 @@ export function ChatFlowClient({
                 : {}),
             })),
           }}
-          onClose={() => setEmployeePickerOpen(false)}
-          onSelect={startEmployeeSession}
+          onClose={() => setEmployeeCreateOpen(false)}
           onCreated={(instance) => startEmployeeSession(instance.id, instance)}
           headers={tenantHeaders}
         />
@@ -2556,13 +2591,17 @@ export function ChatFlowClient({
         collapsed={sidebarCollapsed}
         overlay={layout.compact && !sidebarCollapsed}
         onCollapsedChange={setSidebarCollapsed}
+        pendingEmployeeAssignmentId={
+          automationsOpen ? null : pendingEmployeeAssignmentId
+        }
+        onCreateEmployee={() => {
+          if (!confirmSessionNavigation()) return;
+          if (workspace.employees.length > 0) setEmployeeCreateOpen(true);
+          else setError('当前没有可用员工，请先派驻员工。');
+        }}
         onNewSession={(assignmentId) => {
           if (!confirmSessionNavigation()) return;
-          setAutomationNavigation(null);
-          if (assignmentId) startEmployeeSession(assignmentId);
-          else if (employeeChoices(workspace).length > 0)
-            setEmployeePickerOpen(true);
-          else setError('当前没有可用员工，请先派驻员工。');
+          startEmployeeSession(assignmentId);
         }}
         onOpenEmployeeDetails={(assignmentId) => {
           setSceneRequest(null);
@@ -2634,23 +2673,29 @@ export function ChatFlowClient({
               if (!confirmSessionNavigation()) return;
               if (activeEmployee)
                 startEmployeeSession(employeeChoiceId(activeEmployee));
-              else setEmployeePickerOpen(true);
+              else setEmployeeCreateOpen(true);
               setAutomationNavigation({ scope: settingsScope, view: 'create' });
             }}
           />
         ) : (
           <div
-            className={conversationUi.root}
+            className={`${conversationUi.root} ${globalEmployeeEmpty ? globalEmptyUi.root : ''}`}
             data-phase={isEmptyConversation ? 'hero' : 'active'}
           >
             {
               <header
-                className={`${conversationUi.header} ${styles.conversationHeader}`}
+                className={`${conversationUi.header} ${styles.conversationHeader} ${globalEmployeeEmpty ? globalEmptyUi.header : ''}`}
               >
                 <div className={conversationUi.titleRow}>
-                  <div className={conversationUi.titleCluster}>
+                  <div
+                    className={`${conversationUi.titleCluster} ${styles.conversationTitle}`}
+                  >
                     <div className={conversationUi.crumbs}>
-                      <h1>{activeSession?.title ?? '新的工作'}</h1>
+                      <h1>
+                        {globalEmployeeEmpty
+                          ? 'AI 员工'
+                          : (activeSession?.title ?? '新的工作')}
+                      </h1>
                     </div>
                   </div>
                   <div
@@ -2851,9 +2896,15 @@ export function ChatFlowClient({
                   ) : null}
                 </div>
               </div>
+            ) : globalEmployeeEmpty ? (
+              <div className={conversationUi.scrollBody}>
+                <EmployeeGlobalEmpty />
+              </div>
             ) : isEmptyConversation ? (
               <div className={conversationUi.scrollBody}>
-                <section className={styles.emptyStage}>
+                <section
+                  className={`${styles.emptyStage} ${pendingEmployeeConversation ? styles.pendingEmployeeStage : ''}`}
+                >
                   <div className={styles.heroStack}>
                     {automationCreate && (
                       <p>
@@ -2865,13 +2916,23 @@ export function ChatFlowClient({
                       <span className={styles.heroMark} aria-hidden="true">
                         {Array.from(activeEmployeeName)[0]}
                       </span>
-                      <h1>与 {activeEmployeeName} 工作</h1>
-                      <p>
-                        {employeeIntroduction(
-                          activeEmployee,
-                          activeEmployeeProfile,
-                        )}
-                      </p>
+                      <h1>
+                        {newlyCreatedEmployeeConversation
+                          ? `${activeEmployeeName}已创建，开始第一项工作吧`
+                          : pendingEmployeeConversation
+                            ? `和${activeEmployeeName}开始新的工作`
+                            : `与 ${activeEmployeeName} 工作`}
+                      </h1>
+                      {newlyCreatedEmployeeConversation ? (
+                        <p>技能、工作场景可以在“详情”里添加</p>
+                      ) : !pendingEmployeeConversation ? (
+                        <p>
+                          {employeeIntroduction(
+                            activeEmployee,
+                            activeEmployeeProfile,
+                          )}
+                        </p>
+                      ) : null}
                     </div>
                     {renderComposer(true)}
                   </div>
