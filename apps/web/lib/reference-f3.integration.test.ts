@@ -11,6 +11,7 @@ import * as client from '../../../packages/database/src/core/client.ts';
 import {
   createRuntimeFixtureDatabase,
   runtimeFixtureStorage,
+  runtimeTaskFixture,
 } from '../../../packages/database/src/runtime.fixture.ts';
 import { tenantValidationFixture } from '../../../packages/database/src/tenant-validation.fixture.ts';
 import {
@@ -23,6 +24,7 @@ import { lockWorkspaceStorageQuota } from '../../../packages/database/src/core/s
 import {
   assertReferenceSelections,
   captureReferenceSelections,
+  retrieveSelectedReferenceKnowledge,
 } from '../../../packages/database/src/reference-runtime.ts';
 import {
   claimReferenceProcessing,
@@ -76,10 +78,12 @@ suite('F3 backend facts through real browser session identity', () => {
   }, 30000);
 
   async function login(userId: string, selection: RequestContext) {
+    const workspaceId = selection.workspaceId;
+    if (!workspaceId) throw Error('Fixture requires an exact workspace');
     const session = await createSession(userId);
     const context = (await authenticateSession(session.token, {
       organizationId: selection.organizationId,
-      workspaceId: selection.workspaceId,
+      workspaceId,
     }))!;
     expect(context.actor.id).toBe(userId);
     browser.token = session.token;
@@ -265,7 +269,7 @@ suite('F3 backend facts through real browser session identity', () => {
     const a = await setup(),
       objectId = await originalUpload(a.context);
     expect(
-      await f.db`select id from allrice_file_references where object_id=${objectId}`,
+      await f.db`select object_id from allrice_file_references where object_id=${objectId}`,
     ).toHaveLength(0);
     const [proof] =
       await f.db`select o.owner_id,o.organization_id,o.workspace_id,p.upload_request_id,p.upload_digest
@@ -411,11 +415,19 @@ suite('F3 backend facts through real browser session identity', () => {
   });
 
   it('reports exact publication eligibility instead of equating it with maintenance or ownership', async () => {
-    const a = await setup();
+    // This generic fixture creates its real Run/session, but no employee Run evidence.
+    const fixture = await runtimeTaskFixture(f.db);
+    const a = {
+      ...fixture,
+      ...(await login(fixture.context.actor.id, fixture.context)),
+    };
+    const delivery = await a.artifact(a.task.runId);
     const [artifact] =
-      await f.db`select object_id from allrice_deliverable_versions where id=${a.artifact.artifactId}`;
+      await f.db`select object_id from allrice_deliverable_versions where id=${delivery.artifactId}`;
     // Still an owned business directory entry, but its required Run provenance is absent.
-    await f.db`delete from allrice_employee_runs where run_id=${a.task.runId}`;
+    expect(
+      await f.db`select run_id from allrice_employee_runs where run_id=${a.task.runId}`,
+    ).toHaveLength(0);
     expect(
       (await catalog(a.context, artifact!.object_id)).files[0],
     ).toMatchObject({
@@ -511,6 +523,19 @@ suite('F3 backend facts through real browser session identity', () => {
       );
       expect(pins[0]!.fileName).toBe(finalName);
       await f.db.begin((tx) => assertReferenceSelections(a.context, pins, tx));
+      const retrieved = await retrieveSelectedReferenceKnowledge({
+        context: a.context,
+        selections: pins,
+        query: '完整原件正文',
+      });
+      expect(retrieved).toHaveLength(1);
+      expect(retrieved[0]!.content).toBe('长名称下的完整原件正文。');
+      expect(retrieved[0]!.citation.reference).toEqual(pins[0]);
+      const label = retrieved[0]!.citation.label;
+      expect(label.length).toBeLessThanOrEqual(200);
+      expect(Buffer.from(label).toString()).toBe(label);
+      if (finalName.length > 195) expect(label).toContain('… · v1');
+      else expect(label).toBe(`${finalName} · v1`);
       if (finalName !== requested) {
         expect(finalName).toHaveLength(255);
         expect(finalName).toContain('（2）');
@@ -651,6 +676,12 @@ suite('F3 backend facts through real browser session identity', () => {
     ).toBe(403);
     browser.token = a.token;
     await f.db`update allrice_memberships set active=false where user_id=${a.context.actor.id}`;
+    expect(
+      (await eligibility(request(a.context, path), route(sessionId))).status,
+    ).toBe(403);
+    // Actual login expiry, distinct from a live login whose membership was withdrawn.
+    await f.db`update allrice_sessions set created_at=clock_timestamp()-interval '1 day',expires_at=clock_timestamp()-interval '1 second'
+      where id=${a.context.sessionId}`;
     expect(
       (await eligibility(request(a.context, path), route(sessionId))).status,
     ).toBe(401);
