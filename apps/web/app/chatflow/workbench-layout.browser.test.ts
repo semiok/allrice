@@ -6187,10 +6187,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           exact: true,
         });
         await text.waitFor();
-        const scrollport = text.locator('..');
+        const scrollport = f.panel.locator(
+          '[class*="deliveryReadingArea"]:visible',
+        );
         await scrollport.evaluate((e) => {
           e.scrollTop = 450;
         });
+        expect(await scrollport.evaluate((e) => e.scrollTop)).toBeGreaterThan(
+          0,
+        );
         const banner = text.locator('.md-code-block > :first-child');
         await expect
           .poll(async () => {
@@ -12509,7 +12514,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           ).toEqual(['', id(7), id(17)]);
           await employee.click();
           await capture('employee-filter-all-first');
-          await f.page.keyboard.press('Escape');
+          await employee.selectOption(id(7));
+          expect(await f.panel.isVisible()).toBe(true);
           await capture('deliverables');
           await directory
             .getByRole('button', { name: '员工交付', exact: true })
@@ -13210,6 +13216,23 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                   .getByRole('button', { name: /自动换行|取消换行/ })
                   .count(),
               ).toBe(1);
+              const wrap = source.getByRole('button', {
+                name: '自动换行',
+                exact: true,
+              });
+              expect(await wrap.getAttribute('aria-pressed')).toBe('true');
+              await wrap.click();
+              expect(
+                await source
+                  .locator('[data-code-wrap]')
+                  .getAttribute('data-code-wrap'),
+              ).toBe('false');
+              await wrap.click();
+              expect(
+                await source
+                  .locator('[data-code-wrap]')
+                  .getAttribute('data-code-wrap'),
+              ).toBe('true');
               await capture('source');
               await toolbar
                 .getByRole('button', { name: '更多文件操作', exact: true })
@@ -13319,6 +13342,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                   originalFrame,
                 ),
               ).toBe(true);
+              await expectFooterActionsReachable(footer, nativeFrame);
               await capture('zoomed-footer');
             }
             await footer
@@ -13427,7 +13451,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await quote.click();
         await directory
           .getByRole('alert')
-          .filter({ hasText: '引用读取失败，请重试。' })
+          .filter({ hasText: '成果服务暂不可用，请重试。' })
           .waitFor();
         expect(await quote.isEnabled()).toBe(true);
         failed = false;
@@ -13587,6 +13611,41 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     },
     30000,
   );
+
+  async function expectFooterActionsReachable(footer: Locator, frame: Locator) {
+    await frame
+      .getByRole('button', { name: '选择缩放比例', exact: true })
+      .focus();
+    await expect
+      .poll(() =>
+        frame
+          .locator('[data-document-zoom-controls]')
+          .getAttribute('data-document-zoom-visible'),
+      )
+      .toBe('true');
+    const viewport = (await frame.boundingBox())!;
+    const bounds = (await footer.boundingBox())!;
+    expect(bounds.x).toBeGreaterThanOrEqual(viewport.x - 1);
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(
+      viewport.x + viewport.width + 1,
+    );
+    await expect
+      .poll(() =>
+        footer
+          .locator('[class*="detailActions"] > button')
+          .evaluateAll((buttons) =>
+            buttons.map((button) => {
+              const box = button.getBoundingClientRect();
+              const hit = document.elementFromPoint(
+                box.x + box.width / 2,
+                box.y + box.height / 2,
+              );
+              return hit !== null && button.contains(hit);
+            }),
+          ),
+      )
+      .toEqual([true, true, true]);
+  }
 
   async function retainedPdfReader(f: Awaited<ReturnType<typeof fixture>>) {
     await f.panel
@@ -14151,6 +14210,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             failedPreviewBox.y + failedPreviewBox.height + 1,
           );
           const footerTop = await scroll.evaluate((node) => node.scrollTop);
+          await expectFooterActionsReachable(
+            f.panel.locator('footer:visible'),
+            frame,
+          );
           expect(failureBox.y + failureBox.height).toBeLessThanOrEqual(
             width === 1440 ? 1000 : 844,
           );

@@ -205,6 +205,12 @@
 .pdfPages {
   min-height: 100%;
 }
+.pdfFooter {
+  position: sticky;
+  left: 0;
+  width: 100%;
+  padding-bottom: var(--document-zoom-reveal-height);
+}
 
 .actionAnchor {
   display: inline-flex;

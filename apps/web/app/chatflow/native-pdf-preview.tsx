@@ -48,7 +48,7 @@ function PdfFooterViewport(props: ZoomViewportProps) {
   return (
     <ZoomViewport {...props}>
       <div className={reader.pdfPages}>{props.children}</div>
-      {integration?.footer}
+      <div className={reader.pdfFooter}>{integration?.footer}</div>
     </ZoomViewport>
   );
 }
