@@ -7977,6 +7977,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         let firstFailure: unknown;
         const cleanupErrors: unknown[] = [];
         let seams: Awaited<ReturnType<typeof fixture>> | undefined;
+        let nativeIcon: Awaited<ReturnType<typeof fixture>> | undefined;
         let failurePage = f.page;
         const seamWrites: Array<{ method: string; path: string }> = [];
         const tree = () =>
@@ -8190,6 +8191,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           details: Record<string, unknown> = {},
           page = f.page,
         ) => {
+          expect(page.viewportSize()).toEqual({ width, height });
+          await expect.poll(() => page.locator('html').getAttribute('data-theme')).toBe(appearance);
+          expect(await page.locator('body').evaluate((node) => node.hasAttribute('data-ds-dark-theme'))).toBe(appearance === 'dark');
           await page.evaluate(() => document.fonts.ready);
           expect(
             await page.evaluate(
@@ -8751,6 +8755,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               officeHistoryCount: 0,
             });
             failurePage = seams.page;
+            await seams.page.setViewportSize({ width, height });
             seams.page.on('request', (request) => {
               if (request.method() !== 'GET')
                 seamWrites.push({
@@ -8941,8 +8946,43 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               },
               seams.page,
             );
+            // A separate existing-session mount opens the real native child
+            // tab without changing the original forty-four-state journey.
+            nativeIcon = await fixture({
+              width,
+              appearance,
+              nativeSubagents: nativeChildSummary(),
+              nativeEvents: nativeChildCalls(),
+            });
+            failurePage = nativeIcon.page;
+            await nativeIcon.page.setViewportSize({ width, height });
+            const child = await openNativeChild(nativeIcon);
+            await nativeIcon.page.getByRole('tree', { name: '子智能体目录', exact: true }).waitFor({ state: 'hidden' });
+            await expect.poll(() => child.innerText()).toContain('child-a 获授权的回复');
+            const tab = nativeIcon.panel.locator('[role="tab"]:has([data-native-subagent-tab])');
+            expect(await tab.count()).toBe(1);
+            expect(await tab.getAttribute('aria-selected')).toBe('true');
+            const tabGlyph = tab.locator('[data-native-subagent-tab] > svg');
+            const topGlyph = nativeIcon.page.locator('header')
+              .getByRole('button', { name: /2 个子智能体/ }).locator('svg').first();
+            const token = await topGlyph.evaluate((node) => getComputedStyle(node).getPropertyValue('--ar-link').trim());
+            const topColor = await topGlyph.evaluate((node) => getComputedStyle(node).color);
+            const tabColor = await tabGlyph.evaluate((node) => getComputedStyle(node).color);
+            expect(topColor).toBe(token);
+            expect(tabColor).toBe(topColor);
+            expect(await tabGlyph.getAttribute('viewBox')).toBe(await topGlyph.getAttribute('viewBox'));
+            expect(await tabGlyph.innerHTML()).toBe(await topGlyph.innerHTML());
+            const tabBox = (await tabGlyph.boundingBox())!;
+            const topBox = (await topGlyph.boundingBox())!;
+            expect([tabBox.width, tabBox.height]).toEqual([17, 17]);
+            expect([topBox.width, topBox.height]).toEqual([20, 20]);
+            expect(nativeIcon.state.messageInputs).toEqual([]);
+            expect(nativeIcon.writes).toEqual([]);
+            expect(nativeIcon.errors).toEqual([]);
+            await nativeIcon.page.mouse.move(width - 1, 1);
+            await capture('subagent-tab', '', { childId: 'child-a', colorToken: '--ar-link', tabIconColor: tabColor, headerIconColor: topColor }, nativeIcon.page);
           }
-          expect(captures).toHaveLength(11);
+          expect(captures).toHaveLength(device === 'mobile' ? 11 : 12);
           completed = true;
         } catch (error) {
           firstFailure = error;
@@ -8976,6 +9016,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                         errors: seams.errors,
                       }
                     : null,
+                  nativeSubagentIconEvidence: nativeIcon ? {
+                    unexpectedWrites: nativeIcon.writes,
+                    messageInputs: nativeIcon.state.messageInputs,
+                    errors: nativeIcon.errors,
+                  } : null,
                   firstFailure:
                     firstFailure instanceof Error
                       ? firstFailure.stack
@@ -8987,6 +9032,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             );
           } catch (error) {
             cleanupErrors.push(error);
+          }
+          if (nativeIcon) {
+            try {
+              await nativeIcon.close();
+            } catch (error) {
+              cleanupErrors.push(error);
+            }
           }
           if (seams) {
             try {
