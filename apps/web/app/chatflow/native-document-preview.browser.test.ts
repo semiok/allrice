@@ -1,12 +1,24 @@
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  onTestFailed,
+} from 'vitest';
 import type {
   Browser,
+  ElementHandle,
+  Frame,
+  JSHandle,
   Page,
 } from '../../../worker/node_modules/playwright-core/index.js';
+import { createFailureEvidence } from '../../../../scripts/test-failure-evidence.mjs';
 import { nativeExcelAssetResponse } from '../../lib/chatflow/native-document-asset';
 const suite =
   process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1'
@@ -152,8 +164,13 @@ suite('DSH native document previews', () => {
     server?.closeAllConnections();
     if (server) await new Promise<void>((done) => server.close(() => done()));
   }, 30_000);
-  async function mount(items: unknown[], width = 1200) {
+  async function mount(
+    items: unknown[],
+    width = 1200,
+    observe?: (page: Page) => void,
+  ) {
     const page = await browser.newPage({ viewport: { width, height: 820 } });
+    observe?.(page);
     const errors: string[] = [];
     page.on('pageerror', (error) => {
       errors.push(error.message);
@@ -322,41 +339,382 @@ suite('DSH native document previews', () => {
       }
     },
   );
+  it.each([1440, 390])(
+    'renders a stored tool search response and its exact source text at %ipx',
+    async (width) => {
+      const objectId = '00000000-0000-4000-8000-000000000110';
+      const name = `tool-result-web-search-${objectId}.txt`;
+      const text = JSON.stringify({
+        provider: 'fixture',
+        query: '官方公告',
+        output:
+          '[查看官方公告](https://example.com/news)\n\n已经发布的公告摘录。\n\nRevenue $100 and price $25.',
+      });
+      const item = {
+        name,
+        preview: { kind: 'text', mediaType: 'text/plain', text },
+        toolResult: true,
+      };
+      const { page, errors } = await mount([item], width);
+      try {
+        const body = page.getByRole('region', {
+          name: '文件正文',
+          exact: true,
+        });
+        await body.getByText('已经发布的公告摘录。', { exact: true }).waitFor();
+        expect(
+          await body
+            .getByRole('link', { name: '查看官方公告', exact: true })
+            .getAttribute('href'),
+        ).toBe('https://example.com/news');
+        expect(await body.getByText(/"provider"/).count()).toBe(0);
+        await body
+          .getByText('Revenue $100 and price $25.', { exact: true })
+          .waitFor();
+        expect(await body.locator('.katex').count()).toBe(0);
+        await page.evaluate(
+          (value) =>
+            Reflect.get(
+              window,
+              'setPreviewItems',
+            )([{ ...value, source: true }]),
+          item,
+        );
+        const source = page.getByRole('region', {
+          name: '源文本',
+          exact: true,
+        });
+        await expect
+          .poll(() => source.innerText())
+          .toContain('"provider": "fixture"');
+        expect(await source.innerText()).toContain(
+          'Revenue $100 and price $25.',
+        );
+        expect(
+          await page
+            .getByRole('link', { name: '下载', exact: true })
+            .getAttribute('href'),
+        ).toContain(objectId);
+        expect(errors).toEqual([]);
+      } finally {
+        await page.close();
+      }
+    },
+  );
   it('uses native static HTML sanitization and an opaque iframe for interaction', async () => {
+    let stage = 'mount',
+      cleanupStage = 'not-started',
+      lastReadyState: string | undefined;
+    const observedPage: { current?: Page } = {};
+    const events: unknown[] = [],
+      snapshots: unknown[] = [];
+    const frameIds = new Map<Frame, number>();
+    let dropped = 0,
+      priorDocument: JSHandle<Document> | null = null;
+    let priorButton: ElementHandle<HTMLElement | SVGElement> | null = null;
+    const record = (event: string, detail: unknown) => {
+      if (events.length < 32) events.push({ at: Date.now(), event, detail });
+      else dropped++;
+    };
+    const frameId = (frame: Frame) => {
+      if (!frameIds.has(frame)) frameIds.set(frame, frameIds.size + 1);
+      return frameIds.get(frame);
+    };
+    const observe = async <T>(phase: string, read: Promise<T> | undefined) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          read,
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(
+              () => reject(Error('Observation exceeded 2000ms')),
+              2000,
+            );
+          }),
+        ]);
+      } catch (error) {
+        snapshots.push({ phase, readError: String(error) });
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    const inspect = async (phase: string, failure = false) => {
+      try {
+        const iframe = await observedPage.current
+          ?.locator('section[aria-label="interactive.html"] iframe')
+          .elementHandle();
+        const frame = await iframe?.contentFrame();
+        if (!frame) return { phase, frame: null };
+        const value = await frame.evaluate(
+          ({ priorDocument, priorButton, failure }) => {
+            const button = document.querySelector('button');
+            const rect = button?.getBoundingClientRect();
+            return {
+              html: document.documentElement.outerHTML,
+              url: document.URL,
+              readyState: document.readyState,
+              sameDocument: priorDocument === document,
+              sameButton: priorButton === button,
+              connected: priorButton?.isConnected,
+              heading: document.querySelector('h1')?.textContent,
+              button: button?.outerHTML,
+              handler: failure ? typeof button?.onclick : undefined,
+              events: Reflect.get(document, 'htmlClickEvidence'),
+              viewport: {
+                width: innerWidth,
+                height: innerHeight,
+                scrollX,
+                scrollY,
+              },
+              buttonRect: rect?.toJSON(),
+              buttonCenterHit: rect
+                ? document
+                    .elementFromPoint(
+                      rect.x + rect.width / 2,
+                      rect.y + rect.height / 2,
+                    )
+                    ?.outerHTML.slice(0, 500)
+                : null,
+            };
+          },
+          { priorDocument, priorButton, failure },
+        );
+        const buttonBox = await priorButton?.boundingBox();
+        const host = await observedPage.current?.evaluate((buttonBox) => {
+          const iframe = document.querySelector(
+            'section[aria-label="interactive.html"] iframe',
+          );
+          const bounds = (node: Element | null | undefined) => {
+            if (!node) return null;
+            const style = getComputedStyle(node);
+            return {
+              rect: node.getBoundingClientRect().toJSON(),
+              client: [node.clientWidth, node.clientHeight],
+              scroll: [
+                node.scrollWidth,
+                node.scrollHeight,
+                node.scrollLeft,
+                node.scrollTop,
+              ],
+              display: style.display,
+              visibility: style.visibility,
+              pointerEvents: style.pointerEvents,
+              transform: style.transform,
+              inert: !!node.closest('[inert]'),
+            };
+          };
+          return {
+            iframe: bounds(iframe),
+            section: bounds(iframe?.closest('section')),
+            viewport: { width: innerWidth, height: innerHeight },
+            focused: document.hasFocus(),
+            visibility: document.visibilityState,
+            buttonCenterHit: buttonBox
+              ? document
+                  .elementFromPoint(
+                    buttonBox.x + buttonBox.width / 2,
+                    buttonBox.y + buttonBox.height / 2,
+                  )
+                  ?.outerHTML.slice(0, 500)
+              : null,
+            events: Reflect.get(document, 'htmlRootClickEvidence'),
+          };
+        }, buttonBox);
+        const { html, ...detail } = value;
+        return {
+          phase,
+          frame: frameId(frame),
+          ...detail,
+          buttonBox,
+          host,
+          sandbox: await iframe?.getAttribute('sandbox'),
+          htmlBytes: Buffer.byteLength(html),
+          htmlSHA256: createHash('sha256').update(html).digest('hex'),
+        };
+      } catch (error) {
+        return { phase, readError: String(error) };
+      }
+    };
+    const snapshot = async (phase: string, failure = false) => {
+      const value = await observe(phase, inspect(phase, failure));
+      if (value) snapshots.push(value);
+    };
+    const evidence = createFailureEvidence({
+      file: import.meta.url,
+      test: 'native static HTML sanitization and opaque iframe interaction',
+      collect: async () => {
+        await snapshot('failure', true);
+        return {
+          stage,
+          cleanupStage,
+          lastReadyState,
+          events,
+          dropped,
+          snapshots,
+        };
+      },
+    });
+    const capture = (errors: unknown) => {
+      evidence.mark('cached-html-observations', {
+        stage,
+        cleanupStage,
+        lastReadyState,
+        events,
+        dropped,
+        snapshots,
+      });
+      return evidence.capture(errors);
+    };
+    onTestFailed(async ({ task }) => {
+      console.error('Native HTML failure stage', {
+        stage,
+        cleanupStage,
+        lastReadyState,
+        frames: observedPage.current?.frames().map((frame) => frame.url()),
+      });
+      await capture(task.result?.errors);
+    });
     const html =
       "<h1>原生网页预览</h1><button onclick=\"document.querySelector('h1').textContent='交互成功'\">点击测试</button><script>try { parent.previewEscaped=true } catch {}</script>";
-    const { page, errors } = await mount([
-      { name: 'static.html', preview: { kind: 'html', base64: encode(html) } },
-      {
-        name: 'interactive.html',
-        preview: { kind: 'html', base64: encode(html) },
-        interactive: true,
+    const { page, errors } = await mount(
+      [
+        {
+          name: 'static.html',
+          preview: { kind: 'html', base64: encode(html) },
+        },
+        {
+          name: 'interactive.html',
+          preview: { kind: 'html', base64: encode(html) },
+          interactive: true,
+        },
+      ],
+      1200,
+      (page) => {
+        observedPage.current = page;
+        const recordFrame = (event: string) => (frame: Frame) =>
+          record(event, { frame: frameId(frame), url: frame.url() });
+        page.on('frameattached', recordFrame('frameattached'));
+        page.on('framenavigated', recordFrame('framenavigated'));
+        page.on('framedetached', recordFrame('framedetached'));
+        page.on('console', (message) => {
+          if (['error', 'warning'].includes(message.type()))
+            record('console', {
+              type: message.type(),
+              text: message.text().slice(0, 1000),
+            });
+        });
+        page.on('pageerror', (error) => record('pageerror', error.message));
       },
-    ]);
+    );
+    observedPage.current = page;
     try {
+      stage = 'static-heading';
       await page
         .frameLocator('section[aria-label="static.html"] iframe')
         .getByRole('heading')
         .waitFor();
       // The packed frame replaces its document; wait until loading finishes before clicking.
+      stage = 'interactive-ready';
       await expect
         .poll(
           () =>
             page
               .frameLocator('section[aria-label="interactive.html"] iframe')
               .locator('body')
-              .evaluate((node) => node.ownerDocument.readyState),
+              .evaluate((node) => node.ownerDocument.readyState)
+              .then((value) => (lastReadyState = value)),
           { timeout: 5000 },
         )
         .toBe('complete');
+      stage = 'interactive-click';
+      const buttonRead = page
+        .frameLocator('section[aria-label="interactive.html"] iframe')
+        .getByRole('button')
+        .elementHandle();
+      priorButton = (await observe('button-handle', buttonRead)) ?? null;
+      const documentRead = priorButton?.evaluateHandle(
+        (node) => node.ownerDocument,
+      );
+      priorDocument = (await observe('owner-document', documentRead)) ?? null;
+      const listeners = priorButton?.evaluate((button) => {
+        const doc = button.ownerDocument,
+          events: unknown[] = [];
+        Reflect.set(doc, 'htmlClickEvidence', events);
+        const record = (event: Event, phase: string) => {
+          if (events.length >= 16) return;
+          const target = event.target;
+          events.push({
+            type: event.type,
+            phase,
+            trusted: event.isTrusted,
+            target:
+              target instanceof Element ? target.outerHTML.slice(0, 600) : null,
+            heading: doc.querySelector('h1')?.textContent,
+            url: doc.URL,
+          });
+        };
+        for (const type of [
+          'pointerdown',
+          'pointerup',
+          'click',
+          'securitypolicyviolation',
+        ])
+          doc.addEventListener(type, (event) => record(event, 'capture'), {
+            capture: true,
+            passive: true,
+          });
+        doc.addEventListener('click', (event) => record(event, 'bubble'), {
+          passive: true,
+        });
+      });
+      await observe('event-listeners', listeners);
+      void observe(
+        'root-event-listeners',
+        page.evaluate(() => {
+          const events: unknown[] = [];
+          Reflect.set(document, 'htmlRootClickEvidence', events);
+          for (const type of ['pointerdown', 'pointerup', 'click'])
+            document.addEventListener(
+              type,
+              (event) => {
+                if (!event.isTrusted || events.length >= 16) return;
+                events.push({
+                  type: event.type,
+                  trusted: event.isTrusted,
+                  point:
+                    event instanceof MouseEvent
+                      ? [event.clientX, event.clientY]
+                      : null,
+                  target:
+                    event.target instanceof Element
+                      ? event.target.outerHTML.slice(0, 500)
+                      : null,
+                  path: event
+                    .composedPath()
+                    .slice(0, 5)
+                    .map((node) =>
+                      node instanceof Element ? node.tagName : null,
+                    ),
+                  focused: document.hasFocus(),
+                  visibility: document.visibilityState,
+                });
+              },
+              { capture: true, passive: true },
+            );
+        }),
+      );
+      await snapshot('before-click');
       await page
         .frameLocator('section[aria-label="interactive.html"] iframe')
         .getByRole('button')
         .click();
+      await snapshot('after-click');
+      stage = 'interactive-heading';
       await page
         .frameLocator('section[aria-label="interactive.html"] iframe')
         .getByRole('heading', { name: '交互成功' })
         .waitFor();
+      stage = 'sanitization-assertions';
       expect(
         await page
           .frameLocator('section[aria-label="static.html"] iframe')
@@ -367,8 +725,14 @@ suite('DSH native document previews', () => {
         await page.evaluate(() => Reflect.get(window, 'previewEscaped')),
       ).toBeUndefined();
       expect(errors).toEqual([]);
+      stage = 'complete';
+    } catch (error) {
+      await capture([error]);
+      throw error;
     } finally {
+      cleanupStage = 'page-close';
       await page.close();
+      cleanupStage = 'complete';
     }
   }, 30_000);
   it('allows a private project to export CSV while keeping its parent origin isolated', async () => {

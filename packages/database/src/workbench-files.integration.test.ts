@@ -21,6 +21,7 @@ import {
   captureWorkbenchFileReference,
   readWorkbenchFile,
   readWorkbenchFileCatalog,
+  readWorkbenchDeliverables,
   listWorkbenchFileVersions,
   updateWorkbenchFile,
   uploadWorkbenchFile,
@@ -155,6 +156,290 @@ suite(
       };
     }
     const storage = () => runtimeFixtureStorage(fixture.db);
+    it('lists my actual uploads and every business object, filters before paging, and keeps cursor authority private', async () => {
+      const synthetic = await runtimeTaskFixture(fixture.db);
+      const owner = {
+        ...(await authenticateSession(
+          (await createSession(synthetic.context.actor.id)).token,
+        ))!,
+        workspaceId: synthetic.context.workspaceId!,
+      };
+      await fixture.db`insert into allrice_organization_people(organization_id,user_id,display_name,content_maintenance_level)
+        values (${owner.organizationId},${owner.actor.id},'Owner','company')`;
+      const [session] = await fixture.db<
+        { employee_assignment_id: string }[]
+      >`select employee_assignment_id from allrice_chat_sessions where id=${synthetic.task.chatSessionId}`;
+      const first = await synthetic.artifact(
+        synthetic.task.runId,
+        'First complete file',
+      );
+      const second = await synthetic.artifact(
+        synthetic.task.runId,
+        'Second complete file',
+      );
+      const [v1] = await fixture.db<
+        { object_id: string; series_id: string }[]
+      >`select object_id,series_id from allrice_deliverable_versions where id=${first.artifactId}`;
+      await fixture.db`update allrice_deliverable_versions set series_id=${v1!.series_id},version=2,parent_version_id=${first.artifactId} where id=${second.artifactId}`;
+      await fixture.db`update allrice_storage_objects set created_at='2020-01-01T00:00:00Z' where id in (select object_id from allrice_deliverable_versions where id in (${first.artifactId},${second.artifactId}))`;
+      const uploads = [];
+      for (let n = 0; n < 52; n++) {
+        const file = await uploadWorkbenchFile(
+          owner,
+          { ...uploadInput(owner), fileName: `本人上传-${n}.txt` },
+          storage(),
+        );
+        uploads.push(file.objectId);
+      }
+      // A genuine historical direct upload need not have any conversation.
+      const direct = await readWorkbenchDeliverables(owner, {
+        workspaceId: owner.workspaceId,
+        category: 'upload',
+        objectId: uploads[0],
+      });
+      expect(direct.files[0]).toMatchObject({
+        origin: 'user-upload',
+        sources: [],
+        category: 'upload',
+        ownedByMe: true,
+      });
+      // Tied timestamps exercise the object-ID tie breaker over multiple pages.
+      await fixture.db`update allrice_storage_objects set created_at='2026-01-01T00:00:00Z' where id in ${fixture.db(uploads)}`;
+      const page = await readWorkbenchDeliverables(owner, {
+        workspaceId: owner.workspaceId,
+      });
+      expect(page.files).toHaveLength(50);
+      expect(page.nextCursor).not.toBeNull();
+      expect(page.employees).toEqual([
+        { id: session!.employee_assignment_id, name: 'P25 Fixture' },
+      ]);
+      const tail = await readWorkbenchDeliverables(owner, {
+        workspaceId: owner.workspaceId,
+        cursor: page.nextCursor,
+      });
+      expect(tail.files).toHaveLength(4);
+      expect(tail.nextCursor).toBeNull();
+      expect(
+        new Set([...page.files, ...tail.files].map((file) => file.objectId))
+          .size,
+      ).toBe(54);
+      const business = await readWorkbenchDeliverables(owner, {
+        workspaceId: owner.workspaceId,
+        employeeInstanceId: session!.employee_assignment_id,
+        category: 'artifact',
+      });
+      expect(business.files).toHaveLength(2);
+      expect(new Set(business.files.map((file) => file.artifact!.id))).toEqual(
+        new Set([first.artifactId, second.artifactId]),
+      );
+      expect(business.files[0]).toMatchObject({
+        origin: 'business-deliverable',
+        sources: [
+          {
+            sessionId: synthetic.task.chatSessionId,
+            sessionTitle: 'Synthetic runtime session',
+            employeeInstanceId: session!.employee_assignment_id,
+            employeeName: 'P25 Fixture',
+          },
+        ],
+      });
+      expect(
+        (
+          await readWorkbenchDeliverables(owner, {
+            workspaceId: owner.workspaceId,
+            employeeInstanceId: randomUUID(),
+          })
+        ).files,
+      ).toEqual([]);
+      expect(
+        (
+          await readWorkbenchDeliverables(owner, {
+            workspaceId: owner.workspaceId,
+            query: '本人上传-51',
+          })
+        ).files.map((file) => file.objectId),
+      ).toEqual([uploads[51]]);
+      // A single upload may genuinely belong to work with two employees.
+      const employeeId = randomUUID(),
+        versionId = randomUUID(),
+        assignmentId = randomUUID(),
+        sessionId = randomUUID();
+      await fixture.db`insert into allrice_employees(id,organization_id,workspace_id,employee_key,name)
+        values(${employeeId},${owner.organizationId},${owner.workspaceId},${'second-' + employeeId},'Second Fixture')`;
+      await fixture.db`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest,provider_snapshot)
+        select ${versionId},organization_id,workspace_id,${employeeId},1,'Second Fixture',model,system_prompt,capabilities,config_checksum,manifest,provider_snapshot
+        from allrice_employee_versions where id=(select employee_version_id from allrice_chat_sessions where id=${synthetic.task.chatSessionId})`;
+      await fixture.db`insert into allrice_employee_assignments(id,organization_id,workspace_id,employee_id,employee_version_id,user_id,is_default)
+        values(${assignmentId},${owner.organizationId},${owner.workspaceId},${employeeId},${versionId},${owner.actor.id},false)`;
+      await fixture.db`insert into allrice_chat_sessions(id,organization_id,workspace_id,owner_id,title,employee_assignment_id,employee_version_id)
+        values(${sessionId},${owner.organizationId},${owner.workspaceId},${owner.actor.id},'Second employee work',${assignmentId},${versionId})`;
+      const { linkFileToSession } = await import('./workspace/service.ts');
+      for (const source of [sessionId, synthetic.task.chatSessionId])
+        await linkFileToSession({
+          context: owner,
+          workspaceId: owner.workspaceId,
+          sessionId: source,
+          objectId: uploads[0]!,
+          fileName: '跨员工上传.txt',
+        });
+      for (const employeeInstanceId of [
+        assignmentId,
+        session!.employee_assignment_id,
+      ]) {
+        const employeeFiles = await readWorkbenchDeliverables(owner, {
+          workspaceId: owner.workspaceId,
+          employeeInstanceId,
+          category: 'upload',
+        });
+        expect(employeeFiles.files.map((file) => file.objectId)).toEqual([
+          uploads[0],
+        ]);
+        expect(
+          new Set(
+            employeeFiles.files[0]!.sources.map(
+              (source) => source.employeeInstanceId,
+            ),
+          ),
+        ).toEqual(new Set([assignmentId, session!.employee_assignment_id]));
+        expect(employeeFiles.employees).toContainEqual({
+          id: assignmentId,
+          name: 'Second Fixture',
+        });
+      }
+      // Its existing shared-directory consumer still collapses a series.
+      const legacy = await readWorkbenchFileCatalog(owner, {
+        workspaceId: owner.workspaceId,
+      });
+      expect(legacy.files.filter((file) => file.artifact)).toHaveLength(1);
+      const other = await runtimeTaskFixture(fixture.db);
+      await expect(
+        readWorkbenchDeliverables(other.context, {
+          workspaceId: owner.workspaceId,
+          objectId: uploads[0],
+        }),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+      await expect(
+        readWorkbenchDeliverables(owner, {
+          workspaceId: owner.workspaceId,
+          cursor: randomUUID(),
+        }),
+      ).rejects.toMatchObject({ code: 'not_found' });
+    }, 30000);
+    it('never treats shared maintenance access or worker intermediate bytes as my uploads', async () => {
+      const t = await setup();
+      const shared = await uploadWorkbenchFile(
+        t.owner,
+        uploadInput(t.owner, { scope: 'company', departmentIds: [] }),
+        storage(),
+      );
+      expect(
+        (await readWorkbenchFile(t.maintainer, shared.objectId)).canMaintain,
+      ).toBe(true);
+      const directory = await readWorkbenchDeliverables(t.maintainer, {
+        workspaceId: t.maintainer.workspaceId,
+      });
+      expect(directory.files).toEqual([]);
+      expect(directory.employees).toEqual([]);
+      await expect(
+        readWorkbenchDeliverables(t.maintainer, {
+          workspaceId: t.maintainer.workspaceId,
+          objectId: shared.objectId,
+        }),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await expect(
+        readWorkbenchDeliverables(t.maintainer, {
+          workspaceId: t.maintainer.workspaceId,
+          cursor: shared.objectId,
+        }),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      const synthetic = await runtimeTaskFixture(fixture.db);
+      const owner = {
+        ...(await authenticateSession(
+          (await createSession(synthetic.context.actor.id)).token,
+        ))!,
+        workspaceId: synthetic.context.workspaceId!,
+      };
+      await fixture.db`insert into allrice_organization_people(organization_id,user_id,display_name,content_maintenance_level) values (${owner.organizationId},${owner.actor.id},'Owner','personal')`;
+      await synthetic.artifact(
+        synthetic.task.runId,
+        'Command output',
+        undefined,
+        {
+          kind: 'command_output',
+        },
+      );
+      await synthetic.artifact(
+        synthetic.task.runId,
+        'Project snapshot',
+        undefined,
+        {
+          provenanceKind: 'project_snapshot',
+        },
+      );
+      const loose = randomUUID();
+      await createStorageMetadata(owner, {
+        id: loose,
+        workspaceId: owner.workspaceId,
+        category: 'uploads',
+        mediaType: 'text/plain',
+        sizeBytes: 1,
+        checksum: `sha256:${'a'.repeat(64)}`,
+        visibility: 'private',
+        retentionUntil: null,
+        immutable: true,
+      });
+      await markStorageReady(owner, loose);
+      expect(
+        (
+          await readWorkbenchDeliverables(owner, {
+            workspaceId: owner.workspaceId,
+          })
+        ).files,
+      ).toEqual([]);
+      await expect(
+        readWorkbenchDeliverables(owner, {
+          workspaceId: owner.workspaceId,
+          objectId: loose,
+        }),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      const uploaded = await uploadWorkbenchFile(
+        owner,
+        uploadInput(owner),
+        storage(),
+      );
+      const { linkFileToSession } = await import('./workspace/service.ts');
+      await linkFileToSession({
+        context: owner,
+        workspaceId: owner.workspaceId,
+        sessionId: synthetic.task.chatSessionId,
+        objectId: uploaded.objectId,
+        fileName: '对话上传.txt',
+      });
+      const own = await readWorkbenchDeliverables(owner, {
+        workspaceId: owner.workspaceId,
+      });
+      expect(own.files).toHaveLength(1);
+      expect(own.files[0]).toMatchObject({
+        objectId: uploaded.objectId,
+        origin: 'user-upload',
+        sources: [{ sessionId: synthetic.task.chatSessionId }],
+      });
+      // A retained reference is not a second upload, even when owned by me.
+      await captureWorkbenchFileReference(
+        owner,
+        owner.workspaceId,
+        uploaded.objectId,
+        randomUUID(),
+        storage(),
+      );
+      expect(
+        (
+          await readWorkbenchDeliverables(owner, {
+            workspaceId: owner.workspaceId,
+          })
+        ).files.map((file) => file.objectId),
+      ).toEqual([uploaded.objectId]);
+    }, 30000);
     function change(
       context: RequestContext,
       id: string,

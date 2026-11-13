@@ -4,6 +4,9 @@ import {
   WorkbenchFileSchema,
   WorkbenchFileUpdateSchema,
   WorkbenchFileUploadSchema,
+  WorkbenchDeliverablesFilterSchema,
+  WorkbenchDeliverablesCatalogSchema,
+  type WorkbenchDeliverable,
   UuidSchema,
   type RequestContext,
   type StorageObject,
@@ -30,6 +33,7 @@ import {
 } from './reference-library.ts';
 import { businessDeliverablePredicate } from './organization-dashboard.ts';
 import { assertWorkbenchSession } from './artifact-review.ts';
+import { personalInstanceNameSql } from './employees/employee-instance-policy.ts';
 import {
   canSetWorkbenchFileSharing,
   readWorkbenchFilePolicy,
@@ -552,6 +556,152 @@ export async function captureWorkbenchFileReference(
   const reference = references.find((r) => r.revisionId === copy.revisionId);
   if (!reference) throw new DataAccessError('not_found');
   return reference;
+}
+
+/** Personal directory only. Keep the shared catalog's audience and latest-series
+ * semantics below intact for its existing reference and technical consumers. */
+export async function readWorkbenchDeliverables(
+  contextInput: RequestContext,
+  input: unknown,
+) {
+  const filter = WorkbenchDeliverablesFilterSchema.parse(input),
+    context = scoped(contextInput, filter.workspaceId),
+    db = getDatabase();
+  const principal = await readContentPrincipal(context);
+  if (!principal) throw new DataAccessError('authorization_denied');
+  const cte = db`with business as (
+    select dv.* from allrice_deliverable_versions dv
+    join allrice_chat_sessions s on s.id=dv.session_id and s.organization_id=dv.organization_id
+      and s.workspace_id=dv.workspace_id and s.owner_id=${context.actor.id}
+    left join allrice_workbench_artifacts a on a.version_id=dv.id and a.organization_id=dv.organization_id
+      and a.workspace_id=dv.workspace_id and a.owner_id=dv.owner_id
+    where dv.organization_id=${context.organizationId} and dv.workspace_id=${filter.workspaceId}
+      and dv.owner_id=${context.actor.id} and dv.platform_test_run_id is null
+      and ${businessDeliverablePredicate(db)}
+  ), origins as (
+    select o.id,o.created_at,case when b.object_id is null then 'upload' else 'artifact' end as category,
+      coalesce(b.file_name,f.file_name,p.file_name,'未命名文件') as file_name
+    from allrice_storage_objects o
+    join allrice_workspaces w on w.id=o.workspace_id and w.organization_id=o.organization_id and w.archived_at is null
+    left join lateral (select * from business where object_id=o.id order by created_at desc,id desc limit 1) b on true
+    left join allrice_workbench_file_policies p on p.object_id=o.id and p.organization_id=o.organization_id and p.owner_id=o.owner_id
+    left join lateral (select file_name from allrice_file_references where object_id=o.id and owner_id=${context.actor.id} order by created_at limit 1) f on true
+    where o.organization_id=${context.organizationId} and o.workspace_id=${filter.workspaceId} and o.owner_id=${context.actor.id}
+      and o.state='ready' and o.deleted_at is null and (o.retention_until is null or o.retention_until>clock_timestamp())
+      and (b.object_id is not null or (o.category='uploads'
+        and not exists(select 1 from allrice_deliverable_versions v where v.object_id=o.id)
+        and ((p.upload_request_id is not null and p.upload_digest is not null)
+          or exists(select 1 from allrice_file_references r join allrice_chat_sessions s on s.id=r.session_id
+            and s.organization_id=r.organization_id and s.workspace_id=r.workspace_id
+            where r.object_id=o.id and r.owner_id=${context.actor.id} and s.owner_id=${context.actor.id}))))
+      and not exists(select 1 from allrice_knowledge_revisions r where r.file_object_id=o.id)
+      and not exists(select 1 from allrice_company_asset_revisions r where r.snapshot_object_id=o.id)
+      and not exists(select 1 from allrice_company_asset_materials m where m.object_id=o.id)
+      and not exists(select 1 from allrice_company_run_assets r where r.material_object_id=o.id)
+  ), source_ids as (
+    select b.object_id,b.session_id from business b join origins o on o.id=b.object_id
+    union select r.object_id,r.session_id from allrice_file_references r join origins o on o.id=r.object_id and o.category='upload'
+      where r.owner_id=${context.actor.id}
+  ), sources as (
+    select r.object_id,s.id as session_id,s.title as session_title,s.employee_assignment_id,s.updated_at as session_updated_at,
+      coalesce(s.employee_instance_id,s.employee_assignment_id) as employee_instance_id,
+      coalesce(case when ${personalInstanceNameSql(db)} then i.profile->>'name' end,v.name) as employee_name
+    from source_ids r join allrice_chat_sessions s on s.id=r.session_id
+      and s.organization_id=${context.organizationId} and s.workspace_id=${filter.workspaceId} and s.owner_id=${context.actor.id}
+    join allrice_employee_versions v on v.id=s.employee_version_id
+    left join allrice_employee_instances i on i.id=coalesce(s.employee_instance_id,s.employee_assignment_id)
+      and i.organization_id=s.organization_id and i.workspace_id=s.workspace_id and i.owner_id=${context.actor.id}
+  ), eligible as (
+    select o.*,coalesce((select jsonb_agg(jsonb_build_object(
+      'sessionId',s.session_id,'sessionTitle',s.session_title,'employeeAssignmentId',s.employee_assignment_id,
+      'employeeInstanceId',s.employee_instance_id,'employeeName',s.employee_name) order by s.session_id)
+      from sources s where s.object_id=o.id),'[]'::jsonb) as sources
+    from origins o
+  ), filtered as (
+    select * from eligible e where (${filter.category}='all' or e.category=${filter.category})
+      and (${filter.employeeInstanceId ?? null}::uuid is null or exists(select 1 from sources s
+        where s.object_id=e.id and s.employee_instance_id=${filter.employeeInstanceId ?? null}::uuid))
+      and position(lower(${filter.query}) in lower(e.file_name))>0
+      and (${filter.objectId ?? null}::uuid is null or e.id=${filter.objectId ?? null}::uuid)
+  )`;
+  if (filter.cursor) {
+    const [cursor] = await db<
+      { id: string }[]
+    >`${cte} select id from filtered where id=${filter.cursor}`;
+    if (!cursor) throw new DataAccessError('not_found');
+  }
+  const [rows, employees, references] = await Promise.all([
+    db<
+      {
+        id: string;
+        category: 'artifact' | 'upload';
+        sources: WorkbenchDeliverable['sources'];
+      }[]
+    >`${cte}
+      select * from filtered where (${filter.cursor ?? null}::uuid is null or
+        (created_at,id)<((select created_at from filtered where id=${filter.cursor ?? null}::uuid),${filter.cursor ?? null}::uuid))
+      order by created_at desc,id desc limit 51`,
+    db<{ id: string; name: string }[]>`${cte}
+      select id,name from (select distinct on(employee_instance_id) employee_instance_id as id,employee_name as name
+        from sources order by employee_instance_id,session_updated_at desc,session_id desc) names order by name,id`,
+    listReferenceRevisions(context, filter.workspaceId, undefined, true),
+  ]);
+  const referenceBySource = new Map(references.map((r) => [r.sourceId, r]));
+  const files: WorkbenchDeliverable[] = [];
+  for (const row of rows.slice(0, 50)) {
+    try {
+      // Reuse the current file ACL, including reference revocation, after the
+      // owner-only candidate selection. Maintenance authority is never ownership.
+      const file = await readWorkbenchFile(context, row.id),
+        p = file.policy;
+      if (file.object.ownerId !== context.actor.id) continue;
+      files.push({
+        objectId: row.id,
+        workspaceId: filter.workspaceId,
+        fileName: file.row.file_name,
+        mediaType: file.object.mediaType,
+        checksum: file.object.checksum,
+        sizeBytes: file.object.sizeBytes,
+        createdAt: file.row.created_at.toISOString(),
+        ownedByMe: true,
+        canMaintain: file.canMaintain,
+        revision: p?.revision ?? 0,
+        sharing: {
+          scope: p?.scope ?? 'personal',
+          departmentIds: p?.department_ids ?? [],
+          departmentNames: file.departments.map((d) => d.name),
+        },
+        category: row.category,
+        sessionIds: row.sources.map((source) => source.sessionId),
+        artifact:
+          row.category === 'artifact' &&
+          file.row.artifact_id &&
+          file.row.artifact_session_id
+            ? {
+                id: file.row.artifact_id,
+                sessionId: file.row.artifact_session_id,
+                version: file.row.artifact_version!,
+              }
+            : null,
+        origin:
+          row.category === 'artifact' ? 'business-deliverable' : 'user-upload',
+        sources: row.sources,
+        isReference: p?.reference_enabled ?? false,
+        reference:
+          p?.reference_enabled && p.reference_source_id
+            ? (referenceBySource.get(p.reference_source_id) ?? null)
+            : null,
+      });
+    } catch (error) {
+      if (!(error instanceof DataAccessError)) throw error;
+    }
+  }
+  if (filter.objectId && !files.length) throw new DataAccessError('not_found');
+  return WorkbenchDeliverablesCatalogSchema.parse({
+    files,
+    employees,
+    nextCursor: rows.length > 50 ? rows[49]!.id : null,
+  });
 }
 
 export async function readWorkbenchFileCatalog(

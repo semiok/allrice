@@ -2,6 +2,7 @@ import { UuidSchema } from '@allrice/contracts';
 import { WorkbenchFileActionsCatalogSchema } from '../../../../../lib/chatflow/workbench-file-actions';
 import {
   readWorkbenchFileCatalog,
+  readWorkbenchDeliverables,
   uploadWorkbenchFile,
   isIndexableKnowledgeTextSource,
 } from '@allrice/database';
@@ -31,9 +32,19 @@ export async function GET(request: Request) {
         .max(200)
         .parse(params.get('query') ?? ''),
     };
-    const catalog = WorkbenchFileActionsCatalogSchema.parse(
-      await readWorkbenchFileCatalog(context, input),
-    );
+    const catalog =
+      params.get('view') === 'deliverables'
+        ? await readWorkbenchDeliverables(context, {
+            workspaceId: context.workspaceId,
+            employeeInstanceId: params.get('employeeInstanceId') ?? undefined,
+            category: params.get('category') ?? undefined,
+            query: params.get('query') ?? '',
+            cursor: params.get('cursor') ?? undefined,
+            objectId: params.get('objectId') ?? undefined,
+          })
+        : WorkbenchFileActionsCatalogSchema.parse(
+            await readWorkbenchFileCatalog(context, input),
+          );
     // This only projects existing processing capabilities; reference preparation
     // still checks current authority and exact bytes on the original endpoint.
     const quotableFileIds = catalog.files

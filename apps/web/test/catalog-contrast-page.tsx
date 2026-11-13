@@ -127,7 +127,12 @@ window.fetch = async (input, init) => {
   if (path === '/api/v1/workbench/files') {
     const query = url.searchParams.get('query');
     return Response.json({
-      files: !query || file.fileName.includes(query) ? [file] : [],
+      files:
+        !query || file.fileName.includes(query)
+          ? [{ ...file, origin: 'business-deliverable', sources: [] }]
+          : [],
+      employees: [],
+      nextCursor: null,
       quotableFileIds: [],
       truncated: false,
       options: {
@@ -195,6 +200,8 @@ const cases: Record<string, ReactNode> = {
     <div style={{ height: 640, minWidth: 0 }}>
       <WorkbenchFilesPanel
         workspaceId={workspaceId}
+        ownerKey="contrast-fixture"
+        refreshKey="fixed"
         sessionId={null}
         headers={{}}
         active

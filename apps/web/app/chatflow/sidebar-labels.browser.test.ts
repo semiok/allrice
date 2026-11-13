@@ -188,7 +188,7 @@ suite('sidebar, new-work dialog and workbench badge labels', () => {
             tree(page).getByText('从顶部「新的工作」开始', { exact: true }),
           );
           const files = page.getByRole('button', {
-            name: '工作区文件，1 项新增',
+            name: '交付成果，1 项新增',
           });
           await readable(
             'new deliverable badge',

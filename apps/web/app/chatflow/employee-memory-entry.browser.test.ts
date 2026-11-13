@@ -989,7 +989,7 @@ suite('U1 employee details personal-memory entry', () => {
         .getByRole('textbox', { name: '新增记忆内容', exact: true })
         .fill('真实工作台切标签保留草稿');
       await f.page
-        .getByRole('button', { name: '工作区文件', exact: true })
+        .getByRole('button', { name: '交付成果', exact: true })
         .click();
       await expect.poll(() => manager.isVisible()).toBe(false);
       await f.page.getByRole('tab').filter({ hasText: '记忆' }).click();

@@ -7,33 +7,31 @@ import {
   type FormEvent,
 } from 'react';
 import {
+  UuidSchema,
   type ReferenceRevision,
   type WorkbenchFile,
   type WorkbenchFileCatalog,
   type WorkbenchFileSharing,
+  type WorkbenchDeliverable,
 } from '@allrice/contracts';
 import {
   FileTypeIcon,
-  classifyFileType,
   Menu,
   IconEllipsisOutlineRegular,
   IconPlusOutlineRegular,
-  IconRefreshOutlineRegular,
   IconChevronDownOutlineRegular,
   IconSearchOutlineRegular,
-  IconSettingsOutlineRegular,
   Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import { workbenchJson } from '../../lib/chatflow/workbench-model';
 import {
-  WorkbenchFileActionsCatalogSchema,
-  type WorkbenchFileActionsCatalog,
+  WorkbenchDeliverablesActionsCatalogSchema,
+  type WorkbenchDeliverablesActionsCatalog,
 } from '../../lib/chatflow/workbench-file-actions';
 import { DshDialog } from './dsh-upstream/Dialog';
-import { isToolResultFile } from '../../lib/chatflow/document-reader-model';
 import { WorkbenchIcon } from './workbench-modules';
-import { WorkbenchFileIcon } from './workbench-file-icon';
 import { useWorkbenchFileReference } from './use-workbench-file-reference';
+import { copyWorkbenchFileLink } from './workbench-file-link';
 import css from './workbench-files-panel.module.css';
 const scopeNames = {
   personal: '仅自己',
@@ -59,6 +57,10 @@ function message(error: unknown) {
 }
 export function WorkbenchFilesPanel(props: {
   workspaceId: string;
+  ownerKey: string;
+  refreshKey: string;
+  currentEmployee?: { id: string; name: string };
+  employees?: Array<{ id: string; name: string }>;
   sessionId: string | null;
   headers: Record<string, string>;
   active: boolean;
@@ -69,95 +71,209 @@ export function WorkbenchFilesPanel(props: {
   onTemplate?: (reference: ReferenceRevision) => void;
   onRead?: () => void;
 }) {
-  const [scope, setScope] = useState('all'),
-    [query, setQuery] = useState(''),
-    [category, setCategory] = useState(props.initialCategory ?? 'all');
+  const employeeScope = `${props.ownerKey}/${props.currentEmployee?.id ?? ''}`;
+  const [employeeChoice, setEmployeeChoice] = useState({
+    scope: employeeScope,
+    id: props.currentEmployee?.id ?? '',
+  });
+  const employeeId =
+    employeeChoice.scope === employeeScope
+      ? employeeChoice.id
+      : (props.currentEmployee?.id ?? '');
+  const [query, setQuery] = useState('');
+  const [category, setCategory] = useState<'all' | 'artifact' | 'upload'>(
+    props.initialCategory === 'artifact' ? 'artifact' : 'all',
+  );
+  const [revision, setRevision] = useState(0);
+  const [page, setPage] = useState<{ key: string; cursor: string } | null>(
+    null,
+  );
   const [snapshot, setSnapshot] = useState<{
-      key: string;
-      value: WorkbenchFileActionsCatalog;
-    } | null>(null),
-    [error, setError] = useState(''),
-    [notice, setNotice] = useState(''),
-    [loading, setLoading] = useState(false),
-    [revision, setRevision] = useState(0);
-  const [editor, setEditor] = useState<WorkbenchFile | 'upload' | null>(null),
-    [editorMode, setEditorMode] = useState<'sharing' | 'reference'>('sharing');
-  const referenceActions = useWorkbenchFileReference(props);
-  const { using, pending, useFile } = referenceActions;
+    key: string;
+    value: WorkbenchDeliverablesActionsCatalog;
+  } | null>(null);
+  const [status, setStatus] = useState({ key: '', loading: false, error: '' });
+  const [notice, setNotice] = useState('');
+  const [linkStatus, setLinkStatus] = useState<{
+    scope: string;
+    denied: boolean;
+    error: string;
+  } | null>(null);
+  const list = useRef<HTMLDivElement>(null);
   const params = new URLSearchParams({
     workspaceId: props.workspaceId,
-    scope,
-    ...(props.sessionId ? { sessionId: props.sessionId } : {}),
+    view: 'deliverables',
+    category,
+    ...(employeeId ? { employeeInstanceId: employeeId } : {}),
     ...(query.trim() ? { query: query.trim() } : {}),
   });
-  const key = params.toString(),
-    catalog = snapshot?.key === key ? snapshot.value : null;
+  const request = params.toString(),
+    key = `${props.ownerKey}/${request}`;
+  if (page && page.key !== key) setPage(null);
+  const cursor = page?.key === key ? page.cursor : null;
+  const catalog = snapshot?.key === key ? snapshot.value : null;
+  const loading = status.key === key && status.loading;
+  const error = status.key === key ? status.error : '';
+  const referenceActions = useWorkbenchFileReference(props);
   const reload = useCallback(() => setRevision((n) => n + 1), []);
-  const changed = () => {
-    reload();
-    window.dispatchEvent(new Event('allrice:workbench-files-changed'));
-  };
   useEffect(() => {
-    if (props.initialCategory) setCategory(props.initialCategory);
+    if (props.initialCategory)
+      setCategory(props.initialCategory === 'artifact' ? 'artifact' : 'all');
   }, [props.initialCategory]);
   useEffect(() => {
     if (!props.active) return;
-    const controller = new AbortController(),
-      timer = setTimeout(() => {
-        setLoading(true);
-        setError('');
-        void workbenchJson('/api/v1/workbench/files?' + key, props.headers, {
-          signal: controller.signal,
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      setStatus({ key, loading: true, error: '' });
+      void workbenchJson(
+        '/api/v1/workbench/files?' +
+          request +
+          (cursor ? `&cursor=${cursor}` : ''),
+        props.headers,
+        { signal: controller.signal },
+      )
+        .then(WorkbenchDeliverablesActionsCatalogSchema.parse)
+        .then((value) => {
+          if (controller.signal.aborted) return;
+          setSnapshot((prior) => ({
+            key,
+            value:
+              cursor && prior?.key === key
+                ? {
+                    ...value,
+                    files: [
+                      ...new Map(
+                        [...prior.value.files, ...value.files].map((file) => [
+                          file.objectId,
+                          file,
+                        ]),
+                      ).values(),
+                    ],
+                    quotableFileIds: [
+                      ...new Set([
+                        ...prior.value.quotableFileIds,
+                        ...value.quotableFileIds,
+                      ]),
+                    ],
+                  }
+                : value,
+          }));
+          props.onRead?.();
+          setStatus({ key, loading: false, error: '' });
         })
-          .then(WorkbenchFileActionsCatalogSchema.parse)
-          .then((value) => {
-            if (controller.signal.aborted) return;
-            setSnapshot({ key, value });
-            props.onRead?.();
-          })
-          .catch((error) => {
-            if (!controller.signal.aborted) {
-              setSnapshot(null);
-              setError(message(error));
-            }
-          })
-          .finally(() => {
-            if (!controller.signal.aborted) setLoading(false);
-          });
-      }, 180);
+        .catch((cause) => {
+          if (!controller.signal.aborted)
+            setStatus({ key, loading: false, error: message(cause) });
+        });
+    }, 180);
     return () => {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [props.active, props.headers, key, revision]);
+  }, [props.active, props.headers, request, key, revision, cursor]);
   useEffect(() => {
-    window.addEventListener('allrice:workbench-files-changed', reload);
+    setPage(null);
+    reload();
+  }, [props.refreshKey, reload]);
+  useEffect(() => {
+    const changed = () => {
+      setPage(null);
+      reload();
+    };
+    window.addEventListener('allrice:workbench-files-changed', changed);
     return () =>
-      window.removeEventListener('allrice:workbench-files-changed', reload);
+      window.removeEventListener('allrice:workbench-files-changed', changed);
   }, [reload]);
-  const files = (catalog?.files ?? []).filter(
-    (file) =>
-      category === 'all' ||
-      (category === 'artifact' && file.category === 'artifact') ||
-      (category === 'reference' && file.isReference),
-  );
+  useEffect(() => {
+    if (!props.active) return;
+    const url = new URL(window.location.href),
+      id = UuidSchema.safeParse(url.searchParams.get('file'));
+    if (!id.success) return;
+    const controller = new AbortController();
+    setLinkStatus(null);
+    if (url.searchParams.get('workspaceId') !== props.workspaceId) {
+      setLinkStatus({ scope: props.ownerKey, denied: true, error: '' });
+      return;
+    }
+    void workbenchJson(
+      '/api/v1/workbench/files?' +
+        new URLSearchParams({
+          workspaceId: props.workspaceId,
+          view: 'deliverables',
+          objectId: id.data,
+        }),
+      props.headers,
+      { signal: controller.signal },
+    )
+      .then(WorkbenchDeliverablesActionsCatalogSchema.parse)
+      .then((value) => {
+        if (controller.signal.aborted) return;
+        const file = value.files.find((file) => file.objectId === id.data);
+        if (!file) {
+          setLinkStatus({ scope: props.ownerKey, denied: true, error: '' });
+          return;
+        }
+        props.onOpen(file);
+      })
+      .catch((cause) => {
+        if (controller.signal.aborted) return;
+        const denied = [401, 403, 404].includes(
+          (cause as { status?: number }).status ?? 0,
+        );
+        setLinkStatus({
+          scope: props.ownerKey,
+          denied,
+          error: denied ? '' : message(cause),
+        });
+      });
+    return () => controller.abort();
+  }, [
+    props.active,
+    props.ownerKey,
+    props.workspaceId,
+    props.headers,
+    revision,
+  ]);
   if (!props.active) return null;
+  if (linkStatus?.scope === props.ownerKey && linkStatus.denied)
+    return (
+      <section className={css.empty} aria-label="交付成果">
+        <p>无权访问</p>
+      </section>
+    );
+  const employees = [
+    ...new Map(
+      [...(catalog?.employees ?? []), ...(props.employees ?? [])].map(
+        (employee) => [employee.id, employee],
+      ),
+    ).values(),
+  ];
+  if (
+    props.currentEmployee &&
+    !employees.some((employee) => employee.id === props.currentEmployee!.id)
+  )
+    employees.unshift(props.currentEmployee);
+  const files = catalog?.files ?? [];
   return (
-    <section className={css.panel} aria-label="工作区文件">
+    <section className={css.panel} aria-label="交付成果">
       <div className={css.toolbar}>
         <div className={css.scopePicker}>
           <select
-            aria-label="文件范围"
-            value={scope}
-            onChange={(event) => setScope(event.target.value)}
+            aria-label="按员工筛选"
+            value={employeeId}
+            onChange={(event) =>
+              setEmployeeChoice({
+                scope: employeeScope,
+                id: event.target.value,
+              })
+            }
           >
-            <option value="all">全部可见</option>
-            <option value="current" disabled={!props.sessionId}>
-              本次对话
-            </option>
-            <option value="my">我的文件</option>
-            <option value="departments">部门共享</option>
-            <option value="company">公司共享</option>
+            {employees.map((employee) => (
+              <option value={employee.id} key={employee.id}>
+                {employee.name}
+              </option>
+            ))}
+            <option value="">全部员工</option>
           </select>
           <IconChevronDownOutlineRegular size={14} />
         </div>
@@ -171,34 +287,14 @@ export function WorkbenchFilesPanel(props: {
             maxLength={200}
             onChange={(event) => setQuery(event.target.value)}
           />
-          <Tooltip label="刷新文件列表" side="bottom" portal>
-            <button
-              type="button"
-              className={css.iconButton}
-              aria-label="刷新文件列表"
-              disabled={loading}
-              onClick={reload}
-            >
-              <IconRefreshOutlineRegular size={20} />
-            </button>
-          </Tooltip>
         </div>
-        <button
-          type="button"
-          className={css.upload}
-          onClick={() => setEditor('upload')}
-          disabled={!catalog?.options.writable}
-        >
-          <WorkbenchFileIcon kind="upload" />
-          上传
-        </button>
       </div>
       <nav className={css.tabs} aria-label="文件类型">
         {(
           [
             ['all', '全部'],
-            ['artifact', '交付成果'],
-            ['reference', '参考资料'],
+            ['artifact', '员工交付'],
+            ['upload', '我的上传'],
           ] as const
         ).map(([id, label]) => (
           <button
@@ -211,9 +307,16 @@ export function WorkbenchFilesPanel(props: {
           </button>
         ))}
       </nav>
-      {(error || referenceActions.error) && (
+      {(error ||
+        referenceActions.error ||
+        (linkStatus?.scope === props.ownerKey && linkStatus.error)) && (
         <p className={css.error} role="alert">
-          {error || referenceActions.error}
+          {error || referenceActions.error || linkStatus?.error}
+          {(error || linkStatus?.error) && (
+            <button type="button" onClick={reload}>
+              重新加载
+            </button>
+          )}
         </p>
       )}
       {(notice || referenceActions.notice) && (
@@ -221,181 +324,147 @@ export function WorkbenchFilesPanel(props: {
           {notice || referenceActions.notice}
         </p>
       )}
-      {pending && (
-        <p role="status" className={css.notice}>
-          正在准备“{pending.reference.fileName}”…{' '}
-          <button
-            type="button"
-            onClick={() => {
-              referenceActions.cancel();
-            }}
-          >
+      {referenceActions.pending && (
+        <p className={css.notice} role="status">
+          正在准备“{referenceActions.pending.reference.fileName}”…{' '}
+          <button type="button" onClick={referenceActions.cancel}>
             取消等待
           </button>
         </p>
       )}
-      <div className={css.list} aria-busy={loading}>
-        {files.map((file) => {
-          return (
-            <article
-              className={css.file}
-              key={file.objectId}
-              data-file-id={file.objectId}
+      <div
+        className={css.list}
+        ref={list}
+        aria-busy={loading}
+        onScroll={() => {
+          const node = list.current;
+          if (
+            node &&
+            node.scrollHeight - node.scrollTop - node.clientHeight < 80 &&
+            catalog?.nextCursor &&
+            !loading &&
+            !error
+          )
+            setPage({ key, cursor: catalog.nextCursor });
+        }}
+      >
+        {files.map((file) => (
+          <article
+            className={css.file}
+            key={file.objectId}
+            data-file-id={file.objectId}
+          >
+            <button
+              type="button"
+              className={css.fileMain}
+              onClick={() => {
+                props.onOpen(file);
+              }}
+              title={file.fileName}
+              aria-label={file.fileName}
             >
-              <button
-                type="button"
-                className={css.fileMain}
-                onClick={() => props.onOpen(file)}
-                title={file.fileName}
-                aria-label={file.fileName}
-              >
-                <span className={css.fileIcon}>
-                  <FileTypeIcon
-                    kind={classifyFileType(file.fileName)}
-                    size={28}
-                  />
-                </span>
-                <span className={css.fileName}>
-                  {isToolResultFile(file.fileName, file.objectId)
-                    ? `${file.fileName.startsWith('tool-result-web-search-') ? '搜索资料' : '工具记录'} · ${file.objectId.slice(0, 8)}`
-                    : file.fileName}
-                </span>
-                <small>
-                  <span>
-                    {file.fileName.split('.').at(-1)?.toUpperCase() || '文件'}
-                  </span>
-                  <span>·</span>
-                  {size(file.sizeBytes)}
-                  <span>·</span>
-                  <span className={css.range} title={range(file)}>
-                    {range(file)}
-                  </span>
-                  {file.isReference
-                    ? ` · 长期参考${file.reference?.processing === 'ready' ? '' : file.reference?.processing === 'failed' ? ' · 处理失败' : file.reference?.processing === 'unsupported' ? '' : ' · 准备中'}`
-                    : ''}
-                </small>
-              </button>
-              <FileMenu
-                file={file}
-                quotable={
-                  catalog?.quotableFileIds.includes(file.objectId) ?? false
-                }
-                disabled={props.readOnly || using !== null}
-                onUse={() => {
-                  setNotice('');
-                  setError('');
-                  void useFile(file);
-                }}
-                onEdit={(mode) => {
-                  setEditorMode(mode);
-                  setEditor(file);
-                }}
-              />
-            </article>
-          );
-        })}
+              <span className={css.fileIcon}>
+                <FileTypeIcon path={file.fileName} size={28} />
+              </span>
+              <span className={css.fileName}>{file.fileName}</span>
+              <small>
+                {new Date(file.createdAt).toLocaleString('zh-CN', {
+                  month: 'numeric',
+                  day: 'numeric',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
+              </small>
+            </button>
+            <FileMenu
+              file={file}
+              disabled={
+                !!props.readOnly ||
+                referenceActions.using !== null ||
+                !catalog?.quotableFileIds.includes(file.objectId)
+              }
+              onUse={() => void referenceActions.useFile(file)}
+              onNotice={setNotice}
+            />
+          </article>
+        ))}
         {!files.length && !loading && !error && (
           <div className={css.empty}>
             <WorkbenchIcon kind="files" size={36} />
+            <h3>{query ? '未找到相关文件' : '还没有交付成果'}</h3>
             <p>
               {query
-                ? '没有找到匹配的文件。'
-                : category === 'reference'
-                  ? '暂无长期参考资料。可在文件设置中将可维护的文件设为长期参考。'
-                  : '这个范围内暂无文件。'}
+                ? '换个关键词试试。'
+                : '员工交付的文件和你在对话中上传的文件会显示在这里。'}
             </p>
           </div>
         )}
-        {loading && !files.length && (
+        {loading && (
           <p className={css.empty} role="status">
             正在读取文件…
           </p>
         )}
-        {catalog?.truncated && (
-          <p className={css.hint}>
-            显示最近 200 个文件。可缩小范围或按名称查找。
-          </p>
-        )}
       </div>
-      {editor && catalog && (
-        <FileSettings
-          key={
-            editor === 'upload'
-              ? 'upload'
-              : editor.objectId + '/' + editor.revision
-          }
-          file={editor === 'upload' ? null : editor}
-          mode={editorMode}
-          options={catalog.options}
-          workspaceId={props.workspaceId}
-          headers={props.headers}
-          onClose={() => setEditor(null)}
-          onSaved={() => {
-            setEditor(null);
-            changed();
-            setNotice('文件设置已保存。');
-          }}
-        />
-      )}
     </section>
   );
 }
 function FileMenu({
   file,
-  quotable,
   disabled,
   onUse,
-  onEdit,
+  onNotice,
 }: {
-  file: WorkbenchFile;
-  quotable: boolean;
+  file: WorkbenchDeliverable;
   disabled: boolean;
   onUse: () => void;
-  onEdit: (mode: 'sharing' | 'reference') => void;
+  onNotice: (message: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   return (
     <div className={css.fileActions}>
-      <Tooltip label="可见范围" side="bottom" portal>
-        <button
-          type="button"
-          className={css.fileMenu}
-          aria-label={`可见范围 ${file.fileName}`}
-          disabled={!file.canMaintain}
-          onClick={() => onEdit('sharing')}
-        >
-          <IconSettingsOutlineRegular size={20} />
-        </button>
+      <Tooltip label="引用到对话" side="bottom" portal>
+        <span>
+          <button
+            type="button"
+            className={css.fileMenu}
+            aria-label={`引用到对话 ${file.fileName}`}
+            disabled={disabled}
+            onClick={onUse}
+          >
+            <IconPlusOutlineRegular size={20} />
+          </button>
+        </span>
       </Tooltip>
       <Menu
         open={open}
         anchor={
-          <button
-            type="button"
-            className={css.fileMenu}
-            aria-label={`文件选项 ${file.fileName}`}
-            aria-haspopup="menu"
-            aria-expanded={open}
-            onClick={() => setOpen(!open)}
-          >
-            <IconEllipsisOutlineRegular size={20} />
-          </button>
+          <Tooltip label="更多操作" side="bottom" disabled={open} portal>
+            <button
+              type="button"
+              className={css.fileMenu}
+              aria-label={`文件选项 ${file.fileName}`}
+              aria-haspopup="menu"
+              aria-expanded={open}
+              onClick={() => setOpen(!open)}
+            >
+              <IconEllipsisOutlineRegular size={20} />
+            </button>
+          </Tooltip>
         }
         items={[
-          ...(quotable ? [{ id: 'use', label: '引用文件', disabled }] : []),
-          ...(file.canMaintain && !file.isReference
-            ? [{ id: 'reference', label: '设为参考资料' }]
-            : []),
           { id: 'download', label: '下载' },
+          { id: 'copy', label: '复制链接' },
         ]}
         onClose={() => setOpen(false)}
         onSelect={(id) => {
           setOpen(false);
-          if (id === 'use' && !disabled) onUse();
-          if (id === 'sharing' || id === 'reference') onEdit(id);
+          if (id === 'copy')
+            void copyWorkbenchFileLink(file.workspaceId, file.objectId)
+              .then(() => onNotice('链接已复制，仅你自己可以打开'))
+              .catch((cause) => onNotice(message(cause)));
           if (id === 'download') {
             const a = document.createElement('a');
-            a.href = `/api/v1/files/${file.objectId}/download?name=${encodeURIComponent(file.fileName)}`;
+            a.href = `/api/v1/workbench/files/${file.objectId}/download?workspaceId=${file.workspaceId}`;
             a.download = file.fileName;
             document.body.append(a);
             a.click();
@@ -572,10 +641,7 @@ export function FileSettings(props: {
         {props.file ? (
           <>
             <div className={css.fileIdentity}>
-              <FileTypeIcon
-                kind={classifyFileType(props.file.fileName)}
-                size={32}
-              />
+              <FileTypeIcon path={props.file.fileName} size={32} />
               <div>
                 <p className={css.filename}>{props.file.fileName}</p>
                 <small>{size(props.file.sizeBytes)}</small>
@@ -601,7 +667,7 @@ export function FileSettings(props: {
           >
             {file ? (
               <div className={css.fileIdentity}>
-                <FileTypeIcon kind={classifyFileType(file.name)} size={32} />
+                <FileTypeIcon path={file.name} size={32} />
                 <div>
                   <p className={css.filename}>{file.name}</p>
                   <small>{size(file.size)}</small>

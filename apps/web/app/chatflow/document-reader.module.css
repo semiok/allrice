@@ -24,6 +24,22 @@
 .identity > svg {
   flex: none;
 }
+.deliveryToolbar {
+  padding: 8px 20px;
+  border-bottom: 0;
+}
+.deliveryToolbar .identity {
+  flex-basis: 100%;
+}
+.deliveryToolbar .name {
+  font-size: 17px;
+  line-height: 26px;
+  font-weight: 600;
+}
+.deliveryToolbar .controls {
+  margin-left: 0;
+  justify-content: flex-start;
+}
 .name {
   flex: 1;
   min-width: 0;
@@ -83,7 +99,8 @@
   vector-effect: non-scaling-stroke;
 }
 .toolbar .download:hover,
-.toolbar button:hover:not(:disabled) {
+.toolbar
+  button:hover:not(:disabled):not(:where([data-office-font-warning] button)) {
   color: var(--dsw-alias-label-primary, #20242b);
   background: var(--dsw-alias-interactive-bg-hover, #edf0f4);
 }
@@ -159,6 +176,10 @@
   }
   .text {
     padding: 12px 0;
+  }
+  .deliveryToolbar .name {
+    font-size: 16px;
+    line-height: 24px;
   }
 }
 

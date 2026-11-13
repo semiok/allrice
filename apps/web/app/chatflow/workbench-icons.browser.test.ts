@@ -241,11 +241,7 @@ suite('workbench icon scale and workflow identity', () => {
         expect.soft(await focusState(agents)).toMatchObject({ ring: false });
         await page.getByRole('heading', { level: 1 }).click();
         const entries = page.getByLabel('工作台入口');
-        for (const name of [
-          '工作区文件，33 项新增',
-          '记忆，1 项新增',
-          '能力',
-        ]) {
+        for (const name of ['交付成果，33 项新增', '记忆，1 项新增', '能力']) {
           const button = entries.getByRole('button', { name, exact: true });
           await button.click();
           await page.keyboard.press('Tab');
@@ -333,7 +329,7 @@ suite('workbench icon scale and workflow identity', () => {
           const entries = page.getByLabel('工作台入口');
           const buttons = [
             agents,
-            entries.getByRole('button', { name: '工作区文件，33 项新增' }),
+            entries.getByRole('button', { name: '交付成果，33 项新增' }),
             entries.getByRole('button', { name: '记忆，1 项新增' }),
             entries.getByRole('button', { name: '能力', exact: true }),
           ];
@@ -392,7 +388,7 @@ suite('workbench icon scale and workflow identity', () => {
           expect(await buttons[3]!.getAttribute('aria-pressed')).toBe('true');
           await buttons[1]!.click();
           expect(await page.getByLabel('当前工作台模块').innerText()).toBe(
-            '工作区文件',
+            '交付成果',
           );
           await workflowCard.click();
           expect(await page.getByLabel('当前工作台模块').innerText()).toBe(

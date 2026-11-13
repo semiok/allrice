@@ -26,6 +26,7 @@ import {
   announceWorkbenchRead,
 } from './unified-workbench-controls';
 import { WorkbenchIcon, type WorkbenchModule } from './workbench-modules';
+import { clearWorkbenchFileLink } from './workbench-file-link';
 import {
   EmployeeSceneDialog,
   EmployeeSceneList,
@@ -702,6 +703,11 @@ export function ChatFlowClient({
     layout.show();
   };
   const workbenchEntry = useRef<HTMLButtonElement>(null);
+  const workbenchFocusScope = useRef({
+    scope: fileScope,
+    open: workbenchRequested,
+  });
+  workbenchFocusScope.current = { scope: fileScope, open: workbenchRequested };
   const [activeModule, setActiveModule] = useState<{
     scope: string;
     kind: WorkbenchModule | 'schedule' | null;
@@ -728,6 +734,7 @@ export function ChatFlowClient({
       : undefined;
   const dismissWorkbench = useCallback(
     (memoryInstanceId?: string) => {
+      const closingFocus = document.activeElement;
       closeWorkbench();
       if (memoryInstanceId) {
         setSceneRequest(null);
@@ -736,9 +743,26 @@ export function ChatFlowClient({
         reuseDetailsSceneSnapshot.current = false;
         setDetailsAssignmentId(memoryInstanceId);
         setEmployeeDetailsOpen(true);
-      } else workbenchEntry.current?.focus();
+      } else {
+        const closingScope = fileScope;
+        requestAnimationFrame(() => {
+          const current = workbenchFocusScope.current;
+          const focused = document.activeElement;
+          const closingFocusInactive =
+            closingFocus &&
+            (!closingFocus.isConnected ||
+              closingFocus.closest('#artifact-workbench[inert]'));
+          if (
+            current.scope === closingScope &&
+            !current.open &&
+            (focused === closingFocus ||
+              (focused === document.body && closingFocusInactive))
+          )
+            workbenchEntry.current?.focus();
+        });
+      }
     },
-    [closeWorkbench],
+    [closeWorkbench, fileScope],
   );
   const sessionAutomations = useSessionAutomations({
     enabled: workbenchEnabled && !!workspace,
@@ -797,6 +821,25 @@ export function ChatFlowClient({
     }));
     workbench.show(undefined, true);
   };
+  const fileLinkHandled = useRef('');
+  useEffect(() => {
+    if (
+      !workbenchEnabled ||
+      !workspace ||
+      !new URLSearchParams(window.location.search).get('file')
+    )
+      return;
+    // The directory resolves this locator through the authenticated owner-only
+    // read before rendering a title. URL parameters carry no authority.
+    if (fileLinkHandled.current === settingsScope) return;
+    fileLinkHandled.current = settingsScope;
+    setModuleRequest((previous) => ({
+      scope: fileScope,
+      kind: 'files',
+      revision: (previous?.revision ?? 0) + 1,
+    }));
+    workbench.show(undefined, true);
+  }, [workbenchEnabled, settingsScope, fileScope, workbench.show, workspace]);
   const openReference = useCallback(
     (reference: ReferenceDraft) => {
       if (layout.compact || !workbenchEnabled) {
@@ -820,7 +863,7 @@ export function ChatFlowClient({
     !!currentMemoryRequest ||
     !!currentSubagentRequest ||
     !!currentCapabilityRequest ||
-    (!layout.compact && !!currentModuleRequest) ||
+    !!currentModuleRequest ||
     !!currentAutomationRequest ||
     currentFilesRequest > 0 ||
     workbench.artifacts.length > 0 ||
@@ -2217,10 +2260,6 @@ export function ChatFlowClient({
         )
       }
       onOpenReferenceLibrary={() => {
-        if (!layout.compact && workbenchEnabled) {
-          requestWorkbenchModule('files', { category: 'reference' });
-          return;
-        }
         setRecommendedTemplates(false);
         setReferenceToView(null);
         setReferenceLibraryOpen(true);
@@ -2660,7 +2699,7 @@ export function ChatFlowClient({
                     ) : (
                       <EmptyNativeSubagentDirectory key={settingsScope} />
                     )}
-                    {!layout.compact && workbenchEnabled ? (
+                    {workbenchEnabled ? (
                       <UnifiedWorkbenchControls
                         scope={`${settingsScope}/${activeEmployee?.instanceId ?? 'none'}`}
                         scopeId={settingsScope}
@@ -2687,6 +2726,18 @@ export function ChatFlowClient({
                         }
                         onSchedule={openSessionTasks}
                         onOpen={(kind) => {
+                          if (
+                            layout.compact &&
+                            kind === 'experience' &&
+                            activeEmployee?.instanceId
+                          ) {
+                            requestWorkbenchModule('experience', {
+                              id: activeEmployee.instanceId,
+                              title: '记忆',
+                              view: 'personal-memory',
+                            });
+                            return;
+                          }
                           if (kind === 'workflow')
                             skillNavigation.current?.navigateHome();
                           requestWorkbenchModule(kind);
@@ -2741,7 +2792,7 @@ export function ChatFlowClient({
                               workbench.show(undefined, true);
                             }}
                           >
-                            工作区文件
+                            交付成果
                           </button>
                         ) : null}
                         {workbenchEnabled && hasWorkbenchContent ? (
@@ -3032,6 +3083,28 @@ export function ChatFlowClient({
         currentCapabilityRequest) &&
       hasWorkbenchContent ? (
         <ArtifactWorkbench
+          personalDeliverables
+          employeeColors={Object.fromEntries(
+            employeeChoices(workspace).map((employee) => [
+              employee.instanceId ?? employeeChoiceId(employee),
+              employeeChoiceProfile(workspace, employeeChoiceId(employee))
+                ?.appearance?.accentColor,
+            ]),
+          )}
+          onOpenSourceSession={(sessionId) => {
+            if (sessionId !== activeId && !confirmSessionNavigation()) return;
+            clearWorkbenchFileLink();
+            if (sessionId !== activeId) {
+              clearPendingAttachments();
+              setSessionReferences([]);
+              setReferenceSelections([]);
+              setCompanyReferences([]);
+              setReferencePickerOpen(false);
+              setDraft('');
+            }
+            selectSession(sessionId);
+            if (layout.compact) layout.close();
+          }}
           desktop={!layout.compact}
           moduleRequest={currentModuleRequest}
           experienceAvailable={
@@ -3062,6 +3135,28 @@ export function ChatFlowClient({
             <Suspense fallback={<p role="status">正在打开工作台…</p>}>
               {kind === 'files' ? (
                 <WorkbenchFilesPanel
+                  key={settingsScope}
+                  ownerKey={settingsScope}
+                  employees={employeeChoices(workspace).map((employee) => ({
+                    id: employee.instanceId ?? employeeChoiceId(employee),
+                    name:
+                      employeeChoiceProfile(
+                        workspace,
+                        employeeChoiceId(employee),
+                      )?.name ?? employee.currentVersion.manifest.name,
+                  }))}
+                  refreshKey={`${activeId}/${history?.messages.length}/${history?.messages.at(-1)?.status}`}
+                  currentEmployee={
+                    activeEmployee?.instanceId || activeSession
+                      ? {
+                          id:
+                            activeEmployee?.instanceId ??
+                            activeSession!.employeeInstanceId ??
+                            activeSession!.employeeAssignmentId,
+                          name: activeEmployeeName,
+                        }
+                      : undefined
+                  }
                   workspaceId={workspace.workspaceId}
                   sessionId={activeId}
                   headers={tenantHeaders}
@@ -3082,8 +3177,12 @@ export function ChatFlowClient({
                     const artifact = workbench.artifacts.find(
                       (item) => item.object.id === file.objectId,
                     );
-                    if (artifact) showWorkbench(artifact.id);
-                    else onOpenFile(file.objectId, file.fileName);
+                    if (artifact) {
+                      showWorkbench(artifact.id);
+                      return;
+                    }
+                    workbench.show(undefined, true);
+                    onOpenFile(file.objectId, file.fileName);
                   }}
                   onTemplate={viewWorkbenchTemplate}
                   onUse={useWorkbenchReference}

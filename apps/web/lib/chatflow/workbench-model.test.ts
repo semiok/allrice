@@ -202,6 +202,25 @@ describe('workbench UI boundary', () => {
     expect(
       parseArtifactPreview({ kind: 'download_only', reason: 'download' }).kind,
     ).toBe('download_only');
+    expect(
+      parseArtifactPreview({
+        kind: 'download_only',
+        reason: '文档转换暂不可用，请重试预览或下载查看。',
+        retryable: true,
+      }),
+    ).toEqual({
+      kind: 'download_only',
+      reason: '文档转换暂不可用，请重试预览或下载查看。',
+      retryable: true,
+    });
+    for (const retryable of [undefined, false, 'true'])
+      expect(
+        parseArtifactPreview({
+          kind: 'download_only',
+          reason: '请下载查看。',
+          retryable,
+        }),
+      ).toEqual({ kind: 'download_only', reason: '请下载查看。' });
   });
   it('parses saved-page results, preserves older records, and refuses a mismatched or incomplete passed report', () => {
     const observationId = randomUUID();

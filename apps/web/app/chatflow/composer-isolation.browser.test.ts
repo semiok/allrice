@@ -20,6 +20,7 @@ import type {
   Browser,
   BrowserContext,
   Page,
+  Request,
 } from '../../../worker/node_modules/playwright-core/index.js';
 
 const suite =
@@ -246,6 +247,8 @@ suite(
         nativeDelayFull?: boolean;
         nativeClock?: boolean;
         nativeStartup?: boolean;
+        nativeStartupObserve?: (phase: string, detail: unknown) => void;
+        nativeStartupPage?: (page: Page) => void;
         beforeSidebarReady?: (page: Page) => Promise<void>;
         workspaceFiles?: WorkspaceFile[];
         taskSuggestions?: TaskSuggestionDisplay[];
@@ -331,6 +334,7 @@ suite(
       let nativeDenied = false;
       let nativeBindingPending = options.nativeStartup ?? false;
       let rejectStartupEvents = false;
+      let startupRequestSequence = 0;
       const nativeSource = {
         summary: (id: string) => nativeSummary(id),
         status: 0,
@@ -515,6 +519,19 @@ suite(
           return;
         }
         reads.push(request.url!);
+        const startupRequest = ++startupRequestSequence;
+        options.nativeStartupObserve?.('server-request', {
+          startupRequest,
+          path: request.url,
+          streams: streams.size,
+          nativeBindingPending,
+          rejectStartupEvents,
+          messages: messages[A]?.map(({ role, runId, status }) => ({
+            role,
+            runId,
+            status,
+          })),
+        });
         const subagentSession = path.match(
           /^\/api\/v1\/sessions\/([a-f0-9-]{36})\/subagents$/,
         )?.[1];
@@ -770,6 +787,13 @@ suite(
               `data: ${JSON.stringify({ ...event(), eventId: 'event-2', sequence: 2, cursor: `${runId}:2`, type: 'turn.started', payload: { turnId: 'turn-2' } })}\n\n`,
             );
           streams.add(response);
+          options.nativeStartupObserve?.('stream-open', {
+            startupRequest,
+            path: request.url,
+          });
+          response.on('close', () =>
+            options.nativeStartupObserve?.('stream-close', { startupRequest }),
+          );
           response.on('close', () => streams.delete(response));
           return;
         }
@@ -818,6 +842,7 @@ suite(
           : {}),
       });
       const page: Page = await context.newPage();
+      options.nativeStartupPage?.(page);
       const webSocketUrls: string[] = [];
       // Record browser requests even when the gateway never forwards a GET.
       page.on('websocket', (socket) => webSocketUrls.push(socket.url()));
@@ -1374,27 +1399,132 @@ suite(
     });
 
     it('MET-214 waits for the first native binding before reading a new session directory', async () => {
+      let stage = 'fixture',
+        dropped = 0,
+        samples = 0,
+        workspaceSamples = 0;
+      const observations: unknown[] = [],
+        snapshots: unknown[] = [];
+      const mark = (phase: string, detail: unknown = null) => {
+        if (observations.length < 64)
+          observations.push({ at: Date.now(), phase, detail });
+        else dropped++;
+      };
+      const sample = (page: Page, reason: string) => {
+        if (samples === 4) return;
+        const id = ++samples,
+          startedAt = Date.now();
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        mark('dom-sample-start', { id, reason });
+        void Promise.race([
+          Promise.resolve().then(() =>
+            page.evaluate(() => ({
+              url: location.href,
+              heading: document.querySelector('h1')?.textContent,
+              selected: Array.from(
+                document.querySelectorAll(
+                  '[data-row-key^="session:"][aria-selected="true"]',
+                ),
+                (row) => row.getAttribute('data-row-key'),
+              ),
+              stop: !!document.querySelector('button[aria-label="停止生成"]'),
+              browserAt: Date.now(),
+            })),
+          ),
+          new Promise((resolve) => {
+            timer = setTimeout(() => resolve({ timedOut: true }), 2000);
+          }),
+        ])
+          .then(
+            (detail) =>
+              snapshots.push({ id, reason, startedAt, at: Date.now(), detail }),
+            (error) =>
+              snapshots.push({
+                id,
+                reason,
+                startedAt,
+                at: Date.now(),
+                error: String(error),
+              }),
+          )
+          .finally(() => clearTimeout(timer));
+      };
       const f = await fixture({
         nativeParents: 3,
         running: true,
         nativeStartup: true,
         nativeClock: true,
+        nativeStartupObserve: mark,
+        nativeStartupPage: (page) => {
+          const requests = new Map<Request, number>();
+          page.on('request', (request) => {
+            if (!request.url().includes('/api/v1/') || requests.size === 64)
+              return;
+            requests.set(request, requests.size + 1);
+            mark('browser-request', {
+              id: requests.get(request),
+              url: request.url(),
+            });
+            if (request.url().includes(`/sessions/${A}/subagents?`))
+              sample(page, 'A-subagents-request');
+          });
+          page.on('response', (response) => {
+            const id = requests.get(response.request());
+            if (!id) return;
+            mark('browser-response', {
+              id,
+              url: response.url(),
+              status: response.status(),
+            });
+            if (
+              new URL(response.url()).pathname === '/api/v1/workspace' &&
+              workspaceSamples++ < 2
+            )
+              sample(page, 'workspace-response');
+          });
+          const finished = (phase: string) => (request: Request) => {
+            const id = requests.get(request);
+            if (id)
+              mark(phase, {
+                id,
+                url: request.url(),
+                failure: request.failure(),
+              });
+          };
+          page.on('requestfinished', finished('requestfinished'));
+          page.on('requestfailed', finished('requestfailed'));
+        },
       });
       try {
         const activeReads = () =>
           f.reads.filter((url) =>
             url.startsWith(`/api/v1/sessions/${A}/subagents?`),
           );
+        const step = (phase: string) => {
+          stage = phase;
+          mark(phase, {
+            streams: f.native.startupStreams(),
+            reads: activeReads(),
+          });
+        };
+        step('fixture-return');
         await f.page
           .getByRole('button', { name: '停止生成', exact: true })
           .waitFor();
+        step('clock-before');
         await f.page.clock.runFor(6_000);
+        step('clock-after');
+        step('directory-click-before');
         await f.page
           .getByRole('button', { name: '子智能体', exact: true })
           .click();
+        step('directory-click-after');
         await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+        step('focus-after');
         expect(activeReads()).toEqual([]);
+        step('allow-ready-before');
         f.native.allowReady();
+        step('allow-ready-after');
         await f.page
           .getByRole('button', {
             name: '1 个子智能体 · 1 个运行中',
@@ -1403,6 +1533,21 @@ suite(
           .waitFor();
         await expect.poll(f.native.fullRequests).toBe(1);
         expect(f.errors).toEqual([]);
+      } catch (error) {
+        console.error(
+          'MET214 initial binding failure',
+          JSON.stringify({
+            stage,
+            observations,
+            dropped,
+            samples,
+            snapshots,
+            streams: f.native.startupStreams(),
+            reads: f.reads,
+            errors: f.errors,
+          }),
+        );
+        throw error;
       } finally {
         await f.close();
       }
@@ -1411,11 +1556,47 @@ suite(
     it.each(['ready', 'terminal', 'disconnect'] as const)(
       'MET-214 first binding follows the background session until %s without polling',
       async (outcome) => {
+        let stage = 'fixture',
+          dropped = 0;
+        const observations: unknown[] = [];
+        const mark = (phase: string, detail: unknown = null) => {
+          if (observations.length < 64)
+            observations.push({ at: Date.now(), phase, detail });
+          else dropped++;
+        };
         const f = await fixture({
           nativeParents: 3,
           running: true,
           nativeStartup: true,
           nativeClock: true,
+          nativeStartupObserve: mark,
+          nativeStartupPage: (page) => {
+            const requests = new Map<Request, number>();
+            page.on('request', (request) => {
+              if (!request.url().includes('/api/v1/') || requests.size === 64)
+                return;
+              requests.set(request, requests.size + 1);
+              mark('browser-request', {
+                id: requests.get(request),
+                url: request.url(),
+              });
+            });
+            page.on('response', (response) =>
+              mark('browser-response', {
+                id: requests.get(response.request()),
+                url: response.url(),
+                status: response.status(),
+              }),
+            );
+            const recordRequest = (event: string) => (request: Request) =>
+              mark(event, {
+                id: requests.get(request),
+                url: request.url(),
+                failure: request.failure(),
+              });
+            page.on('requestfinished', recordRequest('requestfinished'));
+            page.on('requestfailed', recordRequest('requestfailed'));
+          },
         });
         try {
           const reads = () =>
@@ -1425,10 +1606,22 @@ suite(
           await f.page
             .getByRole('button', { name: '停止生成', exact: true })
             .waitFor();
+          stage = 'choose-background';
+          mark(stage, {
+            url: f.page.url(),
+            streams: f.native.startupStreams(),
+          });
           await f.choose(B);
           await expect.poll(f.native.startupStreams).toBe(1);
+          stage = 'clock-before-release';
+          mark(stage, {
+            url: f.page.url(),
+            streams: f.native.startupStreams(),
+          });
           await f.page.clock.runFor(6_000);
           expect(reads()).toEqual([]);
+          stage = `release-${outcome}`;
+          mark(stage, { streams: f.native.startupStreams() });
           if (outcome === 'ready') f.native.allowReady();
           else if (outcome === 'terminal') f.finishRun(A, 'canceled');
           else {
@@ -1463,6 +1656,23 @@ suite(
           ).toBe(0);
           expect(f.writes).toEqual([]);
           expect(f.errors).toEqual([]);
+        } catch (error) {
+          console.error(
+            'MET214 binding failure',
+            JSON.stringify({
+              outcome,
+              stage,
+              observations,
+              dropped,
+              url: f.page.url(),
+              streams: f.native.startupStreams(),
+              nativeRequests: f.native.nativeRequests,
+              reads: f.reads,
+              writes: f.writes,
+              errors: f.errors,
+            }),
+          );
+          throw error;
         } finally {
           await f.close();
         }
@@ -1546,7 +1756,7 @@ suite(
           0,
         );
         expect(
-          await f.page.getByRole('button', { name: /^工作区文件/ }).isVisible(),
+          await f.page.getByRole('button', { name: /^交付成果/ }).isVisible(),
         ).toBe(true);
         const reads = f.reads.length;
         await trigger.hover();
@@ -3474,82 +3684,38 @@ suite(
               },
             }),
           );
-          if (width > 760) {
-            await f.page.route('**/api/v1/workbench/files?*', (route) =>
-              route.fulfill({
-                json: {
-                  files: [
-                    {
-                      objectId: childId,
-                      workspaceId: B,
-                      fileName: reference.fileName,
-                      mediaType: reference.mediaType,
-                      sizeBytes: reference.sizeBytes,
-                      checksum: reference.checksum,
-                      createdAt: now,
-                      ownedByMe: false,
-                      canMaintain: false,
-                      revision: 0,
-                      sharing: {
-                        scope: 'company',
-                        departmentIds: [],
-                        departmentNames: [],
-                      },
-                      category: 'reference',
-                      sessionIds: [],
-                      artifact: null,
-                      isReference: true,
-                      reference,
-                    },
-                  ],
-                  quotableFileIds: [childId],
-                  truncated: false,
-                  options: {
-                    writable: false,
-                    maintenanceLevel: 'personal',
-                    departmentId: null,
-                    departments: [],
-                  },
-                },
-              }),
-            );
-            await f.page.route(
-              '**/api/v1/workbench/files/*/reference?*',
-              (route) => route.fulfill({ json: { reference } }),
-            );
-          }
+          const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+          await input.fill('打开共享参考资料期间保留草稿');
           await f.page
             .getByRole('button', { name: '添加文件', exact: true })
             .click();
           await f.page
             .getByRole('menuitem', { name: '参考资料', exact: true })
             .click();
-          if (width > 760) {
-            await f.page
-              .getByRole('region', { name: '工作区文件', exact: true })
-              .getByRole('button', {
-                name: `文件选项 ${reference.fileName}`,
-                exact: true,
-              })
-              .click();
-            await f.page
-              .getByRole('menuitem', { name: '引用文件', exact: true })
-              .click();
-          } else
-            await f.page
-              .getByRole('button', { name: '引用 v1', exact: true })
-              .click();
+          const library = f.page.getByRole('dialog', {
+            name: '参考资料',
+            exact: true,
+          });
+          await library
+            .getByRole('button', { name: reference.fileName, exact: true })
+            .waitFor();
+          await library
+            .getByRole('button', { name: '引用 v1', exact: true })
+            .click();
           const chip = f.page.getByRole('button', {
             name: '移除资料 Budget-v1.txt v1',
             exact: true,
           });
           await chip.waitFor();
+          expect(await input.inputValue()).toBe('打开共享参考资料期间保留草稿');
+          expect(f.pending).toHaveLength(0);
           await f.send('核对资料中的预算');
           await f.waitPending(1);
           expect(f.pending[0]!.body.referenceRevisionIds).toEqual([runId]);
           expect(f.pending[0]!.body).not.toHaveProperty('referenceSelections');
           await f.respond(0, false);
           await chip.waitFor();
+          expect(await input.inputValue()).toBe('核对资料中的预算');
           await f.send('核对资料中的预算');
           await f.waitPending(2);
           expect(f.pending[1]!.body).toEqual(f.pending[0]!.body);
@@ -4324,11 +4490,13 @@ suite(
         await f.page
           .getByRole('menuitem', { name: '从工作区添加', exact: true })
           .waitFor();
-        expect(
-          await f.page
-            .getByRole('button', { name: '添加文件', exact: true })
-            .evaluate((element) => document.activeElement === element),
-        ).toBe(true);
+        await expect
+          .poll(() =>
+            f.page
+              .getByRole('button', { name: '添加文件', exact: true })
+              .evaluate((element) => document.activeElement === element),
+          )
+          .toBe(true);
         await f.page.keyboard.press('Escape');
         await selectSuggestion(f.page, task.title, 1440, false);
         await dialog

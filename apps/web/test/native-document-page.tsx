@@ -17,6 +17,7 @@ function Page() {
       pageUrl?: string;
       liveSrc?: string;
       active?: boolean;
+      toolResult?: boolean;
     }[]
   >([]);
   Object.assign(window, { setPreviewItems: setItems });
@@ -51,6 +52,7 @@ function Page() {
             ) : (
               <NativeDocumentPreview
                 active={item.active}
+                toolResult={item.toolResult}
                 preview={preview}
                 fileName={item.name}
                 source={item.source}

@@ -546,7 +546,7 @@ suite('native subagent directory and employee sidebar', () => {
         const badge = trigger.locator('span[aria-hidden="true"]');
         expect(await badge.count()).toBe(0);
         const files = page.getByRole('button', {
-          name: '工作区文件，33 项新增',
+          name: '交付成果，33 项新增',
           exact: true,
         });
         const colors = await files.locator('span').evaluate((node) => {
@@ -894,7 +894,7 @@ suite('native subagent directory and employee sidebar', () => {
       expect(await badge.count()).toBe(0);
       for (const button of [
         page.getByRole('button', {
-          name: '工作区文件，33 项新增',
+          name: '交付成果，33 项新增',
           exact: true,
         }),
         page.getByRole('button', { name: '记忆，1 项新增', exact: true }),
