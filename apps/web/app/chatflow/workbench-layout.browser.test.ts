@@ -9017,7 +9017,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               expect(await tabGlyph.getAttribute('viewBox')).toBe(
                 await topGlyph.getAttribute('viewBox'),
               );
-              expect(await tabGlyph.innerHTML()).toBe(await topGlyph.innerHTML());
+              expect(await tabGlyph.innerHTML()).toBe(
+                await topGlyph.innerHTML(),
+              );
               const tabBox = (await tabGlyph.boundingBox())!;
               const topBox = (await topGlyph.boundingBox())!;
               expect([tabBox.width, tabBox.height]).toEqual([17, 17]);
