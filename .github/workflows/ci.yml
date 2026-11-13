@@ -268,7 +268,7 @@ jobs:
     # build/Bridge boundary; all completed test batches passed.
     # Allow ~10m headroom while keeping test deadlines and every gate.
     # Making the job faster is tracked in MET-216.
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:
