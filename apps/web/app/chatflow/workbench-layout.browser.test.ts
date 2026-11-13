@@ -8192,8 +8192,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           page = f.page,
         ) => {
           expect(page.viewportSize()).toEqual({ width, height });
-          await expect.poll(() => page.locator('html').getAttribute('data-theme')).toBe(appearance);
-          expect(await page.locator('body').evaluate((node) => node.hasAttribute('data-ds-dark-theme'))).toBe(appearance === 'dark');
+          await expect
+            .poll(() => page.locator('html').getAttribute('data-theme'))
+            .toBe(appearance);
+          expect(
+            await page
+              .locator('body')
+              .evaluate((node) => node.hasAttribute('data-ds-dark-theme')),
+          ).toBe(appearance === 'dark');
           await page.evaluate(() => document.fonts.ready);
           expect(
             await page.evaluate(
@@ -8241,11 +8247,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               .filter({ hasText: '新会话' })
               .count(),
           ).toBe(0);
-          const header = page
-            .locator('header')
-            .filter({
-              has: page.getByRole('heading', { name: 'AI 员工', exact: true }),
-            });
+          const header = page.locator('header').filter({
+            has: page.getByRole('heading', { name: 'AI 员工', exact: true }),
+          });
           expect(
             await header.evaluate(
               (node) => node.getBoundingClientRect().height,
@@ -8957,20 +8961,37 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             failurePage = nativeIcon.page;
             await nativeIcon.page.setViewportSize({ width, height });
             const child = await openNativeChild(nativeIcon);
-            await nativeIcon.page.getByRole('tree', { name: '子智能体目录', exact: true }).waitFor({ state: 'hidden' });
-            await expect.poll(() => child.innerText()).toContain('child-a 获授权的回复');
-            const tab = nativeIcon.panel.locator('[role="tab"]:has([data-native-subagent-tab])');
+            await nativeIcon.page
+              .getByRole('tree', { name: '子智能体目录', exact: true })
+              .waitFor({ state: 'hidden' });
+            await expect
+              .poll(() => child.innerText())
+              .toContain('child-a 获授权的回复');
+            const tab = nativeIcon.panel.locator(
+              '[role="tab"]:has([data-native-subagent-tab])',
+            );
             expect(await tab.count()).toBe(1);
             expect(await tab.getAttribute('aria-selected')).toBe('true');
             const tabGlyph = tab.locator('[data-native-subagent-tab] > svg');
-            const topGlyph = nativeIcon.page.locator('header')
-              .getByRole('button', { name: /2 个子智能体/ }).locator('svg').first();
-            const token = await topGlyph.evaluate((node) => getComputedStyle(node).getPropertyValue('--ar-link').trim());
-            const topColor = await topGlyph.evaluate((node) => getComputedStyle(node).color);
-            const tabColor = await tabGlyph.evaluate((node) => getComputedStyle(node).color);
+            const topGlyph = nativeIcon.page
+              .locator('header')
+              .getByRole('button', { name: /2 个子智能体/ })
+              .locator('svg')
+              .first();
+            const token = await topGlyph.evaluate((node) =>
+              getComputedStyle(node).getPropertyValue('--ar-link').trim(),
+            );
+            const topColor = await topGlyph.evaluate(
+              (node) => getComputedStyle(node).color,
+            );
+            const tabColor = await tabGlyph.evaluate(
+              (node) => getComputedStyle(node).color,
+            );
             expect(topColor).toBe(token);
             expect(tabColor).toBe(topColor);
-            expect(await tabGlyph.getAttribute('viewBox')).toBe(await topGlyph.getAttribute('viewBox'));
+            expect(await tabGlyph.getAttribute('viewBox')).toBe(
+              await topGlyph.getAttribute('viewBox'),
+            );
             expect(await tabGlyph.innerHTML()).toBe(await topGlyph.innerHTML());
             const tabBox = (await tabGlyph.boundingBox())!;
             const topBox = (await topGlyph.boundingBox())!;
@@ -8980,7 +9001,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             expect(nativeIcon.writes).toEqual([]);
             expect(nativeIcon.errors).toEqual([]);
             await nativeIcon.page.mouse.move(width - 1, 1);
-            await capture('subagent-tab', '', { childId: 'child-a', colorToken: '--ar-link', tabIconColor: tabColor, headerIconColor: topColor }, nativeIcon.page);
+            await capture(
+              'subagent-tab',
+              '',
+              {
+                childId: 'child-a',
+                colorToken: '--ar-link',
+                tabIconColor: tabColor,
+                headerIconColor: topColor,
+              },
+              nativeIcon.page,
+            );
           }
           expect(captures).toHaveLength(device === 'mobile' ? 11 : 12);
           completed = true;
@@ -9016,11 +9047,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                         errors: seams.errors,
                       }
                     : null,
-                  nativeSubagentIconEvidence: nativeIcon ? {
-                    unexpectedWrites: nativeIcon.writes,
-                    messageInputs: nativeIcon.state.messageInputs,
-                    errors: nativeIcon.errors,
-                  } : null,
+                  nativeSubagentIconEvidence: nativeIcon
+                    ? {
+                        unexpectedWrites: nativeIcon.writes,
+                        messageInputs: nativeIcon.state.messageInputs,
+                        errors: nativeIcon.errors,
+                      }
+                    : null,
                   firstFailure:
                     firstFailure instanceof Error
                       ? firstFailure.stack
