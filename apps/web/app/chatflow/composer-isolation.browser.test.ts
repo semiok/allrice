@@ -3779,14 +3779,16 @@ suite(
               sidebar?.getBoundingClientRect().width === target &&
               parseFloat(getComputedStyle(frame).gridTemplateColumns) ===
                 target &&
-              !frame.getAnimations().some(
-                (animation) =>
-                  animation instanceof CSSTransition &&
-                  animation.transitionProperty === 'grid-template-columns' &&
-                  (animation.pending ||
-                    (animation.playState !== 'finished' &&
-                      animation.playState !== 'idle')),
-              )
+              !frame
+                .getAnimations()
+                .some(
+                  (animation) =>
+                    animation instanceof CSSTransition &&
+                    animation.transitionProperty === 'grid-template-columns' &&
+                    (animation.pending ||
+                      (animation.playState !== 'finished' &&
+                        animation.playState !== 'idle')),
+                )
             );
           }, hasImportedStorageState),
         )
