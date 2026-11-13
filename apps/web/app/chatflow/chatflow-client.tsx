@@ -1,5 +1,6 @@
 'use client';
 import { ReferenceLibrary } from './reference-library';
+import type { MemoryWriteStore } from '../../lib/memory/employee-memory-client';
 import {
   EmptyNativeSubagentDirectory,
   NativeSubagentDirectory,
@@ -208,6 +209,7 @@ export function ChatFlowClient({
   experienceEnabled?: boolean;
   taskSuggestionsEnabled?: boolean;
 }) {
+  const memoryWrites = useRef<MemoryWriteStore>(new Map());
   const [draftStore] = useState(createComposerDraftStore);
   const setDraft = draftStore.set;
   const hasDraft = useSyncExternalStore(
@@ -2955,6 +2957,7 @@ export function ChatFlowClient({
                     <InputStatusContext.Provider value={inputStatus}>
                       <ChatTranscript
                         memoryScope={settingsScope}
+                        memoryWrites={memoryWrites.current}
                         onOpenReference={openReference}
                         onOpenAutomation={(id) => openAutomationTask({ id })}
                         streamingOutput={preferences.value.streamingOutput}
@@ -3192,6 +3195,7 @@ export function ChatFlowClient({
               ) : kind === 'experience' &&
                 (memoryInstanceId ?? activeEmployee?.instanceId) ? (
                 <WorkbenchExperiencePanel
+                  memoryWrites={memoryWrites.current}
                   memoryRequest={{
                     instanceId: (memoryInstanceId ??
                       activeEmployee?.instanceId)!,

@@ -1,7 +1,5 @@
-/** Real cookie auth, memory HTTP routes and isolated PG; only host/transport is
- * synthetic. Legacy editing cases explicitly reconstruct v1 full-content data.
- * Paired writes require the future v2 UI; PR1 tests their HTTP refusal separately.
- * The separate Worker matrix covers model -> broker -> storage. */
+/** Real cookie auth, v2 memory HTTP routes and isolated PG; only the page/server
+ * transport is synthetic. The separate Worker matrix covers model production. */
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
@@ -9,7 +7,14 @@ import { createServer, type Server } from 'node:http';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { RequestContext, WorkspaceMemorySchema } from '@allrice/contracts';
+import {
+  EmployeeMemoryDetailResponseSchema,
+  EmployeeMemoryListSchema,
+  EmployeeMemoryWriteResponseSchema,
+  type EmployeeMemoryRecord,
+  type RequestContext,
+  type WorkspaceMemorySchema,
+} from '@allrice/contracts';
 import type { z } from 'zod';
 import type {
   Browser,
@@ -29,15 +34,20 @@ import {
   ensureDefaultEmployee,
 } from '../../../../packages/database/src/workspace/service.ts';
 import { GET as adminMemories } from '../api/v1/admin/organizations/[organizationId]/employee-memories/route';
+import { GET as adminMemoryDetail } from '../api/v1/admin/organizations/[organizationId]/employee-memories/[id]/route';
 import { GET as manage } from '../api/v1/memories/manage/route';
 import { GET as list, POST as create } from '../api/v1/memories/route';
 import { GET as instanceContent } from '../api/v1/employee-instances/[id]/content/route';
-import { ensureGeneralEmployeeInstance } from '../../../../packages/database/src/employees/employee-instances.ts';
+import {
+  createEmployeeInstance,
+  ensureGeneralEmployeeInstance,
+} from '../../../../packages/database/src/employees/employee-instances.ts';
 import { POST as promote } from '../api/v1/memories/[id]/promote/route';
 import { POST as pin } from '../api/v1/memories/[id]/pin/route';
 import {
   DELETE as discard,
   PATCH as correct,
+  GET as getMemory,
 } from '../api/v1/memories/[id]/route';
 
 const ports = vi.hoisted(() => ({ cookies: vi.fn() }));
@@ -64,6 +74,12 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
   const screenshots = resolve('.local/quality/candidate-memory-entry');
   let loseAckFor = '',
     failDeleteFor = '';
+  let loseNextCreateAck = false;
+  const httpWrites: Array<{
+    method: string;
+    id: string;
+    body: Record<string, unknown>;
+  }> = [];
 
   beforeAll(async () => {
     f = await createRuntimeFixtureDatabase();
@@ -243,9 +259,16 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
               });
             if (parts[3] === 'admin' && parts[6] === 'employee-memories')
               return request.method === 'GET'
-                ? adminMemories(request, {
-                    params: Promise.resolve({ organizationId: parts[5]! }),
-                  })
+                ? parts[7]
+                  ? adminMemoryDetail(request, {
+                      params: Promise.resolve({
+                        organizationId: parts[5]!,
+                        id: parts[7],
+                      }),
+                    })
+                  : adminMemories(request, {
+                      params: Promise.resolve({ organizationId: parts[5]! }),
+                    })
                 : new Response(null, { status: 405 });
             if (parts[3] !== 'memories') {
               failures.push(
@@ -256,8 +279,17 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
               );
               return new Response(null, { status: 404 });
             }
-            if (req.method !== 'GET')
+            if (req.method !== 'GET') {
               mutations.push(request.method + ' ' + url.pathname);
+              httpWrites.push({
+                method: request.method,
+                id,
+                body: await request
+                  .clone()
+                  .json()
+                  .catch(() => ({})),
+              });
+            }
             if (req.method === 'DELETE' && id === failDeleteFor)
               return Response.json({}, { status: 503 });
             const params = { params: Promise.resolve({ id }) };
@@ -272,11 +304,22 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
                     ? await discard(request, params)
                     : req.method === 'PATCH'
                       ? await correct(request, params)
-                      : parts[5] === 'pin'
-                        ? await pin(request, params)
-                        : await promote(request, params);
+                      : req.method === 'GET'
+                        ? await getMemory(request, params)
+                        : parts[5] === 'pin'
+                          ? await pin(request, params)
+                          : await promote(request, params);
             if (id === loseAckFor && parts[5] === 'promote' && response.ok) {
               loseAckFor = '';
+              return Response.json({}, { status: 503 });
+            }
+            if (
+              !id &&
+              req.method === 'POST' &&
+              response.ok &&
+              loseNextCreateAck
+            ) {
+              loseNextCreateAck = false;
               return Response.json({}, { status: 503 });
             }
             return response;
@@ -391,6 +434,9 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     init: RequestInit = {},
     token = ownerToken,
     workspace = identity.workspace,
+    instance: string = token === foreignToken
+      ? foreign.assignment
+      : identity.assignment,
   ) {
     return fetch(
       origin +
@@ -400,7 +446,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
         'workspaceId=' +
         workspace +
         '&instanceId=' +
-        (token === foreignToken ? foreign.assignment : identity.assignment),
+        instance,
       {
         ...init,
         headers: {
@@ -414,9 +460,14 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       },
     );
   }
-  async function open(host = 'chat', theme = 'light', width = 1280) {
+  async function open(
+    host = 'chat',
+    theme = 'light',
+    width = 1280,
+    instance?: string,
+  ) {
     const context = await browser.newContext({
-      viewport: { width, height: 900 },
+      viewport: { width, height: width < 600 ? 844 : 1000 },
       colorScheme: theme === 'dark' ? 'dark' : 'light',
     });
     await context.addCookies([
@@ -424,25 +475,52 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     ]);
     const page = await context.newPage();
     page.on('pageerror', (error) => failures.push(error.message));
-    await page.goto(origin + '/?host=' + host + '&forged-memory=' + shared.id);
+    await page.goto(
+      origin +
+        '/?host=' +
+        host +
+        '&forged-memory=' +
+        shared.id +
+        (instance ? '&instance=' + instance : ''),
+    );
     await page.evaluate((value) => {
       document.documentElement.dataset.theme = value;
+      document.documentElement.dataset.appearance = value;
       document.documentElement.dataset.dsTheme = value;
       document.documentElement.style.colorScheme = value;
       if (value === 'dark')
         document.body.setAttribute('data-ds-dark-theme', '');
       else document.body.removeAttribute('data-ds-dark-theme');
     }, theme);
-    if (host === 'management')
+    if (host === 'management' && !instance)
       await page.getByRole('button', { name: '个人记忆', exact: true }).click();
     return { page, close: () => context.close() };
   }
   const card = (page: Page, id: string) =>
     page.locator(`[data-memory-id="${id}"]`);
-  async function capture(page: Page, name: string) {
+  async function capture(
+    page: Page,
+    name: string,
+    loadedDetails?: string | null,
+  ) {
     await page.waitForLoadState('networkidle');
+    if (loadedDetails !== undefined) {
+      const dialog = page.getByRole('dialog');
+      await dialog.getByRole('status').waitFor({ state: 'hidden' });
+      await dialog
+        .getByText(loadedDetails || '没有详细说明', { exact: true })
+        .waitFor();
+      await dialog
+        .getByRole('button', { name: '修改', exact: true })
+        .and(page.locator(':enabled'))
+        .waitFor();
+    }
     const path = resolve(screenshots, name + '.png');
-    await page.screenshot({ path, fullPage: true });
+    await page.screenshot({
+      path,
+      fullPage: true,
+      animations: 'disabled',
+    });
     console.info('CANDIDATE_MEMORY_SCREENSHOT ' + path);
   }
   async function noOverflow(page: Page) {
@@ -569,22 +647,105 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     expect((await read()).some((m) => m.id === added.id)).toBe(false);
   });
 
-  it('rejects missing cookie, cross-site writes, other owners and foreign orgs; duplicate confirmation adds one revision', async () => {
-    const path = '/' + candidate.id + '/promote';
-    const write = {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        instanceId: candidate.instanceId,
-        expectedRevision: candidate.revision,
-        contentDigest: candidate.contentDigest,
+  const write = (body: unknown, method = 'POST') => ({
+    method,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const exact = (
+    row: Pick<EmployeeMemoryRecord, 'revision' | 'pairDigest'>,
+    instanceId: string = identity.assignment,
+  ) => ({
+    instanceId,
+    expectedRevision: row.revision,
+    pairDigest: row.pairDigest,
+    idempotencyKey: randomUUID(),
+  });
+  async function detail(id: string, instanceId: string = identity.assignment) {
+    const response = await api(
+      '/' + id,
+      {},
+      ownerToken,
+      identity.workspace,
+      instanceId,
+    );
+    expect(response.status).toBe(200);
+    return EmployeeMemoryDetailResponseSchema.parse(await response.json())
+      .memory;
+  }
+  async function collection(instanceId: string = identity.assignment) {
+    const response = await api(
+      '/manage',
+      {},
+      ownerToken,
+      identity.workspace,
+      instanceId,
+    );
+    expect(response.status).toBe(200);
+    return EmployeeMemoryListSchema.parse(await response.json());
+  }
+  async function createPair(
+    instanceId: string,
+    summary: string,
+    details: string | null = null,
+  ) {
+    const response = await api(
+      '',
+      write({
+        workspaceId: identity.workspace,
+        instanceId,
+        summary,
+        details,
         idempotencyKey: randomUUID(),
       }),
-    };
+      ownerToken,
+      identity.workspace,
+      instanceId,
+    );
+    expect(response.status).toBe(201);
+    return EmployeeMemoryWriteResponseSchema.parse(await response.json())
+      .memory;
+  }
+  async function isolatedInstance() {
+    return (
+      await createEmployeeInstance(owner, {
+        workspaceId: identity.workspace,
+        assignmentId: identity.assignment,
+        requestId: randomUUID(),
+        profile: { name: 'Rice' },
+      })
+    ).id;
+  }
+  async function pendingFor(instanceId: string, content: string) {
+    return createTraceableMemory(owner, {
+      workspaceId: identity.workspace,
+      instanceId,
+      content,
+      sourceType: 'user',
+      sourceLabel: 'isolated UI fixture',
+      lifecycleState: 'candidate',
+      idempotencyKey: randomUUID(),
+    });
+  }
+  const deletion = (page: Page) =>
+    page.getByRole('dialog', { name: '确认删除这条记忆？', exact: true });
+  const notify = (page: Page) =>
+    page.evaluate(
+      (scopeId) =>
+        window.dispatchEvent(
+          new CustomEvent('allrice:memory-changed', { detail: { scopeId } }),
+        ),
+      identity.workspace,
+    );
+
+  it('keeps real cookie/same-origin/owner scope gates and replays one complete-pair confirmation', async () => {
+    const row = await detail(candidate.id),
+      path = '/' + candidate.id + '/promote';
+    const request = write(exact(row));
     expect(
       (
         await api(path, {
-          ...write,
+          ...request,
           headers: { cookie: '', authorization: 'Bearer ' + ownerToken },
         })
       ).status,
@@ -594,7 +755,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       { origin: 'https://other.invalid' },
       { 'sec-fetch-site': 'cross-site' },
     ] as Record<string, string>[])
-      expect((await api(path, { ...write, headers })).status).toBe(403);
+      expect((await api(path, { ...request, headers })).status).toBe(403);
     for (const [suffix, method] of [
       ['', 'POST'],
       ['/' + candidate.id, 'PATCH'],
@@ -603,75 +764,151 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       expect(
         (await api(suffix!, { method, headers: { origin: '' } })).status,
       ).toBe(403);
-    expect((await api(path, write, readerToken)).status).toBe(403);
+    expect((await api(path, request, readerToken)).status).toBe(403);
     expect(
-      (await api(path, write, foreignToken, foreign.workspace)).status,
+      (await api(path, request, foreignToken, foreign.workspace)).status,
     ).toBe(403);
     expect(
-      (await api('/' + shared.id, { ...write, method: 'DELETE' })).status,
+      (await api('/' + shared.id, { ...request, method: 'DELETE' })).status,
     ).toBe(404);
-    const responses = await Promise.all([api(path, write), api(path, write)]);
-    expect(responses.map((r) => r.status)).toEqual([200, 200]);
-    const rows = await Promise.all(responses.map((r) => r.json()));
-    expect(rows.map((r) => r.memory.revision)).toEqual([2, 2]);
-    expect(rows[0].memory).toMatchObject({
-      id: candidate.id,
-      lifecycleState: 'durable',
-      trust: 'user_confirmed',
-      ownedByMe: true,
+    const responses = await Promise.all([
+      api(path, request),
+      api(path, request),
+    ]);
+    expect(responses.map((response) => response.status)).toEqual([200, 200]);
+    const receipts = await Promise.all(
+      responses.map((response) => response.json()),
+    );
+    expect(receipts.map((receipt) => receipt.memory.revision)).toEqual([2, 2]);
+    expect(receipts[0]).toMatchObject({
+      schemaVersion: 2,
+      memory: { id: candidate.id, state: 'active', pairDigest: row.pairDigest },
     });
+    expect(receipts[0].memory).not.toHaveProperty('ownedByMe');
     expect(
-      await f.db`select revision from allrice_memory_revisions where memory_id=${candidate.id} order by revision`,
+      await f.db.unsafe(
+        'select revision from allrice_memory_revisions where memory_id=$1 order by revision',
+        [candidate.id],
+      ),
     ).toEqual([{ revision: 1 }, { revision: 2 }]);
     expect(
-      await f.db`select action from allrice_audit_events where resource_id=${candidate.id} and action='memory.promote'`,
+      await f.db.unsafe(
+        "select action from allrice_audit_events where resource_id=$1 and action='memory.promote'",
+        [candidate.id],
+      ),
     ).toHaveLength(1);
   });
 
+  it('keeps the existing chat card complete after a real V2 edit while the v2 sidebar still lists only its summary', async () => {
+    const pending = await remember('真实候选来源：月报条件请本人确认');
+    const row = await detail(pending.id);
+    const pair = {
+      summary: '月报可以外发',
+      details: '  只发脱敏汇总\n原始名单不得外发  ',
+    };
+    const response = await api(
+      '/' + pending.id,
+      write(
+        {
+          ...exact(row),
+          ...pair,
+          reason: '本人确认并保存完整条件',
+        },
+        'PATCH',
+      ),
+    );
+    expect(response.status).toBe(200);
+    const edited = EmployeeMemoryWriteResponseSchema.parse(
+      await response.json(),
+    ).memory;
+    const chat = await open('chat');
+    try {
+      const current = card(chat.page, pending.id);
+      await current.waitFor();
+      expect(await current.locator('p').first().textContent()).toBe(
+        `${pair.summary}\n${pair.details}`,
+      );
+      const manager = await open(
+        'management',
+        'light',
+        1280,
+        identity.assignment,
+      );
+      try {
+        const listed = card(manager.page, pending.id);
+        await listed.getByText(pair.summary, { exact: true }).waitFor();
+        expect(await listed.textContent()).not.toContain('原始名单不得外发');
+        await listed.locator('button').first().click();
+        await manager.page
+          .getByRole('dialog')
+          .getByText(pair.details, { exact: true })
+          .waitFor();
+        expect((await detail(pending.id)).pairDigest).toBe(edited.pairDigest);
+      } finally {
+        await manager.close();
+      }
+    } finally {
+      await chat.close();
+    }
+  });
+
   it.each([
-    ['light', 1280],
-    ['dark', 320],
+    ['light', 1440],
+    ['dark', 390],
   ] as const)(
-    'chat shows an empty-body receipt in %s at %ipx, confirms only on click, and can discard',
+    'chat confirms from a real pair and requires a separate delete click at %s/%s',
     async (theme, width) => {
       const pending = await remember(
-        '聊天候选 ' + theme + '：' + '较长内容'.repeat(20),
+        '聊天候选：先看表格，再看文字说明。' + theme,
       );
-      const dropped = await remember('将放弃的候选 ' + theme);
+      const dropped = await remember('不再需要的候选 ' + theme);
       const ui = await open('chat', theme, width);
       try {
         await card(ui.page, pending.id)
-          .getByRole('button', { name: '确认并记住' })
+          .getByRole('button', { name: '确认并记住', exact: true })
           .waitFor();
         expect(await card(ui.page, shared.id).count()).toBe(0);
-        expect(
-          (
-            await f.db`select lifecycle_state from allrice_memories where id=${pending.id}`
-          )[0]!.lifecycle_state,
-        ).toBe('candidate');
-        await noOverflow(ui.page);
+        expect((await detail(pending.id)).state).toBe('pending');
+        const before = httpWrites.length;
         await capture(ui.page, theme + '-chat-before');
-        const before = mutations.length;
         await card(ui.page, pending.id)
-          .getByRole('button', { name: '确认并记住' })
+          .getByRole('button', { name: '确认并记住', exact: true })
           .click();
         await card(ui.page, pending.id)
           .getByText('长期记忆', { exact: true })
           .waitFor();
-        expect(mutations.slice(before)).toEqual([
-          'POST /api/v1/memories/' + pending.id + '/promote',
-        ]);
-        await noOverflow(ui.page);
-        await capture(ui.page, theme + '-chat-after');
+        expect(httpWrites.slice(before)).toHaveLength(1);
+        expect(httpWrites[before]!.body).toMatchObject({
+          expectedRevision: 1,
+          pairDigest: expect.stringMatching(/^sha256:/),
+        });
+        expect(httpWrites[before]!.body).not.toHaveProperty('contentDigest');
         await card(ui.page, dropped.id)
           .getByRole('button', { name: '放弃', exact: true })
+          .click();
+        await deletion(ui.page).waitFor();
+        expect(httpWrites.slice(before)).toHaveLength(1);
+        await deletion(ui.page)
+          .getByRole('button', { name: '取消', exact: true })
+          .click();
+        expect(await card(ui.page, dropped.id).count()).toBe(1);
+        await card(ui.page, dropped.id)
+          .getByRole('button', { name: '放弃', exact: true })
+          .click();
+        await deletion(ui.page)
+          .getByRole('button', { name: '删除', exact: true })
           .click();
         await card(ui.page, dropped.id).waitFor({ state: 'detached' });
         expect(
           (
-            await f.db`select archived_at from allrice_memories where id=${dropped.id}`
+            await f.db.unsafe(
+              'select archived_at from allrice_memories where id=$1',
+              [dropped.id],
+            )
           )[0]!.archived_at,
         ).not.toBeNull();
+        await noOverflow(ui.page);
+        await capture(ui.page, theme + '-chat-after');
         await ui.page.reload();
         await card(ui.page, pending.id)
           .getByText('长期记忆', { exact: true })
@@ -683,44 +920,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     },
   );
 
-  it('management is available with automatic experience disabled and uses the selected instance', async () => {
-    const pending = await remember('个人记忆入口待确认');
-    const ui = await open('management', 'dark', 320);
-    try {
-      await card(ui.page, pending.id)
-        .getByRole('button', { name: '确认并记住' })
-        .waitFor();
-      expect(
-        await ui.page
-          .getByRole('combobox', { name: '经验所属 AllRice 助手' })
-          .isDisabled(),
-      ).toBe(false);
-      expect(await card(ui.page, shared.id).count()).toBe(0);
-      await noOverflow(ui.page);
-      await card(ui.page, pending.id)
-        .getByRole('button', { name: '确认并记住' })
-        .click();
-      await card(ui.page, pending.id)
-        .getByText('长期记忆', { exact: true })
-        .waitFor();
-      await card(ui.page, pending.id)
-        .getByRole('button', { name: '撤回', exact: true })
-        .click();
-      await card(ui.page, pending.id).waitFor({ state: 'detached' });
-      await ui.page.reload();
-      await ui.page
-        .getByRole('button', { name: '个人记忆', exact: true })
-        .click();
-      await ui.page
-        .getByRole('button', { name: '待确认', exact: true })
-        .waitFor();
-      expect(await card(ui.page, pending.id).count()).toBe(0);
-    } finally {
-      await ui.close();
-    }
-  });
-
-  it('restores an empty-body memory receipt from a complete trace while retaining the partial live view', async () => {
+  it('restores a complete trace and confirms the actual candidate without trusting a forged model memory ID', async () => {
     const pending = await remember('断线后恢复的真实候选');
     const ui = await open('recovery');
     try {
@@ -729,72 +929,72 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
         .poll(() => status.getAttribute('data-live-events'))
         .toBe('1');
       expect(await card(ui.page, pending.id).count()).toBe(0);
-      await ui.page.getByRole('button', { name: '恢复已完成历史' }).click();
+      await ui.page
+        .getByRole('button', { name: '恢复已完成历史', exact: true })
+        .click();
       await card(ui.page, pending.id)
-        .getByRole('button', { name: '确认并记住' })
-        .waitFor();
-      expect(await status.getAttribute('data-live-events')).toBe('1');
-      expect(await status.getAttribute('data-trace-state')).toBe('loaded');
-      await card(ui.page, pending.id)
-        .getByRole('button', { name: '确认并记住' })
+        .getByRole('button', { name: '确认并记住', exact: true })
         .click();
       await card(ui.page, pending.id)
         .getByText('长期记忆', { exact: true })
         .waitFor();
+      expect(await status.getAttribute('data-live-events')).toBe('1');
+      expect(await status.getAttribute('data-trace-state')).toBe('loaded');
+      expect(await card(ui.page, shared.id).count()).toBe(0);
+      expect((await detail(pending.id)).state).toBe('active');
     } finally {
       await ui.close();
     }
   });
 
   it.each(['future', 'expired'] as const)(
-    'retains historical v1 %s expiry before and after confirmation without extending it',
+    'uses real eligibility for a paired historical %s expiry and removes retired expiry promises',
     async (period) => {
-      const future = new Date(Date.now() + 86400000).toISOString();
-      const expiresAt =
-        period === 'future'
-          ? future
-          : new Date(Date.now() - 86400000).toISOString();
-      const pending = await remember('已有期限的候选 ' + period, future, true);
-      if (period === 'expired') {
-        // Reconstruct a legally captured older record in the isolated fixture:
-        // expiry stays after capture, while both dates are now in the past.
-        const capturedAt = new Date(Date.now() - 2 * 86400000).toISOString();
-        await f.db`update allrice_memories set captured_at=${capturedAt},created_at=${capturedAt},updated_at=${capturedAt},expires_at=${expiresAt} where id=${pending.id}`;
-        await f.db`update allrice_memory_revisions set changed_at=${capturedAt},expires_at=${expiresAt} where memory_id=${pending.id}`;
-      }
+      const pending = await remember('有历史期限的成对候选 ' + period);
+      const captured = new Date(Date.now() - 2 * 86400000).toISOString();
+      const expiry = new Date(
+        Date.now() + (period === 'future' ? 1 : -1) * 86400000,
+      ).toISOString();
+      await f.db.unsafe(
+        'update allrice_memories set captured_at=$2,created_at=$2,updated_at=$2,expires_at=$3 where id=$1',
+        [pending.id, captured, expiry],
+      );
+      await f.db.unsafe(
+        'update allrice_memory_revisions set changed_at=$2,expires_at=$3 where memory_id=$1',
+        [pending.id, captured, expiry],
+      );
       const ui = await open('management');
       try {
-        if (period === 'expired')
-          await ui.page
-            .getByRole('button', { name: '已过期', exact: true })
-            .click();
-        const receipt = card(ui.page, pending.id);
-        await receipt
-          .getByText('已记为候选，等待你确认', { exact: true })
+        await ui.page
+          .getByRole('heading', { name: '测试助手 · 记忆', exact: true })
           .waitFor();
-        expect(await receipt.locator('time').getAttribute('datetime')).toBe(
-          expiresAt,
-        );
-        expect(await receipt.textContent()).toContain(
-          '确认不会延长有效期；过期后不会用于后续对话。',
-        );
+        await ui.page
+          .getByText('正在读取记忆…', { exact: true })
+          .waitFor({ state: 'hidden' });
         expect(
-          await receipt
-            .getByText('已记为候选，确认后才生效', { exact: true })
+          await ui.page
+            .getByText('确认不会延长有效期', { exact: false })
             .count(),
         ).toBe(0);
-        await receipt.getByRole('button', { name: '确认并记住' }).click();
-        await receipt.getByText('长期记忆', { exact: true }).waitFor();
-        expect(await receipt.locator('time').getAttribute('datetime')).toBe(
-          expiresAt,
-        );
-        expect(await receipt.textContent()).toContain(
-          '确认不会延长有效期；过期后不会用于后续对话。',
-        );
-        const [stored] =
-          await f.db`select lifecycle_state,expires_at from allrice_memories where id=${pending.id}`;
-        expect(stored!.lifecycle_state).toBe('durable');
-        expect(stored!.expires_at.toISOString()).toBe(expiresAt);
+        if (period === 'expired')
+          expect(await card(ui.page, pending.id).count()).toBe(0);
+        else {
+          await card(ui.page, pending.id)
+            .getByRole('button', { name: '确认', exact: true })
+            .click();
+          await ui.page
+            .getByRole('region', { name: '生效中', exact: true })
+            .locator('[data-memory-id="' + pending.id + '"]')
+            .waitFor();
+          expect(
+            (
+              await f.db.unsafe(
+                'select expires_at,lifecycle_state from allrice_memories where id=$1',
+                [pending.id],
+              )
+            )[0],
+          ).toEqual({ expires_at: null, lifecycle_state: 'durable' });
+        }
       } finally {
         await ui.close();
       }
@@ -802,11 +1002,11 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
   );
 
   it.each(['confirm-success', 'discard-failure', 'discard-ack-loss'] as const)(
-    'preserves the other in-flight card across a successful background refresh: %s',
+    'preserves a frozen ordinary card across another real view refresh: %s',
     async (mode) => {
-      const fast = await remember('快速确认 ' + mode);
-      const slow = await remember('等待回执 ' + mode);
-      const ui = await open('management');
+      const fast = await remember('另一视图确认 ' + mode),
+        slow = await remember('当前视图等待回执 ' + mode);
+      const ui = await open('chat');
       let release = () => {};
       if (mode === 'discard-failure') failDeleteFor = slow.id;
       try {
@@ -820,10 +1020,12 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
         });
         const confirming = mode === 'confirm-success';
         await ui.page.route(
-          `**/api/v1/memories/${slow.id}${confirming ? '/promote' : ''}?**`,
+          '**/api/v1/memories/' +
+            slow.id +
+            (confirming ? '/promote' : '') +
+            '?**',
           async (route) => {
-            // Success and lost delete acknowledgement are already committed when
-            // the fast card triggers a read; definitive failure stays uncommitted.
+            if (route.request().method() === 'GET') return route.continue();
             const response =
               mode === 'discard-failure' ? null : await route.fetch();
             reached();
@@ -839,85 +1041,58 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
             exact: true,
           })
           .click();
+        if (!confirming)
+          await deletion(ui.page)
+            .getByRole('button', { name: '删除', exact: true })
+            .click();
         await arrived;
+        const other = await detail(fast.id);
         expect(
-          await ui.page
-            .getByRole('button', { name: '已过期', exact: true })
-            .isDisabled(),
-        ).toBe(true);
-        expect(
-          await ui.page
-            .getByRole('button', { name: '下一页', exact: true })
-            .isDisabled(),
-        ).toBe(true);
-        expect(
-          await card(ui.page, fast.id)
-            .getByRole('button', { name: '确认并记住' })
-            .isEnabled(),
-        ).toBe(true);
+          (await api('/' + fast.id + '/promote', write(exact(other)))).status,
+        ).toBe(200);
         const refreshed = ui.page.waitForResponse(
           (response) =>
-            ['/api/v1/memories', '/api/v1/memories/manage'].includes(
-              new URL(response.url()).pathname,
-            ) && response.request().method() === 'GET',
+            new URL(response.url()).pathname === '/api/v1/memories' &&
+            response.request().method() === 'GET',
         );
-        await card(ui.page, fast.id)
-          .getByRole('button', { name: '确认并记住' })
-          .click();
+        await notify(ui.page);
         await (await refreshed).finished();
-        await ui.page.evaluate(
-          () =>
-            new Promise<void>((done) =>
-              requestAnimationFrame(() => requestAnimationFrame(() => done())),
-            ),
-        );
+        await expect
+          .poll(() =>
+            card(ui.page, fast.id)
+              .getByText('长期记忆', { exact: true })
+              .count(),
+          )
+          .toBe(1);
         expect(await card(ui.page, slow.id).getAttribute('aria-busy')).toBe(
           'true',
         );
-        expect(
-          await card(ui.page, slow.id)
-            .getByRole('button', {
-              name: confirming ? '正在确认…' : '正在处理…',
-              exact: true,
-            })
-            .isDisabled(),
-        ).toBe(true);
         release();
         if (confirming) {
           await card(ui.page, slow.id)
             .getByText('长期记忆', { exact: true })
             .waitFor();
-          expect(
-            (
-              await f.db`select lifecycle_state from allrice_memories where id=${slow.id}`
-            )[0]!.lifecycle_state,
-          ).toBe('durable');
+          expect((await detail(slow.id)).state).toBe('active');
         } else {
-          const error = card(ui.page, slow.id).getByRole('alert');
-          await error.waitFor();
-          expect(await error.textContent()).toContain(
-            '暂时无法确认操作结果，请重新读取记忆。',
-          );
-          const [stored] =
-            await f.db`select archived_at from allrice_memories where id=${slow.id}`;
+          await deletion(ui.page).getByRole('alert').waitFor();
+          expect(
+            await deletion(ui.page).getByRole('alert').textContent(),
+          ).toContain('暂时无法确认操作结果。');
+          await deletion(ui.page)
+            .getByRole('button', { name: '取消', exact: true })
+            .click();
+          const stored = (
+            await f.db.unsafe(
+              'select archived_at from allrice_memories where id=$1',
+              [slow.id],
+            )
+          )[0]!;
           if (mode === 'discard-ack-loss') {
-            expect(stored!.archived_at).not.toBeNull();
-            await card(ui.page, slow.id)
-              .getByRole('button', { name: '重新读取记忆' })
-              .click();
+            expect(stored.archived_at).not.toBeNull();
+            await notify(ui.page);
             await card(ui.page, slow.id).waitFor({ state: 'detached' });
-          } else expect(stored!.archived_at).toBeNull();
+          } else expect(stored.archived_at).toBeNull();
         }
-        await card(ui.page, fast.id)
-          .getByText('长期记忆', { exact: true })
-          .waitFor();
-        await ui.page
-          .getByRole('button', { name: '已过期', exact: true })
-          .click();
-        await ui.page
-          .getByText('正在读取记忆…', { exact: true })
-          .waitFor({ state: 'hidden' });
-        expect(await ui.page.getByRole('alert').count()).toBe(0);
       } finally {
         release();
         failDeleteFor = '';
@@ -926,107 +1101,100 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     },
   );
 
-  it('rejects a stale historical v1 card after another view edits the exact revision and refreshes to saved content', async () => {
-    const pending = await remember('月报入口使用原始账单', null, true);
-    const ui = await open();
+  it('refuses a stale card before any write after another owner view saves a different pair', async () => {
+    const pending = await remember('月报入口使用原始账单');
+    const ui = await open('chat');
     try {
-      await card(ui.page, pending.id)
-        .getByRole('button', { name: '确认并记住' })
-        .waitFor();
-      const changed = await api('/' + pending.id, {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          instanceId: pending.instanceId,
-          expectedRevision: pending.revision,
-          contentDigest: pending.contentDigest,
-          idempotencyKey: randomUUID(),
-          content: '月报入口使用本人校订后的原始账单',
-          reason: 'Another owner view edited this proposal',
-          confidence: 1,
-          expiresAt: null,
-        }),
-      });
-      expect(changed.status).toBe(200);
-      const response = ui.page.waitForResponse(
-        (r) =>
-          r.request().method() === 'POST' &&
-          r.url().includes('/' + pending.id + '/promote'),
+      await card(ui.page, pending.id).waitFor();
+      const row = await detail(pending.id);
+      const changed = await api(
+        '/' + pending.id,
+        write(
+          {
+            ...exact(row),
+            summary: '月报使用本人校订的账单',
+            details: '  原始附件仍须保留  ',
+            reason: '本人编辑',
+          },
+          'PATCH',
+        ),
       );
+      expect(changed.status).toBe(200);
+      const before = mutations.length;
       await card(ui.page, pending.id)
-        .getByRole('button', { name: '确认并记住' })
+        .getByRole('button', { name: '确认并记住', exact: true })
         .click();
-      expect((await response).status()).toBe(409);
       await card(ui.page, pending.id)
         .getByText('记忆已变化，请重新读取后再操作。', { exact: false })
         .waitFor();
+      expect(mutations.length).toBe(before);
       await card(ui.page, pending.id)
-        .getByRole('button', { name: '重新读取记忆' })
+        .getByRole('button', { name: '重新读取记忆', exact: true })
         .click();
-      await card(ui.page, pending.id)
-        .getByText('月报入口使用本人校订后的原始账单', { exact: true })
-        .waitFor();
-      await card(ui.page, pending.id)
-        .getByText('长期记忆', { exact: true })
-        .waitFor();
+      await expect
+        .poll(() =>
+          card(ui.page, pending.id).locator('p').first().textContent(),
+        )
+        .toBe('月报使用本人校订的账单\n  原始附件仍须保留  ');
       expect(
-        await f.db`select revision,content from allrice_memories where id=${pending.id}`,
-      ).toEqual([{ revision: 2, content: '月报入口使用本人校订后的原始账单' }]);
-      expect(
-        await f.db`select id from allrice_audit_events where resource_id=${pending.id} and action='memory.promote'`,
+        await f.db.unsafe(
+          "select id from allrice_audit_events where resource_id=$1 and action='memory.promote'",
+          [pending.id],
+        ),
       ).toHaveLength(0);
     } finally {
       await ui.close();
     }
   });
 
-  it('keeps candidate on lost confirmation acknowledgement, recovers by rereading, and retains failed discard', async () => {
-    const pending = await remember('确认回执丢失的候选');
-    const dropped = await remember('放弃失败的候选');
+  it('replays a lost confirmation with its original key/CAS and preserves failed delete until final confirmation', async () => {
+    const pending = await remember('确认回执丢失的候选'),
+      dropped = await remember('放弃失败的候选');
     loseAckFor = pending.id;
     failDeleteFor = dropped.id;
     const ui = await open('chat');
     try {
-      await card(ui.page, pending.id)
-        .getByRole('button', { name: '确认并记住' })
-        .click();
+      const before = httpWrites.length;
+      const button = card(ui.page, pending.id).getByRole('button', {
+        name: '确认并记住',
+        exact: true,
+      });
+      await button.click();
       await card(ui.page, pending.id).getByRole('alert').waitFor();
-      expect(
-        await card(ui.page, pending.id)
-          .getByText('已记为候选，确认后才生效', { exact: true })
-          .count(),
-      ).toBe(1);
+      expect((await detail(pending.id)).state).toBe('active');
       expect(
         await card(ui.page, pending.id)
           .getByText('长期记忆', { exact: true })
           .count(),
       ).toBe(0);
-      expect(
-        (
-          await f.db`select lifecycle_state from allrice_memories where id=${pending.id}`
-        )[0]!.lifecycle_state,
-      ).toBe('durable');
-      await card(ui.page, pending.id)
-        .getByRole('button', { name: '重新读取记忆' })
-        .click();
+      await button.click();
       await card(ui.page, pending.id)
         .getByText('长期记忆', { exact: true })
         .waitFor();
-      await card(ui.page, pending.id)
-        .getByRole('alert')
-        .waitFor({ state: 'detached' });
+      const calls = httpWrites
+        .slice(before)
+        .filter((item) => item.id === pending.id);
+      expect(calls).toHaveLength(2);
+      expect(calls[0]!.body).toEqual(calls[1]!.body);
+      expect(calls[0]!.body.expectedRevision).toBe(1);
       await card(ui.page, dropped.id)
         .getByRole('button', { name: '放弃', exact: true })
         .click();
-      await card(ui.page, dropped.id).getByRole('alert').waitFor();
+      await deletion(ui.page)
+        .getByRole('button', { name: '删除', exact: true })
+        .click();
+      await deletion(ui.page).getByRole('alert').waitFor();
       expect(
         (
-          await f.db`select archived_at from allrice_memories where id=${dropped.id}`
+          await f.db.unsafe(
+            'select archived_at from allrice_memories where id=$1',
+            [dropped.id],
+          )
         )[0]!.archived_at,
       ).toBeNull();
       failDeleteFor = '';
-      await card(ui.page, dropped.id)
-        .getByRole('button', { name: '放弃', exact: true })
+      await deletion(ui.page)
+        .getByRole('button', { name: '删除', exact: true })
         .click();
       await card(ui.page, dropped.id).waitFor({ state: 'detached' });
     } finally {
@@ -1037,10 +1205,10 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
   });
 
   it.each(['success', 'failure'] as const)(
-    'ignores an older read finishing with %s after a later lost write acknowledgement',
+    'does not let an older read %s settle a later unknown mutation',
     async (outcome) => {
-      const fast = await remember('触发较早读取 ' + outcome);
-      const pending = await remember('较后确认回执丢失 ' + outcome);
+      const fast = await remember('较早确认 ' + outcome),
+        pending = await remember('较后确认回执未知 ' + outcome);
       const ui = await open('chat');
       let release = () => {};
       loseAckFor = pending.id;
@@ -1048,46 +1216,32 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
         await card(ui.page, pending.id).waitFor();
         let reached!: () => void;
         const arrived = new Promise<void>((done) => {
-          reached = done;
+            reached = done;
+          }),
+          blocked = new Promise<void>((done) => {
+            release = done;
+          });
+        await ui.page.route('**/api/v1/memories?**', async (route) => {
+          const response = await route.fetch();
+          reached();
+          await blocked;
+          return outcome === 'success'
+            ? route.fulfill({ response })
+            : route.fulfill({ status: 503, json: {} });
         });
-        const blocked = new Promise<void>((done) => {
-          release = done;
-        });
-        let beforeWriteState: string | undefined;
-        await ui.page.route(
-          '**/api/v1/memories{,/manage}?**',
-          async (route) => {
-            const response = await route.fetch();
-            beforeWriteState = (await response.json()).memories.find(
-              (memory: WorkspaceMemory) => memory.id === pending.id,
-            )?.lifecycleState;
-            reached();
-            await blocked;
-            return outcome === 'success'
-              ? route.fulfill({ response })
-              : route.fulfill({ status: 503, json: {} });
-          },
-        );
         await card(ui.page, fast.id)
-          .getByRole('button', { name: '确认并记住' })
+          .getByRole('button', { name: '确认并记住', exact: true })
           .click();
         await arrived;
-        expect(beforeWriteState).toBe('candidate');
         await card(ui.page, pending.id)
-          .getByRole('button', { name: '确认并记住' })
+          .getByRole('button', { name: '确认并记住', exact: true })
           .click();
-        const operationError = card(ui.page, pending.id).getByRole('alert');
-        await operationError.waitFor();
-        expect(
-          (
-            await f.db`select lifecycle_state from allrice_memories where id=${pending.id}`
-          )[0]!.lifecycle_state,
-        ).toBe('durable');
+        const error = card(ui.page, pending.id).getByRole('alert');
+        await error.waitFor();
         const returned = ui.page.waitForResponse(
           (response) =>
-            ['/api/v1/memories', '/api/v1/memories/manage'].includes(
-              new URL(response.url()).pathname,
-            ) && response.request().method() === 'GET',
+            new URL(response.url()).pathname === '/api/v1/memories' &&
+            response.request().method() === 'GET',
         );
         release();
         await (await returned).finished();
@@ -1098,38 +1252,24 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
               requestAnimationFrame(() => requestAnimationFrame(() => done())),
             ),
         );
-        expect(await operationError.count()).toBe(1);
+        expect(await error.count()).toBe(1);
         expect(
           await card(ui.page, pending.id)
-            .getByText('已记为候选，确认后才生效', { exact: true })
+            .getByText('长期记忆', { exact: true })
             .count(),
-        ).toBe(1);
+        ).toBe(0);
         expect(
           await ui.page
             .getByRole('alert')
             .filter({ hasText: '记忆读取失败' })
             .count(),
         ).toBe(0);
-        // A new, failed read also cannot clear the unresolved operation error.
-        await ui.page.route('**/api/v1/memories{,/manage}?**', (route) =>
-          route.fulfill({ status: 503, json: {} }),
-        );
         await card(ui.page, pending.id)
-          .getByRole('button', { name: '重新读取记忆' })
-          .click();
-        await ui.page
-          .getByRole('alert')
-          .filter({ hasText: '记忆读取失败' })
-          .waitFor();
-        expect(await operationError.count()).toBe(1);
-        await ui.page.unrouteAll({ behavior: 'wait' });
-        await card(ui.page, pending.id)
-          .getByRole('button', { name: '重新读取记忆' })
+          .getByRole('button', { name: '重新读取记忆', exact: true })
           .click();
         await card(ui.page, pending.id)
           .getByText('长期记忆', { exact: true })
           .waitFor();
-        await operationError.waitFor({ state: 'detached' });
       } finally {
         release();
         loseAckFor = '';
@@ -1138,49 +1278,242 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     },
   );
 
-  it('offers a retry after the personal-memory read fails', async () => {
-    const pending = await remember('读取失败后可重试的候选');
-    const ui = await open('management');
+  it('keeps an edit snapshot through refresh, rejects its stale CAS, then explicitly rereads without trimming details', async () => {
+    const instanceId = await isolatedInstance(),
+      original = await createPair(
+        instanceId,
+        '最初的一句话',
+        '  原始说明\n保留尾空白  ',
+      );
+    const ui = await open('management', 'light', 1440, instanceId);
     try {
-      await card(ui.page, pending.id).waitFor();
-      let failOnce = true;
-      await ui.page.route('**/api/v1/memories{,/manage}?**', (route) => {
-        if (!failOnce) return route.continue();
-        failOnce = false;
-        return route.fulfill({ status: 503, json: {} });
+      await card(ui.page, original.id).locator('button').click();
+      await ui.page
+        .getByRole('dialog')
+        .getByRole('button', { name: '修改', exact: true })
+        .click();
+      const form = ui.page.getByRole('form', {
+        name: 'Rice · 修改记忆',
+        exact: true,
       });
-      await ui.page
-        .getByRole('button', { name: '已生效经验', exact: true })
-        .click();
-      await ui.page
-        .getByRole('button', { name: '个人记忆', exact: true })
-        .click();
-      await ui.page
-        .getByRole('alert')
-        .getByRole('button', { name: '重新读取记忆' })
-        .click();
-      await card(ui.page, pending.id)
-        .getByRole('button', { name: '确认并记住' })
+      await form.getByLabel(/一句话/).fill('我正在编辑的草稿');
+      const raw = '  第一行\n\n第二行  \n';
+      await form.getByLabel(/详细说明/).fill(raw);
+      expect(
+        (
+          await api(
+            '/' + original.id,
+            write(
+              {
+                ...exact(original, instanceId),
+                summary: '另一窗口已更新',
+                details: '另一窗口说明',
+                reason: '本人编辑',
+              },
+              'PATCH',
+            ),
+            ownerToken,
+            identity.workspace,
+            instanceId,
+          )
+        ).status,
+      ).toBe(200);
+      await notify(ui.page);
+      await card(ui.page, original.id)
+        .getByText('另一窗口已更新', { exact: true })
         .waitFor();
+      expect(await form.getByLabel(/一句话/).inputValue()).toBe(
+        '我正在编辑的草稿',
+      );
+      expect(await form.getByLabel(/详细说明/).inputValue()).toBe(raw);
+      const before = httpWrites.length;
+      await form.getByRole('button', { name: '保存', exact: true }).click();
+      await form.getByRole('alert').filter({ hasText: '记忆已变化' }).waitFor();
+      expect(httpWrites[before]!.body).toMatchObject({
+        expectedRevision: original.revision,
+        pairDigest: original.pairDigest,
+        summary: '我正在编辑的草稿',
+        details: raw,
+      });
+      expect((await detail(original.id, instanceId)).summary).toBe(
+        '另一窗口已更新',
+      );
+      await form.getByRole('button', { name: '取消', exact: true }).click();
+      await card(ui.page, original.id).locator('button').click();
+      await ui.page
+        .getByRole('dialog')
+        .getByRole('button', { name: '修改', exact: true })
+        .click();
+      const reread = ui.page.getByRole('form', {
+        name: 'Rice · 修改记忆',
+        exact: true,
+      });
+      await reread.getByLabel(/一句话/).fill('本人明确重新保存');
+      await reread.getByLabel(/详细说明/).fill(raw);
+      await reread.getByRole('button', { name: '保存', exact: true }).click();
+      await expect.poll(() => ui.page.getByRole('dialog').count()).toBe(0);
+      expect(await detail(original.id, instanceId)).toMatchObject({
+        summary: '本人明确重新保存',
+        details: raw,
+        revision: 3,
+      });
     } finally {
       await ui.close();
     }
   });
 
-  it('drops a delayed old workspace read after switching scope', async () => {
-    const pending = await remember('旧范围延迟返回不能显示');
+  it('retries a lost create receipt without duplicate rows and keeps success separate from a failed follow-up read', async () => {
+    const instanceId = await isolatedInstance();
+    const ui = await open('management', 'dark', 390, instanceId);
+    try {
+      await ui.page
+        .getByRole('button', { name: '＋ 新增', exact: true })
+        .click();
+      const form = ui.page.getByRole('form', {
+        name: 'Rice · 新增记忆',
+        exact: true,
+      });
+      await form.getByLabel(/一句话/).fill('每周先做数据核对');
+      await form.getByLabel(/详细说明/).fill('  保留原文\n最后一行  ');
+      const before = httpWrites.length;
+      loseNextCreateAck = true;
+      await form.getByRole('button', { name: '保存', exact: true }).click();
+      await form
+        .getByRole('alert')
+        .filter({ hasText: '暂时无法确认保存结果。' })
+        .waitFor();
+      expect((await collection(instanceId)).counts.active).toBe(1);
+      await ui.page.route('**/api/v1/memories/manage?**', (route) =>
+        route.fulfill({ status: 503, json: {} }),
+      );
+      await form.getByRole('button', { name: '保存', exact: true }).click();
+      await expect.poll(() => ui.page.getByRole('dialog').count()).toBe(0);
+      await ui.page
+        .getByRole('alert')
+        .filter({ hasText: '记忆读取失败' })
+        .waitFor();
+      const calls = httpWrites.slice(before);
+      expect(calls).toHaveLength(2);
+      expect(calls[0]!.body).toEqual(calls[1]!.body);
+      expect((await collection(instanceId)).counts.active).toBe(1);
+      await ui.page.unrouteAll({ behavior: 'wait' });
+      await ui.page.getByRole('button', { name: '重试', exact: true }).click();
+      await ui.page.getByText('每周先做数据核对', { exact: true }).waitFor();
+      expect(httpWrites.slice(before)).toHaveLength(2);
+    } finally {
+      loseNextCreateAck = false;
+      await ui.close();
+    }
+  });
+
+  it('preserves untouched CRLF and surrounding whitespace in a summary-only edit', async () => {
+    const instanceId = await isolatedInstance(),
+      raw = '  第一行\r\n\r\n第二行  \r\n';
+    const saved = await createPair(instanceId, '说明保持原样', raw);
+    const ui = await open('management', 'light', 390, instanceId);
+    try {
+      await card(ui.page, saved.id).locator('button').click();
+      await ui.page
+        .getByRole('dialog')
+        .getByRole('button', { name: '修改', exact: true })
+        .click();
+      const form = ui.page.getByRole('form', {
+        name: 'Rice · 修改记忆',
+        exact: true,
+      });
+      await form.getByLabel(/一句话/).fill('只修改这一句话');
+      await form.getByRole('button', { name: '保存', exact: true }).click();
+      await expect.poll(() => ui.page.getByRole('dialog').count()).toBe(0);
+      expect(await detail(saved.id, instanceId)).toMatchObject({
+        summary: '只修改这一句话',
+        details: raw,
+        revision: 2,
+      });
+    } finally {
+      await ui.close();
+    }
+  });
+
+  it.each([401, 403, 404, 503])(
+    'clears revoked private content for %s while keeping a draft on a network/service read failure',
+    async (status) => {
+      const instanceId = await isolatedInstance(),
+        saved = await createPair(
+          instanceId,
+          '不可串到另一人的原文',
+          '原私密说明',
+        );
+      const ui = await open('management', 'light', 390, instanceId);
+      try {
+        await card(ui.page, saved.id).locator('button').click();
+        await ui.page
+          .getByRole('dialog')
+          .getByRole('button', { name: '修改', exact: true })
+          .click();
+        const form = ui.page.getByRole('form', {
+          name: 'Rice · 修改记忆',
+          exact: true,
+        });
+        await form.getByLabel(/详细说明/).fill('尚未提交的私密草稿');
+        await ui.page.route('**/api/v1/memories/manage?**', (route) =>
+          route.fulfill({ status, json: {} }),
+        );
+        await notify(ui.page);
+        await ui.page
+          .getByRole('region', { name: '个人记忆', exact: true })
+          .getByRole('alert')
+          .waitFor();
+        if (status === 503) {
+          expect(await form.getByLabel(/详细说明/).inputValue()).toBe(
+            '尚未提交的私密草稿',
+          );
+          expect(
+            await form
+              .getByRole('button', { name: '保存', exact: true })
+              .isDisabled(),
+          ).toBe(true);
+          await ui.page.unrouteAll({ behavior: 'wait' });
+          await form.getByRole('button', { name: '重试', exact: true }).click();
+          await expect
+            .poll(() =>
+              form
+                .getByRole('button', { name: '保存', exact: true })
+                .isEnabled(),
+            )
+            .toBe(true);
+          expect(await form.getByLabel(/详细说明/).inputValue()).toBe(
+            '尚未提交的私密草稿',
+          );
+        } else {
+          expect(await ui.page.getByRole('dialog').count()).toBe(0);
+          expect(
+            await ui.page
+              .getByText('尚未提交的私密草稿', { exact: true })
+              .count(),
+          ).toBe(0);
+          expect(await card(ui.page, saved.id).count()).toBe(0);
+        }
+        expect((await detail(saved.id, instanceId)).details).toBe('原私密说明');
+      } finally {
+        await ui.close();
+      }
+    },
+  );
+
+  it('discards a delayed old-scope list and closes its portal when the actual host scope changes', async () => {
+    const pending = await remember('旧范围的内容不能显示');
     const ui = await open('management');
     let release = () => {};
     try {
       await card(ui.page, pending.id).waitFor();
       let reached!: () => void;
-      const blocked = new Promise<void>((done) => {
-        release = done;
-      });
       const arrived = new Promise<void>((done) => {
-        reached = done;
-      });
-      await ui.page.route('**/api/v1/memories{,/manage}?**', async (route) => {
+          reached = done;
+        }),
+        blocked = new Promise<void>((done) => {
+          release = done;
+        });
+      await ui.page.route('**/api/v1/memories/manage?**', async (route) => {
         if (
           new URL(route.request().url()).searchParams.get('workspaceId') !==
           identity.workspace
@@ -1189,295 +1522,587 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
         const response = await route.fetch();
         reached();
         await blocked;
-        await route.fulfill({ response });
+        return route.fulfill({ response });
       });
-      // Reopen the tab to start an old read, then change the actual scope.
-      await ui.page
-        .getByRole('button', { name: '已生效经验', exact: true })
-        .click();
-      await ui.page
-        .getByRole('button', { name: '个人记忆', exact: true })
-        .click();
+      await notify(ui.page);
       await arrived;
-      await ui.page.getByRole('button', { name: '切换测试工作区' }).click();
-      await ui.page.getByText('暂无全部的记忆。', { exact: true }).waitFor();
+      await ui.page
+        .getByRole('button', { name: '切换测试工作区', exact: true })
+        .click();
+      await ui.page.getByText('还没有记忆', { exact: true }).waitFor();
       release();
       await ui.page.unrouteAll({ behavior: 'wait' });
       expect(await card(ui.page, pending.id).count()).toBe(0);
-      expect(await ui.page.locator('[data-memory-id]').count()).toBe(0);
+      expect(await ui.page.getByRole('dialog').count()).toBe(0);
     } finally {
       release();
       await ui.close();
     }
   });
-  it('owner adds a real pair, retains oversized draft, gets zero-write legacy edit refusal, and can still withdraw', async () => {
-    const ui = await open('management');
+
+  it('does not silently fall back to a v1 full-content editor or mutate a historical record', async () => {
+    const instanceId = await isolatedInstance();
+    const legacy = await seedLegacyEmployeeMemory(f.db, owner, {
+      workspaceId: identity.workspace,
+      instanceId,
+      sourceType: 'user',
+      content: '历史v1整段内容只能按明确迁移合同处理',
+    });
+    const before = await f.db.unsafe(
+      'select revision,content,summary,details from allrice_memories where id=$1',
+      [legacy.id],
+    );
+    const ui = await open('management', 'light', 1440, instanceId);
     try {
-      await ui.page.getByText('（确认后生效）', { exact: true }).waitFor();
+      await ui.page
+        .getByRole('alert')
+        .filter({ hasText: '记忆读取失败' })
+        .waitFor();
       expect(
         await ui.page
-          .getByText('管理员可以查看你的记忆。', { exact: false })
-          .count(),
-      ).toBe(0);
-      await ui.page
-        .getByRole('button', { name: '＋ 新增', exact: true })
-        .click();
-      await ui.page.getByLabel('新增记忆内容').fill('中'.repeat(334));
-      await ui.page
-        .getByRole('button', { name: '保存记忆', exact: true })
-        .click();
-      await ui.page
-        .getByRole('alert')
-        .filter({ hasText: '1000 字节' })
-        .waitFor();
-      expect(await ui.page.getByLabel('新增记忆内容').inputValue()).toBe(
-        '中'.repeat(334),
-      );
-      const content = '本人新增月报资料入口 ' + randomUUID();
-      await ui.page.getByLabel('新增记忆内容').fill(content);
-      await ui.page
-        .getByRole('button', { name: '保存记忆', exact: true })
-        .click();
-      await ui.page
-        .getByRole('status')
-        .filter({ hasText: '记忆已保存' })
-        .waitFor();
-      const [stored] =
-        await f.db`select id,revision,trust_level,lifecycle_state,instance_id from allrice_memories where content=${content} and owner_id=${identity.user}`;
-      expect(stored).toMatchObject({
-        revision: 1,
-        trust_level: 'user_confirmed',
-        lifecycle_state: 'durable',
-        instance_id: identity.assignment,
-      });
-      const snapshot = () => f.db`select to_jsonb(m) as memory,
-        (select jsonb_agg(to_jsonb(r) order by revision) from allrice_memory_revisions r where memory_id=m.id) revisions,
-        (select jsonb_agg(to_jsonb(o) order by operation_key) from allrice_employee_memory_operations o where memory_id=m.id) receipts
-        from allrice_memories m where id=${stored!.id}`;
-      const beforeEdit = await snapshot();
-      expect(beforeEdit[0]!.memory.details).toBe(content);
-      const row = card(ui.page, stored!.id);
-      await row.getByRole('button', { name: '编辑', exact: true }).click();
-      await ui.page.getByLabel('编辑记忆内容').fill(content + ' 已更正');
-      const rejected = ui.page.waitForResponse(
-        (r) => r.request().method() === 'PATCH' && r.url().includes(stored!.id),
-      );
-      await ui.page
-        .getByRole('button', { name: '保存记忆', exact: true })
-        .click();
-      const response = await rejected;
-      expect(response.status()).toBe(409);
-      expect(await response.json()).toMatchObject({
-        error: {
-          code: 'CONFLICT',
-          retryable: false,
-          details: {
-            domain: 'employee_memory',
-            reason: 'contract_changed',
-            requiredSchemaVersion: 2,
-          },
-        },
-      });
-      await ui.page
-        .getByRole('alert')
-        .filter({ hasText: '编辑内容已保留' })
-        .waitFor();
-      expect(await ui.page.getByLabel('编辑记忆内容').inputValue()).toBe(
-        content + ' 已更正',
-      );
-      expect(await snapshot()).toEqual(beforeEdit);
-      await ui.page.getByRole('button', { name: '取消', exact: true }).click();
-      await ui.page.locator('summary').filter({ hasText: '容量预览' }).click();
-      await ui.page
-        .getByText('任务开始时会重新核对资格。', { exact: false })
-        .waitFor();
-      await capture(ui.page, 'm2-owner-management');
-      await row.getByRole('button', { name: '撤回', exact: true }).click();
-      await row.waitFor({ state: 'detached' });
-      await ui.page
-        .getByRole('button', { name: '已撤回', exact: true })
-        .click();
-      await card(ui.page, stored!.id).waitFor();
-      expect(await card(ui.page, stored!.id).getByRole('button').count()).toBe(
-        0,
-      );
-    } finally {
-      await ui.close();
-    }
-  });
-
-  it('edits a directly seeded historical v1 full-content row without rewriting its old revision', async () => {
-    const content = '历史v1本人记忆 ' + randomUUID();
-    const memory = await seedLegacyEmployeeMemory(f.db, owner, {
-      workspaceId: identity.workspace,
-      instanceId: identity.assignment,
-      sourceType: 'user',
-      content,
-    });
-    const ui = await open('management');
-    try {
-      const row = card(ui.page, memory.id);
-      await row.getByRole('button', { name: '编辑', exact: true }).click();
-      await ui.page.getByLabel('编辑记忆内容').fill(content + ' 已更正');
-      await ui.page
-        .getByRole('button', { name: '保存记忆', exact: true })
-        .click();
-      await row.getByText(content + ' 已更正', { exact: true }).waitFor();
+          .getByRole('button', { name: '＋ 新增', exact: true })
+          .isDisabled(),
+      ).toBe(true);
+      expect(await ui.page.getByRole('textbox').count()).toBe(0);
       expect(
-        (
-          await f.db`select revision,content from allrice_memories where id=${memory.id}`
-        )[0],
-      ).toEqual({ revision: 2, content: content + ' 已更正' });
-      expect(
-        (
-          await f.db`select revision,content,summary,details from allrice_memory_revisions where memory_id=${memory.id} and revision=1`
-        )[0],
-      ).toEqual({ revision: 1, content, summary: null, details: null });
-    } finally {
-      await ui.close();
-    }
-  });
-
-  it('historical v1 pin receipts and capacity rejection retain the edit and preview at desktop and narrow widths', async () => {
-    const saved: WorkspaceMemory[] = [];
-    const write = (body: unknown, method = 'POST') => ({
-      method,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const exact = (memory: WorkspaceMemory) => ({
-      instanceId: identity.assignment,
-      expectedRevision: memory.revision,
-      contentDigest: memory.contentDigest,
-      idempotencyKey: randomUUID(),
-    });
-    for (let i = 0; i < 8; i++) {
-      const memory = await seedLegacyEmployeeMemory(f.db, owner, {
-        workspaceId: identity.workspace,
-        instanceId: identity.assignment,
-        content: `预算入口${i}`,
-        sourceType: 'user',
-        sourceLabel: '本人新增',
-        lifecycleState: 'durable',
-        memoryClass: 'user_preference',
-        idempotencyKey: randomUUID(),
-      });
-      const pinned = await api(
-        '/' + memory.id + '/pin',
-        write({ ...exact(memory), pinned: true }),
-      );
-      expect(pinned.status).toBe(200);
-      saved.push((await pinned.json()).memory);
-    }
-    let blocked: WorkspaceMemory | undefined;
-    for (const memory of saved) {
-      const response = await api(
-        '/' + memory.id,
-        write(
-          {
-            ...exact(memory),
-            content: 'x'.repeat(1000),
-            reason: '本人编辑',
-          },
-          'PATCH',
+        await f.db.unsafe(
+          'select revision,content,summary,details from allrice_memories where id=$1',
+          [legacy.id],
         ),
-      );
-      if (response.status === 422) {
-        blocked = memory;
-        break;
-      }
-      expect(response.status).toBe(200);
-    }
-    expect(blocked).toBeDefined();
-    const ui = await open('management');
-    try {
-      const row = card(ui.page, blocked!.id);
-      await row
-        .locator('..')
-        .getByRole('button', { name: '取消置顶', exact: true })
-        .click();
-      await ui.page
-        .getByRole('status')
-        .filter({ hasText: '已取消置顶' })
-        .waitFor();
-      await row
-        .locator('..')
-        .getByRole('button', { name: '置顶', exact: true })
-        .click();
-      await ui.page.getByRole('status').filter({ hasText: '已置顶' }).waitFor();
-      const before =
-        await f.db`select content,revision from allrice_memories where id=${blocked!.id}`;
-      await row.getByRole('button', { name: '编辑', exact: true }).click();
-      await ui.page.getByLabel('编辑记忆内容').fill('x'.repeat(1000));
-      const rejected = ui.page.waitForResponse(
-        (r) =>
-          r.request().method() === 'PATCH' && r.url().includes(blocked!.id),
-      );
-      await ui.page
-        .getByRole('button', { name: '保存记忆', exact: true })
-        .click();
-      expect((await rejected).status()).toBe(422);
-      await ui.page
-        .getByRole('alert')
-        .filter({ hasText: '编辑内容已保留' })
-        .waitFor();
-      expect(await ui.page.getByLabel('编辑记忆内容').inputValue()).toBe(
-        'x'.repeat(1000),
-      );
-      expect(
-        await f.db`select content,revision from allrice_memories where id=${blocked!.id}`,
       ).toEqual(before);
-      await ui.page.locator('summary').filter({ hasText: '容量预览' }).click();
-      await ui.page
-        .getByText('预留来源定位信息空间', { exact: false })
-        .waitFor();
-      await noOverflow(ui.page);
-      await capture(ui.page, 'm3-pin-capacity-desktop');
-      await ui.page.setViewportSize({ width: 320, height: 900 });
-      await noOverflow(ui.page);
-      await capture(ui.page, 'm3-pin-capacity-narrow');
     } finally {
       await ui.close();
     }
-  }, 60000);
+  });
 
-  it('administrator sees only the memory projection and a read audit; ordinary account is denied', async () => {
-    const memory = await remember('管理员只读记忆 ' + randomUUID());
+  it('keeps administrator list/detail on the independently audited scope without owner mutations', async () => {
+    const raw = '  管理员读取的详细说明\n原文末尾空白  ';
+    const memory = await createPair(
+      identity.assignment,
+      '管理员查看的一句话',
+      raw,
+    );
     const denied = await open('admin');
     try {
       await denied.page.getByRole('alert').waitFor();
       expect(
-        await denied.page.getByText(memory.content, { exact: true }).count(),
+        await denied.page.getByText(memory.summary, { exact: true }).count(),
       ).toBe(0);
     } finally {
       await denied.close();
     }
-    const [user] =
-      await f.db`select email from allrice_users where id=${identity.user}`;
-    vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', user!.email);
-    const ui = await open('admin', 'dark', 360);
+    const user = (
+      await f.db.unsafe('select email from allrice_users where id=$1', [
+        identity.user,
+      ])
+    )[0]!;
+    vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', user.email);
+    const ui = await open('admin', 'dark', 390);
     try {
-      await ui.page
-        .getByRole('button', { name: '待确认', exact: true })
-        .click();
-      await ui.page.getByText(memory.content, { exact: true }).waitFor();
+      const article = ui.page
+        .locator('article')
+        .filter({ hasText: memory.summary });
+      await article.waitFor();
+      await f.db.unsafe(
+        'update allrice_employee_assignments set active=false where id=$1',
+        [identity.assignment],
+      );
+      expect((await api('/' + memory.id)).status).not.toBe(200);
+      await article.getByRole('button', { name: '查看', exact: true }).click();
+      await expect
+        .poll(() =>
+          ui.page.getByRole('dialog').locator('p').last().textContent(),
+        )
+        .toBe(raw);
       expect(
         await ui.page
-          .getByRole('button', {
-            name: /^(编辑|确认并记住|撤回|新增记忆|＋ 新增)$/,
-          })
+          .getByRole('button', { name: /^(修改|确认|删除|保存|＋ 新增)$/ })
           .count(),
       ).toBe(0);
       expect(await ui.page.locator('a[href]').count()).toBe(0);
-      const audits =
-        await f.db`select metadata from allrice_audit_events where action='employee_memory.admin_read' and actor_id=${identity.user} and resource_id=${identity.assignment}`;
-      expect(audits.length).toBeGreaterThan(0);
-      expect(JSON.stringify(audits)).not.toContain(memory.content);
+      const audits = await f.db.unsafe(
+        "select resource_type,resource_id,metadata from allrice_audit_events where action='employee_memory.admin_read' and organization_id=$1 and workspace_id=$2 and actor_id=$3 and resource_id in ($4,$5) order by resource_type,resource_id",
+        [
+          identity.org,
+          identity.workspace,
+          identity.user,
+          identity.assignment,
+          memory.id,
+        ],
+      );
+      const auditScope = {
+        ownerId: identity.user,
+        instanceId: identity.assignment,
+        schemaVersion: 2,
+      };
+      expect(audits).toEqual([
+        {
+          resource_type: 'employee_instance',
+          resource_id: identity.assignment,
+          metadata: {
+            ...auditScope,
+            returnedCount: await ui.page.locator('article').count(),
+          },
+        },
+        {
+          resource_type: 'memory',
+          resource_id: memory.id,
+          metadata: { ...auditScope, returnedCount: 1, memoryId: memory.id },
+        },
+      ]);
+      expect(JSON.stringify(audits)).not.toContain(raw);
       await noOverflow(ui.page);
-      await capture(ui.page, 'm2-admin-read-only');
+      await capture(ui.page, 'v10-admin-read-only');
     } finally {
+      await f.db.unsafe(
+        'update allrice_employee_assignments set active=true where id=$1',
+        [identity.assignment],
+      );
       await ui.close();
       vi.unstubAllEnvs();
     }
   });
+
+  it.each([401, 403, 404, 503])(
+    'clears cached administrator scope after detail %s and retains lawful context for 5xx',
+    async (status) => {
+      const raw = '管理员读取后仍须按真实失权边界清理的说明';
+      const memory = await createPair(
+        identity.assignment,
+        '管理员详情读取边界 ' + status,
+        raw,
+      );
+      const user = (
+        await f.db.unsafe('select email from allrice_users where id=$1', [
+          identity.user,
+        ])
+      )[0]!;
+      vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', user.email);
+      const ui = await open('admin');
+      const detailPath = `/api/v1/admin/organizations/${identity.org}/employee-memories/${memory.id}`;
+      const detailMatcher = (url: URL) => url.pathname === detailPath;
+      try {
+        const article = ui.page
+          .locator('article')
+          .filter({ hasText: memory.summary });
+        await article.waitFor();
+        if (status === 401) await ui.page.context().clearCookies();
+        else if (status === 403)
+          vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', '');
+        else if (status === 404)
+          expect(
+            (await api('/' + memory.id, write(exact(memory), 'DELETE'))).status,
+          ).toBe(204);
+        else {
+          await article
+            .getByRole('button', { name: '查看', exact: true })
+            .click();
+          await ui.page
+            .getByRole('dialog')
+            .getByText(raw, { exact: true })
+            .waitFor();
+          await ui.page
+            .getByRole('dialog')
+            .getByRole('button', { name: '关闭', exact: true })
+            .click();
+          // Transport failure injection only; all successful reads use real routes.
+          await ui.page.route(detailMatcher, (route) =>
+            route.fulfill({ status: 503, body: '{}' }),
+          );
+        }
+        const before = mutations.length;
+        const response = ui.page.waitForResponse(
+          (value) => new URL(value.url()).pathname === detailPath,
+        );
+        await article
+          .getByRole('button', { name: '查看', exact: true })
+          .click();
+        expect((await response).status()).toBe(status);
+        await ui.page.getByRole('alert').waitFor();
+        if (status === 503) {
+          expect(await article.count()).toBe(1);
+          expect(await ui.page.getByRole('dialog').count()).toBe(1);
+          await ui.page.unroute(detailMatcher);
+          await ui.page
+            .getByRole('dialog')
+            .getByRole('button', { name: '重新读取', exact: true })
+            .click();
+          await ui.page
+            .getByRole('dialog')
+            .getByText(raw, { exact: true })
+            .waitFor();
+        } else {
+          expect(await ui.page.locator('article').count()).toBe(0);
+          expect(await ui.page.getByRole('dialog').count()).toBe(0);
+          expect(
+            await ui.page.getByText(memory.summary, { exact: true }).count(),
+          ).toBe(0);
+          expect(await ui.page.getByText(raw, { exact: true }).count()).toBe(0);
+        }
+        expect(mutations.length).toBe(before);
+      } finally {
+        await ui.close();
+        vi.unstubAllEnvs();
+      }
+    },
+  );
+
+  it.each([
+    ['light', 1440],
+    ['dark', 1440],
+    ['light', 390],
+    ['dark', 390],
+  ] as const)(
+    'runs the 17 approved v10 states against real scoped APIs at %s/%s',
+    async (theme, width) => {
+      const instanceId = await isolatedInstance();
+      const active: EmployeeMemoryRecord[] = [];
+      active.push(await createPair(instanceId, '回复先给结论，300 字以内'));
+      active.push(
+        await createPair(
+          instanceId,
+          '报价规则：含税、PDF、文件名带客户和日期',
+          '1. 报价一律含税。\n2. 金额超过 5 万先发给我看，再发客户。',
+        ),
+      );
+      active.push(
+        await createPair(instanceId, '公众号固定周二、周四 20:00 发布'),
+      );
+      active.push(
+        await createPair(instanceId, '对外统一写“AllRice”，不写“All Rice”'),
+      );
+      active.push(
+        await createPair(instanceId, '财务数据以每月 5 号的对账表为准'),
+      );
+      const pending = await Promise.all(
+        [
+          '周报统一用表格，先写结论再写数据',
+          '给客户发邮件前先让我看',
+          '项目风险每周五汇总',
+        ].map((summary) => pendingFor(instanceId, summary)),
+      );
+      const ui = await open('management', theme, width, instanceId);
+      const shot = async (state: string) => {
+        await noOverflow(ui.page);
+        await capture(
+          ui.page,
+          'v10-' + state + '-' + width + '-' + theme,
+          state === 'pending' || state === 'full-pending' ? null : undefined,
+        );
+      };
+      const manager = ui.page.getByRole('region', {
+        name: '个人记忆',
+        exact: true,
+      });
+      const dialog = () => ui.page.getByRole('dialog').first();
+      try {
+        await card(ui.page, pending[0]!.id).waitFor();
+        expect(
+          await manager
+            .getByRole('region', { name: '待确认', exact: true })
+            .locator('[data-memory-id]')
+            .count(),
+        ).toBe(3);
+        expect(
+          await manager
+            .getByRole('region', { name: '生效中', exact: true })
+            .locator('[data-memory-id]')
+            .count(),
+        ).toBe(5);
+        await shot('list');
+        await card(ui.page, pending[0]!.id)
+          .getByRole('button', { name: '确认', exact: true })
+          .click();
+        await expect
+          .poll(() =>
+            manager
+              .getByRole('region', { name: '生效中', exact: true })
+              .locator('[data-memory-id]')
+              .count(),
+          )
+          .toBe(6);
+        expect(
+          await manager
+            .getByRole('region', { name: '生效中', exact: true })
+            .locator('[data-memory-id]')
+            .first()
+            .getAttribute('data-memory-id'),
+        ).toBe(pending[0]!.id);
+        expect(await ui.page.getByRole('dialog').count()).toBe(0);
+        expect(await ui.page.getByRole('status').count()).toBe(0);
+        await shot('confirmed');
+        await card(ui.page, active[1]!.id).locator('button').click();
+        await dialog()
+          .getByText(
+            '1. 报价一律含税。\n2. 金额超过 5 万先发给我看，再发客户。',
+            { exact: true },
+          )
+          .waitFor();
+        expect(
+          await dialog()
+            .getByText(/^生效于 \d{2}-\d{2}$/)
+            .count(),
+        ).toBe(1);
+        await shot('active-details');
+        const activeDelete = dialog().getByRole('button', {
+          name: '删除',
+          exact: true,
+        });
+        let before = httpWrites.length;
+        await activeDelete.click();
+        await shot('delete-active');
+        expect(httpWrites.length).toBe(before);
+        await ui.page.keyboard.press('Escape');
+        expect(
+          await activeDelete.evaluate(
+            (node) => node === document.activeElement,
+          ),
+        ).toBe(true);
+        await dialog()
+          .getByRole('button', { name: '修改', exact: true })
+          .click();
+        await shot('edit-active');
+        await dialog()
+          .getByRole('button', { name: '取消', exact: true })
+          .click();
+        await card(ui.page, active[0]!.id).locator('button').click();
+        await dialog().getByText('没有详细说明', { exact: true }).waitFor();
+        await shot('active-empty');
+        await ui.page.keyboard.press('Escape');
+        await card(ui.page, pending[1]!.id).locator('button').first().click();
+        await dialog()
+          .getByRole('button', { name: '修改', exact: true })
+          .waitFor();
+        expect(
+          await dialog()
+            .getByText(/^添加于 今天 \d{2}:\d{2}$/)
+            .count(),
+        ).toBe(1);
+        await shot('pending');
+        const pendingDelete = dialog().getByRole('button', {
+          name: '删除',
+          exact: true,
+        });
+        before = httpWrites.length;
+        await pendingDelete.click();
+        await shot('delete-pending');
+        expect(httpWrites.length).toBe(before);
+        await deletion(ui.page)
+          .getByRole('button', { name: '取消', exact: true })
+          .click();
+        expect(
+          await pendingDelete.evaluate(
+            (node) => node === document.activeElement,
+          ),
+        ).toBe(true);
+        await dialog()
+          .getByRole('button', { name: '修改', exact: true })
+          .click();
+        await shot('edit');
+        expect(
+          await dialog()
+            .getByRole('button', { name: '保存', exact: true })
+            .isEnabled(),
+        ).toBe(true);
+        await dialog()
+          .getByRole('button', { name: '取消', exact: true })
+          .click();
+        const rowDelete = card(ui.page, pending[2]!.id).getByRole('button', {
+          name: /^删除/,
+        });
+        before = httpWrites.length;
+        await rowDelete.click();
+        await shot('delete-row');
+        expect(httpWrites.length).toBe(before);
+        await deletion(ui.page)
+          .locator('..')
+          .locator(':scope > [aria-hidden="true"]')
+          .click({ position: { x: 4, y: 4 } });
+        expect(
+          await rowDelete.evaluate((node) => node === document.activeElement),
+        ).toBe(true);
+        await manager
+          .getByRole('button', { name: '＋ 新增', exact: true })
+          .click();
+        let form = ui.page.getByRole('form', {
+          name: 'Rice · 新增记忆',
+          exact: true,
+        });
+        expect(
+          await form
+            .getByRole('button', { name: '保存', exact: true })
+            .isDisabled(),
+        ).toBe(true);
+        await shot('new');
+        const raw = '  两栏说明\n\n最后一行  \n';
+        await form.getByLabel(/一句话/).fill('😀'.repeat(40));
+        await form.getByLabel(/详细说明/).fill(raw);
+        expect(
+          await form.getByText('40 / 40 字', { exact: true }).count(),
+        ).toBe(1);
+        await shot('new-filled');
+        await form.getByLabel(/一句话/).fill('😀'.repeat(41));
+        expect(
+          await form
+            .getByRole('button', { name: '保存', exact: true })
+            .isDisabled(),
+        ).toBe(true);
+        await form.getByLabel(/一句话/).fill('本人新增：说明保留原文');
+        await form.getByRole('button', { name: '保存', exact: true }).click();
+        await expect.poll(() => ui.page.getByRole('dialog').count()).toBe(0);
+        const added = (await collection(instanceId)).active.find(
+          (row) => row.summary === '本人新增：说明保留原文',
+        )!;
+        expect((await detail(added.id, instanceId)).details).toBe(raw);
+        for (
+          let count = (await collection(instanceId)).counts.active;
+          count < 99;
+          count++
+        )
+          await createPair(instanceId, '容量行为验证 ' + count);
+        await notify(ui.page);
+        await expect
+          .poll(() =>
+            manager
+              .getByRole('region', { name: '生效中', exact: true })
+              .locator('[data-memory-id]')
+              .count(),
+          )
+          .toBe(99);
+        await manager
+          .getByRole('button', { name: '＋ 新增', exact: true })
+          .click();
+        form = ui.page.getByRole('form', {
+          name: 'Rice · 新增记忆',
+          exact: true,
+        });
+        await form.getByLabel(/一句话/).fill('满额时保留的草稿');
+        await createPair(instanceId, '另一视图占用第100个名额');
+        await form.getByRole('button', { name: '保存', exact: true }).click();
+        await form
+          .getByRole('alert')
+          .filter({ hasText: '记忆已满（100 / 100）' })
+          .waitFor();
+        expect(await form.getByLabel(/一句话/).inputValue()).toBe(
+          '满额时保留的草稿',
+        );
+        expect(
+          await form
+            .getByRole('button', { name: '保存', exact: true })
+            .isDisabled(),
+        ).toBe(true);
+        await form.getByRole('button', { name: '取消', exact: true }).click();
+        expect(
+          await manager
+            .getByRole('region', { name: '生效中', exact: true })
+            .locator('[data-memory-id]')
+            .count(),
+        ).toBe(100);
+        expect(
+          await manager
+            .getByRole('button', { name: '＋ 新增', exact: true })
+            .isDisabled(),
+        ).toBe(true);
+        expect(
+          await card(ui.page, pending[1]!.id)
+            .getByRole('button', { name: '确认', exact: true })
+            .isDisabled(),
+        ).toBe(true);
+        await shot('full');
+        await card(ui.page, pending[1]!.id).locator('button').first().click();
+        expect(
+          await dialog()
+            .getByRole('button', { name: '确认', exact: true })
+            .isDisabled(),
+        ).toBe(true);
+        await shot('full-pending');
+        await dialog()
+          .getByRole('button', { name: '修改', exact: true })
+          .click();
+        expect(
+          await dialog()
+            .getByRole('button', { name: '保存', exact: true })
+            .isDisabled(),
+        ).toBe(true);
+        await shot('full-edit-pending');
+        await dialog()
+          .getByRole('button', { name: '取消', exact: true })
+          .click();
+        await card(ui.page, active[1]!.id).locator('button').click();
+        await dialog()
+          .getByRole('button', { name: '修改', exact: true })
+          .click();
+        expect(
+          await dialog()
+            .getByRole('button', { name: '保存', exact: true })
+            .isEnabled(),
+        ).toBe(true);
+        await shot('full-edit-active');
+        await dialog()
+          .getByLabel(/详细说明/)
+          .fill('');
+        await dialog()
+          .getByRole('button', { name: '保存', exact: true })
+          .click();
+        await expect.poll(() => ui.page.getByRole('dialog').count()).toBe(0);
+        expect((await detail(active[1]!.id, instanceId)).details).toBeNull();
+        expect((await collection(instanceId)).counts.active).toBe(100);
+        await card(ui.page, active[0]!.id).locator('button').click();
+        await dialog()
+          .getByRole('button', { name: '删除', exact: true })
+          .click();
+        await deletion(ui.page)
+          .getByRole('button', { name: '删除', exact: true })
+          .click();
+        await expect.poll(() => ui.page.getByRole('dialog').count()).toBe(0);
+        expect((await collection(instanceId)).counts.active).toBe(99);
+        expect(
+          await manager
+            .getByRole('button', { name: '＋ 新增', exact: true })
+            .isEnabled(),
+        ).toBe(true);
+        await card(ui.page, pending[1]!.id)
+          .getByRole('button', { name: '确认', exact: true })
+          .click();
+        await expect
+          .poll(async () => (await collection(instanceId)).counts.active)
+          .toBe(100);
+        await expect
+          .poll(() =>
+            manager
+              .getByRole('region', { name: '生效中', exact: true })
+              .locator('[data-memory-id]')
+              .count(),
+          )
+          .toBe(100);
+        const remaining = await collection(instanceId);
+        for (const row of [...remaining.active, ...remaining.pending])
+          expect(
+            (
+              await api(
+                '/' + row.id,
+                write(exact(row, instanceId), 'DELETE'),
+                ownerToken,
+                identity.workspace,
+                instanceId,
+              )
+            ).status,
+          ).toBe(204);
+        await notify(ui.page);
+        await manager.getByText('还没有记忆', { exact: true }).waitFor();
+        expect(
+          await manager
+            .getByText(
+              '聊天里提到的习惯和规则，Rice 会记下来等你确认；也可以直接新增。',
+              { exact: true },
+            )
+            .count(),
+        ).toBe(1);
+        await shot('empty');
+      } finally {
+        await ui.close();
+      }
+    },
+    180_000,
+  );
 });

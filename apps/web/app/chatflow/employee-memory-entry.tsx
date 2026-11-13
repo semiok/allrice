@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { EmployeeMemoryPageSchema } from '@allrice/contracts';
+import { EmployeeMemoryListSchema } from '@allrice/contracts';
 import { workbenchJson } from '../../lib/chatflow/workbench-model';
 import { WorkbenchIcon } from './workbench-modules';
 import css from './employee-memory-entry.module.css';
@@ -42,29 +42,26 @@ function MemoryEntry(props: Props) {
     const controller = new AbortController();
     setCounts(null);
     setError(false);
-    const total = async (state: 'confirmed' | 'pending') => {
-      const query = new URLSearchParams({
-        workspaceId: props.workspaceId,
-        instanceId: props.instanceId,
-        state,
-      });
-      const page = EmployeeMemoryPageSchema.parse(
-        await workbenchJson('/api/v1/memories/manage?' + query, headers, {
-          cache: 'no-store',
-          signal: controller.signal,
-        }),
-      );
-      if (
-        page.workspaceId !== props.workspaceId ||
-        page.instanceId !== props.instanceId ||
-        page.state !== state
-      )
-        throw Error('Memory count target changed');
-      return page.total;
-    };
-    void Promise.all([total('confirmed'), total('pending')])
-      .then(([confirmed, pending]) => {
-        if (!controller.signal.aborted) setCounts({ confirmed, pending });
+    const query = new URLSearchParams({
+      workspaceId: props.workspaceId,
+      instanceId: props.instanceId,
+    });
+    void workbenchJson('/api/v1/memories/manage?' + query, headers, {
+      cache: 'no-store',
+      signal: controller.signal,
+    })
+      .then((raw) => {
+        const page = EmployeeMemoryListSchema.parse(raw);
+        if (
+          page.workspaceId !== props.workspaceId ||
+          page.instanceId !== props.instanceId
+        )
+          throw Error('Memory count target changed');
+        if (!controller.signal.aborted)
+          setCounts({
+            confirmed: page.counts.active,
+            pending: page.counts.pending,
+          });
       })
       .catch(() => {
         if (!controller.signal.aborted) setError(true);

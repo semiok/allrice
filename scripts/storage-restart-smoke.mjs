@@ -69,6 +69,14 @@ const memory = saved.find((item) => item.id === state.messageMemoryId);
 if (!memory || !saved.some((item) => item.id === state.fileMemoryId)) {
   throw new Error('private memories did not survive database restart');
 }
+const detailResponse = await request(
+  `/api/v1/memories/${state.messageMemoryId}?workspaceId=${state.workspaceId}&instanceId=${state.memoryInstanceId}`,
+  { headers },
+);
+const detail = await detailResponse.json();
+if (detail.schemaVersion !== 2 || detail.memory?.id !== state.messageMemoryId) {
+  throw new Error('memory detail did not match the V2 deletion target');
+}
 await request(
   `/api/v1/memories/${state.messageMemoryId}?workspaceId=${state.workspaceId}`,
   {
@@ -76,8 +84,8 @@ await request(
     headers: { ...headers, 'content-type': 'application/json' },
     body: JSON.stringify({
       instanceId: state.memoryInstanceId,
-      expectedRevision: memory.revision,
-      contentDigest: memory.contentDigest,
+      expectedRevision: detail.memory.revision,
+      pairDigest: detail.memory.pairDigest,
       idempotencyKey: randomUUID(),
     }),
   },

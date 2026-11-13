@@ -41,7 +41,7 @@ import {
   EmployeeInstanceSchema,
   EmployeeInstanceProfileSchema,
   EmployeeSkillCatalogSchema,
-  EmployeeMemoryPageSchema,
+  EmployeeMemoryListSchema,
   PersonalSceneSkillCatalogSchema,
   EmployeeSceneSkillCatalogSchema,
   type PersonalSkillItem,
@@ -1829,34 +1829,20 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       ) {
         expect([...url.searchParams.keys()].sort()).toEqual([
           'instanceId',
-          'state',
           'workspaceId',
         ]);
         expect(url.searchParams.get('workspaceId')).toBe(state.workspace);
         expect(url.searchParams.get('instanceId')).toBe(
           state.employeeDetails.profile.instanceId,
         );
-        const memoryState = url.searchParams.get('state');
-        expect(['all', 'confirmed', 'pending']).toContain(memoryState);
         return answer(
-          EmployeeMemoryPageSchema.parse({
-            organizationId: org,
+          EmployeeMemoryListSchema.parse({
+            schemaVersion: 2,
             workspaceId: state.workspace,
-            ownerId: state.viewer,
             instanceId: state.employeeDetails.profile.instanceId,
-            state: memoryState,
-            total: 0,
-            memories: [],
-            nextCursor: null,
-            budget: {
-              mode: 'capacity_preview',
-              maxBytes: 6000,
-              maxItems: 20,
-              usedBytes: 0,
-              eligibleCount: 0,
-              omittedCount: 0,
-              selectedIds: [],
-            },
+            counts: { active: 0, pending: 0, maxActive: 100 },
+            active: [],
+            pending: [],
           }),
         );
       }
@@ -13874,7 +13860,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.panel
         .getByRole('region', { name: '个人记忆', exact: true })
         .waitFor();
-      await f.panel.getByText('全部 · 共 0 条', { exact: true }).waitFor();
+      await f.panel
+        .getByRole('heading', { name: '还没有记忆', exact: true })
+        .waitFor();
       await f.panel
         .getByRole('button', { name: '返回员工详情', exact: true })
         .click();

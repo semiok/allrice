@@ -1,31 +1,28 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Button, Modal } from '@deepseek-ai/dsh-client-ui-primitives';
+import {
+  PersonalMemoryPairSchema,
+  type EmployeeMemoryRecord,
+} from '@allrice/contracts';
+import {
+  MemoryClientError,
+  memoryUnknown,
+  type MemoryPair,
+  type MemoryRow,
+} from '../../lib/memory/employee-memory-client';
+import { EmployeeMemoryDeleteConfirmation } from './employee-memory-delete-confirmation';
 import css from './employee-memory-sidebar.module.css';
 
-/** Presentation models only. These are not a memory HTTP/DB contract.
- * A future authorized adapter must supply the complete scoped collection and
- * validate real operation receipts before resolving any action. The legacy
- * content/page DTO is deliberately not adapted or mounted here. */
-export type MemorySidebarRow = {
-  id: string;
-  summary: string;
-  state: 'active' | 'pending';
-  capturedAt: string;
-  updatedAt: string;
-};
-export type MemorySidebarDetail = MemorySidebarRow & {
-  details: string | null;
-};
-export type MemorySidebarInput = {
-  summary: string;
-  details: string | null;
-};
+export type MemorySidebarRow = MemoryRow;
+export type MemorySidebarDetail = EmployeeMemoryRecord;
+export type MemorySidebarInput = MemoryPair;
 type Props = {
   targetKey: string;
   employeeName: string;
   rows: readonly MemorySidebarRow[];
+  active?: boolean;
   loading?: boolean;
   error?: string;
   onReload: () => void;
@@ -67,12 +64,16 @@ function Sidebar(props: Props) {
   const [selected, setSelected] = useState<MemorySidebarRow | null>(null);
   const [detail, setDetail] = useState<MemorySidebarDetail | null>(null);
   const [editing, setEditing] = useState(false);
+  const [deleting, setDeleting] = useState<MemorySidebarRow | null>(null);
   const [summary, setSummary] = useState('');
   const [details, setDetails] = useState('');
   const [reading, setReading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const pendingWrite = useRef(false);
   const readController = useRef<AbortController | null>(null);
+  const detailHeader = useRef<HTMLElement | null>(null);
+  const restoreDetailLayer = useRef<(() => void) | null>(null);
   const alive = useRef(true);
   const active = props.rows
     .filter((row) => row.state === 'active')
@@ -90,17 +91,34 @@ function Sidebar(props: Props) {
       readController.current?.abort();
     };
   }, []);
-  useEffect(() => {
-    if (selected && !props.rows.some((row) => row.id === selected.id)) {
-      readController.current?.abort();
-      setSelected(null);
-      setDetail(null);
-      setEditing(false);
-    }
-  }, [props.rows, selected]);
+  // Detail, edit and delete retain the exact selected snapshot. A background
+  // list refresh cannot silently replace its identity, revision or pairDigest.
+  useLayoutEffect(() => {
+    if (!deleting || props.active === false) return;
+    const layer =
+      detailHeader.current?.closest('[role="dialog"]')?.parentElement;
+    if (!layer) return;
+    const previousInert = layer.inert;
+    const previousHidden = layer.getAttribute('aria-hidden');
+    const restore = () => {
+      layer.inert = previousInert;
+      if (previousHidden === null) layer.removeAttribute('aria-hidden');
+      else layer.setAttribute('aria-hidden', previousHidden);
+    };
+    // Native Modal has already moved focus into its top layer. Only this
+    // sidebar's retained parent layer is hidden from assistive technology.
+    layer.inert = true;
+    layer.setAttribute('aria-hidden', 'true');
+    restoreDetailLayer.current = restore;
+    return () => {
+      restore();
+      if (restoreDetailLayer.current === restore)
+        restoreDetailLayer.current = null;
+    };
+  }, [deleting, props.active]);
 
   function close() {
-    if (busy) return;
+    if (pendingWrite.current) return;
     readController.current?.abort();
     setSelected(null);
     setDetail(null);
@@ -140,7 +158,8 @@ function Sidebar(props: Props) {
     setEditing(true);
   }
   async function mutate(action: () => Promise<void>) {
-    if (busy) return;
+    if (pendingWrite.current) return;
+    pendingWrite.current = true;
     setBusy(true);
     setError('');
     try {
@@ -149,17 +168,38 @@ function Sidebar(props: Props) {
       setSelected(null);
       setDetail(null);
       setEditing(false);
-    } catch {
-      if (alive.current) setError('暂时无法确认操作结果，请重新读取记忆。');
+      setDeleting(null);
+    } catch (cause) {
+      if (alive.current)
+        setError(
+          cause instanceof MemoryClientError ? cause.message : memoryUnknown,
+        );
     } finally {
+      pendingWrite.current = false;
       if (alive.current) setBusy(false);
     }
+  }
+  function askDelete(row: MemorySidebarRow) {
+    setError('');
+    setDeleting(row);
+  }
+  function cancelDelete() {
+    if (pendingWrite.current) return;
+    // Re-enable the invoking control before native Modal's layout cleanup
+    // restores focus, including Escape and mask cancellation.
+    restoreDetailLayer.current?.();
+    setDeleting(null);
+    setError('');
   }
   const canSave =
     available &&
     summary.trim().length > 0 &&
     size(summary) <= 40 &&
     size(details) <= 2000 &&
+    PersonalMemoryPairSchema.safeParse({
+      summary,
+      details: details.trim() ? details : null,
+    }).success &&
     (!full || selected?.state === 'active');
   const shown = detail ?? selected;
   const timestamp = shown
@@ -207,7 +247,7 @@ function Sidebar(props: Props) {
                   className={css.remove}
                   aria-label={`删除${row.summary}`}
                   disabled={busy || !available}
-                  onClick={() => void mutate(() => props.onDelete(row))}
+                  onClick={() => askDelete(row)}
                 >
                   ×
                 </button>
@@ -278,14 +318,15 @@ function Sidebar(props: Props) {
             )}
           </>
         )}
-        {error && !selected && !editing && (
+        {error && !selected && !editing && !deleting && (
           <p role="alert" className={css.message}>
             {error}
           </p>
         )}
       </div>
       <Modal
-        open={Boolean(selected || editing)}
+        key={editing ? 'edit' : 'detail'}
+        open={props.active !== false && Boolean(selected || editing)}
         onClose={close}
         headless
         title={
@@ -297,7 +338,7 @@ function Sidebar(props: Props) {
         }
         className={css.dialog}
       >
-        <header className={css.dialogHeader}>
+        <header ref={detailHeader} className={css.dialogHeader}>
           {editing ? (
             <h2>{selected ? '修改记忆' : '新增记忆'}</h2>
           ) : (
@@ -320,6 +361,7 @@ function Sidebar(props: Props) {
         </header>
         {editing ? (
           <form
+            aria-label={`${props.employeeName} · ${selected ? '修改记忆' : '新增记忆'}`}
             onSubmit={(event) => {
               event.preventDefault();
               if (canSave)
@@ -327,7 +369,7 @@ function Sidebar(props: Props) {
                   props.onSave(
                     {
                       summary: summary.trim(),
-                      details: details.trim() || null,
+                      details: details.trim() ? details : null,
                     },
                     selected,
                   ),
@@ -363,6 +405,18 @@ function Sidebar(props: Props) {
               <p className={css.hint}>
                 保存后立即生效 · 生效中 {active.length} / 100
               </p>
+              {props.error && (
+                <p role="alert" className={css.message}>
+                  {props.error}{' '}
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={props.onReload}
+                  >
+                    重试
+                  </button>
+                </p>
+              )}
               {error && (
                 <p role="alert" className={css.message}>
                   {error}
@@ -428,9 +482,7 @@ function Sidebar(props: Props) {
                 variant="ghost"
                 className={css.deleteAction}
                 disabled={busy || !shown || !available}
-                onClick={() =>
-                  shown && void mutate(() => props.onDelete(shown))
-                }
+                onClick={() => shown && askDelete(shown)}
               >
                 删除
               </Button>
@@ -458,6 +510,14 @@ function Sidebar(props: Props) {
           </>
         )}
       </Modal>
+      <EmployeeMemoryDeleteConfirmation
+        memory={deleting}
+        visible={props.active}
+        busy={busy}
+        error={error}
+        onCancel={cancelDelete}
+        onDelete={() => deleting && void mutate(() => props.onDelete(deleting))}
+      />
     </section>
   );
 }

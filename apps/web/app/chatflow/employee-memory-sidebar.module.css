@@ -1,3 +1,27 @@
+.panel,
+.dialog {
+  --memory-field: rgb(245, 246, 247);
+  --memory-focus: rgb(65, 118, 230);
+  --memory-avatar-bg: #e5f0ff;
+  --memory-avatar-ink: #1e40af;
+  --memory-active: #2e9657;
+  --memory-pending: #d29b26;
+  --memory-danger: rgb(185, 28, 28);
+  --memory-warning-bg: #fcf5e7;
+  --memory-warning-ink: #805512;
+}
+:global(body[data-ds-dark-theme]) .panel,
+:global(body[data-ds-dark-theme]) .dialog {
+  --memory-field: rgb(53, 54, 56);
+  --memory-focus: rgb(183, 200, 254);
+  --memory-avatar-bg: #263951;
+  --memory-avatar-ink: #a0c0f7;
+  --memory-active: #6ab78b;
+  --memory-pending: #ddae4e;
+  --memory-danger: rgb(254, 202, 202);
+  --memory-warning-bg: #30291c;
+  --memory-warning-ink: #dec28e;
+}
 .panel {
   display: flex;
   flex-direction: column;
@@ -24,8 +48,8 @@
   width: 28px;
   height: 28px;
   border-radius: 8px;
-  background: var(--ar-surface-active);
-  color: var(--ar-text);
+  background: var(--memory-avatar-bg);
+  color: var(--memory-avatar-ink);
   font-size: 13px;
   font-weight: 600;
 }
@@ -92,7 +116,7 @@
 .row:hover {
   background: var(--ar-surface-hover);
 }
-.open {
+.panel .open {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -112,10 +136,10 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--ar-success);
+  background: var(--memory-active);
 }
 .pending {
-  background: var(--ar-warning);
+  background: var(--memory-pending);
 }
 .summary {
   flex: 1;
@@ -132,7 +156,7 @@
   font-size: 11.5px;
   color: var(--ar-text-tertiary, var(--ar-text-secondary));
 }
-.confirm {
+.panel .confirm {
   flex: none;
   min-height: 26px;
   padding: 2px 8px;
@@ -145,10 +169,10 @@
   line-height: 18px;
   cursor: pointer;
 }
-.confirm:hover {
+.panel .confirm:hover {
   background: var(--ar-surface-hover);
 }
-.remove,
+.panel .remove,
 .close {
   display: grid;
   place-items: center;
@@ -173,8 +197,8 @@
   margin: 16px 16px 0;
   padding: 10px 12px;
   border-radius: 8px;
-  background: var(--ar-warning-soft);
-  color: var(--ar-warning-text);
+  background: var(--memory-warning-bg);
+  color: var(--memory-warning-ink);
   font-size: 12px;
   line-height: 20px;
 }
@@ -235,6 +259,7 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
+  margin: 0;
   overflow: hidden;
 }
 .dialogHeader {
@@ -316,7 +341,20 @@
 }
 .deleteAction {
   margin-right: auto;
-  color: var(--ar-danger) !important;
+  color: var(--memory-danger) !important;
+}
+.deleteDialog {
+  width: min(440px, 100%) !important;
+}
+.deleteSummary {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  line-height: 24px;
+}
+.deleteConfirm {
+  color: var(--memory-danger) !important;
 }
 .field {
   display: grid;
@@ -341,13 +379,20 @@
   width: 100%;
   border: 1px solid var(--ar-border);
   border-radius: 8px;
-  background: var(--ar-surface-raised);
+  background: var(--memory-field);
   padding: 10px 12px;
   color: inherit;
-  font: inherit;
-  line-height: 22px;
+  font: var(--ar-font-body);
+}
+.field input:focus,
+.field textarea:focus {
+  border-color: var(--memory-focus);
+  outline: 2px solid var(--memory-focus);
+  outline-offset: 2px;
+  background: var(--ar-surface);
 }
 .field textarea {
+  height: 144px;
   min-height: 144px;
   resize: vertical;
 }
@@ -357,12 +402,10 @@
   font-size: 12px;
   line-height: 18px;
 }
-.open:focus-visible,
-.confirm:focus-visible,
-.remove:focus-visible,
+.panel .open:focus-visible,
+.panel .confirm:focus-visible,
+.panel .remove:focus-visible,
 .close:focus-visible,
-.field input:focus-visible,
-.field textarea:focus-visible,
 .message button:focus-visible {
   outline: 2px solid var(--ar-focus-ring);
   outline-offset: 2px;
@@ -387,11 +430,16 @@
   .summary {
     font-size: 13px;
   }
-  .open {
+  .panel .open {
     gap: 9px;
   }
   .dialog {
+    width: min(552px, calc(100vw - 28px)) !important;
+    flex-shrink: 0;
     border-radius: 20px !important;
+  }
+  .deleteDialog {
+    width: min(440px, calc(100vw - 28px)) !important;
   }
   .dialogHeader {
     padding: 18px 20px 12px;
@@ -401,6 +449,9 @@
   }
   .footer {
     padding: 0 20px 20px;
+  }
+  .footer button {
+    min-height: 40px;
   }
   .detailTitle {
     font-size: 17px;
