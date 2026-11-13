@@ -2,9 +2,68 @@ import { z } from 'zod';
 import { TimestampSchema, UuidSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
 import { ContentOwnershipSchema } from './content-maintenance.ts';
+import { WorkbenchFileSharingSchema } from './file-audience.ts';
 
 // PostgreSQL UUID identity is case-insensitive; JSON ownership and dedup keys must agree.
 const ReferenceInputUuidSchema = UuidSchema.transform((id) => id.toLowerCase());
+
+export const ReferenceAudienceSchema = WorkbenchFileSharingSchema.transform(
+  (value) => ({
+    ...value,
+    departmentIds: value.departmentIds.map((id) => id.toLowerCase()).sort(),
+  }),
+).superRefine((value, context) => {
+  if (new Set(value.departmentIds).size !== value.departmentIds.length)
+    context.addIssue({ code: 'custom', message: '部门不能重复。' });
+});
+export type ReferenceAudience = z.infer<typeof ReferenceAudienceSchema>;
+
+const publicationInput = {
+  workspaceId: ReferenceInputUuidSchema,
+  requestId: ReferenceInputUuidSchema,
+  audience: ReferenceAudienceSchema,
+  purpose: z.string().trim().max(1000).default(''),
+};
+export const ReferencePublishInputSchema = z.discriminatedUnion('origin', [
+  z
+    .object({
+      ...publicationInput,
+      origin: z.literal('file'),
+      objectId: ReferenceInputUuidSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...publicationInput,
+      origin: z.literal('upload'),
+      fileName: z.string().trim().min(1).max(160),
+      mediaType: z.string().min(1).max(255),
+      contentBase64: z.string().max(70_000_000),
+    })
+    .strict(),
+]);
+export type ReferencePublishInput = z.infer<typeof ReferencePublishInputSchema>;
+
+const publicationAction = {
+  workspaceId: ReferenceInputUuidSchema,
+  requestId: ReferenceInputUuidSchema,
+  expectedRevision: z.number().int().positive(),
+};
+export const ReferencePublicationActionSchema = z.discriminatedUnion('action', [
+  z
+    .object({
+      ...publicationAction,
+      action: z.literal('audience'),
+      audience: ReferenceAudienceSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...publicationAction,
+      action: z.enum(['revoke', 'delete']),
+    })
+    .strict(),
+]);
 
 /** Server-captured pin; file bytes and revision manifest have different digests. */
 export const ReferenceSelectionSchema = z
@@ -101,6 +160,16 @@ export const ReferenceRevisionSchema = z
     failure: z.string().nullable(),
     canMaintain: z.boolean(),
     canRetryProcessing: z.boolean().optional(),
+    publication: z
+      .object({
+        origin: z.enum(['file', 'upload']),
+        publisherId: UuidSchema,
+        publisherName: z.string(),
+        audience: ReferenceAudienceSchema,
+        audienceRevision: z.number().int().positive(),
+      })
+      .strict()
+      .optional(),
     createdAt: TimestampSchema,
     companyTemplate: z
       .object({

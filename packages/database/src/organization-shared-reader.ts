@@ -3,6 +3,7 @@ import type {
   ContentAccessDecision,
   ContentOwnership,
   RequestContext,
+  ReferenceAudience,
 } from '@allrice/contracts';
 import {
   requireTenantAdministrationAuthority,
@@ -52,6 +53,25 @@ export class OrganizationSharedReader {
         ownership.organizationId === this.context.organizationId &&
         (ownership.scope === 'company' ||
           ownership.departmentId === this.departmentId));
+    return {
+      canRead,
+      canMaintain: false,
+      readReason: canRead ? 'allowed' : 'private_owner_only',
+      maintenanceReason: 'read_only_membership',
+    };
+  }
+
+  publicationAccess(
+    organizationId: string,
+    audience: ReferenceAudience,
+    activeDepartmentIds: readonly string[],
+  ): ContentAccessDecision {
+    const canRead =
+      organizationId === this.context.organizationId &&
+      (audience.scope === 'company' ||
+        (audience.scope === 'departments' &&
+          this.departmentId !== null &&
+          activeDepartmentIds.includes(this.departmentId)));
     return {
       canRead,
       canMaintain: false,

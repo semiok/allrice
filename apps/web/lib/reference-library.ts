@@ -6,8 +6,11 @@ import {
 import { getRequestContext } from './identity/session';
 import { storageErrorResponse } from './storage/responses';
 import { apiProblem } from './api-error-response';
+import { sameOriginBrowserWrite } from './identity/request-origin';
 
-export async function referenceContext(request: Request) {
+export async function referenceContext(request: Request, write = false) {
+  if (write && !sameOriginBrowserWrite(request))
+    throw new DataAccessError('authorization_denied');
   const context = await getRequestContext(request);
   if (!context) throw new DataAccessError('authentication_required');
   return context;

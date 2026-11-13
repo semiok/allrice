@@ -1562,6 +1562,14 @@ async function persistChatMessageInTransaction(
     session.id,
     true,
   );
+  const { assertEmployeeReferencePublicationHistory } =
+    await import('../employees/employee-runtime-content.ts');
+  await assertEmployeeReferencePublicationHistory(
+    { ...context, workspaceId },
+    session.id,
+    transaction,
+    true,
+  );
   const employeeRows = await transaction<
     { employee_id: string; employee_version_id: string }[]
   >`

@@ -1,4 +1,5 @@
 import type { NextConfig } from 'next';
+import { PHASE_PRODUCTION_BUILD } from 'next/constants.js';
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
@@ -30,4 +31,14 @@ const nextConfig: NextConfig = {
   allowedDevOrigins: ['localhost', '127.0.0.1'],
 };
 
-export default nextConfig;
+export default function configureNext(phase: string): NextConfig {
+  return phase === PHASE_PRODUCTION_BUILD
+    ? {
+        ...nextConfig,
+        typescript: {
+          ...nextConfig.typescript,
+          tsconfigPath: 'tsconfig.next-build.json',
+        },
+      }
+    : nextConfig;
+}

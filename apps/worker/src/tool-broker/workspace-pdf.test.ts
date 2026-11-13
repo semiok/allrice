@@ -5,20 +5,36 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   makeObjectKey,
+  OfficeCreateSchema,
   type ExecutionContext,
   type StorageObject,
 } from '@allrice/contracts';
 import { LocalStorageAdapter } from '@allrice/storage';
+import JSZip from 'jszip';
+import { createOffice } from '../office/create.js';
+import { processNextReference } from '../reference-processing.js';
 import type * as Database from '@allrice/database';
 
-const { getToolBrokerFile, recordToolBrokerAudit } = vi.hoisted(() => ({
+const {
+  getToolBrokerFile,
+  recordToolBrokerAudit,
+  claimReferenceProcessing,
+  finishReferenceProcessing,
+  failReferenceProcessing,
+} = vi.hoisted(() => ({
   getToolBrokerFile: vi.fn(),
   recordToolBrokerAudit: vi.fn(async () => undefined),
+  claimReferenceProcessing: vi.fn(),
+  finishReferenceProcessing: vi.fn(),
+  failReferenceProcessing: vi.fn(),
 }));
 vi.mock('@allrice/database', async (original) => ({
   ...(await original<typeof Database>()),
   getToolBrokerFile,
   recordToolBrokerAudit,
+  claimReferenceProcessing,
+  finishReferenceProcessing,
+  failReferenceProcessing,
 }));
 import { executeRiceTool } from '../tool-broker.js';
 
@@ -30,10 +46,15 @@ afterEach(async () => {
   );
 });
 
-async function inputFor(fileName = '02-ruled-invoice-table.pdf') {
-  const bytes = await readFile(
-    new URL(`../../../../tests/fixtures/pdf/${fileName}`, import.meta.url),
-  );
+async function inputFor(
+  fileName = '02-ruled-invoice-table.pdf',
+  content?: { bytes: Buffer; mediaType: string },
+) {
+  const bytes =
+    content?.bytes ??
+    (await readFile(
+      new URL(`../../../../tests/fixtures/pdf/${fileName}`, import.meta.url),
+    ));
   const actor = randomUUID(),
     org = randomUUID(),
     workspace = randomUUID(),
@@ -71,7 +92,7 @@ async function inputFor(fileName = '02-ruled-invoice-table.pdf') {
       objectId,
     }),
     checksum: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
-    mediaType: 'application/pdf',
+    mediaType: content?.mediaType ?? 'application/pdf',
     sizeBytes: bytes.length,
     retentionUntil: null,
     deletedAt: null,
@@ -105,6 +126,92 @@ async function inputFor(fileName = '02-ruled-invoice-table.pdf') {
     },
   };
 }
+
+describe('bounded Office read preserves available text without claiming full-text readiness', () => {
+  it.each(['missing', 'sparse'] as const)(
+    'reads the same %s chart-cache PPTX through the real broker while the real Worker rejects full text',
+    async (cache) => {
+      const out = await createOffice(
+        OfficeCreateSchema.parse({
+          kind: 'pptx',
+          title: '图表月报',
+          slides: [
+            { title: '可读首页', body: ['已有正文仍应可读'] },
+            {
+              title: '可读图表页',
+              chart: {
+                type: 'bar',
+                labels: ['九月', '十月'],
+                series: [{ name: '收入', values: [12, 20] }],
+              },
+            },
+          ],
+        }),
+      );
+      const zip = await JSZip.loadAsync(out.bytes);
+      const charts = zip.file(/^ppt\/charts\/chart\d+\.xml$/);
+      expect(charts).toHaveLength(1);
+      const chart = charts[0];
+      if (!chart) throw new Error('Expected the unique native chart fixture');
+      const xml = await chart.async('string');
+      expect(xml).toContain('<c:numCache>');
+      const changed = xml.replace(
+        /<c:numCache>[\s\S]*?<\/c:numCache>/g,
+        (value) =>
+          cache === 'missing'
+            ? ''
+            : value.replace(/<c:pt idx="1">[\s\S]*?<\/c:pt>/, ''),
+      );
+      expect(changed).not.toBe(xml);
+      const changedCaches =
+        changed.match(/<c:numCache>[\s\S]*?<\/c:numCache>/g) ?? [];
+      if (cache === 'missing') expect(changedCaches).toHaveLength(0);
+      else {
+        expect(changedCaches.length).toBeGreaterThan(0);
+        for (const value of changedCaches) {
+          expect(value).toContain('<c:ptCount val="2"/>');
+          expect(value).not.toContain('<c:pt idx="1">');
+        }
+      }
+      zip.file(chart.name, changed);
+      const bytes = await zip.generateAsync({ type: 'nodebuffer' });
+      const input = await inputFor('chart.pptx', {
+        bytes,
+        mediaType: out.mediaType,
+      });
+      input.call.arguments.includeStructure = false;
+      input.call.arguments.maxCharacters = 1000;
+      const result = await executeRiceTool({
+        ...input,
+        capabilities: [...input.capabilities],
+      });
+      const parsed = JSON.parse(result.modelContent);
+      expect(parsed.text).toContain('已有正文仍应可读');
+      expect(parsed.text).toContain('可读图表页');
+      expect(
+        parsed.units.map((unit: { pageNumber: number }) => unit.pageNumber),
+      ).toEqual([1, 2]);
+      expect(parsed.truncated).toBe(true);
+      expect(parsed.warnings).toContain(
+        '部分图表正文未完整提取；以下仅为已提取文字，不代表全文。',
+      );
+      const claim = {
+        revisionId: randomUUID(),
+        token: randomUUID(),
+        fileName: 'chart.pptx',
+        object: { ...input.object, immutable: true },
+      };
+      claimReferenceProcessing.mockResolvedValueOnce(claim);
+      expect(await processNextReference(input.storageRoot)).toBe(true);
+      expect(finishReferenceProcessing).not.toHaveBeenCalled();
+      expect(failReferenceProcessing).toHaveBeenCalledExactlyOnceWith(
+        claim,
+        '图表正文暂不能完整提取，尚不可全文检索；原文件已保留。',
+        true,
+      );
+    },
+  );
+});
 
 describe('PDF through the existing read-only Tool Broker', () => {
   it('returns verified source and raw grid values without write or Python authority', async () => {

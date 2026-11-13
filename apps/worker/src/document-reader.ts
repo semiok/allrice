@@ -1,5 +1,4 @@
 import ExcelJS from 'exceljs';
-import JSZip from 'jszip';
 import mammoth from 'mammoth';
 import {
   PdfReadError,
@@ -8,9 +7,10 @@ import {
 } from '@allrice/office-runtime/pdf-reader';
 
 import { HandlerError } from './errors.js';
+import { OfficePackage, children, elements, ns } from './office/package.js';
 
-const maximumDocumentBytes = 20 * 1024 * 1024;
-const defaultMaximumCharacters = 120_000;
+export const maximumDocumentBytes = 20 * 1024 * 1024;
+export const defaultMaximumCharacters = 120_000;
 const absoluteMaximumCharacters = 300_000;
 
 export interface ParsedDocument extends Partial<
@@ -19,7 +19,12 @@ export interface ParsedDocument extends Partial<
   kind: 'text' | 'pdf' | 'docx' | 'xlsx' | 'pptx';
   text: string;
   truncated: boolean;
-  units: { label: string; text: string; pageNumber?: number }[];
+  units: {
+    label: string;
+    text: string;
+    pageNumber?: number;
+    sheetName?: string;
+  }[];
   warnings: string[];
 }
 
@@ -32,18 +37,6 @@ function normalizeText(value: string) {
     .trim();
 }
 
-function decodeXml(value: string) {
-  return value
-    .replace(/<a:br\s*\/>/g, '\n')
-    .replace(/<a:tab\s*\/>/g, '\t')
-    .replace(/<[^>]+>/g, '')
-    .replaceAll('&lt;', '<')
-    .replaceAll('&gt;', '>')
-    .replaceAll('&quot;', '"')
-    .replaceAll('&apos;', "'")
-    .replaceAll('&amp;', '&');
-}
-
 function limitDocument(
   kind: ParsedDocument['kind'],
   units: ParsedDocument['units'],
@@ -54,15 +47,19 @@ function limitDocument(
     Math.max(Math.trunc(maximumCharacters), 1_000),
     absoluteMaximumCharacters,
   );
-  const joined = units
-    .map((unit) => `## ${unit.label}\n\n${normalizeText(unit.text)}`)
+  const normalizedUnits = units.map((unit) => ({
+    ...unit,
+    text: normalizeText(unit.text),
+  }));
+  const joined = normalizedUnits
+    .map((unit) => `## ${unit.label}\n\n${unit.text}`)
     .join('\n\n');
   const truncated = joined.length > boundedMaximum;
   return {
     kind,
     text: truncated ? joined.slice(0, boundedMaximum) : joined,
     truncated,
-    units,
+    units: normalizedUnits,
     warnings: [
       ...warnings,
       ...(truncated
@@ -122,30 +119,151 @@ async function parseXlsx(bytes: Buffer, maximumCharacters: number) {
           .join('\t'),
       );
     });
-    units.push({ label: `工作表：${worksheet.name}`, text: rows.join('\n') });
+    units.push({
+      label: `工作表：${worksheet.name}`,
+      sheetName: worksheet.name,
+      text: rows.join('\n'),
+    });
   });
   return limitDocument('xlsx', units, maximumCharacters);
 }
 
-async function parsePptx(bytes: Buffer, maximumCharacters: number) {
-  const archive = await JSZip.loadAsync(bytes);
-  const slidePaths = Object.keys(archive.files)
-    .filter((path) => /^ppt\/slides\/slide\d+\.xml$/.test(path))
-    .sort((left, right) => {
-      const leftIndex = Number(left.match(/slide(\d+)\.xml$/)?.[1] ?? 0);
-      const rightIndex = Number(right.match(/slide(\d+)\.xml$/)?.[1] ?? 0);
-      return leftIndex - rightIndex;
+async function parsePptx(
+  bytes: Buffer,
+  maximumCharacters: number,
+  requireCompleteText = false,
+) {
+  // Reuse the Office reader's relationship order and namespace-aware XML.
+  const pkg = await OfficePackage.open(bytes, 'pptx', { readOnly: true });
+  const units: ParsedDocument['units'] = [];
+  const warnings: string[] = [];
+  let incomplete = false;
+  for (const part of await pkg.orderedParts()) {
+    const doc = await pkg.xml(part.path);
+    const text = elements(doc, ns.a, 't').map((element) => element.textContent);
+    try {
+      const chartNamespace =
+        'http://schemas.openxmlformats.org/drawingml/2006/chart';
+      const extendedChartNamespace =
+        'http://schemas.microsoft.com/office/drawing/2014/chartex';
+      if (
+        elements(doc, ns.a, 'graphicData').some(
+          (node) => node.getAttribute('uri') === extendedChartNamespace,
+        )
+      )
+        incompleteChartText();
+      const charts = elements(doc, chartNamespace, 'chart');
+      if (charts.length) {
+        const links = await pkg.links(part.path);
+        for (const [index, chart] of charts.entries()) {
+          const path = links.get(chart.getAttributeNS(ns.r, 'id') ?? '');
+          if (!path) incompleteChartText();
+          const chartDoc = await pkg.xml(path);
+          // Cached values are source strings, never JS numbers or recalculated
+          // formulas. Missing/sparse caches cannot establish complete chart text.
+          const cacheNames = [
+            'strCache',
+            'numCache',
+            'multiLvlStrCache',
+            'strLit',
+            'numLit',
+          ];
+          for (const [ref, cache] of [
+            ['strRef', 'strCache'],
+            ['numRef', 'numCache'],
+            ['multiLvlStrRef', 'multiLvlStrCache'],
+          ] as const)
+            for (const node of elements(chartDoc, chartNamespace, ref))
+              if (children(node, chartNamespace, cache).length !== 1)
+                incompleteChartText();
+          const caches = cacheNames.flatMap((name) =>
+            elements(chartDoc, chartNamespace, name),
+          );
+          if (!caches.length) incompleteChartText();
+          for (const name of ['cat', 'val', 'xVal', 'yVal', 'bubbleSize'])
+            for (const data of elements(chartDoc, chartNamespace, name))
+              if (
+                !cacheNames.some(
+                  (cache) => elements(data, chartNamespace, cache).length,
+                )
+              )
+                incompleteChartText();
+          for (const cache of caches) {
+            const countText = children(
+              cache,
+              chartNamespace,
+              'ptCount',
+            )[0]?.getAttribute('val');
+            const count = Number(countText);
+            if (
+              countText === null ||
+              countText === undefined ||
+              !/^\d+$/.test(countText) ||
+              !Number.isSafeInteger(count)
+            )
+              incompleteChartText();
+            const groups =
+              cache.localName === 'multiLvlStrCache'
+                ? children(cache, chartNamespace, 'lvl')
+                : [cache];
+            if (!groups.length && count) incompleteChartText();
+            for (const group of groups) {
+              const points = children(group, chartNamespace, 'pt');
+              const indexes = points.map((point) =>
+                Number(point.getAttribute('idx')),
+              );
+              if (
+                points.length !== count ||
+                new Set(indexes).size !== count ||
+                points.some(
+                  (point) =>
+                    !/^\d+$/.test(point.getAttribute('idx') ?? '') ||
+                    !Number.isSafeInteger(Number(point.getAttribute('idx'))) ||
+                    Number(point.getAttribute('idx')) >= count ||
+                    children(point, chartNamespace, 'v').length !== 1,
+                )
+              )
+                incompleteChartText();
+            }
+          }
+          text.push(
+            `图表 ${index + 1}`,
+            ...elements(chartDoc, ns.a, 't').map((node) => node.textContent),
+            ...elements(chartDoc, chartNamespace, 'v').map(
+              (node) => node.textContent,
+            ),
+          );
+        }
+        warnings.push('图表数值来自文件内的完整缓存，未重新计算公式。');
+      }
+    } catch (error) {
+      if (
+        requireCompleteText ||
+        !(error instanceof HandlerError) ||
+        error.code !== 'OFFICE_CHART_TEXT_INCOMPLETE'
+      )
+        throw error;
+      incomplete = true;
+      warnings.push('部分图表正文未完整提取；以下仅为已提取文字，不代表全文。');
+    }
+    units.push({
+      label: `第 ${part.index} 页`,
+      pageNumber: part.index,
+      text: text.join('\n'),
     });
-  const units = await Promise.all(
-    slidePaths.map(async (path, index) => {
-      const xml = await archive.file(path)!.async('string');
-      const runs = [...xml.matchAll(/<a:t>([\s\S]*?)<\/a:t>/g)].map((match) =>
-        decodeXml(match[1] ?? ''),
-      );
-      return { label: `第 ${index + 1} 页`, text: runs.join('\n') };
-    }),
+  }
+  const result = limitDocument('pptx', units, maximumCharacters, [
+    ...new Set(warnings),
+  ]);
+  return { ...result, truncated: result.truncated || incomplete };
+}
+
+function incompleteChartText(): never {
+  throw new HandlerError(
+    'OFFICE_CHART_TEXT_INCOMPLETE',
+    'PPTX 图表正文缺少完整缓存，当前无法完整提取。',
+    false,
   );
-  return limitDocument('pptx', units, maximumCharacters);
 }
 
 export async function parseDocument(input: {
@@ -155,6 +273,8 @@ export async function parseDocument(input: {
   maximumCharacters?: number;
   pages?: number[];
   includeStructure?: boolean;
+  /** Internal full-text publication guard; ordinary reads may return partial text. */
+  requireCompleteText?: true;
 }): Promise<ParsedDocument> {
   if (input.bytes.byteLength > maximumDocumentBytes) {
     throw new HandlerError(
@@ -201,7 +321,7 @@ export async function parseDocument(input: {
       'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
     extension === 'pptx'
   ) {
-    return parsePptx(input.bytes, maximumCharacters);
+    return parsePptx(input.bytes, maximumCharacters, input.requireCompleteText);
   }
   if (
     input.mediaType.startsWith('text/') ||
