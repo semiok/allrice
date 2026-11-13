@@ -65,6 +65,7 @@ export * from './data.ts';
 export * from './workspace.ts';
 export {
   EmployeeMemoryConflict,
+  EmployeeMemoryContractChanged,
   EmployeeMemoryCapacityError,
 } from './workspace/employee-memory.ts';
 export * from './workspace-readiness.ts';

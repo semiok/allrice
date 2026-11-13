@@ -10,6 +10,7 @@ import {
 } from '../run-memory-context.ts';
 import { readRunExperienceSource } from '../run-experience-source.ts';
 import { readToolBrokerMemoryContext } from '../execution/tool-broker.ts';
+import { seedLegacyEmployeeMemory } from './employee-memory-v1.fixture.ts';
 import { setPersonalEmployeeMemoryPin } from './service.ts';
 /** Actual isolated PostgreSQL, current identities and the public memory services.
  * No model calls. Test data and all schema changes live in runtime.fixture. */
@@ -18,6 +19,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   renderMemoryContext,
   initialMemoryContextBytes,
+  memoryContextBytes,
   type ExecutionContext,
 } from '@allrice/contracts';
 import * as client from '../core/client.ts';
@@ -36,7 +38,9 @@ import { searchToolBrokerMemories } from '../execution/tool-broker.ts';
 import { recallRagChunks } from '../data.ts';
 import {
   createTraceableMemory,
+  createPersonalEmployeeMemory,
   correctWorkspaceMemory,
+  correctPersonalEmployeeMemory,
   promoteWorkspaceMemory,
   deleteWorkspaceMemory,
   listWorkspaceMemories,
@@ -48,6 +52,8 @@ import {
 import {
   EmployeeMemoryConflict,
   memoryContentDigest,
+  memoryPairDigest,
+  legacyPersonalMemoryPair,
 } from './employee-memory.ts';
 
 const suite =
@@ -185,16 +191,7 @@ suite(
       expect(initial.initial.bytes).toBe(initialMemoryContextBytes(selected));
       expect(initial.initial).not.toHaveProperty('documentDigest');
       expect(initial).not.toHaveProperty('confirmedPins');
-      const edited = await correctWorkspaceMemory(
-        f.context,
-        f.workspace,
-        kept.id,
-        {
-          ...exact(kept),
-          content: '下个任务的新正文',
-          reason: '本人更新',
-        },
-      );
+      const edited = await editActive(f, kept, '下个任务的新正文', '本人更新');
       const resumed = await prepareRunMemoryContext(
         auth,
         await filterEmployeeMethodMemories(scope, frozen),
@@ -238,6 +235,46 @@ suite(
       ).toBeNull();
     });
 
+    async function editActive(
+      f: Awaited<ReturnType<typeof setup>>,
+      m: {
+        id: string;
+        content: string;
+        revision: number;
+        instanceId: string | null;
+      },
+      summary: string,
+      reason: string,
+    ) {
+      const edited = await correctPersonalEmployeeMemory(
+        f.context,
+        f.workspace,
+        m.id,
+        {
+          instanceId: m.instanceId!,
+          expectedRevision: m.revision,
+          pairDigest: memoryPairDigest(legacyPersonalMemoryPair(m.content)),
+          idempotencyKey: randomUUID(),
+          summary,
+          details: null,
+          reason,
+        },
+      );
+      return { ...edited, contentDigest: memoryContentDigest(edited.summary) };
+    }
+    const legacyMemory = (
+      f: Awaited<ReturnType<typeof setup>>,
+      content: string,
+      lifecycleState: 'candidate' | 'durable' = 'durable',
+    ) =>
+      seedLegacyEmployeeMemory(fixture.db, f.context, {
+        workspaceId: f.workspace,
+        instanceId: f.assignment,
+        content,
+        sourceType: 'user',
+        lifecycleState,
+      });
+
     it('freezes whole document revisions, shares search/source pins and spend, and stops after withdrawal', async () => {
       const f = await setup();
       const first = await f.create('稳定资料入口：先核对12笔，不得合并退款。');
@@ -278,15 +315,11 @@ suite(
       expect(source.items[0]).toMatchObject({
         memory: { content: first.content },
       });
-      const edited = await correctWorkspaceMemory(
-        f.context,
-        f.workspace,
-        first.id,
-        {
-          ...exact(first),
-          content: '新任务入口：按新说明核对。',
-          reason: '本人更新',
-        },
+      const edited = await editActive(
+        f,
+        first,
+        '新任务入口：按新说明核对。',
+        '本人更新',
       );
       await assertRunMemoryContextCurrent(scope);
       expect(
@@ -327,6 +360,192 @@ suite(
           await fixture.db`select memory_context_state s from allrice_employee_runs where run_id=${f.rootRunId}`
         )[0]!.s,
       ).toEqual(spent!.s);
+    });
+    it('reads complete new V2 pairs through V1 current/search/source while retaining an issued revision after a V2 edit', async () => {
+      const f = await setup();
+      const pair = {
+        summary: '月报可以外发',
+        details: '  只发脱敏汇总\r\n客户名单不得外发 {{missing}}  ',
+      };
+      const first = await createPersonalEmployeeMemory(f.context, {
+        workspaceId: f.workspace,
+        instanceId: f.assignment,
+        idempotencyKey: randomUUID(),
+        ...pair,
+      });
+      const original = `${pair.summary}\n${pair.details}`;
+      const scope = { ...f.scope, sessionId: f.session };
+      const [job] =
+        await fixture.db`select attempt from allrice_jobs where id=${f.worker.jobId}`;
+      const auth = {
+        scope,
+        worker: { ...f.worker, attempt: Number(job!.attempt) },
+      };
+      const document = await freezeEmployeeDocuments(
+        fixture.db,
+        { ...scope, instanceId: f.assignment },
+        {},
+        true,
+      );
+      expect(document.memories).toContainEqual(
+        expect.objectContaining({ id: first.id, content: original }),
+      );
+      await fixture.db`update allrice_employee_runs set status='running',memory_context_state='{"schemaVersion":1,"pending":true}' where run_id=${f.rootRunId}`;
+      await prepareRunMemoryContext(
+        auth,
+        document.memories,
+        document.employeeDocuments.memory,
+      );
+      const state = async () =>
+        (
+          await fixture.db`select memory_context_state s from allrice_employee_runs where run_id=${f.rootRunId}`
+        )[0]!.s;
+      const initial = await state();
+      const pin = initial.confirmedPins.find(
+        (p: { id: string }) => p.id === first.id,
+      );
+      expect(pin.contentDigest).toBe(runtimePolicyDigest(original));
+      const search = await readToolBrokerMemoryContext(
+        f.execution,
+        '客户名单不得外发',
+        20,
+        auth,
+      );
+      expect(search.items).toContainEqual(
+        expect.objectContaining({
+          id: first.id,
+          revision: 1,
+          content: original,
+          sourceHandle: pin.handle,
+        }),
+      );
+      const [oldRevision] =
+        await fixture.db`select * from allrice_memory_revisions where memory_id=${first.id} and revision=1`;
+      const [receipt] =
+        await fixture.db`select * from allrice_employee_memory_operations where memory_id=${first.id}`;
+      const next = {
+        summary: '月报继续按条件外发',
+        details: '  新规定：仅发审计汇总\n禁止附原始订单  ',
+      };
+      await correctPersonalEmployeeMemory(f.context, f.workspace, first.id, {
+        instanceId: f.assignment,
+        expectedRevision: first.revision,
+        pairDigest: first.pairDigest,
+        idempotencyKey: randomUUID(),
+        ...next,
+        reason: '本人更新详细条件',
+      });
+      expect(
+        (
+          await fixture.db`select * from allrice_memory_revisions where memory_id=${first.id} and revision=1`
+        )[0],
+      ).toEqual(oldRevision);
+      expect(
+        (
+          await fixture.db`select * from allrice_employee_memory_operations where memory_id=${first.id} and operation_key=${receipt!.operation_key}`
+        )[0],
+      ).toEqual(receipt);
+      expect(
+        await searchWorkspaceMemories(f.context, {
+          workspaceId: f.workspace,
+          instanceId: f.assignment,
+          query: '禁止附原始订单',
+        }),
+      ).toContainEqual(
+        expect.objectContaining({
+          id: first.id,
+          content: `${next.summary}\n${next.details}`,
+        }),
+      );
+      const source = await readRunExperienceSource(auth, pin.handle);
+      expect(source.items).toContainEqual(
+        expect.objectContaining({
+          handle: pin.handle,
+          pin,
+          memory: { id: first.id, revision: 1, content: original },
+        }),
+      );
+      const pinnedSearch = await readToolBrokerMemoryContext(
+        f.execution,
+        '客户名单不得外发',
+        20,
+        auth,
+      );
+      expect(pinnedSearch.items).toContainEqual(
+        expect.objectContaining({
+          id: first.id,
+          revision: 1,
+          content: original,
+          sourceHandle: pin.handle,
+        }),
+      );
+      const spent = await state();
+      expect(spent.confirmedPins).toEqual(initial.confirmedPins);
+      expect(spent.initial).toEqual(initial.initial);
+      expect(spent.limits).toEqual(initial.limits);
+      expect(spent.limits).toMatchObject({
+        maximumResponseBytes: 8000,
+        maximumRunBytes: 24000,
+        maximumToolReads: 12,
+      });
+      expect(spent.toolReads).toBe(3);
+      expect(spent.spentBytes).toBe(
+        initial.spentBytes +
+          memoryContextBytes(search) +
+          memoryContextBytes(pinnedSearch) +
+          memoryContextBytes(source),
+      );
+    });
+    it('omits an oversized complete V2 pair from V1 initial and search budgets instead of returning its summary as full content', async () => {
+      const f = await setup();
+      const pair = { summary: '超预算边界', details: '🧑'.repeat(2000) };
+      const memory = await createPersonalEmployeeMemory(f.context, {
+        workspaceId: f.workspace,
+        instanceId: f.assignment,
+        idempotencyKey: randomUUID(),
+        ...pair,
+      });
+      const scope = { ...f.scope, sessionId: f.session };
+      const [job] =
+        await fixture.db`select attempt from allrice_jobs where id=${f.worker.jobId}`;
+      const auth = {
+        scope,
+        worker: { ...f.worker, attempt: Number(job!.attempt) },
+      };
+      const document = await freezeEmployeeDocuments(
+        fixture.db,
+        { ...scope, instanceId: f.assignment },
+        {},
+        true,
+      );
+      expect(document.memories).toEqual([]);
+      await fixture.db`update allrice_employee_runs set status='running',memory_context_state='{"schemaVersion":1,"pending":true}' where run_id=${f.rootRunId}`;
+      await prepareRunMemoryContext(
+        auth,
+        document.memories,
+        document.employeeDocuments.memory,
+      );
+      const result = await readToolBrokerMemoryContext(
+        f.execution,
+        pair.summary,
+        20,
+        auth,
+      );
+      expect(result).toMatchObject({ items: [], omittedItems: 1 });
+      expect(JSON.stringify(result)).not.toContain(pair.summary);
+      const [stored] =
+        await fixture.db`select memory_context_state s from allrice_employee_runs where run_id=${f.rootRunId}`;
+      expect(stored!.s.initial.ids).not.toContain(memory.id);
+      expect(stored!.s.confirmedPins).toEqual([]);
+      expect(stored!.s.limits).toMatchObject({
+        maximumResponseBytes: 8000,
+        maximumRunBytes: 24000,
+        maximumToolReads: 12,
+      });
+      expect(stored!.s.spentBytes).toBe(
+        stored!.s.initial.bytes + memoryContextBytes(result),
+      );
+      expect(stored!.s.toolReads).toBe(1);
     });
     it('admits current human documents, rejects old or unknown ordinary snapshots, and preserves proven internal producers', async () => {
       const f = await setup();
@@ -491,11 +710,11 @@ suite(
       ).rejects.toThrow();
     });
 
-    it('rejects oversized edits of pinned memories atomically and always allows unpin to repair capacity', async () => {
+    it('retains historical v1 pinned-edit capacity rejection and always allows unpin to repair capacity', async () => {
       const f = await setup();
       const saved = [];
       for (let i = 0; i < 8; i++) {
-        const item = await f.create(`常用入口${i}`);
+        const item = await legacyMemory(f, `常用入口${i}`);
         saved.push(
           await setPersonalEmployeeMemoryPin(f.context, f.workspace, item.id, {
             ...exact(item),
@@ -805,11 +1024,12 @@ suite(
       });
       expect(foreignInstance.dto.available).toBe(false);
       expect(foreignInstance.dto).not.toHaveProperty('body');
-      await correctWorkspaceMemory(f.context, f.workspace, m.id, {
-        ...exact(m),
-        content: 'Corrected monthly report source',
-        reason: 'Owner edited next-run preference',
-      });
+      await editActive(
+        f,
+        m,
+        'Corrected monthly report source',
+        'Owner edited next-run preference',
+      );
       expect(await filterEmployeeMethodMemories(f.scope, [m])).toEqual([m]);
       const current = (
         await listWorkspaceMemories(f.context, f.workspace, undefined, {
@@ -836,11 +1056,9 @@ suite(
       expect(instance!.archived_at).not.toBeNull();
     });
 
-    it('requires the exact viewed revision and content, keeps retries idempotent, and does not revive discarded sources', async () => {
+    it('retains historical v1 edit CAS/current receipts and does not revive discarded sources', async () => {
       const f = await setup();
-      const candidate = await f.create('月报入口 A', {
-        lifecycleState: 'candidate',
-      });
+      const candidate = await legacyMemory(f, '月报入口 A', 'candidate');
       const confirmation = exact(candidate);
       await expect(
         promoteWorkspaceMemory(f.context, f.workspace, candidate.id, {
@@ -930,9 +1148,9 @@ suite(
       ).rejects.toBeInstanceOf(EmployeeMemoryConflict);
     });
 
-    it('serializes concurrent edit/confirmation, preserves a single winning revision and rejects a changed idempotency payload', async () => {
+    it('serializes historical v1 edit/confirmation, preserves one winning revision and rejects changed idempotency payloads', async () => {
       const f = await setup();
-      const m = await f.create('original', { lifecycleState: 'candidate' });
+      const m = await legacyMemory(f, 'original', 'candidate');
       const result = await Promise.allSettled([
         promoteWorkspaceMemory(f.context, f.workspace, m.id, exact(m)),
         correctWorkspaceMemory(f.context, f.workspace, m.id, {
@@ -1003,11 +1221,7 @@ suite(
       create trigger fail_memory_audit before insert on allrice_audit_events for each row execute function fail_memory_audit()`);
       try {
         await expect(
-          correctWorkspaceMemory(f.context, f.workspace, m.id, {
-            ...exact(m),
-            content: 'after',
-            reason: 'test atomicity',
-          }),
+          editActive(f, m, 'after', 'test atomicity'),
         ).rejects.toThrow('synthetic audit failure');
       } finally {
         await fixture.db.unsafe(
