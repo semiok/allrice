@@ -602,6 +602,110 @@ async function schedulingRuntime(
   };
 }
 
+it('a nonthrowing unpublished native question exits through the existing abort and exact close path', async () => {
+  const runtime = await schedulingRuntime(
+    [
+      {
+        id: 'call-private-question',
+        wireName: 'ask_user_question',
+        arguments: {
+          questions: [
+            {
+              id: 'choice',
+              question: 'PRIVATE_QUESTION_BODY',
+              options: [{ label: 'Continue' }],
+            },
+          ],
+        },
+      },
+    ],
+    {
+      usage: [
+        {
+          prompt_tokens: 13,
+          completion_tokens: 7,
+          prompt_tokens_details: { cached_tokens: 2 },
+        },
+      ],
+    },
+  );
+  const controller = new AbortController(),
+    input = executionInput({
+      prompt: 'Ask the native question and wait.',
+      provider: runtime.provider,
+      signal: controller.signal,
+    });
+  input.workDirectory = runtime.root;
+  input.tools = [];
+  let owned: DshRuntime | undefined,
+    suppressed = 0;
+  const publicEvents: HarnessEvent[] = [];
+  const batcher = new HarnessEventBatcher(async (event) => {
+    if (event.sourceEventType === 'session/user-question') {
+      expect(
+        UserQuestionRequestSchema.parse(event.sourcePayload).questions[0]!
+          .question,
+      ).toBe('PRIVATE_QUESTION_BODY');
+      suppressed++;
+      // The database cancellation/heartbeat are exercised against real SQL in
+      // reference-publications; runner's old tests prove inactive -> abort.
+      // This real native port gets no ACK, exception or fabricated answer.
+      setImmediate(() => controller.abort());
+      return;
+    }
+    publicEvents.push(event);
+  });
+  const park = vi.fn(),
+    confirmStopped = vi.fn(async (receipt) => {
+      expect(receipt).toEqual({
+        nativeSessionId: owned!.sessionId,
+        runtimeId: owned!.id,
+      });
+      expect(owned!.client.processState()).toMatchObject({
+        state: 'exited',
+        stdioClosed: true,
+      });
+    });
+  input.questionWait = { park, adopted: vi.fn(), confirmStopped };
+  input.onEvent = async (event) => {
+    if (event.sourceEventType === 'allrice/runtime-preparation')
+      owned = (
+        Reflect.get(runtime.adapter, 'runtimePool') as DshRuntimePool
+      ).get(event.threadId!)!;
+    await batcher.accept(event);
+  };
+  try {
+    const failure = await runtime.adapter
+      .execute(input)
+      .catch((error: unknown) => error);
+    await batcher.close();
+    expect(failure).toMatchObject({
+      code: 'EXECUTION_ABORTED',
+      retryable: false,
+    });
+    expect(suppressed).toBe(1);
+    expect(park).not.toHaveBeenCalled();
+    expect(confirmStopped).toHaveBeenCalledOnce();
+    expect(runtime.requests).toHaveLength(1);
+    expect(
+      publicEvents.some((e) => e.sourceEventType === 'session/user-question'),
+    ).toBe(false);
+    const receipt = getExecutionFailureUsage(
+      failure,
+      input.executionEnvironment.ALLRICE_RUN_ID!,
+      input.attempt,
+    );
+    expect(receipt?.usage).toEqual({
+      inputTokens: 13,
+      cachedInputTokens: 2,
+      outputTokens: 7,
+    });
+    expect(receipt?.usageComplete).toBe(false); // interrupted wait is not usage settlement proof
+  } finally {
+    await runtime.close();
+  }
+}, 30000);
+
 const schedulingTools: HarnessExecutionInput['tools'] = [
   {
     name: 'automation.create',

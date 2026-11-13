@@ -421,6 +421,15 @@ export async function updateWorkbenchFile(
     db = getDatabase();
   const inputDigest = digest(JSON.stringify({ objectId, ...value }));
   const initial = await readWorkbenchFile(context, objectId);
+  if (initial.row.source_id) {
+    const [publication] = await db`select id from allrice_knowledge_sources
+      where id=${initial.row.source_id} and publication_kind is not null`;
+    if (publication)
+      throw new WorkbenchFileError(
+        'invalid_file',
+        '请通过企业资料操作修改范围或撤销资料。',
+      );
+  }
   if (!initial.canMaintain) throw new DataAccessError('authorization_denied');
   const [completed] = await db<
     { object_id: string; input_digest: string; result_revision: number }[]
