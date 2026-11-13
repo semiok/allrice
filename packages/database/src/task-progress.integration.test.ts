@@ -13,7 +13,7 @@ import { freezeRouteSubscriptionSnapshot } from './execution/route-subscription.
 import { createTaskProgressRuntime } from './task-progress.ts';
 import { readTaskClock } from './task-clock.ts';
 import { listDshRuntimeEventTimeline } from './conversation/conversation-runtime.ts';
-import { cancelRun } from './execution/queue.ts';
+import { cancelRun, heartbeatJob } from './execution/queue.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -107,6 +107,113 @@ suite(
       const nativeSessionId = randomUUID();
       return { task, context, worker, port, nativeSessionId, decision };
     }
+    it('proves only an absent tool start under the original live cancellation drain', async () => {
+      const s = await setup(),
+        handle = s.port();
+      const start = {
+        action: 'start',
+        kind: 'tool',
+        nativeSessionId: s.nativeSessionId,
+        callId: 'not-admitted',
+        name: 'read',
+        argumentsDigest: `sha256:${'a'.repeat(64)}`,
+      };
+      await handle({ ...start, callId: 'registered-tool' });
+      await handle({
+        action: 'start',
+        kind: 'model',
+        nativeSessionId: s.nativeSessionId,
+        callId: 'registered-model',
+      });
+      await cancelRun(f.context, f.workspaceId, s.task.runId, {
+        reason: 'user_requested',
+      });
+      await heartbeatJob(
+        s.worker.workerId,
+        s.worker.jobId,
+        s.worker.leaseToken,
+        30000,
+      );
+      const [before] =
+        await f.db`select * from allrice_jobs where id=${s.worker.jobId}`;
+      expect(before!.drain_deadline_at).toBeInstanceOf(Date);
+      const rejected = async (
+        port: ReturnType<typeof s.port>,
+        request: unknown,
+        trusted = false,
+      ) => {
+        const error = await port(request).catch((error: unknown) => error);
+        expect(error).toBeInstanceOf(Error);
+        expect((error as Error).message).toBe('task_progress_lease_lost');
+        const proof = createTaskProgressRuntime.stoppedToolStart(error);
+        if (trusted) {
+          expect(proof).toEqual({
+            toolStart: 'not_admitted',
+            reason: 'admission_closed',
+            runId: s.task.runId,
+            nativeSessionId: s.nativeSessionId,
+            callId: start.callId,
+            rejection: {
+              code: 'task_progress_lease_lost',
+              message: 'task_progress_lease_lost',
+            },
+          });
+          expect(Object.isFrozen(proof)).toBe(true);
+          expect(Object.isFrozen(proof!.rejection)).toBe(true);
+        } else expect(proof).toBeUndefined();
+      };
+      await rejected(handle, start, true);
+      // No fabricated start, no progress mutation, no drain extension.
+      expect(
+        await f.db`select * from allrice_task_calls where run_id=${s.task.runId} and call_id=${start.callId}`,
+      ).toHaveLength(0);
+      expect(
+        (await f.db`select * from allrice_jobs where id=${s.worker.jobId}`)[0],
+      ).toEqual(before);
+      for (const request of [
+        { ...start, callId: 'registered-tool' },
+        { ...start, callId: 'registered-model' },
+        { ...start, kind: 'model' },
+        { ...start, name: undefined },
+        { ...start, argumentsDigest: undefined },
+        { action: 'check', nativeSessionId: s.nativeSessionId },
+      ])
+        await rejected(handle, request);
+      for (const altered of [
+        {
+          context: { ...s.context, organizationId: randomUUID() },
+          worker: s.worker,
+        },
+        {
+          context: { ...s.context, workspaceId: randomUUID() },
+          worker: s.worker,
+        },
+        {
+          context: {
+            ...s.context,
+            delegatedBy: { ...s.context.delegatedBy, id: randomUUID() },
+          },
+          worker: s.worker,
+        },
+        { context: s.context, worker: { ...s.worker, workerId: randomUUID() } },
+        {
+          context: s.context,
+          worker: { ...s.worker, leaseToken: randomUUID() },
+        },
+      ])
+        await rejected(createTaskProgressRuntime(altered, f.db), start);
+      await f.db`update allrice_jobs set drain_deadline_at=null where id=${s.worker.jobId}`;
+      await rejected(handle, start);
+      await f.db`update allrice_jobs set drain_deadline_at=clock_timestamp()-interval '1 second' where id=${s.worker.jobId}`;
+      await rejected(handle, start);
+      await f.db`update allrice_jobs set drain_deadline_at=${before!.drain_deadline_at},lease_expires_at=clock_timestamp()-interval '1 second' where id=${s.worker.jobId}`;
+      await rejected(handle, start);
+      const spoof = Object.assign(Error('task_progress_lease_lost'), {
+        toolStart: 'not_admitted',
+        reason: 'admission_closed',
+      });
+      expect(createTaskProgressRuntime.stoppedToolStart(spoof)).toBeUndefined();
+    }, 30000);
     it.each([true, false])(
       'ordinary model receipts preserve unknown usage across a retry (subscription proof=%s)',
       async (proof) => {

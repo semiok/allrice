@@ -1,5 +1,9 @@
 /** Actual pinned native process and JSON-RPC, synthetic HTTP model (no paid calls). */
 import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
+import { createServer } from 'node:http';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
@@ -15,6 +19,171 @@ import {
 import { p24Fixture } from '../p24/fixture.js';
 
 describe('MET153 actual native progress wire', () => {
+  it('retains the native aborted-before-dispatch pair without fabricating a progress finish', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'progress-skipped-'));
+    const server = createServer(async (req, res) => {
+      for await (const chunk of req) {
+        void chunk; // Consume the synthetic request.
+      }
+      res.setHeader('content-type', 'text/event-stream');
+      const common = {
+        id: 'synthetic',
+        object: 'chat.completion.chunk',
+        created: 1,
+        model: 'synthetic',
+      };
+      for (const chunk of [
+        {
+          ...common,
+          choices: [
+            {
+              index: 0,
+              delta: {
+                role: 'assistant',
+                tool_calls: ['first', 'skipped'].map((id, index) => ({
+                  index,
+                  id,
+                  type: 'function',
+                  function: {
+                    name: 'platform_repository_review',
+                    arguments: '{"action":"inspect"}',
+                  },
+                })),
+              },
+              finish_reason: null,
+            },
+          ],
+        },
+        {
+          ...common,
+          choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+          usage: { prompt_tokens: 20, completion_tokens: 5, total_tokens: 25 },
+        },
+      ])
+        res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+      res.end('data: [DONE]\n\n');
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const client = new DshProtocolClient({
+      command: process.execPath,
+      args: [
+        resolve(import.meta.dirname, '../../dsh/allrice-jsonrpc-runtime.mjs'),
+      ],
+      cwd: root,
+      requestTimeoutMs: 15000,
+      environment: {
+        PATH: process.env.PATH ?? '/usr/bin:/bin',
+        ALLRICE_PROGRESS_GUARD_ENABLED: '1',
+        DSH_CORDIS_CONFIG: resolve(
+          import.meta.dirname,
+          '../../dsh/allrice-restricted.cordis.yml',
+        ),
+        DSH_DISTRIBUTION_VERSION: DSH_DISTRIBUTION_CURRENT_VERSION,
+        DSH_SESSION_ROOT: join(root, 'sessions'),
+        DSH_HOME: root,
+        DSH_CWD: root,
+        DSH_CREDENTIALS_PATH: join(root, 'credentials.yaml'),
+        DSH_MODEL: 'synthetic',
+        DSH_OPENAI_COMPATIBLE_MODEL: 'synthetic',
+        OPENAI_COMPATIBLE_API_KEY: 'synthetic-only',
+        OPENAI_COMPATIBLE_BASE_URL: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
+      },
+    });
+    const session = `skipped-${randomUUID()}`,
+      requests: Record<string, unknown>[] = [],
+      notices: DshNotification[] = [];
+    let started!: () => void;
+    const firstStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    client.subscribe((notice) => notices.push(notice));
+    client.setRequestHandler(async (method, p) => {
+      if (method === 'allrice/tool-call') {
+        expect(p.toolCallId).toBe('first');
+        await firstStarted;
+        await client.interrupt(session);
+        return {
+          modelContent: '{}',
+          summary: 'Synthetic canceled first call.',
+        };
+      }
+      expect(method).toBe('allrice/progress');
+      requests.push(p);
+      if (p.action === 'start' && p.kind === 'tool') {
+        if (p.callId === 'first') started();
+        else
+          return {
+            toolStart: 'not_admitted',
+            reason: 'admission_closed',
+            runId: 'synthetic-run',
+            nativeSessionId: session,
+            callId: 'skipped',
+            rejection: {
+              code: 'task_progress_lease_lost',
+              message: 'task_progress_lease_lost',
+            },
+          };
+      }
+      return { paused: false };
+    });
+    try {
+      await client.initialize({
+        cwd: root,
+        provider: 'openai-compatible',
+        model: 'synthetic',
+        nativeTools: ['platform.repository.review'],
+        expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
+        requireTaskProgress: true,
+      });
+      await client.prompt(session, 'Synthetic two exclusive tool calls.');
+      await expect
+        .poll(
+          () =>
+            notices.some(
+              (n) =>
+                n.method === 'session.event' &&
+                (n.params.event as { type: string }).type === 'turn/end',
+            ),
+          { timeout: 15000 },
+        )
+        .toBe(true);
+      await client.close(); // Flush the actual Host ledger bridge and require confirmed exit.
+      expect(client.closureEvidence()).toMatchObject({
+        process: { state: 'exited', exitCode: 0, signal: null },
+        wrapperCleanupConfirmed: true,
+      });
+      expect(
+        requests
+          .filter((p) => p.kind === 'tool')
+          .map((p) => [p.action, p.callId]),
+      ).toEqual([
+        ['start', 'first'],
+        ['finish', 'first'],
+        ['start', 'skipped'],
+      ]);
+      expect(JSON.stringify(notices)).toContain('TOOL_ABORTED_BEFORE_DISPATCH');
+      expect(
+        notices.filter(
+          (n) =>
+            n.method === 'session.event' &&
+            (n.params.event as { type: string }).type === 'tool/call',
+        ),
+      ).toHaveLength(2);
+      expect(
+        notices.filter(
+          (n) =>
+            n.method === 'session.event' &&
+            (n.params.event as { type: string }).type === 'tool/result',
+        ),
+      ).toHaveLength(2);
+    } finally {
+      await client.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30000);
+
   it('carries a maintenance reservation through the actual native provider wire and settles each call', async () => {
     const model = await p24Fixture(async (_request, index) => ({
       ...(index < 3
