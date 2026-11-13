@@ -9045,7 +9045,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           if (failurePage)
             await failurePage
               .screenshot({
-                path: join(evidence, `FIRST-FAILURE-${device}-${appearance}.png`),
+                path: join(
+                  evidence,
+                  `FIRST-FAILURE-${device}-${appearance}.png`,
+                ),
               })
               .catch(() => {});
         } finally {
