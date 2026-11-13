@@ -2645,8 +2645,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const firstPaint = `window.firstPaint={theme:document.documentElement.getAttribute('data-theme'),dark:document.body.hasAttribute('data-ds-dark-theme')}`;
         return `<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/app.css"></head><body style="margin:0"><script>${themeScript}</script><script>${appearanceScript({ choice: saved ?? null, viewer: state.viewer })}</script><script>${firstPaint}</script><div id="root"></div><script src="/app.js"></script></body></html>`;
       };
-      if (nativeFixture) nativeDocuments.set(nativeFixture, document);
-      else
+      if (nativeFixture) {
+        nativeDocuments.set(nativeFixture, document);
+        const documentOwner = options.failureCleanup?.own(() =>
+          nativeDocuments.delete(nativeFixture),
+        );
+        if (documentOwner?.late) await documentOwner.late;
+      } else
         await page.route(
           (url) => url.origin === origin && url.pathname === '/',
           (route) =>
@@ -7978,7 +7983,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const cleanupErrors: unknown[] = [];
         let seams: Awaited<ReturnType<typeof fixture>> | undefined;
         let nativeIcon: Awaited<ReturnType<typeof fixture>> | undefined;
-        let failurePage = f.page;
+        let nativeCleanup: ReturnType<typeof createFailureCleanup> | undefined;
+        let failurePage: Page | undefined = f.page;
         const seamWrites: Array<{ method: string; path: string }> = [];
         const tree = () =>
           f.page.getByRole('tree', { name: '员工与工作', exact: true });
@@ -8952,12 +8958,31 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             );
             // A separate existing-session mount opens the real native child
             // tab without changing the original forty-four-state journey.
+            const nativeEvidence = createFailureEvidence({
+              file: import.meta.url,
+              test: task.name,
+            });
+            nativeCleanup = createFailureCleanup(nativeEvidence);
+            unreadCleanups.set(task, nativeCleanup);
+            onTestFailed(async ({ task }) => {
+              await nativeEvidence.capture(task.result?.errors);
+            });
+            failurePage = undefined;
             nativeIcon = await fixture({
               width,
               appearance,
               nativeSubagents: nativeChildSummary(),
               nativeEvents: nativeChildCalls(),
+              failureEvidence: {
+                ...nativeEvidence,
+                observePage(page) {
+                  failurePage = page;
+                  nativeEvidence.observePage(page);
+                },
+              },
+              failureCleanup: nativeCleanup,
             });
+            nativeCleanup.check();
             failurePage = nativeIcon.page;
             await nativeIcon.page.setViewportSize({ width, height });
             const child = await openNativeChild(nativeIcon);
@@ -9017,11 +9042,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           completed = true;
         } catch (error) {
           firstFailure = error;
-          await failurePage
-            .screenshot({
-              path: join(evidence, `FIRST-FAILURE-${device}-${appearance}.png`),
-            })
-            .catch(() => {});
+          if (failurePage)
+            await failurePage
+              .screenshot({
+                path: join(evidence, `FIRST-FAILURE-${device}-${appearance}.png`),
+              })
+              .catch(() => {});
         } finally {
           try {
             await writeFile(
@@ -9066,9 +9092,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           } catch (error) {
             cleanupErrors.push(error);
           }
-          if (nativeIcon) {
+          if (nativeCleanup) {
             try {
-              await nativeIcon.close();
+              await nativeCleanup.finish({
+                state: completed ? 'pass' : 'fail',
+                errors: firstFailure,
+              });
             } catch (error) {
               cleanupErrors.push(error);
             }
