@@ -2603,6 +2603,9 @@ suite('U1 mounted employee Workflow host', () => {
         instanceRead = gate();
       const original = '当前输入保留';
       await f.page
+        .getByRole('button', { name: '和 Rice 开新会话', exact: true })
+        .click();
+      await f.page
         .getByRole('textbox', { name: '给 Rice 的消息', exact: true })
         .fill(original);
       await f.page.locator('input[type=file][multiple]').setInputFiles({
