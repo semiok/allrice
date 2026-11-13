@@ -144,10 +144,11 @@ describe('bounded Office read preserves available text without claiming full-tex
         [{ name: '收入', labels: ['九月', '十月'], values: [12, 20] }],
         { x: 1, y: 1, w: 8, h: 4 },
       );
+      const binary = await presentation.write({ outputType: 'nodebuffer' });
+      if (!Buffer.isBuffer(binary))
+        throw new Error('Expected native PPTX buffer');
       const out = {
-        bytes: Buffer.from(
-          await presentation.write({ outputType: 'nodebuffer' }),
-        ),
+        bytes: Buffer.from(binary),
         mediaType:
           'application/vnd.openxmlformats-officedocument.presentationml.presentation',
       };

@@ -1111,6 +1111,9 @@ describe('Codex hosted search Tool Broker integration', () => {
       .spyOn(nativeOffice, 'generateNativeOfficeExport')
       .mockResolvedValue({
         ...generated,
+        bytes: Buffer.from(generated.bytes),
+        extension: 'docx',
+        mediaType: officeMediaTypes.docx,
         sourceFile: undefined,
         changes: undefined,
         warnings: undefined,
@@ -1208,6 +1211,9 @@ describe('Codex hosted search Tool Broker integration', () => {
       if (mode === 'publication-unknown')
         generate.mockResolvedValue({
           ...generated,
+          bytes: Buffer.from(generated.bytes),
+          extension: 'docx',
+          mediaType: officeMediaTypes.docx,
           sourceFile: undefined,
           changes: undefined,
           warnings: undefined,
