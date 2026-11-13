@@ -7,10 +7,7 @@ import type {
   StoragePort,
   SignedAccessGrant,
 } from '@allrice/contracts';
-import {
-  methodActivationQuestionPrefix,
-  UserQuestionRequestSchema,
-} from '@allrice/contracts';
+import { UserQuestionRequestSchema } from '@allrice/contracts';
 import * as client from '../../../packages/database/src/core/client.ts';
 import {
   createRuntimeFixtureDatabase,
@@ -1459,11 +1456,7 @@ suite(
             questionId: 'native-question',
             questions: [
               {
-                // A rejected activation question must never reach the writer that
-                // requires its authentic activation receipt. Normal questions do.
-                id: denied
-                  ? methodActivationQuestionPrefix + randomUUID()
-                  : 'choice',
+                id: 'choice',
                 question: 'NEW_NATIVE_BODY',
                 detail: 'NEW_NATIVE_BODY',
                 header: 'NEW_NATIVE_BODY',
@@ -1570,7 +1563,6 @@ suite(
               await f.db`select * from allrice_task_questions where run_id=${run.scope.runId}`,
               await f.db`select * from allrice_native_questions where source_run_id=${run.scope.runId}`,
               await f.db`select * from allrice_native_question_waits where run_id=${run.scope.runId}`,
-              await f.db`select * from allrice_employee_method_activations where source_run_id=${run.scope.runId}`,
             ])
               expect(rows).toHaveLength(0);
             const [root] =
@@ -1693,7 +1685,6 @@ suite(
       for (const rows of [
         await f.db`select * from allrice_native_questions where source_run_id=${run.scope.runId}`,
         await f.db`select * from allrice_native_question_waits where run_id=${run.scope.runId}`,
-        await f.db`select * from allrice_employee_method_activations where source_run_id=${run.scope.runId}`,
         await f.db`select * from allrice_employee_run_steps where run_id=${run.scope.runId} and payload::text like '%IN_FLIGHT_NATIVE_BODY%'`,
       ])
         expect(rows).toHaveLength(0);

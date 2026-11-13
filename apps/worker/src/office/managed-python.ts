@@ -21,7 +21,7 @@ import type { RiceToolExecutionInput } from '../tool-broker/types.js';
 import { waitForLocalAdmission } from '../tool-broker/handlers/local-admission.js';
 import { HandlerError, confirmToolFailure } from '../errors.js';
 import { assertLocalPythonPreflight } from '../python/preflight.js';
-import { readOfficeBytes } from './export.js';
+import { readOfficeBytes } from './read-bytes.js';
 import { OfficePackage, officeMediaTypes } from './package.js';
 
 /** Internal adapter for the original frozen tool/call. Publication still has

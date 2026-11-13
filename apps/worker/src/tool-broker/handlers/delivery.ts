@@ -18,7 +18,6 @@ import {
 import { LocalStorageAdapter } from '@allrice/storage';
 import { officeFormat } from '@allrice/office-runtime';
 
-import { generateOfficeExport } from '../../office/export.js';
 import { generateNativeOfficeExport } from '../../office/native.js';
 import { generateOfficePdfExport } from '../../office/pdf.js';
 import { checkOfficeExport } from '../../office/quality.js';
@@ -65,7 +64,6 @@ export async function createControlledWorkspaceExport(
     );
   }
   const format = DeliveryFormatSchema.parse(stringValue(args.format, 'format'));
-  const hasOffice = args.office !== undefined;
   const hasPython = args.python !== undefined;
   const hasOfficePdf = args.officePdf !== undefined;
   if (args.location !== undefined && !hasPython && !hasOfficePdf)
@@ -75,17 +73,16 @@ export async function createControlledWorkspaceExport(
       false,
     );
   if (
-    [hasOffice, hasPython, hasOfficePdf, args.content !== undefined].filter(
-      Boolean,
-    ).length !== 1
+    [hasPython, hasOfficePdf, args.content !== undefined].filter(Boolean)
+      .length !== 1
   )
     throw new HandlerError(
       'TOOL_INPUT_INVALID',
-      'content、python、officePdf 与旧版 office 必须且只能提供一个',
+      'content、python 与 officePdf 必须且只能提供一个',
       false,
     );
   if (
-    (hasOffice || hasPython || hasOfficePdf) &&
+    (hasPython || hasOfficePdf) &&
     args.artifactKind !== undefined &&
     args.artifactKind !== 'document'
   )
@@ -95,9 +92,7 @@ export async function createControlledWorkspaceExport(
       false,
     );
   const content =
-    hasOffice || hasPython || hasOfficePdf
-      ? ''
-      : textValue(args.content, 'content');
+    hasPython || hasOfficePdf ? '' : textValue(args.content, 'content');
   if (hasOfficePdf && format !== 'pdf')
     throw new HandlerError(
       'TOOL_INPUT_INVALID',
@@ -168,18 +163,16 @@ export async function createControlledWorkspaceExport(
             });
           throw error;
         })
-      : hasOffice
-        ? await generateOfficeExport(input, format, args.office)
-        : {
-            ...(await generateDeliverable({
-              format,
-              content,
-              ...(format === 'text' ? { fileName: requestedFileName } : {}),
-            })),
-            sourceFile: undefined,
-            warnings: undefined,
-            changes: undefined,
-          };
+      : {
+          ...(await generateDeliverable({
+            format,
+            content,
+            ...(format === 'text' ? { fileName: requestedFileName } : {}),
+          })),
+          sourceFile: undefined,
+          warnings: undefined,
+          changes: undefined,
+        };
   if (generated.bytes.byteLength > 8_000_000)
     throw new HandlerError(
       'TOOL_FILE_TOO_LARGE',

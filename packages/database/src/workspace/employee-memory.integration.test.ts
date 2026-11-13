@@ -33,7 +33,7 @@ import {
 } from '../employees/employee-instances.ts';
 import { resolveEmployeeContentSource } from '../employees/employee-content-sources.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
-import { filterEmployeeMethodMemories } from '../employees/employee-method-chat.ts';
+import { filterEmployeeMethodMemories } from '../employees/employee-content-chat.ts';
 import { searchToolBrokerMemories } from '../execution/tool-broker.ts';
 import { recallRagChunks } from '../data.ts';
 import {

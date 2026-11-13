@@ -35,31 +35,9 @@ export {
   readEmployeeChatSourceKind,
 } from './employees/employee-chat-authority.ts';
 export {
-  prepareEmployeeMethodActivationFromChat,
-  activateEmployeeMethodFromChat,
-} from './employees/employee-method-activation.ts';
-export { EmployeeMethodActivationError } from './employees/employee-method-activation-question.ts';
-export {
-  inspectEmployeeMethodFromChat,
-  saveEmployeeMethodFromChat,
-  restoreEmployeeMethodFromChat,
-  saveEmployeeMethodAndPublishFromChat,
-  restoreEmployeeMethodAndPublishFromChat,
-  EmployeeMethodChatError,
-  isEmployeeMethodAuthoringRun,
   filterEmployeeMethodMemories,
-} from './employees/employee-method-chat.ts';
-export {
-  startEmployeeMethodTestFromChat,
-  inspectEmployeeMethodTestFromChat,
-  getEmployeeMethodTest,
-  employeeMethodTestStillCurrent,
-} from './employees/employee-method-tests.ts';
+} from './employees/employee-content-chat.ts';
 export * from './employees/employee-runtime-content.ts';
-export {
-  claimMethodFileExecution,
-  methodFileExecutionUnverified,
-} from './employees/employee-method-file-runtime.ts';
 export * from './organization-departments.ts';
 export * from './organization-employee-assignments.ts';
 export * from './employee-administration.ts';

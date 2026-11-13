@@ -78,7 +78,6 @@ export interface HarnessExecutionInput {
   documentMemory?: boolean;
   /** Restricts only three existing method schemas. Derived from the server's
    * frozen Rice identity; never grants a tool or accepts model/browser identity. */
-  personalMethodToolsOnly?: true;
   /** Captured Worker accounting only; never a model/browser authority. */
   nativeAccounting?: {
     bind(rootSessionId: string): {

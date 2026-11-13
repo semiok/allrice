@@ -5,11 +5,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import {
-  makeObjectKey,
-  OfficeCreateSchema,
-  type StorageObject,
-} from '@allrice/contracts';
+import { makeObjectKey, type StorageObject } from '@allrice/contracts';
 import type * as Database from '@allrice/database';
 import {
   claimReferenceProcessing,
@@ -24,7 +20,6 @@ import PDFDocument from 'pdfkit';
 import { processNextReference } from './reference-processing.js';
 import { readKnowledgeText } from './knowledge.js';
 import * as documentReader from './document-reader.js';
-import { createOffice } from './office/create.js';
 import JSZip from 'jszip';
 
 const PptxGenJS: typeof PptxGenJSModule.default = createRequire(
@@ -455,22 +450,23 @@ it('retains the final PPTX slide and its natural page position', async () => {
 it.each(['complete', 'missing', 'sparse'] as const)(
   'extracts native PPTX chart facts or rejects an incomplete cache without publishing partial text: cache=%s',
   async (cache) => {
-    const out = await createOffice(
-      OfficeCreateSchema.parse({
-        kind: 'pptx',
-        title: '月报',
-        slides: [
-          {
-            title: '图表页',
-            chart: {
-              type: 'bar',
-              labels: ['九月', '十月'],
-              series: [{ name: '收入', values: [12, 20] }],
-            },
-          },
-        ],
-      }),
+    const presentation = new PptxGenJS();
+    const intro = presentation.addSlide();
+    intro.addText('可读首页\n已有正文仍应可读', { x: 1, y: 1, w: 8, h: 1 });
+    const slide = presentation.addSlide();
+    slide.addText('可读图表页', { x: 1, y: 0.2, w: 8, h: 0.5 });
+    slide.addChart(
+      'bar',
+      [{ name: '收入', labels: ['九月', '十月'], values: [12, 20] }],
+      { x: 1, y: 1, w: 8, h: 4 },
     );
+    const out = {
+      bytes: Buffer.from(
+        await presentation.write({ outputType: 'nodebuffer' }),
+      ),
+      mediaType:
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    };
     let bytes: Buffer = out.bytes;
     if (cache !== 'complete') {
       const zip = await JSZip.loadAsync(bytes);

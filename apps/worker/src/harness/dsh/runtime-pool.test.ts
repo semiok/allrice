@@ -773,32 +773,6 @@ it.each([false, true])(
 );
 
 it.each([false, true])(
-  'keeps Rice-only method projection in the runtime fingerprint, first=%s',
-  async (personalFirst) => {
-    const { runtimes, value } = currentExecutionRequest('current');
-    value.input.personalMethodToolsOnly = personalFirst ? true : undefined;
-    const first = await runtimes.acquire(value);
-    expect(first.runtime.fingerprintParts.personalMethodToolsOnly).toBe(
-      personalFirst
-        ? createHash('sha256').update('true').digest('hex')
-        : undefined,
-    );
-    value.input.personalMethodToolsOnly = personalFirst ? undefined : true;
-    const second = await runtimes.acquire(value);
-    expect(second.runtime).not.toBe(first.runtime);
-    expect(second.runtime.fingerprintParts.personalMethodToolsOnly).toBe(
-      personalFirst
-        ? undefined
-        : createHash('sha256').update('true').digest('hex'),
-    );
-    expect(first.runtime.client.processState()).toMatchObject({
-      state: 'exited',
-      stdioClosed: true,
-    });
-  },
-);
-
-it.each([false, true])(
   'separates document-memory descriptions in both directions and reuses the same mode, first=%s',
   async (documentFirst) => {
     const { runtimes, value } = currentExecutionRequest('current');

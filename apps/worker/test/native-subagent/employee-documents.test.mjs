@@ -49,12 +49,7 @@ it.each(
       '探索相关备选方案并说明取舍，不编造事实。',
     ],
   ].flatMap(([expressionStyle, label, meaning]) =>
-    ['platform_preview', 'method_candidate'].map((kind) => [
-      kind,
-      expressionStyle,
-      label,
-      meaning,
-    ]),
+    ['platform_preview'].map((kind) => [kind, expressionStyle, label, meaning]),
   ),
 )(
   '%s %s PERSONA reaches native required literal context with empty USER/MEMORY and separate system instructions',
@@ -88,9 +83,7 @@ it.each(
       systemPrompt: 'PLATFORM_HARD_POLICY_ONLY',
       identity,
     });
-    const instructions =
-      kind === 'method_candidate' ? 'METHOD_INSTRUCTIONS_ONLY' : '';
-    const system = [platformSystem, instructions].filter(Boolean).join('\n\n');
+    const system = platformSystem;
     const h = await host({
       runId: randomUUID(),
       rootSystemInstructions: system,
@@ -120,13 +113,11 @@ it.each(
     expect(current).toContain(label);
     expect(current).toContain(meaning);
     expect(current).toContain(kind);
-    expect(current).not.toContain('METHOD_INSTRUCTIONS_ONLY');
     expect(current).not.toContain('# USER.md');
     expect(current).not.toContain('# MEMORY.md');
     const systems = JSON.stringify(
       rootRequest.messages.filter((message) => message.role === 'system'),
     );
-    if (instructions) expect(systems).toContain(instructions);
     for (const required of [
       'PLATFORM_HARD_POLICY_ONLY',
       'PLATFORM_BEHAVIOR_ONLY',

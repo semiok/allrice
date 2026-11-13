@@ -25,7 +25,7 @@ import { runtimePolicyDigest } from '../runtime-policy.ts';
 import { assertPersonalSceneNamespace } from './personal-scene-names.ts';
 import { getEmployeeInstance } from './employee-instances.ts';
 import { employeeChatUuid } from './employee-chat-authority.ts';
-import { resolveEmployeeMethodTarget } from './employee-method-target.ts';
+import { resolvePersonalEmployeeContentTarget } from './employee-content-target.ts';
 import {
   mutateEmployeeContentInTransaction,
   readPersonalEmployeeSceneLayer,
@@ -451,10 +451,9 @@ export async function savePersonalSceneSkillInTransaction(
       throw new DataAccessError('not_found');
   };
   await authorize();
-  const target = await resolveEmployeeMethodTarget(
+  const target = await resolvePersonalEmployeeContentTarget(
     context,
     instanceId,
-    undefined,
     tx,
   );
   const contentId = employeeChatUuid(

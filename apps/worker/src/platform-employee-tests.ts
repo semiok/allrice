@@ -1,7 +1,3 @@
-import {
-  employeeMethodFileTools,
-  executeEmployeeMethodFileStep,
-} from './employee-method-file-tests.js';
 import { randomUUID } from 'node:crypto';
 import { createJobNativeBinding } from './harness/native-session-binding.js';
 import { resolve } from 'node:path';
@@ -20,9 +16,7 @@ import {
 import {
   claimNextPlatformEmployeeTestRun,
   completePlatformEmployeeTestRun,
-  employeeMethodTestStillCurrent,
   experienceValidationStillCurrent,
-  methodFileExecutionUnverified,
   freezeRouteSubscriptionSnapshot,
   employeePersonaPlatformSystemPrompt,
   runtimePackageChecksum,
@@ -70,14 +64,10 @@ export async function executeNextPlatformEmployeeTest(input: {
   const adapter = new DshHarnessAdapter({
     runtimeRoot: testDirectory,
     requestTimeoutMs:
-      test.experienceCandidate?.timeoutMs ??
-      test.methodCandidate?.timeoutMs ??
-      test.runtimeProfile.timeoutMs,
+      test.experienceCandidate?.timeoutMs ?? test.runtimeProfile.timeoutMs,
   });
-  const method = test.methodCandidate;
   const experience = test.experienceCandidate;
-  const candidate = experience ?? method;
-  let methodExecutionIssue: string | undefined;
+  const candidate = experience;
   const controller = new AbortController();
   const signal = AbortSignal.any([input.signal, controller.signal]);
   let guard: ReturnType<typeof setInterval> | undefined;
@@ -97,14 +87,12 @@ export async function executeNextPlatformEmployeeTest(input: {
     checking = (async () => {
       try {
         if (
-          !(await (experience
-            ? experienceValidationStillCurrent(test.id, {
-                runId: test.previewExecution.runId,
-                jobId: test.previewExecution.jobId,
-                workerId: input.workerId,
-                leaseToken: test.previewExecution.leaseToken,
-              })
-            : employeeMethodTestStillCurrent(test.id)))
+          !(await experienceValidationStillCurrent(test.id, {
+            runId: test.previewExecution.runId,
+            jobId: test.previewExecution.jobId,
+            workerId: input.workerId,
+            leaseToken: test.previewExecution.leaseToken,
+          }))
         )
           throw new HandlerError(
             'EMPLOYEE_METHOD_TEST_STALE',
@@ -161,14 +149,10 @@ export async function executeNextPlatformEmployeeTest(input: {
     }
     const tools = experience
       ? []
-      : method
-        ? method.caseId === 'cny-file-flow-v1'
-          ? employeeMethodFileTools
-          : []
-        : riceReadOnlyToolDefinitionsForPreview(
-            grantedCapabilities,
-            test.runtimeProfile.toolNames,
-          );
+      : riceReadOnlyToolDefinitionsForPreview(
+          grantedCapabilities,
+          test.runtimeProfile.toolNames,
+        );
     const snapshot = candidate
       ? providerSnapshotForModelTarget(candidate.modelSnapshot)
       : DshExecutionSnapshotSchema.parse({
@@ -190,14 +174,7 @@ export async function executeNextPlatformEmployeeTest(input: {
           decision: experience.decision,
           providerSnapshot: snapshot,
         })
-      : method
-        ? preflightSubscription({
-            sessionId: method.sourceSessionId,
-            modelSnapshot: method.modelSnapshot,
-            decision: method.decision,
-            providerSnapshot: snapshot,
-          })
-        : undefined;
+      : undefined;
     if (subscriptionSnapshot && candidate) {
       const frozen = await freezeRouteSubscriptionSnapshot({
         organizationId: test.previewContext.organizationId,
@@ -209,16 +186,13 @@ export async function executeNextPlatformEmployeeTest(input: {
     }
     await checkCandidate();
     signal.throwIfAborted();
-    // Both EmployeeKernel consumers use the verified frozen definition. Method
-    // instructions keep their system priority; experience keeps its own path.
+    // Platform preview uses the verified frozen definition; experience keeps
+    // its separate internal validation kernel.
     const platformPersona = !experience
       ? {
-          systemInstructions: [
-            employeePersonaPlatformSystemPrompt(test.definition),
-            method?.instructions,
-          ]
-            .filter(Boolean)
-            .join('\n\n'),
+          systemInstructions: employeePersonaPlatformSystemPrompt(
+            test.definition,
+          ),
           employeeDocuments: {
             persona: renderEmployeePersonaDocument(
               {
@@ -228,7 +202,7 @@ export async function executeNextPlatformEmployeeTest(input: {
                 identity: test.definition.identity,
               },
               EmployeePersonaDocumentSourceSchema.parse({
-                kind: method ? 'method_candidate' : 'platform_preview',
+                kind: 'platform_preview',
                 testId: test.id,
                 platformEmployeeId: test.employeeId,
                 platformRevisionId: test.revisionId,
@@ -296,7 +270,7 @@ export async function executeNextPlatformEmployeeTest(input: {
             bootstrapConversation: '',
             authorizedMemoryContext: '',
             grantedCapabilities,
-            skillVersionIds: method ? [] : test.runtimeProfile.nativeSkillIds,
+            skillVersionIds: test.runtimeProfile.nativeSkillIds,
             runtimePackageChecksum:
               test.runtimeProfile.runtimePackage?.checksum,
             runtimeDistributionGeneration:
@@ -354,40 +328,25 @@ export async function executeNextPlatformEmployeeTest(input: {
         ? tools.map((tool) => tool.name)
         : test.runtimeProfile.toolNames,
       onToolCall:
-        method?.caseId === 'cny-file-flow-v1'
-          ? (call) =>
-              executeEmployeeMethodFileStep({
+        tools.length > 0
+          ? (call, options) =>
+              executeRiceTool({
+                nativeSkills: test.nativeSkills,
                 context: executionContext,
-                testId: test.id,
-                onUnverified: (code) => {
-                  methodExecutionIssue ??= code;
-                },
-                leaseToken: test.previewExecution.leaseToken,
-                jobAttempt: test.previewExecution.jobAttempt,
-                call,
-                signal,
+                managedBrowserJobAttempt: test.previewExecution.jobAttempt,
+                managedBrowserJobLeaseToken: test.previewExecution.leaseToken,
+                capabilities: grantedCapabilities,
                 storageRoot:
                   process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
+                skillVersionIds: test.nativeSkills.map((skill) => skill.id),
+                platformTestRunId: test.id,
+                platformActorLabel: test.requestedByLabel,
+                signal: options?.signal
+                  ? AbortSignal.any([signal, options.signal])
+                  : signal,
+                call,
               })
-          : tools.length > 0
-            ? (call, options) =>
-                executeRiceTool({
-                  nativeSkills: test.nativeSkills,
-                  context: executionContext,
-                  managedBrowserJobAttempt: test.previewExecution.jobAttempt,
-                  managedBrowserJobLeaseToken: test.previewExecution.leaseToken,
-                  capabilities: grantedCapabilities,
-                  storageRoot:
-                    process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
-                  skillVersionIds: test.nativeSkills.map((skill) => skill.id),
-                  platformTestRunId: test.id,
-                  platformActorLabel: test.requestedByLabel,
-                  signal: options?.signal
-                    ? AbortSignal.any([signal, options.signal])
-                    : signal,
-                  call,
-                })
-            : undefined,
+          : undefined,
       onEvent: async (event) => {
         // The final answer is persisted separately. Keep the safe native
         // timeline, lifecycle and usage events without storing delta spam.
@@ -444,16 +403,6 @@ export async function executeNextPlatformEmployeeTest(input: {
         result,
         costCents: meter.costCents,
       });
-      if (
-        method?.caseId === 'cny-file-flow-v1' &&
-        (methodExecutionIssue ||
-          (await methodFileExecutionUnverified(executionContext, test.id)))
-      )
-        throw new HandlerError(
-          'EMPLOYEE_METHOD_TEST_EXECUTION_UNVERIFIED',
-          '隔离文件执行尚未获得完整结果，请保留本测试并按明确重试流程处理。',
-          false,
-        );
       await checkCandidate();
       signal.throwIfAborted();
     }

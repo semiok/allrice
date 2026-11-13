@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "version": "1.7.6",
-  "contentChecksum": "sha256:884b57f9feeb2ae235a031a96966e26fb5410a36e6dfa7ac4e1b83084d1ac91e",
-  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/office?content-sha256=884b57f9feeb2ae235a031a96966e26fb5410a36e6dfa7ac4e1b83084d1ac91e",
+  "version": "1.7.7",
+  "contentChecksum": "sha256:e8c1d7cbcb19f11b548433deb54da9a8009246e799ddf292e9e7f7725bf42fa1",
+  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/office?content-sha256=e8c1d7cbcb19f11b548433deb54da9a8009246e799ddf292e9e7f7725bf42fa1",
   "license": "Apache-2.0 AND MIT",
-  "reviewedBy": "Role task closeout: rendered chart bounds and scoped recovery",
+  "reviewedBy": "MET-223 approved tool and Skill cleanup",
   "resources": [
     {
       "path": "references/charts.md",
@@ -33,8 +33,8 @@
     {
       "path": "references/provenance.md",
       "mediaType": "text/markdown",
-      "byteLength": 6568,
-      "checksum": "sha256:aaaa89bda177e8d3865a1c37f4bdb4c4e5319a48580a699e802a88088c0601bc"
+      "byteLength": 6403,
+      "checksum": "sha256:1728338fe655978c648ff5ddb9e1c04537c6823f261af5a599eef0b27d085170"
     },
     {
       "path": "references/xlsx.md",
@@ -71,5 +71,5 @@
       "name": "python.execute"
     }
   ],
-  "checksum": "sha256:2785dcde12192280ed068f3dbb9b2ec9ab78160a4065a917f5cb76951b71b0ca"
+  "checksum": "sha256:38b22de73c4f0c0d7ec2ce489fb9ded3d64fbda004033334daa976c9ecd10581"
 }

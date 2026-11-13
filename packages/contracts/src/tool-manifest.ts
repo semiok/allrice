@@ -29,29 +29,11 @@ export const employeeCustomizationTools = [
   { name: 'workspace.personal_skill.install', capability: 'storage:write' },
   { name: 'workspace.personal_skill.version', capability: 'storage:write' },
   { name: 'workspace.employee.profile.update', capability: 'storage:write' },
-  { name: 'workspace.employee.method.inspect', capability: 'storage:read' },
-  {
-    name: 'workspace.employee.method.save_candidate',
-    capability: 'storage:write',
-  },
-  {
-    name: 'workspace.employee.method.restore_candidate',
-    capability: 'storage:write',
-  },
-  { name: 'workspace.employee.method.test', capability: 'storage:write' },
-  { name: 'workspace.employee.method.test_status', capability: 'storage:read' },
-  {
-    name: 'workspace.employee.method.prepare_activation',
-    capability: 'storage:write',
-  },
-  { name: 'workspace.employee.method.activate', capability: 'storage:write' },
 ] as const;
 
-/** Historical execution eligibility, including frozen method grants. New Run
- * admission below removes retired methods. baseRice is server-verified. */
+/** Intrinsic tools remain bounded by the current instance kind. */
 export function employeeCustomizationToolsForInstance(
   kind?: 'general' | 'custom',
-  baseRice = false,
 ) {
   return employeeCustomizationTools.filter(
     (tool) =>
@@ -59,21 +41,16 @@ export function employeeCustomizationToolsForInstance(
       (kind === 'general' &&
         (tool.name === 'workspace.employee.profile.update' ||
           tool.name === 'workspace.personal_skill.install' ||
-          tool.name === 'workspace.personal_skill.version' ||
-          (baseRice &&
-            (tool.name === 'workspace.employee.method.inspect' ||
-              tool.name === 'workspace.employee.method.save_candidate' ||
-              tool.name === 'workspace.employee.method.restore_candidate')))),
+          tool.name === 'workspace.personal_skill.version')),
   );
 }
 
 /** Remove intrinsic names from publication input before adding the server's
- * bounded instance selection, so a template cannot opt general users into methods. */
+ * bounded instance selection. */
 export function withEmployeeCustomizationTools(
   toolNames: readonly string[],
   capabilities: readonly SkillCapability[],
   kind?: 'general' | 'custom',
-  baseRice = false,
 ) {
   return [
     ...new Set([
@@ -81,22 +58,8 @@ export function withEmployeeCustomizationTools(
         (name) =>
           !employeeCustomizationTools.some((tool) => tool.name === name),
       ),
-      ...employeeCustomizationToolsForInstance(kind, baseRice)
-        .filter(
-          (tool) =>
-            capabilities.includes(tool.capability) &&
-            // Keep frozen grants recognizable without admitting any retired
-            // text method or draft gate to a new Run, even if declared.
-            ![
-              'workspace.employee.method.inspect',
-              'workspace.employee.method.save_candidate',
-              'workspace.employee.method.restore_candidate',
-              'workspace.employee.method.test',
-              'workspace.employee.method.test_status',
-              'workspace.employee.method.prepare_activation',
-              'workspace.employee.method.activate',
-            ].includes(tool.name),
-        )
+      ...employeeCustomizationToolsForInstance(kind)
+        .filter((tool) => capabilities.includes(tool.capability))
         .map((tool) => tool.name),
     ]),
   ];
@@ -150,55 +113,6 @@ export const allRiceToolManifest = [
     risk: 'managed_write',
     transport: 'dsh_broker_native',
     dshWireName: 'workspace_employee_profile_update',
-  },
-  {
-    canonicalName: 'workspace.employee.method.inspect',
-    capability: 'storage:read',
-    risk: 'read_only',
-    transport: 'dsh_broker_native',
-    dshWireName: 'workspace_employee_method_inspect',
-  },
-  {
-    canonicalName: 'workspace.employee.method.save_candidate',
-    capability: 'storage:write',
-    risk: 'managed_write',
-    transport: 'dsh_broker_native',
-    dshWireName: 'workspace_employee_method_save_candidate',
-  },
-  {
-    canonicalName: 'workspace.employee.method.restore_candidate',
-    capability: 'storage:write',
-    risk: 'managed_write',
-    transport: 'dsh_broker_native',
-    dshWireName: 'workspace_employee_method_restore_candidate',
-  },
-  {
-    canonicalName: 'workspace.employee.method.test',
-    capability: 'storage:write',
-    risk: 'managed_write',
-    transport: 'dsh_broker_native',
-    dshWireName: 'workspace_employee_method_test',
-  },
-  {
-    canonicalName: 'workspace.employee.method.test_status',
-    capability: 'storage:read',
-    risk: 'read_only',
-    transport: 'dsh_broker_native',
-    dshWireName: 'workspace_employee_method_test_status',
-  },
-  {
-    canonicalName: 'workspace.employee.method.prepare_activation',
-    capability: 'storage:write',
-    risk: 'managed_write',
-    transport: 'dsh_broker_native',
-    dshWireName: 'workspace_employee_method_prepare_activation',
-  },
-  {
-    canonicalName: 'workspace.employee.method.activate',
-    capability: 'storage:write',
-    risk: 'managed_write',
-    transport: 'dsh_broker_native',
-    dshWireName: 'workspace_employee_method_activate',
   },
   {
     canonicalName: 'local.mcp.discover',

@@ -6,7 +6,6 @@ import {
   IMAGE_MODEL_SELECTION_GUIDANCE,
   IMAGE_PROMPT_GUIDANCE,
   PLATFORM_IMAGE_MODELS,
-  OfficeExportSchema,
   NativeOfficeExportSchema,
   OfficePdfExportSchema,
   ExecutionLocationSchema,
@@ -70,13 +69,11 @@ export const workbenchNativeTools = [
     presentation: 'tool',
     validateArguments(args) {
       if (
-        [args.content, args.office, args.python, args.officePdf].filter(
+        [args.content, args.python, args.officePdf].filter(
           (v) => v !== undefined,
         ).length !== 1
       )
-        throw new Error(
-          'Supply exactly one of content, python, officePdf or legacy office.',
-        );
+        throw new Error('Supply exactly one of content, python or officePdf.');
       if (args.location !== undefined) {
         if (args.python === undefined && args.officePdf === undefined)
           throw new Error(
@@ -97,19 +94,6 @@ export const workbenchNativeTools = [
             'Put inputs and sourceObjectId INSIDE python: {script, inputs, sourceObjectId}. Use storage object IDs and checksums returned by workspace_file_list/workspace_document_read, not attachment IDs.',
           );
         NativeOfficeExportSchema.parse(args.python);
-      }
-      if (args.office !== undefined) {
-        const parsed = OfficeExportSchema.safeParse(args.office);
-        if (!parsed.success)
-          throw new Error(
-            'Invalid Office payload: ' +
-              parsed.error.issues
-                .slice(0, 5)
-                .map(
-                  (issue) => `office.${issue.path.join('.')}: ${issue.message}`,
-                )
-                .join('; '),
-          );
       }
     },
     parameters: {
@@ -141,7 +125,7 @@ export const workbenchNativeTools = [
       content: {
         type: 'string',
         description:
-          'Complete final text content, or the changeset JSON proposal. Supply exactly one of content, python or legacy office.',
+          'Complete final text content, or the changeset JSON proposal. Supply exactly one of content, python or officePdf.',
       },
       python: {
         type: 'object',
@@ -217,13 +201,7 @@ export const workbenchNativeTools = [
           },
         },
         description:
-          'Convert the same existing DOCX/XLSX/PPTX into a formal PDF using DSH Office-to-PDF. Example: {fileName: "report.pdf", format: "pdf", officePdf: {objectId: "...", checksum: "sha256:..."}}. Supply officePdf alone instead of content/python/legacy office; do not regenerate the report or supply a path/script. Inspect actual conversion location and missingFonts warnings. A PDF starts its own version series and retains the Office source; to revise that PDF use its previous objectId as top-level parentObjectId.',
-      },
-      office: {
-        type: 'object',
-        additionalProperties: true,
-        description:
-          'Compatibility only for previously frozen employee packages. Current Office workflows use python with native document libraries.',
+          'Convert the same existing DOCX/XLSX/PPTX into a formal PDF using DSH Office-to-PDF. Example: {fileName: "report.pdf", format: "pdf", officePdf: {objectId: "...", checksum: "sha256:..."}}. Supply officePdf alone instead of content/python; do not regenerate the report or supply a path/script. Inspect actual conversion location and missingFonts warnings. A PDF starts its own version series and retains the Office source; to revise that PDF use its previous objectId as top-level parentObjectId.',
       },
       parentObjectId: {
         type: 'string',

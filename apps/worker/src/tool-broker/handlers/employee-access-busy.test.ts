@@ -5,20 +5,17 @@ import type { RiceToolHandlerContext } from '../types.js';
 const ports = vi.hoisted(() => ({
   version: vi.fn(),
   profile: vi.fn(),
-  method: vi.fn(),
 }));
 vi.mock('@allrice/database', async (original) => ({
   ...(await original<typeof Database>()),
   personalSkillVersionFromChat: ports.version,
   personalSkillVersionConfirmationFiles: vi.fn(async () => []),
   updateEmployeeProfileFromChat: ports.profile,
-  inspectEmployeeMethodFromChat: ports.method,
 }));
 import { EmployeeAccessBusyError, DataAccessError } from '@allrice/database';
 import { isConfirmedToolFailure } from '../../errors.js';
 import { versionPersonalSkill } from './personal-skills.js';
 import { updateEmployeeProfile } from './employee-profile.js';
-import { inspectEmployeeMethod } from './employee-method.js';
 beforeEach(() => vi.clearAllMocks());
 it.each([
   {
@@ -32,12 +29,6 @@ it.each([
     execute: updateEmployeeProfile,
     port: ports.profile,
     code: 'EMPLOYEE_PROFILE_BUSY',
-  },
-  {
-    tool: 'workspace.employee.method.inspect',
-    execute: inspectEmployeeMethod,
-    port: ports.method,
-    code: 'EMPLOYEE_METHOD_BUSY',
   },
 ])(
   'distinguishes contention, permission denial and unknown outcome for $tool',

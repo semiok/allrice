@@ -8,7 +8,6 @@ export type ServiceName = 'web' | 'worker';
 export * from './message-feedback.ts';
 export * from './model-failure.ts';
 export * from './work-methods.ts';
-export * from './employee-method-activation.ts';
 export * from './user-preferences.ts';
 export type HealthStatus = 'live' | 'ready' | 'not_ready';
 
@@ -152,8 +151,6 @@ export * from './personal-scene-reads.ts';
 export * from './employee-details.ts';
 export * from './reference-library.ts';
 
-export * from './employee-method-tests.ts';
-export * from './employee-method-file-case.ts';
 export * from './personal-skills.ts';
 export * from './personal-skill-github.ts';
 

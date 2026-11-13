@@ -1569,7 +1569,6 @@ export async function prepareEmployeeRunBinding(
         conversationToolNames,
         grantedCapabilities,
         instance?.kind,
-        baseRice,
       ),
       grantedCapabilities,
       modelSnapshot,

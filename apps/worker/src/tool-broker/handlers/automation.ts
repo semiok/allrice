@@ -101,7 +101,7 @@ export const createAutomation: RiceToolHandler = async ({
                     hint: '用户原话可直接识别为上面的频率，与本次参数不同。若是参数写错，按原话改参数重新调用即可，不必让用户确认。',
                   }
                 : {}),
-              next: '尚未创建。把 askUserQuestion 原样交给 ask_user_question，不要改写任何文字。用户选择“确认：…”后，用完全相同的参数再调用一次 automation_create。',
+              next: '尚未创建。把 askUserQuestion 原样交给 ask_user_question，不要改写任何文字。用户选择“确认：…”后，用完全相同的参数再调用一次 automation.create。',
             }),
             summary: '等你确认后再创建这个定时任务。',
             itemCount: 0,

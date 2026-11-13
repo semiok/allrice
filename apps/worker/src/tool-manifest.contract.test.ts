@@ -24,47 +24,6 @@ import {
 
 describe('AllRice worker tool manifest contract', () => {
   afterEach(() => vi.unstubAllEnvs());
-  it('omits retired methods from the default schema while retaining explicit historical adapters', () => {
-    const names = ['inspect', 'save_candidate', 'restore_candidate'].map(
-      (action) => `workspace.employee.method.${action}`,
-    );
-    const capabilities = ['storage:read', 'storage:write'] as const;
-    for (const tool of riceToolDefinitionsForCapabilities([...capabilities]))
-      expect(names).not.toContain(tool.name);
-    expect(
-      riceToolDefinitionsForCapabilities([...capabilities], names).map(
-        (tool) => tool.name,
-      ),
-    ).toEqual(names);
-  });
-  it('keeps native and Broker method descriptions on legacy targets, not personal package confirmation', async () => {
-    const { employeeMethodNativeTools } = await import(
-      pathToFileURL(
-        resolve(
-          import.meta.dirname,
-          '../dsh/allrice-employee-method-native-tools.mjs',
-        ),
-      ).href
-    );
-    for (const action of ['inspect', 'save_candidate', 'restore_candidate']) {
-      const name = `workspace.employee.method.${action}`;
-      const native = employeeMethodNativeTools.find(
-        (tool: { canonicalName: string }) => tool.canonicalName === name,
-      );
-      const broker = riceToolDefinitions.find((tool) => tool.name === name)!;
-      expect(native.description).toContain(
-        'Legacy text-content and authorized background targets only',
-      );
-      expect(native.description).toContain(
-        'not the personal Workflow package file path',
-      );
-      expect(native.description).toContain(
-        'do not use this tool to replace that confirmation',
-      );
-      expect(broker.description).toContain('仅适用旧文字内容和已授权后台目标');
-      expect(broker.description).toContain('不用本工具替代');
-    }
-  });
   it.each(['0', '1'])(
     'never exposes retired assistant tools with the former flag at %s',
     (value) => {
@@ -332,10 +291,6 @@ describe('AllRice worker tool manifest contract', () => {
       {
         canonicalName: 'platform.repository.review',
         wireName: 'platform_repository_review',
-      },
-      {
-        canonicalName: 'platform.employee.method.step',
-        wireName: 'platform_employee_method_step',
       },
     ];
     expectedPairs.push(...privatePairs);

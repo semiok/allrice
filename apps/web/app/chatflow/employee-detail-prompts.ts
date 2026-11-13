@@ -3,8 +3,7 @@ import type {
   EmployeeResolvedContent,
 } from '@allrice/contracts';
 
-/** The leading request stays literal so the existing method-intent gate can
- * distinguish a durable personal change from quoted employee/source data. */
+/** Source labels remain quoted data; the model interprets the requested edit. */
 export function createEmployeeScenePrompt(details: EmployeeDetails) {
   return [
     '请新增我的工作场景：',

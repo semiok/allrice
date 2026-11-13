@@ -26,7 +26,6 @@ const metadataSchema = z
             checksum: z.string(),
             sourceRef: z.string(),
             bundleChecksum: z.string().optional(),
-            replaces: z.array(z.uuid()).optional(),
           })
           .strict(),
       )
@@ -113,12 +112,7 @@ export async function freezeEmployeeBaseSkills(
     }
     // Managed IDs follow this catalog for NEW Runs, including a disabled entry.
     // Non-catalog employee-specific Skills keep their immutable publication.
-    const replacedIds = new Set(
-      metadata.skills.flatMap((s) => s.replaces ?? []),
-    );
-    const extras = original.filter(
-      (s) => !seenIds.has(s.id) && !replacedIds.has(s.id),
-    );
+    const extras = original.filter((s) => !seenIds.has(s.id));
     for (const skill of extras) {
       validateFrozenSkill(skill);
       if (seenNames.has(skill.name))

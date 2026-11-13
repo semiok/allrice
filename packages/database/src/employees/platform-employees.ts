@@ -5,11 +5,6 @@ import {
 } from '../experience-validation.ts';
 import { ExperienceError } from '../experience.ts';
 import { PersonalSkillError } from './personal-skills.ts';
-import {
-  prepareEmployeeMethodTestClaim,
-  recordEmployeeMethodTestExecution,
-  finishEmployeeMethodTestInTransaction,
-} from './employee-method-tests.ts';
 import { DataAccessError } from '../data.ts';
 import { EmployeeContentError } from './employee-content-model.ts';
 import { EmployeeInstanceError } from './employee-instances.ts';
@@ -37,7 +32,6 @@ import {
   PlatformEmployeeDefinitionSchema,
   assembleEmployeeCapabilities,
   prepareEmployeeEditorDefinition,
-  upgradeEmployeeSkillBindings,
   rapidEmployeeIterationEnabled,
   employeePublicationPolicy,
   PlatformEmployeeAuditEventSchema,
@@ -68,7 +62,6 @@ import { employeeManifest } from './employee-config.ts';
 import { taskSuggestionConfigurationErrors } from './task-suggestions.ts';
 import { frozenPackageSkills, validateSkillBundle } from '../skill-bundles.ts';
 import { getDatabase } from '../core/client.ts';
-import { platformSkillReplacements } from '../platform-content/replacements.ts';
 import { listEmployeeToolAvailability } from '../employee-administration.ts';
 import { synchronizeTenantEmployeeAccess } from '../tenant-employee-access.ts';
 import { requireTenantAdministrationAuthority } from '../tenant-administration.ts';
@@ -127,7 +120,7 @@ interface EmployeeRow {
 }
 
 interface TestRunRow {
-  purpose: 'platform_preview' | 'method_candidate' | 'experience_validation';
+  purpose: 'platform_preview' | 'experience_validation';
   id: string;
   employee_id: string;
   revision_id: string;
@@ -447,8 +440,6 @@ export async function listPlatformEmployeeWorkspaces() {
 export async function listPlatformNativeSkills(
   sql: postgres.Sql | postgres.TransactionSql = getDatabase(),
 ) {
-  const replacements = await platformSkillReplacements(sql);
-  const replaced = new Set([...replacements.values()].flat());
   const skills = await sql<
     {
       id: string;
@@ -480,12 +471,7 @@ export async function listPlatformNativeSkills(
     from allrice_platform_dsh_skills
     order by enabled desc, name, id
   `;
-  return skills
-    .filter((skill) => !replaced.has(skill.id))
-    .map((skill) => ({
-      ...skill,
-      replaces: replacements.get(skill.id) ?? [],
-    }));
+  return skills;
 }
 
 function testRunSnapshot(row: TestRunRow) {
@@ -720,13 +706,6 @@ async function finalizePlatformEmployeeTestRunInTransaction(
           },
         })
       : input.output;
-  if (existing.purpose === 'method_candidate')
-    await finishEmployeeMethodTestInTransaction(
-      transaction,
-      input.testRunId,
-      normalizedOutput,
-      terminal.runStatus,
-    );
   if (existing.purpose === 'experience_validation')
     await finishExperienceValidation(
       transaction,
@@ -941,9 +920,6 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
     let previewContext: Awaited<
       ReturnType<typeof resolvePlatformPreviewContext>
     >['context'];
-    let methodClaim: Awaited<
-      ReturnType<typeof prepareEmployeeMethodTestClaim>
-    > = null;
     let experienceClaim: Awaited<
       ReturnType<typeof prepareExperienceValidationClaim>
     > = null;
@@ -955,10 +931,6 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
         );
         if (!experienceClaim) return null;
         previewContext = experienceClaim.previewContext;
-      } else if (row.purpose === 'method_candidate') {
-        methodClaim = await prepareEmployeeMethodTestClaim(transaction, row.id);
-        if (!methodClaim) return null;
-        previewContext = methodClaim.previewContext;
       } else {
         ({ context: previewContext } = await resolvePlatformPreviewContext(
           transaction,
@@ -1117,12 +1089,6 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
                 experienceValidationDigest: experienceClaim.binding.draftDigest,
               }
             : {}),
-          ...(methodClaim
-            ? {
-                employeeMethodSnapshotDigest:
-                  methodClaim.binding.snapshot_digest,
-              }
-            : {}),
         })},
         ${transaction.json({ prompt: parsedInput.prompt })}, ${issuedAt}
       )
@@ -1146,9 +1112,6 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
         ${workerId}, ${leaseToken}, ${issuedAt}, ${issuedAt}, ${expiresAt}
       )
     `;
-    const methodCandidate = methodClaim
-      ? await recordEmployeeMethodTestExecution(transaction, methodClaim, runId)
-      : null;
     const experienceCandidate = experienceClaim
       ? await recordExperienceValidationExecution(
           transaction,
@@ -1179,7 +1142,6 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
     `;
     return {
       id: row.id,
-      methodCandidate,
       experienceCandidate,
       employeeId: row.employee_id,
       revisionId: row.revision_id,
@@ -1450,12 +1412,8 @@ export async function compilePlatformEmployee(
     const rawDefinition = PlatformEmployeeDefinitionSchema.parse(
       revision.definition,
     );
-    const upgraded = upgradeEmployeeSkillBindings(
-      rawDefinition,
-      await listPlatformNativeSkills(transaction),
-    );
     const definition = PlatformEmployeeDefinitionSchema.parse({
-      ...upgraded,
+      ...rawDefinition,
       modelPolicy: await platformEmployeeModelPolicy(),
       securityPolicy: rawDefinition.securityPolicy,
     });

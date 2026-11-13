@@ -1626,7 +1626,7 @@ ADMISSION = "(select state from allrice_dev_maintenance where environment_id = :
 WINDOW = "now() - make_interval(mins => :'window_minutes'::int)"
 
 # Root runs of real users: every root run has its job (assistant child runs have none and
-# never set completed_at); platform runs, smoke/test accounts, previews, method tests,
+# never set completed_at); platform runs, smoke/test accounts, previews,
 # experience checks and the consolidation job are left out. Shared by both failure queries.
 USER_RUNS = """
   from allrice_runs r
@@ -1637,7 +1637,6 @@ USER_RUNS = """
     and not (coalesce(u.username, '') = any (string_to_array(:'test_usernames', ',')))
     and coalesce(r.execution_spec->>'handler', '') <> 'platform_employee_preview'
     and coalesce(j.payload->>'type', '') <> 'allrice.experience.consolidate'
-    and not exists (select 1 from allrice_employee_method_tests t where t.run_id = r.id)
     and not exists (select 1 from allrice_platform_employee_test_runs v where v.experience_run_id = r.id)"""
 
 SQL_FAILED_RUNS = """
