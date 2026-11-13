@@ -720,23 +720,42 @@ suite('U1 employee details personal-memory entry', () => {
         if (width > 760) {
           // Enter the existing no-pending draft through frame attachment
           // intake, then remove it after the original text owns the composer.
-          await f.page.getByRole('region', { name: 'AI 员工空态', exact: true }).waitFor();
+          await f.page
+            .getByRole('region', { name: 'AI 员工空态', exact: true })
+            .waitFor();
           const transfer = await f.page.evaluateHandle(() => {
             const data = new DataTransfer();
-            data.items.add(new File(['Synthetic draft entry'], '草稿入口.txt', { type: 'text/plain' }));
+            data.items.add(
+              new File(['Synthetic draft entry'], '草稿入口.txt', {
+                type: 'text/plain',
+              }),
+            );
             return data;
           });
           try {
-            await f.page.locator('main').dispatchEvent('drop', { dataTransfer: transfer });
+            await f.page
+              .locator('main')
+              .dispatchEvent('drop', { dataTransfer: transfer });
           } finally {
             await transfer.dispose();
           }
           await composer.waitFor();
           await composer.fill('还没发送的工作草稿。');
-          await f.page.getByRole('button', { name: '移除 草稿入口.txt', exact: true }).click();
-          expect(await f.page.getByRole('group', { name: '待发送附件', exact: true }).count()).toBe(0);
+          await f.page
+            .getByRole('button', { name: '移除 草稿入口.txt', exact: true })
+            .click();
+          expect(
+            await f.page
+              .getByRole('group', { name: '待发送附件', exact: true })
+              .count(),
+          ).toBe(0);
           expect(new URL(f.page.url()).searchParams.get('session')).toBeNull();
-          expect(await f.page.getByRole('treeitem').filter({ hasText: '新会话' }).count()).toBe(0);
+          expect(
+            await f.page
+              .getByRole('treeitem')
+              .filter({ hasText: '新会话' })
+              .count(),
+          ).toBe(0);
           expect(f.state.writes).toEqual([]);
         }
         await composer.fill('还没发送的工作草稿。');
