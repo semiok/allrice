@@ -10096,7 +10096,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               name: employeeCount ? '给 Rice 的消息' : '给 AI 员工 的消息',
             })
             .count(),
-        ).toBe(0);
+        ).toBe(employeeCount ? 0 : 1);
       } finally {
         await f.close();
       }

@@ -2006,6 +2006,7 @@ export function ChatFlowClient({
     !activeId &&
     !pendingEmployeeAssignmentId &&
     !automationCreate &&
+    !error &&
     !hasComposerText &&
     pendingAttachments.length === 0 &&
     sessionReferences.length === 0 &&
