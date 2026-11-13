@@ -32,6 +32,7 @@ import { employeeAccessTransaction } from './employees/employee-access-cancellat
 import { resolveEmployeeSessionInstance } from './employees/employee-instances.ts';
 import {
   assertMemoryWorker,
+  MemoryWorkerAuthorityError,
   type MemoryRunScope,
   type MemoryWorker,
 } from './memory-worker-authority.ts';
@@ -81,11 +82,12 @@ async function withRun<T>(
     if (!(await readContentPrincipal(who, tx, true))) return unavailable();
     await tx`select pg_advisory_xact_lock_shared(hashtextextended(${`employee-content:${who.organizationId}`},0))`;
     const [row] =
-      await tx`select er.memory_context_state,er.employee_assignment_id,s.employee_instance_id
+      await tx`select er.memory_context_state,er.employee_assignment_id,s.employee_instance_id,
+        coalesce((er.execution_snapshot->'persona'->'source') ? 'task',false) task_source
       from allrice_employee_runs er join allrice_chat_sessions s on s.id=er.session_id
       and s.organization_id=er.organization_id and s.workspace_id=er.workspace_id and s.owner_id=er.owner_id
       where er.run_id=${auth.scope.runId} and s.archived_at is null`;
-    if (!row) return unavailable();
+    if (!row || row.task_source) return unavailable();
     await resolveEmployeeSessionInstance(
       who,
       row.employee_assignment_id,
@@ -95,6 +97,11 @@ async function withRun<T>(
     const result = await read(tx, row.memory_context_state);
     await assertMemoryWorker(tx, auth.scope, auth.worker, true);
     return result;
+  }).catch((error: unknown) => {
+    // Keep the public memory refusal contract when the memory-owned lease
+    // guard rejects; callers need not know about the retired experience guard.
+    if (error instanceof MemoryWorkerAuthorityError) return unavailable();
+    throw error;
   });
 }
 

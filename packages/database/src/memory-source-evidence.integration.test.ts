@@ -17,8 +17,6 @@ import {
   markMemorySourcePending,
   memorySourceProducer,
 } from './memory-source-capture.ts';
-import { createExperienceStore } from './experience.ts';
-import { getExperienceOverview } from './experience-overview.ts';
 import {
   createChatSession,
   sendChatMessage,
@@ -163,24 +161,37 @@ suite(
             relatedRunId: null,
           },
         );
-        expect(await createExperienceStore().list(f.owner)).toEqual([]);
         expect(
-          (await getExperienceOverview(f.owner, f.instanceId)).summary.counts,
-        ).toMatchObject({ pendingSources: 0, awaitingValidation: 0 });
+          await listWorkspaceMemories(f.owner, f.workspace, undefined, {
+            instanceId: f.instanceId,
+          }),
+        ).toEqual([]);
+        await expect(
+          listWorkspaceMemories(f.neighbor, f.workspace, undefined, {
+            instanceId: f.instanceId,
+          }),
+        ).rejects.toThrow();
         expect(
-          (
-            await listWorkspaceMemories(f.owner, f.workspace, undefined, {
-              instanceId: f.instanceId,
-            })
-          ).some((m) => m.id === source.id),
-        ).toBe(false);
-        expect(await createExperienceStore().list(f.neighbor)).toEqual([]);
+          await db`select id from allrice_memory_sources
+          where organization_id=${f.org} and workspace_id=${f.workspace}
+            and owner_id=${f.neighbor.actor.id} and id=${source.id}`,
+        ).toEqual([]);
         await collectPendingExperienceEvidence({ database: db });
+        expect(await rows(f.runId)).toEqual(captured);
         expect(
-          await db`select id from allrice_memories where source_id=${f.messageId}`,
+          await db`select id from allrice_memories
+          where organization_id=${f.org} and workspace_id=${f.workspace}
+            and owner_id=${f.user} and (source_id=${f.messageId} or id=${source.id})`,
         ).toEqual([]);
         expect(
-          await db`select id from allrice_memory_revisions where memory_id=${source.id}`,
+          await db`select id from allrice_memory_revisions
+          where organization_id=${f.org} and workspace_id=${f.workspace}
+            and memory_id=${source.id}`,
+        ).toEqual([]);
+        expect(
+          await db`select memory_id from allrice_experience_reviews
+          where organization_id=${f.org} and workspace_id=${f.workspace}
+            and owner_id=${f.user} and (message_id=${f.messageId} or memory_id=${source.id})`,
         ).toEqual([]);
       },
     );
@@ -439,16 +450,24 @@ suite(
           runId: f.runId,
         });
     });
-    it.each(['attachment', 'policy', 'instance', 'skill'] as const)(
+    it.each(['attachment', 'artifact', 'policy', 'instance', 'skill'] as const)(
       'allows current %s revocation during capture and rolls back the staged source',
       async (mode) => {
         const f = await setup(undefined, false, mode === 'skill');
         const objectId = randomUUID();
-        if (mode === 'attachment') {
+        if (mode === 'attachment' || mode === 'artifact') {
           await db`insert into allrice_storage_objects(id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,state)
             values(${objectId},${f.org},${f.workspace},${f.user},${'synthetic/' + objectId},'uploads','text/plain',4,${'sha256:' + 'b'.repeat(64)},'ready')`;
-          await db`insert into allrice_message_attachments(organization_id,workspace_id,message_id,object_id,attached_by,file_name)
+          if (mode === 'attachment')
+            await db`insert into allrice_message_attachments(organization_id,workspace_id,message_id,object_id,attached_by,file_name)
             values(${f.org},${f.workspace},${f.messageId},${objectId},${f.user},'synthetic.txt')`;
+        }
+        const versionId = randomUUID();
+        if (mode === 'artifact') {
+          await db`insert into allrice_deliverable_versions(id,organization_id,workspace_id,owner_id,object_id,series_id,version,session_id,file_name,format)
+            values(${versionId},${f.org},${f.workspace},${f.user},${objectId},${randomUUID()},1,${f.session.id},'synthetic.txt','text')`;
+          await db`insert into allrice_workbench_artifacts(version_id,organization_id,workspace_id,owner_id,run_id,kind,provenance,request_id,request_digest)
+            values(${versionId},${f.org},${f.workspace},${f.user},${f.runId},'file','{}',${randomUUID()},${'sha256:' + 'a'.repeat(64)})`;
         }
         if (mode === 'skill')
           await db`insert into allrice_run_events(id,organization_id,workspace_id,run_id,sequence,event_type,payload)
@@ -462,14 +481,23 @@ suite(
             await original(...args);
             if (args[2] !== f.instanceId) return;
             const [staged] =
-              await args[0]`select id from allrice_memory_sources where capture_run_id=${f.runId}`;
+              await args[0]`select id,evidence from allrice_memory_sources where capture_run_id=${f.runId}`;
             if (!staged) return;
             stagedId = staged.id;
+            if (mode === 'artifact')
+              expect(staged.evidence.artifacts).toEqual([
+                {
+                  runId: f.runId,
+                  versionId,
+                  objectId,
+                  checksum: 'sha256:' + 'b'.repeat(64),
+                },
+              ]);
             // A separate transaction must commit before capture ends: no held
             // interactive SHARE lock, no timing sleep, no replacement validator.
             await db.begin(async (tx) => {
               await tx`set local lock_timeout='500ms'`;
-              if (mode === 'attachment')
+              if (mode === 'attachment' || mode === 'artifact')
                 await tx`update allrice_storage_objects set state='deleted',deleted_at=clock_timestamp() where id=${objectId}`;
               if (mode === 'policy')
                 await tx`update allrice_settings set value=jsonb_set(value,'{enabled}','false') where scope_type='organization' and scope_id=${f.org} and key='employee_memory_source_policy'`;

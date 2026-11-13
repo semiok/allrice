@@ -8,6 +8,7 @@ import { LocalStorageAdapter } from '@allrice/storage';
 
 import {
   withPlatformImageTools,
+  withoutTaskMemoryTools,
   isBaseRiceInstanceDefinition,
   isMemoryIndexDocuments,
   modelProviderRuntimeSupported,
@@ -915,7 +916,7 @@ export async function executeEmployeeRun({
       executionSnapshot.schemaVersion === 2
         ? executionSnapshot.capabilitySnapshot
         : null;
-    const allowedToolNames =
+    const admittedToolNames =
       executionSnapshot.employee.definition.schemaVersion === 2
         ? withPlatformImageTools(
             capabilitySnapshot?.bindings.toolNames ??
@@ -927,6 +928,16 @@ export async function executeEmployeeRun({
               : undefined,
           )
         : undefined;
+    // A restored task may retain a pre-retirement frozen allowlist. Apply the
+    // task boundary for this execution without rewriting that historical pin.
+    const allowedToolNames = personaTask
+      ? withoutTaskMemoryTools(
+          admittedToolNames ??
+            riceToolDefinitionsForCapabilities(
+              resolved.grantedCapabilities,
+            ).map((tool) => tool.name),
+        )
+      : admittedToolNames;
     const authorizedTools = repositoryReviewTask
       ? [platformRepositoryReviewToolDefinition]
       : repairTask

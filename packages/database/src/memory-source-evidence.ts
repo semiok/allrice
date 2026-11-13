@@ -107,7 +107,7 @@ async function evidenceFor(
     where a.run_id in ${tx(ids)} and a.organization_id=${s.organization_id} and a.workspace_id=${s.workspace_id}
       and a.owner_id=${s.owner_id} and v.owner_id=${s.owner_id} and o.owner_id=${s.owner_id}
       and o.state='ready' and o.deleted_at is null
-    order by a.created_at,a.version_id limit 33 for share of o`;
+    order by a.created_at,a.version_id limit 33`;
   const knowledge = runs.flatMap((r) => {
     const bindings = record(
       record(r.execution_snapshot).capabilitySnapshot,
@@ -391,6 +391,20 @@ async function capture(tx: Tx, s: Source) {
       )
         throw new DataAccessError('authorization_denied');
       await assertSkills(writeTx);
+      for (const artifact of evidence.artifacts) {
+        const [current] = await writeTx`select v.id
+          from allrice_workbench_artifacts a
+          join allrice_deliverable_versions v on v.id=a.version_id
+            and v.organization_id=a.organization_id and v.workspace_id=a.workspace_id
+          join allrice_storage_objects o on o.id=v.object_id
+            and o.organization_id=v.organization_id and o.workspace_id=v.workspace_id
+          where a.run_id=${artifact.runId} and a.version_id=${artifact.versionId}
+            and a.organization_id=${s.organization_id} and a.workspace_id=${s.workspace_id}
+            and a.owner_id=${s.owner_id} and v.owner_id=${s.owner_id} and o.owner_id=${s.owner_id}
+            and o.id=${artifact.objectId} and o.checksum=${artifact.checksum}
+            and o.state='ready' and o.deleted_at is null`;
+        if (!current) throw new DataAccessError('authorization_denied');
+      }
       const currentPolicy = await readMemorySourceCollectionPolicy(
         writeTx,
         s.organization_id,
