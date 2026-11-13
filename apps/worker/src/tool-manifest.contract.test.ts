@@ -22,6 +22,12 @@ import {
   riceToolDefinitionsForCapabilities,
 } from './tool-broker.js';
 
+function nativeWireName(tool: (typeof allRiceToolManifest)[number]) {
+  if (!('dshWireName' in tool))
+    throw new Error('Expected a native tool wire name');
+  return tool.dshWireName;
+}
+
 describe('AllRice worker tool manifest contract', () => {
   afterEach(() => vi.unstubAllEnvs());
   it.each(['0', '1'])(
@@ -143,7 +149,10 @@ describe('AllRice worker tool manifest contract', () => {
       (tool) => tool.transport === 'dsh_broker_native',
     );
     const expectedWireMap = Object.fromEntries(
-      expectedNativeTools.map((tool) => [tool.dshWireName, tool.canonicalName]),
+      expectedNativeTools.map((tool) => [
+        nativeWireName(tool),
+        tool.canonicalName,
+      ]),
     );
 
     expect([...dshNativeToolNames]).toEqual(
@@ -276,7 +285,7 @@ describe('AllRice worker tool manifest contract', () => {
         .filter((tool) => tool.transport === 'dsh_broker_native')
         .map((tool) => ({
           canonicalName: tool.canonicalName,
-          wireName: tool.dshWireName,
+          wireName: nativeWireName(tool),
         }));
 
     const privatePairs = [
