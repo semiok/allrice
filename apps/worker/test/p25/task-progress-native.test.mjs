@@ -52,6 +52,116 @@ function fixture() {
   };
 }
 describe('native progress middleware', () => {
+  function toolEvents(f) {
+    const emit = f.hooks.get('session/event');
+    emit(f.root, {
+      type: 'tool/call',
+      data: { callId: 'stopped', name: 'read', arguments: {} },
+    });
+    emit(f.root, {
+      type: 'tool/result',
+      data: {
+        message: {
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: 'stopped',
+              isError: true,
+              content: [{ type: 'text', text: 'TOOL_ABORTED_BEFORE_DISPATCH' }],
+            },
+          ],
+        },
+      },
+    });
+  }
+  const nonEntry = () => ({
+    toolStart: 'not_admitted',
+    reason: 'admission_closed',
+    runId: 'run',
+    nativeSessionId: 'root',
+    callId: 'stopped',
+    rejection: {
+      code: 'task_progress_lease_lost',
+      message: 'task_progress_lease_lost',
+    },
+  });
+  it('does not fabricate finish for a proven non-entry even when the native result arrives before the start reply', async () => {
+    const f = fixture();
+    let release;
+    const pending = new Promise((resolve) => {
+      release = resolve;
+    });
+    f.bridge.mockImplementation(async (p) =>
+      p.action === 'start' ? pending : {},
+    );
+    toolEvents(f);
+    release(nonEntry());
+    await expect(f.runtime.flush()).resolves.toBeUndefined();
+    expect(f.bridge.mock.calls.map(([p]) => p.action)).toEqual(['start']);
+    // A later confirmed call still writes its strict terminal receipt.
+    f.bridge.mockResolvedValue({});
+    toolEvents(f);
+    await f.runtime.flush();
+    expect(f.bridge.mock.calls.map(([p]) => p.action)).toEqual([
+      'start',
+      'start',
+      'finish',
+    ]);
+  });
+  it.each([
+    'task_progress_lease_lost',
+    'task_progress_call_missing',
+    'SQL failed',
+    'transport closed',
+  ])(
+    'retains the original %s rejection and does not treat an unknown start as a non-entry',
+    async (message) => {
+      const f = fixture(),
+        original = Error(message);
+      f.bridge.mockImplementation(async (p) => {
+        if (p.action === 'start') throw original;
+        throw Error('task_progress_call_missing');
+      });
+      toolEvents(f);
+      await expect(f.runtime.flush()).rejects.toBe(original);
+      expect(f.bridge.mock.calls.map(([p]) => p.action)).toEqual([
+        'start',
+        'finish',
+      ]);
+    },
+  );
+  it.each([
+    { toolStart: 'admitted' },
+    { reason: 'lease_lost' },
+    { runId: '' },
+    { nativeSessionId: 'other' },
+    { callId: 'other' },
+    { rejection: { code: 'SQL_ERROR', message: 'failure' } },
+  ])(
+    'rejects malformed or mismatched non-entry receipts: %j',
+    async (altered) => {
+      const f = fixture();
+      f.bridge.mockResolvedValue({ ...nonEntry(), ...altered });
+      toolEvents(f);
+      await expect(f.runtime.flush()).rejects.toThrow(
+        'task_progress_start_receipt_invalid',
+      );
+      expect(f.bridge.mock.calls.map(([p]) => p.action)).toEqual([
+        'start',
+        'finish',
+      ]);
+    },
+  );
+  it('keeps a confirmed start strict when its finish is missing', async () => {
+    const f = fixture(),
+      original = Error('task_progress_call_missing');
+    f.bridge.mockImplementation(async (p) => {
+      if (p.action === 'finish') throw original;
+      return {};
+    });
+    toolEvents(f);
+    await expect(f.runtime.flush()).rejects.toBe(original);
+  });
   it('flushes the third queued failure before compaction model admission without asking a question', async () => {
     const f = fixture();
     let state = initialProgressState();

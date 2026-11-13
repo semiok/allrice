@@ -86,7 +86,7 @@ export function installTaskProgress(ctx, send, configuration = {}) {
   const bridge = (p, signal) => send(attribute(p), signal);
   let writes = Promise.resolve(),
     failure;
-  const toolNames = new Map(); // outstanding calls only; cleared at receipt
+  const toolCalls = new Map(); // outstanding calls only; cleared at receipt
   let prompting;
   const pauseQuestions = new Map();
   const admissions = new Map();
@@ -127,12 +127,17 @@ export function installTaskProgress(ctx, send, configuration = {}) {
     }
     throw Error('task_progress_root_not_live');
   }
-  function track(request) {
+  function track(request, received, shouldSend = () => true) {
     const attributed = attribute(request);
     writes = writes
-      .then(() => send(attributed))
+      .then(async () => {
+        if (shouldSend()) {
+          const receipt = await send(attributed);
+          received?.(receipt);
+        }
+      })
       .catch((error) => {
-        failure = error;
+        failure ??= error;
       });
   }
   async function flush() {
@@ -228,32 +233,57 @@ export function installTaskProgress(ctx, send, configuration = {}) {
         }
       }
       const key = `${session.id}:${d.callId}`;
-      if (toolNames.size >= 1024 && !toolNames.has(key))
+      if (toolCalls.size >= 1024 && !toolCalls.has(key))
         throw Error('task_progress_inflight_overload');
-      toolNames.set(key, d.name);
-      track({
-        action: 'start',
-        kind: 'tool',
-        nativeSessionId: session.id,
-        callId: d.callId,
-        name: d.name,
-        argumentsDigest: progressDigest(args),
-      });
+      const call = { name: d.name, admitted: undefined };
+      toolCalls.set(key, call);
+      track(
+        {
+          action: 'start',
+          kind: 'tool',
+          nativeSessionId: session.id,
+          callId: d.callId,
+          name: d.name,
+          argumentsDigest: progressDigest(args),
+        },
+        (receipt) => {
+          if (receipt?.toolStart !== undefined) {
+            if (
+              receipt.toolStart !== 'not_admitted' ||
+              receipt.reason !== 'admission_closed' ||
+              typeof receipt.runId !== 'string' ||
+              !receipt.runId ||
+              receipt.nativeSessionId !== session.id ||
+              receipt.callId !== d.callId ||
+              receipt.rejection?.code !== 'task_progress_lease_lost' ||
+              typeof receipt.rejection.message !== 'string'
+            )
+              throw Error('task_progress_start_receipt_invalid');
+            call.admitted = false;
+          } else call.admitted = true;
+        },
+      );
     } else if (event.type === 'tool/result') {
       const b = readDshToolResult(d.message);
       const callId =
         b?.toolCallId ?? d.message?.toolCallId ?? d.message?.callId;
       if (!callId) return;
       const key = `${session.id}:${callId}`,
-        name = toolNames.get(key) ?? 'unknown';
-      toolNames.delete(key);
-      track({
-        action: 'finish',
-        kind: 'tool',
-        nativeSessionId: session.id,
-        callId,
-        ...progressResult(name, b),
-      });
+        call = toolCalls.get(key);
+      toolCalls.delete(key);
+      track(
+        {
+          action: 'finish',
+          kind: 'tool',
+          nativeSessionId: session.id,
+          callId,
+          ...progressResult(call?.name ?? 'unknown', b),
+        },
+        undefined,
+        // Start and result events can both arrive before the start RPC settles.
+        // Skip only a proven non-entry; unknown or failed starts stay strict.
+        () => call?.admitted !== false,
+      );
     }
   });
   ctx.on('agent/request', async ({ agent, signal }, next) => {
