@@ -3741,9 +3741,20 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     });
     cleanup.check();
     observation.fixture = f;
-    evidence.mark('baseline-request-count-wait-started');
-    await expect.poll(() => f.state.updateReads).toBe(1);
-    evidence.mark('baseline-request-count-observed', {
+    evidence.mark('baseline-persisted-wait-started');
+    // The route counter precedes response consumption and React's unread
+    // effect. Refreshing before that effect commits can make the new file
+    // become the first baseline instead of an unread addition.
+    await expect
+      .poll(() =>
+        f.page.evaluate(
+          (key) => localStorage.getItem(key),
+          `allrice:workbench-read:v1:${org}/${workspace}/${user}/files`,
+        ),
+      )
+      .toBe('[]');
+    expect(f.state.updateReads).toBe(1);
+    evidence.mark('baseline-persisted-observed', {
       updateReads: f.state.updateReads,
     });
     f.state.files.push({
