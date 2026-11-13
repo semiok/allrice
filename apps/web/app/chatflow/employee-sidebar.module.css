@@ -31,12 +31,16 @@
 }
 .employeeCard {
   --dsw-alias-interactive-bg-hover: transparent;
+  --employee-card-background: var(--dsw-static-neutral-bluish-100);
   margin-bottom: 0;
   border-radius: 13px;
   padding: 5px;
-  background: var(--allrice-employee-bg);
+  background: var(--employee-card-background);
   color: var(--dsw-alias-label-primary);
   transition: background-color 140ms ease;
+}
+:global(body[data-ds-dark-theme]) .employeeCard {
+  --employee-card-background: rgba(255, 255, 255, 0.055);
 }
 @media (hover: hover) {
   .employeeCard:hover {

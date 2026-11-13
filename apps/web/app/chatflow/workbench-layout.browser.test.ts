@@ -9083,7 +9083,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const before = await letter.boundingBox();
         await expect
           .poll(() => card.evaluate((e) => getComputedStyle(e).backgroundColor))
-          .toBe(active ? 'rgb(225, 230, 237)' : 'rgb(240, 242, 245)');
+          .toBe(active ? 'rgb(225, 230, 237)' : 'rgb(235, 238, 242)');
         await row.hover();
         expect(await letter.isVisible()).toBe(true);
         expect(await letter.boundingBox()).toEqual(before);
