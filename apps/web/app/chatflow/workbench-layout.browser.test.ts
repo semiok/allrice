@@ -426,15 +426,25 @@ function navigationHistory(count: number, paragraphs = 90): Message[] {
   ]).flat();
 }
 
-function deliverablePdf(missingFonts?: string[]): ArtifactPreview {
+function deliverablePdf(
+  missingFonts?: string[],
+  pageCount = 1,
+): ArtifactPreview {
   const text = 'BT /F1 16 Tf 30 350 Td (Delivery original preview) Tj ET';
   const objects = [
     '<< /Type /Catalog /Pages 2 0 R >>',
-    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    `<< /Type /Pages /Kids [${Array.from({ length: pageCount }, (_, page) => `${page ? 4 + page * 2 : 3} 0 R`).join(' ')}] /Count ${pageCount} >>`,
     '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
     '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
     `<< /Length ${text.length} >>\nstream\n${text}\nendstream`,
   ];
+  for (let page = 1; page < pageCount; page++) {
+    const pageText = `BT /F1 16 Tf 30 350 Td (Delivery original preview page ${page + 1}) Tj ET`;
+    objects.push(
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Resources << /Font << /F1 4 0 R >> >> /Contents ${5 + page * 2} 0 R >>`,
+      `<< /Length ${pageText.length} >>\nstream\n${pageText}\nendstream`,
+    );
+  }
   let pdf = '%PDF-1.4\n';
   const offsets = [0];
   objects.forEach((object, index) => {
@@ -442,12 +452,12 @@ function deliverablePdf(missingFonts?: string[]): ArtifactPreview {
     pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
   });
   const xref = Buffer.byteLength(pdf);
-  pdf += `xref\n0 6\n0000000000 65535 f \n${offsets
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets
     .slice(1)
     .map((offset) => String(offset).padStart(10, '0') + ' 00000 n ')
     .join(
       '\n',
-    )}\ntrailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+    )}\ntrailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
   return {
     kind: 'pdf',
     base64: Buffer.from(pdf).toString('base64'),
@@ -12689,6 +12699,21 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           expect(errorStyle.button).toBe(errorStyle.body);
           expect(errorStyle.offset).toBeLessThan(1);
           await capture('preview-error');
+          const errorFooter = f.panel.locator('footer:visible');
+          await errorFooter.scrollIntoViewIfNeeded();
+          const errorFooterBox = (await errorFooter.boundingBox())!;
+          const errorArea = f.panel.locator(
+            '[class*="deliveryReadingArea"]:visible',
+          );
+          const errorAreaBox = (await errorArea.boundingBox())!;
+          expect(errorFooterBox.y).toBeGreaterThanOrEqual(errorAreaBox.y - 1);
+          expect(errorFooterBox.y + errorFooterBox.height).toBeLessThanOrEqual(
+            errorAreaBox.y + errorAreaBox.height + 1,
+          );
+          await capture('preview-error-footer');
+          await errorArea.evaluate((node) => {
+            node.scrollTop = 0;
+          });
           f.state.filePreviewStatus = 200;
           await f.panel
             .getByRole('button', { name: '重新加载', exact: true })
@@ -12993,6 +13018,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               width,
               height: width === 1440 ? 1000 : 844,
             });
+            const pdfPageCount = 8;
             const file = catalogFile(9590, {
               fileName: `阅读验收.${kind === 'image' ? 'png' : kind}`,
               category: 'artifact',
@@ -13013,6 +13039,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             else if (kind === 'pdf' || kind === 'docx')
               f.state.filePreview = deliverablePdf(
                 kind === 'docx' ? ['Noto Sans CJK SC'] : [],
+                pdfPageCount,
               );
             else if (kind === 'xlsx') {
               const ExcelJS = createRequire(
@@ -13103,6 +13130,22 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                     ),
                 )
                 .toBe(480);
+            const lastPage = detail.locator(
+              `[data-pdf-page="${pdfPageCount}"]`,
+            );
+            const lastPageText = `Delivery original preview page ${pdfPageCount}`;
+            if (kind === 'pdf' || kind === 'docx') {
+              // A distant final page starts as the native lazy placeholder.
+              await lastPage.waitFor({ state: 'attached' });
+              expect(
+                await lastPage
+                  .locator('[data-document-zoom-surface]')
+                  .isHidden(),
+              ).toBe(true);
+              expect(
+                await lastPage.getByText(lastPageText, { exact: true }).count(),
+              ).toBe(0);
+            }
             const areaBox = (await reading.boundingBox())!;
             const previewBox = (await preview.boundingBox())!;
             expect(areaBox.height).toBeGreaterThan(0);
@@ -13198,6 +13241,25 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             await scroll.evaluate((node) => {
               node.scrollTop = node.scrollHeight;
             });
+            if (kind === 'pdf' || kind === 'docx') {
+              await lastPage.getByText(lastPageText, { exact: true }).waitFor();
+              await expect
+                .poll(() =>
+                  lastPage.locator('[data-document-zoom-surface]').isVisible(),
+                )
+                .toBe(true);
+              // Native page rendering can replace the lazy placeholder height.
+              await scroll.evaluate((node) => {
+                node.scrollTop = node.scrollHeight;
+              });
+              const lastPageBox = (await lastPage.boundingBox())!;
+              expect((await footer.boundingBox())!.y).toBeGreaterThanOrEqual(
+                lastPageBox.y + lastPageBox.height - 1,
+              );
+              expect(await detail.locator('[data-pdf-page]').count()).toBe(
+                pdfPageCount,
+              );
+            }
             const footerBox = (await footer.boundingBox())!;
             expect(footerBox.y).toBeGreaterThanOrEqual(areaBox.y - 1);
             expect(footerBox.y + footerBox.height).toBeLessThanOrEqual(
@@ -13221,6 +13283,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             expect(buttonStyles[1]).toEqual(buttonStyles[2]);
             expect(parseFloat(buttonStyles[0]!.border)).toBeGreaterThan(0);
             await capture('footer');
+            let nativeZoom: string | undefined;
             if (kind === 'pdf' || kind === 'docx') {
               const quoteHeight = (await actions.first().boundingBox())!.height;
               const zoom = nativeFrame.getByRole('button', {
@@ -13243,6 +13306,19 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                   (await actions.first().boundingBox())!.height - quoteHeight,
                 ),
               ).toBeLessThan(1);
+              const zoomedLastPage = (await lastPage.boundingBox())!;
+              expect((await footer.boundingBox())!.y).toBeGreaterThanOrEqual(
+                zoomedLastPage.y + zoomedLastPage.height - 1,
+              );
+              nativeZoom = await nativeFrame.evaluate((node) =>
+                node.style.getPropertyValue('--document-zoom'),
+              );
+              expect(
+                await nativeFrame.evaluate(
+                  (node, original) => node === original,
+                  originalFrame,
+                ),
+              ).toBe(true);
               await capture('zoomed-footer');
             }
             await footer
@@ -13263,6 +13339,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               expect(
                 await originalFrame.evaluate((node) => node.isConnected),
               ).toBe(true);
+            if (nativeZoom !== undefined) {
+              expect(
+                await nativeFrame.getAttribute('data-document-zoom-mode'),
+              ).toBe('fixed');
+              expect(
+                await nativeFrame.evaluate((node) =>
+                  node.style.getPropertyValue('--document-zoom'),
+                ),
+              ).toBe(nativeZoom);
+            }
             expect(
               f.state.favoriteWrites.map((write) => write.objectId),
             ).toEqual([file.objectId]);
