@@ -8806,6 +8806,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               { fileObjectId: file.objectId, activeSessionId: null },
               seams.page,
             );
+            // Finish the file-link scenario before exercising list-only
+            // reference actions in the later draft scenarios.
+            await seams.panel
+              .getByRole('button', { name: '‹ 交付成果', exact: true })
+              .click();
+            expect(new URL(seams.page.url()).searchParams.has('file')).toBe(
+              false,
+            );
             await seams.panel
               .getByRole('button', { name: '关闭工作台', exact: true })
               .click();
