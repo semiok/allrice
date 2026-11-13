@@ -435,8 +435,7 @@ export const allRiceToolManifest = [
     canonicalName: 'automation.create',
     capability: 'automation:write',
     risk: 'side_effect',
-    transport: 'dsh_broker_native',
-    dshWireName: 'automation_create',
+    transport: 'envelope',
   },
 ] as const satisfies readonly AllRiceToolManifestEntry[];
 

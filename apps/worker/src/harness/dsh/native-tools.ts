@@ -33,13 +33,7 @@ export async function selectDshNativeTools(
   names: readonly string[],
   verifiedEntrypoint?: string,
 ) {
-  // The host owns the current once/recurring schema. Pinned artifacts still
-  // advertise a once-only automation_create, so always use the existing Broker
-  // envelope for this capability. Transport is not natural-language authority:
-  // clarification can change the intended frequency after initialization.
-  const requested = names.filter(
-    (name) => isDshNativeTool(name) && name !== 'automation.create',
-  );
+  const requested = names.filter(isDshNativeTool);
   if (!verifiedEntrypoint) return requested; // offline protocol fixtures
   const catalog = approvedDshNativeToolCatalog(verifiedEntrypoint);
   let catalogPath: string;

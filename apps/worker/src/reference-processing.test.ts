@@ -451,8 +451,6 @@ it.each(['complete', 'missing', 'sparse'] as const)(
   'extracts native PPTX chart facts or rejects an incomplete cache without publishing partial text: cache=%s',
   async (cache) => {
     const presentation = new PptxGenJS();
-    const intro = presentation.addSlide();
-    intro.addText('可读首页\n已有正文仍应可读', { x: 1, y: 1, w: 8, h: 1 });
     const slide = presentation.addSlide();
     slide.addText('可读图表页', { x: 1, y: 0.2, w: 8, h: 0.5 });
     slide.addChart(

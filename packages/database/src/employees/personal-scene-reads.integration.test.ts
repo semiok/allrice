@@ -1,3 +1,5 @@
+import { loadPlatformContentCatalog } from '../platform-content/catalog.ts';
+import { synchronizePlatformContent } from '../platform-content/sync.ts';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
@@ -928,6 +930,7 @@ suite(
           (skill: { name: string }) => skill.name === oldName,
         ),
       ).toBe(true);
+      await synchronizePlatformContent(await loadPlatformContentCatalog());
       const [catalogRow] =
         await f.db`select value from allrice_runtime_metadata where key='platform-content-catalog'`;
       const [platformSkill] =
