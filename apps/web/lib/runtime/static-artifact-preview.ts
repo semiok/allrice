@@ -7,7 +7,11 @@ import {
 import { previewOfficePdf } from '@allrice/office-runtime/preview';
 import { getStorageAdapter } from '../storage/runtime';
 import { readDocumentTextPage } from './document-text-page';
-import { reportPreviewFailure } from './preview-diagnostics';
+import {
+  previewPhase,
+  reportPreviewFailure,
+  type PreviewDiagnostics,
+} from './preview-diagnostics';
 import {
   documentPreviewLimits as limits,
   previewExtension,
@@ -23,9 +27,15 @@ export async function readStaticArtifactPreview(
   artifact: Pick<WorkbenchArtifact, 'object' | 'kind'> & {
     version?: { fileName: string };
   },
-  options: { offset?: number; source?: boolean; signal?: AbortSignal } = {},
+  options: {
+    offset?: number;
+    source?: boolean;
+    signal?: AbortSignal;
+    diagnostic?: PreviewDiagnostics;
+  } = {},
 ) {
   const object = artifact.object;
+  options.diagnostic?.object(object.id);
   const extension = previewExtension(
     artifact.version?.fileName,
     object.mediaType,
@@ -46,19 +56,28 @@ export async function readStaticArtifactPreview(
     if (object.sizeBytes > limits.officeInputBytes)
       return download('此文档超过 50 MiB 预览上限，请下载查看。');
     try {
-      const result = await previewOfficePdf({
-        objectId: object.id,
-        checksum: object.checksum,
-        sizeBytes: object.sizeBytes,
-        format: extension as OfficePreviewFormat,
-        signal: options.signal,
-        read: async (signal, maximum) => {
-          signal.throwIfAborted();
-          const data = await bytes(maximum);
-          signal.throwIfAborted();
-          return data;
-        },
-      });
+      const result = await previewPhase(
+        options.diagnostic,
+        'office-conversion',
+        () =>
+          previewOfficePdf({
+            objectId: object.id,
+            checksum: object.checksum,
+            sizeBytes: object.sizeBytes,
+            format: extension as OfficePreviewFormat,
+            signal: options.signal,
+            read: async (signal, maximum) => {
+              signal.throwIfAborted();
+              const data = await previewPhase(
+                options.diagnostic,
+                'object-read',
+                () => bytes(maximum),
+              );
+              signal.throwIfAborted();
+              return data;
+            },
+          }),
+      );
       return {
         kind: 'pdf',
         base64: Buffer.from(result.pdf).toString('base64'),
@@ -67,7 +86,12 @@ export async function readStaticArtifactPreview(
       };
     } catch (error) {
       if (options.signal?.aborted) throw error;
-      reportPreviewFailure('office-conversion', error, object.id);
+      reportPreviewFailure(
+        'office-conversion',
+        error,
+        object.id,
+        options.diagnostic,
+      );
       return {
         ...download('文档转换暂不可用，请重试预览或下载查看。'),
         retryable: true,

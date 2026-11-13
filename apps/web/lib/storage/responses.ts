@@ -16,7 +16,13 @@ import {
 import { executionErrorResponse } from '../execution/responses';
 import { employeeHubErrorResponse } from '../employeehub/responses';
 
-export function storageErrorResponse(error: unknown) {
+export type StorageErrorOptions = {
+  onUnexpectedError?: (error: unknown) => void;
+};
+export function storageErrorResponse(
+  error: unknown,
+  options: StorageErrorOptions = {},
+) {
   if (error instanceof EmployeeMemoryConflict) {
     const response = apiProblem({
       status: 409,
@@ -75,10 +81,12 @@ export function storageErrorResponse(error: unknown) {
     code = 'SIGNED_ACCESS_DENIED';
     message = 'Signed access denied';
   } else if (!isRequestValidationError(error)) {
-    console.error('Unhandled storage request error', {
-      name: error instanceof Error ? error.name : 'UnknownError',
-      message: error instanceof Error ? error.message : 'Unknown failure',
-    });
+    if (options.onUnexpectedError) options.onUnexpectedError(error);
+    else
+      console.error('Unhandled storage request error', {
+        name: error instanceof Error ? error.name : 'UnknownError',
+        message: error instanceof Error ? error.message : 'Unknown failure',
+      });
     status = 500;
     code = 'INTERNAL_ERROR';
     message = 'Storage request failed';

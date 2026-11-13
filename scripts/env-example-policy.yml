@@ -45,7 +45,7 @@ calls:
   apps/worker/src/harness/dsh-egress-environment.ts#configuredProxy: 1
   '*#runtimeFeatureEnabled': 0
 exclude:
-  '^(HOME|USER|LOGNAME|LANG|PATH|NODE_ENV|NODE_OPTIONS|CHOKIDAR_USEPOLLING|NAPI_RS_FORCE_WASI|NAPI_RS_NATIVE_LIBRARY_PATH)$': Inherited OS/engine/tool controls, outside application deployment examples.
+  '^(HOME|USER|LOGNAME|LANG|PATH|SYSTEMROOT|NODE_ENV|NODE_OPTIONS|CHOKIDAR_USEPOLLING|NAPI_RS_FORCE_WASI|NAPI_RS_NATIVE_LIBRARY_PATH)$': Inherited OS/engine/tool controls, outside application deployment examples.
   '^ALLRICE_(SERVICE_ROLE|BRIDGE_UPDATE_HEALTH_ID|STATIC_BROWSER_DEADLINE|NATIVE_ONCE_REFERENCE|NATIVE_RECURRING_REFERENCE)$': Internal process identity/update/approved-reference channels; not manually populated.
   '^ALLRICE_BRIDGE_STATIC_(DEVICE_ID|DEVICE_NAME|SERVER)$': Bridge static harness identity overrides, outside the common application environment.
   '^ALLRICE_MANAGED_BROWSER_DISABLE_CHROMIUM_SANDBOX$': Test-only sandbox opt-out, refused in production and excluded from deployment examples.

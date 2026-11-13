@@ -4,6 +4,7 @@ import {
   OfficeSourceKey,
   type OfficeExtension,
 } from '@deepseek-ai/dsh-office-to-pdf';
+import { officePreviewFontDirectories } from './font-directories.ts';
 
 let provider: Promise<OfficeToPdf> | undefined;
 
@@ -19,7 +20,9 @@ export async function previewOfficePdf(input: {
 }) {
   provider ??= (async () => {
     const context = new Context();
-    const plugin = context.plugin(OfficeToPdf, {});
+    const plugin = context.plugin(OfficeToPdf, {
+      fontDirectories: await officePreviewFontDirectories(),
+    });
     await plugin.await();
     return context.officeToPdf;
   })().catch((error) => {
