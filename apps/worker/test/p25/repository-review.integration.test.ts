@@ -1701,10 +1701,10 @@ suite(
         try {
           // This actual waiting SQL occurs after the original lease check.
           // Its blocker PID proves the interleaving, without a mocked result.
-          // The memory-owned marker is written before the assistant-message
-          // UPDATE waits behind the locked row. This remains after the original
-          // lease check; the snapshot checks both old and new capture markers
-          // roll back with the rest of the terminal transaction.
+          // The memory-owned marker UPDATE waits behind the locked assistant
+          // row. This remains after the original lease check; the snapshot
+          // checks both old and new capture markers roll back with the rest
+          // of the terminal transaction.
           let waiting: { query: string; now: Date } | undefined;
           await expect
             .poll(
@@ -1721,7 +1721,7 @@ suite(
               query: expect.stringContaining(
                 ending === 'progress finish'
                   ? 'from allrice_task_calls'
-                  : 'update allrice_messages',
+                  : 'update allrice_employee_runs set memory_source_capture_state',
               ),
             });
           // Read DB time independently while the late statement is blocked.
