@@ -11,7 +11,11 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
-import type { DshExecutionSnapshot, HarnessEvent } from '@allrice/contracts';
+import type {
+  DshExecutionSnapshot,
+  DshNativeSkillSnapshot,
+  HarnessEvent,
+} from '@allrice/contracts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { HarnessExecutionInput, HarnessToolCall } from './adapter.js';
@@ -2698,6 +2702,81 @@ describe('DshHarnessAdapter', () => {
       ]),
     );
   });
+
+  it.each([
+    {
+      name: 'cloud without local',
+      tools: ['browser.workspace', 'browser.run'],
+      visible: true,
+    },
+    {
+      name: 'cloud with local',
+      tools: ['browser.workspace', 'browser.run', 'local.browser.workspace'],
+      visible: true,
+    },
+    {
+      name: 'no cloud workspace grant',
+      tools: ['browser.run', 'local.browser.workspace'],
+      visible: false,
+    },
+    {
+      name: 'no cloud run grant',
+      tools: ['browser.workspace', 'local.browser.workspace'],
+      visible: false,
+    },
+  ])(
+    'registers the governed browser Skill only with both canonical cloud tools: $name',
+    async ({ tools, visible }) => {
+      // Test-only source loading must stay outside the Worker's emit graph.
+      const { loadPlatformContentCatalog } = (await import(
+        new URL(
+          '../../../../packages/database/src/platform-content/catalog.ts',
+          import.meta.url,
+        ).href
+      )) as {
+        loadPlatformContentCatalog: () => Promise<{
+          skills: (Omit<DshNativeSkillSnapshot, 'invocation'> &
+            DshNativeSkillSnapshot['invocation'])[];
+        }>;
+      };
+      const current = (await loadPlatformContentCatalog()).skills.find(
+        (s) => s.name === 'browser-research',
+      )!;
+      const input = executionInput({ prompt: 'inspect-skill-directory' });
+      input.nativeSkills = [
+        {
+          id: current.id,
+          name: current.name,
+          description: current.description,
+          content: current.content,
+          checksum: current.checksum,
+          invocation: {
+            modelInvocable: current.modelInvocable,
+            userInvocable: current.userInvocable,
+          },
+          requiredToolRefs: current.requiredToolRefs,
+        },
+      ];
+      input.tools = tools.map((name) => ({
+        name,
+        description: name,
+        inputSchema: {},
+      }));
+      input.authorizedToolNames = tools;
+      const result = await createAdapter().execute(input);
+      expect(JSON.parse(result.answer)).toEqual(
+        visible
+          ? [
+              {
+                id: current.id,
+                name: current.name,
+                description: current.description,
+              },
+            ]
+          : [],
+      );
+    },
+  );
 
   it('does not report an authorized but inactive Skill as unavailable', async () => {
     const adapter = createAdapter();

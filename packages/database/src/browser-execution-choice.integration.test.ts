@@ -399,6 +399,49 @@ suite('MET164 real local choice and existing durable admission', () => {
       },
     });
   });
+
+  it('keeps a Run without frozen local-browser authority cloud-only even after its device is ready', async () => {
+    // Freeze the Run without local authority before creating its device/grant.
+    // The snapshot remains immutable while the device becomes ready.
+    const f = await createLocalBrowserFixture(database.db, storage, {
+      frozen: false,
+      open: false,
+    });
+    await environment(f, 'ready');
+    const noCloud = await selectBrowserExecution(
+      await admission(f),
+      database.db,
+    );
+    expect(noCloud.choice.status).toBe('unavailable');
+    expect(noCloud.deviceId).toBeNull();
+    const grant = await cloud(f);
+    expect(
+      await selectBrowserExecution(await admission(f), database.db),
+    ).toMatchObject({
+      choice: { location: 'cloud', status: 'execute' },
+      deviceId: null,
+    });
+    for (const constraints of [
+      { location: 'local' as const },
+      { requireLocalInputs: true },
+    ]) {
+      const result = await selectBrowserExecution(
+        { ...(await admission(f)), ...constraints },
+        database.db,
+      );
+      expect(result.choice).toMatchObject({
+        location: 'local',
+        status: 'unavailable',
+      });
+      expect(result.deviceId).toBeNull();
+    }
+    // Current cloud authorization remains necessary even with a ready device.
+    await database.db`update allrice_browser_control_grants set revoked_at=clock_timestamp() where id=${grant.id}`;
+    expect(
+      (await selectBrowserExecution(await admission(f), database.db)).choice
+        .status,
+    ).toBe('unavailable');
+  });
   it('enforces the stored user message over a contrary model location', async () => {
     const f = await fixture();
     await cloud(f);
