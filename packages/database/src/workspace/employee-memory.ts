@@ -12,9 +12,16 @@ import type { z } from 'zod';
 import { DataAccessError } from '../data.ts';
 import type { getDatabase } from '../core/client.ts';
 import { readContentPrincipal } from '../content-maintenance.ts';
-import { runtimePolicyDigest } from '../runtime-policy-digest.ts';
 import { resolveEmployeeSessionInstance } from '../employees/employee-instances.ts';
 import type { ResourcePrincipal } from '../resource-principal.ts';
+import {
+  memoryPairDigest,
+  ordinaryMemoryPredicate,
+} from './employee-memory-primitives.ts';
+export {
+  memoryPairDigest,
+  ordinaryMemoryPredicate,
+} from './employee-memory-primitives.ts';
 
 type Sql = ReturnType<typeof getDatabase> | TransactionSql;
 export type EmployeeMemoryIdentity = ResourcePrincipal &
@@ -26,24 +33,6 @@ export type EmployeeMemoryScope = {
   instanceId: string;
   employeeId: string;
 };
-
-/** Ordinary private records only. Raw reviews and business-method data retain
- * their own APIs; this predicate grants neither source nor resource access. */
-export function ordinaryMemoryPredicate(
-  tx: TransactionSql,
-  scope: EmployeeMemoryScope,
-) {
-  return tx`m.organization_id=${scope.organizationId} and m.workspace_id=${scope.workspaceId}
-    and m.owner_id=${scope.ownerId} and m.instance_id=${scope.instanceId}
-    and m.employee_id=${scope.employeeId} and m.visibility='private'
-    and not exists(select 1 from allrice_experience_reviews r where r.memory_id=m.id)
-    and not exists(select 1 from allrice_brand_content_experiences b where b.memory_id=m.id)
-    and not exists(select 1 from allrice_employee_runs origin
-      where origin.organization_id=m.organization_id and origin.workspace_id=m.workspace_id and origin.method_authoring
-        and ((m.source_type='message' and m.source_id in (origin.user_message_id,origin.assistant_message_id))
-          or (m.source_type='checkpoint' and exists(select 1 from allrice_context_checkpoints cp
-            where cp.id=m.source_id and cp.covered_through_message_id in (origin.user_message_id,origin.assistant_message_id)))))`;
-}
 
 export class EmployeeMemoryConflict extends Error {
   constructor(
@@ -86,13 +75,6 @@ export class EmployeeMemoryCapacityError extends Error {
 
 export const memoryContentDigest = (content: string) =>
   `sha256:${createHash('sha256').update(content).digest('hex')}`;
-
-export const memoryPairDigest = (pair: PersonalMemoryPair) =>
-  runtimePolicyDigest({
-    version: 2,
-    summary: pair.summary,
-    details: pair.details,
-  });
 
 export function legacyPersonalMemoryPair(content: string): PersonalMemoryPair {
   return PersonalMemoryPairSchema.parse({
@@ -171,6 +153,20 @@ export async function memoryInstanceForRun(
     runId: string;
   },
 ) {
+  return (await memoryScopeForRun(sql, scope))?.instanceId ?? null;
+}
+
+/** Same current Run/instance gate as v1, with its trusted assignment employee
+ * for the shared ordinary-memory predicate. No model-supplied identity. */
+export async function memoryScopeForRun(
+  sql: Sql,
+  scope: {
+    organizationId: string;
+    workspaceId: string;
+    ownerId: string;
+    runId: string;
+  },
+): Promise<EmployeeMemoryScope | null> {
   if (
     !(await readContentPrincipal(
       {
@@ -182,8 +178,8 @@ export async function memoryInstanceForRun(
     ))
   )
     return null;
-  const [row] = await sql<{ instance_id: string }[]>`
-    select i.id instance_id from allrice_employee_runs r
+  const [row] = await sql<{ instance_id: string; employee_id: string }[]>`
+    select i.id instance_id,a.employee_id from allrice_employee_runs r
     join allrice_chat_sessions s on s.id=r.session_id and s.organization_id=r.organization_id
       and s.workspace_id=r.workspace_id and s.owner_id=r.owner_id
     join allrice_employee_instances i on i.id=coalesce(s.employee_instance_id,s.employee_assignment_id)
@@ -198,7 +194,15 @@ export async function memoryInstanceForRun(
       and not exists(select 1 from allrice_platform_employee_tenant_assignments d
         where d.organization_id=a.organization_id and d.workspace_id=a.workspace_id
           and d.tenant_employee_id=a.employee_id and not d.active)`;
-  return row?.instance_id ?? null;
+  return row
+    ? {
+        organizationId: scope.organizationId,
+        workspaceId: scope.workspaceId,
+        ownerId: scope.ownerId,
+        instanceId: row.instance_id,
+        employeeId: row.employee_id,
+      }
+    : null;
 }
 
 export function assertMemoryRevision(

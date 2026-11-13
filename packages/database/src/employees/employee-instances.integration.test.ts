@@ -59,6 +59,8 @@ import {
   newCurrentPlatformTestOrigin,
 } from '../conversation/current-platform-test-binding.ts';
 import { searchToolBrokerMemories } from '../execution/tool-broker.ts';
+import { assertRunMemoryContextCurrent } from '../run-memory-context.ts';
+import { memoryPairDigest } from '../workspace/employee-memory.ts';
 import * as toolSelection from '@allrice/contracts';
 import {
   prepareEmployeeMethodActivationFromChat,
@@ -5309,7 +5311,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       confidence: 1,
       expiresAt: null,
     };
-    await createTraceableMemory(f.a.context, memory);
+    const savedMemory = await createTraceableMemory(f.a.context, memory);
     expect(
       await searchWorkspaceMemories(f.a.context, {
         workspaceId: f.a.workspaceId,
@@ -5328,15 +5330,34 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       },
     );
     const [queuedRow] =
-      await fixture.db`select prompt_snapshot from allrice_employee_runs where run_id=${queued.run.id}`;
-    const frozenMemories = queuedRow!.prompt_snapshot.memories as {
-      id: string;
-      content: string;
-    }[];
-    expect(frozenMemories).toHaveLength(1);
-    expect(
-      await filterEmployeeMethodMemories(run.scope, frozenMemories),
-    ).toEqual(frozenMemories);
+      await fixture.db`select prompt_snapshot,memory_context_state from allrice_employee_runs where run_id=${queued.run.id}`;
+    expect(queuedRow!.prompt_snapshot.memories).toEqual([]);
+    expect(queuedRow!.prompt_snapshot.employeeDocuments.schemaVersion).toBe(2);
+    expect(queuedRow!.prompt_snapshot.employeeDocuments.memory).toContain(
+      `[1] ${memory.content}`,
+    );
+    expect(queuedRow!.memory_context_state.pins).toEqual([
+      expect.objectContaining({
+        number: 1,
+        id: savedMemory.id,
+        revision: savedMemory.revision,
+      }),
+    ]);
+    const queuedScope = { ...run.scope, runId: queued.run.id };
+    await expect(
+      assertRunMemoryContextCurrent(queuedScope),
+    ).resolves.toBeUndefined();
+    // Keep the legacy filter contract explicit; these are not v2 prompt items.
+    const legacyItems = [
+      {
+        id: savedMemory.id,
+        content: savedMemory.content,
+        revision: savedMemory.revision,
+      },
+    ];
+    expect(await filterEmployeeMethodMemories(run.scope, legacyItems)).toEqual(
+      legacyItems,
+    );
     // Already persisted pre-retirement authoring metadata; inspect must not create it.
     await fixture.db`update allrice_employee_runs set method_authoring=true where run_id=${run.context.runId}`;
     await fixture.db`update allrice_employee_content_contexts set retired_at=clock_timestamp() where generation_id=${run.runtime.generationId}`;
@@ -5356,12 +5377,15 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         query: 'DRAFT_MEMORY_MARKER',
       }),
     ).toHaveLength(0);
-    expect(
-      await filterEmployeeMethodMemories(run.scope, frozenMemories),
-    ).toEqual([]);
+    expect(await filterEmployeeMethodMemories(run.scope, legacyItems)).toEqual(
+      [],
+    );
+    await expect(
+      assertRunMemoryContextCurrent(queuedScope),
+    ).rejects.toMatchObject({ code: 'MEMORY_CONTEXT_UNAVAILABLE' });
     const [historical] =
-      await fixture.db`select prompt_snapshot from allrice_employee_runs where run_id=${queued.run.id}`;
-    expect(historical!.prompt_snapshot.memories).toEqual(frozenMemories);
+      await fixture.db`select prompt_snapshot,memory_context_state from allrice_employee_runs where run_id=${queued.run.id}`;
+    expect(historical).toEqual(queuedRow);
     await expect(
       createTraceableMemory(f.a.context, memory),
     ).rejects.toMatchObject({ code: 'authorization_denied' });
@@ -6332,17 +6356,33 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       // while retrying the same input must not create new recall side effects.
       expect(await memoryState()).toEqual(memoryBefore);
       const [restoredRun] =
-        await fixture.db`select prompt_snapshot from allrice_employee_runs where run_id=${sent.run.id}`;
-      expect(restoredRun!.prompt_snapshot.memories).toEqual([
-        expect.objectContaining({
+        await fixture.db`select prompt_snapshot,memory_context_state from allrice_employee_runs where run_id=${sent.run.id}`;
+      const [pair] = await fixture.db<
+        { summary: string; details: string | null }[]
+      >`select summary,details from allrice_memories where id=${memory.id}`;
+      expect(pair).toEqual({
+        summary: Array.from(input.text).slice(0, 40).join(''),
+        details: input.text,
+      });
+      expect(restoredRun!.prompt_snapshot.memories).toEqual([]);
+      expect(restoredRun!.prompt_snapshot.employeeDocuments.schemaVersion).toBe(
+        2,
+      );
+      expect(restoredRun!.prompt_snapshot.employeeDocuments.memory).toContain(
+        `[1] ${pair!.summary}（有说明）`,
+      );
+      expect(
+        restoredRun!.prompt_snapshot.employeeDocuments.memory,
+      ).not.toContain(input.text);
+      expect(restoredRun!.memory_context_state.pins).toEqual([
+        {
+          number: 1,
           id: memory.id,
           revision: memory.revision,
-          content: input.text,
-        }),
+          pairDigest: memoryPairDigest(pair!),
+          hasDetails: true,
+        },
       ]);
-      expect(restoredRun!.prompt_snapshot.employeeDocuments.memory).toContain(
-        input.text,
-      );
     },
   );
   it('waits for a concurrent archive before persisting a message from a stale Session read', async () => {
@@ -7032,6 +7072,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       ).toEqual([]);
       const resolved = await resolveEmployeeExecution(run.scope);
       expect(resolved.promptSnapshot.employeeDocuments).toEqual({
+        schemaVersion: 2,
         persona: expect.any(String),
         user: expect.any(String),
         memory: expect.any(String),

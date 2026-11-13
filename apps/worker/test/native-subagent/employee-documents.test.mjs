@@ -1,10 +1,14 @@
 /* global AbortController */
+import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import AgentPresets from '@deepseek-ai/dsh-agent-preset-registry';
-import { renderEmployeePersonaDocument } from '@allrice/contracts';
+import {
+  renderEmployeePersonaDocument,
+  renderMemoryIndexV2,
+} from '@allrice/contracts';
 import { employeePersonaPlatformSystemPrompt } from '@allrice/database';
 import { expect, it, vi } from 'vitest';
 import { gate, hold, host, text } from './fixture.mjs';
@@ -700,3 +704,393 @@ it('cold root recovery keeps native history unchanged and the latest cleared sna
   expect(JSON.stringify(request.messages)).toContain('WITHDRAWN_MEMORY');
   expect(JSON.stringify(request.messages)).toContain('OLD_PERSONA');
 }, 30000);
+
+const documents = (version, memory, user = '') =>
+  version === 2
+    ? {
+        schemaVersion: 2,
+        user,
+        memory: memory
+          ? renderMemoryIndexV2(
+              Array.from({ length: 100 }, (_, i) => ({
+                summary: i === 0 ? memory : `合成规则 ${i + 1}`,
+                hasDetails: true,
+              })),
+            )
+          : '',
+      }
+    : { user, memory: memory ? `# MEMORY.md\n${memory}` : '' };
+
+it('keeps maximum V2 memory and PERSONA independent through native child, nested child, fork, next Run and cold recovery', async () => {
+  const heading = '# PERSONA.md\nPERSONA_CURRENT {{missing}}\n';
+  const persona = heading + 'P'.repeat(16384 - Buffer.byteLength(heading));
+  const memory = renderMemoryIndexV2(
+    Array.from({ length: 100 }, () => ({
+      summary: '🧑'.repeat(40),
+      hasDetails: true,
+    })),
+  );
+  const userHeading = '# USER.md\nROOT_ONLY_USER\n';
+  const initial = {
+    schemaVersion: 2,
+    persona,
+    user: userHeading + 'U'.repeat(2048 - Buffer.byteLength(userHeading)),
+    memory,
+  };
+  expect(Buffer.byteLength(memory)).toBe(18303);
+  expect(Buffer.byteLength(persona)).toBe(16384);
+  const entered = gate(),
+    release = gate();
+  let holdFirstChild = true;
+  const runId = randomUUID();
+  const h = await host({
+    runId,
+    depth: 2,
+    documentMemory: true,
+    nativeTools: ['workspace.memory.read'],
+    rootSystemInstructions: 'ROOT_POLICY_ONLY',
+    employeeDocuments: initial,
+    model: async (request) => {
+      if (request.sessionId !== 'pr0-root' && holdFirstChild) {
+        holdFirstChild = false;
+        entered.resolve();
+        await hold(request.signal, release);
+      }
+      return text('已核对');
+    },
+    bridge: async (method) => {
+      if (method === 'allrice/run-authorize') return { allowed: true };
+      throw Error(`unexpected replay ${method}`);
+    },
+  });
+  expect(h.initialization.capabilities.employeeDocumentsSchemaVersion).toBe(2);
+  await h.prompt('按完整索引核对本次任务');
+  await h.wait();
+  const root = h.calls.find((request) => request.sessionId === h.root.id);
+  const rootContext = JSON.stringify(currentContext(root));
+  for (const literal of [persona, memory, initial.user])
+    expect(rootContext).toContain(JSON.stringify(literal).slice(1, -1));
+  const assertChildContext = (request) => {
+    const current = JSON.stringify(currentContext(request));
+    expect(current).toContain(JSON.stringify(persona).slice(1, -1));
+    expect(current).not.toContain('ROOT_ONLY_USER');
+    expect(current).not.toContain('MEMORY_INDEX_V2');
+    expect(
+      JSON.stringify(request.messages.filter((m) => m.role === 'system')),
+    ).not.toContain('PERSONA_CURRENT');
+  };
+  const child = await h.spawn();
+  try {
+    await entered.promise;
+    const childAgent = h.ctx.agents.get(child.childId);
+    const nested = await h.spawn(childAgent, '嵌套核对');
+    await nested.result;
+    assertChildContext(
+      h.calls.find((request) => request.sessionId === child.childId),
+    );
+    assertChildContext(
+      h.calls.find((request) => request.sessionId === nested.childId),
+    );
+  } finally {
+    release.resolve();
+  }
+  await child.result;
+  await h.wait();
+  const fork = await h.spawn(h.root, '沿原生已完成历史分叉', {
+    provider: 'fork',
+  });
+  await fork.result;
+  await h.wait();
+  const forkRequest = h.calls.find(
+    (request) => request.sessionId === fork.childId,
+  );
+  assertChildContext(forkRequest);
+  // Native completed history remains intact; only the current contribution is
+  // persona-only. No AllRice history filter or deletion is introduced.
+  expect(JSON.stringify(forkRequest.messages)).toContain('ROOT_ONLY_USER');
+  expect(JSON.stringify(forkRequest.messages)).toContain('MEMORY_INDEX_V2');
+  await h.server.handleRequest('run/end', { runId });
+  const nextRun = randomUUID();
+  const next = {
+    schemaVersion: 2,
+    persona: '# PERSONA.md\nNEXT_PERSONA',
+    user: '',
+    memory: '',
+  };
+  await h.server.handleRequest('run/begin', {
+    sessionId: h.root.id,
+    runId: nextRun,
+    employeeDocuments: next,
+  });
+  await h.server.handleRequest('session/prompt', {
+    sessionId: h.root.id,
+    runId: nextRun,
+    contentBlocks: text('换人设后的新任务'),
+  });
+  await h.wait();
+  const assertLatestCurrent = (request) => {
+    const current = JSON.stringify(currentContext(request));
+    expect(current).toContain('NEXT_PERSONA');
+    expect(current).not.toContain('PERSONA_CURRENT');
+    expect(current).not.toContain('ROOT_ONLY_USER');
+    expect(current).not.toContain('MEMORY_INDEX_V2');
+  };
+  assertLatestCurrent(h.calls.at(-1));
+  expect(JSON.stringify(h.calls.at(-1).messages)).toContain('MEMORY_INDEX_V2');
+  await h.ctx.subagents.sendMessage(
+    h.root,
+    child.childId,
+    text('后续 Run 恢复原子任务'),
+    {
+      signal: new AbortController().signal,
+    },
+  );
+  await h.wait();
+  const coldChild = h.calls
+    .filter((request) => request.sessionId === child.childId)
+    .at(-1);
+  assertLatestCurrent(coldChild);
+  expect(JSON.stringify(coldChild.messages)).not.toContain('ROOT_ONLY_USER');
+  expect(JSON.stringify(coldChild.messages)).not.toContain('MEMORY_INDEX_V2');
+  expect(JSON.stringify(coldChild.messages)).toContain('PERSONA_CURRENT');
+  await h.ctx.subagents.sendMessage(
+    h.root,
+    fork.childId,
+    text('后续 Run 继续原生分叉'),
+    {
+      signal: new AbortController().signal,
+    },
+  );
+  await h.wait();
+  const continuedFork = h.calls
+    .filter((request) => request.sessionId === fork.childId)
+    .at(-1);
+  assertLatestCurrent(continuedFork);
+  expect(JSON.stringify(continuedFork.messages)).toContain('MEMORY_INDEX_V2');
+  const count = h.calls.length;
+  await h.server.closeRoot(h.root.id);
+  await h.server.handleRequest('run/end', { runId: nextRun });
+  await h.server.handleRequest('session/recover', { sessionId: h.root.id });
+  await h.server.handleRequest('run/begin', {
+    sessionId: h.root.id,
+    runId: nextRun,
+    employeeDocuments: next,
+  });
+  expect(h.calls).toHaveLength(count);
+  await h.server.handleRequest('session/prompt', {
+    sessionId: h.root.id,
+    runId: nextRun,
+    contentBlocks: text('冷恢复当前冻结文档'),
+  });
+  await h.wait();
+  expect(h.calls).toHaveLength(count + 1);
+  assertLatestCurrent(h.calls.at(-1));
+  expect(JSON.stringify(h.calls.at(-1).messages)).toContain('MEMORY_INDEX_V2');
+}, 30000);
+
+it.each([1, 2])(
+  'v%s: only the admitted root gets required literal documents; child current prompt/tools/approval stay unchanged and fork inherits completed history',
+  async (version) => {
+    const runId = randomUUID();
+    const observedAgents = new Map();
+    const h = await host({
+      model: async (request) => {
+        observedAgents.set(
+          request.sessionId,
+          h.ctx.agents.get(request.sessionId),
+        );
+        return text('完成');
+      },
+      runId,
+      rootSystemInstructions: 'ROOT_STABLE_PERSONA',
+      employeeDocuments: documents(
+        version,
+        'CONFIRMED_A',
+        '# USER.md\nPERSON {{missing}}',
+      ),
+      prepare: async () =>
+        vi.stubEnv('DSH_SYSTEM_PROMPT', 'LEGACY_CHILD_PERSONA'),
+      bridge: async (method) => {
+        if (method === 'allrice/run-authorize') return { allowed: true };
+        throw Error(`unexpected ${method}`);
+      },
+    });
+    await h.prompt('完成根任务');
+    await h.wait();
+    expect(h.initialization.capabilities.employeeDocumentsSchemaVersion).toBe(
+      version,
+    );
+    const rootRequest = h.calls.find((r) => r.sessionId === h.root.id);
+    expect(JSON.stringify(rootRequest.messages)).toContain(
+      'ROOT_STABLE_PERSONA',
+    );
+    expect(JSON.stringify(rootRequest.messages)).not.toContain(
+      'LEGACY_CHILD_PERSONA',
+    );
+    expect(JSON.stringify(rootRequest.messages)).toContain(
+      'PERSON {{missing}}',
+    );
+    if (version === 2)
+      expect(JSON.stringify(rootRequest.messages)).toContain(
+        '[100] 合成规则 100（有说明）',
+      );
+    const child = await h.spawn();
+    await child.result;
+    await h.wait();
+    const childRequest = h.calls.find((r) => r.sessionId === child.childId);
+    expect(JSON.stringify(childRequest.messages)).toContain(
+      'LEGACY_CHILD_PERSONA',
+    );
+    expect(JSON.stringify(childRequest.messages)).not.toContain('CONFIRMED_A');
+    const childAgent = observedAgents.get(child.childId);
+    const approval = childAgent.session
+      .snapshotEvents()
+      .filter((e) => e.type === 'approval/policy');
+    expect(approval.map((e) => e.data.policy)).toContain('never');
+    const forked = await h.spawn(h.root, '原生分叉', { provider: 'fork' });
+    await forked.result;
+    await h.wait();
+    const forkRequest = h.calls.find((r) => r.sessionId === forked.childId);
+    expect(JSON.stringify(forkRequest.messages)).toContain('CONFIRMED_A');
+    expect(
+      JSON.stringify(
+        forkRequest.messages.filter((m) => m.role === 'system').at(-1),
+      ),
+    ).toContain('LEGACY_CHILD_PERSONA');
+    // The same child continues with its own unchanged current system/tools.
+    h.server.employeeDocuments.bind(
+      h.root.id,
+      documents(version, 'CONFIRMED_B'),
+    );
+    await h.ctx.subagents.sendMessage(h.root, child.childId, text('继续'), {
+      signal: new AbortController().signal,
+    });
+    await h.wait();
+    const last = h.calls.filter((r) => r.sessionId === child.childId).at(-1);
+    expect(last.tools).toEqual(childRequest.tools);
+    expect(last.messages.filter((m) => m.role === 'system').at(-1)).toEqual(
+      childRequest.messages.filter((m) => m.role === 'system').at(-1),
+    );
+    expect(JSON.stringify(last.messages)).not.toContain('CONFIRMED_B');
+    expect(
+      observedAgents
+        .get(child.childId)
+        .session.snapshotEvents()
+        .filter((e) => e.type === 'approval/policy'),
+    ).toEqual(approval);
+    await expect(
+      Promise.resolve().then(() =>
+        h.server.employeeDocuments.bind(child.childId, documents(version, '')),
+      ),
+    ).rejects.toThrow();
+  },
+  30000,
+);
+
+it.each([1, 2])(
+  'v%s: uses native context supersession for nonempty to empty without rewriting history',
+  async (version) => {
+    const runId = randomUUID();
+    const h = await host({
+      runId,
+      rootSystemInstructions: 'ROOT_STABLE',
+      employeeDocuments: documents(version, 'OLD_SNAPSHOT'),
+      bridge: async () => ({ allowed: true }),
+    });
+    await h.prompt('第一轮');
+    await h.wait();
+    const old = h.root.session
+      .snapshotEvents()
+      .filter((e) => e.type === 'user/message');
+    h.server.employeeDocuments.bind(h.root.id, documents(version, ''));
+    await h.prompt('第二轮');
+    await h.wait();
+    const events = h.root.session
+      .snapshotEvents()
+      .filter((e) => e.type === 'user/message');
+    for (const event of old) expect(events).toContainEqual(event);
+    const updates = events.filter(
+      (e) => !old.some((prior) => prior.seq === e.seq),
+    );
+    expect(JSON.stringify(updates)).not.toContain('OLD_SNAPSHOT');
+    // Other native runtime contexts may keep the full snapshot nonempty; the
+    // updated snapshot, rather than a fabricated deletion, removes this section.
+    expect(updates.length).toBeGreaterThan(1);
+  },
+  30000,
+);
+
+it.each([1, 2])(
+  'v%s: cold root recovery keeps native history unchanged and the latest cleared snapshot current, without replay',
+  async (version) => {
+    const runId = randomUUID();
+    const h = await host({
+      runId,
+      rootSystemInstructions: 'ROOT_STABLE',
+      employeeDocuments: documents(
+        version,
+        'WITHDRAWN_MEMORY',
+        '# USER.md\nOLD_ROLE',
+      ),
+      bridge: async (method) => {
+        if (method === 'allrice/run-authorize') return { allowed: true };
+        throw Error(`Unexpected tool replay: ${method}`);
+      },
+    });
+    await h.prompt('第一轮');
+    await h.wait();
+    await h.server.handleRequest('run/end', { runId });
+    const nextRun = randomUUID();
+    const empty = documents(version, '');
+    await h.server.handleRequest('run/begin', {
+      sessionId: h.root.id,
+      runId: nextRun,
+      employeeDocuments: empty,
+    });
+    await h.server.handleRequest('session/prompt', {
+      sessionId: h.root.id,
+      runId: nextRun,
+      contentBlocks: text('撤回后的新任务'),
+    });
+    await h.wait();
+    const before = h.root.session
+      .snapshotEvents()
+      .filter((e) => e.type === 'user/message');
+    expect(JSON.stringify(before)).toContain('WITHDRAWN_MEMORY');
+    const count = h.calls.length;
+    await h.server.closeRoot(h.root.id);
+    await h.server.handleRequest('run/end', { runId: nextRun });
+    await h.server.handleRequest('session/recover', { sessionId: h.root.id });
+    expect(h.calls.length).toBe(count);
+    const recovered = h.server.requireRoot(h.root.id).agent;
+    expect(recovered).not.toBe(h.root);
+    await h.server.handleRequest('run/begin', {
+      sessionId: h.root.id,
+      runId: nextRun,
+      employeeDocuments: empty,
+    });
+    expect(h.calls.length).toBe(count);
+    await h.server.handleRequest('session/prompt', {
+      sessionId: h.root.id,
+      runId: nextRun,
+      contentBlocks: text('恢复后继续'),
+    });
+    await h.wait();
+    expect(h.calls.length).toBe(count + 1);
+    const after = recovered.session
+      .snapshotEvents()
+      .filter((e) => e.type === 'user/message');
+    for (const event of before) expect(after).toContainEqual(event);
+    const request = h.calls.at(-1);
+    const contexts = request.messages.filter((message) =>
+      JSON.stringify(message.content).includes(
+        'Current runtime context. This snapshot supersedes earlier runtime-context snapshots.',
+      ),
+    );
+    expect(contexts.length).toBeGreaterThan(1);
+    expect(JSON.stringify(contexts.at(-1))).not.toContain('WITHDRAWN_MEMORY');
+    expect(JSON.stringify(contexts.at(-1))).not.toContain('OLD_ROLE');
+    expect(JSON.stringify(request.messages)).toContain('WITHDRAWN_MEMORY');
+  },
+  30000,
+);

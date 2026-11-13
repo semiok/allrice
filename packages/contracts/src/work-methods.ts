@@ -41,6 +41,7 @@ export const completedToolWorkMethods: Readonly<Record<string, WorkMethod>> = {
   'market.history': 'cloud_search',
   'workspace.memory.search': 'cloud_search',
   'workspace.experience.read': 'cloud_search',
+  'workspace.memory.read': 'cloud_search',
   'workspace.session.search': 'cloud_search',
   'workspace.file.list': 'cloud_files',
   'workspace.file.read': 'cloud_files',

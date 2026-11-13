@@ -1,6 +1,7 @@
 import {
   EmployeeDocumentsSchema,
   EmployeePersonaPinSchema,
+  isMemoryIndexDocuments,
 } from './employee-documents.ts';
 import { EmployeePersonaFoundationSchema } from './employee-persona-foundation.ts';
 import { SessionReferenceSnapshotsSchema } from './session-reference.ts';
@@ -917,7 +918,12 @@ export const EmployeePromptSnapshotSchema = z
     imageAttachments: z.array(PromptImageAttachmentSchema).max(20).default([]),
     sessionReferences: SessionReferenceSnapshotsSchema.optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (snapshot) =>
+      !isMemoryIndexDocuments(snapshot.employeeDocuments) ||
+      snapshot.memories.length === 0,
+  );
 
 export const EmployeeRunSchema = z
   .object({

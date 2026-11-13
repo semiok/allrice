@@ -12,6 +12,11 @@ import {
   type EmployeeInstanceSnapshot,
   type EmployeeExecutionSnapshot,
   type EmployeeDocuments,
+  PersonalMemoryPairSchema,
+  EmployeeDocumentsV2Schema,
+  RunMemoryContextV2StateSchema,
+  memoryIndexPolicy,
+  renderMemoryIndexV2,
   type EmployeeUserFacts,
   type MemoryContextItem,
   type EmployeePersonaTask,
@@ -21,7 +26,11 @@ import {
   RuntimePolicyError,
   runtimePolicyDigest,
 } from '../runtime-policy-digest.ts';
-import { employeeMemoryReadPredicate } from '../workspace/employee-memory-read.ts';
+import {
+  employeeMemoryReadPredicate,
+  personalMemoryIndexReadPredicate,
+} from '../workspace/employee-memory-read.ts';
+import { memoryPairDigest } from '../workspace/employee-memory-primitives.ts';
 import {
   getEmployeeInstance,
   readEmployeePersonaVersion,
@@ -454,5 +463,88 @@ export async function freezeEmployeeDocuments(
       ),
       memory: employeeMemoryDocument(memories, rows.length),
     },
+  };
+}
+
+/** New ordinary Run projection. Details stay in memories/revisions, never in
+ * prompt snapshots or the ledger. The queue persists this one projection. */
+export async function freezeEmployeeMemoryIndexV2(
+  sql: ReturnType<typeof getDatabase> | TransactionSql,
+  scope: Parameters<typeof personalMemoryIndexReadPredicate>[1],
+  facts: EmployeeUserFacts,
+  personaInput?: { instance: EmployeeInstanceSnapshot; employeeId: string },
+) {
+  const persona = personaInput
+    ? await freezeRunPersona(
+        sql,
+        personaInput.instance,
+        personaInput.employeeId,
+      )
+    : undefined;
+  const rows = await sql<
+    {
+      id: string;
+      revision: number;
+      summary: string | null;
+      details: string | null;
+    }[]
+  >`select m.id,m.revision,m.summary,m.details from allrice_memories m
+    where ${personalMemoryIndexReadPredicate(sql, scope)}
+    order by m.updated_at desc,m.id desc`;
+  const entries = rows.map((row, i) => {
+    const pair = PersonalMemoryPairSchema.parse({
+      summary: row.summary,
+      details: row.details,
+    });
+    if (pair.summary !== row.summary || pair.details !== row.details)
+      throw Error('MEMORY_CONTEXT_UNAVAILABLE');
+    return {
+      summary: pair.summary,
+      pin: {
+        number: i + 1,
+        id: row.id,
+        revision: row.revision,
+        pairDigest: memoryPairDigest(pair),
+        hasDetails: pair.details !== null,
+      },
+    };
+  });
+  const pins = entries.map((entry) => entry.pin);
+  const memory = renderMemoryIndexV2(
+    entries.map((entry) => ({
+      summary: entry.summary,
+      hasDetails: entry.pin.hasDetails,
+    })),
+  );
+  const bytes = Buffer.byteLength(memory, 'utf8');
+  const user = selectEmployeeUserFacts(facts);
+  return {
+    memories: [],
+    ...(persona
+      ? { persona: persona.pin, systemPrompt: persona.systemPrompt }
+      : {}),
+    employeeDocuments: EmployeeDocumentsV2Schema.parse({
+      schemaVersion: 2,
+      ...(persona ? { persona: persona.persona } : {}),
+      user: renderEmployeeUserDocument(
+        user.facts,
+        user.omitted,
+        runtimePolicyDigest(user),
+      ),
+      memory,
+    }),
+    memoryContextStateV2: RunMemoryContextV2StateSchema.parse({
+      schemaVersion: 2,
+      meter: 'utf8_bytes',
+      limits: memoryIndexPolicy,
+      initial: {
+        digest: runtimePolicyDigest(pins),
+        documentDigest: runtimePolicyDigest(memory),
+        bytes,
+      },
+      pins,
+      spentBytes: bytes,
+      toolReads: 0,
+    }),
   };
 }

@@ -9,6 +9,7 @@ import { LocalStorageAdapter } from '@allrice/storage';
 import {
   withPlatformImageTools,
   isBaseRiceInstanceDefinition,
+  isMemoryIndexDocuments,
   modelProviderRuntimeSupported,
   EmployeeKernelRequestSchema,
   renderMemoryContext,
@@ -385,13 +386,17 @@ export async function executeEmployeeRun({
       ...resolved,
       promptSnapshot: {
         ...resolved.promptSnapshot,
-        memories: [
-          ...resolved.promptSnapshot.memories.slice(
-            0,
-            20 - experience.memories.length,
-          ),
-          ...experience.memories,
-        ],
+        memories: isMemoryIndexDocuments(
+          resolved.promptSnapshot.employeeDocuments,
+        )
+          ? []
+          : [
+              ...resolved.promptSnapshot.memories.slice(
+                0,
+                20 - experience.memories.length,
+              ),
+              ...experience.memories,
+            ],
         systemPrompt:
           resolved.promptSnapshot.systemPrompt +
           (experience.receipt
@@ -686,6 +691,10 @@ export async function executeEmployeeRun({
     documentMemory
       ? resolved.promptSnapshot.employeeDocuments?.memory
       : undefined,
+    documentMemory &&
+      isMemoryIndexDocuments(resolved.promptSnapshot.employeeDocuments)
+      ? 2
+      : 1,
   );
   if (personaTask && resolved.promptSnapshot.employeeDocuments)
     resolved.promptSnapshot.employeeDocuments = {

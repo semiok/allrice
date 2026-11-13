@@ -165,9 +165,9 @@ suite('default Rice project tool admission', () => {
     const x = await setup(true);
     // Simulate the old tool selection at first INSERT, never rewrite a stored
     // snapshot or disable its immutability trigger. All admission checks stay real.
-    const selectMemoryTools = toolSelection.freezeMemorySourceToolNames;
+    const selectMemoryTools = toolSelection.freezeMemoryIndexToolNames;
     const oldSelection = vi
-      .spyOn(toolSelection, 'freezeMemorySourceToolNames')
+      .spyOn(toolSelection, 'freezeMemoryIndexToolNames')
       .mockImplementation((...args) => [
         ...selectMemoryTools(...args),
         'workspace.project',

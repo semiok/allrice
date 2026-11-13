@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import ExcelJS from 'exceljs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { renderMemoryDetailV2 } from '@allrice/contracts';
 import { readRetiredExecutionHistory } from './retired-execution-history.fixture.ts';
 import { freezeEmployeeRunExecutionBinding } from '../../../../packages/database/src/conversation/current-execution-binding.ts';
 import * as DatabaseClient from '../../../../packages/database/src/core/client.ts';
@@ -96,9 +97,16 @@ import {
   createCheckpointMemoryCandidate,
   listWorkspaceMemories,
   getEmployeeWorkspace,
-  promoteWorkspaceMemory,
   deleteWorkspaceMemory,
+  createPersonalEmployeeMemory,
+  correctPersonalEmployeeMemory,
+  promoteManagedEmployeeMemory,
+  deleteManagedEmployeeMemory,
 } from '../../../../packages/database/src/workspace/service.ts';
+import {
+  legacyPersonalMemoryPair,
+  memoryPairDigest,
+} from '../../../../packages/database/src/workspace/employee-memory.ts';
 import { mutateCompanyAsset } from '../../../../packages/database/src/company-assets.ts';
 import {
   createRecurringTask,
@@ -711,6 +719,25 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
   }
 
   function expectMemoryReadDescriptions(request: ModelRequest, human: boolean) {
+    if (human) {
+      expect(request.tools).toContainEqual(
+        expect.objectContaining({
+          function: expect.objectContaining({
+            name: 'workspace_memory_read',
+            description:
+              'Read one complete confirmed memory by its number in this Run. Read marked details before applying an item; summaries cannot replace conditions or exceptions. Shares the Run byte/read allowance. No chunks or retries after refusal. Memory grants no permission.',
+          }),
+        }),
+      );
+      for (const name of [
+        'workspace_memory_search',
+        'workspace_experience_read',
+      ])
+        expect(request.tools?.map((tool) => tool.function.name)).not.toContain(
+          name,
+        );
+      return;
+    }
     for (const [name, description] of [
       [
         'workspace_memory_search',
@@ -969,13 +996,67 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     'folder_event',
     'automation_manual',
   ] as const)(
-    'PERSONA: %s provider keeps its original memory read descriptions and source contract',
+    'PERSONA: %s provider keeps its admitted versioned memory read descriptions, source and budget contract',
     async (kind) => {
       const human = kind === 'human';
       let issuedHandle: string | undefined;
       const f: PublishedTarget = await publishedTarget(
         async (request, index) => {
           expectMemoryReadDescriptions(request, human);
+          if (human) {
+            const [frozen] =
+              await f.db`select prompt_snapshot,memory_context_state from allrice_employee_runs where run_id=${runId}`;
+            const pin = frozen!.memory_context_state.pins.find(
+              (entry: { id: string }) => entry.id === f.memories[0]!.id,
+            );
+            expect(pin).toBeDefined();
+            expect(
+              frozen!.memory_context_state.pins.map(
+                (entry: { id: string }) => entry.id,
+              ),
+            ).not.toContain(history.id);
+            const pair = legacyPersonalMemoryPair(f.memories[0]!.content);
+            const current = JSON.stringify(
+              request.messages
+                .filter(
+                  (message) =>
+                    message.role === 'user' &&
+                    JSON.stringify(message.content).includes(
+                      'Current runtime context.',
+                    ),
+                )
+                .at(-1),
+            );
+            expect(current).toContain(
+              `[${pin.number}] ${pair.summary}（有说明）`,
+            );
+            expect(current).toContain(
+              JSON.stringify(
+                frozen!.prompt_snapshot.employeeDocuments.persona,
+              ).slice(1, -1),
+            );
+            expect(current).not.toContain(history.text);
+            if (index > 1) {
+              const content = request.messages
+                .filter((message) => message.role === 'tool')
+                .at(-1)!.content;
+              const actual =
+                typeof content === 'string'
+                  ? content
+                  : (content as { text?: string }[])
+                      .map((block) => block.text ?? '')
+                      .join('');
+              expect(actual).toBe(renderMemoryDetailV2(pin.number, pair));
+            }
+            if (index <= 2)
+              return {
+                nativeTool: {
+                  name: 'workspace_memory_read',
+                  arguments: { number: pin.number },
+                },
+              };
+            return { text: 'Synthetic complete V2 memory read completed.' };
+          }
           if (index === 1)
             return {
               nativeTool: {
@@ -1000,21 +1081,16 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
             // Only the synthetic provider script reads this legacy Run's
             // existing durable source pin. Initial MEMORY and the real search
             // still exclude derived history; this is not model discovery.
-            const issued = human
-              ? search.items
-              : await searchRunExperiences({
-                  organizationId: f.identity.org,
-                  workspaceId: f.identity.workspace,
-                  ownerId: f.identity.user,
-                  runId,
-                });
+            const issued = await searchRunExperiences({
+              organizationId: f.identity.org,
+              workspaceId: f.identity.workspace,
+              ownerId: f.identity.user,
+              runId,
+            });
             issuedHandle = issued.find(
-              (item: { id: string }) =>
-                item.id === (human ? f.memories[0]!.id : history.id),
+              (item: { id: string }) => item.id === history.id,
             )?.sourceHandle;
             expect(issuedHandle).toMatch(/^experience:sha256:[a-f0-9]{64}$/u);
-            if (human)
-              expect(JSON.stringify(request.messages)).toContain(issuedHandle);
             return {
               nativeTool: {
                 name: 'workspace_experience_read',
@@ -1063,6 +1139,64 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           }),
         ).toBe(human ? 'human' : 'internal');
         await task.run();
+        if (human) {
+          const [stored] =
+            await f.db`select prompt_snapshot,execution_snapshot,memory_context_state s,experience_reads from allrice_employee_runs where run_id=${runId}`;
+          const pin = stored!.s.pins.find(
+            (entry: { id: string }) => entry.id === f.memories[0]!.id,
+          );
+          const readText = renderMemoryDetailV2(
+            pin.number,
+            legacyPersonalMemoryPair(f.memories[0]!.content),
+          );
+          const reads = await Promise.all(
+            broker.mock.calls.flatMap(([input], index) =>
+              input.call.name === 'workspace.memory.read'
+                ? [
+                    broker.mock.results[index]!.value.then(
+                      (
+                        result: Awaited<
+                          ReturnType<typeof ToolBroker.executeRiceTool>
+                        >,
+                      ) => result.modelContent,
+                    ),
+                  ]
+                : [],
+            ),
+          );
+          expect(reads).toEqual([readText, readText]);
+          expect(
+            broker.mock.calls.some(([input]) =>
+              ['workspace.memory.search', 'workspace.experience.read'].includes(
+                input.call.name,
+              ),
+            ),
+          ).toBe(false);
+          const docs = stored!.prompt_snapshot.employeeDocuments;
+          expect(stored!.prompt_snapshot.memories).toEqual([]);
+          expect(docs.schemaVersion).toBe(2);
+          expect(
+            JSON.parse(docs.persona.slice('# 人设\n'.length)).source,
+          ).toEqual(stored!.execution_snapshot.persona.source);
+          expect(
+            stored!.s.pins.map((entry: { id: string }) => entry.id),
+          ).not.toContain(history.id);
+          expect(stored!.experience_reads).toEqual([]);
+          expect(stored!.s.schemaVersion).toBe(2);
+          expect(stored!.s.initial.bytes).toBe(Buffer.byteLength(docs.memory));
+          expect(stored!.s.spentBytes).toBe(
+            Buffer.byteLength(docs.memory) + 2 * Buffer.byteLength(readText),
+          );
+          expect(stored!.s.initial.bytes).toBeLessThanOrEqual(18303);
+          expect(stored!.s.limits).toMatchObject({
+            maximumResponseBytes: 10000,
+            maximumRunBytes: 24000,
+            maximumToolReads: 12,
+          });
+          expect(stored!.s.toolReads).toBe(2);
+          expect(stored!.s).not.toHaveProperty('confirmedPins');
+          return;
+        }
         const reads = await Promise.all(
           broker.mock.calls.flatMap(([input], index) =>
             ['workspace.memory.search', 'workspace.experience.read'].includes(
@@ -1087,24 +1221,16 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           omittedItems: 0,
         });
         expect(source.items).toHaveLength(1);
-        if (human) {
-          expect(source.items[0]).toMatchObject({
-            handle: issuedHandle,
-            kind: 'confirmed_employee_memory',
-            memory: { id: f.memories[0]!.id, content: f.memories[0]!.content },
-          });
-          expect(source.items[0]).not.toHaveProperty('source');
-        } else
-          expect(source.items[0]).toMatchObject({
-            handle: issuedHandle,
-            pin: { id: history.id },
-            source: {
-              runId: history.runId,
-              sessionId: history.sessionId,
-              messageId: history.messageId,
-              excerpt: history.text,
-            },
-          });
+        expect(source.items[0]).toMatchObject({
+          handle: issuedHandle,
+          pin: { id: history.id },
+          source: {
+            runId: history.runId,
+            sessionId: history.sessionId,
+            messageId: history.messageId,
+            excerpt: history.text,
+          },
+        });
         const [stored] =
           await f.db`select memory_context_state s,experience_reads from allrice_employee_runs where run_id=${runId}`;
         // Keep the existing qualification filter: derived history is excluded
@@ -1114,11 +1240,10 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           stored!.experience_reads.some(
             (pin: { id: string }) => pin.id === history.id,
           ),
-        ).toBe(!human);
-        if (!human)
-          expect(JSON.stringify(model!.requests.at(-1)!.messages)).toContain(
-            history.text,
-          );
+        ).toBe(true);
+        expect(JSON.stringify(model!.requests.at(-1)!.messages)).toContain(
+          history.text,
+        );
         expect(stored!.s.toolReads).toBe(2);
         expect(stored!.s.spentBytes).toBe(
           stored!.s.initial.bytes +
@@ -1128,17 +1253,172 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         expect(stored!.s.spentBytes).toBeLessThanOrEqual(
           stored!.s.limits.maximumRunBytes,
         );
-        if (human) {
-          expect(stored!.s.initial.documentDigest).toMatch(
-            /^sha256:[a-f0-9]{64}$/u,
+        expect(stored!.s.schemaVersion).toBe(1);
+        expect(stored!.s.initial).not.toHaveProperty('documentDigest');
+        expect(stored!.s).not.toHaveProperty('confirmedPins');
+      } finally {
+        await task.isolation.cleanup();
+      }
+    },
+    90000,
+  );
+
+  it.each([
+    'native_once',
+    'native_recurring',
+    'folder_event',
+    'automation_manual',
+  ] as const)(
+    'V1 %s reads complete newly created and edited V2 pairs without ordinal grants or a new budget',
+    async (kind) => {
+      const bodies: { id: string; content: string }[] = [];
+      const f = await publishedTarget(async (request, index) => {
+        expectMemoryReadDescriptions(request, false);
+        if (index === 1) {
+          const current = JSON.stringify(
+            request.messages
+              .filter(
+                (message) =>
+                  message.role === 'user' &&
+                  JSON.stringify(message.content).includes(
+                    'Current runtime context.',
+                  ),
+              )
+              .at(-1),
           );
-          expect(stored!.s.confirmedPins).toContainEqual(
-            expect.objectContaining({ id: f.memories[0]!.id }),
-          );
-        } else {
-          expect(stored!.s.initial).not.toHaveProperty('documentDigest');
-          expect(stored!.s).not.toHaveProperty('confirmedPins');
+          for (const body of bodies)
+            expect(current).toContain(
+              JSON.stringify(body.content).slice(1, -1),
+            );
+          return {
+            nativeTool: {
+              name: 'workspace_memory_search',
+              arguments: { query: 'PAIR_CONDITION' },
+            },
+          };
         }
+        return {
+          text: 'Complete V2 pairs were read using the existing V1 task contract.',
+        };
+      });
+      // Keep this regression's recall pool to the two real V2 write paths;
+      // the preceding producer matrix independently retains its legacy proofs.
+      for (const memory of f.memories)
+        await deleteWorkspaceMemory(
+          f.context,
+          f.identity.workspace,
+          memory.id,
+          {
+            instanceId: f.identity.assignment,
+            expectedRevision: memory.revision,
+            contentDigest: memory.contentDigest,
+            idempotencyKey: randomUUID(),
+          },
+        );
+      const createdPair = {
+        summary: '新建月报可以外发',
+        details: `${f.prompt}\nPAIR_CONDITION_CREATE 只可发送脱敏汇总；原始客户名单不得外发。`,
+      };
+      const created = await createPersonalEmployeeMemory(f.context, {
+        workspaceId: f.identity.workspace,
+        instanceId: f.identity.assignment,
+        idempotencyKey: randomUUID(),
+        ...createdPair,
+      });
+      bodies.push({
+        id: created.id,
+        content: `${createdPair.summary}\n${createdPair.details}`,
+      });
+      const before = await createPersonalEmployeeMemory(f.context, {
+        workspaceId: f.identity.workspace,
+        instanceId: f.identity.assignment,
+        idempotencyKey: randomUUID(),
+        summary: '待更新月报条件',
+        details: '编辑前的条件不得替代当前规定',
+      });
+      const editedPair = {
+        summary: '编辑月报继续按条件外发',
+        details: `${f.prompt}\nPAIR_CONDITION_EDIT 只发审计版；未经确认不得附原始订单。`,
+      };
+      await correctPersonalEmployeeMemory(
+        f.context,
+        f.identity.workspace,
+        before.id,
+        {
+          instanceId: f.identity.assignment,
+          expectedRevision: before.revision,
+          pairDigest: before.pairDigest,
+          idempotencyKey: randomUUID(),
+          ...editedPair,
+          reason: '本人更新条件后再执行任务',
+        },
+      );
+      bodies.push({
+        id: before.id,
+        content: `${editedPair.summary}\n${editedPair.details}`,
+      });
+      f.prompt += '请生成月度报告，遵守 PAIR_CONDITION 的全部条件。';
+      let runId: string;
+      if (kind === 'native_once') runId = await (await oncePlan(f)).dispatch();
+      else if (kind === 'native_recurring') runId = await recurringProducer(f);
+      else if (kind === 'folder_event') runId = (await folderProducer(f)).runId;
+      else
+        runId = (
+          await runManualAutomation(
+            f.context,
+            f.identity.workspace,
+            (await oncePlan(f)).plan.id,
+            {
+              requestId: randomUUID(),
+              expectedRevision: 1,
+            },
+          )
+        ).run.id;
+      const broker = vi.spyOn(ToolBroker, 'executeRiceTool');
+      const task = await claim(f, runId, true);
+      try {
+        await task.run();
+        const reads = await Promise.all(
+          broker.mock.calls.flatMap(([input], index) =>
+            input.call.name === 'workspace.memory.search'
+              ? [
+                  broker.mock.results[index]!.value.then(
+                    (
+                      result: Awaited<
+                        ReturnType<typeof ToolBroker.executeRiceTool>
+                      >,
+                    ) => JSON.parse(result.modelContent),
+                  ),
+                ]
+              : [],
+          ),
+        );
+        expect(reads).toHaveLength(1);
+        for (const body of bodies)
+          expect(reads[0].items).toContainEqual(expect.objectContaining(body));
+        expect(
+          broker.mock.calls.some(
+            ([input]) => input.call.name === 'workspace.memory.read',
+          ),
+        ).toBe(false);
+        const [stored] =
+          await f.db`select memory_context_state s from allrice_employee_runs where run_id=${runId}`;
+        expect(stored!.s.schemaVersion).toBe(1);
+        expect(stored!.s.initial.ids).toEqual(
+          expect.arrayContaining(bodies.map((body) => body.id)),
+        );
+        expect(stored!.s.initial.bytes).toBeLessThanOrEqual(6000);
+        expect(stored!.s.initial).not.toHaveProperty('documentDigest');
+        expect(stored!.s).not.toHaveProperty('confirmedPins');
+        expect(stored!.s.limits).toMatchObject({
+          maximumResponseBytes: 8000,
+          maximumRunBytes: 24000,
+          maximumToolReads: 12,
+        });
+        expect(stored!.s.toolReads).toBe(1);
+        expect(stored!.s.spentBytes).toBe(
+          stored!.s.initial.bytes + memoryContextBytes(reads[0]),
+        );
       } finally {
         await task.isolation.cleanup();
       }
@@ -2781,7 +3061,17 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       expect(documents.persona).toContain(
         '"expressionStyle":{"value":"structured"',
       );
-      expect(parked.memory_context_state.initial.ids).toEqual([memory.id]);
+      expect(documents.schemaVersion).toBe(2);
+      expect(parked.memory_context_state.schemaVersion).toBe(2);
+      expect(parked.memory_context_state.pins).toEqual([
+        expect.objectContaining({ id: memory.id, revision: memory.revision }),
+      ]);
+      expect(parked.memory_context_state.initial.bytes).toBe(
+        Buffer.byteLength(documents.memory),
+      );
+      expect(parked.memory_context_state.spentBytes).toBe(
+        parked.memory_context_state.initial.bytes,
+      );
       expect(parked.memory_context_state.spentBytes).toBeGreaterThan(0);
       const system = model!.requests[0]!.messages.filter(
         (message) => message.role === 'system',
@@ -2961,6 +3251,105 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     }
   }, 45000);
 
+  it('freezes v2 at real chat admission and reads the complete pair through Worker, native Host and provider', async () => {
+    const pair = {
+      summary: '日报按财务模板',
+      details: '\u0001'.repeat(1995) + '不得外发。',
+    };
+    const text = renderMemoryDetailV2(1, pair);
+    const f = await setup(
+      async (request, count) => {
+        const tools = request.tools!.map((tool) => tool.function.name);
+        expect(tools).toContain('workspace_memory_read');
+        expect(tools).not.toContain('workspace_memory_search');
+        expect(tools).not.toContain('workspace_experience_read');
+        if (count === 1) {
+          expect(JSON.stringify(request.messages)).toContain(
+            `[1] ${pair.summary}（有说明）`,
+          );
+          expect(JSON.stringify(request.messages)).not.toContain(
+            JSON.stringify(pair.details).slice(1, -1),
+          );
+          return {
+            nativeTool: {
+              name: 'workspace_memory_read',
+              arguments: { number: 1 },
+            },
+          };
+        }
+        const content = request.messages.find(
+          (message) => message.role === 'tool',
+        )!.content;
+        const actual =
+          typeof content === 'string'
+            ? content
+            : (content as { text?: string }[])
+                .map((block) => block.text ?? '')
+                .join('');
+        expect(actual).toBe(text);
+        return { text: '按完整说明完成。' };
+      },
+      false,
+      false,
+      ['workspace.memory.search', 'workspace.export.create'],
+    );
+    const memory = await createPersonalEmployeeMemory(f.context, {
+      workspaceId: f.identity.workspace,
+      instanceId: f.identity.assignment,
+      idempotencyKey: randomUUID(),
+      ...pair,
+    });
+    const initialize = vi.spyOn(DshProtocolClient.prototype, 'initialize');
+    const broker = vi.spyOn(ToolBroker, 'executeRiceTool');
+    const task = await prepare(f, '请按财务日报规则处理今天的记录。');
+    try {
+      const [frozen] =
+        await f.db`select prompt_snapshot,memory_context_state from allrice_employee_runs where run_id=${task.runId}`;
+      expect(frozen!.prompt_snapshot.employeeDocuments.schemaVersion).toBe(2);
+      expect(frozen!.prompt_snapshot.memories).toEqual([]);
+      expect(frozen!.memory_context_state.pins).toEqual([
+        {
+          number: 1,
+          id: memory.id,
+          revision: memory.revision,
+          pairDigest: memory.pairDigest,
+          hasDetails: true,
+        },
+      ]);
+      expect(JSON.stringify(frozen)).not.toContain(
+        JSON.stringify(pair.details).slice(1, -1),
+      );
+      await task.run();
+      expect(initialize.mock.calls).toHaveLength(1);
+      expect(initialize.mock.calls[0]![0]).toMatchObject({
+        employeeDocumentsSchemaVersion: 2,
+      });
+      const receipt = await initialize.mock.results[0]!.value;
+      // initialize resolves only after the actual Host's v2 capability receipt
+      // has passed DshProtocolClient's compatibility check.
+      expect(receipt.name).toBe('deepseek-harness-sdk-runtime');
+      const reads = broker.mock.calls.filter(
+        ([input]) => input.call.name === 'workspace.memory.read',
+      );
+      expect(reads).toHaveLength(1);
+      expect(reads[0]![0].call.arguments).toEqual({ number: 1 });
+      expect(reads[0]![0].employeeDocuments).toEqual(
+        frozen!.prompt_snapshot.employeeDocuments,
+      );
+      const [current] =
+        await f.db`select memory_context_state from allrice_employee_runs where run_id=${task.runId}`;
+      expect(current!.memory_context_state).toEqual({
+        ...frozen!.memory_context_state,
+        toolReads: 1,
+        spentBytes:
+          frozen!.memory_context_state.initial.bytes + Buffer.byteLength(text),
+      });
+      expect(model!.requests).toHaveLength(2);
+    } finally {
+      await task.isolation.cleanup();
+    }
+  }, 45000);
+
   it.each([
     {
       label: 'SB01 original remember request',
@@ -3022,20 +3411,13 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
               nativeTool: {
                 name: 'workspace_memory_remember',
                 arguments: {
-                  content,
+                  summary: content,
+                  details: '完整说明：月结前不得外发。',
                   memoryClass: 'user_preference',
-                  lifecycleState: c.requested,
                 },
               },
             };
           }
-          if (count === 2 && c.state === 'candidate')
-            return {
-              nativeTool: {
-                name: 'workspace_memory_search',
-                arguments: { query: content },
-              },
-            };
           return { text: 'Synthetic completed.' };
         },
         false,
@@ -3051,7 +3433,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       try {
         const result = await task.run();
         const memories = await f.db`
-        select m.id,m.content,m.employee_id,m.source_type,m.source_id,m.lifecycle_state,
+        select m.id,m.content,m.summary,m.details,m.employee_id,m.source_type,m.source_id,m.lifecycle_state,
           m.trust_level,m.memory_class,m.revision,s.role,s.content->>'text' source_text,
           er.user_message_id
         from allrice_memories m join allrice_messages s on s.id=m.source_id
@@ -3063,10 +3445,15 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         expect(writeIndex).toBeGreaterThanOrEqual(0);
         const invocation = broker.mock.calls[writeIndex]![0];
         expect(invocation.userRequest).toBe(c.prompt);
+        expect(invocation.employeeDocuments).toMatchObject({
+          schemaVersion: 2,
+        });
         expect(memories).toHaveLength(1);
         const trust = 'derived';
         expect(memories[0]).toMatchObject({
-          content,
+          content: '看数据时先看表格再看文字说明\n完整说明：月结前不得外发。',
+          summary: content,
+          details: '完整说明：月结前不得外发。',
           employee_id: f.identity.employee,
           source_type: 'message',
           source_id: memories[0]!.user_message_id,
@@ -3085,14 +3472,11 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         });
         expect(receipt.summary).toBe('已记为候选，确认后才生效');
         if (c.state === 'candidate') {
-          const searchIndex = broker.mock.calls.findIndex(
-            ([input]) => input.call.name === 'workspace.memory.search',
-          );
-          expect(searchIndex).toBeGreaterThanOrEqual(0);
-          const search = await broker.mock.results[searchIndex]!.value;
-          expect(JSON.parse(search.modelContent).items).not.toContainEqual(
-            expect.objectContaining({ id: memories[0]!.id }),
-          );
+          expect(
+            broker.mock.calls.some(
+              ([input]) => input.call.name === 'workspace.memory.search',
+            ),
+          ).toBe(false);
           const coverage = readCheckedFinalDeliveryForExecution(
             task.workflowLease,
             result,
@@ -3111,21 +3495,26 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
             { text: content, clientMessageId: randomUUID() },
           );
           const [frozen] =
-            await f.db`select prompt_snapshot from allrice_employee_runs where run_id=${next.run!.id}`;
+            await f.db`select prompt_snapshot,memory_context_state from allrice_employee_runs where run_id=${next.run!.id}`;
           expect(frozen!.prompt_snapshot.memories).toEqual([]);
-          // The real owner action changes lifecycle; a fresh chat then uses the
-          // existing automatic recall path. This is deterministic overlap, not
-          // a replacement for the frozen SB02 semantic-recall acceptance case.
-          const promoted = await promoteWorkspaceMemory(
+          expect(frozen!.prompt_snapshot.employeeDocuments).toMatchObject({
+            schemaVersion: 2,
+            memory: '',
+          });
+          expect(frozen!.memory_context_state.pins).toEqual([]);
+          // Only the real owner confirmation admits this candidate to a later
+          // ordinary Run's index. The already frozen pending Run stays empty.
+          const promoted = await promoteManagedEmployeeMemory(
             f.context,
             f.identity.workspace,
             memories[0]!.id,
             {
               instanceId: f.identity.assignment,
               expectedRevision: memories[0]!.revision,
-              contentDigest:
-                'sha256:' +
-                createHash('sha256').update(memories[0]!.content).digest('hex'),
+              pairDigest: memoryPairDigest({
+                summary: content,
+                details: memories[0]!.details as string,
+              }),
               idempotencyKey: randomUUID(),
             },
           );
@@ -3144,18 +3533,34 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
             },
           );
           const [confirmed] =
-            await f.db`select prompt_snapshot from allrice_employee_runs where run_id=${confirmedReply.run!.id}`;
-          expect(confirmed!.prompt_snapshot.memories).toContainEqual(
-            expect.objectContaining({ id: memories[0]!.id }),
+            await f.db`select prompt_snapshot,memory_context_state from allrice_employee_runs where run_id=${confirmedReply.run!.id}`;
+          expect(confirmed!.prompt_snapshot.memories).toEqual([]);
+          expect(confirmed!.prompt_snapshot.employeeDocuments.memory).toContain(
+            `[1] ${content}（有说明）`,
           );
-          await deleteWorkspaceMemory(
+          expect(JSON.stringify(confirmed!.prompt_snapshot)).not.toContain(
+            memories[0]!.details,
+          );
+          expect(confirmed!.memory_context_state.pins).toEqual([
+            expect.objectContaining({
+              id: memories[0]!.id,
+              revision: promoted.revision,
+              pairDigest: promoted.pairDigest,
+            }),
+          ]);
+          expect(
+            (
+              await f.db`select memory_context_state from allrice_employee_runs where run_id=${next.run!.id}`
+            )[0]!.memory_context_state.pins,
+          ).toEqual([]);
+          await deleteManagedEmployeeMemory(
             f.context,
             f.identity.workspace,
             memories[0]!.id,
             {
-              instanceId: promoted.instanceId,
+              instanceId: f.identity.assignment,
               expectedRevision: promoted.revision,
-              contentDigest: promoted.contentDigest,
+              pairDigest: promoted.pairDigest,
               idempotencyKey: randomUUID(),
             },
           );
@@ -3174,8 +3579,10 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
             },
           );
           const [discarded] =
-            await f.db`select prompt_snapshot from allrice_employee_runs where run_id=${discardedReply.run!.id}`;
+            await f.db`select prompt_snapshot,memory_context_state from allrice_employee_runs where run_id=${discardedReply.run!.id}`;
           expect(discarded!.prompt_snapshot.memories).toEqual([]);
+          expect(discarded!.prompt_snapshot.employeeDocuments.memory).toBe('');
+          expect(discarded!.memory_context_state.pins).toEqual([]);
         }
       } finally {
         await task.isolation.cleanup();
@@ -3194,7 +3601,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     );
     try {
       const [source] =
-        await f.db`select user_message_id from allrice_employee_runs where run_id=${task.runId}`;
+        await f.db`select user_message_id,prompt_snapshot from allrice_employee_runs where run_id=${task.runId}`;
       const foreign = await createRunAuthorityFixture(f.db, {
         configure: false,
       });
@@ -3202,6 +3609,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         await f.db`select id from allrice_messages where session_id=${foreign.session} and role='user'`;
       const input = {
         context: task.execution.context,
+        employeeDocuments: source!.prompt_snapshot.employeeDocuments,
         capabilities: ['storage:write'] as ['storage:write'],
         storageRoot: '.local/storage',
         employeeId: f.identity.employee,
@@ -3209,7 +3617,8 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         call: {
           id: randomUUID(),
           name: 'workspace.memory.remember',
-          arguments: { content: '先看表格再看文字', lifecycleState: 'durable' },
+          nativeSessionId: `synthetic-native-${f.chat.id}`,
+          arguments: { summary: '先看表格再看文字', details: null },
         },
       };
       await expect(
@@ -3429,8 +3838,8 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
               nativeTool: {
                 name: 'workspace_memory_remember',
                 arguments: {
-                  content: '我偏好中文周报',
-                  lifecycleState: 'durable',
+                  summary: '我偏好中文周报',
+                  details: null,
                   memoryClass: 'user_preference',
                 },
               },

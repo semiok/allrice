@@ -24,6 +24,8 @@ import {
   employeeManifestChecksum,
 } from './employee-config.ts';
 import { prepareEmployeeRunBinding } from './employeehub.ts';
+import { ensureGeneralEmployeeInstance } from './employee-instances.ts';
+import { memoryPairDigest } from '../workspace/employee-memory.ts';
 import * as runtimeContent from './employee-runtime-content.ts';
 
 type Sql = ReturnType<typeof client.getDatabase> | TransactionSql;
@@ -374,6 +376,11 @@ integration(
         preferences: { fixture: 'uncommitted' },
       };
       const skill = '# Binding fixture\nTX_NATIVE_SKILL_BODY';
+      const memoryId = randomUUID();
+      const pair = {
+        summary: 'TX_MEMORY_SUMMARY',
+        details: 'TX_PRIVATE_DETAIL',
+      };
       expect(await counts(scope, fixture.db)).toEqual(countsBeforeBinding);
       const pool = forbidPool();
       const rollback = Error('intentional_complete_binding_rollback');
@@ -407,7 +414,38 @@ integration(
             'TX_KNOWLEDGE_DIRECTORY',
           );
 
-          const binding = await prepareEmployeeRunBinding(input(scope), tx);
+          await ensureGeneralEmployeeInstance(tx, scope.assignmentId);
+          await tx`insert into allrice_memories(id,organization_id,workspace_id,owner_id,instance_id,employee_id,
+            content,summary,details,visibility,source_type,lifecycle_state,trust_level)
+            values(${memoryId},${scope.organizationId},${scope.workspaceId},${scope.ownerId},${scope.assignmentId},
+              ${scope.employeeId},${pair.summary},${pair.summary},${pair.details},'private','user','durable','user_confirmed')`;
+          const binding = await prepareEmployeeRunBinding(
+            { ...input(scope), employeeDocuments: true },
+            tx,
+          );
+          expect(binding.promptSnapshot.employeeDocuments).toMatchObject({
+            schemaVersion: 2,
+          });
+          expect(binding.promptSnapshot.employeeDocuments!.memory).toContain(
+            `[1] ${pair.summary}（有说明）`,
+          );
+          expect(binding.promptSnapshot.memories).toEqual([]);
+          expect(JSON.stringify(binding)).not.toContain(pair.details);
+          expect(binding.memoryContextStateV2).toMatchObject({
+            pins: [
+              {
+                number: 1,
+                id: memoryId,
+                revision: 1,
+                pairDigest: memoryPairDigest(pair),
+                hasDetails: true,
+              },
+            ],
+            spentBytes: Buffer.byteLength(
+              binding.promptSnapshot.employeeDocuments!.memory,
+            ),
+            toolReads: 0,
+          });
           expect(binding.promptSnapshot.organizationContext).toMatchObject({
             companyName: 'TX_COMPANY',
             businessContext: 'TX_COMPANY_CONTEXT',
@@ -475,6 +513,9 @@ integration(
       expect(await counts(scope, fixture.db)).toEqual(countsBeforeBinding);
       expect(await currentRows(scope, fixture.db)).toEqual(before);
       expect(await readPlatformModelSettings(fixture.db)).toEqual(settings);
+      expect(
+        await fixture.db`select id from allrice_memories where id=${memoryId}`,
+      ).toHaveLength(0);
     }, 30_000);
 
     it.each(['membership', 'assignment'] as const)(

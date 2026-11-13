@@ -52,6 +52,23 @@ it('keeps business tools native when the selected artifact provides them', async
     await selectDshNativeTools(['workspace.brand_content.read'], entry),
   ).toEqual(['workspace.brand_content.read']);
 });
+it('refuses an ordinal read rather than silently using an old carrier envelope', async () => {
+  const old = await artifact([
+    'workspace.memory.search',
+    'workspace.experience.read',
+  ]);
+  await expect(
+    selectDshNativeTools(['workspace.memory.read'], old),
+  ).rejects.toMatchObject({
+    code: 'DSH_NATIVE_TOOL_CAPABILITY_MISMATCH',
+    retryable: false,
+  });
+  const current = await artifact(['workspace.memory.read']);
+  expect(
+    await selectDshNativeTools(['workspace.memory.read'], current),
+  ).toEqual(['workspace.memory.read']);
+  expect(await selectDshNativeTools([], current)).toEqual([]);
+});
 it('preserves offline fixture behavior and excludes envelope-only tools', async () => {
   expect(
     await selectDshNativeTools([

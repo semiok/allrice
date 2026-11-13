@@ -1,6 +1,13 @@
 import { confirmedMemoryHandle } from './employees/employee-documents.ts';
-import { memoryInstanceForRun } from './workspace/employee-memory.ts';
-import { employeeMemoryReadPredicate } from './workspace/employee-memory-read.ts';
+import {
+  memoryInstanceForRun,
+  memoryScopeForRun,
+  memoryPairDigest,
+} from './workspace/employee-memory.ts';
+import {
+  employeeMemoryReadPredicate,
+  personalMemoryIndexReadPredicate,
+} from './workspace/employee-memory-read.ts';
 import type postgres from 'postgres';
 import {
   memoryContextBytes,
@@ -8,9 +15,16 @@ import {
   initialMemoryContextBytes,
   selectWholeMemories,
   RunMemoryContextStateSchema,
+  RunMemoryContextV2StateSchema,
+  EmployeeDocumentsV2Schema,
+  PersonalMemoryPairSchema,
+  MemoryOrdinalInputSchema,
+  hasMemoryIndexReadTool,
+  renderMemoryDetailV2,
   type MemoryContextItem,
   type RunMemoryContextState,
   type ConfirmedMemoryReadPin,
+  type RunMemoryContextV2State,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
 import { readContentPrincipal } from './content-maintenance.ts';
@@ -35,6 +49,12 @@ const unavailable = (): never => {
   throw new MemoryContextError('MEMORY_CONTEXT_UNAVAILABLE');
 };
 function parseState(raw: unknown) {
+  const indexed = RunMemoryContextV2StateSchema.safeParse(raw);
+  if (indexed.success) {
+    if (runtimePolicyDigest(indexed.data.pins) !== indexed.data.initial.digest)
+      return unavailable();
+    return indexed.data;
+  }
   const parsed = RunMemoryContextStateSchema.safeParse(raw);
   return parsed.success ? parsed.data : unavailable();
 }
@@ -78,8 +98,12 @@ async function withRun<T>(
   });
 }
 
-async function save(tx: Tx, runId: string, state: RunMemoryContextState) {
-  RunMemoryContextStateSchema.parse(state);
+async function save(
+  tx: Tx,
+  runId: string,
+  state: RunMemoryContextState | RunMemoryContextV2State,
+) {
+  parseState(state);
   await tx`update allrice_employee_runs set memory_context_state=${tx.json(state)} where run_id=${runId}`;
 }
 
@@ -89,8 +113,22 @@ export async function prepareRunMemoryContext<T extends MemoryContextItem>(
   auth: RunMemoryAuthority,
   items: T[],
   document?: string,
+  documentVersion: 1 | 2 = 1,
 ) {
   return withRun(auth, async (tx, raw) => {
+    if (documentVersion === 2) {
+      const state = parseState(raw);
+      if (
+        state.schemaVersion !== 2 ||
+        items.length ||
+        document === undefined ||
+        runtimePolicyDigest(document) !== state.initial.documentDigest ||
+        Buffer.byteLength(document, 'utf8') !== state.initial.bytes
+      )
+        return unavailable();
+      await assertMemoryIndexCurrent(tx, auth.scope, state);
+      return [] as T[];
+    }
     // An upgrade cannot invent a fresh allowance for an already running task.
     if (raw === null) {
       if (document !== undefined) return unavailable();
@@ -101,6 +139,7 @@ export async function prepareRunMemoryContext<T extends MemoryContextItem>(
       runtimePolicyDigest({ schemaVersion: 1, pending: true })
     ) {
       const state = parseState(raw);
+      if (state.schemaVersion !== 1) return unavailable();
       const selected = state.initial.ids.map((id) =>
         items.find((m) => m.id === id),
       );
@@ -162,6 +201,8 @@ export async function readRunMemoryContext<T>(
     )
       return unavailable();
     const state = parseState(raw);
+    // Old search/source entrypoints cannot become a v2 disclosure bypass.
+    if (state.schemaVersion !== 1) return unavailable();
     const remainingBytes = state.limits.maximumRunBytes - state.spentBytes;
     if (
       state.toolReads >= state.limits.maximumToolReads ||
@@ -209,6 +250,82 @@ export async function readRunMemoryContext<T>(
   });
 }
 
+async function assertMemoryIndexCurrent(
+  sql: ReturnType<typeof getDatabase> | Tx,
+  scope: ExperienceRunScope,
+  state: RunMemoryContextV2State,
+) {
+  const current = await memoryScopeForRun(sql, scope);
+  if (!current) return unavailable();
+  if (!state.pins.length) return current;
+  const rows = await sql<{ id: string }[]>`select m.id from allrice_memories m
+    where m.id=any(${state.pins.map((pin) => pin.id)}::uuid[])
+      and ${personalMemoryIndexReadPredicate(sql, current)}`;
+  if (new Set(rows.map((row) => row.id)).size !== state.pins.length)
+    return unavailable();
+  return current;
+}
+
+/** A single complete decoded text result, admitted atomically on the existing
+ * Run ledger. Ordinals never authorize another Run, instance or revision. */
+export async function readRunMemoryOrdinal(
+  auth: RunMemoryAuthority,
+  input: unknown,
+) {
+  const { number } = MemoryOrdinalInputSchema.parse(input);
+  return withRun(auth, async (tx, raw) => {
+    const state = parseState(raw);
+    if (state.schemaVersion !== 2) return unavailable();
+    const [run] =
+      await tx`select execution_snapshot,prompt_snapshot->'employeeDocuments' documents
+      from allrice_employee_runs where run_id=${auth.scope.runId}`;
+    const documents = EmployeeDocumentsV2Schema.safeParse(run?.documents);
+    if (
+      !hasMemoryIndexReadTool(run?.execution_snapshot) ||
+      !documents.success ||
+      runtimePolicyDigest(documents.data.memory) !==
+        state.initial.documentDigest ||
+      Buffer.byteLength(documents.data.memory, 'utf8') !== state.initial.bytes
+    )
+      return unavailable();
+    const pin = state.pins.find((entry) => entry.number === number);
+    if (!pin) return unavailable();
+    const current = await assertMemoryIndexCurrent(tx, auth.scope, state);
+    const [row] = await tx<
+      { summary: string | null; details: string | null }[]
+    >`
+      select r.summary,r.details from allrice_memories m
+      join allrice_memory_revisions r on r.memory_id=m.id and r.organization_id=m.organization_id
+        and r.workspace_id=m.workspace_id and r.revision=${pin.revision}
+      where m.id=${pin.id} and ${personalMemoryIndexReadPredicate(tx, current)}`;
+    const pair = PersonalMemoryPairSchema.safeParse(
+      row && { summary: row.summary, details: row.details },
+    );
+    if (
+      !pair.success ||
+      pair.data.summary !== row!.summary ||
+      pair.data.details !== row!.details ||
+      memoryPairDigest(pair.data) !== pin.pairDigest ||
+      (pair.data.details !== null) !== pin.hasDetails
+    )
+      return unavailable();
+    const text = renderMemoryDetailV2(number, pair.data);
+    const bytes = Buffer.byteLength(text, 'utf8');
+    if (
+      state.toolReads >= state.limits.maximumToolReads ||
+      bytes > state.limits.maximumResponseBytes ||
+      state.spentBytes + bytes > state.limits.maximumRunBytes
+    )
+      throw new MemoryContextError('MEMORY_CONTEXT_BUDGET_EXHAUSTED');
+    await save(tx, auth.scope.runId, {
+      ...state,
+      spentBytes: state.spentBytes + bytes,
+      toolReads: state.toolReads + 1,
+    });
+    return text;
+  });
+}
+
 export function confirmedMemoryPin(
   item: MemoryContextItem,
 ): ConfirmedMemoryReadPin {
@@ -247,6 +364,10 @@ export async function assertRunMemoryContextCurrent(scope: ExperienceRunScope) {
     where run_id=${scope.runId} and organization_id=${scope.organizationId}
       and workspace_id=${scope.workspaceId} and owner_id=${scope.ownerId} and session_id=${scope.sessionId}`;
   const state = parseState(run?.memory_context_state);
+  if (state.schemaVersion === 2) {
+    await assertMemoryIndexCurrent(sql, scope, state);
+    return;
+  }
   if (state.initial.documentDigest === undefined) return unavailable();
   const pins = state.confirmedPins ?? [];
   if (!pins.length) return;

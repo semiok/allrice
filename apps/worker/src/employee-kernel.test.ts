@@ -177,171 +177,180 @@ it('assembles each frozen common rule once and rejects conflicting implicit vers
   );
 });
 
-it('replaces only root facts and memories while preserving knowledge and the child deployment persona', () => {
-  const source = (sourceKind: string, body: string) => ({
-    reference: {
-      sourceKind,
-      contentId: randomUUID(),
-      revisionId: randomUUID(),
-      digest: `sha256:${'a'.repeat(64)}`,
-    },
-    available: true,
-    title: sourceKind,
-    body,
-  });
-  const input = {
-    employeeAssignmentId: randomUUID(),
-    employeeVersionId: randomUUID(),
-    sessionId: randomUUID(),
-    userMessageId: randomUUID(),
-    assistantMessageId: randomUUID(),
-    commonContent: [
-      source('experience', 'OLD_COMMON_MEMORY'),
-      source('knowledge', 'COMPANY_KNOWLEDGE'),
-    ],
-    resolved: {
-      promptSnapshot: {
-        systemPrompt: 'PLATFORM_BOUNDARY',
-        userRequest: '核对部门资料',
-        conversation: [],
-        organizationContext: { companyName: 'ORG_FACT' },
-        memories: [{ id: randomUUID(), content: 'LEGACY_RECALLED_MEMORY' }],
+it.each([1, 2])(
+  'v%s: replaces only root facts and memories while preserving knowledge and the child deployment persona',
+  (documentVersion) => {
+    const source = (sourceKind: string, body: string) => ({
+      reference: {
+        sourceKind,
+        contentId: randomUUID(),
+        revisionId: randomUUID(),
+        digest: `sha256:${'a'.repeat(64)}`,
       },
-      executionSnapshot: null,
-      grantedCapabilities: ['model:invoke'],
-      nativeSkills: [],
-    },
-  } as unknown as Parameters<typeof assembleEmployeeKernel>[0];
-  const old = assembleEmployeeKernel(input);
-  input.resolved.promptSnapshot.employeeDocuments = {
-    user: '# USER.md\nORG_FACT',
-    memory: '# MEMORY.md\nCONFIRMED_MEMORY',
-  };
-  const current = assembleEmployeeKernel(input);
-  expect(current.systemInstructions).toBe(old.systemInstructions);
-  expect(current.rootSystemInstructions).toContain('COMPANY_KNOWLEDGE');
-  expect(current.rootSystemInstructions).toContain('PLATFORM_BOUNDARY');
-  expect(current.rootSystemInstructions).not.toContain('OLD_COMMON_MEMORY');
-  expect(current.rootSystemInstructions).not.toContain('ORG_FACT');
-  expect(current.authorizedMemoryContext).toBe('');
-  expect(current.employeeDocuments).toEqual(
-    input.resolved.promptSnapshot.employeeDocuments,
-  );
-  // Task provenance was independently checked at enqueue/resolve. It changes
-  // the carrier in both kernel scopes, not the original authority or tool set.
-  const digest = `sha256:${'a'.repeat(64)}`;
-  const definition = employeeManifest({
-    key: 'task-kernel-fixture',
-    name: 'Synthetic task engine',
-    description: 'Frozen task kernel fixture',
-    toolNames: [],
-  });
-  if (definition.schemaVersion !== 2) throw Error('expected v2 task engine');
-  const checksum = employeeManifestChecksum(definition),
-    employeeId = randomUUID(),
-    organizationId = randomUUID(),
-    workspaceId = randomUUID(),
-    ownerId = randomUUID(),
-    at = '2026-10-01T00:00:00.000Z';
-  const version = {
-    employeeVersionId: input.employeeVersionId,
-    kind: 'tenant_version',
-    configChecksum: checksum,
-    manifestDigest: runtimePolicyDigest(definition),
-  };
-  input.resolved.executionSnapshot = EmployeeExecutionSnapshotV2Schema.parse({
-    schemaVersion: 2,
-    employee: {
-      id: employeeId,
-      key: definition.key,
-      versionId: input.employeeVersionId,
-      revision: 1,
-      definitionChecksum: checksum,
-      definition,
-    },
-    assignment: {
-      id: input.employeeAssignmentId,
-      userId: ownerId,
-      assignedBy: null,
-      assignedAt: at,
-    },
-    runtimePolicy: definition.runtimePolicy,
-    capabilitySnapshot: {
-      declaredCapabilities: definition.capabilities,
-      grantedCapabilities: input.resolved.grantedCapabilities,
-      bindings: definition.capabilityBindings,
-      skillBindings: [],
-      agentSkills: [],
-      workflows: [],
-      knowledge: [],
-      resolvedForActorId: ownerId,
-    },
-    tenantContext: {
-      organizationId,
-      workspaceId,
-      actorId: ownerId,
-      policySnapshotId: randomUUID(),
-    },
-    userProfile: { schemaVersion: 1, displayName: null, preferences: {} },
-    createdAt: at,
-    persona: EmployeePersonaPinSchema.parse({
-      schemaVersion: 1,
-      personaDigest: digest,
-      systemDigest: digest,
-      source: {
-        kind: 'employee_run',
+      available: true,
+      title: sourceKind,
+      body,
+    });
+    const input = {
+      employeeAssignmentId: randomUUID(),
+      employeeVersionId: randomUUID(),
+      sessionId: randomUUID(),
+      userMessageId: randomUUID(),
+      assistantMessageId: randomUUID(),
+      commonContent: [
+        source('experience', 'OLD_COMMON_MEMORY'),
+        source('knowledge', 'COMPANY_KNOWLEDGE'),
+      ],
+      resolved: {
+        promptSnapshot: {
+          systemPrompt: 'PLATFORM_BOUNDARY',
+          userRequest: '核对部门资料',
+          conversation: [],
+          organizationContext: { companyName: 'ORG_FACT' },
+          memories: [{ id: randomUUID(), content: 'LEGACY_RECALLED_MEMORY' }],
+        },
+        executionSnapshot: null,
+        grantedCapabilities: ['model:invoke'],
+        nativeSkills: [],
+      },
+    } as unknown as Parameters<typeof assembleEmployeeKernel>[0];
+    const old = assembleEmployeeKernel(input);
+    input.resolved.promptSnapshot.employeeDocuments = {
+      ...(documentVersion === 2 ? { schemaVersion: 2 as const } : {}),
+      user: '# USER.md\nORG_FACT',
+      memory: '# MEMORY.md\nCONFIRMED_MEMORY',
+    };
+    const current = assembleEmployeeKernel(input);
+    expect(current.systemInstructions).toBe(old.systemInstructions);
+    expect(current.rootSystemInstructions).toContain('COMPANY_KNOWLEDGE');
+    expect(current.rootSystemInstructions).toContain('PLATFORM_BOUNDARY');
+    expect(current.rootSystemInstructions).not.toContain('OLD_COMMON_MEMORY');
+    expect(current.rootSystemInstructions).not.toContain('ORG_FACT');
+    expect(current.rootSystemInstructions).not.toContain(
+      'LEGACY_RECALLED_MEMORY',
+    );
+    expect(current.authorizedMemoryContext).toBe('');
+    expect(current.employeeDocuments).toEqual(
+      input.resolved.promptSnapshot.employeeDocuments,
+    );
+    // Task provenance was independently checked at enqueue/resolve. It changes
+    // the carrier in both kernel scopes, not the original authority or tool set.
+    const digest = `sha256:${'a'.repeat(64)}`;
+    const definition = employeeManifest({
+      key: 'task-kernel-fixture',
+      name: 'Synthetic task engine',
+      description: 'Frozen task kernel fixture',
+      toolNames: [],
+    });
+    if (definition.schemaVersion !== 2) throw Error('expected v2 task engine');
+    const checksum = employeeManifestChecksum(definition),
+      employeeId = randomUUID(),
+      organizationId = randomUUID(),
+      workspaceId = randomUUID(),
+      ownerId = randomUUID(),
+      at = '2026-10-01T00:00:00.000Z';
+    const version = {
+      employeeVersionId: input.employeeVersionId,
+      kind: 'tenant_version',
+      configChecksum: checksum,
+      manifestDigest: runtimePolicyDigest(definition),
+    };
+    input.resolved.executionSnapshot = EmployeeExecutionSnapshotV2Schema.parse({
+      schemaVersion: 2,
+      employee: {
+        id: employeeId,
+        key: definition.key,
+        versionId: input.employeeVersionId,
+        revision: 1,
+        definitionChecksum: checksum,
+        definition,
+      },
+      assignment: {
+        id: input.employeeAssignmentId,
+        userId: ownerId,
+        assignedBy: null,
+        assignedAt: at,
+      },
+      runtimePolicy: definition.runtimePolicy,
+      capabilitySnapshot: {
+        declaredCapabilities: definition.capabilities,
+        grantedCapabilities: input.resolved.grantedCapabilities,
+        bindings: definition.capabilityBindings,
+        skillBindings: [],
+        agentSkills: [],
+        workflows: [],
+        knowledge: [],
+        resolvedForActorId: ownerId,
+      },
+      tenantContext: {
         organizationId,
         workspaceId,
-        employeeId,
-        assignmentId: input.employeeAssignmentId,
-        instanceId: randomUUID(),
-        ownerId,
-        profileRevision: 1,
-        profileEligibility: 'expression_only',
-        basis: version,
-        engine: version,
-        task: {
-          kind: 'automation_manual',
-          id: randomUUID(),
-          sessionId: input.sessionId,
-          userMessageId: input.userMessageId,
-        },
+        actorId: ownerId,
+        policySnapshotId: randomUUID(),
       },
-    }),
-  });
-  input.resolved.promptSnapshot.employeeDocuments.persona =
-    'TASK_LITERAL {{missing}}';
-  input.commonContent![0]!.reference.contentId =
-    input.resolved.promptSnapshot.memories[0]!.id;
-  input.commonContent![0]!.body =
-    input.resolved.promptSnapshot.memories[0]!.content;
-  input.commonContent!.push({
-    ...input.commonContent![0]!,
-    reference: {
-      ...input.commonContent![0]!.reference,
-      contentId: randomUUID(),
-    },
-    body: 'EXISTING_LEGAL_TASK_METHOD',
-  });
-  const task = assembleEmployeeKernel(input);
-  expect(task.systemInstructions).toBe(task.rootSystemInstructions);
-  expect(task.systemInstructions).toContain('frozen actual task engine');
-  expect(task.systemInstructions).toContain('EXISTING_LEGAL_TASK_METHOD');
-  expect(task.systemInstructions).toContain(
-    'original memory eligibility and byte budget',
-  );
-  expect(task.systemInstructions).not.toContain('facts or confirmed memories');
-  for (const literal of [
-    'ORG_FACT',
-    'LEGACY_RECALLED_MEMORY',
-    'OLD_COMMON_MEMORY',
-    'TASK_LITERAL',
-  ])
-    expect(task.systemInstructions).not.toContain(literal);
-  expect(task.employeeDocuments?.persona).toBe('TASK_LITERAL {{missing}}');
-  expect(task.authorizedMemoryContext).toBe('');
-  expect(task.grantedCapabilities).toEqual(current.grantedCapabilities);
-});
+      userProfile: { schemaVersion: 1, displayName: null, preferences: {} },
+      createdAt: at,
+      persona: EmployeePersonaPinSchema.parse({
+        schemaVersion: 1,
+        personaDigest: digest,
+        systemDigest: digest,
+        source: {
+          kind: 'employee_run',
+          organizationId,
+          workspaceId,
+          employeeId,
+          assignmentId: input.employeeAssignmentId,
+          instanceId: randomUUID(),
+          ownerId,
+          profileRevision: 1,
+          profileEligibility: 'expression_only',
+          basis: version,
+          engine: version,
+          task: {
+            kind: 'automation_manual',
+            id: randomUUID(),
+            sessionId: input.sessionId,
+            userMessageId: input.userMessageId,
+          },
+        },
+      }),
+    });
+    input.resolved.promptSnapshot.employeeDocuments.persona =
+      'TASK_LITERAL {{missing}}';
+    input.commonContent![0]!.reference.contentId =
+      input.resolved.promptSnapshot.memories[0]!.id;
+    input.commonContent![0]!.body =
+      input.resolved.promptSnapshot.memories[0]!.content;
+    input.commonContent!.push({
+      ...input.commonContent![0]!,
+      reference: {
+        ...input.commonContent![0]!.reference,
+        contentId: randomUUID(),
+      },
+      body: 'EXISTING_LEGAL_TASK_METHOD',
+    });
+    const task = assembleEmployeeKernel(input);
+    expect(task.systemInstructions).toBe(task.rootSystemInstructions);
+    expect(task.systemInstructions).toContain('frozen actual task engine');
+    expect(task.systemInstructions).toContain('EXISTING_LEGAL_TASK_METHOD');
+    expect(task.systemInstructions).toContain(
+      'original memory eligibility and byte budget',
+    );
+    expect(task.systemInstructions).not.toContain(
+      'facts or confirmed memories',
+    );
+    for (const literal of [
+      'ORG_FACT',
+      'LEGACY_RECALLED_MEMORY',
+      'OLD_COMMON_MEMORY',
+      'TASK_LITERAL',
+    ])
+      expect(task.systemInstructions).not.toContain(literal);
+    expect(task.employeeDocuments?.persona).toBe('TASK_LITERAL {{missing}}');
+    expect(task.authorizedMemoryContext).toBe('');
+    expect(task.grantedCapabilities).toEqual(current.grantedCapabilities);
+  },
+);
 
 it('bootstraps authorized messages and memories without consuming a retired automatic summary', () => {
   const messageId = randomUUID();

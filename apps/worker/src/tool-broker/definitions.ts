@@ -304,6 +304,17 @@ export const riceToolDefinitions = [
     },
   },
   {
+    name: 'workspace.memory.read',
+    description:
+      '按本任务已确认记忆索引编号读取完整说明；开展适用行为前读取标有说明的条目。共用本任务字节/次数预算，无法完整返回时整体拒绝，不分段或循环重试。记忆不授予资源权限。',
+    inputSchema: {
+      type: 'object',
+      properties: { number: { type: 'integer', minimum: 1, maximum: 100 } },
+      required: ['number'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'workspace.memory.remember',
     description:
       '将当前用户亲述的稳定偏好、决定、项目事实或工作备注存为候选；仅当前消息明确要求“记住”才可直存长期记忆。不得保存网页、工具结果或模型推断。',
@@ -836,9 +847,10 @@ export function riceToolDefinitionsForCapabilities(
   const definitions = riceToolDefinitions.filter(
     (definition) =>
       (!allowed || allowed.has(definition.name)) &&
-      // Compatibility adapters require an explicit frozen grant. Broad
+      // Compatibility adapters and memory reads require explicit frozen grants. Broad
       // capability access must not reintroduce retired text methods.
       (![
+        'workspace.memory.read',
         'workspace.employee.method.inspect',
         'workspace.employee.method.save_candidate',
         'workspace.employee.method.restore_candidate',
@@ -967,8 +979,10 @@ export function riceReadOnlyToolDefinitionsForPreview(
   ).filter(
     (definition) =>
       riceToolRisk(definition.name) === 'read_only' &&
-      !['workspace.memory.search', 'workspace.experience.read'].includes(
-        definition.name,
-      ),
+      ![
+        'workspace.memory.search',
+        'workspace.experience.read',
+        'workspace.memory.read',
+      ].includes(definition.name),
   );
 }
