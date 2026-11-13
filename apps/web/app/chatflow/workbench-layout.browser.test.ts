@@ -2664,7 +2664,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     await (
       options.startup
         ? page.getByRole('region', { name: '进入工作区', exact: true })
-        : page.getByRole('textbox', { name: /^给 .+ 的消息$/ })
+        : page
+            .getByRole('textbox', { name: /^给 .+ 的消息$/ })
+            .or(page.getByRole('region', { name: 'AI 员工空态', exact: true }))
+            .first()
     )
       .waitFor()
       .catch(async (error) => {
@@ -5953,7 +5956,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   );
 
   async function openSettings(f: Awaited<ReturnType<typeof fixture>>) {
-    await f.page.getByRole('textbox', { name: /^给 .+ 的消息$/ }).waitFor();
+    await f.page
+      .getByRole('textbox', { name: /^给 .+ 的消息$/ })
+      .or(f.page.getByRole('region', { name: 'AI 员工空态', exact: true }))
+      .first()
+      .waitFor();
     const settings = f.page.getByRole('button', { name: '设置', exact: true });
     if (!(await settings.isVisible()))
       await f.page
@@ -7941,7 +7948,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   );
 
   // Capture the approved seven states from mounted product DOM. The four
-  // native instances write 18 desktop + 22 mobile PNGs, matching preview names.
+  // native instances retain the 40 preview names and add four desktop seams.
   for (const [device, width, height] of [
     ['desktop', 1440, 1000],
     ['mobile', 390, 844],
@@ -7969,6 +7976,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         let completed = false;
         let firstFailure: unknown;
         const cleanupErrors: unknown[] = [];
+        let seams: Awaited<ReturnType<typeof fixture>> | undefined;
+        let failurePage = f.page;
+        const seamWrites: Array<{ method: string; path: string }> = [];
         const tree = () =>
           f.page.getByRole('tree', { name: '员工与工作', exact: true });
         const group = (name: string) =>
@@ -8177,15 +8187,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           state: string,
           suffix = '',
           details: Record<string, unknown> = {},
+          page = f.page,
         ) => {
-          await f.page.evaluate(() => document.fonts.ready);
+          await page.evaluate(() => document.fonts.ready);
           expect(
-            await f.page.evaluate(
+            await page.evaluate(
               () => document.documentElement.scrollWidth <= innerWidth,
             ),
           ).toBe(true);
           const file = `${device}-${appearance}-${state}${suffix}.png`;
-          const bytes = await f.page.screenshot({
+          const bytes = await page.screenshot({
             path: join(screenshots, file),
             animations: 'disabled',
           });
@@ -8202,6 +8213,32 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             bytes: bytes.length,
             ...details,
           });
+        };
+        const expectGlobalEmpty = async (page = f.page) => {
+          const empty = page.getByRole('region', {
+            name: 'AI 员工空态',
+            exact: true,
+          });
+          await empty.getByRole('heading', { name: 'AI 员工', exact: true }).waitFor();
+          await empty.getByText('点卡片上的加号开始', { exact: true }).waitFor();
+          expect(await page.getByRole('textbox', { name: /^给 .+ 的消息$/ }).count()).toBe(0);
+          expect(new URL(page.url()).searchParams.get('session')).toBeNull();
+          expect(await page.getByRole('tree', { name: '员工与工作' }).getByRole('treeitem').filter({ hasText: '新会话' }).count()).toBe(0);
+          const header = page.locator('header').filter({ has: page.getByRole('heading', { name: 'AI 员工', exact: true }) });
+          expect(await header.evaluate((node) => node.getBoundingClientRect().height)).toBe(72);
+          expect(await header.getByRole('button', { name: /^交付成果(?:，\d+ 项新增)?$/ }).count()).toBe(1);
+          expect(await header.getByRole('button', { name: /^(?:展开|收起)工作台$/ }).count()).toBe(1);
+          const mark = empty.locator('span[aria-hidden="true"]');
+          expect(await empty.getByRole('heading', { name: 'AI 员工', exact: true }).evaluate((node) => {
+            const css = getComputedStyle(node);
+            return [css.fontSize, css.lineHeight, css.fontWeight];
+          })).toEqual(['24px', '32px', '600']);
+          expect(await mark.evaluate((node) => {
+            const box = node.getBoundingClientRect();
+            return [box.width, box.height];
+          })).toEqual([56, 56]);
+          expect(await mark.locator('svg').getAttribute('viewBox')).toBe('0 0 24 24');
+          expect(await mark.locator('path').getAttribute('d')).toBe('M8 7V4h8v3M4 12h16m-10 0v3h4v-3');
         };
         const scrollForm = async (dialog: Locator, bottom: boolean) => {
           const dimensions = await dialog.evaluate((root, bottom) => {
@@ -8248,9 +8285,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           // The supported employee deep link opens a blank view while the
           // real sidebar still loads the saved-session count and previews.
           await f.page.goto(`${origin}/?employee=${id(9)}&theme=1`);
-          await f.page
-            .getByRole('textbox', { name: '给 Rice 的消息', exact: true })
-            .waitFor();
+          if (device === 'desktop') await expectGlobalEmpty();
+          else
+            await f.page
+              .getByRole('textbox', { name: '给 Rice 的消息', exact: true })
+              .waitFor();
           await expect
             .poll(() => f.page.locator('html').getAttribute('data-theme'))
             .toBe(appearance);
@@ -8335,6 +8374,20 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await f.page.mouse.move(width - 1, 1);
           await capture('normal');
 
+          const emptyRow = tree().locator(
+            `[data-row-key="workspace:${id(17)}"]`,
+          );
+          if (device === 'desktop') {
+            if ((await emptyRow.getAttribute('aria-expanded')) !== 'true')
+              await emptyRow.click();
+            await group('Office 文档助手')
+              .getByText('点卡片上的加号开始', { exact: true })
+              .waitFor();
+            await expectGlobalEmpty();
+            await capture('empty-employee');
+            await emptyRow.click();
+          }
+
           const plus = group('Rice').getByRole('button', {
             name: '和 Rice 开新会话',
             exact: true,
@@ -8412,15 +8465,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           expect(new URL(f.page.url()).searchParams.get('session')).toBe(
             id(600),
           );
-          const emptyRow = tree().locator(
-            `[data-row-key="workspace:${id(17)}"]`,
-          );
           if ((await emptyRow.getAttribute('aria-expanded')) !== 'true')
             await emptyRow.click();
           await group('Office 文档助手')
             .getByText('点卡片上的加号开始', { exact: true })
             .waitFor();
-          await capture('empty-employee');
+          if (device === 'mobile') await capture('empty-employee');
 
           const createTrigger = f.page.getByRole('button', {
             name: '创建员工',
@@ -8650,10 +8700,112 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           }
           expect(f.state.messageInputs).toEqual([]);
           expect(f.errors).toEqual([]);
+          if (device === 'desktop') {
+            // Separate product mount: retain the original forty-state journey
+            // and reach both new seams through public links and user actions.
+            seams = await fixture({
+              width,
+              appearance,
+              employeeCount: 2,
+              employeeHistory: true,
+              employeeHistoryCount: 3,
+              officeHistoryCount: 0,
+            });
+            failurePage = seams.page;
+            seams.page.on('request', (request) => {
+              if (request.method() !== 'GET') seamWrites.push({
+                method: request.method(),
+                path: new URL(request.url()).pathname,
+              });
+            });
+            const file = catalogFile(9588, {
+              fileName: '无会话参考原件.txt',
+              sessionIds: [],
+            });
+            seams.state.workbenchFiles.push(file);
+            await seams.page.goto(`${origin}/?employee=${id(9)}&file=${file.objectId}&workspaceId=${workspace}&theme=1`);
+            await expectGlobalEmpty(seams.page);
+            await seams.panel
+              .locator('header[aria-label="文件操作"]')
+              .getByText(file.fileName, { exact: true })
+              .waitFor();
+            expect(seams.state.deliverableRequests.some((request) => request.objectId === file.objectId)).toBe(true);
+            expect(seamWrites).toEqual([]);
+            expect(seams.writes).toEqual([]);
+            await capture('global-file', '', { fileObjectId: file.objectId, activeSessionId: null }, seams.page);
+            await seams.panel.getByRole('button', { name: '关闭工作台', exact: true }).click();
+            await expectGlobalEmpty(seams.page);
+
+            const input = seams.page.getByRole('textbox', { name: '给 Rice 的消息', exact: true });
+            const global = seams.page.getByRole('region', { name: 'AI 员工空态', exact: true });
+            const prepare = async () => {
+              await openCapabilities(seams!);
+              await seams!.page.getByRole('dialog', { name: '设置', exact: true })
+                .getByRole('button', { name: '准备报告与文件交付任务', exact: true }).click();
+              await expect.poll(() => input.inputValue()).toContain('保存为正式交付的 Markdown 文件');
+            };
+            // Text alone keeps the existing draft workspace and focus.
+            await prepare();
+            expect(await global.count()).toBe(0);
+            expect(await input.isEditable()).toBe(true);
+            await expect.poll(() => input.evaluate((node) => node === document.activeElement)).toBe(true);
+            await input.fill('   ');
+            expect(await input.inputValue()).toBe('   ');
+            expect(await global.count()).toBe(0);
+            await input.fill('');
+            await expectGlobalEmpty(seams.page);
+
+            const quote = async () => {
+              await seams!.page.locator('header').getByRole('button', { name: /^交付成果(?:，\d+ 项新增)?$/ }).click();
+              await seams!.panel.getByRole('button', { name: `引用到对话 ${file.fileName}`, exact: true }).click();
+              await seams!.panel.getByRole('button', { name: '关闭工作台', exact: true }).click();
+              await seams!.page.getByRole('button', { name: `移除资料 ${file.fileName} v1`, exact: true }).waitFor();
+            };
+            // A reference alone also keeps the composer; removing the last
+            // item returns to the clean global view without making a Session.
+            await quote();
+            expect(await input.inputValue()).toBe('');
+            expect(await global.count()).toBe(0);
+            await seams.page.getByRole('button', { name: `移除资料 ${file.fileName} v1`, exact: true }).click();
+            await expectGlobalEmpty(seams.page);
+
+            const transfer = await seams.page.evaluateHandle(() => {
+              const data = new DataTransfer();
+              data.items.add(new File(['Synthetic unsent attachment'], '未发送附件.txt', { type: 'text/plain' }));
+              return data;
+            });
+            try {
+              await seams.page.locator('main').dispatchEvent('drop', { dataTransfer: transfer });
+            } finally {
+              await transfer.dispose();
+            }
+            // Frame drop is a real existing entry even when no composer was
+            // mounted. The attachment alone must make its controls visible.
+            await seams.page.getByRole('group', { name: '待发送附件', exact: true }).getByText('未发送附件.txt', { exact: true }).waitFor();
+            expect(await input.inputValue()).toBe('');
+            expect(await global.count()).toBe(0);
+            expect(await seams.page.getByRole('button', { name: '移除 未发送附件.txt', exact: true }).isEnabled()).toBe(true);
+            await quote();
+            await prepare();
+            await seams.page.getByRole('button', { name: `移除资料 ${file.fileName} v1`, exact: true }).waitFor();
+            await seams.page.getByRole('group', { name: '待发送附件', exact: true }).getByText('未发送附件.txt', { exact: true }).waitFor();
+            expect(new URL(seams.page.url()).searchParams.get('session')).toBeNull();
+            expect(await seams.page.getByRole('tree', { name: '员工与工作' }).getByRole('treeitem').filter({ hasText: '新会话' }).count()).toBe(0);
+            expect(seamWrites).toEqual([
+              { method: 'POST', path: `/api/v1/workbench/files/${file.objectId}/reference` },
+              { method: 'POST', path: `/api/v1/workbench/files/${file.objectId}/reference` },
+            ]);
+            expect(seams.writes).toEqual([]);
+            expect(seams.state.messageInputs).toEqual([]);
+            expect(seams.state.workbenchReferenceUses).toEqual([file.objectId, file.objectId]);
+            expect(seams.errors).toEqual([]);
+            await capture('global-draft', '', { draft: 'capability-report', referenceObjectId: file.objectId, attachment: '未发送附件.txt', activeSessionId: null }, seams.page);
+          }
+          expect(captures).toHaveLength(11);
           completed = true;
         } catch (error) {
           firstFailure = error;
-          await f.page
+          await failurePage
             .screenshot({
               path: join(evidence, `FIRST-FAILURE-${device}-${appearance}.png`),
             })
@@ -8674,6 +8826,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                   creationRequests,
                   sessionCreates,
                   errors: f.errors,
+                  globalSeamEvidence: seams ? {
+                    writes: seamWrites,
+                    unexpectedWrites: seams.writes,
+                    messageInputs: seams.state.messageInputs,
+                    referenceUses: seams.state.workbenchReferenceUses,
+                    errors: seams.errors,
+                  } : null,
                   firstFailure:
                     firstFailure instanceof Error
                       ? firstFailure.stack
@@ -8685,6 +8844,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             );
           } catch (error) {
             cleanupErrors.push(error);
+          }
+          if (seams) {
+            try {
+              await seams.close();
+            } catch (error) {
+              cleanupErrors.push(error);
+            }
           }
           try {
             await f.close();
@@ -9902,6 +10068,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     for (const employeeCount of [0, 1]) {
       const f = await fixture({ employeeCount, noSession: true });
       try {
+        await f.page.getByRole('region', { name: 'AI 员工空态', exact: true })
+          .getByRole('heading', { name: 'AI 员工', exact: true }).waitFor();
         await f.page
           .getByRole('button', { name: '创建员工', exact: true })
           .click();
@@ -9928,7 +10096,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               name: employeeCount ? '给 Rice 的消息' : '给 AI 员工 的消息',
             })
             .count(),
-        ).toBe(1);
+        ).toBe(0);
       } finally {
         await f.close();
       }

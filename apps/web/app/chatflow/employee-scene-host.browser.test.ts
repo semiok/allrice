@@ -1154,6 +1154,8 @@ suite('U1 mounted employee Workflow host', () => {
         name: options.frozen ? '给 配发员工 的消息' : '给 Rice 的消息',
         exact: true,
       })
+      .or(page.getByRole('region', { name: 'AI 员工空态', exact: true }))
+      .first()
       .waitFor();
     if (options.session)
       await expect

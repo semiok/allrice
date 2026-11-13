@@ -125,6 +125,8 @@ import { inputRetry } from '../../lib/chatflow/input-retry';
 import { isSendReceipt } from './send-receipt';
 import { ChatSidebar } from './chat-sidebar';
 import { EmployeeCreateDialog } from './employee-create-dialog';
+import { EmployeeGlobalEmpty } from './employee-global-empty';
+import globalEmptyUi from './employee-global-empty.module.css';
 import {
   employeeAccent,
   employeeAccentStyle,
@@ -216,6 +218,11 @@ export function ChatFlowClient({
     draftStore.subscribe,
     draftStore.hasDraft,
     draftStore.hasDraft,
+  );
+  const hasComposerText = useSyncExternalStore(
+    draftStore.subscribe,
+    () => draftStore.getSnapshot().length > 0,
+    () => draftStore.getSnapshot().length > 0,
   );
   const [companyReferences, setCompanyReferences] = useState<
     CompanyDraftReference[]
@@ -1993,6 +2000,18 @@ export function ChatFlowClient({
     Object.keys(runViews).length === 0;
   const pendingEmployeeConversation =
     !activeId && !!pendingEmployeeAssignmentId && !automationCreate;
+  const globalEmployeeEmpty =
+    !layout.compact &&
+    isEmptyConversation &&
+    !activeId &&
+    !pendingEmployeeAssignmentId &&
+    !automationCreate &&
+    !hasComposerText &&
+    pendingAttachments.length === 0 &&
+    sessionReferences.length === 0 &&
+    referenceSelections.length === 0 &&
+    companyReferences.length === 0 &&
+    !visibleSubmission;
   const newlyCreatedEmployeeConversation =
     pendingEmployeeConversation &&
     createdEmployee?.scope === settingsScope &&
@@ -2659,19 +2678,23 @@ export function ChatFlowClient({
           />
         ) : (
           <div
-            className={conversationUi.root}
+            className={`${conversationUi.root} ${globalEmployeeEmpty ? globalEmptyUi.root : ''}`}
             data-phase={isEmptyConversation ? 'hero' : 'active'}
           >
             {
               <header
-                className={`${conversationUi.header} ${styles.conversationHeader}`}
+                className={`${conversationUi.header} ${styles.conversationHeader} ${globalEmployeeEmpty ? globalEmptyUi.header : ''}`}
               >
                 <div className={conversationUi.titleRow}>
                   <div
                     className={`${conversationUi.titleCluster} ${styles.conversationTitle}`}
                   >
                     <div className={conversationUi.crumbs}>
-                      <h1>{activeSession?.title ?? '新的工作'}</h1>
+                      <h1>
+                        {globalEmployeeEmpty
+                          ? 'AI 员工'
+                          : (activeSession?.title ?? '新的工作')}
+                      </h1>
                     </div>
                   </div>
                   <div
@@ -2871,6 +2894,10 @@ export function ChatFlowClient({
                     </button>
                   ) : null}
                 </div>
+              </div>
+            ) : globalEmployeeEmpty ? (
+              <div className={conversationUi.scrollBody}>
+                <EmployeeGlobalEmpty />
               </div>
             ) : isEmptyConversation ? (
               <div className={conversationUi.scrollBody}>
