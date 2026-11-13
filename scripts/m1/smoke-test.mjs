@@ -14,6 +14,8 @@ import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { readSmokeReply } from './smoke-reply.mjs';
+import { startSmokeWork } from './smoke-entry.mjs';
 
 const args = Object.fromEntries(
   process.argv
@@ -120,21 +122,7 @@ async function login() {
   ]);
   await page.waitForLoadState('networkidle').catch(() => {});
 }
-async function newWork() {
-  await page
-    .goto(`${base}/chatflow`, { waitUntil: 'networkidle' })
-    .catch(() => {});
-  await page
-    .getByRole('button', { name: '新的工作', exact: true })
-    .first()
-    .click();
-  await page
-    .getByRole('dialog')
-    .getByText('Rice', { exact: true })
-    .first()
-    .click();
-  await page.waitForTimeout(1500);
-}
+const newWork = () => startSmokeWork(page, base);
 // Send, then wait until the run's stop button has appeared and stayed gone for 3s.
 async function ask(text, timeoutMs) {
   await page.locator('textarea').first().fill(text);
@@ -171,11 +159,10 @@ const sessionOf = () => {
     return null;
   }
 };
-const replyAfter = async (prompt) => {
-  const t = await page.innerText('main');
-  const i = t.lastIndexOf(prompt);
-  return i < 0 ? '' : t.slice(i + prompt.length);
-};
+const replyAfter = (prompt, marker) =>
+  page
+    .locator('[data-chat-scroll]')
+    .evaluate(readSmokeReply, { prompt, marker });
 async function check(name, fn) {
   if (!only.includes(name)) return;
   const started = Date.now();
@@ -209,10 +196,10 @@ try {
     await newWork();
     const q = `冒烟测试 ${tag}：请用一句话介绍你自己。`;
     const run = await ask(q, 180_000);
-    const reply = await replyAfter(q);
+    const { text: reply, timing } = await replyAfter(q);
     const pass =
       run.finished &&
-      /用时/.test(reply) &&
+      /用时/.test(timing) &&
       reply.replace(/\s+/g, '').length > 20;
     return {
       pass,
@@ -250,10 +237,10 @@ try {
       };
     const q = `冒烟测试 ${tag}：接着上面的对话，用一句话说说你上一条回复讲了什么。`;
     const run = await ask(q, 180_000);
-    const reply = await replyAfter(q);
+    const { text: reply, timing } = await replyAfter(q);
     const pass =
       run.finished &&
-      /用时/.test(reply) &&
+      /用时/.test(timing) &&
       reply.replace(/\s+/g, '').length > 20;
     return {
       pass,
@@ -269,7 +256,8 @@ try {
     await newWork();
     const q = `冒烟测试 ${tag}：生成一份 Word 文档，标题《冒烟测试》，正文两句话，直接给我下载。`;
     const run = await ask(q, 420_000);
-    const reply = await replyAfter(q);
+    const { text, links } = await replyAfter(q);
+    const reply = [text, ...links].join('\n');
     const pass = run.finished && /\.docx/.test(reply);
     return {
       pass,
@@ -289,7 +277,8 @@ try {
     await page.waitForTimeout(2500);
     const q = `冒烟测试 ${tag}：按渠道汇总这个 CSV，画一张柱状图。`;
     const run = await ask(q, 420_000);
-    const reply = await replyAfter(q);
+    const { text, links } = await replyAfter(q);
+    const reply = [text, ...links].join('\n');
     const pass = run.finished && /\.png/.test(reply);
     return {
       pass,
@@ -302,7 +291,7 @@ try {
     await newWork();
     const q = `冒烟测试 ${tag}：请用云端浏览器打开 https://example.com ，告诉我页面标题。`;
     const run = await ask(q, 300_000);
-    const reply = await replyAfter(q);
+    const { text: reply } = await replyAfter(q);
     const pass = run.finished && /Example Domain/.test(reply);
     return {
       pass,
@@ -316,7 +305,8 @@ try {
     const marker = `冒烟提醒-${tag}`;
     const q = `1 分钟后提醒我：${marker}。`;
     const run = await ask(q, 180_000);
-    const created = await replyAfter(q);
+    const { text, automation } = await replyAfter(q);
+    const created = [text, automation].join('\n');
     if (!run.finished || !/(待执行|一次性)/.test(created))
       return {
         pass: false,
@@ -330,9 +320,8 @@ try {
       // The model words the delivered reminder freely, so do not match its text:
       // a fired task adds an "自动化任务 … 查看任务" run entry to the conversation,
       // followed by a reply that carries this run's unique marker.
-      const t = await page.innerText('main');
-      const fired = t.indexOf('查看任务', t.lastIndexOf(q) + q.length);
-      if (fired >= 0 && t.indexOf(marker, fired) >= 0) return { pass: true };
+      const { delivered } = await replyAfter(q, marker);
+      if (delivered) return { pass: true };
     }
     return { pass: false, detail: 'reminder did not fire within 3 minutes' };
   });
