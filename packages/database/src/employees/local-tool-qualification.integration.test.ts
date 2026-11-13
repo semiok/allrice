@@ -305,6 +305,7 @@ suite('local tools: new Run device qualification', () => {
     await synchronizePlatformContent(catalog);
     const current = catalog.skills.find((s) => s.name === 'browser-research')!;
     const cloudTools = ['browser.workspace', 'browser.run'];
+    const cloudRunTools = [...cloudTools, 'workspace.skill.read'];
     const x = await setup([...cloudTools, 'local.browser.workspace']);
     const first = await x.send(
       'general',
@@ -313,7 +314,9 @@ suite('local tools: new Run device qualification', () => {
     const before = await x.resolve(first.sent.run.id);
     const snapshot = before.executionSnapshot!;
     if (snapshot.schemaVersion !== 2) throw Error('wrong snapshot');
-    expect(snapshot.capabilitySnapshot.bindings.toolNames).toEqual(cloudTools);
+    expect(snapshot.capabilitySnapshot.bindings.toolNames).toEqual(
+      cloudRunTools,
+    );
     expect(before.nativeSkills.find((s) => s.id === current.id)).toMatchObject({
       content: current.content,
       checksum: current.checksum,
@@ -348,7 +351,7 @@ suite('local tools: new Run device qualification', () => {
     const offline = await x.resolve((await x.send()).sent.run.id);
     expect(
       offline.executionSnapshot!.capabilitySnapshot.bindings.toolNames,
-    ).toEqual(cloudTools);
+    ).toEqual(cloudRunTools);
     expect(offline.nativeSkills.find((s) => s.id === current.id)).toEqual(
       before.nativeSkills.find((s) => s.id === current.id),
     );
@@ -366,13 +369,13 @@ suite('local tools: new Run device qualification', () => {
     expect(
       (await x.resolve((await x.send()).sent.run.id)).executionSnapshot!
         .capabilitySnapshot.bindings.toolNames,
-    ).toEqual([]);
+    ).toEqual(['workspace.skill.read']);
     const device = await x.pair();
     await heartbeat(device.deviceToken);
     expect(
       (await x.resolve((await x.send()).sent.run.id)).executionSnapshot!
         .capabilitySnapshot.bindings.toolNames,
-    ).toEqual(['local.browser.workspace']);
+    ).toEqual(['local.browser.workspace', 'workspace.skill.read']);
     expect(
       await freezeConnectedLocalToolNames(['browser.run'], x.scope, f.db),
     ).toEqual(['browser.run']);

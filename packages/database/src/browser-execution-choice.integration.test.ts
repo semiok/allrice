@@ -401,13 +401,13 @@ suite('MET164 real local choice and existing durable admission', () => {
   });
 
   it('keeps a Run without frozen local-browser authority cloud-only even after its device is ready', async () => {
-    const f = await fixture();
-    // This fixture has an online, authorized local browser. Reproduce the
-    // frozen allowlist of a Run admitted before its owner connected it.
-    await database.db`update allrice_employee_runs set execution_snapshot=jsonb_set(
-      execution_snapshot,'{capabilitySnapshot,bindings,toolNames}',
-      (execution_snapshot->'capabilitySnapshot'->'bindings'->'toolNames')-'local.browser.workspace')
-      where run_id=${f.run}`;
+    // Freeze the Run without local authority before creating its device/grant.
+    // The snapshot remains immutable while the device becomes ready.
+    const f = await createLocalBrowserFixture(database.db, storage, {
+      frozen: false,
+      open: false,
+    });
+    await environment(f, 'ready');
     const noCloud = await selectBrowserExecution(
       await admission(f),
       database.db,
