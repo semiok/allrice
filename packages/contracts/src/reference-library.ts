@@ -71,7 +71,7 @@ export const ReferenceSelectionSchema = z
     sourceId: UuidSchema,
     revisionId: UuidSchema,
     revision: z.number().int().positive(),
-    fileName: z.string().max(160),
+    fileName: z.string().max(255),
     purpose: z.string().max(1000),
     digest: ChecksumSchema,
     checksum: ChecksumSchema,
@@ -160,6 +160,7 @@ export const ReferenceRevisionSchema = z
     failure: z.string().nullable(),
     canMaintain: z.boolean(),
     canRetryProcessing: z.boolean().optional(),
+    fullTextReady: z.boolean().optional(),
     publication: z
       .object({
         origin: z.enum(['file', 'upload']),
@@ -191,6 +192,23 @@ export const ReferenceRevisionSchema = z
   })
   .strict();
 export type ReferenceRevision = z.infer<typeof ReferenceRevisionSchema>;
+
+/** This reports reference dependencies only; ordinary send admission still applies. */
+export const SessionReferenceEligibilitySchema = z
+  .object({
+    viewerId: UuidSchema,
+    sessionId: UuidSchema,
+    referenceEligibility: z.discriminatedUnion('canContinue', [
+      z.object({ canContinue: z.literal(true), reason: z.null() }).strict(),
+      z
+        .object({
+          canContinue: z.literal(false),
+          reason: z.enum(['publication_revoked', 'current_access_lost']),
+        })
+        .strict(),
+    ]),
+  })
+  .strict();
 export const ReferenceActionSchema = z
   .object({
     workspaceId: UuidSchema,

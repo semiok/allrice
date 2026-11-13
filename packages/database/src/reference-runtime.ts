@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type postgres from 'postgres';
 import type { OrganizationSharedReader } from './organization-shared-reader.ts';
 import {
+  KnowledgeCitationSchema,
   KnowledgeRetrievalResultSchema,
   ReferenceSelectionSchema,
   ReferenceSelectionsSchema,
@@ -376,6 +377,20 @@ export function referenceQueryTerms(query: string) {
   return [...terms].slice(0, 64);
 }
 
+/** Citation labels are bounded display text; the exact complete name stays in the pin. */
+function referenceCitationLabel(selection: ReferenceSelection) {
+  const suffix = ` · v${selection.revision}`;
+  const maximum = KnowledgeCitationSchema.shape.label.maxLength!;
+  if (selection.fileName.length + suffix.length <= maximum)
+    return selection.fileName + suffix;
+  let prefix = '';
+  for (const point of selection.fileName) {
+    if (prefix.length + point.length + suffix.length + 1 > maximum) break;
+    prefix += point;
+  }
+  return prefix + '…' + suffix;
+}
+
 /** Caller owns the principal/content/lease transaction. Ready without a
  * matching index fails explicitly; a valid index with no relevant hit is empty.
  * No file-owner or workspace-file ACL is substituted for the current reader. */
@@ -425,7 +440,7 @@ export async function retrieveReferenceKnowledgeInTransaction(
           citation: {
             type: 'knowledge',
             id: row.id,
-            label: `${selection.fileName} · v${selection.revision}`,
+            label: referenceCitationLabel(selection),
             knowledgeRevisionId: selection.revisionId,
             documentId: row.document_id,
             sourceKind: 'managed',

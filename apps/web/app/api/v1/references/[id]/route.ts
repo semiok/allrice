@@ -12,7 +12,7 @@ export async function POST(
   try {
     return Response.json(
       await changeReference(
-        await referenceContext(request),
+        await referenceContext(request, true),
         (await route.params).id,
         await request.json(),
       ),

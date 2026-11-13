@@ -7,6 +7,7 @@ import {
   EmployeeInstanceError,
   EmployeeContentError,
   EmployeeRuntimeContentError,
+  EmployeeReferencePublicationRevokedError,
 } from '@allrice/database';
 
 import {
@@ -32,6 +33,13 @@ export function employeeHubErrorResponse(error: unknown) {
       code: 'CONFLICT',
       message: '任务正在更新执行状态，本次修改未生效。请稍后重试。',
       retryable: true,
+    });
+  if (error instanceof EmployeeReferencePublicationRevokedError)
+    return apiProblem({
+      status: 409,
+      code: 'REFERENCE_PUBLICATION_REVOKED',
+      message: error.message,
+      retryable: false,
     });
   if (error instanceof EmployeeRuntimeContentError)
     return apiProblem({

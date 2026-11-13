@@ -13,6 +13,10 @@ export async function referenceContext(request: Request, write = false) {
     throw new DataAccessError('authorization_denied');
   const context = await getRequestContext(request);
   if (!context) throw new DataAccessError('authentication_required');
+  // A stale-view precondition, never an authorization or ownership assertion.
+  const expected = request.headers.get('x-allrice-expected-viewer-id');
+  if (write && expected !== null && expected !== context.actor.id)
+    throw new ReferenceLibraryError('request_conflict');
   return context;
 }
 export function referenceError(error: unknown) {

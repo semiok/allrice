@@ -313,6 +313,22 @@ suite(
         if (claim.revisionId === revisionId) return;
       }
     }
+    async function referenceEligibility(
+      context: RequestContext,
+      sessionId: string,
+    ) {
+      browser.context = context;
+      const { GET } =
+        await import('../app/api/v1/sessions/[id]/reference-eligibility/route.ts');
+      const response = await GET(
+        new Request(
+          `https://example.test/api/v1/sessions/${sessionId}/reference-eligibility?workspaceId=${context.workspaceId}`,
+        ),
+        { params: Promise.resolve({ id: sessionId }) },
+      );
+      expect(response.status).toBe(200);
+      return (await response.json()).referenceEligibility;
+    }
     async function httpUpload(
       context: RequestContext,
       input = upload(context),
@@ -2254,6 +2270,12 @@ suite(
         scope: 'personal',
         departmentIds: [],
       });
+      expect(
+        await referenceEligibility(s.finance, current.scope.sessionId),
+      ).toEqual({
+        canContinue: false,
+        reason: 'current_access_lost',
+      });
       await expect(
         assertEmployeeContentContext(
           current.scope,
@@ -2264,6 +2286,12 @@ suite(
       await change(s.owner, b.sourceId, 'audience', 2, {
         scope: 'company',
         departmentIds: [],
+      });
+      expect(
+        await referenceEligibility(s.finance, current.scope.sessionId),
+      ).toEqual({
+        canContinue: true,
+        reason: null,
       });
       await assertEmployeeContentContext(
         current.scope,
@@ -2784,6 +2812,12 @@ suite(
           merelySelected.scope.sessionId,
         ),
       ).toBe(false);
+      expect(
+        await referenceEligibility(s.owner, merelySelected.scope.sessionId),
+      ).toEqual({
+        canContinue: true,
+        reason: null,
+      });
       const newPublication = await httpUpload(s.owner);
       expect(newPublication.sourceId).not.toBe(published.sourceId);
       for (const run of relayed)
@@ -2794,6 +2828,12 @@ suite(
           ),
         ).toBe(true);
       for (const run of [source, imported, ...relayed]) {
+        expect(
+          await referenceEligibility(s.owner, run.scope.sessionId),
+        ).toEqual({
+          canContinue: false,
+          reason: 'publication_revoked',
+        });
         await expect(
           assertEmployeeContentContext(run.scope, run.runtime.generationId),
         ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
@@ -2812,6 +2852,31 @@ suite(
           await f.db`select count(*)::int n from allrice_messages where session_id=${run.scope.sessionId}`;
         expect(after!.n).toBe(before!.n);
       }
+      const { POST } =
+        await import('../app/api/v1/sessions/[id]/messages/route.ts');
+      browser.context = s.owner;
+      const denied = await POST(
+        new Request(
+          `https://example.test/api/v1/sessions/${source.scope.sessionId}/messages?workspaceId=${s.owner.workspaceId}`,
+          {
+            method: 'POST',
+            headers: {
+              origin: 'https://example.test',
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              clientMessageId: randomUUID(),
+              text: '继续刚才的任务',
+            }),
+          },
+        ),
+        { params: Promise.resolve({ id: source.scope.sessionId }) },
+      );
+      expect(denied.status).toBe(409);
+      expect((await denied.json()).error).toMatchObject({
+        code: 'REFERENCE_PUBLICATION_REVOKED',
+        retryable: false,
+      });
       await expect(
         assertEmployeeContentReferenceMessages(
           s.owner,

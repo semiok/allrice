@@ -82,6 +82,12 @@ export class EmployeeRuntimeContentError extends Error {
   }
 }
 class PublicationContentUnavailableError extends EmployeeRuntimeContentError {}
+/** Permanent Q8 comes only from actual-read withdrawal facts, never current ACL loss. */
+export class EmployeeReferencePublicationRevokedError extends EmployeeRuntimeContentError {
+  constructor() {
+    super('本对话使用的企业资料已撤销或删除，请新建对话。历史记录仍可查看。');
+  }
+}
 export async function assertEmployeeReferencePublicationHistory(
   context: ContentIdentity,
   sessionId: string,
@@ -91,9 +97,7 @@ export async function assertEmployeeReferencePublicationHistory(
   if (
     await hasRevokedReferencePublicationHistory(context, sessionId, sql, lock)
   )
-    throw new EmployeeRuntimeContentError(
-      '本对话使用的企业资料已撤销或删除，请新建对话。历史记录仍可查看。',
-    );
+    throw new EmployeeReferencePublicationRevokedError();
 }
 const unavailable = () => {
   throw new EmployeeRuntimeContentError();

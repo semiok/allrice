@@ -26,6 +26,7 @@ import {
 import { readContentPrincipal } from './content-maintenance.ts';
 import {
   completeReferenceUpload,
+  canPublishReferenceFile,
   getReferenceFile,
   listReferenceRevisions,
   prepareReferenceUpload,
@@ -37,6 +38,7 @@ import {
   personalWorkbenchOrigins,
 } from './workbench-file-personal.ts';
 import { assertWorkbenchSession } from './artifact-review.ts';
+import { readOwnedReferencePublications } from './reference-publication-projections.ts';
 import { personalInstanceNameSql } from './employees/employee-instance-policy.ts';
 import {
   canSetWorkbenchFileSharing,
@@ -625,6 +627,11 @@ export async function readWorkbenchDeliverables(
     listReferenceRevisions(context, filter.workspaceId, undefined, true),
   ]);
   const referenceBySource = new Map(references.map((r) => [r.sourceId, r]));
+  const publicationByObject = await readOwnedReferencePublications(
+    context,
+    rows.slice(0, 50).map((row) => row.id),
+    db,
+  );
   const files: WorkbenchDeliverable[] = [];
   for (const row of rows.slice(0, 50)) {
     try {
@@ -665,6 +672,13 @@ export async function readWorkbenchDeliverables(
           row.category === 'artifact' ? 'business-deliverable' : 'user-upload',
         sources: row.sources,
         favorite: row.favorite,
+        canPublishReference: await canPublishReferenceFile(
+          context,
+          file,
+          principal.writable,
+          db,
+        ),
+        publication: publicationByObject.get(row.id) ?? null,
         isReference: p?.reference_enabled ?? false,
         reference:
           p?.reference_enabled && p.reference_source_id
@@ -677,6 +691,7 @@ export async function readWorkbenchDeliverables(
   }
   if (filter.objectId && !files.length) throw new DataAccessError('not_found');
   return WorkbenchDeliverablesCatalogSchema.parse({
+    viewerId: context.actor.id,
     files,
     employees,
     nextCursor: rows.length > 50 ? rows[49]!.id : null,
