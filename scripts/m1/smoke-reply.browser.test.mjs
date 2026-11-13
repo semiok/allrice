@@ -97,7 +97,9 @@ suite('smoke reply evidence belongs to the requested assistant turn', () => {
           .getByRole('textbox', { name: '给 Rice 的消息', exact: true })
           .inputValue(),
       ).toBe('');
-      const state = await page.evaluate(() => ({ ...globalThis.document.body.dataset }));
+      const state = await page.evaluate(() => ({
+        ...globalThis.document.body.dataset,
+      }));
       expect(state).toEqual({ started: 'Rice' });
       expect(writes).toEqual([]);
     },
