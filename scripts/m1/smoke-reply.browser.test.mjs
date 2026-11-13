@@ -73,7 +73,7 @@ suite('smoke reply evidence belongs to the requested assistant turn', () => {
       });
       await page.route(`${base}/**`, (route) =>
         route.fulfill({
-          contentType: 'text/html',
+          contentType: 'text/html; charset=utf-8',
           body: `<!doctype html>
             <button onclick="document.body.dataset.created = 'yes'">创建员工</button>
             <button aria-label="和 Rice 开新会话" onclick="
