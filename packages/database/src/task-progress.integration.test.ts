@@ -202,9 +202,9 @@ suite(
         },
       ])
         await rejected(createTaskProgressRuntime(altered, f.db), start);
-      await f.db`update allrice_jobs set drain_deadline_at=null where id=${s.worker.jobId}`;
+      await f.db`update allrice_jobs set drain_reason=null,drain_deadline_at=null where id=${s.worker.jobId}`;
       await rejected(handle, start);
-      await f.db`update allrice_jobs set drain_deadline_at=clock_timestamp()-interval '1 second' where id=${s.worker.jobId}`;
+      await f.db`update allrice_jobs set drain_reason=${before!.drain_reason},drain_deadline_at=clock_timestamp()-interval '1 second' where id=${s.worker.jobId}`;
       await rejected(handle, start);
       await f.db`update allrice_jobs set drain_deadline_at=${before!.drain_deadline_at},lease_expires_at=clock_timestamp()-interval '1 second' where id=${s.worker.jobId}`;
       await rejected(handle, start);

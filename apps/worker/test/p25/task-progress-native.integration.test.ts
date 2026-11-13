@@ -2,10 +2,14 @@
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import {
+  TOOL_ABORTED,
+  TOOL_ABORTED_BEFORE_DISPATCH,
+} from '@deepseek-ai/dsh-tools';
 import {
   DshProtocolClient,
   type DshNotification,
@@ -21,7 +25,18 @@ import { p24Fixture } from '../p24/fixture.js';
 describe('MET153 actual native progress wire', () => {
   it('retains the native aborted-before-dispatch pair without fabricating a progress finish', async () => {
     const root = await mkdtemp(join(tmpdir(), 'progress-skipped-'));
+    let canceled!: (value: unknown) => void;
+    const nativeCanceled = new Promise<unknown>((resolve) => {
+      canceled = resolve;
+    });
     const server = createServer(async (req, res) => {
+      if (req.url === '/test-native-canceled') {
+        const chunks = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        canceled(JSON.parse(Buffer.concat(chunks).toString()));
+        res.end();
+        return;
+      }
       for await (const chunk of req) {
         void chunk; // Consume the synthetic request.
       }
@@ -65,6 +80,37 @@ describe('MET153 actual native progress wire', () => {
     });
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
+    const baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    const observer = join(root, 'observe-cancel.mjs');
+    // Test-only public middleware observes the real native signal. It never
+    // cancels, dispatches, or changes a tool result or the Host lifecycle.
+    await writeFile(
+      observer,
+      `export default function (ctx) {
+      ctx.on('tools/execute', async (exec, next) => {
+        if (exec.callId !== 'first') return next();
+        let observation;
+        const observe = () => observation ??= fetch(${JSON.stringify(`${baseUrl}/test-native-canceled`)}, {
+          method: 'POST', body: JSON.stringify({
+            nativeSessionId: exec.agent.id, callId: exec.callId, aborted: exec.signal.aborted,
+          }),
+        }).then(response => { if (!response.ok) throw Error('test_cancel_observation_failed'); });
+        exec.signal.addEventListener('abort', observe, { once: true });
+        if (exec.signal.aborted) observe();
+        try { return await next(); }
+        finally { exec.signal.removeEventListener('abort', observe); await observation; }
+      });
+    }`,
+    );
+    const profile = join(root, 'progress.cordis.yml');
+    await writeFile(
+      profile,
+      (await readFile(
+        resolve(import.meta.dirname, '../../dsh/allrice-restricted.cordis.yml'),
+        'utf8',
+      )) +
+        `\n- id: test-cancel-observer\n  name: ${JSON.stringify(observer)}\n`,
+    );
     const client = new DshProtocolClient({
       command: process.execPath,
       args: [
@@ -75,10 +121,7 @@ describe('MET153 actual native progress wire', () => {
       environment: {
         PATH: process.env.PATH ?? '/usr/bin:/bin',
         ALLRICE_PROGRESS_GUARD_ENABLED: '1',
-        DSH_CORDIS_CONFIG: resolve(
-          import.meta.dirname,
-          '../../dsh/allrice-restricted.cordis.yml',
-        ),
+        DSH_CORDIS_CONFIG: profile,
         DSH_DISTRIBUTION_VERSION: DSH_DISTRIBUTION_CURRENT_VERSION,
         DSH_SESSION_ROOT: join(root, 'sessions'),
         DSH_HOME: root,
@@ -87,7 +130,7 @@ describe('MET153 actual native progress wire', () => {
         DSH_MODEL: 'synthetic',
         DSH_OPENAI_COMPATIBLE_MODEL: 'synthetic',
         OPENAI_COMPATIBLE_API_KEY: 'synthetic-only',
-        OPENAI_COMPATIBLE_BASE_URL: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
+        OPENAI_COMPATIBLE_BASE_URL: `${baseUrl}/v1`,
       },
     });
     const session = `skipped-${randomUUID()}`,
@@ -97,12 +140,27 @@ describe('MET153 actual native progress wire', () => {
     const firstStarted = new Promise<void>((resolve) => {
       started = resolve;
     });
+    let interrupted: Promise<Record<string, unknown>> | undefined;
     client.subscribe((notice) => notices.push(notice));
     client.setRequestHandler(async (method, p) => {
       if (method === 'allrice/tool-call') {
         expect(p.toolCallId).toBe('first');
         await firstStarted;
-        await client.interrupt(session);
+        interrupted = client.interrupt(session);
+        // interrupt also joins the current tool. Release this test callback
+        // only after native cancellation, then await recovery outside it.
+        await expect(
+          Promise.race([
+            nativeCanceled,
+            interrupted.then(() => {
+              throw Error('test_interrupt_without_cancel_observation');
+            }),
+          ]),
+        ).resolves.toEqual({
+          nativeSessionId: session,
+          callId: 'first',
+          aborted: true,
+        });
         return {
           modelContent: '{}',
           summary: 'Synthetic canceled first call.',
@@ -148,6 +206,8 @@ describe('MET153 actual native progress wire', () => {
           { timeout: 15000 },
         )
         .toBe(true);
+      expect(interrupted).toBeDefined();
+      await expect(interrupted).resolves.toMatchObject({ interrupted: true });
       await client.close(); // Flush the actual Host ledger bridge and require confirmed exit.
       expect(client.closureEvidence()).toMatchObject({
         process: { state: 'exited', exitCode: 0, signal: null },
@@ -162,7 +222,25 @@ describe('MET153 actual native progress wire', () => {
         ['finish', 'first'],
         ['start', 'skipped'],
       ]);
-      expect(JSON.stringify(notices)).toContain('TOOL_ABORTED_BEFORE_DISPATCH');
+      const results = notices.filter(
+        (n) =>
+          n.method === 'session.event' &&
+          (n.params.event as { type: string }).type === 'tool/result',
+      );
+      expect(results.map((n) => n.params.event)).toMatchObject([
+        {
+          data: {
+            message: { toolCallId: 'first', isError: true },
+            error: { code: TOOL_ABORTED },
+          },
+        },
+        {
+          data: {
+            message: { toolCallId: 'skipped', isError: true },
+            error: { code: TOOL_ABORTED_BEFORE_DISPATCH },
+          },
+        },
+      ]);
       expect(
         notices.filter(
           (n) =>
