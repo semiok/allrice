@@ -8784,11 +8784,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             await seams.page.goto(
               `${origin}/?employee=${id(9)}&file=${file.objectId}&workspaceId=${workspace}&theme=1`,
             );
-            await expectGlobalEmpty(seams.page, 'open');
             await seams.panel
               .locator('header[aria-label="文件操作"]')
               .getByText(file.fileName, { exact: true })
               .waitFor();
+            await expectGlobalEmpty(seams.page, 'open');
             expect(
               seams.state.deliverableRequests.some(
                 (request) => request.objectId === file.objectId,
