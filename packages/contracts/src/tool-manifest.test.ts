@@ -59,7 +59,7 @@ describe('AllRice tool manifest', () => {
         )
         .map((tool) => ({
           name: tool.canonicalName,
-          wireName: tool.dshWireName,
+          wireName: 'dshWireName' in tool ? tool.dshWireName : undefined,
           capability: tool.capability,
           risk: tool.risk,
         })),
@@ -77,7 +77,9 @@ describe('AllRice tool manifest', () => {
         risk: 'managed_write',
       },
     ]);
-    expect(envelopeTools.map((tool) => tool.canonicalName)).toEqual([]);
+    expect(envelopeTools.map((tool) => tool.canonicalName)).toEqual([
+      'automation.create',
+    ]);
     expect(
       allRiceToolManifest.find(
         (tool) => tool.canonicalName === 'workspace.file.read',
