@@ -244,7 +244,7 @@ suite(
       vi.stubEnv('ALLRICE_RELEASE_SHA', 'a'.repeat(40));
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
       vi.stubEnv('ALLRICE_STORAGE_ROOT', f.storageRoot);
-      for (const flag of ['WORKBENCH', 'RUNTIME_POLICY'])
+      for (const flag of ['WORKBENCH', 'RUNTIME_POLICY', 'MEMORY_SOURCE_CAPTURE'])
         vi.stubEnv(`ALLRICE_${flag}_ENABLED`, '1');
       await createExperienceFixture(f.db);
       await f.db`update allrice_model_connections set status='ready' where id='52000000-0000-4000-8000-000000000001'`;
@@ -1567,6 +1567,7 @@ suite(
             select j.status,j.worker_id,j.lease_token,j.lease_expires_at,j.drain_deadline_at,
               j.last_error_code,j.completed_at,r.state as run_state,e.status as employee_status,
               e.experience_capture_state,e.experience_capture_reason,
+              e.memory_source_capture_state,e.memory_source_capture_reason,
               m.status as message_status,c.finished_at,c.result_digest,c.outcome,
               t.phase as clock_phase,t.changed_at as clock_changed_at
             from allrice_jobs j join allrice_runs r on r.id=j.run_id
@@ -1612,10 +1613,10 @@ suite(
         try {
           // This actual waiting SQL occurs after the original lease check.
           // Its blocker PID proves the interleaving, without a mocked result.
-          // The new provenance-marker UPDATE checks the employee Run's message
-          // references and waits behind the locked assistant row. This remains
-          // after the original lease check; assert its rollback with the rest
-          // of the terminal transaction, including the new capture marker.
+          // The memory-owned marker is written before the assistant-message
+          // UPDATE waits behind the locked row. This remains after the original
+          // lease check; the snapshot checks both old and new capture markers
+          // roll back with the rest of the terminal transaction.
           let waiting: { query: string; now: Date } | undefined;
           await expect
             .poll(
@@ -1632,7 +1633,7 @@ suite(
               query: expect.stringContaining(
                 ending === 'progress finish'
                   ? 'from allrice_task_calls'
-                  : 'update allrice_employee_runs set experience_capture_state',
+                  : 'update allrice_messages',
               ),
             });
           // Read DB time independently while the late statement is blocked.
