@@ -3748,6 +3748,36 @@ suite(
       ],
       preparation: ['files'],
     };
+    async function waitForDesktopSidebarLayout(page: Page) {
+      // These clean 1440px fixtures use the approved 320px default. The first
+      // unmeasured frame is 240px, before the native grid transition starts.
+      await expect
+        .poll(() =>
+          page.locator('main').evaluate((frame) => ({
+            target: frame
+              .querySelector('[role="separator"][aria-controls="chat-sidebar"]')
+              ?.getAttribute('aria-valuenow'),
+            rendered: frame
+              .querySelector('#chat-sidebar')
+              ?.getBoundingClientRect().width,
+            track: parseFloat(getComputedStyle(frame).gridTemplateColumns),
+            gridAnimating: frame.getAnimations().some(
+              (animation) =>
+                animation instanceof CSSTransition &&
+                animation.transitionProperty === 'grid-template-columns' &&
+                (animation.pending ||
+                  (animation.playState !== 'finished' &&
+                    animation.playState !== 'idle')),
+            ),
+          })),
+        )
+        .toEqual({
+          target: '320',
+          rendered: 320,
+          track: 320,
+          gridAnimating: false,
+        });
+    }
     async function selectSuggestion(
       page: Page,
       title: string,
@@ -3848,6 +3878,7 @@ suite(
               f.page.getByTitle('未上传.txt', { exact: true }).count(),
             )
             .toBe(1);
+          if (width === 1440) await waitForDesktopSidebarLayout(f.page);
           const scroll = f.page.locator('[data-conversation-scroll]');
           await scroll.evaluate((el) => {
             el.scrollTop = 300;
@@ -4424,6 +4455,7 @@ suite(
       };
       const f = await fixture({ taskSuggestions: [task], longHistory: true });
       try {
+        await waitForDesktopSidebarLayout(f.page);
         const header = f.page.getByRole('heading', { level: 1 });
         const scroll = f.page.locator('[data-conversation-scroll]');
         await scroll.evaluate((element) => {
