@@ -45,10 +45,10 @@ const nextAssignmentId = '77777777-7777-4777-8777-777777777777';
 const nextVersionId = '88888888-8888-4888-8888-888888888888';
 const now = '2026-09-14T00:00:00.000Z';
 async function startNewWork(page: Page) {
-  await page.getByRole('button', { name: '新的工作', exact: true }).click();
+  const expand = page.getByRole('button', { name: '展开侧边栏', exact: true });
+  if (await expand.isVisible()) await expand.click();
   await page
-    .getByRole('dialog', { name: '选择 AI 员工' })
-    .locator('[data-default-employee="true"]')
+    .getByRole('button', { name: '和 Rice 开新会话', exact: true })
     .click();
 }
 
@@ -1350,9 +1350,9 @@ suite(
         ).toBe(1);
         await f.page.getByText('Existing A', { exact: true }).waitFor();
         await startNewWork(f.page);
-        await f.page
-          .getByRole('dialog', { name: '选择 AI 员工' })
-          .waitFor({ state: 'hidden' });
+        expect(
+          await f.page.getByRole('dialog', { name: '选择 AI 员工' }).count(),
+        ).toBe(0);
         await f.page
           .getByRole('heading', { level: 1, name: '新的工作', exact: true })
           .waitFor();
@@ -2777,7 +2777,7 @@ suite(
         await f.send('发送时我先使用其它控件');
         await f.waitPending(1);
         const otherControl = f.page.getByRole('button', {
-          name: '新的工作',
+          name: '创建员工',
           exact: true,
         });
         await otherControl.focus();
@@ -2807,7 +2807,7 @@ suite(
           await input.evaluate((node) => node === document.activeElement),
         ).toBe(true);
         await f.page
-          .getByRole('button', { name: '新的工作', exact: true })
+          .getByRole('button', { name: '创建员工', exact: true })
           .focus();
         await f.page.getByText(text, { exact: true }).click();
         expect(
@@ -2844,7 +2844,7 @@ suite(
         const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
         expect(await input.count()).toBe(0);
         const otherControl = f.page.getByRole('button', {
-          name: '新的工作',
+          name: '创建员工',
           exact: true,
         });
         await otherControl.focus();
@@ -3748,6 +3748,52 @@ suite(
       ],
       preparation: ['files'],
     };
+    async function waitForDesktopSidebarLayout(page: Page) {
+      const hasImportedStorageState = Boolean(
+        process.env.ALLRICE_TEST_DEV_STORAGE_STATE,
+      );
+      // Imported Dev state can retain a width or a collapsed sidebar. Read the
+      // product's public targets without parsing or resetting stored preferences.
+      await expect
+        .poll(() =>
+          page.locator('main').evaluate((frame, importedState) => {
+            if (!(frame instanceof HTMLElement)) return false;
+            const sidebar = frame.querySelector('#chat-sidebar');
+            const splitter = frame.querySelector(
+              '[role="separator"][aria-controls="chat-sidebar"]',
+            );
+            const inline = parseFloat(frame.style.gridTemplateColumns);
+            const target = splitter
+              ? Number(splitter.getAttribute('aria-valuenow'))
+              : inline;
+            // On these 1440px frames, max === min is the unmeasured 240px clamp.
+            const measured = splitter
+              ? Number(splitter.getAttribute('aria-valuemax')) >
+                Number(splitter.getAttribute('aria-valuemin'))
+              : !!sidebar?.querySelector('button[aria-label="展开侧边栏"]');
+            return (
+              target > 0 &&
+              (importedState || target === 320) &&
+              measured &&
+              target === inline &&
+              sidebar?.getBoundingClientRect().width === target &&
+              parseFloat(getComputedStyle(frame).gridTemplateColumns) ===
+                target &&
+              !frame
+                .getAnimations()
+                .some(
+                  (animation) =>
+                    animation instanceof CSSTransition &&
+                    animation.transitionProperty === 'grid-template-columns' &&
+                    (animation.pending ||
+                      (animation.playState !== 'finished' &&
+                        animation.playState !== 'idle')),
+                )
+            );
+          }, hasImportedStorageState),
+        )
+        .toBe(true);
+    }
     async function selectSuggestion(
       page: Page,
       title: string,
@@ -3848,6 +3894,7 @@ suite(
               f.page.getByTitle('未上传.txt', { exact: true }).count(),
             )
             .toBe(1);
+          if (width === 1440) await waitForDesktopSidebarLayout(f.page);
           const scroll = f.page.locator('[data-conversation-scroll]');
           await scroll.evaluate((el) => {
             el.scrollTop = 300;
@@ -4424,6 +4471,7 @@ suite(
       };
       const f = await fixture({ taskSuggestions: [task], longHistory: true });
       try {
+        await waitForDesktopSidebarLayout(f.page);
         const header = f.page.getByRole('heading', { level: 1 });
         const scroll = f.page.locator('[data-conversation-scroll]');
         await scroll.evaluate((element) => {

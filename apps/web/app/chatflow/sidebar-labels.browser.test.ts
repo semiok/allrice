@@ -16,8 +16,8 @@ const suite =
     : describe.skip;
 
 // MET-214 dark audit D07, D11 and L01: small labels in the sidebar, the
-// 「新的工作」 dialog and the workbench badge read at 4.5:1 in both themes.
-suite('sidebar, new-work dialog and workbench badge labels', () => {
+// create-employee dialog and workbench badge read at 4.5:1 in both themes.
+suite('sidebar, create-employee dialog and workbench badge labels', () => {
   let browser: Browser, server: Server, origin: string;
   beforeAll(async () => {
     const require = createRequire(import.meta.url);
@@ -181,11 +181,14 @@ suite('sidebar, new-work dialog and workbench badge labels', () => {
       it(`reads the sidebar and badge at ${at}`, () =>
         measure(`${at} sidebar`, width, async (page) => {
           await page.goto(`${origin}/?theme=${theme}`);
-          const label = tree(page).getByText('默认', { exact: true });
-          await readable('default label', label);
+          expect(
+            await tree(page).getByText('默认', { exact: true }).count(),
+          ).toBe(0);
+          const label = tree(page).getByText('3 个工作', { exact: true });
+          await readable('saved work count', label);
           await readable(
             'empty employee hint',
-            tree(page).getByText('从顶部「新的工作」开始', { exact: true }),
+            tree(page).getByText('点卡片上的加号开始', { exact: true }),
           );
           const files = page.getByRole('button', {
             name: '交付成果，1 项新增',
@@ -196,7 +199,7 @@ suite('sidebar, new-work dialog and workbench badge labels', () => {
           );
           // The employee card darkens under the pointer.
           await tree(page).getByText('Rice', { exact: true }).hover();
-          await readable('default label on hover', label);
+          await readable('saved work count on hover', label);
         }));
 
       it(`reads session times and the pin at ${at}`, () =>
@@ -222,31 +225,41 @@ suite('sidebar, new-work dialog and workbench badge labels', () => {
           await readable('selected pin, hovered and focused', pin, 3);
         }));
 
-      it(`reads the new-work dialog at ${at}`, () =>
-        measure(`${at} new-work`, width, async (page) => {
-          await page.goto(`${origin}/?theme=${theme}&dialog=picker`);
-          const dialog = page.getByRole('dialog', { name: '选择 AI 员工' });
+      it(`reads the create-employee dialog at ${at}`, () =>
+        measure(`${at} create-employee`, width, async (page) => {
+          await page.goto(`${origin}/?theme=${theme}&dialog=create`);
+          const dialog = page.getByRole('dialog', { name: '创建一位 AI 员工' });
           await readable(
-            'dialog eyebrow',
-            dialog.locator('header p').getByText('新的工作', { exact: true }),
+            'dialog title',
+            dialog.getByRole('heading', {
+              name: '创建一位 AI 员工',
+              exact: true,
+            }),
           );
-          const badge = dialog.getByText('默认', { exact: true });
-          await readable('employee default badge', badge);
           await readable(
-            'dialog footer',
-            dialog.getByText('选择一位员工，开始新的工作', { exact: true }),
+            'creation guidance',
+            dialog.getByText(
+              '一个员工由人设、技能、工作场景、插件、记忆五部分组成。现在先定人设，其他四项创建后在“详情”里随时添加。',
+              { exact: true },
+            ),
           );
-          const card = dialog.locator('button').filter({ hasText: 'Rice' });
-          await card.hover();
-          await readable('employee default badge on hover', badge);
-          // The shortcut hint and the hover「开始」 are desktop-only.
-          if (width > 560) {
-            await readable('close shortcut', dialog.locator('kbd'));
+          await readable(
+            'required fields guidance',
+            dialog.getByText('名字和使命填好后才能创建', { exact: true }),
+          );
+          expect(await dialog.getByText('默认', { exact: true }).count()).toBe(
+            0,
+          );
+          for (const name of [
+            '技能 Skills',
+            '工作场景 Workflow',
+            '插件 Plugins',
+            '记忆 Memory',
+          ])
             await readable(
-              'start on hover',
-              card.getByText('开始', { exact: true }),
+              `${name} description heading`,
+              dialog.getByRole('heading', { name, exact: true }),
             );
-          }
         }));
 
       for (const [kind, name, eyebrow] of [

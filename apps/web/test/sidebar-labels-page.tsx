@@ -7,7 +7,7 @@ import type {
 } from '../app/chatflow/chatflow-types';
 import { BrandContentPanel } from '../app/chatflow/brand-content-panel';
 import { DeliverableVersionHistoryDialog } from '../app/chatflow/deliverable-version-history-dialog';
-import { EmployeePickerDialog } from '../app/chatflow/employee-picker-dialog';
+import { EmployeeCreateDialog } from '../app/chatflow/employee-create-dialog';
 import { EmployeeSidebar } from '../app/chatflow/employee-sidebar';
 import { SessionReferencePicker } from '../app/chatflow/session-reference-picker';
 import { WorkbenchEntries } from '../app/chatflow/workbench-modules';
@@ -109,15 +109,15 @@ createRoot(document.getElementById('root')!).render(
         collapsed={false}
         onSelectSession={noop}
         onPrepareSession={noop}
+        onNewSession={noop}
         onDetails={noop}
       />
     </aside>
-    {dialog === 'picker' && (
-      <EmployeePickerDialog
+    {dialog === 'create' && (
+      <EmployeeCreateDialog
         workspace={workspace}
         headers={{}}
         onClose={noop}
-        onSelect={noop}
         onCreated={noop}
       />
     )}

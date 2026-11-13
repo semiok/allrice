@@ -55,7 +55,7 @@ export function useWorkbenchResize(
     ? 57
     : Math.min(
         sidebarMax,
-        Math.max(sidebarMin, Math.round(sidebarPreference ?? 240)),
+        Math.max(sidebarMin, Math.round(sidebarPreference ?? 320)),
       );
   const max = Math.max(
     min,

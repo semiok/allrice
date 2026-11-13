@@ -507,3 +507,163 @@
     min-height: 44px;
   }
 }
+
+/* Approved MET-249 creation form. Edit-mode validation and presentation stay scoped. */
+.createForm {
+  margin: 0;
+  font: var(--ar-font-body);
+  -webkit-font-smoothing: antialiased;
+}
+.createForm > div {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ar-border-strong) transparent;
+}
+.createForm .identity {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.createForm .nameRow {
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.createForm .avatar {
+  width: 44px;
+  height: 44px;
+  margin-top: 24px;
+  border-radius: var(--ar-radius-md);
+  color: var(--employee-foreground);
+  font-size: 20px;
+  font-weight: 600;
+}
+.createForm .nameField label,
+.createForm .field label,
+.createForm .colors legend {
+  margin: 0 0 8px;
+  font: var(--ar-font-label);
+}
+.createForm .colors {
+  margin: 0 0 16px;
+}
+.createForm .colorChoice {
+  min-height: 56px;
+  color: var(--ar-text-secondary);
+  font: var(--ar-font-caption);
+}
+.createForm .settings {
+  gap: 16px;
+  margin: 0;
+}
+.createForm .nameField input,
+.createForm .field textarea,
+.createForm .field select {
+  min-height: 44px;
+  padding: 10px 12px;
+  border-color: var(--ar-border);
+  border-radius: var(--ar-radius-sm);
+  background: var(--ar-surface-subtle);
+  color: var(--ar-text);
+  font: var(--ar-font-body);
+}
+.createForm .field textarea {
+  min-height: 64px;
+}
+.createForm .field select {
+  height: auto;
+  padding-right: 24px;
+}
+@media (min-width: 701px) and (pointer: fine) {
+  .createForm .field select {
+    min-height: 40px;
+    height: 40px;
+  }
+}
+.createForm .nameField input:hover,
+.createForm .field textarea:hover,
+.createForm .field select:hover {
+  border-color: var(--ar-border-strong);
+}
+.createForm .nameField input:focus,
+.createForm .field textarea:focus,
+.createForm .field select:focus {
+  outline: 2px solid var(--ar-focus-ring);
+  outline-offset: 2px;
+  background: var(--dsw-specific-input-major);
+}
+.createForm > [role='alert'] {
+  flex: none;
+  margin: 0;
+  padding: 0 24px 16px;
+}
+.createForm .actions {
+  flex: none;
+  align-items: center;
+  margin: 0;
+  padding: 16px 24px 20px;
+  border-color: var(--ar-border);
+}
+.createForm .actions button {
+  min-height: 36px;
+  padding: 7px 14px;
+  border: 0.5px solid var(--ar-border);
+  border-radius: var(--ar-radius-md);
+  background: transparent;
+  color: var(--ar-text);
+  font: var(--ar-font-label);
+  white-space: nowrap;
+}
+.createForm .actions button:hover:not(:disabled) {
+  background: var(--ar-surface-hover);
+}
+.createForm .actions button[type='submit'] {
+  border-color: transparent;
+  background: var(--ar-action-primary);
+  color: var(--ar-text-on-primary);
+}
+.createForm .actions button[type='submit']:hover:not(:disabled) {
+  background: var(--ar-action-primary-hover);
+}
+.createForm .actions button:focus-visible,
+.createForm .colorChoice input:focus-visible + .swatch {
+  outline: 2px solid var(--ar-focus-ring);
+  outline-offset: 3px;
+}
+@media (max-width: 700px) {
+  .createForm .avatar {
+    width: 40px;
+    height: 40px;
+    font-size: 18px;
+  }
+  .createForm .palette {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+  .createForm .colorChoice {
+    min-height: 65px;
+  }
+  .createForm .nameField input,
+  .createForm .field textarea,
+  .createForm .field select {
+    font-size: 16px;
+    line-height: 24px;
+  }
+  .createForm .actions {
+    flex-wrap: wrap;
+    padding: 16px 20px max(16px, env(safe-area-inset-bottom));
+  }
+  .createForm .actions button {
+    min-height: 44px;
+  }
+  .createForm .actions button[type='button'] {
+    margin-left: auto;
+  }
+}
+@media (max-width: 480px) {
+  .createForm .nameRow {
+    gap: 10px;
+  }
+  .createForm .colorChoice {
+    font-size: 11px;
+  }
+}

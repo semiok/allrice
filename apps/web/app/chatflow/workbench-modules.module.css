@@ -185,3 +185,6 @@
 .dockTitle svg {
   flex: none;
 }
+.dockTitle[data-native-subagent-tab] > svg {
+  color: var(--ar-link);
+}

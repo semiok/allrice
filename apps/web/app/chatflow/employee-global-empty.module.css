@@ -1,0 +1,59 @@
+.root {
+  --allrice-chat-header-height: 72px;
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.root .header {
+  padding: 0 28px;
+  border-bottom-color: var(--dsw-alias-border-l1);
+}
+.root .header h1 {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+}
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 32px 96px;
+  padding-inline-start: calc(32px + var(--dsh-scrollbar-width));
+  text-align: center;
+  color: var(--dsw-alias-label-primary);
+  overflow-wrap: anywhere;
+}
+.content {
+  width: 100%;
+  max-width: 560px;
+}
+.mark {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 20px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 16px;
+  background: var(--dsw-alias-bg-module-platform);
+}
+.mark svg {
+  width: 30px;
+  height: 30px;
+}
+.content h1 {
+  margin: 0 0 8px;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 32px;
+}
+.content p {
+  margin: 0;
+  color: var(--ar-text-secondary);
+  font-size: 14px;
+  line-height: 22px;
+}

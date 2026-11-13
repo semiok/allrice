@@ -601,6 +601,8 @@ suite('U1 Rice full persona from the real employee entry', () => {
     await page.goto(`${origin}/?${query}`);
     await page
       .getByRole('textbox', { name: '给 Rice 的消息', exact: true })
+      .or(page.getByRole('region', { name: 'AI 员工空态', exact: true }))
+      .first()
       .waitFor();
     const sidebar = async () => {
       const toggle = page.getByRole('button', {
@@ -760,25 +762,25 @@ suite('U1 Rice full persona from the real employee entry', () => {
     await tree.screenshot({
       path: resolve(appearanceEvidence, `${filename}-sidebar.png`),
     });
-    await f.page
-      .getByRole('button', { name: '开始新的工作', exact: true })
+    await tree
+      .getByRole('button', { name: `和 ${name} 开新会话`, exact: true })
       .click();
-    const picker = f.page.getByRole('dialog', {
-      name: '选择 AI 员工',
-      exact: true,
-    });
-    const choice = picker.getByRole('button').filter({
-      has: f.page.getByText(name, { exact: true }),
-    });
+    await f.page
+      .getByRole('textbox', { name: `给 ${name} 的消息`, exact: true })
+      .waitFor();
+    const conversation = f.page.locator('main > section[data-employee-accent]');
+    expect(await conversation.getAttribute('data-employee-accent')).toBe(color);
     expect(
-      await read(choice.locator(':scope > span[aria-hidden="true"]').first()),
-    ).toEqual(detailPaint);
-    await paint(picker);
-    await picker.screenshot({
-      path: resolve(appearanceEvidence, `${filename}-picker.png`),
+      await conversation.evaluate((node) =>
+        getComputedStyle(node).getPropertyValue('--employee-start').trim(),
+      ),
+    ).toBe(detailPaint.accent);
+    expect(
+      await f.page.getByRole('dialog', { name: '选择 AI 员工' }).count(),
+    ).toBe(0);
+    await f.page.screenshot({
+      path: resolve(appearanceEvidence, `${filename}-new-session.png`),
     });
-    await picker.getByRole('button', { name: '关闭', exact: true }).click();
-    await picker.waitFor({ state: 'detached' });
     await f.openDetails(name);
   }
 
@@ -796,6 +798,47 @@ suite('U1 Rice full persona from the real employee entry', () => {
           name: '给 Rice 的消息',
           exact: true,
         });
+        if (width > 760) {
+          // This business case needs a draft without selecting a pending
+          // employee. Prepare it through the existing public settings action.
+          await f.page
+            .getByRole('region', { name: 'AI 员工空态', exact: true })
+            .waitFor();
+          await f.sidebar();
+          await f.page
+            .getByRole('button', { name: '设置', exact: true })
+            .click();
+          const settings = f.page.getByRole('dialog', {
+            name: '设置',
+            exact: true,
+          });
+          await settings
+            .getByRole('button', { name: '工作方式', exact: true })
+            .click();
+          const work = settings.locator('[data-capability-scope="work"]');
+          const group = work.locator(':scope > details');
+          if ((await group.getAttribute('open')) === null)
+            await group.locator(':scope > summary').click();
+          const report = work.locator('[data-capability="report"]');
+          if ((await report.getAttribute('open')) === null)
+            await report.locator(':scope > summary').click();
+          await report
+            .getByRole('button', {
+              name: '准备报告与文件交付任务',
+              exact: true,
+            })
+            .click();
+          await composer.waitFor();
+          expect(new URL(f.page.url()).searchParams.get('session')).toBeNull();
+          expect(
+            await f.page
+              .getByRole('treeitem')
+              .filter({ hasText: '新会话' })
+              .count(),
+          ).toBe(0);
+          expect(f.state.writes).toEqual([]);
+          expect(f.state.unexpected).toEqual([]);
+        }
         await composer.fill('不发送的原工作草稿。');
         await f.openDetails();
         const editor = await f.openEditor();

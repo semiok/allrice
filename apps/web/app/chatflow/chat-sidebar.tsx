@@ -21,6 +21,7 @@ import type { Session, Workspace } from './chatflow-types';
 import type { useSessionArchive } from './use-session-archive';
 import archiveCss from './session-archive.module.css';
 import { EmployeeSidebar } from './employee-sidebar';
+import employeeSidebarCss from './employee-sidebar.module.css';
 import { employeePreferenceKey } from './employee-navigation';
 import type { NativeSubagentRead } from './use-native-subagents';
 import frameUi from './dsh-upstream/AppFrame.module.css';
@@ -48,7 +49,9 @@ interface ChatSidebarProps {
   bridgeReleases: ReturnType<typeof useBridgeReleases>;
   onCapabilitiesChange: () => void;
   onCollapsedChange: (collapsed: boolean) => void;
-  onNewSession: (assignmentId?: string) => void;
+  onCreateEmployee: () => void;
+  onNewSession: (assignmentId: string) => void;
+  pendingEmployeeAssignmentId?: string | null;
   onOpenEmployeeDetails: (assignmentId?: string) => void;
   onSelectSession: (sessionId: string) => void;
   onPrepareSession: (sessionId: string) => void;
@@ -81,7 +84,9 @@ export function ChatSidebar({
   bridgeReleases,
   onCapabilitiesChange,
   onCollapsedChange,
+  onCreateEmployee,
   onNewSession,
+  pendingEmployeeAssignmentId,
   onOpenEmployeeDetails,
   onSelectSession,
   onPrepareSession,
@@ -94,10 +99,6 @@ export function ChatSidebar({
 }: ChatSidebarProps) {
   const sidebar = useRef<HTMLElement>(null);
   const showingArchive = archive?.filter === 'only';
-  const startNewSession = () => {
-    archive?.setFilter('default');
-    onNewSession();
-  };
   useEffect(() => {
     if (!overlay) return;
     const previous =
@@ -166,14 +167,9 @@ export function ChatSidebar({
       >
         <div className={sidebarUi.logoRow}>
           {!collapsed ? (
-            <button
-              aria-label="开始新的工作"
-              className={sidebarUi.brand}
-              onClick={startNewSession}
-              type="button"
-            >
+            <div className={sidebarUi.brand}>
               <AllriceBrand />
-            </button>
+            </div>
           ) : null}
           <button
             aria-label={collapsed ? '展开侧边栏' : '收起侧边栏'}
@@ -204,11 +200,11 @@ export function ChatSidebar({
         <div className={!collapsed ? archiveCss.newWorkActions : undefined}>
           <button
             className={`${sidebarUi.newSession} ${!collapsed ? archiveCss.newWorkButton : ''}`}
-            onClick={startNewSession}
+            onClick={onCreateEmployee}
             type="button"
           >
             <span aria-hidden="true">＋</span>
-            <span className={sidebarUi.newSessionLabel}>新的工作</span>
+            <span className={sidebarUi.newSessionLabel}>创建员工</span>
           </button>
           {archive && !collapsed && (
             <Tooltip label="查看归档" side="bottom" align="end">
@@ -296,6 +292,7 @@ export function ChatSidebar({
           </div>
         )}
         <div className={sidebarUi.regionArea}>
+          {!collapsed && <p className={employeeSidebarCss.label}>AI 员工</p>}
           <EmployeeSidebar
             scheduledSessions={scheduledSessions}
             archive={archive}
@@ -307,6 +304,11 @@ export function ChatSidebar({
             workspace={workspace}
             sessions={sessions}
             activeId={activeId}
+            pendingEmployeeAssignmentId={pendingEmployeeAssignmentId}
+            onNewSession={(id) => {
+              archive?.setFilter('default');
+              onNewSession(id);
+            }}
             nativeReadyKey={nativeReadyKey}
             pendingNativeSessions={pendingNativeSessions}
             nativeReads={nativeReads}

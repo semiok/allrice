@@ -56,7 +56,7 @@ main.shell {
   position: fixed;
   inset: 0 auto 0 0;
   z-index: 39;
-  width: min(280px, 85vw);
+  width: min(352px, calc(100vw - 32px));
   box-shadow: 10px 0 40px #0003;
 }
 
@@ -328,6 +328,21 @@ header.conversationHeader::after {
   white-space: nowrap;
 }
 
+@media (max-width: 700px) {
+  .conversationHeader .conversationTitle {
+    flex: 1 0 56px;
+    min-width: 56px;
+  }
+
+  .conversationHeader .conversationTitle + .conversationActions {
+    flex: 0 1 auto;
+  }
+
+  .conversationTitle h1 {
+    max-width: 100%;
+  }
+}
+
 .conversationBody {
   min-height: 0;
 }
@@ -475,6 +490,58 @@ header.conversationHeader::after {
   color: var(--dsw-alias-state-business-primary);
   font-size: 20px;
   font-weight: 700;
+}
+
+/* Employee-selected blank/created work follows the approved employee surface.
+   The global welcome and automation modes keep their separate presentation. */
+.pendingEmployeeStage .heroHeadline {
+  width: 100%;
+  max-width: 560px;
+  gap: 0;
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.pendingEmployeeStage .heroMark {
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 16px;
+  border-radius: 16px;
+  background: var(--employee-start);
+  color: var(--employee-foreground);
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.pendingEmployeeStage .heroHeadline h1 {
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 32px;
+}
+
+.pendingEmployeeStage .heroHeadline h1 + p {
+  margin-top: 8px;
+}
+
+@media (max-width: 760px) {
+  .pendingEmployeeStage {
+    /* Keep the 57px rail. At 390px this leaves 325px for the approved
+       16-character, 20px title; narrower views may wrap without clipping. */
+    padding-inline: 4px;
+  }
+
+  .pendingEmployeeStage .heroHeadline h1 {
+    font-size: 20px;
+    line-height: 28px;
+  }
+
+  .pendingEmployeeStage .heroHeadline p {
+    font-size: 13px;
+  }
 }
 
 .pendingFiles {
