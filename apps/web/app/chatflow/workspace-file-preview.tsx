@@ -6,7 +6,6 @@ import type {
 } from '@allrice/contracts';
 import {
   IconPlusOutlineRegular,
-  IconLinkOutlineRegular,
   IconDownloadOutlineRegular,
   Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives';
@@ -27,7 +26,6 @@ import styles from './workbench.module.css';
 import { WorkbenchFileToolbarActions } from './workbench-file-toolbar-actions';
 import type { WorkbenchFileReferenceProps } from './use-workbench-file-reference';
 import { useWorkbenchFileReference } from './use-workbench-file-reference';
-import { copyWorkbenchFileLink } from './workbench-file-link';
 import { WorkbenchDeliverablesActionsCatalogSchema } from '../../lib/chatflow/workbench-file-actions';
 import detail from './workbench-files-panel.module.css';
 import { employeeAccentStyle } from './employee-navigation';
@@ -182,7 +180,6 @@ export function WorkspaceFilePreview(props: {
   const [attempt, setAttempt] = useState(0);
   const [source, setSource] = useState(false);
   const [interactive, setInteractive] = useState(false);
-  const [copyNotice, setCopyNotice] = useState('');
   const favorite = useWorkbenchFileFavorite({
     ownerKey: `${props.ownerKey ?? ''}/${props.objectId}`,
     viewerId: props.viewerId,
@@ -199,10 +196,6 @@ export function WorkspaceFilePreview(props: {
     onUse: props.fileActions?.onUse ?? (() => {}),
     onTemplate: props.fileActions?.onTemplate,
   });
-  const copyLink = () =>
-    void copyWorkbenchFileLink(props.workspaceId, props.objectId)
-      .then(() => setCopyNotice('链接已复制，仅你自己可以打开'))
-      .catch(() => setCopyNotice('操作未完成，请重试。'));
   const quote = () => {
     if (props.deliverable) void reference.useFile(props.deliverable);
   };
@@ -210,17 +203,23 @@ export function WorkspaceFilePreview(props: {
     !props.quotable ||
     !!props.fileActions?.readOnly ||
     reference.using !== null;
+  const favoriteLabel = props.deliverable?.favorite ? '取消收藏' : '收藏';
+  const favoriteDisabled = favorite.disabled || !!favorite.using;
+  const toggleFavorite = () => {
+    if (props.deliverable)
+      void favorite.setFavorite(props.objectId, !props.deliverable.favorite);
+  };
   const toolResult = isToolResultFile(props.title, props.objectId);
   const baseUrl = props.unified ? '/api/v1/workbench/files' : '/api/v1/files';
   const base = `${baseUrl}/${encodeURIComponent(props.objectId)}`;
   const query = `?workspaceId=${encodeURIComponent(props.workspaceId)}&name=${encodeURIComponent(props.title)}`;
+  const downloadUrl = `${base}/download${query}`;
   useEffect(() => {
     const controller = new AbortController();
     setError('');
     setPreview(null);
     setSource(false);
     setInteractive(false);
-    setCopyNotice('');
     void workbenchJson(`${base}/preview${query}`, props.tenantHeaders, {
       signal: controller.signal,
     })
@@ -237,6 +236,169 @@ export function WorkspaceFilePreview(props: {
       });
     return () => controller.abort();
   }, [base, query, props.tenantHeaders, attempt]);
+  const footer = props.deliverable ? (
+    <footer className={detail.detailFooter}>
+      <dl className={detail.metadata}>
+        <dt>
+          {props.deliverable.origin === 'business-deliverable'
+            ? '员工交付'
+            : '我的上传'}
+        </dt>
+        <dd>
+          {props.deliverable.origin === 'business-deliverable' &&
+          props.deliverable.sources[0] ? (
+            <>
+              <span
+                className={detail.employeeAvatar}
+                style={employeeAccentStyle(
+                  props.deliverable.sources[0]!.employeeName,
+                  props.employeeColors?.[
+                    props.deliverable.sources[0]!.employeeInstanceId
+                  ],
+                )}
+                aria-hidden="true"
+              >
+                {Array.from(props.deliverable.sources[0]!.employeeName)[0]}
+              </span>
+              {props.deliverable.sources[0]!.employeeName}
+            </>
+          ) : (
+            '我'
+          )}{' '}
+          · {new Date(props.deliverable.createdAt).toLocaleString('zh-CN')}
+        </dd>
+        <dt>来自对话</dt>
+        <dd>
+          {props.deliverable.sources.length
+            ? props.deliverable.sources.map((source) => (
+                <button
+                  type="button"
+                  className={detail.sourceLink}
+                  key={source.sessionId}
+                  onClick={() => props.onSource?.(source.sessionId)}
+                >
+                  {source.sessionTitle} ›
+                </button>
+              ))
+            : '—'}
+        </dd>
+      </dl>
+      <div className={detail.detailActions}>
+        <button type="button" disabled={quoteDisabled} onClick={quote}>
+          <IconPlusOutlineRegular size={18} />
+          引用到对话
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            const a = document.createElement('a');
+            a.href = downloadUrl;
+            a.download = props.title;
+            document.body.append(a);
+            a.click();
+            a.remove();
+          }}
+        >
+          <IconDownloadOutlineRegular size={18} />
+          下载
+        </button>
+        <button
+          type="button"
+          className={detail.favoriteButton}
+          aria-pressed={props.deliverable.favorite}
+          disabled={favoriteDisabled}
+          onClick={toggleFavorite}
+        >
+          <WorkbenchIcon
+            kind="star"
+            filled={props.deliverable.favorite}
+            size={18}
+          />
+          {favoriteLabel}
+        </button>
+      </div>
+      {(reference.error ||
+        favorite.error ||
+        props.metadataError ||
+        reference.notice) && (
+        <p
+          role={
+            reference.error || favorite.error || props.metadataError
+              ? 'alert'
+              : 'status'
+          }
+          className={detail.notice}
+        >
+          {reference.error ||
+            favorite.error ||
+            (props.metadataError ? '预览加载失败' : '') ||
+            reference.notice}
+          {props.metadataError && (
+            <button
+              type="button"
+              className={detail.sourceLink}
+              onClick={props.onReloadMetadata}
+            >
+              重新加载
+            </button>
+          )}
+        </p>
+      )}
+      {reference.pending && (
+        <p role="status">
+          正在准备“{reference.pending.reference.fileName}”…{' '}
+          <button type="button" onClick={reference.cancel}>
+            取消等待
+          </button>
+        </p>
+      )}
+    </footer>
+  ) : undefined;
+  const nativeViewport = hasNativeViewport(preview) && !source;
+  const pdfFooter =
+    !!props.deliverable && !error && preview?.kind === 'pdf' && !source;
+  const content = (
+    <div
+      className={`${reader.content} ${nativeViewport ? reader.officeContent : ''} ${props.deliverable ? detail.deliveryPreview : ''} ${props.deliverable && nativeViewport ? detail.deliveryViewport : ''}`}
+    >
+      {error ? (
+        <p
+          className={props.deliverable ? detail.previewError : styles.error}
+          role="alert"
+        >
+          {props.deliverable ? '预览加载失败' : error}
+          {props.deliverable && (
+            <button type="button" onClick={() => setAttempt((n) => n + 1)}>
+              重新加载
+            </button>
+          )}
+        </p>
+      ) : preview ? (
+        <>
+          <NativeDocumentPreview
+            active={props.active}
+            preview={preview}
+            fileName={props.title}
+            pageUrl={`${base}/preview${query}`}
+            headers={props.tenantHeaders}
+            source={source}
+            interactive={interactive}
+            toolResult={toolResult}
+            footer={pdfFooter ? footer : undefined}
+          />
+          {props.deliverable &&
+            preview.kind === 'download_only' &&
+            preview.retryable === true && (
+              <button type="button" onClick={() => setAttempt((n) => n + 1)}>
+                重新加载
+              </button>
+            )}
+        </>
+      ) : (
+        <p role="status">正在加载文件预览…</p>
+      )}
+    </div>
+  );
   return (
     <div
       className={`${reader.reader} ${props.deliverable ? detail.deliveryDetail : ''}`}
@@ -261,7 +423,7 @@ export function WorkspaceFilePreview(props: {
               : '工具记录'
             : props.title
         }
-        downloadUrl={`${base}/download${query}`}
+        downloadUrl={downloadUrl}
         quickActions={
           props.deliverable ? (
             <Tooltip label="引用到对话" side="bottom" portal>
@@ -291,33 +453,14 @@ export function WorkspaceFilePreview(props: {
         trailingActions={
           props.deliverable ? (
             <>
-              <Tooltip label="复制链接" side="bottom" portal>
-                <button
-                  type="button"
-                  className={reader.iconButton}
-                  aria-label="复制链接"
-                  onClick={copyLink}
-                >
-                  <IconLinkOutlineRegular size={20} />
-                </button>
-              </Tooltip>
-              <Tooltip
-                label={props.deliverable.favorite ? '取消收藏' : '收藏'}
-                side="bottom"
-                portal
-              >
+              <Tooltip label={favoriteLabel} side="bottom" portal>
                 <button
                   type="button"
                   className={`${reader.iconButton} ${detail.favoriteButton}`}
-                  aria-label={props.deliverable.favorite ? '取消收藏' : '收藏'}
+                  aria-label={favoriteLabel}
                   aria-pressed={props.deliverable.favorite}
-                  disabled={favorite.disabled || !!favorite.using}
-                  onClick={() =>
-                    void favorite.setFavorite(
-                      props.objectId,
-                      !props.deliverable!.favorite,
-                    )
-                  }
+                  disabled={favoriteDisabled}
+                  onClick={toggleFavorite}
                 >
                   <WorkbenchIcon
                     kind="star"
@@ -351,160 +494,13 @@ export function WorkspaceFilePreview(props: {
           }
         }}
       />
-      <div
-        className={`${reader.content} ${hasNativeViewport(preview) && !source ? reader.officeContent : ''} ${props.deliverable ? detail.deliveryPreview : ''}`}
-      >
-        {error ? (
-          <p
-            className={props.deliverable ? detail.previewError : styles.error}
-            role="alert"
-          >
-            {props.deliverable ? '预览加载失败' : error}
-            {props.deliverable && (
-              <button type="button" onClick={() => setAttempt((n) => n + 1)}>
-                重新加载
-              </button>
-            )}
-          </p>
-        ) : preview ? (
-          <>
-            <NativeDocumentPreview
-              active={props.active}
-              preview={preview}
-              fileName={props.title}
-              pageUrl={`${base}/preview${query}`}
-              headers={props.tenantHeaders}
-              source={source}
-              interactive={interactive}
-              toolResult={toolResult}
-            />
-            {props.deliverable &&
-              preview.kind === 'download_only' &&
-              preview.retryable === true && (
-                <button type="button" onClick={() => setAttempt((n) => n + 1)}>
-                  重新加载
-                </button>
-              )}
-          </>
-        ) : (
-          <p role="status">正在加载文件预览…</p>
-        )}
-      </div>
-      {props.deliverable && (
-        <footer className={detail.detailFooter}>
-          <dl className={detail.metadata}>
-            <dt>
-              {props.deliverable.origin === 'business-deliverable'
-                ? '员工交付'
-                : '我的上传'}
-            </dt>
-            <dd>
-              {props.deliverable.origin === 'business-deliverable' &&
-              props.deliverable.sources[0] ? (
-                <>
-                  <span
-                    className={detail.employeeAvatar}
-                    style={employeeAccentStyle(
-                      props.deliverable.sources[0]!.employeeName,
-                      props.employeeColors?.[
-                        props.deliverable.sources[0]!.employeeInstanceId
-                      ],
-                    )}
-                    aria-hidden="true"
-                  >
-                    {Array.from(props.deliverable.sources[0]!.employeeName)[0]}
-                  </span>
-                  {props.deliverable.sources[0]!.employeeName}
-                </>
-              ) : (
-                '我'
-              )}{' '}
-              · {new Date(props.deliverable.createdAt).toLocaleString('zh-CN')}
-            </dd>
-            <dt>来自对话</dt>
-            <dd>
-              {props.deliverable.sources.length
-                ? props.deliverable.sources.map((source) => (
-                    <button
-                      type="button"
-                      className={detail.sourceLink}
-                      key={source.sessionId}
-                      onClick={() => props.onSource?.(source.sessionId)}
-                    >
-                      {source.sessionTitle} ›
-                    </button>
-                  ))
-                : '—'}
-            </dd>
-          </dl>
-          <div className={detail.detailActions}>
-            <button
-              type="button"
-              className={detail.primaryAction}
-              disabled={quoteDisabled}
-              onClick={quote}
-            >
-              <IconPlusOutlineRegular size={18} />
-              引用到对话
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                const a = document.createElement('a');
-                a.href = `${base}/download${query}`;
-                a.download = props.title;
-                document.body.append(a);
-                a.click();
-                a.remove();
-              }}
-            >
-              <IconDownloadOutlineRegular size={18} />
-              下载
-            </button>
-            <button type="button" onClick={copyLink}>
-              <IconLinkOutlineRegular size={18} />
-              复制链接
-            </button>
-          </div>
-          {(reference.error ||
-            favorite.error ||
-            props.metadataError ||
-            reference.notice ||
-            copyNotice) && (
-            <p
-              role={
-                reference.error || favorite.error || props.metadataError
-                  ? 'alert'
-                  : 'status'
-              }
-              className={detail.notice}
-            >
-              {reference.error ||
-                favorite.error ||
-                (props.metadataError ? '预览加载失败' : '') ||
-                reference.notice ||
-                copyNotice}
-              {props.metadataError && (
-                <button
-                  type="button"
-                  className={detail.sourceLink}
-                  onClick={props.onReloadMetadata}
-                >
-                  重新加载
-                </button>
-              )}
-            </p>
-          )}
-          {reference.pending && (
-            <p role="status">
-              正在准备“{reference.pending.reference.fileName}”…{' '}
-              <button type="button" onClick={reference.cancel}>
-                取消等待
-              </button>
-            </p>
-          )}
-          <p className={detail.privateNote}>交付成果只有你自己能看到。</p>
-        </footer>
+      {props.deliverable ? (
+        <div className={detail.deliveryReadingArea}>
+          {content}
+          {!pdfFooter && footer}
+        </div>
+      ) : (
+        content
       )}
     </div>
   );
