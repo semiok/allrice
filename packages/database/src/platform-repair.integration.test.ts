@@ -1,6 +1,7 @@
 /** Real isolated PostgreSQL/Employee Run authority. Physical and paid-model checks are separate. */
 import { randomUUID, createHash } from 'node:crypto';
 import {
+  constants,
   readFileSync,
   writeFileSync,
   mkdtempSync,
@@ -9,8 +10,8 @@ import {
   realpathSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
+import { cp, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { gzipSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
@@ -47,6 +48,7 @@ import {
   measureDshNativeArtifact,
   installDshNativeArtifact,
   nativeArtifactPath,
+  currentDshNativeLaunch,
 } from '../../../apps/worker/src/harness/dsh-native-artifact.js';
 import { p24Fixture } from '../../../apps/worker/test/p24/fixture.js';
 import { executeEmployeeRun } from '../../../apps/worker/src/jobs/employee-run.js';
@@ -109,26 +111,46 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
     catalogRoot: string,
     baseline: RepositoryBaseline;
   let model: Awaited<ReturnType<typeof p24Fixture>>;
-  let manifestPath: string, previousManifest: Buffer | undefined;
+  let nativeRoot: string | undefined;
   const testHarnessExecArgv = process.execArgv;
   beforeAll(async () => {
     const repository = await realpath(resolve(import.meta.dirname, '../../..'));
     const artifact = await measureDshNativeArtifact(repository, undefined, {
       schemaVersion: 2,
     });
-    manifestPath = join(repository, nativeArtifactPath);
-    previousManifest = await readFile(manifestPath).catch(
-      (error: NodeJS.ErrnoException) => {
-        if (error.code !== 'ENOENT') throw error;
-        return undefined;
-      },
-    );
-    await mkdir(join(repository, '.local'), { recursive: true });
+    nativeRoot = await mkdtemp(join(tmpdir(), 'allrice-repair-native-'));
+    nativeRoot = await realpath(nativeRoot);
+    const root = nativeRoot;
+    // Copy installation bytes and relative aliases, never the repository's
+    // shared .local manifest, .git or an alias back to its directory tree.
+    const installationPaths = new Set([
+      'package.json',
+      'pnpm-lock.yaml',
+      'pnpm-workspace.yaml',
+      'node_modules',
+      'apps/worker/package.json',
+      'apps/worker/dsh',
+      'apps/worker/node_modules',
+      ...artifact.content.packages
+        .map(({ path }) => path)
+        .filter((path) => !path.startsWith('node_modules/')),
+    ]);
+    for (const path of installationPaths) {
+      const target = join(root, path);
+      await mkdir(dirname(target), { recursive: true });
+      await cp(join(repository, path), target, {
+        recursive: true,
+        verbatimSymlinks: true,
+        mode: constants.COPYFILE_FICLONE,
+      });
+    }
+    const manifestPath = join(root, nativeArtifactPath);
+    await mkdir(dirname(manifestPath), { recursive: true });
     await writeFile(manifestPath, JSON.stringify(artifact));
     process.execArgv = [];
     vi.stubEnv('NODE_OPTIONS', '');
     await installDshNativeArtifact({
-      root: repository,
+      root,
       expectedId: artifact.artifactId,
     });
     vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', artifact.artifactId);
@@ -256,10 +278,7 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
       await model?.close();
       await fixture?.close();
     } finally {
-      if (manifestPath) {
-        if (previousManifest) await writeFile(manifestPath, previousManifest);
-        else await rm(manifestPath, { force: true });
-      }
+      if (nativeRoot) await rm(nativeRoot, { recursive: true, force: true });
       process.execArgv = testHarnessExecArgv;
       vi.restoreAllMocks();
       vi.unstubAllEnvs();
@@ -401,6 +420,76 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
     await startClaimedJob(workerId, job!.id, lease.leaseToken);
     return lease;
   }
+  it('the production publication lookup recovers a suffixed deterministic object and preserves ambiguous legacy rejection', async () => {
+    const q = await submit(),
+      lease = await start(q),
+      task = await getPlatformRepairExecution(lease);
+    const { readPlatformRepairPublication } = await vi.importActual<
+      typeof RepairWorker
+    >('../../../apps/worker/src/jobs/platform-repair.js');
+    const checksum = repositoryDigest(
+      Buffer.from('Synthetic metadata lookup only'),
+    );
+    const seed = async (objectId: string, fileName: string) => {
+      const id = randomUUID();
+      await fixture.db`insert into allrice_storage_objects(id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,visibility,state,immutable)
+        values(${objectId},${task.organization_id},${task.workspace_id},${task.owner_id},${'fixture/repair/' + objectId},'exports','application/json',3,${checksum},'private','ready',true)`;
+      await fixture.db`insert into allrice_deliverable_versions(id,organization_id,workspace_id,owner_id,object_id,series_id,version,session_id,file_name,format)
+        values(${id},${task.organization_id},${task.workspace_id},${task.owner_id},${objectId},${randomUUID()},1,${task.session_id},${fileName},'json')`;
+      return { id, object_id: objectId, file_name: fileName, size_bytes: '3' };
+    };
+    try {
+      const legacy = await seed(randomUUID(), '仓库候选修订.json');
+      const first = await readPlatformRepairPublication(
+        task,
+        'candidate',
+        checksum,
+      );
+      expect(first.published).toMatchObject({
+        id: legacy.id,
+        file_name: '仓库候选修订.json',
+      });
+      const exact = await seed(first.objectId, '仓库候选修订（2）.json');
+      const recovered = await readPlatformRepairPublication(
+        task,
+        'candidate',
+        checksum,
+      );
+      expect(recovered.published).toMatchObject({
+        id: exact.id,
+        object_id: first.objectId,
+        file_name: '仓库候选修订（2）.json',
+      });
+      expect(
+        await readPlatformRepairPublication(task, 'candidate', checksum),
+      ).toEqual(recovered);
+      expect(
+        (
+          await readPlatformRepairPublication(
+            { ...task, owner_id: randomUUID() },
+            'candidate',
+            checksum,
+          )
+        ).published,
+      ).toBeUndefined();
+      await seed(randomUUID(), '仓库候选修订.json');
+      await expect(
+        readPlatformRepairPublication(task, 'candidate', checksum),
+      ).rejects.toMatchObject({ code: 'REPAIR_ARTIFACT_CONFLICT' });
+      expect(
+        await fixture.db`select file_name from allrice_deliverable_versions where id=${legacy.id}`,
+      ).toEqual([{ file_name: '仓库候选修订.json' }]);
+    } finally {
+      await cancelPlatformRepairTask(admin, q.id);
+      await failJob({
+        ...lease,
+        code: 'FIXTURE_LOOKUP_COMPLETE',
+        message:
+          'Synthetic publication lookup only; no physical controller success',
+        retryable: false,
+      });
+    }
+  }, 30000);
   async function assertFrozenCommandRecovery(
     prepared: Awaited<ReturnType<typeof preparePlatformRepairVerification>>,
     lease: Parameters<typeof preparePlatformRepairVerification>[0],
@@ -583,7 +672,11 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
       jobId: job!.id,
       attempt: job!.attempt,
     });
+    const launch = currentDshNativeLaunch('restricted');
     const adapter = new DshHarnessAdapter({
+      runtimeCommand: launch.command,
+      runtimeArgs: launch.args,
+      cordisConfig: launch.profile,
       runtimeRoot: join(fixture.storageRoot, 'fixed-repair-native'),
       credentialResolver: {
         resolve: async () => ({ apiKey: 'synthetic-only' }),

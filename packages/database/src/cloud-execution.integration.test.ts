@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,8 +14,18 @@ import { cloudStableId } from './cloud-execution.ts';
 import { revokeRuntimeActionApproval } from './runtime-policy.ts';
 import { listCloudRuntimeOperations } from './cloud-operation-view.ts';
 import { executeRiceTool } from '../../../apps/worker/src/tool-broker.js';
+import { exportReconciliation } from '../../../apps/worker/src/tool-broker/handlers/reconciliation.js';
+import { getWorkbenchArtifact, readArtifactBytes } from './artifact-review.ts';
+import { readWorkbenchDeliverables } from './workbench-files.ts';
+import { authenticateSession, createSession } from './identity.ts';
+import { UuidSchema } from '@allrice/contracts';
+import { z } from 'zod';
 import { resolveCloudToolArguments } from '../../../apps/worker/src/tool-broker/handlers/cloud-frozen-script.js';
-import { getToolBrokerFile } from './execution/tool-broker.ts';
+import {
+  getToolBrokerFile,
+  createToolBrokerExportObject,
+  registerToolBrokerExport,
+} from './execution/tool-broker.ts';
 import type * as Client from './core/client.ts';
 let db: ReturnType<typeof postgres>,
   admin: ReturnType<typeof postgres>,
@@ -149,6 +159,25 @@ suite('P15 real PostgreSQL governance and SaaS gVisor delivery', () => {
       outputs: [{ path: 'summary.csv', fileName: '汇总.csv', format: 'csv' }],
     };
     const raw = structuredClone(args);
+    const priorBytes = Buffer.from('Existing exact original');
+    const prior = createToolBrokerExportObject({
+      context: f.execution,
+      mediaType: 'text/csv',
+      sizeBytes: priorBytes.length,
+      checksum:
+        'sha256:' + createHash('sha256').update(priorBytes).digest('hex'),
+    });
+    await f.storage.put(prior, new Blob([priorBytes]).stream());
+    await registerToolBrokerExport(
+      {
+        context: f.execution,
+        sessionId: f.session,
+        fileName: '汇总.csv',
+        format: 'text',
+        object: prior,
+      },
+      db,
+    );
     const timeout = process.env.ALLRICE_CLOUD_COMMAND_TIMEOUT_MS;
     const output = process.env.ALLRICE_CLOUD_COMMAND_OUTPUT_BYTES;
     vi.stubEnv('ALLRICE_CLOUD_COMMAND_TIMEOUT_MS', '1500');
@@ -237,6 +266,20 @@ suite('P15 real PostgreSQL governance and SaaS gVisor delivery', () => {
       if ('error' in result) throw result.error;
       const value = JSON.parse(result.value.modelContent);
       expect(value.status).toBe('succeeded');
+      expect(value.artifacts[0].fileName).toBe('汇总（2）.csv');
+      const replay = await executeRiceTool({
+        context: f.execution,
+        capabilities: ['storage:read', 'storage:write'],
+        storageRoot,
+        sessionId: f.session,
+        call: { id: 'summary', name: 'cloud.process.execute', arguments: args },
+      });
+      expect(JSON.parse(replay.modelContent).artifacts).toEqual(
+        value.artifacts,
+      );
+      expect(await new Response(await f.storage.get(prior)).text()).toBe(
+        'Existing exact original',
+      );
       expect(execute).toHaveBeenCalledTimes(1);
       expect(execute.mock.calls[0]![0].arguments.limits).toMatchObject({
         timeoutMs: 1500,
@@ -270,6 +313,149 @@ suite('P15 real PostgreSQL governance and SaaS gVisor delivery', () => {
       vi.stubEnv('ALLRICE_CLOUD_COMMAND_OUTPUT_BYTES', output);
     }
   });
+  it('the real reconciliation handler returns the persisted collision name and exact call replay with a saved synthetic cloud result', async () => {
+    const f = await fixture({ workbench: true, reconciliationOnly: true });
+    const report = {
+      schemaVersion: 1,
+      currency: 'CNY',
+      rows: [
+        {
+          invoice_id: 'invoice-1',
+          invoice_cents: 30,
+          paid_cents: 30,
+          difference_cents: 0,
+          status: 'matched',
+        },
+      ],
+      issues: [],
+      totals: {
+        invoice_rows: 1,
+        payment_rows: 1,
+        invoice_cents: 30,
+        valid_payment_cents: 30,
+        allocated_payment_cents: 30,
+        unallocated_payment_cents: 0,
+        difference_cents: 0,
+      },
+    };
+    class SavedReportBackend extends CloudRunnerBackend {
+      executions = 0;
+      override async inspect() {
+        return null;
+      }
+      override async cleanup() {}
+      override async execute(): ReturnType<CloudRunnerBackend['execute']> {
+        this.executions++;
+        return {
+          containerId: '2'.repeat(64),
+          exitCode: 0,
+          stopped: true,
+          reason: 'completed',
+          output: 'synthetic saved report',
+          elapsedMs: 1,
+          artifacts: [
+            {
+              path: 'reconciliation.json',
+              contentBase64: Buffer.from(JSON.stringify(report)).toString(
+                'base64',
+              ),
+            },
+          ],
+        };
+      }
+    }
+    const fake = new SavedReportBackend();
+    const operation = await f.create('reconciliation-source', {
+      script: '/* synthetic saved cloud result, no physical execution */',
+      inputs: f.args.inputs,
+      outputs: [
+        {
+          path: 'reconciliation.json',
+          fileName: 'reconciliation.json',
+          format: 'json',
+        },
+      ],
+    });
+    await f.approve(operation);
+    const computed = await runCloudCommandOperation(operation, {
+      storage: f.storage,
+      backend: fake,
+      database: db,
+    });
+    expect(computed.status).toBe('succeeded');
+    expect(fake.executions).toBe(1);
+    const args = {
+        artifactId: computed.artifacts[0]!.versionId,
+        fileName: '对账.xlsx',
+      },
+      originalArgs = structuredClone(args);
+    const invoke = (callId: string, argumentsInput = args) =>
+      exportReconciliation({
+        input: {
+          context: f.execution,
+          capabilities: ['storage:read', 'storage:write'],
+          storageRoot,
+          sessionId: f.session,
+          call: {
+            id: callId,
+            name: 'workspace.reconciliation.export',
+            arguments: argumentsInput,
+          },
+        },
+        arguments: argumentsInput,
+      });
+    const parse = (body: string) =>
+      z
+        .object({
+          artifactId: UuidSchema,
+          objectId: UuidSchema,
+          fileName: z.string(),
+          downloadUrl: z.string(),
+        })
+        .parse(JSON.parse(body));
+    const first = parse((await invoke('first-reconciliation')).modelContent),
+      firstArtifact = await getWorkbenchArtifact(
+        f.context,
+        f.session,
+        first.artifactId,
+      ),
+      originalBytes = await readArtifactBytes(f.storage, firstArtifact.object);
+    const secondResult = await invoke('second-reconciliation'),
+      second = parse(secondResult.modelContent);
+    expect(first.fileName).toBe('对账.xlsx');
+    expect(second.fileName).toBe('对账（2）.xlsx');
+    expect(second.objectId).not.toBe(first.objectId);
+    expect(
+      new URL(second.downloadUrl, 'https://allrice.test').searchParams.get(
+        'name',
+      ),
+    ).toBe(second.fileName);
+    expect(await invoke('second-reconciliation')).toEqual(secondResult);
+    await expect(
+      invoke('second-reconciliation', { ...args, fileName: '变更.xlsx' }),
+    ).rejects.toThrow('idempotency_conflict');
+    expect(args).toEqual(originalArgs);
+    expect(await readArtifactBytes(f.storage, firstArtifact.object)).toEqual(
+      originalBytes,
+    );
+    const login = {
+      ...(await authenticateSession((await createSession(f.user)).token))!,
+      workspaceId: f.workspace,
+    };
+    const directory = await readWorkbenchDeliverables(login, {
+      workspaceId: f.workspace,
+      objectId: second.objectId,
+    });
+    expect(directory.files[0]!.fileName).toBe(second.fileName);
+    const source = await getWorkbenchArtifact(
+      f.context,
+      f.session,
+      args.artifactId,
+    );
+    expect((await readArtifactBytes(f.storage, source.object)).toString()).toBe(
+      JSON.stringify(report),
+    );
+  }, 30000);
   it('preserves both exact runtime endpoints through Broker normalization and rejects outside them before freezing', async () => {
     const f = await fixture();
     for (const [index, limits] of [

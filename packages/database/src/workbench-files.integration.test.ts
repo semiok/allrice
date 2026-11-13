@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { allocateWorkbenchFileName } from './workbench-file-name.ts';
+import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
 import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 import type { RequestContext, WorkbenchFileSharing } from '@allrice/contracts';
 import * as client from './core/client.ts';
@@ -25,6 +27,7 @@ import {
   listWorkbenchFileVersions,
   updateWorkbenchFile,
   uploadWorkbenchFile,
+  setWorkbenchFileFavorite,
 } from './workbench-files.ts';
 import {
   getReferenceFile,
@@ -182,7 +185,7 @@ suite(
       >`select object_id,series_id from allrice_deliverable_versions where id=${first.artifactId}`;
       await fixture.db`update allrice_deliverable_versions set series_id=${v1!.series_id},version=2,parent_version_id=${first.artifactId} where id=${second.artifactId}`;
       await fixture.db`update allrice_storage_objects set created_at='2020-01-01T00:00:00Z' where id in (select object_id from allrice_deliverable_versions where id in (${first.artifactId},${second.artifactId}))`;
-      const uploads = [];
+      const uploads: string[] = [];
       for (let n = 0; n < 52; n++) {
         const file = await uploadWorkbenchFile(
           owner,
@@ -229,6 +232,9 @@ suite(
         category: 'artifact',
       });
       expect(business.files).toHaveLength(2);
+      expect(business.files.every((file) => file.favorite === false)).toBe(
+        true,
+      );
       expect(new Set(business.files.map((file) => file.artifact!.id))).toEqual(
         new Set([first.artifactId, second.artifactId]),
       );
@@ -294,6 +300,7 @@ suite(
         expect(employeeFiles.files.map((file) => file.objectId)).toEqual([
           uploads[0],
         ]);
+        expect(employeeFiles.files[0]!.fileName).toBe('跨员工上传.txt');
         expect(
           new Set(
             employeeFiles.files[0]!.sources.map(
@@ -307,10 +314,92 @@ suite(
         });
       }
       // Its existing shared-directory consumer still collapses a series.
+      const acrossEmployees = await fixture.db.begin(async (tx) => {
+        await lockWorkspaceStorageQuota(
+          tx,
+          owner.organizationId,
+          owner.workspaceId,
+        );
+        const names = [];
+        for (const requested of ['跨员工上传.txt', '本人上传-51.txt'])
+          names.push(
+            await allocateWorkbenchFileName(
+              tx,
+              {
+                organizationId: owner.organizationId,
+                workspaceId: owner.workspaceId,
+                ownerId: owner.actor.id,
+              },
+              randomUUID(),
+              requested,
+            ),
+          );
+        return names;
+      });
+      expect(acrossEmployees).toEqual([
+        '跨员工上传（2）.txt',
+        '本人上传-51（2）.txt',
+      ]);
       const legacy = await readWorkbenchFileCatalog(owner, {
         workspaceId: owner.workspaceId,
       });
       expect(legacy.files.filter((file) => file.artifact)).toHaveLength(1);
+      // Favorites are object preferences, never series/name aliases. Seed the
+      // larger relation set only to exercise filtering before the 50-row limit.
+      await fixture.db`insert into allrice_workbench_file_favorites(organization_id,workspace_id,user_id,object_id)
+        select organization_id,workspace_id,owner_id,id from allrice_storage_objects
+        where id in ${fixture.db([...uploads, ...business.files.map((file) => file.objectId)])}`;
+      const favorites = await readWorkbenchDeliverables(owner, {
+        workspaceId: owner.workspaceId,
+        category: 'favorite',
+        employeeInstanceId: randomUUID(),
+      });
+      expect(favorites.files).toHaveLength(50);
+      expect(favorites.files.every((file) => file.favorite)).toBe(true);
+      const favoriteTail = await readWorkbenchDeliverables(owner, {
+        workspaceId: owner.workspaceId,
+        category: 'favorite',
+        employeeInstanceId: assignmentId,
+        cursor: favorites.nextCursor,
+      });
+      expect(
+        new Set(
+          [...favorites.files, ...favoriteTail.files].map(
+            (file) => file.objectId,
+          ),
+        ).size,
+      ).toBe(54);
+      expect(favoriteTail.files.filter((file) => file.artifact)).toHaveLength(
+        2,
+      );
+      expect(
+        (
+          await readWorkbenchDeliverables(owner, {
+            workspaceId: owner.workspaceId,
+            category: 'favorite',
+            query: '本人上传-51',
+            employeeInstanceId: randomUUID(),
+          })
+        ).files.map((file) => file.objectId),
+      ).toEqual([uploads[51]]);
+      await Promise.all(
+        [true, true].map((favorite) =>
+          setWorkbenchFileFavorite(owner, uploads[0]!, { favorite }),
+        ),
+      );
+      expect(
+        await fixture.db`select 1 from allrice_workbench_file_favorites where object_id=${uploads[0]!}`,
+      ).toHaveLength(1);
+      await setWorkbenchFileFavorite(owner, uploads[0]!, { favorite: false });
+      await setWorkbenchFileFavorite(owner, uploads[0]!, { favorite: false });
+      expect(
+        (
+          await readWorkbenchDeliverables(owner, {
+            workspaceId: owner.workspaceId,
+            objectId: uploads[0],
+          })
+        ).files[0]!.favorite,
+      ).toBe(false);
       const other = await runtimeTaskFixture(fixture.db);
       await expect(
         readWorkbenchDeliverables(other.context, {
@@ -325,6 +414,131 @@ suite(
         }),
       ).rejects.toMatchObject({ code: 'not_found' });
     }, 30000);
+    it('favorites use the current owner and live authority, never shared maintenance or a stored preference as access', async () => {
+      const t = await setup();
+      // Create a genuinely authorized shared original, then exercise favorite
+      // writes after its owner returns to personal maintenance authority.
+      await fixture.db`update allrice_organization_people set content_maintenance_level='company' where organization_id=${t.a.organizationId} and user_id=${t.a.actor.id}`;
+      const file = await uploadWorkbenchFile(
+        t.a,
+        uploadInput(t.a, { scope: 'company', departmentIds: [] }),
+        storage(),
+      );
+      const duplicate = await uploadWorkbenchFile(
+        t.a,
+        uploadInput(t.a),
+        storage(),
+      );
+      await fixture.db`update allrice_organization_people set content_maintenance_level='personal' where organization_id=${t.a.organizationId} and user_id=${t.a.actor.id}`;
+      const [stored, duplicateStored] = await Promise.all(
+        [file, duplicate].map(({ objectId }) =>
+          readWorkbenchFile(t.a, objectId),
+        ),
+      );
+      if (!stored || !duplicateStored)
+        throw Error('Both uploaded originals must remain readable.');
+      expect(stored.row.file_name).toBe(duplicateStored.row.file_name);
+      const names = await fixture.db.begin(async (tx) => {
+        await lockWorkspaceStorageQuota(
+          tx,
+          t.a.organizationId,
+          t.a.workspaceId!,
+        );
+        return Promise.all(
+          [t.a, t.b].map((current) =>
+            allocateWorkbenchFileName(
+              tx,
+              {
+                organizationId: current.organizationId,
+                workspaceId: current.workspaceId!,
+                ownerId: current.actor.id,
+              },
+              randomUUID(),
+              stored.row.file_name,
+            ),
+          ),
+        );
+      });
+      expect(names).toEqual(['收入口径（2）.txt', '收入口径.txt']);
+      await setWorkbenchFileFavorite(t.a, file.objectId, { favorite: true });
+      await setWorkbenchFileFavorite(t.a, duplicate.objectId, {
+        favorite: true,
+      });
+      expect(
+        (
+          await readWorkbenchDeliverables(t.a, {
+            workspaceId: t.a.workspaceId,
+            category: 'favorite',
+          })
+        ).files
+          .map((row) => row.objectId)
+          .sort(),
+      ).toEqual([file.objectId, duplicate.objectId].sort());
+      expect(
+        (await readWorkbenchFile(t.maintainer, file.objectId)).canMaintain,
+      ).toBe(true);
+      const foreign = await setup();
+      for (const current of [
+        t.maintainer,
+        t.b,
+        foreign.owner,
+        { ...t.a, workspaceId: randomUUID() },
+      ]) {
+        await expect(
+          setWorkbenchFileFavorite(current, file.objectId, { favorite: true }),
+        ).rejects.toThrow();
+        await expect(
+          setWorkbenchFileFavorite(current, file.objectId, { favorite: false }),
+        ).rejects.toThrow();
+      }
+      expect(
+        await fixture.db`select user_id from allrice_workbench_file_favorites where object_id=${file.objectId}`,
+      ).toEqual([{ user_id: t.a.actor.id }]);
+      // Even a residual relation does not authorize a nonowner or expose a name.
+      await fixture.db`insert into allrice_workbench_file_favorites(organization_id,workspace_id,user_id,object_id)
+        values(${t.a.organizationId},${t.a.workspaceId},${t.maintainer.actor.id},${file.objectId})`;
+      expect(
+        (
+          await readWorkbenchDeliverables(t.maintainer, {
+            workspaceId: t.maintainer.workspaceId,
+            category: 'favorite',
+          })
+        ).files,
+      ).toEqual([]);
+      await expect(
+        readWorkbenchDeliverables(t.maintainer, {
+          workspaceId: t.maintainer.workspaceId,
+          objectId: file.objectId,
+        }),
+      ).rejects.toMatchObject({ code: 'not_found' });
+    }, 30000);
+    it.each(['membership', 'revoked-session', 'expired-session'] as const)(
+      'rechecks %s before even removing a personal favorite',
+      async (reason) => {
+        const t = await setup(),
+          file = await uploadWorkbenchFile(t.a, uploadInput(t.a), storage());
+        await setWorkbenchFileFavorite(t.a, file.objectId, { favorite: true });
+        if (reason === 'membership')
+          await fixture.db`update allrice_memberships set active=false where user_id=${t.a.actor.id}`;
+        if (reason === 'revoked-session')
+          await fixture.db`update allrice_sessions set revoked_at=clock_timestamp() where id=${t.a.sessionId!}`;
+        if (reason === 'expired-session')
+          await fixture.db`update allrice_sessions set expires_at=clock_timestamp()-interval '1 second',created_at=clock_timestamp()-interval '1 day' where id=${t.a.sessionId!}`;
+        await expect(
+          setWorkbenchFileFavorite(t.a, file.objectId, { favorite: false }),
+        ).rejects.toMatchObject({ code: 'authorization_denied' });
+        expect(
+          await fixture.db`select user_id from allrice_workbench_file_favorites where object_id=${file.objectId}`,
+        ).toEqual([{ user_id: t.a.actor.id }]);
+        await expect(
+          readWorkbenchDeliverables(t.a, {
+            workspaceId: t.a.workspaceId,
+            category: 'favorite',
+          }),
+        ).rejects.toMatchObject({ code: 'authorization_denied' });
+      },
+      30000,
+    );
     it('never treats shared maintenance access or worker intermediate bytes as my uploads', async () => {
       const t = await setup();
       const shared = await uploadWorkbenchFile(

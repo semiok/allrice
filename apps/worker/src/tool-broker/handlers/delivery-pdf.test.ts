@@ -521,6 +521,7 @@ describe('Plain content through the existing export publisher', () => {
           checksum: hash(publication.bytes),
         },
         version: {
+          fileName: publication.fileName,
           seriesId,
           version: 4,
           parentObjectId,
@@ -583,6 +584,7 @@ describe('Plain content through the existing export publisher', () => {
       checksum,
     }));
     mocks.register.mockResolvedValue({
+      fileName: 'ledger.csv',
       seriesId: randomUUID(),
       version: 2,
       parentObjectId,

@@ -128,6 +128,7 @@ function personalMemoryTarget(kind: string, contentId: string) {
 
 type Props = {
   personalDeliverables?: boolean;
+  viewerId?: string;
   employeeColors?: Record<string, EmployeeAccentColor | undefined>;
   onOpenSourceSession?: (sessionId: string) => void;
   desktop?: boolean;
@@ -845,6 +846,7 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
             ) : props.personalDeliverables && tab.kind === 'managedFile' ? (
               <WorkbenchDeliverablePreview
                 scope={props.dockScope}
+                viewerId={props.viewerId}
                 objectId={tab.contentId}
                 workspaceId={props.workspaceId}
                 tenantHeaders={props.tenantHeaders}
@@ -1007,6 +1009,7 @@ function ArtifactTabBody(
         ) : null}
         <WorkbenchDeliverablePreview
           scope={props.dockScope}
+          viewerId={props.viewerId}
           objectId={file.object.id}
           workspaceId={props.workspaceId}
           tenantHeaders={props.tenantHeaders}

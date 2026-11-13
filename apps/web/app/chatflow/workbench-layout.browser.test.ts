@@ -824,6 +824,18 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       filePreviewStatus: 200,
       deliverableRequests: [] as Record<string, string>[],
       deliverableSettled: new Set<Record<string, string>>(),
+      favoriteIds: new Set<string>(),
+      favoriteDelay: null as Promise<void> | null,
+      favoriteStatus: 200,
+      favoriteWrites: [] as Array<{
+        viewerId: string;
+        workspaceId: string;
+        objectId: string;
+        favorite: boolean;
+        expected: string | null;
+      }>,
+      favoriteSettled: new Set<number>(),
+      deliverableRequestObjects: new Map<Request, Record<string, string>>(),
       updateReads: 0,
       workbenchFiles: [] as WorkbenchFile[],
       workbenchReferenceUses: [] as string[],
@@ -1130,6 +1142,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         state.workbenchReads++;
         const request = Object.fromEntries(url.searchParams);
         state.deliverableRequests.push(request);
+        state.deliverableRequestObjects.set(route.request(), request);
         const reply = async (data: unknown, status = 200) => {
           try {
             return await answer(data, status);
@@ -1157,6 +1170,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           )
           .map((file): WorkbenchDeliverable => ({
             ...file,
+            favorite: state.favoriteIds.has(
+              `${owner}/${scope}/${file.objectId}`,
+            ),
             origin:
               file.category === 'artifact'
                 ? 'business-deliverable'
@@ -1179,7 +1195,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           (file) =>
             (!url.searchParams.get('objectId') ||
               file.objectId === url.searchParams.get('objectId')) &&
-            (!url.searchParams.get('employeeInstanceId') ||
+            (url.searchParams.get('category') === 'favorite' ||
+              !url.searchParams.get('employeeInstanceId') ||
               file.sources.some(
                 (source) =>
                   source.employeeInstanceId ===
@@ -1187,6 +1204,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               )) &&
             (!url.searchParams.get('category') ||
               url.searchParams.get('category') === 'all' ||
+              (url.searchParams.get('category') === 'favorite' &&
+                file.favorite) ||
               file.category === url.searchParams.get('category')) &&
             (!url.searchParams.get('query') ||
               file.fileName.includes(url.searchParams.get('query')!)),
@@ -1289,6 +1308,46 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             ],
           },
         });
+      }
+      const favoriteTarget = path.match(
+        /^\/api\/v1\/workbench\/files\/([a-f0-9-]{36})\/favorite$/,
+      );
+      if (favoriteTarget && route.request().method() === 'PUT') {
+        const viewerId = state.viewer,
+          workspaceId = state.workspace,
+          objectId = favoriteTarget[1]!,
+          favorite = route.request().postDataJSON().favorite === true,
+          expected =
+            route.request().headers()['x-allrice-expected-viewer-id'] ?? null;
+        if (expected !== null && expected !== viewerId) return answer({}, 409);
+        if (
+          viewerId !== user ||
+          workspaceId !== workspace ||
+          !workbenchFiles().some(
+            (file) => file.objectId === objectId && file.ownedByMe,
+          )
+        )
+          return answer({}, 404);
+        const index = state.favoriteWrites.length;
+        state.favoriteWrites.push({
+          viewerId,
+          workspaceId,
+          objectId,
+          favorite,
+          expected,
+        });
+        const delay = state.favoriteDelay,
+          status = state.favoriteStatus;
+        if (delay) await delay;
+        try {
+          if (status !== 200) return await answer({}, status);
+          const key = `${viewerId}/${workspaceId}/${objectId}`;
+          if (favorite) state.favoriteIds.add(key);
+          else state.favoriteIds.delete(key);
+          return await answer({ viewerId, objectId, favorite });
+        } finally {
+          state.favoriteSettled.add(index);
+        }
       }
       const workbenchReference = path.match(
         /^\/api\/v1\/workbench\/files\/([a-f0-9-]{36})\/reference$/,
@@ -3588,7 +3647,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByRole('navigation', { name: '文件类型' })
           .getByRole('button')
           .allTextContents(),
-      ).toEqual(['全部', '员工交付', '我的上传']);
+      ).toEqual(['全部', '员工交付', '我的上传', '我的收藏']);
       expect(f.state.workbenchMutations).toEqual([]);
     } finally {
       await f.close();
@@ -12380,6 +12439,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             mediaType: 'image/png',
           });
           f.state.workbenchFiles.push(business, upload, image);
+          f.state.favoriteIds.add(`${user}/${workspace}/${business.objectId}`);
           const input = f.page.getByRole('textbox', { name: /给 .* 的消息/ });
           await input.fill('检查文件期间保留这段草稿');
           await f.page
@@ -12402,7 +12462,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               .getByRole('navigation', { name: '文件类型' })
               .getByRole('button')
               .allTextContents(),
-          ).toEqual(['全部', '员工交付', '我的上传']);
+          ).toEqual(['全部', '员工交付', '我的上传', '我的收藏']);
           await employee.selectOption(id(17));
           await directory
             .getByText('还没有交付成果', { exact: true })
@@ -12445,6 +12505,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           expect(await f.page.getByRole('menuitem').allTextContents()).toEqual([
             '下载',
             '复制链接',
+            '收藏',
           ]);
           await capture('deliverables-menu');
           const menuDownloadPath = `/api/v1/workbench/files/${upload.objectId}/download?workspaceId=${workspace}`;
@@ -12462,6 +12523,68 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             '本人上传的原始文件字节',
           );
           downloadFixtures.delete(menuDownloadPath);
+          await row
+            .getByRole('button', {
+              name: `文件选项 ${upload.fileName}`,
+              exact: true,
+            })
+            .click();
+          await f.page
+            .getByRole('menuitem', { name: '收藏', exact: true })
+            .click();
+          await row.getByLabel('已收藏', { exact: true }).waitFor();
+          const colleague = catalogFile(9503, {
+            fileName: '另一位员工的交付.md',
+            category: 'artifact',
+            sessionIds: [B],
+          });
+          f.state.sessionEdits.set(B, {
+            employeeAssignmentId: id(17),
+            employeeName: 'Office 文档助手',
+          });
+          f.state.workbenchFiles.push(colleague);
+          f.state.favoriteIds.add(`${user}/${workspace}/${colleague.objectId}`);
+          await employee.selectOption(id(7));
+          await directory
+            .getByRole('button', { name: '我的收藏', exact: true })
+            .click();
+          await expect.poll(() => directory.locator('article').count()).toBe(3);
+          expect(await employee.isDisabled()).toBe(true);
+          expect(await employee.inputValue()).toBe('');
+          expect(
+            f.state.deliverableRequests.at(-1)?.employeeInstanceId,
+          ).toBeUndefined();
+          await directory
+            .getByRole('button', { name: colleague.fileName, exact: true })
+            .waitFor();
+          await capture('favorites');
+          const businessRow = directory.locator(
+            `[data-file-id="${business.objectId}"]`,
+          );
+          await businessRow
+            .getByRole('button', {
+              name: `文件选项 ${business.fileName}`,
+              exact: true,
+            })
+            .click();
+          expect(await f.page.getByRole('menuitem').allTextContents()).toEqual([
+            '下载',
+            '复制链接',
+            '取消收藏',
+          ]);
+          await capture('favorites-menu');
+          await f.page
+            .getByRole('menuitem', { name: '取消收藏', exact: true })
+            .click();
+          await expect.poll(() => directory.locator('article').count()).toBe(2);
+          await directory
+            .getByRole('button', { name: '全部', exact: true })
+            .click();
+          expect(await employee.isEnabled()).toBe(true);
+          expect(await employee.inputValue()).toBe(id(7));
+          await row
+            .getByRole('button', { name: upload.fileName, exact: true })
+            .waitFor();
           expect(
             await directory
               .locator(`[data-file-id="${image.objectId}"]`)
@@ -12664,12 +12787,55 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           expect(box!.x).toBeGreaterThanOrEqual(0);
           expect(box!.x + box!.width).toBeLessThanOrEqual(width);
           await capture('artifact-fonts-open');
+          const previewNode = (await f.panel
+            .locator(`[data-document-id="${fontFile.objectId}"]:visible`)
+            .getByText('Delivery original preview', { exact: true })
+            .elementHandle())!;
+          const previewReads = f.state.workbenchPreviewReads;
+          f.state.favoriteIds.add(`${user}/${workspace}/${fontFile.objectId}`);
+          await f.page.evaluate(() =>
+            window.dispatchEvent(new Event('allrice:workbench-files-changed')),
+          );
+          await toolbar
+            .getByRole('button', { name: '取消收藏', exact: true })
+            .waitFor();
+          expect(await previewNode.evaluate((node) => node.isConnected)).toBe(
+            true,
+          );
+          expect(f.state.workbenchPreviewReads).toBe(previewReads);
+          expect(await fonts.isVisible()).toBe(true);
           await fonts
             .getByRole('button', { name: '关闭字体详情', exact: true })
             .click();
           expect(
             await warning.evaluate((node) => document.activeElement === node),
           ).toBe(true);
+          const star = toolbar.getByRole('button', {
+            name: '取消收藏',
+            exact: true,
+          });
+          const favoriteColor = await star.evaluate(
+            (node) => getComputedStyle(node).color,
+          );
+          await star.hover();
+          expect(
+            await star.evaluate((node) => getComputedStyle(node).color),
+          ).toBe(favoriteColor);
+          await f.page
+            .getByRole('tooltip', { name: '取消收藏', exact: true })
+            .waitFor();
+          const filled = await star
+            .locator('svg path')
+            .evaluate((node) => getComputedStyle(node).fill);
+          expect(filled).not.toBe('none');
+          await star.click();
+          await toolbar
+            .getByRole('button', { name: '收藏', exact: true })
+            .waitFor();
+          expect(await previewNode.evaluate((node) => node.isConnected)).toBe(
+            true,
+          );
+          expect(f.state.workbenchPreviewReads).toBe(previewReads);
           await warning.click();
           await fonts.waitFor();
           await f.page.keyboard.press('Escape');
@@ -12801,6 +12967,876 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       }, 30000);
     }
 
+  it.each([1440, 390])(
+    'MET247 a pending favorite can be canceled by hiding and reopened in the same retained module at %ipx',
+    async (width) => {
+      const f = await fixture({ width });
+      let release = () => {};
+      try {
+        const file = catalogFile(9580, {
+          fileName: '挂起收藏.md',
+          category: 'artifact',
+        });
+        f.state.workbenchFiles.push(file);
+        const input = f.page.getByRole('textbox', { name: /给 .* 的消息/ });
+        await input.fill('收藏等待期间保留草稿');
+        const entry = f.page
+          .locator('header')
+          .getByRole('button', { name: '交付成果', exact: true });
+        await entry.click();
+        const directory = f.panel.getByRole('region', {
+          name: '交付成果',
+          exact: true,
+        });
+        await directory
+          .getByRole('button', { name: '员工交付', exact: true })
+          .click();
+        await directory
+          .getByRole('searchbox', { name: '查找文件' })
+          .fill('挂起收藏');
+        const row = directory.locator(`[data-file-id="${file.objectId}"]`);
+        await row.waitFor();
+        f.state.favoriteDelay = new Promise<void>((done) => {
+          release = done;
+        });
+        await row
+          .getByRole('button', {
+            name: `文件选项 ${file.fileName}`,
+            exact: true,
+          })
+          .click();
+        await f.page
+          .getByRole('menuitem', { name: '收藏', exact: true })
+          .click();
+        await expect.poll(() => f.state.favoriteWrites.length).toBe(1);
+        const host = (await f.panel.elementHandle())!;
+        await f.panel
+          .getByRole('button', { name: '关闭工作台', exact: true })
+          .click();
+        expect(await host.evaluate((node) => node.isConnected)).toBe(true);
+        await entry.click();
+        expect(
+          await directory
+            .getByRole('button', { name: '员工交付', exact: true })
+            .getAttribute('aria-pressed'),
+        ).toBe('true');
+        expect(
+          await directory
+            .getByRole('searchbox', { name: '查找文件' })
+            .inputValue(),
+        ).toBe('挂起收藏');
+        await row
+          .getByRole('button', {
+            name: `文件选项 ${file.fileName}`,
+            exact: true,
+          })
+          .click();
+        expect(
+          await f.page
+            .getByRole('menuitem', { name: '收藏', exact: true })
+            .isEnabled(),
+        ).toBe(true);
+        f.state.favoriteDelay = null;
+        await f.page
+          .getByRole('menuitem', { name: '收藏', exact: true })
+          .click();
+        await row.getByLabel('已收藏', { exact: true }).waitFor();
+        release();
+        await expect.poll(() => f.state.favoriteSettled.has(0)).toBe(true);
+        await row
+          .getByRole('button', {
+            name: `文件选项 ${file.fileName}`,
+            exact: true,
+          })
+          .click();
+        await f.page
+          .getByRole('menuitem', { name: '取消收藏', exact: true })
+          .click();
+        await expect
+          .poll(() => row.getByLabel('已收藏', { exact: true }).count())
+          .toBe(0);
+        expect(f.state.favoriteWrites).toHaveLength(3);
+        expect(
+          f.state.favoriteWrites.every(
+            (write) => write.expected === user && write.viewerId === user,
+          ),
+        ).toBe(true);
+        expect(await input.inputValue()).toBe('收藏等待期间保留草稿');
+        expect(f.state.messageInputs).toEqual([]);
+      } finally {
+        release();
+        await f.close();
+      }
+    },
+    30000,
+  );
+
+  async function retainedPdfReader(f: Awaited<ReturnType<typeof fixture>>) {
+    await f.panel
+      .getByText('Delivery original preview', { exact: true })
+      .waitFor();
+    const frame = f.panel.locator('[data-document-zoom-frame]:visible');
+    const zoomButton = frame.getByRole('button', {
+      name: '选择缩放比例',
+      exact: true,
+    });
+    // Exercise the native keyboard entry, independently of the mouse-reveal
+    // failure observed in the separate metadata/FontNotice regression.
+    await zoomButton.focus();
+    await zoomButton.press('Enter');
+    await f.page.getByRole('menuitem', { name: '150%', exact: true }).click();
+    await expect
+      .poll(() => frame.getAttribute('data-document-zoom-mode'))
+      .toBe('fixed');
+    const scroll = frame.locator('[data-document-zoom-scrollport]');
+    await expect
+      .poll(() =>
+        scroll.evaluate((node) => node.scrollHeight > node.clientHeight),
+      )
+      .toBe(true);
+    const top = await scroll.evaluate((node) => {
+      node.scrollTop = 80;
+      return node.scrollTop;
+    });
+    expect(top).toBeGreaterThan(0);
+    const original = await frame.elementHandle();
+    if (!original) throw Error('The native PDF frame must be present.');
+    const zoom = await original.evaluate((node) =>
+      node.style.getPropertyValue('--document-zoom'),
+    );
+    const previewReads = f.state.workbenchPreviewReads;
+    return async (visible: boolean | 'tab-hidden' = false) => {
+      expect(await original.evaluate((node) => node.isConnected)).toBe(true);
+      expect(
+        await original.evaluate((node) =>
+          node.style.getPropertyValue('--document-zoom'),
+        ),
+      ).toBe(zoom);
+      if (visible === 'tab-hidden')
+        expect(
+          await original.evaluate((node) => {
+            const host = node.closest('[data-dockkit-host]');
+            return {
+              hidden: host?.hasAttribute('hidden'),
+              display: host ? getComputedStyle(host).display : null,
+              boxes: node.getClientRects().length,
+            };
+          }),
+        ).toEqual({ hidden: true, display: 'none', boxes: 0 });
+      else
+        expect(
+          await original.evaluate(
+            (node) =>
+              node.querySelector<HTMLElement>('[data-document-zoom-scrollport]')
+                ?.scrollTop,
+          ),
+        ).toBe(top);
+      expect(f.state.workbenchPreviewReads).toBe(previewReads);
+      if (visible === true)
+        expect(
+          await frame.evaluate((node, prior) => node === prior, original),
+        ).toBe(true);
+    };
+  }
+
+  it.each([
+    { width: 1440, completeBeforeReopen: true },
+    { width: 390, completeBeforeReopen: true },
+    { width: 1440, completeBeforeReopen: false },
+    { width: 390, completeBeforeReopen: false },
+  ])(
+    'MET247 retained file details reconcile both favorite directions at $width px, completed before reopen: $completeBeforeReopen',
+    async ({ width, completeBeforeReopen }) => {
+      const f = await fixture({ width });
+      let release = () => {};
+      try {
+        const file = catalogFile(9582, {
+          fileName: '详情收藏对账.pdf',
+          category: 'artifact',
+        });
+        f.state.workbenchFiles.push(file);
+        f.state.filePreview = deliverablePdf();
+        const input = f.page.getByRole('textbox', { name: /给 .* 的消息/ });
+        await input.fill('详情隐藏期间保留草稿');
+        const entry = f.page
+          .locator('header')
+          .getByRole('button', { name: '交付成果', exact: true });
+        await entry.click();
+        await f.panel
+          .getByRole('region', { name: '交付成果', exact: true })
+          .getByRole('button', { name: file.fileName, exact: true })
+          .click();
+        const toolbar = f.panel.locator(
+          'header[aria-label="文件操作"]:visible',
+        );
+        await toolbar
+          .getByRole('button', { name: '收藏', exact: true })
+          .waitFor();
+        const expectReaderRetained = await retainedPdfReader(f);
+        for (const [index, desired] of [true, false].entries()) {
+          const button = toolbar.getByRole('button', {
+            name: desired ? '收藏' : '取消收藏',
+            exact: true,
+          });
+          f.state.favoriteDelay = new Promise<void>((done) => {
+            release = done;
+          });
+          await button.click();
+          await expect
+            .poll(() => f.state.favoriteWrites.length)
+            .toBe(index + 1);
+          expect(await button.isDisabled()).toBe(true);
+          const reads = f.state.deliverableRequests.filter(
+            (request) => request.objectId === file.objectId,
+          ).length;
+          await f.panel
+            .getByRole('button', { name: '关闭工作台', exact: true })
+            .click();
+          await expectReaderRetained();
+          if (completeBeforeReopen) {
+            release();
+            await expect
+              .poll(() => f.state.favoriteSettled.has(index))
+              .toBe(true);
+          }
+          const [metadata] = await Promise.all([
+            completeBeforeReopen
+              ? Promise.resolve(null)
+              : f.page.waitForResponse((response) => {
+                  const url = new URL(response.url());
+                  return (
+                    response.request().method() === 'GET' &&
+                    url.pathname === '/api/v1/workbench/files' &&
+                    url.searchParams.get('objectId') === file.objectId &&
+                    response.status() === 200
+                  );
+                }),
+            (async () => {
+              await entry.click();
+              await expectReaderRetained('tab-hidden');
+              await f.panel
+                .getByRole('tab')
+                .filter({ hasText: file.fileName })
+                .click();
+            })(),
+          ]);
+          const reopenedFavorite = completeBeforeReopen ? desired : !desired;
+          if (metadata)
+            expect(await metadata.json()).toMatchObject({
+              files: [{ objectId: file.objectId, favorite: reopenedFavorite }],
+            });
+          const reopened = toolbar.getByRole('button', {
+            name: reopenedFavorite ? '取消收藏' : '收藏',
+            exact: true,
+          });
+          await reopened.waitFor();
+          expect(await reopened.isEnabled()).toBe(true);
+          expect(await reopened.getAttribute('aria-pressed')).toBe(
+            String(reopenedFavorite),
+          );
+          expect(
+            f.state.favoriteIds.has(`${user}/${workspace}/${file.objectId}`),
+          ).toBe(reopenedFavorite);
+          expect(f.state.favoriteWrites).toHaveLength(index + 1);
+          if (!completeBeforeReopen) {
+            expect(f.state.favoriteSettled.has(index)).toBe(false);
+            release();
+            await expect
+              .poll(() => f.state.favoriteSettled.has(index))
+              .toBe(true);
+          }
+          f.state.favoriteDelay = null;
+          const reconciled = toolbar.getByRole('button', {
+            name: desired ? '取消收藏' : '收藏',
+            exact: true,
+          });
+          await reconciled.waitFor();
+          expect(await reconciled.isEnabled()).toBe(true);
+          expect(await reconciled.getAttribute('aria-pressed')).toBe(
+            String(desired),
+          );
+          expect(
+            f.state.favoriteIds.has(`${user}/${workspace}/${file.objectId}`),
+          ).toBe(desired);
+          expect(
+            f.state.deliverableRequests.filter(
+              (request) => request.objectId === file.objectId,
+            ).length,
+          ).toBeGreaterThan(reads);
+          expect(f.state.favoriteWrites).toHaveLength(index + 1);
+          await expectReaderRetained(true);
+        }
+        expect(f.state.favoriteWrites.map((write) => write.favorite)).toEqual([
+          true,
+          false,
+        ]);
+        expect(await input.inputValue()).toBe('详情隐藏期间保留草稿');
+        expect(f.state.messageInputs).toEqual([]);
+      } finally {
+        release();
+        await f.close();
+      }
+    },
+    30000,
+  );
+
+  it.each([1440, 390])(
+    'MET247 retained detail reports a late failed favorite in both directions and recovers only on manual action at %ipx',
+    async (width) => {
+      const f = await fixture({ width });
+      let release = () => {};
+      try {
+        const file = catalogFile(9584, {
+          fileName: '详情收藏失败恢复.pdf',
+          category: 'artifact',
+        });
+        f.state.workbenchFiles.push(file);
+        f.state.filePreview = deliverablePdf();
+        const input = f.page.getByRole('textbox', { name: /给 .* 的消息/ });
+        await input.fill('收藏失败保留草稿');
+        const entry = f.page
+          .locator('header')
+          .getByRole('button', { name: '交付成果', exact: true });
+        await entry.click();
+        await f.panel
+          .getByRole('region', { name: '交付成果', exact: true })
+          .getByRole('button', { name: file.fileName, exact: true })
+          .click();
+        const toolbar = f.panel.locator(
+          'header[aria-label="文件操作"]:visible',
+        );
+        const expectReaderRetained = await retainedPdfReader(f);
+        const failure = f.panel.getByRole('alert').filter({
+          hasText: '成果服务暂不可用，请重试。',
+        });
+        for (const [index, desired] of [true, false].entries()) {
+          f.state.favoriteStatus = 500;
+          f.state.favoriteDelay = new Promise<void>((done) => {
+            release = done;
+          });
+          const button = toolbar.getByRole('button', {
+            name: desired ? '收藏' : '取消收藏',
+            exact: true,
+          });
+          await button.click();
+          await expect
+            .poll(() => f.state.favoriteWrites.length)
+            .toBe(index * 2 + 1);
+          expect(await button.isDisabled()).toBe(true);
+          await f.panel
+            .getByRole('button', { name: '关闭工作台', exact: true })
+            .click();
+          await expectReaderRetained();
+          const [metadata] = await Promise.all([
+            f.page.waitForResponse((response) => {
+              const url = new URL(response.url());
+              return (
+                response.request().method() === 'GET' &&
+                url.pathname === '/api/v1/workbench/files' &&
+                url.searchParams.get('objectId') === file.objectId &&
+                response.status() === 200
+              );
+            }),
+            (async () => {
+              await entry.click();
+              await f.panel
+                .getByRole('tab')
+                .filter({ hasText: file.fileName })
+                .click();
+            })(),
+          ]);
+          expect(await metadata.json()).toMatchObject({
+            files: [{ objectId: file.objectId, favorite: !desired }],
+          });
+          await button.waitFor();
+          expect(await button.isEnabled()).toBe(true);
+          expect(f.state.favoriteSettled.has(index * 2)).toBe(false);
+          release();
+          await expect
+            .poll(() => f.state.favoriteSettled.has(index * 2))
+            .toBe(true);
+          await failure.waitFor();
+          expect(await failure.innerText()).toBe('成果服务暂不可用，请重试。');
+          expect(await button.isEnabled()).toBe(true);
+          expect(await button.getAttribute('aria-pressed')).toBe(
+            String(!desired),
+          );
+          expect(
+            f.state.favoriteIds.has(`${user}/${workspace}/${file.objectId}`),
+          ).toBe(!desired);
+          expect(f.state.favoriteWrites).toHaveLength(index * 2 + 1);
+          await expectReaderRetained(true);
+          await f.panel
+            .getByRole('button', { name: '关闭工作台', exact: true })
+            .click();
+          await entry.click();
+          await f.panel
+            .getByRole('tab')
+            .filter({ hasText: file.fileName })
+            .click();
+          await failure.waitFor();
+          f.state.favoriteStatus = 200;
+          f.state.favoriteDelay = null;
+          await button.click();
+          const recovered = toolbar.getByRole('button', {
+            name: desired ? '取消收藏' : '收藏',
+            exact: true,
+          });
+          await recovered.waitFor();
+          expect(await recovered.isEnabled()).toBe(true);
+          expect(await recovered.getAttribute('aria-pressed')).toBe(
+            String(desired),
+          );
+          expect(
+            f.state.favoriteIds.has(`${user}/${workspace}/${file.objectId}`),
+          ).toBe(desired);
+          expect(f.state.favoriteWrites).toHaveLength(index * 2 + 2);
+          expect(await failure.count()).toBe(0);
+          await expectReaderRetained(true);
+        }
+        expect(f.state.favoriteWrites.map((write) => write.favorite)).toEqual([
+          true,
+          true,
+          false,
+          false,
+        ]);
+        expect(
+          f.state.favoriteWrites.every(
+            (write) => write.expected === user && write.viewerId === user,
+          ),
+        ).toBe(true);
+        expect(await input.inputValue()).toBe('收藏失败保留草稿');
+        expect(f.state.messageInputs).toEqual([]);
+      } finally {
+        release();
+        f.state.favoriteStatus = 200;
+        await f.close();
+      }
+    },
+    30000,
+  );
+
+  for (const theme of ['light', 'dark'] as const)
+    for (const width of [1440, 390]) {
+      it(`MET247 metadata failure preserves the native file, fonts and reader state until manual recovery at ${width}px ${theme}`, async () => {
+        const f = await fixture({ width, appearance: theme });
+        let release = () => {};
+        let readerStage = 'mount';
+        const readerObservations: unknown[] = [];
+        let inspectReader: ((phase: string) => Promise<void>) | undefined;
+        try {
+          await f.page.setViewportSize({
+            width,
+            height: width === 1440 ? 1000 : 844,
+          });
+          const file = catalogFile(9583, {
+            fileName: '收藏元数据恢复.docx',
+            category: 'artifact',
+          });
+          f.state.workbenchFiles.push(file);
+          f.state.filePreview = deliverablePdf([
+            'Noto Sans CJK SC',
+            'Aptos Display Semibold',
+          ]);
+          const input = f.page.getByRole('textbox', { name: /给 .* 的消息/ });
+          await input.fill('元数据失败不清草稿');
+          await f.page
+            .locator('header')
+            .getByRole('button', { name: '交付成果', exact: true })
+            .click();
+          await f.panel
+            .getByRole('region', { name: '交付成果', exact: true })
+            .getByRole('button', { name: file.fileName, exact: true })
+            .click();
+          const toolbar = f.panel.locator(
+            'header[aria-label="文件操作"]:visible',
+          );
+          await f.panel
+            .getByText('Delivery original preview', { exact: true })
+            .waitFor({ timeout: 15000 });
+          const frame = f.panel.locator('[data-document-zoom-frame]:visible');
+          const scroll = frame.locator('[data-document-zoom-scrollport]');
+          const box = (await frame.boundingBox())!;
+          const observedFrame = await frame.elementHandle();
+          if (!observedFrame) throw Error('The reader frame must be present.');
+          inspectReader = async (phase) => {
+            const detail = await observedFrame.evaluate((node) => {
+              const bounds = (element: Element | null) => {
+                if (!element) return null;
+                const css = getComputedStyle(element);
+                return {
+                  rect: element.getBoundingClientRect().toJSON(),
+                  opacity: css.opacity,
+                  pointerEvents: css.pointerEvents,
+                  transform: css.transform,
+                  overflow: css.overflow,
+                  minHeight: css.minHeight,
+                  maxHeight: css.maxHeight,
+                  clientHeight: element.clientHeight,
+                  scrollHeight: element.scrollHeight,
+                  scrollTop: element.scrollTop,
+                };
+              };
+              const hit = (x: number, y: number) => {
+                const chain: Array<{
+                  tag: string;
+                  className: string | null;
+                  label: string | null;
+                  pointerEvents: string;
+                }> = [];
+                let element = document.elementFromPoint(x, y);
+                for (
+                  let n = 0;
+                  element && n < 6;
+                  n++, element = element.parentElement
+                )
+                  chain.push({
+                    tag: element.tagName,
+                    className: element.getAttribute('class'),
+                    label: element.getAttribute('aria-label'),
+                    pointerEvents: getComputedStyle(element).pointerEvents,
+                  });
+                return { x, y, chain };
+              };
+              const rect = node.getBoundingClientRect();
+              const controls = node.querySelector(
+                '[data-document-zoom-controls]',
+              );
+              const button = node.querySelector('[aria-label="选择缩放比例"]');
+              const buttonRect = button?.getBoundingClientRect();
+              return {
+                viewport: { width: innerWidth, height: innerHeight },
+                mouse: {
+                  hoverNone: matchMedia('(hover: none)').matches,
+                  coarse: matchMedia('(pointer: coarse)').matches,
+                },
+                frame: bounds(node),
+                wrapper: bounds(node.parentElement),
+                preview: bounds(node.parentElement?.parentElement ?? null),
+                controls: bounds(controls),
+                controlsVisible: controls?.getAttribute(
+                  'data-document-zoom-visible',
+                ),
+                button: bounds(button),
+                moveHit: hit(
+                  rect.x + rect.width / 2,
+                  rect.y + rect.height - 20,
+                ),
+                buttonHit: buttonRect
+                  ? hit(
+                      buttonRect.x + buttonRect.width / 2,
+                      buttonRect.y + buttonRect.height / 2,
+                    )
+                  : null,
+              };
+            });
+            readerObservations.push({ phase, detail });
+          };
+          readerStage = 'pointer-move';
+          await inspectReader('before-pointer-move');
+          await f.page.mouse.move(
+            box.x + box.width / 2,
+            box.y + box.height - 20,
+          );
+          await inspectReader('after-pointer-move');
+          readerStage = 'zoom-button-click';
+          await inspectReader('before-zoom-click');
+          await frame
+            .getByRole('button', { name: '选择缩放比例', exact: true })
+            .click();
+          readerStage = 'zoom-menu-select';
+          await f.page
+            .getByRole('menuitem', { name: '150%', exact: true })
+            .click();
+          readerStage = 'reader-state';
+          await expect
+            .poll(() => frame.getAttribute('data-document-zoom-mode'))
+            .toBe('fixed');
+          await expect
+            .poll(() =>
+              scroll.evaluate((node) => node.scrollHeight > node.clientHeight),
+            )
+            .toBe(true);
+          const top = await scroll.evaluate((node) => {
+            node.scrollTop = 80;
+            return node.scrollTop;
+          });
+          expect(top).toBeGreaterThan(0);
+          const original = (await frame.elementHandle())!;
+          const zoom = await frame.evaluate((node) =>
+            node.style.getPropertyValue('--document-zoom'),
+          );
+          const previewReads = f.state.workbenchPreviewReads;
+          const reads = f.state.deliverableRequests.filter(
+            (request) => request.objectId === file.objectId,
+          ).length;
+          readerStage = 'favorite-write';
+          f.state.favoriteDelay = new Promise<void>((done) => {
+            release = done;
+          });
+          await toolbar
+            .getByRole('button', { name: '收藏', exact: true })
+            .click();
+          await expect.poll(() => f.state.favoriteWrites.length).toBe(1);
+          await toolbar
+            .getByRole('button', {
+              name: '缺失 2 种字体，点击查看',
+              exact: true,
+            })
+            .click();
+          const fonts = f.page.getByRole('dialog', {
+            name: '缺失的字体',
+            exact: true,
+          });
+          await fonts.waitFor();
+          f.state.deliverablesStatus = 500;
+          release();
+          readerStage = 'metadata-failure';
+          const failure = f.panel
+            .locator('footer:visible')
+            .getByRole('alert')
+            .filter({ hasText: '预览加载失败' });
+          await failure
+            .getByRole('button', { name: '重新加载', exact: true })
+            .waitFor();
+          expect(
+            f.state.favoriteIds.has(`${user}/${workspace}/${file.objectId}`),
+          ).toBe(true);
+          expect(await original.evaluate((node) => node.isConnected)).toBe(
+            true,
+          );
+          expect(await fonts.isVisible()).toBe(true);
+          expect(await scroll.evaluate((node) => node.scrollTop)).toBe(top);
+          expect(
+            await frame.evaluate((node) =>
+              node.style.getPropertyValue('--document-zoom'),
+            ),
+          ).toBe(zoom);
+          expect(f.state.workbenchPreviewReads).toBe(previewReads);
+          expect(
+            f.state.deliverableRequests.filter(
+              (request) => request.objectId === file.objectId,
+            ),
+          ).toHaveLength(reads + 1);
+          expect(
+            await toolbar
+              .getByRole('button', { name: '收藏', exact: true })
+              .isEnabled(),
+          ).toBe(true);
+          const failureBox = (await failure.boundingBox())!;
+          const failedPreviewBox = (await frame.boundingBox())!;
+          expect(failureBox.y).toBeGreaterThanOrEqual(
+            failedPreviewBox.y + failedPreviewBox.height,
+          );
+          expect(failureBox.y + failureBox.height).toBeLessThanOrEqual(
+            width === 1440 ? 1000 : 844,
+          );
+          const reviewDir = process.env.ALLRICE_DELIVERABLES_REVIEW_DIR;
+          if (reviewDir) {
+            await (
+              await import('node:fs/promises')
+            ).mkdir(reviewDir, { recursive: true });
+            await f.page.screenshot({
+              path: join(
+                reviewDir,
+                `${width}-${theme}-artifact-metadata-error.png`,
+              ),
+              animations: 'disabled',
+            });
+          }
+          f.state.deliverablesStatus = 200;
+          readerStage = 'manual-recovery';
+          await failure
+            .getByRole('button', { name: '重新加载', exact: true })
+            .click();
+          await toolbar
+            .getByRole('button', { name: '取消收藏', exact: true })
+            .waitFor();
+          expect(await failure.count()).toBe(0);
+          expect(await original.evaluate((node) => node.isConnected)).toBe(
+            true,
+          );
+          expect(await scroll.evaluate((node) => node.scrollTop)).toBe(top);
+          expect(
+            await frame.evaluate((node) =>
+              node.style.getPropertyValue('--document-zoom'),
+            ),
+          ).toBe(zoom);
+          expect(f.state.workbenchPreviewReads).toBe(previewReads);
+          expect(
+            f.state.deliverableRequests.filter(
+              (request) => request.objectId === file.objectId,
+            ),
+          ).toHaveLength(reads + 2);
+          await toolbar
+            .getByRole('button', {
+              name: '缺失 2 种字体，点击查看',
+              exact: true,
+            })
+            .click();
+          await fonts.waitFor();
+          expect(await fonts.getByRole('listitem').allTextContents()).toEqual([
+            'Noto Sans CJK SC',
+            'Aptos Display Semibold',
+          ]);
+          expect(f.state.favoriteWrites).toHaveLength(1);
+          expect(await input.inputValue()).toBe('元数据失败不清草稿');
+          expect(f.state.messageInputs).toEqual([]);
+        } catch (error) {
+          await inspectReader?.('failure').catch((captureError: unknown) => {
+            readerObservations.push({ captureError: String(captureError) });
+          });
+          console.error(
+            'MET247 metadata reader failure',
+            JSON.stringify({
+              width,
+              theme,
+              stage: readerStage,
+              observations: readerObservations,
+            }),
+          );
+          throw error;
+        } finally {
+          release();
+          await f.close();
+        }
+      }, 30000);
+    }
+
+  it.each([401, 403, 404, 200])(
+    'MET247 metadata denial or an invisible object clears an already loaded preview (%i)',
+    async (status) => {
+      const f = await fixture();
+      try {
+        const file = catalogFile(9584, {
+          fileName: '撤权后的原件.md',
+          category: 'artifact',
+        });
+        f.state.workbenchFiles.push(file);
+        await f.page
+          .locator('header')
+          .getByRole('button', { name: '交付成果', exact: true })
+          .click();
+        await f.panel
+          .getByRole('region', { name: '交付成果', exact: true })
+          .getByRole('button', { name: file.fileName, exact: true })
+          .click();
+        const content = f.panel
+          .locator('[data-document-id]:visible')
+          .getByRole('heading', { name: '上传的文件', exact: true });
+        await content.waitFor();
+        const original = (await content.elementHandle())!;
+        f.state.deliverablesStatus = status;
+        if (status === 200) f.state.workbenchFiles = [];
+        await f.page.evaluate(() =>
+          window.dispatchEvent(new Event('allrice:workbench-files-changed')),
+        );
+        await f.panel.getByText('无权访问', { exact: true }).waitFor();
+        expect(await original.evaluate((node) => node.isConnected)).toBe(false);
+        expect(
+          await f.panel
+            .locator('header[aria-label="文件操作"]:visible')
+            .count(),
+        ).toBe(0);
+        expect(f.state.favoriteWrites).toEqual([]);
+        expect(f.state.messageInputs).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+    30000,
+  );
+
+  for (const theme of ['light', 'dark'] as const)
+    for (const width of [1440, 390]) {
+      it(`MET247 three separate same-name objects keep their final download names at ${width}px ${theme}`, async () => {
+        const f = await fixture({ width, appearance: theme });
+        try {
+          await f.page.setViewportSize({
+            width,
+            height: width === 1440 ? 1000 : 844,
+          });
+          const names = ['同名交付.md', '同名交付（2）.md', '同名交付（3）.md'];
+          const files = names.map((fileName, n) =>
+            catalogFile(9570 + n, { fileName, category: 'artifact' }),
+          );
+          f.state.workbenchFiles.push(...files);
+          await f.page
+            .locator('header')
+            .getByRole('button', { name: '交付成果', exact: true })
+            .click();
+          const directory = f.panel.getByRole('region', {
+            name: '交付成果',
+            exact: true,
+          });
+          await expect.poll(() => directory.locator('article').count()).toBe(3);
+          expect(
+            new Set(
+              await directory
+                .locator('article')
+                .evaluateAll((nodes) =>
+                  nodes.map((node) => node.getAttribute('data-file-id')),
+                ),
+            ).size,
+          ).toBe(3);
+          const reviewDir = process.env.ALLRICE_DELIVERABLES_REVIEW_DIR;
+          if (reviewDir) {
+            await (
+              await import('node:fs/promises')
+            ).mkdir(reviewDir, { recursive: true });
+            await f.page.screenshot({
+              path: join(
+                reviewDir,
+                `${width}-${theme}-deliverables-same-name.png`,
+              ),
+              animations: 'disabled',
+            });
+          }
+          const file = files[2]!;
+          await directory
+            .getByRole('button', { name: file.fileName, exact: true })
+            .click();
+          const toolbar = f.panel.locator(
+            'header[aria-label="文件操作"]:visible',
+          );
+          await toolbar.getByText(file.fileName, { exact: true }).waitFor();
+          const download = toolbar.getByRole('link', {
+            name: '下载',
+            exact: true,
+          });
+          const url = new URL(
+            (await download.getAttribute('href'))!,
+            f.page.url(),
+          );
+          expect(url.searchParams.get('name')).toBe(file.fileName);
+          expect(url.pathname).toContain(file.objectId);
+          const path = url.pathname + url.search;
+          downloadFixtures.set(path, {
+            fileName: file.fileName,
+            body: '第三份独立对象的原始字节',
+          });
+          const pending = f.page.waitForEvent('download');
+          await download.click();
+          const original = await pending;
+          expect(original.suggestedFilename()).toBe(file.fileName);
+          expect(await readFile((await original.path())!, 'utf8')).toBe(
+            '第三份独立对象的原始字节',
+          );
+          downloadFixtures.delete(path);
+          await f.panel
+            .getByRole('button', { name: '‹ 交付成果', exact: true })
+            .click();
+          for (const name of names)
+            await directory
+              .getByRole('button', { name, exact: true })
+              .waitFor();
+          expect(f.state.messageInputs).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      }, 30000);
+    }
+
   it('MET247 mobile deliverables, personal memory and capabilities icons open their real panels', async () => {
     const f = await fixture({
       width: 390,
@@ -12896,6 +13932,85 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     );
     return hold;
   }
+  it('MET247 a late authorized A favorite cannot update the known B workspace or its metadata', async () => {
+    const f = await deliverableScopeFixture({}, 'MET247 favorite scope');
+    let release = () => {};
+    let refresh: Awaited<ReturnType<typeof holdWorkspaceRefresh>> | undefined;
+    try {
+      const file = catalogFile(9581, { fileName: 'A 账号的收藏原件.txt' });
+      f.state.workbenchFiles.push(file);
+      refresh = await holdWorkspaceRefresh(f);
+      const details = await openOwnerDetails(f);
+      await expect.poll(() => !!refresh?.request).toBe(true);
+      await details.getByRole('button', { name: '关闭', exact: true }).click();
+      await f.page
+        .locator('header')
+        .getByRole('button', { name: '交付成果', exact: true })
+        .click();
+      const directory = f.panel.getByRole('region', {
+        name: '交付成果',
+        exact: true,
+      });
+      await directory
+        .getByRole('button', { name: file.fileName, exact: true })
+        .click();
+      const toolbar = f.panel.locator('header[aria-label="文件操作"]:visible');
+      await toolbar
+        .getByRole('button', { name: '收藏', exact: true })
+        .waitFor();
+      const original = (await toolbar.elementHandle())!;
+      f.state.favoriteDelay = new Promise<void>((done) => {
+        release = done;
+      });
+      await toolbar.getByRole('button', { name: '收藏', exact: true }).click();
+      await expect.poll(() => f.state.favoriteWrites.length).toBe(1);
+      expect(await original.evaluate((node) => node.isConnected)).toBe(true);
+      expect(f.state.favoriteIds.size).toBe(0);
+      const workspaceReads = f.state.workspaceReads;
+      f.state.viewer = id(999);
+      f.state.workspace = id(998);
+      refresh.release();
+      await expect
+        .poll(() => f.state.workspaceReads)
+        .toBeGreaterThan(workspaceReads);
+      await expect
+        .poll(() => original.evaluate((node) => node.isConnected))
+        .toBe(false);
+      release();
+      await expect
+        .poll(() =>
+          f.state.favoriteIds.has(`${user}/${workspace}/${file.objectId}`),
+        )
+        .toBe(true);
+      expect([...f.state.favoriteIds]).toEqual([
+        `${user}/${workspace}/${file.objectId}`,
+      ]);
+      expect(
+        await f.page.getByText(file.fileName, { exact: true }).count(),
+      ).toBe(0);
+      expect(
+        await f.page.locator('header[aria-label="文件操作"]').count(),
+      ).toBe(0);
+      expect(f.state.favoriteWrites).toEqual([
+        {
+          viewerId: user,
+          workspaceId: workspace,
+          objectId: file.objectId,
+          favorite: true,
+          expected: user,
+        },
+      ]);
+    } catch (error) {
+      await f.evidence.capture(error);
+      throw error;
+    } finally {
+      refresh?.release();
+      release();
+      await f.close();
+      f.evidence.dispose();
+    }
+  }, 30000);
+
   it('MET247 keyset pages survive category, employee and search round trips and reject a late old-owner title', async () => {
     const f = await deliverableScopeFixture(
       { employeeCount: 2 },
@@ -13070,19 +14185,20 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         f.state.fileDelay = new Promise<void>((done) => {
           release = done;
         });
-        const [oldRequest] = await Promise.all([
-          f.page.waitForRequest((request) => {
-            const url = new URL(request.url());
-            return (
-              url.pathname === '/api/v1/workbench/files' &&
-              url.searchParams.get('objectId') === file.objectId
-            );
-          }),
-          f.page
-            .locator('header')
-            .getByRole('button', { name: '交付成果', exact: true })
-            .click(),
-        ]);
+        const linkRequests: Request[] = [];
+        const observeRequest = (request: Request) => {
+          const url = new URL(request.url());
+          if (
+            url.pathname === '/api/v1/workbench/files' &&
+            url.searchParams.get('objectId') === file.objectId
+          )
+            linkRequests.push(request);
+        };
+        f.page.on('request', observeRequest);
+        await f.page
+          .locator('header')
+          .getByRole('button', { name: '交付成果', exact: true })
+          .click();
         await expect
           .poll(
             () =>
@@ -13091,17 +14207,50 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               ).length,
           )
           .toBeGreaterThan(objectReads);
-        const oldRead = f.state.deliverableRequests.findLast(
-          (request) => request.objectId === file.objectId,
-        )!;
-        const oldNode = (await f.panel
-          .getByRole('region', { name: '交付成果', exact: true })
-          .elementHandle())!;
+        const directory = f.panel.getByRole('region', {
+          name: '交付成果',
+          exact: true,
+        });
+        await directory.waitFor();
+        const pending = () =>
+          linkRequests.filter((request) => {
+            const record = f.state.deliverableRequestObjects.get(request);
+            return (
+              record &&
+              request.failure() === null &&
+              !f.responses.has(request) &&
+              !f.state.deliverableSettled.has(record)
+            );
+          });
+        // Reopening briefly activates the retained detail before the module
+        // effect selects files. Bind the one live directory read, not that
+        // legitimately cancelled metadata read or an unrelated last record.
+        await expect.poll(() => pending().length).toBe(1);
+        const [oldRequest] = pending();
+        if (!oldRequest) throw Error('One live file-link request is required.');
+        const oldRead = f.state.deliverableRequestObjects.get(oldRequest);
+        if (!oldRead) throw Error('The live request must reach this fixture.');
+        f.page.off('request', observeRequest);
+        const oldNode = (await directory.elementHandle())!;
         expect(await oldNode.evaluate((node) => node.isConnected)).toBe(true);
         expect(oldRequest.failure()).toBeNull();
         expect(f.responses.has(oldRequest)).toBe(false);
         expect(f.state.deliverableSettled.has(oldRead)).toBe(false);
-        f.evidence.mark('old-file-link-pending-before-identity');
+        f.evidence.mark('old-file-link-pending-before-identity', {
+          selected: linkRequests.indexOf(oldRequest),
+          requests: linkRequests.map((request, index) => {
+            const record = f.state.deliverableRequestObjects.get(request);
+            return {
+              index,
+              recordIndex: record
+                ? f.state.deliverableRequests.indexOf(record)
+                : -1,
+              failure: request.failure(),
+              response: f.responses.has(request),
+              settled: record ? f.state.deliverableSettled.has(record) : false,
+            };
+          }),
+        });
         const workspaceReads = f.state.workspaceReads;
         f.state.viewer = id(999);
         f.state.fileDelay = null;

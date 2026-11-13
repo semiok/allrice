@@ -40,6 +40,7 @@ import { CompanyAssetError } from '../company-assets.ts';
 import { resolveWorkspaceId } from '../workspace/service.ts';
 import { searchConfirmedEmployeeMemories } from '../workspace/employee-memory-read.ts';
 import { memoryInstanceForRun } from '../workspace/employee-memory.ts';
+import { allocateWorkbenchFileName } from '../workbench-file-name.ts';
 
 interface ResourceRow {
   id: string;
@@ -427,6 +428,8 @@ export async function registerToolBrokerExport(
     object: StorageObject;
     /** Internal publisher mode; model tool arguments never select it. */
     storageMode?: 'existing_ready';
+    /** Existing personal-delivery classification, selected only by trusted publishers. */
+    namePolicy?: 'personal-deliverable';
   },
   database: ReturnType<typeof getDatabase> | TransactionSql = getDatabase(),
 ) {
@@ -592,6 +595,19 @@ export async function registerToolBrokerExport(
       `;
       versionNumber = (latest[0]?.version ?? 0) + 1;
     }
+    const fileName =
+      input.namePolicy === 'personal-deliverable' && input.sessionId
+        ? await allocateWorkbenchFileName(
+            transaction,
+            {
+              organizationId: input.context.organizationId,
+              workspaceId,
+              ownerId,
+            },
+            input.object.id,
+            input.fileName,
+          )
+        : input.fileName;
     const versions = await transaction<
       {
         id: string;
@@ -608,7 +624,7 @@ export async function registerToolBrokerExport(
         ${input.context.organizationId}, ${workspaceId}, ${ownerId},
         ${input.object.id}, ${seriesId}, ${versionNumber}, ${parentVersionId},
         ${input.sessionId ?? null}, ${input.platformTestRunId ?? null},
-        ${input.fileName}, ${DeliveryFormatSchema.parse(input.format)},
+        ${fileName}, ${DeliveryFormatSchema.parse(input.format)},
         ${input.changeSummary?.trim() || null}
       )
       returning id, series_id, version, created_at
@@ -619,7 +635,7 @@ export async function registerToolBrokerExport(
           organization_id, workspace_id, object_id, session_id, owner_id, file_name
         ) values (
           ${input.context.organizationId}, ${workspaceId}, ${input.object.id},
-          ${input.sessionId}, ${ownerId}, ${input.fileName}
+          ${input.sessionId}, ${ownerId}, ${fileName}
         )
         on conflict (object_id, session_id) do nothing
       `;
@@ -644,6 +660,7 @@ export async function registerToolBrokerExport(
         values(${input.context.organizationId},${workspaceId},${ownerId},'artifact.office-quality','deliverable_version',${versions[0]!.id},'recorded','actual_exporter_receipt',${transaction.json({ objectId: input.object.id, checksum: input.object.checksum, runId: input.context.runId, receipt: officeReceipt })})`;
     }
     return {
+      fileName,
       id: versions[0]!.id,
       seriesId: versions[0]!.series_id,
       version: versions[0]!.version,
@@ -658,7 +675,6 @@ export async function registerToolBrokerExport(
       : await register(database);
   return {
     objectId: input.object.id,
-    fileName: input.fileName,
     ...version,
   };
 }

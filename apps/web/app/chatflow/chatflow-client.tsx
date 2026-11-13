@@ -3084,6 +3084,7 @@ export function ChatFlowClient({
       hasWorkbenchContent ? (
         <ArtifactWorkbench
           personalDeliverables
+          viewerId={workspace.viewerId ?? undefined}
           employeeColors={Object.fromEntries(
             employeeChoices(workspace).map((employee) => [
               employee.instanceId ?? employeeChoiceId(employee),
@@ -3137,6 +3138,7 @@ export function ChatFlowClient({
                 <WorkbenchFilesPanel
                   key={settingsScope}
                   ownerKey={settingsScope}
+                  viewerId={workspace.viewerId ?? undefined}
                   employees={employeeChoices(workspace).map((employee) => ({
                     id: employee.instanceId ?? employeeChoiceId(employee),
                     name:

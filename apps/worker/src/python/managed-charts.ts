@@ -289,7 +289,7 @@ async function executeManagedChartsAttempt(
     const proof = result.artifacts.find((a) => a.objectId === file.object.id);
     if (
       !proof ||
-      file.fileName !== proof.fileName ||
+      file.requestedFileName !== proof.fileName ||
       file.object.checksum !== proof.checksum ||
       file.object.sizeBytes !== proof.sizeBytes ||
       file.object.mediaType !== proof.mediaType

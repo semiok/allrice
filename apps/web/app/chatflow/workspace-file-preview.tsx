@@ -31,11 +31,14 @@ import { copyWorkbenchFileLink } from './workbench-file-link';
 import { WorkbenchDeliverablesActionsCatalogSchema } from '../../lib/chatflow/workbench-file-actions';
 import detail from './workbench-files-panel.module.css';
 import { employeeAccentStyle } from './employee-navigation';
+import { useWorkbenchFileFavorite } from './use-workbench-file-favorite';
+import { WorkbenchIcon } from './workbench-modules';
 
 /** Used by business file cards as well as the owner directory. Resolve metadata
  * before the toolbar mounts, including when an old card points at a denied file. */
 export function WorkbenchDeliverablePreview(props: {
   scope: string;
+  viewerId?: string;
   objectId: string;
   workspaceId: string;
   tenantHeaders: Record<string, string>;
@@ -61,13 +64,20 @@ export function WorkbenchDeliverablePreview(props: {
   const [attempt, setAttempt] = useState(0);
   const loaded = useRef<{ key: string; attempt: number } | null>(null);
   useEffect(() => {
-    if (
-      !props.active ||
-      (loaded.current?.key === key && loaded.current.attempt === attempt)
-    )
+    const changed = () => setAttempt((n) => n + 1);
+    window.addEventListener('allrice:workbench-files-changed', changed);
+    return () =>
+      window.removeEventListener('allrice:workbench-files-changed', changed);
+  }, []);
+  useEffect(() => {
+    if (!props.active) {
+      loaded.current = null;
+      return;
+    }
+    if (loaded.current?.key === key && loaded.current.attempt === attempt)
       return;
     const abort = new AbortController();
-    setSnapshot(null);
+    setSnapshot((prior) => (prior?.key === key ? prior : null));
     setFailure(null);
     void workbenchJson(
       '/api/v1/workbench/files?' +
@@ -92,16 +102,18 @@ export function WorkbenchDeliverablePreview(props: {
             file,
             quotable: data.quotableFileIds.includes(file.objectId),
           });
-        } else setFailure({ key, denied: true });
+        } else {
+          setSnapshot(null);
+          setFailure({ key, denied: true });
+        }
       })
       .catch((error) => {
-        if (!abort.signal.aborted)
-          setFailure({
-            key,
-            denied: [401, 403, 404].includes(
-              (error as { status?: number }).status ?? 0,
-            ),
-          });
+        if (abort.signal.aborted) return;
+        const denied = [401, 403, 404].includes(
+          (error as { status?: number }).status ?? 0,
+        );
+        if (denied) setSnapshot(null);
+        setFailure({ key, denied });
       });
     return () => abort.abort();
   }, [
@@ -112,7 +124,7 @@ export function WorkbenchDeliverablePreview(props: {
     props.active,
     attempt,
   ]);
-  if (failure?.key === key)
+  if (failure?.key === key && (failure.denied || snapshot?.key !== key))
     return failure.denied ? (
       <p className={detail.empty}>无权访问</p>
     ) : (
@@ -132,10 +144,13 @@ export function WorkbenchDeliverablePreview(props: {
       <WorkspaceFilePreview
         key={key}
         {...props}
+        ownerKey={props.scope}
         title={snapshot.file.fileName}
         unified
         deliverable={snapshot.file}
         quotable={snapshot.quotable}
+        metadataError={failure?.key === key}
+        onReloadMetadata={() => setAttempt((n) => n + 1)}
       />
     </div>
   );
@@ -143,6 +158,8 @@ export function WorkbenchDeliverablePreview(props: {
 
 export function WorkspaceFilePreview(props: {
   objectId: string;
+  ownerKey?: string;
+  viewerId?: string;
   title: string;
   workspaceId: string;
   tenantHeaders: Record<string, string>;
@@ -151,6 +168,8 @@ export function WorkspaceFilePreview(props: {
   deliverable?: WorkbenchDeliverable;
   employeeColors?: Record<string, EmployeeAccentColor | undefined>;
   quotable?: boolean;
+  metadataError?: boolean;
+  onReloadMetadata?: () => void;
   onBack?: () => void;
   onSource?: (sessionId: string) => void;
   fileActions?: Pick<
@@ -164,6 +183,13 @@ export function WorkspaceFilePreview(props: {
   const [source, setSource] = useState(false);
   const [interactive, setInteractive] = useState(false);
   const [copyNotice, setCopyNotice] = useState('');
+  const favorite = useWorkbenchFileFavorite({
+    ownerKey: `${props.ownerKey ?? ''}/${props.objectId}`,
+    viewerId: props.viewerId,
+    workspaceId: props.workspaceId,
+    headers: props.tenantHeaders,
+    active: props.active ?? true,
+  });
   const reference = useWorkbenchFileReference({
     workspaceId: props.workspaceId,
     sessionId: props.fileActions?.sessionId ?? null,
@@ -264,16 +290,42 @@ export function WorkspaceFilePreview(props: {
         }
         trailingActions={
           props.deliverable ? (
-            <Tooltip label="复制链接" side="bottom" portal>
-              <button
-                type="button"
-                className={reader.iconButton}
-                aria-label="复制链接"
-                onClick={copyLink}
+            <>
+              <Tooltip label="复制链接" side="bottom" portal>
+                <button
+                  type="button"
+                  className={reader.iconButton}
+                  aria-label="复制链接"
+                  onClick={copyLink}
+                >
+                  <IconLinkOutlineRegular size={20} />
+                </button>
+              </Tooltip>
+              <Tooltip
+                label={props.deliverable.favorite ? '取消收藏' : '收藏'}
+                side="bottom"
+                portal
               >
-                <IconLinkOutlineRegular size={20} />
-              </button>
-            </Tooltip>
+                <button
+                  type="button"
+                  className={`${reader.iconButton} ${detail.favoriteButton}`}
+                  aria-label={props.deliverable.favorite ? '取消收藏' : '收藏'}
+                  aria-pressed={props.deliverable.favorite}
+                  disabled={favorite.disabled || !!favorite.using}
+                  onClick={() =>
+                    void favorite.setFavorite(
+                      props.objectId,
+                      !props.deliverable!.favorite,
+                    )
+                  }
+                >
+                  <WorkbenchIcon
+                    kind="star"
+                    filled={props.deliverable.favorite}
+                  />
+                </button>
+              </Tooltip>
+            </>
           ) : undefined
         }
         actions={[
@@ -414,12 +466,33 @@ export function WorkspaceFilePreview(props: {
               复制链接
             </button>
           </div>
-          {(reference.error || reference.notice || copyNotice) && (
+          {(reference.error ||
+            favorite.error ||
+            props.metadataError ||
+            reference.notice ||
+            copyNotice) && (
             <p
-              role={reference.error ? 'alert' : 'status'}
+              role={
+                reference.error || favorite.error || props.metadataError
+                  ? 'alert'
+                  : 'status'
+              }
               className={detail.notice}
             >
-              {reference.error || reference.notice || copyNotice}
+              {reference.error ||
+                favorite.error ||
+                (props.metadataError ? '预览加载失败' : '') ||
+                reference.notice ||
+                copyNotice}
+              {props.metadataError && (
+                <button
+                  type="button"
+                  className={detail.sourceLink}
+                  onClick={props.onReloadMetadata}
+                >
+                  重新加载
+                </button>
+              )}
             </p>
           )}
           {reference.pending && (

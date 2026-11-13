@@ -1351,6 +1351,7 @@ export async function publishLocalPythonArtifacts(
     const published: {
       object: StorageObject;
       fileName: string;
+      requestedFileName: string;
       versionId: string;
     }[] = [];
     for (const [index, output] of current.payload.arguments.outputs.entries()) {
@@ -1364,9 +1365,14 @@ export async function publishLocalPythonArtifacts(
           checksum: object.checksum,
         });
       const [existing] = await tx<
-        { version_id: string; request_digest: string; object_id: string }[]
+        {
+          version_id: string;
+          request_digest: string;
+          object_id: string;
+          file_name: string;
+        }[]
       >`
-        select a.version_id,a.request_digest,v.object_id from allrice_workbench_artifacts a
+        select a.version_id,a.request_digest,v.object_id,v.file_name from allrice_workbench_artifacts a
         join allrice_deliverable_versions v on v.id=a.version_id
         where a.organization_id=${ctx.organizationId} and a.workspace_id=${ctx.workspaceId} and a.owner_id=${owner}
           and a.run_id=${ctx.runId} and a.request_id=${requestId}`;
@@ -1417,7 +1423,8 @@ export async function publishLocalPythonArtifacts(
           throw new RuntimePolicyError('idempotency_conflict');
         published.push({
           object: { ...object, retentionUntil: null },
-          fileName: output.fileName,
+          fileName: existing.file_name,
+          requestedFileName: output.fileName,
           versionId: existing.version_id,
         });
         continue;
@@ -1426,6 +1433,7 @@ export async function publishLocalPythonArtifacts(
         {
           context: ctx,
           sessionId: binding.task.chatSessionId!,
+          namePolicy: 'personal-deliverable',
           ...(originalOutput.parentObjectId
             ? { parentObjectId: originalOutput.parentObjectId }
             : {}),
@@ -1448,7 +1456,8 @@ export async function publishLocalPythonArtifacts(
         ${tx.json({ kind: 'tool_result', runId: ctx.runId, operationId: input.operationId, stepId: null })},${tx.json(binding.execution)},${requestId},${requestDigest})`;
       published.push({
         object: { ...object, retentionUntil: null },
-        fileName: output.fileName,
+        fileName: version.fileName,
+        requestedFileName: output.fileName,
         versionId: version.id,
       });
     }

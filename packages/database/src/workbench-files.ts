@@ -6,6 +6,7 @@ import {
   WorkbenchFileUploadSchema,
   WorkbenchDeliverablesFilterSchema,
   WorkbenchDeliverablesCatalogSchema,
+  WorkbenchFileFavoriteSchema,
   type WorkbenchDeliverable,
   UuidSchema,
   type RequestContext,
@@ -31,7 +32,10 @@ import {
   referenceLibraryOptions,
   referenceSourceAccess,
 } from './reference-library.ts';
-import { businessDeliverablePredicate } from './organization-dashboard.ts';
+import {
+  businessDeliverablePredicate,
+  personalWorkbenchOrigins,
+} from './workbench-file-personal.ts';
 import { assertWorkbenchSession } from './artifact-review.ts';
 import { personalInstanceNameSql } from './employees/employee-instance-policy.ts';
 import {
@@ -569,36 +573,7 @@ export async function readWorkbenchDeliverables(
     db = getDatabase();
   const principal = await readContentPrincipal(context);
   if (!principal) throw new DataAccessError('authorization_denied');
-  const cte = db`with business as (
-    select dv.* from allrice_deliverable_versions dv
-    join allrice_chat_sessions s on s.id=dv.session_id and s.organization_id=dv.organization_id
-      and s.workspace_id=dv.workspace_id and s.owner_id=${context.actor.id}
-    left join allrice_workbench_artifacts a on a.version_id=dv.id and a.organization_id=dv.organization_id
-      and a.workspace_id=dv.workspace_id and a.owner_id=dv.owner_id
-    where dv.organization_id=${context.organizationId} and dv.workspace_id=${filter.workspaceId}
-      and dv.owner_id=${context.actor.id} and dv.platform_test_run_id is null
-      and ${businessDeliverablePredicate(db)}
-  ), origins as (
-    select o.id,o.created_at,case when b.object_id is null then 'upload' else 'artifact' end as category,
-      coalesce(b.file_name,f.file_name,p.file_name,'未命名文件') as file_name
-    from allrice_storage_objects o
-    join allrice_workspaces w on w.id=o.workspace_id and w.organization_id=o.organization_id and w.archived_at is null
-    left join lateral (select * from business where object_id=o.id order by created_at desc,id desc limit 1) b on true
-    left join allrice_workbench_file_policies p on p.object_id=o.id and p.organization_id=o.organization_id and p.owner_id=o.owner_id
-    left join lateral (select file_name from allrice_file_references where object_id=o.id and owner_id=${context.actor.id} order by created_at limit 1) f on true
-    where o.organization_id=${context.organizationId} and o.workspace_id=${filter.workspaceId} and o.owner_id=${context.actor.id}
-      and o.state='ready' and o.deleted_at is null and (o.retention_until is null or o.retention_until>clock_timestamp())
-      and (b.object_id is not null or (o.category='uploads'
-        and not exists(select 1 from allrice_deliverable_versions v where v.object_id=o.id)
-        and ((p.upload_request_id is not null and p.upload_digest is not null)
-          or exists(select 1 from allrice_file_references r join allrice_chat_sessions s on s.id=r.session_id
-            and s.organization_id=r.organization_id and s.workspace_id=r.workspace_id
-            where r.object_id=o.id and r.owner_id=${context.actor.id} and s.owner_id=${context.actor.id}))))
-      and not exists(select 1 from allrice_knowledge_revisions r where r.file_object_id=o.id)
-      and not exists(select 1 from allrice_company_asset_revisions r where r.snapshot_object_id=o.id)
-      and not exists(select 1 from allrice_company_asset_materials m where m.object_id=o.id)
-      and not exists(select 1 from allrice_company_run_assets r where r.material_object_id=o.id)
-  ), source_ids as (
+  const cte = db`with ${personalWorkbenchOrigins(db, { organizationId: context.organizationId, workspaceId: filter.workspaceId, ownerId: context.actor.id })}, source_ids as (
     select b.object_id,b.session_id from business b join origins o on o.id=b.object_id
     union select r.object_id,r.session_id from allrice_file_references r join origins o on o.id=r.object_id and o.category='upload'
       where r.owner_id=${context.actor.id}
@@ -612,14 +587,16 @@ export async function readWorkbenchDeliverables(
     left join allrice_employee_instances i on i.id=coalesce(s.employee_instance_id,s.employee_assignment_id)
       and i.organization_id=s.organization_id and i.workspace_id=s.workspace_id and i.owner_id=${context.actor.id}
   ), eligible as (
-    select o.*,coalesce((select jsonb_agg(jsonb_build_object(
+    select o.*,exists(select 1 from allrice_workbench_file_favorites f where f.organization_id=${context.organizationId}
+      and f.workspace_id=${filter.workspaceId} and f.user_id=${context.actor.id} and f.object_id=o.id) as favorite,
+      coalesce((select jsonb_agg(jsonb_build_object(
       'sessionId',s.session_id,'sessionTitle',s.session_title,'employeeAssignmentId',s.employee_assignment_id,
       'employeeInstanceId',s.employee_instance_id,'employeeName',s.employee_name) order by s.session_id)
       from sources s where s.object_id=o.id),'[]'::jsonb) as sources
     from origins o
   ), filtered as (
-    select * from eligible e where (${filter.category}='all' or e.category=${filter.category})
-      and (${filter.employeeInstanceId ?? null}::uuid is null or exists(select 1 from sources s
+    select * from eligible e where (${filter.category}='all' or e.category=${filter.category} or (${filter.category}='favorite' and e.favorite))
+      and (${filter.category}='favorite' or ${filter.employeeInstanceId ?? null}::uuid is null or exists(select 1 from sources s
         where s.object_id=e.id and s.employee_instance_id=${filter.employeeInstanceId ?? null}::uuid))
       and position(lower(${filter.query}) in lower(e.file_name))>0
       and (${filter.objectId ?? null}::uuid is null or e.id=${filter.objectId ?? null}::uuid)
@@ -636,6 +613,7 @@ export async function readWorkbenchDeliverables(
         id: string;
         category: 'artifact' | 'upload';
         sources: WorkbenchDeliverable['sources'];
+        favorite: boolean;
       }[]
     >`${cte}
       select * from filtered where (${filter.cursor ?? null}::uuid is null or
@@ -686,6 +664,7 @@ export async function readWorkbenchDeliverables(
         origin:
           row.category === 'artifact' ? 'business-deliverable' : 'user-upload',
         sources: row.sources,
+        favorite: row.favorite,
         isReference: p?.reference_enabled ?? false,
         reference:
           p?.reference_enabled && p.reference_source_id
@@ -701,6 +680,38 @@ export async function readWorkbenchDeliverables(
     files,
     employees,
     nextCursor: rows.length > 50 ? rows[49]!.id : null,
+  });
+}
+
+export async function setWorkbenchFileFavorite(
+  contextInput: RequestContext,
+  objectIdInput: string,
+  input: unknown,
+) {
+  const value = WorkbenchFileFavoriteSchema.parse(input);
+  const context = scoped(contextInput, contextInput.workspaceId!);
+  const objectId = UuidSchema.parse(objectIdInput);
+  return getDatabase().begin(async (tx) => {
+    if (!(await readContentPrincipal(context, tx, true)))
+      throw new DataAccessError('authorization_denied');
+    const [eligible] = await tx<
+      { id: string }[]
+    >`with ${personalWorkbenchOrigins(tx, {
+      organizationId: context.organizationId,
+      workspaceId: context.workspaceId!,
+      ownerId: context.actor.id,
+    })} select id from origins where id=${objectId}`;
+    if (!eligible) throw new DataAccessError('not_found');
+    const file = await readWorkbenchFile(context, objectId, tx);
+    if (file.object.ownerId !== context.actor.id)
+      throw new DataAccessError('not_found');
+    if (value.favorite)
+      await tx`insert into allrice_workbench_file_favorites(organization_id,workspace_id,user_id,object_id)
+        values(${context.organizationId},${context.workspaceId!},${context.actor.id},${objectId}) on conflict do nothing`;
+    else
+      await tx`delete from allrice_workbench_file_favorites where organization_id=${context.organizationId}
+        and workspace_id=${context.workspaceId!} and user_id=${context.actor.id} and object_id=${objectId}`;
+    return { viewerId: context.actor.id, objectId, favorite: value.favorite };
   });
 }
 

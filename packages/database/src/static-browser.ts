@@ -413,7 +413,7 @@ export async function publishStaticBrowserVerification(
         `${s.index + 1}. ${s.type}：${s.status}${s.expected === null ? '' : `；期望 ${JSON.stringify(s.expected)}；实际 ${JSON.stringify(s.actual)}`}`,
     ),
     '',
-    `[下载验证截图](/api/v1/files/${image.object.id}/download?name=browser-verification.png)`,
+    `[下载验证截图](/api/v1/files/${image.object.id}/download?name=${encodeURIComponent(image.version.fileName)})`,
     `计划校验：${outcome.report.planDigest}`,
     `验证记录：${row.id}`,
     '',

@@ -166,8 +166,9 @@ export async function publishLocalFileDerivationArtifacts(
         request_digest: string;
         object_id: string;
         version: number;
+        file_name: string;
       }[]
-    >`select a.version_id,a.request_digest,v.object_id,v.version from allrice_workbench_artifacts a join allrice_deliverable_versions v on v.id=a.version_id where a.organization_id=${ctx.organizationId} and a.workspace_id=${ctx.workspaceId} and a.owner_id=${owner} and a.run_id=${ctx.runId} and a.request_id=${operationId}`;
+    >`select a.version_id,a.request_digest,v.object_id,v.version,v.file_name from allrice_workbench_artifacts a join allrice_deliverable_versions v on v.id=a.version_id where a.organization_id=${ctx.organizationId} and a.workspace_id=${ctx.workspaceId} and a.owner_id=${owner} and a.run_id=${ctx.runId} and a.request_id=${operationId}`;
     if (existing) {
       if (
         existing.object_id !== object.id ||
@@ -179,12 +180,14 @@ export async function publishLocalFileDerivationArtifacts(
         objectId: object.id,
         versionId: existing.version_id,
         version: existing.version,
+        fileName: existing.file_name,
       };
     }
     const version = await registerToolBrokerExport(
       {
         context: ctx,
         sessionId: current.snapshot.binding.task.chatSessionId!,
+        namePolicy: 'personal-deliverable',
         fileName: current.object.fileName,
         format,
         object,
@@ -204,6 +207,7 @@ export async function publishLocalFileDerivationArtifacts(
       objectId: object.id,
       versionId: version.id,
       version: version.version,
+      fileName: version.fileName,
     };
   });
 }

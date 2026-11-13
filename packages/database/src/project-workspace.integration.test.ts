@@ -179,7 +179,7 @@ suite('MET166 PR3a private project checkpoints', () => {
       callId = randomUUID();
     const args = { action: 'deliver', project, baseline: f.opened.project };
     const delivery = (await f.call(args, callId)) as {
-      artifacts: { objectId: string; fileName: string }[];
+      artifacts: { objectId: string; fileName: string; downloadUrl: string }[];
       report: { executions: unknown[] };
     };
     expect(await f.call(args, callId)).toEqual(delivery);
@@ -190,6 +190,9 @@ suite('MET166 PR3a private project checkpoints', () => {
     ]);
     const files = new Map<string, Buffer>();
     for (const a of delivery.artifacts) {
+      expect(
+        new URL(a.downloadUrl, 'https://allrice.test').searchParams.get('name'),
+      ).toBe(a.fileName);
       const { object } = await getToolBrokerFile(f.context, a.objectId, f.db);
       files.set(a.fileName, await readArtifactBytes(f.storage, object));
       await expect(
@@ -538,7 +541,7 @@ suite('MET166 PR3a private project checkpoints', () => {
       replay = raced.results[1]!.value as Delivery;
     expect(replay).toEqual(second);
     const next = second.artifacts.find(
-      (a) => a.fileName === 'project-source.zip',
+      (a) => a.fileName === 'project-source（2）.zip',
     )!;
     const rows =
       await f.db`select v.id,v.series_id,v.version,v.parent_version_id,v.format,a.kind
@@ -566,7 +569,7 @@ suite('MET166 PR3a private project checkpoints', () => {
       oldBytes,
     );
     for (const artifact of second.artifacts.filter(
-      (a) => a.fileName !== 'project-source.zip',
+      (a) => a.objectId !== next.objectId,
     )) {
       const [version] =
         await f.db`select version,parent_version_id from allrice_deliverable_versions
@@ -595,7 +598,7 @@ suite('MET166 PR3a private project checkpoints', () => {
       project: args.project,
     })) as Delivery;
     const alternativeZip = alternative.artifacts.find(
-      (a) => a.fileName === 'project-source.zip',
+      (a) => a.fileName === 'project-source（4）.zip',
     )!;
     await expect(
       f.call({ ...args, parentObjectId: alternativeZip.objectId }, callId),

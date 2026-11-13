@@ -989,6 +989,7 @@ describe('Codex hosted search Tool Broker integration', () => {
         id: randomUUID(),
         object: { ...source, id: randomUUID(), mediaType: input.mediaType },
         version: {
+          fileName: input.fileName,
           seriesId: randomUUID(),
           version: 1,
           parentObjectId: null,
@@ -1505,7 +1506,11 @@ describe('Codex hosted search Tool Broker integration', () => {
       id: randomUUID(),
       kind: 'file',
       object: { id: randomUUID(), checksum: 'persisted-checksum' },
-      version: { seriesId: randomUUID(), version: 2 },
+      version: {
+        fileName: 'metrics.json',
+        seriesId: randomUUID(),
+        version: 2,
+      },
     });
     const result = await executeRiceTool({
       context: executionContext(),
@@ -1558,7 +1563,7 @@ describe('Codex hosted search Tool Broker integration', () => {
     createToolBrokerExportObject.mockReturnValue(object);
     registerToolBrokerExport.mockResolvedValue({
       objectId,
-      fileName: 'Q3-计划-初稿.md',
+      fileName: 'Q3-计划-初稿（2）.md',
       id: randomUUID(),
       seriesId,
       version: 2,
@@ -1596,6 +1601,7 @@ describe('Codex hosted search Tool Broker integration', () => {
       expect(registerToolBrokerExport).toHaveBeenCalledWith({
         context,
         sessionId,
+        namePolicy: 'personal-deliverable',
         fileName: 'Q3-计划-初稿.md',
         format: 'markdown',
         parentObjectId,
@@ -1607,13 +1613,14 @@ describe('Codex hosted search Tool Broker integration', () => {
       );
       expect(JSON.parse(result.modelContent)).toMatchObject({
         objectId,
-        fileName: 'Q3-计划-初稿.md',
+        fileName: 'Q3-计划-初稿（2）.md',
+        downloadUrl: `/api/v1/files/${objectId}/download?name=${encodeURIComponent('Q3-计划-初稿（2）.md')}`,
         seriesId,
         version: 2,
         parentObjectId,
         changeSummary: '补充风险与负责人',
       });
-      expect(result.summary).toBe('已生成交付文件 Q3-计划-初稿.md · v2');
+      expect(result.summary).toBe('已生成交付文件 Q3-计划-初稿（2）.md · v2');
     } finally {
       await rm(storageRoot, { recursive: true, force: true });
     }
@@ -1632,6 +1639,7 @@ describe('Codex hosted search Tool Broker integration', () => {
         id,
         object: { id: objectId, mediaType: 'text/plain', sizeBytes: 4 },
         version: {
+          fileName: 'plan（2）.txt',
           seriesId: randomUUID(),
           version: 1,
           parentObjectId: null,
@@ -1655,8 +1663,12 @@ describe('Codex hosted search Tool Broker integration', () => {
         },
       });
       expect(JSON.parse(result.modelContent).artifactId).toBe(id);
+      expect(JSON.parse(result.modelContent)).toMatchObject({
+        fileName: 'plan（2）.txt',
+        downloadUrl: `/api/v1/files/${objectId}/download?name=${encodeURIComponent('plan（2）.txt')}`,
+      });
       expect(result.summary).toBe(
-        `已生成${kind === 'plan' ? '待审查计划' : '交付文件'} plan.txt · v1`,
+        `已生成${kind === 'plan' ? '待审查计划' : '交付文件'} plan（2）.txt · v1`,
       );
       expect(publishWorkbenchArtifact).toHaveBeenCalledWith(
         expect.objectContaining({

@@ -354,7 +354,7 @@ export async function executeProjectWorkspace(
         versionId: a.id,
         fileName: a.version.fileName,
         checksum: a.object.checksum,
-        downloadUrl: `/api/v1/files/${a.object.id}/download?workspaceId=${ctx.workspaceId}&name=${encodeURIComponent(file.name)}`,
+        downloadUrl: `/api/v1/files/${a.object.id}/download?workspaceId=${ctx.workspaceId}&name=${encodeURIComponent(a.version.fileName)}`,
       });
     }
     return {

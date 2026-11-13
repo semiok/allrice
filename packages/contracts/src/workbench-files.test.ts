@@ -3,10 +3,32 @@ import {
   WorkbenchFileSharingSchema,
   WorkbenchFileUpdateSchema,
   WorkbenchFileUploadSchema,
+  WorkbenchFileFavoriteSchema,
+  WorkbenchDeliverablesFilterSchema,
 } from './workbench-files.ts';
 const a = '00000000-0000-4000-8000-000000000001',
   b = '00000000-0000-4000-8000-000000000002';
 describe('workspace file sharing inputs', () => {
+  it('accepts only an explicit personal favorite set/unset and the directory favorite filter', () => {
+    for (const favorite of [true, false])
+      expect(WorkbenchFileFavoriteSchema.parse({ favorite })).toEqual({
+        favorite,
+      });
+    for (const input of [
+      {},
+      { favorite: 'true' },
+      { favorite: true, viewerId: a },
+      { favorite: false, ownerId: b },
+    ])
+      expect(WorkbenchFileFavoriteSchema.safeParse(input).success).toBe(false);
+    expect(
+      WorkbenchDeliverablesFilterSchema.parse({
+        workspaceId: a,
+        category: 'favorite',
+        employeeInstanceId: b,
+      }).category,
+    ).toBe('favorite');
+  });
   it('defaults an upload to personal independently of a browsing filter', () => {
     expect(
       WorkbenchFileUploadSchema.parse({

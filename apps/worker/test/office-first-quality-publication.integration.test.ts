@@ -1,5 +1,6 @@
 import { prepareDeliveryAuthorityFixture } from './final-delivery-reference-authority.fixture.ts';
 /** Real publisher -> current transaction reader -> deterministic final policy.
+ * The historical identical-name case seeds pre-F2 immutable persistence directly.
  * All identities/leases belong to the fixture's private UUID PostgreSQL schema.
  * No real account, renderer, native SDK, model, cloud tool or Dev is invoked. */
 import assert from 'node:assert/strict';
@@ -9,7 +10,9 @@ import { join } from 'node:path';
 import JSZip from 'jszip';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
+  ChecksumSchema,
   ExecutionContextSchema,
+  OfficeExportProducerSchema,
   officeMediaTypes,
   type OfficeDeliveryReceipt,
 } from '@allrice/contracts';
@@ -24,6 +27,11 @@ import {
   publishWorkbenchArtifact,
   readArtifactBytes,
 } from '../../../packages/database/src/artifact-review.ts';
+import {
+  createToolBrokerExportObject,
+  registerToolBrokerExport,
+} from '../../../packages/database/src/execution/tool-broker.ts';
+import { runtimePolicyDigest } from '../../../packages/database/src/runtime-policy.ts';
 import { checkOfficeExport } from '../src/office/quality.js';
 import { officeDeliveryReceipt } from '../src/office/delivery-receipt.js';
 import { createDeliveryMarkup } from '../src/final-delivery/markup.js';
@@ -157,6 +165,57 @@ async function localReceipt(bytes: Buffer) {
   });
   expect(checked.bytes).toEqual(bytes);
   return officeDeliveryReceipt(checked.bytes, checked);
+}
+async function historicalPublication(f: Fixture, bytes: Buffer) {
+  const callId = randomUUID(),
+    checksum = ChecksumSchema.parse(digest(bytes)),
+    receipt = await localReceipt(bytes);
+  const object = {
+    ...createToolBrokerExportObject({
+      context: f.context,
+      mediaType: officeMediaTypes.xlsx,
+      sizeBytes: bytes.length,
+      checksum,
+    }),
+    immutable: true,
+  };
+  await storage().put(object, new Blob([Uint8Array.from(bytes)]).stream());
+  const version = await db().begin(async (tx) => {
+    const version = await registerToolBrokerExport(
+      {
+        context: f.context,
+        sessionId: f.session,
+        fileName: 'same-name.xlsx',
+        format: 'xlsx',
+        object,
+        officeReceipt: receipt,
+      },
+      tx,
+    );
+    const requestDigest = runtimePolicyDigest({
+      sessionId: f.session,
+      kind: 'document',
+      fileName: 'same-name.xlsx',
+      format: 'xlsx',
+      checksum,
+      mediaType: officeMediaTypes.xlsx,
+      parentObjectId: null,
+      changeSummary: null,
+    });
+    await tx`insert into allrice_workbench_artifacts(version_id,organization_id,workspace_id,owner_id,run_id,kind,provenance,request_id,request_digest)
+      values(${version.id},${f.org},${f.workspace},${f.user},${f.rootRunId},'document',${tx.json({ kind: 'model_proposal', runId: f.rootRunId, operationId: null, stepId: null })},${callId},${requestDigest})`;
+    await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata)
+      values(${f.org},${f.workspace},${f.user},'artifact.published','deliverable_version',${version.id},'recorded','immutable_version',${tx.json({ runId: f.rootRunId, sessionId: f.session, checksum, kind: 'document', officeExport: OfficeExportProducerSchema.parse({ version: 1, tool: 'workspace.export.create', callId, objectId: object.id }) })})`;
+    return version;
+  });
+  const artifact = await getWorkbenchArtifact(
+    f.principal,
+    f.session,
+    version.id,
+    db(),
+  );
+  published.push({ f, artifact, bytes });
+  return artifact;
 }
 async function publish(
   f: Fixture,
@@ -439,8 +498,8 @@ suite(
 
     it('does not let a cached, identically named other series erase the first series obligation', async () => {
       const f = await fixture(),
-        v1 = await publish(f, await workbook('missing'));
-      const other = await publish(f, await workbook('cached')),
+        v1 = await historicalPublication(f, await workbook('missing'));
+      const other = await historicalPublication(f, await workbook('cached')),
         snapshot = await f.read();
       expect(other.version.fileName).toBe(v1.version.fileName);
       expect(other.version.seriesId).not.toBe(v1.version.seriesId);
@@ -456,6 +515,43 @@ suite(
         other: identity(other),
         requirements: snapshot.requirements,
       });
+    });
+
+    it('suffixes current independent publications without erasing either obligation and replays the original call', async () => {
+      const f = await fixture(),
+        oldBytes = await workbook('missing'),
+        newBytes = await workbook('cached'),
+        callId = randomUUID();
+      const v1 = await publish(f, oldBytes),
+        other = await publish(f, newBytes, { callId }),
+        originalAudit = await audits(other);
+      expect(v1.version.fileName).toBe('same-name.xlsx');
+      expect(other.version.fileName).toBe('same-name（2）.xlsx');
+      expect(other.version.seriesId).not.toBe(v1.version.seriesId);
+      expect(other.object.id).not.toBe(v1.object.id);
+      expect(other.id).not.toBe(v1.id);
+      const replay = await publish(f, newBytes, { callId });
+      expect(identity(replay)).toEqual(identity(other));
+      expect(replay.version.fileName).toBe(other.version.fileName);
+      expect(await audits(other)).toEqual(originalAudit);
+      const snapshot = await f.read();
+      expect(
+        snapshot.requirements.filter((required) => required.requireLink),
+      ).toHaveLength(2);
+      expect(decide(f, snapshot, other).status).toBe('invalid_response');
+      expect(
+        decide(f, snapshot, other, v1).issues.map((issue) => issue.code),
+      ).toContain('required_check_incomplete');
+      expect(checks(snapshot, v1)).toContainEqual({
+        checkId: 'office.saved_values',
+        status: 'failed',
+      });
+      expect(checks(snapshot, other)).toContainEqual({
+        checkId: 'office.saved_values',
+        status: 'passed',
+      });
+      await assertBytes(f, v1, oldBytes);
+      await assertBytes(f, other, newBytes);
     });
 
     it('retains an existing formula obligation through a constant-only head until another formula version repairs it', async () => {

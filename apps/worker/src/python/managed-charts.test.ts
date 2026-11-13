@@ -177,6 +177,7 @@ beforeEach(() => {
         mediaType: artifact.mediaType,
       },
       fileName: artifact.fileName,
+      requestedFileName: artifact.fileName,
       versionId: randomUUID(),
     })),
   );
@@ -407,6 +408,45 @@ describe('canonical Python original-call execution adapter', () => {
     expect(JSON.stringify(args)).toBe(before);
     expect(args).not.toHaveProperty('language');
     expect(args).not.toHaveProperty('location');
+  });
+  it('keeps frozen output proof names while returning the publisher final name', async () => {
+    const request = input(argumentsForPng());
+    ports.publish.mockImplementation(async () =>
+      result(lastPayload).artifacts.map((artifact) => ({
+        object: {
+          id: artifact.objectId,
+          checksum: artifact.checksum,
+          sizeBytes: artifact.sizeBytes,
+          mediaType: artifact.mediaType,
+        },
+        requestedFileName: artifact.fileName,
+        fileName: '中文图（2）.png',
+        versionId: randomUUID(),
+      })),
+    );
+    const response = JSON.parse((await run(request)).modelContent);
+    expect(response.artifacts[0].fileName).toBe('中文图（2）.png');
+    expect(response.artifacts[0]).not.toHaveProperty('requestedFileName');
+    expect(lastPayload.arguments.outputs[0]!.fileName).toBe('中文图.png');
+    expect(lastPayload.arguments.origin.argumentsDigest).toBe(
+      runtimePolicyDigest(request.call.arguments),
+    );
+    ports.publish.mockImplementation(async () =>
+      result(lastPayload).artifacts.map((artifact) => ({
+        object: {
+          id: artifact.objectId,
+          checksum: artifact.checksum,
+          sizeBytes: artifact.sizeBytes,
+          mediaType: artifact.mediaType,
+        },
+        requestedFileName: 'substituted.png',
+        fileName: '中文图（2）.png',
+        versionId: randomUUID(),
+      })),
+    );
+    await expect(run(request)).rejects.toMatchObject({
+      code: 'PYTHON_LOCAL_RESULT_UNKNOWN',
+    });
   });
   it.each(['png', 'csv'] as const)(
     'binds a changed %s parent in the original digest without changing Bridge execution fields or stable output ID',

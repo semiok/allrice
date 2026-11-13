@@ -571,16 +571,32 @@ suite(
             fileName: string;
             objectId: string;
             versionId: string;
+            downloadUrl: string;
           }[];
         };
+        const suffix = kind === 'document' ? '（2）' : '';
+        expect(delivered.artifacts.map((a) => a.fileName)).toEqual([
+          `project-source${suffix}.zip`,
+          `project-test-report${suffix}.json`,
+        ]);
         const third = delivered.artifacts.find(
-          (a) => a.fileName === 'project-source.zip',
-        )!;
+          (a) => a.fileName === `project-source${suffix}.zip`,
+        );
+        if (!third) throw Error('Missing delivered source ZIP');
+        expect(
+          new URL(
+            third.downloadUrl,
+            'https://fixture.invalid',
+          ).searchParams.get('name'),
+        ).toBe(third.fileName);
         const [version] =
-          await f.db`select v.series_id,v.version,v.parent_version_id,a.kind
+          await f.db`select v.object_id,v.file_name,v.format,v.series_id,v.version,v.parent_version_id,a.kind
           from allrice_deliverable_versions v join allrice_workbench_artifacts a on a.version_id=v.id
           where v.id=${third.versionId}`;
         expect(version).toMatchObject({
+          object_id: third.objectId,
+          file_name: third.fileName,
+          format: 'zip',
           series_id: rows[0]!.series_id,
           version: 3,
           parent_version_id: next.versionId,

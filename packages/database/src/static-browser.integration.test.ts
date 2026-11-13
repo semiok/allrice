@@ -12,6 +12,9 @@ import {
   staticBrowserDocumentUrl,
   ArtifactBrowserVerificationSchema,
   BrowserObservationSchema,
+  BrowserVerificationOutcomeSchema,
+  StaticBrowserTargetSchema,
+  StaticBrowserReferenceSchema,
 } from '@allrice/contracts';
 import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createLocalBrowserFixture } from './local-browser.fixture.ts';
@@ -47,6 +50,7 @@ import {
   readArtifactBrowserVerification,
   recordStaticBrowserContainer,
   recordStaticBrowserExecutionFailure,
+  recordStaticBrowserOutcome,
   type StaticBrowserExecutionFailure,
 } from './static-browser.ts';
 import { isConfirmedToolFailure } from '../../../apps/worker/src/errors.ts';
@@ -225,6 +229,183 @@ suite(
         database.db,
       );
     }
+    it('resolves the actual persisted HTML final name beyond 120 without widening the model reference or 255 boundary', async () => {
+      const f = await fixture(),
+        fileName = 'h'.repeat(115) + '.html';
+      const input = {
+        context: f.execution,
+        sessionId: f.session,
+        kind: 'document' as const,
+        fileName,
+        format: 'html' as const,
+        mediaType: 'text/html',
+        bytes: Buffer.from(html),
+      };
+      const original = await publishWorkbenchArtifact(
+        { ...input, callId: randomUUID() },
+        f.storage,
+        database.db,
+      );
+      const renamed = await publishWorkbenchArtifact(
+        { ...input, callId: randomUUID() },
+        f.storage,
+        database.db,
+      );
+      expect(original.version.fileName.length).toBe(120);
+      expect(renamed.version.fileName).toBe('h'.repeat(115) + '（2）.html');
+      const reference = {
+        versionId: renamed.id,
+        checksum: renamed.object.checksum,
+      };
+      const resolved = await resolveStaticBrowserDocument(
+        f.execution,
+        reference,
+        f.storage,
+        database.db,
+      );
+      expect(resolved.target.fileName).toBe(renamed.version.fileName);
+      expect(Buffer.from(resolved.contentBase64, 'base64')).toEqual(
+        Buffer.from(html),
+      );
+      expect(
+        StaticBrowserTargetSchema.safeParse({
+          ...resolved.target,
+          fileName: 'x'.repeat(255),
+        }).success,
+      ).toBe(true);
+      expect(
+        StaticBrowserTargetSchema.safeParse({
+          ...resolved.target,
+          fileName: 'x'.repeat(256),
+        }).success,
+      ).toBe(false);
+      expect(
+        StaticBrowserReferenceSchema.safeParse({
+          ...reference,
+          fileName: renamed.version.fileName,
+        }).success,
+      ).toBe(false);
+    }, 30000);
+
+    it('keeps final report/image names and the embedded download link stable with a synthetic saved outcome, without a physical browser', async () => {
+      const f = await fixture(),
+        row = await admit(f, randomUUID(), assertionPlan);
+      const png = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=',
+        'base64',
+      );
+      const oldImage = await publishWorkbenchArtifact(
+        {
+          context: f.execution,
+          sessionId: f.session,
+          callId: randomUUID(),
+          kind: 'document',
+          fileName: 'browser-verification.png',
+          format: 'png',
+          mediaType: 'image/png',
+          bytes: png,
+        },
+        f.storage,
+        database.db,
+      );
+      const oldReport = await publishWorkbenchArtifact(
+        {
+          context: f.execution,
+          sessionId: f.session,
+          callId: randomUUID(),
+          kind: 'document',
+          fileName: 'browser-verification.md',
+          format: 'text',
+          mediaType: 'text/markdown',
+          bytes: Buffer.from('Earlier report original'),
+        },
+        f.storage,
+        database.db,
+      );
+      await startStaticBrowserVerification(row, database.db);
+      const containerId = 'c'.repeat(64),
+        observationId = randomUUID(),
+        now = new Date().toISOString();
+      await recordStaticBrowserContainer(row, containerId, database.db);
+      // Only the transport outcome is synthetic. The producer, authority,
+      // registration, immutable storage and exact replay all use real PG.
+      const outcome = BrowserVerificationOutcomeSchema.parse({
+        version: 1,
+        verificationId: row.id,
+        plan: assertionPlan,
+        location: row.location,
+        executionReason: row.execution_reason,
+        targetId: row.target_id,
+        deviceId: row.device_id,
+        attemptId: row.attempt_id,
+        containerId,
+        imageDigest: staticBrowserImageV1,
+        browserVersion: 'synthetic-contract-only',
+        physicalStopConfirmed: true,
+        screenshotChecksum:
+          'sha256:' + createHash('sha256').update(png).digest('hex'),
+        screenshotObjectId: null,
+        screenshotObservationId: observationId,
+        report: {
+          version: 1,
+          target: row.target,
+          planDigest: runtimePolicyDigest(assertionPlan),
+          startedAt: now,
+          completedAt: now,
+          verdict: 'passed',
+          errorCode: null,
+          steps: [
+            {
+              index: 0,
+              type: 'title_equals',
+              status: 'passed',
+              observationId,
+              pageDigest: runtimePolicyDigest('Known bug verified'),
+              expected: 'Known bug verified',
+              actual: 'Known bug verified',
+              errorCode: null,
+            },
+          ],
+        },
+      });
+      await recordStaticBrowserOutcome(row, outcome, database.db);
+      const published = await publishStaticBrowserVerification(
+        row,
+        png,
+        f.storage,
+        database.db,
+      );
+      expect(published.screenshot.version.fileName).toBe(
+        'browser-verification（2）.png',
+      );
+      expect(published.report.version.fileName).toBe(
+        'browser-verification（2）.md',
+      );
+      expect(published.report.provenance.kind).toBe('tool_result');
+      expect(published.screenshot.provenance.kind).toBe('tool_result');
+      const report = (
+        await readArtifactBytes(f.storage, published.report.object)
+      ).toString();
+      expect(report).toContain(
+        `/api/v1/files/${published.screenshot.object.id}/download?name=${encodeURIComponent(published.screenshot.version.fileName)}`,
+      );
+      const replay = await publishStaticBrowserVerification(
+        row,
+        png,
+        f.storage,
+        database.db,
+      );
+      expect(replay.report.id).toBe(published.report.id);
+      expect(replay.screenshot.id).toBe(published.screenshot.id);
+      expect(await readArtifactBytes(f.storage, replay.report.object)).toEqual(
+        Buffer.from(report),
+      );
+      expect(await readArtifactBytes(f.storage, oldImage.object)).toEqual(png);
+      expect(await readArtifactBytes(f.storage, oldReport.object)).toEqual(
+        Buffer.from('Earlier report original'),
+      );
+    }, 30000);
+
     it('MET-210 static verification browser list reads its saved artifact authority without row locks', async () => {
       const { f, row } = await claimedStatic();
       await startStaticBrowserVerification(row, database.db);

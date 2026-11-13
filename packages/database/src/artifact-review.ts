@@ -36,6 +36,7 @@ import {
 } from '@allrice/contracts';
 import type { TransactionSql } from 'postgres';
 import { businessDeliverablePredicate } from './organization-dashboard.ts';
+import { isBusinessDeliverable } from './workbench-file-personal.ts';
 import {
   requireTenantAdministrationAuthority,
   requireTenantAdministrationTarget,
@@ -1773,22 +1774,6 @@ export async function publishWorkbenchArtifact(
         created,
         new Blob([Uint8Array.from(input.bytes)]).stream(),
       );
-      const version = await registerToolBrokerExport(
-        {
-          context,
-          sessionId: input.sessionId,
-          fileName: input.fileName,
-          format: input.format,
-          object: created,
-          ...(officeReceipt ? { officeReceipt } : {}),
-          ...(source ? { sourceFile: source.source } : {}),
-          ...(parentObjectId ? { parentObjectId } : {}),
-          ...(input.changeSummary
-            ? { changeSummary: input.changeSummary }
-            : {}),
-        },
-        tx,
-      );
       const provenance = {
         kind:
           development?.projectDelivery ||
@@ -1809,6 +1794,25 @@ export async function publishWorkbenchArtifact(
           null,
         stepId: null,
       };
+      const version = await registerToolBrokerExport(
+        {
+          context,
+          sessionId: input.sessionId,
+          ...(isBusinessDeliverable(publicationKind, provenance.kind)
+            ? { namePolicy: 'personal-deliverable' }
+            : {}),
+          fileName: input.fileName,
+          format: input.format,
+          object: created,
+          ...(officeReceipt ? { officeReceipt } : {}),
+          ...(source ? { sourceFile: source.source } : {}),
+          ...(parentObjectId ? { parentObjectId } : {}),
+          ...(input.changeSummary
+            ? { changeSummary: input.changeSummary }
+            : {}),
+        },
+        tx,
+      );
       await tx`insert into allrice_workbench_artifacts(version_id,organization_id,workspace_id,owner_id,run_id,kind,provenance,execution,request_id,request_digest)
       values(${version.id},${context.organizationId},${context.workspaceId!},${owner},${publishingRunId},${publicationKind},${tx.json(provenance)},${execution ? tx.json(execution) : null},${input.callId},${requestDigest})`;
       await assertPublishingRun(tx, context, input.sessionId, requiredTool);

@@ -121,6 +121,7 @@ function setup(
   ports.workbench.mockReturnValue(workbench);
   ports.object.mockImplementation((arg) => ({ id: randomUUID(), ...arg }));
   ports.register.mockResolvedValue({
+    fileName: 'reconciliation（2）.xlsx',
     seriesId: randomUUID(),
     version: 1,
     parentObjectId: null,
@@ -134,6 +135,7 @@ function setup(
       sizeBytes: arg.bytes.length,
     },
     version: {
+      fileName: arg.officeReceipt ? 'reconciliation（2）.xlsx' : arg.fileName,
       seriesId: randomUUID(),
       version: 1,
       parentObjectId: null,
@@ -172,6 +174,13 @@ describe('Office receipts through existing publication ports', () => {
         diagnostic: f.checked.diagnostic,
       });
       expect(result).toMatchObject(call.officeReceipt);
+      expect(call.fileName).toBe('reconciliation.xlsx');
+      expect(result.fileName).toBe('reconciliation（2）.xlsx');
+      expect(
+        new URL(result.downloadUrl, 'https://allrice.test').searchParams.get(
+          'name',
+        ),
+      ).toBe(result.fileName);
       expect(ports.quality).toHaveBeenCalledExactlyOnceWith(source, 'xlsx', {
         cloudQualityAllowed: true,
       });
@@ -222,7 +231,12 @@ describe('Office receipts through existing publication ports', () => {
           checksum: hash(final),
           sizeBytes: final.length,
         },
-        version: { seriesId: randomUUID(), version: 1, parentObjectId: null },
+        version: {
+          fileName: 'historical-original.xlsx',
+          seriesId: randomUUID(),
+          version: 1,
+          parentObjectId: null,
+        },
         officeReceipt: missing ? null : old,
         officeReceiptReplayed: true,
       });
@@ -231,6 +245,7 @@ describe('Office receipts through existing publication ports', () => {
       expect(result.diagnostic).toBeUndefined();
       expect(result.quality).toEqual(missing ? undefined : old.quality);
       expect(result.warnings).toEqual(missing ? [] : old.warnings);
+      expect(result.fileName).toBe('historical-original.xlsx');
     },
   );
   it('rejects final-byte mismatch before every storage/publication port and confirms only this attempt', async () => {

@@ -39,6 +39,11 @@ import {
   createSession,
   authenticateSession,
 } from './identity.ts';
+import {
+  uploadWorkbenchFile,
+  readWorkbenchDeliverables,
+  readWorkbenchFile,
+} from './workbench-files.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -246,6 +251,138 @@ suite(
       });
       return getWorkbenchArtifact(f.requestContext, f.session, version.id);
     }
+
+    it.each([
+      {
+        label: 'normal extension',
+        fileName: 'recovery.txt',
+        names: ['recovery（2）.txt', 'recovery（3）.txt'],
+      },
+      {
+        label: 'legal 255-unit name with an oversized dot tail',
+        fileName: 'a.' + 'x'.repeat(253),
+        names: [2, 3].map((number) => 'a.' + 'x'.repeat(250) + `（${number}）`),
+      },
+    ])(
+      'allocates personal final names for $label under the existing quota lock across two database connections and exact call replay',
+      async ({ fileName, names }) => {
+        const f = await setup();
+        const owner = {
+          ...(await authenticateSession((await createSession(f.user)).token))!,
+          workspaceId: f.workspace,
+        };
+        const originalBytes = Buffer.from('Original source stays intact');
+        let originalId: string;
+        if (fileName.length <= 160) {
+          originalId = (
+            await uploadWorkbenchFile(
+              owner,
+              {
+                workspaceId: f.workspace,
+                requestId: randomUUID(),
+                fileName,
+                mediaType: 'text/plain',
+                contentBase64: originalBytes.toString('base64'),
+              },
+              f.storage,
+            )
+          ).objectId;
+        } else {
+          // The upload API retains its existing 160 limit. A compatible
+          // published original can already carry the legal 255-unit name.
+          const object = createToolBrokerExportObject({
+            context: f.input.context,
+            mediaType: 'text/plain',
+            sizeBytes: originalBytes.length,
+            checksum:
+              'sha256:' +
+              createHash('sha256').update(originalBytes).digest('hex'),
+          });
+          await f.storage.put(object, new Blob([originalBytes]).stream());
+          await registerToolBrokerExport(
+            {
+              context: f.input.context,
+              sessionId: f.session,
+              fileName,
+              format: 'text',
+              object,
+            },
+            fixture.db,
+          );
+          originalId = object.id;
+        }
+        const pids = new Set<number>();
+        const observed = new Proxy(fixture.db, {
+          get(target, key) {
+            if (key !== 'begin') return Reflect.get(target, key, target);
+            return (body: (tx: TransactionSql) => Promise<unknown>) =>
+              target.begin(async (tx) => {
+                pids.add(
+                  (await tx<{ pid: number }[]>`select pg_backend_pid() pid`)[0]!
+                    .pid,
+                );
+                return body(tx);
+              });
+          },
+        });
+        const requests = [
+          { ...f.input, fileName },
+          {
+            ...f.input,
+            fileName,
+            callId: randomUUID(),
+            bytes: Buffer.from('Independent new original'),
+          },
+        ];
+        const published = await Promise.all(
+          requests.map((input) =>
+            publishWorkbenchArtifact(input, f.storage, observed),
+          ),
+        );
+        expect(pids.size).toBe(2);
+        expect(published.map((file) => file.version.fileName).sort()).toEqual(
+          names,
+        );
+        expect(new Set(published.map((file) => file.object.id)).size).toBe(2);
+        for (const [index, artifact] of published.entries()) {
+          expect(artifact.version.fileName.length).toBeLessThanOrEqual(255);
+          expect(await readArtifactBytes(f.storage, artifact.object)).toEqual(
+            requests[index]!.bytes,
+          );
+          expect(
+            (await publishWorkbenchArtifact(requests[index]!, f.storage)).id,
+          ).toBe(artifact.id);
+          expect(
+            (await publishWorkbenchArtifact(requests[index]!, f.storage))
+              .version.fileName,
+          ).toBe(artifact.version.fileName);
+          await expect(
+            publishWorkbenchArtifact(
+              { ...requests[index]!, fileName: 'changed.txt' },
+              f.storage,
+            ),
+          ).rejects.toThrow('idempotency_conflict');
+          expect(
+            await fixture.db`select file_name from allrice_file_references where object_id=${artifact.object.id}`,
+          ).toEqual([{ file_name: artifact.version.fileName }]);
+        }
+        expect(
+          (
+            await readWorkbenchDeliverables(owner, {
+              workspaceId: f.workspace,
+              objectId: originalId,
+            })
+          ).files[0]!.fileName,
+        ).toBe(fileName);
+        const original = await f.storage.get(
+          (await readWorkbenchFile(owner, originalId)).object,
+        );
+        expect(await new Response(original).text()).toBe(
+          originalBytes.toString(),
+        );
+      },
+      30000,
+    );
 
     it.each(['192229', '192000'])(
       'paginates an entire immutable batch with fractional timestamp %s without skipping files',
@@ -599,6 +736,8 @@ suite(
         fixture.db,
         { ...base, registered, replayed },
       );
+      expect(previous.version.fileName).toBe('recovery.txt');
+      expect(committed.version.fileName).toBe('recovery（2）.txt');
       const cached = await publishWorkbenchArtifact(
         revision,
         storage,
@@ -606,6 +745,7 @@ suite(
         { ...base, registered, replayed },
       );
       expect(cached.id).toBe(committed.id);
+      expect(cached.version.fileName).toBe(committed.version.fileName);
       expect(registered).toHaveBeenCalledOnce();
       expect(replayed).toHaveBeenCalledOnce();
       expect(

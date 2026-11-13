@@ -27,6 +27,7 @@ export async function assertExplicitOutputParent(
     {
       id: string;
       object_id: string;
+      file_name: string;
       series_id: string;
       kind: string | null;
       provenance_kind: string | null;
@@ -36,7 +37,7 @@ export async function assertExplicitOutputParent(
       operation_id: string | null;
     }[]
   >`
-    select v.id,v.object_id,v.series_id,a.kind,o.checksum,a.run_id,
+    select v.id,v.object_id,v.file_name,v.series_id,a.kind,o.checksum,a.run_id,
       a.provenance->>'operationId' as operation_id,a.provenance->>'kind' as provenance_kind,o.immutable
     from allrice_deliverable_versions v
     join allrice_storage_objects o on o.id=v.object_id

@@ -442,12 +442,38 @@ suite('MET166 PR3b exact saved-source local command — real PostgreSQL', () => 
         },
         f.storage,
         f.db,
-      )) as { artifacts: { fileName: string; objectId: string }[] };
+      )) as {
+        artifacts: {
+          fileName: string;
+          objectId: string;
+          versionId: string;
+          downloadUrl: string;
+        }[];
+      };
+      expect(alternative.artifacts.map((a) => a.fileName)).toEqual([
+        'project-source（2）.zip',
+        'project-test-report（2）.json',
+      ]);
+      const alternativeSource = alternative.artifacts.find(
+        (a) => a.fileName === 'project-source（2）.zip',
+      );
+      if (!alternativeSource) throw Error('Missing alternative source ZIP');
+      const [alternativeVersion] =
+        await f.db`select object_id,file_name,format from allrice_deliverable_versions where id=${alternativeSource.versionId}`;
+      expect(alternativeVersion).toMatchObject({
+        object_id: alternativeSource.objectId,
+        file_name: alternativeSource.fileName,
+        format: 'zip',
+      });
+      expect(
+        new URL(
+          alternativeSource.downloadUrl,
+          'https://fixture.invalid',
+        ).searchParams.get('name'),
+      ).toBe(alternativeSource.fileName);
       const changed = structuredClone(payload);
       changed.arguments.outputs![0]!.parentObjectId =
-        alternative.artifacts.find(
-          (a) => a.fileName === 'project-source.zip',
-        )!.objectId;
+        alternativeSource.objectId;
       await expect(
         f.db`update allrice_runtime_operations set bridge_payload=${f.db.json(changed)}
           where id=${operationId}`,

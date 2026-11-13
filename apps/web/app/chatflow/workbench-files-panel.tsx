@@ -31,6 +31,7 @@ import {
 import { DshDialog } from './dsh-upstream/Dialog';
 import { WorkbenchIcon } from './workbench-modules';
 import { useWorkbenchFileReference } from './use-workbench-file-reference';
+import { useWorkbenchFileFavorite } from './use-workbench-file-favorite';
 import { copyWorkbenchFileLink } from './workbench-file-link';
 import css from './workbench-files-panel.module.css';
 const scopeNames = {
@@ -58,6 +59,7 @@ function message(error: unknown) {
 export function WorkbenchFilesPanel(props: {
   workspaceId: string;
   ownerKey: string;
+  viewerId?: string;
   refreshKey: string;
   currentEmployee?: { id: string; name: string };
   employees?: Array<{ id: string; name: string }>;
@@ -76,15 +78,16 @@ export function WorkbenchFilesPanel(props: {
     scope: employeeScope,
     id: props.currentEmployee?.id ?? '',
   });
-  const employeeId =
+  const selectedEmployeeId =
     employeeChoice.scope === employeeScope
       ? employeeChoice.id
       : (props.currentEmployee?.id ?? '');
   const [query, setQuery] = useState('');
-  const [category, setCategory] = useState<'all' | 'artifact' | 'upload'>(
-    props.initialCategory === 'artifact' ? 'artifact' : 'all',
-  );
+  const [category, setCategory] = useState<
+    'all' | 'artifact' | 'upload' | 'favorite'
+  >(props.initialCategory === 'artifact' ? 'artifact' : 'all');
   const [revision, setRevision] = useState(0);
+  const employeeId = category === 'favorite' ? '' : selectedEmployeeId;
   const [page, setPage] = useState<{ key: string; cursor: string } | null>(
     null,
   );
@@ -115,6 +118,7 @@ export function WorkbenchFilesPanel(props: {
   const loading = status.key === key && status.loading;
   const error = status.key === key ? status.error : '';
   const referenceActions = useWorkbenchFileReference(props);
+  const favorite = useWorkbenchFileFavorite(props);
   const reload = useCallback(() => setRevision((n) => n + 1), []);
   useEffect(() => {
     if (props.initialCategory)
@@ -260,6 +264,7 @@ export function WorkbenchFilesPanel(props: {
         <div className={css.scopePicker}>
           <select
             aria-label="按员工筛选"
+            disabled={category === 'favorite'}
             value={employeeId}
             onChange={(event) =>
               setEmployeeChoice({
@@ -295,6 +300,7 @@ export function WorkbenchFilesPanel(props: {
             ['all', '全部'],
             ['artifact', '员工交付'],
             ['upload', '我的上传'],
+            ['favorite', '我的收藏'],
           ] as const
         ).map(([id, label]) => (
           <button
@@ -309,9 +315,13 @@ export function WorkbenchFilesPanel(props: {
       </nav>
       {(error ||
         referenceActions.error ||
+        favorite.error ||
         (linkStatus?.scope === props.ownerKey && linkStatus.error)) && (
         <p className={css.error} role="alert">
-          {error || referenceActions.error || linkStatus?.error}
+          {error ||
+            referenceActions.error ||
+            favorite.error ||
+            linkStatus?.error}
           {(error || linkStatus?.error) && (
             <button type="button" onClick={reload}>
               重新加载
@@ -366,7 +376,14 @@ export function WorkbenchFilesPanel(props: {
               <span className={css.fileIcon}>
                 <FileTypeIcon path={file.fileName} size={28} />
               </span>
-              <span className={css.fileName}>{file.fileName}</span>
+              <span className={css.fileName}>
+                {file.favorite && (
+                  <span className={css.favorite} aria-label="已收藏">
+                    <WorkbenchIcon kind="star" filled size={13} />
+                  </span>
+                )}
+                {file.fileName}
+              </span>
               <small>
                 {new Date(file.createdAt).toLocaleString('zh-CN', {
                   month: 'numeric',
@@ -385,13 +402,23 @@ export function WorkbenchFilesPanel(props: {
               }
               onUse={() => void referenceActions.useFile(file)}
               onNotice={setNotice}
+              favoriteDisabled={favorite.disabled || !!favorite.using}
+              onFavorite={() =>
+                void favorite.setFavorite(file.objectId, !file.favorite)
+              }
             />
           </article>
         ))}
         {!files.length && !loading && !error && (
           <div className={css.empty}>
             <WorkbenchIcon kind="files" size={36} />
-            <h3>{query ? '未找到相关文件' : '还没有交付成果'}</h3>
+            <h3>
+              {query
+                ? '未找到相关文件'
+                : category === 'favorite'
+                  ? '还没有收藏'
+                  : '还没有交付成果'}
+            </h3>
             <p>
               {query
                 ? '换个关键词试试。'
@@ -413,11 +440,15 @@ function FileMenu({
   disabled,
   onUse,
   onNotice,
+  favoriteDisabled,
+  onFavorite,
 }: {
   file: WorkbenchDeliverable;
   disabled: boolean;
   onUse: () => void;
   onNotice: (message: string) => void;
+  favoriteDisabled: boolean;
+  onFavorite: () => void;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -454,10 +485,16 @@ function FileMenu({
         items={[
           { id: 'download', label: '下载' },
           { id: 'copy', label: '复制链接' },
+          {
+            id: 'favorite',
+            label: file.favorite ? '取消收藏' : '收藏',
+            disabled: favoriteDisabled,
+          },
         ]}
         onClose={() => setOpen(false)}
         onSelect={(id) => {
           setOpen(false);
+          if (id === 'favorite') onFavorite();
           if (id === 'copy')
             void copyWorkbenchFileLink(file.workspaceId, file.objectId)
               .then(() => onNotice('链接已复制，仅你自己可以打开'))

@@ -129,7 +129,14 @@ window.fetch = async (input, init) => {
     return Response.json({
       files:
         !query || file.fileName.includes(query)
-          ? [{ ...file, origin: 'business-deliverable', sources: [] }]
+          ? [
+              {
+                ...file,
+                origin: 'business-deliverable',
+                sources: [],
+                favorite: false,
+              },
+            ]
           : [],
       employees: [],
       nextCursor: null,
