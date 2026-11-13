@@ -330,8 +330,8 @@ header.conversationHeader::after {
 
 @media (max-width: 700px) {
   .conversationHeader .conversationTitle {
-    flex: 1 0 5em;
-    min-width: 5em;
+    flex: 1 0 56px;
+    min-width: 56px;
   }
 
   .conversationHeader .conversationTitle + .conversationActions {

@@ -38,7 +38,7 @@
   margin: -6px -8px -6px auto;
   padding: 0;
   border-radius: var(--ar-radius-sm);
-  color: var(--ar-text);
+  color: var(--ar-text-secondary);
 }
 .dialog > header button:hover:not(:disabled) {
   background: var(--ar-surface-hover);

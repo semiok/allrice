@@ -18,7 +18,7 @@
 .label {
   flex: none;
   margin: 0;
-  padding: 0 12px 8px;
+  padding: 0 12px;
   color: var(--dsw-alias-label-secondary);
   font-size: 12px;
   line-height: 18px;
@@ -142,7 +142,12 @@
   --dsw-alias-interactive-bg-hover: var(--allrice-sidebar-hover);
   display: grid;
   gap: 2px;
-  padding: 4px 5px 0 46px;
+  padding: 4px 5px 0 26px;
+}
+.sessions > .draftSession,
+.sessions > .empty,
+.sessions > .more {
+  margin-inline-start: 20px;
 }
 .sessions [role='treeitem'] {
   transition: background-color 140ms ease;
