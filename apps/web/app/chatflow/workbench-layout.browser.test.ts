@@ -13860,7 +13860,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.panel
         .getByRole('region', { name: '个人记忆', exact: true })
         .waitFor();
-      await f.panel.getByText('全部 · 共 0 条', { exact: true }).waitFor();
+      await f.panel
+        .getByRole('heading', { name: '还没有记忆', exact: true })
+        .waitFor();
       await f.panel
         .getByRole('button', { name: '返回员工详情', exact: true })
         .click();
