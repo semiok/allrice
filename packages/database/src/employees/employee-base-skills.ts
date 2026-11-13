@@ -9,6 +9,7 @@ import { getDatabase } from '../core/client.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
 import { validateFrozenSkill } from '../skill-bundles.ts';
 import { readExistingPlatformSkills } from '../platform-content/sync.ts';
+import { assertCurrentPlatformSkillSources } from '../platform-content/retired-skills.ts';
 
 const metadataSchema = z
   .object({
@@ -46,6 +47,7 @@ export async function freezeEmployeeBaseSkills(
   original: DshNativeSkillSnapshot[],
   transaction?: postgres.TransactionSql,
 ) {
+  assertCurrentPlatformSkillSources(original);
   const freeze = async (sql: postgres.TransactionSql) => {
     const [record] = await sql<{ value: unknown }[]>`
       select value from allrice_runtime_metadata where key='platform-content-catalog'`;

@@ -62,6 +62,7 @@ import { employeeManifest } from './employee-config.ts';
 import { taskSuggestionConfigurationErrors } from './task-suggestions.ts';
 import { frozenPackageSkills, validateSkillBundle } from '../skill-bundles.ts';
 import { getDatabase } from '../core/client.ts';
+import { assertCurrentPlatformSkillSources } from '../platform-content/retired-skills.ts';
 import { listEmployeeToolAvailability } from '../employee-administration.ts';
 import { synchronizeTenantEmployeeAccess } from '../tenant-employee-access.ts';
 import { requireTenantAdministrationAuthority } from '../tenant-administration.ts';
@@ -1668,6 +1669,8 @@ export async function materializePlatformEmployeeRevision(
     preserveCurrentPolicy?: boolean;
   },
 ) {
+  if (input.revision.status === 'disabled')
+    throw new Error('platform_employee_revision_disabled');
   await assertStableMaterializedEmployeeKey(
     transaction,
     input.employeeId,
@@ -1685,6 +1688,7 @@ export async function materializePlatformEmployeeRevision(
   );
   const manifestChecksum = runtimeProfile.runtimePackage.checksum;
   const frozenSkills = frozenPackageSkills(runtimeProfile.runtimePackage);
+  assertCurrentPlatformSkillSources(frozenSkills);
   if (
     frozenSkills.length !==
       input.definition.capabilities.nativeSkillIds.length ||
