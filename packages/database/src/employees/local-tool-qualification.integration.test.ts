@@ -20,6 +20,8 @@ import { savePlatformEmployeeDraft } from './platform-employees.ts';
 import { createEmployeeInstance } from './employee-instances.ts';
 import { resolveEmployeeExecution } from './employeehub.ts';
 import { freezeConnectedLocalToolNames } from './local-tool-qualification.ts';
+import { loadPlatformContentCatalog } from '../platform-content/catalog.ts';
+import { synchronizePlatformContent } from '../platform-content/sync.ts';
 
 const localTools = [
   'local.fs.list',
@@ -36,11 +38,13 @@ const localTools = [
   'local.file.derive',
   'local.file.save',
   'local.preview.open',
+  'local.browser.workspace',
 ];
 const unchangedTools = [
   'workspace.skill.read',
   'workspace.project',
-  'local.browser.workspace',
+  'browser.workspace',
+  'browser.run',
 ];
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -94,7 +98,10 @@ suite('local tools: new Run device qualification', () => {
       requestId: randomUUID(),
       profile: { name: 'Local task employee' },
     });
-    const send = async (kind: 'general' | 'custom' = 'general') => {
+    const send = async (
+      kind: 'general' | 'custom' = 'general',
+      text = '请检查我电脑上已经授权的文件。',
+    ) => {
       const session = await createChatSession(context, {
         workspaceId: source.workspaceId,
         ...(kind === 'custom'
@@ -103,7 +110,7 @@ suite('local tools: new Run device qualification', () => {
         title: 'Local qualification fixture',
       });
       const input = {
-        text: '请检查我电脑上已经授权的文件。',
+        text,
         clientMessageId: randomUUID(),
       };
       const sent = await sendChatMessage(
@@ -291,5 +298,83 @@ suite('local tools: new Run device qualification', () => {
       pool.mockReturnValue(f.db);
     }
     expect(await hasOnlineOwnedBridgeDevice(x.scope, f.db)).toBe(true);
+  });
+
+  it('qualifies a browser-only publication and freezes the synchronized cloud Skill without adding local authority', async () => {
+    const catalog = await loadPlatformContentCatalog();
+    await synchronizePlatformContent(catalog);
+    const current = catalog.skills.find((s) => s.name === 'browser-research')!;
+    const cloudTools = ['browser.workspace', 'browser.run'];
+    const x = await setup([...cloudTools, 'local.browser.workspace']);
+    const first = await x.send(
+      'general',
+      '请打开公开网页，读取需要渲染的内容。',
+    );
+    const before = await x.resolve(first.sent.run.id);
+    const snapshot = before.executionSnapshot!;
+    if (snapshot.schemaVersion !== 2) throw Error('wrong snapshot');
+    expect(snapshot.capabilitySnapshot.bindings.toolNames).toEqual(cloudTools);
+    expect(before.nativeSkills.find((s) => s.id === current.id)).toMatchObject({
+      content: current.content,
+      checksum: current.checksum,
+      requiredToolRefs: cloudTools,
+      invocation: { modelInvocable: true, userInvocable: true },
+    });
+    expect(snapshot.baseSkillCatalog?.skills).toContainEqual(
+      expect.objectContaining({
+        id: current.id,
+        version: current.version,
+        checksum: current.checksum,
+        sourceRef: current.sourceRef,
+      }),
+    );
+    const frozen = before.executionSnapshot;
+    const device = await x.pair();
+    await heartbeat(device.deviceToken);
+    // Presence qualifies the tool, not browser readiness or operation authority.
+    // This heartbeat deliberately reports browser=unavailable.
+    for (const kind of ['general', 'custom'] as const) {
+      const next = await x.resolve((await x.send(kind)).sent.run.id);
+      expect(
+        next.executionSnapshot!.capabilitySnapshot.bindings.toolNames,
+      ).toEqual(
+        expect.arrayContaining([...cloudTools, 'local.browser.workspace']),
+      );
+    }
+    expect((await x.resolve(first.sent.run.id)).executionSnapshot).toEqual(
+      frozen,
+    );
+    await revokeCurrentBridgeDevice(device.deviceToken);
+    const offline = await x.resolve((await x.send()).sent.run.id);
+    expect(
+      offline.executionSnapshot!.capabilitySnapshot.bindings.toolNames,
+    ).toEqual(cloudTools);
+    expect(offline.nativeSkills.find((s) => s.id === current.id)).toEqual(
+      before.nativeSkills.find((s) => s.id === current.id),
+    );
+  });
+
+  it('filters local-browser alone while leaving unrelated tools and absent grants unchanged', async () => {
+    const x = await setup(['local.browser.workspace']);
+    expect(
+      await freezeConnectedLocalToolNames(
+        ['local.browser.workspace', 'local.mcp.call'],
+        x.scope,
+        f.db,
+      ),
+    ).toEqual(['local.mcp.call']);
+    expect(
+      (await x.resolve((await x.send()).sent.run.id)).executionSnapshot!
+        .capabilitySnapshot.bindings.toolNames,
+    ).toEqual([]);
+    const device = await x.pair();
+    await heartbeat(device.deviceToken);
+    expect(
+      (await x.resolve((await x.send()).sent.run.id)).executionSnapshot!
+        .capabilitySnapshot.bindings.toolNames,
+    ).toEqual(['local.browser.workspace']);
+    expect(
+      await freezeConnectedLocalToolNames(['browser.run'], x.scope, f.db),
+    ).toEqual(['browser.run']);
   });
 });
