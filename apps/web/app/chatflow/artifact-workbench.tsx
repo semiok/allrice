@@ -645,7 +645,10 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                     ) : ['scheduleTask', 'sessionSchedules'].includes(
                         tab.kind,
                       ) ? (
-                      <IconClockOutlineRegular size={17} />
+                      <IconClockOutlineRegular
+                        size={17}
+                        className={moduleUi.schedule}
+                      />
                     ) : tab.kind === 'terminal' ? (
                       <TerminalIcon />
                     ) : tab.kind === GUIDE_KIND ? (

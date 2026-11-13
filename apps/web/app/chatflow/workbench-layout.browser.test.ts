@@ -8099,7 +8099,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             text.complete,
             'the complete success title stays readable',
           ).toBe(true);
-          if (f.page.viewportSize()!.width >= 390) expect(text.lines).toBe(1);
+          const viewportWidth = f.page.viewportSize()!.width;
+          if (viewportWidth >= 390)
+            expect(text.lines).toBe(
+              device === 'mobile' && viewportWidth === 390 ? 2 : 1,
+            );
           const mark = heading.locator('..').locator(':scope > span');
           expect(
             await mark.evaluate((node) => {
@@ -8976,6 +8980,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               appearance,
               nativeSubagents: nativeChildSummary(),
               nativeEvents: nativeChildCalls(),
+              scheduledTasks: [recurringTask(9840), recurringTask(9841)],
               failureEvidence: {
                 ...nativeEvidence,
                 observePage(page) {
@@ -8988,6 +8993,61 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             nativeCleanup.check();
             failurePage = nativeIcon.page;
             await nativeIcon.page.setViewportSize({ width, height });
+            const scheduleClock = nativeIcon.page
+              .locator('header')
+              .getByRole('button', {
+                name: '当前对话的自动化任务',
+                exact: true,
+              });
+            await scheduleClock.waitFor();
+            const expectScheduleClock = async (scheduleTab: Locator) => {
+              const tabGlyph = scheduleTab.locator('svg').first();
+              const topGlyph = scheduleClock.locator('svg').first();
+              const topColor = await topGlyph.evaluate(
+                (node) => getComputedStyle(node).color,
+              );
+              expect(topColor).toBe(
+                appearance === 'light'
+                  ? 'rgb(87, 148, 148)'
+                  : 'rgb(140, 201, 201)',
+              );
+              expect(
+                await tabGlyph.evaluate((node) => getComputedStyle(node).color),
+              ).toBe(topColor);
+              expect(await tabGlyph.getAttribute('viewBox')).toBe(
+                await topGlyph.getAttribute('viewBox'),
+              );
+              expect(await tabGlyph.innerHTML()).toBe(await topGlyph.innerHTML());
+              const tabBox = (await tabGlyph.boundingBox())!;
+              const topBox = (await topGlyph.boundingBox())!;
+              expect([tabBox.width, tabBox.height]).toEqual([17, 17]);
+              expect([topBox.width, topBox.height]).toEqual([20, 20]);
+            };
+            await scheduleClock.click();
+            const sessionSchedules = nativeIcon.panel.getByRole('region', {
+              name: '当前对话的自动化任务',
+              exact: true,
+            });
+            const scheduledTask = sessionSchedules.getByRole('button', {
+              name: /定时工作 9840/,
+            });
+            await scheduledTask.waitFor();
+            await expectScheduleClock(
+              nativeIcon.panel.getByRole('tab', {
+                name: /^当前对话的自动化任务/,
+              }),
+            );
+            await scheduledTask.click();
+            await nativeIcon.panel
+              .getByRole('region', {
+                name: '自动化任务详情：定时工作 9840',
+                exact: true,
+              })
+              .getByRole('textbox', { name: '任务名称', exact: true })
+              .waitFor();
+            await expectScheduleClock(
+              nativeIcon.panel.getByRole('tab', { name: /定时工作 9840/ }),
+            );
             const child = await openNativeChild(nativeIcon);
             await nativeIcon.page
               .getByRole('tree', { name: '子智能体目录', exact: true })
