@@ -1,8 +1,9 @@
 import { hasOnlineOwnedBridgeDevice } from '../bridge.ts';
 import type { ContentSql } from './employee-content-model.ts';
 
-// The approved local tool group only. Browser and MCP have their own admission
-// contracts; do not infer group membership from a prefix or broaden this list.
+// The approved local tool group and browser presence qualification only.
+// Browser execution authority and MCP admission keep their own contracts;
+// do not infer group membership from a prefix or broaden this list.
 const connectedDeviceTools = new Set([
   'local.fs.list',
   'local.fs.search',
@@ -18,6 +19,7 @@ const connectedDeviceTools = new Set([
   'local.file.derive',
   'local.file.save',
   'local.preview.open',
+  'local.browser.workspace',
 ]);
 
 /** Call only when admitting a new Run. A later connection cannot expand its
