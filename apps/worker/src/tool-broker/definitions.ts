@@ -1,5 +1,7 @@
 import {
   ImageToolInputSchema,
+  isMemoryIndexDocuments,
+  type EmployeeDocuments,
   OfficeExportSchema,
   NativeOfficeExportSchema,
   OfficePdfExportSchema,
@@ -804,14 +806,34 @@ export function riceToolRisk(name: string) {
   return toolRisks[name] ?? null;
 }
 
+const pairMemoryDefinition = {
+  name: 'workspace.memory.remember',
+  description:
+    '将当前真人消息亲述的稳定事实保存为待本人确认的候选。summary最多40字，details选填最多2000字；不得保存工具结果或模型推断，不能直接生效。',
+  inputSchema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['summary'],
+    properties: {
+      summary: { type: 'string', minLength: 1, maxLength: 40 },
+      details: { type: ['string', 'null'], maxLength: 2000 },
+      memoryClass: {
+        type: 'string',
+        enum: ['user_preference', 'project_fact', 'decision', 'work_note'],
+      },
+    },
+  },
+};
+
 export function riceToolDefinitionsForCapabilities(
   capabilities: SkillCapability[],
   allowedToolNames?: readonly string[],
   _legacyMcpTools?: readonly FrozenMcpTool[],
   localMcp?: LocalMcpSnapshot,
+  employeeDocuments?: EmployeeDocuments,
 ) {
   const allowed = allowedToolNames ? new Set(allowedToolNames) : null;
-  return riceToolDefinitions.filter(
+  const definitions = riceToolDefinitions.filter(
     (definition) =>
       (!allowed || allowed.has(definition.name)) &&
       // Compatibility adapters require an explicit frozen grant. Broad
@@ -888,6 +910,12 @@ export function riceToolDefinitionsForCapabilities(
           runtimeFeatureEnabled('ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED'))) &&
       capabilities.includes(toolCapabilities[definition.name]!),
   );
+  return definitions.map((definition) =>
+    definition.name === 'workspace.memory.remember' &&
+    isMemoryIndexDocuments(employeeDocuments)
+      ? pairMemoryDefinition
+      : definition,
+  );
 }
 
 /**
@@ -903,6 +931,7 @@ export function riceToolDefinitionsForTurn(
   selectedToolNames: readonly string[],
   frozenMcpTools: readonly FrozenMcpTool[] = [],
   localMcp?: LocalMcpSnapshot,
+  employeeDocuments?: EmployeeDocuments,
 ) {
   const selected = new Set(selectedToolNames);
   return riceToolDefinitionsForCapabilities(
@@ -910,6 +939,7 @@ export function riceToolDefinitionsForTurn(
     allowedToolNames,
     frozenMcpTools,
     localMcp,
+    employeeDocuments,
   ).filter(
     (definition) =>
       ['read_only', 'managed_write'].includes(

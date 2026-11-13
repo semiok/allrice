@@ -1,5 +1,6 @@
 import type {
   createTraceableMemory,
+  createRememberedMemoryCandidate,
   isManagedBrowserTaskCancelRequested,
   TechnicalTaskLease,
   QualityLease,
@@ -12,6 +13,7 @@ import type {
   FrozenMcpTool,
   LocalMcpSnapshot,
   PersonalSceneSkillResource,
+  EmployeeDocuments,
 } from '@allrice/contracts';
 
 import type { searchCodexHostedWeb } from '../codex-search-broker.js';
@@ -69,6 +71,8 @@ export interface RiceToolExecutionInput {
   technicalTaskLease?: TechnicalTaskLease;
   /** Worker-owned scope and lease; never parsed from model arguments. */
   memoryReadAuthority?: RunMemoryAuthority;
+  /** Same frozen documents sent to native run/begin, never accepted from args. */
+  employeeDocuments?: EmployeeDocuments;
   technicalTaskId?: string;
   /** Private fixed-case driver hook, never parsed from model/tool JSON. */
   qualityLiveProbe?: {
@@ -89,6 +93,7 @@ export interface RiceToolExecutionInput {
   managedBrowserJobAttempt?: number;
   managedBrowserJobLeaseToken?: string;
   memoryCreate?: typeof createTraceableMemory;
+  memoryCandidateCreate?: typeof createRememberedMemoryCandidate;
 }
 
 export interface RiceToolHandlerContext {

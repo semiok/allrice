@@ -369,3 +369,34 @@ describe('real cold wrapper shutdown without a model', () => {
     expect(client.closureEvidence()?.emptyTransportClosed).not.toBe(true);
   }, 30_000);
 });
+
+it('requires explicit docs2 acknowledgement from the initialized Host and keeps old V1 Hosts usable', async () => {
+  const client = Object.create(
+    DshProtocolClient.prototype,
+  ) as DshProtocolClient;
+  const response = {
+    serverInfo: {
+      name: 'deepseek-harness-sdk-runtime',
+      version: DSH_DISTRIBUTION_CURRENT_VERSION,
+    },
+    capabilities: {},
+  };
+  const request = vi.fn().mockResolvedValue(response);
+  Object.assign(client, { request });
+  const initialize = { cwd: '/tmp', provider: 'fixture', model: 'fixture' };
+  await expect(
+    client.initialize({ ...initialize, employeeDocumentsSchemaVersion: 2 }),
+  ).rejects.toMatchObject({
+    code: 'DSH_EMPLOYEE_DOCUMENT_VERSION_UNAVAILABLE',
+  });
+  await expect(
+    client.initialize({ ...initialize, employeeDocumentsSchemaVersion: 1 }),
+  ).resolves.toBeDefined();
+  request.mockResolvedValue({
+    ...response,
+    capabilities: { employeeDocumentsSchemaVersion: 2 },
+  });
+  await expect(
+    client.initialize({ ...initialize, employeeDocumentsSchemaVersion: 2 }),
+  ).resolves.toBeDefined();
+});

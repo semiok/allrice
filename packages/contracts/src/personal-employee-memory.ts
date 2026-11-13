@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { TimestampSchema, UuidSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
+import { MemoryClassSchema } from './operations.ts';
 
 // PostgreSQL text/JSON cannot store NUL or unpaired UTF-16 surrogates.
 const storageText = z.string().refine((text) =>
@@ -24,6 +25,29 @@ export const PersonalMemoryPairSchema = z
     details: PersonalMemoryDetailsSchema,
   })
   .strict();
+/** Model arguments carry content only; source and operation identity are Worker-owned. */
+export const RememberPersonalMemoryInputSchema =
+  PersonalMemoryPairSchema.extend({
+    details: PersonalMemoryDetailsSchema.optional().default(null),
+    memoryClass: MemoryClassSchema.default('work_note'),
+  }).strict();
+export const CreateRememberedMemoryCandidateInputSchema =
+  RememberPersonalMemoryInputSchema.extend({
+    workspaceId: UuidSchema,
+    employeeId: UuidSchema,
+    sourceId: UuidSchema,
+  }).strict();
+/** Internal stored-checkpoint adapter, never a model tool or background producer. */
+export const CreateCheckpointPersonalMemoryCandidateInputSchema =
+  PersonalMemoryPairSchema.extend({
+    workspaceId: UuidSchema,
+    employeeId: UuidSchema,
+    sessionId: UuidSchema,
+    checkpointId: UuidSchema,
+    sourceLabel: z.string().trim().min(1).max(240),
+    idempotencyKey: UuidSchema,
+    details: PersonalMemoryDetailsSchema.optional().default(null),
+  }).strict();
 export const CreatePersonalEmployeeMemoryInputSchema = z
   .object({
     workspaceId: UuidSchema,

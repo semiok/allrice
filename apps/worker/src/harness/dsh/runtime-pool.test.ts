@@ -1812,3 +1812,37 @@ describe('idle close (MET-216)', () => {
     },
   );
 });
+
+it.each([1, 2] as const)(
+  'keys the existing Host cache by frozen document version, first=%s',
+  async (version) => {
+    const { runtimes, value } = currentExecutionRequest('current');
+    value.input.kernel.employeeDocuments =
+      version === 2
+        ? { schemaVersion: 2, persona: 'PERSONA_A', user: '', memory: '' }
+        : { persona: 'PERSONA_A', user: '', memory: '' };
+    const first = await runtimes.acquire(value),
+      same = await runtimes.acquire(value);
+    expect(same.runtime).toBe(first.runtime);
+    expect(same.fresh).toBe(false);
+    value.input.kernel.employeeDocuments.persona = 'PERSONA_B';
+    const nextPersona = await runtimes.acquire(value);
+    // Run documents are rebound by run/begin; unchanged process configuration
+    // must not force another Host merely because this Run has another persona.
+    expect(nextPersona.runtime).toBe(first.runtime);
+    expect(nextPersona.preparation.changedFields).toEqual([]);
+    value.input.kernel.employeeDocuments =
+      version === 2
+        ? { persona: 'PERSONA_B', user: '', memory: '' }
+        : { schemaVersion: 2, persona: 'PERSONA_B', user: '', memory: '' };
+    const changed = await runtimes.acquire(value);
+    expect(changed.runtime).not.toBe(first.runtime);
+    expect(
+      changed.runtime.fingerprintParts.employeeDocumentsSchemaVersion,
+    ).not.toBe(first.runtime.fingerprintParts.employeeDocumentsSchemaVersion);
+    expect(first.runtime.client.processState()).toMatchObject({
+      state: 'exited',
+      stdioClosed: true,
+    });
+  },
+);

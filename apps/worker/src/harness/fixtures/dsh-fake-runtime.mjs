@@ -156,6 +156,8 @@ lines.on('line', (line) => {
       },
       capabilities: {
         personalMethodToolsOnly: 1,
+        employeeDocumentsSchemaVersion:
+          frame.params.employeeDocumentsSchemaVersion ?? 1,
         runAdmission: true,
         nativeAccounting: frame.params.model === 'legacy-accounting' ? 0 : 1,
         taskProgress:

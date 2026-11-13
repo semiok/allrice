@@ -9,6 +9,8 @@ import {
   EmployeeMemoryRowSchema,
   EmployeeMemoryCountsSchema,
   PersonalMemoryDetailsSchema,
+  CreateRememberedMemoryCandidateInputSchema,
+  CreateCheckpointPersonalMemoryCandidateInputSchema,
   WorkspaceMemorySchema as WorkspaceMemoryResponseSchema,
   type PersonalMemoryPair,
 } from '@allrice/contracts';
@@ -2674,6 +2676,51 @@ export async function createTraceableMemory(
   );
 }
 
+/** A thin candidate adapter over the same source gates, storage and receipt transaction. */
+export async function createRememberedMemoryCandidate(
+  context: RequestContext,
+  input: unknown,
+  executionContext: ExecutionContext,
+  invocation: { nativeSessionId: string; callId: string },
+) {
+  const candidate = CreateRememberedMemoryCandidateInputSchema.parse(input);
+  const call = z
+    .object({
+      nativeSessionId: z.string().min(1),
+      callId: z.string().min(1).max(240),
+    })
+    .strict()
+    .parse(invocation);
+  const memory = CreateWorkspaceMemoryInputSchema.parse({
+    workspaceId: candidate.workspaceId,
+    employeeId: candidate.employeeId,
+    content: candidate.summary,
+    sourceType: 'message',
+    sourceId: candidate.sourceId,
+    sourceLabel: '模型提取候选',
+    lifecycleState: 'candidate',
+    memoryClass: candidate.memoryClass,
+    confidence: 0.8,
+  });
+  const key = `candidate:v2:${memoryContentDigest(
+    JSON.stringify([
+      'workspace.memory.remember',
+      executionContext.runId,
+      call.nativeSessionId,
+      call.callId,
+    ]),
+  )}`;
+  return createEmployeeMemoryRecord(
+    context,
+    memory,
+    executionContext,
+    { summary: candidate.summary, details: candidate.details },
+    mapMemory,
+    WorkspaceMemoryResponseSchema,
+    key,
+  );
+}
+
 /** Pair storage seam; the HTTP adapter below uses the same mutation core. */
 export async function createPersonalEmployeeMemory(
   context: RequestContext,
@@ -2747,6 +2794,7 @@ async function createEmployeeMemoryRecord<
     scope: EmployeeMemoryScope,
   ) => T | Promise<T>,
   responseSchema: z.ZodType<T>,
+  candidateOperationKey?: string,
 ) {
   const workspaceId = await resolveWorkspaceId(context, memory.workspaceId);
   return employeeAccessTransaction(getDatabase(), async (tx) => {
@@ -2853,9 +2901,11 @@ async function createEmployeeMemoryRecord<
     if (source) {
       await lockMemorySource(tx, scope, memory.sourceType, memory.sourceId);
     }
-    const key = source
-      ? `source:${memory.sourceType}:${memory.sourceId}:${memoryContentDigest(memory.content)}`
-      : memory.idempotencyKey;
+    const key =
+      candidateOperationKey ??
+      (source
+        ? `source:${memory.sourceType}:${memory.sourceId}:${memoryContentDigest(memory.content)}`
+        : memory.idempotencyKey);
     if (!key) throw new DataAccessError('authorization_denied');
     return memoryOperation(
       tx,
@@ -2869,9 +2919,9 @@ async function createEmployeeMemoryRecord<
         ...(pair ? { version: 2, pair } : {}),
       },
       async () => {
-        // An existing, current receipt may still be replayed when a different
-        // proposal from this source was discarded. Only new creation is barred.
-        if (source) {
+        // Deleting another identity is not source withdrawal. New proposals stay
+        // pending; memoryOperation still rejects any deleted identity's old receipt.
+        if (source && lifecycleState !== 'candidate') {
           const [discarded] = await tx`select id from allrice_memories
             where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
               and owner_id=${scope.ownerId} and instance_id=${scope.instanceId}
@@ -3372,7 +3422,12 @@ export async function createCheckpointMemoryCandidate(
   context: RequestContext,
   input: unknown,
 ) {
-  const candidate = CreateCheckpointMemoryCandidateInputSchema.parse(input);
+  const candidate = z
+    .union([
+      CreateCheckpointMemoryCandidateInputSchema,
+      CreateCheckpointPersonalMemoryCandidateInputSchema,
+    ])
+    .parse(input);
   const workspaceId = await resolveWorkspaceId(context, candidate.workspaceId);
   const sql = getDatabase();
   const sessions = await sql<{ id: string }[]>`
@@ -3400,10 +3455,10 @@ export async function createCheckpointMemoryCandidate(
       and owner_id = ${requireUser(context)}
   `;
   if (!checkpoints[0]) throw new DataAccessError('authorization_denied');
-  return createTraceableMemory(context, {
+  const memory = CreateWorkspaceMemoryInputSchema.parse({
     workspaceId,
     employeeId: candidate.employeeId,
-    content: candidate.content,
+    content: 'summary' in candidate ? candidate.summary : candidate.content,
     visibility: 'private',
     sourceType: 'checkpoint',
     sourceId: candidate.checkpointId,
@@ -3413,6 +3468,19 @@ export async function createCheckpointMemoryCandidate(
     confidence: 0.7,
     expiresAt: null,
   });
+  return createEmployeeMemoryRecord(
+    context,
+    memory,
+    undefined,
+    'summary' in candidate
+      ? { summary: candidate.summary, details: candidate.details }
+      : null,
+    mapMemory,
+    WorkspaceMemoryResponseSchema,
+    'idempotencyKey' in candidate
+      ? `candidate:checkpoint:${candidate.idempotencyKey}`
+      : undefined,
+  );
 }
 
 /** Browser management uses pair CAS. The pre-existing governed raw-source

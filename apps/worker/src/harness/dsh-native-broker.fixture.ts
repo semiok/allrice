@@ -1,7 +1,10 @@
 import {
   readDshToolResult,
+  isMemoryIndexDocuments,
+  type EmployeeDocuments,
   type DshNativeSkillSnapshot,
 } from '@allrice/contracts';
+import { nativeRunScope } from './dsh/run-scope.js';
 /** Real pinned DSH child + real JSON-RPC + synthetic loopback provider.
  * Transport contract only; this is not real-model/business acceptance. */
 import { randomUUID } from 'node:crypto';
@@ -18,6 +21,7 @@ import { dshInboundToolHandler } from './dsh/tool-bridge.js';
 
 export async function nativeBrokerRoundtrip(input: {
   cordisConfig?: string;
+  run?: { id: string; documents: EmployeeDocuments };
   personalMethodToolsOnly?: true;
   systemPrompt?: string;
   progress?: HarnessExecutionInput['progress'];
@@ -28,6 +32,7 @@ export async function nativeBrokerRoundtrip(input: {
   excludedToolNames?: string[];
   initialMessagesExclude?: string;
   expectedBrokerCalls?: number;
+  forbiddenToolNames?: string[];
   canonicalName: string;
   prompt?: string;
   fileReadRunId?: string;
@@ -182,6 +187,10 @@ export async function nativeBrokerRoundtrip(input: {
     },
   });
   const session = `native-${randomUUID()}`;
+  const runScope = input.run
+    ? nativeRunScope(client, session, input.run.id)
+    : undefined;
+  let runBound = false;
   let completed = 0;
   let nativeRetries = 0;
   const nativeToolFailures: boolean[] = [];
@@ -246,11 +255,14 @@ export async function nativeBrokerRoundtrip(input: {
       return result;
     },
   });
-  client.setRequestHandler((method, params) =>
-    method === 'allrice/progress' && input.progress
+  client.setRequestHandler((method, params) => {
+    if (runScope) params = runScope.check(params);
+    if (method === 'allrice/run-authorize' && input.run)
+      return Promise.resolve({});
+    return method === 'allrice/progress' && input.progress
       ? input.progress(params)
-      : inbound(method, params),
-  );
+      : inbound(method, params);
+  });
   try {
     await client.initialize({
       cwd: root,
@@ -261,12 +273,33 @@ export async function nativeBrokerRoundtrip(input: {
         ...(input.followupTool ? [input.followupTool.canonicalName] : []),
       ],
       ...(input.nativeSkills ? { nativeSkills: input.nativeSkills } : {}),
+      ...(input.run
+        ? {
+            requireRunAdmission: true,
+            rootSystemInstructions:
+              input.systemPrompt ??
+              'Synthetic protocol test; only the selected tool.',
+            employeeDocumentsSchemaVersion: isMemoryIndexDocuments(
+              input.run.documents,
+            )
+              ? (2 as const)
+              : (1 as const),
+          }
+        : {}),
       ...(input.personalMethodToolsOnly
         ? { personalMethodToolsOnly: true }
         : {}),
       expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
       requireTaskProgress: !!input.progress,
     });
+    if (input.run) {
+      if (isMemoryIndexDocuments(input.run.documents))
+        await expect(
+          client.beginRun(session, input.run.id, { user: '', memory: '' }),
+        ).rejects.toThrow('EMPLOYEE_DOCUMENT_VERSION_MISMATCH');
+      await client.beginRun(session, input.run.id, input.run.documents);
+      runBound = true;
+    }
     if (input.denyBeforeModel) {
       let rejected = false;
       try {
@@ -323,6 +356,8 @@ export async function nativeBrokerRoundtrip(input: {
       expect(JSON.stringify(requests[0]!.messages)).not.toContain(
         input.initialMessagesExclude,
       );
+    for (const name of input.forbiddenToolNames ?? [])
+      expect(tools.some((tool) => tool.function?.name === name)).toBe(false);
     input.inspectSchema?.(
       tools.find((tool) => tool.function?.name === input.wireName)!.function!
         .parameters!,
@@ -369,11 +404,16 @@ export async function nativeBrokerRoundtrip(input: {
     expect(errors).toEqual([]);
   } finally {
     try {
-      await client.close().catch((error: unknown) => {
-        if (!input.expectedTerminalError) throw error;
-        expect(failures).toHaveLength(1);
-        // A terminal protocol has no semantic shutdown acknowledgement.
-      });
+      runScope?.unsubscribe();
+      try {
+        if (runBound) await client.endRun(session);
+      } finally {
+        await client.close().catch((error: unknown) => {
+          if (!input.expectedTerminalError) throw error;
+          expect(failures).toHaveLength(1);
+          // A terminal protocol has no semantic shutdown acknowledgement.
+        });
+      }
     } finally {
       server.closeAllConnections();
       await new Promise<void>((resolveClose) =>

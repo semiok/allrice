@@ -929,6 +929,7 @@ export async function executeEmployeeRun({
             executionSnapshot.schemaVersion === 2
               ? executionSnapshot.localMcp
               : undefined,
+            kernel.employeeDocuments,
           );
     const routePlan = decideCapabilityRoute({
       request: {
@@ -1313,6 +1314,7 @@ export async function executeEmployeeRun({
             executionSnapshot.schemaVersion === 2
               ? executionSnapshot.localMcp
               : undefined,
+            kernel.employeeDocuments,
           );
     const turnToolCapabilities = tools.flatMap((tool) => {
       const capability = riceToolCapability(tool.name);
@@ -1797,6 +1799,7 @@ export async function executeEmployeeRun({
                             ? executionSnapshot.mcpTools
                             : [],
                         context: execution.context,
+                        employeeDocuments: routedKernel.employeeDocuments,
                         memoryReadAuthority: {
                           scope: contentScope,
                           worker: {

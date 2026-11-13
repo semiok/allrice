@@ -17,6 +17,7 @@ const {
   completeManagedBrowserTask,
   createToolBrokerExportObject,
   createTraceableMemory,
+  createRememberedMemoryCandidate,
   assertEmployeeChatHumanSource,
   createDefaultManagedBrowserTask,
   dispatchBridgeCommand,
@@ -36,6 +37,7 @@ const {
   completeManagedBrowserTask: vi.fn(),
   createToolBrokerExportObject: vi.fn(),
   createTraceableMemory: vi.fn(),
+  createRememberedMemoryCandidate: vi.fn(),
   assertEmployeeChatHumanSource: vi.fn(),
   createDefaultManagedBrowserTask: vi.fn(),
   dispatchBridgeCommand: vi.fn(),
@@ -69,6 +71,7 @@ vi.mock('@allrice/database', async (original) => ({
   completeManagedBrowserTask,
   createToolBrokerExportObject,
   createTraceableMemory,
+  createRememberedMemoryCandidate,
   assertEmployeeChatHumanSource,
   createDefaultManagedBrowserTask,
   dispatchBridgeCommand,
@@ -148,6 +151,7 @@ describe('Codex hosted search Tool Broker integration', () => {
     completeManagedBrowserTask.mockReset();
     createToolBrokerExportObject.mockReset();
     createTraceableMemory.mockReset();
+    createRememberedMemoryCandidate.mockReset();
     assertEmployeeChatHumanSource.mockReset().mockResolvedValue(undefined);
     createDefaultManagedBrowserTask.mockReset();
     registerToolBrokerExport.mockReset();
@@ -224,6 +228,87 @@ describe('Codex hosted search Tool Broker integration', () => {
       expect.objectContaining({ name: 'workspace.memory.remember' }),
     );
     expect(riceToolRisk('workspace.memory.remember')).toBe('managed_write');
+  });
+
+  it('uses the frozen docs2 pair contract without a read grant and rejects model identity/activation fields', async () => {
+    const context = executionContext(),
+      employeeId = randomUUID(),
+      userMessageId = randomUUID();
+    const documents = { schemaVersion: 2 as const, user: '', memory: '' };
+    const pair = { summary: '日报按财务模板', details: '月结前不得外发' };
+    const call = {
+      id: 'native-call-1',
+      nativeSessionId: 'native-root',
+      name: 'workspace.memory.remember',
+      arguments: pair,
+    };
+    createRememberedMemoryCandidate.mockResolvedValue({
+      id: randomUUID(),
+      content: pair.summary,
+      lifecycleState: 'candidate',
+      trust: 'derived',
+    });
+    const input = {
+      context,
+      employeeId,
+      userMessageId,
+      employeeDocuments: documents,
+      capabilities: ['storage:write'] as ['storage:write'],
+      storageRoot: '.local/storage',
+      call,
+    };
+    const definitions = riceToolDefinitionsForCapabilities(
+      ['storage:write'],
+      ['workspace.memory.remember'],
+      [],
+      undefined,
+      documents,
+    );
+    expect(definitions).toHaveLength(1);
+    expect(definitions[0]!.inputSchema.properties).toHaveProperty('summary');
+    expect(definitions[0]!.inputSchema.properties).not.toHaveProperty(
+      'content',
+    );
+    expect(
+      JSON.parse((await executeRiceTool(input)).modelContent),
+    ).toMatchObject({
+      lifecycleState: 'candidate',
+      requiresConfirmation: true,
+    });
+    expect(createRememberedMemoryCandidate).toHaveBeenCalledWith(
+      expect.anything(),
+      {
+        ...pair,
+        memoryClass: 'work_note',
+        workspaceId: context.workspaceId,
+        employeeId,
+        sourceId: userMessageId,
+      },
+      context,
+      { nativeSessionId: call.nativeSessionId, callId: call.id },
+    );
+    for (const field of [
+      'ownerId',
+      'sourceId',
+      'operationKey',
+      'schemaVersion',
+      'lifecycleState',
+      'expiresAt',
+    ])
+      await expect(
+        executeRiceTool({
+          ...input,
+          call: { ...call, arguments: { ...pair, [field]: 'forged' } },
+        }),
+      ).rejects.toMatchObject({ code: 'TOOL_INPUT_INVALID' });
+    await expect(
+      executeRiceTool({
+        ...input,
+        call: { ...call, nativeSessionId: undefined },
+      }),
+    ).rejects.toMatchObject({ code: 'MEMORY_OPERATION_ID_REQUIRED' });
+    expect(createRememberedMemoryCandidate).toHaveBeenCalledTimes(1);
+    expect(createTraceableMemory).not.toHaveBeenCalled();
   });
 
   it('keeps the former explicit durable request as a candidate with Worker-bound source', async () => {
