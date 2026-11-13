@@ -244,7 +244,11 @@ suite(
       vi.stubEnv('ALLRICE_RELEASE_SHA', 'a'.repeat(40));
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
       vi.stubEnv('ALLRICE_STORAGE_ROOT', f.storageRoot);
-      for (const flag of ['WORKBENCH', 'RUNTIME_POLICY', 'MEMORY_SOURCE_CAPTURE'])
+      for (const flag of [
+        'WORKBENCH',
+        'RUNTIME_POLICY',
+        'MEMORY_SOURCE_CAPTURE',
+      ])
         vi.stubEnv(`ALLRICE_${flag}_ENABLED`, '1');
       await createExperienceFixture(f.db);
       await f.db`update allrice_model_connections set status='ready' where id='52000000-0000-4000-8000-000000000001'`;
