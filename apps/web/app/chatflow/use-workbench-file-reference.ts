@@ -64,7 +64,7 @@ export function useWorkbenchFileReference(props: WorkbenchFileReferenceProps) {
             if (!props.readOnly) props.onUse(current);
             setPending(null);
             setUsing(null);
-            setNotice(props.readOnly ? '当前会话已归档。' : '已引用文件。');
+            setNotice(props.readOnly ? '当前会话已归档。' : '');
           } else if (
             ['failed', 'unsupported', 'uploading'].includes(current.processing)
           ) {
@@ -124,7 +124,6 @@ export function useWorkbenchFileReference(props: WorkbenchFileReferenceProps) {
       );
       if (reference.processing === 'ready') {
         props.onUse(reference);
-        setNotice('已引用文件。');
         setUsing(null);
       } else if (['saved', 'processing'].includes(reference.processing))
         setPending({ fileId: file.objectId, reference });

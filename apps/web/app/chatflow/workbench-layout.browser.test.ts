@@ -2491,13 +2491,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .join(''),
         });
       }
-      if (path === '/api/dsh-ui/pdf') {
+      if (path === '/api/dsh-ui/pdf' || path === '/api/dsh-ui/excel') {
         const require = createRequire(resolve('apps/web/package.json'));
         const file = join(
           dirname(
             require.resolve('@deepseek-ai/dsh-client-ui-sidebar-documentpreview/package.json'),
           ),
-          'lib/client.pdf.js',
+          `lib/client.${path.endsWith('/excel') ? 'excel' : 'pdf'}.js`,
         );
         return route.fulfill({
           contentType: 'text/javascript',
@@ -12490,6 +12490,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               .boundingBox())!;
             expect(Math.abs(filterBox.y - searchBox.y)).toBeLessThan(1);
           }
+          expect(
+            await employee
+              .locator('option')
+              .evaluateAll((nodes) =>
+                nodes.map((node) => (node as HTMLOptionElement).value),
+              ),
+          ).toEqual(['', id(7), id(17)]);
+          await employee.click();
+          await capture('employee-filter-all-first');
+          await f.page.keyboard.press('Escape');
           await capture('deliverables');
           await directory
             .getByRole('button', { name: '员工交付', exact: true })
@@ -12515,7 +12525,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .click();
           expect(await f.page.getByRole('menuitem').allTextContents()).toEqual([
             '下载',
-            '复制链接',
             '收藏',
           ]);
           await capture('deliverables-menu');
@@ -12580,7 +12589,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .click();
           expect(await f.page.getByRole('menuitem').allTextContents()).toEqual([
             '下载',
-            '复制链接',
             '取消收藏',
           ]);
           await capture('favorites-menu');
@@ -12612,8 +12620,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             'header[aria-label="文件操作"]:visible',
           );
           await toolbar
-            .getByRole('button', { name: '复制链接', exact: true })
+            .getByRole('button', { name: '引用到对话', exact: true })
             .waitFor();
+          expect(
+            await f.panel
+              .getByRole('button', { name: '复制链接', exact: true })
+              .count(),
+          ).toBe(0);
           expect(
             await f.panel.locator('dl:visible dt').allTextContents(),
           ).toEqual(['我的上传', '来自对话']);
@@ -12640,36 +12653,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             '本人上传的原始文件字节',
           );
           downloadFixtures.delete(headerDownloadPath);
-          await f.page.evaluate(() => {
-            Object.defineProperty(navigator, 'clipboard', {
-              configurable: true,
-              value: {
-                writeText: async (value: string) => {
-                  (window as unknown as { copiedFile: string }).copiedFile =
-                    value;
-                },
-              },
-            });
-          });
-          await toolbar
-            .getByRole('button', { name: '复制链接', exact: true })
-            .click();
-          await f.panel
-            .getByRole('status')
-            .filter({ hasText: '链接已复制，仅你自己可以打开' })
-            .waitFor();
-          const copied = new URL(
-            await f.page.evaluate(
-              () => (window as unknown as { copiedFile: string }).copiedFile,
-            ),
-          );
-          expect(copied.origin).toBe(new URL(f.page.url()).origin);
-          expect(copied.pathname).toBe('/chatflow');
-          expect([...copied.searchParams.keys()].sort()).toEqual([
-            'file',
-            'workspaceId',
-          ]);
-          expect(copied.searchParams.get('file')).toBe(upload.objectId);
           await f.panel
             .getByRole('button', { name: '‹ 交付成果', exact: true })
             .click();
@@ -12717,13 +12700,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           expect(
             await f.panel.locator('dl:visible dt').allTextContents(),
           ).toEqual(['员工交付', '来自对话']);
-          const previewHeight = (await f.panel
-            .locator('[class*="deliveryPreview"]:visible')
-            .boundingBox())!.height;
-          expect(previewHeight).toBeGreaterThanOrEqual(
-            width === 1440 ? 190 : 170,
+          const readingArea = f.panel.locator(
+            '[class*="deliveryReadingArea"]:visible',
           );
-          expect(previewHeight).toBeLessThanOrEqual(width === 1440 ? 260 : 220);
+          const previewBox = (await f.panel
+            .locator('[class*="deliveryPreview"]:visible')
+            .boundingBox())!;
+          const areaBox = (await readingArea.boundingBox())!;
+          expect(Math.abs(previewBox.y - areaBox.y)).toBeLessThan(1);
+          expect(previewBox.height).toBeGreaterThanOrEqual(areaBox.height - 1);
           await capture('artifact-detail');
           expect(
             await toolbar
@@ -12966,6 +12951,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .poll(() => f.state.workbenchReferenceUses)
             .toEqual([business.objectId]);
           expect(f.state.messageInputs).toEqual([]);
+          await f.page
+            .getByRole('button', {
+              name: `移除资料 ${business.fileName} v1`,
+              exact: true,
+            })
+            .waitFor();
+          expect(
+            await f.page.getByText('已引用文件。', { exact: true }).count(),
+          ).toBe(0);
+          await capture('reference-attached-no-notice');
           expect(await input.inputValue()).toBe('检查文件期间保留这段草稿');
           expect(
             await f.page.evaluate(
@@ -12977,6 +12972,431 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         }
       }, 30000);
     }
+
+  for (const theme of ['light', 'dark'] as const)
+    for (const width of [1440, 390])
+      it.each(['md', 'docx', 'pdf', 'xlsx', 'image'] as const)(
+        `MET247 v7 full reading area and reachable ordinary footer for %s at ${width}px ${theme}`,
+        async (kind) => {
+          const f = await fixture({ width, appearance: theme });
+          const capture = async (state: string) => {
+            const dir = process.env.ALLRICE_DELIVERABLES_REVIEW_DIR;
+            if (!dir) return;
+            await mkdir(dir, { recursive: true });
+            await f.page.screenshot({
+              path: join(dir, `${width}-${theme}-v7-${kind}-${state}.png`),
+              animations: 'disabled',
+            });
+          };
+          try {
+            await f.page.setViewportSize({
+              width,
+              height: width === 1440 ? 1000 : 844,
+            });
+            const file = catalogFile(9590, {
+              fileName: `阅读验收.${kind === 'image' ? 'png' : kind}`,
+              category: 'artifact',
+            });
+            f.state.workbenchFiles.push(file);
+            if (kind === 'md')
+              f.state.filePreview = {
+                kind: 'text',
+                mediaType: 'text/markdown',
+                text:
+                  '# 交付成果阅读验收\n\n' +
+                  Array.from(
+                    { length: 18 },
+                    (_, n) =>
+                      `## 第 ${n + 1} 节\n\n保留原生 Markdown 阅读、文件身份与对话引用；两行来源信息和普通操作在本显示页正文之后。\n\n`,
+                  ).join(''),
+              };
+            else if (kind === 'pdf' || kind === 'docx')
+              f.state.filePreview = deliverablePdf(
+                kind === 'docx' ? ['Noto Sans CJK SC'] : [],
+              );
+            else if (kind === 'xlsx') {
+              const ExcelJS = createRequire(
+                resolve('apps/worker/package.json'),
+              )('exceljs');
+              const book = new ExcelJS.Workbook();
+              book
+                .addWorksheet('销售明细')
+                .addRows([
+                  ['名称', '金额'],
+                  ...Array.from({ length: 80 }, (_, n) => [
+                    `项目 ${n + 1}`,
+                    n * 123,
+                  ]),
+                ]);
+              book.addWorksheet('汇总').addRows([['合计', 388680]]);
+              f.state.filePreview = {
+                kind: 'spreadsheet',
+                format: 'xlsx',
+                base64: Buffer.from(await book.xlsx.writeBuffer()).toString(
+                  'base64',
+                ),
+              };
+            } else {
+              const base64 = await f.page.evaluate(() => {
+                const canvas = document.createElement('canvas');
+                canvas.width = 480;
+                canvas.height = 220;
+                const context = canvas.getContext('2d')!;
+                context.fillStyle = '#f1f5f9';
+                context.fillRect(0, 0, 480, 220);
+                context.fillStyle = '#3970d9';
+                context.fillRect(40, 80, 100, 90);
+                context.fillStyle = '#5f8f70';
+                context.fillRect(180, 50, 100, 120);
+                context.fillStyle = '#a889c4';
+                context.fillRect(320, 25, 100, 145);
+                context.fillStyle = '#20242b';
+                context.font = '18px sans-serif';
+                context.fillText('Delivery preview', 40, 205);
+                return canvas.toDataURL('image/png').split(',')[1]!;
+              });
+              f.state.filePreview = {
+                kind: 'image',
+                mediaType: 'image/png',
+                base64,
+              };
+            }
+            await f.page
+              .locator('header')
+              .getByRole('button', { name: '交付成果', exact: true })
+              .click();
+            await f.panel
+              .getByRole('region', { name: '交付成果', exact: true })
+              .getByRole('button', { name: file.fileName, exact: true })
+              .click();
+            const detail = f.panel.locator(
+              `[data-document-id="${file.objectId}"]:visible`,
+            );
+            const toolbar = detail.locator('header[aria-label="文件操作"]');
+            const reading = detail.locator('[class*="deliveryReadingArea"]');
+            const preview = reading.locator('[class*="deliveryPreview"]');
+            const footer = detail.locator('footer');
+            if (kind === 'md')
+              await detail
+                .getByRole('heading', { name: '交付成果阅读验收', exact: true })
+                .waitFor();
+            else if (kind === 'pdf' || kind === 'docx')
+              await detail
+                .getByText('Delivery original preview', { exact: true })
+                .waitFor();
+            else if (kind === 'xlsx') {
+              await detail
+                .locator('[data-excel-preview]')
+                .getByText('销售明细', { exact: true })
+                .waitFor();
+              await detail
+                .locator('[data-excel-preview]')
+                .getByText('汇总', { exact: true })
+                .waitFor();
+            } else
+              await expect
+                .poll(() =>
+                  detail
+                    .locator('[data-image-preview] img')
+                    .evaluate(
+                      (node) => (node as HTMLImageElement).naturalWidth,
+                    ),
+                )
+                .toBe(480);
+            const areaBox = (await reading.boundingBox())!;
+            const previewBox = (await preview.boundingBox())!;
+            expect(areaBox.height).toBeGreaterThan(0);
+            expect(Math.abs(previewBox.y - areaBox.y)).toBeLessThan(1);
+            expect(previewBox.height).toBeGreaterThanOrEqual(
+              areaBox.height - 1,
+            );
+            if (kind !== 'md')
+              expect(Math.abs(previewBox.height - areaBox.height)).toBeLessThan(
+                1,
+              );
+            expect((await footer.boundingBox())!.y).toBeGreaterThanOrEqual(
+              areaBox.y + areaBox.height - 1,
+            );
+            expect(
+              await toolbar
+                .locator(
+                  'button[aria-label="引用到对话"], a[aria-label="下载"], button[aria-label="收藏"]',
+                )
+                .evaluateAll((nodes) =>
+                  nodes.map((node) => node.getAttribute('aria-label')),
+                ),
+            ).toEqual(['引用到对话', '下载', '收藏']);
+            expect(
+              await detail
+                .getByRole('button', { name: '复制链接', exact: true })
+                .count(),
+            ).toBe(0);
+            expect(
+              await detail
+                .getByRole('button', {
+                  name: /添加为企业资料|已添加为企业资料/,
+                })
+                .count(),
+            ).toBe(0);
+            expect(
+              await detail
+                .getByText('交付成果只有你自己能看到。', { exact: true })
+                .count(),
+            ).toBe(0);
+            await capture('page');
+            if (kind === 'md') {
+              await toolbar
+                .getByRole('button', { name: '更多文件操作', exact: true })
+                .click();
+              await f.page
+                .getByRole('menuitem', { name: '查看源文本', exact: true })
+                .waitFor();
+              await capture('source-menu');
+              await f.page
+                .getByRole('menuitem', { name: '查看源文本', exact: true })
+                .click();
+              const source = detail.getByRole('region', {
+                name: '源文本',
+                exact: true,
+              });
+              await source
+                .getByRole('button', { name: '复制文本', exact: true })
+                .waitFor();
+              expect(
+                await source
+                  .getByRole('button', { name: /自动换行|取消换行/ })
+                  .count(),
+              ).toBe(1);
+              await capture('source');
+              await toolbar
+                .getByRole('button', { name: '更多文件操作', exact: true })
+                .click();
+              await f.page
+                .getByRole('menuitem', { name: '查看预览', exact: true })
+                .waitFor();
+              await capture('preview-return-menu');
+              await f.page
+                .getByRole('menuitem', { name: '查看预览', exact: true })
+                .click();
+              await detail
+                .getByRole('heading', { name: '交付成果阅读验收', exact: true })
+                .waitFor();
+            } else
+              expect(
+                await toolbar
+                  .getByRole('button', { name: '更多文件操作', exact: true })
+                  .count(),
+              ).toBe(0);
+            const nativeFrame = detail.locator('[data-document-zoom-frame]');
+            const originalFrame = (await nativeFrame.count())
+              ? await nativeFrame.elementHandle()
+              : null;
+            const scroll =
+              kind === 'pdf' || kind === 'docx'
+                ? nativeFrame.locator('[data-document-zoom-scrollport]')
+                : reading;
+            await scroll.evaluate((node) => {
+              node.scrollTop = node.scrollHeight;
+            });
+            const footerBox = (await footer.boundingBox())!;
+            expect(footerBox.y).toBeGreaterThanOrEqual(areaBox.y - 1);
+            expect(footerBox.y + footerBox.height).toBeLessThanOrEqual(
+              areaBox.y + areaBox.height + 1,
+            );
+            const actions = footer.locator('[class*="detailActions"] > button');
+            expect(
+              (await actions.allTextContents()).map((label) => label.trim()),
+            ).toEqual(['引用到对话', '下载', '收藏']);
+            const buttonStyles = await actions.evaluateAll((nodes) =>
+              nodes.map((node) => {
+                const css = getComputedStyle(node);
+                return {
+                  background: css.backgroundColor,
+                  border: css.borderTopWidth,
+                  height: node.getBoundingClientRect().height,
+                };
+              }),
+            );
+            expect(buttonStyles[0]).toEqual(buttonStyles[1]);
+            expect(buttonStyles[1]).toEqual(buttonStyles[2]);
+            expect(parseFloat(buttonStyles[0]!.border)).toBeGreaterThan(0);
+            await capture('footer');
+            if (kind === 'pdf' || kind === 'docx') {
+              const quoteHeight = (await actions.first().boundingBox())!.height;
+              const zoom = nativeFrame.getByRole('button', {
+                name: '选择缩放比例',
+                exact: true,
+              });
+              await zoom.focus();
+              await zoom.press('Enter');
+              await f.page
+                .getByRole('menuitem', { name: '150%', exact: true })
+                .click();
+              await expect
+                .poll(() => nativeFrame.getAttribute('data-document-zoom-mode'))
+                .toBe('fixed');
+              await scroll.evaluate((node) => {
+                node.scrollTop = node.scrollHeight;
+              });
+              expect(
+                Math.abs(
+                  (await actions.first().boundingBox())!.height - quoteHeight,
+                ),
+              ).toBeLessThan(1);
+              await capture('zoomed-footer');
+            }
+            await footer
+              .getByRole('button', { name: '收藏', exact: true })
+              .click();
+            await toolbar
+              .getByRole('button', { name: '取消收藏', exact: true })
+              .waitFor();
+            await footer
+              .getByRole('button', { name: '取消收藏', exact: true })
+              .waitFor();
+            expect(
+              await footer
+                .getByRole('button', { name: '取消收藏', exact: true })
+                .getAttribute('aria-pressed'),
+            ).toBe('true');
+            if (originalFrame)
+              expect(
+                await originalFrame.evaluate((node) => node.isConnected),
+              ).toBe(true);
+            expect(
+              f.state.favoriteWrites.map((write) => write.objectId),
+            ).toEqual([file.objectId]);
+            expect(f.errors).toEqual([]);
+          } finally {
+            await f.close();
+          }
+        },
+        30000,
+      );
+
+  it.each([1440, 390])(
+    'MET247 v7 reference preparation preserves cancellation and errors, then attaches without success notice at %ipx',
+    async (width) => {
+      const f = await fixture({ width, employeeCount: 2 });
+      try {
+        const file = catalogFile(9592, {
+          fileName: '引用准备验收.md',
+          category: 'artifact',
+        });
+        const reference = fileReference(9594, file);
+        let processing: ReferenceRevision['processing'] = 'processing';
+        let failed = false;
+        f.state.workbenchFiles.push(file);
+        await f.page.route('**/api/v1/workbench/files/*/reference?*', (route) =>
+          route.fulfill({
+            status: failed ? 503 : 200,
+            contentType: 'application/json',
+            body: JSON.stringify(
+              failed
+                ? { error: { message: '引用读取失败，请重试。' } }
+                : { reference: { ...reference, processing } },
+            ),
+          }),
+        );
+        await f.page.route('**/api/v1/references?*', (route) =>
+          route.fulfill({
+            contentType: 'application/json',
+            body: JSON.stringify({
+              references: [{ ...reference, processing }],
+            }),
+          }),
+        );
+        const input = f.page.getByRole('textbox', { name: /给 .* 的消息/ });
+        await input.fill('保留引用中的草稿');
+        const entry = f.page
+          .locator('header')
+          .getByRole('button', { name: '交付成果', exact: true });
+        await entry.click();
+        const directory = f.panel.getByRole('region', {
+          name: '交付成果',
+          exact: true,
+        });
+        const quote = directory.getByRole('button', {
+          name: `引用到对话 ${file.fileName}`,
+          exact: true,
+        });
+        await quote.click();
+        const cancel = directory.getByRole('button', {
+          name: '取消等待',
+          exact: true,
+        });
+        await cancel.waitFor();
+        expect(await quote.isDisabled()).toBe(true);
+        await cancel.click();
+        expect(await cancel.count()).toBe(0);
+        expect(
+          await f.page
+            .getByRole('button', {
+              name: `移除资料 ${file.fileName} v1`,
+              exact: true,
+            })
+            .count(),
+        ).toBe(0);
+        failed = true;
+        await quote.click();
+        await directory
+          .getByRole('alert')
+          .filter({ hasText: '引用读取失败，请重试。' })
+          .waitFor();
+        expect(await quote.isEnabled()).toBe(true);
+        failed = false;
+        await quote.click();
+        await cancel.waitFor();
+        processing = 'ready';
+        await f.page
+          .getByRole('button', {
+            name: `移除资料 ${file.fileName} v1`,
+            exact: true,
+          })
+          .waitFor();
+        expect(
+          await f.page.getByText('已引用文件。', { exact: true }).count(),
+        ).toBe(0);
+        expect(await cancel.count()).toBe(0);
+        expect(await input.inputValue()).toBe('保留引用中的草稿');
+        await expect
+          .poll(() => input.evaluate((node) => document.activeElement === node))
+          .toBe(true);
+        const dir = process.env.ALLRICE_DELIVERABLES_REVIEW_DIR;
+        if (dir) {
+          await mkdir(dir, { recursive: true });
+          await f.page.screenshot({
+            path: join(dir, `${width}-v7-reference-ready-no-notice.png`),
+            animations: 'disabled',
+          });
+        }
+        await directory
+          .getByRole('combobox', { name: '按员工筛选' })
+          .selectOption(id(17));
+        await directory.getByText('还没有交付成果', { exact: true }).waitFor();
+        expect(
+          await f.page
+            .getByRole('button', {
+              name: `移除资料 ${file.fileName} v1`,
+              exact: true,
+            })
+            .count(),
+        ).toBe(1);
+        expect(
+          await f.page.getByText('已引用文件。', { exact: true }).count(),
+        ).toBe(0);
+        if (dir)
+          await f.page.screenshot({
+            path: join(dir, `${width}-v7-reference-filter-empty.png`),
+            animations: 'disabled',
+          });
+        expect(f.state.messageInputs).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+    30000,
+  );
 
   it.each([1440, 390])(
     'MET247 a pending favorite can be canceled by hiding and reopened in the same retained module at %ipx',
@@ -13634,11 +14054,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               .getByRole('button', { name: '收藏', exact: true })
               .isEnabled(),
           ).toBe(true);
+          // V7 moves metadata errors into the same reader after the PDF pages.
+          // The unchanged reader above is still at the user's original offset;
+          // only the user's explicit scroll to the footer changes that offset.
+          await failure.scrollIntoViewIfNeeded();
           const failureBox = (await failure.boundingBox())!;
           const failedPreviewBox = (await frame.boundingBox())!;
-          expect(failureBox.y).toBeGreaterThanOrEqual(
-            failedPreviewBox.y + failedPreviewBox.height,
+          expect(failureBox.y).toBeGreaterThanOrEqual(failedPreviewBox.y);
+          expect(failureBox.y + failureBox.height).toBeLessThanOrEqual(
+            failedPreviewBox.y + failedPreviewBox.height + 1,
           );
+          const footerTop = await scroll.evaluate((node) => node.scrollTop);
           expect(failureBox.y + failureBox.height).toBeLessThanOrEqual(
             width === 1440 ? 1000 : 844,
           );
@@ -13667,7 +14093,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           expect(await original.evaluate((node) => node.isConnected)).toBe(
             true,
           );
-          expect(await scroll.evaluate((node) => node.scrollTop)).toBe(top);
+          expect(
+            await scroll.evaluate(
+              (node, prior) =>
+                Math.abs(
+                  node.scrollTop -
+                    Math.min(prior, node.scrollHeight - node.clientHeight),
+                ),
+              footerTop,
+            ),
+          ).toBeLessThan(1);
           expect(
             await frame.evaluate((node) =>
               node.style.getPropertyValue('--document-zoom'),

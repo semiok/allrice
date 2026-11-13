@@ -194,6 +194,18 @@
   overflow: hidden;
 }
 
+.pdfWithFooter {
+  min-height: 0;
+  overflow: auto;
+}
+.pdfRenderer {
+  height: 100%;
+  min-height: 100%;
+}
+.pdfPages {
+  min-height: 100%;
+}
+
 .actionAnchor {
   display: inline-flex;
   flex: none;
