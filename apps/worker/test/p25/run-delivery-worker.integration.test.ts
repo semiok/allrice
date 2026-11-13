@@ -3521,8 +3521,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       const f = await setup(
         async (request, count) => {
           requests.push(request);
-          return;
-          count === 1
+          return count === 1
             ? {
                 nativeTool: {
                   name: 'workspace_memory_remember',
