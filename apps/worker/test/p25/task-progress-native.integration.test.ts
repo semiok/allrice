@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -89,16 +89,17 @@ describe('MET153 actual native progress wire', () => {
       `export default function (ctx) {
       ctx.on('tools/execute', async (exec, next) => {
         if (exec.callId !== 'first') return next();
+        const signal = exec.signal;
         let observation;
         const observe = () => observation ??= fetch(${JSON.stringify(`${baseUrl}/test-native-canceled`)}, {
           method: 'POST', body: JSON.stringify({
-            nativeSessionId: exec.agent.id, callId: exec.callId, aborted: exec.signal.aborted,
+            nativeSessionId: exec.agent.id, callId: exec.callId, aborted: signal.aborted,
           }),
         }).then(response => { if (!response.ok) throw Error('test_cancel_observation_failed'); });
-        exec.signal.addEventListener('abort', observe, { once: true });
-        if (exec.signal.aborted) observe();
+        signal.addEventListener('abort', observe, { once: true });
+        if (signal.aborted) observe();
         try { return await next(); }
-        finally { exec.signal.removeEventListener('abort', observe); await observation; }
+        finally { signal.removeEventListener('abort', observe); await observation; }
       });
     }`,
     );
@@ -110,6 +111,12 @@ describe('MET153 actual native progress wire', () => {
         'utf8',
       )) +
         `\n- id: test-cancel-observer\n  name: ${JSON.stringify(observer)}\n`,
+    );
+    // Cordis resolves package plugins relative to the temporary profile.
+    await symlink(
+      resolve(import.meta.dirname, '../../node_modules'),
+      join(root, 'node_modules'),
+      'dir',
     );
     const client = new DshProtocolClient({
       command: process.execPath,
@@ -185,6 +192,7 @@ describe('MET153 actual native progress wire', () => {
       }
       return { paused: false };
     });
+    const failures: unknown[] = [];
     try {
       await client.initialize({
         cwd: root,
@@ -255,10 +263,27 @@ describe('MET153 actual native progress wire', () => {
             (n.params.event as { type: string }).type === 'tool/result',
         ),
       ).toHaveLength(2);
+    } catch (error) {
+      failures.push(error);
     } finally {
-      await client.close();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-      await rm(root, { recursive: true, force: true });
+      for (const cleanup of [
+        () => client.close(),
+        () => new Promise<void>((resolve) => server.close(() => resolve())),
+        () => rm(root, { recursive: true, force: true }),
+      ]) {
+        try {
+          await cleanup();
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+    }
+    if (failures.length > 0) {
+      // Synthetic fixture only: retain the body error even if close also fails.
+      console.error('[native-progress-fixture-failures]', failures);
+      throw new AggregateError(failures, 'Native progress fixture failed', {
+        cause: failures[0],
+      });
     }
   }, 30000);
 
