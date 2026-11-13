@@ -31,10 +31,10 @@ import { readContentPrincipal } from './content-maintenance.ts';
 import { employeeAccessTransaction } from './employees/employee-access-cancellation.ts';
 import { resolveEmployeeSessionInstance } from './employees/employee-instances.ts';
 import {
-  assertExperienceWorker,
-  type ExperienceRunScope,
-  type ExperienceWorker,
-} from './experience-runtime.ts';
+  assertMemoryWorker,
+  type MemoryRunScope,
+  type MemoryWorker,
+} from './memory-worker-authority.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
 
 export class MemoryContextError extends Error {
@@ -60,8 +60,8 @@ function parseState(raw: unknown) {
 }
 type Tx = postgres.TransactionSql;
 export type RunMemoryAuthority = {
-  scope: ExperienceRunScope;
-  worker: ExperienceWorker;
+  scope: MemoryRunScope;
+  worker: MemoryWorker;
 };
 
 /** Reuse the existing access transaction/lease guard. Serialize on the Run row
@@ -72,7 +72,7 @@ async function withRun<T>(
 ) {
   return employeeAccessTransaction(getDatabase(), async (tx) => {
     await tx`set local statement_timeout='5s'`;
-    await assertExperienceWorker(tx, auth.scope, auth.worker, true);
+    await assertMemoryWorker(tx, auth.scope, auth.worker, true);
     const who = {
       actor: { type: 'user' as const, id: auth.scope.ownerId },
       organizationId: auth.scope.organizationId,
@@ -93,7 +93,7 @@ async function withRun<T>(
       tx,
     );
     const result = await read(tx, row.memory_context_state);
-    await assertExperienceWorker(tx, auth.scope, auth.worker, true);
+    await assertMemoryWorker(tx, auth.scope, auth.worker, true);
     return result;
   });
 }
@@ -252,7 +252,7 @@ export async function readRunMemoryContext<T>(
 
 async function assertMemoryIndexCurrent(
   sql: ReturnType<typeof getDatabase> | Tx,
-  scope: ExperienceRunScope,
+  scope: MemoryRunScope,
   state: RunMemoryContextV2State,
 ) {
   const current = await memoryScopeForRun(sql, scope);
@@ -356,7 +356,7 @@ function mergeConfirmedMemoryPins(
 /** Read-only companion to the existing live Run/lease admission. An ordinary
  * edit keeps its issued revision; loss of current eligibility stops the Run.
  * No read locks, new allowance, history rewrite or silent snapshot replacement. */
-export async function assertRunMemoryContextCurrent(scope: ExperienceRunScope) {
+export async function assertRunMemoryContextCurrent(scope: MemoryRunScope) {
   const sql = getDatabase();
   const instanceId = await memoryInstanceForRun(sql, scope);
   if (!instanceId) return unavailable();

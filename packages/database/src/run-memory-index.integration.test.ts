@@ -641,6 +641,24 @@ suite(
       expect(await state(damaged.rootRunId)).toEqual(before);
     });
 
+    it.each(['attempt', 'worker', 'expired', 'canceled'] as const)(
+      'memory-owned Worker guard rejects %s without spending the V2 ledger',
+      async (mode) => {
+        const f = await setup(),
+          before = await state(f.rootRunId);
+        const auth = structuredClone(f.auth);
+        if (mode === 'attempt') auth.worker.attempt++;
+        if (mode === 'worker') auth.worker.workerId = randomUUID();
+        if (mode === 'expired')
+          await fixture.db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${f.worker.jobId}`;
+        if (mode === 'canceled')
+          await fixture.db`update allrice_jobs set cancel_requested_at=clock_timestamp() where id=${f.worker.jobId}`;
+        await expect(
+          readRunMemoryOrdinal(auth, { number: 1 }),
+        ).rejects.toMatchObject({ code: 'identity_denied' });
+        expect(await state(f.rootRunId)).toEqual(before);
+      },
+    );
     it('rechecks current owner, principal, instance, confirmation and the exact worker lease', async () => {
       const f = await setup();
       const before = await state(f.rootRunId);

@@ -77,8 +77,6 @@ import { inspectLocalFile } from '../../../rice-bridge/src/local-files.js';
 import {
   localFileCapabilities,
   LocalFilePayloadSchema,
-  renderMemoryContext,
-  initialMemoryContextBytes,
   memoryContextBytes,
   EmployeeExecutionSnapshotSchema,
   EmployeeManifestSchema,
@@ -1798,7 +1796,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     'folder_event',
     'automation_manual',
   ] as const)(
-    'PERSONA: real %s producer reaches the original queue, Worker and native Host provider with the same memory budget',
+    'PERSONA: real %s producer reaches the original queue, Worker and native Host provider with empty memory and no memory tools',
     async (kind) => {
       const requests: ModelRequest[] = [];
       const providerErrors: {
@@ -1933,9 +1931,19 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       expect(frozenDocs.user).toContain('TASK_ORG_FACT');
       expect(frozenDocs.user).not.toContain('departmentName');
       expect(frozenDocs.memory).toBe('');
-      expect(resolved.promptSnapshot.memories.map((m) => m.id)).toEqual(
-        expect.arrayContaining(f.memories.map((m) => m.id)),
-      );
+      expect(resolved.promptSnapshot.memories).toEqual([]);
+      for (const name of [
+        'workspace.memory.read',
+        'workspace.memory.search',
+        'workspace.memory.remember',
+        'workspace.experience.read',
+      ])
+        expect(snapshot.capabilitySnapshot.bindings.toolNames).not.toContain(
+          name,
+        );
+      const [queuedMemory] =
+        await f.db`select memory_context_state from allrice_employee_runs where run_id=${runId}`;
+      expect(queuedMemory!.memory_context_state).toBeNull();
       if (kind === 'automation_manual') {
         const [latest] =
           await f.db`select employee_version_id from allrice_employee_assignments where id=${f.identity.assignment}`;
@@ -2013,10 +2021,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           'Provider callback failures must not be hidden by HTTP retries',
         ).toEqual([]);
         await assertManualFrozen?.();
-        const expectedMemories = resolved.promptSnapshot.memories.filter(
-          (m) => kind !== 'automation_manual' || m.id !== f.memories[1]!.id,
-        );
-        const memory = renderMemoryContext(expectedMemories);
+        const memory = '';
         const contexts = requests
           .flatMap((request) => request.messages)
           .filter(
@@ -2029,9 +2034,18 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         const current = JSON.stringify(contexts.at(-1));
         for (const literal of [frozenDocs.persona!, frozenDocs.user, memory])
           expect(current).toContain(JSON.stringify(literal).slice(1, -1));
-        expect(current).toContain('TASK_MEMORY_KEEP {{missing}}');
-        if (kind === 'automation_manual')
-          expect(current).not.toContain('TASK_MEMORY_WITHDRAW');
+        expect(current).not.toContain('TASK_MEMORY_KEEP');
+        expect(current).not.toContain('TASK_MEMORY_WITHDRAW');
+        for (const request of requests)
+          for (const name of [
+            'workspace_memory_read',
+            'workspace_memory_search',
+            'workspace_memory_remember',
+            'workspace_experience_read',
+          ])
+            expect(
+              request.tools?.map((tool) => tool.function.name) ?? [],
+            ).not.toContain(name);
         const systems = JSON.stringify(
           requests
             .flatMap((request) => request.messages)
@@ -2048,40 +2062,20 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           expect(systems).not.toContain(literal);
         const [stored] =
           await f.db`select memory_context_state s,prompt_snapshot from allrice_employee_runs where run_id=${runId}`;
-        expect(stored!.s.initial.ids).toEqual(
-          expectedMemories.map((m) => m.id),
-        );
-        expect(stored!.s.initial.bytes).toBe(
-          initialMemoryContextBytes(expectedMemories),
-        );
-        expect(stored!.s.initial.bytes).toBeLessThanOrEqual(6000);
-        expect(stored!.s.spentBytes).toBe(stored!.s.initial.bytes);
-        expect(stored!.s.toolReads).toBe(0);
-        expect(stored!.s.initial).not.toHaveProperty('documentDigest');
-        expect(stored!.s).not.toHaveProperty('confirmedPins');
+        expect(stored!.s).toBeNull();
         expect(stored!.prompt_snapshot.employeeDocuments).toEqual(frozenDocs);
-        const index = broker.mock.calls.findIndex(
-          ([input]) => input.call.name === 'workspace.memory.remember',
-        );
+        // A fabricated provider call cannot reach the Broker when its tool was
+        // excluded by the actual producer's frozen allowlist.
         expect(
-          index,
-          JSON.stringify({
-            frozenToolNames: snapshot.capabilitySnapshot.bindings.toolNames,
-            grantedCapabilities: resolved.grantedCapabilities,
-            brokerCallNames: broker.mock.calls.map(
-              ([input]) => input.call.name,
-            ),
-            requests: requests.map((request) => ({
-              toolNames: request.tools?.map((tool) => tool.function.name),
-              messages: request.messages,
-            })),
-          }),
-        ).toBeGreaterThanOrEqual(0);
-        expect(
-          await broker.mock.results[index]!.value.catch(
-            (error: unknown) => error,
+          broker.mock.calls.filter(([input]) =>
+            [
+              'workspace.memory.read',
+              'workspace.memory.search',
+              'workspace.memory.remember',
+              'workspace.experience.read',
+            ].includes(input.call.name),
           ),
-        ).toMatchObject({ code: 'MEMORY_HUMAN_SOURCE_REQUIRED' });
+        ).toEqual([]);
         expect(checkedLocks).toBe(true);
         if (folder) {
           const [attachment] =

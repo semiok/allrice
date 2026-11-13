@@ -63,6 +63,7 @@ import {
 } from './personal-scene-reads.ts';
 import { removePersonalSceneSkill } from './personal-scene-remove.ts';
 import { collectPendingMemorySources } from '../memory-source-evidence.ts';
+import { enableSyntheticMemorySourceCollection } from '../memory-source.fixture.ts';
 import * as sourceScenes from '../memory-source-scenes.ts';
 
 const browser = vi.hoisted(() => ({ context: null as RequestContext | null }));
@@ -84,7 +85,7 @@ suite(
     >;
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', `sha256:${'c'.repeat(64)}`);
-      vi.stubEnv('ALLRICE_EXPERIENCE_REVIEW_ENABLED', '1');
+      vi.stubEnv('ALLRICE_MEMORY_SOURCE_CAPTURE_ENABLED', '1');
       f = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
       const principal = await ensureBootstrapPortalPrincipal({
@@ -115,6 +116,7 @@ suite(
           name: `Read-${randomUUID()}`,
         }),
         workspaceId = company.defaultWorkspaceId!;
+      await enableSyntheticMemorySourceCollection(f.db, company.organizationId);
       const people = (
         await importOrganizationPeople(admin, company.organizationId, {
           people: [
@@ -402,11 +404,8 @@ suite(
 
     const collectSources = () =>
       collectPendingMemorySources({ database: f.db, limit: 16 });
-    const sources = (
-      run: Runtime,
-    ) => f.db`select e.evidence,m.content,m.lifecycle_state,m.trust_level
-      from allrice_experience_reviews e join allrice_memories m on m.id=e.memory_id
-      where e.evidence->>'captureRunId'=${run.scope.runId}`;
+    const sources = (run: Runtime) =>
+      f.db`select * from allrice_memory_sources where capture_run_id=${run.scope.runId}`;
     const terminal = (run: Runtime) =>
       completeJob({ ...run.worker, result: { text: '合成周报已交付。' } });
     function removeScene(s: Setup, saved: Awaited<ReturnType<typeof save>>) {
@@ -434,8 +433,8 @@ suite(
         await collectSources();
         const [source] = await sources(run);
         expect(source).toMatchObject({
-          lifecycle_state: 'candidate',
-          trust_level: 'derived',
+          capture_run_id: run.scope.runId,
+          instance_id: s.instance.id,
         });
         const evidence = MemorySourceEvidenceSchema.parse(source!.evidence);
         expect(evidence.skills).toEqual([]);
@@ -532,10 +531,10 @@ suite(
         }
         await terminal(run);
         const [pending] =
-          await f.db`select status,experience_capture_state from allrice_employee_runs where run_id=${run.scope.runId}`;
+          await f.db`select status,memory_source_capture_state from allrice_employee_runs where run_id=${run.scope.runId}`;
         expect(pending).toEqual({
           status: 'succeeded',
-          experience_capture_state: 'pending',
+          memory_source_capture_state: 'pending',
         });
         await removeScene(s, saved);
         await collectSources();
@@ -543,7 +542,7 @@ suite(
           mode === 'catalog_only' ? 1 : 0,
         );
         const [result] =
-          await f.db`select experience_capture_state state,experience_capture_reason reason from allrice_employee_runs where run_id=${run.scope.runId}`;
+          await f.db`select memory_source_capture_state state,memory_source_capture_reason reason from allrice_employee_runs where run_id=${run.scope.runId}`;
         expect(result).toEqual(
           mode === 'catalog_only'
             ? { state: 'captured', reason: 'structured_human_source' }
@@ -576,7 +575,7 @@ suite(
         await collectSources();
         expect(await sources(run)).toEqual([]);
         const [result] =
-          await f.db`select experience_capture_reason reason from allrice_employee_runs where run_id=${run.scope.runId}`;
+          await f.db`select memory_source_capture_reason reason from allrice_employee_runs where run_id=${run.scope.runId}`;
         expect(result!.reason).toBe('dependency_unavailable');
       },
     );
@@ -675,17 +674,16 @@ suite(
             removed = true;
             return;
           }
-          const [staged] = await tx<{ memory_id: string }[]>`
-            select memory_id from allrice_experience_reviews
-            where evidence->>'captureRunId'=${run.scope.runId}`;
+          const [staged] = await tx<{ id: string }[]>`
+            select id from allrice_memory_sources where capture_run_id=${run.scope.runId}`;
           expect(staged).toBeDefined();
-          stagedMemoryId = staged!.memory_id;
+          stagedMemoryId = staged!.id;
           expect(
-            await tx`select id from allrice_memories where id=${stagedMemoryId}`,
+            await tx`select id from allrice_memory_sources where id=${stagedMemoryId}`,
           ).toHaveLength(1);
           expect(
             await tx`select memory_id from allrice_memory_revisions where memory_id=${stagedMemoryId}`,
-          ).toHaveLength(1);
+          ).toHaveLength(0);
           expect(
             await tx`select id from allrice_audit_events where action='memory.source.capture' and resource_id=${stagedMemoryId}`,
           ).toHaveLength(1);
@@ -708,7 +706,7 @@ suite(
         expect(stagedMemoryId).toBeDefined();
         expect(await sources(run)).toEqual([]);
         expect(
-          await f.db`select memory_id from allrice_experience_reviews where memory_id=${stagedMemoryId!}`,
+          await f.db`select id from allrice_memory_sources where id=${stagedMemoryId!}`,
         ).toEqual([]);
         expect(
           await f.db`select memory_id from allrice_memory_revisions where memory_id=${stagedMemoryId!}`,
@@ -721,7 +719,7 @@ suite(
             and (organization_id=${s.owner.organizationId} or resource_id=${stagedMemoryId!})`,
         ).toEqual([]);
         const [result] =
-          await f.db`select experience_capture_state state,experience_capture_reason reason from allrice_employee_runs where run_id=${run.scope.runId}`;
+          await f.db`select memory_source_capture_state state,memory_source_capture_reason reason from allrice_employee_runs where run_id=${run.scope.runId}`;
         expect(result).toEqual({
           state: 'ignored',
           reason: 'dependency_unavailable',
