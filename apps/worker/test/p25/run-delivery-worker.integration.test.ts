@@ -19,7 +19,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   renderMemoryDetailV2,
   memoryContextPolicy,
-  initialMemoryContextBytes,
   RunMemoryContextStateSchema,
 } from '@allrice/contracts';
 import * as EmployeeHub from '../../../../packages/database/src/employees/employeehub.ts';
@@ -57,7 +56,12 @@ import {
   employeeManifest,
   employeeManifestChecksum,
 } from '../../../../packages/database/src/employees/employee-config.ts';
-import { assertFrozenEmployeePersona } from '../../../../packages/database/src/employees/employee-documents.ts';
+import {
+  assertFrozenEmployeePersona,
+  confirmedMemoryHandle,
+  employeeMemoryDocument,
+} from '../../../../packages/database/src/employees/employee-documents.ts';
+import { confirmedMemoryPin } from '../../../../packages/database/src/run-memory-context.ts';
 import {
   readEmployeeChatSourceKind,
   assertEmployeeChatHumanSource,
@@ -1527,6 +1531,19 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           }
         : { text: 'Synthetic restored task completed.' };
     });
+    const memories = f.memories.map((memory) => ({
+      id: memory.id,
+      revision: memory.revision,
+      content: memory.content,
+      lifecycleState: memory.lifecycleState,
+      memoryClass: memory.memoryClass,
+      sourceLabel: memory.sourceLabel,
+      trust: memory.trust,
+      confidence: memory.confidence,
+      capturedAt: memory.capturedAt,
+      sourceHandle: confirmedMemoryHandle(memory),
+    }));
+    const memoryDocument = employeeMemoryDocument(memories, memories.length);
     const plan = await oncePlan(f);
     const original = EmployeeHub.prepareEmployeeRunBinding;
     const hook = vi
@@ -1545,10 +1562,10 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
             'workspace.experience.read',
           ]),
         ];
-        binding.promptSnapshot.memories = f.memories;
+        binding.promptSnapshot.memories = memories;
         binding.promptSnapshot.employeeDocuments = {
           ...binding.promptSnapshot.employeeDocuments!,
-          memory: f.memories.map((m) => m.content).join('\n'),
+          memory: memoryDocument,
         };
         return binding;
       });
@@ -1558,16 +1575,18 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     } finally {
       hook.mockRestore();
     }
-    const bytes = initialMemoryContextBytes(f.memories);
+    const bytes = Buffer.byteLength(memoryDocument, 'utf8');
     const ledger = RunMemoryContextStateSchema.parse({
       schemaVersion: 1,
       meter: 'utf8_bytes',
       limits: memoryContextPolicy,
       initial: {
-        ids: f.memories.map((m) => m.id),
-        digest: runtimePolicyDigest(f.memories),
+        ids: memories.map((m) => m.id),
+        digest: runtimePolicyDigest(memories),
         bytes,
+        documentDigest: runtimePolicyDigest(memoryDocument),
       },
+      confirmedPins: memories.map(confirmedMemoryPin),
       spentBytes: bytes + 23,
       toolReads: 1,
     });
