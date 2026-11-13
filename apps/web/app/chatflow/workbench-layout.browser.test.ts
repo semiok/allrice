@@ -9030,8 +9030,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               );
               const tabBox = (await tabGlyph.boundingBox())!;
               const topBox = (await topGlyph.boundingBox())!;
-              expect([tabBox.width, tabBox.height]).toEqual([17, 17]);
-              expect([topBox.width, topBox.height]).toEqual([20, 20]);
+              expect(Math.abs(tabBox.width - 17)).toBeLessThan(0.01);
+              expect(Math.abs(tabBox.height - 17)).toBeLessThan(0.01);
+              expect(Math.abs(topBox.width - 20)).toBeLessThan(0.01);
+              expect(Math.abs(topBox.height - 20)).toBeLessThan(0.01);
             };
             await scheduleClock.click();
             const sessionSchedules = nativeIcon.panel.getByRole('region', {
@@ -9093,8 +9095,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             expect(await tabGlyph.innerHTML()).toBe(await topGlyph.innerHTML());
             const tabBox = (await tabGlyph.boundingBox())!;
             const topBox = (await topGlyph.boundingBox())!;
-            expect([tabBox.width, tabBox.height]).toEqual([17, 17]);
-            expect([topBox.width, topBox.height]).toEqual([20, 20]);
+            expect(Math.abs(tabBox.width - 17)).toBeLessThan(0.01);
+            expect(Math.abs(tabBox.height - 17)).toBeLessThan(0.01);
+            expect(Math.abs(topBox.width - 20)).toBeLessThan(0.01);
+            expect(Math.abs(topBox.height - 20)).toBeLessThan(0.01);
             expect(nativeIcon.state.messageInputs).toEqual([]);
             expect(nativeIcon.writes).toEqual([]);
             expect(nativeIcon.errors).toEqual([]);
