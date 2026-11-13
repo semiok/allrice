@@ -542,10 +542,13 @@ suite(
       'revoked close ordering: heartbeat',
       'revoked close ordering: modelAdmission',
       'revoked close ordering: modelAdmission then heartbeat',
+      'revoked close ordering: start after heartbeat',
     ] as const)(
       '真实入口 → Worker → DSH → PG，无助手：%s',
       async (mode) => {
         const closeOrdering = mode.startsWith('revoked close ordering:');
+        const unadmittedStart =
+          mode === 'revoked close ordering: start after heartbeat';
         const diagnoseClose = mode === 'revoked' || closeOrdering;
         const heartbeatFirst = mode === 'revoked close ordering: heartbeat';
         const modelAdmissionFirst =
@@ -858,7 +861,42 @@ suite(
                         : reviewCloseRpc(method, params);
                       try {
                         if (
+                          unadmittedStart &&
+                          method === 'allrice/progress' &&
+                          params.kind === 'tool'
+                        ) {
+                          if (params.action === 'start') {
+                            mark('tool_start_held', details);
+                            await f.db`update allrice_employee_assignments set active=false where id=(select employee_assignment_id from allrice_employee_runs where run_id=${review.runId})`;
+                            mark('assignment_revoked');
+                            await closeOrderingBarrier(
+                              runnerAborted.promise,
+                              'runner_abort_before_start',
+                            );
+                            const [job] =
+                              await f.db`select status,worker_id,lease_token,drain_deadline_at,last_error_code from allrice_jobs where id=${review.jobId}`;
+                            mark('job_at_abort', { job });
+                            mark('tool_start_released');
+                          } else if (params.action === 'finish')
+                            mark('unadmitted_finish_sent', details);
+                        }
+                        if (unadmittedStart && method === 'allrice/tool-call') {
+                          await closeOrderingBarrier(
+                            runnerAborted.promise,
+                            'runner_abort_before_tool',
+                          );
+                          try {
+                            return await handler(method, params);
+                          } catch (error) {
+                            mark('tool_gate_refused', {
+                              error: closeOrderingError(error),
+                            });
+                            throw error;
+                          }
+                        }
+                        if (
                           closeOrdering &&
+                          !unadmittedStart &&
                           method === 'allrice/tool-call' &&
                           !interceptedTool
                         ) {
@@ -894,6 +932,12 @@ suite(
                         const result = await handler(method, params);
                         if (method === 'allrice/progress') {
                           mark('progress_ok', details);
+                          if (
+                            unadmittedStart &&
+                            params.action === 'start' &&
+                            params.kind === 'tool'
+                          )
+                            mark('tool_start_receipt', { result });
                           if (
                             params.action === 'start' &&
                             params.kind === 'tool'
@@ -1103,7 +1147,7 @@ suite(
               true,
             );
             expect(trace.some((row) => row.event === 'runner_aborted')).toBe(
-              heartbeatFirst || lateHeartbeat,
+              heartbeatFirst || lateHeartbeat || unadmittedStart,
             );
             expect(
               trace.some(
@@ -1115,7 +1159,7 @@ suite(
               ),
             ).toBe(modelAdmissionFirst || lateHeartbeat);
             expect(diagnostic!.last_error_code).toBe(
-              heartbeatFirst || lateHeartbeat
+              heartbeatFirst || lateHeartbeat || unadmittedStart
                 ? 'PLATFORM_TECHNICAL_AUTH_REVOKED'
                 : 'EMPLOYEE_CONTENT_UNAVAILABLE',
             );
@@ -1179,7 +1223,7 @@ suite(
                   .filter((event) => expectedOrder.includes(event as string)),
               ).toEqual(expectedOrder);
             }
-            if (heartbeatFirst || lateHeartbeat) {
+            if (heartbeatFirst || lateHeartbeat || unadmittedStart) {
               const stopped = trace.find(
                 (row) => row.event === 'job_at_abort',
               )!;
@@ -1199,16 +1243,56 @@ suite(
                   row.kind === 'tool' &&
                   row.callId === 'call-1',
               ),
-            ).toBe(true);
+            ).toBe(!unadmittedStart);
             const calls =
               await f.db`select call_id,finished_at,outcome from allrice_task_calls where run_id=${review.runId} and kind='tool'`;
-            expect(calls).toEqual([
-              {
-                call_id: 'call-1',
-                finished_at: expect.any(Date),
-                outcome: 'error',
-              },
-            ]);
+            expect(calls).toEqual(
+              unadmittedStart
+                ? []
+                : [
+                    {
+                      call_id: 'call-1',
+                      finished_at: expect.any(Date),
+                      outcome: 'error',
+                    },
+                  ],
+            );
+            if (unadmittedStart) {
+              expect(
+                trace.some((row) => row.event === 'unadmitted_finish_sent'),
+              ).toBe(false);
+              expect(
+                trace.find((row) => row.event === 'tool_start_receipt')?.result,
+              ).toMatchObject({
+                toolStart: 'not_admitted',
+                reason: 'admission_closed',
+                runId: review.runId,
+                callId: 'call-1',
+                rejection: {
+                  code: 'task_progress_lease_lost',
+                  message: 'task_progress_lease_lost',
+                },
+              });
+              expect(
+                trace
+                  .map((row) => row.event)
+                  .filter((event) =>
+                    [
+                      'tool_start_held',
+                      'assignment_revoked',
+                      'runner_aborted',
+                      'tool_start_released',
+                      'tool_start_receipt',
+                    ].includes(event as string),
+                  ),
+              ).toEqual([
+                'tool_start_held',
+                'assignment_revoked',
+                'runner_aborted',
+                'tool_start_released',
+                'tool_start_receipt',
+              ]);
+            }
           }
         } catch (error) {
           bodyError = error;

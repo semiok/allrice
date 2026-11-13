@@ -2,7 +2,7 @@ import {
   HarnessEventSchema,
   UserQuestionRequestSchema,
 } from '@allrice/contracts';
-import { QueueError } from '@allrice/database';
+import { createTaskProgressRuntime, QueueError } from '@allrice/database';
 import type * as SubscriptionHome from '../codex-subscription-home.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
@@ -214,6 +214,74 @@ describe('confirmed native dispatch stop receipt', () => {
       .mockImplementation(close);
     return { adapter, input, original, runtime, prompt, confirmStopped, drop };
   }
+
+  it.each([
+    'trusted',
+    'forged',
+    'wrong-run',
+    'wrong-session',
+    'wrong-call',
+    'finish',
+  ])(
+    'progress stop classification remains bound to the original tool start: %s',
+    async (mode) => {
+      const f = stoppedExecution(async () => {});
+      const original = Object.assign(Error('task_progress_lease_lost'), {
+        toolStart: 'not_admitted',
+      });
+      f.input.progress = vi.fn().mockRejectedValue(original);
+      let checked = false;
+      f.input.onEvent = async (event) => {
+        if (event.sourceEventType !== 'allrice/runtime-preparation') return;
+        const identity = {
+          runId: f.input.executionEnvironment.ALLRICE_RUN_ID!,
+          nativeSessionId: f.runtime.sessionId,
+          rootSessionId: f.runtime.sessionId,
+          parentSessionId: null,
+          delegationDepth: 0,
+        };
+        vi.mocked(f.runtime.client.subscribe).mock.calls[0]![0]({
+          method: 'allrice.run-session',
+          params: identity,
+        });
+        const handler = vi.mocked(f.runtime.client.setRequestHandler).mock
+          .calls[0]![0]!;
+        const proof = {
+          toolStart: 'not_admitted' as const,
+          reason: 'admission_closed' as const,
+          runId: mode === 'wrong-run' ? 'foreign' : identity.runId,
+          nativeSessionId:
+            mode === 'wrong-session' ? 'foreign' : identity.nativeSessionId,
+          callId: mode === 'wrong-call' ? 'foreign' : 'call',
+          rejection: {
+            code: 'task_progress_lease_lost' as const,
+            message: original.message,
+          },
+        };
+        // The DB integration tests prove creation; this isolates Worker binding.
+        if (mode !== 'forged')
+          vi.spyOn(
+            createTaskProgressRuntime,
+            'stoppedToolStart',
+          ).mockReturnValue(proof);
+        const result = handler('allrice/progress', {
+          ...identity,
+          action: mode === 'finish' ? 'finish' : 'start',
+          kind: 'tool',
+          callId: 'call',
+        });
+        if (mode === 'trusted') await expect(result).resolves.toBe(proof);
+        else await expect(result).rejects.toBe(original);
+        checked = true;
+        throw f.original;
+      };
+      expect(
+        await f.adapter.execute(f.input).catch((error: unknown) => error),
+      ).toBe(f.original);
+      expect(checked).toBe(true);
+      expect(f.prompt).not.toHaveBeenCalled();
+    },
+  );
 
   it('web cancellation on the real Adapter is Run-bound and waits for the exact callback cleanup', async () => {
     const f = stoppedExecution(async () => {});

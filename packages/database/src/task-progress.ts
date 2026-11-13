@@ -68,6 +68,20 @@ const Request = z.discriminatedUnion('action', [
     .strict(),
 ]);
 
+type UnadmittedToolStart = Readonly<{
+  toolStart: 'not_admitted';
+  reason: 'admission_closed';
+  runId: string;
+  nativeSessionId: string;
+  callId: string;
+  rejection: Readonly<{ code: 'task_progress_lease_lost'; message: string }>;
+}>;
+// Proof belongs to the original rejection, never to a caller-supplied code or
+// message. Only the locked DB admission check below can produce it.
+const unadmittedToolStarts = new WeakMap<Error, UnadmittedToolStart>();
+createTaskProgressRuntime.stoppedToolStart = (error: unknown) =>
+  error instanceof Error ? unadmittedToolStarts.get(error) : undefined;
+
 /** Worker-only port bound to an already authorized Run, never a browser tool.
  * The adapter additionally binds native IDs to its live owned root/tree. */
 export function createTaskProgressRuntime(
@@ -116,8 +130,43 @@ export function createTaskProgressRuntime(
       // started call. The original running lease and exact call are still
       // required; queue/heartbeat terminalization is a separate drain boundary.
       const finishing = p.action === 'finish';
-      if (job.cancel_requested_at && !finishing)
-        throw Error('task_progress_lease_lost');
+      if (job.cancel_requested_at && !finishing) {
+        const rejection = Error('task_progress_lease_lost');
+        if (
+          job.drain_deadline_at &&
+          p.action === 'start' &&
+          p.kind === 'tool' &&
+          p.name &&
+          p.argumentsDigest
+        ) {
+          // The original owner/lease and drain deadline passed the locked
+          // query above. Any existing call (including another kind) is a
+          // conflict, not proof that this start never entered the ledger.
+          const [unadmitted] = await tx`select 1 from allrice_jobs j
+            where j.id=${worker.jobId}
+              and j.lease_expires_at>clock_timestamp()
+              and j.drain_deadline_at>clock_timestamp()
+              and not exists (select 1 from allrice_task_calls
+                where run_id=${runId} and native_session_id=${p.nativeSessionId}
+                  and call_id=${p.callId})`;
+          if (unadmitted)
+            unadmittedToolStarts.set(
+              rejection,
+              Object.freeze({
+                toolStart: 'not_admitted',
+                reason: 'admission_closed',
+                runId,
+                nativeSessionId: p.nativeSessionId,
+                callId: p.callId,
+                rejection: Object.freeze({
+                  code: 'task_progress_lease_lost',
+                  message: rejection.message,
+                }),
+              }),
+            );
+        }
+        throw rejection;
+      }
       const inserted =
         await tx`insert into allrice_task_progress(run_id) values(${runId}) on conflict do nothing returning run_id`;
       if (inserted.length && input.sessionId) {

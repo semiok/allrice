@@ -6,6 +6,7 @@ import {
   type PersonalScenePromptPart,
 } from './personal-scene-prompt.js';
 import {
+  createTaskProgressRuntime,
   NativeModelFactSchema,
   NativeModelDeliverySchema,
 } from '@allrice/database';
@@ -648,7 +649,22 @@ export class DshHarnessAdapter implements HarnessAdapter {
         if (!input.progress) throw Error('task_progress_disabled');
         if (!runScope && params.nativeSessionId !== threadId)
           throw Error('task_progress_native_scope');
-        const progress = await input.progress(params);
+        let progress;
+        try {
+          progress = await input.progress(params);
+        } catch (error) {
+          const stopped = createTaskProgressRuntime.stoppedToolStart(error);
+          if (
+            stopped &&
+            params.action === 'start' &&
+            params.kind === 'tool' &&
+            stopped.runId === runId &&
+            stopped.nativeSessionId === params.nativeSessionId &&
+            stopped.callId === params.callId
+          )
+            return stopped;
+          throw error;
+        }
         if (params.kind === 'model' && typeof params.callId === 'string') {
           // Worker progress receipts bracket the model call chain, including
           // native middleware. They are not socket/send/Provider boundaries.
