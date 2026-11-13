@@ -8231,7 +8231,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             ...details,
           });
         };
-        const expectGlobalEmpty = async (page = f.page) => {
+        const expectGlobalEmpty = async (
+          page = f.page,
+          workbenchState: 'closed' | 'open' = 'closed',
+        ) => {
           const empty = page.getByRole('region', {
             name: 'AI 员工空态',
             exact: true,
@@ -8270,7 +8273,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             await header
               .getByRole('button', { name: /^(?:展开|收起)工作台$/ })
               .count(),
-          ).toBe(1);
+          ).toBe(workbenchState === 'open' ? 0 : 1);
           const mark = empty.locator('span[aria-hidden="true"]');
           expect(
             await empty
@@ -8781,7 +8784,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             await seams.page.goto(
               `${origin}/?employee=${id(9)}&file=${file.objectId}&workspaceId=${workspace}&theme=1`,
             );
-            await expectGlobalEmpty(seams.page);
+            await expectGlobalEmpty(seams.page, 'open');
             await seams.panel
               .locator('header[aria-label="文件操作"]')
               .getByText(file.fileName, { exact: true })
