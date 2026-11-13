@@ -12855,6 +12855,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .locator('svg path')
             .evaluate((node) => getComputedStyle(node).fill);
           expect(filled).not.toBe('none');
+          await capture('favorite-hover');
           await star.click();
           await toolbar
             .getByRole('button', { name: '收藏', exact: true })
@@ -12982,12 +12983,67 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .poll(() => f.state.workbenchReferenceUses)
             .toEqual([business.objectId]);
           expect(f.state.messageInputs).toEqual([]);
-          await f.page
-            .getByRole('button', {
-              name: `移除资料 ${business.fileName} v1`,
-              exact: true,
-            })
-            .waitFor();
+          const removeReference = f.page.getByRole('button', {
+            name: `移除资料 ${business.fileName} v1`,
+            exact: true,
+          });
+          await removeReference.waitFor();
+          const referenceContrast = await removeReference
+            .locator('..')
+            .evaluate((chip) => {
+              const rgba = (color: string) =>
+                color.match(/[\d.]+/g)!.map(Number);
+              const layers: number[][] = [];
+              for (
+                let node: Element | null = chip;
+                node;
+                node = node.parentElement
+              ) {
+                const layer = rgba(getComputedStyle(node).backgroundColor);
+                layers.push(layer);
+                if ((layer[3] ?? 1) === 1) break;
+              }
+              const background = layers
+                .reverse()
+                .reduce(
+                  (back, front) =>
+                    back.map(
+                      (channel, i) =>
+                        front[i]! * (front[3] ?? 1) +
+                        channel * (1 - (front[3] ?? 1)),
+                    ),
+                  [255, 255, 255],
+                );
+              const luminance = (color: number[]) =>
+                color
+                  .slice(0, 3)
+                  .map((channel) => {
+                    const c = channel / 255;
+                    return c <= 0.04045
+                      ? c / 12.92
+                      : ((c + 0.055) / 1.055) ** 2.4;
+                  })
+                  .reduce(
+                    (sum, channel, i) =>
+                      sum + channel * [0.2126, 0.7152, 0.0722][i]!,
+                    0,
+                  );
+              return [...chip.children].map((node) => {
+                const foreground = rgba(getComputedStyle(node).color);
+                const painted = background.map(
+                  (channel, i) =>
+                    foreground[i]! * (foreground[3] ?? 1) +
+                    channel * (1 - (foreground[3] ?? 1)),
+                );
+                const [light, dark] = [
+                  luminance(painted),
+                  luminance(background),
+                ].sort((a, b) => b - a);
+                return (light! + 0.05) / (dark! + 0.05);
+              });
+            });
+          for (const contrast of referenceContrast)
+            expect(contrast).toBeGreaterThanOrEqual(4.5);
           expect(
             await f.page.getByText('已引用文件。', { exact: true }).count(),
           ).toBe(0);
@@ -13149,6 +13205,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                   .isHidden(),
               ).toBe(true);
               expect(
+                await lastPage
+                  .locator('[data-document-zoom-surface]')
+                  .evaluate((node) => (node as HTMLElement).hidden),
+              ).toBe(true);
+              expect(
                 await lastPage.getByText(lastPageText, { exact: true }).count(),
               ).toBe(0);
             }
@@ -13233,6 +13294,34 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                   .locator('[data-code-wrap]')
                   .getAttribute('data-code-wrap'),
               ).toBe('true');
+              const nativeActions = source.locator(
+                '[data-code-block-banner] button',
+              );
+              expect(
+                await nativeActions.evaluateAll((buttons) =>
+                  buttons.map((button) => {
+                    const icon = button
+                      .querySelector('svg')
+                      ?.getBoundingClientRect();
+                    if (!icon) return false;
+                    const box = button.getBoundingClientRect();
+                    const hit = document.elementFromPoint(
+                      icon.x + icon.width / 2,
+                      icon.y + icon.height / 2,
+                    );
+                    return (
+                      icon.width >= 10 &&
+                      icon.height >= 10 &&
+                      icon.x >= box.x &&
+                      icon.right <= box.right &&
+                      icon.y >= box.y &&
+                      icon.bottom <= box.bottom &&
+                      hit !== null &&
+                      button.contains(hit)
+                    );
+                  }),
+                ),
+              ).toEqual([true, true]);
               await capture('source');
               await toolbar
                 .getByRole('button', { name: '更多文件操作', exact: true })
@@ -13266,6 +13355,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             });
             if (kind === 'pdf' || kind === 'docx') {
               await lastPage.getByText(lastPageText, { exact: true }).waitFor();
+              // Native ready is committed after drawImage; CSS visibility alone
+              // does not prove the initially hidden surface has finished painting.
+              await expect
+                .poll(() =>
+                  lastPage
+                    .locator('[data-document-zoom-surface]')
+                    .evaluate((node) => (node as HTMLElement).hidden),
+                )
+                .toBe(false);
               await expect
                 .poll(() =>
                   lastPage.locator('[data-document-zoom-surface]').isVisible(),
@@ -13343,6 +13441,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                 ),
               ).toBe(true);
               await expectFooterActionsReachable(footer, nativeFrame);
+              expect(
+                await lastPage
+                  .locator('[data-document-zoom-surface]')
+                  .evaluate((node) => (node as HTMLElement).hidden),
+              ).toBe(false);
               await capture('zoomed-footer');
             }
             await footer

@@ -17,6 +17,7 @@
       [data-terminal-workbench] button,
       [data-terminal-guide] button,
       [data-native-subagent-id] button,
+      :global(.md-code-block) [data-code-block-banner] button,
       [data-employee-capabilities] button
     )
   ),
