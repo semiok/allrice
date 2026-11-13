@@ -1008,9 +1008,7 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
     const issuedAt = new Date();
     const expiresAt = platformEmployeeTestTimeoutAt(
       issuedAt,
-      experienceClaim?.timeoutMs ??
-        methodClaim?.timeoutMs ??
-        runtimeProfile.timeoutMs,
+      experienceClaim?.timeoutMs ?? runtimeProfile.timeoutMs,
     );
     const claimed = await transaction`
       update allrice_platform_employee_test_runs
@@ -1035,7 +1033,7 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
         action: 'job:execute',
         workspaceId: previewContext.workspace_id,
       },
-      ...(methodClaim || experienceClaim
+      ...(experienceClaim
         ? []
         : ['storage_object', 'memory', 'chat_session']
       ).map((resourceType) => ({
