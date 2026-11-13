@@ -68,8 +68,9 @@ async function historical() {
   for (const [id, name] of retired) {
     const content = `# Latest retired ${name}\n`,
       checksum = skillBytesChecksum(content);
-    await db`insert into allrice_platform_dsh_skills(id,name,description,content,checksum,source,enabled)
-      values(${id},${name},'Synthetic retired source',${content},${checksum},'allrice',false)`;
+    await db`insert into allrice_platform_dsh_skills(id,name,description,content,checksum,source,enabled,source_ref,version,license,review_status)
+      values(${id},${name},'Synthetic retired source',${content},${checksum},'allrice',false,
+        ${'https://example.test/retired/' + name},'1.0.0','Apache-2.0','draft')`;
     await db`insert into allrice_platform_skill_bundle_versions(skill_id,version,checksum,bundle)
       values(${id},'1.0.0',${checksum},'{}')`;
     const copy = randomUUID();
