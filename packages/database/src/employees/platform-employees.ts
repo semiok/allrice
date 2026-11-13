@@ -888,6 +888,7 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
         nativeSkills: row.frozen_native_skills,
         packageChecksum: row.frozen_package_checksum,
       });
+      assertCurrentPlatformSkillSources(frozen.nativeSkills);
     } catch (error) {
       const startedAt = new Date();
       await transaction`

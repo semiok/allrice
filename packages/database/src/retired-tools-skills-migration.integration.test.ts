@@ -2,6 +2,10 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  CreatePlatformEmployeeTestRunInputSchema,
+  PlatformEmployeeDefinitionSchema,
+} from '@allrice/contracts';
 import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createEmployeeAdministrationFixture } from './employee-administration.fixture.ts';
 import * as client from './core/client.ts';
@@ -11,7 +15,19 @@ import {
   materializePlatformEmployeeRevision,
   rollbackPlatformEmployee,
   assignPublishedPlatformEmployeeToWorkspace,
+  claimNextPlatformEmployeeTestRun,
+  queuePlatformEmployeeTestRun,
 } from './employees/platform-employees.ts';
+import { validatePlatformEmployeeTestExecutionSnapshot } from './platform-employees/runtime-package.ts';
+import { resolvePlatformPreviewContext } from './platform-employees/preview-context.ts';
+import {
+  freezePlatformTestExecutionBinding,
+  newCurrentPlatformTestOrigin,
+} from './conversation/current-platform-test-binding.ts';
+import {
+  readCurrentPlatformTestExecutionRecord,
+  type PlatformTestExecutionRecord,
+} from './conversation/platform-test-execution-record.ts';
 import { freezeEmployeeBaseSkills } from './employees/employee-base-skills.ts';
 import { loadPlatformContentCatalog } from './platform-content/catalog.ts';
 import { synchronizePlatformContent } from './platform-content/sync.ts';
@@ -105,8 +121,9 @@ async function historical() {
     reviewed_by_label: 'Synthetic',
     reviewed_at: new Date('2026-01-01T00:00:00Z'),
   };
+  const currentRevision = await f.revision();
   const definition = {
-    ...f.definition,
+    ...PlatformEmployeeDefinitionSchema.parse(currentRevision.definition),
     capabilities: { ...f.definition.capabilities, nativeSkillIds: [oldId] },
   };
   const pkg = buildEmployeeRuntimePackage({
@@ -114,7 +131,6 @@ async function historical() {
     definition,
     skills: [skill],
   });
-  const currentRevision = await f.revision();
   const profile = {
     ...currentRevision.runtime_profile,
     runtimePackage: pkg,
@@ -168,6 +184,138 @@ async function historical() {
 }
 
 suite('MET-223 precise tool/Skill retirement migration', () => {
+  it('refuses a valid retired preview queued before migration without creating a Run, Job or Policy', async () => {
+    const x = await historical(),
+      { db, f } = x;
+    const testId = randomUUID();
+    const input = CreatePlatformEmployeeTestRunInputSchema.parse({
+      environment: 'company',
+      workspaceId: f.workspaceId,
+      ownerId: f.ownerId,
+      prompt: 'Synthetic queued preview; never invoke a provider.',
+    });
+    const frozen = validatePlatformEmployeeTestExecutionSnapshot({
+      runtimeProfile: x.oldRevision.runtime_profile,
+      definition: x.definition,
+      nativeSkills: x.pkg.skills,
+      packageChecksum: x.pkg.checksum,
+    });
+    const scope = {
+      organizationId: f.organizationId,
+      workspaceId: f.workspaceId,
+      ownerId: f.ownerId,
+      testId,
+    };
+    const source = {
+      platformEmployeeId: f.employeeId,
+      platformRevisionId: x.revisionId,
+      purpose: 'platform_preview' as const,
+      definitionChecksum: x.oldRevision.checksum,
+      ...frozen,
+      packageChecksum: x.pkg.checksum,
+    };
+    const origin = newCurrentPlatformTestOrigin({ scope, source });
+    const binding = freezePlatformTestExecutionBinding({
+      origin,
+      scope,
+      source,
+    });
+    const record: PlatformTestExecutionRecord = {
+      id: testId,
+      employee_id: f.employeeId,
+      revision_id: x.revisionId,
+      purpose: 'platform_preview',
+      frozen_definition: frozen.definition,
+      frozen_runtime_profile: frozen.runtimeProfile,
+      frozen_native_skills: frozen.nativeSkills,
+      frozen_package_checksum: x.pkg.checksum,
+      native_root_origin: origin,
+      native_execution_binding: binding,
+    };
+    expect(() =>
+      readCurrentPlatformTestExecutionRecord(record, scope),
+    ).not.toThrow();
+    // A legal historical first INSERT, not a rewrite of a sealed queued record.
+    await db`insert into allrice_platform_employee_test_runs (
+      id,employee_id,revision_id,requested_by_label,status,input,purpose,
+      frozen_runtime_profile,frozen_definition,frozen_native_skills,
+      frozen_package_checksum,native_root_origin,native_execution_binding
+    ) values (${testId},${f.employeeId},${x.revisionId},'platform-admin','queued',
+      ${db.json(input)},'platform_preview',${db.json(frozen.runtimeProfile)},
+      ${db.json(frozen.definition)},${db.json(frozen.nativeSkills)},${x.pkg.checksum},
+      ${db.json(origin)},${db.json(binding)})`;
+    const stored = async () =>
+      (
+        await db<PlatformTestExecutionRecord[]>`
+      select id,employee_id,revision_id,purpose,frozen_definition,frozen_runtime_profile,
+        frozen_native_skills,frozen_package_checksum,native_root_origin,native_execution_binding
+      from allrice_platform_employee_test_runs where id=${testId}`
+      )[0]!;
+    const original = await stored();
+    expect(() =>
+      readCurrentPlatformTestExecutionRecord(original, scope),
+    ).not.toThrow();
+    await db.begin(async (tx) => {
+      await tx.unsafe(await migration());
+    });
+    expect(
+      (
+        await db`select status from allrice_platform_employee_revisions where id=${x.revisionId}`
+      )[0]!.status,
+    ).toBe('disabled');
+    expect(
+      (
+        await db`select status from allrice_platform_employee_test_runs where id=${testId}`
+      )[0]!.status,
+    ).toBe('queued');
+    expect(await stored()).toEqual(original);
+    // Authorization remains live, so the new source guard is the rejection.
+    expect(
+      (
+        await db.begin((tx) =>
+          resolvePlatformPreviewContext(tx, input, 'platform-admin'),
+        )
+      ).context.owner_id,
+    ).toBe(f.ownerId);
+    const tables = ['allrice_runs', 'allrice_jobs', 'allrice_policy_snapshots'];
+    const before = await Promise.all(tables.map((t) => snapshot(db, t)));
+    expect(await claimNextPlatformEmployeeTestRun(randomUUID())).toBeNull();
+    const [failed] =
+      await db`select status,output,completed_at from allrice_platform_employee_test_runs where id=${testId}`;
+    expect(failed!.status).toBe('failed');
+    expect(failed!.output.error).toMatchObject({
+      code: 'TEST_SNAPSHOT_INVALID',
+    });
+    expect(failed!.output.error.message).toContain(
+      'retired_platform_skill_source',
+    );
+    expect(failed!.completed_at).not.toBeNull();
+    expect(await stored()).toEqual(original);
+    expect(await Promise.all(tables.map((t) => snapshot(db, t)))).toEqual(
+      before,
+    );
+    expect(await claimNextPlatformEmployeeTestRun(randomUUID())).toBeNull();
+    expect(await Promise.all(tables.map((t) => snapshot(db, t)))).toEqual(
+      before,
+    );
+    expect(
+      (
+        await db`select status,output,completed_at from allrice_platform_employee_test_runs where id=${testId}`
+      )[0],
+    ).toEqual(failed);
+    const current = await createEmployeeAdministrationFixture(db);
+    const queued = await queuePlatformEmployeeTestRun(current.employeeId, {
+      environment: 'company',
+      workspaceId: current.workspaceId,
+      ownerId: current.ownerId,
+      prompt: 'Current synthetic preview.',
+    });
+    expect(queued.queued).toBe(true);
+    expect((await claimNextPlatformEmployeeTestRun(randomUUID()))?.id).toBe(
+      queued.testRun!.id,
+    );
+  }, 120000);
+
   it('deletes only retired sources and methods, preserving live creation pointers, memory and current publications', async () => {
     const x = await historical(),
       { db } = x;
