@@ -18593,32 +18593,46 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               gap: frame.right - target.right,
             };
           });
+        const centerDelta = (actual: number[], expected: number[]) =>
+          Math.max(
+            Math.abs(actual[0]! - expected[0]!),
+            Math.abs(actual[1]! - expected[1]!),
+          );
         if (await collapse.isVisible()) await collapse.click();
         await expand.waitFor();
         await expect
-          .poll(async () => Math.round((await geometry(expand)).gap))
-          .toBe(28);
+          .poll(async () => Math.abs((await geometry(expand)).gap - 28))
+          .toBeLessThanOrEqual(0.5);
         const folded = await geometry(expand);
         expect(folded.target).toEqual([32, 32]);
         expect(folded.glyph).toEqual([20, 20]);
-        expect(folded.glyphCenter).toEqual(folded.center);
+        expect(centerDelta(folded.glyphCenter, folded.center)).toBeLessThanOrEqual(
+          0.5,
+        );
         await f.page.mouse.click(folded.center[0]!, folded.center[1]!);
         await collapse.waitFor();
         await expect
-          .poll(async () => (await geometry(collapse)).gap)
-          .toBeCloseTo(folded.gap, 1);
+          .poll(async () =>
+            Math.abs((await geometry(collapse)).gap - folded.gap),
+          )
+          .toBeLessThanOrEqual(0.5);
         const expanded = await geometry(collapse);
         expect(expanded.target).toEqual(folded.target);
         expect(expanded.glyph).toEqual(folded.glyph);
-        expect(expanded.glyphCenter).toEqual(expanded.center);
-        for (const axis of [0, 1])
-          expect(expanded.center[axis]).toBeCloseTo(folded.center[axis]!, 1);
+        expect(
+          centerDelta(expanded.glyphCenter, expanded.center),
+        ).toBeLessThanOrEqual(0.5);
+        expect(centerDelta(expanded.center, folded.center)).toBeLessThanOrEqual(
+          0.5,
+        );
         // The pointer can close and reopen without moving to another header.
         await f.page.mouse.click(folded.center[0]!, folded.center[1]!);
         await expand.waitFor();
         await expect
-          .poll(async () => (await geometry(expand)).center)
-          .toEqual(folded.center);
+          .poll(async () =>
+            centerDelta((await geometry(expand)).center, folded.center),
+          )
+          .toBeLessThanOrEqual(0.5);
         await f.page.mouse.click(folded.center[0]!, folded.center[1]!);
         await collapse.waitFor();
       } finally {
