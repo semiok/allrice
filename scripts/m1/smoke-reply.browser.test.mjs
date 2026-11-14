@@ -318,8 +318,8 @@ suite('smoke reply evidence belongs to the requested assistant turn', () => {
   const csvHref = `/api/v1/files/${csvObject}/download`;
   const csvCaption = '渠道下单量柱状图';
   const csvMarkdown = `![${csvCaption}](${csvHref})`;
-  const native = (text) =>
-    renderToStaticMarkup(createElement(AssistantMarkdown, { text }));
+  const native = (text, props = {}) =>
+    renderToStaticMarkup(createElement(AssistantMarkdown, { text, ...props }));
   const csvTurn = (body, metadata = '') =>
     assistant(csvAssistant, body, metadata).replace(
       `data-process-region="run-${csvAssistant}"`,
@@ -391,6 +391,36 @@ suite('smoke reply evidence belongs to the requested assistant turn', () => {
     expect(await findCsv(await readCsv(), csvProof(text))).toMatchObject({
       id: csvObject,
       kind: 'anchor',
+    });
+  });
+  it('accepts a reference image rewritten by real AssistantMarkdown artifact and origin context', async () => {
+    const text = `![${csvCaption}][chart]\n\n[chart]: ${csvHref}`;
+    const fileName = '渠道下单量汇总.png';
+    const rewritten = `${csvBase}${csvHref}?name=${encodeURIComponent(fileName)}`;
+    const previous = Object.getOwnPropertyDescriptor(globalThis, 'location');
+    let html;
+    try {
+      Object.defineProperty(globalThis, 'location', {
+        configurable: true,
+        value: { origin: csvBase },
+      });
+      html = native(text, {
+        artifacts: [{ object: { id: csvObject }, version: { fileName } }],
+      });
+    } finally {
+      if (previous) Object.defineProperty(globalThis, 'location', previous);
+      else Reflect.deleteProperty(globalThis, 'location');
+    }
+    expect(html).toContain('<img');
+    expect(html).toContain(`src="${rewritten}"`);
+    expect(html).not.toContain('imageAlt');
+    await mount(user(csvUser, csvPrompt) + csvTurn(final(html)));
+    const observed = await readCsv();
+    expect(observed.images).toEqual([rewritten]);
+    expect(observed.captions).toEqual([]);
+    expect(await findCsv(observed, csvProof(text))).toMatchObject({
+      id: csvObject,
+      kind: 'img',
     });
   });
   it.each([

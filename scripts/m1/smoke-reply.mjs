@@ -146,7 +146,7 @@ export function smokeCsvProofSql({
       where a.run_id=er.run_id and a.organization_id=er.organization_id and a.workspace_id=er.workspace_id
         and a.owner_id=er.owner_id and v.session_id=er.session_id and v.format='png'
         and o.state='ready' and o.deleted_at is null and o.immutable and o.media_type='image/png'
-        and o.category='exports' and (o.retention_until is null or o.retention_until>clock_timestamp())
+        and o.category in ('exports','artifacts') and (o.retention_until is null or o.retention_until>clock_timestamp())
     ),'[]'::jsonb)) as proof
     from allrice_employee_runs er
     join allrice_runs r on r.id=er.run_id and r.organization_id=er.organization_id
@@ -251,8 +251,10 @@ export function findSmokeCsvDelivery({
     );
     if (!object) continue;
     const image = node.type === 'image' || node.type === 'imageReference';
+    // Native reference definitions add the authenticated filename query.
+    // Both destinations still require the same-origin file endpoint above.
     const kind = image
-      ? observed.images.some((src) => file(src)?.href === target.href)
+      ? observed.images.some((src) => file(src)?.id === target.id)
         ? 'img'
         : node.alt &&
             observed.captions.includes(node.alt) &&

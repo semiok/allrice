@@ -142,33 +142,37 @@ suite('CSV smoke exact-turn PNG delivery proof', () => {
       ...changes,
     });
 
-  it('proves one exact user→Run→assistant and its generated session PNG', async () => {
-    const record = await proof();
-    expect(record).toMatchObject({
-      sessionId,
-      userMessageId,
-      assistantMessageId,
-      runId,
-      objects: [
-        {
-          id: objectId,
-          runId,
-          sessionId,
-          state: 'ready',
-          immutable: true,
-          format: 'png',
-        },
-      ],
-    });
-    expect(find(record)).toMatchObject({
-      id: objectId,
-      href: `${base}${href}`,
-      kind: 'native-caption',
-    });
-    expect(
-      validateSmokeCsvPng(png(), record.objects[0], 'image/png'),
-    ).toMatchObject({ width: 1, height: 1 });
-  });
+  it.each(['exports', 'artifacts'])(
+    'proves one exact user→Run→assistant and its generated session PNG in %s',
+    async (category) => {
+      await sql`update allrice_storage_objects set category=${category}`;
+      const record = await proof();
+      expect(record).toMatchObject({
+        sessionId,
+        userMessageId,
+        assistantMessageId,
+        runId,
+        objects: [
+          {
+            id: objectId,
+            runId,
+            sessionId,
+            state: 'ready',
+            immutable: true,
+            format: 'png',
+          },
+        ],
+      });
+      expect(find(record)).toMatchObject({
+        id: objectId,
+        href: `${base}${href}`,
+        kind: 'native-caption',
+      });
+      expect(
+        validateSmokeCsvPng(png(), record.objects[0], 'image/png'),
+      ).toMatchObject({ width: 1, height: 1 });
+    },
+  );
   it.each([
     'sessionId',
     'userMessageId',
@@ -249,6 +253,15 @@ suite('CSV smoke exact-turn PNG delivery proof', () => {
           ...observed,
           captions: [],
           images: [`/api/v1/files/${id(99)}/download`],
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      find(record, {
+        observed: {
+          ...observed,
+          captions: [],
+          images: [`https://elsewhere.invalid${href}`],
         },
       }),
     ).toThrow();
