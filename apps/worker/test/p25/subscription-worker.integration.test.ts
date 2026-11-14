@@ -502,7 +502,7 @@ integration(
                       id: `ungranted-${action}`,
                       arguments: args,
                     }),
-                  ).rejects.toMatchObject({ code: 'EMPLOYEE_METHOD_DENIED' });
+                  ).rejects.toMatchObject({ code: 'TOOL_NOT_ALLOWED' });
                 }
                 const after =
                   await fixture.db`select s.revision,s.candidate_revision_id,s.active_revision_id from allrice_employee_content_sets s

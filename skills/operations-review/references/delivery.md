@@ -14,6 +14,6 @@ Word、Excel 和 PPT 沿用当前 `office` 的 load → change → save → reop
 
 先确认本次变化：更正输入、调整目标/预算，还是修改展示。读取新上传源和上一版数表、脚本与需要修改的成果；不要重算无关任务，也不要覆盖原始输入。更正必须传播到所有受影响的汇总、比率、图表、结论和行动预算；保留项须按原断言复核。
 
-对同一 Word 或 JSON/文本成果续办，`workspace.export.create` 的顶层 `parentObjectId` 使用确切上一版存储对象 ID，不能填版本 ID。输入仍指向实际授权的新来源；Office 修订的 `python.sourceObjectId` 使用实际上一版 Office 对象或准确源对象，遵守当前工具契约。`python.execute` 的 `outputs` 仅接受 path、fileName、format，不能加入 parentObjectId；重新生成的 PNG 是新的计算成果，报告中说明与旧图的对应关系，不声称它已经进入旧图的版本系列。若格式或成果系列不匹配，说明并交付新的系列。
+对同一 Word 或 JSON/文本成果续办，`workspace.export.create` 的顶层 `parentObjectId` 使用确切上一版存储对象 ID，不能填版本 ID。输入仍指向实际授权的新来源；Office 修订的 `python.sourceObjectId` 使用实际上一版 Office 对象或准确源对象，遵守当前工具契约。`python.execute` 的 `outputs` 可使用准确的 `parentObjectId` 为同一成果续版；该值必须是上一版存储对象 ID，格式与成果系列须匹配。以实际返回的版本回执确认关系；未提供父对象的重新生成 PNG 是新的计算成果，不声称已进入旧图的版本系列。若格式或成果系列不匹配，说明并交付新的系列。
 
 等待工具确认真实新版本，核对父版本、来源、下载和本次更改，再说明新旧差异。失败时保留旧版并说明未交付，不把旧版下载、待执行计划或观察超时当成成功。

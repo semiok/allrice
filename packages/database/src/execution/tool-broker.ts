@@ -7,7 +7,6 @@ import {
   readRunMemoryContext,
   type RunMemoryAuthority,
 } from '../run-memory-context.ts';
-import { assertMethodFilePublication } from '../employees/employee-method-file-runtime.ts';
 import { randomUUID } from 'node:crypto';
 import type { TransactionSql } from 'postgres';
 
@@ -417,8 +416,6 @@ export async function registerToolBrokerExport(
     context: ExecutionContext;
     sessionId?: string;
     platformTestRunId?: string;
-    /** Internal fixed-case publisher only; never accepted from model arguments. */
-    methodFileOperationId?: string;
     parentObjectId?: string;
     sourceFile?: ArtifactSourceFile;
     officeReceipt?: OfficeDeliveryReceipt;
@@ -470,16 +467,6 @@ export async function registerToolBrokerExport(
         for update
       `;
       if (!sessions[0]) throw new DataAccessError('authorization_denied');
-    } else if (input.platformTestRunId && input.methodFileOperationId) {
-      if (!input.object.immutable)
-        throw new DataAccessError('authorization_denied');
-      await assertMethodFilePublication(
-        transaction,
-        input.context,
-        input.platformTestRunId,
-        input.methodFileOperationId,
-        input.object.id,
-      );
     } else if (input.platformTestRunId) {
       const tests = await transaction<{ id: string }[]>`
         select test.id

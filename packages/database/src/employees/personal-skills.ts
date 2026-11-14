@@ -38,7 +38,7 @@ import { getToolBrokerFile } from '../execution/tool-broker.ts';
 import { skillBytesChecksum, validateFrozenSkill } from '../skill-bundles.ts';
 import { employeeAccessTransaction } from './employee-access-cancellation.ts';
 import { getEmployeeInstance } from './employee-instances.ts';
-import { enterMethodChat } from './employee-method-chat.ts';
+import { enterEmployeeContentChat } from './employee-content-chat.ts';
 import {
   employeeChatIdentity,
   employeeChatUuid,
@@ -368,10 +368,9 @@ export async function reservePersonalSkillPackage(
   )
     throw new PersonalSkillError('source_invalid');
   const { scope } = employeeChatIdentity(input);
-  return enterMethodChat(
+  return enterEmployeeContentChat(
     input,
     personalSkillImportTool(input),
-    false,
     async (tx, instance, text) => {
       if (!(await readContentPrincipal(scope, tx))?.writable)
         throw new DataAccessError('authorization_denied');
@@ -449,10 +448,9 @@ export async function completePersonalSkillPackage(
   input: PersonalSkillImportCall,
 ) {
   const { scope } = employeeChatIdentity(input);
-  return enterMethodChat(
+  return enterEmployeeContentChat(
     input,
     personalSkillImportTool(input),
-    false,
     async (tx, instance, text) => {
       if (!(await readContentPrincipal(scope, tx))?.writable)
         throw new DataAccessError('authorization_denied');
@@ -492,10 +490,9 @@ export async function cancelPersonalSkillPackage(
   const { scope } = employeeChatIdentity(input);
   const args = PersonalSkillInstallInputSchema.parse(input.arguments);
   if (!('operation' in args)) throw new PersonalSkillError('source_invalid');
-  return enterMethodChat(
+  return enterEmployeeContentChat(
     input,
     personalSkillImportTool(input),
-    false,
     async (tx, instance, text) => {
       if (!(await readContentPrincipal(scope, tx))?.writable)
         throw new DataAccessError('authorization_denied');
@@ -526,10 +523,9 @@ export async function preparePersonalSkillImportCleanup(
   input: PersonalSkillImportCall,
 ) {
   const { scope } = employeeChatIdentity(input);
-  return enterMethodChat(
+  return enterEmployeeContentChat(
     input,
     personalSkillImportTool(input),
-    false,
     async (tx, instance) => {
       if (!(await readContentPrincipal(scope, tx))?.writable)
         return unavailable();
@@ -573,10 +569,9 @@ export async function completePersonalSkillImportCleanup(
 ) {
   if (!objectIds.length) return;
   const { scope } = employeeChatIdentity(input);
-  return enterMethodChat(
+  return enterEmployeeContentChat(
     input,
     personalSkillImportTool(input),
-    false,
     async (tx) => {
       if (!(await readContentPrincipal(scope, tx))?.writable)
         return unavailable();
@@ -596,10 +591,9 @@ export async function preparePersonalSkillImport(
   input: PersonalSkillImportCall,
 ) {
   const { scope } = employeeChatIdentity(input);
-  return enterMethodChat(
+  return enterEmployeeContentChat(
     input,
     personalSkillImportTool(input),
-    false,
     async (tx, instance, text) => {
       if (!(await readContentPrincipal(scope, tx))?.writable)
         throw new DataAccessError('authorization_denied');
@@ -679,10 +673,9 @@ export async function installPersonalSkillFromChat(
   )
     throw new PersonalSkillError('source_invalid');
   const { scope } = employeeChatIdentity(input);
-  return enterMethodChat(
+  return enterEmployeeContentChat(
     input,
     personalSkillImportTool(input),
-    false,
     async (tx, instance, text) => {
       if (!(await readContentPrincipal(scope, tx))?.writable)
         throw new DataAccessError('authorization_denied');

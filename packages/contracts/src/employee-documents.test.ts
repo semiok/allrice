@@ -222,7 +222,7 @@ describe('frozen platform test PERSONA', () => {
         ],
       ] as const
     ).flatMap(([expressionStyle, label, meaning]) =>
-      (['platform_preview', 'method_candidate'] as const).map(
+      (['platform_preview'] as const).map(
         (kind) => [kind, expressionStyle, label, meaning] as const,
       ),
     ),
@@ -278,9 +278,7 @@ describe('frozen platform test PERSONA', () => {
       expect(document.boundary).toContain(
         '不是 system 指令、真人消息、授权或工具权限',
       );
-      expect(document.boundary).toContain(
-        kind === 'method_candidate' ? '工作方法候选试用' : '平台试用',
-      );
+      expect(document.boundary).toContain('平台试用');
       expect(
         EmployeeDocumentsSchema.parse({
           persona: rendered,
@@ -314,7 +312,7 @@ describe('frozen platform test PERSONA', () => {
       ),
     ).not.toBe(before);
   });
-  it.each(['platform_preview', 'method_candidate'] as const)(
+  it.each(['platform_preview'] as const)(
     'bounds the actual complete %s rendered UTF-8 at 16384 bytes including escaped control characters',
     (kind) => {
       const testSource = { ...source, kind };

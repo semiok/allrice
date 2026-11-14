@@ -641,6 +641,73 @@ suite(
       expect(await state(damaged.rootRunId)).toEqual(before);
     });
 
+    it.each(['attempt', 'worker', 'expired', 'canceled'] as const)(
+      'memory-owned Worker guard rejects %s without spending the V2 ledger',
+      async (mode) => {
+        const f = await setup(),
+          before = await state(f.rootRunId);
+        const auth = structuredClone(f.auth);
+        if (mode === 'attempt') auth.worker.attempt++;
+        if (mode === 'worker') auth.worker.workerId = randomUUID();
+        if (mode === 'expired')
+          await fixture.db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${f.worker.jobId}`;
+        if (mode === 'canceled')
+          await fixture.db`update allrice_jobs set cancel_requested_at=clock_timestamp() where id=${f.worker.jobId}`;
+        await expect(
+          readRunMemoryOrdinal(auth, { number: 1 }),
+        ).rejects.toMatchObject({ code: 'MEMORY_CONTEXT_UNAVAILABLE' });
+        expect(await state(f.rootRunId)).toEqual(before);
+      },
+    );
+    it.each(['expired', 'token'] as const)(
+      'Broker retains the memory refusal and audit contract for %s lease authority',
+      async (mode) => {
+        const f = await setup(),
+          before = await state(f.rootRunId);
+        const auth = structuredClone(f.auth);
+        if (mode === 'token') auth.worker.leaseToken = randomUUID();
+        else
+          await fixture.db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${f.worker.jobId}`;
+        const callId = randomUUID();
+        await expect(
+          executeRiceTool({
+            context: f.execution,
+            employeeDocuments: f.projection.employeeDocuments,
+            capabilities: ['storage:read'],
+            storageRoot: '/must-not-export',
+            sessionId: f.session,
+            memoryReadAuthority: auth,
+            call: {
+              id: callId,
+              name: 'workspace.memory.read',
+              arguments: { number: 1 },
+              nativeSessionId: 'synthetic-' + f.session,
+            },
+          }),
+        ).rejects.toMatchObject({
+          code: 'MEMORY_CONTEXT_UNAVAILABLE',
+          retryable: false,
+        });
+        expect(await state(f.rootRunId)).toEqual(before);
+        const audit =
+          await fixture.db`select decision,reason,metadata from allrice_audit_events
+          where organization_id=${f.org} and workspace_id=${f.workspace} and actor_id=${f.user}
+            and action='tool.execute' and metadata->>'nativeCallId'=${callId}`;
+        expect(audit).toEqual([
+          expect.objectContaining({
+            decision: 'denied',
+            reason: 'memory_context_unavailable',
+            metadata: expect.objectContaining({
+              runId: f.rootRunId,
+              toolName: 'workspace.memory.read',
+              errorCode: 'MEMORY_CONTEXT_UNAVAILABLE',
+              retryable: false,
+            }),
+          }),
+        ]);
+      },
+    );
+
     it('rechecks current owner, principal, instance, confirmation and the exact worker lease', async () => {
       const f = await setup();
       const before = await state(f.rootRunId);

@@ -762,33 +762,6 @@ describe('current employee v2 birth and per-Run binding', () => {
     expect(() => assertEmployeeRunExecutionBinding(original, updated)).toThrow(
       'BINDING_MISMATCH',
     );
-    const historical = {
-      ...updated,
-      executionSnapshot: {
-        ...updated.executionSnapshot,
-        capabilitySnapshot: {
-          ...updated.executionSnapshot.capabilitySnapshot,
-          bindings: {
-            ...updated.executionSnapshot.capabilitySnapshot.bindings,
-            toolNames: [
-              ...toolNames,
-              ...['inspect', 'save_candidate', 'restore_candidate'].map(
-                (action) => `workspace.employee.method.${action}`,
-              ),
-            ],
-          },
-        },
-      },
-    };
-    const before = JSON.stringify(historical);
-    const legacyBinding = freezeEmployeeRunExecutionBinding(historical);
-    expect(
-      assertEmployeeRunExecutionBinding(legacyBinding, historical),
-    ).toEqual(legacyBinding);
-    expect(JSON.stringify(historical)).toBe(before);
-    expect(() =>
-      assertEmployeeRunExecutionBinding(legacyBinding, updated),
-    ).toThrow('BINDING_MISMATCH');
   });
   it.each(['organizationId', 'workspaceId', 'ownerId', 'sessionId'] as const)(
     'rejects foreign %s before returning a binding',

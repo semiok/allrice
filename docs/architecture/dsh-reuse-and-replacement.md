@@ -391,17 +391,13 @@ Allrice 的公开事件不含原生推理正文，因此不伪造 ReasoningRow �
 
 ### allrice-jsonrpc-lifecycle-v1
 
-MET-223 B2 removes `workspace.employee.method.inspect`, `save_candidate` and
-`restore_candidate` from new Run grants, including declared dependencies and
-Rice/custom/general/delegated selections. The default capability-only directory
-also omits them. Existing canonical/wire metadata and explicit frozen-grant
-adapters remain for authorized historical reads or original receipts; new text
-writes/restoration/activation are rejected at the existing database boundaries.
-No snapshot, bundle or native history is rebuilt. The same `employee-customization`
-Skill ID now publishes version 3.0.0 without retired tool dependencies; the kernel
-uses frozen `personalScenes` eligibility and DSH's public Skill list/get/tool
-loading. Tool registration still selects only the requested native names; no
-second registry, discovery tool, state machine or new persistence is introduced.
+MET-223 cleanup B removes all seven `workspace.employee.method.*` tools,
+the private method-test step, method activation questions and their dedicated
+runtime/DB implementations. Historical grants no longer have adapters. Current
+personal Skill/Workflow authoring retains its existing owner, root, lease,
+confirmation, file and CAS guards through `employee-content-chat.ts`. DSH's
+public Skill and question mechanisms remain authoritative; no replacement
+method state machine is introduced.
 
 MET-246 F2 uses public `defineTool` and Agent-local `tools.register` for
 `workspace.file.read` only on an ordinary human root admitted by the existing
@@ -425,8 +421,6 @@ multiple legacy envelopes remain fail-closed. There is no new DSH plugin, privat
 interface, physical patch, table or child/schedule controller. Coverage lives in
 `dsh-file-read-native.test.ts`, `native-file-read.integration.test.ts`, and the
 native `file-read-declarations.test.mjs` scope differential.
-
-MET-249 U1（用户 2026-11-05 窄批准）：只给由 definition/source/key 确认的基础 Rice 暴露现有本人 method.inspect/save_candidate/restore_candidate。直接沿公开原生工具注册投影三工具参数，隐藏 sharedTarget、scope、departmentId 和旧测试参数；不整组复制 custom 工具。既有 Host 指纹包含该服务端范围，initialize 回执必须确认支持，旧执行包不能静默退回共享 schema。数据库独立重验归属、真人来源、冻结 grant、租约、CAS，并禁止文字方法改动包引用；包仍走精确文件确认。属于已批 SaaS 门卫，无新表、持久状态、私有接口、子智能体或共享授权修改。守护为 Rice PG/HTTP 用例、原生方法 transport、协议能力负例和 runtime-pool 范围隔离。MET-225 更新既有 lifecycle/本人方法工具行。
 
 MET-222（用户 2026-10-30；root 核定单向运维账本）复用 `dsh-user-questions@0.2.1-rc.2` 公开 `user-questions/request` 的现有 provider：成功发布后只在原 pending 项冻结 Run/root/native/question 身份；原答案、超时、abort、clearRoot 删除即当前事实，不再新增 opened/ended 持久事件或专用写异常。只读 `session/projection` 用 roots.get 返回版本 1 的实际采样时间、完整性和必要 ID；无 root、归属缺失、未成功发布或旧 Host 是 unknown，完整空才代表采样时 0。无 ensure/resume/touch/park/续租，无题答正文，不改等待或用户 Run 结果。
 
@@ -456,9 +450,7 @@ MET-226 删除初始化中退役供应商的专用拒绝分支。供应商仍由
 - 保留范围：`prompt` 只把现有 wire images 标记为原生图片片段，保留 display name；SDK 继续创建消息身份与排队。租户授权、冻结附件及校验和仍在 Allrice。SDK 覆盖名称后才考虑删除这层 wire 桥接，不开放默认工具组合。
 - 验收：`dsh-images-native.integration.test.ts` 覆盖真实存储拒绝边界、整批拒绝、名称/顺序、消息 ID 与进程重启；已纳入 `dsh:golden-replay`。实现与验证见 [PR-3 记录](dsh-upgrades/met154-rc3-reuse.md)。回退此局部替换可在相同 rc.3 构建恢复原 helper；这不授予 v3 历史降级到 rc.2 的资格。
 
-MET181 公司组合验收发现固定 `dsh-tool-ask-user@0.1.5-rc.3` 的 Consumer 未将 `detail` 传给原生 `userQuestions.ask`，完整公司/部门影响说明因此被数据库精确确认校验拒绝。AllRice 的 [method question 适配](../../apps/worker/dsh/allrice-method-questions.mjs) 仅保留同一 live Agent 最近一次服务端 prepare 回执；原生问题的 ID、正文、标题、选项与单选标志完全一致时，补回唯一缺失的说明。新准备、过期、取消、关闭、恢复和首次提问会失效旧缓存；问题通知与原生等待检查点保存同一完整内容。缓存不是批准，数据库仍校验当前候选、测试、权限及真实答案采纳证明。没有更改上游包、通用问题大小或提问/等待协议。
-
-回归包含原生 prepare→ask→完整通知→落盘等待→新进程恢复→一次答案采纳与续办，以及篡改、过期、跨 Agent、迟到回执和二次使用拒绝。上游固定版本直接保留 `detail` 后，经同一回归可删除此有界补字段逻辑；不能删除 AllRice 的精确批准边界。
+MET181 的 method question 补字段适配曾用于旧员工方法的精确确认。MET-223 统一清理 B 随旧方法工具、私有 step 和专用测试一起删除该适配；当前通用问题继续使用 DSH 原生提问、等待和恢复，不保留旧方法执行路径。
 
 ### allrice-final-delivery-v1
 
@@ -552,6 +544,24 @@ MET181 公司组合验收发现固定 `dsh-tool-ask-user@0.1.5-rc.3` 的 Consume
 `allrice-office-native-v1`：将 `workspace.file.list` 接入现有 DSH 原生工具循环；补齐 `workspace.document.read.includeStructure` 与 `workspace.export.create.office`，`content` 与 `office` 二选一。使用现有 DSH 注册接口与 Allrice Broker，不增加 Agent 循环或权限开关。真实固定版本 DSH 子进程回归覆盖文件列表返回、结构读取、三种格式生成和原文件定点编辑，防止仅后端支持而模型接口缺失。
 
 引用上下文在入队时随原生 inbox 消息持久化；pre-step 接纳后移除适配器暂存字段，紧接用户消息插入原生 session-reference 消息。进程在接纳前重启也能从 inbox 恢复固定内容，无需重读来源或依赖内存映射。
+
+### Web Office 预览字体目录（2026-11-12）
+
+共享 `previewOfficePdf`（Web 预览与 Worker PDF 导出）通过 OfficeToPdf 公开
+`fontDirectories` 显式指定系统字体根。
+macOS 使用 `/System/Library/Fonts`、`/Library/Fonts` 与系统 MobileAsset 字体目录，
+保留 Heiti/Hiragino/Songti 和已安装的 PingFang；Linux 使用镜像已有的系统字体目录，
+保留固定版本的 Noto CJK/DejaVu。Windows 使用系统 Fonts 目录。
+Kit 在显式配置目录时关闭 Office 应用与 Group Containers 的可选补扫，
+避免非交互 Web 服务进入 AppData 隐私授权等待；不要求服务取得额外系统隐私权限。
+依据是本次已证实的 TCC 等待及用户 2026-11-12 批准的修复 A。
+字体发现、替换、缓存、转换期限、取消和下载降级继续由原生实现与现有预览入口负责，
+不加入字体二进制、重试或转换状态机。缺字体仍通过原有 `missingFonts` 提示。
+仅目标文件预览 HTTP 接缝增加脱敏阶段日志；`constructed` 表示路由创建响应，
+`finish` 表示 Node ServerResponse 完成发送，不证明浏览器已经收到响应。
+关联只使用同进程唯一的 Node AsyncLocalStorage；不同服务端模块副本通过原生 process
+上的固定 Symbol 共用实例，不按请求建 Map，也不信任入站诊断头。
+标准 Next 入口没有该上下文时，路由自行生成新关联 ID 和单调计时起点。
 
 #### 2026-09-27 · MET-160 设置视觉适配复核
 
@@ -818,8 +828,6 @@ MET-249 E1（同次 PERSONA 完整后端批准）：只扩现有文档 reader，
 MET-249 E2-P（2026-11-06，227cac82）：仅普通 `platform_preview` 的现有 EmployeeKernel 消费者从 queue/claim 已冻结并验证的 definition 派生完整 PERSONA.md。文档含三值技术值、中文原意及真实 test/平台 revision/definition 与 package 摘要；不伪造租户 version、本人实例/revision 或覆盖。PERSONA 整体含标题、JSON 转义≤16384 UTF-8 bytes，不截断；现公开 required、interpolate:false context 逐字消费，USER/MEMORY 固定为空，不调用真人事实/记忆 freeze。系统层只用独立平台 policy、behaviorRules/safetyBoundaries 及原安全/Skill 权限边界，不再把旧四正文、第二份目录/路由/资源清单注入该消费者；用户已批删除的六条独有提示不加回。原 frozen 字节、旧签名/verifier、来源/Job/Run/租约门卫、工具/资源资格不改；schema3 writer/执行仍未开放。method_candidate、experience_validation、full-workbench、普通真人 A2 和 scheduled/repair 保持原路径，缺源处置26dce714未由本片决定。本片仅闭合普通平台试用当前输入，不称全 E、完整 PERSONA 或最低回退闭环；真实模型/Dev 验收未执行。MET-225 仅更新既有 employee-documents 行，具体拟更新文案交发布主会话，实施子会话不直接写卡。
 
 MET-249 A2（同次批准；75e780d5/0231bfcb）：普通真人消息沿既有 `prepareEmployeeRunBinding` → USER/MEMORY freeze → queue 准入 → resolve → EmployeeKernel 消费者接入 PERSONA。仅在当前获准 assignment 默认 basis 与实际 Session-compatible engine 均有可独立验证的 publication 时，复用 E2 同一个 renderer/compiler；PERSONA 取 basis 完整结构与已冻结合法本人稀疏覆盖，显式等于默认的值仍标本人覆盖，头像逐叶合成，三值保技术值、中文 label/完整 meaning。默认 reader 不套 v2 engine/materializer 条件：v1 basis 有准确独立 publication 时仅读该 definition 提供默认，pin 记录实际 version/config 与真实 tuple/digest，不补造 package，不重签 v1 checksum；无独立来源时整个输入保原未迁移链，也不授权新 v1 engine。硬 policy、behaviorRules/safetyBoundaries 取实际 engine，不要求 basis=engine，也不把当前 engine 代际门槛套在人设默认上。新增无默认 optional pin 存两份真实 scope/version/config/publication/manifest 摘要与实际 engine package 摘要、本人 revision/资格及完整 PERSONA/system 摘要，写在原 prompt/execution 快照并进入原 native binding digest；在原 assignment/instance/Session 锁序重核 basis，resolve 只核已冻两个来源和 profile，不追后续发布、编辑或重置。raw 映射真实缺省与 JOIN/status/tuple/checksum/实际投影关系错误区分，非空来源校验失败和坏 pin 不降级旧输入；精确新增完整性错误随 PR 列明。当前 generic/root 两路退出旧复合身份和重复 name/style/personalIdentity，PERSONA 原文只在现 required、interpolate:false context 按低信任字面读取，不是 system、真人来源或授权；原生 child/fork 仅沿 E1 原已绑定 Run 接线，独立 preset/历史继承和 USER/MEMORY root 资格、工具/审批不变。完整渲染独立≤16384 UTF-8 bytes，原 USER2048/MEMORY6000 不挤占、不截断。准确旧 package1/2 无独立 publication、真实 Rice/管理员 null-package producer、v1 basis 缺独立默认来源及历史无 pin Run 明确未迁移，保原准入、prompt、freeze、checksum、resume，不补造 source、不回写历史；新格式 writer、其他 purpose/定时/repair 和最终旧四文件全局退役仍未完成，不能据本片称全 A2/E 或最低回退闭环。此片属于既有 SaaS 业务冻结输入/来源门卫与存储接线，不新增表、状态、默认、loader 或 DSH 私有 API；MET-225 仅拟更新本 employee-documents 行，由发布主会话记卡，真实模型/Dev 验收另记。
-
-MET-249 E3-M（同次 PERSONA 完整后端批准）：仅既有 `method_candidate` EmployeeKernel 消费者复用同一 renderer/compiler，PERSONA 来源为 issuer/claim 原已冻结并验真的 test ID、平台员工/revision、definition/package 摘要，不伪装普通 preview、不造本人/实例版本。平台 definition 仅投影 PERSONA，空 USER/MEMORY；独立原 policy、behaviorRules/safetyBoundaries 与原样 method.instructions 同时送 generic/root system，候选模型快照、固定金额/文件工具、Skills/history/storage、current guards/lease/abort/计费限额保持。现 required、interpolate:false context 字面消费完整三值中文及≤16384 UTF-8 文档；超界沿原失败结算不派模型，不截断/回拼旧 prompt。旧 frozen 四文件/签名继续只读校验，当前 method 不再拼旧四正文和双目录；自由内容中的旧标题字面不筛除。experience、其他内部消费者与全局 writer/缺源终态不在本片，schema3 writer/执行仍关闭；不称全 E 或真实模型/Dev 验收完成。无新表/状态/loader/权限/DSH 私有接口；MET-225 拟更新既有 employee-documents 行，交发布主会话登记。
 
 MET-249 E3-I（同次 PERSONA 完整后端批准）：fresh repository review、固定 repair 和 maintenance repair 在现真实 producer 请求 identity-only 投影，复用 A2 的独立 basis/engine publication 校验、同一 PERSONA renderer、原 binding/queue/resolve pin 和冻结 profile，不调用真人 USER/MEMORY 查询。PERSONA 仅通过既有公开 required、interpolate:false context 字面提供；USER/MEMORY 显式空、memories=[]，持久任务来源仍为 internal，不能由文档存在推导真人资格。generic/root 共同保留已干净的平台 policy、原非身份指导/事实及各自原专门任务指令；原零 history/bootstrap、Skills、图片、工具、grant/期限、lease、预算及禁 delegation 保持。新鲜且来源完整的任务才迁移；准确旧1/2/null缺独立来源、历史无 pin 仍保准确原未迁移路径，坏 present/冻结来源丢失不降级，不补来源或回写旧 checksum/history。三入口测试均沿真实 producer→queue/claim→Worker→DSH Host＋合成 HTTP provider；repair 模型桩只返回文字，物理验证后端禁止调用/完成，不把输入验证冒称修复成功。原 maintenance authority 预算/撤权用例独立保留，native 另用不同 proof 的真实授权任务。当前只有实现与未执行的测试，组合 M5、独审、CI 和真实模型/Dev 验收另记；scheduled/folder/manual automation、全局 writer/旧缺源终态仍由后续集成闭合。仅既有门卫/冻结存储接线，无新状态、表、权限、loader 或私有 API；MET-225 拟更新本行，由发布主会话登记。
 

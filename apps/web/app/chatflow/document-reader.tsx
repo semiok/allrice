@@ -237,7 +237,7 @@ export const DocumentText = memo(function DocumentText(props: {
           streaming={props.streaming}
           lang={language}
           lineNumbers
-          wrap
+          wrap={props.source ? undefined : true}
           copyLabel={paginated ? '复制本页' : '复制文本'}
           copiedLabel="已复制"
           toolbarLabels={{

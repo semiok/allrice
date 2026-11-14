@@ -4,7 +4,6 @@ import {
   type employeeToolCatalog,
   employeeToolRequirements,
   employeeToolDependencySources,
-  resolveEmployeeSkillIds,
   resolveEmployeeToolDependencies,
   type EmployeeSkillChoice,
   type PlatformEmployeeDefinition,
@@ -81,9 +80,7 @@ export function EmployeeSkills({
   onSelectSkills: (ids: string[]) => void;
   onInspectSkill: (id: string) => void;
 }) {
-  const selectedIds = new Set(
-    resolveEmployeeSkillIds(definition.capabilities.nativeSkillIds, skills),
-  );
+  const selectedIds = new Set(definition.capabilities.nativeSkillIds);
   const selectedSkills = skills.filter((skill) => selectedIds.has(skill.id));
   const explicit = new Set(
     definition.capabilities.explicitToolNames ??

@@ -2,15 +2,6 @@ import {
   installPersonalSkill,
   versionPersonalSkill,
 } from './handlers/personal-skills.js';
-import {
-  inspectEmployeeMethod,
-  prepareEmployeeMethodActivation,
-  activateEmployeeMethod,
-  saveEmployeeMethod,
-  restoreEmployeeMethod,
-  testEmployeeMethod,
-  inspectEmployeeMethodTest,
-} from './handlers/employee-method.js';
 import { generateImage } from './handlers/image.js';
 import { readBrandContent } from './handlers/brand-content.js';
 import { updateEmployeeProfile } from './handlers/employee-profile.js';
@@ -87,34 +78,6 @@ export const riceToolHandlerRegistry = Object.freeze({
   'workspace.reference.search': registration('workspace', executeReferenceTool),
   'workspace.reference.read': registration('workspace', executeReferenceTool),
   'workspace.brand_content.read': registration('workspace', readBrandContent),
-  'workspace.employee.method.prepare_activation': registration(
-    'workspace',
-    prepareEmployeeMethodActivation,
-  ),
-  'workspace.employee.method.activate': registration(
-    'workspace',
-    activateEmployeeMethod,
-  ),
-  'workspace.employee.method.restore_candidate': registration(
-    'workspace',
-    restoreEmployeeMethod,
-  ),
-  'workspace.employee.method.test': registration(
-    'workspace',
-    testEmployeeMethod,
-  ),
-  'workspace.employee.method.test_status': registration(
-    'workspace',
-    inspectEmployeeMethodTest,
-  ),
-  'workspace.employee.method.inspect': registration(
-    'workspace',
-    inspectEmployeeMethod,
-  ),
-  'workspace.employee.method.save_candidate': registration(
-    'workspace',
-    saveEmployeeMethod,
-  ),
   'workspace.personal_skill.version': registration(
     'workspace',
     versionPersonalSkill,

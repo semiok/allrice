@@ -6,7 +6,10 @@ import {
 } from '@allrice/database';
 import { ReferenceSelectionErrorSchema } from '@allrice/contracts';
 import { getRequestContext } from './identity/session';
-import { storageErrorResponse } from './storage/responses';
+import {
+  storageErrorResponse,
+  type StorageErrorOptions,
+} from './storage/responses';
 import { apiProblem } from './api-error-response';
 import { sameOriginBrowserWrite } from './identity/request-origin';
 
@@ -37,7 +40,7 @@ export function referenceSelectionError(
     { status: 409, headers: referenceHeaders },
   );
 }
-export function referenceError(error: unknown) {
+export function referenceError(error: unknown, options?: StorageErrorOptions) {
   if (error instanceof ReferenceSelectionUnavailableError)
     return referenceSelectionError(error);
   if (error instanceof ReferenceLibraryError) {
@@ -70,7 +73,7 @@ export function referenceError(error: unknown) {
           : '暂时无法读取完整成果，请稍后重试保存。',
     });
   }
-  return storageErrorResponse(error);
+  return storageErrorResponse(error, options);
 }
 export const referenceHeaders = {
   'Cache-Control': 'private, no-store',

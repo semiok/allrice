@@ -51,6 +51,20 @@ export function freezeMemoryIndexToolNames(
   return EmployeeCapabilityBindingsSchema.shape.toolNames.parse(selected);
 }
 
+/** Internal scheduled/manual/folder tasks never carry personal memory tools.
+ * This filters the actual frozen allowlist, without changing storage grants. */
+export function withoutTaskMemoryTools(toolNames: readonly string[]) {
+  return toolNames.filter(
+    (name) =>
+      ![
+        'workspace.memory.read',
+        'workspace.memory.search',
+        'workspace.memory.remember',
+        'workspace.experience.read',
+      ].includes(name),
+  );
+}
+
 /** Content transport limits, not a tokenizer or a claim about model billing. */
 export const memoryContextPolicy = {
   version: 1,

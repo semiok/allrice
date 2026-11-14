@@ -19,40 +19,6 @@ afterEach(async () => {
 });
 
 describe('AllRice DSH protocol runtime', () => {
-  it('refuses personal method scope when an older execution package cannot acknowledge it', async () => {
-    // No process or model call: exercise the production initialize handshake
-    // against the exact capability response of an older runtime package.
-    const client = Object.create(
-      DshProtocolClient.prototype,
-    ) as DshProtocolClient;
-    const request = vi.fn().mockResolvedValue({
-      serverInfo: {
-        name: 'deepseek-harness-sdk-runtime',
-        version: DSH_DISTRIBUTION_CURRENT_VERSION,
-      },
-      capabilities: {},
-    });
-    Object.assign(client, { request });
-    await expect(
-      client.initialize({
-        cwd: '/tmp',
-        provider: 'fixture',
-        model: 'fixture',
-        personalMethodToolsOnly: true,
-      }),
-    ).rejects.toMatchObject({
-      code: 'DSH_PERSONAL_METHOD_SCOPE_UNAVAILABLE',
-      retryable: false,
-    });
-    expect(request).toHaveBeenCalledWith(
-      'initialize',
-      expect.objectContaining({ personalMethodToolsOnly: true }),
-    );
-    await expect(
-      client.initialize({ cwd: '/tmp', provider: 'fixture', model: 'fixture' }),
-    ).resolves.toMatchObject({ name: 'deepseek-harness-sdk-runtime' });
-  });
-
   it('notifies termination even with no RPC pending and replays the failure to late subscribers', async () => {
     const client = new DshProtocolClient({
       command: process.execPath,

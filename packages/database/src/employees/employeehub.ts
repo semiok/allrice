@@ -36,6 +36,7 @@ import {
   freezeReferenceToolNames,
   freezeMemorySourceToolNames,
   freezeMemoryIndexToolNames,
+  withoutTaskMemoryTools,
   CreateEmployeeInputSchema,
   DshNativeSkillSnapshotSchema,
   EmployeeAdminDirectoryEntrySchema,
@@ -1564,18 +1565,22 @@ export async function prepareEmployeeRunBinding(
     baseRice,
   );
   const memoryIndex = input.employeeDocuments === true && !!instance;
+  const customizedTools = withEmployeeCustomizationTools(
+    conversationToolNames,
+    grantedCapabilities,
+    instance?.kind,
+  );
   const boundToolNames = await freezeConnectedLocalToolNames(
     freezeReferenceToolNames(
-      (memoryIndex ? freezeMemoryIndexToolNames : freezeMemorySourceToolNames)(
-        withEmployeeCustomizationTools(
-          conversationToolNames,
-          grantedCapabilities,
-          instance?.kind,
-          baseRice,
-        ),
-        grantedCapabilities,
-        modelSnapshot,
-      ),
+      input.taskPersona
+        ? withoutTaskMemoryTools(customizedTools)
+        : (memoryIndex
+            ? freezeMemoryIndexToolNames
+            : freezeMemorySourceToolNames)(
+            customizedTools,
+            grantedCapabilities,
+            modelSnapshot,
+          ),
       grantedCapabilities,
       modelSnapshot,
       input.employeeDocuments === true,

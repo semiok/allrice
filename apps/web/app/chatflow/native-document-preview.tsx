@@ -1,5 +1,5 @@
 'use client';
-import { memo, useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   parseArtifactPreview,
   workbenchJson,
@@ -38,6 +38,7 @@ export const NativeDocumentPreview = memo(function NativeDocumentPreview({
   toolResult = false,
   active = true,
   onReadFailure,
+  footer,
 }: {
   preview: ArtifactPreview;
   fileName: string;
@@ -48,6 +49,7 @@ export const NativeDocumentPreview = memo(function NativeDocumentPreview({
   toolResult?: boolean;
   active?: boolean;
   onReadFailure?: () => void;
+  footer?: ReactNode;
 }) {
   const [sourcePage, setSourcePage] = useState<TextPreview>();
   const [error, setError] = useState('');
@@ -118,7 +120,7 @@ export const NativeDocumentPreview = memo(function NativeDocumentPreview({
       <NativeHtmlPreview base64={preview.base64} interactive={interactive} />
     );
   if (preview.kind === 'pdf')
-    return <NativePdfPreview base64={preview.base64} />;
+    return <NativePdfPreview base64={preview.base64} footer={footer} />;
   if (preview.kind === 'image')
     return (
       <NativeImagePreview

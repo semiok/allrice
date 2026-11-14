@@ -22,7 +22,6 @@ export const platformTestSourceFamily =
   'allrice_declarative_platform_test_v1' as const;
 export const PlatformTestPurposeSchema = z.enum([
   'platform_preview',
-  'method_candidate',
   'experience_validation',
 ]);
 export type PlatformTestPurpose = z.infer<typeof PlatformTestPurposeSchema>;

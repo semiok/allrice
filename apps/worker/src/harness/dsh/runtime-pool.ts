@@ -999,9 +999,6 @@ export class DshRuntimePool {
       nativeAccounting: !!input.input.nativeAccounting,
       contentGuard: !!input.input.contentGuard,
       personalContentScenes: !!input.input.contentGuard?.personalScenes,
-      ...(input.input.personalMethodToolsOnly
-        ? { personalMethodToolsOnly: true }
-        : {}),
       ...(input.input.contentGuard?.nativeContextKey &&
       input.input.contentGuard.nativeContextKey !==
         input.input.contentGuard.generationId
@@ -1251,9 +1248,6 @@ export class DshRuntimePool {
         nativeSkills: input.nativeSkills,
         contentScenes: input.input.contentGuard?.scenes,
         personalContentScenes: !!input.input.contentGuard?.personalScenes,
-        ...(input.input.personalMethodToolsOnly
-          ? { personalMethodToolsOnly: true }
-          : {}),
         maxTokens,
         expectedVersion:
           nativeIdentity?.version ?? DSH_DISTRIBUTION_CURRENT_VERSION,

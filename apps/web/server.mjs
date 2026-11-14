@@ -31,6 +31,7 @@ import {
 import { createDevRequestHandler } from './server/dev-maintenance.mjs';
 import { createWebRuntimeClose } from './server/close-runtime.mjs';
 import { createNativeSubagentFollowGateway } from './server/native-subagent-follow.mjs';
+import { observePreviewHttp } from './server/preview-diagnostics.mjs';
 
 /** Next registers its own upgrade listener after the first HTTP request. Route
  * only the dedicated Bridge path before normal EventEmitter dispatch; every
@@ -101,7 +102,7 @@ export async function startAllRiceWeb({
   const handle = createDevRequestHandler(lifecycle, app.getRequestHandler());
   server.nativeFollowGateway = createNativeSubagentFollowGateway({ port });
   server.on('request', (req, res) => {
-    void handle(req, res).catch(() => {
+    void observePreviewHttp(req, res, () => handle(req, res)).catch(() => {
       if (!res.headersSent) res.writeHead(500);
       res.end('Internal Server Error');
     });

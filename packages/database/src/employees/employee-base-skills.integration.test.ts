@@ -20,11 +20,8 @@ import {
 } from '../workspace/service.ts';
 import { loadPlatformContentCatalog } from '../platform-content/catalog.ts';
 import { synchronizePlatformContent } from '../platform-content/sync.ts';
-import {
-  readFrozenSkillResource,
-  skillBytesChecksum,
-} from '../skill-bundles.ts';
-import { runtimePolicyDigest } from '../runtime-policy.ts';
+import { readFrozenSkillResource } from '../skill-bundles.ts';
+
 import {
   resolveEmployeeExecution,
   resolveEmployeeCapabilities,
@@ -179,66 +176,6 @@ suite('foundation Skills: catalog → ordinary Run → frozen execution', () => 
     expect(versionAfter).toEqual(versionBefore);
   });
 
-  it('replaces a managed legacy Skill only for new freezes and preserves exact historical bytes and checksum', async () => {
-    const current = catalog.skills.find(
-      (s) => s.name === 'employee-customization',
-    )!;
-    const content = '# Historical method maintenance\n';
-    const legacy = {
-      id: current.id,
-      name: current.name,
-      description: 'Historical text instructions',
-      content,
-      checksum: skillBytesChecksum(content),
-      invocation: { modelInvocable: true, userInvocable: true },
-      requiredToolRefs: ['inspect', 'save_candidate', 'restore_candidate'].map(
-        (action) => `workspace.employee.method.${action}`,
-      ),
-    };
-    const governance = [
-      {
-        id: legacy.id,
-        name: legacy.name,
-        version: '2.1.0',
-        checksum: legacy.checksum,
-        source: current.source,
-        sourceRef: `https://github.com/semiok/allrice/tree/main/skills/employee-customization?content-sha256=${legacy.checksum.slice(7)}`,
-        license: current.license,
-        reviewedByLabel: 'Historical review',
-      },
-    ];
-    const historical = {
-      schemaVersion: 1 as const,
-      authority: 'skills/catalog.json' as const,
-      catalogChecksum: `sha256:${'8'.repeat(64)}`,
-      snapshotChecksum: runtimePolicyDigest({
-        skills: governance,
-        nativeSkills: [legacy],
-      }),
-      skills: governance,
-    };
-    const before = JSON.stringify({ historical, legacy });
-    assertFrozenBaseSkillCatalog(historical, [legacy]);
-    const next = await freezeEmployeeBaseSkills([legacy]);
-    expect(next.nativeSkills.filter((s) => s.id === current.id)).toEqual([
-      expect.objectContaining({
-        content: current.content,
-        checksum: current.checksum,
-        requiredToolRefs: [],
-      }),
-    ]);
-    expect(next.catalog!.skills.find((s) => s.id === current.id)?.version).toBe(
-      '3.0.0',
-    );
-    assertFrozenBaseSkillCatalog(historical, [legacy]);
-    expect(JSON.stringify({ historical, legacy })).toBe(before);
-    expect(() =>
-      assertFrozenBaseSkillCatalog(historical, [
-        { ...legacy, checksum: current.checksum },
-      ]),
-    ).toThrow('base_skill_snapshot_checksum_mismatch');
-  });
-
   it('retains exact versions and original request receipts after catalog updates; new Runs use the new reviewed version', async () => {
     const x = await setup(),
       original = await x.send('custom');
@@ -355,37 +292,5 @@ suite('foundation Skills: catalog → ordinary Run → frozen execution', () => 
     ).not.toHaveProperty('baseSkillCatalog');
     await x.resolve(sent.run.id);
     await f.db`insert into allrice_runtime_metadata(key,value) values('platform-content-catalog',${f.db.json(record!.value)})`;
-  });
-
-  it('honors replacement identities even after legacy entries leave the current catalog', async () => {
-    const office = catalog.skills.find((s) => s.name === 'office')!;
-    const replaced = new Set(office.replaces!);
-    expect(replaced.size).toBe(2);
-    const original = catalog.skills
-      .filter((s) => replaced.has(s.id))
-      .map((s) => ({
-        id: s.id,
-        name: s.name,
-        description: s.description,
-        content: s.content,
-        checksum: s.checksum,
-        invocation: {
-          modelInvocable: s.modelInvocable,
-          userInvocable: s.userInvocable,
-        },
-        requiredToolRefs: s.requiredToolRefs,
-      }));
-    const [row] =
-      await f.db`select value from allrice_runtime_metadata where key='platform-content-catalog'`;
-    const metadata = row!.value;
-    // A catalog may retain replacement identities after removing legacy entries.
-    metadata.skills = metadata.skills.filter(
-      (s: { id: string }) => !replaced.has(s.id),
-    );
-    await f.db`update allrice_runtime_metadata set value=${f.db.json(metadata)} where key='platform-content-catalog'`;
-    const result = await freezeEmployeeBaseSkills(original);
-    expect(result.nativeSkills.filter((s) => replaced.has(s.id))).toEqual([]);
-    expect(result.nativeSkills.some((s) => s.id === office.id)).toBe(true);
-    expect(original.map((s) => s.id).sort()).toEqual([...replaced].sort());
   });
 });

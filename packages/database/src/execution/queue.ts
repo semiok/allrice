@@ -1740,13 +1740,18 @@ async function enqueueRunInTransaction(
         ${transaction.json(toJsonValue(executionSnapshot))},
         ${nativeExecutionBinding ? transaction.json(toJsonValue(nativeExecutionBinding)) : null},
         ${executionSnapshot.createdAt},
-        ${transaction.json(
-          options.employeeBinding.memoryContextStateV2
-            ? RunMemoryContextV2StateSchema.parse(
-                options.employeeBinding.memoryContextStateV2,
+        ${
+          executionSnapshot.schemaVersion === 2 &&
+          executionSnapshot.persona?.source.task
+            ? null
+            : transaction.json(
+                options.employeeBinding.memoryContextStateV2
+                  ? RunMemoryContextV2StateSchema.parse(
+                      options.employeeBinding.memoryContextStateV2,
+                    )
+                  : { schemaVersion: 1, pending: true },
               )
-            : { schemaVersion: 1, pending: true },
-        )}
+        }
       )
     `;
   }
@@ -3160,13 +3165,6 @@ export async function appendJobEvent(input: {
         );
         const payload = input.payload;
         if (input.type === 'harness.native') {
-          const { recordEmployeeMethodActivationQuestion } =
-            await import('../employees/employee-method-activation-question.ts');
-          await recordEmployeeMethodActivationQuestion(
-            transaction,
-            job,
-            payload,
-          );
           await recordTaskQuestion(transaction, job.run_id, payload);
           await recordNativeQuestions(transaction, job.run_id, payload);
           await refreshTaskClock(transaction, job.run_id);

@@ -80,6 +80,21 @@ export const reviewedUnresolvedCalls: readonly {
   reason: string;
 }[] = [
   {
+    target: 'apps/web/server/preview-diagnostics.d.mts emit',
+    reason:
+      'preview-diagnostics.mjs emit hashes the reference id and logs fixed diagnostic fields and bounded error causes; its current implementation runs no SQL.',
+  },
+  {
+    target: 'apps/web/server/preview-diagnostics.d.mts object',
+    reason:
+      'preview-diagnostics.mjs object only hashes the object id into the diagnostic closure; its current implementation runs no SQL.',
+  },
+  {
+    target: 'apps/web/server/preview-diagnostics.d.mts phase',
+    reason:
+      'preview-diagnostics.mjs phase records timing and outcome around await body(); the body may run SQL and is not exempt. Current inline callbacks remain traversed in the caller AST; implementation or callback-shape changes require review.',
+  },
+  {
     target: 'packages/contracts/src/storage.ts get',
     reason: 'Object storage adapters read blobs; they run no SQL.',
   },

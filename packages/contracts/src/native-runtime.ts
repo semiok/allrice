@@ -28,22 +28,9 @@ export {
   visibleModelText,
 } from './native-display.ts';
 export {
-  EmployeeMethodInspectSchema,
-  EmployeeMethodRestoreSchema,
-  EmployeeMethodSaveSchema,
   EmployeeRuntimeSceneSchema,
   EmployeeSceneReadSchema,
 } from './employee-content.ts';
-export {
-  EmployeeMethodActivateSchema,
-  EmployeeMethodPrepareActivationSchema,
-  methodActivationQuestionPrefix,
-} from './employee-method-activation.ts';
-export { EmployeeMethodFileStepSchema } from './employee-method-file-case.ts';
-export {
-  EmployeeMethodTestInspectSchema,
-  EmployeeMethodTestStartSchema,
-} from './employee-method-tests.ts';
 export { EmployeeProfileChatInputSchema } from './employees.ts';
 export { ExecutionLocationSchema } from './execution-choice.ts';
 export { FileDerivationArgumentsSchema } from './file-derivation.ts';
@@ -55,11 +42,7 @@ export {
 export { LocalFileToolArguments } from './local-files.ts';
 export { ExperienceSourceHandleSchema } from './memory-context.ts';
 export { MemoryOrdinalInputSchema } from './memory-index.ts';
-export {
-  NativeOfficeExportSchema,
-  OfficeExportSchema,
-  OfficePdfExportSchema,
-} from './office.ts';
+export { NativeOfficeExportSchema, OfficePdfExportSchema } from './office.ts';
 export {
   PersonalSkillInstallInputSchema,
   PersonalSkillPinSchema,

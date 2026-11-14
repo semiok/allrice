@@ -3,7 +3,6 @@ import {
   assembleEmployeeCapabilities,
   prepareEmployeeEditorDefinition,
   employeePublicationPolicy,
-  upgradeEmployeeSkillBindings,
   employeeToolDependencySources,
   resolveEmployeeToolDependencies,
   employeeToolConfigurationErrors,
@@ -22,15 +21,6 @@ function definition(): PlatformEmployeeDefinition {
     },
   } as PlatformEmployeeDefinition;
 }
-const office = {
-  id: 'office',
-  replaces: ['document-analysis', 'structured-deliverable'],
-  requiredToolRefs: [
-    'workspace.document.read',
-    'workspace.export.create',
-    'workspace.skill.read',
-  ],
-};
 it('assembles existing local browser authority for a new public-research draft without changing the old definition', () => {
   const original = definition();
   original.capabilities.toolNames = ['browser.run'];
@@ -72,34 +62,6 @@ it('retains an existing cloud-only browser definition without adding local autho
   const assembled = assembleEmployeeCapabilities(original, []);
   expect(assembled.capabilities.toolNames).toEqual(['browser.workspace']);
   expect(assembled.securityPolicy.bridgeAccess).toBe('none');
-});
-it.each([
-  ['document-analysis'],
-  ['structured-deliverable'],
-  ['document-analysis', 'structured-deliverable', 'office'],
-])(
-  'upgrades legacy bindings %j to one Office Skill with its dependencies',
-  (...ids) => {
-    const original = definition();
-    original.capabilities.nativeSkillIds = [...ids, 'unrelated'];
-    const result = upgradeEmployeeSkillBindings(original, [office]);
-    expect(result.capabilities.nativeSkillIds).toEqual(['office', 'unrelated']);
-    expect(result.capabilities.toolNames).toEqual(
-      expect.arrayContaining(office.requiredToolRefs),
-    );
-    expect(result.securityPolicy.deniedCapabilities).toEqual(['secret:use']);
-    expect(original.capabilities.nativeSkillIds).toEqual([...ids, 'unrelated']);
-    expect(original.securityPolicy.deniedCapabilities).toContain(
-      'storage:write',
-    );
-  },
-);
-it('does not reassemble an unrelated draft or silently undo a later explicit restriction', () => {
-  const original = definition();
-  expect(upgradeEmployeeSkillBindings(original, [office])).toBe(original);
-  original.capabilities.nativeSkillIds = ['office'];
-  expect(upgradeEmployeeSkillBindings(original, [office])).toBe(original);
-  expect(original.securityPolicy.deniedCapabilities).toContain('storage:write');
 });
 it('assembles the selected Skill dependencies and their employee permissions in the same edit', () => {
   const original = definition();

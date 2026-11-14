@@ -42,13 +42,10 @@ import {
   mutateCompanyAsset,
 } from './company-assets.ts';
 import {
-  createTraceableMemory,
+  createPersonalEmployeeMemory,
   correctPersonalEmployeeMemory,
 } from './workspace/service.ts';
-import {
-  memoryPairDigest,
-  legacyPersonalMemoryPair,
-} from './workspace/employee-memory.ts';
+import { memoryPairDigest } from './workspace/employee-memory.ts';
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
@@ -477,12 +474,12 @@ suite(
     it('pins an explicitly selected Memory revision while preserving the separately authored rule body', async () => {
       const [memoryAssignment] =
         await f.db`select id from allrice_employee_assignments where organization_id=${owner.organizationId} and workspace_id=${owner.workspaceId!} and user_id=${owner.actor.id} and active`;
-      const memory = await createTraceableMemory(owner, {
+      const memory = await createPersonalEmployeeMemory(owner, {
         instanceId: memoryAssignment!.id,
         idempotencyKey: randomUUID(),
         workspaceId: owner.workspaceId,
-        content: 'Selected original memory excerpt',
-        sourceType: 'user',
+        summary: 'Selected original memory excerpt',
+        details: null,
       });
       const chosen = (
         await listCompanyRuleSources(admin, a.context.organizationId, f.db)
@@ -500,9 +497,7 @@ suite(
         {
           instanceId: memory.instanceId!,
           expectedRevision: memory.revision,
-          pairDigest: memoryPairDigest(
-            legacyPersonalMemoryPair(memory.content),
-          ),
+          pairDigest: memoryPairDigest(memory),
           idempotencyKey: randomUUID(),
           ...editedPair,
           reason: 'Correction for revision provenance',
@@ -516,7 +511,7 @@ suite(
       expect(current.content).toBe(
         `${editedPair.summary}\n${editedPair.details}`,
       );
-      expect(chosen.content).toBe(memory.content);
+      expect(chosen.content).toBe(memory.summary);
       const authored = content('rule', {
         body: 'Edited final company rule; not claimed to be the original memory bytes.',
         sourceMemoryId: memory.id,
@@ -553,12 +548,12 @@ suite(
         member,
         member.workspaceId!,
       );
-      const otherMemory = await createTraceableMemory(member, {
+      const otherMemory = await createPersonalEmployeeMemory(member, {
         instanceId: memberEmployee!.id,
         idempotencyKey: randomUUID(),
         workspaceId: member.workspaceId,
-        content: 'Unrelated private memory',
-        sourceType: 'user',
+        summary: 'Unrelated private memory',
+        details: null,
       });
       const other = (
         await listCompanyRuleSources(admin, a.context.organizationId, f.db)
@@ -597,6 +592,48 @@ suite(
         true,
       );
     });
+    it.each(['candidate', 'derived'] as const)(
+      'excludes %s memory without relying on any experience review row',
+      async (mode) => {
+        const instance = await ensureDefaultEmployee(owner, owner.workspaceId!);
+        const memory = await createPersonalEmployeeMemory(owner, {
+          instanceId: instance!.id,
+          workspaceId: owner.workspaceId,
+          idempotencyKey: randomUUID(),
+          summary: 'Synthetic unconfirmed source',
+          details: null,
+        });
+        const [revision] =
+          await f.db`select id from allrice_memory_revisions where memory_id=${memory.id} and revision=1`;
+        if (mode === 'candidate')
+          await f.db`update allrice_memories set lifecycle_state='candidate' where id=${memory.id}`;
+        else
+          await f.db`update allrice_memories set trust_level='derived' where id=${memory.id}`;
+        expect(
+          await f.db`select memory_id from allrice_experience_reviews where memory_id=${memory.id}`,
+        ).toEqual([]);
+        expect(
+          (
+            await listCompanyRuleSources(admin, a.context.organizationId, f.db)
+          ).sources.map((s) => s.id),
+        ).not.toContain(memory.id);
+        await expect(
+          mutate(
+            admin,
+            {
+              operation: 'save',
+              assetId: randomUUID(),
+              expectedRevision: 0,
+              content: content('rule', {
+                sourceMemoryId: memory.id,
+                sourceMemoryRevisionId: revision!.id,
+              }),
+            },
+            true,
+          ),
+        ).rejects.toThrow('source_changed');
+      },
+    );
     it('withdrawal, live membership and company status gate new bytes including the author', async () => {
       saved = await mutate(owner, {
         operation: 'pause',

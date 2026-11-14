@@ -8,7 +8,6 @@ export type ServiceName = 'web' | 'worker';
 export * from './message-feedback.ts';
 export * from './model-failure.ts';
 export * from './work-methods.ts';
-export * from './employee-method-activation.ts';
 export * from './user-preferences.ts';
 export type HealthStatus = 'live' | 'ready' | 'not_ready';
 
@@ -69,6 +68,7 @@ export * from './employees.ts';
 export * from './task-suggestions.ts';
 export * from './employee-colors.ts';
 export * from './experience.ts';
+export * from './memory-source.ts';
 export * from './employee-model-settings.ts';
 export * from './framework.ts';
 export * from './governance.ts';
@@ -154,8 +154,6 @@ export * from './reference-library.ts';
 export * from './reference-search.ts';
 export * from './reference-tool-grants.ts';
 
-export * from './employee-method-tests.ts';
-export * from './employee-method-file-case.ts';
 export * from './personal-skills.ts';
 export * from './personal-skill-github.ts';
 

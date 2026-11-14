@@ -70,8 +70,7 @@ export async function assertOrdinarySkillSceneName(
     throw new PersonalSkillError('name_conflict');
 }
 
-/** Used by controlled saves and the existing personal draft/restore/activate
- * writer, so a legacy endpoint cannot bypass the same native namespace. */
+/** Controlled saves and restores share the same native namespace check. */
 export async function assertPersonalSceneNames(
   tx: ContentTx,
   context: ContentIdentity,
