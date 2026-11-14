@@ -33,6 +33,8 @@ export function DocumentToolbar(props: {
   trailingActions?: ReactNode;
   missingFonts?: readonly string[];
   delivery?: boolean;
+  description?: string;
+  beforeActions?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const refresh = props.actions.find(
@@ -53,6 +55,10 @@ export function DocumentToolbar(props: {
         <FileTypeIcon path={props.title} size={props.delivery ? 28 : 20} />
         <PathLabel path={props.title} className={styles.name} />
       </div>
+      {props.description && (
+        <p className={styles.materialPurpose}>{props.description}</p>
+      )}
+      {props.beforeActions}
       <div className={styles.controls}>
         {props.children}
         {refresh && 'label' in refresh && (

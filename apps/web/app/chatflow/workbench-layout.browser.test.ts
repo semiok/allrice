@@ -13714,6 +13714,674 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     30000,
   );
 
+  async function materialFixture(options: Parameters<typeof fixture>[0] = {}) {
+    const f = await fixture(options);
+    const material = (
+      n: number,
+      name: string,
+      overrides: Partial<ReferenceRevision> = {},
+    ) =>
+      ReferenceRevisionSchema.parse({
+        ...fileReference(n, catalogFile(n + 2, { fileName: name })),
+        purpose: '资料的已发布用途',
+        fullTextReady: true,
+        canRetryProcessing: true,
+        publication: {
+          origin: 'upload',
+          publisherId: user,
+          publisherName: '当前发布人',
+          audience: { scope: 'company', departmentIds: [] },
+          audienceRevision: 7,
+        },
+        ...overrides,
+      });
+    const state = {
+      references: [
+        material(9700, '品牌口径.md', { fullTextReady: false }),
+        material(9710, '写作习惯.md'),
+        material(9720, '待处理资料.md', { processing: 'failed' }),
+      ],
+      denied: new Set<string>(),
+      catalogStatus: 200,
+      catalogViewer: user,
+      catalogDelay: null as Promise<void> | null,
+      selectionDelay: null as Promise<void> | null,
+      reads: [] as string[],
+      queries: [] as URLSearchParams[],
+      selections: [] as string[],
+      retries: [] as {
+        sourceId: string;
+        input: unknown;
+        viewer: string | undefined;
+      }[],
+      nextCursor: null as {
+        queryDigest: string;
+        createdAt: string;
+        sourceId: string;
+      } | null,
+    };
+    const failure = (ids: string[]) => ({
+      error: {
+        code: 'REFERENCE_SELECTION_UNAVAILABLE',
+        message: '引用失败，文件可能被调整权限或移除',
+        requestId: id(9799),
+        retryable: false,
+        referenceRevisionIds: ids,
+      },
+    });
+    await f.page.route('**/api/v1/references/**', async (route) => {
+      const url = new URL(route.request().url());
+      const answer = (value: unknown, status = 200) =>
+        route.fulfill({
+          status,
+          contentType: 'application/json',
+          body: JSON.stringify(value),
+        });
+      if (url.pathname.endsWith('/publications')) {
+        state.queries.push(url.searchParams);
+        if (state.catalogDelay) await state.catalogDelay;
+        const query = url.searchParams.get('query');
+        const category = url.searchParams.get('category');
+        const refs = state.references.filter(
+          (r) =>
+            (!url.searchParams.has('sourceId') ||
+              r.sourceId === url.searchParams.get('sourceId')) &&
+            (!query ||
+              (query === '配色' &&
+                r.revisionId === state.references[0]?.revisionId)) &&
+            (category === 'all' ||
+              (category === 'mine' && r.publication?.publisherId === user) ||
+              category === r.publication?.audience.scope),
+        );
+        return answer(
+          {
+            viewerId: state.catalogViewer,
+            references: state.nextCursor
+              ? refs.slice(
+                  url.searchParams.has('cursor') ? 20 : 0,
+                  url.searchParams.has('cursor') ? 40 : 20,
+                )
+              : refs,
+            nextCursor: url.searchParams.has('cursor')
+              ? null
+              : state.nextCursor,
+            matches:
+              query === '配色' && refs[0]
+                ? [
+                    {
+                      revisionId: refs[0].revisionId,
+                      content: '<script>不会执行</script>品牌配色来自原文。',
+                      start: 120,
+                      end: 155,
+                      locations: [
+                        { unit: 0, label: '正文', start: 120, end: 155 },
+                      ],
+                      warnings: ['保留的原始解析警告'],
+                    },
+                  ]
+                : [],
+            fullTextCoverage: { ready: 1, unavailable: 2 },
+            options: {
+              workspaceId: f.state.workspace,
+              platformMaintainer: false,
+              maintenanceLevel: 'personal',
+              writable: true,
+              departmentId: null,
+              departments: [],
+            },
+          },
+          state.catalogStatus,
+        );
+      }
+      const reference = state.references.find((r) =>
+        url.pathname.includes(r.revisionId),
+      );
+      if (url.pathname.endsWith('/selection') && reference) {
+        state.selections.push(reference.revisionId);
+        if (state.selectionDelay) await state.selectionDelay;
+        if (state.denied.has(reference.revisionId))
+          return answer(failure([reference.revisionId]), 409);
+        return answer({
+          viewerId: f.state.viewer,
+          workspaceId: f.state.workspace,
+          selection: {
+            sourceId: reference.sourceId,
+            revisionId: reference.revisionId,
+            revision: reference.revision,
+            fileName: reference.fileName,
+            purpose: reference.purpose,
+            digest: reference.checksum,
+            checksum: reference.checksum,
+            ownership: reference.ownership,
+          },
+        });
+      }
+      if (url.pathname.endsWith('/preview') && reference) {
+        state.reads.push(reference.revisionId);
+        return answer({
+          kind: 'text',
+          mediaType: 'text/markdown',
+          text: '# 资料原文\n\n企业资料的独立内容。',
+          offset: 1,
+          lines: 3,
+          eof: true,
+        });
+      }
+      if (route.request().method() === 'POST') {
+        const reference = state.references.find((r) =>
+          url.pathname.endsWith('/' + r.sourceId),
+        );
+        if (reference) {
+          state.retries.push({
+            sourceId: reference.sourceId,
+            input: route.request().postDataJSON(),
+            viewer: route.request().headers()['x-allrice-expected-viewer-id'],
+          });
+          reference.processing = 'saved';
+          return answer({ sourceId: reference.sourceId });
+        }
+      }
+      return route.fallback();
+    });
+    return { ...f, materials: state, failure };
+  }
+
+  for (const theme of ['light', 'dark'] as const)
+    for (const width of [1440, 390]) {
+      it(`MET247 F3 enterprise list, exact preview, source and approved failure at ${width}px ${theme}`, async () => {
+        const f = await materialFixture({ width, appearance: theme });
+        try {
+          const input = f.page.getByRole('textbox', { name: /给 .* 的消息/ });
+          await input.fill('浏览资料时保留文字草稿');
+          const entry = f.page
+            .locator('header')
+            .getByRole('button', { name: '企业资料', exact: true });
+          await entry.click();
+          const panel = f.panel.getByRole('region', {
+            name: '企业资料',
+            exact: true,
+          });
+          await panel
+            .getByRole('button', { name: '品牌口径.md', exact: true })
+            .waitFor();
+          expect(f.materials.queries[0]?.get('category')).toBe('all');
+          expect(f.materials.queries[0]?.get('limit')).toBe('20');
+          const search = panel.getByRole('searchbox', {
+            name: '查找资料（文件名、用途、正文）',
+          });
+          await search.fill('配色');
+          await panel
+            .getByText('<script>不会执行</script>品牌', { exact: false })
+            .waitFor();
+          expect(await panel.locator('mark').innerText()).toBe('配色');
+          expect(await panel.locator('script').count()).toBe(0);
+          expect(await panel.getByText('保留的原始解析警告').count()).toBe(0);
+          expect(
+            await panel
+              .getByRole('button', { name: '写作习惯.md', exact: true })
+              .count(),
+          ).toBe(0);
+          await search.fill('');
+          await panel
+            .getByRole('button', { name: '品牌口径.md', exact: true })
+            .click();
+          await panel.getByRole('heading', { name: '资料原文' }).waitFor();
+          const toolbar = panel.locator('header[aria-label="文件操作"]');
+          await toolbar.getByRole('button', { name: '更多文件操作' }).click();
+          await f.page
+            .getByRole('menuitem', { name: '查看源文本', exact: true })
+            .click();
+          await panel
+            .getByRole('button', { name: '复制文本', exact: true })
+            .waitFor();
+          await toolbar.getByRole('button', { name: '更多文件操作' }).click();
+          await f.page
+            .getByRole('menuitem', { name: '查看预览', exact: true })
+            .click();
+          expect(
+            await panel
+              .getByRole('link', { name: '下载', exact: true })
+              .first()
+              .getAttribute('href'),
+          ).toContain(
+            `/references/revisions/${f.materials.references[0]!.revisionId}/download`,
+          );
+          await toolbar
+            .getByRole('button', { name: '引用到对话', exact: true })
+            .click();
+          const quoted = f.page.getByRole('button', {
+            name: '移除资料 品牌口径.md',
+            exact: true,
+          });
+          await quoted.waitFor();
+          expect(
+            await f.page.locator('[aria-label="本次参考资料"]').innerText(),
+          ).not.toContain('v1');
+          expect(f.materials.selections).toEqual([
+            f.materials.references[0]!.revisionId,
+          ]);
+          expect(await input.inputValue()).toBe('浏览资料时保留文字草稿');
+          expect(f.state.messageInputs).toEqual([]);
+          if (width === 390) {
+            expect(await f.panel.count()).toBe(0);
+            await entry.click();
+          }
+          await panel
+            .getByRole('button', { name: '‹ 企业资料', exact: true })
+            .click();
+          await panel
+            .getByRole('button', { name: '待处理资料.md', exact: true })
+            .click();
+          await panel
+            .getByText('读取失败：Rice 暂时无法读取这份资料的内容', {
+              exact: true,
+            })
+            .waitFor();
+          expect(
+            await panel
+              .getByRole('button', { name: '引用到对话', exact: true })
+              .first()
+              .isDisabled(),
+          ).toBe(true);
+          await panel
+            .getByRole('button', { name: '重新处理', exact: true })
+            .click();
+          await expect.poll(() => f.materials.retries.length).toBe(1);
+          expect(f.materials.retries[0]).toMatchObject({
+            sourceId: f.materials.references[2]!.sourceId,
+            viewer: user,
+            input: { action: 'retry', expectedRevision: 1 },
+          });
+          expect(await input.inputValue()).toBe('浏览资料时保留文字草稿');
+          expect(
+            await f.page.getByText('已引用文件。', { exact: true }).count(),
+          ).toBe(0);
+          expect(
+            await f.page.evaluate(
+              () => document.documentElement.scrollWidth <= innerWidth,
+            ),
+          ).toBe(true);
+        } finally {
+          await f.close();
+        }
+      }, 30000);
+    }
+
+  it('MET247 F3 forwards only the issued opaque cursor and clears it when changing search or category', async () => {
+    const f = await materialFixture();
+    try {
+      const original = f.materials.references[0]!;
+      f.materials.references = Array.from({ length: 25 }, (_, n) => ({
+        ...original,
+        sourceId: id(9800 + n * 2),
+        revisionId: id(9801 + n * 2),
+        fileName: `资料分页-${n}.md`,
+      }));
+      const cursor = {
+        queryDigest: `sha256:${'d'.repeat(64)}`,
+        createdAt: now,
+        sourceId: f.materials.references[19]!.sourceId,
+      };
+      f.materials.nextCursor = cursor;
+      await f.page
+        .locator('header')
+        .getByRole('button', { name: '企业资料', exact: true })
+        .click();
+      const panel = f.panel.getByRole('region', {
+        name: '企业资料',
+        exact: true,
+      });
+      await panel
+        .getByRole('button', { name: '资料分页-0.md', exact: true })
+        .waitFor();
+      expect(
+        await panel
+          .getByRole('button', { name: '资料分页-24.md', exact: true })
+          .count(),
+      ).toBe(0);
+      await panel.locator('[aria-busy]').evaluate((node) => {
+        node.scrollTop = node.scrollHeight;
+        node.dispatchEvent(new Event('scroll'));
+      });
+      await panel
+        .getByRole('button', { name: '资料分页-24.md', exact: true })
+        .waitFor();
+      expect(JSON.parse(f.materials.queries.at(-1)!.get('cursor')!)).toEqual(
+        cursor,
+      );
+      expect(f.materials.queries.at(-1)?.get('category')).toBe('all');
+      await panel.getByRole('searchbox').fill('配色');
+      await expect
+        .poll(() => f.materials.queries.at(-1)?.get('query'))
+        .toBe('配色');
+      expect(f.materials.queries.at(-1)?.has('cursor')).toBe(false);
+      await panel.getByRole('button', { name: '我的', exact: true }).click();
+      await expect
+        .poll(() => f.materials.queries.at(-1)?.get('category'))
+        .toBe('mine');
+      expect(f.materials.queries.at(-1)?.get('query')).toBe('配色');
+      expect(f.materials.queries.at(-1)?.has('cursor')).toBe(false);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('MET247 F3 copies an exact authenticated publication location and hides a denied target without fetching its preview', async () => {
+    const f = await materialFixture();
+    try {
+      await f.context.grantPermissions(['clipboard-read', 'clipboard-write']);
+      const reference = f.materials.references[0]!;
+      await f.page
+        .locator('header')
+        .getByRole('button', { name: '企业资料', exact: true })
+        .click();
+      const panel = f.panel.getByRole('region', {
+        name: '企业资料',
+        exact: true,
+      });
+      await panel
+        .getByRole('button', { name: reference.fileName, exact: true })
+        .click();
+      await panel.getByRole('heading', { name: '资料原文' }).waitFor();
+      await panel
+        .locator('header[aria-label="文件操作"]')
+        .getByRole('button', { name: '复制链接', exact: true })
+        .click();
+      await panel
+        .getByRole('status')
+        .filter({ hasText: '链接已复制，查看仍需资料访问权限' })
+        .waitFor();
+      const link = new URL(
+        await f.page.evaluate(() => navigator.clipboard.readText()),
+      );
+      expect(link.searchParams.get('workspaceId')).toBe(workspace);
+      expect(link.searchParams.get('referenceSource')).toBe(reference.sourceId);
+      expect(link.searchParams.get('referenceRevision')).toBe(
+        reference.revisionId,
+      );
+      expect(link.searchParams.has('file')).toBe(false);
+      f.materials.references = [];
+      f.materials.reads.length = 0;
+      await f.page.goto(link.href);
+      await f.panel.getByText('无权访问', { exact: true }).waitFor();
+      expect(
+        await f.page.getByText(reference.fileName, { exact: true }).count(),
+      ).toBe(0);
+      expect(f.materials.reads).toEqual([]);
+      expect(f.materials.queries.at(-1)?.get('sourceId')).toBe(
+        reference.sourceId,
+      );
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('MET247 F3 failed processing without server retry permission leaves preview and download intact', async () => {
+    const f = await materialFixture();
+    try {
+      f.materials.references[2]!.canRetryProcessing = false;
+      await f.page
+        .locator('header')
+        .getByRole('button', { name: '企业资料', exact: true })
+        .click();
+      const panel = f.panel.getByRole('region', {
+        name: '企业资料',
+        exact: true,
+      });
+      await panel
+        .getByRole('button', { name: '待处理资料.md', exact: true })
+        .click();
+      await panel.getByRole('heading', { name: '资料原文' }).waitFor();
+      await panel
+        .getByText('读取失败：Rice 暂时无法读取这份资料的内容', { exact: true })
+        .waitFor();
+      expect(
+        await panel
+          .getByRole('button', { name: '重新处理', exact: true })
+          .count(),
+      ).toBe(0);
+      expect(
+        await panel.getByRole('link', { name: '下载', exact: true }).count(),
+      ).toBe(2);
+      expect(f.materials.retries).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('MET247 F3 preflight denial adds no chip, retains mobile draft and never reloads a denied detail after filtering', async () => {
+    const f = await materialFixture({ width: 390 });
+    try {
+      const rejected = f.materials.references[0]!;
+      f.materials.denied.add(rejected.revisionId);
+      const input = f.page.getByRole('textbox', { name: /给 .* 的消息/ });
+      await input.fill('原有文字');
+      await f.page
+        .locator('header')
+        .getByRole('button', { name: '企业资料', exact: true })
+        .click();
+      const panel = f.panel.getByRole('region', {
+        name: '企业资料',
+        exact: true,
+      });
+      await panel
+        .getByRole('button', { name: rejected.fileName, exact: true })
+        .waitFor();
+      await panel
+        .locator('article')
+        .filter({
+          has: panel.getByRole('button', {
+            name: rejected.fileName,
+            exact: true,
+          }),
+        })
+        .getByRole('button', { name: '引用到对话', exact: true })
+        .click();
+      await panel
+        .getByRole('alert')
+        .filter({ hasText: '引用失败，文件可能被调整权限或移除' })
+        .waitFor();
+      expect(await f.page.locator('[aria-label="本次参考资料"]').count()).toBe(
+        0,
+      );
+      expect(await input.inputValue()).toBe('原有文字');
+      expect(await f.panel.count()).toBe(1);
+      await panel.getByRole('searchbox').fill('配色');
+      await expect
+        .poll(() => f.materials.queries.at(-1)?.get('query'))
+        .toBe('配色');
+      await panel
+        .getByRole('button', { name: rejected.fileName, exact: true })
+        .waitFor();
+      expect(
+        await panel
+          .getByRole('button', { name: rejected.fileName, exact: true })
+          .isDisabled(),
+      ).toBe(true);
+      expect(f.materials.reads).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it.each(['dedicated', 'generic', 'foreign-id'] as const)(
+    'MET247 F3 send %s failure keeps draft and marks only the exact rejected local pin',
+    async (kind) => {
+      const f = await materialFixture();
+      try {
+        const [bad, good] = f.materials.references;
+        const input = f.page.getByRole('textbox', { name: /给 .* 的消息/ });
+        await input.fill('请结合两份资料整理周报');
+        await f.page
+          .locator('header')
+          .getByRole('button', { name: '企业资料', exact: true })
+          .click();
+        const panel = f.panel.getByRole('region', {
+          name: '企业资料',
+          exact: true,
+        });
+        for (const reference of [bad!, good!]) {
+          await panel
+            .getByRole('button', { name: reference.fileName, exact: true })
+            .waitFor();
+          await panel
+            .locator('article')
+            .filter({
+              has: panel.getByRole('button', {
+                name: reference.fileName,
+                exact: true,
+              }),
+            })
+            .getByRole('button', { name: '引用到对话', exact: true })
+            .click();
+          await f.page
+            .getByRole('button', {
+              name: `移除资料 ${reference.fileName}`,
+              exact: true,
+            })
+            .waitFor();
+        }
+        await f.page.route('**/api/v1/sessions/*/messages?*', (route) => {
+          f.state.messageInputs.push(route.request().postDataJSON());
+          const body =
+            kind === 'generic'
+              ? {
+                  error: {
+                    code: 'CONFLICT',
+                    message: '引用失败，文件可能被调整权限或移除',
+                  },
+                }
+              : f.failure([kind === 'foreign-id' ? id(9988) : bad!.revisionId]);
+          return route.fulfill({
+            status: 409,
+            contentType: 'application/json',
+            body: JSON.stringify(body),
+          });
+        });
+        await input.press('Enter');
+        await expect.poll(() => f.state.messageInputs.length).toBe(1);
+        await expect.poll(() => input.isEnabled()).toBe(true);
+        expect(await input.inputValue()).toBe('请结合两份资料整理周报');
+        expect(f.state.messageInputs[0]?.referenceRevisionIds).toEqual([
+          bad!.revisionId,
+          good!.revisionId,
+        ]);
+        const chips = f.page.locator('[aria-label="本次参考资料"]');
+        expect(
+          await chips.locator('[data-reference-unavailable="true"]').count(),
+        ).toBe(kind === 'dedicated' ? 1 : 0);
+        expect(
+          await chips
+            .locator(`[data-reference-revision-id="${good!.revisionId}"]`)
+            .getAttribute('data-reference-unavailable'),
+        ).toBeNull();
+        if (kind === 'dedicated') {
+          expect(
+            await chips
+              .locator(`[data-reference-revision-id="${bad!.revisionId}"]`)
+              .getAttribute('data-reference-unavailable'),
+          ).toBe('true');
+          await f.page
+            .getByRole('button', {
+              name: `移除资料 ${bad!.fileName}`,
+              exact: true,
+            })
+            .click();
+          expect(
+            await f.page
+              .getByRole('alert')
+              .filter({ hasText: '引用失败，文件可能被调整权限或移除' })
+              .count(),
+          ).toBe(0);
+          expect(await input.inputValue()).toBe('请结合两份资料整理周报');
+          expect(
+            await chips.locator('[data-reference-revision-id]').count(),
+          ).toBe(1);
+        }
+        expect(f.materials.reads).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+    30000,
+  );
+
+  it('MET247 F3 late send rejection cannot mark or restore pins in the next session', async () => {
+    const f = await materialFixture();
+    let release = () => {};
+    try {
+      const reference = f.materials.references[0]!;
+      const input = f.page.getByRole('textbox', { name: /给 .* 的消息/ });
+      await input.fill('A会话文字');
+      await f.page
+        .locator('header')
+        .getByRole('button', { name: '企业资料', exact: true })
+        .click();
+      const panel = f.panel.getByRole('region', {
+        name: '企业资料',
+        exact: true,
+      });
+      await panel
+        .getByRole('button', { name: reference.fileName, exact: true })
+        .waitFor();
+      await panel
+        .locator('article')
+        .filter({
+          has: panel.getByRole('button', {
+            name: reference.fileName,
+            exact: true,
+          }),
+        })
+        .getByRole('button', { name: '引用到对话', exact: true })
+        .click();
+      await f.page
+        .getByRole('button', {
+          name: `移除资料 ${reference.fileName}`,
+          exact: true,
+        })
+        .waitFor();
+      const gate = new Promise<void>((done) => {
+        release = done;
+      });
+      let rejected = false;
+      await f.page.route('**/api/v1/sessions/*/messages?*', async (route) => {
+        f.state.messageInputs.push(route.request().postDataJSON());
+        await gate;
+        await route.fulfill({
+          status: 409,
+          contentType: 'application/json',
+          body: JSON.stringify(f.failure([reference.revisionId])),
+        });
+        rejected = true;
+      });
+      await input.press('Enter');
+      await expect.poll(() => f.state.messageInputs.length).toBe(1);
+      await f.page.getByText('研究任务 B', { exact: true }).click();
+      await input.fill('B会话的新草稿');
+      release();
+      await expect.poll(() => rejected).toBe(true);
+      await f.page.evaluate(
+        () =>
+          new Promise<void>((done) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => done())),
+          ),
+      );
+      expect(await input.inputValue()).toBe('B会话的新草稿');
+      expect(await f.page.locator('[data-reference-revision-id]').count()).toBe(
+        0,
+      );
+      expect(
+        await f.page
+          .getByRole('alert')
+          .filter({ hasText: '引用失败，文件可能被调整权限或移除' })
+          .count(),
+      ).toBe(0);
+    } finally {
+      release();
+      await f.close();
+    }
+  }, 30000);
+
   for (const theme of ['light', 'dark'] as const)
     for (const width of [1440, 390]) {
       it(`MET247 personal directory, actions and recoverable preview at ${width}px ${theme}`, async () => {

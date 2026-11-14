@@ -272,7 +272,7 @@ function Page() {
                 }
               />
               <WorkbenchEntries
-                counts={{ files: 33, experience: 1, workflow: 0 }}
+                counts={{ files: 33, materials: 0, experience: 1, workflow: 0 }}
                 experience
                 workflow={icons && !query.has('no-workflow')}
                 open={icons && selected !== null}

@@ -87,7 +87,7 @@ createRoot(document.getElementById('root')!).render(
       style={{ display: 'flex', justifyContent: 'flex-end', padding: 12 }}
     >
       <WorkbenchEntries
-        counts={{ files: 1, experience: 0, workflow: 0 }}
+        counts={{ files: 1, materials: 0, experience: 0, workflow: 0 }}
         workflow={false}
         experience={false}
         open={false}

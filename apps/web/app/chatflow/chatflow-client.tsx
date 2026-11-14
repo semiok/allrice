@@ -28,6 +28,12 @@ import {
 } from './unified-workbench-controls';
 import { WorkbenchIcon, type WorkbenchModule } from './workbench-modules';
 import { clearWorkbenchFileLink } from './workbench-file-link';
+import { readReferencePublicationLocation } from './reference-publication-link';
+import {
+  checkReferenceSelectionFailure,
+  ReferenceSelectionUnavailableError,
+  referenceSelectionMessage,
+} from '../../lib/chatflow/reference-selection';
 import {
   EmployeeSceneDialog,
   EmployeeSceneList,
@@ -192,6 +198,11 @@ const WorkbenchFilesPanel = lazy(() =>
     default: module.WorkbenchFilesPanel,
   })),
 );
+const EnterpriseMaterialsPanel = lazy(() =>
+  import('./enterprise-materials-panel').then((module) => ({
+    default: module.EnterpriseMaterialsPanel,
+  })),
+);
 const WorkbenchExperiencePanel = lazy(() =>
   import('./workbench-experience-panel').then((module) => ({
     default: module.WorkbenchExperiencePanel,
@@ -253,6 +264,12 @@ export function ChatFlowClient({
     null,
   );
   const [referenceLibraryOpen, setReferenceLibraryOpen] = useState(false);
+  const [referenceFailure, setReferenceFailure] = useState<{
+    scope: string;
+    sessionId: string;
+    clientMessageId: string;
+    revisionIds: string[];
+  } | null>(null);
   const [recommendedTemplates, setRecommendedTemplates] = useState(false);
   const [busy, setBusy] = useState(false);
   const [cancelRequestedRunId, setCancelRequestedRunId] = useState<
@@ -343,6 +360,11 @@ export function ChatFlowClient({
     workspace?.sessions.find((s) => s.id === activeId)?.archivedAt,
   );
   const settingsScope = `${workspace?.organizationId}/${workspace?.workspaceId}/${workspace?.viewerId}`;
+  const unavailableReferenceRevisionIds =
+    referenceFailure?.scope === settingsScope &&
+    referenceFailure.sessionId === activeId
+      ? referenceFailure.revisionIds
+      : [];
   const selectedInstanceId =
     history?.session.employeeInstanceId ??
     history?.session.employeeAssignmentId ??
@@ -470,6 +492,7 @@ export function ChatFlowClient({
       return;
     setSessionReferences([]);
     setReferenceSelections([]);
+    setReferenceFailure(null);
     setReferencePickerOpen(false);
     setReferenceLibraryOpen(false);
     setReferenceToView(null);
@@ -838,6 +861,25 @@ export function ChatFlowClient({
     workbench.show(undefined, true);
   };
   const fileLinkHandled = useRef('');
+  const referenceLinkHandled = useRef('');
+  useEffect(() => {
+    if (
+      !workbenchEnabled ||
+      !workspace ||
+      referenceLinkHandled.current === settingsScope
+    )
+      return;
+    const location = readReferencePublicationLocation();
+    if (!location || location.workspaceId !== workspace.workspaceId) return;
+    referenceLinkHandled.current = settingsScope;
+    setModuleRequest((previous) => ({
+      scope: fileScope,
+      kind: 'materials',
+      revision: (previous?.revision ?? 0) + 1,
+      id: `${location.sourceId}/${location.revisionId}`,
+    }));
+    workbench.show(undefined, true);
+  }, [workbenchEnabled, workspace, settingsScope, fileScope, workbench.show]);
   useEffect(() => {
     if (
       !workbenchEnabled ||
@@ -1147,6 +1189,7 @@ export function ChatFlowClient({
     const draftAttachments = [...pendingAttachments];
     const draftReferences = [...sessionReferences];
     const draftReferenceSelections = [...referenceSelections];
+    const referenceRequestScope = settingsScope;
     const draftCompanyReferences = [...companyReferences];
     let clientMessageId = crypto.randomUUID();
     let nativeAdmissionSessionId: string | null = null;
@@ -1248,19 +1291,22 @@ export function ChatFlowClient({
       setSubmission({ ...echo, sessionId, preparing: false });
       nativeAdmissionSessionId = sessionId;
       beginNativeAdmission(sessionId, nativeAdmission);
-      const result = await readJson<unknown>(
-        await fetch(
-          `/api/v1/sessions/${sessionId}/messages?workspaceId=${workspace.workspaceId}`,
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json', ...tenantHeaders },
-            body: JSON.stringify({
-              clientMessageId,
-              ...inputBody,
-            }),
-          },
-        ),
+      const response = await fetch(
+        `/api/v1/sessions/${sessionId}/messages?workspaceId=${workspace.workspaceId}`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...tenantHeaders },
+          body: JSON.stringify({
+            clientMessageId,
+            ...inputBody,
+          }),
+        },
       );
+      await checkReferenceSelectionFailure(
+        response,
+        draftReferenceSelections.map((reference) => reference.revisionId),
+      );
+      const result = await readJson<unknown>(response);
       // Keep the retry key unless the receipt is usable; resending after an
       // unreadable answer must not create a second task.
       if (!isSendReceipt(result)) throw new Error('结果待确认，请刷新页面查看');
@@ -1276,6 +1322,7 @@ export function ChatFlowClient({
       setSubmission(null);
       setSessionReferences([]);
       setReferenceSelections([]);
+      setReferenceFailure(null);
       setHistory((current) => {
         if (!current || current.session.id !== sessionId) return current;
         const messages = current.messages.filter(
@@ -1336,13 +1383,30 @@ export function ChatFlowClient({
     } catch (cause) {
       if (nativeAdmissionSessionId)
         recordNativeAdmission(nativeAdmissionSessionId, null, nativeAdmission);
-      if (!action.current()) return;
+      if (
+        !action.current() ||
+        currentSettingsScope.current !== referenceRequestScope
+      )
+        return;
       setSubmission(null);
       setDraft(text);
       setSessionReferences(draftReferences);
       setReferenceSelections(draftReferenceSelections);
+      if (cause instanceof ReferenceSelectionUnavailableError)
+        setReferenceFailure({
+          scope: referenceRequestScope,
+          sessionId: nativeAdmissionSessionId!,
+          clientMessageId,
+          revisionIds: cause.referenceRevisionIds,
+        });
       setCompanyReferences(draftCompanyReferences);
-      setError(cause instanceof Error ? cause.message : '消息发送失败');
+      setError(
+        cause instanceof ReferenceSelectionUnavailableError
+          ? ''
+          : cause instanceof Error
+            ? cause.message
+            : '消息发送失败',
+      );
     } finally {
       if (action.finish()) setBusy(false);
     }
@@ -2217,7 +2281,7 @@ export function ChatFlowClient({
     return loadBridgeDevices(true);
   };
 
-  const useWorkbenchReference = (reference: ReferenceRevision) => {
+  const useWorkbenchReference = (reference: ReferenceDraft) => {
     if (
       referenceSelections.length >= 3 &&
       !referenceSelections.some(
@@ -2225,7 +2289,7 @@ export function ChatFlowClient({
       )
     ) {
       setError('每次任务最多引用 3 份资料。');
-      return;
+      return false;
     }
     setReferenceSelections((current) =>
       current.some((item) => item.revisionId === reference.revisionId)
@@ -2233,6 +2297,7 @@ export function ChatFlowClient({
         : [...current, reference],
     );
     requestAnimationFrame(() => composerInput.current?.focus());
+    return true;
   };
   const viewWorkbenchTemplate = (reference: ReferenceRevision) => {
     setRecommendedTemplates(false);
@@ -2292,11 +2357,20 @@ export function ChatFlowClient({
       sessionReferences={sessionReferences}
       onOpenSessionReferences={() => setReferencePickerOpen(true)}
       referenceSelections={referenceSelections}
-      onRemoveReference={(id) =>
+      unavailableReferenceRevisionIds={unavailableReferenceRevisionIds}
+      onRemoveReference={(id) => {
         setReferenceSelections((items) =>
           items.filter((r) => r.revisionId !== id),
-        )
-      }
+        );
+        if (unavailableReferenceRevisionIds.includes(id)) {
+          const remaining = unavailableReferenceRevisionIds.filter(
+            (r) => r !== id,
+          );
+          setReferenceFailure((current) =>
+            current ? { ...current, revisionIds: remaining } : null,
+          );
+        }
+      }}
       onOpenReferenceLibrary={() => {
         setRecommendedTemplates(false);
         setReferenceToView(null);
@@ -2313,7 +2387,11 @@ export function ChatFlowClient({
       composerInput={composerInput}
       composing={composing}
       draftStore={draftStore}
-      error={error}
+      error={
+        unavailableReferenceRevisionIds.length
+          ? referenceSelectionMessage
+          : error
+      }
       fileInput={fileInput}
       hero={hero}
       isRunning={isRunning}
@@ -3252,6 +3330,30 @@ export function ChatFlowClient({
                   }}
                   onTemplate={viewWorkbenchTemplate}
                   onUse={useWorkbenchReference}
+                />
+              ) : kind === 'materials' ? (
+                <EnterpriseMaterialsPanel
+                  key={fileScope}
+                  ownerKey={settingsScope}
+                  viewerId={workspace.viewerId ?? undefined}
+                  workspaceId={workspace.workspaceId}
+                  sessionId={activeId}
+                  headers={tenantHeaders}
+                  active={active}
+                  readOnly={conversationReadOnly}
+                  initialReference={
+                    currentModuleRequest?.kind === 'materials' &&
+                    currentModuleRequest.id
+                      ? {
+                          sourceId: currentModuleRequest.id.split('/')[0]!,
+                          revisionId: currentModuleRequest.id.split('/')[1]!,
+                        }
+                      : undefined
+                  }
+                  onUse={(reference) => {
+                    if (useWorkbenchReference(reference) && layout.compact)
+                      layout.close();
+                  }}
                 />
               ) : kind === 'experience' &&
                 (memoryInstanceId ?? activeEmployee?.instanceId) ? (

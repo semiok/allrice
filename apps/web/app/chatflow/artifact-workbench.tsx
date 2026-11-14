@@ -290,7 +290,9 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
     activeModule.current?.(
       !props.open || !activeTab
         ? null
-        : ['files', 'experience', 'workflow'].includes(activeTab.kind)
+        : ['files', 'materials', 'experience', 'workflow'].includes(
+              activeTab.kind,
+            )
           ? (activeTab.kind as WorkbenchModule)
           : ['scheduleTask', 'sessionSchedules'].includes(activeTab.kind)
             ? 'schedule'
@@ -332,7 +334,7 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
           : null;
       if (
         tab &&
-        ['files', 'experience', 'workflow'].includes(tab.kind) &&
+        ['files', 'materials', 'experience', 'workflow'].includes(tab.kind) &&
         !(
           paneId === enteringMemoryPaneId &&
           tab.kind === 'experience' &&
@@ -356,6 +358,7 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
     if (
       (!props.desktop &&
         !memoryRequest &&
+        request?.kind !== 'materials' &&
         request?.kind !== 'workflow' &&
         !(props.personalDeliverables && request?.kind === 'files')) ||
       !request ||
@@ -633,7 +636,9 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                       tab.kind === 'nativeSubagent' || undefined
                     }
                   >
-                    {['files', 'experience', 'workflow'].includes(tab.kind) ? (
+                    {['files', 'materials', 'experience', 'workflow'].includes(
+                      tab.kind,
+                    ) ? (
                       <span className={moduleUi[tab.kind]}>
                         <WorkbenchIcon
                           kind={tab.kind as WorkbenchModule}
@@ -791,9 +796,12 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
               />
             ) : (props.desktop ||
                 tab.kind === 'files' ||
+                tab.kind === 'materials' ||
                 tab.kind === 'workflow' ||
                 !!personalMemoryTarget(tab.kind, tab.contentId)) &&
-              ['files', 'experience', 'workflow'].includes(tab.kind) ? (
+              ['files', 'materials', 'experience', 'workflow'].includes(
+                tab.kind,
+              ) ? (
               props.renderModule?.(
                 tab.kind as WorkbenchModule,
                 props.open &&

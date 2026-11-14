@@ -92,3 +92,12 @@
     gap: 6px 14px;
   }
 }
+.referenceError {
+  margin: 10px 12px;
+  padding: 10px 12px;
+  color: light-dark(#b53549, #f79bae);
+  background: light-dark(#fff1f3, #6a20302b);
+  border-radius: 8px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
