@@ -72,6 +72,7 @@ files:
     - packages/browser-control/src/local-preview.integration.test.ts
   browser:
     - apps/web/app/chatflow/brand-content-panel.test.tsx
+    - scripts/test-proxy.browser.test.mjs
     - apps/web/server/project-preview.test.mjs
     - scripts/m1/smoke-reply.browser.test.mjs
   browser+db:
