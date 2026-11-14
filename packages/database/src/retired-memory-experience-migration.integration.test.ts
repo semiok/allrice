@@ -52,7 +52,18 @@ async function historical() {
       await f.db.begin(async (tx) => {
         await tx.unsafe(await sqlFor(name));
       });
-    const current = await createCompletedRunFixture(f.db);
+    // Freeze this current identity-only transport at INSERT; execution snapshots
+    // remain immutable after admission, including in historical test schemas.
+    const current = await createCompletedRunFixture(f.db, {
+      promptSnapshot: {
+        employeeDocuments: {
+          persona: 'Synthetic current PERSONA identity',
+          user: 'Synthetic allowed organizational facts',
+          memory: '',
+        },
+        memories: [],
+      },
+    });
     await f.db`update allrice_employee_runs set memory_context_state=null where run_id=${current.run}`;
     // Read the real persisted binding; session response shapes do not supply authority.
     const [bound] =
@@ -252,16 +263,6 @@ suite(
       f = await historical();
       const db = f.db,
         c = f.current;
-      // Current task/preview identity transport intentionally has no V2 memory
-      // schema marker. Empty MEMORY must not select its Run for retirement.
-      await db`update allrice_employee_runs set prompt_snapshot=${db.json({
-        employeeDocuments: {
-          persona: 'Synthetic current PERSONA identity',
-          user: 'Synthetic allowed organizational facts',
-          memory: '',
-        },
-        memories: [],
-      })} where run_id=${c.run}`;
       const currentRun =
         await db`select to_jsonb(r) value from allrice_runs r where id=${c.run}`;
       const currentEmployeeRun =
