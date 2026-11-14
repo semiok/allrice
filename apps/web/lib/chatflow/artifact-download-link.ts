@@ -12,6 +12,7 @@ export function artifactForDownloadLink<
   label?: string,
 ): T | undefined {
   if (!href || !artifacts.length) return undefined;
+  href = href.replace(/^[\u200b\u200c\u200d\u2060\ufeff]+/, '');
   try {
     // Some model replies JSON-escape path separators, even twice. Repair
     // only a URL that still identifies an authenticated delivery below.

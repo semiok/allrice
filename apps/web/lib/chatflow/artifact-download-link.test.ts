@@ -5,7 +5,28 @@ const path = `/api/v1/files/${id}/download`;
 const artifacts = [
   { object: { id }, version: { fileName: '报告 & evidence.md' } },
 ];
+const otherId = '00000000-0000-4000-8000-000000000001';
+const prefixes = ['\u200b', '\u200c', '\u200d', '\u2060', '\ufeff'];
 describe('verified Artifact links, not model-invented download hosts', () => {
+  it.each([...prefixes, prefixes.join('') + '\u200c'])(
+    'resolves only current-Run files after a leading format prefix: %j',
+    (prefix) => {
+      const href = `${prefix}${path}`;
+      expect(artifactDownloadLink(href, artifacts)).toBe(
+        `${path}?name=${encodeURIComponent(artifacts[0]!.version.fileName)}`,
+      );
+      expect(artifactDownloadLink(href, [])).toBe(href);
+      const foreign = `${prefix}/api/v1/files/${otherId}/download`;
+      expect(artifactDownloadLink(foreign, artifacts)).toBe(foreign);
+    },
+  );
+  it.each(prefixes)(
+    'keeps format characters inside the file path: %j',
+    (character) => {
+      const href = `/api/v1/files/${id}${character}/download`;
+      expect(artifactDownloadLink(href, artifacts)).toBe(href);
+    },
+  );
   it.each([
     path,
     `/api/v1/files/${id}`,
@@ -33,6 +54,8 @@ describe('verified Artifact links, not model-invented download hosts', () => {
     `/api/v1/files/00000000-0000-4000-8000-000000000001/download`,
     `https://user:secret@invented.invalid${path}`,
     `javascript:alert(1)`,
+    `\u200chttps://user:secret@invented.invalid${path}`,
+    `\u200cjavascript:alert(1)`,
     `https://allrice.example${path}/different`,
     undefined,
   ])('does not convert unrelated, unverified or non-HTTP links: %s', (href) => {
