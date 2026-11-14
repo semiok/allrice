@@ -186,7 +186,7 @@ suite('ordinary pair candidates through native/Worker storage', () => {
       updatedAt: stamp,
     };
     // Exact pre-A2 WorkspaceMemory DTO: full body/contentDigest, no pair fields.
-    const response: Record<string, unknown> =
+    const response: Record<string, string | number | null> =
       kind === 'personal'
         ? personal
         : {
