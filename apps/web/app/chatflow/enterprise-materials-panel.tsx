@@ -74,6 +74,7 @@ export function EnterpriseMaterialsPanel(props: {
   readOnly?: boolean;
   initialReference?: ReferenceLocation;
   onUse: (reference: ReferenceDraft) => void;
+  onNotice?: (message: string) => void;
   onUpload?: (options: ReferencePublicationOptions) => void;
   onManage?: (
     reference: ReferenceRevision,
@@ -84,6 +85,8 @@ export function EnterpriseMaterialsPanel(props: {
   const identity = `${props.ownerKey}/${props.workspaceId}/${props.viewerId}/${props.sessionId ?? 'draft'}`;
   const current = useRef(identity);
   current.current = identity;
+  const active = useRef(props.active);
+  active.current = props.active;
   const [category, setCategory] = useState<keyof typeof categories>('all');
   const [query, setQuery] = useState('');
   const [page, setPage] = useState<{
@@ -323,15 +326,18 @@ export function EnterpriseMaterialsPanel(props: {
       await navigator.clipboard.writeText(
         referencePublicationLink(props.workspaceId, r.sourceId, r.revisionId),
       );
-      if (current.current === identity)
+      if (current.current === identity && active.current) {
+        const notice = '链接已复制，查看仍需资料访问权限';
+        props.onNotice?.(notice);
         setAction({
           key: identity,
           busy: '',
           error: '',
-          notice: '链接已复制，查看仍需资料访问权限',
+          notice: props.onNotice ? '' : notice,
         });
+      }
     } catch {
-      if (current.current === identity)
+      if (current.current === identity && active.current)
         setAction({
           key: identity,
           busy: '',
@@ -372,6 +378,9 @@ export function EnterpriseMaterialsPanel(props: {
         },
       );
       if (controller.signal.aborted || current.current !== identity) return;
+      // A later processing failure is a new user retry, while an unconfirmed
+      // transport keeps the same key above until its receipt is received.
+      retryRequests.current.delete(requestKey);
       setAction({ key: identity, busy: '', error: '', notice: '' });
       reload();
     } catch (cause) {

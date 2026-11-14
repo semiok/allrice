@@ -78,6 +78,7 @@ files:
   browser+db:
     - apps/web/app/chatflow/candidate-memory.browser.test.ts
     - apps/web/app/chatflow/reference-library.browser.test.ts
+    - apps/web/app/chatflow/reference-publication-dialog.browser.test.ts
     - apps/web/app/chatflow/work-automation.browser.test.ts
     - apps/web/app/runtime-console/organization-administration.browser.test.ts
     - apps/web/app/runtime-console/tenant-administration.browser.test.ts

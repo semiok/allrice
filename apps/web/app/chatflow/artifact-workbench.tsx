@@ -43,6 +43,7 @@ import { clearWorkbenchFileLink } from './workbench-file-link';
 import type {
   ReferenceRevision,
   EmployeeAccentColor,
+  WorkbenchDeliverable,
 } from '@allrice/contracts';
 import reader from './document-reader.module.css';
 import { isToolResultExport } from '../../lib/chatflow/document-reader-model';
@@ -190,6 +191,11 @@ type Props = {
   onOpenReference?: (reference: ReferenceSelection) => void;
   onUseFileReference?: (reference: ReferenceRevision) => void;
   onTemplateFile?: (reference: ReferenceRevision) => void;
+  onPublishFile?: (file: WorkbenchDeliverable) => void;
+  onOpenPublication?: (publication: {
+    sourceId: string;
+    revisionId: string;
+  }) => void;
 };
 
 /** Focus-contained narrow panel; keeps the same component mounted when resized. */
@@ -881,6 +887,8 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                   );
                 }}
                 onSource={props.onOpenSourceSession}
+                onPublish={props.onPublishFile}
+                onOpenPublication={props.onOpenPublication}
                 fileActions={
                   props.onUseFileReference
                     ? {
@@ -1035,6 +1043,8 @@ function ArtifactTabBody(
             props.onFiles();
           }}
           onSource={props.onOpenSourceSession}
+          onPublish={props.onPublishFile}
+          onOpenPublication={props.onOpenPublication}
           fileActions={
             props.onUseFileReference
               ? {

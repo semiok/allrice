@@ -29,6 +29,9 @@ import {
 import { WorkbenchIcon, type WorkbenchModule } from './workbench-modules';
 import { clearWorkbenchFileLink } from './workbench-file-link';
 import { readReferencePublicationLocation } from './reference-publication-link';
+import type { ReferencePublicationTarget } from './reference-publication-dialog';
+import type { ReferencePublicationOptions } from './use-reference-publication-options';
+import publicationUi from './enterprise-materials-panel.module.css';
 import {
   checkReferenceSelectionFailure,
   ReferenceSelectionUnavailableError,
@@ -203,6 +206,11 @@ const EnterpriseMaterialsPanel = lazy(() =>
     default: module.EnterpriseMaterialsPanel,
   })),
 );
+const ReferencePublicationDialog = lazy(() =>
+  import('./reference-publication-dialog').then((module) => ({
+    default: module.ReferencePublicationDialog,
+  })),
+);
 const WorkbenchExperiencePanel = lazy(() =>
   import('./workbench-experience-panel').then((module) => ({
     default: module.WorkbenchExperiencePanel,
@@ -264,6 +272,15 @@ export function ChatFlowClient({
     null,
   );
   const [referenceLibraryOpen, setReferenceLibraryOpen] = useState(false);
+  const [publicationDialog, setPublicationDialog] = useState<{
+    scope: string;
+    target: ReferencePublicationTarget;
+    options?: ReferencePublicationOptions;
+  } | null>(null);
+  const [publicationNotice, setPublicationNotice] = useState<{
+    scope: string;
+    text: string;
+  } | null>(null);
   const [referenceFailure, setReferenceFailure] = useState<{
     scope: string;
     sessionId: string;
@@ -773,6 +790,7 @@ export function ChatFlowClient({
       : undefined;
   const dismissWorkbench = useCallback(
     (memoryInstanceId?: string) => {
+      setPublicationNotice(null);
       const closingFocus = document.activeElement;
       closeWorkbench();
       if (memoryInstanceId) {
@@ -847,6 +865,7 @@ export function ChatFlowClient({
       view?: 'personal-memory';
     },
   ) => {
+    setPublicationNotice(null);
     if (kind === 'workflow') {
       if (!workspace?.viewerId || !activeEmployee?.instanceId) return;
       setSceneRequest(null);
@@ -861,6 +880,20 @@ export function ChatFlowClient({
     workbench.show(undefined, true);
   };
   const fileLinkHandled = useRef('');
+  const openPublication = (publication: {
+    sourceId: string;
+    revisionId: string;
+  }) =>
+    requestWorkbenchModule('materials', {
+      id: `${publication.sourceId}/${publication.revisionId}`,
+    });
+  const openPublicationDialog = (
+    target: ReferencePublicationTarget,
+    options?: ReferencePublicationOptions,
+  ) => {
+    setPublicationNotice(null);
+    setPublicationDialog({ scope: settingsScope, target, options });
+  };
   const referenceLinkHandled = useRef('');
   useEffect(() => {
     if (
@@ -3330,10 +3363,15 @@ export function ChatFlowClient({
                   }}
                   onTemplate={viewWorkbenchTemplate}
                   onUse={useWorkbenchReference}
+                  onPublish={
+                    workspace.viewerId
+                      ? (file) => openPublicationDialog({ kind: 'file', file })
+                      : undefined
+                  }
                 />
               ) : kind === 'materials' ? (
                 <EnterpriseMaterialsPanel
-                  key={fileScope}
+                  key={`${fileScope}/${currentModuleRequest?.kind === 'materials' ? currentModuleRequest.revision : 0}`}
                   ownerKey={settingsScope}
                   viewerId={workspace.viewerId ?? undefined}
                   workspaceId={workspace.workspaceId}
@@ -3354,6 +3392,15 @@ export function ChatFlowClient({
                     if (useWorkbenchReference(reference) && layout.compact)
                       layout.close();
                   }}
+                  onUpload={(options) =>
+                    openPublicationDialog({ kind: 'upload' }, options)
+                  }
+                  onNotice={(text) =>
+                    setPublicationNotice({ scope: settingsScope, text })
+                  }
+                  onManage={(reference, action, options) =>
+                    openPublicationDialog({ kind: action, reference }, options)
+                  }
                 />
               ) : kind === 'experience' &&
                 (memoryInstanceId ?? activeEmployee?.instanceId) ? (
@@ -3427,6 +3474,12 @@ export function ChatFlowClient({
           onOpenReference={openReference}
           onUseFileReference={useWorkbenchReference}
           onTemplateFile={viewWorkbenchTemplate}
+          onPublishFile={
+            workspace.viewerId
+              ? (file) => openPublicationDialog({ kind: 'file', file })
+              : undefined
+          }
+          onOpenPublication={openPublication}
           taskRequest={currentAutomationRequest}
           refineSubagent={(id) => {
             const reference = nativeSubagentReferenceFromTabId(id);
@@ -3654,6 +3707,49 @@ export function ChatFlowClient({
         }}
       />
 
+      {publicationDialog?.scope === settingsScope && workspace.viewerId && (
+        <Suspense fallback={null}>
+          <ReferencePublicationDialog
+            workspaceId={workspace.workspaceId}
+            viewerId={workspace.viewerId}
+            headers={tenantHeaders}
+            target={publicationDialog.target}
+            options={publicationDialog.options}
+            onClose={() => setPublicationDialog(null)}
+            onSaved={(saved) => {
+              if (currentSettingsScope.current !== publicationDialog.scope)
+                return;
+              const kind = publicationDialog.target.kind;
+              setPublicationDialog(null);
+              window.dispatchEvent(
+                new Event('allrice:workbench-files-changed'),
+              );
+              if (kind === 'upload' && saved.revisionId)
+                openPublication({
+                  sourceId: saved.sourceId,
+                  revisionId: saved.revisionId,
+                });
+              else if (kind === 'revoke' || kind === 'delete')
+                requestWorkbenchModule('materials');
+              setPublicationNotice({
+                scope: settingsScope,
+                text: {
+                  file: '已添加为企业资料',
+                  upload: '已发布',
+                  audience: '范围已修改',
+                  revoke: '资料已撤销',
+                  delete: '资料已删除',
+                }[kind],
+              });
+            }}
+          />
+        </Suspense>
+      )}
+      {publicationNotice?.scope === settingsScope && (
+        <div className={publicationUi.toast} role="status">
+          {publicationNotice.text}
+        </div>
+      )}
       {referencePickerOpen && (
         <SessionReferencePicker
           workspaceId={workspace.workspaceId}
