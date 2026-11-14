@@ -2339,21 +2339,67 @@ function mapMemory(row: MemoryRow) {
   });
 }
 
+/** Current V2 candidates already have a paired request digest, even when their
+ * stored response predates the paired DTO. The operation gate checks that exact
+ * request and current row before replay; this never accepts a V1 write. */
+function candidateReceiptForPair(pair: PersonalMemoryPair) {
+  return z.preprocess((value) => {
+    if (!value || typeof value !== 'object') return value;
+    const receipt = value as Record<string, unknown>;
+    if (
+      'pairDigest' in receipt ||
+      receipt.content !== memoryPairContent(pair) ||
+      receipt.contentDigest !== memoryContentDigest(memoryPairContent(pair)) ||
+      receipt.visibility !== 'private' ||
+      receipt.expiresAt !== null
+    )
+      return value;
+    return Object.fromEntries([
+      ...[
+        'id',
+        'organizationId',
+        'workspaceId',
+        'ownerId',
+        'instanceId',
+        'revision',
+        'createdAt',
+        'updatedAt',
+        'memoryClass',
+        'lifecycleState',
+        'sourceType',
+        'sourceId',
+        'sourceLabel',
+        'trust',
+        'confidence',
+        'capturedAt',
+      ].map((key) => [key, receipt[key]]),
+      ['summary', pair.summary],
+      ['details', pair.details],
+      ['pairDigest', memoryPairDigest(pair)],
+    ]);
+  }, MemoryCandidateReceiptSchema);
+}
+
 // Private storage/source input; public writes accept complete V2 pairs only.
+// Keep the existing V2 operation digest representation and property order.
+// These fixed storage fields are not accepted by any public input schema.
 const MemoryWriteSourceSchema = z
   .object({
     workspaceId: UuidSchema,
     instanceId: UuidSchema.optional(),
     idempotencyKey: UuidSchema.optional(),
     employeeId: UuidSchema.nullable().default(null),
+    content: z.string().trim().min(1).max(100_000),
+    visibility: z.literal('private').default('private'),
     sourceType: z.enum(['user', 'message', 'checkpoint']),
     sourceId: UuidSchema.nullable().default(null),
-    sourceLabel: z.string().min(1).max(240).default('用户保存的记忆'),
+    sourceLabel: z.string().trim().min(1).max(240).default('用户保存的记忆'),
     lifecycleState: z.enum(['candidate', 'durable']).default('durable'),
     memoryClass: z
       .enum(['user_preference', 'project_fact', 'decision', 'work_note'])
       .default('work_note'),
     confidence: z.number().min(0).max(1).default(1),
+    expiresAt: z.null().default(null),
   })
   .strict();
 
@@ -2475,6 +2521,7 @@ export async function createRememberedMemoryCandidate(
   const memory = MemoryWriteSourceSchema.parse({
     workspaceId: candidate.workspaceId,
     employeeId: candidate.employeeId,
+    content: candidate.summary,
     sourceType: 'message',
     sourceId: candidate.sourceId,
     sourceLabel: '模型提取候选',
@@ -2496,7 +2543,7 @@ export async function createRememberedMemoryCandidate(
     executionContext,
     { summary: candidate.summary, details: candidate.details },
     mapMemory,
-    MemoryCandidateReceiptSchema,
+    candidateReceiptForPair(candidate),
     key,
   );
 }
@@ -2511,6 +2558,7 @@ export async function createPersonalEmployeeMemory(
     workspaceId: pair.workspaceId,
     instanceId: pair.instanceId,
     idempotencyKey: pair.idempotencyKey,
+    content: pair.summary,
     sourceType: 'user',
   });
   return createEmployeeMemoryRecord(
@@ -2547,6 +2595,7 @@ export async function createManagedEmployeeMemory(
     workspaceId: pair.workspaceId,
     instanceId: pair.instanceId,
     idempotencyKey: pair.idempotencyKey,
+    content: pair.summary,
     sourceType: 'user',
   });
   return createEmployeeMemoryRecord(
@@ -3050,6 +3099,7 @@ export async function createCheckpointMemoryCandidate(
   const memory = MemoryWriteSourceSchema.parse({
     workspaceId,
     employeeId: candidate.employeeId,
+    content: candidate.summary,
     sourceType: 'checkpoint',
     sourceId: candidate.checkpointId,
     sourceLabel: candidate.sourceLabel,
@@ -3063,7 +3113,7 @@ export async function createCheckpointMemoryCandidate(
     undefined,
     { summary: candidate.summary, details: candidate.details },
     mapMemory,
-    MemoryCandidateReceiptSchema,
+    candidateReceiptForPair(candidate),
     `candidate:checkpoint:${candidate.idempotencyKey}`,
   );
 }
