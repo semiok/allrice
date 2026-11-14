@@ -589,16 +589,12 @@ describe('normal Run PERSONA defaults and sparse personal sources', () => {
   });
 });
 
-it('shares only the strict documents version contract while leaving the old 6000-byte shape intact', () => {
+it('requires explicit V2 for memory content and preserves its strict byte limit', () => {
   const legacy = { user: '', memory: 'x'.repeat(6000) };
-  expect(EmployeeDocumentsSchema.parse(legacy)).toEqual(legacy);
-  expect(isMemoryIndexDocuments(legacy)).toBe(false);
-  expect(
-    EmployeeDocumentsSchema.safeParse({
-      ...legacy,
-      memory: legacy.memory + 'x',
-    }).success,
-  ).toBe(false);
+  expect(EmployeeDocumentsSchema.safeParse(legacy).success).toBe(false);
+  const identity = { user: '', memory: '' as const };
+  expect(EmployeeDocumentsSchema.parse(identity)).toEqual(identity);
+  expect(isMemoryIndexDocuments(identity)).toBe(false);
   const current = {
     schemaVersion: 2 as const,
     user: '',
