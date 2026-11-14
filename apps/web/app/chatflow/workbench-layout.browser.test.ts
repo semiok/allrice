@@ -18606,9 +18606,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const folded = await geometry(expand);
         expect(folded.target).toEqual([32, 32]);
         expect(folded.glyph).toEqual([20, 20]);
-        expect(centerDelta(folded.glyphCenter, folded.center)).toBeLessThanOrEqual(
-          0.5,
-        );
+        expect(
+          centerDelta(folded.glyphCenter, folded.center),
+        ).toBeLessThanOrEqual(0.5);
         await f.page.mouse.click(folded.center[0]!, folded.center[1]!);
         await collapse.waitFor();
         await expect
