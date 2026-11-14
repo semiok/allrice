@@ -1143,6 +1143,27 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           ? answer({ task, occurrences: [], nextCursor: null })
           : answer({ error: { message: '任务不存在' } }, 404);
       }
+      if (
+        path === '/api/v1/references/publications' &&
+        route.request().method() === 'GET'
+      ) {
+        expect(url.searchParams.get('workspaceId')).toBe(state.workspace);
+        return answer({
+          viewerId: state.viewer,
+          references: [],
+          nextCursor: null,
+          matches: [],
+          fullTextCoverage: { ready: 0, unavailable: 0 },
+          options: {
+            workspaceId: state.workspace,
+            platformMaintainer: false,
+            maintenanceLevel: 'personal',
+            writable: true,
+            departmentId: null,
+            departments: [],
+          },
+        });
+      }
       if (path === '/api/v1/workbench/updates') {
         state.updateReads++;
         const payload = {
@@ -8171,6 +8192,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             '查看归档',
             '子智能体',
             /^交付成果(?:，\d+ 项新增)?$/,
+            '企业资料',
             '记忆',
             '能力',
             '展开工作台',
@@ -8182,7 +8204,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           // Check every currently rendered native header control, including
           // the panel entry, rather than retaining the retired text buttons.
           const buttons = actions.getByRole('button');
-          expect(await buttons.count()).toBe(6);
+          expect(await buttons.count()).toBe(7);
           for (const button of await buttons.all()) {
             await button.focus();
             await button.click({ trial: true });
@@ -14045,6 +14067,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           if (width === 390) {
             expect(await f.panel.count()).toBe(0);
             await entry.click();
+            // The header reopens the catalog; restore the preview before Back.
+            await panel
+              .getByRole('button', { name: '品牌口径.md', exact: true })
+              .click();
           }
           await panel
             .getByRole('button', { name: '‹ 企业资料', exact: true })
@@ -14271,7 +14297,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await panel
         .locator('article')
         .filter({
-          has: panel.getByRole('button', {
+          has: panel.page().getByRole('button', {
             name: retained.fileName,
             exact: true,
           }),
@@ -14294,7 +14320,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await panel
         .locator('article')
         .filter({
-          has: panel.getByRole('button', {
+          has: panel.page().getByRole('button', {
             name: rejected.fileName,
             exact: true,
           }),
@@ -14366,7 +14392,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await panel
             .locator('article')
             .filter({
-              has: panel.getByRole('button', {
+              has: panel.page().getByRole('button', {
                 name: reference.fileName,
                 exact: true,
               }),
@@ -14451,7 +14477,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     return panel
       .locator('article')
       .filter({
-        has: panel.getByRole('button', {
+        has: panel.page().getByRole('button', {
           name: reference.fileName,
           exact: true,
         }),
@@ -14686,7 +14712,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await panel
         .locator('article')
         .filter({
-          has: panel.getByRole('button', {
+          has: panel.page().getByRole('button', {
             name: reference.fileName,
             exact: true,
           }),
