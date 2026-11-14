@@ -4589,15 +4589,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   it.each([1440, 390])(
     'expands tool details downward without moving the clicked header at %ipx',
     async (width) => {
-      let observed: Awaited<ReturnType<typeof fixture>> | undefined;
+      const observed: { fixture?: Awaited<ReturnType<typeof fixture>> } = {};
       let phase = 'fixture',
         inputPhase = 'setup',
         lastTrace: unknown;
       let originalFailure: unknown;
       const measurements: unknown[] = [];
       const readTrace = async () => {
-        if (observed && !observed.page.isClosed())
-          lastTrace = await observed.page.evaluate(() =>
+        if (observed.fixture && !observed.fixture.page.isClosed())
+          lastTrace = await observed.fixture.page.evaluate(() =>
             Reflect.get(window, '__allriceToolHeaderDiagnostic')?.dump(),
           );
         return lastTrace;
@@ -4658,7 +4658,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         streamingOutput: false,
         failureEvidence: evidence,
       });
-      observed = f;
+      observed.fixture = f;
       const operations = Array.from({ length: 5 }, (_, index) => ({
         snapshot: {
           status: 'succeeded',
