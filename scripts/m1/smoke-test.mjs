@@ -14,7 +14,15 @@ import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { readSmokeReply } from './smoke-reply.mjs';
+import { pathToFileURL } from 'node:url';
+import {
+  readSmokeReply,
+  readSmokeCsvReply,
+  readSmokeCsvProof,
+  findSmokeCsvDelivery,
+  validateSmokeCsvPng,
+  decodeSmokeCsvPng,
+} from './smoke-reply.mjs';
 import { startSmokeWork } from './smoke-entry.mjs';
 
 const args = Object.fromEntries(
@@ -277,14 +285,51 @@ try {
     await page.waitForTimeout(2500);
     const q = `冒烟测试 ${tag}：按渠道汇总这个 CSV，画一张柱状图。`;
     const run = await ask(q, 420_000);
-    const { text, links } = await replyAfter(q);
-    const reply = [text, ...links].join('\n');
-    const pass = run.finished && /\.png/.test(reply);
+    if (!run.finished) return { pass: false, detail: 'csv_run_not_finished' };
+    const sessionId = sessionOf();
+    const observed = await page
+      .locator('[data-chat-scroll]')
+      .evaluate(readSmokeCsvReply, { prompt: q });
+    const proof = readSmokeCsvProof({
+      ...observed,
+      sessionId,
+      prompt: q,
+      account: creds.username,
+    });
+    // Reuse the parser already installed with the same release as Playwright.
+    // Installed M1 tools themselves have no workspace node_modules.
+    const webRequire = createRequire(
+      path.join(path.resolve(pwDir, '../../../../..'), 'apps/web/package.json'),
+    );
+    const { fromMarkdown } = await import(
+      pathToFileURL(webRequire.resolve('mdast-util-from-markdown')).href
+    );
+    const delivery = findSmokeCsvDelivery({
+      observed,
+      proof,
+      sessionId,
+      base,
+      fromMarkdown,
+    });
+    const response = await page.request.get(delivery.href);
+    if (!response.ok())
+      throw Error(`csv_png_download_http_${response.status()}`);
+    const bytes = await response.body();
+    const png = validateSmokeCsvPng(
+      bytes,
+      delivery.object,
+      response.headers()['content-type'] ?? '',
+    );
+    const decoded = await page.evaluate(decodeSmokeCsvPng, [...bytes]);
+    if (decoded.width !== png.width || decoded.height !== png.height)
+      throw Error('csv_png_decode_mismatch');
     return {
-      pass,
-      detail: pass
-        ? ''
-        : `finished=${run.finished} reply=${reply.slice(0, 160).replace(/\s+/g, ' ')}`,
+      pass: true,
+      sessionId,
+      userMessageId: proof.userMessageId,
+      assistantMessageId: proof.assistantMessageId,
+      runId: proof.runId,
+      png: { objectId: delivery.id, evidence: delivery.kind, ...png },
     };
   });
   await check('browser', async () => {
