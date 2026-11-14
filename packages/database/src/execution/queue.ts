@@ -2,6 +2,7 @@ import { employeePersonaAdmission } from '../employees/employee-instances.ts';
 import {
   modelFailureText,
   RunMemoryContextV2StateSchema,
+  ReferenceSelectionsSchema,
   personalWorkflowHistoryFailureText,
   type ModelFailure,
   type EmployeePersonaTask,
@@ -1174,9 +1175,9 @@ async function enqueueRunInTransaction(
       ReferenceSelectionUnavailableError,
     } = await import('../reference-runtime.ts');
     const rejected: string[] = [];
-    for (const selection of [
-      ...options.employeeBinding.promptSnapshot.referenceSelections,
-    ].sort((a, b) => a.revisionId.localeCompare(b.revisionId))) {
+    for (const selection of ReferenceSelectionsSchema.parse(
+      options.employeeBinding.promptSnapshot.referenceSelections,
+    ).sort((a, b) => a.revisionId.localeCompare(b.revisionId))) {
       try {
         await assertReferenceSelections(
           instanceIdentity,
