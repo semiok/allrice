@@ -1,6 +1,6 @@
 import { createEmployeeAdministrationFixture } from './employee-administration.fixture.ts';
 import { assignPublishedPlatformEmployeeToWorkspace } from './employees/platform-employees.ts';
-/** Synthetic P20 evidence only; callers must provide their dedicated schema. */
+/** Synthetic completed Run; callers must provide their dedicated schema. */
 import { authorizeFixturePlatformAdministrator } from './platform-authority.fixture.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { ensureGeneralEmployeeInstance } from './employees/employee-instances.ts';
@@ -11,7 +11,7 @@ import {
   getChatSessionHistory,
 } from './workspace/service.ts';
 
-export async function createExperienceFixture(
+export async function createCompletedRunFixture(
   db: ReturnType<typeof postgres>,
   options: { published?: boolean; authenticated?: boolean } = {},
 ) {

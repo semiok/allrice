@@ -69,19 +69,11 @@ export function assertBrandContentAuthority(
       'article.review',
       'receipt.record',
       'feedback.record',
-      'experience.propose',
-      'experience.review',
     ].includes(action.operation) &&
     authority !== 'user'
   )
     brandContentFail('authority_denied');
   if (action.operation === 'retrospective.save' && authority !== 'workflow')
-    brandContentFail('authority_denied');
-  if (
-    'experienceUses' in action &&
-    action.experienceUses?.length &&
-    authority !== 'workflow'
-  )
     brandContentFail('authority_denied');
   if (authority === 'workflow' && !action.workflow)
     brandContentFail('workflow_pin_required');

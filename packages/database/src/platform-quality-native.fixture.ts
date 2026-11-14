@@ -5,7 +5,7 @@ import { PlatformEmployeeDefinitionSchema } from '@allrice/contracts';
 import { expect, vi } from 'vitest';
 import * as client from './core/client.ts';
 import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
-import { createExperienceFixture } from './experience.fixture.ts';
+import { createCompletedRunFixture } from './completed-run.fixture.ts';
 import {
   authenticateSession,
   createSession,
@@ -38,7 +38,7 @@ export async function createPlatformQualityNativeFixture() {
     .mockReturnValue(fixture.db);
   try {
     const { db } = fixture;
-    const company = await createExperienceFixture(db);
+    const company = await createCompletedRunFixture(db);
     const principal = await ensureBootstrapPortalPrincipal(
       {
         organizationSlug: 'allrice-platform',

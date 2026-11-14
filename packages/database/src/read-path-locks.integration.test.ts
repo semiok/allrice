@@ -7,7 +7,7 @@ import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createCloudExecutionFixture } from './cloud-execution.fixture.ts';
 import { createLocalBrowserFixture } from './local-browser.fixture.ts';
 import { createLocalPreviewFixture } from './local-preview.fixture.ts';
-import { createExperienceFixture } from './experience.fixture.ts';
+import { createCompletedRunFixture } from './completed-run.fixture.ts';
 import { createReadPathProbe } from './read-path-probe.fixture.ts';
 import {
   expectReadPathRowLocked,
@@ -360,7 +360,7 @@ suite(
         (await read((sql) => getSessionRunTimings(f.context, f.session, sql)))
           .runTimings,
       ).toHaveLength(1);
-      const history = await createExperienceFixture(db);
+      const history = await createCompletedRunFixture(db);
       await mutateMessageFeedback(history.owner, history.session.id, 'put', {
         messageId: history.assistant,
         rating: 'positive',
@@ -537,7 +537,7 @@ suite(
       expect(checked).toBe(true);
     });
     it('message feedback write still holds identity and session locks and rejects a revoked owner', async () => {
-      const f = await createExperienceFixture(db);
+      const f = await createCompletedRunFixture(db);
       let checked = false;
       const probe = createReadPathProbe(db, {
         beforeCommit: async () => {

@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as client from './core/client.ts';
 import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
-import { createExperienceFixture } from './experience.fixture.ts';
+import { createCompletedRunFixture } from './completed-run.fixture.ts';
 import { devReleaseJobType } from './dev-release-control.ts';
 import {
   enqueueRun,
@@ -23,11 +23,11 @@ suite(
   'Dev supervisor bootstrap: ordinary consumers cannot obtain host authority',
   () => {
     let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
-    let company: Awaited<ReturnType<typeof createExperienceFixture>>;
+    let company: Awaited<ReturnType<typeof createCompletedRunFixture>>;
     beforeAll(async () => {
       fixture = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
-      company = await createExperienceFixture(fixture.db);
+      company = await createCompletedRunFixture(fixture.db);
     }, 120000);
     afterAll(async () => {
       vi.restoreAllMocks();

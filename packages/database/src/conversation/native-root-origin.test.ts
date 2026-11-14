@@ -110,19 +110,20 @@ it('internal recipe authority freezes exact recipe, business seed and profile', 
   const id = randomUUID(),
     recipe = { v: 1, instructions: 'fixed' },
     origin = newCurrentInternalNativeRootOrigin(
-      'experience_consolidation',
+      'platform_technical',
       id,
       recipe,
     );
-  expect(origin.rootSeed).toBe('experience-' + id);
+  expect(origin.rootSeed).toBe(id);
+  expect(origin.profileId).toBe('technical');
   expect(
-    assertNativeRootOrigin(origin, 'experience_consolidation', id, {
+    assertNativeRootOrigin(origin, 'platform_technical', id, {
       kind: 'internal_recipe',
       checksum: nativeRootDigest(recipe),
     }),
   ).toEqual(origin);
   expect(() =>
-    assertNativeRootOrigin(origin, 'experience_consolidation', id, {
+    assertNativeRootOrigin(origin, 'platform_technical', id, {
       kind: 'internal_recipe',
       checksum: nativeRootDigest({ v: 2 }),
     }),

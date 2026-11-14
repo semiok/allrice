@@ -25,11 +25,14 @@ export const NativeRootOriginSchema = z.union([
 ]);
 export type NativeRootOriginV1 = z.infer<typeof NativeRootOriginV1Schema>;
 export type NativeRootOrigin = z.infer<typeof NativeRootOriginSchema>;
-type Kind = NativeRootOrigin['contextKind'];
-export const nativeRootSeed = (kind: Kind, id: string) =>
-  kind === 'experience_consolidation'
-    ? `experience-${UuidSchema.parse(id)}`
-    : UuidSchema.parse(id);
+type Kind = Exclude<
+  NativeRootOrigin['contextKind'],
+  'experience_consolidation'
+>;
+export const nativeRootSeed = (kind: Kind, id: string) => {
+  z.enum(['chat', 'platform_technical', 'platform_employee_test']).parse(kind);
+  return UuidSchema.parse(id);
+};
 function issue(
   kind: Kind,
   id: string,
@@ -71,10 +74,9 @@ export function newEmployeeNativeRootOrigin(
   });
 }
 /** Strict first-INSERT policy for executable internal work. Historical NULL/v1
- * readback and same-ID recovery never call this factory. Empty consolidation
- * has no executable birth and must retain its zero-Run/zero-Job path. */
+ * readback and same-ID recovery never call this factory. */
 export function newCurrentInternalNativeRootOrigin(
-  kind: 'platform_technical' | 'experience_consolidation',
+  kind: 'platform_technical',
   id: string,
   recipe: unknown,
 ): NativeRootOriginV1 {

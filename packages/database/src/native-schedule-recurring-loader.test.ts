@@ -55,9 +55,10 @@ function rows(): NativeRecurringStoredRow[] {
     nativeTaskId: null,
     reference,
     dispatch: {
-      consumer: 'experience-consolidation-v1',
+      consumer: 'ordinary-monthly-v1',
       employeeAssignmentId: id(9),
       employeeInstanceId: id(10),
+      businessSessionId: id(11),
     },
   });
   return [

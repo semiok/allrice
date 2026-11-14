@@ -4,7 +4,6 @@ import {
   BrandFeedbackInputSchema,
   BrandPublicationUrlSchema,
   BrandRetrospectiveOutputSchema,
-  BrandExperienceUsesSchema,
   summarizeBrandFeedback,
 } from './brand-content-feedback.ts';
 
@@ -84,7 +83,7 @@ describe('brand feedback evidence boundary', () => {
       expect(BrandPublicationUrlSchema.safeParse(url).success).toBe(false);
   });
 
-  it('rejects duplicate or empty evidence and duplicate experience attributions', () => {
+  it('rejects duplicate or empty retrospective evidence', () => {
     const report = {
       summary: 'Summary',
       rule: 'Rule',
@@ -98,11 +97,5 @@ describe('brand feedback evidence boundary', () => {
         BrandRetrospectiveOutputSchema.safeParse({ ...report, feedbackIds })
           .success,
       ).toBe(false);
-    expect(
-      BrandExperienceUsesSchema.safeParse([
-        { id, reason: 'Used in opening' },
-        { id, reason: 'Duplicate' },
-      ]).success,
-    ).toBe(false);
   });
 });

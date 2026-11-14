@@ -6,7 +6,7 @@ import {
 } from '@allrice/contracts';
 import * as client from './core/client.ts';
 import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
-import { createExperienceFixture } from './experience.fixture.ts';
+import { createCompletedRunFixture } from './completed-run.fixture.ts';
 import {
   getUserPreferences,
   updateUserPreferences,
@@ -27,7 +27,7 @@ suite('account output preferences', () => {
     if (fixture) await fixture.close();
   });
   it('saves account capability configuration in isolation and preserves concurrent display changes', async () => {
-    const f = await createExperienceFixture(fixture.db);
+    const f = await createCompletedRunFixture(fixture.db);
     const capabilities = {
       [cloudProjectCapabilityId]: { configVersion: 1, enabled: true },
     };
@@ -67,7 +67,7 @@ suite('account output preferences', () => {
     });
   });
   it('defaults on, persists for a normal member across workspaces, and isolates other users', async () => {
-    const f = await createExperienceFixture(fixture.db);
+    const f = await createCompletedRunFixture(fixture.db);
     expect(await getUserPreferences(f.owner)).toEqual(defaultUserPreferences);
     expect((await getUserPreferences(f.owner)).streamingOutput).toBe(true);
     const saved = await updateUserPreferences(f.owner, {
@@ -92,7 +92,7 @@ suite('account output preferences', () => {
     expect((await getUserPreferences(f.owner)).streamingOutput).toBe(false);
   });
   it('updates one display preference without resetting other fields, including concurrent saves', async () => {
-    const f = await createExperienceFixture(fixture.db);
+    const f = await createCompletedRunFixture(fixture.db);
     await updateUserPreferences(f.owner, {
       streamingOutput: true,
       collapseTiming: 'next-input',
@@ -138,7 +138,7 @@ suite('account output preferences', () => {
     );
   });
   it('rejects invalid display values without changing the saved account', async () => {
-    const f = await createExperienceFixture(fixture.db);
+    const f = await createCompletedRunFixture(fixture.db);
     const saved = await updateUserPreferences(f.owner, { fontSize: 22 });
     for (const update of [
       { fontSize: 9 },
@@ -152,7 +152,7 @@ suite('account output preferences', () => {
     expect(await getUserPreferences(f.owner)).toEqual(saved);
   });
   it('retains the streaming default when first saving a display preference or inserting a new account row', async () => {
-    const f = await createExperienceFixture(fixture.db);
+    const f = await createCompletedRunFixture(fixture.db);
     const saved = await updateUserPreferences(f.owner, { fontSize: 16 });
     expect(saved.streamingOutput).toBe(true);
     const [inserted] = await fixture.db`
@@ -163,7 +163,7 @@ suite('account output preferences', () => {
     expect((await getUserPreferences(f.neighbor)).streamingOutput).toBe(true);
   });
   it('defaults appearance to light and saves each choice without touching other preferences', async () => {
-    const f = await createExperienceFixture(fixture.db);
+    const f = await createCompletedRunFixture(fixture.db);
     expect((await getUserPreferences(f.owner)).appearance).toBe('light');
     await updateUserPreferences(f.owner, {
       fontSize: 18,
@@ -202,7 +202,7 @@ suite('account output preferences', () => {
     });
   });
   it('rejects invalid appearance values in the service and the table', async () => {
-    const f = await createExperienceFixture(fixture.db);
+    const f = await createCompletedRunFixture(fixture.db);
     const saved = await updateUserPreferences(f.owner, { appearance: 'dark' });
     for (const update of [
       { appearance: 'auto' },
@@ -227,7 +227,7 @@ suite('account output preferences', () => {
   });
   // MET-210 (user 10-27): DSH's own question wait and subagent settings.
   it('saves each agent preference group alone and keeps the other choices', async () => {
-    const f = await createExperienceFixture(fixture.db);
+    const f = await createCompletedRunFixture(fixture.db);
     await updateUserPreferences(f.owner, { appearance: 'dark', fontSize: 18 });
     const timed = await updateUserPreferences(f.owner, {
       questionWait: { mode: 'timed', seconds: 300 },
@@ -262,7 +262,7 @@ suite('account output preferences', () => {
     expect(await getUserPreferences(f.owner)).toEqual(forever);
   });
   it('resets either subagent override to null without changing other preferences', async () => {
-    const f = await createExperienceFixture(fixture.db);
+    const f = await createCompletedRunFixture(fixture.db);
     await updateUserPreferences(f.owner, {
       appearance: 'dark',
       questionWait: { mode: 'timed', seconds: 300 },
@@ -289,7 +289,7 @@ suite('account output preferences', () => {
   });
   // Rebuilds the pre-0222 column set inside this suite's schema.
   it('migration 0222 sets existing rows to light and keeps their other choices', async () => {
-    const f = await createExperienceFixture(fixture.db);
+    const f = await createCompletedRunFixture(fixture.db);
     await updateUserPreferences(f.owner, {
       streamingOutput: false,
       fontSize: 18,
@@ -338,7 +338,7 @@ suite('account output preferences', () => {
   });
 
   it('migration 0223 leaves DSH defaults unset on existing and new rows and enforces native ranges', async () => {
-    const f = await createExperienceFixture(fixture.db);
+    const f = await createCompletedRunFixture(fixture.db);
     const before = await updateUserPreferences(f.owner, {
       streamingOutput: false,
       fontSize: 18,

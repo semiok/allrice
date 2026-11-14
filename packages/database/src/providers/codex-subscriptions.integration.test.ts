@@ -10,7 +10,7 @@ import {
 } from 'vitest';
 import * as client from '../core/client.ts';
 import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
-import { createExperienceFixture } from '../experience.fixture.ts';
+import { createCompletedRunFixture } from '../completed-run.fixture.ts';
 import {
   listCodexSubscriptions,
   readEnabledCodexSubscription,
@@ -33,11 +33,11 @@ const suite =
     : describe.skip;
 suite('Codex slots: isolated PostgreSQL, no credentials or model calls', () => {
   let db: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
-  let f: Awaited<ReturnType<typeof createExperienceFixture>>;
+  let f: Awaited<ReturnType<typeof createCompletedRunFixture>>;
   beforeAll(async () => {
     db = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(db.db);
-    f = await createExperienceFixture(db.db);
+    f = await createCompletedRunFixture(db.db);
   }, 120000);
   beforeEach(async () => {
     await db.db`delete from allrice_provider_authorization_flows`;

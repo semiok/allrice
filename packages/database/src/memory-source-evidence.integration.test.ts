@@ -6,13 +6,12 @@ import { parsePersonalSkill } from '@allrice/skill-import';
 import { runtimePolicyDigest } from './runtime-policy.ts';
 import * as client from './core/client.ts';
 import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
-import { createExperienceFixture } from './experience.fixture.ts';
+import { createCompletedRunFixture } from './completed-run.fixture.ts';
 import { enableSyntheticMemorySourceCollection } from './memory-source.fixture.ts';
 import { approveSyntheticCurrentEmployeeExecution } from './current-execution.fixture.ts';
 import { collectPendingMemorySources } from './memory-source-evidence.ts';
 import * as sourceScenes from './memory-source-scenes.ts';
 import { memorySourceCaptureEnabled } from './memory-source-capture.ts';
-import { collectPendingExperienceEvidence } from './experience-evidence.ts';
 import {
   markMemorySourcePending,
   memorySourceProducer,
@@ -62,7 +61,7 @@ suite(
       personal = false,
       withSkill = false,
     ) {
-      const f = await createExperienceFixture(db, { authenticated: true });
+      const f = await createCompletedRunFixture(db, { authenticated: true });
       await enableSyntheticMemorySourceCollection(db, f.org);
       const [assignment] =
         await db`select employee_assignment_id id from allrice_employee_runs where run_id=${f.run}`;
@@ -176,7 +175,7 @@ suite(
           where organization_id=${f.org} and workspace_id=${f.workspace}
             and owner_id=${f.neighbor.actor.id} and id=${source.id}`,
         ).toEqual([]);
-        await collectPendingExperienceEvidence({ database: db });
+        await collectPendingMemorySources({ database: db });
         expect(await rows(f.runId)).toEqual(captured);
         expect(
           await db`select id from allrice_memories
@@ -187,11 +186,6 @@ suite(
           await db`select id from allrice_memory_revisions
           where organization_id=${f.org} and workspace_id=${f.workspace}
             and memory_id=${source.id}`,
-        ).toEqual([]);
-        expect(
-          await db`select memory_id from allrice_experience_reviews
-          where organization_id=${f.org} and workspace_id=${f.workspace}
-            and owner_id=${f.user} and (message_id=${f.messageId} or memory_id=${source.id})`,
         ).toEqual([]);
       },
     );
@@ -573,9 +567,6 @@ suite(
       expect(count!.count).toBe(0);
       expect(
         await db`select id from allrice_memories where source_id=${f.messageId}`,
-      ).toEqual([]);
-      expect(
-        await db`select memory_id from allrice_experience_reviews where evidence->>'captureRunId'=${f.runId}`,
       ).toEqual([]);
     });
   },

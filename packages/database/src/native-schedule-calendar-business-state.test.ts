@@ -55,11 +55,12 @@ describe('calendar immutable business decisions', () => {
       NativeCalendarDecisionSchema.parse({ ...queued, ...patch }),
     ).toThrow();
   });
-  it('allows policy cancellation without forging a native writer or receipt', () => {
+  it('allows an exact operation cancellation without forging a native writer or receipt', () => {
     expect(
       NativeCalendarDecisionSchema.parse({
         ...queued,
-        kind: 'policy',
+        kind: 'operation',
+        operationId: id(30),
         outcome: 'canceled',
         revision: 2,
         receiptOccurrenceId: null,
@@ -89,7 +90,7 @@ describe('calendar immutable business decisions', () => {
       initialArmId: id(21),
       revisionDigest: nativeOnceDigest('revision'),
       createdAt: '2027-01-01T00:00:00.000Z',
-      cause: { kind: 'policy', policyRevision: 3 },
+      cause: { kind: 'operation', operationId: id(30) },
     });
     expect(plan.businessScheduledFor).toBe(P);
     expect(() =>

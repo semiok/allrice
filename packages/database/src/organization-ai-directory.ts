@@ -15,7 +15,6 @@ import { DataAccessError } from './data.ts';
 import { OrganizationSharedReader } from './organization-shared-reader.ts';
 import { getOrganizationSharedEmployeeDetails } from './employees/employee-content.ts';
 import { getReferenceFile } from './reference-library.ts';
-import { readExperienceSummary } from './experience-overview.ts';
 import {
   requireTenantAdministrationAuthority,
   requireTenantAdministrationTarget,
@@ -266,7 +265,6 @@ function instanceMetadata(row: Record<string, unknown>) {
         ? {
             sceneCount: row.scene_count,
             referenceCount: row.reference_count,
-            automaticExperience: 'policy_managed',
           }
         : null,
   });
@@ -327,13 +325,6 @@ export async function getOrganizationAiSharedDetails(
         organizationId,
         userId,
         visibility: 'shared_only',
-        experienceSummary: await readExperienceSummary(sql, {
-          organizationId,
-          workspaceId: instance.workspaceId,
-          ownerId: userId,
-          instanceId: instance.id,
-          available: instance.state === 'active',
-        }),
         details: await getOrganizationSharedEmployeeDetails(
           reader,
           instance,
