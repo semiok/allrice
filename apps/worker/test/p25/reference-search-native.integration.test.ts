@@ -40,6 +40,17 @@ suite(
       f = await createRuntimeFixtureDatabase();
       vi.spyOn(database, 'getDatabase').mockReturnValue(f.db);
       x = await referenceToolFixture(f);
+      // Explicit policy in this isolated fixture, independent of development defaults.
+      const controls = {
+        version: 1,
+        enabled: true,
+        mode: 'execute',
+        rules: [],
+      };
+      await f.db`insert into allrice_runtime_policy_controls(organization_id,workspace_id,version,controls)
+        values(${x.context.organizationId},${x.context.workspaceId},1,${f.db.json(controls)})
+        on conflict(organization_id,workspace_id) do update
+          set version=excluded.version,controls=excluded.controls`;
     }, 120000);
     afterAll(async () => {
       vi.restoreAllMocks();
