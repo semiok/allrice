@@ -1,76 +1,45 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { createOffice } from '../../apps/worker/dist/office/create.js';
+import { readFile } from 'node:fs/promises';
 import { checkOfficeExport } from '../../apps/worker/dist/office/quality.js';
 import { renderOffice } from '../../packages/office-runtime/dist/index.js';
-import { OfficeCreateSchema } from '../../packages/contracts/dist/index.js';
 
 const require = createRequire(
   new URL('../../apps/worker/package.json', import.meta.url),
 );
 const ExcelJS = require('exceljs');
+// Current rendering acceptance uses fixed synthetic files and a native workbook,
+// independently of the retired model-facing structured Office editor.
+const workbook = new ExcelJS.Workbook();
+const details = workbook.addWorksheet('明细');
+details.addRow(['编号', '金额', '合计', '错误示例']);
+details.addRow(['00123', 30, { formula: 'B2*2' }, { formula: '1/0' }]);
+const summary = workbook.addWorksheet('汇总');
+summary.addRow(['跨表公式', '文字结果', '布尔结果']);
+summary.addRow([
+  { formula: "SUM('明细'!B2:C2)" },
+  { formula: '"已完成"' },
+  { formula: '1=1' },
+]);
 const examples = [
   {
     kind: 'docx',
-    title: 'Office 验收',
-    blocks: [
-      { type: 'heading', text: '中文标题' },
-      { type: 'table', headers: ['名称', '金额'], rows: [['保留文本', 30]] },
-    ],
+    bytes: await readFile(
+      new URL('./fixtures/office/fixed.docx', import.meta.url),
+    ),
   },
-  {
-    kind: 'xlsx',
-    sheets: [
-      {
-        name: '明细',
-        columns: [
-          { header: '编号' },
-          { header: '金额' },
-          { header: '合计' },
-          { header: '错误示例' },
-        ],
-        rows: [['00123', 30, { formula: 'B2*2' }, { formula: '1/0' }]],
-      },
-      {
-        name: '汇总',
-        columns: [
-          { header: '跨表公式' },
-          { header: '文字结果' },
-          { header: '布尔结果' },
-        ],
-        rows: [
-          [
-            { formula: "SUM('明细'!B2:C2)" },
-            { formula: '"已完成"' },
-            { formula: '1=1' },
-          ],
-        ],
-      },
-    ],
-  },
+  { kind: 'xlsx', bytes: Buffer.from(await workbook.xlsx.writeBuffer()) },
   {
     kind: 'pptx',
-    title: 'Office 验收',
-    slides: [
-      {
-        title: '收入趋势',
-        chart: {
-          type: 'bar',
-          labels: ['八月', '九月'],
-          series: [{ name: '收入', values: [12, 20] }],
-        },
-      },
-      {
-        title: '数据明细',
-        table: { headers: ['编号', '金额'], rows: [['00123', 30]] },
-      },
-    ],
+    bytes: await readFile(
+      new URL('./fixtures/office/fixed.pptx', import.meta.url),
+    ),
   },
 ];
 await Promise.all(
   examples.map(async (input) => {
-    const file = await createOffice(OfficeCreateSchema.parse(input));
+    const file = input;
     const checked = await checkOfficeExport(file.bytes, input.kind);
     assert.equal(
       checked.quality.status,

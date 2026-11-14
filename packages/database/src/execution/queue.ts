@@ -3367,13 +3367,6 @@ export async function appendJobEvent(input: {
           }
         }
         if (input.type === 'harness.native') {
-          const { recordEmployeeMethodActivationQuestion } =
-            await import('../employees/employee-method-activation-question.ts');
-          await recordEmployeeMethodActivationQuestion(
-            transaction,
-            job,
-            payload,
-          );
           await recordTaskQuestion(transaction, job.run_id, payload);
           await recordNativeQuestions(transaction, job.run_id, payload);
           await refreshTaskClock(transaction, job.run_id);

@@ -146,8 +146,6 @@ async function preservation(tx: Tx, sessionId: string) {
       union all select 'reminder',to_jsonb(r) from allrice_brand_content_reminders r where session_id=${sessionId}
       union all select 'workflow_start',to_jsonb(s) from allrice_brand_content_workflow_starts s where session_id=${sessionId}
       union all select 'content_context',to_jsonb(c) from allrice_employee_content_contexts c where session_id=${sessionId}
-      union all select 'method_test',to_jsonb(t) from allrice_employee_method_tests t where source_session_id=${sessionId}
-      union all select 'method_activation',to_jsonb(a) from allrice_employee_method_activations a where session_id=${sessionId}
       union all select 'skill_import',to_jsonb(i) from allrice_personal_skill_imports i where session_id=${sessionId}
       union all select 'skill_operation',to_jsonb(o) from allrice_personal_skill_version_operations o where session_id=${sessionId}
       union all select 'company_input',to_jsonb(a) from allrice_company_run_assets a where run_id in (select run_id from roots)

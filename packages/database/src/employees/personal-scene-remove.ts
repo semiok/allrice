@@ -10,7 +10,7 @@ import { DataAccessError } from '../data.ts';
 import { runtimePolicyDigest } from '../runtime-policy-digest.ts';
 import { getEmployeeInstance } from './employee-instances.ts';
 import { canUsePersonalEmployeeScenes } from './employee-instance-policy.ts';
-import { resolveEmployeeMethodTarget } from './employee-method-target.ts';
+import { resolvePersonalEmployeeContentTarget } from './employee-content-target.ts';
 import { mutateEmployeeContentInTransaction } from './employee-content.ts';
 import { EmployeeContentError } from './employee-content-model.ts';
 import { parsePersonalSceneContentRef } from './personal-scene-skills.ts';
@@ -40,10 +40,9 @@ export async function removePersonalSceneSkill(
         throw new DataAccessError('not_found');
     };
     await authorize();
-    const target = await resolveEmployeeMethodTarget(
+    const target = await resolvePersonalEmployeeContentTarget(
       context,
       instanceId,
-      undefined,
       tx,
     );
     if (pin.setId !== target.setId)

@@ -155,7 +155,6 @@ lines.on('line', (line) => {
         version: `${process.env.DSH_DISTRIBUTION_VERSION ?? '0.2.1-rc.2'}-fake`,
       },
       capabilities: {
-        personalMethodToolsOnly: 1,
         employeeDocumentsSchemaVersion:
           frame.params.employeeDocumentsSchemaVersion ?? 1,
         runAdmission: true,

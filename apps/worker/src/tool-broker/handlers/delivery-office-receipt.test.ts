@@ -13,7 +13,6 @@ const ports = vi.hoisted(() => ({
   put: vi.fn(),
   remove: vi.fn(),
   content: vi.fn(),
-  office: vi.fn(),
   native: vi.fn(),
   quality: vi.fn(),
 }));
@@ -39,9 +38,6 @@ vi.mock('@allrice/storage', () => ({
 vi.mock('../../deliverable-generator.js', () => ({
   generateDeliverable: ports.content,
 }));
-vi.mock('../../office/export.js', () => ({
-  generateOfficeExport: ports.office,
-}));
 vi.mock('../../office/native.js', () => ({
   generateNativeOfficeExport: ports.native,
 }));
@@ -59,17 +55,13 @@ const hash = (bytes: Uint8Array) =>
   `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 const source = Buffer.from('generator bytes'),
   final = Buffer.from('post-cache-patch bytes');
-function setup(
-  mode: 'native' | 'office' | 'content' = 'native',
-  workbench = true,
-) {
+function setup(mode: 'native' | 'content' = 'native', workbench = true) {
   const args: Record<string, unknown> = {
     format: 'xlsx',
     fileName: 'reconciliation.xlsx',
   };
   if (mode === 'native')
     args.python = { script: 'synthetic fixture', inputs: [] };
-  if (mode === 'office') args.office = { kind: 'synthetic fixture' };
   if (mode === 'content') args.content = 'synthetic fixture';
   const input = {
     context: { runId: randomUUID(), workspaceId: randomUUID() },
@@ -91,7 +83,6 @@ function setup(
     changes: undefined,
   };
   ports.content.mockResolvedValue(generated);
-  ports.office.mockResolvedValue(generated);
   ports.native.mockResolvedValue(generated);
   const checked = {
     bytes: final,
@@ -155,10 +146,8 @@ describe('Office receipts through existing publication ports', () => {
   });
   it.each([
     ['native', true],
-    ['office', true],
     ['content', true],
     ['native', false],
-    ['office', false],
     ['content', false],
   ] as const)(
     'preserves final bytes and identical facts for %s / workbench=%s',

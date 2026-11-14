@@ -47,7 +47,6 @@ export function buildPlatformContentCatalogMetadata(
       version: skill.version,
       checksum: skill.checksum,
       sourceRef: skill.sourceRef,
-      ...(skill.replaces?.length ? { replaces: skill.replaces } : {}),
       ...(skill.bundle ? { bundleChecksum: skill.bundle.checksum } : {}),
     })),
     authority: 'skills/catalog.json',

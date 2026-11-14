@@ -6,10 +6,7 @@ import {
   EmployeeMemoryDetailResponseSchema,
   EmployeeMemoryWriteResponseSchema,
   MemoryRevisionSchema,
-  ExecutionContextSchema,
   makeObjectKey,
-  type EmployeeInstanceSnapshot,
-  type EmployeeRuntimeContent,
   type EmployeeMemoryRecord,
   type RequestContext,
 } from '@allrice/contracts';
@@ -24,7 +21,6 @@ import {
 import {
   ensureGeneralEmployeeInstance,
   createEmployeeInstance,
-  prepareEmployeeInstanceSnapshot,
 } from './employees/employee-instances.ts';
 import {
   createTraceableMemory,
@@ -35,9 +31,7 @@ import {
   memoryPairDigest,
 } from './workspace/employee-memory.ts';
 import { freezeEmployeeDocuments } from './employees/employee-documents.ts';
-import { freezeEmployeeRuntimeContent } from './employees/employee-content.ts';
-import { prepareEmployeeContentContext } from './employees/employee-runtime-content.ts';
-import { enterMethodChat } from './employees/employee-method-chat.ts';
+
 import { contextCheckpointChecksum } from './conversation/conversation-checkpoint.ts';
 
 const ports = vi.hoisted(() => ({ context: vi.fn() }));
@@ -609,204 +603,6 @@ suite(
         pending: 0,
         maxActive: 100,
       });
-    });
-
-    it('rejects old promote/PATCH receipts after real method entry excludes their source, retaining current and DELETE replay', async () => {
-      const instanceId = randomUUID();
-      let frozen:
-        | {
-            instance: EmployeeInstanceSnapshot;
-            content: EmployeeRuntimeContent;
-          }
-        | undefined;
-      const run = await setup({
-        allowedTools: ['workspace.employee.method.inspect'],
-        preparePrompt: async (tx, identity) => {
-          // Initial isolated custom-instance fixture; freeze through real
-          // readers before the Run's immutable execution snapshot is inserted.
-          const creation = {
-            workspaceId: identity.workspaceId,
-            assignmentId: identity.employeeAssignmentId,
-            requestId: randomUUID(),
-            profile: {},
-          };
-          await tx`insert into allrice_employee_instances
-            (id,organization_id,workspace_id,owner_id,assignment_id,kind,creation_version_id,creation_request_id,creation_input)
-            values(${instanceId},${identity.organizationId},${identity.workspaceId},${identity.userId},${identity.employeeAssignmentId},'custom',${identity.employeeVersionId},${creation.requestId},${tx.json(creation)})`;
-          await tx`insert into allrice_employee_instance_revisions(instance_id,revision,profile,operation)
-            values(${instanceId},1,'{}','create')`;
-          await tx`update allrice_chat_sessions set employee_instance_id=${instanceId} where id=${identity.sessionId}`;
-          const owner = {
-            actor: { type: 'user' as const, id: identity.userId },
-            organizationId: identity.organizationId,
-            workspaceId: identity.workspaceId,
-          };
-          frozen = {
-            instance: await prepareEmployeeInstanceSnapshot(
-              owner,
-              identity.sessionId,
-              identity.employeeAssignmentId,
-              identity.employeeVersionId,
-              tx,
-            ),
-            content: await freezeEmployeeRuntimeContent(
-              owner,
-              {
-                instanceId,
-                employeeId: identity.executionSnapshot.employee.id,
-                employeeVersionId: identity.employeeVersionId,
-              },
-              tx,
-            ),
-          };
-          return { userRequest: '查看我的工作场景候选' };
-        },
-        snapshot: (value) => {
-          if (!frozen) throw new Error('method fixture must freeze first');
-          return { ...value, ...frozen };
-        },
-      });
-      // HTTP helpers select the custom instance, not its source assignment.
-      const f = { ...run, assignment: instanceId };
-      const [policy] = await fixture.db<
-        {
-          payload: Record<string, unknown>;
-          issued_at: Date;
-          expires_at: Date;
-        }[]
-      >`select payload,issued_at,expires_at from allrice_policy_snapshots where id=${f.policy}`;
-      const context = ExecutionContextSchema.parse({
-        executionId: randomUUID(),
-        runId: f.rootRunId,
-        jobId: f.worker.jobId,
-        worker: { type: 'worker', id: f.worker.workerId },
-        delegatedBy: { type: 'user', id: f.user },
-        organizationId: f.org,
-        workspaceId: f.workspace,
-        startedAt: new Date().toISOString(),
-        policySnapshot: {
-          ...policy!.payload,
-          id: f.policy,
-          organizationId: f.org,
-          subjectId: f.user,
-          version: 1,
-          issuedAt: policy!.issued_at.toISOString(),
-          expiresAt: policy!.expires_at.toISOString(),
-        },
-      });
-      const [source] = await fixture.db<
-        {
-          user_message_id: string;
-          method_authoring: boolean;
-          attempt: number;
-        }[]
-      >`select er.user_message_id,er.method_authoring,j.attempt from allrice_employee_runs er
-        join allrice_jobs j on j.run_id=er.run_id where er.run_id=${f.rootRunId}`;
-      expect(source!.method_authoring).toBe(false);
-      const runtime = await prepareEmployeeContentContext({
-        organizationId: f.org,
-        workspaceId: f.workspace,
-        ownerId: f.user,
-        sessionId: f.session,
-        runId: f.rootRunId,
-      });
-      expect(runtime).not.toBeNull();
-      const receipts: {
-        id: string;
-        replay: () => Promise<Response>;
-        before: unknown;
-      }[] = [];
-      for (const action of ['promote', 'patch'] as const) {
-        const candidate = await createTraceableMemory(
-          f.context,
-          {
-            workspaceId: f.workspace,
-            instanceId,
-            sourceType: 'message',
-            sourceId: source!.user_message_id,
-            lifecycleState: 'candidate',
-            content: `进入方法前的普通${action}候选`,
-            idempotencyKey: randomUUID(),
-          },
-          context,
-        );
-        const row = await read(f, candidate.id);
-        const input = {
-          ...cas(f, row),
-          ...(action === 'patch'
-            ? {
-                summary: '本人保存确认',
-                details: '保留完整限定',
-                reason: '本人编辑',
-              }
-            : {}),
-        };
-        const replay = () =>
-          action === 'promote'
-            ? promote(request(f, 'POST', undefined, input), params(row.id))
-            : edit(request(f, 'PATCH', undefined, input), params(row.id));
-        const saved = await replay();
-        expect(saved.status).toBe(200);
-        const result = EmployeeMemoryWriteResponseSchema.parse(
-          await saved.json(),
-        );
-        expect(result.memory.state).toBe('active');
-        const before = await snapshot(row.id);
-        const currentReplay = await replay();
-        expect(currentReplay.status).toBe(200);
-        expect(await currentReplay.json()).toEqual(result);
-        expect(await snapshot(row.id)).toEqual(before);
-        receipts.push({ id: row.id, replay, before });
-      }
-      const unrelated = await add(f);
-      const deletion = cas(f, unrelated.memory);
-      const replayDelete = () =>
-        remove(
-          request(f, 'DELETE', undefined, deletion),
-          params(unrelated.memory.id),
-        );
-      expect((await replayDelete()).status).toBe(204);
-      const deleted = await snapshot(unrelated.memory.id);
-
-      // Same production boundary used by method inspection. It validates the
-      // current owner/instance, frozen capability, Run, job/lease and context;
-      // this test never directly updates method_authoring or any memory row.
-      expect(
-        await enterMethodChat(
-          {
-            context,
-            sessionId: f.session,
-            userMessageId: source!.user_message_id,
-            worker: {
-              attempt: source!.attempt,
-              leaseToken: f.worker.leaseToken,
-            },
-            callId: randomUUID(),
-            arguments: { view: 'candidate' },
-          },
-          'workspace.employee.method.inspect',
-          true,
-          async (_tx, instance) => instance.id,
-        ),
-      ).toBe(instanceId);
-      const [classified] =
-        await fixture.db`select er.method_authoring,c.retired_at
-        from allrice_employee_runs er join allrice_employee_content_contexts c
-          on c.generation_id=er.content_generation_id where er.run_id=${f.rootRunId}`;
-      expect(classified!.method_authoring).toBe(true);
-      expect(classified!.retired_at).not.toBeNull();
-      const list = await page(f);
-      expect(list.counts).toEqual({ active: 0, pending: 0, maxActive: 100 });
-      for (const receipt of receipts) {
-        expect(list.active.map((row) => row.id)).not.toContain(receipt.id);
-        expect(
-          (await detail(request(f, 'GET'), params(receipt.id))).status,
-        ).toBe(404);
-        await conflict(await receipt.replay(), 'idempotency_conflict');
-        expect(await snapshot(receipt.id)).toEqual(receipt.before);
-      }
-      expect((await replayDelete()).status).toBe(204);
-      expect(await snapshot(unrelated.memory.id)).toEqual(deleted);
     });
 
     it.each([

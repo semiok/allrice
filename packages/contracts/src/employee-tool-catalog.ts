@@ -274,7 +274,6 @@ export type EmployeeSkillChoice = {
   id: string;
   name?: string;
   requiredToolRefs: readonly string[];
-  replaces?: readonly string[];
 };
 
 export function employeeToolDependencySources(
@@ -285,9 +284,7 @@ export function employeeToolDependencySources(
   const add = (names: string[], label: string) => {
     for (const name of names) sources[name] = [...(sources[name] ?? []), label];
   };
-  const selected = new Set(
-    resolveEmployeeSkillIds(definition.capabilities.nativeSkillIds, skills),
-  );
+  const selected = new Set(definition.capabilities.nativeSkillIds);
   for (const skill of skills.filter((skill) => selected.has(skill.id)))
     add(
       resolveEmployeeToolDependencies(skill.requiredToolRefs),
@@ -305,43 +302,11 @@ export function employeeToolDependencySources(
   return sources;
 }
 
-/** Only new drafts are upgraded. Published packages retain their frozen IDs. */
-export function resolveEmployeeSkillIds(
-  selected: readonly string[],
-  skills: readonly EmployeeSkillChoice[],
-) {
-  const replacements = new Map(
-    skills.flatMap((skill) =>
-      (skill.replaces ?? []).map((id) => [id, skill.id] as const),
-    ),
-  );
-  return [...new Set(selected.map((id) => replacements.get(id) ?? id))];
-}
-
-export function upgradeEmployeeSkillBindings(
-  definition: PlatformEmployeeDefinition,
-  skills: readonly EmployeeSkillChoice[],
-): PlatformEmployeeDefinition {
-  const ids = resolveEmployeeSkillIds(
-    definition.capabilities.nativeSkillIds,
-    skills,
-  );
-  if (
-    JSON.stringify(ids) ===
-    JSON.stringify(definition.capabilities.nativeSkillIds)
-  )
-    return definition;
-  return assembleEmployeeCapabilities(definition, skills);
-}
-
 export function assembleEmployeeCapabilities(
   definition: PlatformEmployeeDefinition,
   skills: readonly EmployeeSkillChoice[],
 ): PlatformEmployeeDefinition {
-  const nativeSkillIds = resolveEmployeeSkillIds(
-    definition.capabilities.nativeSkillIds,
-    skills,
-  );
+  const nativeSkillIds = [...new Set(definition.capabilities.nativeSkillIds)];
   const selectedSkills = new Set(nativeSkillIds);
   // With no provenance, preserve every historical tool as an explicit choice.
   const explicitToolNames = [

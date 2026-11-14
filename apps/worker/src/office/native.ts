@@ -17,7 +17,7 @@ import {
 } from '../cloud-runner/backend.js';
 import { HandlerError } from '../errors.js';
 import type { RiceToolExecutionInput } from '../tool-broker/types.js';
-import { readOfficeBytes } from './export.js';
+import { readOfficeBytes } from './read-bytes.js';
 import { OfficePackage, officeError, officeMediaTypes } from './package.js';
 import { executeManagedOffice } from './managed-python.js';
 

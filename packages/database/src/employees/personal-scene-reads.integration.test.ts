@@ -922,7 +922,6 @@ suite(
       const s = await setup(),
         first = await save(s),
         run = await runtime(s);
-      const platform = await loadPlatformContentCatalog();
       const oldName = `p18-${publication.skillId}`;
       const [frozen] =
         await f.db`select native_skills from allrice_employee_runs where run_id=${run.scope.runId}`;
@@ -931,18 +930,26 @@ suite(
           (skill: { name: string }) => skill.name === oldName,
         ),
       ).toBe(true);
-      await synchronizePlatformContent({
-        ...platform,
-        catalogChecksum: 'sha256:' + '9'.repeat(64),
-        skills: platform.skills.map((skill, index) =>
-          index === 0
-            ? {
-                ...skill,
-                replaces: [...(skill.replaces ?? []), publication.skillId],
-              }
-            : skill,
-        ),
+      await synchronizePlatformContent(await loadPlatformContentCatalog());
+      const [catalogRow] =
+        await f.db`select value from allrice_runtime_metadata where key='platform-content-catalog'`;
+      const [platformSkill] =
+        await f.db`select id,name,version,checksum,source_ref,bundle,enabled from allrice_platform_dsh_skills where id=${publication.skillId}`;
+      // A managed disabled source leaves current discovery, while the active
+      // Run still owns its original exact native namespace.
+      const metadata = structuredClone(catalogRow!.value);
+      metadata.skills.push({
+        id: platformSkill!.id,
+        name: platformSkill!.name,
+        version: platformSkill!.version,
+        checksum: platformSkill!.checksum,
+        sourceRef: platformSkill!.source_ref,
+        ...(platformSkill!.bundle
+          ? { bundleChecksum: platformSkill!.bundle.checksum }
+          : {}),
       });
+      await f.db`update allrice_runtime_metadata set value=${f.db.json(metadata)} where key='platform-content-catalog'`;
+      await f.db`update allrice_platform_dsh_skills set enabled=false where id=${publication.skillId}`;
       try {
         const next = await save(s, '2.0.0', first, oldName);
         expect(
@@ -972,7 +979,8 @@ suite(
           ).nativeName,
         ).toBe(oldName);
       } finally {
-        await synchronizePlatformContent(platform);
+        await f.db`update allrice_runtime_metadata set value=${f.db.json(catalogRow!.value)} where key='platform-content-catalog'`;
+        await f.db`update allrice_platform_dsh_skills set enabled=${platformSkill!.enabled} where id=${publication.skillId}`;
       }
     });
 

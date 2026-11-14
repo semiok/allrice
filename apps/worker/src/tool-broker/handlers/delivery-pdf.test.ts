@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { officeMediaTypes } from '@allrice/contracts';
 import type * as Database from '@allrice/database';
 import { ArtifactPublicationParentError } from '@allrice/database';
-import type * as OfficeExport from '../../office/export.js';
 import type * as Deliverable from '../../deliverable-generator.js';
 import type { RiceToolExecutionInput } from '../types.js';
 
@@ -19,7 +18,6 @@ const mocks = vi.hoisted(() => ({
   object: vi.fn(),
   workbench: vi.fn(),
   content: vi.fn(),
-  legacy: vi.fn(),
   python: vi.fn(),
   quality: vi.fn(),
 }));
@@ -50,10 +48,6 @@ vi.mock('../../office/native.js', () => ({
 }));
 vi.mock('../../office/quality.js', () => ({
   checkOfficeExport: mocks.quality,
-}));
-vi.mock('../../office/export.js', async (original) => ({
-  ...(await original<typeof OfficeExport>()),
-  generateOfficeExport: mocks.legacy,
 }));
 import {
   createWorkspaceExport,
@@ -234,9 +228,9 @@ describe('Office-to-PDF in the existing export publisher', () => {
       delete args.officePdf;
       delete args.location;
       args.format = 'docx';
-      args.office = {};
+      args.python = { script: 'synthetic fixture', inputs: [] };
       args.officeReceipt = { quality: { status: 'checked', pageCount: 9999 } };
-      mocks.legacy.mockResolvedValue({
+      mocks.python.mockResolvedValue({
         bytes: original,
         mediaType: officeMediaTypes.docx,
         extension: '.docx',
@@ -336,7 +330,6 @@ describe('Office-to-PDF in the existing export publisher', () => {
   it.each([
     { content: 'duplicate' },
     { python: {} },
-    { office: {} },
     { format: 'docx' },
     { artifactKind: 'changeset' },
   ])(
@@ -356,7 +349,7 @@ describe('Office-to-PDF in the existing export publisher', () => {
     },
   );
 
-  it('keeps content PDF generation and legacy Office quality on their existing paths', async () => {
+  it('keeps content PDF generation and native Office quality on their existing paths', async () => {
     const { input } = setup();
     mocks.content.mockResolvedValue({
       bytes: rawPdf,
@@ -383,11 +376,11 @@ describe('Office-to-PDF in the existing export publisher', () => {
     expect(mocks.preview).not.toHaveBeenCalled();
     expect(mocks.quality).not.toHaveBeenCalled();
     const office = {
-      fileName: 'legacy-office',
+      fileName: 'native-office',
       format: 'docx',
-      office: { kind: 'docx', title: '旧结构路径', blocks: [] },
+      python: { script: 'synthetic fixture', inputs: [] },
     };
-    mocks.legacy.mockResolvedValue({
+    mocks.python.mockResolvedValue({
       bytes: original,
       mediaType: officeMediaTypes.docx,
       extension: '.docx',
@@ -399,10 +392,11 @@ describe('Office-to-PDF in the existing export publisher', () => {
       input: { ...input, call: { ...input.call, arguments: office } },
       arguments: office,
     });
-    expect(mocks.legacy).toHaveBeenCalledWith(
+    expect(mocks.python).toHaveBeenCalledWith(
       expect.anything(),
       'docx',
-      office.office,
+      office.python,
+      undefined,
     );
     expect(mocks.quality).toHaveBeenCalledWith(original, 'docx', {
       cloudQualityAllowed: true,
