@@ -1,6 +1,5 @@
 /** Isolated synthetic sources only. No model or shared Dev access. */
 import { createHash, randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { MemorySourceEvidenceSchema } from '@allrice/contracts';
 import { parsePersonalSkill } from '@allrice/skill-import';
@@ -8,19 +7,16 @@ import { runtimePolicyDigest } from './runtime-policy.ts';
 import * as client from './core/client.ts';
 import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createExperienceFixture } from './experience.fixture.ts';
+import { enableSyntheticMemorySourceCollection } from './memory-source.fixture.ts';
 import { approveSyntheticCurrentEmployeeExecution } from './current-execution.fixture.ts';
 import { collectPendingMemorySources } from './memory-source-evidence.ts';
+import * as sourceScenes from './memory-source-scenes.ts';
+import { memorySourceCaptureEnabled } from './memory-source-capture.ts';
 import { collectPendingExperienceEvidence } from './experience-evidence.ts';
 import {
   markMemorySourcePending,
   memorySourceProducer,
 } from './memory-source-capture.ts';
-import { createExperienceStore } from './experience.ts';
-import { getExperienceOverview } from './experience-overview.ts';
-import {
-  readExperiencePolicy,
-  updateExperiencePolicy,
-} from './experience-consolidation.ts';
 import {
   createChatSession,
   sendChatMessage,
@@ -52,7 +48,7 @@ suite(
       db = fixture.db;
       vi.spyOn(client, 'getDatabase').mockImplementation(() => db);
       approveSyntheticCurrentEmployeeExecution();
-      vi.stubEnv('ALLRICE_EXPERIENCE_REVIEW_ENABLED', '1');
+      vi.stubEnv('ALLRICE_MEMORY_SOURCE_CAPTURE_ENABLED', '1');
     }, 120000);
     afterAll(async () => {
       vi.restoreAllMocks();
@@ -67,6 +63,7 @@ suite(
       withSkill = false,
     ) {
       const f = await createExperienceFixture(db, { authenticated: true });
+      await enableSyntheticMemorySourceCollection(db, f.org);
       const [assignment] =
         await db`select employee_assignment_id id from allrice_employee_runs where run_id=${f.run}`;
       const instance = personal
@@ -134,8 +131,7 @@ suite(
       };
     }
     async function rows(runId: string) {
-      return db`select e.*,m.content,m.lifecycle_state,m.trust_level,m.archived_at from allrice_experience_reviews e
-      join allrice_memories m on m.id=e.memory_id where e.evidence->>'captureRunId'=${runId}`;
+      return db`select * from allrice_memory_sources where capture_run_id=${runId}`;
     }
     it.each([false, true])(
       'captures raw human text without a wordlist; Rice/personal=%s, hidden and not effective',
@@ -150,10 +146,7 @@ suite(
         expect(source).toMatchObject({
           owner_id: f.user,
           instance_id: f.instanceId,
-          content: text,
           source_excerpt: text,
-          lifecycle_state: 'candidate',
-          trust_level: 'derived',
         });
         expect(source.source_digest).toBe(
           'sha256:' + createHash('sha256').update(text).digest('hex'),
@@ -168,20 +161,38 @@ suite(
             relatedRunId: null,
           },
         );
-        expect(await createExperienceStore().list(f.owner)).toEqual([]);
         expect(
-          (await getExperienceOverview(f.owner, f.instanceId)).summary.counts,
-        ).toMatchObject({ pendingSources: 0, awaitingValidation: 0 });
+          await listWorkspaceMemories(f.owner, f.workspace, undefined, {
+            instanceId: f.instanceId,
+          }),
+        ).toEqual([]);
+        await expect(
+          listWorkspaceMemories(f.neighbor, f.workspace, undefined, {
+            instanceId: f.instanceId,
+          }),
+        ).rejects.toThrow();
         expect(
-          (
-            await listWorkspaceMemories(f.owner, f.workspace, undefined, {
-              instanceId: f.instanceId,
-            })
-          ).some((m) => m.id === source.memory_id),
-        ).toBe(false);
-        expect(await createExperienceStore().list(f.neighbor)).toEqual([]);
+          await db`select id from allrice_memory_sources
+          where organization_id=${f.org} and workspace_id=${f.workspace}
+            and owner_id=${f.neighbor.actor.id} and id=${source.id}`,
+        ).toEqual([]);
         await collectPendingExperienceEvidence({ database: db });
-        expect((await rows(f.runId))[0]!.lifecycle_state).toBe('candidate');
+        expect(await rows(f.runId)).toEqual(captured);
+        expect(
+          await db`select id from allrice_memories
+          where organization_id=${f.org} and workspace_id=${f.workspace}
+            and owner_id=${f.user} and (source_id=${f.messageId} or id=${source.id})`,
+        ).toEqual([]);
+        expect(
+          await db`select id from allrice_memory_revisions
+          where organization_id=${f.org} and workspace_id=${f.workspace}
+            and memory_id=${source.id}`,
+        ).toEqual([]);
+        expect(
+          await db`select memory_id from allrice_experience_reviews
+          where organization_id=${f.org} and workspace_id=${f.workspace}
+            and owner_id=${f.user} and (message_id=${f.messageId} or memory_id=${source.id})`,
+        ).toEqual([]);
       },
     );
     it.each(['ready', 'deleted', 'other_owner', 'expired'] as const)(
@@ -247,7 +258,7 @@ suite(
         await db`update allrice_employee_runs set experience_capture_state=${state},experience_capture_reason='old_reason' where run_id=${f.runId}`;
         await f.finish();
         await collect();
-        expect(await rows(f.runId)).toEqual([]);
+        expect(await rows(f.runId)).toHaveLength(1);
         const [run] =
           await db`select experience_capture_state s,experience_capture_reason r from allrice_employee_runs where run_id=${f.runId}`;
         expect(run).toEqual({ s: state, r: 'old_reason' });
@@ -270,10 +281,9 @@ suite(
       const f = await setup(mode === 'oversize' ? 'x'.repeat(4001) : undefined);
       await f.finish();
       if (mode === 'watermark' || mode === 'off')
-        await db`insert into allrice_settings(scope_type,scope_id,key,value)
-          select 'organization',${f.org},key,jsonb_set(value,${mode === 'off' ? '{frequency}' : '{collectionStartedAt}'}::text[],
-            ${db.json(mode === 'off' ? 'off' : new Date(Date.now() + 60000).toISOString())})
-          from allrice_settings where scope_type='system' and key='employee_experience_policy'`;
+        await db`update allrice_settings set value=jsonb_set(value,${mode === 'off' ? '{enabled}' : '{collectionStartedAt}'}::text[],
+          ${db.json(mode === 'off' ? false : new Date(Date.now() + 60000).toISOString())})
+          where scope_type='organization' and scope_id=${f.org} and key='employee_memory_source_policy'`;
       if (mode === 'membership')
         await db`update allrice_memberships set active=false where user_id=${f.user}`;
       if (mode === 'assignment')
@@ -303,7 +313,7 @@ suite(
       await collect();
       expect(await rows(f.runId)).toEqual([]);
       const [run] =
-        await db`select experience_capture_state s from allrice_employee_runs where run_id=${f.runId}`;
+        await db`select memory_source_capture_state s from allrice_employee_runs where run_id=${f.runId}`;
       expect(run!.s).toBe('ignored');
     });
     it('rejects a historical source with an unknown execution snapshot', async () => {
@@ -324,7 +334,7 @@ suite(
         values(${runId},${f.org},${f.workspace},${f.user},'succeeded','{}','{}')`;
       await db`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,employee_assignment_id,
           employee_version_id,session_id,user_message_id,assistant_message_id,status,completed_at,provider_snapshot,
-          prompt_snapshot,execution_snapshot,experience_capture_state,experience_capture_reason)
+          prompt_snapshot,execution_snapshot,memory_source_capture_state,memory_source_capture_reason)
         select ${runId},organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,${history!.session_id},
           ${messageId},${assistantId},'succeeded',clock_timestamp(),'{}','{}',
           jsonb_set(execution_snapshot,'{schemaVersion}','0'),'pending',${memorySourceProducer}
@@ -332,21 +342,21 @@ suite(
       await collect();
       expect(await rows(runId)).toEqual([]);
       const [run] =
-        await db`select experience_capture_state s,experience_capture_reason r from allrice_employee_runs where run_id=${runId}`;
+        await db`select memory_source_capture_state s,memory_source_capture_reason r from allrice_employee_runs where run_id=${runId}`;
       expect(run).toEqual({ s: 'ignored', r: 'source_unproven' });
     });
     it('leaves pending provenance untouched while the existing capture feature is disabled', async () => {
       const f = await setup();
       await f.finish();
-      vi.stubEnv('ALLRICE_EXPERIENCE_REVIEW_ENABLED', '0');
+      vi.stubEnv('ALLRICE_MEMORY_SOURCE_CAPTURE_ENABLED', '0');
       try {
         expect(await collect()).toEqual({ captured: 0, ignored: 0, busy: 0 });
         expect(await rows(f.runId)).toEqual([]);
         const [run] =
-          await db`select experience_capture_state s,experience_capture_reason r from allrice_employee_runs where run_id=${f.runId}`;
+          await db`select memory_source_capture_state s,memory_source_capture_reason r from allrice_employee_runs where run_id=${f.runId}`;
         expect(run).toEqual({ s: 'pending', r: memorySourceProducer });
       } finally {
-        vi.stubEnv('ALLRICE_EXPERIENCE_REVIEW_ENABLED', '1');
+        vi.stubEnv('ALLRICE_MEMORY_SOURCE_CAPTURE_ENABLED', '1');
       }
       await collect();
       expect(await rows(f.runId)).toHaveLength(1);
@@ -358,9 +368,9 @@ suite(
       const [source] = await rows(f.runId);
       expect(source).toBeDefined();
       expect(await rows(f.runId)).toHaveLength(1);
-      await db`update allrice_memories set archived_at=now() where id=${source!.memory_id}`;
+      await db`update allrice_memory_sources set archived_at=now() where id=${source!.id}`;
       // Fault injection simulates an old terminal delivery, never a production reset.
-      await db`update allrice_employee_runs set experience_capture_state='pending',experience_capture_reason=${memorySourceProducer} where run_id=${f.runId}`;
+      await db`update allrice_employee_runs set memory_source_capture_state='pending',memory_source_capture_reason=${memorySourceProducer} where run_id=${f.runId}`;
       await collect();
       const captured = await rows(f.runId);
       expect(captured).toHaveLength(1);
@@ -440,144 +450,133 @@ suite(
           runId: f.runId,
         });
     });
-    it('never turns a concurrently deleted attachment into missing provenance', async () => {
-      const f = await setup(),
-        objectId = randomUUID();
-      await db`insert into allrice_storage_objects(id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,state)
-        values(${objectId},${f.org},${f.workspace},${f.user},${'synthetic/' + objectId},'uploads','text/plain',4,${'sha256:' + 'b'.repeat(64)},'ready')`;
-      await db`insert into allrice_message_attachments(organization_id,workspace_id,message_id,object_id,attached_by,file_name)
-        values(${f.org},${f.workspace},${f.messageId},${objectId},${f.user},'synthetic.txt')`;
-      await f.finish();
-      let release!: () => void, held!: (pid: number) => void;
-      const hold = new Promise<void>((r) => {
-        release = r;
-      });
-      const ready = new Promise<number>((r) => {
-        held = r;
-      });
-      const deleting = db.begin(async (tx) => {
-        await tx`update allrice_storage_objects set state='deleted',deleted_at=now() where id=${objectId}`;
-        const [backend] = await tx<
-          { pid: number }[]
-        >`select pg_backend_pid() pid`;
-        held(backend!.pid);
-        await hold;
-      });
-      const pid = await ready;
-      let finished = false;
-      const capture = collect().finally(() => {
-        finished = true;
-      });
-      void capture.catch(() => {});
-      try {
-        // A legitimate 100ms lock timeout is also safe: it must preserve the
-        // marker for the next existing tick, never commit an empty dependency.
-        await expect
-          .poll(
-            async () =>
-              finished ||
-              (
-                await db`select 1 from pg_stat_activity where ${pid}=any(pg_blocking_pids(pid))`
-              ).length > 0,
-            { timeout: 2000, interval: 5 },
-          )
-          .toBe(true);
-      } finally {
-        release();
-        await deleting;
-      }
-      const result = await capture;
-      expect(result.captured).toBe(0);
-      if (result.busy) await collect();
-      expect(await rows(f.runId)).toEqual([]);
-      const [run] =
-        await db`select experience_capture_state s,experience_capture_reason r from allrice_employee_runs where run_id=${f.runId}`;
-      expect(run).toEqual({ s: 'ignored', r: 'dependency_unavailable' });
-    });
-    it('serializes capture against the first organization policy override using the existing writer lock', async () => {
+    it.each(['attachment', 'artifact', 'policy', 'instance', 'skill'] as const)(
+      'allows current %s revocation during capture and rolls back the staged source',
+      async (mode) => {
+        const f = await setup(undefined, false, mode === 'skill');
+        const objectId = randomUUID();
+        if (mode === 'attachment' || mode === 'artifact') {
+          await db`insert into allrice_storage_objects(id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,state)
+            values(${objectId},${f.org},${f.workspace},${f.user},${'synthetic/' + objectId},'uploads','text/plain',4,${'sha256:' + 'b'.repeat(64)},'ready')`;
+          if (mode === 'attachment')
+            await db`insert into allrice_message_attachments(organization_id,workspace_id,message_id,object_id,attached_by,file_name)
+            values(${f.org},${f.workspace},${f.messageId},${objectId},${f.user},'synthetic.txt')`;
+        }
+        const versionId = randomUUID();
+        if (mode === 'artifact') {
+          await db`insert into allrice_deliverable_versions(id,organization_id,workspace_id,owner_id,object_id,series_id,version,session_id,file_name,format)
+            values(${versionId},${f.org},${f.workspace},${f.user},${objectId},${randomUUID()},1,${f.session.id},'synthetic.txt','text')`;
+          await db`insert into allrice_workbench_artifacts(version_id,organization_id,workspace_id,owner_id,run_id,kind,provenance,request_id,request_digest)
+            values(${versionId},${f.org},${f.workspace},${f.user},${f.runId},'file','{}',${randomUUID()},${'sha256:' + 'a'.repeat(64)})`;
+        }
+        if (mode === 'skill')
+          await db`insert into allrice_run_events(id,organization_id,workspace_id,run_id,sequence,event_type,payload)
+            values(${randomUUID()},${f.org},${f.workspace},${f.runId},100,'tool.completed',${db.json({ name: 'skill', nativePayload: { skillStatus: 'loaded', personalSkill: f.skill } })})`;
+        await f.finish();
+        let stagedId: string | undefined;
+        const original = sourceScenes.assertMemorySourceScenesAvailable;
+        const hook = vi
+          .spyOn(sourceScenes, 'assertMemorySourceScenesAvailable')
+          .mockImplementation(async (...args) => {
+            await original(...args);
+            if (args[2] !== f.instanceId) return;
+            const [staged] =
+              await args[0]`select id,evidence from allrice_memory_sources where capture_run_id=${f.runId}`;
+            if (!staged) return;
+            stagedId = staged.id;
+            if (mode === 'artifact')
+              expect(staged.evidence.artifacts).toEqual([
+                {
+                  runId: f.runId,
+                  versionId,
+                  objectId,
+                  checksum: 'sha256:' + 'b'.repeat(64),
+                },
+              ]);
+            // A separate transaction must commit before capture ends: no held
+            // interactive SHARE lock, no timing sleep, no replacement validator.
+            await db.begin(async (tx) => {
+              await tx`set local lock_timeout='500ms'`;
+              if (mode === 'attachment' || mode === 'artifact')
+                await tx`update allrice_storage_objects set state='deleted',deleted_at=clock_timestamp() where id=${objectId}`;
+              if (mode === 'policy')
+                await tx`update allrice_settings set value=jsonb_set(value,'{enabled}','false') where scope_type='organization' and scope_id=${f.org} and key='employee_memory_source_policy'`;
+              if (mode === 'instance')
+                await tx`update allrice_employee_instances set archived_at=clock_timestamp() where id=${f.instanceId}`;
+              if (mode === 'skill')
+                await tx`update allrice_personal_skill_bindings set enabled=false,epoch=epoch+1 where id=${f.skill.bindingId}`;
+            });
+          });
+        try {
+          await collect();
+        } finally {
+          hook.mockRestore();
+        }
+        expect(stagedId).toBeDefined();
+        expect(await rows(f.runId)).toEqual([]);
+        expect(
+          await db`select id from allrice_audit_events where action='memory.source.capture' and resource_id=${stagedId!}`,
+        ).toEqual([]);
+        const [run] =
+          await db`select memory_source_capture_state state,memory_source_capture_reason reason from allrice_employee_runs where run_id=${f.runId}`;
+        expect(run).toEqual({
+          state: 'ignored',
+          reason: 'dependency_unavailable',
+        });
+      },
+    );
+    it('uses only the new explicit feature flag, even when legacy collection is enabled', async () => {
+      expect(
+        memorySourceCaptureEnabled({
+          ALLRICE_EXPERIENCE_REVIEW_ENABLED: '1',
+          NODE_ENV: 'development',
+        }),
+      ).toBe(false);
       const f = await setup();
-      await f.finish();
-      const policy = await readExperiencePolicy(f.org, db, false);
-      let release!: () => void, held!: (pid: number) => void;
-      const hold = new Promise<void>((r) => {
-        release = r;
-      });
-      const ready = new Promise<number>((r) => {
-        held = r;
-      });
-      const blocker = db.begin(async (tx) => {
-        await tx`select id from allrice_organizations where id=${f.org} for update`;
-        const [backend] = await tx<
-          { pid: number }[]
-        >`select pg_backend_pid() pid`;
-        held(backend!.pid);
-        await hold;
-      });
-      const pid = await ready;
-      const closing = updateExperiencePolicy(f.reviewer, f.org, {
-        expectedRevision: policy.revision,
-        frequency: 'off',
-        timezone: 'Asia/Shanghai',
-        time: '03:00',
-        weekday: 1,
-        monthDay: 1,
-      });
-      // Preserve rejection while the real writer is blocked; do not fake a
-      // policy read or write the override through a test-only production seam.
-      void closing.catch(() => {});
+      vi.stubEnv('ALLRICE_MEMORY_SOURCE_CAPTURE_ENABLED', '');
+      vi.stubEnv('ALLRICE_EXPERIENCE_REVIEW_ENABLED', '1');
       try {
-        await expect
-          .poll(
-            async () =>
-              (
-                await db`select 1 from pg_stat_activity where ${pid}=any(pg_blocking_pids(pid))`
-              ).length,
-            { timeout: 2000, interval: 10 },
-          )
-          .toBeGreaterThan(0);
-        expect(await collect()).toMatchObject({ captured: 0, busy: 1 });
+        await f.finish();
+        expect(await collect()).toEqual({ captured: 0, ignored: 0, busy: 0 });
+        const [run] =
+          await db`select memory_source_capture_state,experience_capture_state from allrice_employee_runs where run_id=${f.runId}`;
+        expect(run).toEqual({
+          memory_source_capture_state: null,
+          experience_capture_state: null,
+        });
         expect(await rows(f.runId)).toEqual([]);
       } finally {
-        release();
-        await blocker;
+        vi.stubEnv('ALLRICE_MEMORY_SOURCE_CAPTURE_ENABLED', '1');
       }
-      await closing;
-      await collect();
-      expect(await rows(f.runId)).toEqual([]);
-      const [run] =
-        await db`select experience_capture_state s,experience_capture_reason r from allrice_employee_runs where run_id=${f.runId}`;
-      expect(run).toEqual({ s: 'ignored', r: 'policy_disabled' });
     });
-    it('cutover advances only the existing watermark/revision and preserves policy choices and old markers', async () => {
+    it.each(['missing', 'invalid', 'disabled'] as const)(
+      'does not inherit the legacy policy when new config is %s',
+      async (mode) => {
+        const f = await setup();
+        if (mode === 'missing')
+          await db`delete from allrice_settings where scope_type='organization' and scope_id=${f.org} and key='employee_memory_source_policy'`;
+        else
+          await db`update allrice_settings set value=${db.json(mode === 'invalid' ? { schemaVersion: 999 } : { schemaVersion: 1, enabled: false, revision: 1, collectionStartedAt: new Date(0).toISOString() })}
+        where scope_type='organization' and scope_id=${f.org} and key='employee_memory_source_policy'`;
+        await f.finish();
+        await collect();
+        expect(await rows(f.runId)).toEqual([]);
+        const [run] =
+          await db`select memory_source_capture_state state,memory_source_capture_reason reason from allrice_employee_runs where run_id=${f.runId}`;
+        expect(run).toEqual({ state: 'ignored', reason: 'policy_disabled' });
+      },
+    );
+    it('keeps old source rows and policies out of the empty memory-owned storage', async () => {
       const f = await setup();
-      await db`update allrice_employee_runs set experience_capture_state='ignored',experience_capture_reason='policy_disabled' where run_id=${f.runId}`;
-      await db`insert into allrice_settings(scope_type,scope_id,key,value)
-      select 'organization',${f.org},key,jsonb_set(value,'{frequency}','"off"') from allrice_settings
-      where scope_type='system' and key='employee_experience_policy'`;
-      const [before] =
-        await db`select value from allrice_settings where scope_type='organization' and scope_id=${f.org} and key='employee_experience_policy'`;
-      await db.unsafe(
-        await readFile(
-          new URL(
-            '../migrations/0234_memory_source_cutover.sql',
-            import.meta.url,
-          ),
-          'utf8',
-        ),
-      );
-      const [after] =
-        await db`select value from allrice_settings where scope_type='organization' and scope_id=${f.org} and key='employee_experience_policy'`;
-      expect(after!.value).toEqual({
-        ...before!.value,
-        revision: before!.value.revision + 1,
-        collectionStartedAt: after!.value.collectionStartedAt,
-      });
+      const [count] =
+        await db`select count(*)::int count from allrice_memory_sources where organization_id=${f.org}`;
+      expect(count!.count).toBe(0);
       expect(
-        Date.parse(after!.value.collectionStartedAt),
-      ).toBeGreaterThanOrEqual(Date.parse(before!.value.collectionStartedAt));
-      await f.finish();
-      await collect();
-      expect(await rows(f.runId)).toEqual([]);
+        await db`select id from allrice_memories where source_id=${f.messageId}`,
+      ).toEqual([]);
+      expect(
+        await db`select memory_id from allrice_experience_reviews where evidence->>'captureRunId'=${f.runId}`,
+      ).toEqual([]);
     });
   },
 );

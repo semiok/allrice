@@ -68,6 +68,7 @@ export * from './employees.ts';
 export * from './task-suggestions.ts';
 export * from './employee-colors.ts';
 export * from './experience.ts';
+export * from './memory-source.ts';
 export * from './employee-model-settings.ts';
 export * from './framework.ts';
 export * from './governance.ts';

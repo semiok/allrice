@@ -1735,13 +1735,18 @@ async function enqueueRunInTransaction(
         ${transaction.json(toJsonValue(executionSnapshot))},
         ${nativeExecutionBinding ? transaction.json(toJsonValue(nativeExecutionBinding)) : null},
         ${executionSnapshot.createdAt},
-        ${transaction.json(
-          options.employeeBinding.memoryContextStateV2
-            ? RunMemoryContextV2StateSchema.parse(
-                options.employeeBinding.memoryContextStateV2,
+        ${
+          executionSnapshot.schemaVersion === 2 &&
+          executionSnapshot.persona?.source.task
+            ? null
+            : transaction.json(
+                options.employeeBinding.memoryContextStateV2
+                  ? RunMemoryContextV2StateSchema.parse(
+                      options.employeeBinding.memoryContextStateV2,
+                    )
+                  : { schemaVersion: 1, pending: true },
               )
-            : { schemaVersion: 1, pending: true },
-        )}
+        }
       )
     `;
   }
