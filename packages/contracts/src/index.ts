@@ -152,6 +152,7 @@ export * from './personal-scene-reads.ts';
 export * from './employee-details.ts';
 export * from './reference-library.ts';
 export * from './reference-search.ts';
+export * from './reference-tool-grants.ts';
 
 export * from './employee-method-tests.ts';
 export * from './employee-method-file-case.ts';

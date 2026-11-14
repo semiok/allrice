@@ -28,6 +28,7 @@ import { executeCloudCommand, executePythonCommand } from './handlers/cloud.js';
 import { executeMcpTool } from './handlers/mcp.js';
 import { executeLocalMcp } from './handlers/local-mcp.js';
 import { readSkillResource } from './handlers/skill.js';
+import { executeReferenceTool } from './handlers/references.js';
 import { exportReconciliation } from './handlers/reconciliation.js';
 import {
   executeLocalBridgeTool,
@@ -83,6 +84,8 @@ function researchHandler(name: ResearchToolName): RiceToolHandler {
  * a manifest-backed tool without registering its handler fails typecheck.
  */
 export const riceToolHandlerRegistry = Object.freeze({
+  'workspace.reference.search': registration('workspace', executeReferenceTool),
+  'workspace.reference.read': registration('workspace', executeReferenceTool),
   'workspace.brand_content.read': registration('workspace', readBrandContent),
   'workspace.employee.method.prepare_activation': registration(
     'workspace',

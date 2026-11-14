@@ -12,6 +12,14 @@
 - 旧会话：不含 AllRice 私有事件的历史日志由当前一代的官方格式迁移器向前迁移，迁移后可继续对话（`legacy-official-migration`）；带私有事件的日志被拒绝且不改写（`legacy-format-refusal`）。按用户决定（10-25），迁不了的旧数据是测试数据，切换时不导入，不做只读归档。
 - 仍待消除的例外：当前一代仍写 4 种 AllRice 私有事件（官方迁移器不认识它们；V0 日志已实测因此被拒，下次换代很可能同样如此，MET-221 第 1 阶段处理）；Web 的 `apps/web/app/dsh-upstream/` 是 0.1.1 UI 源码拷贝，Web 还按文件路径读取 DSH 包内的 `lib/client.*.js` 浏览器资源（两者随 Web UI 换代单独排期）。
 
+## MET247：企业资料原生检索与读取
+
+`allrice-reference-read-v1` 沿当前 `0.2.1-rc.2` 公开 `defineTool` / register 接缝声明 `workspace_reference_search` 和 `workspace_reference_read`，交给现有 Tool Broker。工具参数验证、调用、取消、结果 render 与 Agent 生命周期继续由 DSH 执行。AllRice 只补 MET-247 已批准的企业资料当前权限、精确 revision/双 checksum、现有 Worker 租约与 `reference_reads` 账本；直接使用 R2 完整正文和 PostgreSQL 字面包含索引，不接向量服务，不自建检索执行框架。
+
+只有具备既有文件读取资格的新普通 Run 衍生两项 storage:read 工具，旧冻结清单与 child 不自动扩权。全文查询、解码、分页和响应预算在内容锁外准备，返回前在现有短事务复核当前权限、冻结授权、generation/lease 与正文版本，追加实际摘录回执；搜索元数据和 coverage 同样判权。超预算不另存普通文件。出处继续沿原 R 标签、Q8 和成果来源投影，没有另一个来源状态机。
+
+回归覆盖真实对话 admission、原生 Host/Worker Broker/隔离 PG、长文末尾命中、权限变化、乐观冲突、未就绪、旧 Run 不扩权、64 条账本与重复读稳定标签。上游若提供可绑定 SaaS 当前资料权限和持久回执的等价业务工具接缝，可替换薄声明；权限与精确来源不能随工具迁移删除。MET-225 登记行由规划线同步，代码适配 id 与本段一一对应。
+
 ## MET195：原生运行关闭观察
 
 `allrice-observed-native-close-v1` 继续复用固定 `0.2.1-rc.2` 的公开 SDK shutdown、根 Context dispose 与 JSON-RPC transport flush。AllRice wrapper 逐项记录实际返回结果，最终响应排空失败使自身非零退出；Worker 等待原有子进程的 child close/stdio 关闭，并把原 owner、包、boot 与关闭观察写入不可变持久记录。物理退出、语义关闭确认和持久回执分别判断，缺失或失败保留 unknown/unconfirmed，不把历史补成成功，也不重放业务任务。

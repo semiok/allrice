@@ -33,6 +33,7 @@ import {
   AssignEmployeeVersionInputSchema,
   allRiceToolManifest,
   withEmployeeCustomizationTools,
+  freezeReferenceToolNames,
   freezeMemorySourceToolNames,
   freezeMemoryIndexToolNames,
   CreateEmployeeInputSchema,
@@ -1564,15 +1565,20 @@ export async function prepareEmployeeRunBinding(
   );
   const memoryIndex = input.employeeDocuments === true && !!instance;
   const boundToolNames = await freezeConnectedLocalToolNames(
-    (memoryIndex ? freezeMemoryIndexToolNames : freezeMemorySourceToolNames)(
-      withEmployeeCustomizationTools(
-        conversationToolNames,
+    freezeReferenceToolNames(
+      (memoryIndex ? freezeMemoryIndexToolNames : freezeMemorySourceToolNames)(
+        withEmployeeCustomizationTools(
+          conversationToolNames,
+          grantedCapabilities,
+          instance?.kind,
+          baseRice,
+        ),
         grantedCapabilities,
-        instance?.kind,
-        baseRice,
+        modelSnapshot,
       ),
       grantedCapabilities,
       modelSnapshot,
+      input.employeeDocuments === true,
     ),
     {
       organizationId: input.context.organizationId,

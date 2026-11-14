@@ -2,6 +2,14 @@
   "schemaVersion": 2,
   "patches": [
     {
+      "id": "allrice-reference-read-v1",
+      "issue": "MET-247",
+      "upstreamVersion": "0.2.1-rc.2",
+      "kind": "protocol-extension",
+      "path": "apps/worker/dsh/allrice-reference-native-tools.mjs",
+      "reason": "Public defineTool adapters expose literal publication search and exact revision reads through the existing tenant Tool Broker. AllRice owns current publication ACL, immutable full text, Worker lease and actual-read receipts; DSH retains registration, validation, cancellation, tool results and agent lifecycle. No vector service, core patch, arbitrary path or model-supplied authority."
+    },
+    {
       "id": "allrice-brand-content-read-v1",
       "issue": "MET-194",
       "upstreamVersion": "0.2.1-rc.2",

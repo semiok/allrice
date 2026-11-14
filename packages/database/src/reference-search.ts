@@ -31,6 +31,21 @@ export class ReferenceFullTextUnavailableError extends ReferenceRuntimeError {
   readonly reason = 'full_text_unavailable';
 }
 
+export class ReferenceToolResultLimitError extends Error {
+  readonly code = 'TOOL_RESULT_TOO_LARGE';
+  constructor() {
+    super('企业资料结果超过内联上限，请减少 limit 后继续读取。');
+  }
+}
+
+/** Sensitive text is never exported to an ordinary file to evade source ACLs. */
+export function boundedReferenceToolResult(value: unknown) {
+  const text = JSON.stringify(value);
+  if (text.length > referenceSearchPolicy.maximumInlineCharacters)
+    throw new ReferenceToolResultLimitError();
+  return text;
+}
+
 function queryDigest(
   context: ContentIdentity,
   query: ReferencePublicationQuery,
@@ -115,6 +130,7 @@ export async function queryReferencePublications(
 async function preparePublicationQuery(
   context: ContentIdentity,
   input: unknown,
+  includeMatches = true,
 ) {
   const query = ReferencePublicationQuerySchema.parse(input);
   if (!context.workspaceId || !(await readContentPrincipal(context)))
@@ -194,7 +210,7 @@ async function preparePublicationQuery(
   const references = candidates.slice(0, query.limit);
   const last = references.at(-1);
   const matches = [];
-  if (query.query)
+  if (query.query && includeMatches)
     for (const reference of references) {
       if (!reference.fullTextReady) continue;
       const prepared = await prepareReferenceText(
@@ -377,7 +393,11 @@ export async function prepareReferenceSearch(
   input: unknown,
 ) {
   const args = ReferenceSearchInputSchema.parse(input);
-  const { page, dependencies } = await preparePublicationQuery(context, args);
+  const { page, dependencies } = await preparePublicationQuery(
+    context,
+    args,
+    false,
+  );
   const excerpts = [];
   for (const reference of page.references) {
     if (!reference.fullTextReady) continue;

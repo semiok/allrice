@@ -20,11 +20,21 @@ import { randomUUID, createHash } from 'node:crypto';
 import {
   assertReferenceSelections,
   retrieveReferenceKnowledgeInTransaction,
+  readReferenceSelection,
   ReferenceRuntimeError,
   ReferencePublicationRuntimeError,
   hasRevokedReferencePublicationHistory,
   referencePublicationDependencyRuns,
 } from '../reference-runtime.ts';
+import { referenceSourceAccess } from '../reference-library.ts';
+import {
+  prepareReferenceText,
+  prepareReferenceSearch,
+  referenceTextPage,
+  referenceTextCitation,
+  boundedReferenceToolResult,
+  type PreparedReferenceText,
+} from '../reference-search.ts';
 import {
   EmployeeContentManifestSchema,
   EmployeeRuntimeContentSchema,
@@ -33,6 +43,9 @@ import {
   ReferenceReadSchema,
   ReferenceReadsSchema,
   ReferenceSelectionsSchema,
+  ReferenceSearchInputSchema,
+  ReferenceReadInputSchema,
+  type ReferenceToolName,
   type ReferenceRead,
   type KnowledgeRetrievalResult,
   type EmployeeRuntimeContent,
@@ -1783,6 +1796,187 @@ export async function loadEmployeeRuntimeReferences(
   });
   if ('rejected' in result) return unavailable();
   return result.knowledge;
+}
+
+/** The private Worker closure supplies Run/generation/lease. Tool arguments
+ * cannot substitute another caller, and frozen old Runs gain no new grants. */
+export async function executeEmployeeReferenceTool(
+  scope: RunScope,
+  generationId: string,
+  worker: ContentWorker,
+  toolName: ReferenceToolName,
+  input: unknown,
+  signal?: AbortSignal,
+) {
+  const args =
+    toolName === 'workspace.reference.search'
+      ? ReferenceSearchInputSchema.parse(input)
+      : ReferenceReadInputSchema.parse(input);
+  const reader = identity(scope);
+  async function authority(tx: ContentSql, locked: boolean) {
+    const run = await ownedRun(scope, tx);
+    const [grant] =
+      await tx`select run_id from allrice_employee_runs where run_id=${scope.runId}
+      and execution_snapshot->'capabilitySnapshot'->'grantedCapabilities' ? 'storage:read'
+      and execution_snapshot->'capabilitySnapshot'->'bindings'->'toolNames' ? ${toolName}`;
+    if (
+      !grant ||
+      run.content_generation_id !== generationId ||
+      !(await validContentLease(scope, worker, tx)) ||
+      !(await generationIsReadable(
+        scope,
+        generationId,
+        tx,
+        reader,
+        new Set(),
+        locked,
+      ))
+    )
+      return unavailable();
+    signal?.throwIfAborted();
+    return run;
+  }
+  await authority(getDatabase(), false);
+  // Full scans, extraction decoding, offsets and response formatting are outside
+  // content/admission locks. Only exact authority and the receipt append commit.
+  const search =
+    'query' in args ? await prepareReferenceSearch(reader, args) : null;
+  const read =
+    'revisionId' in args ? await prepareReferenceText(reader, args) : null;
+  const excerpts = search
+    ? search.excerpts
+    : read && 'offset' in args
+      ? (() => {
+          const page = referenceTextPage(read, args.offset, args.limit);
+          return [
+            { prepared: read, page, result: referenceTextCitation(read, page) },
+          ];
+        })()
+      : [];
+  const metadata = (selection: PreparedReferenceText['selection']) => ({
+    sourceId: selection.sourceId,
+    revisionId: selection.revisionId,
+    revision: selection.revision,
+    digest: selection.digest,
+    checksum: selection.checksum,
+    fileName: selection.fileName,
+    purpose: selection.purpose,
+  });
+  const response = (results: KnowledgeRetrievalResult[]) => {
+    const excerpt = (entry: (typeof excerpts)[number]) => {
+      const result = results.find(
+        (value) =>
+          value.citation.reference?.revisionId ===
+          entry.prepared.selection.revisionId,
+      );
+      if (!result) return unavailable();
+      return {
+        ...entry.page,
+        citation: {
+          id: result.citation.id,
+          label: result.citation.label,
+          referenceLabel: result.citation.referenceLabel,
+        },
+      };
+    };
+    return search
+      ? {
+          results: search.references.map((reference) => {
+            const entry = excerpts.find(
+              (item) =>
+                item.prepared.selection.revisionId === reference.revisionId,
+            );
+            return {
+              sourceId: reference.sourceId,
+              revisionId: reference.revisionId,
+              revision: reference.revision,
+              digest: reference.manifestDigest,
+              checksum: reference.checksum,
+              fileName: reference.fileName,
+              purpose: reference.purpose,
+              processing: reference.processing,
+              fullTextReady: reference.fullTextReady,
+              ...(entry ? { excerpt: excerpt(entry) } : {}),
+            };
+          }),
+          nextCursor: search.nextCursor,
+          fullTextCoverage: search.fullTextCoverage,
+        }
+      : { ...metadata(read!.selection), ...excerpt(excerpts[0]!) };
+  };
+  // The longest allowed R label is reserved so budget validation precedes locks.
+  boundedReferenceToolResult(
+    response(
+      excerpts.map((entry) => ({
+        ...entry.result,
+        citation: { ...entry.result.citation, referenceLabel: 'R64' },
+      })),
+    ),
+  );
+  return withContentLocks(scope, async (tx) => {
+    const run = await authority(tx, true);
+    // Coverage is also protected metadata: recheck every counted publication,
+    // including authorized not-ready entries that yielded no excerpt.
+    for (const dependency of [...(search?.dependencies ?? [])].sort((a, b) =>
+      a.sourceId.localeCompare(b.sourceId),
+    )) {
+      const current = await referenceSourceAccess(
+        reader,
+        dependency.sourceId,
+        tx,
+        false,
+        true,
+      );
+      if (
+        !current.publication ||
+        current.publication.revision !==
+          dependency.publication!.audienceRevision
+      )
+        throw new ReferenceRuntimeError();
+    }
+    for (const entry of [...excerpts].sort((a, b) =>
+      a.prepared.selection.sourceId.localeCompare(
+        b.prepared.selection.sourceId,
+      ),
+    )) {
+      const current = await readReferenceSelection(
+        reader,
+        entry.prepared.selection.revisionId,
+        tx,
+        true,
+      );
+      if (
+        !current.publication ||
+        runtimePolicyDigest(current.selection) !==
+          runtimePolicyDigest(entry.prepared.selection)
+      )
+        throw new ReferenceRuntimeError();
+      const [document] =
+        await tx`select id from allrice_knowledge_documents where id=${entry.prepared.document.id}
+        and xmin::text=${entry.prepared.document.version} and active for share`;
+      if (!document) throw new ReferenceRuntimeError();
+    }
+    signal?.throwIfAborted();
+    const results = await recordReferenceReads(
+      tx,
+      scope,
+      run,
+      generationId,
+      worker,
+      [
+        {
+          origin: { kind: 'tool', toolName },
+          results: excerpts.map((entry) => entry.result),
+        },
+      ],
+    );
+    if (!(await validContentLease(scope, worker, tx))) return unavailable();
+    signal?.throwIfAborted();
+    return {
+      modelContent: boundedReferenceToolResult(response(results)),
+      itemCount: search ? search.references.length : 1,
+    };
+  });
 }
 
 /** Worker completion reads committed receipts, including earlier attempts and

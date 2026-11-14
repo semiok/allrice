@@ -89,6 +89,7 @@ import { skillNativeTools } from './allrice-skill-native-tools.mjs';
 import { reconciliationNativeTools } from './allrice-reconciliation-native-tools.mjs';
 import { employeeProfileNativeTools } from './allrice-employee-profile-native-tools.mjs';
 import { fileReadNativeTools } from './allrice-file-read-native-tools.mjs';
+import { referenceNativeTools } from './allrice-reference-native-tools.mjs';
 import { brandContentNativeTools } from './allrice-brand-content-native-tools.mjs';
 import { technicalNativeTools } from './allrice-technical-native-tools.mjs';
 import { workbenchNativeTools } from './allrice-workbench-native-tools.mjs';
@@ -131,6 +132,7 @@ export async function createAllRiceRuntime(
   const codexCredentialKey = credentialKey('llm-pi-ai', 'openai-codex');
   const maximumNativeSkillBodyBytes = 500_000;
   const brokerNativeTools = [
+    ...referenceNativeTools,
     ...fileReadNativeTools,
     ...brandContentNativeTools,
     ...employeeProfileNativeTools,
