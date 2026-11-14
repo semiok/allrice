@@ -8,6 +8,7 @@ import { referenceToolFixture } from '../../../../packages/database/src/referenc
 import { changeReferencePublication } from '../../../../packages/database/src/reference-library.ts';
 import {
   executeEmployeeReferenceTool,
+  loadEmployeeRuntimeReferences,
   assertEmployeeContentContext,
 } from '../../../../packages/database/src/employees/employee-runtime-content.ts';
 import { executeRiceTool, riceToolDefinitions } from '../../src/tool-broker.js';
@@ -18,6 +19,13 @@ import {
 } from '../../src/harness/dsh-protocol-client.js';
 import { DSH_DISTRIBUTION_CURRENT_VERSION } from '../../src/harness/dsh-distribution.js';
 import { p24Fixture } from '../p24/fixture.js';
+
+import {
+  appendJobEvent,
+  completeJob,
+} from '../../../../packages/database/src/execution/queue.ts';
+import { finalDeliveryTextDigest } from '../../../../packages/database/src/final-delivery-commit.ts';
+import { createRunDeliveryPort } from '../../src/final-delivery/run-delivery.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -37,6 +45,121 @@ suite(
       vi.restoreAllMocks();
       await f?.close();
     }, 30000);
+
+    it.each(['before_check', 'before_commit'] as const)(
+      'v1.7: checked Worker completion retains read publication context withdrawn %s',
+      async (timing) => {
+        const previous = process.env.ALLRICE_WORKBENCH_ENABLED;
+        vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
+        try {
+          const published = await x.publish('预算金额为873元。');
+          const run = await x.run(undefined, [published.revisionId]),
+            worker = run.worker;
+          const withdraw = () =>
+            changeReferencePublication(x.publisher, published.sourceId, {
+              workspaceId: x.publisher.workspaceId,
+              requestId: randomUUID(),
+              expectedRevision: 1,
+              action: 'delete',
+            });
+          expect(
+            await loadEmployeeRuntimeReferences(
+              run.scope,
+              run.runtime.generationId,
+              worker,
+            ),
+          ).toHaveLength(1);
+          const [job] =
+            await f.db`select attempt from allrice_jobs where id=${worker.jobId}`;
+          const [runtime] =
+            await f.db`select thread_generation from allrice_conversation_runtimes where session_id=${run.scope.sessionId}`;
+          const native = `dsh-${run.scope.sessionId}`,
+            generation = runtime!.thread_generation,
+            turnId = `${native}:turn:1`;
+          await f.db`update allrice_conversation_runtimes set thread_id=${native},active_turn_id=${turnId} where session_id=${run.scope.sessionId}`;
+          // Synthetic Host identity only; actual Worker check and DB commit run unchanged.
+          await f.db`insert into allrice_native_session_bindings(native_session_id,organization_id,workspace_id,owner_id,context_kind,context_id,
+            storage_context_key,storage_namespace,artifact_id,artifact_manifest_digest,distribution_generation,profile_id,first_run_id,first_job_id,first_attempt,binding_basis)
+            values(${native},${run.scope.organizationId},${run.scope.workspaceId},${run.scope.ownerId},'chat',${run.scope.sessionId},${run.scope.sessionId},${'/synthetic/' + run.scope.sessionId},
+              ${'sha256:' + 'a'.repeat(64)},${'sha256:' + 'a'.repeat(64)},'fixture','restricted',${run.scope.runId},${worker.jobId},${job!.attempt},'approved_compatibility_reader')`;
+          await appendJobEvent({
+            ...worker,
+            type: 'turn.started',
+            payload: { source: 'dsh', threadId: native, turnId, generation },
+          });
+          const port = createRunDeliveryPort({
+            scope: {
+              organizationId: run.scope.organizationId,
+              workspaceId: run.scope.workspaceId,
+              projectId: null,
+            },
+            rootRunId: run.scope.runId,
+            worker: { ...worker, attempt: job!.attempt, generation },
+          });
+          const answer = '保留已读上下文，正常完成本轮答复。';
+          const candidate = {
+            nativeText: answer,
+            projectedText: answer,
+            nativeSessionId: native,
+            publicMessageId: randomUUID(),
+            durableSeq: 1,
+            nativeBindingId: randomUUID(),
+            rootRunId: run.scope.runId,
+            attempt: job!.attempt,
+            generation,
+          };
+          if (timing === 'before_check') await withdraw();
+          const decision = await port.check(candidate);
+          expect(decision.status).toBe('valid');
+          const facts = await port.readSnapshot(answer);
+          expect(facts.explicitReferenceVersionIds).toEqual([]);
+          expect(facts.artifacts).toEqual([]);
+          const origin = (await port.readOrigin())!;
+          const guard = port.createCommitGuard(
+            {
+              nativeSessionId: native,
+              publicMessageId: candidate.publicMessageId,
+              durableSeq: candidate.durableSeq,
+              nativeBindingId: candidate.nativeBindingId,
+              nativeCandidateDigest: finalDeliveryTextDigest(answer),
+              candidateDigest: decision.candidateDigest,
+              factSetDigest: decision.factSetDigest,
+              attempt: job!.attempt,
+              generation,
+            },
+            origin,
+            answer,
+          );
+          if (timing === 'before_commit') await withdraw();
+          await expect(
+            loadEmployeeRuntimeReferences(
+              run.scope,
+              run.runtime.generationId,
+              worker,
+            ),
+          ).rejects.toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
+          await completeJob({
+            ...worker,
+            result: { answer, citations: [] },
+            checkedDelivery: guard,
+          });
+          const [stored] =
+            await f.db`select r.state,r.result,m.content from allrice_runs r
+            join allrice_employee_runs er on er.run_id=r.id join allrice_messages m on m.id=er.assistant_message_id where r.id=${run.scope.runId}`;
+          expect(stored).toMatchObject({
+            state: 'succeeded',
+            result: { answer },
+            content: { text: answer },
+          });
+          const [reads] =
+            await f.db`select reference_reads from allrice_employee_runs where run_id=${run.scope.runId}`;
+          expect(reads!.reference_reads).toHaveLength(1);
+        } finally {
+          vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', previous);
+        }
+      },
+      120000,
+    );
 
     it('native search/read exposes actual retained excerpts and stable citations to the model without XML or file exports', async () => {
       const text = '完整企业政策背景。'.repeat(800) + '差旅上限为九百元。';

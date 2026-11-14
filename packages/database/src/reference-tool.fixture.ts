@@ -57,7 +57,7 @@ export async function referenceToolFixture(
   const assigned = (
     await getEmployeeWorkspace(context, source.workspaceId)
   ).employees.find((e) => e.employeeKey === source.definition.key)!;
-  async function run(sessionId?: string) {
+  async function run(sessionId?: string, referenceRevisionIds: string[] = []) {
     const session = sessionId
       ? { id: sessionId }
       : await createChatSession(context, {
@@ -72,6 +72,9 @@ export async function referenceToolFixture(
       {
         text: '查企业资料里的差旅上限并列出出处。',
         clientMessageId: randomUUID(),
+        ...(referenceRevisionIds.length
+          ? { referenceRevisionIds, deliveryMode: 'follow_up' as const }
+          : {}),
       },
     );
     const scope = {
