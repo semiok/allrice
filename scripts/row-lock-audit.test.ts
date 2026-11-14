@@ -103,6 +103,7 @@ describe('GET route handlers take no row locks', () => {
 /** The analyzer itself: each pattern below once let a read-path lock through. */
 describe('row-lock audit follows the call shapes it claims to', () => {
   let project: string;
+  let report: RouteLockReport;
   let reached: string[];
   let unresolved: string[];
   const files: Record<string, string> = {
@@ -131,6 +132,13 @@ describe('row-lock audit follows the call shapes it claims to', () => {
 };`,
     'lib/db.ts': `import type { Sql } from 'fakepg';
 export declare const sql: Sql;`,
+    'lib/diagnostics.d.mts': `export interface Diagnostics {
+  phase<T>(stage: string, body: () => T | PromiseLike<T>): Promise<T>;
+}
+export function createDiagnostics(): Diagnostics;`,
+    'lib/diagnostics.mjs': `export const createDiagnostics = () => ({
+  phase: async (stage, body) => body(),
+});`,
     'lib/reads.ts': `import { sql } from './db.ts';
 export async function readRun(lock = true) {
   await sql\`select * from runs \${lock ? sql\`for share\` : sql\`\`}\`;
@@ -252,6 +260,22 @@ export function createStore(): Store {
     'export async function GET() { await reads.createStore().read(); }',
   );
   route(
+    'interface-phase-block',
+    `import { createDiagnostics } from '../../../../../lib/diagnostics.mjs';
+export async function GET() {
+  await createDiagnostics().phase('authorize', async () => {
+    await sql\`select * from runs for share\`;
+  });
+}`,
+  );
+  route(
+    'interface-phase-expression',
+    `import { createDiagnostics } from '../../../../../lib/diagnostics.mjs';
+export async function GET() {
+  await createDiagnostics().phase('authorize', () => sql\`select * from runs for share\`);
+}`,
+  );
+  route(
     'barrier-and-read',
     'export async function GET() { await reads.renew(); await reads.readRun(); }',
   );
@@ -281,7 +305,7 @@ export const POST = () => handle(true);`,
       await mkdir(dirname(join(project, path)), { recursive: true });
       await writeFile(join(project, path), text);
     }
-    const report = createRowLockAudit(project).routeLocks(
+    report = createRowLockAudit(project).routeLocks(
       ['GET'],
       undefined,
       ['barrier-and-read', 'barrier-only'].map((name) => ({
@@ -314,6 +338,8 @@ export const POST = () => handle(true);`,
         'dynamic-key',
         'element-access',
         'interface-factory',
+        'interface-phase-block',
+        'interface-phase-expression',
         'reassigned-parameter',
         'switch-break',
         'unknown-object',
@@ -334,5 +360,23 @@ export const POST = () => handle(true);`,
     expect(
       unresolved.filter((entry) => /unsafe-(?:const|element)\//.test(entry)),
     ).toEqual([]);
+  });
+
+  it('keeps inline callback locks visible after exact review of an unresolved interface call', () => {
+    // Exact review filters unresolved targets after analysis, never traversal.
+    const reviewed = new Set(['lib/diagnostics.d.mts phase']);
+    expect(unresolved.filter((target) => reviewed.has(target))).toEqual([
+      ...reviewed,
+    ]);
+    expect(
+      report.reached
+        .filter((site) => site.clause === 'for share')
+        .flatMap((site) => site.routes),
+    ).toEqual(
+      expect.arrayContaining([
+        'apps/web/app/api/interface-phase-block/route.ts GET',
+        'apps/web/app/api/interface-phase-expression/route.ts GET',
+      ]),
+    );
   });
 });

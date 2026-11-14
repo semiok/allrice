@@ -417,7 +417,7 @@ describe('authenticated workbench HTTP boundary', () => {
     ).toBe(403);
     expect(ports.verification).not.toHaveBeenCalled();
   });
-  it('records preview failure codes without recording backend secrets', async () => {
+  it('records known preview failure codes and hashed references without recording backend secrets', async () => {
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       ports.get.mockRejectedValueOnce(
@@ -435,7 +435,7 @@ describe('authenticated workbench HTTP boundary', () => {
         'Document preview failed',
         expect.objectContaining({
           stage: 'artifact-request',
-          referenceId: id,
+          referenceHash: createHash('sha256').update(id).digest('hex'),
           causes: [
             { name: 'Error', code: 'CONNECT_TIMEOUT' },
             { name: 'Error', code: 'ETIMEDOUT' },
@@ -445,6 +445,7 @@ describe('authenticated workbench HTTP boundary', () => {
       expect(JSON.stringify(log.mock.calls)).not.toMatch(
         /SECRET_BACKEND_CONFIG|private storage URL/,
       );
+      expect(JSON.stringify(log.mock.calls)).not.toContain(id);
     } finally {
       log.mockRestore();
     }

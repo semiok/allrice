@@ -104,7 +104,7 @@
   padding: 6px 10px;
   border: 1px solid var(--dsw-alias-border-l2, #e1e5ec);
   border-radius: 9px;
-  background: var(--dsw-alias-interactive-hover, #f3f5f8);
+  background: var(--dsw-alias-interactive-bg-hover, #f3f5f8);
   color: var(--dsw-alias-label-secondary, #626975);
   font-size: 13px;
 }

@@ -4,6 +4,7 @@ import { getRequestContext } from './identity/session';
 import { sameOriginBrowserWrite } from './identity/request-origin';
 import { referenceError, referenceHeaders } from './reference-library';
 import { apiProblem } from './api-error-response';
+import type { StorageErrorOptions } from './storage/responses';
 export { referenceHeaders as workbenchFileHeaders };
 export async function workbenchFileContext(request: Request, write = false) {
   if (write && !sameOriginBrowserWrite(request))
@@ -17,12 +18,15 @@ export async function workbenchFileContext(request: Request, write = false) {
     throw new DataAccessError('authorization_denied');
   return { ...login, workspaceId };
 }
-export function workbenchFileError(error: unknown) {
+export function workbenchFileError(
+  error: unknown,
+  options?: StorageErrorOptions,
+) {
   if (error instanceof WorkbenchFileError)
     return apiProblem({
       status: error.code === 'invalid_file' ? 400 : 409,
       code: error.code === 'invalid_file' ? 'VALIDATION_FAILED' : 'CONFLICT',
       message: error.message,
     });
-  return referenceError(error);
+  return referenceError(error, options);
 }

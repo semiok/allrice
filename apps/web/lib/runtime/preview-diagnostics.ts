@@ -1,27 +1,36 @@
-/** Keep failures diagnosable without logging document contents, URLs or credentials. */
+import {
+  activePreviewDiagnostics,
+  createPreviewDiagnostics,
+} from '../../server/preview-diagnostics.mjs';
+
+export type PreviewDiagnostics = ReturnType<typeof createPreviewDiagnostics>;
+
+export async function previewPhase<T>(
+  diagnostic: PreviewDiagnostics | undefined,
+  stage: string,
+  body: () => Promise<T>,
+): Promise<T> {
+  return diagnostic ? diagnostic.phase(stage, body) : body();
+}
+
+export function previewRequestDiagnostics(request: Request) {
+  const diagnostic: PreviewDiagnostics =
+    activePreviewDiagnostics() ?? createPreviewDiagnostics();
+  const aborted = () => diagnostic.emit('abort', 'request', { aborted: true });
+  request.signal.addEventListener('abort', aborted, { once: true });
+  if (request.signal.aborted) aborted();
+  return {
+    diagnostic,
+    dispose: () => request.signal.removeEventListener('abort', aborted),
+  };
+}
+
+/** Existing callers share the same redaction, even outside the observed route. */
 export function reportPreviewFailure(
   stage: 'artifact-request' | 'office-conversion',
   error: unknown,
   referenceId?: string,
+  diagnostic = createPreviewDiagnostics(),
 ) {
-  const label = (value: unknown) =>
-    typeof value === 'string' && /^[\w-]{1,80}$/.test(value)
-      ? value
-      : undefined;
-  const causes: { name?: string; code?: string }[] = [];
-  let current = error;
-  for (let depth = 0; depth < 3 && current instanceof Error; depth++) {
-    causes.push({
-      name: label(current.name),
-      code: 'code' in current ? label(current.code) : undefined,
-    });
-    current = current.cause;
-  }
-  console.error('Document preview failed', {
-    at: new Date().toISOString(),
-    stage,
-    referenceId: label(referenceId),
-    releaseSha: label(process.env.ALLRICE_RELEASE_SHA),
-    causes,
-  });
+  diagnostic.emit('failure', stage, {}, error, referenceId);
 }

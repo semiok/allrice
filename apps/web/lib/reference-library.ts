@@ -4,7 +4,10 @@ import {
   ReferenceLibraryError,
 } from '@allrice/database';
 import { getRequestContext } from './identity/session';
-import { storageErrorResponse } from './storage/responses';
+import {
+  storageErrorResponse,
+  type StorageErrorOptions,
+} from './storage/responses';
 import { apiProblem } from './api-error-response';
 import { sameOriginBrowserWrite } from './identity/request-origin';
 
@@ -19,7 +22,7 @@ export async function referenceContext(request: Request, write = false) {
     throw new ReferenceLibraryError('request_conflict');
   return context;
 }
-export function referenceError(error: unknown) {
+export function referenceError(error: unknown, options?: StorageErrorOptions) {
   if (error instanceof ReferenceLibraryError) {
     const message = {
       version_conflict: '资料版本已更新，请刷新后重试。',
@@ -50,7 +53,7 @@ export function referenceError(error: unknown) {
           : '暂时无法读取完整成果，请稍后重试保存。',
     });
   }
-  return storageErrorResponse(error);
+  return storageErrorResponse(error, options);
 }
 export const referenceHeaders = {
   'Cache-Control': 'private, no-store',
