@@ -52,6 +52,12 @@ it('wraps both public launch methods with their receiver and restores them', () 
   expect(chromium.launchPersistentContext('/isolated-profile')).toBe('context');
   expect(calls.every((call) => call.receiver === chromium)).toBe(true);
   expect(calls[1].args[0]).toBe('/isolated-profile');
+  for (const options of [calls[0].args[0], calls[1].args[1]]) {
+    expect(options.args).toContain('--proxy-server=direct://');
+    expect(options.args).toContain(
+      '--proxy-bypass-list=*.allrice.test;allrice.test;localhost;*.localhost;127.0.0.1;[::1]',
+    );
+  }
   restore();
   expect(chromium).toEqual(original);
 });
