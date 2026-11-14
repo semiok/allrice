@@ -4589,11 +4589,77 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   it.each([1440, 390])(
     'expands tool details downward without moving the clicked header at %ipx',
     async (width) => {
+      let observed: Awaited<ReturnType<typeof fixture>> | undefined;
+      let phase = 'fixture',
+        inputPhase = 'setup',
+        lastTrace: unknown;
+      let originalFailure: unknown;
+      const measurements: unknown[] = [];
+      const readTrace = async () => {
+        if (observed && !observed.page.isClosed())
+          lastTrace = await observed.page.evaluate(() =>
+            Reflect.get(window, '__allriceToolHeaderDiagnostic')?.dump(),
+          );
+        return lastTrace;
+      };
+      const evidence = createFailureEvidence({
+        file: import.meta.url,
+        test: `tool header position at ${width}px`,
+        collect: async () => ({
+          width,
+          phase,
+          inputPhase,
+          trace: await readTrace(),
+        }),
+      });
+      const saveTrace = async (stage: string) => {
+        try {
+          const directory = resolve('.local/quality');
+          const trace = await readTrace().catch((error) => ({
+            captureError: String(error),
+            lastTrace,
+          }));
+          await mkdir(directory, { recursive: true });
+          await writeFile(
+            join(directory, `tool-header-diagnostic-${width}.json`),
+            JSON.stringify(
+              {
+                width,
+                stage,
+                phase,
+                inputPhase,
+                trace,
+                measurements,
+                originalFailure:
+                  originalFailure instanceof Error
+                    ? {
+                        message: originalFailure.message,
+                        stack: originalFailure.stack,
+                      }
+                    : originalFailure,
+                resultAuthority:
+                  'Original Vitest/native reporter; this record does not override a result',
+              },
+              null,
+              2,
+            ),
+          );
+        } catch (error) {
+          console.error('TOOL_HEADER_DIAGNOSTIC_WRITE_FAILED', error);
+        }
+      };
+      onTestFailed(async ({ task }) => {
+        originalFailure ??= task.result?.errors;
+        await saveTrace('failed-hook');
+        await evidence.capture(task.result?.errors);
+      });
       const f = await fixture({
         width,
         touch: width < 760,
         streamingOutput: false,
+        failureEvidence: evidence,
       });
+      observed = f;
       const operations = Array.from({ length: 5 }, (_, index) => ({
         snapshot: {
           status: 'succeeded',
@@ -4655,10 +4721,119 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const header = card.locator('[data-disclosure-header]');
         const toggle = header.getByRole('button');
         await toggle.waitFor();
-        await scroll.evaluate((node) => {
-          node.scrollTop = node.scrollHeight;
-          node.dispatchEvent(new Event('scroll'));
-        });
+        await scroll.evaluate(
+          (node, ids) => {
+            // Read-only observers: no extra frame, scroll, focus or input action.
+            const rows: unknown[] = [];
+            let dropped = 0,
+              phase = 'installed',
+              input = 'setup';
+            const first = node.querySelector<HTMLElement>(
+              `[data-step-id="${ids.first}"]`,
+            );
+            const next = node.querySelector<HTMLElement>(
+              `[data-step-id="${ids.next}"]`,
+            );
+            const header = first?.querySelector<HTMLElement>(
+              '[data-disclosure-header]',
+            );
+            const ports = [
+              node,
+              ...node.querySelectorAll<HTMLElement>(
+                '[data-process-scrollport]',
+              ),
+            ];
+            const rect = (element: Element | null | undefined) =>
+              element?.getBoundingClientRect().toJSON();
+            const identity = (element: EventTarget | null) =>
+              element instanceof Element
+                ? {
+                    tag: element.tagName,
+                    id: element.id,
+                    step: element
+                      .closest('[data-step-id]')
+                      ?.getAttribute('data-step-id'),
+                    disclosure: element.hasAttribute('data-disclosure-row'),
+                  }
+                : String(element);
+            const record = (kind: string, event?: Event) => {
+              if (rows.length === 512) {
+                rows.shift();
+                dropped++;
+              }
+              rows.push({
+                time: performance.now(),
+                kind,
+                phase,
+                input,
+                target: identity(event?.target ?? null),
+                active: identity(document.activeElement),
+                key: event instanceof KeyboardEvent ? event.key : undefined,
+                header: rect(header),
+                card: rect(first),
+                next: rect(next),
+                windowScrollY: window.scrollY,
+                fonts: document.fonts.status,
+                ports: ports.map((port) => ({
+                  rect: rect(port),
+                  scrollTop: port.scrollTop,
+                  clientHeight: port.clientHeight,
+                  scrollHeight: port.scrollHeight,
+                  overflowY: getComputedStyle(port).overflowY,
+                })),
+              });
+            };
+            for (const type of [
+              'pointerdown',
+              'click',
+              'keydown',
+              'focusin',
+              'focusout',
+              'scroll',
+            ])
+              for (const capture of [true, false])
+                document.addEventListener(
+                  type,
+                  (event) => {
+                    if (
+                      event.target === document ||
+                      (event.target instanceof Node &&
+                        node.contains(event.target))
+                    )
+                      record(
+                        `${type}:${capture ? 'capture' : 'bubble'}`,
+                        event,
+                      );
+                  },
+                  { capture, passive: true },
+                );
+            const observer = new ResizeObserver(() =>
+              record('resize-observer'),
+            );
+            for (const target of [...ports, first, next, header])
+              if (target) observer.observe(target);
+            Reflect.set(window, '__allriceToolHeaderDiagnostic', {
+              mark: (marker: { phase: string; input: string }) => {
+                phase = marker.phase;
+                input = marker.input;
+                record('checkpoint');
+              },
+              dump: () => ({
+                rows,
+                dropped,
+                viewport: { width: innerWidth, height: innerHeight },
+                devicePixelRatio,
+              }),
+            });
+            record('installed');
+            node.scrollTop = node.scrollHeight;
+            node.dispatchEvent(new Event('scroll'));
+          },
+          {
+            first: `operation:cloud:${id(8900)}`,
+            next: `operation:cloud:${id(8901)}`,
+          },
+        );
         const settle = () =>
           f.page.evaluate(
             () =>
@@ -4668,12 +4843,30 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                 ),
               ),
           );
-        const geometry = async () => ({
-          top: (await header.boundingBox())!.y,
-          next: (await next.boundingBox())!.y,
-          height: (await card.boundingBox())!.height,
-          scroll: await scroll.evaluate((node) => node.scrollTop),
-        });
+        const geometry = async (stage = 'geometry') => {
+          phase = stage;
+          const value = {
+            top: (await header.boundingBox())!.y,
+            next: (await next.boundingBox())!.y,
+            height: (await card.boundingBox())!.height,
+            scroll: await scroll.evaluate(
+              (node, marker) => {
+                Reflect.get(window, '__allriceToolHeaderDiagnostic')?.mark(
+                  marker,
+                );
+                return node.scrollTop;
+              },
+              { phase, input: inputPhase },
+            ),
+          };
+          measurements.push({
+            phase: stage,
+            input: inputPhase,
+            geometry: value,
+          });
+          evidence.mark(stage, { input: inputPhase, geometry: value });
+          return value;
+        };
         await settle();
         // Starting at the bottom reproduces the resize-follow jump in a finished reply.
         await expect
@@ -4684,6 +4877,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           )
           .toBeLessThan(2);
         for (const input of ['pointer', 'keyboard'] as const) {
+          inputPhase = input;
           await scroll.evaluate((node) => {
             node.scrollTop = node.scrollHeight;
             node.dispatchEvent(new Event('scroll'));
@@ -4693,12 +4887,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             await toggle.evaluate((node) =>
               node.focus({ preventScroll: true }),
             );
-          const before = await geometry();
+          const before = await geometry('before-toggle');
           if (input === 'keyboard') await toggle.press('Enter');
           else if (width < 760) await toggle.tap();
           else await toggle.click();
           await settle();
-          const after = await geometry();
+          const after = await geometry('after-toggle');
           const detailHeight = await card
             .locator(
               `[data-process-content="step:operation:cloud:${id(8900)}:details"]`,
@@ -4711,6 +4905,19 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                 parseFloat(style.marginBottom)
               );
             });
+          measurements.push({
+            phase: 'expansion-measurement',
+            input,
+            before,
+            after,
+            detailHeight,
+          });
+          evidence.mark('expansion-measurement', {
+            input,
+            before,
+            after,
+            detailHeight,
+          });
           expect(after.height - before.height).toBe(detailHeight);
           expect(detailHeight).toBeGreaterThan(100);
           expect(Math.abs(after.top - before.top)).toBeLessThan(2);
@@ -4720,17 +4927,22 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           ).toBeLessThan(2);
           await toggle.press('Space');
           await settle();
-          expect(Math.abs((await geometry()).top - before.top)).toBeLessThan(2);
+          expect(
+            Math.abs((await geometry('after-interaction')).top - before.top),
+          ).toBeLessThan(2);
         }
         // Reading older content must also keep its position on expansion.
+        inputPhase = 'older-pointer';
         await scroll.evaluate((node) => {
           node.scrollTop -= 100;
         });
         await settle();
-        const before = await geometry();
+        const before = await geometry('before-toggle');
         await toggle.click();
         await settle();
-        expect(Math.abs((await geometry()).top - before.top)).toBeLessThan(2);
+        expect(
+          Math.abs((await geometry('after-interaction')).top - before.top),
+        ).toBeLessThan(2);
         await f.page
           .getByRole('button', { name: '回到底部', exact: true })
           .click();
@@ -4742,6 +4954,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           )
           .toBeLessThan(2);
         // Inline parameters and the complete long result share one disclosure.
+        inputPhase = 'material-pointer';
         const last = f.page.locator(
           `[data-step-id="operation:cloud:${id(8904)}"]`,
         );
@@ -4790,7 +5003,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               .count(),
           ).toBe(1);
         }
+      } catch (error) {
+        originalFailure = error;
+        evidence.mark('assertion-threw', { phase, input: inputPhase, error });
+        await saveTrace('assertion-failed');
+        await evidence.capture(error);
+        throw error;
       } finally {
+        await saveTrace('finally');
+        evidence.dispose();
         await f.close();
       }
     },
