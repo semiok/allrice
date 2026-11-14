@@ -17,7 +17,6 @@ import { join, resolve } from 'node:path';
 import ExcelJS from 'exceljs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderMemoryDetailV2 } from '@allrice/contracts';
-import * as EmployeeHub from '../../../../packages/database/src/employees/employeehub.ts';
 import { readRetiredExecutionHistory } from './retired-execution-history.fixture.ts';
 import { freezeEmployeeRunExecutionBinding } from '../../../../packages/database/src/conversation/current-execution-binding.ts';
 import * as DatabaseClient from '../../../../packages/database/src/core/client.ts';
