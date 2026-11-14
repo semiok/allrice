@@ -968,41 +968,52 @@ suite(
           action: 'audience',
           audience: { scope: 'personal', departmentIds: [] },
         });
-        for (const check of [
-          () =>
-            assertEmployeeContentContext(
-              first.scope,
-              first.runtime.generationId,
-              worker,
-            ),
-          () =>
-            loadPersonalRuntimeSceneSkill(
-              first.scope,
-              first.runtime.generationId,
-              { sceneId: body.scene.id },
-              worker,
-            ),
-          () =>
-            listPersonalRuntimeSceneSkills(
-              first.scope,
-              first.runtime.generationId,
-              worker,
-            ),
-          () =>
-            loadEmployeeRuntimeReferences(
-              first.scope,
-              first.runtime.generationId,
-              worker,
-            ),
-          () => prepareEmployeeContentContext(first.scope),
-          () =>
-            assertEmployeeContentReferenceMessages(s.a, first.scope.sessionId, [
-              first.sent.assistantMessage.id,
-            ]),
-        ])
-          await expect(check()).rejects.toMatchObject({
-            code: 'EMPLOYEE_CONTENT_UNAVAILABLE',
-          });
+        // v1.7: publication access loss does not invalidate already-read history
+        // or grant/revoke the unrelated personal Workflow's own authority.
+        await expect(
+          assertEmployeeContentContext(
+            first.scope,
+            first.runtime.generationId,
+            worker,
+          ),
+        ).resolves.toBeUndefined();
+        await expect(
+          loadPersonalRuntimeSceneSkill(
+            first.scope,
+            first.runtime.generationId,
+            { sceneId: body.scene.id },
+            worker,
+          ),
+        ).resolves.toMatchObject({ skill: { sceneId: body.scene.id } });
+        await expect(
+          listPersonalRuntimeSceneSkills(
+            first.scope,
+            first.runtime.generationId,
+            worker,
+          ),
+        ).resolves.toMatchObject({
+          skills: [expect.objectContaining({ sceneId: body.scene.id })],
+        });
+        await expect(
+          prepareEmployeeContentContext(first.scope),
+        ).resolves.toMatchObject({
+          generationId: first.runtime.generationId,
+          historyFromMessageId: before!.history_from_message_id,
+        });
+        // New source reads and the default new_import still require current
+        // publication access, with each entry point's existing error contract.
+        await expect(
+          loadEmployeeRuntimeReferences(
+            first.scope,
+            first.runtime.generationId,
+            worker,
+          ),
+        ).rejects.toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
+        await expect(
+          assertEmployeeContentReferenceMessages(s.a, first.scope.sessionId, [
+            first.sent.assistantMessage.id,
+          ]),
+        ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
         expect(
           (
             await f.db`select generation_id,history_from_message_id,invalidated_at from allrice_employee_content_contexts where generation_id=${first.runtime.generationId}`
@@ -3339,7 +3350,7 @@ suite(
           evidence,
           worker,
         ),
-      ).resolves.toMatchObject({ adopted: evidence });
+      ).resolves.toEqual(evidence);
       expect(
         (
           await f.db`select invalidated_at from allrice_employee_content_contexts where generation_id=${run.runtime.generationId}`
@@ -3364,7 +3375,7 @@ suite(
           evidence,
           worker,
         ),
-      ).toMatchObject({ adopted: evidence });
+      ).toEqual(evidence);
       await releaseConversationRuntime({
         ...run.scope,
         workerId: worker.workerId,
