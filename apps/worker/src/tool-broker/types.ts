@@ -4,6 +4,7 @@ import type {
   TechnicalTaskLease,
   QualityLease,
   RunMemoryAuthority,
+  executeEmployeeReferenceTool,
 } from '@allrice/database';
 import type {
   ExecutionContext,
@@ -62,6 +63,12 @@ export interface RiceToolExecutionInput {
     contentRef: string,
     path: string,
   ) => Promise<PersonalSceneSkillResource>;
+  /** Bound by Worker to this exact Run/generation/lease; never model input. */
+  executeReferenceTool?: (
+    name: Parameters<typeof executeEmployeeReferenceTool>[3],
+    args: unknown,
+    signal?: AbortSignal,
+  ) => ReturnType<typeof executeEmployeeReferenceTool>;
   sessionId?: string;
   employeeId?: string;
   userMessageId?: string;

@@ -6,7 +6,6 @@ import {
 import { getDatabase } from './core/client.ts';
 import { readContentPrincipal } from './content-maintenance.ts';
 import { DataAccessError } from './data.ts';
-import { readReferencePublicationHistoryAccess } from './reference-runtime.ts';
 
 /** A read-only reference-dependency fact, never permission to bypass send admission. */
 export async function readSessionReferenceEligibility(
@@ -28,18 +27,10 @@ export async function readSessionReferenceEligibility(
     where id=${sessionId} and organization_id=${context.organizationId}
       and workspace_id=${workspaceId} and owner_id=${context.actor.id}`;
   if (!session) throw new DataAccessError('not_found');
-  const access = await readReferencePublicationHistoryAccess(
-    scoped,
-    sessionId,
-    sql,
-  );
   return SessionReferenceEligibilitySchema.parse({
     viewerId: context.actor.id,
     sessionId,
-    referenceEligibility: access.revoked
-      ? { canContinue: false, reason: 'publication_revoked' }
-      : access.canRead
-        ? { canContinue: true, reason: null }
-        : { canContinue: false, reason: 'current_access_lost' },
+    // Historical reference reads never revoke permission to continue chatting.
+    referenceEligibility: { canContinue: true, reason: null },
   });
 }

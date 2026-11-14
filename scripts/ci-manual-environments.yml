@@ -72,6 +72,7 @@ files:
     - packages/browser-control/src/local-preview.integration.test.ts
   browser:
     - apps/web/app/chatflow/brand-content-panel.test.tsx
+    - scripts/test-proxy.browser.test.mjs
     - apps/web/server/project-preview.test.mjs
     - scripts/m1/smoke-reply.browser.test.mjs
   browser+db:
@@ -88,6 +89,8 @@ files:
   db:
     - apps/web/lib/execution/model-failure-api.integration.test.ts
     - apps/web/lib/reference-publications.integration.test.ts
+    - apps/web/lib/reference-search.integration.test.ts
+    - apps/web/lib/reference-input.integration.test.ts
     - apps/web/lib/reference-f3.integration.test.ts
     - apps/web/lib/execution/native-subagent-authorized-query.integration.test.mjs
     - apps/web/lib/execution/native-subagent-control.integration.test.mjs

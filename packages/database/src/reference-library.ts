@@ -106,7 +106,7 @@ function object(row: FileRow): StorageObject {
     immutable: row.immutable,
   };
 }
-function scoped(context: RequestContext, workspaceId: string) {
+function scoped<T extends ContentIdentity>(context: T, workspaceId: string) {
   if (context.actor.type !== 'user')
     throw new DataAccessError('authentication_required');
   if (context.workspaceId && context.workspaceId !== workspaceId)
@@ -254,7 +254,7 @@ async function readPublicationPolicy(sourceId: string, sql: Sql, lock = false) {
 }
 
 export async function listReferenceRevisions(
-  contextInput: RequestContext,
+  contextInput: ContentIdentity,
   workspaceId: string,
   sourceId?: string,
   includeManagedFiles = false,
@@ -1467,7 +1467,7 @@ export async function referencePublicationOptions(
 }
 
 export async function listReferencePublications(
-  context: RequestContext,
+  context: ContentIdentity,
   workspaceId: string,
   sourceId?: string,
 ) {

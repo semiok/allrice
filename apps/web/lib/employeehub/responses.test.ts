@@ -2,28 +2,21 @@ import { describe, expect, it } from 'vitest';
 import { ApiErrorSchema } from '@allrice/contracts';
 import { EmployeeInstanceError } from '../../../../packages/database/src/employees/employee-instances.ts';
 import { EmployeeContentError } from '../../../../packages/database/src/employees/employee-content-model.ts';
-import {
-  EmployeeReferencePublicationRevokedError,
-  EmployeeRuntimeContentError,
-} from '../../../../packages/database/src/employees/employee-runtime-content.ts';
+import { EmployeeRuntimeContentError } from '../../../../packages/database/src/employees/employee-runtime-content.ts';
 import { employeeHubErrorResponse } from './responses';
 
 describe('employee instance content error distinctions', () => {
-  it('distinguishes permanent publication withdrawal by its structured cause, never the message', async () => {
-    const permanent = new EmployeeReferencePublicationRevokedError();
-    expect(permanent.code).toBe('EMPLOYEE_CONTENT_UNAVAILABLE');
-    for (const [cause, code] of [
-      [permanent, 'REFERENCE_PUBLICATION_REVOKED'],
-      [new EmployeeRuntimeContentError(permanent.message), 'CONFLICT'],
-    ] as const) {
-      const response = employeeHubErrorResponse(cause);
-      expect(response.status).toBe(409);
-      expect(ApiErrorSchema.parse(await response.json()).error).toMatchObject({
-        code,
-        retryable: false,
-        message: permanent.message,
-      });
-    }
+  it('does not classify historical publication wording as a continuation ban', async () => {
+    const response = employeeHubErrorResponse(
+      new EmployeeRuntimeContentError(
+        '本对话使用的企业资料已撤销或删除，请新建对话。历史记录仍可查看。',
+      ),
+    );
+    expect(response.status).toBe(409);
+    expect(ApiErrorSchema.parse(await response.json()).error).toMatchObject({
+      code: 'CONFLICT',
+      retryable: false,
+    });
   });
   it('reports retired text writes without suggesting a retry or changing the error envelope', async () => {
     const response = employeeHubErrorResponse(

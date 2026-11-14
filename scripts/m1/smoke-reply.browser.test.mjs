@@ -1,5 +1,7 @@
 // Synthetic public controls and ChatTranscript DOM; no credentials or model Run.
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
+import { crc32 } from 'node:zlib';
 import {
   afterAll,
   afterEach,
@@ -9,8 +11,21 @@ import {
   expect,
   it,
 } from 'vitest';
-import { readSmokeReply } from './smoke-reply.mjs';
+import {
+  readSmokeReply,
+  readSmokeCsvReply,
+  findSmokeCsvDelivery,
+  validateSmokeCsvPng,
+  decodeSmokeCsvPng,
+} from './smoke-reply.mjs';
 import { startSmokeWork } from './smoke-entry.mjs';
+import { AssistantMarkdown } from '../../apps/web/app/chatflow/assistant-markdown.tsx';
+
+const webRequire = createRequire(
+  new URL('../../apps/web/package.json', import.meta.url),
+);
+const { createElement } = webRequire('react');
+const { renderToStaticMarkup } = webRequire('react-dom/server');
 
 const suite =
   process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1'
@@ -292,5 +307,226 @@ suite('smoke reply evidence belongs to the requested assistant turn', () => {
         element.textContent = text;
       }, marker);
     expect((await read({ marker })).delivered).toBe(true);
+  });
+
+  const csvPrompt = '冒烟测试 scope：按渠道汇总这个 CSV，画一张柱状图。';
+  const csvId = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+  const [csvSession, csvUser, csvAssistant, csvRun, csvObject] = [
+    1, 2, 3, 4, 5,
+  ].map(csvId);
+  const csvBase = 'https://allrice.invalid';
+  const csvHref = `/api/v1/files/${csvObject}/download`;
+  const csvCaption = '渠道下单量柱状图';
+  const csvMarkdown = `![${csvCaption}](${csvHref})`;
+  const native = (text, props = {}) =>
+    renderToStaticMarkup(createElement(AssistantMarkdown, { text, ...props }));
+  const csvTurn = (body, metadata = '') =>
+    assistant(csvAssistant, body, metadata).replace(
+      `data-process-region="run-${csvAssistant}"`,
+      `data-process-region="${csvRun}"`,
+    );
+  const readCsv = () =>
+    page
+      .locator('[data-chat-scroll]')
+      .evaluate(readSmokeCsvReply, { prompt: csvPrompt });
+  const csvProof = (text = csvMarkdown) => ({
+    sessionId: csvSession,
+    userMessageId: csvUser,
+    assistantMessageId: csvAssistant,
+    runId: csvRun,
+    text,
+    objects: [
+      {
+        id: csvObject,
+        runId: csvRun,
+        sessionId: csvSession,
+        state: 'ready',
+        immutable: true,
+        format: 'png',
+        mediaType: 'image/png',
+      },
+    ],
+  });
+  async function findCsv(observed, proof = csvProof()) {
+    const { fromMarkdown } = await import(
+      webRequire.resolve('mdast-util-from-markdown')
+    );
+    return findSmokeCsvDelivery({
+      observed,
+      proof,
+      sessionId: csvSession,
+      base: csvBase,
+      fromMarkdown,
+    });
+  }
+
+  it.each([
+    ['relative native caption', csvHref, 'native-caption'],
+    ['absolute native image', `${csvBase}${csvHref}`, 'img'],
+  ])(
+    'accepts the actual %s for an extensionless authenticated file URL',
+    async (_, destination, kind) => {
+      const text = `![${csvCaption}](${destination})`;
+      const html = native(text);
+      if (kind === 'native-caption') {
+        expect(html).not.toContain('<img');
+        expect(html).toContain('imageAlt');
+      } else expect(html).toContain('<img');
+      await mount(user(csvUser, csvPrompt) + csvTurn(final(html)));
+      const observed = await readCsv();
+      expect(observed).toMatchObject({
+        userMessageId: csvUser,
+        assistantMessageId: csvAssistant,
+        runId: csvRun,
+      });
+      expect(await findCsv(observed, csvProof(text))).toMatchObject({
+        id: csvObject,
+        kind,
+      });
+    },
+  );
+  it('keeps ordinary PNG anchors through actual native Markdown', async () => {
+    const text = `[下载柱状图](${csvBase}${csvHref}?name=result.png)`;
+    await mount(user(csvUser, csvPrompt) + csvTurn(final(native(text))));
+    expect(await findCsv(await readCsv(), csvProof(text))).toMatchObject({
+      id: csvObject,
+      kind: 'anchor',
+    });
+  });
+  it('accepts a reference image rewritten by real AssistantMarkdown artifact and origin context', async () => {
+    const text = `![${csvCaption}][chart]\n\n[chart]: ${csvHref}`;
+    const fileName = '渠道下单量汇总.png';
+    const rewritten = `${csvBase}${csvHref}?name=${encodeURIComponent(fileName)}`;
+    const previous = Object.getOwnPropertyDescriptor(globalThis, 'location');
+    let html;
+    try {
+      Object.defineProperty(globalThis, 'location', {
+        configurable: true,
+        value: { origin: csvBase },
+      });
+      html = native(text, {
+        artifacts: [{ object: { id: csvObject }, version: { fileName } }],
+      });
+    } finally {
+      if (previous) Object.defineProperty(globalThis, 'location', previous);
+      else Reflect.deleteProperty(globalThis, 'location');
+    }
+    expect(html).toContain('<img');
+    expect(html).toContain(`src="${rewritten}"`);
+    expect(html).not.toContain('imageAlt');
+    await mount(user(csvUser, csvPrompt) + csvTurn(final(html)));
+    const observed = await readCsv();
+    expect(observed.images).toEqual([rewritten]);
+    expect(observed.captions).toEqual([]);
+    expect(await findCsv(observed, csvProof(text))).toMatchObject({
+      id: csvObject,
+      kind: 'img',
+    });
+  });
+  it.each([
+    'history',
+    'tool',
+    'card',
+    'sidebar',
+    'hidden',
+    'old',
+    'later',
+    'plain caption',
+  ])(
+    'rejects PNG evidence from %s even when its image and caption match',
+    async (position) => {
+      const html = native(csvMarkdown);
+      let body = '',
+        before = '',
+        after = '',
+        metadata = '',
+        outside = '';
+      if (position === 'history')
+        body = `<div data-work-reply="old" data-process-member>${html}</div>`;
+      if (position === 'tool')
+        body = `<div data-process-member><pre>${html}</pre></div>`;
+      if (position === 'card')
+        metadata = `<div class="Deliverables-module__fixture__root">${html}</div>`;
+      if (position === 'sidebar')
+        outside = `<aside>${csvPrompt}${html}<img src="${csvHref}"></aside>`;
+      if (position === 'hidden')
+        body = final(`<div hidden>${html}<img src="${csvHref}"></div>`);
+      if (position === 'old')
+        before = user('old', '旧问题') + assistant('old-answer', final(html));
+      if (position === 'later')
+        after =
+          user('later', '另一个问题') + assistant('later-answer', final(html));
+      if (position === 'plain caption') body = final(csvCaption);
+      await mount(
+        before + user(csvUser, csvPrompt) + csvTurn(body, metadata) + after,
+        outside,
+      );
+      const observed = await readCsv();
+      expect(observed.images).toEqual([]);
+      expect(observed.captions).toEqual([]);
+      await expect(findCsv(observed)).rejects.toThrow(
+        'csv_current_png_delivery_missing',
+      );
+    },
+  );
+  it('does not anchor CSV proof to a sidebar prompt or a different assistant Run', async () => {
+    await mount(
+      user('other', '另一个问题') + csvTurn(final(native(csvMarkdown))),
+      `<aside>${csvPrompt}</aside>`,
+    );
+    expect((await readCsv()).userMessageId).toBeNull();
+    await expect(findCsv(await readCsv())).rejects.toThrow(
+      'csv_turn_not_confirmed',
+    );
+    await mount(user(csvUser, csvPrompt) + csvTurn(final(native(csvMarkdown))));
+    await page
+      .locator('[data-process-region]')
+      .evaluate((region) =>
+        region.setAttribute(
+          'data-process-region',
+          '00000000-0000-4000-8000-000000000099',
+        ),
+      );
+    await expect(findCsv(await readCsv())).rejects.toThrow(
+      'csv_turn_not_confirmed',
+    );
+  });
+  it('decodes captured PNG bytes and rejects a CRC-valid but undecodable payload', async () => {
+    const url = await page.evaluate(() => {
+      const canvas = globalThis.document.createElement('canvas');
+      canvas.width = 1;
+      canvas.height = 1;
+      return canvas.toDataURL('image/png');
+    });
+    const bytes = Buffer.from(url.split(',')[1], 'base64');
+    expect(await page.evaluate(decodeSmokeCsvPng, [...bytes])).toEqual({
+      width: 1,
+      height: 1,
+    });
+    const broken = Buffer.from(bytes);
+    for (let offset = 8; offset + 12 <= broken.length;) {
+      const length = broken.readUInt32BE(offset),
+        end = offset + length + 12;
+      if (broken.toString('ascii', offset + 4, offset + 8) === 'IDAT') {
+        broken.fill(0, offset + 8, end - 4);
+        broken.writeUInt32BE(
+          crc32(broken.subarray(offset + 4, end - 4)),
+          end - 4,
+        );
+      }
+      offset = end;
+    }
+    const object = {
+      mediaType: 'image/png',
+      sizeBytes: broken.length,
+      checksum: `sha256:${createHash('sha256').update(broken).digest('hex')}`,
+    };
+    expect(validateSmokeCsvPng(broken, object, 'image/png')).toMatchObject({
+      width: 1,
+      height: 1,
+    });
+    await expect(
+      page.evaluate(decodeSmokeCsvPng, [...broken]),
+    ).rejects.toThrow();
   });
 });

@@ -2,6 +2,7 @@ import {
   DataAccessError,
   NativeQuestionError,
   ReferenceRuntimeError,
+  ReferenceSelectionUnavailableError,
   SessionReferenceError,
   sendChatMessage,
   ArtifactReviewError,
@@ -9,6 +10,7 @@ import {
   CompanyAssetError,
   CompanyRunAssetError,
 } from '@allrice/database';
+import { referenceSelectionError } from '../../../../../../lib/reference-library';
 import { sameOriginBrowserWrite } from '../../../../../../lib/identity/request-origin';
 
 import { getRequestContext } from '../../../../../../lib/identity/session';
@@ -56,6 +58,8 @@ export async function POST(
       headers: { 'Cache-Control': 'private, no-store' },
     });
   } catch (error) {
+    if (error instanceof ReferenceSelectionUnavailableError)
+      return referenceSelectionError(error);
     if (error instanceof NativeQuestionError)
       return Response.json(
         { error: { code: error.code, message: error.message } },

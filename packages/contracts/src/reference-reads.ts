@@ -14,6 +14,15 @@ export const ReferenceReadSchema = z
       z.object({ kind: z.literal('common') }).strict(),
       z
         .object({
+          kind: z.literal('tool'),
+          toolName: z.enum([
+            'workspace.reference.search',
+            'workspace.reference.read',
+          ]),
+        })
+        .strict(),
+      z
+        .object({
           kind: z.literal('scene'),
           sceneId: UuidSchema,
           sceneDigest: ChecksumSchema,

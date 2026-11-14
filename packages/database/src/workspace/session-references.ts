@@ -153,10 +153,12 @@ export async function captureSessionReferences(
   return SessionReferenceSnapshotsSchema.parse(snapshots);
 }
 
-/** Recheck admission when queued work starts; never recapture or silently omit a source. */
+/** Recheck source Session/message authority without recapturing any text.
+ * Only a Run already bound to its content context can retain publication text. */
 export async function assertSessionReferencesReadable(
   scope: Principal,
   snapshots: SessionReferenceSnapshot[],
+  mode: 'new_import' | 'frozen_context' = 'new_import',
 ) {
   if (!snapshots.length) return;
   await getDatabase().begin(async (db) => {
@@ -175,6 +177,10 @@ export async function assertSessionReferencesReadable(
         snapshot.sessionId,
         snapshot.messages.map((m) => m.id),
         db,
+        new Set(),
+        false,
+        undefined,
+        mode,
       );
     }
   });
