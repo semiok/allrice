@@ -66,7 +66,6 @@ suite(
     const writes: Write[] = [],
       failures: string[] = [];
     const reads: string[] = [];
-    let dropNextReply = false;
     let nextHold: {
       reached: (write: Write) => void;
       wait: Promise<void>;
@@ -227,11 +226,6 @@ suite(
               held.reached(write);
               await held.wait;
             }
-            if (dropNextReply) {
-              dropNextReply = false;
-              res.destroy();
-              return;
-            }
           }
           res.writeHead(result.status, Object.fromEntries(result.headers));
           res.end(Buffer.from(await result.arrayBuffer()));
@@ -366,6 +360,12 @@ suite(
         .toBe(viewerId);
       await expect.poll(() => page.getByRole('dialog').count()).toBe(1);
     }
+    function purposeInput(page: Page) {
+      // Role naming excludes this control's value from its wrapping label.
+      return page
+        .getByRole('dialog')
+        .getByRole('textbox', { name: '用途', exact: true });
+    }
     async function uploadFile(page: Page, name = '本次上传.txt') {
       await page.getByLabel('选择文件', { exact: true }).setInputFiles({
         name,
@@ -410,7 +410,7 @@ suite(
                 path.includes('category=all') && path.includes('limit=1'),
             ),
         ).toBe(true);
-        await page.getByLabel('用途', { exact: true }).fill('固定口径');
+        await purposeInput(page).fill('固定口径');
         await submit(page, '确认');
         const saved = await receipt(page);
         const [copy] =
@@ -483,7 +483,7 @@ suite(
               .getByRole('checkbox', { name: '运营部', exact: true })
               .check();
           }
-          await page.getByLabel('用途', { exact: true }).fill('普通成员发布');
+          await purposeInput(page).fill('普通成员发布');
           await submit(page, '发布');
           const saved = await receipt(page),
             current = (await directory(a, saved.sourceId)).references[0]!;
@@ -563,7 +563,7 @@ suite(
         await page
           .getByRole('checkbox', { name: '运营部', exact: true })
           .check();
-        await page.getByLabel('用途', { exact: true }).fill('保留原填写');
+        await purposeInput(page).fill('保留原填写');
         const otherTab = await page.context().newPage();
         await cookie(otherTab, b);
         await otherTab.close();
@@ -574,9 +574,7 @@ suite(
         expect(writes[start]!.body).toEqual(writes[start + 1]!.body);
         expect(writes[start]!.viewer).toBe(a.context.actor.id);
         expect(writes[start]!.result.error?.code).toBe('CONFLICT');
-        expect(
-          await page.getByLabel('用途', { exact: true }).inputValue(),
-        ).toBe('保留原填写');
+        expect(await purposeInput(page).inputValue()).toBe('保留原填写');
         expect(
           await page
             .getByRole('radio', { name: '指定部门', exact: true })
@@ -589,7 +587,7 @@ suite(
         expect(await page.getByRole('dialog').textContent()).toContain(
           '不能串号.txt',
         );
-        await page.getByLabel('用途', { exact: true }).fill('修改后的填写');
+        await purposeInput(page).fill('修改后的填写');
         await submit(page, '发布', 409);
         expect(writes.at(-1)!.body.requestId).not.toBe(
           writes[start]!.body.requestId,
@@ -618,25 +616,30 @@ suite(
       const page = await pageFor({ kind: 'upload' });
       try {
         await uploadFile(page, '响应丢失后重试.txt');
-        await page.getByLabel('用途', { exact: true }).fill('同一份副本');
+        await purposeInput(page).fill('同一份副本');
         const start = writes.length;
-        dropNextReply = true;
+        await page.route(
+          '**/api/v1/references/publications',
+          async (route) => {
+            // Commit the real request, then fail only its browser delivery.
+            await route.fetch({ maxRetries: 0 });
+            await route.abort('failed');
+          },
+          { times: 1 },
+        );
         await page.getByRole('button', { name: '发布', exact: true }).click();
         await expect.poll(() => page.getByRole('alert').count()).toBe(1);
         expect(writes[start]!.status).toBe(201);
         const sourceId = writes[start]!.result.sourceId!;
         expect((await directory(a, sourceId)).references).toHaveLength(1);
         const committed = await counts();
-        expect(
-          await page.getByLabel('用途', { exact: true }).inputValue(),
-        ).toBe('同一份副本');
+        expect(await purposeInput(page).inputValue()).toBe('同一份副本');
         await submit(page, '发布');
         expect(writes[start + 1]!.body).toEqual(writes[start]!.body);
         expect(writes[start + 1]!.result).toEqual(writes[start]!.result);
         expect((await receipt(page)).sourceId).toBe(sourceId);
         expect(await counts()).toEqual(committed);
       } finally {
-        dropNextReply = false;
         await page.context().close();
       }
     }, 60000);
@@ -670,7 +673,7 @@ suite(
               : { kind: 'file', objectId },
             replacement === 'viewer' ? b.context.actor.id : a.context.actor.id,
           );
-          await page.getByLabel('用途', { exact: true }).fill('新表单草稿');
+          await purposeInput(page).fill('新表单草稿');
           held.release();
           await (await response).finished();
           await page.evaluate(
@@ -679,9 +682,7 @@ suite(
           );
           expect(await page.getByLabel('保存回执').textContent()).toBe('[]');
           expect(await page.getByRole('alert').count()).toBe(0);
-          expect(
-            await page.getByLabel('用途', { exact: true }).inputValue(),
-          ).toBe('新表单草稿');
+          expect(await purposeInput(page).inputValue()).toBe('新表单草稿');
           expect(
             await page
               .getByRole('button', {
@@ -706,7 +707,7 @@ suite(
       const page = await pageFor({ kind: 'upload' }, a, 390);
       try {
         await uploadFile(page);
-        await page.getByLabel('用途', { exact: true }).fill('取消不发布');
+        await purposeInput(page).fill('取消不发布');
         const before = await counts(),
           requests = writes.length;
         await page.getByRole('button', { name: '取消', exact: true }).click();
