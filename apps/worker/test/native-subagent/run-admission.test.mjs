@@ -4,7 +4,10 @@ import { symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
-import { withEmployeeCustomizationTools } from '@allrice/contracts';
+import {
+  renderMemoryIndexV2,
+  withEmployeeCustomizationTools,
+} from '@allrice/contracts';
 import { gate, hold, host, text } from './fixture.mjs';
 
 const runId = 'b5834c57-e579-4794-a4b2-e9b94e5dd4bd';
@@ -61,9 +64,12 @@ it('profile writes reach the Broker only from the actual live root, never a chil
     nativeTools: ['workspace.employee.profile.update'],
     rootSystemInstructions: 'ROOT_STABLE',
     employeeDocuments: {
+      schemaVersion: 2,
       persona: 'SAME_EMPLOYEE_PERSONA',
       user: 'ROOT_USER_ONLY',
-      memory: 'ROOT_MEMORY_ONLY',
+      memory: renderMemoryIndexV2([
+        { summary: 'ROOT_MEMORY_ONLY', hasDetails: false },
+      ]),
     },
     bridge: async (method, params) => {
       if (method === 'allrice/run-authorize') return { allowed: true };

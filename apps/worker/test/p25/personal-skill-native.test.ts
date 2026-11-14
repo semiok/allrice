@@ -96,6 +96,8 @@ it.each([false, true])(
             employeeDocuments: { schemaVersion: 2, user: '', memory: '' },
             systemInstructions:
               'Load attendance-counting. Then return the fixed attendance result.',
+            rootSystemInstructions:
+              'Load attendance-counting. Then return the fixed attendance result.',
             userRequest: 'Synthetic roster',
             bootstrapConversation: '',
             authorizedMemoryContext: '',
