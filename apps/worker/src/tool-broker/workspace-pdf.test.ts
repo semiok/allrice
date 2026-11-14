@@ -1,3 +1,5 @@
+import { createRequire } from 'node:module';
+import type PptxGenJSModule from 'pptxgenjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -5,16 +7,17 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   makeObjectKey,
-  OfficeCreateSchema,
   type ExecutionContext,
   type StorageObject,
 } from '@allrice/contracts';
 import { LocalStorageAdapter } from '@allrice/storage';
 import JSZip from 'jszip';
-import { createOffice } from '../office/create.js';
 import { processNextReference } from '../reference-processing.js';
 import type * as Database from '@allrice/database';
 
+const PptxGenJS: typeof PptxGenJSModule.default = createRequire(
+  import.meta.url,
+)('pptxgenjs');
 const {
   getToolBrokerFile,
   recordToolBrokerAudit,
@@ -131,23 +134,24 @@ describe('bounded Office read preserves available text without claiming full-tex
   it.each(['missing', 'sparse'] as const)(
     'reads the same %s chart-cache PPTX through the real broker while the real Worker rejects full text',
     async (cache) => {
-      const out = await createOffice(
-        OfficeCreateSchema.parse({
-          kind: 'pptx',
-          title: '图表月报',
-          slides: [
-            { title: '可读首页', body: ['已有正文仍应可读'] },
-            {
-              title: '可读图表页',
-              chart: {
-                type: 'bar',
-                labels: ['九月', '十月'],
-                series: [{ name: '收入', values: [12, 20] }],
-              },
-            },
-          ],
-        }),
+      const presentation = new PptxGenJS();
+      const intro = presentation.addSlide();
+      intro.addText('可读首页\n已有正文仍应可读', { x: 1, y: 1, w: 8, h: 1 });
+      const slide = presentation.addSlide();
+      slide.addText('可读图表页', { x: 1, y: 0.2, w: 8, h: 0.5 });
+      slide.addChart(
+        'bar',
+        [{ name: '收入', labels: ['九月', '十月'], values: [12, 20] }],
+        { x: 1, y: 1, w: 8, h: 4 },
       );
+      const binary = await presentation.write({ outputType: 'nodebuffer' });
+      if (!Buffer.isBuffer(binary))
+        throw new Error('Expected native PPTX buffer');
+      const out = {
+        bytes: Buffer.from(binary),
+        mediaType:
+          'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      };
       const zip = await JSZip.loadAsync(out.bytes);
       const charts = zip.file(/^ppt\/charts\/chart\d+\.xml$/);
       expect(charts).toHaveLength(1);

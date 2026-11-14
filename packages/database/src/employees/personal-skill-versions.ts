@@ -23,7 +23,7 @@ import {
 } from '../content-maintenance.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
 import { getEmployeeInstance } from './employee-instances.ts';
-import { enterMethodChat } from './employee-method-chat.ts';
+import { enterEmployeeContentChat } from './employee-content-chat.ts';
 import {
   employeeChatIdentity,
   employeeChatUuid,
@@ -395,10 +395,9 @@ export async function personalSkillVersionConfirmationFiles(
   const args = PersonalSkillVersionInputSchema.parse(input.arguments);
   if (args.operation !== 'confirm') return [];
   const { scope } = employeeChatIdentity(input);
-  return enterMethodChat(
+  return enterEmployeeContentChat(
     input,
     'workspace.personal_skill.version',
-    false,
     async (tx, _instance, text) => {
       const [op] =
         await tx`select * from allrice_personal_skill_version_operations where id=${args.operationId}
@@ -455,10 +454,9 @@ export async function personalSkillVersionFromChat(input: EmployeeChatCall) {
   if (args.operation === 'update')
     throw new PersonalSkillError('source_invalid');
   const { scope } = employeeChatIdentity(input);
-  return enterMethodChat(
+  return enterEmployeeContentChat(
     input,
     'workspace.personal_skill.version',
-    false,
     async (tx, instance, text) => {
       if (!(await readContentPrincipal(scope, tx))?.writable)
         throw new DataAccessError('authorization_denied');

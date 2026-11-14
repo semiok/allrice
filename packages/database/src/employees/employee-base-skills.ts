@@ -9,6 +9,7 @@ import { getDatabase } from '../core/client.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
 import { validateFrozenSkill } from '../skill-bundles.ts';
 import { readExistingPlatformSkills } from '../platform-content/sync.ts';
+import { assertCurrentPlatformSkillSources } from '../platform-content/retired-skills.ts';
 
 const metadataSchema = z
   .object({
@@ -26,7 +27,6 @@ const metadataSchema = z
             checksum: z.string(),
             sourceRef: z.string(),
             bundleChecksum: z.string().optional(),
-            replaces: z.array(z.uuid()).optional(),
           })
           .strict(),
       )
@@ -47,6 +47,7 @@ export async function freezeEmployeeBaseSkills(
   original: DshNativeSkillSnapshot[],
   transaction?: postgres.TransactionSql,
 ) {
+  assertCurrentPlatformSkillSources(original);
   const freeze = async (sql: postgres.TransactionSql) => {
     const [record] = await sql<{ value: unknown }[]>`
       select value from allrice_runtime_metadata where key='platform-content-catalog'`;
@@ -113,12 +114,7 @@ export async function freezeEmployeeBaseSkills(
     }
     // Managed IDs follow this catalog for NEW Runs, including a disabled entry.
     // Non-catalog employee-specific Skills keep their immutable publication.
-    const replacedIds = new Set(
-      metadata.skills.flatMap((s) => s.replaces ?? []),
-    );
-    const extras = original.filter(
-      (s) => !seenIds.has(s.id) && !replacedIds.has(s.id),
-    );
+    const extras = original.filter((s) => !seenIds.has(s.id));
     for (const skill of extras) {
       validateFrozenSkill(skill);
       if (seenNames.has(skill.name))

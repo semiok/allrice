@@ -155,7 +155,7 @@ export const cloudNativeTools = [
         type: 'string',
         enum: ['javascript', 'python'],
         description:
-          'Optional runtime for inline script. Omit to preserve Node; use python for CJK charts. Frozen script references stay Node.',
+          'Optional runtime for inline script. Omit to preserve Node; use python for CJK charts. For frozenScript omit language; the verified original script selects Node or Python.',
       },
       network: sandboxNetworkParameter,
       execution: sandboxExecutionParameter,

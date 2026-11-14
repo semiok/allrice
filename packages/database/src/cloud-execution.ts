@@ -1,9 +1,3 @@
-import {
-  prepareMethodFileStep,
-  methodFileProof,
-  methodFileInputs,
-  recordMethodFilePublication,
-} from './employees/employee-method-file-runtime.ts';
 import { isCompiledRepositoryExecution } from './platform-repair-contracts.ts';
 import { cloudInputTransferScopes } from './cloud-network-authority.ts';
 import { initializeProjectServiceLease } from './project-services.ts';
@@ -21,7 +15,6 @@ import {
   normalizeCloudCommandArguments,
   SandboxExecutionPolicySchema,
   sandboxExecutionBudgetSpec,
-  EmployeeMethodFileStepSchema,
   CloudCommandSchema,
   CloudExecutionPayloadSchema,
   CloudProjectCommandSchema,
@@ -184,12 +177,9 @@ export function createCloudOperationLedger(
     assertCreateReplayAuthority: async ({ transaction, binding }) => {
       const [stored] =
         await transaction`select payload from allrice_cloud_execution_inputs where operation_id=${binding.attempt.operationId}`;
-      const [method] =
-        await transaction`select id from allrice_runs where id=${binding.task.runId} and execution_spec ? 'employeeMethodSnapshotDigest'`;
       if (
         stored?.payload?.kind === 'project' ||
-        stored?.payload?.origin?.toolName === 'workspace.project' ||
-        method
+        stored?.payload?.origin?.toolName === 'workspace.project'
       )
         await checkCloudBindingAuthority(transaction, context, binding);
     },
@@ -779,51 +769,6 @@ async function createCloudOperation(
   });
 }
 
-/** Private fixed-case entry. No ordinary employee Run or chat identity is
- * fabricated, and no model-selected cloud grant or file scope is accepted. */
-export async function createEmployeeMethodFileOperation(
-  input: {
-    context: ExecutionContext;
-    arguments: unknown;
-    callId: string;
-    leaseToken: string;
-    jobAttempt: number;
-    storage: StoragePort;
-  },
-  database: Database = getDatabase(),
-) {
-  const args = EmployeeMethodFileStepSchema.parse(input.arguments);
-  if (!input.callId || input.callId.length > 255)
-    throw new RuntimePolicyError('invalid_tool_call');
-  const key = `method-file:${input.context.runId}:${args.stage}`;
-  const operationId = cloudStableId(key);
-  const prepared = await prepareMethodFileStep(
-    { ...input, arguments: args, operationId },
-    database,
-  );
-  return finishCloudOperation({
-    input,
-    database,
-    run: {
-      ...prepared.run,
-      session_id: null,
-      employee_version_id: prepared.b.employee_version_id,
-      thread_generation: 0,
-    },
-    grant: prepared.grant,
-    profile: prepared.grant.profile,
-    payload: prepared.payload,
-    key,
-    operationId,
-    workerAttempt: input.jobAttempt,
-    content: prepared.payload.arguments.inputs.map((f) => ({
-      kind: 'storage_object' as const,
-      id: f.objectId,
-      checksum: f.checksum,
-    })),
-  });
-}
-
 async function finishCloudOperation<P extends CloudExecutionPayload>({
   input,
   database,
@@ -1024,10 +969,6 @@ export async function loadCloudCommandInputs(
   storage: StoragePort,
   database: Database = getDatabase(),
 ) {
-  const method = await database.begin(async (tx) => {
-    const proof = await methodFileProof(tx, context, payload);
-    return proof ? methodFileInputs(tx, proof) : undefined;
-  });
   const repositoryProof = await resolvePlatformRepositoryExecutionProof(
     context,
     payload,
@@ -1038,9 +979,7 @@ export async function loadCloudCommandInputs(
   )[] = [];
   let total = 0;
   for (const input of payload.arguments.inputs) {
-    const file = method?.object
-      ? { object: method.object }
-      : await getToolBrokerFile(context, input.objectId);
+    const file = await getToolBrokerFile(context, input.objectId);
     if (file.object.id !== input.objectId)
       throw new RuntimePolicyError('cloud_input_changed');
     if (!repositoryProof && payload.origin?.toolName !== 'workspace.project') {
@@ -1132,12 +1071,10 @@ export async function publishCloudOperationArtifacts(
       versionId: string;
     }[];
 
-    const [methodRun] =
-      await tx`select id from allrice_runs where id=${ctx.runId} and execution_spec ? 'employeeMethodSnapshotDigest'`;
     const explicitRevision = payload.arguments.outputs?.some(
       (output) => !!output.parentObjectId,
     );
-    if (existing.length && !methodRun && !explicitRevision) return existing;
+    if (existing.length && !explicitRevision) return existing;
     const principal = {
       actor: { type: 'user' as const, id: ctx.policySnapshot.subjectId },
       organizationId: ctx.organizationId,
@@ -1190,15 +1127,6 @@ export async function publishCloudOperationArtifacts(
       }
     };
     await assertProjectParents();
-    const method = !('kind' in payload)
-      ? await methodFileProof(
-          tx,
-          ctx,
-          payload,
-          binding.attempt.operationId,
-          binding,
-        )
-      : undefined;
     // Exact cached revisions may be historical, but not revoked/deleted/expired.
     if (existing.length) {
       if (explicitRevision) {
@@ -1353,15 +1281,8 @@ export async function publishCloudOperationArtifacts(
       const version = await registerToolBrokerExport(
         {
           context: ctx,
-          ...(method
-            ? {
-                platformTestRunId: method.b.test_id,
-                methodFileOperationId: binding.attempt.operationId,
-              }
-            : {
-                sessionId: binding.task.chatSessionId!,
-                namePolicy: 'personal-deliverable',
-              }),
+          sessionId: binding.task.chatSessionId!,
+          namePolicy: 'personal-deliverable',
           fileName: output.fileName,
           ...('parentObjectId' in output && output.parentObjectId
             ? { parentObjectId: output.parentObjectId }
@@ -1388,13 +1309,6 @@ export async function publishCloudOperationArtifacts(
         tx,
       );
       await tx`insert into allrice_workbench_artifacts(version_id,organization_id,workspace_id,owner_id,run_id,kind,provenance,execution,request_id,request_digest) values(${version.id},${ctx.organizationId},${ctx.workspaceId},${ctx.policySnapshot.subjectId},${ctx.runId},${projectParents.get(output.path) ?? 'file'},${tx.json({ kind: 'tool_result', runId: ctx.runId, operationId: binding.attempt.operationId, stepId: null })},${tx.json(binding.execution)},${`cloud:${binding.attempt.operationId}:${output.path}`},${digest({ objectId: object.id, checksum: object.checksum })})`;
-      if (method)
-        await recordMethodFilePublication(
-          tx,
-          method,
-          { object, versionId: version.id },
-          bytes,
-        );
       published.push({
         object,
         fileName: version.fileName,

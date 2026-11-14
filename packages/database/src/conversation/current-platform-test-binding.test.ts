@@ -275,7 +275,6 @@ describe('platform test source compatibility through the actual package builder'
     for (const format of ['empty', 'plain', 'bundled'] as const)
       for (const purpose of [
         'platform_preview',
-        'method_candidate',
         'experience_validation',
       ] as const)
         it(`${generation}/${format}/${purpose} keeps its original source and independently binds current execution`, () => {
@@ -311,7 +310,7 @@ describe('platform test source compatibility through the actual package builder'
 
   it('restores publisher checksum semantics after JSONB reordering without changing origin or binding', () => {
     const input = frozen(
-      source(newNativeGeneration, 'bundled', 'method_candidate'),
+      source(newNativeGeneration, 'bundled', 'platform_preview'),
     );
     const binding = freezePlatformTestExecutionBinding(input);
     const reordered = reverseObjectKeys(
@@ -507,7 +506,7 @@ describe('independent test birth and immutable readback', () => {
     },
   );
   it('new test IDs use the new approved artifact while the old test keeps its frozen executor', () => {
-    const s = source(newNativeGeneration, 'plain', 'method_candidate');
+    const s = source(newNativeGeneration, 'plain', 'platform_preview');
     const old = frozen(s),
       before = freezePlatformTestExecutionBinding(old);
     const nextArtifact = `sha256:${'c'.repeat(64)}`;
@@ -552,7 +551,7 @@ describe('independent test birth and immutable readback', () => {
   );
   it('cannot relabel a method test as an experience proof', () => {
     const input = frozen(
-      source(newNativeGeneration, 'plain', 'method_candidate'),
+      source(newNativeGeneration, 'plain', 'platform_preview'),
     );
     expect(() =>
       freezePlatformTestExecutionBinding({

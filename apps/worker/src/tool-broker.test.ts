@@ -1,16 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import {
-  OfficeCreateSchema,
-  makeObjectKey,
-  type ExecutionContext,
-} from '@allrice/contracts';
+import { makeObjectKey, type ExecutionContext } from '@allrice/contracts';
 import { LocalStorageAdapter } from '@allrice/storage';
-import { createOffice } from './office/create.js';
-import { inspectOffice } from './office/inspect.js';
+import ExcelJS from 'exceljs';
+import { officeMediaTypes } from '@allrice/contracts';
+import { generateDeliverable } from './deliverable-generator.js';
+
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
@@ -1000,212 +998,6 @@ describe('Codex hosted search Tool Broker integration', () => {
     );
   });
 
-  it('reads addressable Office content and publishes an edited copy with its verified source', async () => {
-    const context = executionContext(),
-      sessionId = randomUUID(),
-      objectId = randomUUID();
-    const created = await createOffice(
-      OfficeCreateSchema.parse({
-        kind: 'xlsx',
-        sheets: [
-          {
-            name: '报价',
-            columns: [{ header: '金额' }, { header: '汇总' }],
-            rows: [[12, { formula: 'A2*2' }]],
-          },
-        ],
-      }),
-    );
-    const source = {
-      id: objectId,
-      organizationId: context.organizationId,
-      workspaceId: context.workspaceId!,
-      ownerId: context.policySnapshot.subjectId,
-      key: makeObjectKey({
-        organizationId: context.organizationId,
-        workspaceId: context.workspaceId!,
-        ownerId: context.policySnapshot.subjectId,
-        category: 'uploads',
-        objectId,
-      }),
-      mediaType: created.mediaType,
-      sizeBytes: created.bytes.length,
-      checksum:
-        `sha256:${createHash('sha256').update(created.bytes).digest('hex')}` as const,
-      retentionUntil: null,
-      deletedAt: null,
-      immutable: false,
-    };
-    const root = await mkdtemp(join(tmpdir(), 'allrice-office-broker-')),
-      storage = new LocalStorageAdapter(root);
-    const base = {
-      context,
-      sessionId,
-      storageRoot: root,
-      capabilities: ['storage:read', 'storage:write'] as (
-        'storage:read' | 'storage:write'
-      )[],
-    };
-    try {
-      await storage.put(
-        source,
-        new Blob([Uint8Array.from(created.bytes)]).stream(),
-      );
-      getToolBrokerFile.mockResolvedValue({
-        object: source,
-        fileName: '报价.xlsx',
-        visibility: 'private',
-      });
-      const read = await executeRiceTool({
-        ...base,
-        call: {
-          id: randomUUID(),
-          name: 'workspace.document.read',
-          arguments: { objectId, includeStructure: true },
-        },
-      });
-      expect(JSON.parse(read.modelContent)).toMatchObject({
-        checksum: source.checksum,
-        kind: 'xlsx',
-      });
-      expect(JSON.parse(read.modelContent).text).toContain('报价!A2');
-      workbenchEnabled.mockReturnValue(true);
-      publishWorkbenchArtifact.mockImplementation(async (input) => ({
-        id: randomUUID(),
-        object: { ...source, id: randomUUID(), mediaType: input.mediaType },
-        version: {
-          fileName: input.fileName,
-          seriesId: randomUUID(),
-          version: 1,
-          parentObjectId: null,
-          changeSummary: null,
-        },
-      }));
-      const call = {
-        id: randomUUID(),
-        name: 'workspace.export.create',
-        arguments: {
-          fileName: '更新报价',
-          format: 'xlsx',
-          office: {
-            kind: 'edit',
-            sourceObjectId: objectId,
-            sourceChecksum: source.checksum,
-            changes: [
-              { type: 'set-cell', sheet: '报价', cell: 'A2', value: 30 },
-            ],
-          },
-        },
-      };
-      const edited = await executeRiceTool({ ...base, call });
-      expect(JSON.parse(edited.modelContent)).toMatchObject({
-        sourceFile: { objectId, checksum: source.checksum },
-        fileName: '更新报价.xlsx',
-        changes: [{ type: 'set-cell', sheet: '报价', cell: 'A2' }],
-      });
-      const publication = publishWorkbenchArtifact.mock.calls[0]![0];
-      expect(publication.sourceFile).toEqual({
-        objectId,
-        checksum: source.checksum,
-      });
-      expect(
-        (await inspectOffice(publication.bytes, 'xlsx', 5000)).text,
-      ).toContain('30');
-      expect(await readFile(join(root, source.key))).toEqual(created.bytes);
-      publishWorkbenchArtifact.mockClear();
-      await expect(
-        executeRiceTool({
-          ...base,
-          capabilities: ['storage:write'],
-          call,
-        }),
-      ).rejects.toThrow('读取文件能力');
-      getToolBrokerFile.mockRejectedValueOnce(
-        new Error('authorization_denied'),
-      );
-      await expect(executeRiceTool({ ...base, call })).rejects.toThrow(
-        'authorization_denied',
-      );
-      await expect(
-        executeRiceTool({
-          ...base,
-          call: {
-            ...call,
-            arguments: {
-              ...call.arguments,
-              office: {
-                ...call.arguments.office,
-                sourceChecksum: `sha256:${'0'.repeat(64)}`,
-              },
-            },
-          },
-        }),
-      ).rejects.toThrow('版本已变化');
-      await writeFile(join(root, source.key), 'modified bytes');
-      await expect(executeRiceTool({ ...base, call })).rejects.toThrow(
-        '校验和不一致',
-      );
-      expect(publishWorkbenchArtifact).not.toHaveBeenCalled();
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-  it('accepts structured Office creation without content and rejects ambiguous or mismatched input', async () => {
-    workbenchEnabled.mockReturnValue(true);
-    publishWorkbenchArtifact.mockResolvedValue({
-      id: randomUUID(),
-      object: {
-        id: randomUUID(),
-        mediaType: 'application/office',
-        sizeBytes: 1,
-      },
-      version: {
-        seriesId: randomUUID(),
-        version: 1,
-        parentObjectId: null,
-        changeSummary: null,
-      },
-    });
-    const base = {
-      context: executionContext(),
-      sessionId: randomUUID(),
-      storageRoot: 'unused-office-mocked-port',
-      capabilities: ['storage:write'] as 'storage:write'[],
-    };
-    const args = {
-      fileName: '说明',
-      format: 'docx',
-      office: {
-        kind: 'docx',
-        title: '说明',
-        blocks: [{ type: 'paragraph', text: '中文内容' }],
-      },
-    };
-    const call = {
-      id: randomUUID(),
-      name: 'workspace.export.create',
-      arguments: args,
-    };
-    await executeRiceTool({ ...base, call });
-    const publication = publishWorkbenchArtifact.mock.calls[0]![0];
-    expect(
-      (await inspectOffice(publication.bytes, 'docx', 5000)).text,
-    ).toContain('中文内容');
-    for (const argumentsValue of [
-      { ...args, content: 'duplicate' },
-      { ...args, format: 'xlsx' },
-      { ...args, artifactKind: 'changeset' },
-      { fileName: 'empty', format: 'docx' },
-    ])
-      await expect(
-        executeRiceTool({
-          ...base,
-          call: { ...call, arguments: argumentsValue },
-        }),
-      ).rejects.toThrow();
-    expect(publishWorkbenchArtifact).toHaveBeenCalledOnce();
-  });
-
   it.each([
     ['生成包含公式的工作簿。', false],
     ['无需重算公式，生成工作簿。', false],
@@ -1216,16 +1008,15 @@ describe('Codex hosted search Tool Broker integration', () => {
   ])(
     'local Python Office honors an explicit quality requirement without cloud disclosure: %s',
     async (userRequest, required) => {
-      const generated = await createOffice({
-        kind: 'xlsx',
-        sheets: [
-          {
-            name: '汇总',
-            columns: [{ header: '数值' }, { header: '公式' }],
-            rows: [[12, { formula: 'A2*2' }]],
-          },
-        ],
-      });
+      const workbook = new ExcelJS.Workbook();
+      const sheet = workbook.addWorksheet('汇总');
+      sheet.addRow(['数值', '公式']);
+      sheet.addRow([12, { formula: 'A2*2' }]);
+      const generated = {
+        bytes: Buffer.from(await workbook.xlsx.writeBuffer()),
+        extension: '.xlsx',
+        mediaType: officeMediaTypes.xlsx,
+      };
       const generate = vi
         .spyOn(nativeOffice, 'generateNativeOfficeExport')
         .mockResolvedValue({
@@ -1312,15 +1103,17 @@ describe('Codex hosted search Tool Broker integration', () => {
   );
 
   it('preserves nested Office revision metadata and rejects conflicting summaries before execution', async () => {
-    const generated = await createOffice({
-      kind: 'docx',
-      title: 'Metadata regression fixture',
-      blocks: [{ type: 'paragraph', text: 'fixture' }],
+    const generated = await generateDeliverable({
+      format: 'docx',
+      content: 'fixture',
     });
     const generate = vi
       .spyOn(nativeOffice, 'generateNativeOfficeExport')
       .mockResolvedValue({
         ...generated,
+        bytes: Buffer.from(generated.bytes),
+        extension: 'docx',
+        mediaType: officeMediaTypes.docx,
         sourceFile: undefined,
         changes: undefined,
         warnings: undefined,
@@ -1410,15 +1203,17 @@ describe('Codex hosted search Tool Broker integration', () => {
         false,
       );
       const transportError = new Error('Synthetic cleanup unknown');
-      const generated = await createOffice({
-        kind: 'docx',
-        title: 'Fixture',
-        blocks: [],
+      const generated = await generateDeliverable({
+        format: 'docx',
+        content: 'fixture',
       });
       const generate = vi.spyOn(nativeOffice, 'generateNativeOfficeExport');
       if (mode === 'publication-unknown')
         generate.mockResolvedValue({
           ...generated,
+          bytes: Buffer.from(generated.bytes),
+          extension: 'docx',
+          mediaType: officeMediaTypes.docx,
           sourceFile: undefined,
           changes: undefined,
           warnings: undefined,

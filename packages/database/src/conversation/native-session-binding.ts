@@ -600,11 +600,7 @@ export async function bindLeasedNativeSession(
       test.status !== 'running' ||
       test.worker_id !== input.workerId ||
       !test.timeout_at ||
-      ![
-        'platform_preview',
-        'method_candidate',
-        'experience_validation',
-      ].includes(test.purpose) ||
+      !['platform_preview', 'experience_validation'].includes(test.purpose) ||
       test.revision_id !== spec.employeeRevisionId ||
       d.profileId !== 'restricted'
     )

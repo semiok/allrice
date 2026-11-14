@@ -20,17 +20,9 @@ See [the exact upstream version, licenses and adaptation boundary](../../../skil
 
 Latest native-workflow evidence: [native acceptance](native-validation.md). Earlier PR validation is historical.
 
-## Existing employees and sessions
+## Current tools and catalog
 
-`skills/catalog.json` declares `office.replaces` for `document-analysis` and `structured-deliverable`. Content synchronization retains their original rows, versions, checksums and source files, while disabling them for new selection. The administrator directory presents Office as their replacement. The catalog's replacement graph rejects missing, active, self-referencing and ambiguous sources.
-
-Opening an employee for editing upgrades the editable definition and assembles Office dependencies. Saving an older API definition and compiling an existing unpublished draft also resolve the old IDs to one Office ID and add its tools. Explicit security denials in submitted definitions remain validation errors rather than being silently discarded. No employee is automatically published by content synchronization.
-
-Published revisions, tenant EmployeeVersions, queued trials and existing Runs keep their frozen packages. Publishing the next draft applies Office to new sessions; existing sessions retain the previous employee version. Rollback selects the original immutable employee revision, including its old Skill IDs and exact content. The database integration suite verifies published/queued package preservation and rollback after catalog synchronization.
-
-## Legacy compatibility
-
-The old typed `office` input and its fixed create/edit implementation remain only for already frozen Office 1.0–1.2 employee packages. Office 1.3 defaults to `python`; new development does not add typed document operations. Remove the compatibility handler when no published package or running task needs it. Historical stored files, downloads and versions do not require retaining the old editor.
+Office uses the native `python` workflow; `content` exports and `officePdf` conversion remain available through the same authorized export tool. The retired typed `office` DSL, its fixed operation enums, `document-analysis` and `structured-deliverable` have been deleted under MET-223. The catalog no longer carries replacement metadata or upgrades old bindings. Old execution packages are not a supported compatibility target.
 
 ## Validation
 
@@ -64,13 +56,9 @@ The service limits input to 8 MB, expanded OOXML to 64 MiB, formulas to 10,000, 
 
 ## Deployment and rollback
 
-Deploy the application and canonical content together, using `pnpm db:setup` / `pnpm content:sync`. No SQL migration is required. Install the lockfile dependencies and start the Office renderer together with the application; development bootstrap compiles the shared contracts before starting plain Node DSH subprocesses; Office bundle 1.3.1 is synchronized alongside it. Catalog synchronization persists replacement metadata atomically with the Skill updates. It is idempotent and does not rewrite employee history.
-
-For PR2 rollback, restore the PR1 application and Office 1.0.0 catalog together and roll affected employees back to their previous published revision. Stored files, lineage and source audits remain readable. To undo the earlier legacy-entry migration entirely, restore the pre-Office application and catalog together. The old catalog re-enables the two legacy entries and removes replacement metadata. Because synchronization intentionally retains unmanaged content, the Office row may remain available after a code rollback; published Office employees require an explicit employee revision rollback when withdrawing that capability. Do not delete frozen content, historical bundle versions or source artifacts.
+Deploy application, migrations and canonical content together through the existing `db:prepare` path. MET-223 removes the retired directory records and method tables; an older application cannot run against the retired schema. Release rollback therefore requires the matching pre-migration database snapshot, not merely an old binary or catalog.
 
 Compose starts `office-renderer` by default on a private network; Web and Worker use `ALLRICE_OFFICE_RENDERER_URL=http://office-renderer:3112`. `pnpm dev` starts a loopback renderer at `127.0.0.1:3112` unless an existing private URL is configured. This setting selects infrastructure, not an enable flag. The image contains maintained Debian LibreOffice/UNO/Poppler/font packages; no tenant-side installation is needed. It runs as a non-root user with a read-only root, bounded tmpfs, no app credentials/volumes and no capabilities. Conversion subprocesses inherit a seccomp denial of IP sockets; UNO uses only a local pipe, macros are disabled and document updates are refused. Renderer restarts do not affect original files.
-
-For PR3 rollback restore the PR2 application/catalog and previous employee revision; stop the renderer after removing its callers. Existing files, including genuine cached formula results, remain readable. There is no database rollback or preview-data migration.
 
 ## Native sandbox deployment
 
@@ -78,4 +66,4 @@ Build `infra/docker/Dockerfile.office-sandbox` for linux/amd64 in the existing d
 
 The image contains the pinned document libraries and the original checker, but no credentials or host mounts. Each export runs with no network and a read-only image, with temporary files, bounded memory and a 60-second execution deadline. Input total is 20 MB; published output is 8 MB, consistent with the existing Office file boundaries. The generic cloud command policy and its existing limits are unchanged. Managed Office export keeps the existing file tool authorization; administrators need not separately approve each temporary Python script.
 
-Publish a new revision of an existing employee to freeze Office 1.3, then start a new session. Existing sessions retain their original frozen package. Roll back application/catalog/employee revision together. No schema migration is required.
+Publish the current Office bundle through the existing reviewed employee publication path. Its file authorization, source checks and durable export receipts remain required.

@@ -38,7 +38,6 @@ type Employee = PlatformEmployeeSummary;
 
 interface NativeSkill {
   requiredToolRefs: string[];
-  replaces?: string[];
   bundleChecksum?: string | null;
   resourceCount?: number;
   id: string;

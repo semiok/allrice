@@ -1,11 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { describe, it, expect } from 'vitest';
-import {
-  EmployeeContentMutationSchema,
-  EmployeeMethodSaveSchema,
-  EmployeeMethodSharedTargetSchema,
-  EmployeeMethodInspectSchema,
-} from './employee-content.ts';
+import { EmployeeContentMutationSchema } from './employee-content.ts';
 function input() {
   return {
     operation: 'save_draft',
@@ -30,121 +25,6 @@ function input() {
   };
 }
 describe('employee content input boundaries', () => {
-  it('accepts an exact candidate-test cursor only for candidate discovery', () => {
-    const args = {
-      view: 'candidate',
-      scope: 'company',
-      beforeTestId: randomUUID(),
-    };
-    expect(EmployeeMethodInspectSchema.parse(args)).toEqual(args);
-    for (const invalid of [
-      { ...args, view: 'effective' },
-      { ...args, view: 'history' },
-      { ...args, beforeRevision: 2 },
-      { ...args, ownerId: randomUUID() },
-      { ...args, beforeTestId: 'latest' },
-    ])
-      expect(EmployeeMethodInspectSchema.safeParse(invalid).success).toBe(
-        false,
-      );
-  });
-  it('requires an exact department target and forbids department identity on company scope', () => {
-    const company = {
-      scope: 'company',
-      setId: randomUUID(),
-      employeeId: randomUUID(),
-    };
-    const department = {
-      ...company,
-      scope: 'department',
-      departmentId: randomUUID(),
-    };
-    expect(EmployeeMethodSharedTargetSchema.parse(company)).toEqual(company);
-    expect(EmployeeMethodSharedTargetSchema.parse(department)).toEqual(
-      department,
-    );
-    for (const target of [
-      { ...company, departmentId: department.departmentId },
-      { ...company, departmentId: null },
-      { ...company, scope: 'department' },
-      { ...company, organizationId: randomUUID() },
-      { ...company, ownerId: randomUUID() },
-    ])
-      expect(EmployeeMethodSharedTargetSchema.safeParse(target).success).toBe(
-        false,
-      );
-  });
-  it('requires new text and exact, distinct replacement pins, without source re-addition', () => {
-    const ref = {
-      sourceKind: 'procedure',
-      contentId: randomUUID(),
-      revisionId: randomUUID(),
-      digest: `sha256:${'a'.repeat(64)}`,
-    };
-    const valid = {
-      expectedRevision: 1,
-      section: 'scene',
-      scene: { id: randomUUID() },
-      procedure: '新版流程',
-      replaceTextReferences: [ref],
-      changeSummary: '替换旧流程',
-    };
-    expect(EmployeeMethodSaveSchema.safeParse(valid).success).toBe(true);
-    for (const invalid of [
-      { ...valid, procedure: undefined },
-      { ...valid, replaceTextReferences: [ref, ref] },
-      { ...valid, references: [ref] },
-      {
-        ...valid,
-        replaceTextReferences: [{ ...ref, sourceKind: 'knowledge' }],
-      },
-      { ...valid, operation: 'remove_scene' },
-    ])
-      expect(EmployeeMethodSaveSchema.safeParse(invalid).success).toBe(false);
-  });
-  it('accepts bounded existing-scene edits and rejects ambiguous removal payloads', () => {
-    const base = {
-      expectedRevision: 2,
-      section: 'scene',
-      scene: { id: randomUUID() },
-      changeSummary: '候选调整',
-    };
-    expect(
-      EmployeeMethodSaveSchema.safeParse({
-        ...base,
-        scene: { ...base.scene, name: '周度回款' },
-      }).success,
-    ).toBe(true);
-    expect(
-      EmployeeMethodSaveSchema.safeParse({ ...base, operation: 'remove_scene' })
-        .success,
-    ).toBe(true);
-    for (const value of [
-      base,
-      { ...base, scene: { name: '缺少适用条件' } },
-      { ...base, operation: 'remove_scene', section: 'common' },
-      {
-        ...base,
-        operation: 'remove_scene',
-        scene: { ...base.scene, name: '不要静默忽略' },
-      },
-      { ...base, operation: 'remove_scene', procedure: '不得同时编辑' },
-      { ...base, operation: 'remove_scene', references: [] },
-      { ...base, operation: 'remove_scene', activate: true },
-      {
-        ...base,
-        removeReferences: [
-          {
-            sourceKind: 'requirement',
-            contentId: randomUUID(),
-            revisionId: randomUUID(),
-            digest: `sha256:${'0'.repeat(64)}`,
-          },
-        ],
-      },
-    ])
-      expect(EmployeeMethodSaveSchema.safeParse(value).success).toBe(false);
-  });
   it('rejects authority/tool fields, foreign target kinds, ambiguous scene IDs and unresolved text edits', () => {
     const base = input(),
       scene = {

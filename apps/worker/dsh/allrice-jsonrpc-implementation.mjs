@@ -25,14 +25,8 @@ import {
 } from '@allrice/contracts/native-runtime';
 import { personalSkillNativeTools } from './allrice-personal-skill-native-tools.mjs';
 import { managedToolWaitTimeoutMs } from './allrice-tool-timeouts.mjs';
-import { methodTestNativeTools } from './allrice-method-test-native-tools.mjs';
-import {
-  employeeMethodNativeTools,
-  personalEmployeeMethodTool,
-} from './allrice-employee-method-native-tools.mjs';
 import { generateCodexImage } from './allrice-codex-images.mjs';
 import { RuntimeLocalCommandToolInputSchema } from '@allrice/contracts/native-runtime';
-import { preparedMethodQuestions } from './allrice-method-questions.mjs';
 import {
   nativeContextProjection,
   installNativeContextProjection,
@@ -135,8 +129,6 @@ export async function createAllRiceRuntime(
     ...brandContentNativeTools,
     ...employeeProfileNativeTools,
     ...personalSkillNativeTools,
-    ...employeeMethodNativeTools,
-    ...methodTestNativeTools,
     ...technicalNativeTools,
     ...browserWorkspaceNativeTools,
     ...mcpNativeTools,
@@ -687,30 +679,6 @@ export async function createAllRiceRuntime(
         },
       },
     },
-    {
-      canonicalName: 'automation.create',
-      wireName: 'automation_create',
-      description:
-        'Create one tenant-scoped scheduled automation only after the user explicitly asks for a reminder or future execution.',
-      presentation: 'tool',
-      parameters: {
-        name: {
-          type: 'string',
-          required: true,
-          description: 'Short automation name.',
-        },
-        prompt: {
-          type: 'string',
-          required: true,
-          description: 'Exact future task to execute.',
-        },
-        delayMinutes: {
-          type: 'integer',
-          required: true,
-          description: 'Delay in minutes from 1 to 525600.',
-        },
-      },
-    },
   ];
 
   function toPiCredential(record) {
@@ -846,28 +814,16 @@ export async function createAllRiceRuntime(
     modelTimingNotify = () => undefined;
     codexModels = null;
     nativeTools = new Set();
-    personalMethodToolsOnly = false;
     nativeToolsRegistered = new Set();
     nativeSkillsRegistered = false;
     pendingUserQuestions = new Map();
-    preparedMethodQuestions = preparedMethodQuestions();
     managedConnectionWaits = new Set();
     userQuestionNotify = () => undefined;
     toolBrokerRequest = async () => {
       throw new Error('AllRice Tool Broker transport is unavailable');
     };
 
-    async waitForApplicationConnection(
-      tool,
-      response,
-      agent,
-      signal,
-      preparation,
-    ) {
-      if (tool === 'workspace.employee.method.prepare_activation') {
-        signal?.throwIfAborted();
-        this.preparedMethodQuestions.complete(agent, preparation, response);
-      }
+    async waitForApplicationConnection(tool, response, agent, signal) {
       if (tool !== 'cloud.mcp.call') return { content: response.modelContent };
       let result;
       try {
@@ -989,10 +945,7 @@ export async function createAllRiceRuntime(
           if (programRunId) this.runAdmission.accepting(programRunId);
           if (this.requireRoot(sessionId).agent !== request.agent)
             throw Error('INPUT_SESSION_NOT_LIVE');
-          const questions = this.preparedMethodQuestions.take(
-            request.agent,
-            request.questions,
-          );
+          const questions = request.questions;
           const callId =
             process.env.ALLRICE_ASK_USER_MODE === 'timed'
               ? request.wait?.callId
@@ -1251,7 +1204,6 @@ export async function createAllRiceRuntime(
         ? params.nativeTools.filter((name) => typeof name === 'string')
         : [];
       this.nativeTools = new Set(requestedTools);
-      this.personalMethodToolsOnly = params.personalMethodToolsOnly === true;
       const skillRegistrationStarted = performance.now();
       const requestedSkills = Array.isArray(params?.nativeSkills)
         ? params.nativeSkills.map(nativeSkillSnapshot)
@@ -1342,7 +1294,6 @@ export async function createAllRiceRuntime(
         capabilities: {
           runAdmission: !!this.runAdmission,
           employeeDocumentsSchemaVersion: this.employeeDocumentsSchemaVersion,
-          personalMethodToolsOnly: 1,
           nativeAccounting: this.nativeAccounting ? 1 : 0,
           durableQuestions: true,
           taskProgress: !!this.taskProgress,
@@ -1470,11 +1421,6 @@ export async function createAllRiceRuntime(
           (tool) =>
             this.nativeTools.has(tool.canonicalName) &&
             !this.nativeToolsRegistered.has(tool.canonicalName),
-        )
-        .map((tool) =>
-          this.personalMethodToolsOnly
-            ? personalEmployeeMethodTool(tool)
-            : tool,
         );
       if (requestedBrokerTools.length === 0) return;
       if (
@@ -1577,18 +1523,7 @@ export async function createAllRiceRuntime(
         this.ctx.systemPrompt.section({
           name: 'tool:allrice_exports',
           order: 115,
-          text: 'When the user asks for Word, Excel, PPT or another downloadable deliverable, create the requested files with workspace_export_create; describing what a file would contain does not fulfill that request. Read the Office Skill format guides and use its native Python workflow: {fileName, format, python: {script, inputs: []}}. For a new file omit python.sourceObjectId or use null. For template edits, list and read the source with includeStructure=true, then edit the actual file supplied via python.inputs using native Office libraries. Use content for text exports; office is only a legacy compatibility path. When revising an existing AllRice deliverable, pass parentObjectId and top-level changeSummary to preserve immutable lineage. Include each actual downloadUrl as a Markdown link without JSON-escaping slashes; Allrice opens the file preview with download available there. Do not create files for an ordinary chat answer.',
-        });
-      }
-      if (
-        requestedBrokerTools.some(
-          (tool) => tool.canonicalName === 'automation.create',
-        )
-      ) {
-        this.ctx.systemPrompt.section({
-          name: 'tool:allrice_automation',
-          order: 116,
-          text: 'Use automation_create only when the user explicitly requests a reminder or future execution. Confirm the intended task and timing from the conversation; never silently schedule speculative work.',
+          text: 'When the user asks for Word, Excel, PPT or another downloadable deliverable, create the requested files with workspace_export_create; describing what a file would contain does not fulfill that request. Read the Office Skill format guides and use its native Python workflow: {fileName, format, python: {script, inputs: []}}. For a new file omit python.sourceObjectId or use null. For template edits, list and read the source with includeStructure=true, then edit the actual file supplied via python.inputs using native Office libraries. Use content for text exports. When revising an existing AllRice deliverable, pass parentObjectId and top-level changeSummary to preserve immutable lineage. Include each actual downloadUrl as a Markdown link without JSON-escaping slashes; Allrice opens the file preview with download available there. Do not create files for an ordinary chat answer.',
         });
       }
       for (const tool of requestedBrokerTools) {
@@ -1629,11 +1564,6 @@ export async function createAllRiceRuntime(
                 : !this.ctx.agents.roots().includes(agent))
             )
               throw Error('EMPLOYEE_PROFILE_ROOT_REQUIRED');
-            const preparation =
-              tool.canonicalName ===
-              'workspace.employee.method.prepare_activation'
-                ? this.preparedMethodQuestions.begin(agent)
-                : undefined;
             tool.validateArguments?.(args);
             const fileRead = tool.canonicalName === 'workspace.file.read';
             const abortFileRead = () =>
@@ -1700,7 +1630,6 @@ export async function createAllRiceRuntime(
               response,
               agent,
               exec.signal,
-              preparation,
             );
           },
           presentCall: (args) => ({
@@ -1889,8 +1818,6 @@ export async function createAllRiceRuntime(
     }
 
     async clearRootQuestion(sessionId, reason) {
-      const record = this.roots.get(sessionId);
-      if (record) this.preparedMethodQuestions.clear(record.agent);
       const pending = this.pendingUserQuestions.get(sessionId);
       if (pending) {
         this.pendingUserQuestions.delete(sessionId);

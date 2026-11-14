@@ -1,6 +1,5 @@
 /** Real pinned DSH process, durable session files and synthetic HTTP model. */
 import { randomUUID } from 'node:crypto';
-import { methodActivationQuestionPrefix } from '@allrice/contracts';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
@@ -17,9 +16,6 @@ describe('MET153 native durable question boundary', () => {
     'application',
     'application-skipped',
     'application-skipped-live',
-    'personal',
-    'department',
-    'company',
   ])(
     'releases and resumes the native question exactly once (kind=%s)',
     async (kind) => {
@@ -28,76 +24,31 @@ describe('MET153 native durable question boundary', () => {
       // A live answer (assistants on never park) returns through the tool.
       const skipped = kind.startsWith('application-skipped');
       const live = kind === 'application-skipped-live';
-      const method = ['personal', 'department', 'company'].includes(kind);
-      const receiptId = randomUUID();
-      const preparedQuestion = {
-        id: methodActivationQuestionPrefix + receiptId,
-        header: '确认工作方法',
-        question: kind + ' candidate exact confirmation',
-        ...(kind === 'company' ? { detail: '范围'.repeat(10_000) } : {}),
-        options: [
-          { label: '确认启用', description: 'Enable this exact version' },
-          { label: '暂不启用' },
-        ],
-        multiSelect: false,
-      };
-      const prepareTool = 'workspace.employee.method.prepare_activation';
-      let preparations = 0;
-      const asksAt = method ? 2 : 1;
+      const asksAt = 1;
       const requestId = randomUUID();
       const connectionId = randomUUID();
-      const itemId = method
-        ? preparedQuestion.id
-        : applicationLogin
-          ? `app-connect:${requestId}`
-          : 'choice';
-      const answerLabel = method
-        ? '确认启用'
-        : applicationLogin
-          ? '已连接，继续任务'
-          : 'Continue';
+      const itemId = applicationLogin ? `app-connect:${requestId}` : 'choice';
+      const answerLabel = applicationLogin ? '已连接，继续任务' : 'Continue';
       const model = await p24Fixture(async (request, index) => {
-        if (method && index === 1)
-          return {
-            nativeTool: {
-              name: 'workspace_employee_method_prepare_activation',
-              arguments: {
-                expectedRevision: 1,
-                candidateRevisionId: randomUUID(),
-                candidateDigest: 'sha256:' + 'a'.repeat(64),
-                testIds: [randomUUID()],
-              },
-            },
-          };
         if (index === asksAt)
           return {
             nativeTool: {
               name: applicationLogin ? 'cloud_mcp_call' : 'ask_user_question',
-              arguments: method
+              arguments: applicationLogin
                 ? {
+                    action: 'connect',
+                    name: 'Records',
+                    endpoint: 'https://mcp.example.test/mcp',
+                  }
+                : {
                     questions: [
                       {
-                        ...preparedQuestion,
-                        multiSelect: undefined,
-                        multi_select: false,
+                        id: 'choice',
+                        question: 'Which option?',
+                        options: [{ label: 'Continue' }],
                       },
                     ],
-                  }
-                : applicationLogin
-                  ? {
-                      action: 'connect',
-                      name: 'Records',
-                      endpoint: 'https://mcp.example.test/mcp',
-                    }
-                  : {
-                      questions: [
-                        {
-                          id: 'choice',
-                          question: 'Which option?',
-                          options: [{ label: 'Continue' }],
-                        },
-                      ],
-                    },
+                  },
             },
           };
         const history = JSON.stringify(request.messages);
@@ -109,10 +60,6 @@ describe('MET153 native durable question boundary', () => {
         if (!live && applicationLogin)
           expect(history).toContain(
             skipped ? '用户没有确认已完成连接' : 'action=status',
-          );
-        if (kind === 'company')
-          expect(JSON.stringify(request.messages)).toContain(
-            preparedQuestion.detail,
           );
         return { text: 'Recovered native answer.' };
       });
@@ -147,31 +94,17 @@ describe('MET153 native durable question boundary', () => {
           },
         });
         clients.push(client);
-        if (applicationLogin || method)
+        if (applicationLogin)
           client.setRequestHandler(
             dshInboundToolHandler({
               tools: [
                 {
-                  name: method ? prepareTool : 'cloud.mcp.call',
-                  description: method
-                    ? 'Prepare method confirmation'
-                    : 'Connect apps',
+                  name: 'cloud.mcp.call',
+                  description: 'Connect apps',
                   inputSchema: { type: 'object' },
                 },
               ],
               onToolCall: async () => {
-                if (method) {
-                  preparations++;
-                  return {
-                    modelContent: JSON.stringify({
-                      enabled: false,
-                      receiptId,
-                      question: preparedQuestion,
-                      expiresAt: new Date(Date.now() + 60_000).toISOString(),
-                    }),
-                    summary: 'Prepared only',
-                  };
-                }
                 return {
                   modelContent: JSON.stringify({
                     needsLogin: true,
@@ -188,11 +121,7 @@ describe('MET153 native durable question boundary', () => {
           cwd: model.root,
           provider: 'openai-compatible',
           model: 'native-wait',
-          nativeTools: method
-            ? [prepareTool]
-            : applicationLogin
-              ? ['cloud.mcp.call']
-              : [],
+          nativeTools: applicationLogin ? ['cloud.mcp.call'] : [],
           expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
         });
         return client;
@@ -221,20 +150,6 @@ describe('MET153 native durable question boundary', () => {
             },
           )
           .toBeTruthy();
-        if (method) {
-          expect(
-            notices.find((n) => n.method === 'session.user-question')!.params
-              .questions,
-          ).toEqual([
-            {
-              ...preparedQuestion,
-              options: preparedQuestion.options.map((o) => ({
-                ...o,
-                description: o.description ?? null,
-              })),
-            },
-          ]);
-        }
         const questionId = String(
           notices.find((n) => n.method === 'session.user-question')!.params
             .questionId,
@@ -267,10 +182,6 @@ describe('MET153 native durable question boundary', () => {
         }
         const parked = await original.parkQuestion(sessionId, questionId);
         expect(parked.checkpoint).toMatchObject({ sessionId, questionId });
-        if (method)
-          expect(parked.checkpoint).toMatchObject({
-            questions: [preparedQuestion],
-          });
         const turnId = (parked.checkpoint as { turnId: string }).turnId;
         await original.close();
         expect(model.requests).toHaveLength(asksAt);
@@ -306,7 +217,6 @@ describe('MET153 native durable question boundary', () => {
           'NATIVE_WAIT_CHANGED',
         );
         expect(model.requests).toHaveLength(asksAt + 1);
-        expect(preparations).toBe(method ? 1 : 0);
       } finally {
         await Promise.allSettled(clients.map((c) => c.close()));
         await model.close();

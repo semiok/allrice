@@ -9,7 +9,7 @@ import { previewOfficePdf } from '@allrice/office-runtime/preview';
 import { LocalStorageAdapter } from '@allrice/storage';
 import { HandlerError } from '../errors.js';
 import type { RiceToolExecutionInput } from '../tool-broker/types.js';
-import { readOfficeBytes } from './export.js';
+import { readOfficeBytes } from './read-bytes.js';
 
 const maximumSourceBytes = 20 * 1024 * 1024;
 const maximumPdfBytes = 8_000_000;

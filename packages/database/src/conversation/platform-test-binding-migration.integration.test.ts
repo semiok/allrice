@@ -162,7 +162,7 @@ suite(
     );
     it('rejects wrong source purpose and missing input owner', async () => {
       await expect(
-        insert(birth(), { purpose: 'method_candidate' }),
+        insert(birth(), { purpose: 'experience_validation' }),
       ).rejects.toThrow('binding required');
       await expect(
         insert(birth(), { input: { ...input, ownerId: null } }),

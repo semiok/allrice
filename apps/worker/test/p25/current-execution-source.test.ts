@@ -82,11 +82,7 @@ function fixture(
   };
   return { input, origin, binding };
 }
-it.each([
-  'platform_preview',
-  'method_candidate',
-  'experience_validation',
-] as const)(
+it.each(['platform_preview', 'experience_validation'] as const)(
   '%s selects the approved executor while retaining its original current package and synthetic version',
   (purpose) => {
     const f = fixture(purpose),
@@ -100,7 +96,7 @@ it.each([
   },
 );
 it('accepts the current declared package without changing original source facts', () => {
-  const f = fixture('method_candidate', newNativeGeneration);
+  const f = fixture('platform_preview', newNativeGeneration);
   expect(currentExecutionForNativeInput(f.input, f.origin, f.binding)).toEqual(
     f.binding.test,
   );

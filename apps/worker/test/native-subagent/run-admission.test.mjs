@@ -16,13 +16,9 @@ const bridge = async (method) => {
 it('new Rice root and actual spawned child omit retired method schemas while retaining granted web fetch', async () => {
   const retired = ['inspect', 'save_candidate', 'restore_candidate'];
   const nativeTools = withEmployeeCustomizationTools(
-    [
-      'web.fetch',
-      ...retired.map((action) => `workspace.employee.method.${action}`),
-    ],
+    ['web.fetch'],
     ['storage:read', 'storage:write', 'network:outbound'],
     'general',
-    true,
   );
   const h = await host({ runId, nativeTools, bridge });
   await h.prompt('请核对公开资料，并把来源检查交给子任务。');

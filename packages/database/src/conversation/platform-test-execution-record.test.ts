@@ -45,11 +45,7 @@ function row(purpose: PlatformTestPurpose = 'platform_preview') {
   };
   return { record, expectedScope, origin, binding };
 }
-it.each([
-  'platform_preview',
-  'method_candidate',
-  'experience_validation',
-] as const)(
+it.each(['platform_preview', 'experience_validation'] as const)(
   '%s original queued source is independent of a later recompiled revision or deployment',
   (purpose) => {
     const f = row(purpose),
