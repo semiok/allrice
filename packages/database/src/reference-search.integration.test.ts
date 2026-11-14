@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import {
   afterAll,
   beforeAll,
@@ -270,6 +271,47 @@ suite('R3 publication search uses complete text and current readers', () => {
     await expect(prepareReferenceText(reader, saved.pin)).rejects.toMatchObject(
       { code: 'REFERENCE_UNAVAILABLE' },
     );
+  });
+
+  it('installs its search index with only the owned schema in search_path', async () => {
+    const migration = await readFile(
+      new URL(
+        '../migrations/0243_reference_fulltext_search.sql',
+        import.meta.url,
+      ),
+      'utf8',
+    );
+    await expect(
+      f.db.begin(async (tx) => {
+        const [owned] = await tx`select current_schema() as name`;
+        await tx`select set_config('search_path', quote_ident(${owned!.name}), true)`;
+        const [before] = await tx`select current_schemas(false) as schemas`;
+        expect(before!.schemas).toEqual([owned!.name]);
+        await tx`drop index allrice_reference_fulltext_search_idx`;
+        await tx.unsafe(migration);
+        const [index] = await tx`select
+          n.nspname as table_schema, c.relname as table_name,
+          op.opcname as opclass, op.opcnamespace = e.extnamespace as extension_opclass,
+          en.nspname as extension_schema
+          from pg_catalog.pg_index i
+          join pg_catalog.pg_class c on c.oid = i.indrelid
+          join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+          join pg_catalog.pg_opclass op on op.oid = i.indclass[0]
+          join pg_catalog.pg_extension e on e.extname = 'pg_trgm'
+          join pg_catalog.pg_namespace en on en.oid = e.extnamespace
+          where i.indexrelid = 'allrice_reference_fulltext_search_idx'::regclass`;
+        expect(index).toMatchObject({
+          table_schema: owned!.name,
+          table_name: 'allrice_knowledge_documents',
+          opclass: 'gin_trgm_ops',
+          extension_opclass: true,
+        });
+        expect(index!.extension_schema).not.toBe(owned!.name);
+        const [after] = await tx`select current_schemas(false) as schemas`;
+        expect(after!.schemas).toEqual([owned!.name]);
+        throw new Error('rollback_owned_index_probe');
+      }),
+    ).rejects.toThrow('rollback_owned_index_probe');
   });
 
   it('uses only the complete text tied to the retained bytes and installs its derived search index', async () => {
