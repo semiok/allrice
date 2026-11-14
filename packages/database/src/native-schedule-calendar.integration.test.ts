@@ -19,7 +19,21 @@ import {
   type NativeCalendarWrite,
 } from './native-schedule-calendar-state.ts';
 import { createChatSession } from './workspace/service.ts';
-import { createRecurringTask } from './native-schedule-recurring-product.ts';
+import { dispatchNextNativeRecurringOccurrence } from './native-schedule-recurring-product.ts';
+import {
+  ordinaryMonthlyControl,
+  lockOrdinaryMonthlyAdmissions,
+} from './native-schedule-monthly.ts';
+import {
+  calendarPlanFor,
+  insertCalendarPlanInTransaction,
+} from './native-schedule-calendar-business.ts';
+import {
+  latestMonthlyBusinessTarget,
+  nextMonthlyBusinessTarget,
+} from './native-schedule-monthly-time.ts';
+import { runtimePolicyDigest } from './runtime-policy.ts';
+import { AutomationConversationSnapshotSchema } from './automation-conversation.ts';
 import * as client from './core/client.ts';
 import {
   nativeOnceDigest,
@@ -113,23 +127,102 @@ suite(
         employeeAssignmentId: f.assignmentId,
         title: 'SQL-only calendar',
       });
-      const task = await createRecurringTask(f.context, session.id, {
-        clientRequestId: randomUUID(),
+      // The first INSERT represents a valid earlier creation, as in the monthly
+      // integration fixture; no immutable issued P or production clock is edited.
+      const automationId = randomUUID(),
+        requestId = randomUUID();
+      const content = {
         name: 'SQL-only calendar',
         prompt: 'Never execute a model in this suite',
-        rule: {
-          kind: 'monthly',
-          monthDay: 31,
-          time: '10:00:00',
-          timezone: 'Asia/Shanghai',
+      };
+      const rule = {
+        kind: 'monthly' as const,
+        monthDay: 31,
+        time: '10:00:00',
+        timezone: 'Asia/Shanghai',
+      };
+      const [clock] = await f.db<
+        { now: Date }[]
+      >`select date_trunc('milliseconds',clock_timestamp()) now`;
+      const acceptedAt = new Date(
+        latestMonthlyBusinessTarget(rule, clock!.now).getTime() - 1,
+      );
+      const dueP = nextMonthlyBusinessTarget(rule, acceptedAt);
+      expect(dueP.getTime()).toBeLessThanOrEqual(clock!.now.getTime());
+      c = ordinaryMonthlyControl({
+        kind: 'calendar',
+        binding: 'rotating-at-v1',
+        partitionId: 'allrice-recurring-v1',
+        controlId: randomUUID(),
+        automationId,
+        organizationId: f.organizationId,
+        workspaceId: f.workspaceId,
+        ownerId: f.ownerId,
+        revision: 1,
+        controlSessionId: `historical-monthly-${randomUUID()}`,
+        reference,
+        sessionState: 'reserved',
+        nativeTaskId: null,
+        dispatch: {
+          consumer: 'ordinary-monthly-v1',
+          employeeAssignmentId: f.assignmentId,
+          employeeInstanceId: session.employeeInstanceId,
+          businessSessionId: session.id,
         },
       });
+      const raw = {
+        kind: 'calendar' as const,
+        binding: 'rotating-at-v1' as const,
+        consumer: 'ordinary-monthly-v1' as const,
+        revision: 1,
+        rule,
+        contentDigest: runtimePolicyDigest(content),
+        acceptedAt: acceptedAt.toISOString(),
+      };
+      v = NativeMonthlyCalendarRevisionSchema.parse({
+        ...raw,
+        reservationDigest: nativeOnceDigest({
+          organizationId: f.organizationId,
+          workspaceId: f.workspaceId,
+          ownerId: f.ownerId,
+          automationId,
+          employeeAssignmentId: f.assignmentId,
+          employeeInstanceId: session.employeeInstanceId,
+          businessSessionId: session.id,
+          ...raw,
+        }),
+      });
+      await f.db.begin(async (tx) => {
+        await tx`insert into allrice_automations(id,organization_id,workspace_id,owner_id,name,prompt,trigger_type,schedule,status,conversation_mode,employee_assignment_id,session_id,
+          next_run_at,clock_owner,native_recurring_request_id,native_recurring_request_digest,native_recurring_revision,created_at)
+          values(${automationId},${f.organizationId},${f.workspaceId},${f.ownerId},${content.name},${content.prompt},'schedule',${tx.json({ frequency: 'native_recurring', rule })},'enabled','reuse',${f.assignmentId},${session.id},${dueP},
+          'native_recurring',${requestId},${runtimePolicyDigest({ sessionId: session.id, clientRequestId: requestId, ...content, rule })},1,${acceptedAt})`;
+        await tx`insert into allrice_native_recurring_versions(automation_id,revision,configuration,business_content,business_content_digest)
+          values(${automationId},1,${tx.json(v)},${tx.json(content)},${v.contentDigest})`;
+        await tx`insert into allrice_native_recurring_controls(partition_id,control_id,automation_id,control_session_id,immutable_identity,snapshot)
+          values(${c.partitionId},${c.controlId},${automationId},${c.controlSessionId},${tx.json(calendarControlIdentity(c))},${tx.json({ control: c, task: null })})`;
+        await insertCalendarPlanInTransaction(
+          tx,
+          calendarPlanFor(c, v, dueP, acceptedAt, {
+            kind: 'request',
+            requestId,
+          }),
+        );
+        expect(
+          (
+            await lockOrdinaryMonthlyAdmissions(tx, [ordinaryMonthlyControl(c)])
+          ).get(c.controlId),
+        ).toMatchObject({ allowed: true, currentRevision: 1 });
+        const [proof] =
+          await tx`select allrice_ordinary_monthly_authorized(${automationId}::uuid) authorized`;
+        expect(proof!.authorized).toBe(true);
+      });
       const [parent] =
-        await f.db`select snapshot->'control' control from allrice_native_recurring_controls where automation_id=${task.id}`;
+        await f.db`select snapshot->'control' control from allrice_native_recurring_controls where automation_id=${automationId}`;
       const [version] =
-        await f.db`select configuration from allrice_native_recurring_versions where automation_id=${task.id} and revision=1`;
+        await f.db`select configuration from allrice_native_recurring_versions where automation_id=${automationId} and revision=1`;
       const [plan] =
-        await f.db`select * from allrice_native_calendar_plans where automation_id=${task.id} and closed_decision_id is null`;
+        await f.db`select * from allrice_native_calendar_plans where automation_id=${automationId} and closed_decision_id is null`;
       c = NativeCalendarControlSchema.parse(parent!.control);
       v = NativeMonthlyCalendarRevisionSchema.parse(version!.configuration);
       businessP = plan!.business_scheduled_for.toISOString();
@@ -259,7 +352,7 @@ suite(
         clock_owner: 'native_recurring',
         schedule: { frequency: 'native_recurring', rule: v.rule },
         conversation_mode: 'reuse',
-        next_run_at: null,
+        next_run_at: new Date(businessP),
       });
       const fixed = createNativeRecurringSqlStore({
         ...options,
@@ -445,6 +538,7 @@ suite(
     function faultDatabase(
       after: (tx: TransactionSql) => Promise<void>,
       loseAck = false,
+      observe: (tx: TransactionSql) => TransactionSql = (tx) => tx,
     ): Sql {
       return new Proxy(f.db, {
         get(target, key, receiver) {
@@ -455,7 +549,8 @@ suite(
             ) => Promise<unknown>;
             const forwarded = [...args];
             forwarded[forwarded.length - 1] = async (tx: TransactionSql) => {
-              const result = await callback(tx);
+              // One wrapper identity flows through the real admission/queue reservation.
+              const result = await callback(observe(tx));
               await after(tx);
               return result;
             };
@@ -614,15 +709,185 @@ suite(
       const [o] = await f.db<
         { occurrence_id: string }[]
       >`select occurrence_id from allrice_native_recurring_occurrences where calendar_period_id=${p.periodId}`;
-      await expect(f.db`insert into allrice_automation_runs(id,organization_id,workspace_id,automation_id,scheduled_for,native_recurring_occurrence_id)
-      values(${randomUUID()},${c.organizationId},${c.workspaceId},${c.automationId},${p.businessScheduledFor}::timestamptz,${o!.occurrence_id})`).rejects.toMatchObject(
+      type Boundary = {
+        business: Record<string, unknown[]>;
+        occurrence: Record<string, unknown>;
+      };
+      async function boundary(tx: Sql | TransactionSql) {
+        const [row] = await tx<
+          { value: Boundary }[]
+        >`select jsonb_build_object('business',jsonb_build_object(
+          'automations',(select coalesce(jsonb_agg(to_jsonb(x) order by x.id),'[]'::jsonb) from allrice_automations x),
+          'versions',(select coalesce(jsonb_agg(to_jsonb(x) order by x.automation_id,x.revision),'[]'::jsonb) from allrice_native_recurring_versions x),
+          'controls',(select coalesce(jsonb_agg(to_jsonb(x) order by x.control_id),'[]'::jsonb) from allrice_native_recurring_controls x),
+          'plans',(select coalesce(jsonb_agg(to_jsonb(x) order by x.period_id),'[]'::jsonb) from allrice_native_calendar_plans x),
+          'periods',(select coalesce(jsonb_agg(to_jsonb(x) order by x.period_id),'[]'::jsonb) from allrice_native_calendar_periods x),
+          'arms',(select coalesce(jsonb_agg(to_jsonb(x) order by x.arm_id),'[]'::jsonb) from allrice_native_calendar_arms x),
+          'decisions',(select coalesce(jsonb_agg(to_jsonb(x) order by x.decision_id),'[]'::jsonb) from allrice_native_calendar_decisions x),
+          'intents',(select coalesce(jsonb_agg(to_jsonb(x) order by to_jsonb(x)::text),'[]'::jsonb) from allrice_native_calendar_retirement_intents x),
+          'retirements',(select coalesce(jsonb_agg(to_jsonb(x) order by to_jsonb(x)::text),'[]'::jsonb) from allrice_native_calendar_retirements x),
+          'automationRuns',(select coalesce(jsonb_agg(to_jsonb(x) order by x.id),'[]'::jsonb) from allrice_automation_runs x),
+          'runs',(select coalesce(jsonb_agg(to_jsonb(x) order by x.id),'[]'::jsonb) from allrice_runs x),
+          'jobs',(select coalesce(jsonb_agg(to_jsonb(x) order by x.id),'[]'::jsonb) from allrice_jobs x),
+          'employeeRuns',(select coalesce(jsonb_agg(to_jsonb(x) order by x.run_id),'[]'::jsonb) from allrice_employee_runs x),
+          'employeeSteps',(select coalesce(jsonb_agg(to_jsonb(x) order by to_jsonb(x)::text),'[]'::jsonb) from allrice_employee_run_steps x),
+          'messages',(select coalesce(jsonb_agg(to_jsonb(x) order by x.id),'[]'::jsonb) from allrice_messages x),
+          'sessions',(select coalesce(jsonb_agg(to_jsonb(x) order by x.id),'[]'::jsonb) from allrice_chat_sessions x),
+          'inputs',(select coalesce(jsonb_agg(to_jsonb(x) order by to_jsonb(x)::text),'[]'::jsonb) from allrice_chat_input_requests x),
+          'policies',(select coalesce(jsonb_agg(to_jsonb(x) order by x.id),'[]'::jsonb) from allrice_policy_snapshots x),
+          'events',(select coalesce(jsonb_agg(to_jsonb(x) order by to_jsonb(x)::text),'[]'::jsonb) from allrice_run_events x),
+          'audit',(select coalesce(jsonb_agg(to_jsonb(x) order by to_jsonb(x)::text),'[]'::jsonb) from allrice_audit_events x),
+          'followups',(select coalesce(jsonb_agg(to_jsonb(x) order by x.run_id),'[]'::jsonb) from allrice_conversation_followups x),
+          'commands',(select coalesce(jsonb_agg(to_jsonb(x) order by to_jsonb(x)::text),'[]'::jsonb) from allrice_conversation_commands x),
+          'clocks',(select coalesce(jsonb_agg(to_jsonb(x) order by x.run_id),'[]'::jsonb) from allrice_task_clocks x),
+          'assets',(select coalesce(jsonb_agg(to_jsonb(x) order by to_jsonb(x)::text),'[]'::jsonb) from allrice_company_run_assets x)),
+          'occurrence',(select to_jsonb(x) from allrice_native_recurring_occurrences x where occurrence_id=${o!.occurrence_id})) value`;
+        return row!.value;
+      }
+      const lease = (b: Boundary) =>
+        Object.fromEntries(
+          [
+            'outbox_owner_id',
+            'outbox_epoch',
+            'outbox_token_digest',
+            'outbox_expires_at',
+          ].map((key) => [key, b.occurrence[key]]),
+        );
+      const before = await boundary(f.db),
+        workerId = randomUUID();
+      const dispatch = ordinaryMonthlyControl(c).dispatch;
+      let claimed: Boundary | undefined,
+        complete: Record<string, unknown> | undefined,
+        damaged: Record<string, unknown> | undefined,
+        injections = 0,
+        proved = false;
+      const db = faultDatabase(
+        async (tx) => {
+          const state = await boundary(tx);
+          if (injections === 0) {
+            expect(state.business).toEqual(before.business);
+            expect(state.occurrence).toMatchObject({
+              outbox_state: 'pending',
+              business_binding: null,
+              outbox_owner_id: workerId,
+              outbox_epoch: Number(before.occurrence.outbox_epoch) + 1,
+            });
+            expect(state.occurrence.outbox_token_digest).toMatch(
+              /^sha256:[a-f0-9]{64}$/,
+            );
+            claimed = state;
+            return;
+          }
+          expect(claimed).toBeDefined();
+          expect(lease(state)).toEqual(lease(claimed!));
+          const [proof] = await tx<
+            {
+              conversation_ok: boolean;
+              monthly_ok: boolean;
+              authority_ok: boolean;
+              lease_live: boolean;
+              conversation_snapshot: unknown;
+              business_binding: unknown;
+            }[]
+          >`select
+          allrice_automation_conversation_handoff_proved(ar.id) conversation_ok,
+          allrice_ordinary_monthly_handoff_proved(o.occurrence_id) monthly_ok,
+          allrice_ordinary_monthly_authorized(ar.automation_id) authority_ok,
+          (o.outbox_state='enqueued' and o.outbox_expires_at>clock_timestamp()) lease_live,
+          ar.conversation_snapshot,o.business_binding from allrice_native_recurring_occurrences o
+          join allrice_automation_runs ar on ar.native_recurring_occurrence_id=o.occurrence_id
+          where o.occurrence_id=${o!.occurrence_id}`;
+          expect(proof).toMatchObject({
+            conversation_ok: true,
+            monthly_ok: false,
+            authority_ok: true,
+            lease_live: true,
+          });
+          expect(complete!.contentDigest).toBe(v.contentDigest);
+          expect(proof!.business_binding).toEqual(damaged);
+          expect(
+            AutomationConversationSnapshotSchema.parse(
+              proof!.conversation_snapshot,
+            ),
+          ).toMatchObject({
+            automationId: c.automationId,
+            businessRevision: 1,
+            mode: 'reuse',
+            sourceSessionId: dispatch.businessSessionId,
+            targetSessionId: dispatch.businessSessionId,
+            employeeAssignmentId: dispatch.employeeAssignmentId,
+            employeeInstanceId: dispatch.employeeInstanceId,
+            trigger: {
+              kind: 'scheduled',
+              nativeKind: 'recurring',
+              occurrenceId: o!.occurrence_id,
+              scheduledFor: p.businessScheduledFor,
+            },
+          });
+          for (const name of ['automationRuns', 'runs', 'jobs', 'employeeRuns'])
+            expect(state.business[name]).toHaveLength(
+              before.business[name]!.length + 1,
+            );
+          expect(state.business.messages).toHaveLength(
+            before.business.messages!.length + 2,
+          );
+          expect(state.business.sessions).toHaveLength(
+            before.business.sessions!.length,
+          );
+          proved = true;
+        },
+        false,
+        (tx) =>
+          new Proxy(tx, {
+            get(target, key, receiver) {
+              if (key !== 'json') return Reflect.get(target, key, receiver);
+              return (value: unknown) => {
+                if (
+                  value &&
+                  typeof value === 'object' &&
+                  'consumer' in value &&
+                  value.consumer === 'ordinary-monthly-v1' &&
+                  'periodId' in value &&
+                  value.periodId === p.periodId &&
+                  'automationRunId' in value
+                ) {
+                  expect(++injections).toBe(1);
+                  complete = structuredClone(value as Record<string, unknown>);
+                  const { contentDigest: omitted, ...rest } = complete;
+                  expect(omitted).toBe(v.contentDigest);
+                  damaged = rest;
+                  return target.json(
+                    rest as Parameters<TransactionSql['json']>[0],
+                  );
+                }
+                return target.json(
+                  value as Parameters<TransactionSql['json']>[0],
+                );
+              };
+            },
+          }),
+      );
+      vi.mocked(client.getDatabase).mockReturnValue(db);
+      try {
+        await expect(
+          dispatchNextNativeRecurringOccurrence(workerId),
+        ).rejects.toMatchObject({
+          code: 'P1921',
+          message:
+            'ordinary monthly Run lacks exact frozen original chat handoff',
+        });
+      } finally {
+        vi.mocked(client.getDatabase).mockReturnValue(f.db);
+      }
+      expect(injections).toBe(1);
+      expect(proved).toBe(true);
+      // The real short claim commits independently; only the business TX rolls back.
+      expect(await boundary(f.db)).toEqual(claimed);
+      await expect(f.db`update allrice_native_recurring_occurrences set outbox_state='enqueued',business_binding='{}'::jsonb
+        where occurrence_id=${o!.occurrence_id} and outbox_owner_id=${workerId} and outbox_expires_at>clock_timestamp()`).rejects.toMatchObject(
         { code: 'P1921' },
       );
-      await expect(f.db`update allrice_native_recurring_occurrences set outbox_state='enqueued',business_binding='{}'::jsonb,
-      outbox_owner_id='fake',outbox_epoch=1,outbox_token_digest=${nativeOnceDigest('fake')},outbox_expires_at=clock_timestamp()+interval '1 minute'
-      where occurrence_id=${o!.occurrence_id}`).rejects.toMatchObject({
-        code: 'P1921',
-      });
+      expect(await boundary(f.db)).toEqual(claimed);
       expect(
         await f.db`select id from allrice_automation_runs where native_recurring_occurrence_id=${o!.occurrence_id}`,
       ).toHaveLength(0);

@@ -4605,6 +4605,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       const evidence = createFailureEvidence({
         file: import.meta.url,
         test: `tool header position at ${width}px`,
+        // Live reads stay inside the helper's existing 2000ms best-effort capture.
         collect: async () => ({
           width,
           phase,
@@ -4615,10 +4616,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       const saveTrace = async (stage: string) => {
         try {
           const directory = resolve('.local/quality');
-          const trace = await readTrace().catch((error) => ({
-            captureError: String(error),
-            lastTrace,
-          }));
+          // Persist local evidence before the helper's bounded live capture.
+          // A stalled renderer must not block this write or fixture cleanup.
           await mkdir(directory, { recursive: true });
           await writeFile(
             join(directory, `tool-header-diagnostic-${width}.json`),
@@ -4628,7 +4627,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                 stage,
                 phase,
                 inputPhase,
-                trace,
+                trace: lastTrace,
                 measurements,
                 originalFailure:
                   originalFailure instanceof Error
