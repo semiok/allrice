@@ -255,6 +255,7 @@ export {
 } from './platform-maintenance-execution.ts';
 
 export * from './reference-library.ts';
+export * from './reference-search.ts';
 export * from './reference-processing.ts';
 export * from './reference-runtime.ts';
 export * from './session-reference-eligibility.ts';
